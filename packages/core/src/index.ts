@@ -3,8 +3,27 @@
  * Core library for HackMyAgent security scanning
  */
 
-export const VERSION = "0.1.0";
+export const VERSION = '0.1.0';
 
+// Checker module
+export {
+  checkSkill,
+  parseSkillIdentifier,
+  analyzePermissions,
+} from './checker';
+
+export type {
+  CheckResult,
+  CheckOptions,
+  PublisherInfo,
+  PermissionInfo,
+  RevocationInfo,
+  RiskLevel,
+  SkillIdentifier,
+  PermissionAnalysis,
+} from './checker';
+
+// Legacy scanner (for scan command)
 export interface ScanResult {
   target: string;
   findings: Finding[];
@@ -13,7 +32,7 @@ export interface ScanResult {
 
 export interface Finding {
   id: string;
-  severity: "low" | "medium" | "high" | "critical";
+  severity: 'low' | 'medium' | 'high' | 'critical';
   title: string;
   description: string;
 }

@@ -4,28 +4,92 @@
  * Security scanning tool for AI agents
  */
 
-import { Command } from "commander";
-import { VERSION, createScanner } from "@hackmyagent/core";
+import { Command } from 'commander';
+import { VERSION, createScanner, checkSkill, type RiskLevel } from '@hackmyagent/core';
 
 const program = new Command();
 
 program
-  .name("hackmyagent")
-  .description("Security scanning tool for AI agents")
+  .name('hackmyagent')
+  .description('Security toolkit for AI agents')
   .version(VERSION);
 
+// Risk level colors and symbols
+const RISK_DISPLAY: Record<RiskLevel, { symbol: string; color: string }> = {
+  low: { symbol: '✅', color: '\x1b[32m' },      // green
+  medium: { symbol: '⚠️', color: '\x1b[33m' },   // yellow
+  high: { symbol: '🔴', color: '\x1b[31m' },     // red
+  critical: { symbol: '🚨', color: '\x1b[91m' }, // bright red
+};
+const RESET = '\x1b[0m';
+
 program
-  .command("check")
-  .description("Check an agent for security vulnerabilities")
-  .argument("<target>", "Target agent URL or identifier")
-  .option("-v, --verbose", "Enable verbose output")
-  .action(async (target: string, options: { verbose?: boolean }) => {
-    console.log(`Checking agent: ${target}`);
-    if (options.verbose) {
-      console.log("Verbose mode enabled");
+  .command('check')
+  .description('Verify a skill before installing')
+  .argument('<skill>', 'Skill identifier (e.g., @publisher/skill)')
+  .option('-v, --verbose', 'Enable verbose output')
+  .option('--json', 'Output as JSON')
+  .action(async (skill: string, options: { verbose?: boolean; json?: boolean }) => {
+    try {
+      const result = await checkSkill(skill);
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+
+      const risk = RISK_DISPLAY[result.risk];
+      console.log(`\n${risk.color}${risk.symbol} ${result.risk.toUpperCase()} RISK${RESET}\n`);
+
+      // Publisher info
+      console.log(`Publisher: @${result.publisher.name}`);
+      console.log(`├─ ${result.publisher.verified ? '✅' : '❌'} ${result.publisher.verified ? 'Verified' : 'Not verified'}`);
+      if (result.publisher.verificationMethod && result.publisher.verificationMethod !== 'none') {
+        console.log(`└─ Method: ${result.publisher.verificationMethod.toUpperCase()}`);
+      }
+      console.log();
+
+      // Permissions
+      console.log('Permissions:');
+      if (result.permissions.requested.length === 0) {
+        console.log('└─ None declared');
+      } else {
+        for (const perm of result.permissions.safe) {
+          console.log(`├─ ✅ ${perm}`);
+        }
+        for (const perm of result.permissions.reviewNeeded) {
+          console.log(`├─ ⚠️  ${perm} (review needed)`);
+        }
+        for (const perm of result.permissions.dangerous) {
+          console.log(`├─ ❌ ${perm} (DANGEROUS)`);
+        }
+        console.log(`└─ Risk score: ${result.permissions.riskScore}/100`);
+      }
+      console.log();
+
+      // Revocation
+      console.log('Revocation:');
+      if (result.revocation.revoked) {
+        console.log(`└─ 🚨 REVOKED: ${result.revocation.reason}`);
+      } else {
+        console.log(`└─ ✅ Not on blocklist`);
+      }
+      console.log();
+
+      // Verbose details
+      if (options.verbose) {
+        console.log('Details:');
+        console.log(`└─ Checked at: ${result.revocation.checkedAt.toISOString()}`);
+      }
+
+      // Exit with non-zero for high/critical risk
+      if (result.risk === 'critical' || result.risk === 'high') {
+        process.exit(1);
+      }
+    } catch (error) {
+      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      process.exit(1);
     }
-    // Placeholder implementation
-    console.log("Check complete. No issues found.");
   });
 
 program
