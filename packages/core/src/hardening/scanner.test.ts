@@ -818,6 +818,241 @@ describe('Permission boundary checks', () => {
   });
 });
 
+describe('Auto-fix: Git security', () => {
+  let scanner: HardeningScanner;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    scanner = new HardeningScanner();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-test-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('creates .gitignore when missing', async () => {
+    await scanner.scan({ targetDir: tempDir, autoFix: true });
+
+    const gitignoreExists = await fs.access(path.join(tempDir, '.gitignore')).then(() => true).catch(() => false);
+    expect(gitignoreExists).toBe(true);
+
+    const content = await fs.readFile(path.join(tempDir, '.gitignore'), 'utf-8');
+    expect(content).toContain('.env');
+    expect(content).toContain('*.pem');
+  });
+
+  it('adds missing patterns to existing .gitignore', async () => {
+    await fs.writeFile(path.join(tempDir, '.gitignore'), 'node_modules/\n');
+
+    await scanner.scan({ targetDir: tempDir, autoFix: true });
+
+    const content = await fs.readFile(path.join(tempDir, '.gitignore'), 'utf-8');
+    expect(content).toContain('node_modules/');
+    expect(content).toContain('.env');
+    expect(content).toContain('*.pem');
+  });
+
+  it('reports fix was applied for .gitignore', async () => {
+    const result = await scanner.scan({ targetDir: tempDir, autoFix: true });
+
+    const gitFinding = result.findings.find(f => f.checkId === 'GIT-001');
+    expect(gitFinding?.fixed).toBe(true);
+  });
+});
+
+describe('Auto-fix: Credential replacement', () => {
+  let scanner: HardeningScanner;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    scanner = new HardeningScanner();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-test-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('replaces Anthropic API key with env var reference in config.json', async () => {
+    const configPath = path.join(tempDir, 'config.json');
+    await fs.writeFile(configPath, JSON.stringify({
+      apiKey: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz',
+      name: 'test'
+    }, null, 2));
+
+    await scanner.scan({ targetDir: tempDir, autoFix: true });
+
+    const content = await fs.readFile(configPath, 'utf-8');
+    expect(content).not.toContain('sk-ant-api03');
+    expect(content).toContain('${ANTHROPIC_API_KEY}');
+  });
+
+  it('replaces OpenAI API key with env var reference', async () => {
+    const configPath = path.join(tempDir, 'config.json');
+    await fs.writeFile(configPath, JSON.stringify({
+      openaiKey: 'sk-proj-abcdefghijklmnopqrstuvwxyz123456',
+    }, null, 2));
+
+    await scanner.scan({ targetDir: tempDir, autoFix: true });
+
+    const content = await fs.readFile(configPath, 'utf-8');
+    expect(content).not.toContain('sk-proj-');
+    expect(content).toContain('${OPENAI_API_KEY}');
+  });
+
+  it('creates .env.example with placeholder', async () => {
+    const configPath = path.join(tempDir, 'config.json');
+    await fs.writeFile(configPath, JSON.stringify({
+      apiKey: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz',
+    }, null, 2));
+
+    await scanner.scan({ targetDir: tempDir, autoFix: true });
+
+    const envExamplePath = path.join(tempDir, '.env.example');
+    const envExists = await fs.access(envExamplePath).then(() => true).catch(() => false);
+    expect(envExists).toBe(true);
+
+    const content = await fs.readFile(envExamplePath, 'utf-8');
+    expect(content).toContain('ANTHROPIC_API_KEY=');
+  });
+});
+
+describe('Auto-fix: Network security', () => {
+  let scanner: HardeningScanner;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    scanner = new HardeningScanner();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-test-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('changes 0.0.0.0 to 127.0.0.1 in mcp.json', async () => {
+    const mcpPath = path.join(tempDir, 'mcp.json');
+    await fs.writeFile(mcpPath, JSON.stringify({
+      servers: {
+        myserver: {
+          command: 'node',
+          args: ['server.js', '--host', '0.0.0.0', '--port', '3000']
+        }
+      }
+    }, null, 2));
+
+    await scanner.scan({ targetDir: tempDir, autoFix: true });
+
+    const content = await fs.readFile(mcpPath, 'utf-8');
+    expect(content).not.toContain('0.0.0.0');
+    expect(content).toContain('127.0.0.1');
+  });
+
+  it('reports fix was applied for network binding', async () => {
+    const mcpPath = path.join(tempDir, 'mcp.json');
+    await fs.writeFile(mcpPath, JSON.stringify({
+      servers: {
+        myserver: {
+          command: 'node',
+          args: ['--host', '0.0.0.0']
+        }
+      }
+    }, null, 2));
+
+    const result = await scanner.scan({ targetDir: tempDir, autoFix: true });
+
+    const netFinding = result.findings.find(f => f.checkId === 'NET-001');
+    expect(netFinding?.fixed).toBe(true);
+  });
+});
+
+describe('Auto-fix: MCP filesystem access', () => {
+  let scanner: HardeningScanner;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    scanner = new HardeningScanner();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-test-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('changes root "/" to "./data" in mcp.json', async () => {
+    const mcpPath = path.join(tempDir, 'mcp.json');
+    await fs.writeFile(mcpPath, JSON.stringify({
+      servers: {
+        filesystem: {
+          command: 'mcp-server-filesystem',
+          args: ['/']
+        }
+      }
+    }, null, 2));
+
+    await scanner.scan({ targetDir: tempDir, autoFix: true });
+
+    const content = await fs.readFile(mcpPath, 'utf-8');
+    const config = JSON.parse(content);
+    expect(config.servers.filesystem.args).not.toContain('/');
+    expect(config.servers.filesystem.args).toContain('./data');
+  });
+
+  it('changes home "~" to "./" in mcp.json', async () => {
+    const mcpPath = path.join(tempDir, 'mcp.json');
+    await fs.writeFile(mcpPath, JSON.stringify({
+      servers: {
+        filesystem: {
+          command: 'mcp-server-filesystem',
+          args: ['~']
+        }
+      }
+    }, null, 2));
+
+    await scanner.scan({ targetDir: tempDir, autoFix: true });
+
+    const content = await fs.readFile(mcpPath, 'utf-8');
+    const config = JSON.parse(content);
+    expect(config.servers.filesystem.args).not.toContain('~');
+    expect(config.servers.filesystem.args).toContain('./');
+  });
+});
+
+describe('Auto-fix: MCP hardcoded secrets', () => {
+  let scanner: HardeningScanner;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    scanner = new HardeningScanner();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-test-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('replaces hardcoded API key in MCP env with reference', async () => {
+    const mcpPath = path.join(tempDir, 'mcp.json');
+    await fs.writeFile(mcpPath, JSON.stringify({
+      servers: {
+        myserver: {
+          command: 'node',
+          env: {
+            API_KEY: 'sk-ant-api03-secretkeyhere1234567890'
+          }
+        }
+      }
+    }, null, 2));
+
+    await scanner.scan({ targetDir: tempDir, autoFix: true });
+
+    const content = await fs.readFile(mcpPath, 'utf-8');
+    expect(content).not.toContain('sk-ant-api03');
+    expect(content).toContain('${ANTHROPIC_API_KEY}');
+  });
+});
+
 describe('Platform detection', () => {
   let scanner: HardeningScanner;
   let tempDir: string;

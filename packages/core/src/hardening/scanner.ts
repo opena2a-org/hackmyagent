@@ -183,51 +183,99 @@ export class HardeningScanner {
   ): Promise<SecurityFinding[]> {
     const findings: SecurityFinding[] = [];
     const exposedKeys: string[] = [];
+    const fixedFiles: string[] = [];
+    const envVarsToAdd: Set<string> = new Set();
+
+    // Credential patterns with their env var names
+    const credentialPatterns = [
+      { name: 'ANTHROPIC_API_KEY', pattern: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{6,}/g, envVar: 'ANTHROPIC_API_KEY' },
+      { name: 'OPENAI_API_KEY', pattern: /sk-proj-[a-zA-Z0-9]{6,}/g, envVar: 'OPENAI_API_KEY' },
+      { name: 'OPENAI_API_KEY', pattern: /sk-[a-zA-Z0-9]{20,}/g, envVar: 'OPENAI_API_KEY' },
+      { name: 'AWS_ACCESS_KEY', pattern: /AKIA[0-9A-Z]{16}/g, envVar: 'AWS_ACCESS_KEY_ID' },
+      { name: 'GITHUB_TOKEN', pattern: /ghp_[a-zA-Z0-9]{36}/g, envVar: 'GITHUB_TOKEN' },
+      { name: 'GITHUB_TOKEN', pattern: /github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}/g, envVar: 'GITHUB_TOKEN' },
+    ];
 
     // Files to check for credentials
     const filesToCheck = [
       'config.json',
       'config.yaml',
       'config.yml',
+      'mcp.json',
+      'settings.json',
       '.env',
       '.env.local',
-      'mcp.json',
-      'CLAUDE.md',
-      'settings.json',
     ];
 
     for (const filename of filesToCheck) {
       const filePath = path.join(targetDir, filename);
       try {
-        const content = await fs.readFile(filePath, 'utf-8');
+        let content = await fs.readFile(filePath, 'utf-8');
+        let fileModified = false;
 
-        for (const { name, pattern } of CREDENTIAL_PATTERNS) {
+        for (const { name, pattern, envVar } of credentialPatterns) {
+          // Reset pattern lastIndex for global regex
+          pattern.lastIndex = 0;
+
           if (pattern.test(content)) {
-            // Check if it's an env var reference (not actual key)
-            if (!content.includes('${') || !content.includes(name)) {
+            // Check if it's already an env var reference
+            pattern.lastIndex = 0;
+            const match = content.match(pattern);
+
+            if (match && !content.includes('${' + envVar + '}')) {
               exposedKeys.push(name);
+
+              if (autoFix) {
+                // Replace the credential with env var reference
+                pattern.lastIndex = 0;
+                content = content.replace(pattern, '${' + envVar + '}');
+                fileModified = true;
+                envVarsToAdd.add(envVar);
+              }
             }
           }
+        }
+
+        if (fileModified) {
+          await fs.writeFile(filePath, content);
+          fixedFiles.push(filename);
         }
       } catch {
         // File doesn't exist, skip
       }
     }
 
+    // Create .env.example if we fixed any credentials
+    if (autoFix && envVarsToAdd.size > 0) {
+      const envExamplePath = path.join(targetDir, '.env.example');
+      let envExampleContent = '# Environment variables for this project\n# Copy to .env and fill in your values\n\n';
+
+      for (const envVar of envVarsToAdd) {
+        envExampleContent += `${envVar}=your_${envVar.toLowerCase()}_here\n`;
+      }
+
+      await fs.writeFile(envExamplePath, envExampleContent);
+    }
+
     const passed = exposedKeys.length === 0;
+    const fixed = fixedFiles.length > 0;
+
     findings.push({
       checkId: 'CRED-001',
       name: 'Exposed API Keys',
       description: 'API keys or secrets found in plaintext configuration files',
       category: 'credentials',
       severity: 'critical',
-      passed,
-      message: passed
-        ? 'No exposed API keys detected'
-        : `Found exposed credentials: ${[...new Set(exposedKeys)].join(', ')}`,
+      passed: passed || fixed,
+      message: fixed
+        ? `Replaced credentials with env var references in: ${fixedFiles.join(', ')}`
+        : passed
+          ? 'No exposed API keys detected'
+          : `Found exposed credentials: ${[...new Set(exposedKeys)].join(', ')}`,
       fixable: true,
-      fixed: false,
-      details: passed ? undefined : { keys: [...new Set(exposedKeys)] },
+      fixed,
+      fixMessage: fixed ? `Created .env.example with: ${[...envVarsToAdd].join(', ')}` : undefined,
+      details: passed && !fixed ? undefined : { keys: [...new Set(exposedKeys)], fixedFiles },
     });
 
     return findings;
@@ -295,16 +343,29 @@ export class HardeningScanner {
       // Check for dangerous filesystem access
       let hasRootAccess = false;
       let hasUnrestrictedShell = false;
+      let mcp001Fixed = false;
 
       if (config.servers) {
         for (const [name, server] of Object.entries(config.servers as Record<string, { command?: string; args?: string[] }>)) {
           // Check for root filesystem access
-          if (
-            server.args?.includes('/') ||
-            server.args?.includes('~') ||
-            server.args?.some((arg: string) => arg === '/' || arg === '~')
-          ) {
-            hasRootAccess = true;
+          if (server.args) {
+            const rootIndex = server.args.findIndex((arg: string) => arg === '/');
+            const homeIndex = server.args.findIndex((arg: string) => arg === '~');
+
+            if (rootIndex !== -1 || homeIndex !== -1) {
+              hasRootAccess = true;
+
+              if (autoFix) {
+                // Replace "/" with "./data" and "~" with "./"
+                if (rootIndex !== -1) {
+                  server.args[rootIndex] = './data';
+                }
+                if (homeIndex !== -1) {
+                  server.args[homeIndex] = './';
+                }
+                mcp001Fixed = true;
+              }
+            }
           }
 
           // Check for unrestricted shell access
@@ -320,17 +381,26 @@ export class HardeningScanner {
         }
       }
 
+      // Save fixed config
+      if (mcp001Fixed) {
+        await fs.writeFile(mcpConfigPath, JSON.stringify(config, null, 2));
+      }
+
       findings.push({
         checkId: 'MCP-001',
         name: 'MCP Root Filesystem Access',
         description: 'MCP server configured with root or home directory access',
         category: 'mcp',
         severity: 'high',
-        passed: !hasRootAccess,
-        message: hasRootAccess
-          ? 'MCP server has dangerous filesystem access (/ or ~)'
-          : 'MCP filesystem access is scoped appropriately',
-        fixable: false,
+        passed: !hasRootAccess || mcp001Fixed,
+        message: mcp001Fixed
+          ? 'Changed dangerous filesystem paths to scoped directories'
+          : hasRootAccess
+            ? 'MCP server has dangerous filesystem access (/ or ~)'
+            : 'MCP filesystem access is scoped appropriately',
+        fixable: true,
+        fixed: mcp001Fixed,
+        fixMessage: mcp001Fixed ? 'Replaced "/" with "./data" and "~" with "./"' : undefined,
       });
 
       findings.push({
@@ -355,7 +425,7 @@ export class HardeningScanner {
         severity: 'high',
         passed: true,
         message: 'No mcp.json found (OK)',
-        fixable: false,
+        fixable: true,
       });
 
       findings.push({
@@ -445,6 +515,34 @@ export class HardeningScanner {
       gitignoreExists = true;
     } catch {}
 
+    // Default .gitignore content
+    const defaultGitignore = `# Secrets and credentials
+.env
+.env.*
+secrets.json
+credentials.json
+*.pem
+*.key
+
+# IDE
+.idea/
+.vscode/
+
+# Dependencies
+node_modules/
+
+# Build
+dist/
+`;
+
+    let git001Fixed = false;
+    if (!gitignoreExists && autoFix) {
+      await fs.writeFile(gitignorePath, defaultGitignore);
+      gitignoreContent = defaultGitignore;
+      gitignoreExists = true;
+      git001Fixed = true;
+    }
+
     findings.push({
       checkId: 'GIT-001',
       name: 'Missing .gitignore',
@@ -452,23 +550,32 @@ export class HardeningScanner {
       category: 'git',
       severity: 'medium',
       passed: gitignoreExists,
-      message: gitignoreExists
-        ? '.gitignore file present'
-        : 'No .gitignore file found - sensitive files may be accidentally committed',
+      message: git001Fixed
+        ? '.gitignore file created with recommended patterns'
+        : gitignoreExists
+          ? '.gitignore file present'
+          : 'No .gitignore file found - sensitive files may be accidentally committed',
       fixable: true,
-      fixed: false,
+      fixed: git001Fixed,
+      fixMessage: git001Fixed ? 'Created .gitignore with secure defaults' : undefined,
     });
 
     // GIT-002: Check for missing sensitive patterns in .gitignore
     const sensitivePatterns = ['.env', 'secrets.json', '*.pem', '*.key'];
     const missingPatterns: string[] = [];
 
-    if (gitignoreExists) {
-      for (const pattern of sensitivePatterns) {
-        if (!gitignoreContent.includes(pattern) && !gitignoreContent.includes(pattern.replace('*', ''))) {
-          missingPatterns.push(pattern);
-        }
+    for (const pattern of sensitivePatterns) {
+      if (!gitignoreContent.includes(pattern) && !gitignoreContent.includes(pattern.replace('*', ''))) {
+        missingPatterns.push(pattern);
       }
+    }
+
+    let git002Fixed = false;
+    if (missingPatterns.length > 0 && autoFix) {
+      const patternsToAdd = '\n# Security patterns (auto-added)\n' + missingPatterns.join('\n') + '\n';
+      gitignoreContent += patternsToAdd;
+      await fs.writeFile(gitignorePath, gitignoreContent);
+      git002Fixed = true;
     }
 
     findings.push({
@@ -477,15 +584,16 @@ export class HardeningScanner {
       description: '.gitignore missing patterns for sensitive files',
       category: 'git',
       severity: 'high',
-      passed: gitignoreExists && missingPatterns.length === 0,
-      message: !gitignoreExists
-        ? 'No .gitignore file'
+      passed: missingPatterns.length === 0 || git002Fixed,
+      message: git002Fixed
+        ? `Added missing patterns to .gitignore: ${missingPatterns.join(', ')}`
         : missingPatterns.length === 0
           ? '.gitignore has all recommended sensitive file patterns'
           : `Missing patterns in .gitignore: ${missingPatterns.join(', ')}`,
       fixable: true,
-      fixed: false,
-      details: missingPatterns.length > 0 ? { missing: missingPatterns } : undefined,
+      fixed: git002Fixed,
+      fixMessage: git002Fixed ? `Added: ${missingPatterns.join(', ')}` : undefined,
+      details: missingPatterns.length > 0 && !git002Fixed ? { missing: missingPatterns } : undefined,
     });
 
     // GIT-003: Check if .env exists but not in .gitignore
@@ -495,8 +603,20 @@ export class HardeningScanner {
       envExists = true;
     } catch {}
 
+    // Re-read gitignore in case we modified it
+    try {
+      gitignoreContent = await fs.readFile(gitignorePath, 'utf-8');
+    } catch {}
+
     const envIgnored = gitignoreContent.includes('.env');
     const envAtRisk = envExists && !envIgnored;
+
+    let git003Fixed = false;
+    if (envAtRisk && autoFix) {
+      gitignoreContent += '\n.env\n';
+      await fs.writeFile(gitignorePath, gitignoreContent);
+      git003Fixed = true;
+    }
 
     findings.push({
       checkId: 'GIT-003',
@@ -504,14 +624,16 @@ export class HardeningScanner {
       description: '.env file exists but may not be ignored by git',
       category: 'git',
       severity: 'critical',
-      passed: !envAtRisk,
-      message: envAtRisk
-        ? '.env file exists but is not in .gitignore - secrets may be committed!'
-        : envExists
-          ? '.env file is properly ignored'
-          : 'No .env file present',
+      passed: !envAtRisk || git003Fixed,
+      message: git003Fixed
+        ? 'Added .env to .gitignore'
+        : envAtRisk
+          ? '.env file exists but is not in .gitignore - secrets may be committed!'
+          : envExists
+            ? '.env file is properly ignored'
+            : 'No .env file present',
       fixable: true,
-      fixed: false,
+      fixed: git003Fixed,
     });
 
     return findings;
@@ -525,9 +647,10 @@ export class HardeningScanner {
     const mcpConfigPath = path.join(targetDir, 'mcp.json');
 
     let mcpConfig: Record<string, unknown> | null = null;
+    let mcpContent = '';
     try {
-      const content = await fs.readFile(mcpConfigPath, 'utf-8');
-      mcpConfig = JSON.parse(content);
+      mcpContent = await fs.readFile(mcpConfigPath, 'utf-8');
+      mcpConfig = JSON.parse(mcpContent);
     } catch {}
 
     // NET-001: Check for servers bound to 0.0.0.0
@@ -541,17 +664,29 @@ export class HardeningScanner {
       }
     }
 
+    let net001Fixed = false;
+    if (boundToAllInterfaces && autoFix && mcpContent) {
+      // Replace 0.0.0.0 with 127.0.0.1 in the file
+      const fixedContent = mcpContent.replace(/0\.0\.0\.0/g, '127.0.0.1');
+      await fs.writeFile(mcpConfigPath, fixedContent);
+      net001Fixed = true;
+    }
+
     findings.push({
       checkId: 'NET-001',
       name: 'Server Bound to All Interfaces',
       description: 'MCP server bound to 0.0.0.0 exposes it to all network interfaces',
       category: 'network',
       severity: 'critical',
-      passed: !boundToAllInterfaces,
-      message: boundToAllInterfaces
-        ? 'MCP server bound to 0.0.0.0 - accessible from any network interface'
-        : 'No servers bound to 0.0.0.0',
-      fixable: false,
+      passed: !boundToAllInterfaces || net001Fixed,
+      message: net001Fixed
+        ? 'Changed 0.0.0.0 to 127.0.0.1 in mcp.json'
+        : boundToAllInterfaces
+          ? 'MCP server bound to 0.0.0.0 - accessible from any network interface'
+          : 'No servers bound to 0.0.0.0',
+      fixable: true,
+      fixed: net001Fixed,
+      fixMessage: net001Fixed ? 'Replaced 0.0.0.0 with 127.0.0.1' : undefined,
     });
 
     // NET-002: Check for remote MCP servers without TLS
@@ -594,23 +729,44 @@ export class HardeningScanner {
       mcpConfig = JSON.parse(content);
     } catch {}
 
+    // Credential patterns with their env var names for auto-fix
+    const credPatterns = [
+      { name: 'ANTHROPIC_API_KEY', pattern: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{6,}/, envVar: 'ANTHROPIC_API_KEY' },
+      { name: 'OPENAI_API_KEY', pattern: /sk-proj-[a-zA-Z0-9]{6,}/, envVar: 'OPENAI_API_KEY' },
+      { name: 'OPENAI_API_KEY', pattern: /sk-[a-zA-Z0-9]{20,}/, envVar: 'OPENAI_API_KEY' },
+      { name: 'GITHUB_TOKEN', pattern: /ghp_[a-zA-Z0-9]{36}/, envVar: 'GITHUB_TOKEN' },
+    ];
+
     // MCP-003: Check for secrets in env vars
     let hasHardcodedSecrets = false;
+    let mcp003Fixed = false;
+
     if (mcpConfig?.servers) {
       for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { env?: Record<string, string> }>)) {
         if (server.env) {
-          for (const [, value] of Object.entries(server.env)) {
+          for (const [key, value] of Object.entries(server.env)) {
             // Check if value is a hardcoded secret (not a reference)
             if (typeof value === 'string' && !value.includes('${')) {
-              for (const { pattern } of CREDENTIAL_PATTERNS) {
+              for (const { pattern, envVar } of credPatterns) {
                 if (pattern.test(value)) {
                   hasHardcodedSecrets = true;
+
+                  if (autoFix) {
+                    // Replace with env var reference
+                    server.env[key] = '${' + envVar + '}';
+                    mcp003Fixed = true;
+                  }
                   break;
                 }
               }
             }
           }
         }
+      }
+
+      // Save fixed config
+      if (mcp003Fixed) {
+        await fs.writeFile(mcpConfigPath, JSON.stringify(mcpConfig, null, 2));
       }
     }
 
@@ -620,11 +776,15 @@ export class HardeningScanner {
       description: 'MCP server configuration contains hardcoded secrets in environment variables',
       category: 'mcp',
       severity: 'critical',
-      passed: !hasHardcodedSecrets,
-      message: hasHardcodedSecrets
-        ? 'MCP server has hardcoded secrets in env vars - use environment variable references instead'
-        : 'No hardcoded secrets in MCP env vars',
-      fixable: false,
+      passed: !hasHardcodedSecrets || mcp003Fixed,
+      message: mcp003Fixed
+        ? 'Replaced hardcoded secrets with environment variable references'
+        : hasHardcodedSecrets
+          ? 'MCP server has hardcoded secrets in env vars - use environment variable references instead'
+          : 'No hardcoded secrets in MCP env vars',
+      fixable: true,
+      fixed: mcp003Fixed,
+      fixMessage: mcp003Fixed ? 'Replaced with ${ENV_VAR} references' : undefined,
     });
 
     // MCP-004: Check for default credentials
