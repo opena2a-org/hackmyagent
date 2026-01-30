@@ -19,16 +19,29 @@ export interface ScanOptions {
 }
 
 // Patterns for detecting exposed credentials
+// Each pattern is carefully tuned to minimize false positives
 const CREDENTIAL_PATTERNS = [
-  { name: 'ANTHROPIC_API_KEY', pattern: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{6,}/ },
-  { name: 'OPENAI_API_KEY', pattern: /sk-proj-[a-zA-Z0-9]{6,}/ },
-  { name: 'OPENAI_API_KEY', pattern: /sk-[a-zA-Z0-9]{20,}/ },
+  // Anthropic: sk-ant-api followed by version and 20+ char key
+  { name: 'ANTHROPIC_API_KEY', pattern: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/ },
+  // OpenAI project keys: sk-proj- prefix with 20+ chars
+  { name: 'OPENAI_API_KEY', pattern: /sk-proj-[a-zA-Z0-9]{20,}/ },
+  // OpenAI legacy keys: sk- followed by 48+ chars (avoid short matches)
+  { name: 'OPENAI_API_KEY', pattern: /sk-[a-zA-Z0-9]{48,}/ },
+  // AWS Access Key: AKIA prefix, exactly 20 chars total
   { name: 'AWS_ACCESS_KEY', pattern: /AKIA[0-9A-Z]{16}/ },
-  { name: 'AWS_SECRET_KEY', pattern: /[a-zA-Z0-9/+=]{40}/ },
+  // Note: AWS Secret Key pattern removed - generic base64 causes false positives
+  // GitHub fine-grained PAT
   { name: 'GITHUB_TOKEN', pattern: /ghp_[a-zA-Z0-9]{36}/ },
+  // GitHub PAT (new format)
   { name: 'GITHUB_TOKEN', pattern: /github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}/ },
+  // Slack tokens: very specific format
   { name: 'SLACK_TOKEN', pattern: /xox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24}/ },
-  { name: 'DISCORD_TOKEN', pattern: /[MN][A-Za-z\d]{23,}\.[\w-]{6}\.[\w-]{27}/ },
+  // Google API keys: AIza prefix
+  { name: 'GOOGLE_API_KEY', pattern: /AIza[0-9A-Za-z_-]{35}/ },
+  // Stripe live/test keys
+  { name: 'STRIPE_KEY', pattern: /sk_live_[0-9a-zA-Z]{24,}/ },
+  // SendGrid
+  { name: 'SENDGRID_KEY', pattern: /SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/ },
 ];
 
 // Severity weights for score calculation
@@ -174,6 +187,38 @@ export class HardeningScanner {
     const secretFindings = await this.checkSecretManagement(targetDir, shouldFix);
     findings.push(...secretFindings);
 
+    // Prompt injection defense checks
+    const promptFindings = await this.checkPromptSecurity(targetDir, shouldFix);
+    findings.push(...promptFindings);
+
+    // Input validation checks
+    const injFindings = await this.checkInputValidation(targetDir, shouldFix);
+    findings.push(...injFindings);
+
+    // Rate limiting checks
+    const rateFindings = await this.checkRateLimiting(targetDir, shouldFix);
+    findings.push(...rateFindings);
+
+    // Session security checks
+    const sessionFindings = await this.checkSessionSecurity(targetDir, shouldFix);
+    findings.push(...sessionFindings);
+
+    // Encryption checks
+    const encryptFindings = await this.checkEncryption(targetDir, shouldFix);
+    findings.push(...encryptFindings);
+
+    // Audit trail checks
+    const auditFindings = await this.checkAuditTrail(targetDir, shouldFix);
+    findings.push(...auditFindings);
+
+    // Sandboxing checks
+    const sandboxFindings = await this.checkSandboxing(targetDir, shouldFix);
+    findings.push(...sandboxFindings);
+
+    // Tool boundary checks
+    const toolFindings = await this.checkToolBoundaries(targetDir, shouldFix);
+    findings.push(...toolFindings);
+
     // Filter out ignored checks
     const filteredFindings =
       ignoredChecks.size > 0
@@ -248,14 +293,16 @@ export class HardeningScanner {
     const fixedFiles: string[] = [];
     const envVarsToAdd: Set<string> = new Set();
 
-    // Credential patterns with their env var names
+    // Credential patterns with their env var names (stricter to avoid false positives)
     const credentialPatterns = [
-      { name: 'ANTHROPIC_API_KEY', pattern: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{6,}/g, envVar: 'ANTHROPIC_API_KEY' },
-      { name: 'OPENAI_API_KEY', pattern: /sk-proj-[a-zA-Z0-9]{6,}/g, envVar: 'OPENAI_API_KEY' },
-      { name: 'OPENAI_API_KEY', pattern: /sk-[a-zA-Z0-9]{20,}/g, envVar: 'OPENAI_API_KEY' },
+      { name: 'ANTHROPIC_API_KEY', pattern: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/g, envVar: 'ANTHROPIC_API_KEY' },
+      { name: 'OPENAI_API_KEY', pattern: /sk-proj-[a-zA-Z0-9]{20,}/g, envVar: 'OPENAI_API_KEY' },
+      { name: 'OPENAI_API_KEY', pattern: /sk-[a-zA-Z0-9]{48,}/g, envVar: 'OPENAI_API_KEY' },
       { name: 'AWS_ACCESS_KEY', pattern: /AKIA[0-9A-Z]{16}/g, envVar: 'AWS_ACCESS_KEY_ID' },
       { name: 'GITHUB_TOKEN', pattern: /ghp_[a-zA-Z0-9]{36}/g, envVar: 'GITHUB_TOKEN' },
       { name: 'GITHUB_TOKEN', pattern: /github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}/g, envVar: 'GITHUB_TOKEN' },
+      { name: 'GOOGLE_API_KEY', pattern: /AIza[0-9A-Za-z_-]{35}/g, envVar: 'GOOGLE_API_KEY' },
+      { name: 'STRIPE_KEY', pattern: /sk_live_[0-9a-zA-Z]{24,}/g, envVar: 'STRIPE_SECRET_KEY' },
     ];
 
     // Files to check for credentials
@@ -791,12 +838,17 @@ dist/
       mcpConfig = JSON.parse(content);
     } catch {}
 
-    // Credential patterns with their env var names for auto-fix
+    // Credential patterns with their env var names for auto-fix (stricter patterns to reduce false positives)
     const credPatterns = [
-      { name: 'ANTHROPIC_API_KEY', pattern: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{6,}/, envVar: 'ANTHROPIC_API_KEY' },
-      { name: 'OPENAI_API_KEY', pattern: /sk-proj-[a-zA-Z0-9]{6,}/, envVar: 'OPENAI_API_KEY' },
-      { name: 'OPENAI_API_KEY', pattern: /sk-[a-zA-Z0-9]{20,}/, envVar: 'OPENAI_API_KEY' },
+      { name: 'ANTHROPIC_API_KEY', pattern: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/, envVar: 'ANTHROPIC_API_KEY' },
+      { name: 'OPENAI_API_KEY', pattern: /sk-proj-[a-zA-Z0-9]{20,}/, envVar: 'OPENAI_API_KEY' },
+      { name: 'OPENAI_API_KEY', pattern: /sk-[a-zA-Z0-9]{48,}/, envVar: 'OPENAI_API_KEY' },
       { name: 'GITHUB_TOKEN', pattern: /ghp_[a-zA-Z0-9]{36}/, envVar: 'GITHUB_TOKEN' },
+      { name: 'GITHUB_TOKEN', pattern: /github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}/, envVar: 'GITHUB_TOKEN' },
+      { name: 'GOOGLE_API_KEY', pattern: /AIza[0-9A-Za-z_-]{35}/, envVar: 'GOOGLE_API_KEY' },
+      { name: 'STRIPE_KEY', pattern: /sk_live_[0-9a-zA-Z]{24,}/, envVar: 'STRIPE_SECRET_KEY' },
+      { name: 'SLACK_TOKEN', pattern: /xox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24}/, envVar: 'SLACK_TOKEN' },
+      { name: 'SENDGRID_KEY', pattern: /SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/, envVar: 'SENDGRID_API_KEY' },
     ];
 
     // MCP-003: Check for secrets in env vars
@@ -2519,6 +2571,1081 @@ dist/
       message: hasPathTraversal
         ? 'Potential path traversal detected - use path.resolve/normalize'
         : 'No obvious path traversal vulnerabilities found',
+      fixable: false,
+    });
+
+    return findings;
+  }
+
+  /**
+   * Prompt injection defense checks
+   */
+  private async checkPromptSecurity(
+    targetDir: string,
+    autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // PROMPT-001: Check for system prompt boundary markers
+    let hasPromptBoundaries = false;
+    const claudeMdPath = path.join(targetDir, 'CLAUDE.md');
+    try {
+      const content = await fs.readFile(claudeMdPath, 'utf-8');
+      hasPromptBoundaries =
+        content.includes('SYSTEM:') ||
+        content.includes('USER:') ||
+        content.includes('---') ||
+        content.includes('###') ||
+        content.toLowerCase().includes('do not follow instructions') ||
+        content.toLowerCase().includes('ignore attempts to');
+    } catch {}
+
+    findings.push({
+      checkId: 'PROMPT-001',
+      name: 'Prompt Boundary Markers',
+      description: 'System prompts should have clear boundary markers to prevent injection',
+      category: 'prompt-security',
+      severity: 'high',
+      passed: hasPromptBoundaries,
+      message: hasPromptBoundaries
+        ? 'Prompt boundaries detected in CLAUDE.md'
+        : 'Consider adding prompt boundary markers to prevent injection attacks',
+      fixable: false,
+    });
+
+    // PROMPT-002: Check for injection defense instructions
+    let hasInjectionDefense = false;
+    try {
+      const content = await fs.readFile(claudeMdPath, 'utf-8');
+      hasInjectionDefense =
+        content.toLowerCase().includes('injection') ||
+        content.toLowerCase().includes('malicious') ||
+        content.toLowerCase().includes('untrusted') ||
+        content.toLowerCase().includes('sanitize') ||
+        content.toLowerCase().includes('validate input');
+    } catch {}
+
+    findings.push({
+      checkId: 'PROMPT-002',
+      name: 'Injection Defense Instructions',
+      description: 'System prompts should include injection defense guidance',
+      category: 'prompt-security',
+      severity: 'medium',
+      passed: hasInjectionDefense,
+      message: hasInjectionDefense
+        ? 'Injection defense instructions found'
+        : 'Consider adding injection defense instructions to system prompts',
+      fixable: false,
+    });
+
+    // PROMPT-003: Check for output constraints
+    let hasOutputConstraints = false;
+    try {
+      const content = await fs.readFile(claudeMdPath, 'utf-8');
+      hasOutputConstraints =
+        content.toLowerCase().includes('never output') ||
+        content.toLowerCase().includes('do not reveal') ||
+        content.toLowerCase().includes('do not disclose') ||
+        content.toLowerCase().includes('keep confidential') ||
+        content.toLowerCase().includes('do not share');
+    } catch {}
+
+    findings.push({
+      checkId: 'PROMPT-003',
+      name: 'Output Confidentiality Rules',
+      description: 'System prompts should define output confidentiality constraints',
+      category: 'prompt-security',
+      severity: 'medium',
+      passed: hasOutputConstraints,
+      message: hasOutputConstraints
+        ? 'Output confidentiality rules defined'
+        : 'Consider defining what information should not be disclosed',
+      fixable: false,
+    });
+
+    // PROMPT-004: Check for role confusion protection
+    let hasRoleProtection = false;
+    try {
+      const content = await fs.readFile(claudeMdPath, 'utf-8');
+      hasRoleProtection =
+        content.toLowerCase().includes('you are') ||
+        content.toLowerCase().includes('your role') ||
+        content.toLowerCase().includes('as an assistant') ||
+        content.toLowerCase().includes('maintain your role');
+    } catch {}
+
+    findings.push({
+      checkId: 'PROMPT-004',
+      name: 'Role Definition Protection',
+      description: 'System prompts should clearly define the AI role to prevent confusion attacks',
+      category: 'prompt-security',
+      severity: 'low',
+      passed: hasRoleProtection,
+      message: hasRoleProtection
+        ? 'Role definition found in prompts'
+        : 'Consider clearly defining the AI role to prevent role confusion attacks',
+      fixable: false,
+    });
+
+    return findings;
+  }
+
+  /**
+   * Input validation and sanitization checks
+   */
+  private async checkInputValidation(
+    targetDir: string,
+    autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // INJ-001: Check for input validation in MCP handlers
+    let hasInputValidation = false;
+    try {
+      const files = await fs.readdir(targetDir);
+      for (const file of files) {
+        if (file.endsWith('.ts') || file.endsWith('.js')) {
+          try {
+            const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+            if (
+              content.includes('zod') ||
+              content.includes('joi') ||
+              content.includes('yup') ||
+              content.includes('validate(') ||
+              content.includes('sanitize(') ||
+              content.includes('schema.')
+            ) {
+              hasInputValidation = true;
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    findings.push({
+      checkId: 'INJ-001',
+      name: 'Input Validation Library',
+      description: 'Applications should use schema validation for inputs',
+      category: 'input-validation',
+      severity: 'high',
+      passed: hasInputValidation,
+      message: hasInputValidation
+        ? 'Input validation library detected'
+        : 'Consider using zod, joi, or similar for input validation',
+      fixable: false,
+    });
+
+    // INJ-002: Check for XSS protection patterns
+    let hasXssProtection = false;
+    try {
+      const files = await fs.readdir(targetDir);
+      for (const file of files) {
+        if (file.endsWith('.ts') || file.endsWith('.js')) {
+          try {
+            const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+            if (
+              content.includes('escapeHtml') ||
+              content.includes('sanitizeHtml') ||
+              content.includes('DOMPurify') ||
+              content.includes('xss(') ||
+              content.includes('encode(')
+            ) {
+              hasXssProtection = true;
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    findings.push({
+      checkId: 'INJ-002',
+      name: 'XSS Protection',
+      description: 'Output should be properly escaped to prevent XSS',
+      category: 'input-validation',
+      severity: 'high',
+      passed: hasXssProtection,
+      message: hasXssProtection
+        ? 'XSS protection patterns detected'
+        : 'Consider implementing output escaping for user-facing content',
+      fixable: false,
+    });
+
+    // INJ-003: Check for SQL injection protection
+    let hasSqlProtection = false;
+    try {
+      const files = await fs.readdir(targetDir);
+      for (const file of files) {
+        if (file.endsWith('.ts') || file.endsWith('.js')) {
+          try {
+            const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+            if (
+              content.includes('parameterized') ||
+              content.includes('prepared') ||
+              content.includes('$1') ||
+              content.includes('?') && content.includes('query(') ||
+              content.includes('prisma') ||
+              content.includes('knex') ||
+              content.includes('sequelize')
+            ) {
+              hasSqlProtection = true;
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    findings.push({
+      checkId: 'INJ-003',
+      name: 'SQL Injection Protection',
+      description: 'Database queries should use parameterized statements',
+      category: 'input-validation',
+      severity: 'critical',
+      passed: hasSqlProtection,
+      message: hasSqlProtection
+        ? 'Parameterized queries or ORM detected'
+        : 'Ensure all database queries use parameterized statements',
+      fixable: false,
+    });
+
+    // INJ-004: Check for command injection protection
+    let hasCmdProtection = false;
+    try {
+      const files = await fs.readdir(targetDir);
+      let hasExec = false;
+      for (const file of files) {
+        if (file.endsWith('.ts') || file.endsWith('.js')) {
+          try {
+            const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+            if (content.includes('exec(') || content.includes('spawn(')) {
+              hasExec = true;
+              if (
+                content.includes('execFile') ||
+                content.includes('shell: false') ||
+                content.includes('shellEscape') ||
+                !content.includes('${')
+              ) {
+                hasCmdProtection = true;
+              }
+            }
+          } catch {}
+        }
+      }
+      if (!hasExec) hasCmdProtection = true; // No exec calls found
+    } catch {
+      hasCmdProtection = true;
+    }
+
+    findings.push({
+      checkId: 'INJ-004',
+      name: 'Command Injection Protection',
+      description: 'Shell commands should use safe execution patterns',
+      category: 'input-validation',
+      severity: 'critical',
+      passed: hasCmdProtection,
+      message: hasCmdProtection
+        ? 'Safe command execution patterns detected or no shell commands found'
+        : 'Use execFile instead of exec, or disable shell interpolation',
+      fixable: false,
+    });
+
+    return findings;
+  }
+
+  /**
+   * Rate limiting and throttling checks
+   */
+  private async checkRateLimiting(
+    targetDir: string,
+    autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // RATE-001: Check for rate limiting configuration
+    let hasRateLimiting = false;
+    try {
+      const pkgPath = path.join(targetDir, 'package.json');
+      const content = await fs.readFile(pkgPath, 'utf-8');
+      const pkg = JSON.parse(content);
+      const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+      hasRateLimiting =
+        'express-rate-limit' in deps ||
+        'rate-limiter-flexible' in deps ||
+        'bottleneck' in deps ||
+        '@upstash/ratelimit' in deps;
+    } catch {}
+
+    findings.push({
+      checkId: 'RATE-001',
+      name: 'Rate Limiting Configuration',
+      description: 'API endpoints should have rate limiting',
+      category: 'rate-limiting',
+      severity: 'medium',
+      passed: hasRateLimiting,
+      message: hasRateLimiting
+        ? 'Rate limiting library detected'
+        : 'Consider implementing rate limiting to prevent abuse',
+      fixable: false,
+    });
+
+    // RATE-002: Check for retry/backoff patterns
+    let hasBackoff = false;
+    try {
+      const files = await fs.readdir(targetDir);
+      for (const file of files) {
+        if (file.endsWith('.ts') || file.endsWith('.js')) {
+          try {
+            const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+            if (
+              content.includes('retry') ||
+              content.includes('backoff') ||
+              content.includes('exponential') ||
+              content.includes('p-retry')
+            ) {
+              hasBackoff = true;
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    findings.push({
+      checkId: 'RATE-002',
+      name: 'Retry with Backoff',
+      description: 'External calls should implement exponential backoff',
+      category: 'rate-limiting',
+      severity: 'low',
+      passed: hasBackoff,
+      message: hasBackoff
+        ? 'Retry/backoff patterns detected'
+        : 'Consider implementing exponential backoff for external calls',
+      fixable: false,
+    });
+
+    // RATE-003: Check for timeout configurations
+    let hasTimeouts = false;
+    try {
+      const files = await fs.readdir(targetDir);
+      for (const file of files) {
+        if (file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json')) {
+          try {
+            const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+            if (
+              content.includes('timeout') ||
+              content.includes('Timeout') ||
+              content.includes('TIMEOUT')
+            ) {
+              hasTimeouts = true;
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    findings.push({
+      checkId: 'RATE-003',
+      name: 'Timeout Configuration',
+      description: 'Operations should have appropriate timeouts',
+      category: 'rate-limiting',
+      severity: 'medium',
+      passed: hasTimeouts,
+      message: hasTimeouts
+        ? 'Timeout configurations detected'
+        : 'Consider setting timeouts for external calls and long-running operations',
+      fixable: false,
+    });
+
+    // RATE-004: Check for concurrent request limiting
+    let hasConcurrencyLimit = false;
+    try {
+      const files = await fs.readdir(targetDir);
+      for (const file of files) {
+        if (file.endsWith('.ts') || file.endsWith('.js')) {
+          try {
+            const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+            if (
+              content.includes('p-limit') ||
+              content.includes('semaphore') ||
+              content.includes('concurrency') ||
+              content.includes('maxConcurrent')
+            ) {
+              hasConcurrencyLimit = true;
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    findings.push({
+      checkId: 'RATE-004',
+      name: 'Concurrency Limits',
+      description: 'Concurrent operations should be limited',
+      category: 'rate-limiting',
+      severity: 'low',
+      passed: hasConcurrencyLimit,
+      message: hasConcurrencyLimit
+        ? 'Concurrency limiting detected'
+        : 'Consider limiting concurrent operations to prevent resource exhaustion',
+      fixable: false,
+    });
+
+    return findings;
+  }
+
+  /**
+   * Session and timeout security checks
+   */
+  private async checkSessionSecurity(
+    targetDir: string,
+    autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // SESSION-001: Check for secure session configuration
+    let hasSecureSessions = false;
+    try {
+      const files = await fs.readdir(targetDir);
+      for (const file of files) {
+        if (file.endsWith('.ts') || file.endsWith('.js')) {
+          try {
+            const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+            if (
+              content.includes('httpOnly') ||
+              content.includes('secure: true') ||
+              content.includes('sameSite')
+            ) {
+              hasSecureSessions = true;
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    findings.push({
+      checkId: 'SESSION-001',
+      name: 'Secure Cookie Settings',
+      description: 'Session cookies should have secure flags',
+      category: 'session-security',
+      severity: 'high',
+      passed: hasSecureSessions,
+      message: hasSecureSessions
+        ? 'Secure cookie flags detected'
+        : 'Set httpOnly, secure, and sameSite on session cookies',
+      fixable: false,
+    });
+
+    // SESSION-002: Check for session expiry
+    let hasSessionExpiry = false;
+    try {
+      const files = await fs.readdir(targetDir);
+      for (const file of files) {
+        if (file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json')) {
+          try {
+            const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+            if (
+              content.includes('maxAge') ||
+              content.includes('expiresIn') ||
+              content.includes('ttl') ||
+              content.includes('sessionTimeout')
+            ) {
+              hasSessionExpiry = true;
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    findings.push({
+      checkId: 'SESSION-002',
+      name: 'Session Expiry',
+      description: 'Sessions should have appropriate expiry times',
+      category: 'session-security',
+      severity: 'medium',
+      passed: hasSessionExpiry,
+      message: hasSessionExpiry
+        ? 'Session expiry configuration detected'
+        : 'Configure appropriate session expiry times',
+      fixable: false,
+    });
+
+    // SESSION-003: Check for CSRF protection
+    let hasCsrfProtection = false;
+    try {
+      const pkgPath = path.join(targetDir, 'package.json');
+      const content = await fs.readFile(pkgPath, 'utf-8');
+      const pkg = JSON.parse(content);
+      const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+      hasCsrfProtection = 'csurf' in deps || 'csrf' in deps || '@fastify/csrf-protection' in deps;
+    } catch {}
+
+    findings.push({
+      checkId: 'SESSION-003',
+      name: 'CSRF Protection',
+      description: 'Forms should have CSRF protection',
+      category: 'session-security',
+      severity: 'high',
+      passed: hasCsrfProtection,
+      message: hasCsrfProtection
+        ? 'CSRF protection library detected'
+        : 'Consider implementing CSRF protection for state-changing operations',
+      fixable: false,
+    });
+
+    // SESSION-004: Check for secure token storage
+    let hasSecureStorage = false;
+    try {
+      const files = await fs.readdir(targetDir);
+      for (const file of files) {
+        if (file.endsWith('.ts') || file.endsWith('.js')) {
+          try {
+            const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+            if (
+              content.includes('keytar') ||
+              content.includes('secure-store') ||
+              content.includes('keychain') ||
+              content.includes('credential-store')
+            ) {
+              hasSecureStorage = true;
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    findings.push({
+      checkId: 'SESSION-004',
+      name: 'Secure Token Storage',
+      description: 'Tokens should be stored securely',
+      category: 'session-security',
+      severity: 'medium',
+      passed: hasSecureStorage,
+      message: hasSecureStorage
+        ? 'Secure token storage detected'
+        : 'Consider using secure storage for sensitive tokens',
+      fixable: false,
+    });
+
+    return findings;
+  }
+
+  /**
+   * Data encryption checks
+   */
+  private async checkEncryption(
+    targetDir: string,
+    autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // ENCRYPT-001: Check for encryption at rest
+    let hasEncryption = false;
+    try {
+      const files = await fs.readdir(targetDir);
+      for (const file of files) {
+        if (file.endsWith('.ts') || file.endsWith('.js')) {
+          try {
+            const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+            if (
+              content.includes('crypto') ||
+              content.includes('encrypt') ||
+              content.includes('aes-') ||
+              content.includes('sodium')
+            ) {
+              hasEncryption = true;
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    findings.push({
+      checkId: 'ENCRYPT-001',
+      name: 'Encryption Implementation',
+      description: 'Sensitive data should be encrypted at rest',
+      category: 'encryption',
+      severity: 'high',
+      passed: hasEncryption,
+      message: hasEncryption
+        ? 'Encryption implementation detected'
+        : 'Consider encrypting sensitive data at rest',
+      fixable: false,
+    });
+
+    // ENCRYPT-002: Check for secure hashing
+    let hasSecureHashing = false;
+    try {
+      const files = await fs.readdir(targetDir);
+      for (const file of files) {
+        if (file.endsWith('.ts') || file.endsWith('.js')) {
+          try {
+            const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+            if (
+              content.includes('bcrypt') ||
+              content.includes('argon2') ||
+              content.includes('scrypt') ||
+              content.includes('pbkdf2')
+            ) {
+              hasSecureHashing = true;
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    findings.push({
+      checkId: 'ENCRYPT-002',
+      name: 'Secure Password Hashing',
+      description: 'Passwords should use secure hashing algorithms',
+      category: 'encryption',
+      severity: 'critical',
+      passed: hasSecureHashing,
+      message: hasSecureHashing
+        ? 'Secure hashing algorithm detected (bcrypt/argon2/scrypt)'
+        : 'Use bcrypt, argon2, or scrypt for password hashing',
+      fixable: false,
+    });
+
+    // ENCRYPT-003: Check for weak algorithms
+    let hasWeakAlgorithms = false;
+    try {
+      const files = await fs.readdir(targetDir);
+      for (const file of files) {
+        if (file.endsWith('.ts') || file.endsWith('.js')) {
+          try {
+            const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+            if (
+              content.includes('md5') ||
+              content.includes('sha1') ||
+              content.includes("'des'") ||
+              content.includes('"des"')
+            ) {
+              hasWeakAlgorithms = true;
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    findings.push({
+      checkId: 'ENCRYPT-003',
+      name: 'Weak Cryptographic Algorithms',
+      description: 'Avoid using weak cryptographic algorithms',
+      category: 'encryption',
+      severity: 'high',
+      passed: !hasWeakAlgorithms,
+      message: hasWeakAlgorithms
+        ? 'Weak algorithms detected (MD5/SHA1/DES) - use SHA-256+ and AES'
+        : 'No weak cryptographic algorithms detected',
+      fixable: false,
+    });
+
+    // ENCRYPT-004: Check for TLS configuration
+    let hasTlsConfig = false;
+    try {
+      const files = await fs.readdir(targetDir);
+      for (const file of files) {
+        if (file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json')) {
+          try {
+            const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+            if (
+              content.includes('https') ||
+              content.includes('tls') ||
+              content.includes('ssl') ||
+              content.includes('rejectUnauthorized')
+            ) {
+              hasTlsConfig = true;
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    findings.push({
+      checkId: 'ENCRYPT-004',
+      name: 'TLS Configuration',
+      description: 'Communications should use TLS',
+      category: 'encryption',
+      severity: 'high',
+      passed: hasTlsConfig,
+      message: hasTlsConfig
+        ? 'TLS/HTTPS configuration detected'
+        : 'Ensure all communications use TLS',
+      fixable: false,
+    });
+
+    return findings;
+  }
+
+  /**
+   * Audit trail and logging security checks
+   */
+  private async checkAuditTrail(
+    targetDir: string,
+    autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // AUDIT-001: Check for audit logging
+    let hasAuditLogging = false;
+    try {
+      const files = await fs.readdir(targetDir);
+      for (const file of files) {
+        if (file.endsWith('.ts') || file.endsWith('.js')) {
+          try {
+            const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+            if (
+              content.includes('audit') ||
+              content.includes('winston') ||
+              content.includes('pino') ||
+              content.includes('bunyan')
+            ) {
+              hasAuditLogging = true;
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    findings.push({
+      checkId: 'AUDIT-001',
+      name: 'Audit Logging',
+      description: 'Security-relevant events should be logged',
+      category: 'audit',
+      severity: 'medium',
+      passed: hasAuditLogging,
+      message: hasAuditLogging
+        ? 'Audit logging implementation detected'
+        : 'Consider implementing audit logging for security events',
+      fixable: false,
+    });
+
+    // AUDIT-002: Check for log rotation
+    let hasLogRotation = false;
+    try {
+      const files = await fs.readdir(targetDir);
+      for (const file of files) {
+        if (file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json')) {
+          try {
+            const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+            if (
+              content.includes('rotate') ||
+              content.includes('maxFiles') ||
+              content.includes('maxSize')
+            ) {
+              hasLogRotation = true;
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    findings.push({
+      checkId: 'AUDIT-002',
+      name: 'Log Rotation',
+      description: 'Logs should have rotation configured',
+      category: 'audit',
+      severity: 'low',
+      passed: hasLogRotation,
+      message: hasLogRotation
+        ? 'Log rotation configuration detected'
+        : 'Consider configuring log rotation to manage disk space',
+      fixable: false,
+    });
+
+    // AUDIT-003: Check for error tracking
+    let hasErrorTracking = false;
+    try {
+      const pkgPath = path.join(targetDir, 'package.json');
+      const content = await fs.readFile(pkgPath, 'utf-8');
+      const pkg = JSON.parse(content);
+      const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+      hasErrorTracking = '@sentry/node' in deps || 'bugsnag' in deps || 'rollbar' in deps;
+    } catch {}
+
+    findings.push({
+      checkId: 'AUDIT-003',
+      name: 'Error Tracking',
+      description: 'Errors should be tracked for monitoring',
+      category: 'audit',
+      severity: 'low',
+      passed: hasErrorTracking,
+      message: hasErrorTracking
+        ? 'Error tracking service detected'
+        : 'Consider using an error tracking service for production',
+      fixable: false,
+    });
+
+    // AUDIT-004: Check for no sensitive data in logs
+    let hasLogSanitization = false;
+    try {
+      const files = await fs.readdir(targetDir);
+      for (const file of files) {
+        if (file.endsWith('.ts') || file.endsWith('.js')) {
+          try {
+            const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+            if (
+              content.includes('redact') ||
+              content.includes('mask') ||
+              content.includes('sanitize')
+            ) {
+              hasLogSanitization = true;
+              break;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    findings.push({
+      checkId: 'AUDIT-004',
+      name: 'Log Sanitization',
+      description: 'Sensitive data should be redacted from logs',
+      category: 'audit',
+      severity: 'high',
+      passed: hasLogSanitization,
+      message: hasLogSanitization
+        ? 'Log sanitization patterns detected'
+        : 'Consider redacting sensitive data (passwords, tokens) from logs',
+      fixable: false,
+    });
+
+    return findings;
+  }
+
+  /**
+   * Process isolation and sandboxing checks
+   */
+  private async checkSandboxing(
+    targetDir: string,
+    autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // SANDBOX-001: Check for Docker/container usage
+    let hasContainerization = false;
+    try {
+      await fs.access(path.join(targetDir, 'Dockerfile'));
+      hasContainerization = true;
+    } catch {}
+    try {
+      await fs.access(path.join(targetDir, 'docker-compose.yml'));
+      hasContainerization = true;
+    } catch {}
+    try {
+      await fs.access(path.join(targetDir, 'docker-compose.yaml'));
+      hasContainerization = true;
+    } catch {}
+
+    findings.push({
+      checkId: 'SANDBOX-001',
+      name: 'Container Isolation',
+      description: 'Applications should run in isolated containers',
+      category: 'sandboxing',
+      severity: 'medium',
+      passed: hasContainerization,
+      message: hasContainerization
+        ? 'Container configuration detected'
+        : 'Consider running in Docker containers for isolation',
+      fixable: false,
+    });
+
+    // SANDBOX-002: Check for non-root execution
+    let hasNonRootConfig = false;
+    try {
+      const dockerPath = path.join(targetDir, 'Dockerfile');
+      const content = await fs.readFile(dockerPath, 'utf-8');
+      hasNonRootConfig = content.includes('USER ') && !content.includes('USER root');
+    } catch {}
+
+    findings.push({
+      checkId: 'SANDBOX-002',
+      name: 'Non-Root Execution',
+      description: 'Containers should not run as root',
+      category: 'sandboxing',
+      severity: 'high',
+      passed: hasNonRootConfig,
+      message: hasNonRootConfig
+        ? 'Non-root user configured in Dockerfile'
+        : 'Configure containers to run as non-root user',
+      fixable: false,
+    });
+
+    // SANDBOX-003: Check for resource limits
+    let hasResourceLimits = false;
+    try {
+      const composePath = path.join(targetDir, 'docker-compose.yml');
+      const content = await fs.readFile(composePath, 'utf-8');
+      hasResourceLimits = content.includes('mem_limit') || content.includes('cpus') || content.includes('deploy:');
+    } catch {}
+    try {
+      const composePath = path.join(targetDir, 'docker-compose.yaml');
+      const content = await fs.readFile(composePath, 'utf-8');
+      hasResourceLimits = content.includes('mem_limit') || content.includes('cpus') || content.includes('deploy:');
+    } catch {}
+
+    findings.push({
+      checkId: 'SANDBOX-003',
+      name: 'Resource Limits',
+      description: 'Containers should have resource limits',
+      category: 'sandboxing',
+      severity: 'medium',
+      passed: hasResourceLimits,
+      message: hasResourceLimits
+        ? 'Resource limits configured'
+        : 'Consider setting CPU and memory limits for containers',
+      fixable: false,
+    });
+
+    // SANDBOX-004: Check for read-only filesystem
+    let hasReadOnlyFs = false;
+    try {
+      const composePath = path.join(targetDir, 'docker-compose.yml');
+      const content = await fs.readFile(composePath, 'utf-8');
+      hasReadOnlyFs = content.includes('read_only: true');
+    } catch {}
+
+    findings.push({
+      checkId: 'SANDBOX-004',
+      name: 'Read-Only Filesystem',
+      description: 'Containers should use read-only filesystem where possible',
+      category: 'sandboxing',
+      severity: 'low',
+      passed: hasReadOnlyFs,
+      message: hasReadOnlyFs
+        ? 'Read-only filesystem configured'
+        : 'Consider using read-only filesystem for containers',
+      fixable: false,
+    });
+
+    return findings;
+  }
+
+  /**
+   * MCP tool permission boundary checks
+   */
+  private async checkToolBoundaries(
+    targetDir: string,
+    autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+    const mcpConfigPath = path.join(targetDir, 'mcp.json');
+
+    let mcpConfig: Record<string, unknown> | null = null;
+    try {
+      const content = await fs.readFile(mcpConfigPath, 'utf-8');
+      mcpConfig = JSON.parse(content);
+    } catch {}
+
+    // TOOL-001: Check for tool whitelisting
+    let hasToolWhitelist = false;
+    if (mcpConfig?.servers) {
+      for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { allowedTools?: string[] }>)) {
+        if (server.allowedTools && server.allowedTools.length > 0) {
+          hasToolWhitelist = true;
+          break;
+        }
+      }
+    }
+
+    findings.push({
+      checkId: 'TOOL-001',
+      name: 'Tool Whitelisting',
+      description: 'MCP servers should have explicit tool whitelists',
+      category: 'tool-boundaries',
+      severity: 'high',
+      passed: hasToolWhitelist,
+      message: hasToolWhitelist
+        ? 'Tool whitelisting configured'
+        : 'Configure allowedTools to restrict MCP server capabilities',
+      fixable: false,
+    });
+
+    // TOOL-002: Check for resource constraints
+    let hasResourceConstraints = false;
+    if (mcpConfig?.servers) {
+      for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { maxTokens?: number; timeout?: number }>)) {
+        if (server.maxTokens || server.timeout) {
+          hasResourceConstraints = true;
+          break;
+        }
+      }
+    }
+
+    findings.push({
+      checkId: 'TOOL-002',
+      name: 'Tool Resource Constraints',
+      description: 'MCP tools should have resource constraints',
+      category: 'tool-boundaries',
+      severity: 'medium',
+      passed: hasResourceConstraints,
+      message: hasResourceConstraints
+        ? 'Resource constraints configured'
+        : 'Consider setting maxTokens and timeout for MCP tools',
+      fixable: false,
+    });
+
+    // TOOL-003: Check for dangerous tool usage
+    let hasDangerousTools = false;
+    if (mcpConfig?.servers) {
+      const dangerousTools = ['shell', 'exec', 'system', 'eval', 'run_command'];
+      for (const [name] of Object.entries(mcpConfig.servers as Record<string, unknown>)) {
+        for (const dangerous of dangerousTools) {
+          if (name.toLowerCase().includes(dangerous)) {
+            hasDangerousTools = true;
+            break;
+          }
+        }
+      }
+    }
+
+    findings.push({
+      checkId: 'TOOL-003',
+      name: 'Dangerous Tool Detection',
+      description: 'Identify potentially dangerous MCP tools',
+      category: 'tool-boundaries',
+      severity: 'high',
+      passed: !hasDangerousTools,
+      message: hasDangerousTools
+        ? 'Potentially dangerous tools detected (shell/exec) - ensure proper restrictions'
+        : 'No obvious dangerous tools detected',
+      fixable: false,
+    });
+
+    // TOOL-004: Check for tool confirmation requirements
+    let hasConfirmation = false;
+    try {
+      const claudePath = path.join(targetDir, 'CLAUDE.md');
+      const content = await fs.readFile(claudePath, 'utf-8');
+      hasConfirmation =
+        content.toLowerCase().includes('confirm') ||
+        content.toLowerCase().includes('approval') ||
+        content.toLowerCase().includes('ask before');
+    } catch {}
+
+    findings.push({
+      checkId: 'TOOL-004',
+      name: 'Tool Confirmation Requirements',
+      description: 'Dangerous operations should require confirmation',
+      category: 'tool-boundaries',
+      severity: 'medium',
+      passed: hasConfirmation,
+      message: hasConfirmation
+        ? 'Tool confirmation instructions detected'
+        : 'Consider requiring confirmation for destructive operations',
       fixable: false,
     });
 

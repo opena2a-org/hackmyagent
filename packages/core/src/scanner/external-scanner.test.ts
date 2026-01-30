@@ -77,7 +77,9 @@ describe('ExternalScanner', () => {
     });
 
     it('does not report closed ports', async () => {
-      const closedPort = port + 1000; // Very likely closed
+      // Use a port that's likely closed but within valid range (1-65535)
+      // Pick port+1 if port < 65000, otherwise port-1000 to stay within range
+      const closedPort = port < 65000 ? port + 1 : port - 1000;
       const result = await scanner.scan('127.0.0.1', {
         ports: [closedPort],
         timeout: 1000,
