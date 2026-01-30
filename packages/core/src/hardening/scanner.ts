@@ -12,6 +12,10 @@ export interface ScanOptions {
   autoFix?: boolean;
   /** Preview fixes without applying them */
   dryRun?: boolean;
+  /** Check IDs to ignore (e.g., ['CRED-001', 'GIT-002']) */
+  ignore?: string[];
+  /** File/folder paths to ignore (e.g., ['.env', 'secrets/', 'test/']) */
+  ignorePaths?: string[];
 }
 
 // Patterns for detecting exposed credentials
@@ -55,7 +59,10 @@ export class HardeningScanner {
   ];
 
   async scan(options: ScanOptions): Promise<ScanResult> {
-    const { targetDir, autoFix = false, dryRun = false } = options;
+    const { targetDir, autoFix = false, dryRun = false, ignore = [] } = options;
+
+    // Normalize ignore list to uppercase for case-insensitive matching
+    const ignoredChecks = new Set(ignore.map((id) => id.toUpperCase()));
 
     // In dry-run mode, we detect what would be fixed but don't modify anything
     const shouldFix = autoFix && !dryRun;
@@ -167,12 +174,18 @@ export class HardeningScanner {
     const secretFindings = await this.checkSecretManagement(targetDir, shouldFix);
     findings.push(...secretFindings);
 
-    // Calculate score
-    const { score, maxScore } = this.calculateScore(findings);
+    // Filter out ignored checks
+    const filteredFindings =
+      ignoredChecks.size > 0
+        ? findings.filter((f) => !ignoredChecks.has(f.checkId.toUpperCase()))
+        : findings;
+
+    // Calculate score (only on non-ignored findings)
+    const { score, maxScore } = this.calculateScore(filteredFindings);
 
     // In dry-run mode, mark fixable failed findings with wouldFix
     if (dryRun && autoFix) {
-      for (const finding of findings) {
+      for (const finding of filteredFindings) {
         if (!finding.passed && finding.fixable) {
           finding.wouldFix = true;
         }
@@ -180,18 +193,19 @@ export class HardeningScanner {
     }
 
     // Determine if all fixes completed successfully (atomic)
-    const hasFixedFindings = findings.some((f) => f.fixed);
+    const hasFixedFindings = filteredFindings.some((f) => f.fixed);
     const atomicFix = shouldFix ? !fixFailed && hasFixedFindings : undefined;
 
     return {
       timestamp: new Date(),
       platform,
-      findings,
+      findings: filteredFindings,
       score,
       maxScore,
       backupPath,
       dryRun: dryRun && autoFix ? true : undefined,
       atomicFix,
+      ignored: ignoredChecks.size > 0 ? Array.from(ignoredChecks) : undefined,
     };
   }
 

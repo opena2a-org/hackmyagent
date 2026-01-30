@@ -56,4 +56,6 @@ export interface ScanResult {
   dryRun?: boolean;
   /** True if all fixes completed atomically (or rolled back on failure) */
   atomicFix?: boolean;
+  /** List of check IDs that were ignored */
+  ignored?: string[];
 }

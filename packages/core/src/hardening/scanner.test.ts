@@ -1425,3 +1425,96 @@ describe('Atomic auto-fix', () => {
     }
   });
 });
+
+describe('Ignore checks', () => {
+  let scanner: HardeningScanner;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    scanner = new HardeningScanner();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-test-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('ignores specific check IDs', async () => {
+    // Create file with exposed credential
+    await fs.writeFile(
+      path.join(tempDir, 'config.json'),
+      JSON.stringify({ apiKey: 'sk-ant-api03-secret' })
+    );
+
+    // Scan without ignore - should find CRED-001
+    const resultWithCheck = await scanner.scan({ targetDir: tempDir });
+    expect(resultWithCheck.findings.some((f) => f.checkId === 'CRED-001')).toBe(true);
+
+    // Scan with ignore - should NOT find CRED-001
+    const resultIgnored = await scanner.scan({
+      targetDir: tempDir,
+      ignore: ['CRED-001'],
+    });
+    expect(resultIgnored.findings.some((f) => f.checkId === 'CRED-001')).toBe(false);
+  });
+
+  it('ignore is case-insensitive', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'config.json'),
+      JSON.stringify({ apiKey: 'sk-ant-api03-secret' })
+    );
+
+    const result = await scanner.scan({
+      targetDir: tempDir,
+      ignore: ['cred-001'], // lowercase
+    });
+
+    expect(result.findings.some((f) => f.checkId === 'CRED-001')).toBe(false);
+  });
+
+  it('returns list of ignored checks in result', async () => {
+    const result = await scanner.scan({
+      targetDir: tempDir,
+      ignore: ['CRED-001', 'GIT-001'],
+    });
+
+    expect(result.ignored).toBeDefined();
+    expect(result.ignored).toContain('CRED-001');
+    expect(result.ignored).toContain('GIT-001');
+  });
+
+  it('ignores multiple check IDs', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'config.json'),
+      JSON.stringify({ apiKey: 'sk-ant-api03-secret' })
+    );
+
+    const result = await scanner.scan({
+      targetDir: tempDir,
+      ignore: ['CRED-001', 'GIT-001', 'GIT-002'],
+    });
+
+    expect(result.findings.some((f) => f.checkId === 'CRED-001')).toBe(false);
+    expect(result.findings.some((f) => f.checkId === 'GIT-001')).toBe(false);
+    expect(result.findings.some((f) => f.checkId === 'GIT-002')).toBe(false);
+  });
+
+  it('score calculation excludes ignored checks', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'config.json'),
+      JSON.stringify({ apiKey: 'sk-ant-api03-secret' })
+    );
+
+    // Without ignore
+    const resultFull = await scanner.scan({ targetDir: tempDir });
+
+    // With ignore (ignoring critical check means fewer findings)
+    const resultIgnored = await scanner.scan({
+      targetDir: tempDir,
+      ignore: ['CRED-001'],
+    });
+
+    // Should have fewer findings when ignoring a check
+    expect(resultIgnored.findings.length).toBeLessThan(resultFull.findings.length);
+  });
+});

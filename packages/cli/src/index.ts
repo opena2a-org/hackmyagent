@@ -174,11 +174,17 @@ program
   .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
   .option('--fix', 'Automatically fix issues where possible')
   .option('--dry-run', 'Preview fixes without applying them (use with --fix)')
+  .option('--ignore <checks>', 'Comma-separated list of check IDs to ignore (e.g., CRED-001,GIT-002)')
   .option('--json', 'Output as JSON')
   .option('-v, --verbose', 'Show all checks including passed ones')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; json?: boolean; verbose?: boolean }) => {
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; verbose?: boolean }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
+
+      // Parse ignore list
+      const ignoreList = options.ignore
+        ? options.ignore.split(',').map((s) => s.trim()).filter(Boolean)
+        : [];
 
       if (options.dryRun) {
         console.log(`\n🔍 Scanning ${targetDir} (dry-run)...\n`);
@@ -191,6 +197,7 @@ program
         targetDir,
         autoFix: options.fix ?? false,
         dryRun: options.dryRun ?? false,
+        ignore: ignoreList,
       });
 
       if (options.json) {
@@ -268,8 +275,13 @@ program
         console.log();
       }
 
+      // Show ignored checks
+      if (result.ignored && result.ignored.length > 0) {
+        console.log(`🚫 Ignored: ${result.ignored.join(', ')}\n`);
+      }
+
       // Summary
-      if (!hasIssues && fixedFindings.length === 0) {
+      if (!hasIssues && fixedFindings.length === 0 && wouldFixFindings.length === 0) {
         console.log(`${colors.green}✅ No security issues found!${RESET()}\n`);
       } else if (hasIssues && !options.fix) {
         const fixableCount = failedFindings.filter((f) => f.fixable).length;
