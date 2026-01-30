@@ -10,6 +10,8 @@ import type { ScanResult, SecurityFinding, Severity } from './security-check';
 export interface ScanOptions {
   targetDir: string;
   autoFix?: boolean;
+  /** Preview fixes without applying them */
+  dryRun?: boolean;
 }
 
 // Patterns for detecting exposed credentials
@@ -53,13 +55,19 @@ export class HardeningScanner {
   ];
 
   async scan(options: ScanOptions): Promise<ScanResult> {
-    const { targetDir, autoFix = false } = options;
+    const { targetDir, autoFix = false, dryRun = false } = options;
 
-    // Create backup before auto-fix
+    // In dry-run mode, we detect what would be fixed but don't modify anything
+    const shouldFix = autoFix && !dryRun;
+
+    // Create backup before auto-fix (not in dry-run mode)
     let backupPath: string | undefined;
-    if (autoFix) {
+    if (shouldFix) {
       backupPath = await this.createBackup(targetDir);
     }
+
+    // Track if any fix fails for atomic rollback
+    let fixFailed = false;
 
     // Detect platform
     const platform = await this.detectPlatform(targetDir);
@@ -68,99 +76,112 @@ export class HardeningScanner {
     const findings: SecurityFinding[] = [];
 
     // Credential exposure checks
-    const credFindings = await this.checkCredentialExposure(targetDir, autoFix);
+    const credFindings = await this.checkCredentialExposure(targetDir, shouldFix);
     findings.push(...credFindings);
 
     // CLAUDE.md specific checks
-    const claudeFindings = await this.checkClaudeMd(targetDir, autoFix);
+    const claudeFindings = await this.checkClaudeMd(targetDir, shouldFix);
     findings.push(...claudeFindings);
 
     // MCP configuration checks
-    const mcpFindings = await this.checkMcpConfig(targetDir, autoFix);
+    const mcpFindings = await this.checkMcpConfig(targetDir, shouldFix);
     findings.push(...mcpFindings);
 
     // File permission checks
-    const permFindings = await this.checkFilePermissions(targetDir, autoFix);
+    const permFindings = await this.checkFilePermissions(targetDir, shouldFix);
     findings.push(...permFindings);
 
     // Git security checks
-    const gitFindings = await this.checkGitSecurity(targetDir, autoFix);
+    const gitFindings = await this.checkGitSecurity(targetDir, shouldFix);
     findings.push(...gitFindings);
 
     // Network security checks
-    const netFindings = await this.checkNetworkSecurity(targetDir, autoFix);
+    const netFindings = await this.checkNetworkSecurity(targetDir, shouldFix);
     findings.push(...netFindings);
 
     // Additional MCP checks
-    const mcpAdvFindings = await this.checkMcpAdvanced(targetDir, autoFix);
+    const mcpAdvFindings = await this.checkMcpAdvanced(targetDir, shouldFix);
     findings.push(...mcpAdvFindings);
 
     // Claude Code advanced checks
-    const claudeAdvFindings = await this.checkClaudeAdvanced(targetDir, autoFix);
+    const claudeAdvFindings = await this.checkClaudeAdvanced(targetDir, shouldFix);
     findings.push(...claudeAdvFindings);
 
     // Cursor configuration checks
-    const cursorFindings = await this.checkCursorConfig(targetDir, autoFix);
+    const cursorFindings = await this.checkCursorConfig(targetDir, shouldFix);
     findings.push(...cursorFindings);
 
     // VSCode configuration checks
-    const vscodeFindings = await this.checkVscodeConfig(targetDir, autoFix);
+    const vscodeFindings = await this.checkVscodeConfig(targetDir, shouldFix);
     findings.push(...vscodeFindings);
 
     // Additional credential checks
-    const credAdvFindings = await this.checkCredentialsAdvanced(targetDir, autoFix);
+    const credAdvFindings = await this.checkCredentialsAdvanced(targetDir, shouldFix);
     findings.push(...credAdvFindings);
 
     // Additional permission checks
-    const permAdvFindings = await this.checkPermissionsAdvanced(targetDir, autoFix);
+    const permAdvFindings = await this.checkPermissionsAdvanced(targetDir, shouldFix);
     findings.push(...permAdvFindings);
 
     // Environment and config checks
-    const envFindings = await this.checkEnvironmentSecurity(targetDir, autoFix);
+    const envFindings = await this.checkEnvironmentSecurity(targetDir, shouldFix);
     findings.push(...envFindings);
 
     // Logging and audit checks
-    const logFindings = await this.checkLoggingSecurity(targetDir, autoFix);
+    const logFindings = await this.checkLoggingSecurity(targetDir, shouldFix);
     findings.push(...logFindings);
 
     // Dependency checks
-    const depFindings = await this.checkDependencySecurity(targetDir, autoFix);
+    const depFindings = await this.checkDependencySecurity(targetDir, shouldFix);
     findings.push(...depFindings);
 
     // Session and auth checks
-    const authFindings = await this.checkAuthSecurity(targetDir, autoFix);
+    const authFindings = await this.checkAuthSecurity(targetDir, shouldFix);
     findings.push(...authFindings);
 
     // Process and runtime checks
-    const procFindings = await this.checkProcessSecurity(targetDir, autoFix);
+    const procFindings = await this.checkProcessSecurity(targetDir, shouldFix);
     findings.push(...procFindings);
 
     // Additional Claude checks
-    const claude3Findings = await this.checkClaudeExtended(targetDir, autoFix);
+    const claude3Findings = await this.checkClaudeExtended(targetDir, shouldFix);
     findings.push(...claude3Findings);
 
     // Additional MCP checks
-    const mcp2Findings = await this.checkMcpExtended(targetDir, autoFix);
+    const mcp2Findings = await this.checkMcpExtended(targetDir, shouldFix);
     findings.push(...mcp2Findings);
 
     // Additional network checks
-    const net2Findings = await this.checkNetworkExtended(targetDir, autoFix);
+    const net2Findings = await this.checkNetworkExtended(targetDir, shouldFix);
     findings.push(...net2Findings);
 
     // Input/output security checks
-    const ioFindings = await this.checkIOSecurity(targetDir, autoFix);
+    const ioFindings = await this.checkIOSecurity(targetDir, shouldFix);
     findings.push(...ioFindings);
 
     // API security checks
-    const apiFindings = await this.checkAPISecurity(targetDir, autoFix);
+    const apiFindings = await this.checkAPISecurity(targetDir, shouldFix);
     findings.push(...apiFindings);
 
     // Secret management checks
-    const secretFindings = await this.checkSecretManagement(targetDir, autoFix);
+    const secretFindings = await this.checkSecretManagement(targetDir, shouldFix);
     findings.push(...secretFindings);
 
     // Calculate score
     const { score, maxScore } = this.calculateScore(findings);
+
+    // In dry-run mode, mark fixable failed findings with wouldFix
+    if (dryRun && autoFix) {
+      for (const finding of findings) {
+        if (!finding.passed && finding.fixable) {
+          finding.wouldFix = true;
+        }
+      }
+    }
+
+    // Determine if all fixes completed successfully (atomic)
+    const hasFixedFindings = findings.some((f) => f.fixed);
+    const atomicFix = shouldFix ? !fixFailed && hasFixedFindings : undefined;
 
     return {
       timestamp: new Date(),
@@ -169,6 +190,8 @@ export class HardeningScanner {
       score,
       maxScore,
       backupPath,
+      dryRun: dryRun && autoFix ? true : undefined,
+      atomicFix,
     };
   }
 

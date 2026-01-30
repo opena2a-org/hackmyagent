@@ -149,18 +149,24 @@ program
   .description('Scan and harden your agent setup')
   .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
   .option('--fix', 'Automatically fix issues where possible')
+  .option('--dry-run', 'Preview fixes without applying them (use with --fix)')
   .option('--json', 'Output as JSON')
   .option('-v, --verbose', 'Show all checks including passed ones')
-  .action(async (directory: string, options: { fix?: boolean; json?: boolean; verbose?: boolean }) => {
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; json?: boolean; verbose?: boolean }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
-      console.log(`\n🔍 Scanning ${targetDir}...\n`);
+      if (options.dryRun) {
+        console.log(`\n🔍 Scanning ${targetDir} (dry-run)...\n`);
+      } else {
+        console.log(`\n🔍 Scanning ${targetDir}...\n`);
+      }
 
       const scanner = new HardeningScanner();
       const result = await scanner.scan({
         targetDir,
         autoFix: options.fix ?? false,
+        dryRun: options.dryRun ?? false,
       });
 
       if (options.json) {
@@ -169,8 +175,9 @@ program
       }
 
       // Group findings by severity
-      const failedFindings = result.findings.filter((f) => !f.passed && !f.fixed);
+      const failedFindings = result.findings.filter((f) => !f.passed && !f.fixed && !f.wouldFix);
       const fixedFindings = result.findings.filter((f) => f.fixed);
+      const wouldFixFindings = result.findings.filter((f) => f.wouldFix);
       const passedFindings = result.findings.filter((f) => f.passed);
 
       const grouped = groupFindingsBySeverity(failedFindings);
@@ -215,6 +222,17 @@ program
           console.log(`📦 Backup created: ${result.backupPath}`);
           console.log(`   Run 'hackmyagent rollback ${directory}' to undo changes\n`);
         }
+      }
+
+      // Print would-fix findings (dry-run mode)
+      if (wouldFixFindings.length > 0) {
+        console.log(`\x1b[36m🔮 WOULD FIX (${wouldFixFindings.length})${RESET}`);
+        for (const finding of wouldFixFindings) {
+          console.log(`   • [${finding.checkId}] ${finding.name}`);
+          console.log(`     ${finding.message}`);
+        }
+        console.log();
+        console.log(`💡 Run with --fix (without --dry-run) to apply these fixes\n`);
       }
 
       // Print passed findings in verbose mode

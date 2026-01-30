@@ -39,6 +39,8 @@ export interface SecurityFinding {
   fixable: boolean;
   fixed?: boolean;
   fixMessage?: string;
+  /** Set in dry-run mode to indicate this would be fixed */
+  wouldFix?: boolean;
   details?: Record<string, unknown>;
 }
 
@@ -48,6 +50,10 @@ export interface ScanResult {
   findings: SecurityFinding[];
   score: number;
   maxScore: number;
-  /** Path to backup directory (only set when autoFix is true) */
+  /** Path to backup directory (only set when autoFix is true and not dryRun) */
   backupPath?: string;
+  /** True if this was a dry-run (no changes made) */
+  dryRun?: boolean;
+  /** True if all fixes completed atomically (or rolled back on failure) */
+  atomicFix?: boolean;
 }
