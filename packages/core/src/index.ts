@@ -26,8 +26,15 @@ export type {
 // Hardening module
 export { HardeningScanner } from './hardening';
 export type { ScanOptions, SecurityFinding, Severity } from './hardening';
-// Note: ScanResult from hardening is different from legacy ScanResult above
-// Import directly from './hardening' if needed
+
+// External scanner module
+export { ExternalScanner } from './scanner';
+export type {
+  ExternalScanResult,
+  ExternalFinding,
+  ScannerOptions,
+  FindingSeverity,
+} from './scanner';
 
 // Legacy scanner (for scan command)
 export interface ScanResult {

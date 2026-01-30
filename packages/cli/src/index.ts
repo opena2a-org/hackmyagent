@@ -7,12 +7,14 @@
 import { Command } from 'commander';
 import {
   VERSION,
-  createScanner,
   checkSkill,
   HardeningScanner,
+  ExternalScanner,
   type RiskLevel,
   type Severity,
   type SecurityFinding,
+  type ExternalFinding,
+  type FindingSeverity,
 } from '@hackmyagent/core';
 
 const program = new Command();
@@ -241,25 +243,121 @@ program
     }
   });
 
+// Severity display for external scan findings
+const FINDING_SEVERITY_DISPLAY: Record<FindingSeverity, { symbol: string; color: string }> = {
+  critical: { symbol: '🔴', color: '\x1b[91m' },
+  high: { symbol: '🟠', color: '\x1b[31m' },
+  medium: { symbol: '🟡', color: '\x1b[33m' },
+  low: { symbol: '🟢', color: '\x1b[32m' },
+};
+
+function groupExternalFindingsBySeverity(
+  findings: ExternalFinding[]
+): Record<FindingSeverity, ExternalFinding[]> {
+  const grouped: Record<FindingSeverity, ExternalFinding[]> = {
+    critical: [],
+    high: [],
+    medium: [],
+    low: [],
+  };
+
+  for (const finding of findings) {
+    grouped[finding.severity].push(finding);
+  }
+
+  return grouped;
+}
+
 program
-  .command("scan")
-  .description("Perform a comprehensive security scan")
-  .argument("<target>", "Target agent URL or identifier")
-  .option("-f, --format <type>", "Output format (json, text, html)", "text")
-  .option("-o, --output <path>", "Output file path")
-  .action(async (target: string, options: { format: string; output?: string }) => {
-    console.log(`Scanning target: ${target}`);
-    const scanner = createScanner();
-    const result = await scanner.scan(target);
-    
-    if (options.format === "json") {
-      const output = JSON.stringify(result, null, 2);
-      console.log(output);
-    } else {
-      console.log(`Scan complete for: ${result.target}`);
-      console.log(`Findings: ${result.findings.length}`);
-      console.log(`Timestamp: ${result.timestamp.toISOString()}`);
+  .command('scan')
+  .description('Scan external target for exposed MCP endpoints and misconfigurations')
+  .argument('<target>', 'Target hostname or IP address')
+  .option('--json', 'Output as JSON')
+  .option('-p, --ports <ports>', 'Comma-separated list of ports to scan')
+  .option('-t, --timeout <ms>', 'Timeout in milliseconds', '5000')
+  .option('-v, --verbose', 'Show detailed findings')
+  .action(
+    async (
+      target: string,
+      options: { json?: boolean; ports?: string; timeout?: string; verbose?: boolean }
+    ) => {
+      try {
+        console.log(`\n🔍 Scanning ${target}...\n`);
+
+        const scanner = new ExternalScanner();
+        const customPorts = options.ports
+          ? options.ports.split(',').map((p) => parseInt(p.trim(), 10))
+          : undefined;
+
+        const result = await scanner.scan(target, {
+          ports: customPorts,
+          timeout: parseInt(options.timeout ?? '5000', 10),
+        });
+
+        if (options.json) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+
+        // Print header
+        const gradeColor =
+          result.grade === 'A'
+            ? '\x1b[32m'
+            : result.grade === 'B'
+              ? '\x1b[32m'
+              : result.grade === 'C'
+                ? '\x1b[33m'
+                : '\x1b[31m';
+        console.log(`Target: ${result.target}`);
+        console.log(`Score: ${gradeColor}${result.score}/100 (${result.grade})${RESET}`);
+        console.log(`Open Ports: ${result.openPorts.length > 0 ? result.openPorts.join(', ') : 'None detected'}`);
+        console.log(`Duration: ${result.duration}ms\n`);
+
+        if (result.findings.length === 0) {
+          console.log(`\x1b[32m✅ No security issues found!${RESET}\n`);
+          return;
+        }
+
+        // Group findings by severity
+        const grouped = groupExternalFindingsBySeverity(result.findings);
+
+        // Print findings by severity
+        for (const severity of ['critical', 'high', 'medium', 'low'] as FindingSeverity[]) {
+          const findings = grouped[severity];
+          if (findings.length === 0) continue;
+
+          const display = FINDING_SEVERITY_DISPLAY[severity];
+          console.log(
+            `${display.color}${display.symbol} ${severity.toUpperCase()} (${findings.length})${RESET}`
+          );
+
+          for (const finding of findings) {
+            console.log(`   • [${finding.checkId}] ${finding.title}`);
+            if (finding.port) {
+              console.log(`     Port: ${finding.port}${finding.path ? `, Path: ${finding.path}` : ''}`);
+            }
+            if (options.verbose) {
+              console.log(`     ${finding.description}`);
+              console.log(`     Evidence: ${finding.evidence}`);
+              console.log(`     Impact: ${finding.impact}`);
+              console.log(`     Fix: ${finding.fix}`);
+            }
+          }
+          console.log();
+        }
+
+        // Exit with non-zero if critical/high issues found
+        const criticalOrHigh = result.findings.filter(
+          (f) => f.severity === 'critical' || f.severity === 'high'
+        );
+        if (criticalOrHigh.length > 0) {
+          process.exit(1);
+        }
+      } catch (error) {
+        console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        process.exit(1);
+      }
     }
-  });
+  );
 
 program.parse();
