@@ -1,0 +1,37 @@
+{
+  "name": "hackmyagent",
+  "version": "0.1.0",
+  "description": "Security toolkit for AI agents - verify skills, harden setups, scan for exposures",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "clean": "turbo run clean"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/opena2a-org/hackmyagent.git"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "security",
+    "mcp",
+    "claude",
+    "skills"
+  ],
+  "author": "OpenA2A",
+  "license": "Apache-2.0"
+}
