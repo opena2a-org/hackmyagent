@@ -54,7 +54,9 @@ Scans for and fixes:
 - Authentication issues (missing auth, weak configs)
 - Credential exposure (plaintext API keys)
 - Permission problems (overly permissive files)
-- And 60+ more checks across 15 categories
+- MCP server misconfigurations
+- Dependency vulnerabilities
+- And more (68 checks across 16 categories)
 
 ### `hackmyagent scan`
 
