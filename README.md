@@ -2,6 +2,8 @@
 
 > Security toolkit for AI agents. Verify skills, harden setups, scan for exposures.
 
+**Website:** [hackmyagent.com](https://hackmyagent.com)
+
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
