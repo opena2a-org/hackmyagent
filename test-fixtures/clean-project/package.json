@@ -1,0 +1,9 @@
+{
+  "name": "clean-project-example",
+  "version": "1.0.0",
+  "description": "Example project with proper security configuration",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Tests pass\""
+  }
+}

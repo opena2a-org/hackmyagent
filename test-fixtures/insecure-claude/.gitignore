@@ -1,0 +1,8 @@
+# Standard ignores
+node_modules/
+dist/
+.env
+.env.*
+secrets.json
+*.pem
+*.key

@@ -1,0 +1,15 @@
+{
+  "database": {
+    "host": "localhost",
+    "port": 5432,
+    "name": "myapp"
+  },
+  "api": {
+    "openaiKey": "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234yz",
+    "anthropicKey": "sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456789"
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 3000
+  }
+}

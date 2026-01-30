@@ -1,0 +1,21 @@
+{
+  "servers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-filesystem", "/"]
+    },
+    "shell": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-server-shell"]
+    },
+    "database": {
+      "command": "node",
+      "args": ["db-server.js"],
+      "env": {
+        "OPENAI_API_KEY": "sk-proj-realkey123456789abcdefghijklmnopqrstuvwxyz12345678",
+        "DATABASE_URL": "postgres://user:password@localhost:5432/db"
+      },
+      "allowedTools": ["*"]
+    }
+  }
+}

@@ -1,0 +1,8 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# NOTE: This gitignore is missing important security patterns!
+# Sensitive files like environment configs and keys should be ignored.

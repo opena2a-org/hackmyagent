@@ -1,0 +1,9 @@
+{
+  "name": "insecure-mcp-server",
+  "version": "1.0.0",
+  "description": "Example MCP server with security issues for testing",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  }
+}

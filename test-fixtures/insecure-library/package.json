@@ -1,0 +1,9 @@
+{
+  "name": "insecure-library-example",
+  "version": "1.0.0",
+  "description": "Example library with missing .gitignore patterns",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"No tests yet\""
+  }
+}

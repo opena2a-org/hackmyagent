@@ -203,6 +203,23 @@ Always use `--dry-run` first to preview changes.
 | `NO_COLOR` | Disable colored output |
 | `HACKMYAGENT_TIMEOUT` | Default timeout for scans (ms) |
 
+## Test Fixtures
+
+Sample projects with intentional security issues for testing:
+
+```bash
+# Test the scanner against example projects
+npx hackmyagent secure test-fixtures/insecure-api     # Score: 27/100
+npx hackmyagent secure test-fixtures/insecure-mcp     # Score: 0/100
+npx hackmyagent secure test-fixtures/insecure-library # Score: 60/100
+npx hackmyagent secure test-fixtures/clean-project    # Score: 100/100
+
+# Test auto-fix
+npx hackmyagent secure test-fixtures/insecure-api --fix
+```
+
+See [test-fixtures/README.md](test-fixtures/README.md) for details.
+
 ## Contributing
 
 Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.

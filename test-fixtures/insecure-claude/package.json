@@ -1,0 +1,6 @@
+{
+  "name": "insecure-claude-project",
+  "version": "1.0.0",
+  "description": "Example project with dangerous Claude Code settings",
+  "main": "index.js"
+}
