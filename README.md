@@ -2,7 +2,7 @@
 
 > Security toolkit for AI agents. Verify skills, harden setups, scan for exposures.
 
-**Website:** [hackmyagent.com](https://hackmyagent.com)
+**Website:** [hackmyagent.com](https://hackmyagent.com) — Online scanner for external infrastructure (MCP endpoints, exposed configs, leaked credentials)
 
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -13,6 +13,13 @@ npx hackmyagent secure                      # harden your agent setup (100 check
 npx hackmyagent secure --fix                # auto-fix security issues
 npx hackmyagent scan example.com            # scan for exposed infrastructure
 ```
+
+## Two Ways to Scan
+
+| Tool | Use Case |
+|------|----------|
+| **[hackmyagent.com](https://hackmyagent.com)** | Scan external targets — check if your MCP servers, configs, or credentials are exposed on the internet |
+| **`npx hackmyagent secure`** | Scan local projects — harden your agent setup before deploying |
 
 ## Why HackMyAgent?
 
