@@ -15,7 +15,7 @@ import {
   type SecurityFinding,
   type ExternalFinding,
   type FindingSeverity,
-} from '@hackmyagent/core';
+} from 'hackmyagent-core';
 
 const program = new Command();
 

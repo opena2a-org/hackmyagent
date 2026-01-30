@@ -1,8 +1,12 @@
 {
-  "name": "@hackmyagent/core",
+  "name": "hackmyagent-core",
   "version": "0.1.0",
+  "description": "Core security scanning library for AI agents",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
@@ -13,5 +17,21 @@
     "@types/node": "^20.0.0",
     "typescript": "^5.3.3",
     "vitest": "^3.0.0"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "security",
+    "mcp",
+    "scanner"
+  ],
+  "author": "OpenA2A",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/opena2a-org/hackmyagent.git"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
