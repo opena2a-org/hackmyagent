@@ -3,7 +3,6 @@
 > **AI Agent Security Scanner** — Detect exposed MCP servers, leaked API keys, and vulnerable Claude Code configurations. Free, no signup required.
 
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
-[![npm downloads](https://img.shields.io/npm/dm/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 **Website:** [hackmyagent.com](https://hackmyagent.com) — Scan external infrastructure for exposed MCP endpoints, configs, and credentials
