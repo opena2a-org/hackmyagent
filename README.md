@@ -1,11 +1,12 @@
 # HackMyAgent
 
-> Security toolkit for AI agents. Verify skills, harden setups, scan for exposures.
-
-**Website:** [hackmyagent.com](https://hackmyagent.com) — Online scanner for external infrastructure (MCP endpoints, exposed configs, leaked credentials)
+> **AI Agent Security Scanner** — Detect exposed MCP servers, leaked API keys, and vulnerable Claude Code configurations. Free, no signup required.
 
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
+[![npm downloads](https://img.shields.io/npm/dm/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
+**Website:** [hackmyagent.com](https://hackmyagent.com) — Scan external infrastructure for exposed MCP endpoints, configs, and credentials
 
 ```bash
 npx hackmyagent check @publisher/skill     # verify a skill before installing
