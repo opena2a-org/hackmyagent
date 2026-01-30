@@ -5,7 +5,54 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import type { ScanResult, SecurityFinding, Severity } from './security-check';
+import type { ScanResult, SecurityFinding, Severity, ProjectType } from './security-check';
+
+/**
+ * Defines which checks apply to which project types
+ * Key: check ID prefix or full ID
+ * Value: array of project types this check applies to
+ *
+ * If a check ID is not in this map, it applies to 'all' project types
+ */
+const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
+  // Core security checks - apply to all projects
+  'CRED-': ['all'], // Credential exposure - always critical
+  'GIT-': ['all'], // Git security - always important
+  'PERM-': ['all'], // File permissions - always important
+  'DEP-': ['all'], // Dependencies - always important
+
+  // Environment checks - API/webapp mostly
+  'ENV-': ['webapp', 'api', 'mcp'],
+
+  // AI-specific checks - apply to MCP servers and AI-integrated projects
+  'CLAUDE-': ['all'], // Claude-specific (if files exist)
+  'MCP-': ['mcp'], // MCP configuration - only MCP servers
+  'PROMPT-': ['mcp', 'api'], // Prompt injection - MCP and APIs
+  'TOOL-': ['mcp'], // MCP tool boundaries
+
+  // Web-specific checks - only for web apps and APIs
+  'AUTH-': ['webapp', 'api'], // Authentication/authorization
+  'SESSION-': ['webapp', 'api'], // Session management
+  'NET-': ['webapp', 'api'], // Network security (HTTPS, etc.)
+  'IO-': ['webapp', 'api'], // Input/output (XSS, etc.)
+  'API-': ['api'], // API security headers
+  'RATE-': ['webapp', 'api'], // Rate limiting
+  'PROC-': ['webapp', 'api'], // Process security (headers, etc.)
+
+  // Database/encryption - only for apps with data storage
+  'INJ-': ['webapp', 'api'], // SQL injection, input validation
+  'ENCRYPT-': ['webapp', 'api'], // Encryption, password hashing
+
+  // Logging/audit - servers and MCP
+  'LOG-': ['webapp', 'api', 'mcp'],
+  'AUDIT-': ['webapp', 'api'],
+
+  // Sandboxing - containerized apps
+  'SANDBOX-': ['webapp', 'api', 'mcp'],
+
+  // Secret management - primarily for apps with secrets
+  'SEC-': ['webapp', 'api', 'mcp'],
+};
 
 export interface ScanOptions {
   targetDir: string;
@@ -89,8 +136,9 @@ export class HardeningScanner {
     // Track if any fix fails for atomic rollback
     let fixFailed = false;
 
-    // Detect platform
+    // Detect platform and project type
     const platform = await this.detectPlatform(targetDir);
+    const projectType = await this.detectProjectType(targetDir);
 
     // Run all checks
     const findings: SecurityFinding[] = [];
@@ -219,13 +267,25 @@ export class HardeningScanner {
     const toolFindings = await this.checkToolBoundaries(targetDir, shouldFix);
     findings.push(...toolFindings);
 
-    // Filter out ignored checks
-    const filteredFindings =
-      ignoredChecks.size > 0
-        ? findings.filter((f) => !ignoredChecks.has(f.checkId.toUpperCase()))
-        : findings;
+    // Filter findings to only show real, actionable issues:
+    // 1. Only failed checks (passed: false)
+    // 2. Only checks with a file path (concrete findings, not generic advice)
+    // 3. Filter out ignored checks
+    let filteredFindings = findings.filter((f) => {
+      // Keep fixed findings (so users can see what was fixed)
+      // Otherwise, only show failed checks
+      if (!f.fixed && f.passed) return false;
 
-    // Calculate score (only on non-ignored findings)
+      // Only show concrete findings (has a file path)
+      if (!f.file) return false;
+
+      // Filter out ignored checks
+      if (ignoredChecks.has(f.checkId.toUpperCase())) return false;
+
+      return true;
+    });
+
+    // Calculate score (only on applicable, non-ignored findings)
     const { score, maxScore } = this.calculateScore(filteredFindings);
 
     // In dry-run mode, mark fixable failed findings with wouldFix
@@ -244,6 +304,7 @@ export class HardeningScanner {
     return {
       timestamp: new Date(),
       platform,
+      projectType,
       findings: filteredFindings,
       score,
       maxScore,
@@ -284,25 +345,122 @@ export class HardeningScanner {
     return platforms.join('+');
   }
 
+  /**
+   * Detect the project type based on package.json and project structure
+   */
+  private async detectProjectType(targetDir: string): Promise<ProjectType> {
+    try {
+      const pkgPath = path.join(targetDir, 'package.json');
+      const content = await fs.readFile(pkgPath, 'utf-8');
+      const pkg = JSON.parse(content);
+
+      // Check if it's a CLI tool (has bin field)
+      if (pkg.bin) {
+        return 'cli';
+      }
+
+      // Check dependencies for framework detection
+      const allDeps = {
+        ...pkg.dependencies,
+        ...pkg.devDependencies,
+      };
+
+      // Check for MCP server
+      if (
+        allDeps['@modelcontextprotocol/sdk'] ||
+        allDeps['mcp'] ||
+        pkg.name?.includes('mcp')
+      ) {
+        return 'mcp';
+      }
+
+      // Check for web frameworks
+      if (
+        allDeps['react'] ||
+        allDeps['vue'] ||
+        allDeps['svelte'] ||
+        allDeps['@angular/core'] ||
+        allDeps['next'] ||
+        allDeps['nuxt']
+      ) {
+        return 'webapp';
+      }
+
+      // Check for API frameworks
+      if (
+        allDeps['express'] ||
+        allDeps['fastify'] ||
+        allDeps['koa'] ||
+        allDeps['hapi'] ||
+        allDeps['@hapi/hapi'] ||
+        allDeps['restify']
+      ) {
+        return 'api';
+      }
+
+      // Default to library if it has main/exports but no clear type
+      if (pkg.main || pkg.exports || pkg.module) {
+        return 'library';
+      }
+    } catch {
+      // No package.json or invalid JSON
+    }
+
+    // Check for Python projects
+    try {
+      const setupPath = path.join(targetDir, 'setup.py');
+      await fs.access(setupPath);
+      return 'library';
+    } catch {}
+
+    try {
+      const pyprojectPath = path.join(targetDir, 'pyproject.toml');
+      const content = await fs.readFile(pyprojectPath, 'utf-8');
+      if (content.includes('fastapi') || content.includes('flask') || content.includes('django')) {
+        return 'api';
+      }
+      return 'library';
+    } catch {}
+
+    // Default to library for generic projects
+    return 'library';
+  }
+
+  /**
+   * Check if a finding applies to the given project type
+   */
+  private findingAppliesTo(finding: SecurityFinding, projectType: ProjectType): boolean {
+    // Find the matching rule based on check ID prefix
+    for (const [prefix, types] of Object.entries(CHECK_PROJECT_TYPES)) {
+      if (finding.checkId.startsWith(prefix.replace('-', ''))) {
+        // Check if 'all' is in the types array
+        if (types.includes('all')) {
+          return true;
+        }
+        return types.includes(projectType);
+      }
+    }
+    // Default: applies to all if no rule found
+    return true;
+  }
+
   private async checkCredentialExposure(
     targetDir: string,
     autoFix: boolean
   ): Promise<SecurityFinding[]> {
     const findings: SecurityFinding[] = [];
-    const exposedKeys: string[] = [];
-    const fixedFiles: string[] = [];
     const envVarsToAdd: Set<string> = new Set();
 
     // Credential patterns with their env var names (stricter to avoid false positives)
     const credentialPatterns = [
-      { name: 'ANTHROPIC_API_KEY', pattern: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/g, envVar: 'ANTHROPIC_API_KEY' },
-      { name: 'OPENAI_API_KEY', pattern: /sk-proj-[a-zA-Z0-9]{20,}/g, envVar: 'OPENAI_API_KEY' },
-      { name: 'OPENAI_API_KEY', pattern: /sk-[a-zA-Z0-9]{48,}/g, envVar: 'OPENAI_API_KEY' },
-      { name: 'AWS_ACCESS_KEY', pattern: /AKIA[0-9A-Z]{16}/g, envVar: 'AWS_ACCESS_KEY_ID' },
-      { name: 'GITHUB_TOKEN', pattern: /ghp_[a-zA-Z0-9]{36}/g, envVar: 'GITHUB_TOKEN' },
-      { name: 'GITHUB_TOKEN', pattern: /github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}/g, envVar: 'GITHUB_TOKEN' },
-      { name: 'GOOGLE_API_KEY', pattern: /AIza[0-9A-Za-z_-]{35}/g, envVar: 'GOOGLE_API_KEY' },
-      { name: 'STRIPE_KEY', pattern: /sk_live_[0-9a-zA-Z]{24,}/g, envVar: 'STRIPE_SECRET_KEY' },
+      { name: 'Anthropic API Key', pattern: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/g, envVar: 'ANTHROPIC_API_KEY' },
+      { name: 'OpenAI API Key', pattern: /sk-proj-[a-zA-Z0-9]{20,}/g, envVar: 'OPENAI_API_KEY' },
+      { name: 'OpenAI API Key', pattern: /sk-[a-zA-Z0-9]{48,}/g, envVar: 'OPENAI_API_KEY' },
+      { name: 'AWS Access Key', pattern: /AKIA[0-9A-Z]{16}/g, envVar: 'AWS_ACCESS_KEY_ID' },
+      { name: 'GitHub Token', pattern: /ghp_[a-zA-Z0-9]{36}/g, envVar: 'GITHUB_TOKEN' },
+      { name: 'GitHub Token', pattern: /github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}/g, envVar: 'GITHUB_TOKEN' },
+      { name: 'Google API Key', pattern: /AIza[0-9A-Za-z_-]{35}/g, envVar: 'GOOGLE_API_KEY' },
+      { name: 'Stripe Key', pattern: /sk_live_[0-9a-zA-Z]{24,}/g, envVar: 'STRIPE_SECRET_KEY' },
     ];
 
     // Files to check for credentials
@@ -314,30 +472,27 @@ export class HardeningScanner {
       'settings.json',
       '.env',
       '.env.local',
+      'CLAUDE.md',
     ];
 
     for (const filename of filesToCheck) {
       const filePath = path.join(targetDir, filename);
       try {
         let content = await fs.readFile(filePath, 'utf-8');
+        const lines = content.split('\n');
         let fileModified = false;
+        const keysFoundInFile: Array<{ name: string; line: number }> = [];
 
         for (const { name, pattern, envVar } of credentialPatterns) {
-          // Reset pattern lastIndex for global regex
-          pattern.lastIndex = 0;
-
-          if (pattern.test(content)) {
-            // Check if it's already an env var reference
+          // Check each line for credentials
+          for (let i = 0; i < lines.length; i++) {
             pattern.lastIndex = 0;
-            const match = content.match(pattern);
-
-            if (match && !content.includes('${' + envVar + '}')) {
-              exposedKeys.push(name);
+            if (pattern.test(lines[i]) && !lines[i].includes('${' + envVar + '}')) {
+              keysFoundInFile.push({ name, line: i + 1 });
 
               if (autoFix) {
-                // Replace the credential with env var reference
                 pattern.lastIndex = 0;
-                content = content.replace(pattern, '${' + envVar + '}');
+                lines[i] = lines[i].replace(pattern, '${' + envVar + '}');
                 fileModified = true;
                 envVarsToAdd.add(envVar);
               }
@@ -345,9 +500,30 @@ export class HardeningScanner {
           }
         }
 
-        if (fileModified) {
-          await fs.writeFile(filePath, content);
-          fixedFiles.push(filename);
+        // Report one finding per file with exposed credentials
+        if (keysFoundInFile.length > 0) {
+          const keyNames = [...new Set(keysFoundInFile.map((k) => k.name))];
+          const firstLine = keysFoundInFile[0].line;
+
+          if (fileModified) {
+            content = lines.join('\n');
+            await fs.writeFile(filePath, content);
+          }
+
+          findings.push({
+            checkId: 'CRED-001',
+            name: 'Exposed Credential',
+            description: `${keyNames.join(', ')} found in plaintext`,
+            category: 'credentials',
+            severity: 'critical',
+            passed: fileModified, // Fixed if we replaced it
+            message: keyNames.join(', '),
+            file: filename,
+            line: firstLine,
+            fixable: true,
+            fixed: fileModified,
+            fix: `Run \`hackmyagent secure --fix\` to replace the hardcoded credential with a \${ENV_VAR} reference, then store the actual value in your .env file`,
+          });
         }
       } catch {
         // File doesn't exist, skip
@@ -357,35 +533,12 @@ export class HardeningScanner {
     // Create .env.example if we fixed any credentials
     if (autoFix && envVarsToAdd.size > 0) {
       const envExamplePath = path.join(targetDir, '.env.example');
-      let envExampleContent = '# Environment variables for this project\n# Copy to .env and fill in your values\n\n';
-
+      let envExampleContent = '# Environment variables\n\n';
       for (const envVar of envVarsToAdd) {
-        envExampleContent += `${envVar}=your_${envVar.toLowerCase()}_here\n`;
+        envExampleContent += `${envVar}=\n`;
       }
-
       await fs.writeFile(envExamplePath, envExampleContent);
     }
-
-    const passed = exposedKeys.length === 0;
-    const fixed = fixedFiles.length > 0;
-
-    findings.push({
-      checkId: 'CRED-001',
-      name: 'Exposed API Keys',
-      description: 'API keys or secrets found in plaintext configuration files',
-      category: 'credentials',
-      severity: 'critical',
-      passed: passed || fixed,
-      message: fixed
-        ? `Replaced credentials with env var references in: ${fixedFiles.join(', ')}`
-        : passed
-          ? 'No exposed API keys detected'
-          : `Found exposed credentials: ${[...new Set(exposedKeys)].join(', ')}`,
-      fixable: true,
-      fixed,
-      fixMessage: fixed ? `Created .env.example with: ${[...envVarsToAdd].join(', ')}` : undefined,
-      details: passed && !fixed ? undefined : { keys: [...new Set(exposedKeys)], fixedFiles },
-    });
 
     return findings;
   }
@@ -399,40 +552,40 @@ export class HardeningScanner {
 
     try {
       const content = await fs.readFile(claudeMdPath, 'utf-8');
-      let hasSecrets = false;
+      const lines = content.split('\n');
+      let credentialLine: number | undefined;
+      let credentialType: string | undefined;
 
       // Check for credentials in CLAUDE.md
-      for (const { pattern } of CREDENTIAL_PATTERNS) {
-        if (pattern.test(content)) {
-          hasSecrets = true;
-          break;
+      for (const { name, pattern } of CREDENTIAL_PATTERNS) {
+        for (let i = 0; i < lines.length; i++) {
+          if (pattern.test(lines[i])) {
+            credentialLine = i + 1;
+            credentialType = name;
+            break;
+          }
         }
+        if (credentialLine) break;
       }
 
-      findings.push({
-        checkId: 'CLAUDE-001',
-        name: 'CLAUDE.md Sensitive Content',
-        description: 'CLAUDE.md file contains sensitive information like API keys',
-        category: 'claude-code',
-        severity: 'critical',
-        passed: !hasSecrets,
-        message: hasSecrets
-          ? 'CLAUDE.md contains exposed credentials'
-          : 'CLAUDE.md does not contain sensitive credentials',
-        fixable: false,
-      });
+      // Only report if credentials found
+      if (credentialLine) {
+        findings.push({
+          checkId: 'CLAUDE-001',
+          name: 'Credential in CLAUDE.md',
+          description: `${credentialType} found in CLAUDE.md`,
+          category: 'claude-code',
+          severity: 'critical',
+          passed: false,
+          message: 'Remove credentials from CLAUDE.md',
+          file: 'CLAUDE.md',
+          line: credentialLine,
+          fixable: false,
+          fix: 'Manually move the credential to a .env file and reference it as ${ENV_VAR}. CLAUDE.md may be committed to git and exposed publicly',
+        });
+      }
     } catch {
-      // CLAUDE.md doesn't exist, that's fine
-      findings.push({
-        checkId: 'CLAUDE-001',
-        name: 'CLAUDE.md Sensitive Content',
-        description: 'CLAUDE.md file contains sensitive information like API keys',
-        category: 'claude-code',
-        severity: 'critical',
-        passed: true,
-        message: 'No CLAUDE.md file found (OK)',
-        fixable: false,
-      });
+      // CLAUDE.md doesn't exist, that's fine - no finding needed
     }
 
     return findings;
@@ -495,58 +648,39 @@ export class HardeningScanner {
         await fs.writeFile(mcpConfigPath, JSON.stringify(config, null, 2));
       }
 
-      findings.push({
-        checkId: 'MCP-001',
-        name: 'MCP Root Filesystem Access',
-        description: 'MCP server configured with root or home directory access',
-        category: 'mcp',
-        severity: 'high',
-        passed: !hasRootAccess || mcp001Fixed,
-        message: mcp001Fixed
-          ? 'Changed dangerous filesystem paths to scoped directories'
-          : hasRootAccess
-            ? 'MCP server has dangerous filesystem access (/ or ~)'
-            : 'MCP filesystem access is scoped appropriately',
-        fixable: true,
-        fixed: mcp001Fixed,
-        fixMessage: mcp001Fixed ? 'Replaced "/" with "./data" and "~" with "./"' : undefined,
-      });
+      // Only report if there's an issue
+      if (hasRootAccess) {
+        findings.push({
+          checkId: 'MCP-001',
+          name: 'MCP Root Filesystem Access',
+          description: 'Server has access to / or ~ directory',
+          category: 'mcp',
+          severity: 'high',
+          passed: mcp001Fixed,
+          message: 'Restrict filesystem access to specific directories',
+          file: 'mcp.json',
+          fixable: true,
+          fixed: mcp001Fixed,
+          fix: 'Run `hackmyagent secure --fix` to restrict filesystem access from / or ~ to project-relative paths (./data or ./)',
+        });
+      }
 
-      findings.push({
-        checkId: 'MCP-002',
-        name: 'MCP Unrestricted Shell',
-        description: 'MCP shell server without command restrictions',
-        category: 'mcp',
-        severity: 'critical',
-        passed: !hasUnrestrictedShell,
-        message: hasUnrestrictedShell
-          ? 'MCP shell server has no command restrictions'
-          : 'MCP shell server is properly restricted or not present',
-        fixable: false,
-      });
+      if (hasUnrestrictedShell) {
+        findings.push({
+          checkId: 'MCP-002',
+          name: 'Unrestricted Shell Server',
+          description: 'Shell server has no command restrictions',
+          category: 'mcp',
+          severity: 'critical',
+          passed: false,
+          message: 'Add allowedCommands to restrict shell access',
+          file: 'mcp.json',
+          fixable: false,
+          fix: 'Manually add an "allowedCommands" array to your shell server config in mcp.json to whitelist specific commands (e.g., ["ls", "cat", "grep"])',
+        });
+      }
     } catch {
-      // mcp.json doesn't exist or is invalid
-      findings.push({
-        checkId: 'MCP-001',
-        name: 'MCP Root Filesystem Access',
-        description: 'MCP server configured with root or home directory access',
-        category: 'mcp',
-        severity: 'high',
-        passed: true,
-        message: 'No mcp.json found (OK)',
-        fixable: true,
-      });
-
-      findings.push({
-        checkId: 'MCP-002',
-        name: 'MCP Unrestricted Shell',
-        description: 'MCP shell server without command restrictions',
-        category: 'mcp',
-        severity: 'critical',
-        passed: true,
-        message: 'No mcp.json found (OK)',
-        fixable: false,
-      });
+      // mcp.json doesn't exist - no findings needed
     }
 
     return findings;
@@ -652,22 +786,22 @@ dist/
       git001Fixed = true;
     }
 
-    findings.push({
-      checkId: 'GIT-001',
-      name: 'Missing .gitignore',
-      description: 'No .gitignore file found to prevent accidental commits of sensitive files',
-      category: 'git',
-      severity: 'medium',
-      passed: gitignoreExists,
-      message: git001Fixed
-        ? '.gitignore file created with recommended patterns'
-        : gitignoreExists
-          ? '.gitignore file present'
-          : 'No .gitignore file found - sensitive files may be accidentally committed',
-      fixable: true,
-      fixed: git001Fixed,
-      fixMessage: git001Fixed ? 'Created .gitignore with secure defaults' : undefined,
-    });
+    // Only report if .gitignore is missing
+    if (!gitignoreExists || git001Fixed) {
+      findings.push({
+        checkId: 'GIT-001',
+        name: 'Missing .gitignore',
+        description: 'No .gitignore file to prevent accidental commits',
+        category: 'git',
+        severity: 'medium',
+        passed: git001Fixed,
+        message: 'Create .gitignore to protect sensitive files',
+        file: '.gitignore',
+        fixable: true,
+        fixed: git001Fixed,
+        fix: 'Run `hackmyagent secure --fix` to create a .gitignore with security patterns (.env, secrets.json, *.pem, *.key) to prevent accidental commits',
+      });
+    }
 
     // GIT-002: Check for missing sensitive patterns in .gitignore
     const sensitivePatterns = ['.env', 'secrets.json', '*.pem', '*.key'];
@@ -687,23 +821,22 @@ dist/
       git002Fixed = true;
     }
 
-    findings.push({
-      checkId: 'GIT-002',
-      name: 'Incomplete .gitignore',
-      description: '.gitignore missing patterns for sensitive files',
-      category: 'git',
-      severity: 'high',
-      passed: missingPatterns.length === 0 || git002Fixed,
-      message: git002Fixed
-        ? `Added missing patterns to .gitignore: ${missingPatterns.join(', ')}`
-        : missingPatterns.length === 0
-          ? '.gitignore has all recommended sensitive file patterns'
-          : `Missing patterns in .gitignore: ${missingPatterns.join(', ')}`,
-      fixable: true,
-      fixed: git002Fixed,
-      fixMessage: git002Fixed ? `Added: ${missingPatterns.join(', ')}` : undefined,
-      details: missingPatterns.length > 0 && !git002Fixed ? { missing: missingPatterns } : undefined,
-    });
+    // Only report if patterns are missing
+    if (missingPatterns.length > 0) {
+      findings.push({
+        checkId: 'GIT-002',
+        name: 'Incomplete .gitignore',
+        description: `Missing: ${missingPatterns.join(', ')}`,
+        category: 'git',
+        severity: 'high',
+        passed: git002Fixed,
+        message: `Add patterns: ${missingPatterns.join(', ')}`,
+        file: '.gitignore',
+        fixable: true,
+        fixed: git002Fixed,
+        fix: `Run \`hackmyagent secure --fix\` to add ${missingPatterns.join(', ')} to .gitignore so sensitive files won't be accidentally committed`,
+      });
+    }
 
     // GIT-003: Check if .env exists but not in .gitignore
     let envExists = false;
@@ -727,23 +860,22 @@ dist/
       git003Fixed = true;
     }
 
-    findings.push({
-      checkId: 'GIT-003',
-      name: '.env File at Risk',
-      description: '.env file exists but may not be ignored by git',
-      category: 'git',
-      severity: 'critical',
-      passed: !envAtRisk || git003Fixed,
-      message: git003Fixed
-        ? 'Added .env to .gitignore'
-        : envAtRisk
-          ? '.env file exists but is not in .gitignore - secrets may be committed!'
-          : envExists
-            ? '.env file is properly ignored'
-            : 'No .env file present',
-      fixable: true,
-      fixed: git003Fixed,
-    });
+    // Only report if .env is at risk
+    if (envAtRisk) {
+      findings.push({
+        checkId: 'GIT-003',
+        name: '.env Not Ignored',
+        description: '.env exists but not in .gitignore - secrets may be committed',
+        category: 'git',
+        severity: 'critical',
+        passed: git003Fixed,
+        message: 'Add .env to .gitignore',
+        file: '.env',
+        fixable: true,
+        fixed: git003Fixed,
+        fix: 'Run `hackmyagent secure --fix` to add .env to .gitignore so your environment variables won\'t be accidentally committed',
+      });
+    }
 
     return findings;
   }
@@ -781,22 +913,22 @@ dist/
       net001Fixed = true;
     }
 
-    findings.push({
-      checkId: 'NET-001',
-      name: 'Server Bound to All Interfaces',
-      description: 'MCP server bound to 0.0.0.0 exposes it to all network interfaces',
-      category: 'network',
-      severity: 'critical',
-      passed: !boundToAllInterfaces || net001Fixed,
-      message: net001Fixed
-        ? 'Changed 0.0.0.0 to 127.0.0.1 in mcp.json'
-        : boundToAllInterfaces
-          ? 'MCP server bound to 0.0.0.0 - accessible from any network interface'
-          : 'No servers bound to 0.0.0.0',
-      fixable: true,
-      fixed: net001Fixed,
-      fixMessage: net001Fixed ? 'Replaced 0.0.0.0 with 127.0.0.1' : undefined,
-    });
+    // Only report if bound to 0.0.0.0
+    if (boundToAllInterfaces) {
+      findings.push({
+        checkId: 'NET-001',
+        name: 'Server Bound to All Interfaces',
+        description: 'Server bound to 0.0.0.0 - accessible from any network',
+        category: 'network',
+        severity: 'critical',
+        passed: net001Fixed,
+        message: 'Change 0.0.0.0 to 127.0.0.1',
+        file: 'mcp.json',
+        fixable: true,
+        fixed: net001Fixed,
+        fix: 'Run `hackmyagent secure --fix` to change 0.0.0.0 to 127.0.0.1 so the server only accepts local connections instead of being exposed to the network',
+      });
+    }
 
     // NET-002: Check for remote MCP servers without TLS
     let hasInsecureRemote = false;
@@ -809,18 +941,21 @@ dist/
       }
     }
 
-    findings.push({
-      checkId: 'NET-002',
-      name: 'Remote MCP Without TLS',
-      description: 'Remote MCP server configured without HTTPS',
-      category: 'network',
-      severity: 'high',
-      passed: !hasInsecureRemote,
-      message: hasInsecureRemote
-        ? 'Remote MCP server using HTTP instead of HTTPS - traffic is unencrypted'
-        : 'All remote MCP servers use HTTPS or no remote servers configured',
-      fixable: false,
-    });
+    // Only report if insecure remote found
+    if (hasInsecureRemote) {
+      findings.push({
+        checkId: 'NET-002',
+        name: 'Remote MCP Without TLS',
+        description: 'Remote server using HTTP instead of HTTPS',
+        category: 'network',
+        severity: 'high',
+        passed: false,
+        message: 'Change http:// to https://',
+        file: 'mcp.json',
+        fixable: false,
+        fix: 'Manually change http:// to https:// in mcp.json to encrypt traffic and prevent man-in-the-middle attacks',
+      });
+    }
 
     return findings;
   }
@@ -884,22 +1019,22 @@ dist/
       }
     }
 
-    findings.push({
-      checkId: 'MCP-003',
-      name: 'MCP Hardcoded Secrets',
-      description: 'MCP server configuration contains hardcoded secrets in environment variables',
-      category: 'mcp',
-      severity: 'critical',
-      passed: !hasHardcodedSecrets || mcp003Fixed,
-      message: mcp003Fixed
-        ? 'Replaced hardcoded secrets with environment variable references'
-        : hasHardcodedSecrets
-          ? 'MCP server has hardcoded secrets in env vars - use environment variable references instead'
-          : 'No hardcoded secrets in MCP env vars',
-      fixable: true,
-      fixed: mcp003Fixed,
-      fixMessage: mcp003Fixed ? 'Replaced with ${ENV_VAR} references' : undefined,
-    });
+    // Only report if hardcoded secrets found
+    if (hasHardcodedSecrets) {
+      findings.push({
+        checkId: 'MCP-003',
+        name: 'Hardcoded Secrets in MCP',
+        description: 'Secrets found in MCP env vars',
+        category: 'mcp',
+        severity: 'critical',
+        passed: mcp003Fixed,
+        message: 'Use ${ENV_VAR} references instead',
+        file: 'mcp.json',
+        fixable: true,
+        fixed: mcp003Fixed,
+        fix: 'Run `hackmyagent secure --fix` to replace hardcoded API keys with ${ENV_VAR} references, then store actual values in .env file',
+      });
+    }
 
     // MCP-004: Check for default credentials
     const defaultPasswords = ['postgres', 'password', 'admin', 'root', '123456', 'default'];
@@ -918,18 +1053,21 @@ dist/
       }
     }
 
-    findings.push({
-      checkId: 'MCP-004',
-      name: 'MCP Default Credentials',
-      description: 'MCP server using default or weak credentials',
-      category: 'mcp',
-      severity: 'critical',
-      passed: !hasDefaultCreds,
-      message: hasDefaultCreds
-        ? 'MCP server using default credentials - change to strong unique passwords'
-        : 'No default credentials detected in MCP config',
-      fixable: false,
-    });
+    // Only report if default credentials found
+    if (hasDefaultCreds) {
+      findings.push({
+        checkId: 'MCP-004',
+        name: 'Default Credentials',
+        description: 'MCP server using default password',
+        category: 'mcp',
+        severity: 'critical',
+        passed: false,
+        message: 'Change to strong unique password',
+        file: 'mcp.json',
+        fixable: false,
+        fix: 'Manually change the default password in mcp.json to a strong, unique password (use `openssl rand -base64 24` to generate one)',
+      });
+    }
 
     // MCP-005: Check for wildcard tool access
     let hasWildcardTools = false;
@@ -942,18 +1080,21 @@ dist/
       }
     }
 
-    findings.push({
-      checkId: 'MCP-005',
-      name: 'MCP Wildcard Tools',
-      description: 'MCP server allows all tools without restrictions',
-      category: 'mcp',
-      severity: 'high',
-      passed: !hasWildcardTools,
-      message: hasWildcardTools
-        ? 'MCP server allows all tools (*) - restrict to specific tools needed'
-        : 'MCP tools are properly scoped',
-      fixable: false,
-    });
+    // Only report if wildcard tools found
+    if (hasWildcardTools) {
+      findings.push({
+        checkId: 'MCP-005',
+        name: 'Wildcard Tool Access',
+        description: 'Server allows all tools (*)',
+        category: 'mcp',
+        severity: 'high',
+        passed: false,
+        message: 'Restrict to specific tools needed',
+        file: 'mcp.json',
+        fixable: false,
+        fix: 'Manually replace "*" with a list of specific tool names you need (e.g., ["read_file", "list_directory"]) to limit what the AI can access',
+      });
+    }
 
     return findings;
   }
@@ -983,18 +1124,21 @@ dist/
       }
     }
 
-    findings.push({
-      checkId: 'CLAUDE-002',
-      name: 'Overly Permissive Claude Permissions',
-      description: 'Claude Code settings allow unrestricted tool access',
-      category: 'claude-code',
-      severity: 'high',
-      passed: !hasOverlyPermissive,
-      message: hasOverlyPermissive
-        ? 'Claude Code has overly permissive permissions (wildcards) - scope to specific paths/commands'
-        : 'Claude Code permissions are appropriately scoped',
-      fixable: false,
-    });
+    // Only report if overly permissive
+    if (hasOverlyPermissive) {
+      findings.push({
+        checkId: 'CLAUDE-002',
+        name: 'Overly Permissive Permissions',
+        description: 'Settings allow unrestricted tool access',
+        category: 'claude-code',
+        severity: 'high',
+        passed: false,
+        message: 'Scope permissions to specific paths',
+        file: '.claude/settings.json',
+        fixable: false,
+        fix: 'Manually replace wildcards like Bash(*) or Read(*) with specific paths (e.g., Bash(npm test) or Read(/src/**)) to limit AI access',
+      });
+    }
 
     // CLAUDE-003: Check for dangerous Bash patterns
     let hasDangerousBash = false;
@@ -1012,18 +1156,21 @@ dist/
       }
     }
 
-    findings.push({
-      checkId: 'CLAUDE-003',
-      name: 'Dangerous Bash Permissions',
-      description: 'Claude Code allows dangerous shell commands',
-      category: 'claude-code',
-      severity: 'critical',
-      passed: !hasDangerousBash,
-      message: hasDangerousBash
-        ? 'Claude Code allows dangerous Bash commands (rm -rf, sudo, etc.) - remove or deny these'
-        : 'No dangerous Bash patterns in Claude permissions',
-      fixable: false,
-    });
+    // Only report if dangerous Bash patterns found
+    if (hasDangerousBash) {
+      findings.push({
+        checkId: 'CLAUDE-003',
+        name: 'Dangerous Bash Permissions',
+        description: 'Allows destructive shell commands',
+        category: 'claude-code',
+        severity: 'critical',
+        passed: false,
+        message: 'Remove rm -rf, sudo, etc.',
+        file: '.claude/settings.json',
+        fixable: false,
+        fix: 'Manually remove dangerous commands (rm -rf, sudo, chmod 777, etc.) from the allow list in .claude/settings.json to prevent accidental destructive operations',
+      });
+    }
 
     return findings;
   }
@@ -3657,11 +3804,10 @@ dist/
     maxScore: number;
   } {
     let score = 100;
-    let maxDeduction = 0;
 
+    // All findings passed in are concrete issues (already filtered)
     for (const finding of findings) {
       const weight = SEVERITY_WEIGHTS[finding.severity];
-      maxDeduction += weight;
 
       if (!finding.passed && !finding.fixed) {
         score -= weight;

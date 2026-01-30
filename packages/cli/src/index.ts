@@ -250,94 +250,67 @@ Examples:
         return;
       }
 
-      // Group findings by severity
-      const failedFindings = result.findings.filter((f) => !f.passed && !f.fixed && !f.wouldFix);
+      // Filter to only show failed findings (issues)
+      const issues = result.findings.filter((f) => !f.passed && !f.fixed);
       const fixedFindings = result.findings.filter((f) => f.fixed);
-      const wouldFixFindings = result.findings.filter((f) => f.wouldFix);
-      const passedFindings = result.findings.filter((f) => f.passed);
 
-      const grouped = groupFindingsBySeverity(failedFindings);
+      // Print header - clean and simple
+      const projectTypeLabel = {
+        cli: 'CLI Tool',
+        library: 'Library',
+        webapp: 'Web App',
+        api: 'API Server',
+        mcp: 'MCP Server',
+        all: 'Project',
+      }[result.projectType] || 'Project';
 
-      // Print header
-      console.log(`Platform: ${result.platform}`);
-      console.log(`Security Score: ${result.score}/${result.maxScore}\n`);
+      console.log(`${projectTypeLabel} | Score: ${result.score}/${result.maxScore}\n`);
 
-      // Print failed findings by severity
-      let hasIssues = false;
-      for (const severity of ['critical', 'high', 'medium', 'low'] as Severity[]) {
-        const findings = grouped[severity];
-        if (findings.length === 0) continue;
+      // No issues? Say so and exit
+      if (issues.length === 0 && fixedFindings.length === 0) {
+        console.log(`${colors.green}No issues found.${RESET()}\n`);
+      } else if (issues.length > 0) {
+        // Print issues - clean format
+        console.log(`${issues.length} issue${issues.length === 1 ? '' : 's'} found:\n`);
 
-        hasIssues = true;
-        const display = SEVERITY_DISPLAY[severity];
-        console.log(`${display.color()}${display.symbol} ${severity.toUpperCase()} (${findings.length})${RESET()}`);
+        for (const finding of issues) {
+          const display = SEVERITY_DISPLAY[finding.severity];
+          const location = finding.file
+            ? finding.line
+              ? `${finding.file}:${finding.line}`
+              : finding.file
+            : '';
 
-        for (const finding of findings) {
-          console.log(`   • [${finding.checkId}] ${finding.name}`);
-          console.log(`     ${finding.message}`);
-          if (finding.fixable && !options.fix) {
-            console.log(`     💡 Auto-fixable with --fix`);
+          // Format: SEVERITY  file:line
+          //         Description
+          //         Fix: command
+          console.log(`${display.color()}${display.symbol} ${finding.severity.toUpperCase()}${RESET()}  ${location}`);
+          console.log(`       ${finding.description}`);
+          if (finding.fix) {
+            console.log(`       ${colors.cyan}Fix:${RESET()} ${finding.fix}`);
           }
+          console.log();
         }
-        console.log();
       }
 
       // Print fixed findings
       if (fixedFindings.length > 0) {
-        console.log(`${colors.green}✅ FIXED (${fixedFindings.length})${RESET()}`);
+        console.log(`${colors.green}Fixed ${fixedFindings.length} issue${fixedFindings.length === 1 ? '' : 's'}:${RESET()}`);
         for (const finding of fixedFindings) {
-          console.log(`   • [${finding.checkId}] ${finding.name}`);
-          if (finding.fixMessage) {
-            console.log(`     ${finding.fixMessage}`);
-          }
+          const location = finding.file || '';
+          console.log(`  ${colors.green}✓${RESET()} ${location} - ${finding.name}`);
         }
         console.log();
 
-        // Show backup info
         if (result.backupPath) {
-          console.log(`📦 Backup created: ${result.backupPath}`);
-          console.log(`   Run 'hackmyagent rollback ${directory}' to undo changes\n`);
-        }
-      }
-
-      // Print would-fix findings (dry-run mode)
-      if (wouldFixFindings.length > 0) {
-        console.log(`${colors.cyan}🔮 WOULD FIX (${wouldFixFindings.length})${RESET()}`);
-        for (const finding of wouldFixFindings) {
-          console.log(`   • [${finding.checkId}] ${finding.name}`);
-          console.log(`     ${finding.message}`);
-        }
-        console.log();
-        console.log(`💡 Run with --fix (without --dry-run) to apply these fixes\n`);
-      }
-
-      // Print passed findings in verbose mode
-      if (options.verbose && passedFindings.length > 0) {
-        console.log(`${colors.green}✅ PASSED (${passedFindings.length})${RESET()}`);
-        for (const finding of passedFindings) {
-          console.log(`   • [${finding.checkId}] ${finding.name}`);
-        }
-        console.log();
-      }
-
-      // Show ignored checks
-      if (result.ignored && result.ignored.length > 0) {
-        console.log(`🚫 Ignored: ${result.ignored.join(', ')}\n`);
-      }
-
-      // Summary
-      if (!hasIssues && fixedFindings.length === 0 && wouldFixFindings.length === 0) {
-        console.log(`${colors.green}✅ No security issues found!${RESET()}\n`);
-      } else if (hasIssues && !options.fix) {
-        const fixableCount = failedFindings.filter((f) => f.fixable).length;
-        if (fixableCount > 0) {
-          console.log(`💡 Run with --fix to automatically fix ${fixableCount} issue(s)\n`);
+          console.log(`Backup: ${result.backupPath}`);
+          console.log(`Undo: hackmyagent rollback ${directory}\n`);
         }
       }
 
       // Exit with non-zero if critical/high issues remain
-      const criticalOrHigh = failedFindings.filter(
-        (f) => f.severity === 'critical' || f.severity === 'high'
+      const criticalOrHigh = issues.filter(
+        (f: SecurityFinding) => f.severity === 'critical' || f.severity === 'high'
       );
       if (criticalOrHigh.length > 0) {
         process.exit(1);

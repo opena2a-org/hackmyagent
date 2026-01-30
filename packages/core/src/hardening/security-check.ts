@@ -4,6 +4,17 @@
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low';
 
+/**
+ * Project types for filtering relevant checks
+ * - cli: Command-line tools (bin field in package.json)
+ * - library: NPM packages for use by other code
+ * - webapp: Web applications (React, Vue, etc.)
+ * - api: Backend API servers (Express, Fastify, etc.)
+ * - mcp: MCP server implementations
+ * - all: Applies to all project types
+ */
+export type ProjectType = 'cli' | 'library' | 'webapp' | 'api' | 'mcp' | 'all';
+
 export interface SecurityCheck {
   id: string;
   name: string;
@@ -41,12 +52,20 @@ export interface SecurityFinding {
   fixMessage?: string;
   /** Set in dry-run mode to indicate this would be fixed */
   wouldFix?: boolean;
+  /** File path where the issue was found (relative to scan directory) */
+  file?: string;
+  /** Line number in the file where the issue was found */
+  line?: number;
+  /** Specific fix instruction for this issue */
+  fix?: string;
   details?: Record<string, unknown>;
 }
 
 export interface ScanResult {
   timestamp: Date;
   platform: string;
+  /** Detected project type */
+  projectType: ProjectType;
   findings: SecurityFinding[];
   score: number;
   maxScore: number;
