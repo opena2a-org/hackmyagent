@@ -306,6 +306,518 @@ describe('HardeningScanner', () => {
   });
 });
 
+describe('Git security checks', () => {
+  let scanner: HardeningScanner;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    scanner = new HardeningScanner();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-test-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('detects missing .gitignore', async () => {
+    // No .gitignore file
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'GIT-001');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+  });
+
+  it('detects .gitignore missing sensitive patterns', async () => {
+    // Create .gitignore without .env pattern
+    await fs.writeFile(path.join(tempDir, '.gitignore'), 'node_modules/\n');
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'GIT-002');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+    expect(finding?.message).toContain('.env');
+  });
+
+  it('passes when .gitignore has all sensitive patterns', async () => {
+    await fs.writeFile(
+      path.join(tempDir, '.gitignore'),
+      '.env\n.env.*\nsecrets.json\n*.pem\n*.key\n'
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'GIT-002');
+
+    expect(finding?.passed).toBe(true);
+  });
+
+  it('detects .env file when .gitignore missing .env pattern', async () => {
+    await fs.writeFile(path.join(tempDir, '.gitignore'), 'node_modules/\n');
+    await fs.writeFile(path.join(tempDir, '.env'), 'SECRET=value\n');
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'GIT-003');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+    expect(finding?.severity).toBe('critical');
+  });
+});
+
+describe('Network security checks', () => {
+  let scanner: HardeningScanner;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    scanner = new HardeningScanner();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-test-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('detects MCP server bound to 0.0.0.0', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'mcp.json'),
+      JSON.stringify({
+        servers: {
+          myserver: {
+            command: 'mcp-server',
+            args: ['--host', '0.0.0.0'],
+          },
+        },
+      })
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'NET-001');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+    expect(finding?.severity).toBe('critical');
+  });
+
+  it('detects remote MCP server without TLS', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'mcp.json'),
+      JSON.stringify({
+        servers: {
+          remote: {
+            url: 'http://api.example.com/mcp',
+          },
+        },
+      })
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'NET-002');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+    expect(finding?.severity).toBe('high');
+  });
+
+  it('passes for remote MCP server with HTTPS', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'mcp.json'),
+      JSON.stringify({
+        servers: {
+          remote: {
+            url: 'https://api.example.com/mcp',
+          },
+        },
+      })
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'NET-002');
+
+    expect(finding?.passed).toBe(true);
+  });
+});
+
+describe('Additional MCP checks', () => {
+  let scanner: HardeningScanner;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    scanner = new HardeningScanner();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-test-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('detects secrets passed as environment variables to MCP', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'mcp.json'),
+      JSON.stringify({
+        servers: {
+          myserver: {
+            command: 'mcp-server',
+            env: {
+              API_KEY: 'sk-ant-api03-hardcoded-secret',
+            },
+          },
+        },
+      })
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'MCP-003');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+    expect(finding?.severity).toBe('critical');
+  });
+
+  it('passes when env vars use references', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'mcp.json'),
+      JSON.stringify({
+        servers: {
+          myserver: {
+            command: 'mcp-server',
+            env: {
+              API_KEY: '${ANTHROPIC_API_KEY}',
+            },
+          },
+        },
+      })
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'MCP-003');
+
+    expect(finding?.passed).toBe(true);
+  });
+
+  it('detects database MCP server with default credentials', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'mcp.json'),
+      JSON.stringify({
+        servers: {
+          postgres: {
+            command: 'mcp-server-postgres',
+            args: ['--password', 'postgres'],
+          },
+        },
+      })
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'MCP-004');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+  });
+
+  it('detects MCP server allowing all tools', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'mcp.json'),
+      JSON.stringify({
+        servers: {
+          myserver: {
+            command: 'mcp-server',
+            allowedTools: ['*'],
+          },
+        },
+      })
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'MCP-005');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+    expect(finding?.severity).toBe('high');
+  });
+});
+
+describe('Claude Code additional checks', () => {
+  let scanner: HardeningScanner;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    scanner = new HardeningScanner();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-test-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('detects overly permissive allowed commands', async () => {
+    await fs.mkdir(path.join(tempDir, '.claude'), { recursive: true });
+    await fs.writeFile(
+      path.join(tempDir, '.claude', 'settings.json'),
+      JSON.stringify({
+        permissions: {
+          allow: ['Bash(*)', 'Read(*)', 'Write(*)'],
+        },
+      })
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'CLAUDE-002');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+    expect(finding?.severity).toBe('high');
+  });
+
+  it('detects dangerous Bash patterns', async () => {
+    await fs.mkdir(path.join(tempDir, '.claude'), { recursive: true });
+    await fs.writeFile(
+      path.join(tempDir, '.claude', 'settings.json'),
+      JSON.stringify({
+        permissions: {
+          allow: ['Bash(rm -rf *)'],
+        },
+      })
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'CLAUDE-003');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+    expect(finding?.severity).toBe('critical');
+  });
+
+  it('passes for scoped permissions', async () => {
+    await fs.mkdir(path.join(tempDir, '.claude'), { recursive: true });
+    await fs.writeFile(
+      path.join(tempDir, '.claude', 'settings.json'),
+      JSON.stringify({
+        permissions: {
+          allow: ['Read(./src/**)', 'Write(./src/**)'],
+          deny: ['Bash(rm *)'],
+        },
+      })
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'CLAUDE-002');
+
+    expect(finding?.passed).toBe(true);
+  });
+});
+
+describe('Cursor configuration checks', () => {
+  let scanner: HardeningScanner;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    scanner = new HardeningScanner();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-test-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('detects credentials in Cursor rules', async () => {
+    await fs.mkdir(path.join(tempDir, '.cursor'), { recursive: true });
+    await fs.writeFile(
+      path.join(tempDir, '.cursor', 'rules'),
+      'Use API key sk-ant-api03-secret for all requests\n'
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'CURSOR-001');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+    expect(finding?.severity).toBe('critical');
+  });
+
+  it('detects credentials in .cursorrules', async () => {
+    await fs.writeFile(
+      path.join(tempDir, '.cursorrules'),
+      'API_KEY=sk-proj-xxxxxxxxxxxxx\n'
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'CURSOR-001');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+  });
+});
+
+describe('VSCode configuration checks', () => {
+  let scanner: HardeningScanner;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    scanner = new HardeningScanner();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-test-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('detects credentials in VSCode MCP config', async () => {
+    await fs.mkdir(path.join(tempDir, '.vscode'), { recursive: true });
+    await fs.writeFile(
+      path.join(tempDir, '.vscode', 'mcp.json'),
+      JSON.stringify({
+        servers: {
+          myserver: {
+            apiKey: 'sk-ant-api03-exposed',
+          },
+        },
+      })
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'VSCODE-001');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+    expect(finding?.severity).toBe('critical');
+  });
+
+  it('detects overly permissive VSCode MCP config', async () => {
+    await fs.mkdir(path.join(tempDir, '.vscode'), { recursive: true });
+    await fs.writeFile(
+      path.join(tempDir, '.vscode', 'mcp.json'),
+      JSON.stringify({
+        servers: {
+          filesystem: {
+            command: 'mcp-server-filesystem',
+            args: ['/'],
+          },
+        },
+      })
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'VSCODE-002');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+  });
+});
+
+describe('Additional credential checks', () => {
+  let scanner: HardeningScanner;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    scanner = new HardeningScanner();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-test-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('detects private keys in directory', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'server.key'),
+      '-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBALRi\n-----END RSA PRIVATE KEY-----\n'
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'CRED-002');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+    expect(finding?.severity).toBe('critical');
+  });
+
+  it('detects .pem files', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'cert.pem'),
+      '-----BEGIN CERTIFICATE-----\nMIIBOgIBAAJBALRi\n-----END CERTIFICATE-----\n'
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'CRED-002');
+
+    expect(finding).toBeDefined();
+  });
+
+  it('detects hardcoded secrets in package.json', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'package.json'),
+      JSON.stringify({
+        name: 'test',
+        scripts: {
+          deploy: 'API_KEY=sk-ant-api03-secret npm run build',
+        },
+      })
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'CRED-003');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+  });
+
+  it('detects JWT secrets in config', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'config.json'),
+      JSON.stringify({
+        jwt: {
+          secret: 'super-secret-jwt-key-that-should-not-be-here',
+        },
+      })
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'CRED-004');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+  });
+});
+
+describe('Permission boundary checks', () => {
+  let scanner: HardeningScanner;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    scanner = new HardeningScanner();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-test-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('detects executable config files', async () => {
+    const configPath = path.join(tempDir, 'config.json');
+    await fs.writeFile(configPath, '{}');
+    await fs.chmod(configPath, 0o755);
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'PERM-002');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+  });
+
+  it('detects group-writable sensitive files', async () => {
+    const envPath = path.join(tempDir, '.env');
+    await fs.writeFile(envPath, 'SECRET=value');
+    await fs.chmod(envPath, 0o664);
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'PERM-003');
+
+    expect(finding).toBeDefined();
+    expect(finding?.passed).toBe(false);
+  });
+});
+
 describe('Platform detection', () => {
   let scanner: HardeningScanner;
   let tempDir: string;
