@@ -38,9 +38,22 @@ if (noColorEnv) {
 
 program
   .name('hackmyagent')
-  .description('Security toolkit for AI agents')
-  .version(VERSION)
-  .option('--no-color', 'Disable colored output')
+  .description(`Security toolkit for AI agents
+
+HackMyAgent helps you secure AI agent deployments with 100+ security checks
+across credential exposure, MCP configurations, prompt injection defenses,
+and infrastructure hardening.
+
+Documentation: https://github.com/ecolibria/hackmyagent
+
+Examples:
+  $ hackmyagent check @anthropic/claude-mcp    Verify skill before installing
+  $ hackmyagent secure                         Scan current directory
+  $ hackmyagent secure --fix                   Auto-fix security issues
+  $ hackmyagent secure --fix --dry-run         Preview fixes without applying
+  $ hackmyagent scan example.com               Scan external infrastructure`)
+  .version(VERSION, '-V, --version', 'Output the version number')
+  .option('--no-color', 'Disable colored output (also respects NO_COLOR env)')
   .hook('preAction', (thisCommand) => {
     const opts = thisCommand.opts();
     if (opts.color === false) {
@@ -59,10 +72,23 @@ const RESET = () => colors.reset;
 
 program
   .command('check')
-  .description('Verify a skill before installing')
+  .description(`Verify a skill before installing
+
+Analyzes skill safety by checking:
+  • Publisher identity via DNS TXT records
+  • Permissions requested (filesystem, network, shell)
+  • Revocation status against global blocklist
+
+Risk levels: low, medium, high, critical
+Exit code 1 if high/critical risk detected.
+
+Examples:
+  $ hackmyagent check @anthropic/claude-mcp
+  $ hackmyagent check @publisher/skill --verbose
+  $ hackmyagent check @publisher/skill --json`)
   .argument('<skill>', 'Skill identifier (e.g., @publisher/skill)')
-  .option('-v, --verbose', 'Enable verbose output')
-  .option('--json', 'Output as JSON')
+  .option('-v, --verbose', 'Show detailed verification info')
+  .option('--json', 'Output as JSON (for scripting/CI)')
   .option('--offline', 'Skip DNS verification (offline mode)')
   .action(async (skill: string, options: { verbose?: boolean; json?: boolean; offline?: boolean }) => {
     try {
@@ -170,12 +196,31 @@ function groupFindingsBySeverity(findings: SecurityFinding[]): Record<Severity, 
 
 program
   .command('secure')
-  .description('Scan and harden your agent setup')
+  .description(`Scan and harden your agent setup
+
+Performs 100 security checks across 24 categories:
+  • Credentials: API key exposure, secrets in configs
+  • MCP: Server configs, tool permissions, secrets
+  • Network: TLS, interface bindings, CORS
+  • Prompt: Injection defenses, role protection
+  • Encryption: At-rest encryption, secure hashing
+  • And 19 more categories...
+
+Severities: critical, high, medium, low
+Exit code 1 if critical/high issues found.
+
+Examples:
+  $ hackmyagent secure                         Scan current directory
+  $ hackmyagent secure ./my-project            Scan specific directory
+  $ hackmyagent secure --fix                   Auto-fix issues
+  $ hackmyagent secure --fix --dry-run         Preview fixes
+  $ hackmyagent secure --ignore CRED-001       Skip specific checks
+  $ hackmyagent secure --json                  JSON output for CI`)
   .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
   .option('--fix', 'Automatically fix issues where possible')
   .option('--dry-run', 'Preview fixes without applying them (use with --fix)')
-  .option('--ignore <checks>', 'Comma-separated list of check IDs to ignore (e.g., CRED-001,GIT-002)')
-  .option('--json', 'Output as JSON')
+  .option('--ignore <checks>', 'Comma-separated check IDs to skip (e.g., CRED-001,GIT-002)')
+  .option('--json', 'Output as JSON (for scripting/CI)')
   .option('-v, --verbose', 'Show all checks including passed ones')
   .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; verbose?: boolean }) => {
     try {
@@ -330,12 +375,27 @@ function groupExternalFindingsBySeverity(
 
 program
   .command('scan')
-  .description('Scan external target for exposed MCP endpoints and misconfigurations')
+  .description(`Scan external target for exposed MCP endpoints
+
+Detects externally exposed:
+  • MCP SSE/tools endpoints
+  • Configuration files (mcp.json, settings)
+  • API keys in responses
+  • Debug/admin interfaces
+
+Scoring: A (90-100), B (80-89), C (70-79), D (60-69), F (<60)
+Exit code 1 if critical/high issues found.
+
+Examples:
+  $ hackmyagent scan example.com
+  $ hackmyagent scan 192.168.1.100 -p 3000,8080
+  $ hackmyagent scan example.com --verbose
+  $ hackmyagent scan example.com --json`)
   .argument('<target>', 'Target hostname or IP address')
-  .option('--json', 'Output as JSON')
-  .option('-p, --ports <ports>', 'Comma-separated list of ports to scan')
-  .option('-t, --timeout <ms>', 'Timeout in milliseconds', '5000')
-  .option('-v, --verbose', 'Show detailed findings')
+  .option('--json', 'Output as JSON (for scripting/CI)')
+  .option('-p, --ports <ports>', 'Comma-separated ports to scan (default: common MCP ports)')
+  .option('-t, --timeout <ms>', 'Connection timeout in milliseconds', '5000')
+  .option('-v, --verbose', 'Show detailed finding information')
   .action(
     async (
       target: string,
@@ -422,7 +482,14 @@ program
 
 program
   .command('rollback')
-  .description('Rollback auto-fix changes to the most recent backup')
+  .description(`Rollback auto-fix changes to the most recent backup
+
+Restores files to their state before the last --fix operation.
+Backups are stored in .hackmyagent-backup/ with timestamps.
+
+Examples:
+  $ hackmyagent rollback              Rollback current directory
+  $ hackmyagent rollback ./my-project Rollback specific directory`)
   .argument('[directory]', 'Directory to rollback (defaults to current directory)', '.')
   .action(async (directory: string) => {
     try {
