@@ -5,7 +5,15 @@
  */
 
 import { Command } from 'commander';
-import { VERSION, createScanner, checkSkill, type RiskLevel } from '@hackmyagent/core';
+import {
+  VERSION,
+  createScanner,
+  checkSkill,
+  HardeningScanner,
+  type RiskLevel,
+  type Severity,
+  type SecurityFinding,
+} from '@hackmyagent/core';
 
 const program = new Command();
 
@@ -111,18 +119,126 @@ program
     }
   });
 
+// Severity colors and symbols for secure command
+const SEVERITY_DISPLAY: Record<Severity, { symbol: string; color: string }> = {
+  critical: { symbol: '🔴', color: '\x1b[91m' },
+  high: { symbol: '🟠', color: '\x1b[31m' },
+  medium: { symbol: '🟡', color: '\x1b[33m' },
+  low: { symbol: '🟢', color: '\x1b[32m' },
+};
+
+function groupFindingsBySeverity(findings: SecurityFinding[]): Record<Severity, SecurityFinding[]> {
+  const grouped: Record<Severity, SecurityFinding[]> = {
+    critical: [],
+    high: [],
+    medium: [],
+    low: [],
+  };
+
+  for (const finding of findings) {
+    grouped[finding.severity].push(finding);
+  }
+
+  return grouped;
+}
+
 program
-  .command("secure")
-  .description("Apply security hardening to an agent configuration")
-  .argument("<config>", "Path to agent configuration file")
-  .option("-o, --output <path>", "Output path for secured configuration")
-  .action(async (config: string, options: { output?: string }) => {
-    console.log(`Securing configuration: ${config}`);
-    if (options.output) {
-      console.log(`Output will be written to: ${options.output}`);
+  .command('secure')
+  .description('Scan and harden your agent setup')
+  .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
+  .option('--fix', 'Automatically fix issues where possible')
+  .option('--json', 'Output as JSON')
+  .option('-v, --verbose', 'Show all checks including passed ones')
+  .action(async (directory: string, options: { fix?: boolean; json?: boolean; verbose?: boolean }) => {
+    try {
+      const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
+
+      console.log(`\n🔍 Scanning ${targetDir}...\n`);
+
+      const scanner = new HardeningScanner();
+      const result = await scanner.scan({
+        targetDir,
+        autoFix: options.fix ?? false,
+      });
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+
+      // Group findings by severity
+      const failedFindings = result.findings.filter((f) => !f.passed && !f.fixed);
+      const fixedFindings = result.findings.filter((f) => f.fixed);
+      const passedFindings = result.findings.filter((f) => f.passed);
+
+      const grouped = groupFindingsBySeverity(failedFindings);
+
+      // Print header
+      console.log(`Platform: ${result.platform}`);
+      console.log(`Security Score: ${result.score}/${result.maxScore}\n`);
+
+      // Print failed findings by severity
+      let hasIssues = false;
+      for (const severity of ['critical', 'high', 'medium', 'low'] as Severity[]) {
+        const findings = grouped[severity];
+        if (findings.length === 0) continue;
+
+        hasIssues = true;
+        const display = SEVERITY_DISPLAY[severity];
+        console.log(`${display.color}${display.symbol} ${severity.toUpperCase()} (${findings.length})${RESET}`);
+
+        for (const finding of findings) {
+          console.log(`   • [${finding.checkId}] ${finding.name}`);
+          console.log(`     ${finding.message}`);
+          if (finding.fixable && !options.fix) {
+            console.log(`     💡 Auto-fixable with --fix`);
+          }
+        }
+        console.log();
+      }
+
+      // Print fixed findings
+      if (fixedFindings.length > 0) {
+        console.log(`\x1b[32m✅ FIXED (${fixedFindings.length})${RESET}`);
+        for (const finding of fixedFindings) {
+          console.log(`   • [${finding.checkId}] ${finding.name}`);
+          if (finding.fixMessage) {
+            console.log(`     ${finding.fixMessage}`);
+          }
+        }
+        console.log();
+      }
+
+      // Print passed findings in verbose mode
+      if (options.verbose && passedFindings.length > 0) {
+        console.log(`\x1b[32m✅ PASSED (${passedFindings.length})${RESET}`);
+        for (const finding of passedFindings) {
+          console.log(`   • [${finding.checkId}] ${finding.name}`);
+        }
+        console.log();
+      }
+
+      // Summary
+      if (!hasIssues && fixedFindings.length === 0) {
+        console.log(`\x1b[32m✅ No security issues found!${RESET}\n`);
+      } else if (hasIssues && !options.fix) {
+        const fixableCount = failedFindings.filter((f) => f.fixable).length;
+        if (fixableCount > 0) {
+          console.log(`💡 Run with --fix to automatically fix ${fixableCount} issue(s)\n`);
+        }
+      }
+
+      // Exit with non-zero if critical/high issues remain
+      const criticalOrHigh = failedFindings.filter(
+        (f) => f.severity === 'critical' || f.severity === 'high'
+      );
+      if (criticalOrHigh.length > 0) {
+        process.exit(1);
+      }
+    } catch (error) {
+      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      process.exit(1);
     }
-    // Placeholder implementation
-    console.log("Security hardening applied.");
   });
 
 program

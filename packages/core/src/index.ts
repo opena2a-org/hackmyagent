@@ -23,6 +23,12 @@ export type {
   PermissionAnalysis,
 } from './checker';
 
+// Hardening module
+export { HardeningScanner } from './hardening';
+export type { ScanOptions, SecurityFinding, Severity } from './hardening';
+// Note: ScanResult from hardening is different from legacy ScanResult above
+// Import directly from './hardening' if needed
+
 // Legacy scanner (for scan command)
 export interface ScanResult {
   target: string;
