@@ -19,19 +19,43 @@ import {
 
 const program = new Command();
 
+// Check for NO_COLOR env or non-TTY to disable colors by default
+const noColorEnv = process.env.NO_COLOR !== undefined || process.stdout.isTTY === false;
+
+// Color codes - will be cleared if --no-color is passed
+let colors = {
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  red: '\x1b[31m',
+  brightRed: '\x1b[91m',
+  cyan: '\x1b[36m',
+  reset: '\x1b[0m',
+};
+
+if (noColorEnv) {
+  colors = { green: '', yellow: '', red: '', brightRed: '', cyan: '', reset: '' };
+}
+
 program
   .name('hackmyagent')
   .description('Security toolkit for AI agents')
-  .version(VERSION);
+  .version(VERSION)
+  .option('--no-color', 'Disable colored output')
+  .hook('preAction', (thisCommand) => {
+    const opts = thisCommand.opts();
+    if (opts.color === false) {
+      colors = { green: '', yellow: '', red: '', brightRed: '', cyan: '', reset: '' };
+    }
+  });
 
 // Risk level colors and symbols
-const RISK_DISPLAY: Record<RiskLevel, { symbol: string; color: string }> = {
-  low: { symbol: '✅', color: '\x1b[32m' },      // green
-  medium: { symbol: '⚠️', color: '\x1b[33m' },   // yellow
-  high: { symbol: '🔴', color: '\x1b[31m' },     // red
-  critical: { symbol: '🚨', color: '\x1b[91m' }, // bright red
+const RISK_DISPLAY: Record<RiskLevel, { symbol: string; color: () => string }> = {
+  low: { symbol: '✅', color: () => colors.green },
+  medium: { symbol: '⚠️', color: () => colors.yellow },
+  high: { symbol: '🔴', color: () => colors.red },
+  critical: { symbol: '🚨', color: () => colors.brightRed },
 };
-const RESET = '\x1b[0m';
+const RESET = () => colors.reset;
 
 program
   .command('check')
@@ -52,7 +76,7 @@ program
       }
 
       const risk = RISK_DISPLAY[result.risk];
-      console.log(`\n${risk.color}${risk.symbol} ${result.risk.toUpperCase()} RISK${RESET}\n`);
+      console.log(`\n${risk.color()}${risk.symbol} ${result.risk.toUpperCase()} RISK${RESET()}\n`);
 
       // Publisher info
       console.log(`Publisher: @${result.publisher.name}`);
@@ -122,11 +146,11 @@ program
   });
 
 // Severity colors and symbols for secure command
-const SEVERITY_DISPLAY: Record<Severity, { symbol: string; color: string }> = {
-  critical: { symbol: '🔴', color: '\x1b[91m' },
-  high: { symbol: '🟠', color: '\x1b[31m' },
-  medium: { symbol: '🟡', color: '\x1b[33m' },
-  low: { symbol: '🟢', color: '\x1b[32m' },
+const SEVERITY_DISPLAY: Record<Severity, { symbol: string; color: () => string }> = {
+  critical: { symbol: '🔴', color: () => colors.brightRed },
+  high: { symbol: '🟠', color: () => colors.red },
+  medium: { symbol: '🟡', color: () => colors.yellow },
+  low: { symbol: '🟢', color: () => colors.green },
 };
 
 function groupFindingsBySeverity(findings: SecurityFinding[]): Record<Severity, SecurityFinding[]> {
@@ -194,7 +218,7 @@ program
 
         hasIssues = true;
         const display = SEVERITY_DISPLAY[severity];
-        console.log(`${display.color}${display.symbol} ${severity.toUpperCase()} (${findings.length})${RESET}`);
+        console.log(`${display.color()}${display.symbol} ${severity.toUpperCase()} (${findings.length})${RESET()}`);
 
         for (const finding of findings) {
           console.log(`   • [${finding.checkId}] ${finding.name}`);
@@ -208,7 +232,7 @@ program
 
       // Print fixed findings
       if (fixedFindings.length > 0) {
-        console.log(`\x1b[32m✅ FIXED (${fixedFindings.length})${RESET}`);
+        console.log(`${colors.green}✅ FIXED (${fixedFindings.length})${RESET()}`);
         for (const finding of fixedFindings) {
           console.log(`   • [${finding.checkId}] ${finding.name}`);
           if (finding.fixMessage) {
@@ -226,7 +250,7 @@ program
 
       // Print would-fix findings (dry-run mode)
       if (wouldFixFindings.length > 0) {
-        console.log(`\x1b[36m🔮 WOULD FIX (${wouldFixFindings.length})${RESET}`);
+        console.log(`${colors.cyan}🔮 WOULD FIX (${wouldFixFindings.length})${RESET()}`);
         for (const finding of wouldFixFindings) {
           console.log(`   • [${finding.checkId}] ${finding.name}`);
           console.log(`     ${finding.message}`);
@@ -237,7 +261,7 @@ program
 
       // Print passed findings in verbose mode
       if (options.verbose && passedFindings.length > 0) {
-        console.log(`\x1b[32m✅ PASSED (${passedFindings.length})${RESET}`);
+        console.log(`${colors.green}✅ PASSED (${passedFindings.length})${RESET()}`);
         for (const finding of passedFindings) {
           console.log(`   • [${finding.checkId}] ${finding.name}`);
         }
@@ -246,7 +270,7 @@ program
 
       // Summary
       if (!hasIssues && fixedFindings.length === 0) {
-        console.log(`\x1b[32m✅ No security issues found!${RESET}\n`);
+        console.log(`${colors.green}✅ No security issues found!${RESET()}\n`);
       } else if (hasIssues && !options.fix) {
         const fixableCount = failedFindings.filter((f) => f.fixable).length;
         if (fixableCount > 0) {
@@ -268,11 +292,11 @@ program
   });
 
 // Severity display for external scan findings
-const FINDING_SEVERITY_DISPLAY: Record<FindingSeverity, { symbol: string; color: string }> = {
-  critical: { symbol: '🔴', color: '\x1b[91m' },
-  high: { symbol: '🟠', color: '\x1b[31m' },
-  medium: { symbol: '🟡', color: '\x1b[33m' },
-  low: { symbol: '🟢', color: '\x1b[32m' },
+const FINDING_SEVERITY_DISPLAY: Record<FindingSeverity, { symbol: string; color: () => string }> = {
+  critical: { symbol: '🔴', color: () => colors.brightRed },
+  high: { symbol: '🟠', color: () => colors.red },
+  medium: { symbol: '🟡', color: () => colors.yellow },
+  low: { symbol: '🟢', color: () => colors.green },
 };
 
 function groupExternalFindingsBySeverity(
@@ -326,19 +350,19 @@ program
         // Print header
         const gradeColor =
           result.grade === 'A'
-            ? '\x1b[32m'
+            ? colors.green
             : result.grade === 'B'
-              ? '\x1b[32m'
+              ? colors.green
               : result.grade === 'C'
-                ? '\x1b[33m'
-                : '\x1b[31m';
+                ? colors.yellow
+                : colors.red;
         console.log(`Target: ${result.target}`);
-        console.log(`Score: ${gradeColor}${result.score}/100 (${result.grade})${RESET}`);
+        console.log(`Score: ${gradeColor}${result.score}/100 (${result.grade})${RESET()}`);
         console.log(`Open Ports: ${result.openPorts.length > 0 ? result.openPorts.join(', ') : 'None detected'}`);
         console.log(`Duration: ${result.duration}ms\n`);
 
         if (result.findings.length === 0) {
-          console.log(`\x1b[32m✅ No security issues found!${RESET}\n`);
+          console.log(`${colors.green}✅ No security issues found!${RESET()}\n`);
           return;
         }
 
@@ -352,7 +376,7 @@ program
 
           const display = FINDING_SEVERITY_DISPLAY[severity];
           console.log(
-            `${display.color}${display.symbol} ${severity.toUpperCase()} (${findings.length})${RESET}`
+            `${display.color()}${display.symbol} ${severity.toUpperCase()} (${findings.length})${RESET()}`
           );
 
           for (const finding of findings) {
@@ -397,7 +421,7 @@ program
       const scanner = new HardeningScanner();
       await scanner.rollback(targetDir);
 
-      console.log(`\x1b[32m✅ Rollback successful!${RESET}`);
+      console.log(`${colors.green}✅ Rollback successful!${RESET()}`);
       console.log('   All auto-fix changes have been reverted.\n');
     } catch (error) {
       console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
