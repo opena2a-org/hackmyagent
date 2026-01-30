@@ -209,6 +209,12 @@ program
           }
         }
         console.log();
+
+        // Show backup info
+        if (result.backupPath) {
+          console.log(`📦 Backup created: ${result.backupPath}`);
+          console.log(`   Run 'hackmyagent rollback ${directory}' to undo changes\n`);
+        }
       }
 
       // Print passed findings in verbose mode
@@ -359,5 +365,26 @@ program
       }
     }
   );
+
+program
+  .command('rollback')
+  .description('Rollback auto-fix changes to the most recent backup')
+  .argument('[directory]', 'Directory to rollback (defaults to current directory)', '.')
+  .action(async (directory: string) => {
+    try {
+      const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
+
+      console.log(`\n🔄 Rolling back changes in ${targetDir}...\n`);
+
+      const scanner = new HardeningScanner();
+      await scanner.rollback(targetDir);
+
+      console.log(`\x1b[32m✅ Rollback successful!${RESET}`);
+      console.log('   All auto-fix changes have been reverted.\n');
+    } catch (error) {
+      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      process.exit(1);
+    }
+  });
 
 program.parse();

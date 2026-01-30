@@ -48,4 +48,6 @@ export interface ScanResult {
   findings: SecurityFinding[];
   score: number;
   maxScore: number;
+  /** Path to backup directory (only set when autoFix is true) */
+  backupPath?: string;
 }

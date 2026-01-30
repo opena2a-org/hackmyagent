@@ -34,8 +34,32 @@ const SEVERITY_WEIGHTS: Record<Severity, number> = {
 };
 
 export class HardeningScanner {
+  // Files that may be created or modified during auto-fix
+  private static readonly BACKUP_FILES = [
+    'config.json',
+    'config.yaml',
+    'config.yml',
+    'mcp.json',
+    'settings.json',
+    '.env',
+    '.env.local',
+    '.gitignore',
+    '.env.example',
+    'CLAUDE.md',
+    '.cursor/mcp.json',
+    '.vscode/mcp.json',
+    '.claude/settings.json',
+    'package.json',
+  ];
+
   async scan(options: ScanOptions): Promise<ScanResult> {
     const { targetDir, autoFix = false } = options;
+
+    // Create backup before auto-fix
+    let backupPath: string | undefined;
+    if (autoFix) {
+      backupPath = await this.createBackup(targetDir);
+    }
 
     // Detect platform
     const platform = await this.detectPlatform(targetDir);
@@ -144,6 +168,7 @@ export class HardeningScanner {
       findings,
       score,
       maxScore,
+      backupPath,
     };
   }
 
@@ -2484,5 +2509,122 @@ dist/
     const maxScore = 100;
 
     return { score, maxScore };
+  }
+
+  /**
+   * Create a backup of files that may be modified during auto-fix
+   */
+  private async createBackup(targetDir: string): Promise<string> {
+    const timestamp = new Date()
+      .toISOString()
+      .replace(/[T:]/g, '-')
+      .replace(/\..+/, '')
+      .replace(/-/g, (m, i) => (i < 10 ? '-' : ''));
+
+    // Format: YYYY-MM-DD-HHMMSS
+    const formattedTimestamp = new Date()
+      .toISOString()
+      .slice(0, 19)
+      .replace('T', '-')
+      .replace(/:/g, '');
+
+    const backupDir = path.join(targetDir, '.hackmyagent-backup', formattedTimestamp);
+
+    // Create backup directory
+    await fs.mkdir(backupDir, { recursive: true });
+
+    // Create manifest to track what existed before
+    const manifest: { existingFiles: string[]; createdFiles: string[] } = {
+      existingFiles: [],
+      createdFiles: [],
+    };
+
+    // Backup each file that exists
+    for (const file of HardeningScanner.BACKUP_FILES) {
+      const sourcePath = path.join(targetDir, file);
+      try {
+        await fs.access(sourcePath);
+        // File exists, back it up
+        const destPath = path.join(backupDir, file);
+        await fs.mkdir(path.dirname(destPath), { recursive: true });
+        await fs.copyFile(sourcePath, destPath);
+        manifest.existingFiles.push(file);
+      } catch {
+        // File doesn't exist, track it for rollback (may be created)
+        manifest.createdFiles.push(file);
+      }
+    }
+
+    // Save manifest
+    await fs.writeFile(
+      path.join(backupDir, '.manifest.json'),
+      JSON.stringify(manifest, null, 2)
+    );
+
+    return backupDir;
+  }
+
+  /**
+   * Rollback to the most recent backup
+   */
+  async rollback(targetDir: string): Promise<void> {
+    const backupBaseDir = path.join(targetDir, '.hackmyagent-backup');
+
+    // Check if backup directory exists
+    try {
+      await fs.access(backupBaseDir);
+    } catch {
+      throw new Error('No backup found. Cannot rollback.');
+    }
+
+    // Find the most recent backup
+    const backups = await fs.readdir(backupBaseDir);
+    const sortedBackups = backups
+      .filter((b) => !b.startsWith('.'))
+      .sort()
+      .reverse();
+
+    if (sortedBackups.length === 0) {
+      throw new Error('No backup found. Cannot rollback.');
+    }
+
+    const latestBackup = sortedBackups[0];
+    const backupDir = path.join(backupBaseDir, latestBackup);
+
+    // Read manifest
+    let manifest: { existingFiles: string[]; createdFiles: string[] };
+    try {
+      const manifestContent = await fs.readFile(
+        path.join(backupDir, '.manifest.json'),
+        'utf-8'
+      );
+      manifest = JSON.parse(manifestContent);
+    } catch {
+      throw new Error('Backup manifest is corrupted. Cannot rollback.');
+    }
+
+    // Restore existing files from backup
+    for (const file of manifest.existingFiles) {
+      const sourcePath = path.join(backupDir, file);
+      const destPath = path.join(targetDir, file);
+      try {
+        await fs.copyFile(sourcePath, destPath);
+      } catch (err) {
+        // Continue with other files
+      }
+    }
+
+    // Remove files that were created during auto-fix
+    for (const file of manifest.createdFiles) {
+      const filePath = path.join(targetDir, file);
+      try {
+        await fs.unlink(filePath);
+      } catch {
+        // File may not exist, that's OK
+      }
+    }
+
+    // Remove the used backup
+    await fs.rm(backupDir, { recursive: true, force: true });
   }
 }

@@ -1099,3 +1099,176 @@ describe('Platform detection', () => {
     expect(result.platform).toBeDefined();
   });
 });
+
+describe('Backup and rollback', () => {
+  let scanner: HardeningScanner;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    scanner = new HardeningScanner();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-test-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('creates backup before auto-fix', async () => {
+    // Create a config file with exposed credentials
+    const configPath = path.join(tempDir, 'config.json');
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({ apiKey: 'sk-ant-api03-secretkey1234567890' })
+    );
+
+    // Run with auto-fix
+    const result = await scanner.scan({ targetDir: tempDir, autoFix: true });
+
+    // Check backup was created
+    const backupDir = path.join(tempDir, '.hackmyagent-backup');
+    const backupExists = await fs
+      .access(backupDir)
+      .then(() => true)
+      .catch(() => false);
+    expect(backupExists).toBe(true);
+
+    // Check backup contains the original file
+    const backups = await fs.readdir(backupDir);
+    expect(backups.length).toBeGreaterThan(0);
+
+    // Read the backup and verify it has original content
+    const backupContent = await fs.readFile(
+      path.join(backupDir, backups[0], 'config.json'),
+      'utf-8'
+    );
+    expect(backupContent).toContain('sk-ant-api03');
+  });
+
+  it('backup contains timestamp in folder name', async () => {
+    const configPath = path.join(tempDir, 'config.json');
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({ apiKey: 'sk-ant-api03-secretkey1234567890' })
+    );
+
+    await scanner.scan({ targetDir: tempDir, autoFix: true });
+
+    const backupDir = path.join(tempDir, '.hackmyagent-backup');
+    const backups = await fs.readdir(backupDir);
+
+    // Backup folder should have timestamp format: YYYY-MM-DD-HHMMSS
+    expect(backups[0]).toMatch(/^\d{4}-\d{2}-\d{2}-\d{6}$/);
+  });
+
+  it('can rollback to previous state', async () => {
+    const configPath = path.join(tempDir, 'config.json');
+    const originalContent = JSON.stringify({ apiKey: 'sk-ant-api03-secretkey1234567890' });
+    await fs.writeFile(configPath, originalContent);
+
+    // Run with auto-fix (modifies the file)
+    await scanner.scan({ targetDir: tempDir, autoFix: true });
+
+    // Verify file was modified
+    const modifiedContent = await fs.readFile(configPath, 'utf-8');
+    expect(modifiedContent).not.toContain('sk-ant-api03');
+
+    // Rollback
+    await scanner.rollback(tempDir);
+
+    // Verify file is restored
+    const restoredContent = await fs.readFile(configPath, 'utf-8');
+    expect(restoredContent).toBe(originalContent);
+  });
+
+  it('rollback restores multiple files', async () => {
+    // Create multiple files
+    await fs.writeFile(
+      path.join(tempDir, 'config.json'),
+      JSON.stringify({ key: 'sk-ant-api03-secret1' })
+    );
+    await fs.writeFile(
+      path.join(tempDir, 'mcp.json'),
+      JSON.stringify({
+        mcpServers: {
+          test: { env: { API_KEY: 'sk-ant-api03-secret2' } },
+        },
+      })
+    );
+
+    // Run auto-fix
+    await scanner.scan({ targetDir: tempDir, autoFix: true });
+
+    // Rollback
+    await scanner.rollback(tempDir);
+
+    // Check both files restored
+    const config = await fs.readFile(path.join(tempDir, 'config.json'), 'utf-8');
+    const mcp = await fs.readFile(path.join(tempDir, 'mcp.json'), 'utf-8');
+    expect(config).toContain('sk-ant-api03-secret1');
+    expect(mcp).toContain('sk-ant-api03-secret2');
+  });
+
+  it('rollback removes newly created files', async () => {
+    // Create a file with credentials (no .gitignore exists)
+    await fs.writeFile(
+      path.join(tempDir, 'config.json'),
+      JSON.stringify({ key: 'sk-ant-api03-secret' })
+    );
+
+    // Run auto-fix (creates .gitignore and .env.example)
+    await scanner.scan({ targetDir: tempDir, autoFix: true });
+
+    // Verify new files were created
+    const gitignoreExists = await fs
+      .access(path.join(tempDir, '.gitignore'))
+      .then(() => true)
+      .catch(() => false);
+    expect(gitignoreExists).toBe(true);
+
+    // Rollback
+    await scanner.rollback(tempDir);
+
+    // Verify .gitignore is removed (it didn't exist before)
+    const gitignoreAfterRollback = await fs
+      .access(path.join(tempDir, '.gitignore'))
+      .then(() => true)
+      .catch(() => false);
+    expect(gitignoreAfterRollback).toBe(false);
+  });
+
+  it('returns backup path in scan result when autoFix is true', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'config.json'),
+      JSON.stringify({ key: 'sk-ant-api03-secret' })
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir, autoFix: true });
+
+    expect(result.backupPath).toBeDefined();
+    expect(result.backupPath).toContain('.hackmyagent-backup');
+  });
+
+  it('does not create backup when autoFix is false', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'config.json'),
+      JSON.stringify({ key: 'sk-ant-api03-secret' })
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir, autoFix: false });
+
+    expect(result.backupPath).toBeUndefined();
+
+    const backupDir = path.join(tempDir, '.hackmyagent-backup');
+    const backupExists = await fs
+      .access(backupDir)
+      .then(() => true)
+      .catch(() => false);
+    expect(backupExists).toBe(false);
+  });
+
+  it('throws error when no backup exists for rollback', async () => {
+    await expect(scanner.rollback(tempDir)).rejects.toThrow(
+      /no backup found/i
+    );
+  });
+});
