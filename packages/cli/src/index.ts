@@ -29,9 +29,12 @@ program
   .argument('<skill>', 'Skill identifier (e.g., @publisher/skill)')
   .option('-v, --verbose', 'Enable verbose output')
   .option('--json', 'Output as JSON')
-  .action(async (skill: string, options: { verbose?: boolean; json?: boolean }) => {
+  .option('--offline', 'Skip DNS verification (offline mode)')
+  .action(async (skill: string, options: { verbose?: boolean; json?: boolean; offline?: boolean }) => {
     try {
-      const result = await checkSkill(skill);
+      const result = await checkSkill(skill, {
+        skipDnsVerification: options.offline,
+      });
 
       if (options.json) {
         console.log(JSON.stringify(result, null, 2));
@@ -43,9 +46,25 @@ program
 
       // Publisher info
       console.log(`Publisher: @${result.publisher.name}`);
-      console.log(`├─ ${result.publisher.verified ? '✅' : '❌'} ${result.publisher.verified ? 'Verified' : 'Not verified'}`);
-      if (result.publisher.verificationMethod && result.publisher.verificationMethod !== 'none') {
-        console.log(`└─ Method: ${result.publisher.verificationMethod.toUpperCase()}`);
+      if (result.publisher.verified) {
+        console.log(`├─ ✅ Verified via DNS`);
+        if (result.publisher.domain) {
+          console.log(`├─ 🌐 Domain: ${result.publisher.domain}`);
+        }
+        if (result.publisher.verifiedAt && options.verbose) {
+          console.log(`└─ 📅 Verified at: ${result.publisher.verifiedAt.toISOString()}`);
+        } else {
+          console.log(`└─ Method: DNS TXT record`);
+        }
+      } else {
+        console.log(`├─ ❌ Not verified`);
+        if (result.publisher.failureReason && options.verbose) {
+          console.log(`└─ Reason: ${result.publisher.failureReason}`);
+        } else if (options.offline) {
+          console.log(`└─ (DNS verification skipped - offline mode)`);
+        } else {
+          console.log(`└─ No valid DNS TXT record found`);
+        }
       }
       console.log();
 

@@ -5,6 +5,7 @@
 
 import { parseSkillIdentifier } from './skill-identifier';
 import { analyzePermissions } from './permission-analyzer';
+import { verifyPublisher, type VerifyOptions } from './publisher-verifier';
 
 export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
 
@@ -12,7 +13,9 @@ export interface PublisherInfo {
   name: string;
   verified: boolean;
   verificationMethod?: 'dns' | 'github' | 'none';
-  registeredAt?: Date;
+  domain?: string;
+  verifiedAt?: Date;
+  failureReason?: string;
 }
 
 export interface PermissionInfo {
@@ -42,8 +45,13 @@ export interface CheckOptions {
   manifest?: {
     permissions?: string[];
   };
+  /** Skip real DNS verification (for testing) */
   mockVerified?: boolean;
   mockRevoked?: boolean;
+  /** Skip DNS lookup entirely (offline mode) */
+  skipDnsVerification?: boolean;
+  /** Options passed to verifyPublisher */
+  verifyOptions?: VerifyOptions;
 }
 
 export async function checkSkill(
@@ -89,7 +97,7 @@ async function getPublisherInfo(
 ): Promise<PublisherInfo> {
   const name = publisherName ?? 'unknown';
 
-  // Handle mock verification for testing
+  // Handle mock verification for testing (backwards compatible)
   if (options?.mockVerified !== undefined) {
     return {
       name,
@@ -98,15 +106,26 @@ async function getPublisherInfo(
     };
   }
 
-  // Known verified publishers (in production, this would query a registry)
-  const verifiedPublishers = new Set(['opena2a', 'verified']);
+  // Skip DNS verification if requested (offline mode)
+  if (options?.skipDnsVerification) {
+    return {
+      name,
+      verified: false,
+      verificationMethod: 'none',
+      failureReason: 'DNS verification skipped (offline mode)',
+    };
+  }
 
-  const verified = verifiedPublishers.has(name);
+  // Perform real DNS verification
+  const verification = await verifyPublisher(name, options?.verifyOptions);
 
   return {
     name,
-    verified,
-    verificationMethod: verified ? 'dns' : 'none',
+    verified: verification.verified,
+    verificationMethod: verification.method,
+    domain: verification.domain,
+    verifiedAt: verification.verifiedAt,
+    failureReason: verification.failureReason,
   };
 }
 
