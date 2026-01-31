@@ -26,7 +26,7 @@ npx hackmyagent scan example.com            # scan for exposed infrastructure
 AI agents are powerful but introduce new attack surfaces. Skills can be malicious. Configs can leak secrets. MCP servers can be exposed. HackMyAgent helps you:
 
 - **Check** skills before installing (publisher verification, permission analysis)
-- **Secure** your agent setup (100-point CIS-style security scan, auto-remediation)
+- **Secure** your agent setup (100-point CIS security scan, auto-remediation)
 - **Scan** external infrastructure (exposed MCP endpoints, leaked configs)
 
 ## Installation
