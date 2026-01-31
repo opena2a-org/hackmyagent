@@ -57,7 +57,7 @@ Add corresponding tests in `scanner.test.ts`.
 
 ## Reporting Security Issues
 
-For security vulnerabilities, please email security@opena2a.org instead of opening a public issue.
+For security vulnerabilities, please email info@opena2a.org instead of opening a public issue.
 
 ## License
 
