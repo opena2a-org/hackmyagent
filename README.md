@@ -7,6 +7,10 @@
 
 **Website:** [hackmyagent.com](https://hackmyagent.com) — Scan external infrastructure for exposed MCP endpoints, configs, and credentials
 
+## Disclaimer
+
+HackMyAgent performs passive reconnaissance only (port checks and HTTP requests) — it does not exploit vulnerabilities. However, please only scan systems you own or have permission to test. The authors assume no liability for misuse of this tool.
+
 ```bash
 npx hackmyagent check @publisher/skill     # verify a skill before installing
 npx hackmyagent secure                      # harden your agent setup (100 checks)
@@ -107,6 +111,8 @@ hackmyagent check @publisher/skill --offline  # skip DNS verification
 - Publisher identity via DNS TXT records
 - Permissions requested (filesystem, network, shell access)
 - Revocation status against global blocklist
+
+**Note:** Only scan systems you own or have permission to test.
 
 **Risk Levels:** `low`, `medium`, `high`, `critical`
 
