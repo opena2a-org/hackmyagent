@@ -254,4 +254,4 @@ Apache-2.0
 
 ---
 
-**Need enterprise features?** Check out [AIM (Agent Identity Management)](https://github.com/opena2a-org/agent-identity-management) for centralized policy management, compliance, and audit trails.
+**Need enterprise features?** Check out open-source [AIM (Agent Identity Management)](https://github.com/opena2a-org/agent-identity-management) for centralized policy management, compliance, and audit trails.
