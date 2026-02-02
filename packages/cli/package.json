@@ -1,13 +1,14 @@
 {
   "name": "hackmyagent",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Security toolkit for AI agents - verify skills, harden setups, scan for exposures",
   "bin": {
     "hackmyagent": "dist/index.js"
   },
   "main": "dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "scripts": {
     "build": "tsc",
@@ -16,7 +17,7 @@
   },
   "dependencies": {
     "commander": "^12.0.0",
-    "hackmyagent-core": "^0.1.2"
+    "hackmyagent-core": "^0.1.3"
   },
   "devDependencies": {
     "typescript": "^5.3.3"
