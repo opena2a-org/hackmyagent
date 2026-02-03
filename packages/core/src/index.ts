@@ -3,7 +3,7 @@
  * Core library for HackMyAgent security scanning
  */
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.3.0';
 
 // Checker module
 export {
@@ -35,6 +35,53 @@ export type {
   ScannerOptions,
   FindingSeverity,
 } from './scanner';
+
+// Attack module
+export { AttackScanner } from './attack';
+
+export {
+  ATTACK_CATEGORIES,
+  ALL_PAYLOADS,
+  PAYLOAD_STATS,
+  getPayloads,
+  getPayloadById,
+  getPayloadsByCategory,
+  getPayloadsByIntensity,
+} from './attack';
+
+export type {
+  AttackCategory,
+  AttackIntensity,
+  AttackSeverity,
+  AttackPayload,
+  AttackResult,
+  AttackReport,
+  AttackTarget,
+  AttackOptions,
+} from './attack';
+
+// Benchmarks module
+export {
+  OASB_1_CATEGORIES,
+  OASB_1_VERSION,
+  OASB_1_NAME,
+  getControlsForLevel,
+  getControlsForCategory,
+  getCheckIdsForLevel,
+  calculateRating,
+  AVAILABLE_BENCHMARKS,
+  isValidBenchmark,
+} from './benchmarks';
+
+export type {
+  BenchmarkLevel,
+  BenchmarkControl,
+  BenchmarkCategory,
+  BenchmarkResult,
+  BenchmarkCategoryResult,
+  BenchmarkControlResult,
+  BenchmarkName,
+} from './benchmarks';
 
 // Legacy scanner (for scan command)
 export interface ScanResult {

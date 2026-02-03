@@ -16,6 +16,8 @@ npx hackmyagent check @publisher/skill     # verify a skill before installing
 npx hackmyagent secure                      # harden your agent setup (100 checks)
 npx hackmyagent secure --fix                # auto-fix security issues
 npx hackmyagent scan example.com            # scan for exposed infrastructure
+npx hackmyagent attack --local              # red team with 55 attack payloads
+npx hackmyagent benchmark --benchmark oasb-1  # run OASB-1 security benchmark
 ```
 
 ## Two Ways to Scan
@@ -135,6 +137,88 @@ hackmyagent scan example.com --json
 
 **Scoring:** A (90-100), B (80-89), C (70-79), D (60-69), F (<60)
 
+### `hackmyagent attack`
+
+Red team your AI agent with adversarial security testing. 55 attack payloads across 5 categories.
+
+```bash
+# Local simulation (no API calls - test payloads locally)
+hackmyagent attack --local
+hackmyagent attack --local --system-prompt "You are a helpful assistant"
+
+# Test an API endpoint
+hackmyagent attack https://api.example.com/v1/chat
+hackmyagent attack https://api.example.com --api-format anthropic
+
+# Filter by category or intensity
+hackmyagent attack --local --category prompt-injection
+hackmyagent attack --local --intensity aggressive
+
+# Output formats
+hackmyagent attack --local -f json
+hackmyagent attack --local -f sarif -o results.sarif
+
+# Verbose mode (show each payload result)
+hackmyagent attack --local --verbose
+```
+
+**Attack Categories:**
+
+| Category | Payloads | Description |
+|----------|----------|-------------|
+| `prompt-injection` | 12 | Manipulate agent behavior via malicious input |
+| `jailbreak` | 12 | Bypass safety guardrails and restrictions |
+| `data-exfiltration` | 11 | Extract sensitive information from the agent |
+| `capability-abuse` | 10 | Misuse agent tools and capabilities |
+| `context-manipulation` | 10 | Poison agent context or memory |
+
+**Intensity Levels:**
+
+| Level | Description |
+|-------|-------------|
+| `passive` | Observation only, minimal risk |
+| `active` | Standard attack payloads (default) |
+| `aggressive` | Creative/risky payloads, full suite |
+
+**Output Formats:**
+- `text` - Human-readable report (default)
+- `json` - Machine-readable JSON
+- `sarif` - SARIF 2.1.0 for GitHub Security tab integration
+
+**Risk Scoring:**
+- 0-24: LOW - Minor issues, agent is reasonably secure
+- 25-49: MEDIUM - Some vulnerabilities, review recommended
+- 50-69: HIGH - Significant vulnerabilities, action required
+- 70-100: CRITICAL - Severe vulnerabilities, immediate action needed
+
+### `hackmyagent benchmark`
+
+Run the OASB-1 (OpenA2A Security Benchmark) against your agent configuration.
+
+```bash
+# Run benchmark
+hackmyagent benchmark --benchmark oasb-1
+
+# Target specific directory
+hackmyagent benchmark --benchmark oasb-1 ./my-project
+
+# Output formats
+hackmyagent benchmark --benchmark oasb-1 -f json
+hackmyagent benchmark --benchmark oasb-1 -f sarif -o results.sarif
+hackmyagent benchmark --benchmark oasb-1 -f html -o report.html
+hackmyagent benchmark --benchmark oasb-1 -f asp -o profile.asp.json
+
+# CI/CD with fail threshold
+hackmyagent benchmark --benchmark oasb-1 --fail-below 70
+```
+
+**Output Formats:**
+- `text` - Human-readable report (default)
+- `json` - Machine-readable JSON
+- `sarif` - SARIF 2.1.0 for GitHub/IDE integration
+- `html` - Standalone HTML report
+- `asp` - Agent Security Profile (HackMyAgent format)
+
 ### `hackmyagent secure-openclaw`
 
 Scan OpenClaw/Moltbot installations with 34 specialized security checks and auto-remediation.
@@ -207,6 +291,38 @@ jobs:
         with:
           name: security-report
           path: security-report.json
+```
+
+### GitHub Actions with Attack Mode (SARIF)
+
+```yaml
+name: AI Agent Security
+on: [push, pull_request]
+
+jobs:
+  attack-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run attack simulation
+        run: npx hackmyagent attack --local -f sarif -o attack-results.sarif
+      - name: Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: attack-results.sarif
+
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run OASB-1 benchmark
+        run: npx hackmyagent benchmark --benchmark oasb-1 --fail-below 70
 ```
 
 ### Pre-commit Hook
