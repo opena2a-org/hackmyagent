@@ -348,24 +348,40 @@ export class HardeningScanner {
     // OpenClaw detection
     try {
       await fs.access(path.join(targetDir, '.openclaw'));
-      platforms.push('openclaw');
+      if (!platforms.includes('openclaw')) {
+        platforms.push('openclaw');
+      }
     } catch {}
 
     try {
       await fs.access(path.join(targetDir, '.moltbot'));
-      platforms.push('openclaw');
+      if (!platforms.includes('openclaw')) {
+        platforms.push('openclaw');
+      }
     } catch {}
 
     try {
       await fs.access(path.join(targetDir, '.clawdbot'));
-      platforms.push('openclaw');
+      if (!platforms.includes('openclaw')) {
+        platforms.push('openclaw');
+      }
+    } catch {}
+
+    // Check for openclaw.json
+    try {
+      await fs.access(path.join(targetDir, 'openclaw.json'));
+      if (!platforms.includes('openclaw')) {
+        platforms.push('openclaw');
+      }
     } catch {}
 
     // Check for SKILL.md files (OpenClaw skill project)
     try {
       const files = await fs.readdir(targetDir);
       if (files.some(f => f === 'SKILL.md' || f.endsWith('.skill.md'))) {
-        platforms.push('openclaw');
+        if (!platforms.includes('openclaw')) {
+          platforms.push('openclaw');
+        }
       }
     } catch {}
 
@@ -388,6 +404,14 @@ export class HardeningScanner {
         return 'openclaw';
       } catch {}
     }
+
+    // Check for *.skill.md files (OpenClaw skill project)
+    try {
+      const files = await fs.readdir(targetDir);
+      if (files.some(f => f.endsWith('.skill.md'))) {
+        return 'openclaw';
+      }
+    } catch {}
 
     try {
       const pkgPath = path.join(targetDir, 'package.json');

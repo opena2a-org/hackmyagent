@@ -30,6 +30,9 @@ async function setupProjectType(
     case 'cli':
       pkgContent.bin = { 'test-cli': './index.js' };
       break;
+    case 'openclaw':
+      await fs.writeFile(path.join(dir, 'SKILL.md'), '# OpenClaw Skill');
+      break;
     case 'library':
     default:
       pkgContent.main = './index.js';
@@ -959,6 +962,68 @@ describe('Platform detection', () => {
 
     const result = await scanner.scan({ targetDir: tempDir });
     expect(result.platform).toContain('mcp');
+  });
+
+  it('detects OpenClaw platform via .openclaw directory', async () => {
+    await fs.mkdir(path.join(tempDir, '.openclaw'));
+    const result = await scanner.scan({ targetDir: tempDir });
+    expect(result.platform).toContain('openclaw');
+  });
+
+  it('detects OpenClaw platform via .moltbot directory', async () => {
+    await fs.mkdir(path.join(tempDir, '.moltbot'));
+    const result = await scanner.scan({ targetDir: tempDir });
+    expect(result.platform).toContain('openclaw');
+  });
+
+  it('detects OpenClaw platform via .clawdbot directory', async () => {
+    await fs.mkdir(path.join(tempDir, '.clawdbot'));
+    const result = await scanner.scan({ targetDir: tempDir });
+    expect(result.platform).toContain('openclaw');
+  });
+
+  it('detects OpenClaw platform via openclaw.json', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'openclaw.json'),
+      JSON.stringify({ skill: 'test' })
+    );
+    const result = await scanner.scan({ targetDir: tempDir });
+    expect(result.platform).toContain('openclaw');
+  });
+
+  it('detects OpenClaw platform via SKILL.md', async () => {
+    await fs.writeFile(path.join(tempDir, 'SKILL.md'), '# My Skill');
+    const result = await scanner.scan({ targetDir: tempDir });
+    expect(result.platform).toContain('openclaw');
+  });
+
+  it('detects OpenClaw platform via *.skill.md files', async () => {
+    await fs.writeFile(path.join(tempDir, 'myskill.skill.md'), '# My Custom Skill');
+    const result = await scanner.scan({ targetDir: tempDir });
+    expect(result.platform).toContain('openclaw');
+  });
+
+  it('does not add duplicate openclaw entries when multiple indicators exist', async () => {
+    await fs.mkdir(path.join(tempDir, '.openclaw'));
+    await fs.mkdir(path.join(tempDir, '.moltbot'));
+    await fs.writeFile(path.join(tempDir, 'SKILL.md'), '# My Skill');
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    // Count how many times 'openclaw' appears in the platform string
+    const matches = result.platform.match(/openclaw/g);
+    expect(matches?.length ?? 0).toBe(1);
+  });
+
+  it('detects OpenClaw project type from SKILL.md', async () => {
+    await fs.writeFile(path.join(tempDir, 'SKILL.md'), '# My Skill');
+    const result = await scanner.scan({ targetDir: tempDir });
+    expect(result.projectType).toBe('openclaw');
+  });
+
+  it('detects OpenClaw project type from *.skill.md files', async () => {
+    await fs.writeFile(path.join(tempDir, 'custom.skill.md'), '# Custom Skill');
+    const result = await scanner.scan({ targetDir: tempDir });
+    expect(result.projectType).toBe('openclaw');
   });
 
   it('returns generic for unknown platform', async () => {
