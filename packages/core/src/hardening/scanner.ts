@@ -4278,8 +4278,185 @@ dist/
           }
         }
       }
+
+      // SKILL-007: ClickFix Social Engineering
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        for (const pattern of SKILL_CLICKFIX_PATTERNS) {
+          pattern.lastIndex = 0;
+          if (pattern.test(line)) {
+            findings.push({
+              checkId: 'SKILL-007',
+              name: 'ClickFix Social Engineering',
+              description: 'Skill uses social engineering tactics to trick users into running commands',
+              category: 'skill',
+              severity: 'critical',
+              passed: false,
+              message: `ClickFix social engineering pattern detected: "${line.trim().substring(0, 80)}..."`,
+              file: relativePath,
+              line: i + 1,
+              fixable: false,
+              fix: 'Remove social engineering instructions that trick users into copying/pasting commands',
+            });
+            break; // One finding per line per check
+          }
+        }
+      }
+
+      // SKILL-008: Reverse Shell Pattern
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        for (const pattern of SKILL_REVERSE_SHELL_PATTERNS) {
+          pattern.lastIndex = 0;
+          if (pattern.test(line)) {
+            findings.push({
+              checkId: 'SKILL-008',
+              name: 'Reverse Shell Pattern',
+              description: 'Skill contains patterns commonly used to establish reverse shells',
+              category: 'skill',
+              severity: 'critical',
+              passed: false,
+              message: `Reverse shell pattern detected: "${line.trim().substring(0, 80)}..."`,
+              file: relativePath,
+              line: i + 1,
+              fixable: false,
+              fix: 'Remove netcat, bash -i, /dev/tcp, and other reverse shell patterns',
+            });
+            break; // One finding per line per check
+          }
+        }
+      }
+
+      // SKILL-009: Typosquatting Name
+      const popularSkills = [
+        'filesystem',
+        'github',
+        'slack',
+        'discord',
+        'postgres',
+        'sqlite',
+        'fetch',
+        'browser',
+        'puppeteer',
+        'playwright',
+      ];
+      const skillBasename = path.basename(skillFile, path.extname(skillFile)).toLowerCase();
+      for (const popular of popularSkills) {
+        if (skillBasename !== popular && this.levenshteinDistance(skillBasename, popular) <= 2) {
+          findings.push({
+            checkId: 'SKILL-009',
+            name: 'Typosquatting Name',
+            description: 'Skill name is suspiciously similar to a popular skill (potential typosquatting)',
+            category: 'skill',
+            severity: 'high',
+            passed: false,
+            message: `Skill name "${skillBasename}" is similar to popular skill "${popular}" (potential typosquatting)`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Rename the skill to avoid confusion with popular skills, or verify this is intentional',
+          });
+          break; // One typosquatting finding per skill file
+        }
+      }
+
+      // SKILL-010: Env File Exfiltration
+      const envFilePattern = /\.env|dotenv|process\.env|environ|getenv/gi;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        envFilePattern.lastIndex = 0;
+        if (envFilePattern.test(line)) {
+          findings.push({
+            checkId: 'SKILL-010',
+            name: 'Env File Exfiltration',
+            description: 'Skill attempts to access environment files or variables',
+            category: 'skill',
+            severity: 'critical',
+            passed: false,
+            message: `Environment file/variable access detected: "${line.trim().substring(0, 80)}..."`,
+            file: relativePath,
+            line: i + 1,
+            fixable: false,
+            fix: 'Skills should not access .env files or environment variables containing secrets',
+          });
+        }
+      }
+
+      // SKILL-011: Browser Data Access
+      const browserDataPattern = /chrome|firefox|cookies|localStorage|sessionStorage|browser.*data|chromium|safari.*cookies/gi;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        browserDataPattern.lastIndex = 0;
+        if (browserDataPattern.test(line)) {
+          findings.push({
+            checkId: 'SKILL-011',
+            name: 'Browser Data Access',
+            description: 'Skill attempts to access browser data, cookies, or local storage',
+            category: 'skill',
+            severity: 'critical',
+            passed: false,
+            message: `Browser data access pattern detected: "${line.trim().substring(0, 80)}..."`,
+            file: relativePath,
+            line: i + 1,
+            fixable: false,
+            fix: 'Skills should not access browser data, cookies, localStorage, or sessionStorage',
+          });
+        }
+      }
+
+      // SKILL-012: Crypto Wallet Access
+      const cryptoWalletPattern = /wallet|solana|phantom|metamask|ledger|seed\s*phrase|mnemonic|\.sol\b|\.eth\b|private\s*key/gi;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        cryptoWalletPattern.lastIndex = 0;
+        if (cryptoWalletPattern.test(line)) {
+          findings.push({
+            checkId: 'SKILL-012',
+            name: 'Crypto Wallet Access',
+            description: 'Skill attempts to access cryptocurrency wallets or seed phrases',
+            category: 'skill',
+            severity: 'critical',
+            passed: false,
+            message: `Crypto wallet access pattern detected: "${line.trim().substring(0, 80)}..."`,
+            file: relativePath,
+            line: i + 1,
+            fixable: false,
+            fix: 'Skills should never access cryptocurrency wallets, seed phrases, or private keys',
+          });
+        }
+      }
     }
 
     return findings;
+  }
+
+  /**
+   * Calculate Levenshtein distance between two strings
+   */
+  private levenshteinDistance(a: string, b: string): number {
+    const matrix: number[][] = [];
+
+    for (let i = 0; i <= b.length; i++) {
+      matrix[i] = [i];
+    }
+
+    for (let j = 0; j <= a.length; j++) {
+      matrix[0][j] = j;
+    }
+
+    for (let i = 1; i <= b.length; i++) {
+      for (let j = 1; j <= a.length; j++) {
+        if (b.charAt(i - 1) === a.charAt(j - 1)) {
+          matrix[i][j] = matrix[i - 1][j - 1];
+        } else {
+          matrix[i][j] = Math.min(
+            matrix[i - 1][j - 1] + 1,
+            matrix[i][j - 1] + 1,
+            matrix[i - 1][j] + 1
+          );
+        }
+      }
+    }
+
+    return matrix[b.length][a.length];
   }
 }
