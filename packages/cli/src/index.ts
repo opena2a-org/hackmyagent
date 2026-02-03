@@ -512,18 +512,33 @@ function generateHtmlReport(result: BenchmarkResult): string {
   const radarCenter = 120;
   const radarRadius = 90;
 
+  // Category name abbreviations for radar chart labels
+  const categoryAbbreviations: Record<string, string> = {
+    'Identity & Provenance': 'Identity',
+    'Capability & Authorization': 'Capability',
+    'Input Security': 'Input',
+    'Output Security': 'Output',
+    'Credential Protection': 'Credentials',
+    'Supply Chain Integrity': 'Supply Chain',
+    'Agent-to-Agent Security': 'A2A Security',
+    'Memory & Context Integrity': 'Memory',
+    'Operational Security': 'Operations',
+    'Monitoring & Response': 'Monitoring',
+  };
+
   radarCategories.forEach((cat, i) => {
     const angle = (Math.PI * 2 * i) / radarCategories.length - Math.PI / 2;
-    const value = cat.compliance / 100;
+    // Use minimum 5% so 0% categories still show on the chart edge (not at center)
+    const value = Math.max(0.05, cat.compliance / 100);
     const x = radarCenter + Math.cos(angle) * radarRadius * value;
     const y = radarCenter + Math.sin(angle) * radarRadius * value;
     radarPoints.push(`${x},${y}`);
 
     // Label position (slightly outside)
-    const labelX = radarCenter + Math.cos(angle) * (radarRadius + 25);
-    const labelY = radarCenter + Math.sin(angle) * (radarRadius + 25);
-    const shortName = cat.category.split(' ').slice(0, 2).join(' ');
-    radarLabels.push(`<text x="${labelX}" y="${labelY}" text-anchor="middle" dominant-baseline="middle" fill="#94a3b8" font-size="9">${escapeHtml(shortName)}</text>`);
+    const labelX = radarCenter + Math.cos(angle) * (radarRadius + 20);
+    const labelY = radarCenter + Math.sin(angle) * (radarRadius + 20);
+    const shortName = categoryAbbreviations[cat.category] || cat.category.split(' ')[0];
+    radarLabels.push(`<text x="${labelX}" y="${labelY}" text-anchor="middle" dominant-baseline="middle" fill="#94a3b8" font-size="10" font-weight="500">${escapeHtml(shortName)}</text>`);
   });
 
   // Generate radar grid lines
@@ -545,10 +560,44 @@ function generateHtmlReport(result: BenchmarkResult): string {
     return `<line x1="${radarCenter}" y1="${radarCenter}" x2="${x}" y2="${y}" stroke="#334155" stroke-width="1"/>`;
   }).join('');
 
-  // Collect all failed controls for executive summary
-  const failedControls = result.categories.flatMap(cat =>
-    cat.controls.filter(ctrl => ctrl.status === 'failed')
-  );
+  // Collect all controls for statistics
+  const allControls = result.categories.flatMap(cat => cat.controls);
+  const failedControls = allControls.filter(ctrl => ctrl.status === 'failed');
+  const passedControls = allControls.filter(ctrl => ctrl.status === 'passed');
+  const unverifiedControls = allControls.filter(ctrl => ctrl.status === 'unverified');
+
+  // Level breakdown stats
+  const levelStats = {
+    L1: { passed: 0, failed: 0, total: 0 },
+    L2: { passed: 0, failed: 0, total: 0 },
+    L3: { passed: 0, failed: 0, total: 0 },
+  };
+  allControls.forEach(ctrl => {
+    const lvl = ctrl.level as 'L1' | 'L2' | 'L3';
+    if (levelStats[lvl]) {
+      levelStats[lvl].total++;
+      if (ctrl.status === 'passed') levelStats[lvl].passed++;
+      if (ctrl.status === 'failed') levelStats[lvl].failed++;
+    }
+  });
+
+  // Find worst category
+  const worstCategory = result.categories
+    .filter(cat => cat.passed + cat.failed > 0)
+    .sort((a, b) => a.compliance - b.compliance)[0];
+
+  // Security grade based on compliance
+  const getGrade = (pct: number) => {
+    if (pct >= 95) return { letter: 'A+', color: '#22c55e' };
+    if (pct >= 90) return { letter: 'A', color: '#22c55e' };
+    if (pct >= 85) return { letter: 'B+', color: '#84cc16' };
+    if (pct >= 80) return { letter: 'B', color: '#84cc16' };
+    if (pct >= 75) return { letter: 'C+', color: '#eab308' };
+    if (pct >= 70) return { letter: 'C', color: '#eab308' };
+    if (pct >= 60) return { letter: 'D', color: '#f97316' };
+    return { letter: 'F', color: '#ef4444' };
+  };
+  const grade = getGrade(result.compliance);
 
   // Generate executive summary items
   const executiveSummary = failedControls.length === 0
@@ -557,13 +606,25 @@ function generateHtmlReport(result: BenchmarkResult): string {
         `<div class="exec-item critical"><span class="exec-icon">!</span><span><strong>${ctrl.controlId}</strong>: ${escapeHtml(ctrl.name)}</span></div>`
       ).join('') + (failedControls.length > 5 ? `<div class="exec-item warning"><span class="exec-icon">+</span><span>${failedControls.length - 5} more issues not shown</span></div>` : '');
 
+  // SVG icons for professional look (no emojis)
+  const icons = {
+    check: '<svg class="icon icon-check" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>',
+    x: '<svg class="icon icon-x" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>',
+    warning: '<svg class="icon icon-warning" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>',
+    circle: '<svg class="icon icon-circle" viewBox="0 0 20 20" fill="currentColor"><circle cx="10" cy="10" r="4"/></svg>',
+    shield: '<svg class="icon icon-shield" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 1.944A11.954 11.954 0 012.166 5C2.056 5.649 2 6.319 2 7c0 5.225 3.34 9.67 8 11.317C14.66 16.67 18 12.225 18 7c0-.682-.057-1.35-.166-2A11.954 11.954 0 0110 1.944zM11 14a1 1 0 11-2 0 1 1 0 012 0zm0-7a1 1 0 10-2 0v3a1 1 0 102 0V7z" clip-rule="evenodd"/></svg>',
+    print: '<svg class="icon icon-print" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 4v3H4a2 2 0 00-2 2v3a2 2 0 002 2h1v2a2 2 0 002 2h6a2 2 0 002-2v-2h1a2 2 0 002-2V9a2 2 0 00-2-2h-1V4a2 2 0 00-2-2H7a2 2 0 00-2 2zm8 0H7v3h6V4zm0 8H7v4h6v-4z" clip-rule="evenodd"/></svg>',
+  };
+
   // Category rows with collapsible sections
   const categoryRows = result.categories.map((cat, catIndex) => {
-    const statusIcon = cat.failed === 0 ? '✅' : cat.passed > 0 ? '⚠️' : '❌';
+    const statusIcon = cat.failed === 0 ? icons.check : cat.passed > 0 ? icons.warning : icons.x;
+    const statusClass = cat.failed === 0 ? 'status-pass' : cat.passed > 0 ? 'status-warn' : 'status-fail';
     const barColor = cat.compliance >= 90 ? '#22c55e' : cat.compliance >= 70 ? '#eab308' : '#ef4444';
 
     const controlRows = cat.controls.map(ctrl => {
-      const statusEmoji = ctrl.status === 'passed' ? '✅' : ctrl.status === 'failed' ? '❌' : '⚪';
+      const statusSvg = ctrl.status === 'passed' ? icons.check : ctrl.status === 'failed' ? icons.x : icons.circle;
+      const ctrlStatusClass = ctrl.status === 'passed' ? 'status-pass' : ctrl.status === 'failed' ? 'status-fail' : 'status-unverified';
       const findingsList = ctrl.findings.length > 0
         ? `<ul class="findings">${ctrl.findings.map(f => `<li>${escapeHtml(f)}</li>`).join('')}</ul>`
         : '';
@@ -572,7 +633,7 @@ function generateHtmlReport(result: BenchmarkResult): string {
         : '';
       return `
         <tr class="control-row ${ctrl.status}">
-          <td class="status-cell">${statusEmoji}</td>
+          <td class="status-cell"><span class="${ctrlStatusClass}">${statusSvg}</span></td>
           <td class="id-cell"><code>${ctrl.controlId}</code></td>
           <td class="name-cell">${escapeHtml(ctrl.name)}</td>
           <td class="level-cell"><span class="level-badge level-${ctrl.level.toLowerCase()}">${ctrl.level}</span></td>
@@ -583,7 +644,7 @@ function generateHtmlReport(result: BenchmarkResult): string {
     return `
       <div class="category" id="cat-${catIndex}">
         <div class="category-header" onclick="toggleCategory(${catIndex})">
-          <span class="category-icon">${statusIcon}</span>
+          <span class="category-icon ${statusClass}">${statusIcon}</span>
           <span class="category-name">${escapeHtml(cat.category)}</span>
           <div class="category-meta">
             <span class="category-score">${cat.passed}/${cat.passed + cat.failed}</span>
@@ -658,27 +719,38 @@ function generateHtmlReport(result: BenchmarkResult): string {
       gap: 0.75rem;
     }
     .header-left .meta { color: var(--text-muted); font-size: 0.8rem; margin-top: 0.25rem; }
-    .header-right { text-align: right; }
+    .header-icon { display: inline-flex; margin-right: 0.5rem; }
+    .header-icon .icon { width: 24px; height: 24px; color: var(--accent); }
+    .header-right { display: flex; align-items: center; gap: 1rem; }
     .rating-badge {
       display: inline-block;
-      padding: 0.5rem 1.25rem;
-      border-radius: 8px;
-      font-weight: 700;
-      font-size: 1.1rem;
+      padding: 0.375rem 1rem;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 0.875rem;
       background: ${ratingBg};
       color: ${ratingColor};
       border: 1px solid ${ratingColor}40;
     }
     .level-tag {
       display: inline-block;
-      margin-top: 0.5rem;
-      padding: 0.25rem 0.75rem;
+      padding: 0.375rem 1rem;
       background: var(--accent);
       color: white;
-      border-radius: 4px;
-      font-size: 0.75rem;
+      border-radius: 6px;
+      font-size: 0.875rem;
       font-weight: 600;
     }
+
+    /* SVG Icons */
+    .icon { width: 16px; height: 16px; display: inline-block; vertical-align: middle; }
+    .status-pass { color: var(--success); }
+    .status-fail { color: var(--danger); }
+    .status-warn { color: var(--warning); }
+    .status-unverified { color: var(--text-muted); }
+    .category-icon { display: flex; align-items: center; }
+    .category-icon .icon { width: 18px; height: 18px; }
+    .footer-btn .icon { width: 14px; height: 14px; margin-right: 0.375rem; }
 
     /* Dashboard grid */
     .dashboard {
@@ -696,45 +768,73 @@ function generateHtmlReport(result: BenchmarkResult): string {
       .radar-section { grid-column: span 1; }
     }
 
-    /* Donut chart card */
-    .donut-card {
+    /* Score card - Prowler style */
+    .score-card {
       background: var(--bg-secondary);
       border-radius: 12px;
-      padding: 1.5rem;
+      padding: 1.25rem;
       border: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
-      align-items: center;
     }
-    .donut-card h3 {
-      font-size: 0.85rem;
-      color: var(--text-secondary);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
+    .score-header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1.25rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .score-grade {
+      width: 56px;
+      height: 56px;
+      border-radius: 12px;
+      border: 2px solid;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .grade-letter { font-size: 1.75rem; font-weight: 800; }
+    .score-main { flex: 1; }
+    .score-pct { font-size: 2rem; font-weight: 700; color: var(--text-primary); line-height: 1; }
+    .score-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }
+
+    .score-bars { margin-bottom: 1rem; }
+    .score-bar-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.5rem;
+    }
+    .bar-label { width: 50px; font-size: 0.75rem; color: var(--text-secondary); }
+    .bar-track { flex: 1; height: 8px; background: var(--bg-tertiary); border-radius: 4px; overflow: hidden; }
+    .bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+    .bar-pass { background: var(--success); }
+    .bar-fail { background: var(--danger); }
+    .bar-manual { background: var(--text-muted); }
+    .bar-count { width: 24px; font-size: 0.8rem; font-weight: 600; text-align: right; color: var(--text-primary); }
+
+    .level-breakdown {
+      display: flex;
+      gap: 0.75rem;
+      padding: 0.75rem;
+      background: var(--bg-tertiary);
+      border-radius: 8px;
       margin-bottom: 1rem;
     }
-    .donut-container { position: relative; }
-    .donut-center {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      text-align: center;
-    }
-    .donut-center .value { font-size: 2.5rem; font-weight: 700; color: ${complianceColor}; }
-    .donut-center .label { font-size: 0.75rem; color: var(--text-muted); }
-    .donut-stats {
+    .level-row { display: flex; align-items: center; gap: 0.375rem; }
+    .level-stat { font-size: 0.8rem; color: var(--text-secondary); }
+
+    .worst-category {
       display: flex;
-      gap: 2rem;
-      margin-top: 1rem;
-      padding-top: 1rem;
-      border-top: 1px solid var(--border);
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.625rem 0.75rem;
+      background: rgba(239, 68, 68, 0.1);
+      border-radius: 6px;
+      border-left: 3px solid var(--danger);
     }
-    .donut-stat { text-align: center; }
-    .donut-stat .num { font-size: 1.5rem; font-weight: 600; }
-    .donut-stat .lbl { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; }
-    .donut-stat.passed .num { color: var(--success); }
-    .donut-stat.failed .num { color: var(--danger); }
+    .worst-label { font-size: 0.7rem; color: var(--danger); text-transform: uppercase; font-weight: 600; }
+    .worst-name { flex: 1; font-size: 0.8rem; color: var(--text-primary); }
+    .worst-pct { font-size: 0.85rem; font-weight: 700; }
 
     /* Radar chart */
     .radar-section {
@@ -959,7 +1059,7 @@ function generateHtmlReport(result: BenchmarkResult): string {
   <div class="container">
     <header class="header">
       <div class="header-left">
-        <h1>🛡️ ${escapeHtml(result.benchmark)}</h1>
+        <h1><span class="header-icon">${icons.shield}</span>${escapeHtml(result.benchmark)}</h1>
         <div class="meta">Version ${result.version} • Generated ${new Date(result.timestamp).toLocaleString()}</div>
       </div>
       <div class="header-right">
@@ -969,31 +1069,62 @@ function generateHtmlReport(result: BenchmarkResult): string {
     </header>
 
     <div class="dashboard">
-      <div class="donut-card">
-        <h3>Compliance Score</h3>
-        <div class="donut-container">
-          <svg width="180" height="180" viewBox="0 0 180 180">
-            <circle cx="90" cy="90" r="${donutRadius}" fill="none" stroke="#334155" stroke-width="${donutStroke}"/>
-            <circle cx="90" cy="90" r="${donutRadius}" fill="none" stroke="${complianceColor}" stroke-width="${donutStroke}"
-              stroke-dasharray="${donutCircumference}" stroke-dashoffset="${donutOffset}"
-              stroke-linecap="round" transform="rotate(-90 90 90)"
-              style="transition: stroke-dashoffset 0.5s ease;"/>
-          </svg>
-          <div class="donut-center">
-            <div class="value">${result.compliance}%</div>
-            <div class="label">Compliant</div>
+      <div class="score-card">
+        <div class="score-header">
+          <div class="score-grade" style="background: ${grade.color}20; border-color: ${grade.color};">
+            <span class="grade-letter" style="color: ${grade.color};">${grade.letter}</span>
+          </div>
+          <div class="score-main">
+            <div class="score-pct">${result.compliance}%</div>
+            <div class="score-label">Security Score</div>
           </div>
         </div>
-        <div class="donut-stats">
-          <div class="donut-stat passed">
-            <div class="num">${result.passedControls}</div>
-            <div class="lbl">Passed</div>
+
+        <div class="score-bars">
+          <div class="score-bar-row">
+            <span class="bar-label">Passed</span>
+            <div class="bar-track">
+              <div class="bar-fill bar-pass" style="width: ${allControls.length ? (passedControls.length / allControls.length * 100) : 0}%;"></div>
+            </div>
+            <span class="bar-count">${passedControls.length}</span>
           </div>
-          <div class="donut-stat failed">
-            <div class="num">${result.failedControls}</div>
-            <div class="lbl">Failed</div>
+          <div class="score-bar-row">
+            <span class="bar-label">Failed</span>
+            <div class="bar-track">
+              <div class="bar-fill bar-fail" style="width: ${allControls.length ? (failedControls.length / allControls.length * 100) : 0}%;"></div>
+            </div>
+            <span class="bar-count">${failedControls.length}</span>
+          </div>
+          <div class="score-bar-row">
+            <span class="bar-label">Manual</span>
+            <div class="bar-track">
+              <div class="bar-fill bar-manual" style="width: ${allControls.length ? (unverifiedControls.length / allControls.length * 100) : 0}%;"></div>
+            </div>
+            <span class="bar-count">${unverifiedControls.length}</span>
           </div>
         </div>
+
+        <div class="level-breakdown">
+          <div class="level-row">
+            <span class="level-badge level-l1">L1</span>
+            <span class="level-stat">${levelStats.L1.passed}/${levelStats.L1.total}</span>
+          </div>
+          <div class="level-row">
+            <span class="level-badge level-l2">L2</span>
+            <span class="level-stat">${levelStats.L2.passed}/${levelStats.L2.total}</span>
+          </div>
+          <div class="level-row">
+            <span class="level-badge level-l3">L3</span>
+            <span class="level-stat">${levelStats.L3.passed}/${levelStats.L3.total}</span>
+          </div>
+        </div>
+
+        ${worstCategory && worstCategory.compliance < 100 ? `
+        <div class="worst-category">
+          <span class="worst-label">Needs Attention</span>
+          <span class="worst-name">${escapeHtml(worstCategory.category)}</span>
+          <span class="worst-pct" style="color: ${worstCategory.compliance < 50 ? '#ef4444' : '#eab308'};">${worstCategory.compliance}%</span>
+        </div>` : ''}
       </div>
 
       <div class="radar-section">
@@ -1030,7 +1161,7 @@ function generateHtmlReport(result: BenchmarkResult): string {
         <a href="https://oasb.ai">OASB-1 Specification</a>
       </div>
       <div class="footer-actions">
-        <button class="footer-btn" onclick="window.print()">🖨️ Print / PDF</button>
+        <button class="footer-btn" onclick="window.print()">${icons.print} Print / PDF</button>
       </div>
     </footer>
   </div>
