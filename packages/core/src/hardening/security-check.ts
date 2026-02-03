@@ -67,7 +67,10 @@ export interface ScanResult {
   platform: string;
   /** Detected project type */
   projectType: ProjectType;
+  /** Filtered findings (failed checks with file paths) - for CLI display */
   findings: SecurityFinding[];
+  /** All findings including passed checks - for benchmark evaluation */
+  allFindings?: SecurityFinding[];
   score: number;
   maxScore: number;
   /** Path to backup directory (only set when autoFix is true and not dryRun) */

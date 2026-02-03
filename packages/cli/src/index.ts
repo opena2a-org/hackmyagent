@@ -276,25 +276,34 @@ function generateBenchmarkReport(
       remediation = control.remediation;
     } else {
       // Check all mapped check IDs
-      let allPassed = true;
+      let hasAnyFinding = false;
+      let hasFailure = false;
       for (const checkId of control.checkIds) {
         const finding = findingsByCheckId.get(checkId);
-        if (finding && !finding.passed) {
-          allPassed = false;
-          relatedFindings.push(`${checkId}: ${finding.description}`);
-          if (finding.fix) {
-            remediation = remediation || finding.fix;
+        if (finding) {
+          hasAnyFinding = true;
+          if (!finding.passed) {
+            hasFailure = true;
+            relatedFindings.push(`${checkId}: ${finding.description}`);
+            if (finding.fix) {
+              remediation = remediation || finding.fix;
+            }
           }
         }
       }
-      if (allPassed) {
-        status = 'passed';
-        passedCount++;
-      } else {
+      // Only mark as passed if we actually verified something
+      // Missing findings = unverified (not passed)
+      if (!hasAnyFinding) {
+        status = 'unverified';
+        unverifiedCount++;
+        remediation = control.remediation;
+      } else if (hasFailure) {
         status = 'failed';
         failedCount++;
-        // Fallback to control's remediation if no finding-specific fix
         remediation = remediation || control.remediation;
+      } else {
+        status = 'passed';
+        passedCount++;
       }
     }
 
@@ -872,8 +881,9 @@ Examples:
 
       // Benchmark mode - output compliance report
       if (options.benchmark) {
+        // Use allFindings (unfiltered) for accurate benchmark evaluation
         const benchmarkResult = generateBenchmarkReport(
-          result.findings,
+          result.allFindings || result.findings,
           level,
           options.category
         );

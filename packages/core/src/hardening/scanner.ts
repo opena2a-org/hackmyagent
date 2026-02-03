@@ -418,6 +418,7 @@ export class HardeningScanner {
       platform,
       projectType,
       findings: filteredFindings,
+      allFindings: findings, // Include unfiltered findings for benchmark evaluation
       score,
       maxScore,
       backupPath,
