@@ -179,6 +179,9 @@ const SEVERITY_WEIGHTS: Record<Severity, number> = {
   low: 3,
 };
 
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB max file size to prevent memory exhaustion
+const MAX_LINE_LENGTH = 10000; // 10KB max line length for regex safety
+
 export class HardeningScanner {
   // Files that may be created or modified during auto-fix
   private static readonly BACKUP_FILES = [
@@ -197,6 +200,15 @@ export class HardeningScanner {
     '.claude/settings.json',
     'package.json',
   ];
+
+  /**
+   * Validate that a file path is within the target directory (no path traversal)
+   */
+  private isPathWithinDirectory(filePath: string, directory: string): boolean {
+    const normalizedFile = path.resolve(filePath);
+    const normalizedDir = path.resolve(directory);
+    return normalizedFile.startsWith(normalizedDir + path.sep) || normalizedFile === normalizedDir;
+  }
 
   async scan(options: ScanOptions): Promise<ScanResult> {
     const { targetDir, autoFix = false, dryRun = false, ignore = [] } = options;
@@ -4099,18 +4111,29 @@ dist/
    * Recursively find SKILL.md and *.skill.md files
    * Skips node_modules and limits depth to 5
    */
-  private async findSkillFiles(dir: string, depth: number = 0): Promise<string[]> {
+  private async findSkillFiles(dir: string, depth: number = 0, rootDir?: string): Promise<string[]> {
     if (depth > 5) {
       return [];
     }
 
+    const baseDir = rootDir || dir;
     const skillFiles: string[] = [];
 
     try {
       const entries = await fs.readdir(dir, { withFileTypes: true });
 
       for (const entry of entries) {
+        // Skip symlinks to prevent path traversal
+        if (entry.isSymbolicLink()) {
+          continue;
+        }
+
         const fullPath = path.join(dir, entry.name);
+
+        // Validate path is within directory (no path traversal)
+        if (!this.isPathWithinDirectory(fullPath, baseDir)) {
+          continue;
+        }
 
         if (entry.isDirectory()) {
           // Skip node_modules and hidden directories (except .openclaw, .moltbot, .clawdbot)
@@ -4120,7 +4143,7 @@ dist/
             continue;
           }
 
-          const subFiles = await this.findSkillFiles(fullPath, depth + 1);
+          const subFiles = await this.findSkillFiles(fullPath, depth + 1, baseDir);
           skillFiles.push(...subFiles);
         } else if (entry.isFile()) {
           // Match SKILL.md or *.skill.md
@@ -4151,12 +4174,30 @@ dist/
 
       let content: string;
       try {
+        const stats = await fs.stat(skillFile);
+        if (stats.size > MAX_FILE_SIZE) {
+          findings.push({
+            checkId: 'SCAN-001',
+            name: 'Oversized File',
+            description: 'File exceeds maximum scan size',
+            category: 'scan',
+            severity: 'medium',
+            passed: false,
+            message: `File ${relativePath} is ${Math.round(stats.size / 1024 / 1024)}MB - skipped (max ${MAX_FILE_SIZE / 1024 / 1024}MB)`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Reduce file size or exclude from scan',
+          });
+          continue;
+        }
         content = await fs.readFile(skillFile, 'utf-8');
       } catch {
         continue;
       }
 
-      const lines = content.split('\n');
+      const lines = content.split('\n').map(line =>
+        line.length > MAX_LINE_LENGTH ? line.substring(0, MAX_LINE_LENGTH) : line
+      );
 
       // SKILL-001: Unsigned Skill
       const hasSignature =
@@ -4449,18 +4490,29 @@ dist/
    * Recursively find HEARTBEAT.md and *.heartbeat.md files
    * Skips node_modules and limits depth to 5
    */
-  private async findHeartbeatFiles(dir: string, depth: number = 0): Promise<string[]> {
+  private async findHeartbeatFiles(dir: string, depth: number = 0, rootDir?: string): Promise<string[]> {
     if (depth > 5) {
       return [];
     }
 
+    const baseDir = rootDir || dir;
     const heartbeatFiles: string[] = [];
 
     try {
       const entries = await fs.readdir(dir, { withFileTypes: true });
 
       for (const entry of entries) {
+        // Skip symlinks to prevent path traversal
+        if (entry.isSymbolicLink()) {
+          continue;
+        }
+
         const fullPath = path.join(dir, entry.name);
+
+        // Validate path is within directory (no path traversal)
+        if (!this.isPathWithinDirectory(fullPath, baseDir)) {
+          continue;
+        }
 
         if (entry.isDirectory()) {
           // Skip node_modules and hidden directories (except .openclaw, .moltbot, .clawdbot)
@@ -4470,7 +4522,7 @@ dist/
             continue;
           }
 
-          const subFiles = await this.findHeartbeatFiles(fullPath, depth + 1);
+          const subFiles = await this.findHeartbeatFiles(fullPath, depth + 1, baseDir);
           heartbeatFiles.push(...subFiles);
         } else if (entry.isFile()) {
           // Match HEARTBEAT.md or *.heartbeat.md
@@ -4501,12 +4553,30 @@ dist/
 
       let content: string;
       try {
+        const stats = await fs.stat(heartbeatFile);
+        if (stats.size > MAX_FILE_SIZE) {
+          findings.push({
+            checkId: 'SCAN-001',
+            name: 'Oversized File',
+            description: 'File exceeds maximum scan size',
+            category: 'scan',
+            severity: 'medium',
+            passed: false,
+            message: `File ${relativePath} is ${Math.round(stats.size / 1024 / 1024)}MB - skipped (max ${MAX_FILE_SIZE / 1024 / 1024}MB)`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Reduce file size or exclude from scan',
+          });
+          continue;
+        }
         content = await fs.readFile(heartbeatFile, 'utf-8');
       } catch {
         continue;
       }
 
-      const lines = content.split('\n');
+      const lines = content.split('\n').map(line =>
+        line.length > MAX_LINE_LENGTH ? line.substring(0, MAX_LINE_LENGTH) : line
+      );
 
       // HEARTBEAT-001: Unverified Heartbeat URL
       const urlPattern = /https?:\/\/[^\s]+/gi;
@@ -4673,6 +4743,15 @@ dist/
     for (const candidate of candidates) {
       const fullPath = path.join(dir, candidate);
       try {
+        // Validate path is within directory (no path traversal)
+        if (!this.isPathWithinDirectory(fullPath, dir)) {
+          continue;
+        }
+        // Check if it's a symlink
+        const stats = await fs.lstat(fullPath);
+        if (stats.isSymbolicLink()) {
+          continue; // Skip symlinks to prevent path traversal
+        }
         await fs.access(fullPath);
         configFiles.push(fullPath);
       } catch {
@@ -4699,6 +4778,22 @@ dist/
       let content: string;
       let config: Record<string, unknown>;
       try {
+        const stats = await fs.stat(configFile);
+        if (stats.size > MAX_FILE_SIZE) {
+          findings.push({
+            checkId: 'SCAN-001',
+            name: 'Oversized File',
+            description: 'File exceeds maximum scan size',
+            category: 'scan',
+            severity: 'medium',
+            passed: false,
+            message: `File ${relativePath} is ${Math.round(stats.size / 1024 / 1024)}MB - skipped (max ${MAX_FILE_SIZE / 1024 / 1024}MB)`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Reduce file size or exclude from scan',
+          });
+          continue;
+        }
         content = await fs.readFile(configFile, 'utf-8');
         config = JSON.parse(content);
       } catch {
@@ -4879,15 +4974,26 @@ dist/
     const scanDir = async (dir: string, currentDepth: number): Promise<void> => {
       if (currentDepth > maxDepth) return;
 
-      let entries: string[];
+      let entries;
       try {
-        entries = await fs.readdir(dir);
+        entries = await fs.readdir(dir, { withFileTypes: true });
       } catch {
         return;
       }
 
-      for (const entryName of entries) {
+      for (const entry of entries) {
+        // Skip symlinks to prevent path traversal
+        if (entry.isSymbolicLink()) {
+          continue;
+        }
+
+        const entryName = entry.name;
         const fullPath = path.join(dir, entryName);
+
+        // Validate path is within directory (no path traversal)
+        if (!this.isPathWithinDirectory(fullPath, targetDir)) {
+          continue;
+        }
 
         // Skip node_modules and .git directories
         if (entryName === 'node_modules' || entryName === '.git') {
@@ -4960,6 +5066,22 @@ dist/
       const relativePath = path.relative(targetDir, soulFile);
       let content: string;
       try {
+        const stats = await fs.stat(soulFile);
+        if (stats.size > MAX_FILE_SIZE) {
+          findings.push({
+            checkId: 'SCAN-001',
+            name: 'Oversized File',
+            description: 'File exceeds maximum scan size',
+            category: 'scan',
+            severity: 'medium',
+            passed: false,
+            message: `File ${relativePath} is ${Math.round(stats.size / 1024 / 1024)}MB - skipped (max ${MAX_FILE_SIZE / 1024 / 1024}MB)`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Reduce file size or exclude from scan',
+          });
+          continue;
+        }
         content = await fs.readFile(soulFile, 'utf-8');
       } catch {
         continue;
@@ -4993,6 +5115,22 @@ dist/
       const relativePath = path.relative(targetDir, daemonFile);
       let content: string;
       try {
+        const stats = await fs.stat(daemonFile);
+        if (stats.size > MAX_FILE_SIZE) {
+          findings.push({
+            checkId: 'SCAN-001',
+            name: 'Oversized File',
+            description: 'File exceeds maximum scan size',
+            category: 'scan',
+            severity: 'medium',
+            passed: false,
+            message: `File ${relativePath} is ${Math.round(stats.size / 1024 / 1024)}MB - skipped (max ${MAX_FILE_SIZE / 1024 / 1024}MB)`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Reduce file size or exclude from scan',
+          });
+          continue;
+        }
         content = await fs.readFile(daemonFile, 'utf-8');
       } catch {
         continue;
@@ -5024,6 +5162,22 @@ dist/
       const relativePath = path.relative(targetDir, envFile);
       let content: string;
       try {
+        const stats = await fs.stat(envFile);
+        if (stats.size > MAX_FILE_SIZE) {
+          findings.push({
+            checkId: 'SCAN-001',
+            name: 'Oversized File',
+            description: 'File exceeds maximum scan size',
+            category: 'scan',
+            severity: 'medium',
+            passed: false,
+            message: `File ${relativePath} is ${Math.round(stats.size / 1024 / 1024)}MB - skipped (max ${MAX_FILE_SIZE / 1024 / 1024}MB)`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Reduce file size or exclude from scan',
+          });
+          continue;
+        }
         content = await fs.readFile(envFile, 'utf-8');
       } catch {
         continue;
@@ -5061,6 +5215,22 @@ dist/
       const relativePath = path.relative(targetDir, memoryFile);
       let content: string;
       try {
+        const stats = await fs.stat(memoryFile);
+        if (stats.size > MAX_FILE_SIZE) {
+          findings.push({
+            checkId: 'SCAN-001',
+            name: 'Oversized File',
+            description: 'File exceeds maximum scan size',
+            category: 'scan',
+            severity: 'medium',
+            passed: false,
+            message: `File ${relativePath} is ${Math.round(stats.size / 1024 / 1024)}MB - skipped (max ${MAX_FILE_SIZE / 1024 / 1024}MB)`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Reduce file size or exclude from scan',
+          });
+          continue;
+        }
         content = await fs.readFile(memoryFile, 'utf-8');
       } catch {
         continue;
@@ -5092,6 +5262,22 @@ dist/
       const relativePath = path.relative(targetDir, configFile);
       let config: Record<string, unknown>;
       try {
+        const stats = await fs.stat(configFile);
+        if (stats.size > MAX_FILE_SIZE) {
+          findings.push({
+            checkId: 'SCAN-001',
+            name: 'Oversized File',
+            description: 'File exceeds maximum scan size',
+            category: 'scan',
+            severity: 'medium',
+            passed: false,
+            message: `File ${relativePath} is ${Math.round(stats.size / 1024 / 1024)}MB - skipped (max ${MAX_FILE_SIZE / 1024 / 1024}MB)`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Reduce file size or exclude from scan',
+          });
+          continue;
+        }
         const content = await fs.readFile(configFile, 'utf-8');
         config = JSON.parse(content);
       } catch {
@@ -5144,6 +5330,22 @@ dist/
 
       let content: string;
       try {
+        const stats = await fs.stat(skillFile);
+        if (stats.size > MAX_FILE_SIZE) {
+          findings.push({
+            checkId: 'SCAN-001',
+            name: 'Oversized File',
+            description: 'File exceeds maximum scan size',
+            category: 'scan',
+            severity: 'medium',
+            passed: false,
+            message: `File ${relativePath} is ${Math.round(stats.size / 1024 / 1024)}MB - skipped (max ${MAX_FILE_SIZE / 1024 / 1024}MB)`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Reduce file size or exclude from scan',
+          });
+          continue;
+        }
         content = await fs.readFile(skillFile, 'utf-8');
       } catch {
         continue;
