@@ -135,6 +135,37 @@ hackmyagent scan example.com --json
 
 **Scoring:** A (90-100), B (80-89), C (70-79), D (60-69), F (<60)
 
+### `hackmyagent secure-openclaw`
+
+Scan OpenClaw/Moltbot installations with 34 specialized security checks.
+
+```bash
+hackmyagent secure-openclaw              # scan default location
+hackmyagent secure-openclaw ~/.moltbot   # scan specific directory
+hackmyagent secure-openclaw --fix        # auto-fix issues
+hackmyagent secure-openclaw --json       # JSON output for CI/CD
+```
+
+**Detects:**
+- Unsigned/malicious skills (ClawHavoc campaign patterns)
+- ClickFix social engineering attacks
+- Reverse shell backdoors
+- Credential exfiltration (wallets, SSH keys, API keys)
+- Heartbeat/cron abuse
+- Gateway misconfigurations (GHSA-g8p2 vulnerability)
+- Disabled sandbox/approval confirmations
+
+**Check Categories:**
+| Category | Checks | Description |
+|----------|--------|-------------|
+| SKILL | 12 | Malicious skill detection |
+| HEARTBEAT | 6 | Heartbeat/cron abuse |
+| GATEWAY | 6 | Gateway misconfigurations |
+| CONFIG | 6 | Insecure settings |
+| SUPPLY | 4 | Supply chain attacks |
+
+See [SECURITY_CHECKS.md](docs/SECURITY_CHECKS.md#openclaw-security-checks) for full documentation.
+
 ### `hackmyagent rollback`
 
 Undo auto-fix changes.

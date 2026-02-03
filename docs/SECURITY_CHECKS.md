@@ -384,6 +384,115 @@ HackMyAgent performs 100 security checks across 24 categories. This document pro
 
 ---
 
+## OpenClaw Security Checks
+
+OpenClaw (Moltbot) is a popular AI agent framework. HackMyAgent includes 34 specialized security checks targeting OpenClaw-specific attack vectors, including the ClawHavoc malware campaign and GHSA-g8p2-7wf7-98mq vulnerability.
+
+### Usage
+
+```bash
+hackmyagent secure-openclaw              # Scan default ~/.moltbot location
+hackmyagent secure-openclaw ~/.moltbot   # Scan specific directory
+hackmyagent secure-openclaw --fix        # Auto-fix issues
+hackmyagent secure-openclaw --json       # JSON output for CI/CD
+```
+
+### SKILL Checks (SKILL-001 to SKILL-012)
+
+Detects malicious skills, including patterns from the ClawHavoc campaign.
+
+| Check ID | Severity | Fixable | Description |
+|----------|----------|---------|-------------|
+| SKILL-001 | Critical | No | Unsigned skill detected — skill lacks cryptographic signature |
+| SKILL-002 | Critical | No | Invalid signature — skill signature fails verification |
+| SKILL-003 | Critical | No | Revoked skill — skill is on global blocklist |
+| SKILL-004 | Critical | No | Reverse shell detected — skill contains nc/bash reverse shell patterns |
+| SKILL-005 | Critical | No | Credential exfiltration — skill accesses wallet/SSH keys/API keys |
+| SKILL-006 | High | No | Network exfiltration — skill sends data to external endpoints |
+| SKILL-007 | High | No | Obfuscated code — skill contains base64/hex encoded payloads |
+| SKILL-008 | High | No | ClickFix pattern — skill uses clipboard manipulation for social engineering |
+| SKILL-009 | Medium | Yes | Excessive permissions — skill requests more permissions than needed |
+| SKILL-010 | Medium | No | Untrusted publisher — skill from unverified publisher |
+| SKILL-011 | High | No | Persistence mechanism — skill installs cron/launchd/systemd entries |
+| SKILL-012 | Critical | No | ClawHavoc signature — matches known ClawHavoc malware patterns |
+
+**ClawHavoc Campaign:** A malware campaign targeting OpenClaw users through malicious skills distributed via unofficial channels. Skills contain reverse shells, credential stealers, and persistence mechanisms.
+
+**ClickFix Attacks:** Social engineering technique where malicious skills manipulate clipboard contents to trick users into executing harmful commands.
+
+### HEARTBEAT Checks (HEARTBEAT-001 to HEARTBEAT-006)
+
+Detects heartbeat/cron abuse and persistence mechanisms.
+
+| Check ID | Severity | Fixable | Description |
+|----------|----------|---------|-------------|
+| HEARTBEAT-001 | Critical | Yes | Unauthorized heartbeat — heartbeat configured without user consent |
+| HEARTBEAT-002 | High | No | Excessive frequency — heartbeat interval under 60 seconds |
+| HEARTBEAT-003 | High | No | External heartbeat URL — heartbeat sends data outside localhost |
+| HEARTBEAT-004 | Medium | Yes | Missing heartbeat auth — heartbeat endpoint lacks authentication |
+| HEARTBEAT-005 | High | No | Heartbeat data exfil — heartbeat payload contains sensitive data |
+| HEARTBEAT-006 | Critical | No | Cron backdoor — heartbeat registered malicious cron entries |
+
+### GATEWAY Checks (GATEWAY-001 to GATEWAY-006)
+
+Detects gateway misconfigurations related to GHSA-g8p2-7wf7-98mq and other vulnerabilities.
+
+| Check ID | Severity | Fixable | Description |
+|----------|----------|---------|-------------|
+| GATEWAY-001 | Critical | Yes | GHSA-g8p2 vulnerable — gateway allows unauthenticated skill installation |
+| GATEWAY-002 | Critical | Yes | Open gateway port — gateway bound to 0.0.0.0 instead of 127.0.0.1 |
+| GATEWAY-003 | High | Yes | Missing gateway auth — gateway lacks API key or token auth |
+| GATEWAY-004 | High | No | Permissive CORS — gateway allows requests from any origin |
+| GATEWAY-005 | Medium | Yes | Insecure transport — gateway uses HTTP instead of HTTPS |
+| GATEWAY-006 | High | No | Gateway path traversal — gateway allows ../ in skill paths |
+
+**CVE Reference:** [GHSA-g8p2-7wf7-98mq](https://github.com/advisories/GHSA-g8p2-7wf7-98mq) — Remote skill installation vulnerability allowing attackers to install arbitrary skills without authentication.
+
+### CONFIG Checks (CONFIG-001 to CONFIG-006)
+
+Detects insecure configuration settings.
+
+| Check ID | Severity | Fixable | Description |
+|----------|----------|---------|-------------|
+| CONFIG-001 | Critical | Yes | Sandbox disabled — skill sandbox protection is disabled |
+| CONFIG-002 | Critical | Yes | Approval disabled — skill execution approval prompts are disabled |
+| CONFIG-003 | High | Yes | Debug mode enabled — debug mode exposes sensitive information |
+| CONFIG-004 | High | No | Hardcoded secrets — API keys in configuration files |
+| CONFIG-005 | Medium | Yes | Permissive file access — skills can access files outside project |
+| CONFIG-006 | Medium | Yes | Missing skill allowlist — no explicit skill whitelist configured |
+
+### SUPPLY Checks (SUPPLY-001 to SUPPLY-004)
+
+Detects supply chain attack vectors.
+
+| Check ID | Severity | Fixable | Description |
+|----------|----------|---------|-------------|
+| SUPPLY-001 | Critical | No | Unofficial skill source — skills installed from untrusted registries |
+| SUPPLY-002 | High | No | Typosquatting detected — skill name similar to popular skill |
+| SUPPLY-003 | High | No | Dependency confusion — skill loads dependencies from public registry |
+| SUPPLY-004 | Medium | No | Missing lockfile — skill dependencies not pinned to specific versions |
+
+### Auto-Fix Capabilities
+
+The following OpenClaw checks can be automatically fixed:
+
+| Check ID | Auto-Fix Action |
+|----------|-----------------|
+| SKILL-009 | Reduce skill permissions to minimum required |
+| HEARTBEAT-001 | Remove unauthorized heartbeat configuration |
+| HEARTBEAT-004 | Add authentication to heartbeat endpoint |
+| GATEWAY-001 | Patch GHSA-g8p2 vulnerability |
+| GATEWAY-002 | Bind gateway to 127.0.0.1 |
+| GATEWAY-003 | Enable API key authentication |
+| GATEWAY-005 | Configure HTTPS transport |
+| CONFIG-001 | Enable sandbox protection |
+| CONFIG-002 | Enable approval prompts |
+| CONFIG-003 | Disable debug mode |
+| CONFIG-005 | Restrict file access to project directory |
+| CONFIG-006 | Generate skill allowlist from installed skills |
+
+---
+
 ## Check ID Format
 
 Check IDs follow the pattern: `CATEGORY-NNN`
