@@ -488,11 +488,78 @@ function generateHtmlReport(result: BenchmarkResult): string {
     'Passing': '#eab308',
     'Needs Improvement': '#f97316',
     'Failing': '#ef4444',
-  }[result.rating];
+  }[result.rating] || '#94a3b8';
 
-  const categoryRows = result.categories.map(cat => {
+  const ratingBg = {
+    'Certified': 'rgba(34, 197, 94, 0.15)',
+    'Compliant': 'rgba(34, 197, 94, 0.15)',
+    'Passing': 'rgba(234, 179, 8, 0.15)',
+    'Needs Improvement': 'rgba(249, 115, 22, 0.15)',
+    'Failing': 'rgba(239, 68, 68, 0.15)',
+  }[result.rating] || 'rgba(148, 163, 184, 0.15)';
+
+  // Generate donut chart SVG
+  const donutRadius = 70;
+  const donutStroke = 14;
+  const donutCircumference = 2 * Math.PI * donutRadius;
+  const donutOffset = donutCircumference * (1 - result.compliance / 100);
+  const complianceColor = result.compliance >= 90 ? '#22c55e' : result.compliance >= 70 ? '#eab308' : '#ef4444';
+
+  // Generate radar chart data points
+  const radarCategories = result.categories.slice(0, 10); // Max 10 for radar
+  const radarPoints: string[] = [];
+  const radarLabels: string[] = [];
+  const radarCenter = 120;
+  const radarRadius = 90;
+
+  radarCategories.forEach((cat, i) => {
+    const angle = (Math.PI * 2 * i) / radarCategories.length - Math.PI / 2;
+    const value = cat.compliance / 100;
+    const x = radarCenter + Math.cos(angle) * radarRadius * value;
+    const y = radarCenter + Math.sin(angle) * radarRadius * value;
+    radarPoints.push(`${x},${y}`);
+
+    // Label position (slightly outside)
+    const labelX = radarCenter + Math.cos(angle) * (radarRadius + 25);
+    const labelY = radarCenter + Math.sin(angle) * (radarRadius + 25);
+    const shortName = cat.category.split(' ').slice(0, 2).join(' ');
+    radarLabels.push(`<text x="${labelX}" y="${labelY}" text-anchor="middle" dominant-baseline="middle" fill="#94a3b8" font-size="9">${escapeHtml(shortName)}</text>`);
+  });
+
+  // Generate radar grid lines
+  const radarGrid = [0.25, 0.5, 0.75, 1].map(scale => {
+    const points = radarCategories.map((_, i) => {
+      const angle = (Math.PI * 2 * i) / radarCategories.length - Math.PI / 2;
+      const x = radarCenter + Math.cos(angle) * radarRadius * scale;
+      const y = radarCenter + Math.sin(angle) * radarRadius * scale;
+      return `${x},${y}`;
+    }).join(' ');
+    return `<polygon points="${points}" fill="none" stroke="#334155" stroke-width="1"/>`;
+  }).join('');
+
+  // Radar axis lines
+  const radarAxes = radarCategories.map((_, i) => {
+    const angle = (Math.PI * 2 * i) / radarCategories.length - Math.PI / 2;
+    const x = radarCenter + Math.cos(angle) * radarRadius;
+    const y = radarCenter + Math.sin(angle) * radarRadius;
+    return `<line x1="${radarCenter}" y1="${radarCenter}" x2="${x}" y2="${y}" stroke="#334155" stroke-width="1"/>`;
+  }).join('');
+
+  // Collect all failed controls for executive summary
+  const failedControls = result.categories.flatMap(cat =>
+    cat.controls.filter(ctrl => ctrl.status === 'failed')
+  );
+
+  // Generate executive summary items
+  const executiveSummary = failedControls.length === 0
+    ? '<div class="exec-item success"><span class="exec-icon">✓</span><span>All controls passing at this level</span></div>'
+    : failedControls.slice(0, 5).map(ctrl =>
+        `<div class="exec-item critical"><span class="exec-icon">!</span><span><strong>${ctrl.controlId}</strong>: ${escapeHtml(ctrl.name)}</span></div>`
+      ).join('') + (failedControls.length > 5 ? `<div class="exec-item warning"><span class="exec-icon">+</span><span>${failedControls.length - 5} more issues not shown</span></div>` : '');
+
+  // Category rows with collapsible sections
+  const categoryRows = result.categories.map((cat, catIndex) => {
     const statusIcon = cat.failed === 0 ? '✅' : cat.passed > 0 ? '⚠️' : '❌';
-    const barWidth = cat.compliance;
     const barColor = cat.compliance >= 90 ? '#22c55e' : cat.compliance >= 70 ? '#eab308' : '#ef4444';
 
     const controlRows = cat.controls.map(ctrl => {
@@ -501,107 +568,498 @@ function generateHtmlReport(result: BenchmarkResult): string {
         ? `<ul class="findings">${ctrl.findings.map(f => `<li>${escapeHtml(f)}</li>`).join('')}</ul>`
         : '';
       const remediation = ctrl.remediation
-        ? `<div class="remediation"><strong>Fix:</strong> ${escapeHtml(ctrl.remediation)}</div>`
+        ? `<div class="remediation"><strong>Remediation:</strong> ${escapeHtml(ctrl.remediation)}</div>`
         : '';
       return `
         <tr class="control-row ${ctrl.status}">
-          <td>${statusEmoji}</td>
-          <td>${ctrl.controlId}</td>
-          <td>${escapeHtml(ctrl.name)}</td>
-          <td><span class="level-badge level-${ctrl.level.toLowerCase()}">${ctrl.level}</span></td>
-          <td>${findingsList}${remediation}</td>
+          <td class="status-cell">${statusEmoji}</td>
+          <td class="id-cell"><code>${ctrl.controlId}</code></td>
+          <td class="name-cell">${escapeHtml(ctrl.name)}</td>
+          <td class="level-cell"><span class="level-badge level-${ctrl.level.toLowerCase()}">${ctrl.level}</span></td>
+          <td class="details-cell">${findingsList}${remediation}</td>
         </tr>`;
     }).join('');
 
     return `
-      <div class="category">
-        <div class="category-header">
+      <div class="category" id="cat-${catIndex}">
+        <div class="category-header" onclick="toggleCategory(${catIndex})">
           <span class="category-icon">${statusIcon}</span>
           <span class="category-name">${escapeHtml(cat.category)}</span>
-          <span class="category-score">${cat.passed}/${cat.passed + cat.failed} (${cat.compliance}%)</span>
+          <div class="category-meta">
+            <span class="category-score">${cat.passed}/${cat.passed + cat.failed}</span>
+            <div class="mini-bar"><div class="mini-fill" style="width: ${cat.compliance}%; background: ${barColor};"></div></div>
+            <span class="category-percent">${cat.compliance}%</span>
+            <span class="chevron">▼</span>
+          </div>
         </div>
-        <div class="progress-bar">
-          <div class="progress-fill" style="width: ${barWidth}%; background: ${barColor};"></div>
+        <div class="category-content">
+          <table class="controls-table">
+            <thead><tr><th></th><th>Control ID</th><th>Control Name</th><th>Level</th><th>Details</th></tr></thead>
+            <tbody>${controlRows}</tbody>
+          </table>
         </div>
-        <table class="controls-table">
-          <thead><tr><th></th><th>ID</th><th>Control</th><th>Level</th><th>Details</th></tr></thead>
-          <tbody>${controlRows}</tbody>
-        </table>
       </div>`;
   }).join('');
+
+  // Level description
+  const levelDesc = {
+    'L1': 'Essential baseline security every agent should implement',
+    'L2': 'Defense-in-depth for production systems',
+    'L3': 'Maximum security for high-risk or regulated environments'
+  }[result.level] || '';
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OASB-1 Compliance Report</title>
+  <title>OASB-1 Compliance Report | ${result.rating}</title>
   <style>
+    :root {
+      --bg-primary: #0a0f1a;
+      --bg-secondary: #111827;
+      --bg-tertiary: #1f2937;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --border: #334155;
+      --accent: #3b82f6;
+      --success: #22c55e;
+      --warning: #eab308;
+      --danger: #ef4444;
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; line-height: 1.6; padding: 2rem; }
-    .container { max-width: 1200px; margin: 0 auto; }
-    .header { text-align: center; margin-bottom: 2rem; padding: 2rem; background: #1e293b; border-radius: 12px; }
-    .header h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
-    .header .version { color: #94a3b8; font-size: 0.875rem; }
-    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
-    .summary-card { background: #1e293b; padding: 1.5rem; border-radius: 8px; text-align: center; }
-    .summary-card .value { font-size: 2rem; font-weight: bold; }
-    .summary-card .label { color: #94a3b8; font-size: 0.875rem; }
-    .rating { color: ${ratingColor}; }
-    .category { background: #1e293b; border-radius: 8px; margin-bottom: 1rem; overflow: hidden; }
-    .category-header { display: flex; align-items: center; gap: 0.75rem; padding: 1rem; font-weight: 600; }
-    .category-icon { font-size: 1.25rem; }
-    .category-name { flex: 1; }
-    .category-score { color: #94a3b8; }
-    .progress-bar { height: 4px; background: #334155; }
-    .progress-fill { height: 100%; transition: width 0.3s; }
-    .controls-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
-    .controls-table th, .controls-table td { padding: 0.75rem 1rem; text-align: left; border-top: 1px solid #334155; }
-    .controls-table th { background: #0f172a; color: #94a3b8; font-weight: 500; }
-    .control-row.failed { background: rgba(239, 68, 68, 0.1); }
-    .control-row.unverified { opacity: 0.6; }
-    .level-badge { padding: 0.125rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+    body {
+      font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      padding: 2rem;
+      font-size: 14px;
+    }
+    .container { max-width: 1400px; margin: 0 auto; }
+
+    /* Header */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 2rem;
+      padding: 1.5rem 2rem;
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+    .header-left h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .header-left .meta { color: var(--text-muted); font-size: 0.8rem; margin-top: 0.25rem; }
+    .header-right { text-align: right; }
+    .rating-badge {
+      display: inline-block;
+      padding: 0.5rem 1.25rem;
+      border-radius: 8px;
+      font-weight: 700;
+      font-size: 1.1rem;
+      background: ${ratingBg};
+      color: ${ratingColor};
+      border: 1px solid ${ratingColor}40;
+    }
+    .level-tag {
+      display: inline-block;
+      margin-top: 0.5rem;
+      padding: 0.25rem 0.75rem;
+      background: var(--accent);
+      color: white;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    /* Dashboard grid */
+    .dashboard {
+      display: grid;
+      grid-template-columns: 280px 1fr 300px;
+      gap: 1.5rem;
+      margin-bottom: 2rem;
+    }
+    @media (max-width: 1200px) {
+      .dashboard { grid-template-columns: 1fr 1fr; }
+      .radar-section { grid-column: span 2; }
+    }
+    @media (max-width: 768px) {
+      .dashboard { grid-template-columns: 1fr; }
+      .radar-section { grid-column: span 1; }
+    }
+
+    /* Donut chart card */
+    .donut-card {
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      padding: 1.5rem;
+      border: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .donut-card h3 {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 1rem;
+    }
+    .donut-container { position: relative; }
+    .donut-center {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+    }
+    .donut-center .value { font-size: 2.5rem; font-weight: 700; color: ${complianceColor}; }
+    .donut-center .label { font-size: 0.75rem; color: var(--text-muted); }
+    .donut-stats {
+      display: flex;
+      gap: 2rem;
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+    }
+    .donut-stat { text-align: center; }
+    .donut-stat .num { font-size: 1.5rem; font-weight: 600; }
+    .donut-stat .lbl { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; }
+    .donut-stat.passed .num { color: var(--success); }
+    .donut-stat.failed .num { color: var(--danger); }
+
+    /* Radar chart */
+    .radar-section {
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      padding: 1.5rem;
+      border: 1px solid var(--border);
+    }
+    .radar-section h3 {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 1rem;
+    }
+    .radar-container { display: flex; justify-content: center; }
+
+    /* Executive summary */
+    .exec-section {
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      padding: 1.5rem;
+      border: 1px solid var(--border);
+    }
+    .exec-section h3 {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 1rem;
+    }
+    .exec-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+      padding: 0.75rem;
+      margin-bottom: 0.5rem;
+      border-radius: 6px;
+      font-size: 0.85rem;
+    }
+    .exec-item.critical { background: rgba(239, 68, 68, 0.1); border-left: 3px solid var(--danger); }
+    .exec-item.warning { background: rgba(234, 179, 8, 0.1); border-left: 3px solid var(--warning); }
+    .exec-item.success { background: rgba(34, 197, 94, 0.1); border-left: 3px solid var(--success); }
+    .exec-icon {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.75rem;
+      flex-shrink: 0;
+    }
+    .exec-item.critical .exec-icon { background: var(--danger); color: white; }
+    .exec-item.warning .exec-icon { background: var(--warning); color: black; }
+    .exec-item.success .exec-icon { background: var(--success); color: white; }
+
+    /* Categories */
+    .categories-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+    .categories-header h2 { font-size: 1.1rem; }
+    .expand-all {
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.8rem;
+    }
+    .expand-all:hover { background: var(--border); }
+
+    .category {
+      background: var(--bg-secondary);
+      border-radius: 8px;
+      margin-bottom: 0.75rem;
+      border: 1px solid var(--border);
+      overflow: hidden;
+    }
+    .category-header {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 1rem 1.25rem;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .category-header:hover { background: var(--bg-tertiary); }
+    .category-icon { font-size: 1.1rem; }
+    .category-name { flex: 1; font-weight: 500; }
+    .category-meta { display: flex; align-items: center; gap: 0.75rem; }
+    .category-score { color: var(--text-secondary); font-size: 0.85rem; font-weight: 500; }
+    .mini-bar { width: 60px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+    .mini-fill { height: 100%; border-radius: 3px; }
+    .category-percent { color: var(--text-muted); font-size: 0.85rem; width: 40px; text-align: right; }
+    .chevron {
+      color: var(--text-muted);
+      font-size: 0.7rem;
+      transition: transform 0.2s;
+      margin-left: 0.5rem;
+    }
+    .category.collapsed .chevron { transform: rotate(-90deg); }
+    .category.collapsed .category-content { display: none; }
+
+    .category-content { border-top: 1px solid var(--border); }
+    .controls-table { width: 100%; border-collapse: collapse; }
+    .controls-table th {
+      padding: 0.75rem 1rem;
+      text-align: left;
+      background: var(--bg-primary);
+      color: var(--text-muted);
+      font-weight: 500;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .controls-table td {
+      padding: 0.875rem 1rem;
+      border-top: 1px solid var(--border);
+      vertical-align: top;
+    }
+    .status-cell { width: 40px; text-align: center; }
+    .id-cell { width: 100px; }
+    .id-cell code {
+      background: var(--bg-tertiary);
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      color: var(--accent);
+    }
+    .name-cell { width: 30%; }
+    .level-cell { width: 60px; }
+    .details-cell { color: var(--text-secondary); font-size: 0.85rem; }
+    .control-row.failed { background: rgba(239, 68, 68, 0.05); }
+    .control-row.unverified { opacity: 0.5; }
+
+    .level-badge {
+      padding: 0.2rem 0.6rem;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
     .level-l1 { background: #7c3aed; color: white; }
     .level-l2 { background: #2563eb; color: white; }
     .level-l3 { background: #059669; color: white; }
-    .findings { margin: 0.5rem 0; padding-left: 1.25rem; color: #f87171; }
-    .remediation { margin-top: 0.5rem; padding: 0.5rem; background: #334155; border-radius: 4px; font-size: 0.8rem; }
-    .footer { text-align: center; margin-top: 2rem; color: #64748b; font-size: 0.875rem; }
+
+    .findings {
+      margin: 0.25rem 0 0.5rem;
+      padding-left: 1.25rem;
+      color: #f87171;
+      list-style-type: disc;
+    }
+    .findings li { margin-bottom: 0.25rem; }
+    .remediation {
+      margin-top: 0.5rem;
+      padding: 0.625rem 0.875rem;
+      background: var(--bg-tertiary);
+      border-radius: 6px;
+      font-size: 0.8rem;
+      border-left: 3px solid var(--accent);
+    }
+
+    /* Footer */
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 2rem;
+      padding: 1.5rem;
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+    .footer a { color: var(--accent); text-decoration: none; }
+    .footer a:hover { text-decoration: underline; }
+    .footer-actions { display: flex; gap: 1rem; }
+    .footer-btn {
+      padding: 0.5rem 1rem;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-primary);
+      cursor: pointer;
+      font-size: 0.8rem;
+    }
+    .footer-btn:hover { background: var(--border); }
+
+    /* Print styles */
+    @media print {
+      body { background: white; color: black; padding: 1rem; }
+      .container { max-width: 100%; }
+      .header, .donut-card, .radar-section, .exec-section, .category, .footer {
+        background: white;
+        border: 1px solid #ddd;
+        break-inside: avoid;
+      }
+      .category.collapsed .category-content { display: block !important; }
+      .chevron, .expand-all, .footer-actions { display: none; }
+      .category-header { cursor: default; }
+      .control-row.failed { background: #fff0f0; }
+      :root {
+        --bg-primary: white;
+        --bg-secondary: white;
+        --bg-tertiary: #f5f5f5;
+        --text-primary: black;
+        --text-secondary: #555;
+        --text-muted: #888;
+        --border: #ddd;
+      }
+    }
   </style>
 </head>
 <body>
   <div class="container">
-    <div class="header">
-      <h1>📋 ${escapeHtml(result.benchmark)}</h1>
-      <div class="version">Version ${result.version} • Generated ${new Date(result.timestamp).toISOString()}</div>
+    <header class="header">
+      <div class="header-left">
+        <h1>🛡️ ${escapeHtml(result.benchmark)}</h1>
+        <div class="meta">Version ${result.version} • Generated ${new Date(result.timestamp).toLocaleString()}</div>
+      </div>
+      <div class="header-right">
+        <div class="rating-badge">${result.rating}</div>
+        <div class="level-tag">${result.level} — ${result.level === 'L1' ? 'Essential' : result.level === 'L2' ? 'Standard' : 'Hardened'}</div>
+      </div>
+    </header>
+
+    <div class="dashboard">
+      <div class="donut-card">
+        <h3>Compliance Score</h3>
+        <div class="donut-container">
+          <svg width="180" height="180" viewBox="0 0 180 180">
+            <circle cx="90" cy="90" r="${donutRadius}" fill="none" stroke="#334155" stroke-width="${donutStroke}"/>
+            <circle cx="90" cy="90" r="${donutRadius}" fill="none" stroke="${complianceColor}" stroke-width="${donutStroke}"
+              stroke-dasharray="${donutCircumference}" stroke-dashoffset="${donutOffset}"
+              stroke-linecap="round" transform="rotate(-90 90 90)"
+              style="transition: stroke-dashoffset 0.5s ease;"/>
+          </svg>
+          <div class="donut-center">
+            <div class="value">${result.compliance}%</div>
+            <div class="label">Compliant</div>
+          </div>
+        </div>
+        <div class="donut-stats">
+          <div class="donut-stat passed">
+            <div class="num">${result.passedControls}</div>
+            <div class="lbl">Passed</div>
+          </div>
+          <div class="donut-stat failed">
+            <div class="num">${result.failedControls}</div>
+            <div class="lbl">Failed</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="radar-section">
+        <h3>Category Coverage</h3>
+        <div class="radar-container">
+          <svg width="240" height="240" viewBox="0 0 240 240">
+            ${radarGrid}
+            ${radarAxes}
+            <polygon points="${radarPoints.join(' ')}" fill="${complianceColor}20" stroke="${complianceColor}" stroke-width="2"/>
+            ${radarLabels.join('')}
+          </svg>
+        </div>
+      </div>
+
+      <div class="exec-section">
+        <h3>Priority Issues</h3>
+        ${executiveSummary}
+        ${failedControls.length > 0 ? `<div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.8rem; color: var(--text-muted);">
+          ${levelDesc}
+        </div>` : ''}
+      </div>
     </div>
 
-    <div class="summary">
-      <div class="summary-card">
-        <div class="value rating">${result.rating}</div>
-        <div class="label">Rating</div>
-      </div>
-      <div class="summary-card">
-        <div class="value">${result.compliance}%</div>
-        <div class="label">Compliance</div>
-      </div>
-      <div class="summary-card">
-        <div class="value">${result.passedControls}/${result.passedControls + result.failedControls}</div>
-        <div class="label">Controls Passed</div>
-      </div>
-      <div class="summary-card">
-        <div class="value">Level ${result.level.replace('L', '')}</div>
-        <div class="label">${result.level === 'L1' ? 'Essential' : result.level === 'L2' ? 'Standard' : 'Hardened'}</div>
-      </div>
+    <div class="categories-header">
+      <h2>Control Details by Category</h2>
+      <button class="expand-all" onclick="toggleAll()">Expand All</button>
     </div>
 
     ${categoryRows}
 
-    <div class="footer">
-      Generated by <a href="https://hackmyagent.com" style="color: #60a5fa;">HackMyAgent</a> •
-      <a href="https://oasb.ai" style="color: #60a5fa;">OASB-1 Specification</a>
-    </div>
+    <footer class="footer">
+      <div>
+        Generated by <a href="https://hackmyagent.com">HackMyAgent</a> •
+        <a href="https://oasb.ai">OASB-1 Specification</a>
+      </div>
+      <div class="footer-actions">
+        <button class="footer-btn" onclick="window.print()">🖨️ Print / PDF</button>
+      </div>
+    </footer>
   </div>
+
+  <script>
+    function toggleCategory(index) {
+      const cat = document.getElementById('cat-' + index);
+      cat.classList.toggle('collapsed');
+    }
+
+    function toggleAll() {
+      const categories = document.querySelectorAll('.category');
+      const btn = document.querySelector('.expand-all');
+      const allCollapsed = Array.from(categories).every(c => c.classList.contains('collapsed'));
+
+      categories.forEach(cat => {
+        if (allCollapsed) {
+          cat.classList.remove('collapsed');
+        } else {
+          cat.classList.add('collapsed');
+        }
+      });
+
+      btn.textContent = allCollapsed ? 'Collapse All' : 'Expand All';
+    }
+
+    // Start with categories collapsed
+    document.querySelectorAll('.category').forEach(cat => cat.classList.add('collapsed'));
+  </script>
 </body>
 </html>`;
 }
