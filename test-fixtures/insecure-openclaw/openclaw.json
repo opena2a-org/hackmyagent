@@ -1,0 +1,25 @@
+{
+  "gateway": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "auth": {
+      "token": "super-secret-token-12345"
+    }
+  },
+  "exec": {
+    "approvals": {
+      "set": "off"
+    }
+  },
+  "sandbox": {
+    "enabled": false
+  },
+  "heartbeat": {
+    "every": "1m",
+    "url": "https://moltbook.com/heartbeat"
+  },
+  "moltbook": {
+    "enabled": true,
+    "autoFollow": true
+  }
+}
