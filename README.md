@@ -137,12 +137,13 @@ hackmyagent scan example.com --json
 
 ### `hackmyagent secure-openclaw`
 
-Scan OpenClaw/Moltbot installations with 34 specialized security checks.
+Scan OpenClaw/Moltbot installations with 34 specialized security checks and auto-remediation.
 
 ```bash
 hackmyagent secure-openclaw              # scan default location
 hackmyagent secure-openclaw ~/.moltbot   # scan specific directory
-hackmyagent secure-openclaw --fix        # auto-fix issues
+hackmyagent secure-openclaw --fix        # auto-fix gateway misconfigurations
+hackmyagent secure-openclaw --fix --dry-run  # preview fixes
 hackmyagent secure-openclaw --json       # JSON output for CI/CD
 ```
 
@@ -155,12 +156,20 @@ hackmyagent secure-openclaw --json       # JSON output for CI/CD
 - Gateway misconfigurations (GHSA-g8p2 vulnerability)
 - Disabled sandbox/approval confirmations
 
+**Auto-Fix (with `--fix`):**
+| Check | Before | After |
+|-------|--------|-------|
+| GATEWAY-001 | `0.0.0.0` | `127.0.0.1` (local-only) |
+| GATEWAY-003 | Plaintext token | `${OPENCLAW_AUTH_TOKEN}` env var |
+| GATEWAY-004 | Approvals disabled | Approvals enabled |
+| GATEWAY-005 | Sandbox disabled | Sandbox enabled |
+
 **Check Categories:**
 | Category | Checks | Description |
 |----------|--------|-------------|
 | SKILL | 12 | Malicious skill detection |
 | HEARTBEAT | 6 | Heartbeat/cron abuse |
-| GATEWAY | 6 | Gateway misconfigurations |
+| GATEWAY | 6 | Gateway misconfigurations (4 auto-fixable) |
 | CONFIG | 6 | Insecure settings |
 | SUPPLY | 4 | Supply chain attacks |
 
@@ -231,6 +240,7 @@ For the complete list of 100 security checks with descriptions and remediation g
 
 The following issues can be automatically fixed with `--fix`:
 
+**General (`hackmyagent secure --fix`):**
 | Check ID | Issue | Auto-Fix Action |
 |----------|-------|-----------------|
 | CRED-001 | Exposed API keys | Replace with env var reference |
@@ -240,7 +250,15 @@ The following issues can be automatically fixed with `--fix`:
 | MCP-001 | Root filesystem access | Scope to project directory |
 | NET-001 | Bound to 0.0.0.0 | Bind to 127.0.0.1 |
 
-Always use `--dry-run` first to preview changes.
+**OpenClaw (`hackmyagent secure-openclaw --fix`):**
+| Check ID | Issue | Auto-Fix Action |
+|----------|-------|-----------------|
+| GATEWAY-001 | Bound to 0.0.0.0 | Bind to 127.0.0.1 |
+| GATEWAY-003 | Plaintext token in config | Replace with `${OPENCLAW_AUTH_TOKEN}` |
+| GATEWAY-004 | Approvals disabled | Enable approval confirmations |
+| GATEWAY-005 | Sandbox disabled | Enable sandbox mode |
+
+Always use `--dry-run` first to preview changes. Backups are created automatically.
 
 ## Environment Variables
 

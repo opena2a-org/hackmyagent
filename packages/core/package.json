@@ -1,6 +1,6 @@
 {
   "name": "hackmyagent-core",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Core security scanning library for AI agents",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
