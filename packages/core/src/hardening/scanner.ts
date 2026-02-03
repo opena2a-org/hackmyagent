@@ -99,7 +99,7 @@ const CREDENTIAL_PATTERNS = [
 ];
 
 // OpenClaw skill security patterns
-const SKILL_REMOTE_FETCH_PATTERNS = [
+const SKILL_REMOTE_FETCH_PATTERNS: RegExp[] = [
   /curl\s+(-[a-zA-Z]+\s+)*https?:\/\//gi,
   /wget\s+(-[a-zA-Z]+\s+)*https?:\/\//gi,
   /fetch\s*\(\s*['"`]https?:\/\//gi,
@@ -107,7 +107,7 @@ const SKILL_REMOTE_FETCH_PATTERNS = [
   /\|\s*sudo/gi,     // pipe to sudo
 ];
 
-const SKILL_CREDENTIAL_ACCESS_PATTERNS = [
+const SKILL_CREDENTIAL_ACCESS_PATTERNS: RegExp[] = [
   /~\/\.ssh/gi,
   /~\/\.aws/gi,
   /~\/\.config\/solana/gi,
@@ -122,17 +122,17 @@ const SKILL_CREDENTIAL_ACCESS_PATTERNS = [
   /credentials\.json/gi,
 ];
 
-const SKILL_EXFILTRATION_PATTERNS = [
+const SKILL_EXFILTRATION_PATTERNS: RegExp[] = [
   /webhook\.site/gi,
   /requestbin/gi,
   /ngrok\.io/gi,
-  /curl\s+.*-d\s/gi,     // curl with data
-  /curl\s+.*--data/gi,
-  /curl\s+.*-X\s*POST/gi,
+  /curl\s+[^\n]*?-d\s/gi,      // Non-greedy with newline boundary
+  /curl\s+[^\n]*?--data/gi,
+  /curl\s+[^\n]*?-X\s*POST/gi,
   /fetch\s*\([^)]*method:\s*['"]POST/gi,
 ];
 
-const SKILL_REVERSE_SHELL_PATTERNS = [
+const SKILL_REVERSE_SHELL_PATTERNS: RegExp[] = [
   /nc\s+(-[a-zA-Z]+\s+)*.*-e/gi,
   /bash\s+-i\s+/gi,
   /\/dev\/tcp\//gi,
@@ -141,7 +141,7 @@ const SKILL_REVERSE_SHELL_PATTERNS = [
   /perl.*socket.*connect/gi,
 ];
 
-const SKILL_CLICKFIX_PATTERNS = [
+const SKILL_CLICKFIX_PATTERNS: RegExp[] = [
   /copy\s+(and\s+)?paste\s+(this\s+)?(into|in)\s+(your\s+)?terminal/gi,
   /run\s+this\s+command/gi,
   /execute\s+(the\s+following|this)/gi,
@@ -149,7 +149,7 @@ const SKILL_CLICKFIX_PATTERNS = [
   /wget.*\|\s*(ba)?sh/gi,
 ];
 
-const HEARTBEAT_DANGEROUS_CAPS = [
+const HEARTBEAT_DANGEROUS_CAPS: string[] = [
   'shell:*',
   'shell:bash',
   'shell:sh',
@@ -159,7 +159,7 @@ const HEARTBEAT_DANGEROUS_CAPS = [
   'network:*',
 ];
 
-const PROMPT_INJECTION_PATTERNS = [
+const PROMPT_INJECTION_PATTERNS: RegExp[] = [
   /ignore\s+(all\s+)?(previous|prior|above)/gi,
   /disregard\s+(all\s+)?(previous|prior)/gi,
   /system:\s/gi,
