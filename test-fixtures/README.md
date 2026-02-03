@@ -23,6 +23,7 @@ npx hackmyagent secure test-fixtures/insecure-api --fix --dry-run
 | `insecure-mcp` | MCP Server | Root filesystem access, hardcoded API keys, unrestricted shell |
 | `insecure-library` | Library | Missing .gitignore patterns, .env not ignored |
 | `insecure-claude` | Library | Overly permissive Claude Code settings, dangerous bash commands |
+| `insecure-openclaw` | OpenClaw Gateway | Unsigned skills, remote fetch patterns, data exfiltration, disabled security |
 | `clean-project` | Library | No issues (should score 100/100) |
 
 ## Expected Results
@@ -48,6 +49,22 @@ npx hackmyagent secure test-fixtures/insecure-api --fix --dry-run
 ### insecure-claude (Score: 60/100)
 - CLAUDE-002: Overly permissive Bash(*), Read(*), Write(*)
 - CLAUDE-003: Dangerous bash commands (rm -rf, sudo, chmod 777)
+
+### insecure-openclaw (Score: 0/100)
+- SKILL-001: Unsigned skills
+- SKILL-002: Remote fetch patterns (curl | bash)
+- SKILL-003: Heartbeat installation
+- SKILL-004: Filesystem wildcard access
+- SKILL-005: Credential file access (~/.aws, ~/.config/solana)
+- SKILL-006: Data exfiltration (webhook.site)
+- SKILL-007: ClickFix social engineering
+- HEARTBEAT-001: Unverified URLs
+- HEARTBEAT-004: Dangerous capabilities
+- GATEWAY-001: Bound to 0.0.0.0
+- GATEWAY-004: Approvals disabled
+- GATEWAY-005: Sandbox disabled
+- CONFIG-001: Session tokens in .env
+- CONFIG-004: Plaintext API keys
 
 ### clean-project (Score: 100/100)
 - No issues found
