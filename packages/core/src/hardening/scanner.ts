@@ -98,6 +98,79 @@ const CREDENTIAL_PATTERNS = [
   { name: 'SENDGRID_KEY', pattern: /SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/ },
 ];
 
+// OpenClaw skill security patterns
+const SKILL_REMOTE_FETCH_PATTERNS = [
+  /curl\s+(-[a-zA-Z]+\s+)*https?:\/\//gi,
+  /wget\s+(-[a-zA-Z]+\s+)*https?:\/\//gi,
+  /fetch\s*\(\s*['"`]https?:\/\//gi,
+  /\|\s*(ba)?sh/gi,  // pipe to shell
+  /\|\s*sudo/gi,     // pipe to sudo
+];
+
+const SKILL_CREDENTIAL_ACCESS_PATTERNS = [
+  /~\/\.ssh/gi,
+  /~\/\.aws/gi,
+  /~\/\.config\/solana/gi,
+  /~\/\.config\/gcloud/gi,
+  /~\/\.kube/gi,
+  /~\/\.gnupg/gi,
+  /keychain/gi,
+  /wallet.*\.json/gi,
+  /seed.*phrase/gi,
+  /private.*key/gi,
+  /\.env/gi,
+  /credentials\.json/gi,
+];
+
+const SKILL_EXFILTRATION_PATTERNS = [
+  /webhook\.site/gi,
+  /requestbin/gi,
+  /ngrok\.io/gi,
+  /curl\s+.*-d\s/gi,     // curl with data
+  /curl\s+.*--data/gi,
+  /curl\s+.*-X\s*POST/gi,
+  /fetch\s*\([^)]*method:\s*['"]POST/gi,
+];
+
+const SKILL_REVERSE_SHELL_PATTERNS = [
+  /nc\s+(-[a-zA-Z]+\s+)*.*-e/gi,
+  /bash\s+-i\s+/gi,
+  /\/dev\/tcp\//gi,
+  /\/dev\/udp\//gi,
+  /python.*socket.*connect/gi,
+  /perl.*socket.*connect/gi,
+];
+
+const SKILL_CLICKFIX_PATTERNS = [
+  /copy\s+(and\s+)?paste\s+(this\s+)?(into|in)\s+(your\s+)?terminal/gi,
+  /run\s+this\s+command/gi,
+  /execute\s+(the\s+following|this)/gi,
+  /curl.*\|\s*(ba)?sh/gi,
+  /wget.*\|\s*(ba)?sh/gi,
+];
+
+const HEARTBEAT_DANGEROUS_CAPS = [
+  'shell:*',
+  'shell:bash',
+  'shell:sh',
+  'filesystem:*',
+  'filesystem:~/*',
+  'filesystem:/',
+  'network:*',
+];
+
+const PROMPT_INJECTION_PATTERNS = [
+  /ignore\s+(all\s+)?(previous|prior|above)/gi,
+  /disregard\s+(all\s+)?(previous|prior)/gi,
+  /system:\s/gi,
+  /<\|.*\|>/gi,  // special tokens
+  /\[INST\]/gi,
+  /\[\/INST\]/gi,
+  /<<SYS>>/gi,
+  /Human:/gi,
+  /Assistant:/gi,
+];
+
 // Severity weights for score calculation
 const SEVERITY_WEIGHTS: Record<Severity, number> = {
   critical: 25,
