@@ -261,6 +261,7 @@ Examples:
         webapp: 'Web App',
         api: 'API Server',
         mcp: 'MCP Server',
+        openclaw: 'OpenClaw Agent',
         all: 'Project',
       }[result.projectType] || 'Project';
 

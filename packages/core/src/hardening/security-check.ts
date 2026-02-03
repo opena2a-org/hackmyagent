@@ -11,9 +11,10 @@ export type Severity = 'critical' | 'high' | 'medium' | 'low';
  * - webapp: Web applications (React, Vue, etc.)
  * - api: Backend API servers (Express, Fastify, etc.)
  * - mcp: MCP server implementations
+ * - openclaw: OpenClaw AI agent projects (SKILL.md, HEARTBEAT.md)
  * - all: Applies to all project types
  */
-export type ProjectType = 'cli' | 'library' | 'webapp' | 'api' | 'mcp' | 'all';
+export type ProjectType = 'cli' | 'library' | 'webapp' | 'api' | 'mcp' | 'openclaw' | 'all';
 
 export interface SecurityCheck {
   id: string;

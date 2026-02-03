@@ -35,6 +35,13 @@ const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
   'SESSION-': ['webapp', 'api'], // Session management
   'NET-': ['webapp', 'api'], // Network security (HTTPS, etc.)
   'IO-': ['webapp', 'api'], // Input/output (XSS, etc.)
+
+  // OpenClaw-specific checks
+  'SKILL-': ['openclaw', 'mcp'], // Skill file security
+  'HEARTBEAT-': ['openclaw'], // Heartbeat/periodic task security
+  'GATEWAY-': ['openclaw'], // Gateway configuration security
+  'CONFIG-': ['openclaw', 'mcp'], // Configuration file security
+  'SUPPLY-': ['openclaw', 'mcp'], // Supply chain security
   'API-': ['api'], // API security headers
   'RATE-': ['webapp', 'api'], // Rate limiting
   'PROC-': ['webapp', 'api'], // Process security (headers, etc.)
@@ -338,6 +345,30 @@ export class HardeningScanner {
       platforms.push('claude-code');
     } catch {}
 
+    // OpenClaw detection
+    try {
+      await fs.access(path.join(targetDir, '.openclaw'));
+      platforms.push('openclaw');
+    } catch {}
+
+    try {
+      await fs.access(path.join(targetDir, '.moltbot'));
+      platforms.push('openclaw');
+    } catch {}
+
+    try {
+      await fs.access(path.join(targetDir, '.clawdbot'));
+      platforms.push('openclaw');
+    } catch {}
+
+    // Check for SKILL.md files (OpenClaw skill project)
+    try {
+      const files = await fs.readdir(targetDir);
+      if (files.some(f => f === 'SKILL.md' || f.endsWith('.skill.md'))) {
+        platforms.push('openclaw');
+      }
+    } catch {}
+
     if (platforms.length === 0) {
       return 'generic';
     }
@@ -349,6 +380,15 @@ export class HardeningScanner {
    * Detect the project type based on package.json and project structure
    */
   private async detectProjectType(targetDir: string): Promise<ProjectType> {
+    // Check for OpenClaw project indicators (check first as it's more specific)
+    const openclawIndicators = ['.openclaw', '.moltbot', '.clawdbot', 'SKILL.md', 'openclaw.json'];
+    for (const indicator of openclawIndicators) {
+      try {
+        await fs.access(path.join(targetDir, indicator));
+        return 'openclaw';
+      } catch {}
+    }
+
     try {
       const pkgPath = path.join(targetDir, 'package.json');
       const content = await fs.readFile(pkgPath, 'utf-8');
