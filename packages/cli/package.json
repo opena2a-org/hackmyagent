@@ -1,6 +1,6 @@
 {
   "name": "hackmyagent",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Security toolkit for AI agents - verify skills, harden setups, scan for exposures",
   "bin": {
     "hackmyagent": "dist/index.js"
@@ -18,7 +18,7 @@
   },
   "dependencies": {
     "commander": "^12.0.0",
-    "hackmyagent-core": "^0.3.1"
+    "hackmyagent-core": "^0.3.2"
   },
   "devDependencies": {
     "typescript": "^5.3.3"

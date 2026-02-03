@@ -773,7 +773,14 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean): void {
     console.log(`Legend: ⚪ = Manual/Forward verification required`);
   }
 
-  console.log(`\nRun 'hackmyagent secure --benchmark oasb-1 --level L2' for stricter checks.`);
+  // Show appropriate next step based on current level
+  if (result.level === 'L1') {
+    console.log(`\nRun 'hackmyagent secure -b oasb-1 -l L2' for stricter checks.`);
+  } else if (result.level === 'L2') {
+    console.log(`\nRun 'hackmyagent secure -b oasb-1 -l L3' for hardened requirements.`);
+  } else {
+    console.log(`\nThis is the highest maturity level (L3 - Hardened).`);
+  }
   console.log(`Spec: https://oasb.ai/oasb-1\n`);
 }
 
