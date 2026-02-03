@@ -1,6 +1,6 @@
 {
   "name": "hackmyagent",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Security toolkit for AI agents - verify skills, harden setups, scan for exposures",
   "bin": {
     "hackmyagent": "dist/index.js"
@@ -13,7 +13,8 @@
   "scripts": {
     "build": "tsc",
     "test": "echo 'No CLI tests yet'",
-    "lint": "eslint src --ext .ts"
+    "lint": "eslint src --ext .ts",
+    "prepublishOnly": "cp ../../README.md ./README.md"
   },
   "dependencies": {
     "commander": "^12.0.0",
