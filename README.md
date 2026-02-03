@@ -17,7 +17,7 @@ npx hackmyagent secure                      # harden your agent setup (100 check
 npx hackmyagent secure --fix                # auto-fix security issues
 npx hackmyagent scan example.com            # scan for exposed infrastructure
 npx hackmyagent attack --local              # red team with 55 attack payloads
-npx hackmyagent benchmark --benchmark oasb-1  # run OASB-1 security benchmark
+npx hackmyagent secure --benchmark oasb-1   # run OASB-1 security benchmark
 ```
 
 ## Two Ways to Scan
@@ -191,25 +191,30 @@ hackmyagent attack --local --verbose
 - 50-69: HIGH - Significant vulnerabilities, action required
 - 70-100: CRITICAL - Severe vulnerabilities, immediate action needed
 
-### `hackmyagent benchmark`
+### `hackmyagent secure --benchmark`
 
 Run the OASB-1 (OpenA2A Security Benchmark) against your agent configuration.
 
 ```bash
-# Run benchmark
-hackmyagent benchmark --benchmark oasb-1
+# Run benchmark (L1 by default)
+hackmyagent secure --benchmark oasb-1
 
 # Target specific directory
-hackmyagent benchmark --benchmark oasb-1 ./my-project
+hackmyagent secure ./my-project --benchmark oasb-1
+
+# Different maturity levels
+hackmyagent secure -b oasb-1 -l L1    # Essential (baseline)
+hackmyagent secure -b oasb-1 -l L2    # Standard
+hackmyagent secure -b oasb-1 -l L3    # Hardened
 
 # Output formats
-hackmyagent benchmark --benchmark oasb-1 -f json
-hackmyagent benchmark --benchmark oasb-1 -f sarif -o results.sarif
-hackmyagent benchmark --benchmark oasb-1 -f html -o report.html
-hackmyagent benchmark --benchmark oasb-1 -f asp -o profile.asp.json
+hackmyagent secure -b oasb-1 -f json
+hackmyagent secure -b oasb-1 -f sarif -o results.sarif
+hackmyagent secure -b oasb-1 -f html -o report.html
+hackmyagent secure -b oasb-1 -f asp -o profile.asp.json
 
 # CI/CD with fail threshold
-hackmyagent benchmark --benchmark oasb-1 --fail-below 70
+hackmyagent secure -b oasb-1 --fail-below 70
 ```
 
 **Output Formats:**
@@ -322,7 +327,7 @@ jobs:
         with:
           node-version: '20'
       - name: Run OASB-1 benchmark
-        run: npx hackmyagent benchmark --benchmark oasb-1 --fail-below 70
+        run: npx hackmyagent secure -b oasb-1 --fail-below 70
 ```
 
 ### Pre-commit Hook
@@ -406,7 +411,7 @@ Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ```bash
 # Development setup
-git clone https://github.com/ecolibria/hackmyagent.git
+git clone https://github.com/opena2a-org/hackmyagent.git
 cd hackmyagent
 npm install
 npm run build
