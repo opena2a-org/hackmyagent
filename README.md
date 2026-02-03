@@ -3,6 +3,8 @@
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
+**Part of [OpenA2A](https://opena2a.org)** — open-source security for AI agents
+
 **Website:** [hackmyagent.com](https://hackmyagent.com) — Scan external infrastructure for exposed MCP endpoints, configs, and credentials
 
 ## Disclaimer
@@ -252,4 +254,8 @@ Apache-2.0
 
 ---
 
-**Need enterprise features?** Check out open-source [AIM (Agent Identity Management)](https://github.com/opena2a-org/agent-identity-management) for centralized policy management, compliance, and audit trails.
+## Secure What You Find
+
+HackMyAgent finds vulnerabilities. **[AIM](https://github.com/opena2a-org/agent-identity-management)** fixes them — the open-source NHI platform for AI agents with cryptographic identity, governance, and access control.
+
+→ [Get started with AIM](https://opena2a.org/docs/quick-start) | [Learn about NHI governance](https://opena2a.org/nhi)
