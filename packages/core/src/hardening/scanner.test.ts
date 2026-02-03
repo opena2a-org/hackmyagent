@@ -1810,3 +1810,171 @@ describe('Security safeguards', () => {
     expect(result).toBeDefined();
   });
 });
+
+describe('OpenClaw gateway auto-fix', () => {
+  let scanner: HardeningScanner;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    scanner = new HardeningScanner();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-test-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('GATEWAY-001: auto-fixes 0.0.0.0 to 127.0.0.1', async () => {
+    const configPath = path.join(tempDir, 'openclaw.json');
+    await fs.writeFile(
+      path.join(tempDir, 'SKILL.md'),
+      '# Test Skill'
+    );
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({
+        gateway: { host: '0.0.0.0', port: 3100 }
+      }, null, 2)
+    );
+
+    // First scan without fix
+    const result1 = await scanner.scan({ targetDir: tempDir, autoFix: false });
+    const finding1 = result1.findings.find(f => f.checkId === 'GATEWAY-001');
+    expect(finding1?.passed).toBe(false);
+    expect(finding1?.fixable).toBe(true);
+
+    // Scan with fix
+    const result2 = await scanner.scan({ targetDir: tempDir, autoFix: true });
+    const finding2 = result2.findings.find(f => f.checkId === 'GATEWAY-001');
+    expect(finding2?.passed).toBe(true);
+    expect(finding2?.fixed).toBe(true);
+    expect(finding2?.fixMessage).toContain('127.0.0.1');
+
+    // Verify file was modified
+    const updatedConfig = JSON.parse(await fs.readFile(configPath, 'utf-8'));
+    expect(updatedConfig.gateway.host).toBe('127.0.0.1');
+  });
+
+  it('GATEWAY-003: auto-fixes plaintext token with env var reference', async () => {
+    const configPath = path.join(tempDir, 'openclaw.json');
+    await fs.writeFile(
+      path.join(tempDir, 'SKILL.md'),
+      '# Test Skill'
+    );
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({
+        gateway: {
+          auth: { token: 'secret-token-12345' }
+        }
+      }, null, 2)
+    );
+
+    // Scan with fix
+    const result = await scanner.scan({ targetDir: tempDir, autoFix: true });
+    const finding = result.findings.find(f => f.checkId === 'GATEWAY-003');
+    expect(finding?.passed).toBe(true);
+    expect(finding?.fixed).toBe(true);
+    expect(finding?.fixMessage).toContain('OPENCLAW_AUTH_TOKEN');
+
+    // Verify file was modified
+    const updatedConfig = JSON.parse(await fs.readFile(configPath, 'utf-8'));
+    expect(updatedConfig.gateway.auth.token).toBe('${OPENCLAW_AUTH_TOKEN}');
+  });
+
+  it('GATEWAY-004: auto-fixes disabled approvals', async () => {
+    const configPath = path.join(tempDir, 'openclaw.json');
+    await fs.writeFile(
+      path.join(tempDir, 'SKILL.md'),
+      '# Test Skill'
+    );
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({
+        exec: { approvals: { enabled: false } }
+      }, null, 2)
+    );
+
+    // Scan with fix
+    const result = await scanner.scan({ targetDir: tempDir, autoFix: true });
+    const finding = result.findings.find(f => f.checkId === 'GATEWAY-004');
+    expect(finding?.passed).toBe(true);
+    expect(finding?.fixed).toBe(true);
+
+    // Verify file was modified
+    const updatedConfig = JSON.parse(await fs.readFile(configPath, 'utf-8'));
+    expect(updatedConfig.exec.approvals.enabled).toBe(true);
+  });
+
+  it('GATEWAY-005: auto-fixes disabled sandbox', async () => {
+    const configPath = path.join(tempDir, 'openclaw.json');
+    await fs.writeFile(
+      path.join(tempDir, 'SKILL.md'),
+      '# Test Skill'
+    );
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({
+        sandbox: { enabled: false }
+      }, null, 2)
+    );
+
+    // Scan with fix
+    const result = await scanner.scan({ targetDir: tempDir, autoFix: true });
+    const finding = result.findings.find(f => f.checkId === 'GATEWAY-005');
+    expect(finding?.passed).toBe(true);
+    expect(finding?.fixed).toBe(true);
+
+    // Verify file was modified
+    const updatedConfig = JSON.parse(await fs.readFile(configPath, 'utf-8'));
+    expect(updatedConfig.sandbox.enabled).toBe(true);
+  });
+
+  it('applies multiple fixes in one scan', async () => {
+    const configPath = path.join(tempDir, 'openclaw.json');
+    await fs.writeFile(
+      path.join(tempDir, 'SKILL.md'),
+      '# Test Skill'
+    );
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({
+        gateway: { host: '0.0.0.0' },
+        sandbox: { enabled: false }
+      }, null, 2)
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir, autoFix: true });
+
+    // Both should be fixed
+    const gateway001 = result.findings.find(f => f.checkId === 'GATEWAY-001');
+    const gateway005 = result.findings.find(f => f.checkId === 'GATEWAY-005');
+    expect(gateway001?.fixed).toBe(true);
+    expect(gateway005?.fixed).toBe(true);
+
+    // Verify file was modified with both fixes
+    const updatedConfig = JSON.parse(await fs.readFile(configPath, 'utf-8'));
+    expect(updatedConfig.gateway.host).toBe('127.0.0.1');
+    expect(updatedConfig.sandbox.enabled).toBe(true);
+  });
+
+  it('does not modify config when autoFix is false', async () => {
+    const configPath = path.join(tempDir, 'openclaw.json');
+    const originalConfig = {
+      gateway: { host: '0.0.0.0' },
+      sandbox: { enabled: false }
+    };
+    await fs.writeFile(
+      path.join(tempDir, 'SKILL.md'),
+      '# Test Skill'
+    );
+    await fs.writeFile(configPath, JSON.stringify(originalConfig, null, 2));
+
+    await scanner.scan({ targetDir: tempDir, autoFix: false });
+
+    // Verify file was NOT modified
+    const updatedConfig = JSON.parse(await fs.readFile(configPath, 'utf-8'));
+    expect(updatedConfig.gateway.host).toBe('0.0.0.0');
+    expect(updatedConfig.sandbox.enabled).toBe(false);
+  });
+});

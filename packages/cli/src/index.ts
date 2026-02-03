@@ -450,7 +450,15 @@ Examples:
         console.log(`\n🦞 OpenClaw Security Report`);
         console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
         if (options.dryRun) {
-          console.log(`🔍 Scanning ${targetDir} (dry-run)...\n`);
+          console.log(`🔍 Scanning ${targetDir} (dry-run - previewing fixes)...\n`);
+        } else if (options.fix) {
+          console.log(`🔧 Scanning and fixing ${targetDir}...\n`);
+          console.log(`${colors.yellow}Auto-fix will:${RESET()}`);
+          console.log(`  • Bind gateway to 127.0.0.1 (local-only)`);
+          console.log(`  • Replace plaintext tokens with env var references`);
+          console.log(`  • Enable approval confirmations`);
+          console.log(`  • Enable sandbox mode`);
+          console.log(`\n${colors.cyan}A backup will be created for rollback if needed.${RESET()}\n`);
         } else {
           console.log(`🔍 Scanning ${targetDir}...\n`);
         }
@@ -520,15 +528,21 @@ Examples:
 
       // Show fixed findings
       if (fixedFindings.length > 0) {
-        console.log(`${colors.green}Fixed Issues:${RESET()}`);
+        console.log(`${colors.green}✅ Auto-Remediation Applied:${RESET()}\n`);
         for (const finding of fixedFindings) {
           console.log(`  ${colors.green}✓${RESET()} [${finding.checkId}] ${finding.name}`);
+          if (finding.fixMessage) {
+            console.log(`     ${colors.cyan}→${RESET()} ${finding.fixMessage}`);
+          }
         }
         console.log();
 
         if (result.backupPath) {
-          console.log(`Backup: ${result.backupPath}`);
-          console.log(`Undo: hackmyagent rollback ${targetDir}\n`);
+          console.log(`${colors.yellow}📁 Backup created:${RESET()} ${result.backupPath}`);
+          console.log(`${colors.yellow}↩️  To rollback:${RESET()} hackmyagent rollback ${targetDir}`);
+          console.log();
+          console.log(`${colors.cyan}Note:${RESET()} If you replaced tokens with env vars, set OPENCLAW_AUTH_TOKEN`);
+          console.log(`      in your environment before starting OpenClaw.\n`);
         }
       }
 

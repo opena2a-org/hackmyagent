@@ -4800,24 +4800,43 @@ dist/
         continue;
       }
 
+      // Track what fixes we apply
+      let configModified = false;
+      const fixesApplied: string[] = [];
+
       // GATEWAY-001: Bound to 0.0.0.0
       const gateway = config.gateway as Record<string, unknown> | undefined;
-      if (gateway && gateway.host === '0.0.0.0') {
+      const boundToAllInterfaces = gateway && gateway.host === '0.0.0.0';
+      let gateway001Fixed = false;
+
+      if (boundToAllInterfaces && autoFix) {
+        // Fix: Change 0.0.0.0 to 127.0.0.1
+        (config.gateway as Record<string, unknown>).host = '127.0.0.1';
+        gateway001Fixed = true;
+        configModified = true;
+        fixesApplied.push('Changed gateway.host from 0.0.0.0 to 127.0.0.1 (local-only access)');
+      }
+
+      if (boundToAllInterfaces) {
         findings.push({
           checkId: 'GATEWAY-001',
           name: 'Bound to 0.0.0.0',
           description: 'Gateway is bound to all interfaces (0.0.0.0)',
           category: 'gateway',
           severity: 'critical',
-          passed: false,
-          message: 'Gateway host is 0.0.0.0 - accessible from any network interface',
+          passed: gateway001Fixed,
+          message: gateway001Fixed
+            ? 'Fixed: Gateway now bound to 127.0.0.1 (local-only)'
+            : 'Gateway host is 0.0.0.0 - accessible from any network interface',
           file: relativePath,
-          fixable: false,
-          fix: 'Bind to 127.0.0.1 for local-only access or specific interface IP',
+          fixable: true,
+          fixed: gateway001Fixed,
+          fixMessage: gateway001Fixed ? 'Changed gateway.host from 0.0.0.0 to 127.0.0.1' : undefined,
+          fix: 'Run `hackmyagent secure-openclaw --fix` to bind gateway to 127.0.0.1 for local-only access',
         });
       }
 
-      // GATEWAY-002: Missing WebSocket Origin Validation
+      // GATEWAY-002: Missing WebSocket Origin Validation (not auto-fixable - requires user to specify allowed origins)
       const security = config.security as Record<string, unknown> | undefined;
       const hasWebSocketOrigins = security && security.websocketOrigins;
       findings.push({
@@ -4832,14 +4851,32 @@ dist/
           : 'Missing security.websocketOrigins - vulnerable to GHSA-g8p2 cross-origin attacks',
         file: relativePath,
         fixable: false,
-        fix: 'Add security.websocketOrigins array with allowed origins',
+        fix: 'Manually add security.websocketOrigins array with your allowed origins (e.g., ["http://localhost:3000"])',
       });
 
       // GATEWAY-003: Token Exposed in Config
       const gatewayAuth = gateway?.auth as Record<string, unknown> | undefined;
-      const hasPlaintextToken =
-        (gatewayAuth && typeof gatewayAuth.token === 'string' && gatewayAuth.token.length > 0) ||
-        (typeof config.token === 'string' && (config.token as string).length > 0);
+      const hasPlaintextTokenInAuth = gatewayAuth && typeof gatewayAuth.token === 'string' && gatewayAuth.token.length > 0;
+      const hasPlaintextTokenAtRoot = typeof config.token === 'string' && (config.token as string).length > 0;
+      const hasPlaintextToken = hasPlaintextTokenInAuth || hasPlaintextTokenAtRoot;
+      let gateway003Fixed = false;
+
+      if (hasPlaintextToken && autoFix) {
+        // Fix: Replace plaintext token with environment variable reference
+        if (hasPlaintextTokenInAuth && gatewayAuth) {
+          gatewayAuth.token = '${OPENCLAW_AUTH_TOKEN}';
+          gateway003Fixed = true;
+          configModified = true;
+          fixesApplied.push('Replaced gateway.auth.token with ${OPENCLAW_AUTH_TOKEN} env var reference');
+        }
+        if (hasPlaintextTokenAtRoot) {
+          config.token = '${OPENCLAW_AUTH_TOKEN}';
+          gateway003Fixed = true;
+          configModified = true;
+          fixesApplied.push('Replaced token with ${OPENCLAW_AUTH_TOKEN} env var reference');
+        }
+      }
+
       if (hasPlaintextToken) {
         findings.push({
           checkId: 'GATEWAY-003',
@@ -4847,11 +4884,15 @@ dist/
           description: 'Plaintext authentication token stored in configuration file',
           category: 'gateway',
           severity: 'critical',
-          passed: false,
-          message: 'Plaintext token found in configuration - use environment variables instead',
+          passed: gateway003Fixed,
+          message: gateway003Fixed
+            ? 'Fixed: Token replaced with ${OPENCLAW_AUTH_TOKEN} - set this env var with your actual token'
+            : 'Plaintext token found in configuration - use environment variables instead',
           file: relativePath,
-          fixable: false,
-          fix: 'Move tokens to environment variables: OPENCLAW_AUTH_TOKEN',
+          fixable: true,
+          fixed: gateway003Fixed,
+          fixMessage: gateway003Fixed ? 'Replaced plaintext token with ${OPENCLAW_AUTH_TOKEN} env var reference. Set OPENCLAW_AUTH_TOKEN in your environment.' : undefined,
+          fix: 'Run `hackmyagent secure-openclaw --fix` to replace plaintext token with ${OPENCLAW_AUTH_TOKEN} env var reference',
         });
       }
 
@@ -4863,6 +4904,30 @@ dist/
         approvals?.set === 'off' ||
         approvals?.enabled === false ||
         configApprovals?.enabled === false;
+      let gateway004Fixed = false;
+
+      if (approvalsDisabled && autoFix) {
+        // Fix: Enable approvals
+        if (approvals?.set === 'off') {
+          approvals.set = 'on';
+          gateway004Fixed = true;
+          configModified = true;
+          fixesApplied.push('Changed exec.approvals.set from "off" to "on"');
+        }
+        if (approvals?.enabled === false) {
+          approvals.enabled = true;
+          gateway004Fixed = true;
+          configModified = true;
+          fixesApplied.push('Changed exec.approvals.enabled to true');
+        }
+        if (configApprovals?.enabled === false) {
+          configApprovals.enabled = true;
+          gateway004Fixed = true;
+          configModified = true;
+          fixesApplied.push('Changed approvals.enabled to true');
+        }
+      }
+
       if (approvalsDisabled) {
         findings.push({
           checkId: 'GATEWAY-004',
@@ -4870,32 +4935,51 @@ dist/
           description: 'Execution approval confirmations are disabled',
           category: 'gateway',
           severity: 'critical',
-          passed: false,
-          message: 'Approval confirmations disabled - commands execute without user confirmation',
+          passed: gateway004Fixed,
+          message: gateway004Fixed
+            ? 'Fixed: Approval confirmations are now enabled - commands will require user confirmation'
+            : 'Approval confirmations disabled - commands execute without user confirmation',
           file: relativePath,
-          fixable: false,
-          fix: 'Enable approvals: exec.approvals.set = "on" or approvals.enabled = true',
+          fixable: true,
+          fixed: gateway004Fixed,
+          fixMessage: gateway004Fixed ? 'Enabled approval confirmations for command execution' : undefined,
+          fix: 'Run `hackmyagent secure-openclaw --fix` to enable approval confirmations for safer command execution',
         });
       }
 
       // GATEWAY-005: Sandbox Disabled
       const sandbox = config.sandbox as Record<string, unknown> | undefined;
-      if (sandbox && sandbox.enabled === false) {
+      const sandboxDisabled = sandbox && sandbox.enabled === false;
+      let gateway005Fixed = false;
+
+      if (sandboxDisabled && autoFix) {
+        // Fix: Enable sandbox
+        sandbox.enabled = true;
+        gateway005Fixed = true;
+        configModified = true;
+        fixesApplied.push('Changed sandbox.enabled to true');
+      }
+
+      if (sandboxDisabled) {
         findings.push({
           checkId: 'GATEWAY-005',
           name: 'Sandbox Disabled',
           description: 'Sandbox execution environment is disabled',
           category: 'gateway',
           severity: 'critical',
-          passed: false,
-          message: 'Sandbox is disabled - code executes with full system access',
+          passed: gateway005Fixed,
+          message: gateway005Fixed
+            ? 'Fixed: Sandbox is now enabled - code executes in isolated environment'
+            : 'Sandbox is disabled - code executes with full system access',
           file: relativePath,
-          fixable: false,
-          fix: 'Enable sandbox: sandbox.enabled = true',
+          fixable: true,
+          fixed: gateway005Fixed,
+          fixMessage: gateway005Fixed ? 'Enabled sandbox mode for isolated code execution' : undefined,
+          fix: 'Run `hackmyagent secure-openclaw --fix` to enable sandbox mode for safer code execution',
         });
       }
 
-      // GATEWAY-006: Container Escape Risk
+      // GATEWAY-006: Container Escape Risk (not auto-fixable - requires manual review of mount points)
       const docker = config.docker as Record<string, unknown> | undefined;
       const isPrivileged = docker?.privileged === true;
       const mounts = docker?.mounts as string[] | undefined;
@@ -4922,8 +5006,41 @@ dist/
           message: `Container escape risk: ${issues.join(', ')}`,
           file: relativePath,
           fixable: false,
-          fix: 'Disable privileged mode and remove sensitive host mounts',
+          fix: 'Manually disable privileged mode and remove sensitive host mounts - requires careful review',
         });
+      }
+
+      // Write modified config back to file if any fixes were applied
+      if (configModified) {
+        try {
+          await fs.writeFile(configFile, JSON.stringify(config, null, 2) + '\n');
+          // Add a summary finding about what was fixed
+          findings.push({
+            checkId: 'FIX-SUMMARY',
+            name: 'Auto-Fix Applied',
+            description: 'Configuration was automatically remediated',
+            category: 'gateway',
+            severity: 'low',
+            passed: true,
+            message: `Applied ${fixesApplied.length} fix(es): ${fixesApplied.join('; ')}`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Use `hackmyagent rollback` to undo these changes if needed',
+          });
+        } catch (writeError) {
+          findings.push({
+            checkId: 'FIX-ERROR',
+            name: 'Auto-Fix Failed',
+            description: 'Could not write configuration changes',
+            category: 'gateway',
+            severity: 'medium',
+            passed: false,
+            message: `Failed to write fixes to ${relativePath}: ${writeError instanceof Error ? writeError.message : 'Unknown error'}`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Check file permissions and try again',
+          });
+        }
       }
     }
 
