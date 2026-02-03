@@ -363,6 +363,10 @@ export class HardeningScanner {
     const configFindings = await this.checkOpenclawConfig(targetDir, shouldFix);
     findings.push(...configFindings);
 
+    // OpenClaw supply chain checks
+    const supplyFindings = await this.checkOpenclawSupplyChain(targetDir, shouldFix);
+    findings.push(...supplyFindings);
+
     // Filter findings to only show real, actionable issues:
     // 1. Only failed checks (passed: false)
     // 2. Only checks with a file path (concrete findings, not generic advice)
@@ -5109,6 +5113,144 @@ dist/
           fix: 'Disable autoFollow or review moltbook security settings',
         });
       }
+    }
+
+    return findings;
+  }
+
+  /**
+   * OpenClaw supply chain security checks (SUPPLY-001 to SUPPLY-004)
+   */
+  private async checkOpenclawSupplyChain(
+    targetDir: string,
+    autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+    const skillFiles = await this.findSkillFiles(targetDir);
+
+    // Known malicious skill patterns from ClawHavoc campaign
+    const clawHavocPatterns = [
+      'polymarket',
+      'better-polymarket',
+      'crypto-tracker',
+      'solana-tracker',
+      'phantom-wallet',
+      'youtube-downloader',
+      'clawhub',
+    ];
+
+    for (const skillFile of skillFiles) {
+      const relativePath = path.relative(targetDir, skillFile);
+
+      let content: string;
+      try {
+        content = await fs.readFile(skillFile, 'utf-8');
+      } catch {
+        continue;
+      }
+
+      // Parse YAML frontmatter
+      const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      const frontmatter = frontmatterMatch ? frontmatterMatch[1] : '';
+
+      // Extract skill name from filename or frontmatter
+      const skillNameMatch = frontmatter.match(/^name:\s*(.+)$/m);
+      const skillName = skillNameMatch
+        ? skillNameMatch[1].trim().replace(/["']/g, '').toLowerCase()
+        : path.basename(path.dirname(skillFile)).toLowerCase();
+
+      // SUPPLY-001: Unverified Publisher
+      const hasPublisher = /^publisher:\s*.+$/m.test(frontmatter);
+      const hasPublisherVerified = /^publisher_verified:\s*true$/m.test(frontmatter);
+
+      findings.push({
+        checkId: 'SUPPLY-001',
+        name: 'Unverified Publisher',
+        description: 'Skill publisher identity has not been verified',
+        category: 'supply',
+        severity: 'high',
+        passed: hasPublisher && hasPublisherVerified,
+        message: hasPublisher && hasPublisherVerified
+          ? 'Skill publisher is verified'
+          : hasPublisher
+            ? 'Skill has publisher but publisher_verified is not true'
+            : 'Skill lacks publisher metadata - cannot verify source',
+        file: relativePath,
+        fixable: false,
+        fix: 'Add publisher: and publisher_verified: true to skill frontmatter after verification',
+      });
+
+      // SUPPLY-002: Skill Not in Registry
+      const hasRegistryAttestation = /^registry_attestation:\s*.+$/m.test(frontmatter);
+
+      findings.push({
+        checkId: 'SUPPLY-002',
+        name: 'Skill Not in Registry',
+        description: 'Skill has not been registered with a trusted skill registry',
+        category: 'supply',
+        severity: 'medium',
+        passed: hasRegistryAttestation,
+        message: hasRegistryAttestation
+          ? 'Skill has registry attestation'
+          : 'Skill lacks registry_attestation - not listed in trusted registry',
+        file: relativePath,
+        fixable: false,
+        fix: 'Register skill with a trusted registry (e.g., clawhub.io, skillregistry.openclaw.org)',
+      });
+
+      // SUPPLY-003: Known Malicious Skill Pattern (ClawHavoc campaign)
+      let isMaliciousMatch = false;
+      let matchedPattern = '';
+
+      for (const pattern of clawHavocPatterns) {
+        // Check for exact match or substring
+        if (skillName.includes(pattern)) {
+          isMaliciousMatch = true;
+          matchedPattern = pattern;
+          break;
+        }
+
+        // Check for typosquatting (Levenshtein distance <= 1)
+        const distance = this.levenshteinDistance(skillName, pattern);
+        if (distance <= 1 && distance > 0) {
+          isMaliciousMatch = true;
+          matchedPattern = `${skillName} (similar to ${pattern})`;
+          break;
+        }
+      }
+
+      if (isMaliciousMatch) {
+        findings.push({
+          checkId: 'SUPPLY-003',
+          name: 'Known Malicious Skill Pattern',
+          description: 'Skill matches known malicious patterns from ClawHavoc campaign',
+          category: 'supply',
+          severity: 'critical',
+          passed: false,
+          message: `Skill matches known malicious pattern: "${matchedPattern}"`,
+          file: relativePath,
+          fixable: false,
+          fix: 'Remove this skill immediately - it matches known malware from the ClawHavoc campaign',
+        });
+      }
+
+      // SUPPLY-004: Version Drift Detection
+      const hasInstalledHash = /^installed_hash:\s*.+$/m.test(frontmatter);
+
+      findings.push({
+        checkId: 'SUPPLY-004',
+        name: 'Version Drift Detection',
+        description: 'Skill lacks installed_hash for detecting unauthorized modifications',
+        category: 'supply',
+        severity: 'high',
+        passed: hasInstalledHash,
+        message: hasInstalledHash
+          ? 'Skill has installed_hash for integrity verification'
+          : 'Skill lacks installed_hash - cannot detect version drift or tampering',
+        file: relativePath,
+        fixable: false,
+        fix: 'Add installed_hash: with SHA-256 hash of the original skill content',
+      });
     }
 
     return findings;
