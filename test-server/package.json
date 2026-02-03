@@ -1,0 +1,15 @@
+{
+  "name": "hackmyagent-test-server",
+  "version": "1.0.0",
+  "description": "Test MCP/API server for validating HackMyAgent attack mode",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "start:secure": "SECURITY_MODE=secure node server.js",
+    "start:vulnerable": "SECURITY_MODE=vulnerable node server.js",
+    "start:very-vulnerable": "SECURITY_MODE=very-vulnerable node server.js"
+  },
+  "keywords": ["test", "mcp", "ai-agent", "security"],
+  "license": "Apache-2.0"
+}
