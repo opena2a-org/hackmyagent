@@ -347,6 +347,216 @@ function groupExternalFindingsBySeverity(
   return grouped;
 }
 
+// OpenClaw-specific check categories
+const OPENCLAW_CATEGORIES = ['skill', 'heartbeat', 'gateway', 'config', 'supply'];
+
+function detectOpenClawDirectory(providedDir: string): string {
+  const os = require('os');
+  const fs = require('fs');
+  const path = require('path');
+
+  // If user provided a directory, use it
+  if (providedDir && providedDir !== '') {
+    return providedDir.startsWith('/') ? providedDir : path.join(process.cwd(), providedDir);
+  }
+
+  // Auto-detect common OpenClaw/Moltbot installation directories
+  const homeDir = os.homedir();
+  const candidates = [
+    path.join(homeDir, '.openclaw'),
+    path.join(homeDir, '.moltbot'),
+    path.join(homeDir, '.clawdbot'),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  // Fall back to current working directory
+  return process.cwd();
+}
+
+function filterOpenClawFindings(findings: SecurityFinding[]): SecurityFinding[] {
+  return findings.filter((f) => {
+    const checkId = f.checkId.toLowerCase();
+    return OPENCLAW_CATEGORIES.some((cat) => checkId.includes(cat));
+  });
+}
+
+function assessRiskLevel(findings: SecurityFinding[]): { level: string; color: string; description: string } {
+  const criticalCount = findings.filter((f) => f.severity === 'critical').length;
+  const highCount = findings.filter((f) => f.severity === 'high').length;
+  const mediumCount = findings.filter((f) => f.severity === 'medium').length;
+
+  if (criticalCount > 0) {
+    return {
+      level: 'CRITICAL',
+      color: colors.brightRed,
+      description: 'Immediate action required. Your OpenClaw installation has critical vulnerabilities.',
+    };
+  }
+  if (highCount > 0) {
+    return {
+      level: 'HIGH',
+      color: colors.red,
+      description: 'Significant risks detected. Address high-severity issues promptly.',
+    };
+  }
+  if (mediumCount > 0) {
+    return {
+      level: 'MODERATE',
+      color: colors.yellow,
+      description: 'Some issues found. Review and address when possible.',
+    };
+  }
+  return {
+    level: 'LOW',
+    color: colors.green,
+    description: 'Your OpenClaw installation appears well-secured.',
+  };
+}
+
+program
+  .command('secure-openclaw')
+  .description(`Security scan specifically for OpenClaw/Moltbot installations
+
+Performs focused security checks for OpenClaw agent deployments:
+  • Skill validation: Permission scopes, signature verification
+  • Heartbeat security: Endpoint exposure, authentication
+  • Gateway configs: Routing rules, rate limiting
+  • Config files: Secret exposure, insecure defaults
+  • Supply chain: Dependency vulnerabilities, integrity
+
+Auto-detects ~/.openclaw, ~/.moltbot, or ~/.clawdbot directories.
+Exit code 1 if critical/high issues found.
+
+Examples:
+  $ hackmyagent secure-openclaw                  Scan auto-detected directory
+  $ hackmyagent secure-openclaw ~/.openclaw      Scan specific directory
+  $ hackmyagent secure-openclaw --fix            Auto-fix issues
+  $ hackmyagent secure-openclaw --json           JSON output for CI`)
+  .argument('[directory]', 'Directory to scan (default: ~/.openclaw or ~/.moltbot)', '')
+  .option('--fix', 'Automatically fix issues where possible')
+  .option('--dry-run', 'Preview fixes without applying them (use with --fix)')
+  .option('--json', 'Output as JSON (for scripting/CI)')
+  .option('-v, --verbose', 'Show all checks including passed ones')
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; json?: boolean; verbose?: boolean }) => {
+    try {
+      const targetDir = detectOpenClawDirectory(directory);
+
+      if (!options.json) {
+        console.log(`\n🦞 OpenClaw Security Report`);
+        console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
+        if (options.dryRun) {
+          console.log(`🔍 Scanning ${targetDir} (dry-run)...\n`);
+        } else {
+          console.log(`🔍 Scanning ${targetDir}...\n`);
+        }
+      }
+
+      const scanner = new HardeningScanner();
+      const result = await scanner.scan({
+        targetDir,
+        autoFix: options.fix ?? false,
+        dryRun: options.dryRun ?? false,
+        ignore: [],
+      });
+
+      // Filter to OpenClaw-specific findings
+      const allOpenClawFindings = filterOpenClawFindings(result.findings);
+      const issues = allOpenClawFindings.filter((f) => !f.passed && !f.fixed);
+      const fixedFindings = allOpenClawFindings.filter((f) => f.fixed);
+      const passedFindings = allOpenClawFindings.filter((f) => f.passed);
+
+      if (options.json) {
+        const jsonOutput = {
+          target: targetDir,
+          riskLevel: assessRiskLevel(issues).level,
+          totalChecks: allOpenClawFindings.length,
+          issues: issues.length,
+          fixed: fixedFindings.length,
+          passed: passedFindings.length,
+          findings: allOpenClawFindings,
+        };
+        console.log(JSON.stringify(jsonOutput, null, 2));
+        return;
+      }
+
+      // Risk assessment
+      const risk = assessRiskLevel(issues);
+      console.log(`Risk Level: ${risk.color}${risk.level}${RESET()}`);
+      console.log(`${risk.description}\n`);
+
+      // Summary stats
+      console.log(`Checks: ${allOpenClawFindings.length} total | ${issues.length} issues | ${fixedFindings.length} fixed | ${passedFindings.length} passed\n`);
+
+      // Show issues
+      if (issues.length > 0) {
+        console.log(`${colors.red}Issues Found:${RESET()}\n`);
+
+        for (const finding of issues) {
+          const display = SEVERITY_DISPLAY[finding.severity];
+          const location = finding.file
+            ? finding.line
+              ? `${finding.file}:${finding.line}`
+              : finding.file
+            : '';
+
+          console.log(`${display.color()}${display.symbol} [${finding.checkId}] ${finding.severity.toUpperCase()}${RESET()}`);
+          console.log(`   ${finding.description}`);
+          if (location) {
+            console.log(`   File: ${location}`);
+          }
+          if (finding.fix) {
+            console.log(`   ${colors.cyan}Fix:${RESET()} ${finding.fix}`);
+          }
+          console.log();
+        }
+      } else {
+        console.log(`${colors.green}No OpenClaw-specific issues found.${RESET()}\n`);
+      }
+
+      // Show fixed findings
+      if (fixedFindings.length > 0) {
+        console.log(`${colors.green}Fixed Issues:${RESET()}`);
+        for (const finding of fixedFindings) {
+          console.log(`  ${colors.green}✓${RESET()} [${finding.checkId}] ${finding.name}`);
+        }
+        console.log();
+
+        if (result.backupPath) {
+          console.log(`Backup: ${result.backupPath}`);
+          console.log(`Undo: hackmyagent rollback ${targetDir}\n`);
+        }
+      }
+
+      // Show passed checks in verbose mode
+      if (options.verbose && passedFindings.length > 0) {
+        console.log(`${colors.green}Passed Checks:${RESET()}`);
+        for (const finding of passedFindings) {
+          console.log(`  ${colors.green}✓${RESET()} [${finding.checkId}] ${finding.name}`);
+        }
+        console.log();
+      }
+
+      console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      console.log(`Run 'hackmyagent secure' for a full security scan.\n`);
+
+      // Exit with non-zero if critical/high issues remain
+      const criticalOrHigh = issues.filter(
+        (f: SecurityFinding) => f.severity === 'critical' || f.severity === 'high'
+      );
+      if (criticalOrHigh.length > 0) {
+        process.exit(1);
+      }
+    } catch (error) {
+      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      process.exit(1);
+    }
+  });
+
 program
   .command('scan')
   .description(`Scan external target for exposed MCP endpoints
