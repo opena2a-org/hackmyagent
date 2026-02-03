@@ -347,6 +347,10 @@ export class HardeningScanner {
     const toolFindings = await this.checkToolBoundaries(targetDir, shouldFix);
     findings.push(...toolFindings);
 
+    // OpenClaw skill checks
+    const skillFindings = await this.checkOpenclawSkills(targetDir, shouldFix);
+    findings.push(...skillFindings);
+
     // Filter findings to only show real, actionable issues:
     // 1. Only failed checks (passed: false)
     // 2. Only checks with a file path (concrete findings, not generic advice)
@@ -4073,5 +4077,209 @@ dist/
 
     // Remove the used backup
     await fs.rm(backupDir, { recursive: true, force: true });
+  }
+
+  /**
+   * Recursively find SKILL.md and *.skill.md files
+   * Skips node_modules and limits depth to 5
+   */
+  private async findSkillFiles(dir: string, depth: number = 0): Promise<string[]> {
+    if (depth > 5) {
+      return [];
+    }
+
+    const skillFiles: string[] = [];
+
+    try {
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+
+        if (entry.isDirectory()) {
+          // Skip node_modules and hidden directories (except .openclaw, .moltbot, .clawdbot)
+          if (entry.name === 'node_modules') continue;
+          if (entry.name.startsWith('.') &&
+              !['openclaw', 'moltbot', 'clawdbot'].includes(entry.name.slice(1))) {
+            continue;
+          }
+
+          const subFiles = await this.findSkillFiles(fullPath, depth + 1);
+          skillFiles.push(...subFiles);
+        } else if (entry.isFile()) {
+          // Match SKILL.md or *.skill.md
+          if (entry.name === 'SKILL.md' || entry.name.endsWith('.skill.md')) {
+            skillFiles.push(fullPath);
+          }
+        }
+      }
+    } catch {
+      // Directory not accessible, skip
+    }
+
+    return skillFiles;
+  }
+
+  /**
+   * OpenClaw skill security checks (SKILL-001 to SKILL-006)
+   */
+  private async checkOpenclawSkills(
+    targetDir: string,
+    autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+    const skillFiles = await this.findSkillFiles(targetDir);
+
+    for (const skillFile of skillFiles) {
+      const relativePath = path.relative(targetDir, skillFile);
+
+      let content: string;
+      try {
+        content = await fs.readFile(skillFile, 'utf-8');
+      } catch {
+        continue;
+      }
+
+      const lines = content.split('\n');
+
+      // SKILL-001: Unsigned Skill
+      const hasSignature =
+        content.includes('opena2a_signature:') ||
+        content.includes('-----BEGIN SIGNATURE-----');
+
+      findings.push({
+        checkId: 'SKILL-001',
+        name: 'Unsigned Skill',
+        description: 'Skill file lacks cryptographic signature for authenticity verification',
+        category: 'skill',
+        severity: 'medium',
+        passed: hasSignature,
+        message: hasSignature
+          ? 'Skill has cryptographic signature'
+          : 'Skill is unsigned - cannot verify authenticity or integrity',
+        file: relativePath,
+        fixable: false,
+        fix: 'Sign the skill using: openclaw sign skill.md --key ~/.openclaw/signing-key.pem',
+      });
+
+      // SKILL-002: Remote Fetch Pattern
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        for (const pattern of SKILL_REMOTE_FETCH_PATTERNS) {
+          // Reset regex lastIndex for global patterns
+          pattern.lastIndex = 0;
+          if (pattern.test(line)) {
+            findings.push({
+              checkId: 'SKILL-002',
+              name: 'Remote Fetch Pattern',
+              description: 'Skill contains pattern that fetches and executes remote code',
+              category: 'skill',
+              severity: 'critical',
+              passed: false,
+              message: `Remote fetch pattern detected: "${line.trim().substring(0, 80)}..."`,
+              file: relativePath,
+              line: i + 1,
+              fixable: false,
+              fix: 'Remove curl|sh, wget|sh, and other remote code execution patterns',
+            });
+            break; // One finding per line
+          }
+        }
+      }
+
+      // SKILL-003: Heartbeat Installation
+      const heartbeatPattern = /heartbeat|cron|schedule|every\s+\d+\s*(min|hour|sec)/gi;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        heartbeatPattern.lastIndex = 0;
+        if (heartbeatPattern.test(line)) {
+          findings.push({
+            checkId: 'SKILL-003',
+            name: 'Heartbeat Installation',
+            description: 'Skill attempts to install periodic/scheduled tasks',
+            category: 'skill',
+            severity: 'high',
+            passed: false,
+            message: `Heartbeat/scheduled task pattern detected: "${line.trim().substring(0, 80)}..."`,
+            file: relativePath,
+            line: i + 1,
+            fixable: false,
+            fix: 'Heartbeats should be configured separately with restricted permissions, not bundled in skills',
+          });
+        }
+      }
+
+      // SKILL-004: Filesystem Write Outside Sandbox
+      const filesystemWildcardPattern = /filesystem:\s*\*|filesystem:\s*~\/\*|filesystem:\s*\//gi;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        filesystemWildcardPattern.lastIndex = 0;
+        if (filesystemWildcardPattern.test(line)) {
+          findings.push({
+            checkId: 'SKILL-004',
+            name: 'Filesystem Write Outside Sandbox',
+            description: 'Skill requests broad filesystem access outside sandbox',
+            category: 'skill',
+            severity: 'critical',
+            passed: false,
+            message: `Broad filesystem access requested: "${line.trim()}"`,
+            file: relativePath,
+            line: i + 1,
+            fixable: false,
+            fix: 'Restrict filesystem access to specific directories (e.g., filesystem:./data/*)',
+          });
+        }
+      }
+
+      // SKILL-005: Credential File Access
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        for (const pattern of SKILL_CREDENTIAL_ACCESS_PATTERNS) {
+          pattern.lastIndex = 0;
+          if (pattern.test(line)) {
+            findings.push({
+              checkId: 'SKILL-005',
+              name: 'Credential File Access',
+              description: 'Skill attempts to access credential or sensitive configuration files',
+              category: 'skill',
+              severity: 'critical',
+              passed: false,
+              message: `Credential file access pattern detected: "${line.trim().substring(0, 80)}..."`,
+              file: relativePath,
+              line: i + 1,
+              fixable: false,
+              fix: 'Skills should never access credential files like ~/.ssh, ~/.aws, wallets, or .env files',
+            });
+            break; // One finding per line per check
+          }
+        }
+      }
+
+      // SKILL-006: Data Exfiltration Pattern
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        for (const pattern of SKILL_EXFILTRATION_PATTERNS) {
+          pattern.lastIndex = 0;
+          if (pattern.test(line)) {
+            findings.push({
+              checkId: 'SKILL-006',
+              name: 'Data Exfiltration Pattern',
+              description: 'Skill contains patterns commonly used for data exfiltration',
+              category: 'skill',
+              severity: 'critical',
+              passed: false,
+              message: `Data exfiltration pattern detected: "${line.trim().substring(0, 80)}..."`,
+              file: relativePath,
+              line: i + 1,
+              fixable: false,
+              fix: 'Remove webhook.site, requestbin, ngrok, and suspicious POST patterns',
+            });
+            break; // One finding per line per check
+          }
+        }
+      }
+    }
+
+    return findings;
   }
 }
