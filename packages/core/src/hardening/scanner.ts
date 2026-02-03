@@ -351,6 +351,10 @@ export class HardeningScanner {
     const skillFindings = await this.checkOpenclawSkills(targetDir, shouldFix);
     findings.push(...skillFindings);
 
+    // OpenClaw heartbeat checks
+    const heartbeatFindings = await this.checkOpenclawHeartbeat(targetDir, shouldFix);
+    findings.push(...heartbeatFindings);
+
     // Filter findings to only show real, actionable issues:
     // 1. Only failed checks (passed: false)
     // 2. Only checks with a file path (concrete findings, not generic advice)
@@ -4424,6 +4428,219 @@ dist/
           });
         }
       }
+    }
+
+    return findings;
+  }
+
+  /**
+   * Recursively find HEARTBEAT.md and *.heartbeat.md files
+   * Skips node_modules and limits depth to 5
+   */
+  private async findHeartbeatFiles(dir: string, depth: number = 0): Promise<string[]> {
+    if (depth > 5) {
+      return [];
+    }
+
+    const heartbeatFiles: string[] = [];
+
+    try {
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+
+        if (entry.isDirectory()) {
+          // Skip node_modules and hidden directories (except .openclaw, .moltbot, .clawdbot)
+          if (entry.name === 'node_modules') continue;
+          if (entry.name.startsWith('.') &&
+              !['openclaw', 'moltbot', 'clawdbot'].includes(entry.name.slice(1))) {
+            continue;
+          }
+
+          const subFiles = await this.findHeartbeatFiles(fullPath, depth + 1);
+          heartbeatFiles.push(...subFiles);
+        } else if (entry.isFile()) {
+          // Match HEARTBEAT.md or *.heartbeat.md
+          if (entry.name === 'HEARTBEAT.md' || entry.name.endsWith('.heartbeat.md')) {
+            heartbeatFiles.push(fullPath);
+          }
+        }
+      }
+    } catch {
+      // Directory not accessible, skip
+    }
+
+    return heartbeatFiles;
+  }
+
+  /**
+   * OpenClaw heartbeat security checks (HEARTBEAT-001 to HEARTBEAT-006)
+   */
+  private async checkOpenclawHeartbeat(
+    targetDir: string,
+    autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+    const heartbeatFiles = await this.findHeartbeatFiles(targetDir);
+
+    for (const heartbeatFile of heartbeatFiles) {
+      const relativePath = path.relative(targetDir, heartbeatFile);
+
+      let content: string;
+      try {
+        content = await fs.readFile(heartbeatFile, 'utf-8');
+      } catch {
+        continue;
+      }
+
+      const lines = content.split('\n');
+
+      // HEARTBEAT-001: Unverified Heartbeat URL
+      const urlPattern = /https?:\/\/[^\s]+/gi;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        urlPattern.lastIndex = 0;
+        const match = urlPattern.exec(line);
+        if (match) {
+          findings.push({
+            checkId: 'HEARTBEAT-001',
+            name: 'Unverified Heartbeat URL',
+            description: 'Heartbeat contacts external URL without verification',
+            category: 'heartbeat',
+            severity: 'critical',
+            passed: false,
+            message: `External URL detected in heartbeat: "${match[0].substring(0, 60)}..."`,
+            file: relativePath,
+            line: i + 1,
+            fixable: false,
+            fix: 'Verify the URL is from a trusted source and add hash pinning for integrity',
+          });
+        }
+      }
+
+      // HEARTBEAT-002: No Hash Pinning
+      const hasHashPinning =
+        content.includes('pinned_hash:') ||
+        content.includes('sha256:') ||
+        content.includes('hash:');
+
+      findings.push({
+        checkId: 'HEARTBEAT-002',
+        name: 'No Hash Pinning',
+        description: 'Heartbeat lacks hash pinning for content integrity verification',
+        category: 'heartbeat',
+        severity: 'high',
+        passed: hasHashPinning,
+        message: hasHashPinning
+          ? 'Heartbeat has hash pinning for integrity verification'
+          : 'Heartbeat lacks hash pinning - content integrity cannot be verified',
+        file: relativePath,
+        fixable: false,
+        fix: 'Add pinned_hash: sha256:<hash> to verify heartbeat content integrity',
+      });
+
+      // HEARTBEAT-003: Unsigned Heartbeat
+      const hasSignature =
+        content.includes('opena2a_signature:') ||
+        content.includes('signature:') ||
+        content.includes('-----BEGIN SIGNATURE-----');
+
+      findings.push({
+        checkId: 'HEARTBEAT-003',
+        name: 'Unsigned Heartbeat',
+        description: 'Heartbeat file lacks cryptographic signature',
+        category: 'heartbeat',
+        severity: 'high',
+        passed: hasSignature,
+        message: hasSignature
+          ? 'Heartbeat has cryptographic signature'
+          : 'Heartbeat is unsigned - cannot verify authenticity or integrity',
+        file: relativePath,
+        fixable: false,
+        fix: 'Sign the heartbeat using: openclaw sign heartbeat.md --key ~/.openclaw/signing-key.pem',
+      });
+
+      // HEARTBEAT-004: Dangerous Capabilities
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].toLowerCase();
+        for (const cap of HEARTBEAT_DANGEROUS_CAPS) {
+          if (line.includes(cap.toLowerCase())) {
+            findings.push({
+              checkId: 'HEARTBEAT-004',
+              name: 'Dangerous Capabilities',
+              description: 'Heartbeat requests dangerous capabilities',
+              category: 'heartbeat',
+              severity: 'critical',
+              passed: false,
+              message: `Dangerous capability "${cap}" detected in heartbeat`,
+              file: relativePath,
+              line: i + 1,
+              fixable: false,
+              fix: 'Heartbeats should use minimal capabilities - avoid shell:*, filesystem:*, network:*',
+            });
+          }
+        }
+      }
+
+      // HEARTBEAT-005: Excessive Frequency
+      // Match both "every: 30s" and "Every 30 minutes:" formats
+      const frequencyPattern = /every[:\s]+(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hours?)/gi;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        frequencyPattern.lastIndex = 0;
+        const match = frequencyPattern.exec(line);
+        if (match) {
+          const value = parseInt(match[1], 10);
+          const unit = match[2].toLowerCase();
+
+          // Calculate interval in minutes
+          let intervalMinutes = value;
+          if (unit.startsWith('s')) {
+            intervalMinutes = value / 60;
+          } else if (unit.startsWith('h')) {
+            intervalMinutes = value * 60;
+          }
+
+          if (intervalMinutes < 5) {
+            findings.push({
+              checkId: 'HEARTBEAT-005',
+              name: 'Excessive Frequency',
+              description: 'Heartbeat runs too frequently (< 5 minutes)',
+              category: 'heartbeat',
+              severity: 'medium',
+              passed: false,
+              message: `Heartbeat interval of ${value}${unit} is less than 5 minutes`,
+              file: relativePath,
+              line: i + 1,
+              fixable: false,
+              fix: 'Increase heartbeat interval to at least 5 minutes to prevent resource exhaustion',
+            });
+          }
+        }
+      }
+
+      // HEARTBEAT-006: No Active Hours Limit
+      const hasActiveHours =
+        /activeHours:/i.test(content) ||
+        /schedule:/i.test(content) ||
+        /time_window:/i.test(content) ||
+        /run_between:/i.test(content);
+
+      findings.push({
+        checkId: 'HEARTBEAT-006',
+        name: 'No Active Hours Limit',
+        description: 'Heartbeat lacks time-of-day restrictions',
+        category: 'heartbeat',
+        severity: 'medium',
+        passed: hasActiveHours,
+        message: hasActiveHours
+          ? 'Heartbeat has active hours restriction'
+          : 'Heartbeat can run 24/7 without time restrictions',
+        file: relativePath,
+        fixable: false,
+        fix: 'Add activeHours: or schedule: to limit when the heartbeat can run',
+      });
     }
 
     return findings;
