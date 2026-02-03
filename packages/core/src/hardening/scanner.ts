@@ -359,6 +359,10 @@ export class HardeningScanner {
     const gatewayFindings = await this.checkOpenclawGateway(targetDir, shouldFix);
     findings.push(...gatewayFindings);
 
+    // OpenClaw config checks
+    const configFindings = await this.checkOpenclawConfig(targetDir, shouldFix);
+    findings.push(...configFindings);
+
     // Filter findings to only show real, actionable issues:
     // 1. Only failed checks (passed: false)
     // 2. Only checks with a file path (concrete findings, not generic advice)
@@ -4856,5 +4860,257 @@ dist/
     }
 
     return matrix[b.length][a.length];
+  }
+
+  /**
+   * Find files matching a pattern recursively (max depth 3, skips node_modules/.git)
+   */
+  private async findFilesMatching(
+    targetDir: string,
+    patterns: string[],
+    maxDepth: number = 3
+  ): Promise<string[]> {
+    const matchedFiles: string[] = [];
+
+    const scanDir = async (dir: string, currentDepth: number): Promise<void> => {
+      if (currentDepth > maxDepth) return;
+
+      let entries: string[];
+      try {
+        entries = await fs.readdir(dir);
+      } catch {
+        return;
+      }
+
+      for (const entryName of entries) {
+        const fullPath = path.join(dir, entryName);
+
+        // Skip node_modules and .git directories
+        if (entryName === 'node_modules' || entryName === '.git') {
+          continue;
+        }
+
+        let stat;
+        try {
+          stat = await fs.stat(fullPath);
+        } catch {
+          continue;
+        }
+
+        if (stat.isDirectory()) {
+          await scanDir(fullPath, currentDepth + 1);
+        } else if (stat.isFile()) {
+          // Check if filename matches any pattern
+          const lowerName = entryName.toLowerCase();
+          for (const pattern of patterns) {
+            if (lowerName.includes(pattern.toLowerCase())) {
+              matchedFiles.push(fullPath);
+              break;
+            }
+          }
+        }
+      }
+    };
+
+    await scanDir(targetDir, 0);
+    return matchedFiles;
+  }
+
+  /**
+   * OpenClaw config security checks (CONFIG-001 to CONFIG-006)
+   */
+  private async checkOpenclawConfig(
+    targetDir: string,
+    autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // CONFIG-001: Session File Exposure
+    const sessionPatterns = [
+      'whatsapp-session',
+      'discord-token',
+      'telegram-session',
+      'slack-token',
+      'session.json',
+    ];
+    const sessionFiles = await this.findFilesMatching(targetDir, sessionPatterns);
+    for (const sessionFile of sessionFiles) {
+      const relativePath = path.relative(targetDir, sessionFile);
+      findings.push({
+        checkId: 'CONFIG-001',
+        name: 'Session File Exposure',
+        description: 'Session/token file found that may contain sensitive credentials',
+        category: 'config',
+        severity: 'critical',
+        passed: false,
+        message: `Session/token file exposed: ${path.basename(sessionFile)}`,
+        file: relativePath,
+        fixable: false,
+        fix: 'Move session files outside the project directory or add to .gitignore',
+      });
+    }
+
+    // CONFIG-002: SOUL.md Injection Vectors
+    const soulFiles = await this.findFilesMatching(targetDir, ['SOUL.md']);
+    for (const soulFile of soulFiles) {
+      const relativePath = path.relative(targetDir, soulFile);
+      let content: string;
+      try {
+        content = await fs.readFile(soulFile, 'utf-8');
+      } catch {
+        continue;
+      }
+
+      for (const pattern of PROMPT_INJECTION_PATTERNS) {
+        const match = content.match(pattern);
+        if (match) {
+          findings.push({
+            checkId: 'CONFIG-002',
+            name: 'SOUL.md Injection Vectors',
+            description: 'SOUL.md contains potential prompt injection patterns',
+            category: 'config',
+            severity: 'high',
+            passed: false,
+            message: `Prompt injection pattern detected: "${match[0]}"`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Review and remove suspicious patterns from SOUL.md',
+          });
+          break; // Only report first match per file
+        }
+      }
+    }
+
+    // CONFIG-003: Daemon Running as Root
+    const daemonPatterns = ['daemon.sh', 'start.sh', 'run.sh'];
+    const daemonFiles = await this.findFilesMatching(targetDir, daemonPatterns);
+    const rootPatterns = [/\bsudo\b/gi, /User=root/gi, /uid=0/gi];
+    for (const daemonFile of daemonFiles) {
+      const relativePath = path.relative(targetDir, daemonFile);
+      let content: string;
+      try {
+        content = await fs.readFile(daemonFile, 'utf-8');
+      } catch {
+        continue;
+      }
+
+      for (const pattern of rootPatterns) {
+        const match = content.match(pattern);
+        if (match) {
+          findings.push({
+            checkId: 'CONFIG-003',
+            name: 'Daemon Running as Root',
+            description: 'Daemon script runs with root privileges',
+            category: 'config',
+            severity: 'critical',
+            passed: false,
+            message: `Root privilege pattern found: "${match[0]}"`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Run daemon as non-root user with minimal privileges',
+          });
+          break; // Only report first match per file
+        }
+      }
+    }
+
+    // CONFIG-004: Plaintext API Keys
+    const envFiles = await this.findFilesMatching(targetDir, ['.env']);
+    for (const envFile of envFiles) {
+      const relativePath = path.relative(targetDir, envFile);
+      let content: string;
+      try {
+        content = await fs.readFile(envFile, 'utf-8');
+      } catch {
+        continue;
+      }
+
+      for (const { name, pattern } of CREDENTIAL_PATTERNS) {
+        const match = content.match(pattern);
+        if (match) {
+          findings.push({
+            checkId: 'CONFIG-004',
+            name: 'Plaintext API Keys',
+            description: 'Plaintext API key found in environment file',
+            category: 'config',
+            severity: 'critical',
+            passed: false,
+            message: `${name} found in plaintext`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Use a secrets manager or ensure .env is in .gitignore',
+          });
+          break; // Only report first match per file
+        }
+      }
+    }
+
+    // CONFIG-005: Memory Poisoning Patterns
+    const memoryFiles = await this.findFilesMatching(targetDir, ['memory.json']);
+    const memoryPoisonPatterns = [
+      ...PROMPT_INJECTION_PATTERNS,
+      /\bbase64\b/gi,
+      /\beval\s*\(/gi,
+      /\bexec\s*\(/gi,
+    ];
+    for (const memoryFile of memoryFiles) {
+      const relativePath = path.relative(targetDir, memoryFile);
+      let content: string;
+      try {
+        content = await fs.readFile(memoryFile, 'utf-8');
+      } catch {
+        continue;
+      }
+
+      for (const pattern of memoryPoisonPatterns) {
+        const match = content.match(pattern);
+        if (match) {
+          findings.push({
+            checkId: 'CONFIG-005',
+            name: 'Memory Poisoning Patterns',
+            description: 'memory.json contains suspicious patterns that could poison agent memory',
+            category: 'config',
+            severity: 'high',
+            passed: false,
+            message: `Suspicious pattern in memory: "${match[0]}"`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Review and sanitize memory.json contents',
+          });
+          break; // Only report first match per file
+        }
+      }
+    }
+
+    // CONFIG-006: Moltbook Integration Risk
+    const openclawConfigFiles = await this.findFilesMatching(targetDir, ['openclaw.json']);
+    for (const configFile of openclawConfigFiles) {
+      const relativePath = path.relative(targetDir, configFile);
+      let config: Record<string, unknown>;
+      try {
+        const content = await fs.readFile(configFile, 'utf-8');
+        config = JSON.parse(content);
+      } catch {
+        continue;
+      }
+
+      const moltbook = config.moltbook as Record<string, unknown> | undefined;
+      if (moltbook && moltbook.enabled === true && moltbook.autoFollow === true) {
+        findings.push({
+          checkId: 'CONFIG-006',
+          name: 'Moltbook Integration Risk',
+          description: 'Moltbook auto-follow enabled, allowing automatic following of untrusted agents',
+          category: 'config',
+          severity: 'high',
+          passed: false,
+          message: 'Moltbook enabled with autoFollow - may auto-follow untrusted agents',
+          file: relativePath,
+          fixable: false,
+          fix: 'Disable autoFollow or review moltbook security settings',
+        });
+      }
+    }
+
+    return findings;
   }
 }
