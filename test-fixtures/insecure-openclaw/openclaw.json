@@ -6,6 +6,9 @@
       "token": "super-secret-token-12345"
     }
   },
+  "security": {
+    "note": "websocketOrigins not configured - triggers GATEWAY-002"
+  },
   "exec": {
     "approvals": {
       "set": "off"
@@ -13,6 +16,13 @@
   },
   "sandbox": {
     "enabled": false
+  },
+  "docker": {
+    "privileged": true,
+    "mounts": [
+      "/var/run/docker.sock:/var/run/docker.sock",
+      "/etc/passwd:/etc/passwd:ro"
+    ]
   },
   "heartbeat": {
     "every": "1m",

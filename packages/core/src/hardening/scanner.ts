@@ -355,6 +355,10 @@ export class HardeningScanner {
     const heartbeatFindings = await this.checkOpenclawHeartbeat(targetDir, shouldFix);
     findings.push(...heartbeatFindings);
 
+    // OpenClaw gateway checks
+    const gatewayFindings = await this.checkOpenclawGateway(targetDir, shouldFix);
+    findings.push(...gatewayFindings);
+
     // Filter findings to only show real, actionable issues:
     // 1. Only failed checks (passed: false)
     // 2. Only checks with a file path (concrete findings, not generic advice)
@@ -4641,6 +4645,183 @@ dist/
         fixable: false,
         fix: 'Add activeHours: or schedule: to limit when the heartbeat can run',
       });
+    }
+
+    return findings;
+  }
+
+  /**
+   * Find OpenClaw gateway configuration files
+   */
+  private async findGatewayConfigFiles(dir: string): Promise<string[]> {
+    const configFiles: string[] = [];
+    const candidates = [
+      'openclaw.json',
+      '.openclaw/config.json',
+      'moltbot.json',
+      '.moltbot/config.json',
+    ];
+
+    for (const candidate of candidates) {
+      const fullPath = path.join(dir, candidate);
+      try {
+        await fs.access(fullPath);
+        configFiles.push(fullPath);
+      } catch {
+        // File doesn't exist
+      }
+    }
+
+    return configFiles;
+  }
+
+  /**
+   * OpenClaw gateway security checks (GATEWAY-001 to GATEWAY-006)
+   */
+  private async checkOpenclawGateway(
+    targetDir: string,
+    autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+    const configFiles = await this.findGatewayConfigFiles(targetDir);
+
+    for (const configFile of configFiles) {
+      const relativePath = path.relative(targetDir, configFile);
+
+      let content: string;
+      let config: Record<string, unknown>;
+      try {
+        content = await fs.readFile(configFile, 'utf-8');
+        config = JSON.parse(content);
+      } catch {
+        continue;
+      }
+
+      // GATEWAY-001: Bound to 0.0.0.0
+      const gateway = config.gateway as Record<string, unknown> | undefined;
+      if (gateway && gateway.host === '0.0.0.0') {
+        findings.push({
+          checkId: 'GATEWAY-001',
+          name: 'Bound to 0.0.0.0',
+          description: 'Gateway is bound to all interfaces (0.0.0.0)',
+          category: 'gateway',
+          severity: 'critical',
+          passed: false,
+          message: 'Gateway host is 0.0.0.0 - accessible from any network interface',
+          file: relativePath,
+          fixable: false,
+          fix: 'Bind to 127.0.0.1 for local-only access or specific interface IP',
+        });
+      }
+
+      // GATEWAY-002: Missing WebSocket Origin Validation
+      const security = config.security as Record<string, unknown> | undefined;
+      const hasWebSocketOrigins = security && security.websocketOrigins;
+      findings.push({
+        checkId: 'GATEWAY-002',
+        name: 'Missing WebSocket Origin Validation',
+        description: 'Gateway lacks WebSocket origin validation (GHSA-g8p2)',
+        category: 'gateway',
+        severity: 'critical',
+        passed: Boolean(hasWebSocketOrigins),
+        message: hasWebSocketOrigins
+          ? 'WebSocket origin validation is configured'
+          : 'Missing security.websocketOrigins - vulnerable to GHSA-g8p2 cross-origin attacks',
+        file: relativePath,
+        fixable: false,
+        fix: 'Add security.websocketOrigins array with allowed origins',
+      });
+
+      // GATEWAY-003: Token Exposed in Config
+      const gatewayAuth = gateway?.auth as Record<string, unknown> | undefined;
+      const hasPlaintextToken =
+        (gatewayAuth && typeof gatewayAuth.token === 'string' && gatewayAuth.token.length > 0) ||
+        (typeof config.token === 'string' && (config.token as string).length > 0);
+      if (hasPlaintextToken) {
+        findings.push({
+          checkId: 'GATEWAY-003',
+          name: 'Token Exposed in Config',
+          description: 'Plaintext authentication token stored in configuration file',
+          category: 'gateway',
+          severity: 'critical',
+          passed: false,
+          message: 'Plaintext token found in configuration - use environment variables instead',
+          file: relativePath,
+          fixable: false,
+          fix: 'Move tokens to environment variables: OPENCLAW_AUTH_TOKEN',
+        });
+      }
+
+      // GATEWAY-004: Approval Confirmations Disabled
+      const exec = config.exec as Record<string, unknown> | undefined;
+      const approvals = exec?.approvals as Record<string, unknown> | undefined;
+      const configApprovals = config.approvals as Record<string, unknown> | undefined;
+      const approvalsDisabled =
+        approvals?.set === 'off' ||
+        approvals?.enabled === false ||
+        configApprovals?.enabled === false;
+      if (approvalsDisabled) {
+        findings.push({
+          checkId: 'GATEWAY-004',
+          name: 'Approval Confirmations Disabled',
+          description: 'Execution approval confirmations are disabled',
+          category: 'gateway',
+          severity: 'critical',
+          passed: false,
+          message: 'Approval confirmations disabled - commands execute without user confirmation',
+          file: relativePath,
+          fixable: false,
+          fix: 'Enable approvals: exec.approvals.set = "on" or approvals.enabled = true',
+        });
+      }
+
+      // GATEWAY-005: Sandbox Disabled
+      const sandbox = config.sandbox as Record<string, unknown> | undefined;
+      if (sandbox && sandbox.enabled === false) {
+        findings.push({
+          checkId: 'GATEWAY-005',
+          name: 'Sandbox Disabled',
+          description: 'Sandbox execution environment is disabled',
+          category: 'gateway',
+          severity: 'critical',
+          passed: false,
+          message: 'Sandbox is disabled - code executes with full system access',
+          file: relativePath,
+          fixable: false,
+          fix: 'Enable sandbox: sandbox.enabled = true',
+        });
+      }
+
+      // GATEWAY-006: Container Escape Risk
+      const docker = config.docker as Record<string, unknown> | undefined;
+      const isPrivileged = docker?.privileged === true;
+      const mounts = docker?.mounts as string[] | undefined;
+      const hasDangerousMounts = mounts?.some(
+        (mount: string) =>
+          mount.includes('/var/run/docker.sock') ||
+          mount.includes('/etc/passwd') ||
+          mount.includes('/etc/shadow') ||
+          mount.startsWith('/:/') ||
+          mount.includes(':/host')
+      );
+
+      if (isPrivileged || hasDangerousMounts) {
+        const issues: string[] = [];
+        if (isPrivileged) issues.push('privileged mode');
+        if (hasDangerousMounts) issues.push('sensitive host mounts');
+        findings.push({
+          checkId: 'GATEWAY-006',
+          name: 'Container Escape Risk',
+          description: 'Docker configuration allows container escape',
+          category: 'gateway',
+          severity: 'critical',
+          passed: false,
+          message: `Container escape risk: ${issues.join(', ')}`,
+          file: relativePath,
+          fixable: false,
+          fix: 'Disable privileged mode and remove sensitive host mounts',
+        });
+      }
     }
 
     return findings;
