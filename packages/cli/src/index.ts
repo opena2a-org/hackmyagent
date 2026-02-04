@@ -2024,7 +2024,7 @@ Examples:
   .option('--timeout <ms>', 'Request timeout in milliseconds', '30000')
   .option('--delay <ms>', 'Delay between requests in milliseconds', '1000')
   .option('--stop-on-success', 'Stop after first successful attack')
-  .option('-f, --format <format>', 'Output format: text, json, sarif', 'text')
+  .option('-f, --format <format>', 'Output format: text, json, sarif, html', 'text')
   .option('-o, --output <file>', 'Write output to file')
   .option('-v, --verbose', 'Show detailed output for each payload')
   .action(async (targetUrl: string | undefined, options: {
@@ -2092,7 +2092,7 @@ Examples:
       };
 
       // Validate format
-      const validFormats = ['text', 'json', 'sarif'];
+      const validFormats = ['text', 'json', 'sarif', 'html'];
       const format = options.format || 'text';
       if (!validFormats.includes(format)) {
         console.error(`Error: Invalid format '${format}'. Use: ${validFormats.join(', ')}`);
@@ -2128,6 +2128,9 @@ Examples:
           break;
         case 'sarif':
           output = generateAttackSarif(report);
+          break;
+        case 'html':
+          output = generateAttackHtmlReport(report);
           break;
         default: // text
           printAttackReport(report, options.verbose ?? false);
@@ -2264,6 +2267,750 @@ function generateAttackSarif(report: AttackReport): string {
       results,
     }],
   }, null, 2);
+}
+
+// Generate HTML report for attack results
+function generateAttackHtmlReport(report: AttackReport): string {
+  // Risk grade based on score
+  const getGrade = (score: number): { letter: string; color: string } => {
+    if (score <= 10) return { letter: 'A', color: '#22c55e' };
+    if (score <= 25) return { letter: 'B', color: '#84cc16' };
+    if (score <= 50) return { letter: 'C', color: '#eab308' };
+    if (score <= 70) return { letter: 'D', color: '#f97316' };
+    return { letter: 'F', color: '#ef4444' };
+  };
+  const grade = getGrade(report.riskScore);
+
+  const ratingColor: Record<AttackReport['riskRating'], string> = {
+    'critical': '#ef4444',
+    'high': '#f97316',
+    'medium': '#eab308',
+    'low': '#22c55e',
+    'secure': '#22c55e',
+  };
+
+  const ratingBg: Record<AttackReport['riskRating'], string> = {
+    'critical': 'rgba(239, 68, 68, 0.15)',
+    'high': 'rgba(249, 115, 22, 0.15)',
+    'medium': 'rgba(234, 179, 8, 0.15)',
+    'low': 'rgba(34, 197, 94, 0.15)',
+    'secure': 'rgba(34, 197, 94, 0.15)',
+  };
+
+  // SVG icons
+  const icons = {
+    sword: '<svg class="icon icon-sword" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 17.5L3 6V3h3l11.5 11.5"/><path d="M13 19l6-6"/><path d="M16 16l4 4"/><path d="M19 21l2-2"/></svg>',
+    shield: '<svg class="icon icon-shield" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 1.944A11.954 11.954 0 012.166 5C2.056 5.649 2 6.319 2 7c0 5.225 3.34 9.67 8 11.317C14.66 16.67 18 12.225 18 7c0-.682-.057-1.35-.166-2A11.954 11.954 0 0110 1.944zM11 14a1 1 0 11-2 0 1 1 0 012 0zm0-7a1 1 0 10-2 0v3a1 1 0 102 0V7z" clip-rule="evenodd"/></svg>',
+    check: '<svg class="icon icon-check" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>',
+    x: '<svg class="icon icon-x" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>',
+    warning: '<svg class="icon icon-warning" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>',
+    print: '<svg class="icon icon-print" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 4v3H4a2 2 0 00-2 2v3a2 2 0 002 2h1v2a2 2 0 002 2h6a2 2 0 002-2v-2h1a2 2 0 002-2V9a2 2 0 00-2-2h-1V4a2 2 0 00-2-2H7a2 2 0 00-2 2zm8 0H7v3h6V4zm0 8H7v4h6v-4z" clip-rule="evenodd"/></svg>',
+  };
+
+  // Category abbreviations
+  const categoryAbbrev: Record<AttackCategory, string> = {
+    'prompt-injection': 'PI',
+    'jailbreak': 'JB',
+    'data-exfiltration': 'DE',
+    'capability-abuse': 'CA',
+    'context-manipulation': 'CM',
+  };
+
+  // Donut chart for attack results
+  const donutRadius = 60;
+  const donutStroke = 12;
+  const donutCircumference = 2 * Math.PI * donutRadius;
+  const total = report.summary.total || 1;
+  const successPct = report.summary.successful / total;
+  const blockedPct = report.summary.blocked / total;
+  const inconclusivePct = report.summary.inconclusive / total;
+
+  const successDash = donutCircumference * successPct;
+  const blockedDash = donutCircumference * blockedPct;
+  const inconclusiveDash = donutCircumference * inconclusivePct;
+
+  // Calculate offsets for each segment
+  const successOffset = 0;
+  const blockedOffset = successDash;
+  const inconclusiveOffset = successDash + blockedDash;
+
+  const donutSvg = `
+    <svg width="160" height="160" viewBox="0 0 160 160">
+      <!-- Background circle -->
+      <circle cx="80" cy="80" r="${donutRadius}" fill="none" stroke="#334155" stroke-width="${donutStroke}"/>
+      <!-- Inconclusive segment (gray) -->
+      ${inconclusivePct > 0 ? `<circle cx="80" cy="80" r="${donutRadius}" fill="none"
+        stroke="#64748b" stroke-width="${donutStroke}"
+        stroke-dasharray="${inconclusiveDash} ${donutCircumference}"
+        stroke-dashoffset="${-inconclusiveOffset}"
+        transform="rotate(-90 80 80)"/>` : ''}
+      <!-- Blocked segment (green) -->
+      ${blockedPct > 0 ? `<circle cx="80" cy="80" r="${donutRadius}" fill="none"
+        stroke="#22c55e" stroke-width="${donutStroke}"
+        stroke-dasharray="${blockedDash} ${donutCircumference}"
+        stroke-dashoffset="${-blockedOffset}"
+        transform="rotate(-90 80 80)"/>` : ''}
+      <!-- Successful segment (red) -->
+      ${successPct > 0 ? `<circle cx="80" cy="80" r="${donutRadius}" fill="none"
+        stroke="#ef4444" stroke-width="${donutStroke}"
+        stroke-dasharray="${successDash} ${donutCircumference}"
+        stroke-dashoffset="${-successOffset}"
+        transform="rotate(-90 80 80)"/>` : ''}
+      <!-- Center text -->
+      <text x="80" y="75" text-anchor="middle" fill="#f1f5f9" font-size="24" font-weight="700">${report.summary.total}</text>
+      <text x="80" y="95" text-anchor="middle" fill="#94a3b8" font-size="12">attacks</text>
+    </svg>`;
+
+  // Generate category breakdown rows
+  const categoryRows = Object.entries(report.summary.byCategory)
+    .filter(([_, stats]) => stats.total > 0)
+    .map(([cat, stats]) => {
+      const catInfo = ATTACK_CATEGORIES[cat as AttackCategory];
+      const abbrev = categoryAbbrev[cat as AttackCategory];
+      const successRate = stats.total > 0 ? Math.round((stats.successful / stats.total) * 100) : 0;
+      const barColor = stats.successful === 0 ? '#22c55e' : successRate > 50 ? '#ef4444' : '#eab308';
+      const statusIcon = stats.successful === 0 ? icons.check : icons.x;
+      const statusClass = stats.successful === 0 ? 'status-pass' : 'status-fail';
+
+      // Get results for this category
+      const catResults = report.results.filter(r => r.payload.category === cat);
+
+      const resultRows = catResults.map(r => {
+        const resultIcon = r.success ? icons.x : r.blocked ? icons.check : icons.warning;
+        const resultClass = r.success ? 'status-fail' : r.blocked ? 'status-pass' : 'status-warn';
+        const sevColor = r.payload.severity === 'critical' ? '#ef4444' :
+                        r.payload.severity === 'high' ? '#f97316' :
+                        r.payload.severity === 'medium' ? '#eab308' : '#22c55e';
+        return `
+          <tr class="attack-row ${r.success ? 'failed' : ''}">
+            <td class="status-cell"><span class="${resultClass}">${resultIcon}</span></td>
+            <td class="id-cell"><code>${r.payload.id}</code></td>
+            <td class="name-cell">${escapeHtml(r.payload.name)}</td>
+            <td class="severity-cell"><span class="severity-badge" style="color: ${sevColor}; background: ${sevColor}20;">${r.payload.severity.toUpperCase()}</span></td>
+            <td class="result-cell">${r.success ? '<span class="result-tag fail">Succeeded</span>' : r.blocked ? '<span class="result-tag pass">Blocked</span>' : '<span class="result-tag warn">Inconclusive</span>'}</td>
+          </tr>`;
+      }).join('');
+
+      return `
+        <div class="category" id="cat-${abbrev}">
+          <div class="category-header" onclick="toggleCategory('${abbrev}')">
+            <span class="category-abbrev">[${abbrev}]</span>
+            <span class="category-icon ${statusClass}">${statusIcon}</span>
+            <span class="category-name">${escapeHtml(catInfo.name)}</span>
+            <div class="category-meta">
+              <span class="category-score">${stats.successful}/${stats.total} successful</span>
+              <div class="mini-bar"><div class="mini-fill" style="width: ${successRate}%; background: ${barColor};"></div></div>
+              <span class="chevron">▼</span>
+            </div>
+          </div>
+          <div class="category-content">
+            <table class="attacks-table">
+              <thead><tr><th></th><th>ID</th><th>Attack</th><th>Severity</th><th>Result</th></tr></thead>
+              <tbody>${resultRows}</tbody>
+            </table>
+          </div>
+        </div>`;
+    }).join('');
+
+  // Successful attacks detail section
+  const successfulAttacks = report.results.filter(r => r.success);
+  const successfulDetailsHtml = successfulAttacks.length > 0 ? successfulAttacks.map(r => {
+    const sevColor = r.payload.severity === 'critical' ? '#ef4444' :
+                    r.payload.severity === 'high' ? '#f97316' :
+                    r.payload.severity === 'medium' ? '#eab308' : '#22c55e';
+    return `
+      <div class="attack-detail">
+        <div class="attack-detail-header">
+          <code class="attack-id">${r.payload.id}</code>
+          <span class="attack-name">${escapeHtml(r.payload.name)}</span>
+          <span class="severity-badge" style="color: ${sevColor}; background: ${sevColor}20;">${r.payload.severity.toUpperCase()}</span>
+        </div>
+        <div class="attack-detail-meta">
+          ${r.payload.oasbControl ? `<span class="meta-tag">OASB ${r.payload.oasbControl}</span>` : ''}
+          ${r.payload.cwe ? `<span class="meta-tag">CWE-${r.payload.cwe}</span>` : ''}
+          <span class="meta-tag">${ATTACK_CATEGORIES[r.payload.category].name}</span>
+        </div>
+        <div class="attack-detail-body">
+          <div class="detail-section">
+            <strong>Description:</strong> ${escapeHtml(r.payload.description)}
+          </div>
+          <div class="detail-section evidence">
+            <strong>Evidence:</strong> ${escapeHtml(r.evidence)}
+          </div>
+          <div class="detail-section remediation">
+            <strong>Remediation:</strong> ${escapeHtml(r.payload.remediation)}
+          </div>
+        </div>
+      </div>`;
+  }).join('') : '<div class="no-attacks">No successful attacks detected.</div>';
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HackMyAgent Attack Report | ${report.riskRating.toUpperCase()}</title>
+  <style>
+    :root {
+      --bg-primary: #0a0f1a;
+      --bg-secondary: #111827;
+      --bg-tertiary: #1f2937;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --border: #334155;
+      --accent: #3b82f6;
+      --success: #22c55e;
+      --warning: #eab308;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      padding: 2rem;
+      font-size: 14px;
+    }
+    .container { max-width: 1400px; margin: 0 auto; }
+
+    /* Header */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 2rem;
+      padding: 1.5rem 2rem;
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+    .header-left h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .header-left .meta { color: var(--text-muted); font-size: 0.8rem; margin-top: 0.25rem; }
+    .header-icon { display: inline-flex; margin-right: 0.5rem; }
+    .header-icon .icon { width: 24px; height: 24px; color: var(--danger); }
+    .header-right { display: flex; align-items: center; gap: 1rem; }
+    .rating-badge {
+      display: inline-block;
+      padding: 0.375rem 1rem;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 0.875rem;
+      background: ${ratingBg[report.riskRating]};
+      color: ${ratingColor[report.riskRating]};
+      border: 1px solid ${ratingColor[report.riskRating]}40;
+    }
+    .intensity-tag {
+      display: inline-block;
+      padding: 0.375rem 1rem;
+      background: var(--accent);
+      color: white;
+      border-radius: 6px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      text-transform: capitalize;
+    }
+
+    /* SVG Icons */
+    .icon { width: 16px; height: 16px; display: inline-block; vertical-align: middle; }
+    .status-pass { color: var(--success); }
+    .status-fail { color: var(--danger); }
+    .status-warn { color: var(--warning); }
+    .category-icon { display: flex; align-items: center; }
+    .category-icon .icon { width: 18px; height: 18px; }
+    .footer-btn .icon { width: 14px; height: 14px; margin-right: 0.375rem; }
+
+    /* Dashboard grid */
+    .dashboard {
+      display: grid;
+      grid-template-columns: 280px 200px 1fr;
+      gap: 1.5rem;
+      margin-bottom: 2rem;
+    }
+    @media (max-width: 1200px) {
+      .dashboard { grid-template-columns: 1fr 1fr; }
+      .summary-section { grid-column: span 2; }
+    }
+    @media (max-width: 768px) {
+      .dashboard { grid-template-columns: 1fr; }
+      .summary-section { grid-column: span 1; }
+    }
+
+    /* Risk Score card */
+    .score-card {
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      padding: 1.25rem;
+      border: 1px solid var(--border);
+    }
+    .score-header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1.25rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .score-grade {
+      width: 56px;
+      height: 56px;
+      border-radius: 12px;
+      border: 2px solid;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .grade-letter { font-size: 1.75rem; font-weight: 800; }
+    .score-main { flex: 1; }
+    .score-pct { font-size: 2rem; font-weight: 700; color: var(--text-primary); line-height: 1; }
+    .score-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }
+
+    .score-stats { margin-top: 1rem; }
+    .stat-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .stat-row:last-child { border-bottom: none; }
+    .stat-label { color: var(--text-secondary); font-size: 0.85rem; }
+    .stat-value { font-weight: 600; }
+    .stat-value.danger { color: var(--danger); }
+    .stat-value.success { color: var(--success); }
+    .stat-value.muted { color: var(--text-muted); }
+
+    /* Donut chart section */
+    .donut-section {
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      padding: 1.25rem;
+      border: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .donut-section h3 {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 1rem;
+      width: 100%;
+    }
+    .donut-legend {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      margin-top: 1rem;
+      width: 100%;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+    }
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+
+    /* Summary section */
+    .summary-section {
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      padding: 1.5rem;
+      border: 1px solid var(--border);
+    }
+    .summary-section h3 {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 1rem;
+    }
+    .severity-breakdown {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .severity-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      background: var(--bg-tertiary);
+      border-radius: 6px;
+    }
+    .severity-count { font-size: 1.25rem; font-weight: 700; }
+    .severity-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; }
+
+    /* Categories */
+    .categories-section {
+      margin-bottom: 2rem;
+    }
+    .categories-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+    .categories-header h2 { font-size: 1.1rem; }
+    .expand-all {
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.8rem;
+    }
+    .expand-all:hover { background: var(--border); }
+
+    .category {
+      background: var(--bg-secondary);
+      border-radius: 8px;
+      margin-bottom: 0.75rem;
+      border: 1px solid var(--border);
+      overflow: hidden;
+    }
+    .category-header {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 1rem 1.25rem;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .category-header:hover { background: var(--bg-tertiary); }
+    .category-abbrev {
+      font-family: monospace;
+      font-size: 0.85rem;
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .category-icon { font-size: 1.1rem; }
+    .category-name { flex: 1; font-weight: 500; }
+    .category-meta { display: flex; align-items: center; gap: 0.75rem; }
+    .category-score { color: var(--text-secondary); font-size: 0.85rem; font-weight: 500; }
+    .mini-bar { width: 60px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+    .mini-fill { height: 100%; border-radius: 3px; }
+    .chevron {
+      color: var(--text-muted);
+      font-size: 0.7rem;
+      transition: transform 0.2s;
+      margin-left: 0.5rem;
+    }
+    .category.collapsed .chevron { transform: rotate(-90deg); }
+    .category.collapsed .category-content { display: none; }
+
+    .category-content { border-top: 1px solid var(--border); }
+    .attacks-table { width: 100%; border-collapse: collapse; }
+    .attacks-table th {
+      padding: 0.75rem 1rem;
+      text-align: left;
+      background: var(--bg-primary);
+      color: var(--text-muted);
+      font-weight: 500;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .attacks-table td {
+      padding: 0.875rem 1rem;
+      border-top: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    .status-cell { width: 40px; text-align: center; }
+    .id-cell { width: 80px; }
+    .id-cell code {
+      background: var(--bg-tertiary);
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      color: var(--accent);
+    }
+    .name-cell { width: 40%; }
+    .severity-cell { width: 80px; }
+    .result-cell { width: 100px; }
+    .attack-row.failed { background: rgba(239, 68, 68, 0.05); }
+
+    .severity-badge {
+      padding: 0.2rem 0.6rem;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .result-tag {
+      padding: 0.2rem 0.6rem;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+    .result-tag.pass { background: rgba(34, 197, 94, 0.2); color: var(--success); }
+    .result-tag.fail { background: rgba(239, 68, 68, 0.2); color: var(--danger); }
+    .result-tag.warn { background: rgba(234, 179, 8, 0.2); color: var(--warning); }
+
+    /* Successful attacks detail */
+    .details-section {
+      margin-bottom: 2rem;
+    }
+    .details-section h2 {
+      font-size: 1.1rem;
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .details-section h2 .icon { color: var(--danger); }
+    .attack-detail {
+      background: var(--bg-secondary);
+      border-radius: 8px;
+      margin-bottom: 1rem;
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--danger);
+      overflow: hidden;
+    }
+    .attack-detail-header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 1rem 1.25rem;
+      background: rgba(239, 68, 68, 0.05);
+    }
+    .attack-id {
+      background: var(--bg-tertiary);
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      color: var(--danger);
+    }
+    .attack-name { flex: 1; font-weight: 500; }
+    .attack-detail-meta {
+      display: flex;
+      gap: 0.5rem;
+      padding: 0.75rem 1.25rem;
+      background: var(--bg-tertiary);
+      border-bottom: 1px solid var(--border);
+    }
+    .meta-tag {
+      padding: 0.2rem 0.5rem;
+      background: var(--bg-secondary);
+      border-radius: 4px;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+    .attack-detail-body { padding: 1rem 1.25rem; }
+    .detail-section {
+      margin-bottom: 0.75rem;
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+    }
+    .detail-section:last-child { margin-bottom: 0; }
+    .detail-section strong { color: var(--text-primary); margin-right: 0.5rem; }
+    .detail-section.evidence {
+      padding: 0.75rem;
+      background: rgba(239, 68, 68, 0.1);
+      border-radius: 6px;
+      border-left: 3px solid var(--danger);
+    }
+    .detail-section.remediation {
+      padding: 0.75rem;
+      background: var(--bg-tertiary);
+      border-radius: 6px;
+      border-left: 3px solid var(--accent);
+    }
+    .no-attacks {
+      padding: 2rem;
+      text-align: center;
+      color: var(--success);
+      background: var(--bg-secondary);
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+
+    /* Footer */
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 2rem;
+      padding: 1.5rem;
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+    .footer a { color: var(--accent); text-decoration: none; }
+    .footer a:hover { text-decoration: underline; }
+    .footer-actions { display: flex; gap: 1rem; }
+    .footer-btn {
+      display: flex;
+      align-items: center;
+      padding: 0.5rem 1rem;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-primary);
+      cursor: pointer;
+      font-size: 0.8rem;
+    }
+    .footer-btn:hover { background: var(--border); }
+
+    /* Print styles */
+    @media print {
+      body { background: white; color: black; padding: 1rem; }
+      .container { max-width: 100%; }
+      .header, .score-card, .donut-section, .summary-section, .category, .attack-detail, .footer {
+        background: white;
+        border: 1px solid #ddd;
+        break-inside: avoid;
+      }
+      .category.collapsed .category-content { display: block !important; }
+      .chevron, .expand-all, .footer-actions { display: none; }
+      .category-header { cursor: default; }
+      .attack-row.failed { background: #fff0f0; }
+      :root {
+        --bg-primary: white;
+        --bg-secondary: white;
+        --bg-tertiary: #f5f5f5;
+        --text-primary: black;
+        --text-secondary: #555;
+        --text-muted: #888;
+        --border: #ddd;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <div class="header-left">
+        <h1><span class="header-icon">${icons.sword}</span>HackMyAgent Attack Report</h1>
+        <div class="meta">Target: ${escapeHtml(report.target || 'Local Simulation')} • ${new Date(report.endTime).toLocaleString()}</div>
+      </div>
+      <div class="header-right">
+        <div class="rating-badge">${report.riskRating.toUpperCase()} RISK</div>
+        <div class="intensity-tag">${report.intensity}</div>
+      </div>
+    </header>
+
+    <div class="dashboard">
+      <div class="score-card">
+        <div class="score-header">
+          <div class="score-grade" style="background: ${grade.color}20; border-color: ${grade.color};">
+            <span class="grade-letter" style="color: ${grade.color};">${grade.letter}</span>
+          </div>
+          <div class="score-main">
+            <div class="score-pct">${report.riskScore}/100</div>
+            <div class="score-label">Risk Score</div>
+          </div>
+        </div>
+        <div class="score-stats">
+          <div class="stat-row">
+            <span class="stat-label">Successful Attacks</span>
+            <span class="stat-value danger">${report.summary.successful}</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Blocked Attacks</span>
+            <span class="stat-value success">${report.summary.blocked}</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Inconclusive</span>
+            <span class="stat-value muted">${report.summary.inconclusive}</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Duration</span>
+            <span class="stat-value">${report.duration}ms</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="donut-section">
+        <h3>Attack Results</h3>
+        ${donutSvg}
+        <div class="donut-legend">
+          <div class="legend-item"><span class="legend-dot" style="background: #ef4444;"></span> Successful (${report.summary.successful})</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #22c55e;"></span> Blocked (${report.summary.blocked})</div>
+          <div class="legend-item"><span class="legend-dot" style="background: #64748b;"></span> Inconclusive (${report.summary.inconclusive})</div>
+        </div>
+      </div>
+
+      <div class="summary-section">
+        <h3>Severity Breakdown (Successful Attacks)</h3>
+        <div class="severity-breakdown">
+          <div class="severity-item">
+            <span class="severity-count" style="color: #ef4444;">${report.summary.bySeverity.critical || 0}</span>
+            <span class="severity-label">Critical</span>
+          </div>
+          <div class="severity-item">
+            <span class="severity-count" style="color: #f97316;">${report.summary.bySeverity.high || 0}</span>
+            <span class="severity-label">High</span>
+          </div>
+          <div class="severity-item">
+            <span class="severity-count" style="color: #eab308;">${report.summary.bySeverity.medium || 0}</span>
+            <span class="severity-label">Medium</span>
+          </div>
+          <div class="severity-item">
+            <span class="severity-count" style="color: #22c55e;">${report.summary.bySeverity.low || 0}</span>
+            <span class="severity-label">Low</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="categories-section">
+      <div class="categories-header">
+        <h2>Category Breakdown</h2>
+        <button class="expand-all" onclick="toggleAll()">Expand/Collapse All</button>
+      </div>
+      ${categoryRows}
+    </div>
+
+    <div class="details-section">
+      <h2>${icons.x} Successful Attacks Detail</h2>
+      ${successfulDetailsHtml}
+    </div>
+
+    <footer class="footer">
+      <div>Generated by <a href="https://hackmyagent.com">HackMyAgent</a> v${VERSION} • <a href="https://oasb.ai/attacks">oasb.ai/attacks</a></div>
+      <div class="footer-actions">
+        <button class="footer-btn" onclick="window.print()">${icons.print} Print Report</button>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    function toggleCategory(id) {
+      const cat = document.getElementById('cat-' + id);
+      cat.classList.toggle('collapsed');
+    }
+    function toggleAll() {
+      const cats = document.querySelectorAll('.category');
+      const allCollapsed = Array.from(cats).every(c => c.classList.contains('collapsed'));
+      cats.forEach(c => {
+        if (allCollapsed) {
+          c.classList.remove('collapsed');
+        } else {
+          c.classList.add('collapsed');
+        }
+      });
+    }
+  </script>
+</body>
+</html>`;
 }
 
 program.parse();
