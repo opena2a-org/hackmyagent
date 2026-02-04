@@ -1,5 +1,5 @@
 /**
- * OASB-1: AI Agent Security Benchmark
+ * OASB-1: Open Agent Security Benchmark
  * Version 1.0.0
  *
  * Maps OASB-1 controls to HackMyAgent check IDs
@@ -1405,4 +1405,4 @@ export function calculateRating(
 }
 
 export const OASB_1_VERSION = '1.0.0';
-export const OASB_1_NAME = 'OASB-1: AI Agent Security Benchmark';
+export const OASB_1_NAME = 'OASB-1: Open Agent Security Benchmark';

@@ -1,6 +1,6 @@
 /**
  * Benchmarks module
- * OASB (OpenA2A Security Benchmark) implementations
+ * OASB (Open Agent Security Benchmark) implementations
  */
 
 export {

@@ -193,7 +193,7 @@ hackmyagent attack --local --verbose
 
 ### `hackmyagent secure --benchmark`
 
-Run the OASB-1 (OpenA2A Security Benchmark) against your agent configuration.
+Run the OASB-1 (Open Agent Security Benchmark) against your agent configuration.
 
 ```bash
 # Run benchmark (L1 by default)
