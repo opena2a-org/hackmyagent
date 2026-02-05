@@ -38,7 +38,7 @@ AI agents are powerful but introduce new attack surfaces. Skills can be maliciou
 ## Installation
 
 ```bash
-# Use directly with npx (no install needed)
+# Use directly with npx
 npx hackmyagent secure
 
 # Or install globally

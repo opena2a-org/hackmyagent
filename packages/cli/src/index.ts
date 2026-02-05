@@ -68,7 +68,7 @@ HackMyAgent helps you secure AI agent deployments with 100+ security checks
 across credential exposure, MCP configurations, prompt injection defenses,
 and infrastructure hardening.
 
-Documentation: https://github.com/ecolibria/hackmyagent
+Documentation: https://github.com/opena2a-org/hackmyagent
 
 Examples:
   $ hackmyagent check @anthropic/claude-mcp    Verify skill before installing
@@ -1423,6 +1423,12 @@ Examples:
   .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
+
+      // Check if directory exists
+      if (!require('fs').existsSync(targetDir)) {
+        console.error(`Error: Directory '${targetDir}' does not exist.`);
+        process.exit(1);
+      }
 
       // Parse ignore list
       const ignoreList = options.ignore
