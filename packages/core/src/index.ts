@@ -3,7 +3,7 @@
  * Core library for HackMyAgent security scanning
  */
 
-export const VERSION = '0.3.3';
+export const VERSION = '0.3.5';
 
 // Checker module
 export {

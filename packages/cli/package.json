@@ -1,6 +1,6 @@
 {
   "name": "hackmyagent",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Security toolkit for AI agents - verify skills, harden setups, scan for exposures",
   "bin": {
     "hackmyagent": "dist/index.js"
