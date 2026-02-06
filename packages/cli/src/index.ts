@@ -1351,7 +1351,14 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean): void {
         } else if (verbose && ctrl.status === 'passed') {
           console.log(`     ✅ ${ctrl.controlId}: ${ctrl.name}`);
         } else if (verbose && ctrl.status === 'unverified') {
-          console.log(`     ⚪ ${ctrl.controlId}: ${ctrl.name} (manual/forward)`);
+          // Look up the original control to determine why it's unverified
+          const originalControl = OASB_1_CATEGORIES
+            .flatMap((c: BenchmarkCategory) => c.controls)
+            .find((c: BenchmarkControl) => c.id === ctrl.controlId);
+          const reason = originalControl && (originalControl.verification === 'manual' || originalControl.verification === 'forward')
+            ? 'manual/forward'
+            : 'no scanner data';
+          console.log(`     ⚪ ${ctrl.controlId}: ${ctrl.name} (${reason})`);
         }
       }
     }
