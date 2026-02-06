@@ -5814,7 +5814,7 @@ dist/
   }
 
   /**
-   * OpenClaw CVE-specific checks (CVE-001, CVE-002)
+   * OpenClaw CVE-specific checks (CVE-001, CVE-002, CVE-003, CVE-004)
    */
   private async checkOpenclawCVE(
     targetDir: string,
@@ -5858,10 +5858,67 @@ dist/
             fixable: false,
             fix: 'Upgrade openclaw to v2026.1.29 or later: npm install openclaw@latest',
           });
+          // CVE-003: OS Command Injection via SSH Path (same fix version)
+          if (isVulnerable) {
+            findings.push({
+              checkId: 'CVE-003',
+              name: 'CVE-2026-25157: OS Command Injection via SSH Path',
+              description: 'OpenClaw version vulnerable to CVE-2026-25157 (CVSS 7.8) - unescaped project path enables command injection on SSH hosts',
+              category: 'cve',
+              severity: 'high',
+              passed: false,
+              message: `OpenClaw ${openclawVersion} is vulnerable to CVE-2026-25157 - upgrade to v2026.1.29+`,
+              file: 'package.json',
+              fixable: false,
+              fix: 'Upgrade openclaw to v2026.1.29 or later: npm install openclaw@latest',
+            });
+          } else {
+            findings.push({
+              checkId: 'CVE-003',
+              name: 'CVE-2026-25157: OS Command Injection via SSH Path',
+              description: 'OpenClaw version includes CVE-2026-25157 fix',
+              category: 'cve',
+              severity: 'high',
+              passed: true,
+              message: `OpenClaw ${openclawVersion} includes CVE-2026-25157 fix`,
+              file: 'package.json',
+              fixable: false,
+              fix: 'No action needed',
+            });
+          }
+
+          // CVE-004: Docker PATH Command Injection (same fix version)
+          if (isVulnerable) {
+            findings.push({
+              checkId: 'CVE-004',
+              name: 'CVE-2026-24763: Docker PATH Command Injection',
+              description: 'OpenClaw version vulnerable to CVE-2026-24763 (CVSS 8.8) - unsafe PATH handling enables command injection in Docker sandbox',
+              category: 'cve',
+              severity: 'critical',
+              passed: false,
+              message: `OpenClaw ${openclawVersion} is vulnerable to CVE-2026-24763 - upgrade to v2026.1.29+`,
+              file: 'package.json',
+              fixable: false,
+              fix: 'Upgrade openclaw to v2026.1.29 or later: npm install openclaw@latest',
+            });
+          } else {
+            findings.push({
+              checkId: 'CVE-004',
+              name: 'CVE-2026-24763: Docker PATH Command Injection',
+              description: 'OpenClaw version includes CVE-2026-24763 fix',
+              category: 'cve',
+              severity: 'critical',
+              passed: true,
+              message: `OpenClaw ${openclawVersion} includes CVE-2026-24763 fix`,
+              file: 'package.json',
+              fixable: false,
+              fix: 'No action needed',
+            });
+          }
         }
       }
     } catch {
-      // No package.json or parse error - skip CVE-001
+      // No package.json or parse error - skip CVE checks
     }
 
     // CVE-002: Control UI Origin Restrictions (defense-in-depth)

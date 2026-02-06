@@ -7,16 +7,18 @@
 
 **Website:** [hackmyagent.com](https://hackmyagent.com) — Scan external infrastructure for exposed MCP endpoints, configs, and credentials
 
-## What's New — v0.4.0
+## What's New — v0.4.3
 
 **First scanner for [CVE-2026-25253](https://hackmyagent.com/blog/cve-2026-25253-detection)** (CVSS 8.8) — the OpenClaw WebSocket hijacking RCE.
 
 - **CVE-001:** Detect vulnerable OpenClaw versions (before v2026.1.29)
 - **CVE-002:** Control UI origin restrictions (defense-in-depth hardening)
+- **CVE-003:** CVE-2026-25157 — OS command injection via SSH path (CVSS 7.8)
+- **CVE-004:** CVE-2026-24763 — Docker PATH command injection (CVSS 8.8)
 - **SUPPLY-005–008:** ClawHavoc campaign IOCs (C2 IPs, malware filenames, ClickFix patterns)
 - **GATEWAY-007–008, CONFIG-007–009:** Config hardening (open DM wildcards, disabled sandbox, weak tokens)
 
-11 new checks. 145+ total.
+13 new checks. 147+ total.
 
 ## Disclaimer
 
@@ -24,7 +26,7 @@ HackMyAgent performs passive reconnaissance only (port checks and HTTP requests)
 
 ```bash
 npx hackmyagent check @publisher/skill     # verify a skill before installing
-npx hackmyagent secure                      # harden your agent setup (145+ checks)
+npx hackmyagent secure                      # harden your agent setup (147+ checks)
 npx hackmyagent secure --fix                # auto-fix security issues
 npx hackmyagent scan example.com            # scan for exposed infrastructure
 npx hackmyagent attack --local              # red team with 55 attack payloads
@@ -43,7 +45,7 @@ npx hackmyagent secure --benchmark oasb-1   # run OASB-1 security benchmark
 CVE-2026-25253 turned every OpenClaw installation into a remote code execution target. 341 malicious skills were distributed through ClawHub. AI agent security is no longer theoretical — HackMyAgent helps you:
 
 - **Check** skills before installing (publisher verification, permission analysis)
-- **Secure** your agent setup (145+ security checks with auto-remediation)
+- **Secure** your agent setup (147+ security checks with auto-remediation)
 - **Scan** external infrastructure (exposed MCP endpoints, leaked configs)
 
 ## Installation
@@ -63,7 +65,7 @@ npm install --save-dev hackmyagent
 
 ### `hackmyagent secure`
 
-Scan and harden your local agent setup with 145+ security checks across 31 categories.
+Scan and harden your local agent setup with 147+ security checks across 31 categories.
 
 ```bash
 # Basic scan
@@ -116,7 +118,7 @@ hackmyagent secure --verbose
 | API | 4 | API security |
 | VSCODE | 4 | VS Code configuration |
 | CURSOR | 4 | Cursor IDE configuration |
-| CVE | 2 | CVE-2026-25253 detection |
+| CVE | 4 | OpenClaw CVE detection |
 | GATEWAY | 8 | Gateway misconfigurations |
 | CONFIG | 9 | Insecure settings |
 | SUPPLY | 8 | Supply chain attacks |
@@ -329,7 +331,7 @@ hackmyagent secure -b oasb-1 --fail-below 70
 
 ### `hackmyagent secure-openclaw`
 
-Scan OpenClaw/Moltbot installations with 45 specialized security checks and auto-remediation.
+Scan OpenClaw/Moltbot installations with 47 specialized security checks and auto-remediation.
 
 ```bash
 hackmyagent secure-openclaw              # scan default location
@@ -367,7 +369,7 @@ hackmyagent secure-openclaw --json       # JSON output for CI/CD
 | GATEWAY | 8 | Gateway misconfigurations (4 auto-fixable) |
 | CONFIG | 9 | Insecure settings |
 | SUPPLY | 8 | Supply chain attacks |
-| CVE | 2 | CVE-2026-25253 detection |
+| CVE | 4 | OpenClaw CVE detection |
 
 See [SECURITY_CHECKS.md](docs/SECURITY_CHECKS.md#openclaw-security-checks) for full documentation.
 
@@ -462,7 +464,7 @@ hackmyagent secure --json | jq '.findings[] | select(.severity == "critical")'
 
 ## Security Check Reference
 
-For the complete list of 145+ security checks with descriptions and remediation guidance, see [SECURITY_CHECKS.md](docs/SECURITY_CHECKS.md).
+For the complete list of 147+ security checks with descriptions and remediation guidance, see [SECURITY_CHECKS.md](docs/SECURITY_CHECKS.md).
 
 ## Auto-Fix Capabilities
 

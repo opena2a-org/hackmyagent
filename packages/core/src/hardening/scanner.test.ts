@@ -2066,6 +2066,86 @@ describe('OpenClaw gateway auto-fix', () => {
     });
   });
 
+  describe('CVE-003: OS Command Injection via SSH Path', () => {
+    it('detects vulnerable openclaw version', async () => {
+      await fs.writeFile(
+        path.join(tempDir, 'SKILL.md'),
+        '# Test Skill'
+      );
+      await fs.writeFile(
+        path.join(tempDir, 'package.json'),
+        JSON.stringify({
+          name: 'test',
+          dependencies: { openclaw: '2026.1.15' }
+        })
+      );
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const cve003 = result.findings.find(f => f.checkId === 'CVE-003');
+      expect(cve003).toBeDefined();
+      expect(cve003!.passed).toBe(false);
+      expect(cve003!.message).toContain('CVE-2026-25157');
+    });
+
+    it('does not flag patched openclaw version', async () => {
+      await fs.writeFile(
+        path.join(tempDir, 'SKILL.md'),
+        '# Test Skill'
+      );
+      await fs.writeFile(
+        path.join(tempDir, 'package.json'),
+        JSON.stringify({
+          name: 'test',
+          dependencies: { openclaw: '2026.1.29' }
+        })
+      );
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const cve003 = result.findings.find(f => f.checkId === 'CVE-003' && !f.passed);
+      expect(cve003).toBeUndefined();
+    });
+  });
+
+  describe('CVE-004: Docker PATH Command Injection', () => {
+    it('detects vulnerable openclaw version', async () => {
+      await fs.writeFile(
+        path.join(tempDir, 'SKILL.md'),
+        '# Test Skill'
+      );
+      await fs.writeFile(
+        path.join(tempDir, 'package.json'),
+        JSON.stringify({
+          name: 'test',
+          dependencies: { openclaw: '2026.1.15' }
+        })
+      );
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const cve004 = result.findings.find(f => f.checkId === 'CVE-004');
+      expect(cve004).toBeDefined();
+      expect(cve004!.passed).toBe(false);
+      expect(cve004!.message).toContain('CVE-2026-24763');
+    });
+
+    it('does not flag patched openclaw version', async () => {
+      await fs.writeFile(
+        path.join(tempDir, 'SKILL.md'),
+        '# Test Skill'
+      );
+      await fs.writeFile(
+        path.join(tempDir, 'package.json'),
+        JSON.stringify({
+          name: 'test',
+          dependencies: { openclaw: '2026.1.29' }
+        })
+      );
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const cve004 = result.findings.find(f => f.checkId === 'CVE-004' && !f.passed);
+      expect(cve004).toBeUndefined();
+    });
+  });
+
   // ===== ClawHavoc IOC Tests =====
 
   describe('SUPPLY-005: ClawHavoc C2 IP', () => {
