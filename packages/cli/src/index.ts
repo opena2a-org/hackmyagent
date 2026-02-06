@@ -35,10 +35,14 @@ import {
   AttackScanner,
   ATTACK_CATEGORIES,
   PAYLOAD_STATS,
+  parseCustomPayloads,
+  shouldFail,
   type AttackCategory,
   type AttackIntensity,
   type AttackTarget,
   type AttackReport,
+  type AttackPayload,
+  type FailPolicy,
 } from 'hackmyagent-core';
 
 const program = new Command();
@@ -2018,7 +2022,9 @@ Examples:
   $ hackmyagent attack https://api.example.com --intensity aggressive
   $ hackmyagent attack https://api.example.com --category prompt-injection
   $ hackmyagent attack --local --system-prompt "You are a helpful assistant"
-  $ hackmyagent attack https://api.example.com -f sarif -o results.sarif`)
+  $ hackmyagent attack https://api.example.com -f sarif -o results.sarif
+  $ hackmyagent attack https://api.example.com --payload-file custom.json
+  $ hackmyagent attack https://api.example.com --fail-on-vulnerable medium`)
   .argument('[target]', 'API endpoint to test (or use --local for simulation)')
   .option('-i, --intensity <level>', 'Attack intensity: passive, active, aggressive', 'active')
   .option('-c, --category <categories>', 'Comma-separated categories to test')
@@ -2030,6 +2036,8 @@ Examples:
   .option('--timeout <ms>', 'Request timeout in milliseconds', '30000')
   .option('--delay <ms>', 'Delay between requests in milliseconds', '1000')
   .option('--stop-on-success', 'Stop after first successful attack')
+  .option('--payload-file <path>', 'JSON file with custom attack payloads')
+  .option('--fail-on-vulnerable [severity]', 'Exit code 1 if vulnerabilities found (optional: critical/high/medium/low)')
   .option('-f, --format <format>', 'Output format: text, json, sarif, html', 'text')
   .option('-o, --output <file>', 'Write output to file')
   .option('-v, --verbose', 'Show detailed output for each payload')
@@ -2044,6 +2052,8 @@ Examples:
     timeout?: string;
     delay?: string;
     stopOnSuccess?: boolean;
+    payloadFile?: string;
+    failOnVulnerable?: string | boolean;
     format?: string;
     output?: string;
     verbose?: boolean;
@@ -2105,13 +2115,29 @@ Examples:
         process.exit(1);
       }
 
+      // Load custom payloads from file
+      let customPayloads: AttackPayload[] | undefined;
+      if (options.payloadFile) {
+        const filePath = require('path').resolve(options.payloadFile);
+        if (!require('fs').existsSync(filePath)) {
+          console.error(`Error: Payload file not found: ${filePath}`);
+          process.exit(1);
+        }
+        const fileContent = require('fs').readFileSync(filePath, 'utf-8');
+        customPayloads = parseCustomPayloads(fileContent);
+      }
+
       // Show header for text output
       if (format === 'text') {
         console.log(`\n⚔️  HackMyAgent Attack Mode`);
         console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
         console.log(`Target: ${target.type === 'local' ? 'Local Simulation' : targetUrl}`);
         console.log(`Intensity: ${intensity}`);
-        console.log(`Categories: ${categories ? categories.join(', ') : 'all'}`);
+        if (customPayloads) {
+          console.log(`Payloads: ${customPayloads.length} custom (from file)`);
+        } else {
+          console.log(`Categories: ${categories ? categories.join(', ') : 'all'}`);
+        }
         console.log();
       }
 
@@ -2120,6 +2146,7 @@ Examples:
       const report = await scanner.scan(target, {
         intensity,
         categories,
+        customPayloads,
         timeout: parseInt(options.timeout || '30000', 10),
         delay: parseInt(options.delay || '1000', 10),
         stopOnSuccess: options.stopOnSuccess,
@@ -2153,8 +2180,8 @@ Examples:
         }
       }
 
-      // Exit with non-zero if critical/high vulnerabilities found
-      if (report.riskRating === 'critical' || report.riskRating === 'high') {
+      // Exit with non-zero based on fail policy
+      if (shouldFail(report, options.failOnVulnerable as FailPolicy)) {
         process.exit(1);
       }
     } catch (error) {

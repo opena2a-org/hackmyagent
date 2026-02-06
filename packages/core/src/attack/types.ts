@@ -131,6 +131,27 @@ export interface AttackOptions {
   stopOnSuccess?: boolean;
   /** Verbose output */
   verbose?: boolean;
+  /** Custom payloads (from --payload-file) */
+  customPayloads?: AttackPayload[];
+}
+
+export interface CustomPayloadInput {
+  id: string;
+  payload: string;
+  name?: string;
+  description?: string;
+  category?: AttackCategory;
+  intensity?: AttackIntensity;
+  severity?: AttackSeverity;
+  successIndicators?: string[];
+  blockedIndicators?: string[];
+  oasbControl?: string;
+  cwe?: string;
+  remediation?: string;
+}
+
+export interface CustomPayloadFile {
+  payloads: CustomPayloadInput[];
 }
 
 /** Category metadata */

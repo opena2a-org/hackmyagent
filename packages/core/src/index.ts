@@ -47,6 +47,8 @@ export {
   getPayloadById,
   getPayloadsByCategory,
   getPayloadsByIntensity,
+  parseCustomPayloads,
+  shouldFail,
 } from './attack';
 
 export type {
@@ -58,6 +60,9 @@ export type {
   AttackReport,
   AttackTarget,
   AttackOptions,
+  CustomPayloadInput,
+  CustomPayloadFile,
+  FailPolicy,
 } from './attack';
 
 // Benchmarks module

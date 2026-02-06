@@ -38,9 +38,11 @@ export class AttackScanner {
     const opts = { ...this.options, ...options, target };
     const startTime = new Date();
 
-    // Get payloads to run
+    // Get payloads to run (custom > payloadIds > categories/intensity)
     let payloads: AttackPayload[];
-    if (opts.payloadIds && opts.payloadIds.length > 0) {
+    if (opts.customPayloads && opts.customPayloads.length > 0) {
+      payloads = opts.customPayloads;
+    } else if (opts.payloadIds && opts.payloadIds.length > 0) {
       payloads = opts.payloadIds
         .map(id => getPayloadById(id))
         .filter((p): p is AttackPayload => p !== undefined);

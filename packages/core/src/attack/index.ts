@@ -4,6 +4,9 @@
  */
 
 export { AttackScanner } from './scanner';
+export { parseCustomPayloads } from './custom-payloads';
+export { shouldFail } from './fail-policy';
+export type { FailPolicy } from './fail-policy';
 
 export {
   AttackCategory,
@@ -16,6 +19,8 @@ export {
   AttackOptions,
   ATTACK_CATEGORIES,
 } from './types';
+
+export type { CustomPayloadInput, CustomPayloadFile } from './types';
 
 export {
   ALL_PAYLOADS,
