@@ -42,6 +42,7 @@ const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
   'GATEWAY-': ['openclaw'], // Gateway configuration security
   'CONFIG-': ['openclaw', 'mcp'], // Configuration file security
   'SUPPLY-': ['openclaw', 'mcp'], // Supply chain security
+  'CVE-': ['openclaw'], // CVE-specific detection
   'API-': ['api'], // API security headers
   'RATE-': ['webapp', 'api'], // Rate limiting
   'PROC-': ['webapp', 'api'], // Process security (headers, etc.)
@@ -158,6 +159,20 @@ const HEARTBEAT_DANGEROUS_CAPS: string[] = [
   'filesystem:/',
   'network:*',
 ];
+
+// ClawHavoc campaign IOCs (Koi Security research, Jan 2026)
+const CLAWHAVOC_C2_IPS = ['91.92.242.30'];
+const CLAWHAVOC_MALICIOUS_FILES = [
+  'openclaw-agent.exe', 'openclaw-agent.zip', 'openclawcli.zip',
+  'agent-setup.exe', 'openclaw-installer.dmg',
+];
+const CLAWHAVOC_CLICKFIX_PATTERNS: RegExp[] = [
+  /download.*paste.*terminal/i,
+  /copy.*(?:command|script).*terminal/i,
+  /right[- ]click.*open/i,
+  /run.*\.exe/i,
+];
+const CLAWHAVOC_ARCHIVE_PASSWORD = /password\s*[:=]\s*["']?(openclaw|claw|agent|setup)["']?/i;
 
 const PROMPT_INJECTION_PATTERNS: RegExp[] = [
   /ignore\s+(all\s+)?(previous|prior|above)/gi,
@@ -378,6 +393,10 @@ export class HardeningScanner {
     // OpenClaw supply chain checks
     const supplyFindings = await this.checkOpenclawSupplyChain(targetDir, shouldFix);
     findings.push(...supplyFindings);
+
+    // OpenClaw CVE-specific checks
+    const cveFindings = await this.checkOpenclawCVE(targetDir, shouldFix);
+    findings.push(...cveFindings);
 
     // Filter findings to only show real, actionable issues:
     // 1. Only failed checks (passed: false)
@@ -5011,6 +5030,65 @@ dist/
         });
       }
 
+      // GATEWAY-007: Open DM Policy with Wildcard
+      const channels = config.channels as Record<string, Record<string, unknown>> | undefined;
+      const dm = config.dm as Record<string, unknown> | undefined;
+      let hasOpenDmWildcard = false;
+
+      if (channels) {
+        for (const [, channelConfig] of Object.entries(channels)) {
+          if (
+            channelConfig.dmPolicy === 'open' &&
+            Array.isArray(channelConfig.allowFrom) &&
+            channelConfig.allowFrom.includes('*')
+          ) {
+            hasOpenDmWildcard = true;
+            break;
+          }
+        }
+      }
+      if (!hasOpenDmWildcard && dm?.policy === 'open') {
+        const allowList = dm.allowFrom as string[] | undefined;
+        if (Array.isArray(allowList) && allowList.includes('*')) {
+          hasOpenDmWildcard = true;
+        }
+      }
+
+      if (hasOpenDmWildcard) {
+        findings.push({
+          checkId: 'GATEWAY-007',
+          name: 'Open DM Policy with Wildcard',
+          description: 'Direct message policy allows messages from any source',
+          category: 'gateway',
+          severity: 'critical',
+          passed: false,
+          message: 'DM policy is open with wildcard allowFrom - anyone can message the agent',
+          file: relativePath,
+          fixable: false,
+          fix: 'Replace wildcard "*" in allowFrom with specific allowed sender IDs or domains',
+        });
+      }
+
+      // GATEWAY-008: Tailscale Funnel Exposure
+      const tailscale = gateway?.tailscale as Record<string, unknown> | undefined;
+      const tailscaleRoot = config.tailscale as Record<string, unknown> | undefined;
+      const funnelEnabled = tailscale?.funnel === true || tailscaleRoot?.funnel === true;
+
+      if (funnelEnabled) {
+        findings.push({
+          checkId: 'GATEWAY-008',
+          name: 'Tailscale Funnel Exposure',
+          description: 'Tailscale Funnel is enabled, exposing the agent to the public internet',
+          category: 'gateway',
+          severity: 'high',
+          passed: false,
+          message: 'Tailscale Funnel enabled - agent is publicly accessible from the internet',
+          file: relativePath,
+          fixable: false,
+          fix: 'Disable Tailscale Funnel unless public access is intentional. Use Tailscale ACLs to restrict access.',
+        });
+      }
+
       // Write modified config back to file if any fixes were applied
       if (configModified) {
         try {
@@ -5417,6 +5495,80 @@ dist/
           fix: 'Disable autoFollow or review moltbook security settings',
         });
       }
+
+      // CONFIG-007: Unrestricted Elevated Execution
+      const tools = config.tools as Record<string, unknown> | undefined;
+      const elevated = tools?.elevated as Record<string, unknown> | undefined;
+      const exec = config.exec as Record<string, unknown> | undefined;
+      const execApprovals = exec?.approvals as Record<string, unknown> | undefined;
+      const hasUnrestrictedExec =
+        elevated?.defaultLevel === 'full' ||
+        execApprovals?.set === 'off';
+
+      if (hasUnrestrictedExec) {
+        findings.push({
+          checkId: 'CONFIG-007',
+          name: 'Unrestricted Elevated Execution',
+          description: 'Elevated execution is set to full access without restrictions or approvals are bypassed',
+          category: 'config',
+          severity: 'critical',
+          passed: false,
+          message: elevated?.defaultLevel === 'full'
+            ? 'tools.elevated.defaultLevel is "full" - all tools run with maximum privileges'
+            : 'exec.approvals.set is "off" - execution approval is bypassed',
+          file: relativePath,
+          fixable: false,
+          fix: 'Set tools.elevated.defaultLevel to "restricted" and enable exec.approvals',
+        });
+      }
+
+      // CONFIG-008: Sandbox Disabled
+      const sandbox = config.sandbox as Record<string, unknown> | undefined;
+      const toolExec = tools?.exec as Record<string, unknown> | undefined;
+      const sandboxDisabled =
+        sandbox?.enabled === false ||
+        toolExec?.sandbox === false;
+
+      if (sandboxDisabled) {
+        findings.push({
+          checkId: 'CONFIG-008',
+          name: 'Sandbox Disabled',
+          description: 'Sandbox execution environment is explicitly disabled in config',
+          category: 'config',
+          severity: 'high',
+          passed: false,
+          message: sandbox?.enabled === false
+            ? 'sandbox.enabled is false - code runs without isolation'
+            : 'tools.exec.sandbox is false - tool execution is not sandboxed',
+          file: relativePath,
+          fixable: false,
+          fix: 'Enable sandbox: set sandbox.enabled to true or tools.exec.sandbox to true',
+        });
+      }
+
+      // CONFIG-009: Weak Gateway Token
+      const gatewayConfig = config.gateway as Record<string, unknown> | undefined;
+      const gatewayAuth = gatewayConfig?.auth as Record<string, unknown> | undefined;
+      const tokenValue = (gatewayAuth?.token as string) || (config.token as string);
+      if (
+        typeof tokenValue === 'string' &&
+        tokenValue.length > 0 &&
+        tokenValue.length < 24 &&
+        !tokenValue.startsWith('${')
+      ) {
+        findings.push({
+          checkId: 'CONFIG-009',
+          name: 'Weak Gateway Token',
+          description: 'Gateway authentication token is too short (< 24 characters)',
+          category: 'config',
+          severity: 'high',
+          passed: false,
+          message: `Token is only ${tokenValue.length} characters - minimum 24 recommended`,
+          file: relativePath,
+          fixable: false,
+          fix: 'Generate a stronger token: openssl rand -base64 32',
+        });
+      }
     }
 
     return findings;
@@ -5441,6 +5593,16 @@ dist/
       'phantom-wallet',
       'youtube-downloader',
       'clawhub',
+      'clawhub1',
+      'clawhubb',
+      'cllawhub',
+      'clawhub-official',
+      'openclaw-official',
+      'openclaw1',
+      'opennclaw',
+      'insiderwallet',
+      'wallet-finder',
+      'crypto-insider',
     ];
 
     for (const skillFile of skillFiles) {
@@ -5571,6 +5733,184 @@ dist/
         fixable: false,
         fix: 'Add installed_hash: with SHA-256 hash of the original skill content',
       });
+
+      // SUPPLY-005: ClawHavoc C2 IP
+      for (const ip of CLAWHAVOC_C2_IPS) {
+        if (content.includes(ip)) {
+          findings.push({
+            checkId: 'SUPPLY-005',
+            name: 'ClawHavoc C2 IP Detected',
+            description: 'Skill contains known ClawHavoc command-and-control IP address',
+            category: 'supply',
+            severity: 'critical',
+            passed: false,
+            message: `Known C2 IP address found: ${ip}`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Remove this skill immediately - contains known malware C2 infrastructure',
+          });
+          break;
+        }
+      }
+
+      // SUPPLY-006: Malware Filenames
+      for (const filename of CLAWHAVOC_MALICIOUS_FILES) {
+        if (content.toLowerCase().includes(filename.toLowerCase())) {
+          findings.push({
+            checkId: 'SUPPLY-006',
+            name: 'ClawHavoc Malware Filename',
+            description: 'Skill references known ClawHavoc malware payload filename',
+            category: 'supply',
+            severity: 'critical',
+            passed: false,
+            message: `Known malware filename referenced: "${filename}"`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Remove this skill immediately - references known malware payload',
+          });
+          break;
+        }
+      }
+
+      // SUPPLY-007: ClickFix Pattern
+      for (const pattern of CLAWHAVOC_CLICKFIX_PATTERNS) {
+        const match = content.match(pattern);
+        if (match) {
+          findings.push({
+            checkId: 'SUPPLY-007',
+            name: 'ClawHavoc ClickFix Pattern',
+            description: 'Skill contains social engineering instructions to execute malware',
+            category: 'supply',
+            severity: 'high',
+            passed: false,
+            message: `ClickFix social engineering pattern detected: "${match[0]}"`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Review and remove suspicious download/execute instructions',
+          });
+          break;
+        }
+      }
+
+      // SUPPLY-008: Suspicious Archive Password
+      const archiveMatch = content.match(CLAWHAVOC_ARCHIVE_PASSWORD);
+      if (archiveMatch) {
+        findings.push({
+          checkId: 'SUPPLY-008',
+          name: 'Suspicious Archive Password',
+          description: 'Skill contains password-protected archive reference typical of malware distribution',
+          category: 'supply',
+          severity: 'high',
+          passed: false,
+          message: `Suspicious archive password pattern: "${archiveMatch[0]}"`,
+          file: relativePath,
+          fixable: false,
+          fix: 'Investigate password-protected archive reference - common malware distribution technique',
+        });
+      }
+    }
+
+    return findings;
+  }
+
+  /**
+   * OpenClaw CVE-specific checks (CVE-001, CVE-002)
+   */
+  private async checkOpenclawCVE(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // CVE-001: Vulnerable OpenClaw Version
+    const pkgJsonPath = path.join(targetDir, 'package.json');
+    try {
+      const pkgContent = await fs.readFile(pkgJsonPath, 'utf-8');
+      const pkg = JSON.parse(pkgContent);
+      const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+      const openclawVersion = deps?.openclaw || deps?.['@openclaw/core'];
+
+      if (openclawVersion) {
+        // Extract numeric version (strip ^ ~ >= etc.)
+        const versionMatch = openclawVersion.match(/(\d{4})\.(\d{1,2})\.(\d{1,2})/);
+        if (versionMatch) {
+          const year = parseInt(versionMatch[1], 10);
+          const month = parseInt(versionMatch[2], 10);
+          const day = parseInt(versionMatch[3], 10);
+
+          // Patch release: v2026.1.29
+          const isVulnerable =
+            year < 2026 ||
+            (year === 2026 && month < 1) ||
+            (year === 2026 && month === 1 && day < 29);
+
+          findings.push({
+            checkId: 'CVE-001',
+            name: 'CVE-2026-25253: WebSocket Hijacking RCE',
+            description: 'OpenClaw version vulnerable to CVE-2026-25253 (CVSS 8.8) - WebSocket hijacking enables 1-click RCE',
+            category: 'cve',
+            severity: 'critical',
+            passed: !isVulnerable,
+            message: isVulnerable
+              ? `OpenClaw ${openclawVersion} is vulnerable to CVE-2026-25253 - upgrade to v2026.1.29+`
+              : `OpenClaw ${openclawVersion} includes CVE-2026-25253 fix`,
+            file: 'package.json',
+            fixable: false,
+            fix: 'Upgrade openclaw to v2026.1.29 or later: npm install openclaw@latest',
+          });
+        }
+      }
+    } catch {
+      // No package.json or parse error - skip CVE-001
+    }
+
+    // CVE-002: Missing Control UI Origin Restrictions
+    const configFiles = await this.findGatewayConfigFiles(targetDir);
+    for (const configFile of configFiles) {
+      const relativePath = path.relative(targetDir, configFile);
+      try {
+        const stats = await fs.stat(configFile);
+        if (stats.size > MAX_FILE_SIZE) continue;
+        const content = await fs.readFile(configFile, 'utf-8');
+        const config = JSON.parse(content);
+
+        const gateway = config.gateway as Record<string, unknown> | undefined;
+        const controlUi = gateway?.controlUi as Record<string, unknown> | undefined;
+        const hasAllowedOrigins = controlUi?.allowedOrigins && Array.isArray(controlUi.allowedOrigins) && controlUi.allowedOrigins.length > 0;
+
+        // Only flag if auth is configured (no auth = lower risk)
+        const hasAuth = gateway?.auth || config.auth || config.token || gateway?.token;
+
+        if (hasAuth && !hasAllowedOrigins) {
+          findings.push({
+            checkId: 'CVE-002',
+            name: 'CVE-2026-25253: Missing Control UI Origin Restrictions',
+            description: 'Auth is configured but controlUi.allowedOrigins is missing - vulnerable to cross-origin WebSocket hijacking',
+            category: 'cve',
+            severity: 'critical',
+            passed: false,
+            message: 'Auth configured without controlUi.allowedOrigins - cross-origin requests can steal auth tokens',
+            file: relativePath,
+            fixable: false,
+            fix: 'Add gateway.controlUi.allowedOrigins with your allowed origins (e.g., ["http://localhost:3000"])',
+          });
+        } else if (hasAuth && hasAllowedOrigins) {
+          findings.push({
+            checkId: 'CVE-002',
+            name: 'CVE-2026-25253: Control UI Origin Restrictions',
+            description: 'Control UI origin restrictions are configured',
+            category: 'cve',
+            severity: 'critical',
+            passed: true,
+            message: 'controlUi.allowedOrigins is configured',
+            file: relativePath,
+            fixable: false,
+            fix: 'No action needed',
+          });
+        }
+      } catch {
+        continue;
+      }
     }
 
     return findings;
