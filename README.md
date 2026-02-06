@@ -223,7 +223,7 @@ Only `id` and `payload` are required. See `--help` for all defaults.
 
 ### `hackmyagent secure --benchmark`
 
-Run the OASB-1 (Open Agent Security Benchmark) against your agent configuration.
+Run the [OASB-1](https://oasb.ai/oasb-1) (Open Agent Security Benchmark) — 46 controls across 10 categories that measure how secure your AI agent setup is.
 
 ```bash
 # Run benchmark (L1 by default)
@@ -233,9 +233,15 @@ hackmyagent secure --benchmark oasb-1
 hackmyagent secure ./my-project --benchmark oasb-1
 
 # Different maturity levels
-hackmyagent secure -b oasb-1 -l L1    # Essential (baseline)
-hackmyagent secure -b oasb-1 -l L2    # Standard
-hackmyagent secure -b oasb-1 -l L3    # Hardened
+hackmyagent secure -b oasb-1 -l L1    # Essential (26 controls)
+hackmyagent secure -b oasb-1 -l L2    # Standard (44 controls)
+hackmyagent secure -b oasb-1 -l L3    # Hardened (46 controls)
+
+# Verbose — see every control with pass/fail/unverified status
+hackmyagent secure -b oasb-1 -v
+
+# Filter by category
+hackmyagent secure -b oasb-1 --category "Credential Protection"
 
 # Output formats
 hackmyagent secure -b oasb-1 -f json
@@ -243,16 +249,53 @@ hackmyagent secure -b oasb-1 -f sarif -o results.sarif
 hackmyagent secure -b oasb-1 -f html -o report.html
 hackmyagent secure -b oasb-1 -f asp -o profile.asp.json
 
-# CI/CD with fail threshold
+# CI/CD gate — exit 1 if compliance is below threshold
 hackmyagent secure -b oasb-1 --fail-below 70
 ```
 
+**OASB-1 Categories (46 controls):**
+
+| # | Category | Controls | What it checks |
+|---|----------|----------|----------------|
+| 1 | Identity & Provenance | 4 | Cryptographic identity, ownership, provenance chain |
+| 2 | Capability & Authorization | 5 | Least privilege, capability boundaries, human-in-the-loop |
+| 3 | Input Security | 5 | Prompt injection, input validation, URL/SSRF protection |
+| 4 | Output Security | 4 | Output validation, destructive op confirmation, exfiltration prevention |
+| 5 | Credential Protection | 5 | Hardcoded secrets, context window isolation, log redaction |
+| 6 | Supply Chain Integrity | 5 | Dependency scanning, lockfiles, rug pull protection, SBOM |
+| 7 | Agent-to-Agent Security | 4 | Mutual auth, message integrity, trust boundaries |
+| 8 | Memory & Context Integrity | 4 | Context injection, memory isolation, summarization security |
+| 9 | Operational Security | 5 | Non-root execution, sandboxing, network isolation, resource limits |
+| 10 | Monitoring & Response | 5 | Security logging, anomaly detection, kill switch, incident response |
+
+**Maturity Levels:**
+
+| Level | Controls | Purpose |
+|-------|----------|---------|
+| L1 - Essential | 26 | Baseline security every agent should meet |
+| L2 - Standard | 44 (L1 + 18) | Production-grade agent security |
+| L3 - Hardened | 46 (L2 + 2) | High-security environments, multi-modal threats |
+
+**Rating System:**
+
+| Rating | L1 Criteria | L2 Criteria | L3 Criteria |
+|--------|-------------|-------------|-------------|
+| Certified | 100% | L1=100% + L2=100% | All 100% |
+| Compliant | — | L1=100% + L2≥90% | L1=100% + L2≥90% |
+| Passing | ≥90% | L1≥90% | L1≥90% |
+| Needs Improvement | ≥70% | L1≥70% | L1≥70% |
+| Failing | <70% | L1<70% | L1<70% |
+
 **Output Formats:**
-- `text` - Human-readable report (default)
-- `json` - Machine-readable JSON
-- `sarif` - SARIF 2.1.0 for GitHub/IDE integration
-- `html` - Standalone HTML report
-- `asp` - Agent Security Profile (HackMyAgent format)
+- `text` — Terminal report with category breakdown (default)
+- `json` — Machine-readable JSON with full control details
+- `sarif` — SARIF 2.1.0 for GitHub Security tab and IDE integration
+- `html` — Standalone HTML report with donut chart, radar chart, and grades
+- `asp` — Agent Security Profile (portable security posture document)
+
+**Exit Codes:**
+- `0` — Rating is Passing or better (or compliance above `--fail-below` threshold)
+- `1` — Rating is Failing or Needs Improvement (or compliance below threshold)
 
 ### `hackmyagent secure-openclaw`
 
