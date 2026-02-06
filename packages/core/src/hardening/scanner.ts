@@ -5864,7 +5864,7 @@ dist/
       // No package.json or parse error - skip CVE-001
     }
 
-    // CVE-002: Missing Control UI Origin Restrictions
+    // CVE-002: Control UI Origin Restrictions (defense-in-depth)
     const configFiles = await this.findGatewayConfigFiles(targetDir);
     for (const configFile of configFiles) {
       const relativePath = path.relative(targetDir, configFile);
@@ -5884,12 +5884,12 @@ dist/
         if (hasAuth && !hasAllowedOrigins) {
           findings.push({
             checkId: 'CVE-002',
-            name: 'CVE-2026-25253: Missing Control UI Origin Restrictions',
-            description: 'Auth is configured but controlUi.allowedOrigins is missing - vulnerable to cross-origin WebSocket hijacking',
+            name: 'Control UI Origin Restrictions Not Configured',
+            description: 'Auth is configured but controlUi.allowedOrigins is not set - adding explicit origin restrictions provides defense-in-depth',
             category: 'cve',
-            severity: 'critical',
+            severity: 'medium',
             passed: false,
-            message: 'Auth configured without controlUi.allowedOrigins - cross-origin requests can steal auth tokens',
+            message: 'Auth configured without controlUi.allowedOrigins - consider adding explicit origin restrictions for defense-in-depth',
             file: relativePath,
             fixable: false,
             fix: 'Add gateway.controlUi.allowedOrigins with your allowed origins (e.g., ["http://localhost:3000"])',
@@ -5897,10 +5897,10 @@ dist/
         } else if (hasAuth && hasAllowedOrigins) {
           findings.push({
             checkId: 'CVE-002',
-            name: 'CVE-2026-25253: Control UI Origin Restrictions',
+            name: 'Control UI Origin Restrictions Configured',
             description: 'Control UI origin restrictions are configured',
             category: 'cve',
-            severity: 'critical',
+            severity: 'medium',
             passed: true,
             message: 'controlUi.allowedOrigins is configured',
             file: relativePath,

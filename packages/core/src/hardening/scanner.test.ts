@@ -2021,7 +2021,7 @@ describe('OpenClaw gateway auto-fix', () => {
     });
   });
 
-  describe('CVE-002: Missing Control UI Origin Restrictions', () => {
+  describe('CVE-002: Control UI Origin Restrictions (defense-in-depth)', () => {
     it('detects missing allowedOrigins when auth is configured', async () => {
       await fs.writeFile(
         path.join(tempDir, 'SKILL.md'),

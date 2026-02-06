@@ -12,7 +12,7 @@
 **First scanner for [CVE-2026-25253](https://hackmyagent.com/blog/cve-2026-25253-detection)** (CVSS 8.8) — the OpenClaw WebSocket hijacking RCE.
 
 - **CVE-001:** Detect vulnerable OpenClaw versions (before v2026.1.29)
-- **CVE-002:** Missing `controlUi.allowedOrigins` (patch alone isn't enough)
+- **CVE-002:** Control UI origin restrictions (defense-in-depth hardening)
 - **SUPPLY-005–008:** ClawHavoc campaign IOCs (C2 IPs, malware filenames, ClickFix patterns)
 - **GATEWAY-007–008, CONFIG-007–009:** Config hardening (open DM wildcards, disabled sandbox, weak tokens)
 
