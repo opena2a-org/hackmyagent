@@ -2,11 +2,15 @@
 
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-219%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
+[![Tests](https://img.shields.io/badge/tests-501%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
 
-Security scanner for AI agents. 147+ checks. Auto-fix. Plugin architecture.
+Security scanner for AI agents. 147+ checks across 31 categories. Auto-fix. Extensible plugin architecture.
 
-Part of [OpenA2A](https://opena2a.org) | [Website](https://hackmyagent.com) | [Security Checks Reference](docs/SECURITY_CHECKS.md)
+Scans Claude Code, Cursor, VS Code, Windsurf, and any MCP server setup for credential leaks, misconfigurations, prompt injection vectors, supply chain risks, and more.
+
+[Website](https://hackmyagent.com) | [Docs](https://hackmyagent.com/docs) | [OpenA2A](https://opena2a.org) | [Security Checks Reference](docs/SECURITY_CHECKS.md)
+
+---
 
 ## Quick Start
 
@@ -16,11 +20,15 @@ npx hackmyagent secure --fix        # auto-fix what it finds
 npx hackmyagent fix-all --with-aim  # run all plugins with identity + audit
 ```
 
+No config files required. Works out of the box.
+
+---
+
 ## Table of Contents
 
 - [Installation](#installation)
 - [Commands](#commands)
-  - [secure](#hackmyagent-secure) — local agent hardening
+  - [secure](#hackmyagent-secure) — local agent hardening (147+ checks)
   - [fix-all](#hackmyagent-fix-all) — run all OpenA2A security plugins
   - [check](#hackmyagent-check) — verify a skill before installing
   - [scan](#hackmyagent-scan) — scan external infrastructure
@@ -30,20 +38,27 @@ npx hackmyagent fix-all --with-aim  # run all plugins with identity + audit
   - [rollback](#hackmyagent-rollback) — undo auto-fix changes
 - [Plugin Architecture](#plugin-architecture)
 - [CI/CD Integration](#cicd-integration)
+- [Exit Codes](#exit-codes)
 - [Contributing](#contributing)
+
+---
 
 ## Installation
 
 ```bash
-# Run directly (no install)
+# Run directly (no install needed)
 npx hackmyagent secure
 
 # Install globally
 npm install -g hackmyagent
 
-# Add to project
+# Add to project devDependencies
 npm install --save-dev hackmyagent
 ```
+
+**Requirements:** Node.js 18+
+
+---
 
 ## Commands
 
@@ -52,51 +67,51 @@ npm install --save-dev hackmyagent
 Scan and harden your local agent setup. 147+ checks across 31 categories with auto-remediation.
 
 ```bash
-hackmyagent secure                          # basic scan
-hackmyagent secure ./my-project             # scan specific directory
-hackmyagent secure --fix                    # auto-fix issues
-hackmyagent secure --fix --dry-run          # preview fixes
+hackmyagent secure                            # basic scan
+hackmyagent secure ./my-project               # scan specific directory
+hackmyagent secure --fix                      # auto-fix issues
+hackmyagent secure --fix --dry-run            # preview fixes before applying
 hackmyagent secure --ignore CRED-001,GIT-002  # skip specific checks
-hackmyagent secure --json                   # JSON output for CI/CD
-hackmyagent secure --verbose                # show all checks including passed
+hackmyagent secure --json                     # JSON output for CI/CD
+hackmyagent secure --verbose                  # show all checks including passed
 ```
 
 <details>
-<summary>Security categories (31)</summary>
+<summary>All 31 security categories</summary>
 
-| Category | Checks | Description |
-|----------|--------|-------------|
-| CRED | 4 | Credential exposure detection |
-| MCP | 12 | MCP server configuration |
-| CLAUDE | 8 | Claude Code security |
-| NET | 6 | Network security |
-| PROMPT | 4 | Prompt injection defenses |
-| INJ | 4 | Input validation (XSS, SQL, cmd) |
-| ENCRYPT | 4 | Encryption at rest |
-| SESSION | 4 | Session management |
-| AUDIT | 4 | Audit trails |
-| SANDBOX | 4 | Process isolation |
+| Category | Checks | What it detects |
+|----------|--------|-----------------|
+| CRED | 4 | Hardcoded API keys, tokens, passwords |
+| MCP | 12 | MCP server misconfigurations |
+| CLAUDE | 8 | Claude Code security issues |
+| NET | 6 | Network exposure, open ports |
+| PROMPT | 4 | Prompt injection vectors |
+| INJ | 4 | XSS, SQL injection, command injection |
+| ENCRYPT | 4 | Missing encryption at rest |
+| SESSION | 4 | Session management flaws |
+| AUDIT | 4 | Missing audit trails |
+| SANDBOX | 4 | Process isolation gaps |
 | TOOL | 4 | Tool permission boundaries |
-| AUTH | 4 | Authentication checks |
-| DEPS | 4 | Dependency security |
-| ENV | 4 | Environment variable safety |
-| GIT | 4 | Git security |
+| AUTH | 4 | Authentication weaknesses |
+| DEPS | 4 | Vulnerable dependencies |
+| ENV | 4 | Insecure environment variables |
+| GIT | 4 | Git security (gitignore, hooks) |
 | IO | 4 | Input/output validation |
-| LOG | 4 | Logging and monitoring |
-| PERM | 4 | File permissions |
-| PROC | 4 | Process isolation |
-| RATE | 4 | Rate limiting |
+| LOG | 4 | Logging and monitoring gaps |
+| PERM | 4 | Overly permissive file permissions |
+| PROC | 4 | Process isolation issues |
+| RATE | 4 | Missing rate limiting |
 | SEC | 4 | Security headers |
-| API | 4 | API security |
-| VSCODE | 4 | VS Code configuration |
-| CURSOR | 4 | Cursor IDE configuration |
-| CVE | 4 | OpenClaw CVE detection |
+| API | 4 | API security issues |
+| VSCODE | 4 | VS Code configuration risks |
+| CURSOR | 4 | Cursor IDE configuration risks |
+| CVE | 4 | Known CVE detection |
 | GATEWAY | 8 | Gateway misconfigurations |
-| CONFIG | 9 | Insecure settings |
-| SUPPLY | 8 | Supply chain attacks |
-| SKILL | 12 | Malicious skill detection |
+| CONFIG | 9 | Insecure default settings |
+| SUPPLY | 8 | Supply chain attack vectors |
+| SKILL | 12 | Malicious skill/tool detection |
 | HEARTBEAT | 6 | Heartbeat/cron abuse |
-| WINDSURF | 3 | Windsurf IDE configuration |
+| WINDSURF | 3 | Windsurf IDE configuration risks |
 
 </details>
 
@@ -105,8 +120,8 @@ hackmyagent secure --verbose                # show all checks including passed
 
 **General (`hackmyagent secure --fix`):**
 
-| Check ID | Issue | Fix |
-|----------|-------|-----|
+| Check | Issue | Auto-fix |
+|-------|-------|----------|
 | CRED-001 | Exposed API keys | Replace with env var reference |
 | GIT-001 | Missing .gitignore | Create with secure defaults |
 | GIT-002 | Incomplete .gitignore | Add missing patterns |
@@ -116,18 +131,18 @@ hackmyagent secure --verbose                # show all checks including passed
 
 **OpenClaw (`hackmyagent secure-openclaw --fix`):**
 
-| Check ID | Issue | Fix |
-|----------|-------|-----|
+| Check | Issue | Auto-fix |
+|-------|-------|----------|
 | GATEWAY-001 | Bound to 0.0.0.0 | Bind to 127.0.0.1 |
 | GATEWAY-003 | Plaintext token | Replace with `${OPENCLAW_AUTH_TOKEN}` |
 | GATEWAY-004 | Approvals disabled | Enable approvals |
 | GATEWAY-005 | Sandbox disabled | Enable sandbox |
 
-Always use `--dry-run` first to preview changes. Backups are created automatically.
+Use `--dry-run` first to preview changes. Backups are created automatically in `.hackmyagent-backup/`.
 
 </details>
 
-Exit codes: `0` = no critical/high issues, `1` = critical/high issues found.
+---
 
 ### `hackmyagent fix-all`
 
@@ -145,23 +160,23 @@ hackmyagent fix-all -v                  # verbose output
 
 **Plugin execution order:**
 
-| Order | Plugin | What it does |
-|-------|--------|--------------|
-| 1 | SkillGuard | Hash pinning, tamper detection, dangerous pattern scanning |
-| 2 | SignCrypt | Ed25519 signing of SKILL.md and HEARTBEAT.md files |
-| 3 | Secretless | Credential detection, env var replacement, encrypted store |
+| # | Plugin | What it does |
+|---|--------|--------------|
+| 1 | **SkillGuard** | Hash pinning, tamper detection, dangerous pattern scanning (reverse shells, exfil, prompt injection) |
+| 2 | **SignCrypt** | Ed25519 signing of SKILL.md and HEARTBEAT.md, SHA-256 hash pinning, signature verification |
+| 3 | **Secretless** | Credential detection (10 patterns), env var replacement, AES-256-GCM encrypted store |
 
-**`--with-aim` enables:**
+**`--with-aim` adds:**
 - Ed25519 identity generation for the agent
-- Cryptographic signing of findings and remediations
-- Audit log at `.opena2a/aim/audit.jsonl`
-- Capability policy enforcement
+- Cryptographic audit log at `.opena2a/aim/audit.jsonl`
+- Capability policy enforcement via `policy.yaml`
+- 8-factor trust scoring
 
-Exit code `1` if critical/high issues remain after fixing.
+---
 
 ### `hackmyagent check`
 
-Verify a skill before installing.
+Verify a skill before installing it.
 
 ```bash
 hackmyagent check @publisher/skill-name
@@ -170,6 +185,8 @@ hackmyagent check @publisher/skill --offline    # skip DNS verification
 ```
 
 Checks: publisher identity (DNS TXT), permissions requested, revocation status.
+
+---
 
 ### `hackmyagent scan`
 
@@ -185,7 +202,9 @@ Detects: exposed MCP SSE/tools endpoints, public configs, API keys in responses,
 
 Scoring: A (90-100), B (80-89), C (70-79), D (60-69), F (<60).
 
-> Only scan systems you own or have permission to test.
+> Only scan systems you own or have written authorization to test.
+
+---
 
 ### `hackmyagent attack`
 
@@ -195,26 +214,27 @@ Red team your AI agent with 55 adversarial payloads across 5 categories.
 hackmyagent attack --local                                    # local simulation
 hackmyagent attack --local --system-prompt "You are helpful"  # with custom prompt
 hackmyagent attack https://api.example.com/v1/chat            # test live endpoint
-hackmyagent attack --local --category prompt-injection         # filter category
+hackmyagent attack --local --category prompt-injection         # single category
 hackmyagent attack --local --intensity aggressive              # full suite
 hackmyagent attack --local -f sarif -o results.sarif           # SARIF output
 hackmyagent attack https://api.example.com --fail-on-vulnerable medium  # CI gate
 ```
 
 <details>
-<summary>Attack categories and payload format</summary>
+<summary>Attack categories and custom payloads</summary>
 
 | Category | Payloads | Description |
 |----------|----------|-------------|
-| `prompt-injection` | 12 | Manipulate agent behavior |
-| `jailbreak` | 12 | Bypass safety guardrails |
-| `data-exfiltration` | 11 | Extract sensitive data |
-| `capability-abuse` | 10 | Misuse agent tools |
-| `context-manipulation` | 10 | Poison agent context |
+| `prompt-injection` | 12 | Manipulate agent behavior via injected instructions |
+| `jailbreak` | 12 | Bypass safety guardrails and system constraints |
+| `data-exfiltration` | 11 | Extract sensitive data, system prompts, credentials |
+| `capability-abuse` | 10 | Misuse agent tools for unintended actions |
+| `context-manipulation` | 10 | Poison agent context or memory |
 
-Intensity: `passive` (observation), `active` (default), `aggressive` (full suite).
+Intensity: `passive` (observation only), `active` (default), `aggressive` (full suite).
 
-**Custom payload file:**
+**Custom payloads:** Create a JSON file and pass with `--payloads custom.json`:
+
 ```json
 {
   "payloads": [
@@ -238,6 +258,8 @@ Only `id` and `payload` are required.
 
 Output formats: `text`, `json`, `sarif` (GitHub Security tab), `html`.
 
+---
+
 ### `hackmyagent secure --benchmark`
 
 Run the [OASB-1](https://oasb.ai/oasb-1) (Open Agent Security Benchmark) — 46 controls across 10 categories.
@@ -252,7 +274,7 @@ hackmyagent secure -b oasb-1 --fail-below 70          # CI gate
 ```
 
 <details>
-<summary>OASB-1 categories and rating system</summary>
+<summary>OASB-1 categories and maturity levels</summary>
 
 | # | Category | Controls |
 |---|----------|----------|
@@ -267,13 +289,15 @@ hackmyagent secure -b oasb-1 --fail-below 70          # CI gate
 | 9 | Operational Security | 5 |
 | 10 | Monitoring & Response | 5 |
 
-**Maturity levels:** L1 Essential (26), L2 Standard (44), L3 Hardened (46).
+**Maturity levels:** L1 Essential (26 controls), L2 Standard (44), L3 Hardened (46).
 
 **Ratings:** Certified (100%), Compliant (L1=100% + L2>=90%), Passing (>=90%), Needs Improvement (>=70%), Failing (<70%).
 
 </details>
 
 Output formats: `text`, `json`, `sarif`, `html`, `asp` (Agent Security Profile).
+
+---
 
 ### `hackmyagent secure-openclaw`
 
@@ -291,6 +315,8 @@ Detects: CVE-2026-25253, ClawHavoc IOCs, reverse shells, credential exfiltration
 
 See [SECURITY_CHECKS.md](docs/SECURITY_CHECKS.md#openclaw-security-checks) for full documentation.
 
+---
+
 ### `hackmyagent rollback`
 
 Undo auto-fix changes. Backups are created automatically in `.hackmyagent-backup/`.
@@ -300,65 +326,126 @@ hackmyagent rollback                # rollback current directory
 hackmyagent rollback ./my-project   # rollback specific directory
 ```
 
+---
+
 ## Plugin Architecture
 
-HackMyAgent uses a modular plugin system built on `@opena2a/plugin-core`. Each plugin implements the `OpenA2APlugin` interface with `scan()` and `fix()` methods.
+HackMyAgent uses a modular plugin system built on [`@opena2a/plugin-core`](packages/plugin-core). Each plugin implements `scan()` to detect issues and `fix()` to remediate them.
 
 ### Packages
 
-| Package | Purpose |
-|---------|---------|
-| `@opena2a/aim-core` | Ed25519 identity, cryptographic signing, audit logging, capability policy, trust scoring |
-| `@opena2a/plugin-core` | Plugin interface, registry, shared types |
-| `@opena2a/secretless-openclaw` | Credential scanning (10 regex patterns), auto-replacement, encrypted store |
-| `@opena2a/signcrypt-openclaw` | SKILL.md/HEARTBEAT.md signing, SHA-256 hash pinning, signature records |
-| `@opena2a/skillguard-openclaw` | Capability validation, permission pinning, dangerous pattern detection |
-
-### AIM Core Trust Score
-
-8-factor weighted trust score (0.0 to 1.0):
-
-| Factor | Weight | Measures |
-|--------|--------|----------|
-| identity | 0.20 | Ed25519 keypair exists |
-| capabilities | 0.15 | Capabilities declared and pinned |
-| secretsManaged | 0.15 | No hardcoded credentials |
-| auditLog | 0.10 | Audit trail active |
-| configSigned | 0.10 | Configuration integrity verified |
-| skillsVerified | 0.10 | Skills cryptographically signed |
-| networkControlled | 0.10 | Network access restricted |
-| heartbeatMonitored | 0.10 | Heartbeat monitoring active |
+| Package | npm | Description |
+|---------|-----|-------------|
+| [`@opena2a/plugin-core`](packages/plugin-core) | — | Plugin interface, registry, shared types |
+| [`@opena2a/aim-core`](packages/aim-core) | — | Ed25519 identity, audit logging, capability policy, trust scoring |
+| [`@opena2a/secretless-openclaw`](packages/secretless-openclaw) | — | Credential scanning (10 patterns), env var replacement, AES-256-GCM store |
+| [`@opena2a/signcrypt-openclaw`](packages/signcrypt-openclaw) | — | Ed25519 file signing, SHA-256 hash pinning, signature verification |
+| [`@opena2a/skillguard-openclaw`](packages/skillguard-openclaw) | — | Permission pinning, tamper detection, dangerous pattern scanning |
 
 ### Writing a Plugin
 
 ```typescript
-import type { OpenA2APlugin, Finding, Remediation } from '@opena2a/plugin-core';
+import type {
+  OpenA2APlugin,
+  PluginMetadata,
+  PluginStatus,
+  Finding,
+  Remediation,
+  FixOptions,
+  PluginInitOptions,
+} from '@opena2a/plugin-core';
 
-class MyPlugin implements OpenA2APlugin {
-  readonly metadata = { packageName: '@my/plugin', /* ... */ };
+export const metadata: PluginMetadata = {
+  packageName: '@my-org/my-plugin',
+  displayName: 'My Plugin',
+  description: 'Detects and fixes X',
+  version: '1.0.0',
+  findings: ['MY-001', 'MY-002'],
+  scoreImprovement: 10,
+};
 
-  async init() {}
+export class MyPlugin implements OpenA2APlugin {
+  readonly metadata = metadata;
+
+  async init(options?: PluginInitOptions): Promise<void> {
+    // Access AIM Core for identity-aware audit logging:
+    // const aimCore = options?.aimCore;
+  }
 
   async scan(agentDir: string): Promise<Finding[]> {
-    // Return findings
-    return [];
+    // Scan the agent directory and return findings
+    return [
+      {
+        id: 'MY-001',
+        title: 'Insecure widget detected',
+        description: 'Widget at config.json line 12 uses plaintext.',
+        severity: 'high',        // critical | high | medium | low
+        filePath: 'config.json',
+        line: 12,
+        autoFixable: true,
+      },
+    ];
   }
 
   async fix(agentDir: string, options?: FixOptions): Promise<Remediation[]> {
-    // Fix findings, return what was fixed
-    return [];
+    if (options?.dryRun) {
+      // Return what would be fixed without modifying files
+      return [{ findingId: 'MY-001', description: 'Would encrypt widget', filesModified: ['config.json'], rollbackAvailable: false }];
+    }
+
+    // Apply fixes and return what was changed
+    return [{ findingId: 'MY-001', description: 'Encrypted widget', filesModified: ['config.json'], rollbackAvailable: false }];
   }
 
-  async status() { return { name: 'My Plugin', version: '1.0.0', active: true, findingsCount: 0 }; }
+  async status(): Promise<PluginStatus> {
+    return { name: metadata.displayName, version: metadata.version, active: true, findingsCount: 0 };
+  }
+
+  async uninstall(): Promise<void> {}
+}
+
+export function createPlugin(): MyPlugin {
+  return new MyPlugin();
 }
 ```
+
+Register the plugin in `@opena2a/plugin-core`:
+
+```typescript
+import { registerPlugin } from '@opena2a/plugin-core';
+import { createPlugin, metadata } from '@my-org/my-plugin';
+
+registerPlugin({
+  metadata,
+  factory: createPlugin,
+});
+```
+
+### Trust Score
+
+AIM Core provides an 8-factor weighted trust score (0.0 to 1.0) for each agent:
+
+| Factor | Weight | What it measures |
+|--------|--------|------------------|
+| `identity` | 0.20 | Ed25519 keypair exists and is valid |
+| `capabilities` | 0.15 | Capabilities declared and pinned |
+| `secretsManaged` | 0.15 | No hardcoded credentials |
+| `auditLog` | 0.10 | Audit trail active |
+| `configSigned` | 0.10 | Configuration integrity verified |
+| `skillsVerified` | 0.10 | Skills cryptographically signed |
+| `networkControlled` | 0.10 | Network access restricted |
+| `heartbeatMonitored` | 0.10 | Heartbeat monitoring active |
+
+Use `--with-aim` in `fix-all` to generate trust scores.
+
+---
 
 ## CI/CD Integration
 
 ### GitHub Actions
 
 ```yaml
-name: Security
+name: Agent Security
 on: [push, pull_request]
 jobs:
   scan:
@@ -370,10 +457,10 @@ jobs:
       - run: npx hackmyagent secure --json > security-report.json
       - run: npx hackmyagent fix-all --scan-only --json > plugin-report.json
       - uses: actions/upload-artifact@v4
-        with: { name: security-report, path: '*.json' }
+        with: { name: security-reports, path: '*.json' }
 ```
 
-### SARIF + GitHub Security Tab
+### SARIF (GitHub Security Tab)
 
 ```yaml
 - run: npx hackmyagent attack --local -f sarif -o results.sarif --fail-on-vulnerable medium
@@ -392,16 +479,36 @@ npx hackmyagent secure --ignore LOG-001,RATE-001
 ### JSON Piping
 
 ```bash
+# Filter critical findings
 hackmyagent secure --json | jq '.findings[] | select(.severity == "critical")'
+
+# Count issues by category
+hackmyagent secure --json | jq '[.findings[].id | split("-")[0]] | group_by(.) | map({(.[0]): length}) | add'
 ```
+
+---
+
+## Exit Codes
+
+| Code | Meaning | Commands |
+|------|---------|----------|
+| `0` | Clean — no critical/high issues | All commands |
+| `1` | Critical or high severity issues remain after scan/fix | `secure`, `fix-all`, `attack` |
+| `2` | Incomplete scan — one or more plugins failed to run | `fix-all` |
+
+---
 
 ## Supported Platforms
 
-- **Claude Code** — CLAUDE.md, skills, MCP servers
-- **Cursor** — .cursor/ rules, MCP configurations
-- **VS Code** — .vscode/mcp.json configurations
-- **Windsurf** — IDE configurations
-- **Generic MCP** — any MCP server setup
+| Platform | What HackMyAgent scans |
+|----------|------------------------|
+| **Claude Code** | CLAUDE.md, skills, MCP server configs |
+| **Cursor** | .cursor/ rules, MCP configurations |
+| **VS Code** | .vscode/mcp.json configurations |
+| **Windsurf** | IDE configurations |
+| **Generic MCP** | Any MCP server setup |
+
+---
 
 ## Environment Variables
 
@@ -409,6 +516,8 @@ hackmyagent secure --json | jq '.findings[] | select(.severity == "critical")'
 |----------|-------------|
 | `NO_COLOR` | Disable colored output |
 | `HACKMYAGENT_TIMEOUT` | Default timeout for scans (ms) |
+
+---
 
 ## Contributing
 
@@ -418,9 +527,24 @@ Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 git clone https://github.com/opena2a-org/hackmyagent.git
 cd hackmyagent
 npm install
-npx turbo run build    # build all 7 packages
-npx turbo run test     # run 219 tests
+npx turbo build     # build all 7 packages
+npx turbo test      # run 501 tests
 ```
+
+### Monorepo Structure
+
+```
+packages/
+  cli/                      # CLI entry point (hackmyagent command)
+  core/                     # Scanner engine (147+ checks)
+  aim-core/                 # Ed25519 identity, audit, policy, trust
+  plugin-core/              # Plugin interface and registry
+  secretless-openclaw/      # Credential scanner plugin
+  signcrypt-openclaw/       # Signing and hash pinning plugin
+  skillguard-openclaw/      # Permission and pattern scanner plugin
+```
+
+---
 
 ## License
 
@@ -428,6 +552,4 @@ Apache-2.0
 
 ---
 
-HackMyAgent finds vulnerabilities. **[AIM](https://github.com/opena2a-org/agent-identity-management)** manages identity and access — the open-source NHI platform for AI agents.
-
-[Get started with AIM](https://opena2a.org/docs/quick-start) | [OpenA2A docs](https://opena2a.org)
+Built by [OpenA2A](https://opena2a.org). HackMyAgent finds vulnerabilities. [AIM](https://github.com/opena2a-org/agent-identity-management) manages identity and access.
