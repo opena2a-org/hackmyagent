@@ -3053,4 +3053,259 @@ function generateAttackHtmlReport(report: AttackReport): string {
 </html>`;
 }
 
+// --- fix-all: Run all OpenClaw plugins to scan and remediate ---
+
+import { createPlugin as createSecretlessPlugin } from '@opena2a/secretless-openclaw';
+import { createPlugin as createSigncryptPlugin } from '@opena2a/signcrypt-openclaw';
+import { createPlugin as createSkillguardPlugin } from '@opena2a/skillguard-openclaw';
+import { AIMCore } from '@opena2a/aim-core';
+import type {
+  Finding as PluginFinding,
+  Remediation,
+  OpenA2APlugin,
+  Severity as PluginSeverity,
+} from '@opena2a/plugin-core';
+
+const PLUGIN_SEVERITY_DISPLAY: Record<PluginSeverity, { symbol: string; color: () => string }> = {
+  critical: { symbol: '🔴', color: () => colors.brightRed },
+  high: { symbol: '🟠', color: () => colors.red },
+  medium: { symbol: '🟡', color: () => colors.yellow },
+  low: { symbol: '🟢', color: () => colors.green },
+  info: { symbol: 'ℹ️', color: () => colors.cyan },
+};
+
+program
+  .command('fix-all')
+  .description(`Run all OpenA2A security plugins to scan and auto-fix agent issues
+
+Runs the full plugin suite in order:
+  1. SkillGuard  — hash pinning, tamper detection, dangerous patterns
+  2. SignCrypt   — Ed25519 signing, heartbeat hash pins
+  3. Secretless  — credential detection, env var replacement
+
+Each plugin scans for findings, then auto-fixes what it can.
+Dangerous patterns (reverse shells, exfil, etc.) require manual review.
+
+Exit code 1 if critical/high issues remain after fixing.
+
+Examples:
+  $ hackmyagent fix-all                     Scan and fix current directory
+  $ hackmyagent fix-all ./my-agent          Scan specific directory
+  $ hackmyagent fix-all --dry-run           Preview fixes without applying
+  $ hackmyagent fix-all --scan-only         Scan without fixing
+  $ hackmyagent fix-all --json              JSON output for CI
+  $ hackmyagent fix-all --with-aim          Enable AIM identity and audit`)
+  .argument('[directory]', 'Agent directory to scan (default: current directory)', '')
+  .option('--dry-run', 'Preview fixes without applying them')
+  .option('--scan-only', 'Only scan, do not fix')
+  .option('--json', 'Output as JSON (for scripting/CI)')
+  .option('--with-aim', 'Initialize AIM Core for identity-aware audit logging')
+  .option('-v, --verbose', 'Show all findings including passed plugins')
+  .action(
+    async (
+      directory: string,
+      options: {
+        dryRun?: boolean;
+        scanOnly?: boolean;
+        json?: boolean;
+        withAim?: boolean;
+        verbose?: boolean;
+      }
+    ) => {
+      try {
+        const path = require('path');
+        const fs = require('fs');
+
+        // Resolve target directory
+        let targetDir: string;
+        if (directory && directory !== '') {
+          targetDir = directory.startsWith('/')
+            ? directory
+            : path.join(process.cwd(), directory);
+        } else {
+          targetDir = process.cwd();
+        }
+
+        if (!fs.existsSync(targetDir)) {
+          console.error(`Error: Directory not found: ${targetDir}`);
+          process.exit(1);
+        }
+
+        // Initialize AIM Core if requested
+        let aimCore: AIMCore | undefined;
+        if (options.withAim) {
+          aimCore = new AIMCore({
+            agentName: path.basename(targetDir),
+            dataDir: path.join(targetDir, '.opena2a', 'aim'),
+          });
+        }
+
+        // Create and initialize plugins in execution order
+        const pluginFactories: Array<{ name: string; create: () => OpenA2APlugin }> = [
+          { name: 'SkillGuard', create: createSkillguardPlugin },
+          { name: 'SignCrypt', create: createSigncryptPlugin },
+          { name: 'Secretless', create: createSecretlessPlugin },
+        ];
+
+        const plugins: Array<{ name: string; plugin: OpenA2APlugin }> = [];
+        for (const factory of pluginFactories) {
+          const plugin = factory.create();
+          await plugin.init(aimCore ? { aimCore } : undefined);
+          plugins.push({ name: factory.name, plugin });
+        }
+
+        if (!options.json) {
+          console.log(`\n🛡️  OpenA2A Fix-All Security Report`);
+          console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
+
+          if (options.dryRun) {
+            console.log(`🔍 Scanning ${targetDir} (dry-run — previewing fixes)...\n`);
+          } else if (options.scanOnly) {
+            console.log(`🔍 Scanning ${targetDir} (scan-only — no fixes applied)...\n`);
+          } else {
+            console.log(`🔧 Scanning and fixing ${targetDir}...\n`);
+          }
+        }
+
+        // Aggregate results from all plugins
+        interface PluginResult {
+          name: string;
+          findings: PluginFinding[];
+          remediations: Remediation[];
+        }
+
+        const results: PluginResult[] = [];
+        let allFindings: PluginFinding[] = [];
+        let allRemediations: Remediation[] = [];
+
+        for (const { name, plugin } of plugins) {
+          if (!options.json) {
+            console.log(`${colors.cyan}▸ ${name}${RESET()}`);
+          }
+
+          // Scan
+          const findings = await plugin.scan(targetDir);
+
+          let remediations: Remediation[] = [];
+          if (!options.scanOnly && findings.length > 0) {
+            remediations = await plugin.fix(targetDir, {
+              dryRun: options.dryRun ?? false,
+            });
+          }
+
+          results.push({ name, findings, remediations });
+          allFindings.push(...findings);
+          allRemediations.push(...remediations);
+
+          if (!options.json) {
+            if (findings.length === 0) {
+              console.log(`  ${colors.green}✓ No issues found${RESET()}`);
+            } else {
+              console.log(`  Found ${findings.length} issue(s)`);
+              if (remediations.length > 0) {
+                console.log(
+                  `  ${colors.green}✓ Fixed ${remediations.length}${RESET()}`
+                );
+              }
+            }
+            console.log();
+          }
+        }
+
+        // JSON output
+        if (options.json) {
+          const unfixed = allFindings.filter(
+            (f) => !allRemediations.some((r) => r.findingId === f.id)
+          );
+          const jsonOutput = {
+            target: targetDir,
+            mode: options.dryRun ? 'dry-run' : options.scanOnly ? 'scan-only' : 'fix',
+            aimEnabled: !!aimCore,
+            totalFindings: allFindings.length,
+            totalFixed: allRemediations.length,
+            remainingIssues: unfixed.length,
+            plugins: results.map((r) => ({
+              name: r.name,
+              findings: r.findings,
+              remediations: r.remediations,
+            })),
+          };
+          console.log(JSON.stringify(jsonOutput, null, 2));
+          return;
+        }
+
+        // Summary
+        console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        console.log(`\nFindings: ${allFindings.length} total | ${allRemediations.length} fixed\n`);
+
+        // Show remaining issues (not auto-fixed)
+        const fixedIds = new Set(allRemediations.map((r) => r.findingId));
+        const remainingFindings = allFindings.filter((f) => !fixedIds.has(f.id) || !f.autoFixable);
+
+        if (remainingFindings.length > 0) {
+          console.log(`${colors.red}Remaining Issues (require manual review):${RESET()}\n`);
+
+          for (const finding of remainingFindings) {
+            const display = PLUGIN_SEVERITY_DISPLAY[finding.severity];
+            console.log(
+              `${display.color()}${display.symbol} [${finding.id}] ${finding.severity.toUpperCase()}${RESET()}`
+            );
+            console.log(`   ${finding.title}`);
+            console.log(`   ${finding.description}`);
+            if (finding.filePath) {
+              console.log(`   File: ${finding.filePath}`);
+            }
+            console.log();
+          }
+        }
+
+        // Show remediations applied
+        if (allRemediations.length > 0 && !options.scanOnly) {
+          const label = options.dryRun ? 'Fixes Available (dry-run):' : 'Fixes Applied:';
+          console.log(`${colors.green}✅ ${label}${RESET()}\n`);
+
+          for (const remediation of allRemediations) {
+            console.log(`  ${colors.green}✓${RESET()} [${remediation.findingId}] ${remediation.description}`);
+            if (remediation.filesModified.length > 0 && options.verbose) {
+              for (const file of remediation.filesModified) {
+                console.log(`     ${colors.cyan}→${RESET()} ${file}`);
+              }
+            }
+          }
+          console.log();
+
+          if (!options.dryRun) {
+            console.log(
+              `${colors.cyan}Note:${RESET()} Plugin data stored in ${targetDir}/.opena2a/`
+            );
+            console.log(
+              `      Uninstall with: hackmyagent fix-all ${directory || '.'} --uninstall\n`
+            );
+          }
+        }
+
+        // All clear message
+        if (allFindings.length === 0) {
+          console.log(`${colors.green}✅ No security issues found. Agent looks good!${RESET()}\n`);
+        }
+
+        console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+        console.log(`Run 'hackmyagent secure' for a full hardening scan.\n`);
+
+        // Exit with non-zero if critical/high issues remain
+        const criticalOrHigh = remainingFindings.filter(
+          (f) => f.severity === 'critical' || f.severity === 'high'
+        );
+        if (criticalOrHigh.length > 0) {
+          process.exit(1);
+        }
+      } catch (error) {
+        console.error(
+          `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+        );
+        process.exit(1);
+      }
+    }
+  );
+
 program.parse();
