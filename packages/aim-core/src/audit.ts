@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import type { AuditEvent, AuditEventInput, AuditReadOptions } from './types';
 
 const AUDIT_FILE = 'audit.jsonl';
@@ -20,8 +21,13 @@ export function logEvent(dataDir: string, event: AuditEventInput): AuditEvent {
   try {
     const stat = fs.statSync(filePath);
     if (stat.size > MAX_AUDIT_SIZE) {
-      const rotatedPath = `${filePath}.${Date.now()}.${process.pid}`;
-      fs.renameSync(filePath, rotatedPath);
+      const suffix = `${Date.now()}.${process.pid}.${crypto.randomBytes(4).toString('hex')}`;
+      const rotatedPath = `${filePath}.${suffix}`;
+      try {
+        fs.renameSync(filePath, rotatedPath);
+      } catch {
+        // Another process may have already rotated — safe to continue
+      }
 
       // Clean up old rotated logs beyond the retention limit
       try {

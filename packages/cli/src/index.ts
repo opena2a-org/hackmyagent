@@ -3129,21 +3129,19 @@ Examples:
           process.exit(1);
         }
 
-        // Reject symlinks to prevent following links to sensitive locations
-        const lstat = fs.lstatSync(targetDir);
-        if (lstat.isSymbolicLink()) {
-          console.error(`Error: Refusing to follow symlink: ${targetDir}`);
-          process.exit(1);
-        }
-        if (!lstat.isDirectory()) {
-          console.error(`Error: Not a directory: ${targetDir}`);
+        // Resolve realpath first, then validate the resolved path (avoids TOCTOU)
+        const realTarget = fs.realpathSync(targetDir);
+        const realCwd = fs.realpathSync(process.cwd());
+
+        // Verify resolved path is a directory (not symlink — realpath already resolved it)
+        const resolvedStat = fs.lstatSync(realTarget);
+        if (!resolvedStat.isDirectory()) {
+          console.error(`Error: Not a directory: ${realTarget}`);
           process.exit(1);
         }
 
-        // Resolve realpath and verify it stays within cwd
-        const realTarget = fs.realpathSync(targetDir);
-        const realCwd = fs.realpathSync(process.cwd());
-        if (!realTarget.startsWith(realCwd)) {
+        // Verify resolved path stays within cwd (prevents traversal via .. or symlinks)
+        if (!realTarget.startsWith(realCwd + path.sep) && realTarget !== realCwd) {
           console.error(`Error: Target directory must be within current working directory`);
           process.exit(1);
         }
