@@ -3067,11 +3067,11 @@ import type {
 } from '@opena2a/plugin-core';
 
 const PLUGIN_SEVERITY_DISPLAY: Record<PluginSeverity, { symbol: string; color: () => string }> = {
-  critical: { symbol: '🔴', color: () => colors.brightRed },
-  high: { symbol: '🟠', color: () => colors.red },
-  medium: { symbol: '🟡', color: () => colors.yellow },
-  low: { symbol: '🟢', color: () => colors.green },
-  info: { symbol: 'ℹ️', color: () => colors.cyan },
+  critical: { symbol: '[!!]', color: () => colors.brightRed },
+  high: { symbol: '[!]', color: () => colors.red },
+  medium: { symbol: '[~]', color: () => colors.yellow },
+  low: { symbol: '[.]', color: () => colors.green },
+  info: { symbol: '[i]', color: () => colors.cyan },
 };
 
 program
@@ -3155,15 +3155,15 @@ Examples:
         }
 
         if (!options.json) {
-          console.log(`\n🛡️  OpenA2A Fix-All Security Report`);
+          console.log(`\n  OpenA2A Fix-All Security Report`);
           console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
 
           if (options.dryRun) {
-            console.log(`🔍 Scanning ${targetDir} (dry-run — previewing fixes)...\n`);
+            console.log(`Scanning ${targetDir} (dry-run -- previewing fixes)...\n`);
           } else if (options.scanOnly) {
-            console.log(`🔍 Scanning ${targetDir} (scan-only — no fixes applied)...\n`);
+            console.log(`Scanning ${targetDir} (scan-only -- no fixes applied)...\n`);
           } else {
-            console.log(`🔧 Scanning and fixing ${targetDir}...\n`);
+            console.log(`Scanning and fixing ${targetDir}...\n`);
           }
         }
 
@@ -3180,7 +3180,7 @@ Examples:
 
         for (const { name, plugin } of plugins) {
           if (!options.json) {
-            console.log(`${colors.cyan}▸ ${name}${RESET()}`);
+            console.log(`${colors.cyan}> ${name}${RESET()}`);
           }
 
           // Scan
@@ -3199,12 +3199,12 @@ Examples:
 
           if (!options.json) {
             if (findings.length === 0) {
-              console.log(`  ${colors.green}✓ No issues found${RESET()}`);
+              console.log(`  ${colors.green}[+] No issues found${RESET()}`);
             } else {
               console.log(`  Found ${findings.length} issue(s)`);
               if (remediations.length > 0) {
                 console.log(
-                  `  ${colors.green}✓ Fixed ${remediations.length}${RESET()}`
+                  `  ${colors.green}[+] Fixed ${remediations.length}${RESET()}`
                 );
               }
             }
@@ -3262,10 +3262,10 @@ Examples:
         // Show remediations applied
         if (allRemediations.length > 0 && !options.scanOnly) {
           const label = options.dryRun ? 'Fixes Available (dry-run):' : 'Fixes Applied:';
-          console.log(`${colors.green}✅ ${label}${RESET()}\n`);
+          console.log(`${colors.green}[+] ${label}${RESET()}\n`);
 
           for (const remediation of allRemediations) {
-            console.log(`  ${colors.green}✓${RESET()} [${remediation.findingId}] ${remediation.description}`);
+            console.log(`  ${colors.green}[+]${RESET()} [${remediation.findingId}] ${remediation.description}`);
             if (remediation.filesModified.length > 0 && options.verbose) {
               for (const file of remediation.filesModified) {
                 console.log(`     ${colors.cyan}→${RESET()} ${file}`);
@@ -3286,7 +3286,7 @@ Examples:
 
         // All clear message
         if (allFindings.length === 0) {
-          console.log(`${colors.green}✅ No security issues found. Agent looks good!${RESET()}\n`);
+          console.log(`${colors.green}[+] No security issues found. Agent looks good.${RESET()}\n`);
         }
 
         console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
