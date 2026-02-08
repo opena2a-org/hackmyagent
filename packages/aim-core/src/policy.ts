@@ -21,7 +21,7 @@ export function loadPolicy(dataDir: string): CapabilityPolicy {
   let parsed: Record<string, unknown> | undefined;
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
-    parsed = yaml.load(raw) as Record<string, unknown> | undefined;
+    parsed = yaml.load(raw, { schema: yaml.JSON_SCHEMA }) as Record<string, unknown> | undefined;
   } catch {
     return DEFAULT_POLICY;
   }

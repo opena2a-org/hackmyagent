@@ -3116,7 +3116,7 @@ Examples:
         const path = require('path');
         const fs = require('fs');
 
-        // Resolve target directory with path traversal protection
+        // Resolve target directory with path traversal and symlink protection
         let targetDir: string;
         if (directory && directory !== '') {
           targetDir = path.resolve(process.cwd(), directory);
@@ -3129,12 +3129,25 @@ Examples:
           process.exit(1);
         }
 
-        // Verify the resolved path is a directory (not a symlink to something unexpected)
-        const stat = fs.statSync(targetDir);
-        if (!stat.isDirectory()) {
+        // Reject symlinks to prevent following links to sensitive locations
+        const lstat = fs.lstatSync(targetDir);
+        if (lstat.isSymbolicLink()) {
+          console.error(`Error: Refusing to follow symlink: ${targetDir}`);
+          process.exit(1);
+        }
+        if (!lstat.isDirectory()) {
           console.error(`Error: Not a directory: ${targetDir}`);
           process.exit(1);
         }
+
+        // Resolve realpath and verify it stays within cwd
+        const realTarget = fs.realpathSync(targetDir);
+        const realCwd = fs.realpathSync(process.cwd());
+        if (!realTarget.startsWith(realCwd)) {
+          console.error(`Error: Target directory must be within current working directory`);
+          process.exit(1);
+        }
+        targetDir = realTarget;
 
         // Initialize AIM Core if requested
         let aimCore: AIMCore | undefined;
@@ -3188,32 +3201,41 @@ Examples:
             console.log(`${colors.cyan}> ${name}${RESET()}`);
           }
 
-          // Scan
-          const findings = await plugin.scan(targetDir);
+          try {
+            // Scan
+            const findings = await plugin.scan(targetDir);
 
-          let remediations: Remediation[] = [];
-          if (!options.scanOnly && findings.length > 0) {
-            remediations = await plugin.fix(targetDir, {
-              dryRun: options.dryRun ?? false,
-            });
-          }
-
-          results.push({ name, findings, remediations });
-          allFindings.push(...findings);
-          allRemediations.push(...remediations);
-
-          if (!options.json) {
-            if (findings.length === 0) {
-              console.log(`  ${colors.green}[+] No issues found${RESET()}`);
-            } else {
-              console.log(`  Found ${findings.length} issue(s)`);
-              if (remediations.length > 0) {
-                console.log(
-                  `  ${colors.green}[+] Fixed ${remediations.length}${RESET()}`
-                );
-              }
+            let remediations: Remediation[] = [];
+            if (!options.scanOnly && findings.length > 0) {
+              remediations = await plugin.fix(targetDir, {
+                dryRun: options.dryRun ?? false,
+              });
             }
-            console.log();
+
+            results.push({ name, findings, remediations });
+            allFindings.push(...findings);
+            allRemediations.push(...remediations);
+
+            if (!options.json) {
+              if (findings.length === 0) {
+                console.log(`  ${colors.green}[+] No issues found${RESET()}`);
+              } else {
+                console.log(`  Found ${findings.length} issue(s)`);
+                if (remediations.length > 0) {
+                  console.log(
+                    `  ${colors.green}[+] Fixed ${remediations.length}${RESET()}`
+                  );
+                }
+              }
+              console.log();
+            }
+          } catch (pluginErr) {
+            // Isolate plugin errors — one failing plugin should not crash the entire run
+            results.push({ name, findings: [], remediations: [] });
+            if (!options.json) {
+              console.log(`  ${colors.brightRed}[!!] Plugin error: ${pluginErr instanceof Error ? pluginErr.message : String(pluginErr)}${RESET()}`);
+              console.log();
+            }
           }
         }
 

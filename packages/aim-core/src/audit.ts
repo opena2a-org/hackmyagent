@@ -14,13 +14,29 @@ export function logEvent(dataDir: string, event: AuditEventInput): AuditEvent {
   fs.mkdirSync(dataDir, { recursive: true });
   const filePath = path.join(dataDir, AUDIT_FILE);
 
-  // Rotate if audit log exceeds 50MB
+  // Rotate if audit log exceeds 50MB, keep last 5 rotated logs
   const MAX_AUDIT_SIZE = 50 * 1024 * 1024;
+  const MAX_ROTATED_LOGS = 5;
   try {
     const stat = fs.statSync(filePath);
     if (stat.size > MAX_AUDIT_SIZE) {
-      const rotatedPath = filePath + '.' + Date.now();
+      const rotatedPath = `${filePath}.${Date.now()}.${process.pid}`;
       fs.renameSync(filePath, rotatedPath);
+
+      // Clean up old rotated logs beyond the retention limit
+      try {
+        const dir = path.dirname(filePath);
+        const base = path.basename(filePath);
+        const rotated = fs.readdirSync(dir)
+          .filter((f: string) => f.startsWith(base + '.') && f !== base)
+          .sort()
+          .reverse();
+        for (const old of rotated.slice(MAX_ROTATED_LOGS)) {
+          fs.unlinkSync(path.join(dir, old));
+        }
+      } catch {
+        // Cleanup is best-effort
+      }
     }
   } catch {
     // File doesn't exist yet — will be created by appendFileSync

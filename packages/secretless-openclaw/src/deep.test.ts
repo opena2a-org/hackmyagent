@@ -375,12 +375,13 @@ describe('SecretlessPlugin (deep)', () => {
       expect(keyHex.length).toBe(64);
       expect(/^[0-9a-f]+$/.test(keyHex)).toBe(true);
 
-      // Verify encrypted store has iv:data format
+      // Verify encrypted store has iv:authTag:ciphertext format (AES-256-GCM)
       const enc = fs.readFileSync(path.join(storeDir, 'secrets.enc'), 'utf-8');
-      expect(enc).toContain(':');
-      const [iv, data] = enc.split(':');
-      expect(iv.length).toBe(32); // 16 bytes = 32 hex chars
-      expect(data.length).toBeGreaterThan(0);
+      const parts = enc.split(':');
+      expect(parts.length).toBe(3);
+      expect(parts[0].length).toBe(24); // 12 bytes IV = 24 hex chars (GCM)
+      expect(parts[1].length).toBe(32); // 16 bytes auth tag = 32 hex chars
+      expect(parts[2].length).toBeGreaterThan(0);
     });
 
     it('.env.example contains correct variable names', async () => {

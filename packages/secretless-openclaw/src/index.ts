@@ -87,13 +87,21 @@ function initStore(agentDir: string): void {
   if (!fs.existsSync(storePath)) {
     // Generate encryption key and create empty store
     const key = crypto.randomBytes(32);
-    const iv = crypto.randomBytes(16);
-    const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
+    const iv = crypto.randomBytes(12); // 12 bytes for GCM
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
     const encrypted = Buffer.concat([cipher.update('{}', 'utf-8'), cipher.final()]);
+    const authTag = cipher.getAuthTag();
 
     // Store key alongside (in production, this would use OS keychain)
     fs.writeFileSync(path.join(storeDir, 'store.key'), key.toString('hex'), 'utf-8');
-    fs.writeFileSync(storePath, iv.toString('hex') + ':' + encrypted.toString('hex'), 'utf-8');
+    // Format: iv:authTag:ciphertext (all hex)
+    fs.writeFileSync(
+      storePath,
+      iv.toString('hex') + ':' + authTag.toString('hex') + ':' + encrypted.toString('hex'),
+      'utf-8'
+    );
+    // Restrict key file permissions (owner read/write only)
+    try { fs.chmodSync(path.join(storeDir, 'store.key'), 0o600); } catch { /* Windows */ }
   }
 }
 
