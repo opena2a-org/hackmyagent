@@ -30,11 +30,10 @@ export function createIdentity(dataDir: string, agentName: string): StoredIdenti
   };
 
   fs.mkdirSync(dataDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(dataDir, IDENTITY_FILE),
-    JSON.stringify(identity, null, 2),
-    'utf-8'
-  );
+  const identityPath = path.join(dataDir, IDENTITY_FILE);
+  const tmpPath = identityPath + '.tmp.' + process.pid;
+  fs.writeFileSync(tmpPath, JSON.stringify(identity, null, 2), 'utf-8');
+  fs.renameSync(tmpPath, identityPath);
 
   return identity;
 }

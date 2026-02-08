@@ -21,7 +21,7 @@ export function loadPolicy(dataDir: string): CapabilityPolicy {
   let parsed: Record<string, unknown> | undefined;
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
-    parsed = yaml.load(raw, { schema: yaml.JSON_SCHEMA }) as Record<string, unknown> | undefined;
+    parsed = yaml.load(raw, { schema: yaml.FAILSAFE_SCHEMA }) as Record<string, unknown> | undefined;
   } catch {
     return DEFAULT_POLICY;
   }
@@ -41,7 +41,9 @@ export function loadPolicy(dataDir: string): CapabilityPolicy {
 export function savePolicy(dataDir: string, policy: CapabilityPolicy): void {
   fs.mkdirSync(dataDir, { recursive: true });
   const filePath = path.join(dataDir, POLICY_FILE);
-  fs.writeFileSync(filePath, yaml.dump(policy), 'utf-8');
+  const tmpPath = filePath + '.tmp.' + process.pid;
+  fs.writeFileSync(tmpPath, yaml.dump(policy), 'utf-8');
+  fs.renameSync(tmpPath, filePath);
 }
 
 /** Check if a capability is allowed by the policy */

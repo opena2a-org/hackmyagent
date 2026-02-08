@@ -3124,24 +3124,27 @@ Examples:
           targetDir = process.cwd();
         }
 
-        if (!fs.existsSync(targetDir)) {
+        // Resolve realpath atomically — eliminates TOCTOU between existence check and resolution
+        let realTarget: string;
+        try {
+          realTarget = fs.realpathSync(targetDir);
+        } catch {
           console.error(`Error: Directory not found: ${targetDir}`);
           process.exit(1);
         }
 
-        // Resolve realpath first, then validate the resolved path (avoids TOCTOU)
-        const realTarget = fs.realpathSync(targetDir);
         const realCwd = fs.realpathSync(process.cwd());
 
-        // Verify resolved path is a directory (not symlink — realpath already resolved it)
-        const resolvedStat = fs.lstatSync(realTarget);
+        // Verify resolved path is a directory (realpath already resolved any symlinks)
+        const resolvedStat = fs.statSync(realTarget);
         if (!resolvedStat.isDirectory()) {
           console.error(`Error: Not a directory: ${realTarget}`);
           process.exit(1);
         }
 
         // Verify resolved path stays within cwd (prevents traversal via .. or symlinks)
-        if (!realTarget.startsWith(realCwd + path.sep) && realTarget !== realCwd) {
+        const relative = path.relative(realCwd, realTarget);
+        if (relative.startsWith('..') || path.isAbsolute(relative)) {
           console.error(`Error: Target directory must be within current working directory`);
           process.exit(1);
         }
@@ -3193,6 +3196,7 @@ Examples:
         const results: PluginResult[] = [];
         let allFindings: PluginFinding[] = [];
         let allRemediations: Remediation[] = [];
+        let pluginErrors = 0;
 
         for (const { name, plugin } of plugins) {
           if (!options.json) {
@@ -3229,6 +3233,7 @@ Examples:
             }
           } catch (pluginErr) {
             // Isolate plugin errors — one failing plugin should not crash the entire run
+            pluginErrors++;
             results.push({ name, findings: [], remediations: [] });
             if (!options.json) {
               console.log(`  ${colors.brightRed}[!!] Plugin error: ${pluginErr instanceof Error ? pluginErr.message : String(pluginErr)}${RESET()}`);
@@ -3249,6 +3254,8 @@ Examples:
             totalFindings: allFindings.length,
             totalFixed: allRemediations.length,
             remainingIssues: unfixed.length,
+            pluginErrors,
+            scanComplete: pluginErrors === 0,
             plugins: results.map((r) => ({
               name: r.name,
               findings: r.findings,
@@ -3256,6 +3263,7 @@ Examples:
             })),
           };
           console.log(JSON.stringify(jsonOutput, null, 2));
+          if (pluginErrors > 0) process.exit(2);
           return;
         }
 
@@ -3317,7 +3325,16 @@ Examples:
         console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
         console.log(`Run 'hackmyagent secure' for a full hardening scan.\n`);
 
-        // Exit with non-zero if critical/high issues remain
+        // Warn if scan is incomplete due to plugin errors
+        if (pluginErrors > 0) {
+          console.log(`\n${colors.brightRed}[!!] WARNING: ${pluginErrors} plugin(s) failed — scan results are incomplete${RESET()}`);
+          console.log(`     Re-run with --verbose for details.\n`);
+        }
+
+        // Exit with non-zero if critical/high issues remain or scan is incomplete
+        if (pluginErrors > 0) {
+          process.exit(2); // Exit 2 = partial/incomplete scan
+        }
         const criticalOrHigh = remainingFindings.filter(
           (f) => f.severity === 'critical' || f.severity === 'high'
         );

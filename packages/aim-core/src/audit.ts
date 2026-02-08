@@ -12,6 +12,14 @@ export function logEvent(dataDir: string, event: AuditEventInput): AuditEvent {
     ...event,
   };
 
+  // Enforce per-event size limit (1MB) to prevent DoS via oversized metadata
+  const MAX_EVENT_SIZE = 1024 * 1024;
+  let serialized = JSON.stringify(fullEvent);
+  if (serialized.length > MAX_EVENT_SIZE) {
+    fullEvent.metadata = { _truncated: true, _reason: 'Event exceeded 1MB size limit' };
+    serialized = JSON.stringify(fullEvent);
+  }
+
   fs.mkdirSync(dataDir, { recursive: true });
   const filePath = path.join(dataDir, AUDIT_FILE);
 
@@ -38,7 +46,11 @@ export function logEvent(dataDir: string, event: AuditEventInput): AuditEvent {
           .sort()
           .reverse();
         for (const old of rotated.slice(MAX_ROTATED_LOGS)) {
-          fs.unlinkSync(path.join(dir, old));
+          try {
+            fs.unlinkSync(path.join(dir, old));
+          } catch {
+            // Individual file deletion is best-effort
+          }
         }
       } catch {
         // Cleanup is best-effort
@@ -48,7 +60,7 @@ export function logEvent(dataDir: string, event: AuditEventInput): AuditEvent {
     // File doesn't exist yet — will be created by appendFileSync
   }
 
-  fs.appendFileSync(filePath, JSON.stringify(fullEvent) + '\n', 'utf-8');
+  fs.appendFileSync(filePath, serialized + '\n', 'utf-8');
 
   return fullEvent;
 }
