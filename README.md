@@ -233,7 +233,7 @@ hackmyagent attack https://api.example.com --fail-on-vulnerable medium  # CI gat
 
 Intensity: `passive` (observation only), `active` (default), `aggressive` (full suite).
 
-**Custom payloads:** Create a JSON file and pass with `--payloads custom.json`:
+**Custom payloads:** Create a JSON file and pass with `--payload-file custom.json`:
 
 ```json
 {
