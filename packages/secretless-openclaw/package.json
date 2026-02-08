@@ -1,0 +1,54 @@
+{
+  "name": "@opena2a/secretless-openclaw",
+  "version": "0.1.0",
+  "description": "Credential protection for OpenClaw bots — encrypted local store, environment variable resolution, per-skill isolation. Credentials never touch the LLM context window.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src --ext .ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@opena2a/plugin-core": "^0.1.0"
+  },
+  "peerDependencies": {
+    "@opena2a/aim-core": ">=0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@opena2a/aim-core": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@opena2a/aim-core": "^0.1.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.3",
+    "vitest": "^3.0.0"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "security",
+    "secrets",
+    "credentials",
+    "openclaw",
+    "opena2a"
+  ],
+  "author": "OpenA2A",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/opena2a-org/hackmyagent.git",
+    "directory": "packages/secretless-openclaw"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

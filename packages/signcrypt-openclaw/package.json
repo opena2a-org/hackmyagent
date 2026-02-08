@@ -1,0 +1,54 @@
+{
+  "name": "@opena2a/signcrypt-openclaw",
+  "version": "0.1.0",
+  "description": "Configuration integrity for OpenClaw bots — Ed25519 signing, DNS publisher verification, heartbeat expiry enforcement.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src --ext .ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@opena2a/plugin-core": "^0.1.0"
+  },
+  "peerDependencies": {
+    "@opena2a/aim-core": ">=0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@opena2a/aim-core": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@opena2a/aim-core": "^0.1.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.3",
+    "vitest": "^3.0.0"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "security",
+    "signing",
+    "integrity",
+    "openclaw",
+    "opena2a"
+  ],
+  "author": "OpenA2A",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/opena2a-org/hackmyagent.git",
+    "directory": "packages/signcrypt-openclaw"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
