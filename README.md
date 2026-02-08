@@ -7,18 +7,17 @@
 
 **Website:** [hackmyagent.com](https://hackmyagent.com) — Scan external infrastructure for exposed MCP endpoints, configs, and credentials
 
-## What's New — v0.4.3
+## What's New — v0.5.0
 
-**First scanner for [CVE-2026-25253](https://hackmyagent.com/blog/cve-2026-25253-detection)** (CVSS 8.8) — the OpenClaw WebSocket hijacking RCE.
+**OpenA2A Security Plugins** — modular plugin architecture with AIM Core integration.
 
-- **CVE-001:** Detect vulnerable OpenClaw versions (before v2026.1.29)
-- **CVE-002:** Control UI origin restrictions (defense-in-depth hardening)
-- **CVE-003:** CVE-2026-25157 — OS command injection via SSH path (CVSS 7.8)
-- **CVE-004:** CVE-2026-24763 — Docker PATH command injection (CVSS 8.8)
-- **SUPPLY-005–008:** ClawHavoc campaign IOCs (C2 IPs, malware filenames, ClickFix patterns)
-- **GATEWAY-007–008, CONFIG-007–009:** Config hardening (open DM wildcards, disabled sandbox, weak tokens)
+- **`hackmyagent fix-all`** — run all security plugins in one command (scan + auto-fix)
+- **AIM Core** — Ed25519 identity, cryptographic signing, audit logging, capability policy, 8-factor trust scoring
+- **Secretless** — credential detection (10 regex patterns), auto-replace with env var references, encrypted store
+- **SignCrypt** — Ed25519 SKILL.md/HEARTBEAT.md signing, SHA-256 hash pinning, signature records
+- **SkillGuard** — capability validation, permission pinning, dangerous pattern detection
 
-13 new checks. 147+ total.
+219 tests. 147+ security checks. 5 new packages.
 
 ## Disclaimer
 
@@ -28,6 +27,8 @@ HackMyAgent performs passive reconnaissance only (port checks and HTTP requests)
 npx hackmyagent check @publisher/skill     # verify a skill before installing
 npx hackmyagent secure                      # harden your agent setup (147+ checks)
 npx hackmyagent secure --fix                # auto-fix security issues
+npx hackmyagent fix-all                     # run all OpenA2A security plugins
+npx hackmyagent fix-all --with-aim          # enable AIM identity and audit logging
 npx hackmyagent scan example.com            # scan for exposed infrastructure
 npx hackmyagent attack --local              # red team with 55 attack payloads
 npx hackmyagent secure --benchmark oasb-1   # run OASB-1 security benchmark
@@ -373,6 +374,36 @@ hackmyagent secure-openclaw --json       # JSON output for CI/CD
 
 See [SECURITY_CHECKS.md](docs/SECURITY_CHECKS.md#openclaw-security-checks) for full documentation.
 
+### `hackmyagent fix-all`
+
+Run all OpenA2A security plugins to scan and auto-fix agent issues. Executes plugins in order: SkillGuard, SignCrypt, Secretless.
+
+```bash
+hackmyagent fix-all                     # scan and fix current directory
+hackmyagent fix-all ./my-agent          # scan specific directory
+hackmyagent fix-all --dry-run           # preview fixes without applying
+hackmyagent fix-all --scan-only         # scan without fixing
+hackmyagent fix-all --json              # JSON output for CI
+hackmyagent fix-all --with-aim          # enable AIM identity and audit logging
+hackmyagent fix-all -v                  # verbose output
+```
+
+**Plugins executed:**
+
+| Order | Plugin | What it does |
+|-------|--------|--------------|
+| 1 | SkillGuard | Hash pinning, tamper detection, dangerous pattern scanning |
+| 2 | SignCrypt | Ed25519 signing of SKILL.md and HEARTBEAT.md files |
+| 3 | Secretless | Credential detection and replacement with env var references |
+
+**With `--with-aim`:**
+- Generates Ed25519 identity for the agent
+- Signs findings and remediations with cryptographic signatures
+- Writes audit log to `.opena2a/aim/audit.jsonl`
+- Enables capability policy enforcement
+
+**Exit code 1** if critical/high issues remain after fixing.
+
 ### `hackmyagent rollback`
 
 Undo auto-fix changes.
@@ -514,17 +545,46 @@ npx hackmyagent secure test-fixtures/insecure-api --fix
 
 See [test-fixtures/README.md](test-fixtures/README.md) for details.
 
+## OpenA2A Plugin Architecture
+
+HackMyAgent ships with a modular plugin system built on `@opena2a/plugin-core`. Each plugin implements the `OpenA2APlugin` interface: `scan()` returns findings, `fix()` returns remediations.
+
+**Packages:**
+
+| Package | npm | Purpose |
+|---------|-----|---------|
+| `@opena2a/aim-core` | `@opena2a/aim-core` | Ed25519 identity, audit, policy, trust scoring |
+| `@opena2a/plugin-core` | `@opena2a/plugin-core` | Plugin interface and registry |
+| `@opena2a/secretless-openclaw` | `@opena2a/secretless-openclaw` | Credential scanning and protection |
+| `@opena2a/signcrypt-openclaw` | `@opena2a/signcrypt-openclaw` | Cryptographic signing and hash pinning |
+| `@opena2a/skillguard-openclaw` | `@opena2a/skillguard-openclaw` | Capability validation and permission enforcement |
+
+**AIM Core Trust Scoring:**
+
+8-factor weighted trust score (0.0 to 1.0):
+
+| Factor | Weight | Description |
+|--------|--------|-------------|
+| identity | 0.20 | Ed25519 keypair exists |
+| capabilities | 0.15 | Capabilities declared and pinned |
+| auditLog | 0.10 | Audit trail active |
+| secretsManaged | 0.15 | No hardcoded credentials |
+| configSigned | 0.10 | Configuration signed |
+| skillsVerified | 0.10 | Skills cryptographically signed |
+| networkControlled | 0.10 | Network access restricted |
+| heartbeatMonitored | 0.10 | Heartbeat monitoring active |
+
 ## Contributing
 
 Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ```bash
-# Development setup
+# Development setup (Turborepo monorepo)
 git clone https://github.com/opena2a-org/hackmyagent.git
 cd hackmyagent
 npm install
-npm run build
-npm test
+npx turbo run build    # build all 7 packages
+npx turbo run test     # run 219 tests
 ```
 
 ## License
