@@ -19,7 +19,11 @@ export function loadPolicy(dataDir: string): CapabilityPolicy {
   }
 
   const raw = fs.readFileSync(filePath, 'utf-8');
-  const parsed = yaml.load(raw) as Record<string, unknown>;
+  const parsed = yaml.load(raw) as Record<string, unknown> | undefined;
+
+  if (!parsed || typeof parsed !== 'object') {
+    return DEFAULT_POLICY;
+  }
 
   return {
     version: String(parsed.version ?? '1'),
