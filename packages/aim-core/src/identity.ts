@@ -33,6 +33,7 @@ export function createIdentity(dataDir: string, agentName: string): StoredIdenti
   const identityPath = path.join(dataDir, IDENTITY_FILE);
   const tmpPath = identityPath + '.tmp.' + process.pid;
   fs.writeFileSync(tmpPath, JSON.stringify(identity, null, 2), 'utf-8');
+  try { fs.chmodSync(tmpPath, 0o600); } catch { /* Windows */ }
   fs.renameSync(tmpPath, identityPath);
 
   return identity;

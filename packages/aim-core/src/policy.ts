@@ -30,6 +30,12 @@ export function loadPolicy(dataDir: string): CapabilityPolicy {
     return DEFAULT_POLICY;
   }
 
+  // Reject prototype pollution attempts
+  const keys = Object.keys(parsed);
+  if (keys.includes('__proto__') || keys.includes('constructor') || keys.includes('prototype')) {
+    return DEFAULT_POLICY;
+  }
+
   return {
     version: String(parsed.version ?? '1'),
     defaultAction: parsed.defaultAction === 'allow' ? 'allow' : 'deny',
@@ -98,7 +104,7 @@ function matchesCapability(pattern: string, capability: string): boolean {
 
   if (pattern.endsWith(':*')) {
     const prefix = pattern.slice(0, -1); // "db:" from "db:*"
-    return capability.startsWith(prefix);
+    return capability.startsWith(prefix) && capability.length > prefix.length;
   }
 
   return false;

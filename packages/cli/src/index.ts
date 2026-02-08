@@ -3237,6 +3237,9 @@ Examples:
             results.push({ name, findings: [], remediations: [] });
             if (!options.json) {
               console.log(`  ${colors.brightRed}[!!] Plugin error: ${pluginErr instanceof Error ? pluginErr.message : String(pluginErr)}${RESET()}`);
+              if (pluginErr instanceof Error && pluginErr.stack) {
+                console.error(pluginErr.stack);
+              }
               console.log();
             }
           }

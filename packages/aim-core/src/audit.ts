@@ -12,6 +12,12 @@ export function logEvent(dataDir: string, event: AuditEventInput): AuditEvent {
     ...event,
   };
 
+  // Enforce per-field size limits to prevent DoS via oversized fields
+  const MAX_FIELD_SIZE = 4096;
+  if (fullEvent.plugin.length > MAX_FIELD_SIZE) fullEvent.plugin = fullEvent.plugin.slice(0, MAX_FIELD_SIZE);
+  if (fullEvent.action.length > MAX_FIELD_SIZE) fullEvent.action = fullEvent.action.slice(0, MAX_FIELD_SIZE);
+  if (fullEvent.target.length > MAX_FIELD_SIZE) fullEvent.target = fullEvent.target.slice(0, MAX_FIELD_SIZE);
+
   // Enforce per-event size limit (1MB) to prevent DoS via oversized metadata
   const MAX_EVENT_SIZE = 1024 * 1024;
   let serialized = JSON.stringify(fullEvent);

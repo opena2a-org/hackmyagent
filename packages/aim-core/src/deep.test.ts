@@ -366,7 +366,7 @@ describe('policy (deep)', () => {
     };
     expect(checkCapability(policy, 'db:read')).toBe(true);
     expect(checkCapability(policy, 'db:write')).toBe(true);
-    expect(checkCapability(policy, 'db:')).toBe(true);
+    expect(checkCapability(policy, 'db:')).toBe(false); // Empty resource after prefix is rejected
     expect(checkCapability(policy, 'database:read')).toBe(false);
     expect(checkCapability(policy, 'db')).toBe(false);
   });
