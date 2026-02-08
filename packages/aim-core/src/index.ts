@@ -1,153 +1,127 @@
 export const VERSION = '0.1.0';
 
-// --- Types ---
+// Re-export all types
+export type {
+  AIMCoreOptions,
+  AIMIdentity,
+  StoredIdentity,
+  AuditEvent,
+  AuditEventInput,
+  AuditReadOptions,
+  CapabilityPolicy,
+  CapabilityRule,
+  TrustScore,
+  TrustFactors,
+  TrustHints,
+} from './types';
 
-export interface AIMCoreOptions {
-  /** Human-readable agent name */
-  agentName: string;
-  /** Directory for identity keys, audit log, and config. Defaults to ~/.opena2a/aim-core */
-  dataDir?: string;
-  /** Optional AIM server URL for fleet reporting */
-  serverUrl?: string;
-}
+// Re-export module functions for advanced usage
+export { sign, verify } from './crypto';
+export { createIdentity, loadIdentity, getOrCreateIdentity } from './identity';
+export { logEvent, readAuditLog, hasAuditLog } from './audit';
+export { loadPolicy, savePolicy, checkCapability, hasPolicy } from './policy';
+export { calculateTrust } from './trust';
 
-export interface AIMIdentity {
-  /** Agent's unique identifier (derived from public key) */
-  agentId: string;
-  /** Ed25519 public key (base64) */
-  publicKey: string;
-  /** Agent name from config */
-  agentName: string;
-  /** ISO timestamp of identity creation */
-  createdAt: string;
-}
+// --- Imports for AIMCore ---
+import type {
+  AIMCoreOptions,
+  AIMIdentity,
+  AuditEvent,
+  AuditEventInput,
+  AuditReadOptions,
+  CapabilityPolicy,
+  TrustScore,
+  TrustHints,
+} from './types';
 
-export interface AuditEvent {
-  /** ISO timestamp */
-  timestamp: string;
-  /** Plugin that generated the event */
-  plugin: string;
-  /** Action performed */
-  action: string;
-  /** Target resource */
-  target: string;
-  /** Result: allowed, denied, error */
-  result: 'allowed' | 'denied' | 'error';
-  /** Optional metadata */
-  metadata?: Record<string, unknown>;
-}
+import * as identity from './identity';
+import * as audit from './audit';
+import * as policy from './policy';
+import * as trust from './trust';
+import * as crypto from './crypto';
 
-export interface CapabilityPolicy {
-  /** Policy version */
-  version: string;
-  /** Default action when no rule matches */
-  defaultAction: 'allow' | 'deny';
-  /** Capability rules */
-  rules: CapabilityRule[];
-}
-
-export interface CapabilityRule {
-  /** Capability pattern (e.g., "db:read", "net:*", "fs:write:/tmp/*") */
-  capability: string;
-  /** Action for this rule */
-  action: 'allow' | 'deny';
-  /** Optional: restrict to specific plugins */
-  plugins?: string[];
-}
-
-export interface TrustScore {
-  /** Overall trust score (0-1) */
-  overall: number;
-  /** Individual factor scores */
-  factors: TrustFactors;
-  /** ISO timestamp of calculation */
-  calculatedAt: string;
-}
-
-export interface TrustFactors {
-  /** Identity verified (Ed25519 key exists and is valid) */
-  identity: number;
-  /** Capabilities declared and enforced */
-  capabilities: number;
-  /** Audit logging active */
-  auditLog: number;
-  /** Secrets managed (not hardcoded) */
-  secretsManaged: number;
-  /** Configuration signed */
-  configSigned: number;
-  /** Skills integrity verified */
-  skillsVerified: number;
-  /** Network access controlled */
-  networkControlled: number;
-  /** Heartbeat monitoring active */
-  heartbeatMonitored: number;
-}
-
-// --- Core Class ---
-
+/**
+ * Main entry point for aim-core.
+ *
+ * Provides Ed25519 identity, local audit logging, capability policy enforcement,
+ * trust scoring, and cryptographic signing — all without a server or database.
+ */
 export class AIMCore {
-  private readonly options: Required<AIMCoreOptions>;
+  private readonly agentName: string;
+  private readonly dataDir: string;
+  private readonly serverUrl: string;
+  private cachedPolicy: CapabilityPolicy | null = null;
+  private trustHints: TrustHints = {};
 
   constructor(options: AIMCoreOptions) {
-    this.options = {
-      agentName: options.agentName,
-      dataDir: options.dataDir ?? this.defaultDataDir(),
-      serverUrl: options.serverUrl ?? '',
-    };
+    this.agentName = options.agentName;
+    this.dataDir = options.dataDir ?? this.defaultDataDir();
+    this.serverUrl = options.serverUrl ?? '';
   }
 
   /** Get or create the agent's Ed25519 identity */
-  async getIdentity(): Promise<AIMIdentity> {
-    // TODO: Implement — generate or load Ed25519 keypair from dataDir
-    throw new Error('Not implemented');
+  getIdentity(): AIMIdentity {
+    return identity.getOrCreateIdentity(this.dataDir, this.agentName);
   }
 
   /** Check if a capability is allowed by the current policy */
   checkCapability(capability: string, plugin?: string): boolean {
-    // TODO: Implement — load policy from dataDir, evaluate rules
-    throw new Error('Not implemented');
+    if (!this.cachedPolicy) {
+      this.cachedPolicy = policy.loadPolicy(this.dataDir);
+    }
+    return policy.checkCapability(this.cachedPolicy, capability, plugin);
   }
 
   /** Load capability policy from YAML file */
-  async loadPolicy(): Promise<CapabilityPolicy> {
-    // TODO: Implement — parse YAML from dataDir/policy.yaml
-    throw new Error('Not implemented');
+  loadPolicy(): CapabilityPolicy {
+    this.cachedPolicy = policy.loadPolicy(this.dataDir);
+    return this.cachedPolicy;
+  }
+
+  /** Save a capability policy to YAML file */
+  savePolicy(p: CapabilityPolicy): void {
+    policy.savePolicy(this.dataDir, p);
+    this.cachedPolicy = p;
   }
 
   /** Log an audit event to the local JSON-lines file */
-  async logEvent(event: Omit<AuditEvent, 'timestamp'>): Promise<void> {
-    // TODO: Implement — append to dataDir/audit.jsonl
-    throw new Error('Not implemented');
+  logEvent(event: AuditEventInput): AuditEvent {
+    return audit.logEvent(this.dataDir, event);
   }
 
   /** Read audit events from local log */
-  async readAuditLog(options?: { limit?: number; since?: string }): Promise<AuditEvent[]> {
-    // TODO: Implement — read from dataDir/audit.jsonl
-    throw new Error('Not implemented');
+  readAuditLog(options?: AuditReadOptions): AuditEvent[] {
+    return audit.readAuditLog(this.dataDir, options);
   }
 
   /** Calculate the agent's trust score based on current state */
-  async calculateTrust(): Promise<TrustScore> {
-    // TODO: Implement — evaluate 8 trust factors
-    throw new Error('Not implemented');
+  calculateTrust(): TrustScore {
+    const hasId = identity.loadIdentity(this.dataDir) !== null;
+    return trust.calculateTrust(this.dataDir, hasId, this.trustHints);
+  }
+
+  /** Provide hints from plugins to improve trust score accuracy */
+  setTrustHints(hints: TrustHints): void {
+    this.trustHints = { ...this.trustHints, ...hints };
   }
 
   /** Sign data with the agent's Ed25519 private key */
-  async sign(data: Uint8Array): Promise<Uint8Array> {
-    // TODO: Implement — sign with tweetnacl
-    throw new Error('Not implemented');
+  sign(data: Uint8Array): Uint8Array {
+    const secretKey = identity.getSecretKey(this.dataDir);
+    if (!secretKey) {
+      throw new Error('No identity found. Call getIdentity() first to generate a keypair.');
+    }
+    return crypto.sign(data, secretKey);
   }
 
-  /** Verify a signature against a public key */
-  async verify(data: Uint8Array, signature: Uint8Array, publicKey: Uint8Array): Promise<boolean> {
-    // TODO: Implement — verify with tweetnacl
-    throw new Error('Not implemented');
+  /** Verify an Ed25519 signature against a public key */
+  verify(data: Uint8Array, signature: Uint8Array, publicKey: Uint8Array): boolean {
+    return crypto.verify(data, signature, publicKey);
   }
 
-  /** Connect to an AIM server for fleet reporting (optional) */
-  async connectServer(serverUrl: string): Promise<void> {
-    // TODO: Implement — register with AIM server, begin periodic reporting
-    throw new Error('Not implemented');
+  /** Get the data directory path */
+  getDataDir(): string {
+    return this.dataDir;
   }
 
   private defaultDataDir(): string {
