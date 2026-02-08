@@ -13,6 +13,19 @@ export function logEvent(dataDir: string, event: AuditEventInput): AuditEvent {
 
   fs.mkdirSync(dataDir, { recursive: true });
   const filePath = path.join(dataDir, AUDIT_FILE);
+
+  // Rotate if audit log exceeds 50MB
+  const MAX_AUDIT_SIZE = 50 * 1024 * 1024;
+  try {
+    const stat = fs.statSync(filePath);
+    if (stat.size > MAX_AUDIT_SIZE) {
+      const rotatedPath = filePath + '.' + Date.now();
+      fs.renameSync(filePath, rotatedPath);
+    }
+  } catch {
+    // File doesn't exist yet — will be created by appendFileSync
+  }
+
   fs.appendFileSync(filePath, JSON.stringify(fullEvent) + '\n', 'utf-8');
 
   return fullEvent;

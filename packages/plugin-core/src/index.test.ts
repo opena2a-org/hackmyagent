@@ -76,15 +76,14 @@ describe('plugin registry', () => {
     expect(listPlugins().length).toBe(0);
   });
 
-  it('overwrites plugin with same package name', () => {
+  it('throws on duplicate registration', () => {
     registerPlugin({ metadata: mockMetadata, create: () => new MockPlugin() });
-    registerPlugin({
-      metadata: { ...mockMetadata, displayName: 'Updated' },
-      create: () => new MockPlugin(),
-    });
-
-    const entry = getPlugin('@opena2a/test-plugin');
-    expect(entry!.metadata.displayName).toBe('Updated');
+    expect(() =>
+      registerPlugin({
+        metadata: { ...mockMetadata, displayName: 'Updated' },
+        create: () => new MockPlugin(),
+      })
+    ).toThrow(/already registered/);
     expect(listPlugins().length).toBe(1);
   });
 });

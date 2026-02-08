@@ -122,9 +122,13 @@ export interface PluginRegistryEntry {
 
 const registry = new Map<string, PluginRegistryEntry>();
 
-/** Register a plugin with the global registry */
+/** Register a plugin with the global registry. Throws if already registered. */
 export function registerPlugin(entry: PluginRegistryEntry): void {
-  registry.set(entry.metadata.packageName, entry);
+  const key = entry.metadata.packageName;
+  if (registry.has(key)) {
+    throw new Error(`Plugin "${key}" is already registered. Use clearRegistry() first to re-register.`);
+  }
+  registry.set(key, entry);
 }
 
 /** Get a registered plugin by package name */

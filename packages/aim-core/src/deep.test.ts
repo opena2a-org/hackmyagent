@@ -78,21 +78,21 @@ describe('identity (deep)', () => {
     const dataDir = path.join(tmpDir, 'corrupt');
     fs.mkdirSync(dataDir, { recursive: true });
     fs.writeFileSync(path.join(dataDir, 'identity.json'), '{invalid json!!!', 'utf-8');
-    expect(() => loadIdentity(dataDir)).toThrow();
+    expect(loadIdentity(dataDir)).toBeNull();
   });
 
   it('handles truncated identity JSON', () => {
     const dataDir = path.join(tmpDir, 'truncated');
     fs.mkdirSync(dataDir, { recursive: true });
     fs.writeFileSync(path.join(dataDir, 'identity.json'), '{"agentId":"aim_test"', 'utf-8');
-    expect(() => loadIdentity(dataDir)).toThrow();
+    expect(loadIdentity(dataDir)).toBeNull();
   });
 
   it('handles empty identity file', () => {
     const dataDir = path.join(tmpDir, 'empty');
     fs.mkdirSync(dataDir, { recursive: true });
     fs.writeFileSync(path.join(dataDir, 'identity.json'), '', 'utf-8');
-    expect(() => loadIdentity(dataDir)).toThrow();
+    expect(loadIdentity(dataDir)).toBeNull();
   });
 
   it('overwrites existing identity when createIdentity is called again', () => {
@@ -338,7 +338,9 @@ describe('policy (deep)', () => {
 
   it('handles corrupt YAML gracefully', () => {
     fs.writeFileSync(path.join(tmpDir, 'policy.yaml'), '{{{{invalid yaml', 'utf-8');
-    expect(() => loadPolicy(tmpDir)).toThrow();
+    const policy = loadPolicy(tmpDir);
+    expect(policy.defaultAction).toBe('deny');
+    expect(policy.rules).toEqual([]);
   });
 
   it('handles empty YAML file', () => {

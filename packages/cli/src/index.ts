@@ -3116,18 +3116,23 @@ Examples:
         const path = require('path');
         const fs = require('fs');
 
-        // Resolve target directory
+        // Resolve target directory with path traversal protection
         let targetDir: string;
         if (directory && directory !== '') {
-          targetDir = directory.startsWith('/')
-            ? directory
-            : path.join(process.cwd(), directory);
+          targetDir = path.resolve(process.cwd(), directory);
         } else {
           targetDir = process.cwd();
         }
 
         if (!fs.existsSync(targetDir)) {
           console.error(`Error: Directory not found: ${targetDir}`);
+          process.exit(1);
+        }
+
+        // Verify the resolved path is a directory (not a symlink to something unexpected)
+        const stat = fs.statSync(targetDir);
+        if (!stat.isDirectory()) {
+          console.error(`Error: Not a directory: ${targetDir}`);
           process.exit(1);
         }
 

@@ -421,15 +421,15 @@ describe('SecretlessPlugin (deep)', () => {
       expect(findings.filter((f) => f.id === 'CRED-001').length).toBe(0);
     });
 
-    it('skips very long lines (>10240 chars)', async () => {
-      const longLine = 'x'.repeat(10240) + 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz';
+    it('skips very long lines (>4096 chars) for ReDoS protection', async () => {
+      const longLine = 'x'.repeat(4096) + 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz';
       fs.writeFileSync(path.join(tmpDir, 'config.json'), longLine, 'utf-8');
       const findings = await plugin.scan(tmpDir);
-      // Line exceeds 10240 so should be skipped
+      // Line exceeds 4096 so should be skipped
       expect(findings.filter((f) => f.id === 'CRED-001').length).toBe(0);
     });
 
-    it('detects credential on line under 10240 chars', async () => {
+    it('detects credential on line under 4096 chars', async () => {
       const line = 'x'.repeat(100) + 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz';
       fs.writeFileSync(path.join(tmpDir, 'config.json'), line, 'utf-8');
       const findings = await plugin.scan(tmpDir);

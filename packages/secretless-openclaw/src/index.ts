@@ -122,7 +122,7 @@ function scanFileForCredentials(filePath: string, agentDir: string): Finding[] {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (line.length > 10240) continue; // Skip very long lines
+    if (line.length > 4096) continue; // Skip long lines to prevent ReDoS
 
     for (const pattern of CREDENTIAL_PATTERNS) {
       if (pattern.regex.test(line)) {
@@ -221,7 +221,10 @@ function fixCredentialsInFile(filePath: string, agentDir: string): string[] {
     }
 
     if (changed) {
-      fs.writeFileSync(filePath, content, 'utf-8');
+      // Atomic write: write to temp file then rename to prevent corruption on crash
+      const tmpPath = filePath + '.tmp.' + process.pid;
+      fs.writeFileSync(tmpPath, content, 'utf-8');
+      fs.renameSync(tmpPath, filePath);
       modified.push(path.relative(agentDir, filePath));
     }
   } catch {

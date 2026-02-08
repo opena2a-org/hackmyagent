@@ -18,8 +18,13 @@ export function loadPolicy(dataDir: string): CapabilityPolicy {
     return DEFAULT_POLICY;
   }
 
-  const raw = fs.readFileSync(filePath, 'utf-8');
-  const parsed = yaml.load(raw) as Record<string, unknown> | undefined;
+  let parsed: Record<string, unknown> | undefined;
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    parsed = yaml.load(raw) as Record<string, unknown> | undefined;
+  } catch {
+    return DEFAULT_POLICY;
+  }
 
   if (!parsed || typeof parsed !== 'object') {
     return DEFAULT_POLICY;

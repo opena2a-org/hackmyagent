@@ -160,7 +160,11 @@ function scanHeartbeatFiles(agentDir: string): Finding[] {
 
 // --- Fix helpers ---
 
-function computeFileHash(filePath: string): string {
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB limit for hash computation
+
+function computeFileHash(filePath: string): string | null {
+  const stat = fs.statSync(filePath);
+  if (!stat.isFile() || stat.size > MAX_FILE_SIZE) return null;
   const content = fs.readFileSync(filePath);
   return crypto.createHash('sha256').update(content).digest('hex');
 }
@@ -289,6 +293,7 @@ export class SignCryptPlugin implements OpenA2APlugin {
       if (!fs.existsSync(fullPath)) continue;
 
       const hash = computeFileHash(fullPath);
+      if (!hash) continue; // Skip files too large or not regular files
       appendSignatureBlock(fullPath, hash, this.aimCore);
 
       const now = new Date().toISOString();

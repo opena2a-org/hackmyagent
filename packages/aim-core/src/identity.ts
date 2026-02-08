@@ -46,8 +46,12 @@ export function loadIdentity(dataDir: string): StoredIdentity | null {
     return null;
   }
 
-  const raw = fs.readFileSync(filePath, 'utf-8');
-  return JSON.parse(raw) as StoredIdentity;
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    return JSON.parse(raw) as StoredIdentity;
+  } catch {
+    return null;
+  }
 }
 
 /** Get or create the agent's identity. Returns the public-facing identity (no secret key). */
