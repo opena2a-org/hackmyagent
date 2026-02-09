@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * HackMyAgent CLI
- * Security scanning tool for AI agents
+ * Find it. Break it. Fix it.
  */
 
 import { Command } from 'commander';
@@ -66,19 +66,18 @@ if (noColorEnv) {
 
 program
   .name('hackmyagent')
-  .description(`Security toolkit for AI agents
+  .description(`Find it. Break it. Fix it.
 
-HackMyAgent helps you secure AI agent deployments with 100+ security checks
-across credential exposure, MCP configurations, prompt injection defenses,
-and infrastructure hardening.
+The hacker's toolkit for AI agents. 147+ security checks, 55 attack
+payloads, auto-fix with rollback, and OASB benchmark compliance.
 
-Documentation: https://github.com/opena2a-org/hackmyagent
+Documentation: https://hackmyagent.com/docs
 
 Examples:
-  $ hackmyagent check @anthropic/claude-mcp    Verify skill before installing
-  $ hackmyagent secure                         Scan current directory
-  $ hackmyagent secure --fix                   Auto-fix security issues
-  $ hackmyagent secure --fix --dry-run         Preview fixes without applying
+  $ hackmyagent secure                         Find vulnerabilities (147+ checks)
+  $ hackmyagent attack --local                 Break it with 55 attack payloads
+  $ hackmyagent secure --fix                   Fix issues automatically
+  $ hackmyagent fix-all                        Run all security plugins
   $ hackmyagent scan example.com               Scan external infrastructure`)
   .version(VERSION, '-V, --version', 'Output the version number')
   .option('--no-color', 'Disable colored output (also respects NO_COLOR env)')
