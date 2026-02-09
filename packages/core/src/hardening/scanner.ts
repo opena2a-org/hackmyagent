@@ -6,6 +6,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { ScanResult, SecurityFinding, Severity, ProjectType } from './security-check';
+import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '@opena2a/semantic-engine';
 
 /**
  * Defines which checks apply to which project types
@@ -60,6 +61,9 @@ const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
 
   // Secret management - primarily for apps with secrets
   'SEC-': ['webapp', 'api', 'mcp'],
+
+  // Semantic analysis - applies to all project types
+  'SEM-': ['all'],
 };
 
 export interface ScanOptions {
@@ -71,6 +75,10 @@ export interface ScanOptions {
   ignore?: string[];
   /** File/folder paths to ignore (e.g., ['.env', 'secrets/', 'test/']) */
   ignorePaths?: string[];
+  /** Enable Layer 3 LLM analysis (requires ANTHROPIC_API_KEY in CLI mode) */
+  deep?: boolean;
+  /** Progress callback for long-running operations */
+  onProgress?: (message: string) => void;
 }
 
 // Patterns for detecting exposed credentials
@@ -398,6 +406,41 @@ export class HardeningScanner {
     const cveFindings = await this.checkOpenclawCVE(targetDir, shouldFix);
     findings.push(...cveFindings);
 
+    // Layer 2: Structural analysis (always on)
+    let layer2Count = 0;
+    let layer3Count = 0;
+    let llmCost: number | undefined;
+    let cachedResults: number | undefined;
+    try {
+      const structural = new StructuralAnalyzer();
+      const structuralFindings = await structural.analyze(targetDir);
+      const converted = toSecurityFindings(structuralFindings);
+      findings.push(...converted);
+      layer2Count = converted.length;
+    } catch {
+      // Structural analysis failure is non-fatal
+    }
+
+    // Layer 3: LLM analysis (only with --deep + API key in CLI mode)
+    if (options.deep && process.env.ANTHROPIC_API_KEY) {
+      try {
+        const structural = new StructuralAnalyzer();
+        const files = await structural.discoverFiles(targetDir);
+        const llm = new LLMAnalyzer({
+          apiKey: process.env.ANTHROPIC_API_KEY,
+          onProgress: options.onProgress,
+        });
+        const llmResult = await llm.analyze(files);
+        const converted = toSecurityFindings(llmResult.findings);
+        findings.push(...converted);
+        layer3Count = converted.length;
+        llmCost = llmResult.cost;
+        cachedResults = llmResult.cachedResults;
+      } catch {
+        // LLM analysis failure is non-fatal — fall back to Layer 2 only
+      }
+    }
+
     // Filter findings to only show real, actionable issues:
     // 1. Only failed checks (passed: false)
     // 2. Only checks with a file path (concrete findings, not generic advice)
@@ -444,6 +487,12 @@ export class HardeningScanner {
       dryRun: dryRun && autoFix ? true : undefined,
       atomicFix,
       ignored: ignoredChecks.size > 0 ? Array.from(ignoredChecks) : undefined,
+      semanticAnalysis: (layer2Count > 0 || layer3Count > 0) ? {
+        layer2Findings: layer2Count,
+        layer3Findings: layer3Count,
+        llmCost,
+        cachedResults,
+      } : undefined,
     };
   }
 

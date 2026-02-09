@@ -21,7 +21,9 @@
     "@opena2a/plugin-core": "^0.1.0",
     "@opena2a/credvault-openclaw": "^0.1.0",
     "@opena2a/signcrypt-openclaw": "^0.1.0",
+    "@opena2a/semantic-engine": "^0.1.0",
     "@opena2a/skillguard-openclaw": "^0.1.0",
+    "@modelcontextprotocol/sdk": "^1.12.1",
     "commander": "^12.0.0",
     "hackmyagent-core": "^0.4.0"
   },

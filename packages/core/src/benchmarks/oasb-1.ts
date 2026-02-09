@@ -224,7 +224,7 @@ export const OASB_1_CATEGORIES: BenchmarkCategory[] = [
           '1. Check for capability manifest (agent-manifest.json, capabilities.yaml)\n2. Verify all tool/API access is listed in manifest\n3. Compare runtime capabilities against declared capabilities\n4. Check for wildcard permissions (*)\n5. Verify capability grants are version-controlled',
         remediation:
           '1. Create capability manifest:\n   ```json\n   {\n     "capabilities": [\n       {"action": "file:read", "scope": "/data/*"},\n       {"action": "http:get", "scope": "api.example.com"}\n     ]\n   }\n   ```\n2. Implement capability checking at runtime\n3. Deny actions not in manifest\n4. Use AIM for centralized capability management',
-        checkIds: [],
+        checkIds: ['SEM-MCP-001', 'SEM-MCP-004'],
         verification: 'forward',
         frameworkMappings: {
           cisControls: ['CIS Control 6.8 - Define and Maintain Role-Based Access Control'],
@@ -246,7 +246,7 @@ export const OASB_1_CATEGORIES: BenchmarkCategory[] = [
           '1. List all permissions the agent has access to\n2. Document which permissions are actually used\n3. Identify and flag unused permissions\n4. Check for admin/root/sudo access\n5. Run: hackmyagent secure --check PERM-001,PERM-002',
         remediation:
           '1. Audit current permissions and remove unused ones\n2. Use read-only access where possible\n3. Scope file access to specific directories\n4. Scope API access to specific endpoints\n5. Use time-limited elevated permissions when needed\n6. Implement regular permission audits',
-        checkIds: ['PERM-001', 'PERM-002'],
+        checkIds: ['PERM-001', 'PERM-002', 'SEM-PERM-001', 'SEM-PERM-002', 'SEM-MCP-001'],
         verification: 'automated',
         frameworkMappings: {
           cisControls: ['CIS Control 5.4 - Restrict Administrator Privileges', 'CIS Control 6.1 - Establish Access Granting Process'],
@@ -342,7 +342,7 @@ export const OASB_1_CATEGORIES: BenchmarkCategory[] = [
         impact:
           'Implementing prompt injection protection may increase latency (5-50ms per request if using external filtering). Some legitimate edge cases may be incorrectly flagged. Regular tuning of detection rules is required.',
         defaultValue: 'Most agent frameworks provide NO default prompt injection protection. User input is typically passed directly to the LLM context.',
-        checkIds: ['PROMPT-001', 'PROMPT-002'],
+        checkIds: ['PROMPT-001', 'PROMPT-002', 'SEM-INST-001', 'SEM-INST-003'],
         verification: 'automated',
         references: [
           'https://owasp.org/www-project-top-10-for-large-language-model-applications/',
@@ -536,7 +536,7 @@ export const OASB_1_CATEGORIES: BenchmarkCategory[] = [
           '1. Implement egress filtering:\n   - Allowlist permitted external domains\n   - Block requests to unknown destinations\n2. Scan outbound content for sensitive patterns:\n   - API keys, credentials\n   - Email addresses, phone numbers\n   - Credit card numbers\n3. Use DLP (Data Loss Prevention) tools\n4. Log all external communications',
         impact: 'May block legitimate external integrations. Requires allowlist maintenance.',
         defaultValue: 'Agents typically have unrestricted outbound access.',
-        checkIds: ['NET-003', 'NET-004'],
+        checkIds: ['NET-003', 'NET-004', 'SEM-MCP-005', 'SEM-INST-002'],
         verification: 'automated',
         references: [
           'https://owasp.org/www-community/attacks/Data_Exfiltration',
@@ -595,7 +595,7 @@ export const OASB_1_CATEGORIES: BenchmarkCategory[] = [
           '1. Remove all hardcoded credentials from code immediately\n2. Rotate any credentials that may have been exposed\n3. Use environment variables for development:\n   export OPENAI_API_KEY="sk-..."\n4. Use a secrets manager for production:\n   - AWS Secrets Manager\n   - HashiCorp Vault\n   - Azure Key Vault\n   - 1Password Connect\n5. Add .env to .gitignore\n6. Install pre-commit hooks to prevent secret commits:\n   pip install detect-secrets\n   detect-secrets-hook --baseline .secrets.baseline',
         impact: 'Requires infrastructure for secret management. Adds complexity to local development setup.',
         defaultValue: 'Many tutorials and examples include hardcoded API keys. Most agent frameworks do not enforce secure credential handling.',
-        checkIds: ['CRED-002', 'CRED-003', 'CRED-004'],
+        checkIds: ['CRED-002', 'CRED-003', 'CRED-004', 'SEM-CRED-001', 'SEM-CRED-002', 'SEM-CRED-003', 'SEM-CRED-004'],
         verification: 'automated',
         references: [
           'https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html',
