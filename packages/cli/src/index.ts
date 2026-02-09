@@ -1430,7 +1430,11 @@ Examples:
   .option('-b, --benchmark <name>', 'Run benchmark compliance check (e.g., oasb-1)')
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
   .option('-c, --category <name>', 'Filter to specific benchmark category')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string }) => {
+  .option('--registry-report', 'Post results to OpenA2A Registry')
+  .option('--version-id <id>', 'Registry version ID to report against')
+  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)')
+  .option('--registry-key <key>', 'Registry API key (default: REGISTRY_API_KEY env)')
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; registryReport?: boolean; versionId?: string; registryUrl?: string; registryKey?: string }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
@@ -1604,6 +1608,37 @@ Examples:
         if (result.backupPath) {
           console.log(`Backup: ${result.backupPath}`);
           console.log(`Undo: hackmyagent rollback ${directory}\n`);
+        }
+      }
+
+      // Report to registry if requested
+      if (options.registryReport) {
+        const { RegistryClient, buildScanReport } = await import('hackmyagent-core');
+        const registryUrl = options.registryUrl || process.env.REGISTRY_URL;
+        const registryKey = options.registryKey || process.env.REGISTRY_API_KEY;
+        const versionId = options.versionId;
+
+        if (!registryUrl) {
+          console.error('Error: --registry-url or REGISTRY_URL env is required for registry reporting');
+          process.exit(1);
+        }
+        if (!registryKey) {
+          console.error('Error: --registry-key or REGISTRY_API_KEY env is required for registry reporting');
+          process.exit(1);
+        }
+        if (!versionId) {
+          console.error('Error: --version-id is required for registry reporting');
+          process.exit(1);
+        }
+
+        const client = new RegistryClient({ registryUrl, apiKey: registryKey });
+        const payload = buildScanReport(versionId, result.findings);
+
+        try {
+          await client.reportScanResult(payload);
+          console.log(`Registry: scan results reported for version ${versionId}`);
+        } catch (regErr) {
+          console.error(`Registry report failed: ${regErr instanceof Error ? regErr.message : regErr}`);
         }
       }
 
@@ -2047,6 +2082,10 @@ Examples:
   .option('-f, --format <format>', 'Output format: text, json, sarif, html', 'text')
   .option('-o, --output <file>', 'Write output to file')
   .option('-v, --verbose', 'Show detailed output for each payload')
+  .option('--registry-report', 'Post results to OpenA2A Registry')
+  .option('--version-id <id>', 'Registry version ID to report against')
+  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)')
+  .option('--registry-key <key>', 'Registry API key (default: REGISTRY_API_KEY env)')
   .action(async (targetUrl: string | undefined, options: {
     intensity?: string;
     category?: string;
@@ -2063,6 +2102,10 @@ Examples:
     format?: string;
     output?: string;
     verbose?: boolean;
+    registryReport?: boolean;
+    versionId?: string;
+    registryUrl?: string;
+    registryKey?: string;
   }) => {
     try {
       // Validate target
@@ -2183,6 +2226,37 @@ Examples:
           console.error(`Report written to ${options.output}`);
         } else {
           console.log(output);
+        }
+      }
+
+      // Report to registry if requested
+      if (options.registryReport) {
+        const { RegistryClient, buildAttackReport } = await import('hackmyagent-core');
+        const registryUrl = options.registryUrl || process.env.REGISTRY_URL;
+        const registryKey = options.registryKey || process.env.REGISTRY_API_KEY;
+        const versionId = options.versionId;
+
+        if (!registryUrl) {
+          console.error('Error: --registry-url or REGISTRY_URL env is required for registry reporting');
+          process.exit(1);
+        }
+        if (!registryKey) {
+          console.error('Error: --registry-key or REGISTRY_API_KEY env is required for registry reporting');
+          process.exit(1);
+        }
+        if (!versionId) {
+          console.error('Error: --version-id is required for registry reporting');
+          process.exit(1);
+        }
+
+        const client = new RegistryClient({ registryUrl, apiKey: registryKey });
+        const payload = buildAttackReport(versionId, report);
+
+        try {
+          await client.reportScanResult(payload);
+          console.log(`Registry: attack results reported for version ${versionId}`);
+        } catch (regErr) {
+          console.error(`Registry report failed: ${regErr instanceof Error ? regErr.message : regErr}`);
         }
       }
 
