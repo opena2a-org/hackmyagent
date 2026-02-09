@@ -14,9 +14,11 @@ import type { SemanticFinding, AnalysisFile } from '../types';
 const SECRET_KEY_PATTERN =
   /^(.*_)?(secret|token|key|password|passwd|credential|auth|apikey|api_key|access_key|private_key|client_secret|signing_key|encryption_key|master_key|jwt_secret|session_secret|db_password|database_password)(_.*)?$/i;
 
-/** URL with embedded credentials: protocol://user:password@host */
+/** URL with embedded credentials: protocol://user:password@host
+ * Uses greedy .+ for password to handle @ chars in passwords.
+ * The greedy match backtracks to the last valid @hostname boundary. */
 const URL_CREDENTIAL_PATTERN =
-  /(?:postgres|postgresql|mysql|mongodb|redis|amqp|rabbitmq|ftp|sftp|https?):\/\/([^:]+):([^@\s]{3,})@[^\s"',)]+/gi;
+  /(?:postgres|postgresql|mysql|mongodb|redis|amqp|rabbitmq|ftp|sftp|https?):\/\/([^:]+):(.+)@([a-zA-Z0-9][-a-zA-Z0-9.]*(?::\d+)?(?:\/[^\s"',)]*)?)/gi;
 
 /** Values that are NOT secrets (env var refs, booleans, paths, etc.) */
 function isNonSecretValue(value: string): boolean {

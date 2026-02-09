@@ -29,6 +29,12 @@ describe('CredentialContextAnalyzer', () => {
       expect(findings.some((f) => f.id === 'SEM-CRED-001')).toBe(true);
     });
 
+    it('detects password containing @ symbol', () => {
+      const file = makeFile('.env', 'DATABASE_URL=postgres://admin:P@ssw0rd123!@db.prod.example.com:5432/production', 'env_file');
+      const findings = analyzer.analyze([file]);
+      expect(findings.some((f) => f.id === 'SEM-CRED-001')).toBe(true);
+    });
+
     it('ignores URLs without credentials', () => {
       const file = makeFile('.env', 'API_URL=https://api.example.com/v1', 'env_file');
       const findings = analyzer.analyze([file]);
