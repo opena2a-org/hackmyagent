@@ -17,7 +17,7 @@ The hacker's toolkit for AI agents. 147 security checks, 55 attack payloads, aut
 ```bash
 npx hackmyagent secure              # scan current directory (147 checks)
 npx hackmyagent secure --fix        # auto-fix what it finds
-npx hackmyagent fix-all --with-aim  # run all plugins with identity + audit
+npx hackmyagent fix-all --with-aim  # add agent identity + audit logging
 ```
 
 No config files required. Works out of the box.
