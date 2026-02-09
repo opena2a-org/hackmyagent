@@ -1,6 +1,6 @@
 {
   "name": "@opena2a/secretless-openclaw",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Credential protection for OpenClaw bots — encrypted local store, environment variable resolution, per-skill isolation. Credentials never touch the LLM context window.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

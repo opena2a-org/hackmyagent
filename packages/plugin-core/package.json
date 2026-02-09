@@ -1,6 +1,6 @@
 {
   "name": "@opena2a/plugin-core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Shared plugin interface and registry for OpenA2A security plugins. Defines the contract all plugins implement.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

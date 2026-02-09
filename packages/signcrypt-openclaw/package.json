@@ -1,6 +1,6 @@
 {
   "name": "@opena2a/signcrypt-openclaw",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Configuration integrity for OpenClaw bots — Ed25519 signing, DNS publisher verification, heartbeat expiry enforcement.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
