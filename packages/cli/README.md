@@ -17,7 +17,7 @@ Scans Claude Code, Cursor, VS Code, and any MCP server setup for credential leak
 ```bash
 npx hackmyagent secure              # scan current directory (147 checks)
 npx hackmyagent secure --fix        # auto-fix what it finds
-npx hackmyagent fix-all --with-aim  # run all plugins with identity + audit
+npx hackmyagent fix-all --with-aim  # add agent identity + audit logging
 ```
 
 No config files required. Works out of the box.
