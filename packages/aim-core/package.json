@@ -1,6 +1,6 @@
 {
   "name": "@opena2a/aim-core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Lightweight agent identity library — Ed25519 identity, local audit log, capability policy, trust scoring. No server required.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
