@@ -88,6 +88,19 @@ export type {
   BenchmarkName,
 } from './benchmarks';
 
+// Registry module
+export {
+  RegistryClient,
+  buildScanReport,
+  buildAttackReport,
+} from './registry';
+
+export type {
+  RegistryConfig,
+  RegistryPackage,
+  ScanReportPayload,
+} from './registry';
+
 // Legacy scanner (for scan command)
 export interface ScanResult {
   target: string;
