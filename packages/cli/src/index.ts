@@ -1430,11 +1430,12 @@ Examples:
   .option('-b, --benchmark <name>', 'Run benchmark compliance check (e.g., oasb-1)')
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
   .option('-c, --category <name>', 'Filter to specific benchmark category')
+  .option('--deep', 'Enable LLM-powered semantic analysis (requires ANTHROPIC_API_KEY)')
   .option('--registry-report', 'Post results to OpenA2A Registry')
   .option('--version-id <id>', 'Registry version ID to report against')
   .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)')
   .option('--registry-key <key>', 'Registry API key (default: REGISTRY_API_KEY env)')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; registryReport?: boolean; versionId?: string; registryUrl?: string; registryKey?: string }) => {
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; registryReport?: boolean; versionId?: string; registryUrl?: string; registryKey?: string }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
@@ -1487,12 +1488,28 @@ Examples:
         }
       }
 
+      // Deep mode progress display
+      const isDeep = options.deep ?? false;
+      const onProgress = isDeep && format === 'text'
+        ? (msg: string) => process.stdout.write(msg)
+        : undefined;
+
+      if (isDeep && format === 'text') {
+        if (!process.env.ANTHROPIC_API_KEY) {
+          console.log(`Layer 3: Semantic analysis — skipped (no ANTHROPIC_API_KEY)`);
+          console.log(`  Tip: Add HackMyAgent as an MCP server for free LLM analysis:`);
+          console.log(`  npx hackmyagent init-mcp\n`);
+        }
+      }
+
       const scanner = new HardeningScanner();
       const result = await scanner.scan({
         targetDir,
         autoFix: options.fix ?? false,
         dryRun: options.dryRun ?? false,
         ignore: ignoreList,
+        deep: isDeep,
+        onProgress,
       });
 
       // Benchmark mode - output compliance report
@@ -1567,7 +1584,17 @@ Examples:
         all: 'Project',
       }[result.projectType] || 'Project';
 
-      console.log(`${projectTypeLabel} | Score: ${result.score}/${result.maxScore}\n`);
+      let scoreExtra = '';
+      if (result.semanticAnalysis) {
+        const sa = result.semanticAnalysis;
+        scoreExtra = ` | Semantic: ${sa.layer2Findings} structural`;
+        if (sa.layer3Findings > 0) {
+          scoreExtra += `, ${sa.layer3Findings} LLM`;
+          if (sa.llmCost !== undefined) scoreExtra += ` ($${sa.llmCost.toFixed(3)})`;
+          if (sa.cachedResults) scoreExtra += ` (${sa.cachedResults} cached)`;
+        }
+      }
+      console.log(`${projectTypeLabel} | Score: ${result.score}/${result.maxScore}${scoreExtra}\n`);
 
       // No issues? Say so and exit
       if (issues.length === 0 && fixedFindings.length === 0) {
@@ -3425,5 +3452,61 @@ Examples:
       }
     }
   );
+
+// MCP Server command
+program
+  .command('mcp-serve')
+  .description('Run HackMyAgent as an MCP server (stdio transport)')
+  .action(async () => {
+    try {
+      const { startMcpServer } = await import('./mcp-server');
+      await startMcpServer();
+    } catch (error) {
+      console.error(`Error starting MCP server: ${error instanceof Error ? error.message : error}`);
+      process.exit(1);
+    }
+  });
+
+// Init MCP command
+program
+  .command('init-mcp')
+  .description(`Add HackMyAgent as an MCP server to your AI coding tool
+
+Detects your IDE (Claude Code, Cursor, VS Code) and configures
+HackMyAgent as an MCP server for LLM-powered security analysis.
+
+Once configured, ask your AI assistant:
+  "Run a deep security scan on this project"
+
+Examples:
+  $ hackmyagent init-mcp
+  $ hackmyagent init-mcp --tool cursor
+  $ hackmyagent init-mcp /path/to/project`)
+  .argument('[directory]', 'Project directory (defaults to current directory)', '.')
+  .option('-t, --tool <name>', 'Force specific tool: claude, cursor, vscode')
+  .action(async (directory: string, options: { tool?: string }) => {
+    try {
+      const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
+      const { initMcp } = await import('./init-mcp');
+      const result = initMcp(targetDir, options.tool);
+
+      if (!result.created) {
+        console.log(`\n  HackMyAgent MCP server already configured in ${result.configPath}\n`);
+        return;
+      }
+
+      console.log(`\n  Detected: ${result.tool}\n`);
+      console.log(`  Added HackMyAgent MCP server to ${result.configPath}\n`);
+      console.log(`  Available tools in ${result.tool}:`);
+      console.log(`    hackmyagent_scan       — 147+ checks + structural analysis`);
+      console.log(`    hackmyagent_deep_scan  — Full analysis with LLM reasoning`);
+      console.log(`    hackmyagent_analyze_file — Analyze a single file`);
+      console.log(`    hackmyagent_benchmark  — OASB-1 compliance assessment\n`);
+      console.log(`  Try: "Run a deep security scan on this project"\n`);
+    } catch (error) {
+      console.error(`Error: ${error instanceof Error ? error.message : error}`);
+      process.exit(1);
+    }
+  });
 
 program.parse();
