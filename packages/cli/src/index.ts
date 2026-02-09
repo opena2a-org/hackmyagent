@@ -3128,7 +3128,7 @@ function generateAttackHtmlReport(report: AttackReport): string {
 
 // --- fix-all: Run all OpenClaw plugins to scan and remediate ---
 
-import { createPlugin as createSecretlessPlugin } from '@opena2a/secretless-openclaw';
+import { createPlugin as createCredVaultPlugin } from '@opena2a/credvault-openclaw';
 import { createPlugin as createSigncryptPlugin } from '@opena2a/signcrypt-openclaw';
 import { createPlugin as createSkillguardPlugin } from '@opena2a/skillguard-openclaw';
 import { AIMCore } from '@opena2a/aim-core';
@@ -3154,7 +3154,7 @@ program
 Runs the full plugin suite in order:
   1. SkillGuard  — hash pinning, tamper detection, dangerous patterns
   2. SignCrypt   — Ed25519 signing, heartbeat hash pins
-  3. Secretless  — credential detection, env var replacement
+  3. CredVault   — credential detection, env var replacement
 
 Each plugin scans for findings, then auto-fixes what it can.
 Dangerous patterns (reverse shells, exfil, etc.) require manual review.
@@ -3236,7 +3236,7 @@ Examples:
         const pluginFactories: Array<{ name: string; create: () => OpenA2APlugin }> = [
           { name: 'SkillGuard', create: createSkillguardPlugin },
           { name: 'SignCrypt', create: createSigncryptPlugin },
-          { name: 'Secretless', create: createSecretlessPlugin },
+          { name: 'CredVault', create: createCredVaultPlugin },
         ];
 
         const plugins: Array<{ name: string; plugin: OpenA2APlugin }> = [];

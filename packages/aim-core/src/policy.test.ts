@@ -34,7 +34,7 @@ rules:
   - capability: "net:*"
     action: allow
     plugins:
-      - secretless
+      - credvault
 `;
       fs.writeFileSync(path.join(tmpDir, 'policy.yaml'), yamlContent, 'utf-8');
 
@@ -43,7 +43,7 @@ rules:
       expect(p.rules.length).toBe(2);
       expect(p.rules[0].capability).toBe('db:write');
       expect(p.rules[0].action).toBe('deny');
-      expect(p.rules[1].plugins).toEqual(['secretless']);
+      expect(p.rules[1].plugins).toEqual(['credvault']);
     });
   });
 
@@ -127,11 +127,11 @@ rules:
         version: '1',
         defaultAction: 'deny',
         rules: [
-          { capability: 'db:read', action: 'allow', plugins: ['secretless'] },
+          { capability: 'db:read', action: 'allow', plugins: ['credvault'] },
         ],
       };
 
-      expect(checkCapability(p, 'db:read', 'secretless')).toBe(true);
+      expect(checkCapability(p, 'db:read', 'credvault')).toBe(true);
       expect(checkCapability(p, 'db:read', 'other-plugin')).toBe(false);
       expect(checkCapability(p, 'db:read')).toBe(false); // No plugin specified
     });

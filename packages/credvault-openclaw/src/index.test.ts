@@ -2,15 +2,15 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { SecretlessPlugin } from './index';
+import { CredVaultPlugin } from './index';
 
-describe('SecretlessPlugin', () => {
+describe('CredVaultPlugin', () => {
   let tmpDir: string;
-  let plugin: SecretlessPlugin;
+  let plugin: CredVaultPlugin;
 
   beforeEach(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'secretless-test-'));
-    plugin = new SecretlessPlugin();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'credvault-test-'));
+    plugin = new CredVaultPlugin();
     await plugin.init();
   });
 
@@ -143,7 +143,7 @@ describe('SecretlessPlugin', () => {
 
       await plugin.fix(tmpDir);
 
-      const storeDir = path.join(tmpDir, '.opena2a', 'secretless');
+      const storeDir = path.join(tmpDir, '.opena2a', 'credvault');
       expect(fs.existsSync(storeDir)).toBe(true);
       expect(fs.existsSync(path.join(storeDir, 'secrets.meta.json'))).toBe(true);
     });
@@ -169,7 +169,7 @@ describe('SecretlessPlugin', () => {
   describe('status', () => {
     it('returns plugin status', async () => {
       const status = await plugin.status();
-      expect(status.name).toBe('Secretless');
+      expect(status.name).toBe('CredVault');
       expect(status.version).toBe('0.1.0');
     });
   });
