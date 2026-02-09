@@ -4,9 +4,9 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Tests](https://img.shields.io/badge/tests-501%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
 
-Security scanner for AI agents. 147 checks across 30 categories. Auto-fix. Extensible plugin architecture.
+**Find it. Break it. Fix it.**
 
-Scans Claude Code, Cursor, VS Code, and any MCP server setup for credential leaks, misconfigurations, prompt injection vectors, supply chain risks, and more.
+The hacker's toolkit for AI agents. 147 security checks, 55 attack payloads, auto-fix with rollback, and OASB benchmark compliance. Scans Claude Code, Cursor, VS Code, and any MCP server setup for credential leaks, misconfigurations, prompt injection vectors, supply chain risks, and more.
 
 [Website](https://hackmyagent.com) | [Docs](https://hackmyagent.com/docs) | [OpenA2A](https://opena2a.org) | [Security Checks Reference](docs/SECURITY_CHECKS.md)
 
