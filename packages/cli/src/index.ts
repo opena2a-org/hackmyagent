@@ -3260,10 +3260,12 @@ Examples:
         }
 
         // Create and initialize plugins in execution order
+        // Order matters: CredVault replaces creds, SignCrypt signs skills,
+        // SkillGuard pins last so hashes reflect the final file state.
         const pluginFactories: Array<{ name: string; create: () => OpenA2APlugin }> = [
-          { name: 'SkillGuard', create: createSkillguardPlugin },
-          { name: 'SignCrypt', create: createSigncryptPlugin },
           { name: 'CredVault', create: createCredVaultPlugin },
+          { name: 'SignCrypt', create: createSigncryptPlugin },
+          { name: 'SkillGuard', create: createSkillguardPlugin },
         ];
 
         const plugins: Array<{ name: string; plugin: OpenA2APlugin }> = [];
