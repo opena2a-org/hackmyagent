@@ -74,6 +74,7 @@ hackmyagent secure --fix --dry-run            # preview fixes before applying
 hackmyagent secure --ignore CRED-001,GIT-002  # skip specific checks
 hackmyagent secure --json                     # JSON output for CI/CD
 hackmyagent secure --verbose                  # show all checks including passed
+hackmyagent secure --no-color                 # disable colored output
 ```
 
 <details>
@@ -217,6 +218,11 @@ hackmyagent attack --local --category prompt-injection         # single category
 hackmyagent attack --local --intensity aggressive              # full suite
 hackmyagent attack --local -f sarif -o results.sarif           # SARIF output
 hackmyagent attack https://api.example.com --fail-on-vulnerable medium  # CI gate
+hackmyagent attack https://api.example.com --api-format anthropic       # Anthropic API
+hackmyagent attack https://api.example.com --model gpt-4o              # specify model
+hackmyagent attack https://api.example.com -H "Authorization: Bearer tk" # custom header
+hackmyagent attack --local --timeout 5000 --delay 500                   # timing controls
+hackmyagent attack --local --stop-on-success                            # stop at first hit
 ```
 
 <details>
@@ -267,6 +273,7 @@ Run the [OASB-1](https://oasb.ai/oasb-1) (Open Agent Security Benchmark) — 46 
 hackmyagent secure -b oasb-1              # L1 baseline (26 controls)
 hackmyagent secure -b oasb-1 -l L2        # L2 standard (44 controls)
 hackmyagent secure -b oasb-1 -l L3        # L3 hardened (46 controls)
+hackmyagent secure -b oasb-1 -c "Input Security"     # filter to one category
 hackmyagent secure -b oasb-1 -v           # verbose (every control)
 hackmyagent secure -b oasb-1 -f html -o report.html  # HTML report
 hackmyagent secure -b oasb-1 --fail-below 70          # CI gate
