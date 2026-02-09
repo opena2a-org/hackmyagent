@@ -6,7 +6,7 @@
 
 **Find it. Break it. Fix it.**
 
-The hacker's toolkit for AI agents. 147+ security checks, 55 attack payloads, auto-fix with rollback, and OASB benchmark compliance. Scans Claude Code, Cursor, VS Code, Windsurf, and any MCP server setup for credential leaks, misconfigurations, prompt injection vectors, supply chain risks, and more.
+The hacker's toolkit for AI agents. 147 security checks, 55 attack payloads, auto-fix with rollback, and OASB benchmark compliance. Scans Claude Code, Cursor, VS Code, and any MCP server setup for credential leaks, misconfigurations, prompt injection vectors, supply chain risks, and more.
 
 [Website](https://hackmyagent.com) | [Docs](https://hackmyagent.com/docs) | [OpenA2A](https://opena2a.org) | [Security Checks Reference](docs/SECURITY_CHECKS.md)
 
@@ -15,7 +15,7 @@ The hacker's toolkit for AI agents. 147+ security checks, 55 attack payloads, au
 ## Quick Start
 
 ```bash
-npx hackmyagent secure              # scan current directory (147+ checks)
+npx hackmyagent secure              # scan current directory (147 checks)
 npx hackmyagent secure --fix        # auto-fix what it finds
 npx hackmyagent fix-all --with-aim  # run all plugins with identity + audit
 ```
@@ -28,7 +28,7 @@ No config files required. Works out of the box.
 
 - [Installation](#installation)
 - [Commands](#commands)
-  - [secure](#hackmyagent-secure) — local agent hardening (147+ checks)
+  - [secure](#hackmyagent-secure) — local agent hardening (147 checks)
   - [fix-all](#hackmyagent-fix-all) — run all OpenA2A security plugins
   - [check](#hackmyagent-check) — verify a skill before installing
   - [scan](#hackmyagent-scan) — scan external infrastructure
@@ -64,7 +64,7 @@ npm install --save-dev hackmyagent
 
 ### `hackmyagent secure`
 
-Scan and harden your local agent setup. 147+ checks across 31 categories with auto-remediation.
+Scan and harden your local agent setup. 147 checks across 30 categories with auto-remediation.
 
 ```bash
 hackmyagent secure                            # basic scan
@@ -77,13 +77,13 @@ hackmyagent secure --verbose                  # show all checks including passed
 ```
 
 <details>
-<summary>All 31 security categories</summary>
+<summary>All 30 security categories</summary>
 
 | Category | Checks | What it detects |
 |----------|--------|-----------------|
 | CRED | 4 | Hardcoded API keys, tokens, passwords |
-| MCP | 12 | MCP server misconfigurations |
-| CLAUDE | 8 | Claude Code security issues |
+| MCP | 10 | MCP server misconfigurations |
+| CLAUDE | 7 | Claude Code security issues |
 | NET | 6 | Network exposure, open ports |
 | PROMPT | 4 | Prompt injection vectors |
 | INJ | 4 | XSS, SQL injection, command injection |
@@ -93,25 +93,24 @@ hackmyagent secure --verbose                  # show all checks including passed
 | SANDBOX | 4 | Process isolation gaps |
 | TOOL | 4 | Tool permission boundaries |
 | AUTH | 4 | Authentication weaknesses |
-| DEPS | 4 | Vulnerable dependencies |
+| DEP | 4 | Vulnerable dependencies |
 | ENV | 4 | Insecure environment variables |
-| GIT | 4 | Git security (gitignore, hooks) |
+| GIT | 3 | Git security (gitignore, hooks) |
 | IO | 4 | Input/output validation |
 | LOG | 4 | Logging and monitoring gaps |
-| PERM | 4 | Overly permissive file permissions |
+| PERM | 3 | Overly permissive file permissions |
 | PROC | 4 | Process isolation issues |
 | RATE | 4 | Missing rate limiting |
 | SEC | 4 | Security headers |
 | API | 4 | API security issues |
-| VSCODE | 4 | VS Code configuration risks |
-| CURSOR | 4 | Cursor IDE configuration risks |
+| VSCODE | 2 | VS Code configuration risks |
+| CURSOR | 1 | Cursor IDE configuration risks |
 | CVE | 4 | Known CVE detection |
 | GATEWAY | 8 | Gateway misconfigurations |
 | CONFIG | 9 | Insecure default settings |
 | SUPPLY | 8 | Supply chain attack vectors |
 | SKILL | 12 | Malicious skill/tool detection |
 | HEARTBEAT | 6 | Heartbeat/cron abuse |
-| WINDSURF | 3 | Windsurf IDE configuration risks |
 
 </details>
 
@@ -417,7 +416,7 @@ import { createPlugin, metadata } from '@my-org/my-plugin';
 
 registerPlugin({
   metadata,
-  factory: createPlugin,
+  create: createPlugin,
 });
 ```
 
@@ -505,7 +504,6 @@ hackmyagent secure --json | jq '[.findings[].id | split("-")[0]] | group_by(.) |
 | **Claude Code** | CLAUDE.md, skills, MCP server configs |
 | **Cursor** | .cursor/ rules, MCP configurations |
 | **VS Code** | .vscode/mcp.json configurations |
-| **Windsurf** | IDE configurations |
 | **Generic MCP** | Any MCP server setup |
 
 ---
@@ -515,7 +513,6 @@ hackmyagent secure --json | jq '[.findings[].id | split("-")[0]] | group_by(.) |
 | Variable | Description |
 |----------|-------------|
 | `NO_COLOR` | Disable colored output |
-| `HACKMYAGENT_TIMEOUT` | Default timeout for scans (ms) |
 
 ---
 
@@ -536,7 +533,7 @@ npx turbo test      # run 501 tests
 ```
 packages/
   cli/                      # CLI entry point (hackmyagent command)
-  core/                     # Scanner engine (147+ checks)
+  core/                     # Scanner engine (147 checks)
   aim-core/                 # Ed25519 identity, audit, policy, trust
   plugin-core/              # Plugin interface and registry
   secretless-openclaw/      # Credential scanner plugin

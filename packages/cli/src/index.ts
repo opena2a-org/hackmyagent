@@ -1387,13 +1387,13 @@ program
   .command('secure')
   .description(`Scan and harden your agent setup
 
-Performs 100+ security checks across 24 categories:
+Performs 147 security checks across 30 categories:
   • Credentials: API key exposure, secrets in configs
   • MCP: Server configs, tool permissions, secrets
   • Network: TLS, interface bindings, CORS
   • Prompt: Injection defenses, role protection
   • Encryption: At-rest encryption, secure hashing
-  • And 19 more categories...
+  • And 25 more categories...
 
 Benchmark mode (--benchmark oasb-1):
   Run OASB-1 compliance checks with L1/L2/L3 levels.
