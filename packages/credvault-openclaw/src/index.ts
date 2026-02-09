@@ -55,7 +55,7 @@ export interface SecretEntry {
   backend: 'local' | 'env';
 }
 
-export interface SecretlessConfig {
+export interface CredVaultConfig {
   dataDir?: string;
 }
 
@@ -70,7 +70,7 @@ interface SecretStoreMeta {
 }
 
 function getStoreDir(agentDir: string): string {
-  return path.join(agentDir, '.opena2a', 'secretless');
+  return path.join(agentDir, '.opena2a', 'credvault');
 }
 
 function initStore(agentDir: string): void {
@@ -275,15 +275,15 @@ function createEnvExample(agentDir: string, findings: Finding[]): string | null 
 // --- Plugin Implementation ---
 
 export const metadata: PluginMetadata = {
-  packageName: '@opena2a/secretless-openclaw',
-  displayName: 'Secretless',
+  packageName: '@opena2a/credvault-openclaw',
+  displayName: 'CredVault',
   description: 'Credential protection — scan for hardcoded secrets, move to encrypted store, per-skill isolation',
   version: VERSION,
   findings: ['CRED-001', 'CRED-002', 'CRED-003', 'CRED-004'],
   scoreImprovement: 25,
 };
 
-export class SecretlessPlugin implements OpenA2APlugin {
+export class CredVaultPlugin implements OpenA2APlugin {
   readonly metadata = metadata;
   private aimCore?: AIMCore;
 
@@ -311,7 +311,7 @@ export class SecretlessPlugin implements OpenA2APlugin {
     // Log to aim-core audit if available
     if (this.aimCore) {
       this.aimCore.logEvent({
-        plugin: 'secretless',
+        plugin: 'credvault',
         action: 'scan.complete',
         target: agentDir,
         result: findings.length > 0 ? 'denied' : 'allowed',
@@ -391,7 +391,7 @@ export class SecretlessPlugin implements OpenA2APlugin {
     if (this.aimCore) {
       for (const r of remediations) {
         this.aimCore.logEvent({
-          plugin: 'secretless',
+          plugin: 'credvault',
           action: 'fix.applied',
           target: r.findingId,
           result: 'allowed',
@@ -419,6 +419,6 @@ export class SecretlessPlugin implements OpenA2APlugin {
   }
 }
 
-export function createPlugin(): SecretlessPlugin {
-  return new SecretlessPlugin();
+export function createPlugin(): CredVaultPlugin {
+  return new CredVaultPlugin();
 }

@@ -18,14 +18,14 @@ describe('audit', () => {
   describe('logEvent', () => {
     it('creates audit.jsonl and appends event', () => {
       const event = logEvent(tmpDir, {
-        plugin: 'secretless',
+        plugin: 'credvault',
         action: 'secret.resolved',
         target: 'db-prod',
         result: 'allowed',
       });
 
       expect(event.timestamp).toBeTruthy();
-      expect(event.plugin).toBe('secretless');
+      expect(event.plugin).toBe('credvault');
       expect(event.result).toBe('allowed');
 
       const filePath = path.join(tmpDir, 'audit.jsonl');

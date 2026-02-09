@@ -32,7 +32,7 @@ describe('AIMCore', () => {
 
   it('logs and reads audit events', () => {
     aim.logEvent({
-      plugin: 'secretless',
+      plugin: 'credvault',
       action: 'secret.resolved',
       target: 'db-prod',
       result: 'allowed',
@@ -47,7 +47,7 @@ describe('AIMCore', () => {
 
     const events = aim.readAuditLog();
     expect(events.length).toBe(2);
-    expect(events[0].plugin).toBe('secretless');
+    expect(events[0].plugin).toBe('credvault');
     expect(events[1].plugin).toBe('skillguard');
   });
 

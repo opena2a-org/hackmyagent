@@ -1,5 +1,5 @@
 {
-  "name": "@opena2a/secretless-openclaw",
+  "name": "@opena2a/credvault-openclaw",
   "version": "0.1.1",
   "description": "Credential protection for OpenClaw bots — encrypted local store, environment variable resolution, per-skill isolation. Credentials never touch the LLM context window.",
   "main": "dist/index.js",
@@ -47,7 +47,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/opena2a-org/hackmyagent.git",
-    "directory": "packages/secretless-openclaw"
+    "directory": "packages/credvault-openclaw"
   },
   "engines": {
     "node": ">=18.0.0"

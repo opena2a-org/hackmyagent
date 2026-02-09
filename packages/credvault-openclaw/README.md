@@ -1,6 +1,6 @@
-# @opena2a/secretless-openclaw
+# @opena2a/credvault-openclaw
 
-[![npm version](https://img.shields.io/npm/v/@opena2a/secretless-openclaw.svg)](https://www.npmjs.com/package/@opena2a/secretless-openclaw)
+[![npm version](https://img.shields.io/npm/v/@opena2a/credvault-openclaw.svg)](https://www.npmjs.com/package/@opena2a/credvault-openclaw)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 Credential protection plugin for HackMyAgent. Encrypted local secret store, environment variable resolution, and per-skill isolation. Credentials never touch the LLM context window.
@@ -12,13 +12,13 @@ Part of the [HackMyAgent](https://github.com/opena2a-org/hackmyagent) security t
 ## Install
 
 ```bash
-npm install @opena2a/secretless-openclaw
+npm install @opena2a/credvault-openclaw
 ```
 
 ## Usage
 
 ```typescript
-import { createPlugin } from '@opena2a/secretless-openclaw';
+import { createPlugin } from '@opena2a/credvault-openclaw';
 import { registerPlugin } from '@opena2a/plugin-core';
 
 const plugin = createPlugin();

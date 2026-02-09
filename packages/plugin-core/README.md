@@ -19,19 +19,19 @@ npm install @opena2a/plugin-core
 
 ```typescript
 import { registerPlugin, getPlugin, listPlugins } from '@opena2a/plugin-core';
-import { createPlugin as createSecretless } from '@opena2a/secretless-openclaw';
+import { createPlugin as createCredVault } from '@opena2a/credvault-openclaw';
 import { createPlugin as createSignCrypt } from '@opena2a/signcrypt-openclaw';
 
 // Register plugins
-registerPlugin(createSecretless());
+registerPlugin(createCredVault());
 registerPlugin(createSignCrypt());
 
 // List registered plugins
 const plugins = listPlugins();
-// => [{ id: 'secretless', name: 'Secretless', ... }, { id: 'signcrypt', name: 'SignCrypt', ... }]
+// => [{ id: 'credvault', name: 'CredVault', ... }, { id: 'signcrypt', name: 'SignCrypt', ... }]
 
 // Get a specific plugin
-const secretless = getPlugin('secretless');
+const credvault = getPlugin('credvault');
 ```
 
 ### Writing a plugin

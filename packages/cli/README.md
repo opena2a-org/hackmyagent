@@ -164,7 +164,7 @@ hackmyagent fix-all -v                  # verbose output
 |---|--------|--------------|
 | 1 | **SkillGuard** | Hash pinning, tamper detection, dangerous pattern scanning (reverse shells, exfil, prompt injection) |
 | 2 | **SignCrypt** | Ed25519 signing of SKILL.md and HEARTBEAT.md, SHA-256 hash pinning, signature verification |
-| 3 | **Secretless** | Credential detection (10 patterns), env var replacement, AES-256-GCM encrypted store |
+| 3 | **CredVault** | Credential detection (10 patterns), env var replacement, AES-256-GCM encrypted store |
 
 **`--with-aim` adds:**
 - Ed25519 identity generation for the agent
@@ -344,7 +344,7 @@ HackMyAgent uses a modular plugin system built on [`@opena2a/plugin-core`](packa
 |---------|-----|-------------|
 | [`@opena2a/plugin-core`](packages/plugin-core) | — | Plugin interface, registry, shared types |
 | [`@opena2a/aim-core`](packages/aim-core) | — | Ed25519 identity, audit logging, capability policy, trust scoring |
-| [`@opena2a/secretless-openclaw`](packages/secretless-openclaw) | — | Credential scanning (10 patterns), env var replacement, AES-256-GCM store |
+| [`@opena2a/credvault-openclaw`](packages/credvault-openclaw) | — | Credential scanning (10 patterns), env var replacement, AES-256-GCM store |
 | [`@opena2a/signcrypt-openclaw`](packages/signcrypt-openclaw) | — | Ed25519 file signing, SHA-256 hash pinning, signature verification |
 | [`@opena2a/skillguard-openclaw`](packages/skillguard-openclaw) | — | Permission pinning, tamper detection, dangerous pattern scanning |
 
@@ -543,7 +543,7 @@ packages/
   core/                     # Scanner engine (147 checks)
   aim-core/                 # Ed25519 identity, audit, policy, trust
   plugin-core/              # Plugin interface and registry
-  secretless-openclaw/      # Credential scanner plugin
+  credvault-openclaw/       # Credential scanner plugin
   signcrypt-openclaw/       # Signing and hash pinning plugin
   skillguard-openclaw/      # Permission and pattern scanner plugin
 ```
