@@ -81,4 +81,11 @@ export interface ScanResult {
   atomicFix?: boolean;
   /** List of check IDs that were ignored */
   ignored?: string[];
+  /** Semantic analysis summary (Layer 2 + Layer 3) */
+  semanticAnalysis?: {
+    layer2Findings: number;
+    layer3Findings: number;
+    llmCost?: number;
+    cachedResults?: number;
+  };
 }

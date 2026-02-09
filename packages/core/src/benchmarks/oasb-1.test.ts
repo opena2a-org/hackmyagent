@@ -70,7 +70,7 @@ describe('OASB-1 Benchmark', () => {
       const validPrefixes = [
         'CRED-', 'TOOL-', 'PROMPT-', 'IO-', 'NET-', 'DEP-',
         'LOG-', 'AUDIT-', 'PERM-', 'RATE-', 'SANDBOX-',
-        'MCP-', 'PROC-', 'ENV-',
+        'MCP-', 'PROC-', 'ENV-', 'SEM-',
       ];
       for (const control of allControls) {
         for (const checkId of control.checkIds) {
@@ -91,12 +91,15 @@ describe('OASB-1 Benchmark', () => {
       }
     });
 
-    it('manual and forward controls have empty checkIds', () => {
+    it('manual and forward controls have empty checkIds or only semantic checkIds', () => {
       for (const control of allControls) {
         if (control.verification === 'manual' || control.verification === 'forward') {
+          // Semantic engine checkIds (SEM-*) are allowed on forward controls
+          // because they provide partial automated verification
+          const nonSemanticIds = control.checkIds.filter((id) => !id.startsWith('SEM-'));
           expect(
-            control.checkIds.length,
-            `${control.id} is ${control.verification} but has checkIds: ${control.checkIds.join(', ')}`
+            nonSemanticIds.length,
+            `${control.id} is ${control.verification} but has non-semantic checkIds: ${nonSemanticIds.join(', ')}`
           ).toBe(0);
         }
       }

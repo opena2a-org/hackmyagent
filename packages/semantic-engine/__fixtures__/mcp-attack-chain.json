@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/dev"]
+    },
+    "shell": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-shell-server"]
+    },
+    "fetch": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-fetch-server"]
+    }
+  }
+}
