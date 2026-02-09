@@ -7,7 +7,7 @@ Credential protection plugin for HackMyAgent. Encrypted local secret store, envi
 
 Part of the [HackMyAgent](https://github.com/opena2a-org/hackmyagent) security toolkit.
 
-> **Looking for the standalone CLI?** See [`secretless`](https://www.npmjs.com/package/secretless) — one command to keep secrets out of any AI coding tool.
+> **Looking for the standalone CLI?** See [`secretless-ai`](https://www.npmjs.com/package/secretless-ai) — one command to keep secrets out of any AI coding tool.
 
 ## Install
 
@@ -47,7 +47,7 @@ Detects Anthropic, OpenAI, AWS, GitHub, Slack, Google, Stripe, SendGrid, Supabas
 
 ## Related
 
-- [`secretless`](https://www.npmjs.com/package/secretless) — Standalone CLI for protecting AI coding tools
+- [`secretless-ai`](https://www.npmjs.com/package/secretless-ai) — Standalone CLI for protecting AI coding tools
 - [`@opena2a/plugin-core`](https://www.npmjs.com/package/@opena2a/plugin-core) — Plugin interface
 - [`hackmyagent`](https://www.npmjs.com/package/hackmyagent) — Full security toolkit
 
