@@ -11,7 +11,8 @@
     "dev": "turbo run dev",
     "lint": "turbo run lint",
     "test": "turbo run test",
-    "clean": "turbo run clean"
+    "clean": "turbo run clean",
+    "publish-all": "./scripts/publish-all.sh"
   },
   "devDependencies": {
     "turbo": "^2.0.0",
