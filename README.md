@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-501%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
+[![Tests](https://img.shields.io/badge/tests-566%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
 
 **Find it. Break it. Fix it.**
 
@@ -531,8 +531,8 @@ Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 git clone https://github.com/opena2a-org/hackmyagent.git
 cd hackmyagent
 npm install
-npx turbo build     # build all 7 packages
-npx turbo test      # run 501 tests
+npx turbo build     # build all 8 packages
+npx turbo test      # run 566 tests
 ```
 
 ### Monorepo Structure
@@ -546,6 +546,7 @@ packages/
   credvault-openclaw/       # Credential scanner plugin
   signcrypt-openclaw/       # Signing and hash pinning plugin
   skillguard-openclaw/      # Permission and pattern scanner plugin
+  semantic-engine/          # Semantic analysis engine for deep scanning
 ```
 
 ---
