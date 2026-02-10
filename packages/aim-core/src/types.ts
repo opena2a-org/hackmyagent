@@ -105,9 +105,17 @@ export interface TrustFactors {
 
 /** Hints provided by plugins to inform trust calculation */
 export interface TrustHints {
+  // Core factors (mapped to trust score weights)
   secretsManaged?: boolean;
   configSigned?: boolean;
   skillsVerified?: boolean;
   networkControlled?: boolean;
   heartbeatMonitored?: boolean;
+
+  // Extended plugin signals (8-plugin coverage)
+  sessionsProtected?: boolean;
+  promptsGuarded?: boolean;
+  daemonHardened?: boolean;
+  dlpEnabled?: boolean;
+  runtimeProtected?: boolean;
 }

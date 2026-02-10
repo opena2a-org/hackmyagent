@@ -14,6 +14,20 @@ const WEIGHTS: Record<keyof TrustFactors, number> = {
   heartbeatMonitored: 0.10,
 };
 
+/**
+ * Extended plugin signals that boost the overall score.
+ * Each active signal provides a small bonus (up to 0.05 total).
+ * This rewards comprehensive security posture without changing the base weights.
+ */
+const EXTENDED_SIGNALS: Array<keyof TrustHints> = [
+  'sessionsProtected',
+  'promptsGuarded',
+  'daemonHardened',
+  'dlpEnabled',
+  'runtimeProtected',
+];
+const MAX_EXTENDED_BONUS = 0.05;
+
 /** Calculate trust score based on current state and plugin hints */
 export function calculateTrust(
   dataDir: string,
@@ -36,8 +50,17 @@ export function calculateTrust(
     overall += factors[factor as keyof TrustFactors] * weight;
   }
 
-  // Round to 2 decimal places
-  overall = Math.round(overall * 100) / 100;
+  // Extended plugin bonus: each active signal adds a proportional share of the max bonus
+  if (hints) {
+    const activeExtended = EXTENDED_SIGNALS.filter((s) => hints[s]).length;
+    if (activeExtended > 0) {
+      const bonus = (activeExtended / EXTENDED_SIGNALS.length) * MAX_EXTENDED_BONUS;
+      overall += bonus;
+    }
+  }
+
+  // Cap at 1.0 and round to 2 decimal places
+  overall = Math.round(Math.min(overall, 1.0) * 100) / 100;
 
   return {
     overall,

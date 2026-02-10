@@ -39,6 +39,12 @@ export {
   type DLPPolicy,
 } from './dlp';
 
+// Server reporter
+export { AIMServerReporter, type ReporterOptions } from './reporter';
+
+// Event aggregation
+export { EventAggregator } from './aggregator';
+
 // --- Imports for AIMCore ---
 import type {
   AIMCoreOptions,
@@ -56,6 +62,8 @@ import * as audit from './audit';
 import * as policy from './policy';
 import * as trust from './trust';
 import * as crypto from './crypto';
+import { AIMServerReporter } from './reporter';
+import { EventAggregator } from './aggregator';
 
 /**
  * Main entry point for aim-core.
@@ -69,6 +77,8 @@ export class AIMCore {
   private readonly serverUrl: string;
   private cachedPolicy: CapabilityPolicy | null = null;
   private trustHints: TrustHints = {};
+  private reporter: AIMServerReporter | null = null;
+  private aggregator: EventAggregator | null = null;
 
   constructor(options: AIMCoreOptions) {
     this.agentName = options.agentName;
@@ -101,9 +111,18 @@ export class AIMCore {
     this.cachedPolicy = p;
   }
 
-  /** Log an audit event to the local JSON-lines file */
+  /** Log an audit event to the local JSON-lines file and route to reporter */
   logEvent(event: AuditEventInput): AuditEvent {
-    return audit.logEvent(this.dataDir, event);
+    const logged = audit.logEvent(this.dataDir, event);
+
+    // Route to aggregator → reporter pipeline if enabled
+    if (this.aggregator) {
+      this.aggregator.add(event);
+    } else if (this.reporter) {
+      this.reporter.enqueue(logged);
+    }
+
+    return logged;
   }
 
   /** Read audit events from local log */
@@ -134,6 +153,46 @@ export class AIMCore {
   /** Verify an Ed25519 signature against a public key */
   verify(data: Uint8Array, signature: Uint8Array, publicKey: Uint8Array): boolean {
     return crypto.verify(data, signature, publicKey);
+  }
+
+  /** Enable server reporting — batch POST audit events to AIM server */
+  enableReporting(options?: { apiToken?: string; flushIntervalMs?: number }): void {
+    if (!this.serverUrl) {
+      throw new Error('Cannot enable reporting without serverUrl in AIMCoreOptions');
+    }
+
+    const id = this.getIdentity();
+    this.reporter = new AIMServerReporter({
+      serverUrl: this.serverUrl,
+      agentId: id.agentId,
+      dataDir: this.dataDir,
+      apiToken: options?.apiToken,
+      flushIntervalMs: options?.flushIntervalMs,
+    });
+    this.reporter.start();
+  }
+
+  /** Enable event aggregation — summarize repeated events before reporting */
+  enableAggregation(windowMs?: number): void {
+    this.aggregator = new EventAggregator(windowMs);
+    this.aggregator.setFlushHandler((events) => {
+      for (const event of events) {
+        this.reporter?.enqueue(event);
+      }
+    });
+    this.aggregator.start();
+  }
+
+  /** Stop reporter and aggregator, flush remaining events */
+  async shutdown(): Promise<void> {
+    if (this.aggregator) {
+      this.aggregator.stop();
+      this.aggregator = null;
+    }
+    if (this.reporter) {
+      await this.reporter.stop();
+      this.reporter = null;
+    }
   }
 
   /** Get the data directory path */
