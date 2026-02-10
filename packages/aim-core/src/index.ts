@@ -22,6 +22,23 @@ export { logEvent, readAuditLog, hasAuditLog } from './audit';
 export { loadPolicy, savePolicy, checkCapability, hasPolicy } from './policy';
 export { calculateTrust } from './trust';
 
+// DLP module
+export {
+  scanText,
+  maskMetadata,
+  ALL_PATTERNS,
+  PII_PATTERNS,
+  SECRET_PATTERNS,
+  mask,
+  maskAll,
+  getDLPAction,
+  defaultDLPPolicy,
+  type DLPPattern,
+  type DLPMatch,
+  type DLPScanResult,
+  type DLPPolicy,
+} from './dlp';
+
 // --- Imports for AIMCore ---
 import type {
   AIMCoreOptions,
