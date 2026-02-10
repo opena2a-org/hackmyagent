@@ -190,7 +190,7 @@ export class AttackScanner {
         };
       case 'anthropic':
         return {
-          model: target.model || 'claude-3-opus-20240229',
+          model: target.model || 'claude-sonnet-4-5-20250929',
           max_tokens: 1024,
           system: target.systemPrompt || undefined,
           messages: [{ role: 'user', content: prompt }],
