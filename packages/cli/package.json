@@ -1,6 +1,6 @@
 {
   "name": "hackmyagent",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Find it. Break it. Fix it. The hacker's toolkit for AI agents.",
   "bin": {
     "hackmyagent": "dist/index.js"
@@ -25,7 +25,7 @@
     "@opena2a/skillguard-openclaw": "^0.1.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "commander": "^12.0.0",
-    "hackmyagent-core": "^0.4.0"
+    "hackmyagent-core": "^0.5.0"
   },
   "devDependencies": {
     "typescript": "^5.3.3"
