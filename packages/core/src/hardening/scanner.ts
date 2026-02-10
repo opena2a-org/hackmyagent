@@ -670,7 +670,7 @@ export class HardeningScanner {
   private findingAppliesTo(finding: SecurityFinding, projectType: ProjectType): boolean {
     // Find the matching rule based on check ID prefix
     for (const [prefix, types] of Object.entries(CHECK_PROJECT_TYPES)) {
-      if (finding.checkId.startsWith(prefix.replace('-', ''))) {
+      if (finding.checkId.startsWith(prefix)) {
         // Check if 'all' is in the types array
         if (types.includes('all')) {
           return true;
