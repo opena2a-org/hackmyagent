@@ -69,7 +69,7 @@ export class RegistryClient {
    * Post scan results to registry callback endpoint.
    */
   async reportScanResult(payload: ScanReportPayload): Promise<void> {
-    const url = `${this.config.registryUrl}/api/v1/registry/internal/scan-result`;
+    const url = `${this.config.registryUrl}/internal/scan-result`;
 
     const response = await fetch(url, {
       method: 'POST',
