@@ -222,6 +222,8 @@ export class HardeningScanner {
     '.vscode/mcp.json',
     '.claude/settings.json',
     'package.json',
+    'openclaw.json',
+    'moltbot.json',
   ];
 
   /**
