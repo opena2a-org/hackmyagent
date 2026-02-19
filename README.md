@@ -4,7 +4,7 @@
 
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-566%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
+[![Tests](https://img.shields.io/badge/tests-611%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
 
 **Find it. Break it. Fix it.**
 
@@ -534,7 +534,7 @@ git clone https://github.com/opena2a-org/hackmyagent.git
 cd hackmyagent
 npm install
 npx turbo build     # build all 8 packages
-npx turbo test      # run 566 tests
+npx turbo test      # run 611 tests
 ```
 
 ### Monorepo Structure

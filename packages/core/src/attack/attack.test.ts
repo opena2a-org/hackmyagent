@@ -51,12 +51,14 @@ describe('Attack Payloads', () => {
         'data-exfiltration': 'DE',
         'capability-abuse': 'CA',
         'context-manipulation': 'CM',
+        'mcp-exploitation': 'MCP',
+        'a2a-attack': 'A2A',
       };
 
       for (const payload of ALL_PAYLOADS) {
         const expectedPrefix = prefixes[payload.category];
         expect(payload.id.startsWith(expectedPrefix)).toBe(true);
-        expect(payload.id).toMatch(/^[A-Z]{2}-\d{3}$/);
+        expect(payload.id).toMatch(/^[A-Z][A-Z0-9]{1,2}-\d{3}$/);
       }
     });
 
@@ -572,6 +574,8 @@ describe('shouldFail', () => {
           'data-exfiltration': { total: 0, successful: 0 },
           'capability-abuse': { total: 0, successful: 0 },
           'context-manipulation': { total: 0, successful: 0 },
+          'mcp-exploitation': { total: 0, successful: 0 },
+          'a2a-attack': { total: 0, successful: 0 },
         },
       },
       results: [],

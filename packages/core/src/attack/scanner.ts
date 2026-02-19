@@ -104,6 +104,9 @@ export class AttackScanner {
         case 'mcp':
           response = await this.sendMcpRequest(payload, target, options.timeout || 30000);
           break;
+        case 'a2a':
+          response = await this.sendA2ARequest(payload, target, options.timeout || 30000);
+          break;
         case 'local':
         default:
           response = await this.simulateLocal(payload, target);
@@ -209,21 +212,177 @@ export class AttackScanner {
         return data.choices?.[0]?.message?.content || '';
       case 'anthropic':
         return data.content?.[0]?.text || '';
+      case 'mcp-jsonrpc':
+        return this.extractMcpResponseText(data);
+      case 'a2a':
+        return this.extractA2AResponseText(data);
       default:
         return data.response || data.text || data.content || JSON.stringify(data);
     }
   }
 
   /**
-   * Send request to MCP server
+   * Extract text from MCP JSON-RPC response
+   */
+  private extractMcpResponseText(data: any): string {
+    // JSON-RPC error
+    if (data.error) {
+      return data.error.message || JSON.stringify(data.error);
+    }
+    // JSON-RPC result with MCP content array
+    if (data.result?.content) {
+      const parts = Array.isArray(data.result.content) ? data.result.content : [data.result.content];
+      return parts
+        .map((p: any) => (typeof p === 'string' ? p : p.text || JSON.stringify(p)))
+        .join('\n');
+    }
+    // JSON-RPC result with tools array (tools/list)
+    if (data.result?.tools) {
+      return JSON.stringify(data.result.tools);
+    }
+    // Fallback
+    return data.result ? JSON.stringify(data.result) : JSON.stringify(data);
+  }
+
+  /**
+   * Extract text from A2A message response
+   */
+  private extractA2AResponseText(data: any): string {
+    return data.content || data.message || data.response || data.text || JSON.stringify(data);
+  }
+
+  /**
+   * Send MCP JSON-RPC request
    */
   private async sendMcpRequest(
     payload: AttackPayload,
     target: AttackTarget,
     timeout: number
   ): Promise<string> {
-    // MCP implementation - for now just treat as API
-    return this.sendApiRequest(payload, target, timeout);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    try {
+      const body = this.buildMcpRequestBody(payload, target);
+      const response = await fetch(target.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...target.headers,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      return this.extractMcpResponseText(data);
+    } catch (error) {
+      clearTimeout(timeoutId);
+      throw error;
+    }
+  }
+
+  /**
+   * Build MCP JSON-RPC 2.0 request body from payload
+   *
+   * MCP payloads encode tool info in JSON: {"_mcpTool":"tool_name","param":"value"}
+   * The special _mcpMethod field triggers tools/list instead of tools/call.
+   */
+  private buildMcpRequestBody(payload: AttackPayload, target: AttackTarget): object {
+    let parsed: Record<string, any> = {};
+    try {
+      parsed = JSON.parse(payload.payload);
+    } catch {
+      // If payload is not JSON, send as a generic tool call with the text as an argument
+      return {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: target.mcpTool || 'execute',
+          arguments: { input: payload.payload },
+        },
+      };
+    }
+
+    // Handle tools/list
+    if (parsed._mcpMethod === 'tools/list') {
+      return {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/list',
+        params: {},
+      };
+    }
+
+    // Handle tools/call with structured arguments
+    const toolName = parsed._mcpTool || target.mcpTool || 'execute';
+    const args = { ...parsed };
+    delete args._mcpTool;
+    delete args._mcpMethod;
+
+    return {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: toolName,
+        arguments: args,
+      },
+    };
+  }
+
+  /**
+   * Send A2A message request
+   */
+  private async sendA2ARequest(
+    payload: AttackPayload,
+    target: AttackTarget,
+    timeout: number
+  ): Promise<string> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    try {
+      const body = {
+        from: target.a2aSender || 'attacker-agent',
+        to: target.a2aRecipient || 'target-agent',
+        content: payload.payload,
+      };
+
+      // A2A message endpoint is typically /a2a/message
+      const url = target.url.endsWith('/a2a/message')
+        ? target.url
+        : target.url.replace(/\/?$/, '/a2a/message');
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...target.headers,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      return this.extractA2AResponseText(data);
+    } catch (error) {
+      clearTimeout(timeoutId);
+      throw error;
+    }
   }
 
   /**
@@ -364,6 +523,8 @@ export class AttackScanner {
       'data-exfiltration': { total: 0, successful: 0 },
       'capability-abuse': { total: 0, successful: 0 },
       'context-manipulation': { total: 0, successful: 0 },
+      'mcp-exploitation': { total: 0, successful: 0 },
+      'a2a-attack': { total: 0, successful: 0 },
     };
     for (const r of results) {
       byCategory[r.payload.category].total++;

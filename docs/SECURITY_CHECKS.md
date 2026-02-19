@@ -1,6 +1,6 @@
 # Security Checks Reference
 
-HackMyAgent performs 100 security checks across 24 categories. This document provides detailed information about each check, including severity, description, and remediation guidance.
+HackMyAgent performs 147 security checks across 30 categories. This document provides detailed information about each check, including severity, description, and remediation guidance.
 
 ## Severity Levels
 
@@ -386,7 +386,7 @@ HackMyAgent performs 100 security checks across 24 categories. This document pro
 
 ## OpenClaw Security Checks
 
-OpenClaw (Moltbot) is a popular AI agent framework. HackMyAgent includes 34 specialized security checks targeting OpenClaw-specific attack vectors, including the ClawHavoc malware campaign and GHSA-g8p2-7wf7-98mq vulnerability.
+OpenClaw (Moltbot) is a popular AI agent framework. HackMyAgent includes 47 specialized security checks targeting OpenClaw-specific attack vectors, including the ClawHavoc malware campaign, CVE-2026-25253, and related vulnerabilities.
 
 ### Usage
 
@@ -433,7 +433,7 @@ Detects heartbeat/cron abuse and persistence mechanisms.
 | HEARTBEAT-005 | High | No | Heartbeat data exfil — heartbeat payload contains sensitive data |
 | HEARTBEAT-006 | Critical | No | Cron backdoor — heartbeat registered malicious cron entries |
 
-### GATEWAY Checks (GATEWAY-001 to GATEWAY-006)
+### GATEWAY Checks (GATEWAY-001 to GATEWAY-008)
 
 Detects gateway misconfigurations related to GHSA-g8p2-7wf7-98mq and other vulnerabilities.
 
@@ -445,10 +445,12 @@ Detects gateway misconfigurations related to GHSA-g8p2-7wf7-98mq and other vulne
 | GATEWAY-004 | High | No | Permissive CORS — gateway allows requests from any origin |
 | GATEWAY-005 | Medium | Yes | Insecure transport — gateway uses HTTP instead of HTTPS |
 | GATEWAY-006 | High | No | Gateway path traversal — gateway allows ../ in skill paths |
+| GATEWAY-007 | Critical | No | Open DM policy with wildcard — direct message policy allows messages from any source |
+| GATEWAY-008 | High | No | Tailscale Funnel exposure — Tailscale Funnel is enabled, exposing the agent to the public internet |
 
 **CVE Reference:** [GHSA-g8p2-7wf7-98mq](https://github.com/advisories/GHSA-g8p2-7wf7-98mq) — Remote skill installation vulnerability allowing attackers to install arbitrary skills without authentication.
 
-### CONFIG Checks (CONFIG-001 to CONFIG-006)
+### CONFIG Checks (CONFIG-001 to CONFIG-009)
 
 Detects insecure configuration settings.
 
@@ -460,10 +462,13 @@ Detects insecure configuration settings.
 | CONFIG-004 | High | No | Hardcoded secrets — API keys in configuration files |
 | CONFIG-005 | Medium | Yes | Permissive file access — skills can access files outside project |
 | CONFIG-006 | Medium | Yes | Missing skill allowlist — no explicit skill whitelist configured |
+| CONFIG-007 | Critical | No | Unrestricted elevated execution — elevated execution set to full access without restrictions or approvals bypassed |
+| CONFIG-008 | High | No | Sandbox disabled in config — sandbox execution environment is explicitly disabled in configuration |
+| CONFIG-009 | High | No | Weak gateway token — gateway authentication token is too short (< 24 characters) |
 
-### SUPPLY Checks (SUPPLY-001 to SUPPLY-004)
+### SUPPLY Checks (SUPPLY-001 to SUPPLY-008)
 
-Detects supply chain attack vectors.
+Detects supply chain attack vectors and ClawHavoc indicators of compromise.
 
 | Check ID | Severity | Fixable | Description |
 |----------|----------|---------|-------------|
@@ -471,6 +476,21 @@ Detects supply chain attack vectors.
 | SUPPLY-002 | High | No | Typosquatting detected — skill name similar to popular skill |
 | SUPPLY-003 | High | No | Dependency confusion — skill loads dependencies from public registry |
 | SUPPLY-004 | Medium | No | Missing lockfile — skill dependencies not pinned to specific versions |
+| SUPPLY-005 | Critical | No | ClawHavoc C2 IP detected — skill contains known command-and-control IP address |
+| SUPPLY-006 | Critical | No | ClawHavoc malware filename — skill references known malware payload filename |
+| SUPPLY-007 | High | No | ClawHavoc ClickFix pattern — skill contains social engineering instructions to execute malware |
+| SUPPLY-008 | High | No | Suspicious archive password — skill contains password-protected archive reference typical of malware distribution |
+
+### CVE Checks (CVE-001 to CVE-004)
+
+Detects known CVEs affecting OpenClaw installations.
+
+| Check ID | Severity | Fixable | Description |
+|----------|----------|---------|-------------|
+| CVE-001 | Critical | No | CVE-2026-25253: WebSocket Hijacking RCE — OpenClaw version vulnerable to WebSocket hijacking that enables 1-click RCE (CVSS 8.8) |
+| CVE-002 | Medium | No | Control UI origin restrictions not configured — auth is configured but controlUi.allowedOrigins is not set for defense-in-depth |
+| CVE-003 | High | No | CVE-2026-25157: OS command injection via SSH path — unescaped project path enables command injection on SSH hosts (CVSS 7.8) |
+| CVE-004 | Critical | No | CVE-2026-24763: Docker PATH command injection — unsafe PATH handling enables command injection in Docker sandbox (CVSS 8.8) |
 
 ### Auto-Fix Capabilities
 

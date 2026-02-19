@@ -8,6 +8,8 @@ import { JAILBREAK_PAYLOADS } from './jailbreak';
 import { DATA_EXFILTRATION_PAYLOADS } from './data-exfiltration';
 import { CAPABILITY_ABUSE_PAYLOADS } from './capability-abuse';
 import { CONTEXT_MANIPULATION_PAYLOADS } from './context-manipulation';
+import { MCP_EXPLOITATION_PAYLOADS } from './mcp-exploitation';
+import { A2A_ATTACK_PAYLOADS } from './a2a-attacks';
 
 /** All available payloads */
 export const ALL_PAYLOADS: AttackPayload[] = [
@@ -16,6 +18,8 @@ export const ALL_PAYLOADS: AttackPayload[] = [
   ...DATA_EXFILTRATION_PAYLOADS,
   ...CAPABILITY_ABUSE_PAYLOADS,
   ...CONTEXT_MANIPULATION_PAYLOADS,
+  ...MCP_EXPLOITATION_PAYLOADS,
+  ...A2A_ATTACK_PAYLOADS,
 ];
 
 /** Get payloads by category */
@@ -61,6 +65,8 @@ export const PAYLOAD_STATS = {
     'data-exfiltration': DATA_EXFILTRATION_PAYLOADS.length,
     'capability-abuse': CAPABILITY_ABUSE_PAYLOADS.length,
     'context-manipulation': CONTEXT_MANIPULATION_PAYLOADS.length,
+    'mcp-exploitation': MCP_EXPLOITATION_PAYLOADS.length,
+    'a2a-attack': A2A_ATTACK_PAYLOADS.length,
   } as Record<AttackCategory, number>,
   byIntensity: {
     passive: ALL_PAYLOADS.filter(p => p.intensity === 'passive').length,
@@ -75,4 +81,6 @@ export {
   DATA_EXFILTRATION_PAYLOADS,
   CAPABILITY_ABUSE_PAYLOADS,
   CONTEXT_MANIPULATION_PAYLOADS,
+  MCP_EXPLOITATION_PAYLOADS,
+  A2A_ATTACK_PAYLOADS,
 };
