@@ -49,6 +49,8 @@ export {
   getPayloadsByIntensity,
   parseCustomPayloads,
   shouldFail,
+  MCP_EXPLOITATION_PAYLOADS,
+  A2A_ATTACK_PAYLOADS,
 } from './attack';
 
 export type {

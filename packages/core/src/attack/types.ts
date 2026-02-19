@@ -8,7 +8,9 @@ export type AttackCategory =
   | 'jailbreak'         // JB - Bypass safety guardrails
   | 'data-exfiltration' // DE - Extract sensitive information
   | 'capability-abuse'  // CA - Misuse agent tools/capabilities
-  | 'context-manipulation'; // CM - Poison context/memory
+  | 'context-manipulation' // CM - Poison context/memory
+  | 'mcp-exploitation'  // MCP - Exploit MCP tool parameters
+  | 'a2a-attack';       // A2A - Exploit agent-to-agent messaging
 
 export type AttackIntensity =
   | 'passive'     // Observation only, minimal risk
@@ -69,7 +71,7 @@ export interface AttackReport {
   /** Target that was tested */
   target: string;
   /** Target type */
-  targetType: 'api' | 'mcp' | 'local';
+  targetType: 'api' | 'mcp' | 'a2a' | 'local';
   /** Attack intensity used */
   intensity: AttackIntensity;
   /** Categories tested */
@@ -101,15 +103,21 @@ export interface AttackTarget {
   /** Target URL or identifier */
   url: string;
   /** Target type */
-  type: 'api' | 'mcp' | 'local';
+  type: 'api' | 'mcp' | 'a2a' | 'local';
   /** Authentication headers */
   headers?: Record<string, string>;
   /** API format */
-  apiFormat?: 'openai' | 'anthropic' | 'custom';
+  apiFormat?: 'openai' | 'anthropic' | 'mcp-jsonrpc' | 'a2a' | 'custom';
   /** Model to test (for API targets) */
   model?: string;
   /** System prompt (for local testing) */
   systemPrompt?: string;
+  /** MCP tool name (for mcp-jsonrpc targets) */
+  mcpTool?: string;
+  /** A2A sender identity (for a2a targets) */
+  a2aSender?: string;
+  /** A2A recipient identity (for a2a targets) */
+  a2aRecipient?: string;
 }
 
 export interface AttackOptions {
@@ -180,5 +188,15 @@ export const ATTACK_CATEGORIES: Record<AttackCategory, { name: string; descripti
     name: 'Context Manipulation',
     description: 'Attempts to poison agent context or memory',
     oasbControls: ['8.1', '8.2'],
+  },
+  'mcp-exploitation': {
+    name: 'MCP Exploitation',
+    description: 'Attempts to exploit MCP tool call parameters (path traversal, command injection, SSRF)',
+    oasbControls: ['2.2', '2.3'],
+  },
+  'a2a-attack': {
+    name: 'A2A Attack',
+    description: 'Attempts to exploit agent-to-agent messaging (identity spoofing, delegation abuse)',
+    oasbControls: ['5.1', '5.2'],
   },
 };

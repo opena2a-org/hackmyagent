@@ -2073,17 +2073,25 @@ program
   .command('attack')
   .description(`Adversarial security testing for AI agents
 
-Red team your AI agent with ${PAYLOAD_STATS.total} attack payloads across 5 categories:
+Red team your AI agent with ${PAYLOAD_STATS.total} attack payloads across 7 categories:
   • Prompt Injection: ${PAYLOAD_STATS.byCategory['prompt-injection']} payloads
   • Jailbreaking: ${PAYLOAD_STATS.byCategory['jailbreak']} payloads
   • Data Exfiltration: ${PAYLOAD_STATS.byCategory['data-exfiltration']} payloads
   • Capability Abuse: ${PAYLOAD_STATS.byCategory['capability-abuse']} payloads
   • Context Manipulation: ${PAYLOAD_STATS.byCategory['context-manipulation']} payloads
+  • MCP Exploitation: ${PAYLOAD_STATS.byCategory['mcp-exploitation']} payloads
+  • A2A Attacks: ${PAYLOAD_STATS.byCategory['a2a-attack']} payloads
 
 Intensity levels:
   passive     Observation only, minimal risk
   active      Standard attack payloads (default)
   aggressive  Creative/risky payloads
+
+Target types:
+  api         OpenAI/Anthropic chat completions (default)
+  mcp         MCP JSON-RPC server (tools/call, tools/list)
+  a2a         A2A agent messaging endpoint (/a2a/message)
+  local       Local simulation (no API calls)
 
 Examples:
   $ hackmyagent attack https://api.example.com/v1/chat
@@ -2092,14 +2100,20 @@ Examples:
   $ hackmyagent attack --local --system-prompt "You are a helpful assistant"
   $ hackmyagent attack https://api.example.com -f sarif -o results.sarif
   $ hackmyagent attack https://api.example.com --payload-file custom.json
-  $ hackmyagent attack https://api.example.com --fail-on-vulnerable medium`)
+  $ hackmyagent attack https://api.example.com --fail-on-vulnerable medium
+  $ hackmyagent attack http://localhost:3010 --target-type mcp --category mcp-exploitation
+  $ hackmyagent attack http://localhost:3020 --target-type a2a --category a2a-attack`)
   .argument('[target]', 'API endpoint to test (or use --local for simulation)')
   .option('-i, --intensity <level>', 'Attack intensity: passive, active, aggressive', 'active')
   .option('-c, --category <categories>', 'Comma-separated categories to test')
   .option('--local', 'Run in local simulation mode (no actual API calls)')
-  .option('--api-format <format>', 'API format: openai, anthropic, custom', 'openai')
+  .option('-t, --target-type <type>', 'Target type: api, mcp, a2a, local', 'api')
+  .option('--api-format <format>', 'API format: openai, anthropic, mcp-jsonrpc, a2a, custom', 'openai')
   .option('--model <model>', 'Model to test (for API targets)')
   .option('--system-prompt <prompt>', 'System prompt (for local testing)')
+  .option('--mcp-tool <tool>', 'Default MCP tool name (for mcp targets)')
+  .option('--a2a-sender <name>', 'A2A sender identity (for a2a targets)', 'attacker-agent')
+  .option('--a2a-recipient <name>', 'A2A recipient identity (for a2a targets)', 'target-agent')
   .option('-H, --header <headers>', 'Headers in format "Key: Value" (can be used multiple times)')
   .option('--timeout <ms>', 'Request timeout in milliseconds', '30000')
   .option('--delay <ms>', 'Delay between requests in milliseconds', '1000')
@@ -2117,9 +2131,13 @@ Examples:
     intensity?: string;
     category?: string;
     local?: boolean;
+    targetType?: string;
     apiFormat?: string;
     model?: string;
     systemPrompt?: string;
+    mcpTool?: string;
+    a2aSender?: string;
+    a2aRecipient?: string;
     header?: string | string[];
     timeout?: string;
     delay?: string;
@@ -2173,14 +2191,38 @@ Examples:
         }
       }
 
+      // Determine target type
+      let targetType: 'api' | 'mcp' | 'a2a' | 'local' = 'api';
+      if (options.local) {
+        targetType = 'local';
+      } else if (options.targetType) {
+        const validTypes = ['api', 'mcp', 'a2a', 'local'];
+        if (!validTypes.includes(options.targetType)) {
+          console.error(`Error: Invalid target type '${options.targetType}'. Use: ${validTypes.join(', ')}`);
+          process.exit(1);
+        }
+        targetType = options.targetType as 'api' | 'mcp' | 'a2a' | 'local';
+      }
+
+      // Auto-detect api format from target type if not explicitly set
+      let apiFormat = options.apiFormat || 'openai';
+      if (targetType === 'mcp' && apiFormat === 'openai') {
+        apiFormat = 'mcp-jsonrpc';
+      } else if (targetType === 'a2a' && apiFormat === 'openai') {
+        apiFormat = 'a2a';
+      }
+
       // Build target
       const target: AttackTarget = {
         url: targetUrl || '',
-        type: options.local ? 'local' : 'api',
+        type: targetType,
         headers: Object.keys(headers).length > 0 ? headers : undefined,
-        apiFormat: (options.apiFormat || 'openai') as 'openai' | 'anthropic' | 'custom',
+        apiFormat: apiFormat as 'openai' | 'anthropic' | 'mcp-jsonrpc' | 'a2a' | 'custom',
         model: options.model,
         systemPrompt: options.systemPrompt,
+        mcpTool: options.mcpTool,
+        a2aSender: options.a2aSender,
+        a2aRecipient: options.a2aRecipient,
       };
 
       // Validate format
@@ -2454,6 +2496,8 @@ function generateAttackHtmlReport(report: AttackReport): string {
     'data-exfiltration': 'DE',
     'capability-abuse': 'CA',
     'context-manipulation': 'CM',
+    'mcp-exploitation': 'MCP',
+    'a2a-attack': 'A2A',
   };
 
   // Donut chart for attack results
