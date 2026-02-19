@@ -68,14 +68,20 @@ program
   .name('hackmyagent')
   .description(`Find it. Break it. Fix it.
 
-The hacker's toolkit for AI agents. 147+ security checks, 55 attack
+The hacker's toolkit for AI agents. 147+ security checks, 75 attack
 payloads, auto-fix with rollback, and OASB benchmark compliance.
 
 Documentation: https://hackmyagent.com/docs
 
+Updates (v${VERSION}):
+  - MCP JSON-RPC and A2A protocol attack modes
+  - SARIF and HTML output for all scan modes
+  - Semantic engine (structural + LLM analysis)
+  - OpenA2A Registry integration for trust scoring
+
 Examples:
   $ hackmyagent secure                         Find vulnerabilities (147+ checks)
-  $ hackmyagent attack --local                 Break it with 55 attack payloads
+  $ hackmyagent attack --local                 Break it with 75 attack payloads
   $ hackmyagent secure --fix                   Fix issues automatically
   $ hackmyagent fix-all                        Run all security plugins
   $ hackmyagent scan example.com               Scan external infrastructure`)
@@ -1202,6 +1208,168 @@ function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// SARIF output for non-benchmark secure scans
+function generateScanSarif(findings: SecurityFinding[], targetDir: string): string {
+  const issues = findings.filter(f => !f.passed && !f.fixed);
+  const rules = issues.map(f => ({
+    id: f.checkId,
+    name: f.name.replace(/\s+/g, ''),
+    shortDescription: { text: f.name },
+    fullDescription: { text: f.description },
+    help: { text: f.fix || `Fix the ${f.name} issue.` },
+    defaultConfiguration: {
+      level: (f.severity === 'critical' || f.severity === 'high' ? 'error' :
+             f.severity === 'medium' ? 'warning' : 'note') as 'error' | 'warning' | 'note',
+    },
+    properties: {
+      'security-severity': f.severity === 'critical' ? '9.0' :
+                          f.severity === 'high' ? '7.0' :
+                          f.severity === 'medium' ? '5.0' : '3.0',
+      tags: ['security', 'ai-agent', f.category],
+    },
+  }));
+
+  const results = issues.map(f => ({
+    ruleId: f.checkId,
+    level: (f.severity === 'critical' || f.severity === 'high' ? 'error' :
+           f.severity === 'medium' ? 'warning' : 'note') as 'error' | 'warning' | 'note',
+    message: { text: f.description },
+    locations: f.file ? [{
+      physicalLocation: {
+        artifactLocation: { uri: f.file.replace(targetDir + '/', '') },
+        ...(f.line ? { region: { startLine: f.line } } : {}),
+      },
+    }] : undefined,
+  }));
+
+  return JSON.stringify({
+    $schema: 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json',
+    version: '2.1.0',
+    runs: [{
+      tool: {
+        driver: {
+          name: 'HackMyAgent',
+          version: VERSION,
+          informationUri: 'https://hackmyagent.com',
+          rules,
+        },
+      },
+      results,
+    }],
+  }, null, 2);
+}
+
+// HTML report for non-benchmark secure scans
+function generateScanHtmlReport(scanResult: { findings: SecurityFinding[]; score: number; maxScore: number; projectType: string }, targetDir: string): string {
+  const issues = scanResult.findings.filter(f => !f.passed && !f.fixed);
+  const fixedFindings = scanResult.findings.filter(f => f.fixed);
+  const score = scanResult.score;
+  const scoreColor = score >= 90 ? '#22c55e' : score >= 70 ? '#eab308' : score >= 50 ? '#f97316' : '#ef4444';
+  const gradeLetters = score >= 90 ? 'A' : score >= 80 ? 'B' : score >= 70 ? 'C' : score >= 60 ? 'D' : 'F';
+
+  const severityOrder = ['critical', 'high', 'medium', 'low'];
+  const severityColors: Record<string, string> = {
+    critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#22c55e',
+  };
+
+  const issueRows = issues
+    .sort((a, b) => severityOrder.indexOf(a.severity) - severityOrder.indexOf(b.severity))
+    .map(f => `
+      <tr>
+        <td><span class="severity-badge" style="background: ${severityColors[f.severity]}20; color: ${severityColors[f.severity]}; border: 1px solid ${severityColors[f.severity]}40;">${escapeHtml(f.severity.toUpperCase())}</span></td>
+        <td><code>${escapeHtml(f.checkId)}</code></td>
+        <td>${escapeHtml(f.description)}</td>
+        <td>${f.file ? escapeHtml(f.file) + (f.line ? ':' + f.line : '') : ''}</td>
+        <td>${f.fix ? escapeHtml(f.fix) : ''}</td>
+      </tr>`).join('');
+
+  const fixedRows = fixedFindings.map(f => `
+      <tr>
+        <td><span class="severity-badge" style="background: #22c55e20; color: #22c55e; border: 1px solid #22c55e40;">FIXED</span></td>
+        <td><code>${escapeHtml(f.checkId)}</code></td>
+        <td>${escapeHtml(f.description)}</td>
+        <td>${f.file ? escapeHtml(f.file) : ''}</td>
+        <td>${f.fixMessage ? escapeHtml(f.fixMessage) : ''}</td>
+      </tr>`).join('');
+
+  const projectTypeLabel: Record<string, string> = {
+    cli: 'CLI Tool', library: 'Library', webapp: 'Web App', api: 'API Server',
+    mcp: 'MCP Server', openclaw: 'OpenClaw Agent', all: 'Project',
+  };
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HackMyAgent Security Report | ${escapeHtml(require('path').basename(targetDir))}</title>
+  <style>
+    :root { --bg-primary: #0a0f1a; --bg-secondary: #111827; --bg-tertiary: #1f2937; --text-primary: #f1f5f9; --text-secondary: #94a3b8; --border: #334155; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-primary); color: var(--text-primary); line-height: 1.6; padding: 2rem; font-size: 14px; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    .meta { color: var(--text-secondary); margin-bottom: 2rem; }
+    .score-card { display: flex; align-items: center; gap: 2rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin-bottom: 2rem; }
+    .grade { font-size: 3rem; font-weight: 700; width: 80px; height: 80px; display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 3px solid ${scoreColor}; }
+    .score-details { flex: 1; }
+    .score-num { font-size: 2rem; font-weight: 700; }
+    .stats { display: flex; gap: 2rem; margin-top: 0.5rem; }
+    .stat { color: var(--text-secondary); }
+    .stat strong { color: var(--text-primary); }
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    th { text-align: left; padding: 0.75rem; background: var(--bg-secondary); border-bottom: 1px solid var(--border); color: var(--text-secondary); font-size: 0.8rem; text-transform: uppercase; }
+    td { padding: 0.75rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    code { background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+    .severity-badge { padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+    .section { margin-top: 2rem; }
+    .section h2 { font-size: 1.2rem; margin-bottom: 0.5rem; }
+    footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--text-secondary); font-size: 0.85rem; }
+    footer a { color: #3b82f6; }
+    @media print { body { background: #fff; color: #000; } .score-card { border-color: #ccc; } th { background: #f3f4f6; } td { border-color: #e5e7eb; } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>HackMyAgent Security Report</h1>
+    <div class="meta">${escapeHtml(projectTypeLabel[scanResult.projectType] || 'Project')} - ${escapeHtml(require('path').basename(targetDir))} - ${new Date().toISOString().split('T')[0]}</div>
+
+    <div class="score-card">
+      <div class="grade" style="color: ${scoreColor};">${gradeLetters}</div>
+      <div class="score-details">
+        <div class="score-num" style="color: ${scoreColor};">${score}/${scanResult.maxScore}</div>
+        <div class="stats">
+          <span class="stat"><strong>${issues.length}</strong> issues</span>
+          <span class="stat"><strong>${fixedFindings.length}</strong> fixed</span>
+          <span class="stat"><strong>${scanResult.findings.filter(f => f.passed).length}</strong> passed</span>
+        </div>
+      </div>
+    </div>
+
+    ${issues.length > 0 ? `
+    <div class="section">
+      <h2>Issues (${issues.length})</h2>
+      <table>
+        <thead><tr><th>Severity</th><th>Check</th><th>Description</th><th>Location</th><th>Remediation</th></tr></thead>
+        <tbody>${issueRows}</tbody>
+      </table>
+    </div>` : '<div class="section"><h2>No issues found</h2></div>'}
+
+    ${fixedFindings.length > 0 ? `
+    <div class="section">
+      <h2>Auto-Fixed (${fixedFindings.length})</h2>
+      <table>
+        <thead><tr><th>Status</th><th>Check</th><th>Description</th><th>Location</th><th>Details</th></tr></thead>
+        <tbody>${fixedRows}</tbody>
+      </table>
+    </div>` : ''}
+
+    <footer>Generated by <a href="https://hackmyagent.com">HackMyAgent</a> v${VERSION}</footer>
+  </div>
+</body>
+</html>`;
+}
+
 // Agent Security Profile (ASP) - our differentiator format
 function generateAspOutput(benchmarkResult: BenchmarkResult, scanResult: { findings: SecurityFinding[]; projectType: string }, targetDir: string): string {
   const fs = require('fs');
@@ -1566,6 +1734,33 @@ Examples:
 
       if (format === 'json') {
         console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+
+      // Handle SARIF/HTML/ASP for non-benchmark mode
+      if (format === 'sarif') {
+        const output = generateScanSarif(result.findings, targetDir);
+        if (options.output) {
+          require('fs').writeFileSync(options.output, output);
+          console.error(`Report written to ${options.output}`);
+        } else {
+          console.log(output);
+        }
+        const critHigh = result.findings.filter((f: SecurityFinding) => !f.passed && !f.fixed && (f.severity === 'critical' || f.severity === 'high'));
+        if (critHigh.length > 0) process.exit(1);
+        return;
+      }
+
+      if (format === 'html') {
+        const output = generateScanHtmlReport(result, targetDir);
+        if (options.output) {
+          require('fs').writeFileSync(options.output, output);
+          console.error(`Report written to ${options.output}`);
+        } else {
+          console.log(output);
+        }
+        const critHigh = result.findings.filter((f: SecurityFinding) => !f.passed && !f.fixed && (f.severity === 'critical' || f.severity === 'high'));
+        if (critHigh.length > 0) process.exit(1);
         return;
       }
 
@@ -2073,7 +2268,7 @@ program
   .command('attack')
   .description(`Adversarial security testing for AI agents
 
-Red team your AI agent with ${PAYLOAD_STATS.total} attack payloads across 7 categories:
+Red team your AI agent with up to ${PAYLOAD_STATS.total} attack payloads across 7 categories:
   • Prompt Injection: ${PAYLOAD_STATS.byCategory['prompt-injection']} payloads
   • Jailbreaking: ${PAYLOAD_STATS.byCategory['jailbreak']} payloads
   • Data Exfiltration: ${PAYLOAD_STATS.byCategory['data-exfiltration']} payloads
@@ -2082,10 +2277,10 @@ Red team your AI agent with ${PAYLOAD_STATS.total} attack payloads across 7 cate
   • MCP Exploitation: ${PAYLOAD_STATS.byCategory['mcp-exploitation']} payloads
   • A2A Attacks: ${PAYLOAD_STATS.byCategory['a2a-attack']} payloads
 
-Intensity levels:
-  passive     Observation only, minimal risk
-  active      Standard attack payloads (default)
-  aggressive  Creative/risky payloads
+Intensity levels (controls how many payloads run):
+  passive     Observation only (${PAYLOAD_STATS.byIntensity.passive} payloads)
+  active      Standard payloads (${PAYLOAD_STATS.byIntensity.passive + PAYLOAD_STATS.byIntensity.active} payloads, default)
+  aggressive  All payloads including creative/risky (${PAYLOAD_STATS.total} payloads)
 
 Target types:
   api         OpenAI/Anthropic chat completions (default)
@@ -3260,10 +3455,10 @@ Examples:
         const path = require('path');
         const fs = require('fs');
 
-        // Resolve target directory with path traversal and symlink protection
+        // Resolve target directory with symlink protection
         let targetDir: string;
         if (directory && directory !== '') {
-          targetDir = path.resolve(process.cwd(), directory);
+          targetDir = path.isAbsolute(directory) ? directory : path.resolve(process.cwd(), directory);
         } else {
           targetDir = process.cwd();
         }
@@ -3277,8 +3472,6 @@ Examples:
           process.exit(1);
         }
 
-        const realCwd = fs.realpathSync(process.cwd());
-
         // Verify resolved path is a directory (realpath already resolved any symlinks)
         const resolvedStat = fs.statSync(realTarget);
         if (!resolvedStat.isDirectory()) {
@@ -3286,11 +3479,14 @@ Examples:
           process.exit(1);
         }
 
-        // Verify resolved path stays within cwd (prevents traversal via .. or symlinks)
-        const relative = path.relative(realCwd, realTarget);
-        if (relative.startsWith('..') || path.isAbsolute(relative)) {
-          console.error(`Error: Target directory must be within current working directory`);
-          process.exit(1);
+        // Block path traversal via .. in relative paths (but allow absolute paths)
+        if (!path.isAbsolute(directory) && directory && directory !== '') {
+          const realCwd = fs.realpathSync(process.cwd());
+          const relative = path.relative(realCwd, realTarget);
+          if (relative.startsWith('..')) {
+            console.error(`Error: Target directory must not traverse above current working directory. Use an absolute path instead.`);
+            process.exit(1);
+          }
         }
         targetDir = realTarget;
 
