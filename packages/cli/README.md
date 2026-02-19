@@ -12,6 +12,16 @@ The hacker's toolkit for AI agents. 147 security checks, 55 attack payloads, aut
 
 ---
 
+## Updates
+
+| Date | Change |
+|------|--------|
+| 2026-02-19 | Added MCP JSON-RPC and A2A attack modes -- 7 categories, 70 payloads. New `--target-type mcp\|a2a` flags for protocol-specific scanning. |
+| 2026-02-17 | OpenClaw security scanning with 47 specialized checks. CVE-2026-25253 detection. |
+| 2026-02-09 | Initial release -- 147 security checks, 55 attack payloads, OASB-1 benchmark. |
+
+---
+
 ## Quick Start
 
 ```bash
