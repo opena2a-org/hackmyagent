@@ -2268,7 +2268,7 @@ program
   .command('attack')
   .description(`Adversarial security testing for AI agents
 
-Red team your AI agent with up to ${PAYLOAD_STATS.total} attack payloads across 7 categories:
+Red team your AI agent with ${PAYLOAD_STATS.total} attack payloads across 7 categories:
   • Prompt Injection: ${PAYLOAD_STATS.byCategory['prompt-injection']} payloads
   • Jailbreaking: ${PAYLOAD_STATS.byCategory['jailbreak']} payloads
   • Data Exfiltration: ${PAYLOAD_STATS.byCategory['data-exfiltration']} payloads
@@ -2281,6 +2281,12 @@ Intensity levels (controls how many payloads run):
   passive     Observation only (${PAYLOAD_STATS.byIntensity.passive} payloads)
   active      Standard payloads (${PAYLOAD_STATS.byIntensity.passive + PAYLOAD_STATS.byIntensity.active} payloads, default)
   aggressive  All payloads including creative/risky (${PAYLOAD_STATS.total} payloads)
+
+Target types:
+  api         OpenAI/Anthropic chat completions (default)
+  mcp         MCP JSON-RPC server (tools/call, tools/list)
+  a2a         A2A agent messaging endpoint (/a2a/message)
+  local       Local simulation (no API calls)
 
 Target types:
   api         OpenAI/Anthropic chat completions (default)
