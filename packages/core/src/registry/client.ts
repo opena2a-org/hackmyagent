@@ -5,6 +5,7 @@
  * and POSTs them to the registry callback endpoint.
  */
 
+import { createHmac } from 'crypto';
 import type { SecurityFinding, Severity } from '../hardening';
 import type { AttackReport } from '../attack';
 
@@ -46,9 +47,26 @@ interface BehavioralFinding {
   evidence?: string;
 }
 
+// Community scan result format — identifies packages by name, no auth needed
+export interface CommunityScanPayload {
+  packageName: string;
+  packageType?: string;
+  version?: string;
+  scanId: string;
+  status: 'passed' | 'failed' | 'warnings' | 'error';
+  completedAt: string;
+  vulnerabilities: VulnerabilityFinding[];
+  criticalCount: number;
+  highCount: number;
+  mediumCount: number;
+  lowCount: number;
+  rawReport?: Record<string, unknown>;
+}
+
 export interface RegistryConfig {
   registryUrl: string;
   apiKey: string;
+  communitySecret?: string;
 }
 
 export interface RegistryPackage {
@@ -86,6 +104,44 @@ export class RegistryClient {
       throw new Error(
         `Registry report failed (${response.status}): ${body}`
       );
+    }
+  }
+
+  /**
+   * Post community scan results (no auth, HMAC-signed).
+   * Returns { status: 'accepted' | 'unknown_package' | 'failed' }.
+   * Never throws — registry errors are non-fatal for the user's scan.
+   */
+  async reportCommunityResult(
+    payload: CommunityScanPayload,
+  ): Promise<{ status: string; message?: string }> {
+    const url = `${this.config.registryUrl}/api/v1/registry/community/scan-result`;
+    const body = JSON.stringify(payload);
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'User-Agent': 'HackMyAgent-CLI',
+    };
+
+    // Sign with HMAC if community secret is configured
+    if (this.config.communitySecret) {
+      headers['X-HMA-Signature'] = computeHMAC(body, this.config.communitySecret);
+    }
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body,
+      });
+
+      if (!response.ok) {
+        return { status: 'failed', message: `HTTP ${response.status}` };
+      }
+
+      return await response.json() as { status: string; message?: string };
+    } catch {
+      return { status: 'failed', message: 'Network error' };
     }
   }
 
@@ -216,6 +272,101 @@ export function buildAttackReport(
       successfulAttacks: report.summary.successful,
     },
   };
+}
+
+/**
+ * Build a CommunityScanPayload from HMA hardening scan results.
+ * Used for auto-publishing to the community endpoint (no version ID needed).
+ */
+export function buildCommunityReport(
+  packageName: string,
+  findings: SecurityFinding[],
+  options?: { packageType?: string; version?: string },
+): CommunityScanPayload {
+  const failed = findings.filter(f => !f.passed && !f.fixed);
+  const counts = countBySeverity(failed);
+  const status = deriveStatus(counts);
+
+  const vulnerabilities: VulnerabilityFinding[] = failed.map(f => ({
+    id: f.checkId,
+    severity: f.severity,
+    title: f.name,
+    description: f.description,
+  }));
+
+  return {
+    packageName,
+    packageType: options?.packageType,
+    version: options?.version,
+    scanId: `hma-community-${Date.now()}`,
+    status,
+    completedAt: new Date().toISOString(),
+    vulnerabilities,
+    criticalCount: counts.critical,
+    highCount: counts.high,
+    mediumCount: counts.medium,
+    lowCount: counts.low,
+    rawReport: {
+      generator: 'hackmyagent',
+      totalFindings: findings.length,
+      failedFindings: failed.length,
+    },
+  };
+}
+
+/**
+ * Build a CommunityScanPayload from HMA attack results.
+ */
+export function buildCommunityAttackReport(
+  packageName: string,
+  report: AttackReport,
+  options?: { packageType?: string; version?: string },
+): CommunityScanPayload {
+  const vulnerabilities: VulnerabilityFinding[] = report.results
+    .filter(r => r.success)
+    .map(r => ({
+      id: r.payload.id,
+      severity: r.payload.severity,
+      title: `${r.payload.category}: ${r.payload.id}`,
+      description: r.response?.substring(0, 500) || 'Attack succeeded',
+    }));
+
+  const counts = {
+    critical: vulnerabilities.filter(v => v.severity === 'critical').length,
+    high: vulnerabilities.filter(v => v.severity === 'high').length,
+    medium: vulnerabilities.filter(v => v.severity === 'medium').length,
+    low: vulnerabilities.filter(v => v.severity === 'low').length,
+  };
+
+  const status = deriveStatus(counts);
+
+  return {
+    packageName,
+    packageType: options?.packageType,
+    version: options?.version,
+    scanId: `hma-attack-community-${Date.now()}`,
+    status,
+    completedAt: new Date().toISOString(),
+    vulnerabilities,
+    criticalCount: counts.critical,
+    highCount: counts.high,
+    mediumCount: counts.medium,
+    lowCount: counts.low,
+    rawReport: {
+      generator: 'hackmyagent-attack',
+      target: report.target,
+      riskRating: report.riskRating,
+      totalPayloads: report.summary.total,
+      successfulAttacks: report.summary.successful,
+    },
+  };
+}
+
+/**
+ * Compute HMAC-SHA256 signature for community endpoint authentication.
+ */
+function computeHMAC(body: string, secret: string): string {
+  return createHmac('sha256', secret).update(body).digest('hex');
 }
 
 function countBySeverity(findings: { severity: Severity | string }[]): {
