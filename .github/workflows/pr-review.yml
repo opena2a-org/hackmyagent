@@ -157,7 +157,7 @@ jobs:
             --rawfile system /tmp/system_prompt.txt \
             --rawfile user /tmp/user_msg.txt \
             '{
-              model: "claude-sonnet-4-5-20250929",
+              model: "claude-sonnet-4-5-20250514",
               max_tokens: 16000,
               thinking: { type: "enabled", budget_tokens: 10000 },
               system: $system,
@@ -188,7 +188,7 @@ jobs:
               --rawfile system /tmp/system_prompt.txt \
               --rawfile user /tmp/user_msg.txt \
               '{
-                model: "claude-sonnet-4-5-20250929",
+                model: "claude-sonnet-4-5-20250514",
                 max_tokens: 8192,
                 system: $system,
                 messages: [{ role: "user", content: $user }]
