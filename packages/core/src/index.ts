@@ -95,12 +95,15 @@ export {
   RegistryClient,
   buildScanReport,
   buildAttackReport,
+  buildCommunityReport,
+  buildCommunityAttackReport,
 } from './registry';
 
 export type {
   RegistryConfig,
   RegistryPackage,
   ScanReportPayload,
+  CommunityScanPayload,
 } from './registry';
 
 // Legacy scanner (for scan command)
