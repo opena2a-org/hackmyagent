@@ -1,6 +1,6 @@
 {
   "name": "@opena2a/semantic-engine",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Semantic analysis engine for AI agent security scanning",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
