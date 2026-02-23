@@ -1897,8 +1897,8 @@ Examples:
               }
             }
           }
-        } catch {
-          // Never fail the scan because of registry reporting issues
+        } catch (reportErr: any) {
+          console.error(`Registry: failed to report scan results: ${reportErr.message || reportErr}`);
         }
       }
 
@@ -2568,8 +2568,8 @@ Examples:
               console.log('Registry: attack results shared with OpenA2A community');
             }
           }
-        } catch {
-          // Never fail the scan because of registry reporting issues
+        } catch (reportErr: any) {
+          console.error(`Registry: failed to report scan results: ${reportErr.message || reportErr}`);
         }
       }
 
