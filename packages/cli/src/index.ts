@@ -64,6 +64,11 @@ if (noColorEnv) {
   colors = { green: '', yellow: '', red: '', brightRed: '', cyan: '', reset: '' };
 }
 
+// Deprecation warning for removed HMAC auth
+if (process.env.HMA_COMMUNITY_SECRET) {
+  console.error('Warning: HMA_COMMUNITY_SECRET is deprecated and no longer used. Scan tokens are now issued automatically.');
+}
+
 program
   .name('hackmyagent')
   .description(`Find it. Break it. Fix it.
@@ -1882,16 +1887,18 @@ Examples:
             await client.reportScanResult(payload);
             console.log(`Registry: scan results reported for version ${options.versionId}`);
           } else {
-            // Community path: auto-publish by package name (HMAC-signed, no user auth)
-            const communitySecret = process.env.HMA_COMMUNITY_SECRET || '';
-            const client = new RegistryClient({ registryUrl, apiKey: '', communitySecret });
+            // Community path: request scan token, then submit results
+            const client = new RegistryClient({ registryUrl, apiKey: '' });
             const packageName = resolvePackageName(targetDir);
             if (packageName) {
               const packageVersion = resolvePackageVersion(targetDir);
+              const tokenResp = await client.requestScanToken(packageName, {
+                version: packageVersion ?? undefined,
+              });
               const payload = buildCommunityReport(packageName, result.findings, {
                 version: packageVersion ?? undefined,
               });
-              const resp = await client.reportCommunityResult(payload);
+              const resp = await client.reportCommunityResult(payload, tokenResp?.scanToken);
               if (resp.status === 'accepted') {
                 console.log('Registry: scan shared with OpenA2A community');
               }
@@ -2563,12 +2570,12 @@ Examples:
             await client.reportScanResult(payload);
             console.log(`Registry: attack results reported for version ${options.versionId}`);
           } else {
-            // Community path: auto-publish by target name (HMAC-signed, no user auth)
-            const communitySecret = process.env.HMA_COMMUNITY_SECRET || '';
-            const client = new RegistryClient({ registryUrl, apiKey: '', communitySecret });
+            // Community path: request scan token, then submit results
+            const client = new RegistryClient({ registryUrl, apiKey: '' });
             const packageName = target.url || targetUrl || 'unknown';
+            const tokenResp = await client.requestScanToken(packageName);
             const payload = buildCommunityAttackReport(packageName, report);
-            const resp = await client.reportCommunityResult(payload);
+            const resp = await client.reportCommunityResult(payload, tokenResp?.scanToken);
             if (resp.status === 'accepted') {
               console.log('Registry: attack results shared with OpenA2A community');
             }

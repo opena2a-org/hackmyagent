@@ -5,7 +5,6 @@
  * and POSTs them to the registry callback endpoint.
  */
 
-import { createHmac } from 'crypto';
 import type { SecurityFinding, Severity } from '../hardening';
 import type { AttackReport } from '../attack';
 
@@ -66,7 +65,6 @@ export interface CommunityScanPayload {
 export interface RegistryConfig {
   registryUrl: string;
   apiKey: string;
-  communitySecret?: string;
 }
 
 export interface RegistryPackage {
@@ -108,13 +106,61 @@ export class RegistryClient {
   }
 
   /**
-   * Post community scan results (no auth, HMAC-signed).
+   * Request a short-lived scan token for community scan submission.
+   * Returns the token response on success, or null on failure (never throws).
+   */
+  async requestScanToken(
+    packageName: string,
+    options?: { packageType?: string; version?: string },
+  ): Promise<{ scanToken: string; tokenId: string; expiresIn: string } | null> {
+    const url = `${this.config.registryUrl}/api/v1/registry/community/request-scan-token`;
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'HackMyAgent-CLI',
+        },
+        body: JSON.stringify({
+          packageName,
+          packageType: options?.packageType,
+          version: options?.version,
+        }),
+      });
+
+      if (response.status === 404) {
+        console.error(`Registry: package "${packageName}" not found in registry`);
+        return null;
+      }
+
+      if (response.status === 429) {
+        console.error('Registry: rate limited — try again later');
+        return null;
+      }
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        console.error(`Registry: scan token request failed (${response.status}): ${body}`);
+        return null;
+      }
+
+      return await response.json() as { scanToken: string; tokenId: string; expiresIn: string };
+    } catch {
+      console.error('Registry: scan token request failed (network error)');
+      return null;
+    }
+  }
+
+  /**
+   * Post community scan results with optional scan token.
    * Returns { status: 'accepted' | 'unknown_package' | 'failed' }.
    * Never throws — registry errors are non-fatal for the user's scan.
    */
   async reportCommunityResult(
     payload: CommunityScanPayload,
-  ): Promise<{ status: string; message?: string }> {
+    scanToken?: string,
+  ): Promise<{ status: string; message?: string; code?: string }> {
     const url = `${this.config.registryUrl}/api/v1/registry/community/scan-result`;
     const body = JSON.stringify(payload);
 
@@ -123,9 +169,8 @@ export class RegistryClient {
       'User-Agent': 'HackMyAgent-CLI',
     };
 
-    // Sign with HMAC if community secret is configured
-    if (this.config.communitySecret) {
-      headers['X-HMA-Signature'] = computeHMAC(body, this.config.communitySecret);
+    if (scanToken) {
+      headers['X-Scan-Token'] = scanToken;
     }
 
     try {
@@ -136,7 +181,12 @@ export class RegistryClient {
       });
 
       if (!response.ok) {
-        return { status: 'failed', message: `HTTP ${response.status}` };
+        const errBody = await response.json().catch(() => ({})) as Record<string, unknown>;
+        return {
+          status: 'failed',
+          message: (errBody.message as string) || `HTTP ${response.status}`,
+          code: errBody.code as string | undefined,
+        };
       }
 
       return await response.json() as { status: string; message?: string };
@@ -360,13 +410,6 @@ export function buildCommunityAttackReport(
       successfulAttacks: report.summary.successful,
     },
   };
-}
-
-/**
- * Compute HMAC-SHA256 signature for community endpoint authentication.
- */
-function computeHMAC(body: string, secret: string): string {
-  return createHmac('sha256', secret).update(body).digest('hex');
 }
 
 function countBySeverity(findings: { severity: Severity | string }[]): {
