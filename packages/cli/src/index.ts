@@ -1872,7 +1872,7 @@ Examples:
       const shouldReport = options.registryReport || (options.registry !== false);
       if (shouldReport) {
         try {
-          const { RegistryClient, buildScanReport, buildCommunityReport } = await import('hackmyagent-core');
+          const core = await import('hackmyagent-core');
           const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://registry.opena2a.org';
 
           if (options.versionId) {
@@ -1882,23 +1882,25 @@ Examples:
               console.error('Error: --registry-key or REGISTRY_API_KEY env is required when using --version-id');
               process.exit(1);
             }
-            const client = new RegistryClient({ registryUrl, apiKey: registryKey });
-            const payload = buildScanReport(options.versionId, result.findings);
+            const client = new core.RegistryClient({ registryUrl, apiKey: registryKey });
+            const payload = core.buildScanReport(options.versionId, result.findings);
             await client.reportScanResult(payload);
             console.log(`Registry: scan results reported for version ${options.versionId}`);
-          } else {
+          } else if (typeof core.buildCommunityReport === 'function') {
             // Community path: request scan token, then submit results
-            const client = new RegistryClient({ registryUrl, apiKey: '' });
+            const client = new core.RegistryClient({ registryUrl, apiKey: '' });
             const packageName = resolvePackageName(targetDir);
             if (packageName) {
               const packageVersion = resolvePackageVersion(targetDir);
-              const tokenResp = await client.requestScanToken(packageName, {
+              const tokenResp = typeof client.requestScanToken === 'function'
+                ? await client.requestScanToken(packageName, { version: packageVersion ?? undefined })
+                : null;
+              const payload = core.buildCommunityReport(packageName, result.findings, {
                 version: packageVersion ?? undefined,
               });
-              const payload = buildCommunityReport(packageName, result.findings, {
-                version: packageVersion ?? undefined,
-              });
-              const resp = await client.reportCommunityResult(payload, tokenResp?.scanToken);
+              const resp = typeof client.reportCommunityResult === 'function'
+                ? await client.reportCommunityResult(payload, tokenResp?.scanToken)
+                : { status: 'skipped' };
               if (resp.status === 'accepted') {
                 console.log('Registry: scan shared with OpenA2A community');
               }
@@ -2555,7 +2557,7 @@ Examples:
       const shouldReport = options.registryReport || (options.registry !== false);
       if (shouldReport) {
         try {
-          const { RegistryClient, buildAttackReport, buildCommunityAttackReport } = await import('hackmyagent-core');
+          const core = await import('hackmyagent-core');
           const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://registry.opena2a.org';
 
           if (options.versionId) {
@@ -2565,17 +2567,21 @@ Examples:
               console.error('Error: --registry-key or REGISTRY_API_KEY env is required when using --version-id');
               process.exit(1);
             }
-            const client = new RegistryClient({ registryUrl, apiKey: registryKey });
-            const payload = buildAttackReport(options.versionId, report);
+            const client = new core.RegistryClient({ registryUrl, apiKey: registryKey });
+            const payload = core.buildAttackReport(options.versionId, report);
             await client.reportScanResult(payload);
             console.log(`Registry: attack results reported for version ${options.versionId}`);
-          } else {
+          } else if (typeof core.buildCommunityAttackReport === 'function') {
             // Community path: request scan token, then submit results
-            const client = new RegistryClient({ registryUrl, apiKey: '' });
+            const client = new core.RegistryClient({ registryUrl, apiKey: '' });
             const packageName = target.url || targetUrl || 'unknown';
-            const tokenResp = await client.requestScanToken(packageName);
-            const payload = buildCommunityAttackReport(packageName, report);
-            const resp = await client.reportCommunityResult(payload, tokenResp?.scanToken);
+            const tokenResp = typeof client.requestScanToken === 'function'
+              ? await client.requestScanToken(packageName)
+              : null;
+            const payload = core.buildCommunityAttackReport(packageName, report);
+            const resp = typeof client.reportCommunityResult === 'function'
+              ? await client.reportCommunityResult(payload, tokenResp?.scanToken)
+              : { status: 'skipped' };
             if (resp.status === 'accepted') {
               console.log('Registry: attack results shared with OpenA2A community');
             }
