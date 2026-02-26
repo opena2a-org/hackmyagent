@@ -1902,6 +1902,11 @@ Examples:
         }
       }
 
+      // Star prompt (interactive TTY only, text format only)
+      if (process.stdout.isTTY) {
+        console.log(`${colors.cyan}Helpful?${RESET()} Star the project: https://github.com/opena2a-org\n`);
+      }
+
       // Exit with non-zero if critical/high issues remain
       const criticalOrHigh = issues.filter(
         (f: SecurityFinding) => f.severity === 'critical' || f.severity === 'high'
