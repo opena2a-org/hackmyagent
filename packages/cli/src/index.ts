@@ -1904,7 +1904,7 @@ Examples:
 
       // Star prompt (interactive TTY only, text format only)
       if (process.stdout.isTTY) {
-        console.log(`${colors.cyan}Helpful?${RESET()} Star the project: https://github.com/opena2a-org\n`);
+        console.log(`${colors.cyan}Helpful?${RESET()} Star the project: https://github.com/opena2a-org/opena2a\n`);
       }
 
       // Exit with non-zero if critical/high issues remain
