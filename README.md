@@ -12,6 +12,10 @@ The hacker's toolkit for AI agents. 147 security checks, 55 attack payloads, aut
 
 [Website](https://hackmyagent.com) | [OpenA2A](https://opena2a.org) | [Security Checks Reference](docs/SECURITY_CHECKS.md)
 
+<p align="center">
+  <img src="docs/hackmyagent-demo.gif" alt="HackMyAgent scanning an AI agent project" width="700" />
+</p>
+
 ---
 
 ## Quick Start
