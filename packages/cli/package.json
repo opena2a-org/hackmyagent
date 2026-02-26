@@ -25,7 +25,7 @@
     "@opena2a/skillguard-openclaw": "^0.1.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "commander": "^12.0.0",
-    "hackmyagent-core": "^0.5.0"
+    "hackmyagent-core": "^0.6.2"
   },
   "devDependencies": {
     "typescript": "^5.3.3"
