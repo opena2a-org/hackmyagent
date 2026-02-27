@@ -10,7 +10,7 @@
 
 The hacker's toolkit for AI agents. 147 security checks, 55 attack payloads, auto-fix with rollback, and OASB benchmark compliance. Scans Claude Code, Cursor, VS Code, and any MCP server setup for credential leaks, misconfigurations, prompt injection vectors, supply chain risks, and more.
 
-[Website](https://hackmyagent.com) | [OpenA2A](https://opena2a.org) | [Security Checks Reference](docs/SECURITY_CHECKS.md)
+[Website](https://hackmyagent.com) | [Security Checks Reference](docs/SECURITY_CHECKS.md)
 
 <p align="center">
   <img src="docs/hackmyagent-demo.gif" alt="HackMyAgent scanning an AI agent project" width="700" />
