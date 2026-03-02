@@ -1,29 +1,42 @@
 {
   "name": "hackmyagent",
-  "version": "0.3.5",
-  "description": "Security toolkit for AI agents - verify skills, harden setups, scan for exposures",
-  "private": true,
-  "workspaces": [
-    "packages/*"
+  "version": "0.8.0",
+  "description": "Find it. Break it. Fix it. The hacker's toolkit for AI agents.",
+  "bin": {
+    "hackmyagent": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./plugins": "./dist/plugins/core.js",
+    "./semantic": "./dist/semantic/index.js",
+    "./arp": "./dist/arp/index.js",
+    "./oasb": "./dist/oasb/harness/arp-wrapper.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
-    "build": "turbo run build",
-    "dev": "turbo run dev",
-    "lint": "turbo run lint",
-    "test": "turbo run test",
-    "clean": "turbo run clean",
-    "publish-all": "./scripts/publish-all.sh"
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src --ext .ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@opena2a/aim-core": "^0.1.2",
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "commander": "^12.0.0",
+    "js-yaml": "^4.1.1"
   },
   "devDependencies": {
-    "turbo": "^2.0.0",
-    "typescript": "^5.0.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/opena2a-org/hackmyagent.git"
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.3",
+    "vitest": "^3.0.0"
   },
   "keywords": [
     "ai",
@@ -31,9 +44,25 @@
     "security",
     "mcp",
     "claude",
-    "skills"
+    "cursor",
+    "skills",
+    "hardening",
+    "scanner",
+    "attack",
+    "benchmark",
+    "runtime-protection"
   ],
   "author": "OpenA2A",
   "license": "Apache-2.0",
-  "packageManager": "npm@10.0.0"
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/opena2a-org/hackmyagent.git"
+  },
+  "homepage": "https://github.com/opena2a-org/hackmyagent#readme",
+  "bugs": {
+    "url": "https://github.com/opena2a-org/hackmyagent/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

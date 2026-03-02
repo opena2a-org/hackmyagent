@@ -1,0 +1,54 @@
+agentName: arp-lab-target
+agentDescription: "Test target agent for ARP security testing"
+declaredCapabilities:
+  - "file read/write in workspace"
+  - "HTTP requests to allowed APIs"
+  - "process management"
+
+monitors:
+  process:
+    enabled: true
+    intervalMs: 1000
+  network:
+    enabled: true
+    intervalMs: 2000
+    allowedHosts:
+      - "localhost"
+      - "127.0.0.1"
+  filesystem:
+    enabled: true
+
+rules:
+  - name: critical-threat
+    condition:
+      category: threat
+      minSeverity: critical
+    action: kill
+    requireLlmConfirmation: true
+
+  - name: high-violation
+    condition:
+      category: violation
+      minSeverity: high
+    action: alert
+
+  - name: suspicious-binary
+    condition:
+      source: process
+      category: violation
+      fieldMatch:
+        data.binary: "*"
+    action: alert
+
+  - name: anomaly-burst
+    condition:
+      category: anomaly
+      threshold:
+        count: 5
+        windowMs: 30000
+    action: alert
+    requireLlmConfirmation: true
+
+intelligence:
+  enabled: false
+  budgetUsd: 0
