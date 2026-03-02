@@ -30,9 +30,39 @@ No config files required. Works out of the box.
 
 ---
 
+## Usage via OpenA2A CLI
+
+HackMyAgent is available as a first-class adapter in the [OpenA2A CLI](https://github.com/opena2a-org/opena2a). If you have the CLI installed, you can invoke scanning, auto-fix, and attack capabilities directly:
+
+```bash
+opena2a scan                              # run HackMyAgent security scan on current directory
+opena2a scan --fix                        # scan and auto-fix issues
+opena2a scan --attack http://localhost:3000  # red-team a live endpoint with adversarial payloads
+```
+
+The `opena2a scan` adapter delegates to `hackmyagent secure` under the hood, supporting the same checks, output formats, and exit codes documented below.
+
+### Scope Drift Detection
+
+HackMyAgent includes credential scope drift detectors exposed through the `opena2a protect` command. These detect when AI agent credentials have permissions beyond their declared scope:
+
+| Detector | ID | What it detects |
+|----------|----|-----------------|
+| Google / Gemini | DRIFT-001 | OAuth scopes or API key permissions exceeding declared agent capabilities |
+| AWS / Bedrock | DRIFT-002 | IAM policies granting broader access than the agent's capability manifest |
+
+Preview drift findings without applying changes:
+
+```bash
+opena2a protect --dry-run
+```
+
+---
+
 ## Table of Contents
 
 - [Installation](#installation)
+- [Usage via OpenA2A CLI](#usage-via-opena2a-cli)
 - [Commands](#commands)
   - [secure](#hackmyagent-secure) — local agent hardening (147 checks)
   - [fix-all](#hackmyagent-fix-all) — run all OpenA2A security plugins
@@ -568,7 +598,6 @@ Apache-2.0
 | Project | Description | Install |
 |---------|-------------|---------|
 | [**AIM**](https://github.com/opena2a-org/agent-identity-management) | Agent Identity Management -- identity and access control for AI agents | `pip install aim-sdk` |
-| [**HackMyAgent**](https://github.com/opena2a-org/hackmyagent) | Security scanner -- 147 checks, attack mode, auto-fix | `npx hackmyagent secure` |
 | [**OASB**](https://github.com/opena2a-org/oasb) | Open Agent Security Benchmark -- 182 attack scenarios | `npm install @opena2a/oasb` |
 | [**ARP**](https://github.com/opena2a-org/arp) | Agent Runtime Protection -- process, network, filesystem monitoring | `npm install @opena2a/arp` |
 | [**Secretless AI**](https://github.com/opena2a-org/secretless-ai) | Keep credentials out of AI context windows | `npx secretless-ai init` |
