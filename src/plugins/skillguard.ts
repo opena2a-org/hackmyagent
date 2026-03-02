@@ -253,7 +253,7 @@ function scanForUnpinnedSkills(agentDir: string): Finding[] {
 // --- Plugin Implementation ---
 
 export const metadata: PluginMetadata = {
-  packageName: '@opena2a/skillguard-openclaw',
+  packageName: 'hackmyagent',
   displayName: 'SkillGuard',
   description: 'Skill integrity — hash pinning, tamper detection, dangerous pattern scanning',
   version: VERSION,

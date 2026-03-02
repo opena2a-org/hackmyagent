@@ -84,7 +84,7 @@ jobs:
           cat > /tmp/system_prompt.txt << 'SYSPROMPT'
           You are a senior security engineer reviewing a pull request for HackMyAgent — an open-source security scanner CLI for AI agents ("OWASP ZAP for AI Agents").
 
-          Tech stack: TypeScript/Node.js Turborepo monorepo (packages/cli + packages/core), ES modules, vitest for testing.
+          Tech stack: TypeScript/Node.js flat package (src/), CommonJS, vitest for testing.
 
           You have TWO sources of information:
           1. FULL SOURCE FILES — complete line-numbered source code of changed files (use this to VERIFY mitigations)

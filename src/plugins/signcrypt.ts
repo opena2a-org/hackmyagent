@@ -234,7 +234,7 @@ function saveSignatureRecord(agentDir: string, record: SignatureRecord): void {
 // --- Plugin Implementation ---
 
 export const metadata: PluginMetadata = {
-  packageName: '@opena2a/signcrypt-openclaw',
+  packageName: 'hackmyagent',
   displayName: 'SignCrypt',
   description: 'Configuration integrity — Ed25519 signing, hash pinning, heartbeat expiry enforcement',
   version: VERSION,

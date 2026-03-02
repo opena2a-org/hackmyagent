@@ -531,4 +531,4 @@ hackmyagent secure --ignore CRED-001,LOG-001
 
 ## Updating This Reference
 
-This document is maintained alongside the scanner implementation. Check IDs and descriptions should match the scanner source code in `packages/core/src/hardening/scanner.ts`.
+This document is maintained alongside the scanner implementation. Check IDs and descriptions should match the scanner source code in `src/hardening/scanner.ts`.

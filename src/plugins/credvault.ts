@@ -275,7 +275,7 @@ function createEnvExample(agentDir: string, findings: Finding[]): string | null 
 // --- Plugin Implementation ---
 
 export const metadata: PluginMetadata = {
-  packageName: '@opena2a/credvault-openclaw',
+  packageName: 'hackmyagent',
   displayName: 'CredVault',
   description: 'Credential protection — scan for hardcoded secrets, move to encrypted store, per-skill isolation',
   version: VERSION,
