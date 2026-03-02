@@ -8,9 +8,8 @@
 import type { SemanticFinding } from '../types';
 
 /**
- * SecurityFinding shape from hackmyagent-core.
- * Duplicated here to avoid a circular dependency — the semantic engine
- * has zero runtime dependencies.
+ * SecurityFinding shape duplicated here to avoid a circular dependency —
+ * the semantic engine has zero runtime dependencies.
  */
 export interface SecurityFinding {
   checkId: string;

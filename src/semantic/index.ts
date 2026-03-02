@@ -1,5 +1,5 @@
 /**
- * @opena2a/semantic-engine
+ * Semantic analysis engine
  *
  * Semantic analysis engine for AI agent security scanning.
  * Provides Layer 2 (structural) and Layer 3 (LLM) analysis.
