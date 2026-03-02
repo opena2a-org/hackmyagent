@@ -372,17 +372,16 @@ hackmyagent rollback ./my-project   # rollback specific directory
 
 ## Plugin Architecture
 
-HackMyAgent uses a modular plugin system built on [`@opena2a/plugin-core`](packages/plugin-core). Each plugin implements `scan()` to detect issues and `fix()` to remediate them.
+HackMyAgent uses a modular plugin system. Each plugin implements `scan()` to detect issues and `fix()` to remediate them.
 
-### Packages
+### Built-in Plugins
 
-| Package | npm | Description |
-|---------|-----|-------------|
-| [`@opena2a/plugin-core`](packages/plugin-core) | — | Plugin interface, registry, shared types |
-| [`@opena2a/aim-core`](packages/aim-core) | — | Ed25519 identity, audit logging, capability policy, trust scoring |
-| [`@opena2a/credvault-openclaw`](packages/credvault-openclaw) | — | Credential scanning (10 patterns), env var replacement, AES-256-GCM store |
-| [`@opena2a/signcrypt-openclaw`](packages/signcrypt-openclaw) | — | Ed25519 file signing, SHA-256 hash pinning, signature verification |
-| [`@opena2a/skillguard-openclaw`](packages/skillguard-openclaw) | — | Permission pinning, tamper detection, dangerous pattern scanning |
+| Module | Description |
+|--------|-------------|
+| `src/plugins/core.ts` | Plugin interface, registry, shared types |
+| `src/plugins/credvault.ts` | Credential scanning (10 patterns), env var replacement, AES-256-GCM store |
+| `src/plugins/signcrypt.ts` | Ed25519 file signing, SHA-256 hash pinning, signature verification |
+| `src/plugins/skillguard.ts` | Permission pinning, tamper detection, dangerous pattern scanning |
 
 ### Writing a Plugin
 
@@ -395,7 +394,7 @@ import type {
   Remediation,
   FixOptions,
   PluginInitOptions,
-} from '@opena2a/plugin-core';
+} from 'hackmyagent/plugins';
 
 export const metadata: PluginMetadata = {
   packageName: '@my-org/my-plugin',
@@ -454,7 +453,7 @@ export function createPlugin(): MyPlugin {
 Register the plugin in `@opena2a/plugin-core`:
 
 ```typescript
-import { registerPlugin } from '@opena2a/plugin-core';
+import { registerPlugin } from 'hackmyagent/plugins';
 import { createPlugin, metadata } from '@my-org/my-plugin';
 
 registerPlugin({
@@ -567,22 +566,28 @@ Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 git clone https://github.com/opena2a-org/hackmyagent.git
 cd hackmyagent
 npm install
-npx turbo build     # build all 8 packages
-npx turbo test      # run 611 tests
+npm run build
+npm test              # run 765 tests
 ```
 
-### Monorepo Structure
+### Project Structure
 
 ```
-packages/
-  cli/                      # CLI entry point (hackmyagent command)
-  core/                     # Scanner engine (147 checks)
-  aim-core/                 # Ed25519 identity, audit, policy, trust
-  plugin-core/              # Plugin interface and registry
-  credvault-openclaw/       # Credential scanner plugin
-  signcrypt-openclaw/       # Signing and hash pinning plugin
-  skillguard-openclaw/      # Permission and pattern scanner plugin
-  semantic-engine/          # Semantic analysis engine for deep scanning
+src/
+  cli.ts                    # CLI entry point (hackmyagent command)
+  index.ts                  # Main exports
+  hardening/                # Scanner engine (147 checks)
+  attack/                   # Red team attack simulation
+  checker/                  # Security check framework
+  scanner/                  # External scanner interface
+  semantic/                 # Semantic analysis engine
+  plugins/
+    core.ts                 # Plugin interface, registry, shared types
+    credvault.ts            # Credential scanner plugin
+    signcrypt.ts            # Signing and hash pinning plugin
+    skillguard.ts           # Permission and pattern scanner plugin
+  arp/                      # Agent Runtime Protection
+  oasb/                     # Open Agent Security Benchmark
 ```
 
 ---
@@ -598,7 +603,7 @@ Apache-2.0
 | Project | Description | Install |
 |---------|-------------|---------|
 | [**AIM**](https://github.com/opena2a-org/agent-identity-management) | Agent Identity Management -- identity and access control for AI agents | `pip install aim-sdk` |
-| [**OASB**](https://github.com/opena2a-org/oasb) | Open Agent Security Benchmark -- 182 attack scenarios | `npm install @opena2a/oasb` |
-| [**ARP**](https://github.com/opena2a-org/arp) | Agent Runtime Protection -- process, network, filesystem monitoring | `npm install @opena2a/arp` |
+| [**OASB**](https://github.com/opena2a-org/oasb) | Open Agent Security Benchmark -- 222 attack scenarios | Included in `hackmyagent` |
+| [**ARP**](https://github.com/opena2a-org/arp) | Agent Runtime Protection -- process, network, filesystem monitoring | Included in `hackmyagent` |
 | [**Secretless AI**](https://github.com/opena2a-org/secretless-ai) | Keep credentials out of AI context windows | `npx secretless-ai init` |
 | [**DVAA**](https://github.com/opena2a-org/damn-vulnerable-ai-agent) | Damn Vulnerable AI Agent -- security training and red-teaming | `docker pull opena2a/dvaa` |

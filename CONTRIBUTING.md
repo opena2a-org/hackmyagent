@@ -22,9 +22,14 @@ npm test
 ## Project Structure
 
 ```
-packages/
-  core/     # Core scanning and verification logic
-  cli/      # Command-line interface
+src/
+  cli.ts          # CLI entry point
+  index.ts        # Main exports
+  hardening/      # Core scanning engine
+  plugins/        # Plugin system (credvault, signcrypt, skillguard)
+  semantic/       # Semantic analysis engine
+  arp/            # Agent Runtime Protection
+  oasb/           # Open Agent Security Benchmark
 ```
 
 ## Making Changes
@@ -44,7 +49,7 @@ packages/
 
 ## Adding Security Checks
 
-New security checks go in `packages/core/src/hardening/scanner.ts`. Each check needs:
+New security checks go in `src/hardening/scanner.ts`. Each check needs:
 
 - Unique check ID (e.g., `SEC-004`)
 - Name and description
