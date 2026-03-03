@@ -8,7 +8,9 @@
 
 **Find it. Break it. Fix it.**
 
-Security scanner and red-team toolkit for AI agents. 147 security checks across 30 categories, 55 adversarial attack payloads, auto-fix with rollback, and OASB-1 compliance benchmarking — all in a single package.
+AI agents execute arbitrary code with your permissions. HackMyAgent finds what can go wrong before an attacker does.
+
+Security scanner and red-team toolkit for AI agents. 147 security checks across 30 categories, 55 adversarial attack payloads, auto-fix with rollback, and OASB-1 compliance benchmarking -- all in a single package.
 
 Scans Claude Code, Cursor, VS Code, and any MCP server setup.
 
