@@ -12,3 +12,20 @@ export type {
   ScanReportPayload,
   CommunityScanPayload,
 } from './client';
+
+export {
+  hashArtifact,
+  generateContributionId,
+  extractFindingIds,
+  countBySeverity,
+  buildHardeningContribution,
+  buildGovernanceContribution,
+  buildMcpContribution,
+  buildAttackContribution,
+  submitContribution,
+} from './contribution';
+
+export type {
+  ContributionType,
+  ContributionPayload,
+} from './contribution';
