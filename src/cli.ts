@@ -1633,12 +1633,14 @@ Examples:
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
   .option('-c, --category <name>', 'Filter to specific benchmark category')
   .option('--deep', 'Enable LLM-powered semantic analysis (requires ANTHROPIC_API_KEY)')
+  .option('--live-mcp', 'Enable live MCP tool enumeration (spawns MCP servers)')
+  .option('--contribute', 'Share anonymized scan results with OpenA2A community')
   .option('--registry-report', 'Post results to OpenA2A Registry')
   .option('--no-registry', 'Skip auto-publishing results to OpenA2A Registry')
   .option('--version-id <id>', 'Registry version ID to report against')
   .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)')
   .option('--registry-key <key>', 'Registry API key (default: REGISTRY_API_KEY env)')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string }) => {
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; liveMcp?: boolean; contribute?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
@@ -1712,6 +1714,7 @@ Examples:
         dryRun: options.dryRun ?? false,
         ignore: ignoreList,
         deep: isDeep,
+        liveMcp: options.liveMcp ?? false,
         onProgress,
       });
 
@@ -1908,6 +1911,30 @@ Examples:
           }
         } catch (reportErr: any) {
           console.error(`Registry: failed to report scan results: ${reportErr.message || reportErr}`);
+        }
+      }
+
+      // Anonymous contribution (opt-in via --contribute flag)
+      if (options.contribute) {
+        try {
+          const contrib = await import('./registry/contribution');
+          const artifactContent = require('fs').readdirSync(targetDir).join(',');
+          const payload = contrib.buildHardeningContribution(
+            VERSION,
+            artifactContent,
+            result.findings,
+            result.score,
+            result.maxScore,
+          );
+          const submitted = await contrib.submitContribution(
+            process.env.REGISTRY_URL || 'https://registry.opena2a.org',
+            payload,
+          );
+          if (submitted && format === 'text') {
+            console.log('Community: anonymized scan shared with OpenA2A registry');
+          }
+        } catch {
+          // Contribution failure is non-critical
         }
       }
 
@@ -3812,6 +3839,225 @@ Examples:
       console.log(`    hackmyagent_analyze_file — Analyze a single file`);
       console.log(`    hackmyagent_benchmark  — OASB-1 compliance assessment\n`);
       console.log(`  Try: "Run a deep security scan on this project"\n`);
+    } catch (error) {
+      console.error(`Error: ${error instanceof Error ? error.message : error}`);
+      process.exit(1);
+    }
+  });
+
+// Governance scanning command
+program
+  .command('scan-soul')
+  .description(`Scan SOUL.md / system prompts for governance controls
+
+Evaluates behavioral governance documents against OASB v2 domains 7-14
+(68 controls across Trust Hierarchy, Capability Boundaries, Injection
+Hardening, Data Handling, Hardcoded Behaviors, Agentic Safety, Honesty
+& Transparency, Human Oversight).
+
+Grades: A (90-100), B (75-89), C (60-74), D (40-59), F (0-39)
+
+Examples:
+  $ hackmyagent scan-soul
+  $ hackmyagent scan-soul ./my-agent
+  $ hackmyagent scan-soul --format json
+  $ hackmyagent scan-soul --contribute`)
+  .argument('[directory]', 'Directory containing SOUL.md or system prompts', '.')
+  .option('-f, --format <format>', 'Output format: text, json (default: text)', 'text')
+  .option('-o, --output <file>', 'Write output to file')
+  .option('-v, --verbose', 'Show all controls including passed ones')
+  .option('--contribute', 'Share anonymized results with OpenA2A community')
+  .action(async (directory: string, options: { format?: string; output?: string; verbose?: boolean; contribute?: boolean }) => {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const targetDir = directory.startsWith('/') ? directory : path.join(process.cwd(), directory);
+
+      if (!fs.existsSync(targetDir)) {
+        console.error(`Error: Directory '${targetDir}' does not exist.`);
+        process.exit(1);
+      }
+
+      // Discover governance files
+      const GOVERNANCE_FILES = [
+        'SOUL.md', 'soul.md', 'SYSTEM_PROMPT.md', 'system-prompt.md',
+        'system_prompt.md', '.cursorrules', 'GUIDELINES.md', 'RULES.md',
+      ];
+
+      let governanceFile: string | null = null;
+      let content: string = '';
+
+      for (const filename of GOVERNANCE_FILES) {
+        const filePath = path.join(targetDir, filename);
+        if (fs.existsSync(filePath)) {
+          governanceFile = filePath;
+          content = fs.readFileSync(filePath, 'utf-8');
+          break;
+        }
+      }
+
+      if (!governanceFile || !content) {
+        console.error('No governance file found (SOUL.md, system-prompt.md, .cursorrules, etc.)');
+        console.error('Create a SOUL.md file or run: hackmyagent harden-soul');
+        process.exit(1);
+      }
+
+      const abgr = await import('./abgr');
+      const tier = abgr.detectTier(content);
+      const detections = abgr.detectGovernanceControls(content);
+      const score = abgr.computeGovernanceScore(detections, tier, governanceFile);
+
+      if (options.format === 'json') {
+        const output = JSON.stringify(score, null, 2);
+        if (options.output) {
+          fs.writeFileSync(options.output, output);
+          console.error(`Report written to ${options.output}`);
+        } else {
+          console.log(output);
+        }
+      } else {
+        // Text output
+        const tierLabel = abgr.getTierLabel(tier);
+        console.log(`\nGovernance Scan: ${path.basename(governanceFile)}`);
+        console.log(`Agent Tier: ${tierLabel}`);
+        console.log(`Overall: ${score.overall}/100 (Grade ${score.grade})\n`);
+
+        for (const domain of score.domains) {
+          console.log(`  ${domain.domainName}: ${domain.score}/100 (${domain.controlsPassed}/${domain.controlsTotal} controls)`);
+
+          if (options.verbose) {
+            const domainResults = score.results.filter((r: any) => r.domain === domain.domain);
+            for (const r of domainResults) {
+              const mark = r.passed ? `${colors.green}PASS${RESET()}` : `${colors.red}FAIL${RESET()}`;
+              console.log(`    ${mark}  ${r.controlId} ${r.controlName}`);
+            }
+          }
+        }
+        console.log();
+
+        if (score.criticalFailures.length > 0) {
+          console.log(`${colors.red}${score.criticalFailures.length} critical controls missing${RESET()} (grade capped at C)`);
+          console.log(`Run: hackmyagent harden-soul ${directory}\n`);
+        }
+      }
+
+      // Anonymous contribution
+      if (options.contribute) {
+        try {
+          const contrib = await import('./registry/contribution');
+          const payload = contrib.buildGovernanceContribution(VERSION, content, score);
+          await contrib.submitContribution(
+            process.env.REGISTRY_URL || 'https://registry.opena2a.org',
+            payload,
+          );
+          if (options.format !== 'json') {
+            console.log('Community: anonymized governance scan shared with OpenA2A registry');
+          }
+        } catch {
+          // Non-critical
+        }
+      }
+
+      // Exit non-zero if grade D or F
+      if (score.grade === 'D' || score.grade === 'F') {
+        process.exit(1);
+      }
+    } catch (error) {
+      console.error(`Error: ${error instanceof Error ? error.message : error}`);
+      process.exit(1);
+    }
+  });
+
+// Governance hardening command
+program
+  .command('harden-soul')
+  .description(`Generate or augment a SOUL.md with governance controls
+
+Reads an existing SOUL.md (if present), identifies missing governance
+controls, and appends remediation templates. Creates a new SOUL.md if
+none exists.
+
+Examples:
+  $ hackmyagent harden-soul
+  $ hackmyagent harden-soul ./my-agent
+  $ hackmyagent harden-soul --dry-run
+  $ hackmyagent harden-soul --output SOUL-hardened.md`)
+  .argument('[directory]', 'Directory to harden', '.')
+  .option('-o, --output <file>', 'Write to specific file (default: SOUL.md in target dir)')
+  .option('--dry-run', 'Show what would be added without modifying files')
+  .action(async (directory: string, options: { output?: string; dryRun?: boolean }) => {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const targetDir = directory.startsWith('/') ? directory : path.join(process.cwd(), directory);
+
+      const GOVERNANCE_FILES = [
+        'SOUL.md', 'soul.md', 'SYSTEM_PROMPT.md', 'system-prompt.md',
+        'system_prompt.md', '.cursorrules', 'GUIDELINES.md', 'RULES.md',
+      ];
+
+      let existingFile: string | null = null;
+      let existingContent: string = '';
+
+      for (const filename of GOVERNANCE_FILES) {
+        const filePath = path.join(targetDir, filename);
+        if (fs.existsSync(filePath)) {
+          existingFile = filePath;
+          existingContent = fs.readFileSync(filePath, 'utf-8');
+          break;
+        }
+      }
+
+      const abgr = await import('./abgr');
+
+      // Detect what's already covered
+      let missingIds: string[];
+      if (existingContent) {
+        const detections = abgr.detectGovernanceControls(existingContent);
+        const passing = detections.filter((d: any) => d.confidence >= abgr.PASS_THRESHOLD);
+        const passingIds = new Set(passing.map((d: any) => d.controlId));
+        const allIds = abgr.getRemediationIds();
+        missingIds = allIds.filter((id: string) => !passingIds.has(id));
+      } else {
+        missingIds = abgr.getRemediationIds();
+      }
+
+      if (missingIds.length === 0) {
+        console.log('\nAll governance controls are already addressed.');
+        return;
+      }
+
+      // Build remediation content
+      const remediationText = abgr.getRemediations(missingIds);
+
+      const outputPath = options.output
+        ? (options.output.startsWith('/') ? options.output : path.join(targetDir, options.output))
+        : existingFile || path.join(targetDir, 'SOUL.md');
+
+      if (options.dryRun) {
+        console.log(`\nWould add ${missingIds.length} governance sections to ${path.basename(outputPath)}:\n`);
+        for (const id of missingIds) {
+          const control = abgr.getControlById(id);
+          if (control) {
+            console.log(`  + ${id}: ${control.name}`);
+          }
+        }
+        console.log(`\nRun without --dry-run to apply changes.`);
+        return;
+      }
+
+      // Write or append
+      const header = existingContent
+        ? '\n\n---\n\n<!-- Added by hackmyagent harden-soul -->\n\n'
+        : '# Agent Governance Policy\n\n';
+
+      const finalContent = existingContent
+        ? existingContent + header + remediationText + '\n'
+        : header + remediationText + '\n';
+
+      fs.writeFileSync(outputPath, finalContent);
+      console.log(`\nAdded ${missingIds.length} governance controls to ${outputPath}`);
+      console.log(`Run: hackmyagent scan-soul ${directory} to verify\n`);
     } catch (error) {
       console.error(`Error: ${error instanceof Error ? error.message : error}`);
       process.exit(1);

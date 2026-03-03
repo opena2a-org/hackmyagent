@@ -7,6 +7,8 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { ScanResult, SecurityFinding, Severity, ProjectType } from './security-check';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
+import { checkShellEnvironment, checkShellHistory } from './shell-checks';
+import { checkMcpToolEnumeration } from './mcp-tool-enum';
 
 /**
  * Defines which checks apply to which project types
@@ -64,6 +66,13 @@ const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
 
   // Semantic analysis - applies to all project types
   'SEM-': ['all'],
+
+  // Shell environment and history checks - always run
+  'SHELL-': ['all'],
+  'SHELLHIST-': ['all'],
+
+  // MCP tool enumeration - MCP servers and general
+  'MCPTOOL-': ['mcp', 'all'],
 };
 
 export interface ScanOptions {
@@ -77,6 +86,8 @@ export interface ScanOptions {
   ignorePaths?: string[];
   /** Enable Layer 3 LLM analysis (requires ANTHROPIC_API_KEY in CLI mode) */
   deep?: boolean;
+  /** Enable live MCP tool enumeration (spawns MCP servers) */
+  liveMcp?: boolean;
   /** Progress callback for long-running operations */
   onProgress?: (message: string) => void;
 }
@@ -407,6 +418,32 @@ export class HardeningScanner {
     // OpenClaw CVE-specific checks
     const cveFindings = await this.checkOpenclawCVE(targetDir, shouldFix);
     findings.push(...cveFindings);
+
+    // Shell environment checks (SHELL-001 to SHELL-004)
+    try {
+      const shellEnvFindings = await checkShellEnvironment();
+      findings.push(...shellEnvFindings);
+    } catch {
+      // Shell environment scanning failure is non-fatal
+    }
+
+    // Shell history checks (SHELLHIST-001 to SHELLHIST-003)
+    try {
+      const shellHistFindings = await checkShellHistory();
+      findings.push(...shellHistFindings);
+    } catch {
+      // Shell history scanning failure is non-fatal
+    }
+
+    // MCP tool enumeration (MCPTOOL-001 to MCPTOOL-005) - only with --deep or --live-mcp
+    if (options.deep || options.liveMcp) {
+      try {
+        const mcpToolFindings = await checkMcpToolEnumeration(targetDir);
+        findings.push(...mcpToolFindings);
+      } catch {
+        // MCP tool enumeration failure is non-fatal
+      }
+    }
 
     // Layer 2: Structural analysis (always on)
     let layer2Count = 0;

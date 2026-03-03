@@ -27,6 +27,11 @@ export type {
 export { HardeningScanner } from './hardening';
 export type { ScanOptions, SecurityFinding, Severity } from './hardening';
 
+// Shell & MCP checks
+export { checkShellEnvironment, checkShellHistory } from './hardening';
+export { discoverMcpConfigs, classifyTools, checkMcpToolEnumeration } from './hardening';
+export type { McpServerConfig, McpToolInfo, McpServerResult } from './hardening';
+
 // External scanner module
 export { ExternalScanner } from './scanner';
 export type {
@@ -90,6 +95,43 @@ export type {
   BenchmarkName,
 } from './benchmarks';
 
+// OASB v2 Behavioral Governance (domains 7-14)
+export {
+  ALL_GOVERNANCE_CONTROLS,
+  DOMAIN_METADATA,
+  getControlsByDomain,
+  getControlById,
+  getControlsForTier,
+  getControlsBySeverity,
+  analyzeStructure,
+  detectGovernanceControls,
+  detectSingleControl,
+  PASS_THRESHOLD,
+  computeGovernanceScore,
+  scoreToGrade,
+  detectTier,
+  getTierLabel,
+  getTierLevel,
+  getRemediation,
+  getRemediations,
+  getAllRemediations,
+  getRemediationCount,
+  getRemediationIds,
+} from './abgr';
+
+export type {
+  GovernanceSeverity,
+  GovernanceDomain,
+  AgentTier,
+  GovernanceGrade,
+  GovernanceControl,
+  GovernanceDetectionResult,
+  GovernanceResult,
+  DomainScore,
+  GovernanceScore,
+  StructuralInfo,
+} from './abgr';
+
 // Registry module
 export {
   RegistryClient,
@@ -104,6 +146,24 @@ export type {
   RegistryPackage,
   ScanReportPayload,
   CommunityScanPayload,
+} from './registry';
+
+// Anonymous contribution
+export {
+  hashArtifact,
+  generateContributionId,
+  extractFindingIds,
+  countBySeverity,
+  buildHardeningContribution,
+  buildGovernanceContribution,
+  buildMcpContribution,
+  buildAttackContribution,
+  submitContribution,
+} from './registry';
+
+export type {
+  ContributionType,
+  ContributionPayload,
 } from './registry';
 
 // Semantic engine (Layer 2 + Layer 3 analysis)
