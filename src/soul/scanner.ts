@@ -84,75 +84,82 @@ interface ControlDef {
   domainId: number;
   keywords: string[];
   critical?: boolean;
+  /** Which tiers must satisfy this control. Empty means all tiers. */
+  tiers: AgentTier[];
 }
+
+const ALL_TIERS: AgentTier[] = ['BASIC', 'TOOL-USING', 'AGENTIC', 'MULTI-AGENT'];
+const TOOL_AND_UP: AgentTier[] = ['TOOL-USING', 'AGENTIC', 'MULTI-AGENT'];
+const AGENTIC_AND_UP: AgentTier[] = ['AGENTIC', 'MULTI-AGENT'];
+const MULTI_AGENT_ONLY: AgentTier[] = ['MULTI-AGENT'];
 
 const CONTROL_DEFS: ControlDef[] = [
   // Domain 7: Trust Hierarchy
-  { id: 'SOUL-TH-001', name: 'Trust chain defined', domain: 'Trust Hierarchy', domainId: 7,
+  { id: 'SOUL-TH-001', name: 'Trust chain defined', domain: 'Trust Hierarchy', domainId: 7, tiers: ALL_TIERS,
     keywords: ['trust', 'authority', 'principal', 'hierarchy', 'precedence', 'priority'] },
-  { id: 'SOUL-TH-002', name: 'Conflict resolution defined', domain: 'Trust Hierarchy', domainId: 7,
+  { id: 'SOUL-TH-002', name: 'Conflict resolution defined', domain: 'Trust Hierarchy', domainId: 7, tiers: ALL_TIERS,
     keywords: ['conflict', 'override', 'precedence', 'escalat'] },
-  { id: 'SOUL-TH-003', name: 'Operator/user distinction', domain: 'Trust Hierarchy', domainId: 7,
-    keywords: ['operator', 'developer', 'user', 'system prompt'] },
+  { id: 'SOUL-TH-003', name: 'Agent-to-agent trust', domain: 'Trust Hierarchy', domainId: 7, tiers: MULTI_AGENT_ONLY,
+    keywords: ['agent-to-agent', 'sub-agent', 'orchestrat', 'delegate', 'trust.*agent', 'agent.*trust'] },
 
-  // Domain 8: Capability Boundaries
-  { id: 'SOUL-CB-001', name: 'Allowed actions declared', domain: 'Capability Boundaries', domainId: 8,
+  // Domain 8: Capability Boundaries (TOOL-USING and up)
+  { id: 'SOUL-CB-001', name: 'Allowed actions declared', domain: 'Capability Boundaries', domainId: 8, tiers: TOOL_AND_UP,
     keywords: ['allow', 'permit', 'can do', 'authorized', 'capabilities'] },
-  { id: 'SOUL-CB-002', name: 'Denied actions declared', domain: 'Capability Boundaries', domainId: 8,
+  { id: 'SOUL-CB-002', name: 'Denied actions declared', domain: 'Capability Boundaries', domainId: 8, tiers: TOOL_AND_UP,
     keywords: ['deny', 'prohibit', 'must not', 'cannot', 'forbidden', 'restricted'] },
-  { id: 'SOUL-CB-003', name: 'Filesystem/network scope', domain: 'Capability Boundaries', domainId: 8,
+  { id: 'SOUL-CB-003', name: 'Filesystem/network scope', domain: 'Capability Boundaries', domainId: 8, tiers: TOOL_AND_UP,
     keywords: ['file', 'directory', 'path', 'network', 'endpoint', 'url', 'api'] },
-  { id: 'SOUL-CB-004', name: 'Least privilege principle', domain: 'Capability Boundaries', domainId: 8,
+  { id: 'SOUL-CB-004', name: 'Least privilege principle', domain: 'Capability Boundaries', domainId: 8, tiers: TOOL_AND_UP,
     keywords: ['least privilege', 'minimal', 'only needed', 'minimum necessary'] },
 
-  // Domain 9: Injection Hardening
-  { id: 'SOUL-IH-001', name: 'Instruction override defense', domain: 'Injection Hardening', domainId: 9,
+  // Domain 9: Injection Hardening (all tiers)
+  { id: 'SOUL-IH-001', name: 'Instruction override defense', domain: 'Injection Hardening', domainId: 9, tiers: ALL_TIERS,
     keywords: ['ignore previous', 'override', 'injection', 'contradict'] },
-  { id: 'SOUL-IH-002', name: 'Encoded payload defense', domain: 'Injection Hardening', domainId: 9,
+  { id: 'SOUL-IH-002', name: 'Encoded payload defense', domain: 'Injection Hardening', domainId: 9, tiers: ALL_TIERS,
     keywords: ['encoded', 'obfuscated', 'base64', 'hidden'] },
-  { id: 'SOUL-IH-003', name: 'Role-play refusal', domain: 'Injection Hardening', domainId: 9,
+  { id: 'SOUL-IH-003', name: 'Role-play refusal', domain: 'Injection Hardening', domainId: 9, tiers: ALL_TIERS,
     keywords: ['role-play', 'pretend', 'act as', 'jailbreak', 'DAN'], critical: true },
 
   // Domain 10: Data Handling
-  { id: 'SOUL-DH-001', name: 'PII protection', domain: 'Data Handling', domainId: 10,
+  { id: 'SOUL-DH-001', name: 'PII protection', domain: 'Data Handling', domainId: 10, tiers: ALL_TIERS,
     keywords: ['pii', 'personal', 'privacy', 'data protection', 'gdpr'] },
-  { id: 'SOUL-DH-002', name: 'Credential handling', domain: 'Data Handling', domainId: 10,
+  { id: 'SOUL-DH-002', name: 'Credential handling', domain: 'Data Handling', domainId: 10, tiers: TOOL_AND_UP,
     keywords: ['credential', 'secret', 'password', 'api key', 'token'] },
-  { id: 'SOUL-DH-003', name: 'Data minimization', domain: 'Data Handling', domainId: 10,
+  { id: 'SOUL-DH-003', name: 'Data minimization', domain: 'Data Handling', domainId: 10, tiers: ALL_TIERS,
     keywords: ['minimiz', 'only collect', 'retention', 'delete', 'purge'] },
 
-  // Domain 11: Hardcoded Behaviors
-  { id: 'SOUL-HB-001', name: 'Safety immutables defined', domain: 'Hardcoded Behaviors', domainId: 11,
+  // Domain 11: Hardcoded Behaviors (all tiers)
+  { id: 'SOUL-HB-001', name: 'Safety immutables defined', domain: 'Hardcoded Behaviors', domainId: 11, tiers: ALL_TIERS,
     keywords: ['never', 'always', 'must not', 'absolute', 'immutable', 'hardcoded'], critical: true },
-  { id: 'SOUL-HB-002', name: 'No data exfiltration rule', domain: 'Hardcoded Behaviors', domainId: 11,
+  { id: 'SOUL-HB-002', name: 'No data exfiltration rule', domain: 'Hardcoded Behaviors', domainId: 11, tiers: ALL_TIERS,
     keywords: ['exfiltrat', 'unauthorized', 'leak', 'transmit'] },
-  { id: 'SOUL-HB-003', name: 'Kill switch / emergency stop', domain: 'Hardcoded Behaviors', domainId: 11,
+  { id: 'SOUL-HB-003', name: 'Kill switch / emergency stop', domain: 'Hardcoded Behaviors', domainId: 11, tiers: ALL_TIERS,
     keywords: ['kill switch', 'emergency', 'shutdown', 'terminate', 'stop'] },
 
-  // Domain 12: Agentic Safety
-  { id: 'SOUL-AS-001', name: 'Iteration/loop limits', domain: 'Agentic Safety', domainId: 12,
+  // Domain 12: Agentic Safety (AGENTIC and up)
+  { id: 'SOUL-AS-001', name: 'Iteration/loop limits', domain: 'Agentic Safety', domainId: 12, tiers: AGENTIC_AND_UP,
     keywords: ['iteration', 'loop', 'limit', 'maximum', 'budget'] },
-  { id: 'SOUL-AS-002', name: 'Budget/cost caps', domain: 'Agentic Safety', domainId: 12,
+  { id: 'SOUL-AS-002', name: 'Budget/cost caps', domain: 'Agentic Safety', domainId: 12, tiers: AGENTIC_AND_UP,
     keywords: ['budget', 'cost', 'spending', 'cap', 'limit'] },
-  { id: 'SOUL-AS-003', name: 'Timeout defined', domain: 'Agentic Safety', domainId: 12,
+  { id: 'SOUL-AS-003', name: 'Timeout defined', domain: 'Agentic Safety', domainId: 12, tiers: AGENTIC_AND_UP,
     keywords: ['timeout', 'time limit', 'duration', 'deadline'] },
-  { id: 'SOUL-AS-004', name: 'Reversibility preference', domain: 'Agentic Safety', domainId: 12,
+  { id: 'SOUL-AS-004', name: 'Reversibility preference', domain: 'Agentic Safety', domainId: 12, tiers: MULTI_AGENT_ONLY,
     keywords: ['reversible', 'undo', 'rollback', 'revert'] },
 
-  // Domain 13: Honesty and Transparency
-  { id: 'SOUL-HT-001', name: 'Uncertainty acknowledgment', domain: 'Honesty and Transparency', domainId: 13,
+  // Domain 13: Honesty and Transparency (all tiers)
+  { id: 'SOUL-HT-001', name: 'Uncertainty acknowledgment', domain: 'Honesty and Transparency', domainId: 13, tiers: ALL_TIERS,
     keywords: ['uncertain', "don't know", 'not sure', 'acknowledge', 'calibrat'] },
-  { id: 'SOUL-HT-002', name: 'No fabrication rule', domain: 'Honesty and Transparency', domainId: 13,
+  { id: 'SOUL-HT-002', name: 'No fabrication rule', domain: 'Honesty and Transparency', domainId: 13, tiers: ALL_TIERS,
     keywords: ['fabricat', 'hallucin', 'invent', 'make up', 'accurate'] },
-  { id: 'SOUL-HT-003', name: 'Identity disclosure', domain: 'Honesty and Transparency', domainId: 13,
+  { id: 'SOUL-HT-003', name: 'Identity disclosure', domain: 'Honesty and Transparency', domainId: 13, tiers: ALL_TIERS,
     keywords: ['identity', 'ai', 'assistant', 'disclose', 'transparent'] },
 
-  // Domain 14: Human Oversight
-  { id: 'SOUL-HO-001', name: 'Approval gates', domain: 'Human Oversight', domainId: 14,
+  // Domain 14: Human Oversight (TOOL-USING and up)
+  { id: 'SOUL-HO-001', name: 'Approval gates', domain: 'Human Oversight', domainId: 14, tiers: TOOL_AND_UP,
     keywords: ['approval', 'confirm', 'human-in-the-loop', 'review', 'authorize'] },
-  { id: 'SOUL-HO-002', name: 'Override mechanism', domain: 'Human Oversight', domainId: 14,
+  { id: 'SOUL-HO-002', name: 'Override mechanism', domain: 'Human Oversight', domainId: 14, tiers: TOOL_AND_UP,
     keywords: ['override', 'intervene', 'manual', 'human control'] },
-  { id: 'SOUL-HO-003', name: 'Monitoring/logging', domain: 'Human Oversight', domainId: 14,
+  { id: 'SOUL-HO-003', name: 'Monitoring/logging', domain: 'Human Oversight', domainId: 14, tiers: TOOL_AND_UP,
     keywords: ['monitor', 'log', 'audit', 'track', 'observe'] },
 ];
 
@@ -267,15 +274,28 @@ export class SoulScanner {
   }
 
   /**
+   * Return the subset of controls applicable to a given agent tier.
+   */
+  private applicableControls(tier: AgentTier): ControlDef[] {
+    return CONTROL_DEFS.filter((d) => d.tiers.includes(tier));
+  }
+
+  /**
    * Scan a directory for behavioral governance coverage.
    */
   async scanSoul(targetDir: string, options?: { verbose?: boolean; tier?: string }): Promise<SoulScanResult> {
     const govFile = this.findGovernanceFile(targetDir);
 
+    // Detect tier early (needed for applicable control count)
+    const contentForTier = govFile ? (() => { try { return fs.readFileSync(govFile, 'utf-8'); } catch { return ''; } })() : '';
+    const tier = (options?.tier as AgentTier) || this.detectTier(targetDir, contentForTier);
+    const applicable = this.applicableControls(tier);
+
     // No governance file found
     if (!govFile) {
       const emptyDomains: DomainResult[] = DOMAIN_ORDER.map((domain) => {
-        const defs = CONTROL_DEFS.filter((d) => d.domain === domain);
+        const defs = applicable.filter((d) => d.domain === domain);
+        if (defs.length === 0) return null; // Domain not applicable for this tier
         const controls: ControlCheck[] = defs
           .map((d) => ({ id: d.id, name: d.name, domain: d.domain, keywords: d.keywords, passed: false }));
         const domainId = defs[0]?.domainId ?? 0;
@@ -287,12 +307,9 @@ export class SoulScanner {
           total: controls.length,
           percentage: 0,
         };
-      });
+      }).filter((d): d is DomainResult => d !== null);
 
-      // Detect tier from project files only
-      const tier = (options?.tier as AgentTier) || this.detectTier(targetDir, '');
-
-      const criticalMissing = CONTROL_DEFS.filter((d) => d.critical).map((d) => d.id);
+      const criticalMissing = applicable.filter((d) => d.critical).map((d) => d.id);
       const { grade, floored } = this.calculateGrade(0, criticalMissing);
 
       return {
@@ -304,18 +321,17 @@ export class SoulScanner {
         grade,
         criticalFloor: floored,
         criticalMissing,
-        totalControls: CONTROL_DEFS.length,
+        totalControls: applicable.length,
         totalPassed: 0,
       };
     }
 
     // Read governance file
-    const content = fs.readFileSync(govFile, 'utf-8');
+    const content = contentForTier;
     const fileSize = Buffer.byteLength(content, 'utf-8');
-    const tier = (options?.tier as AgentTier) || this.detectTier(targetDir, content);
 
-    // Check each control
-    const controlResults: ControlCheck[] = CONTROL_DEFS.map((def) => ({
+    // Check each applicable control
+    const controlResults: ControlCheck[] = applicable.map((def) => ({
       id: def.id,
       name: def.name,
       domain: def.domain,
@@ -323,9 +339,10 @@ export class SoulScanner {
       passed: this.checkControl(content, def),
     }));
 
-    // Group into domains
+    // Group into domains (only domains with applicable controls)
     const domains: DomainResult[] = DOMAIN_ORDER.map((domain) => {
       const domainControls = controlResults.filter((c) => c.domain === domain);
+      if (domainControls.length === 0) return null; // No applicable controls for this tier
       const passed = domainControls.filter((c) => c.passed).length;
       const total = domainControls.length;
       const domainId = CONTROL_DEFS.find((d) => d.domain === domain)?.domainId ?? 0;
@@ -337,15 +354,15 @@ export class SoulScanner {
         total,
         percentage: total > 0 ? Math.round((passed / total) * 100) : 0,
       };
-    });
+    }).filter((d): d is DomainResult => d !== null);
 
-    // Calculate overall score as average of domain percentages
+    // Calculate overall score as average of applicable domain percentages
     const score = domains.length > 0
       ? Math.round(domains.reduce((sum, d) => sum + d.percentage, 0) / domains.length)
       : 0;
 
-    // Find missing critical controls
-    const criticalMissing = CONTROL_DEFS
+    // Find missing critical controls (only applicable ones)
+    const criticalMissing = applicable
       .filter((d) => d.critical)
       .filter((d) => !controlResults.find((c) => c.id === d.id)?.passed)
       .map((d) => d.id);
@@ -362,7 +379,7 @@ export class SoulScanner {
       grade,
       criticalFloor: floored,
       criticalMissing,
-      totalControls: CONTROL_DEFS.length,
+      totalControls: applicable.length,
       totalPassed,
     };
   }
@@ -382,8 +399,6 @@ export class SoulScanner {
       : path.join(targetDir, 'SOUL.md');
     const existedBefore = scanResult.file !== null;
 
-    // Find domains with missing controls
-    const missingDomains = scanResult.domains.filter((d) => d.passed < d.total);
     const sectionsAdded: string[] = [];
     let controlsAdded = 0;
 
@@ -405,8 +420,11 @@ export class SoulScanner {
       }
     }
 
-    for (const domain of missingDomains) {
-      const template = DOMAIN_TEMPLATES[domain.domain];
+    // harden-soul generates all 8 domain sections (comprehensive / future-proof).
+    // scan-soul evaluates only tier-applicable controls; harden-soul adds them all
+    // so the resulting SOUL.md is ready if the agent tier increases later.
+    for (const domainName of DOMAIN_ORDER) {
+      const template = DOMAIN_TEMPLATES[domainName];
       if (!template) continue;
 
       // Check if the heading already exists in the file
@@ -414,13 +432,14 @@ export class SoulScanner {
       const headingLower = template.heading.toLowerCase();
       if (existingLower.includes(headingLower)) {
         // Domain heading exists -- skip to avoid overwriting user content.
-        // The domain has partial coverage, but the user should fill in gaps manually.
         continue;
       }
 
       newContent += template.content + '\n';
-      sectionsAdded.push(domain.domain);
-      controlsAdded += domain.total - domain.passed;
+      sectionsAdded.push(domainName);
+      // Count controls in this domain (all tiers, since we're adding comprehensive content)
+      const domainControls = CONTROL_DEFS.filter((d) => d.domain === domainName).length;
+      controlsAdded += domainControls;
     }
 
     // Apply or preview

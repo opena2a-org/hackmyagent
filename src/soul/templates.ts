@@ -168,11 +168,11 @@ If the agent detects it is operating outside its intended parameters:
 - Maintain rollback capability for recent actions when feasible.
 `,
   },
-  'Honesty & Transparency': {
+  'Honesty and Transparency': {
     domainId: 13,
-    domainName: 'Honesty & Transparency',
-    heading: '## Honesty & Transparency',
-    content: `## Honesty & Transparency
+    domainName: 'Honesty and Transparency',
+    heading: '## Honesty and Transparency',
+    content: `## Honesty and Transparency
 
 ### Uncertainty Acknowledgment
 - When uncertain about an answer, the agent must say so explicitly.
