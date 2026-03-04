@@ -150,6 +150,19 @@ export { createPlugin as createSkillguardPlugin } from './plugins/skillguard';
 // Agent Runtime Protection
 export { AgentRuntimeProtection } from './arp';
 
+// Soul module (Behavioral Governance Scanner)
+export { SoulScanner, CONTROL_DEFS, DOMAIN_ORDER, GOVERNANCE_FILES } from './soul';
+export type {
+  AgentTier,
+  SoulGrade,
+  ControlCheck,
+  DomainResult,
+  SoulScanResult,
+  HardenResult,
+} from './soul';
+export { DOMAIN_TEMPLATES } from './soul';
+export type { DomainTemplate } from './soul';
+
 // Legacy scanner (for scan command)
 export interface ScanResult {
   target: string;
