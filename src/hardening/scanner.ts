@@ -4124,7 +4124,7 @@ dist/
     try {
       await fs.access(backupBaseDir);
     } catch {
-      throw new Error('No backup found. Cannot rollback.');
+      throw new Error('No backup found. Run hackmyagent harden --fix <dir> first to create a backup.');
     }
 
     // Find the most recent backup
@@ -4135,7 +4135,7 @@ dist/
       .reverse();
 
     if (sortedBackups.length === 0) {
-      throw new Error('No backup found. Cannot rollback.');
+      throw new Error('No backup found. Run hackmyagent harden --fix <dir> first to create a backup.');
     }
 
     const latestBackup = sortedBackups[0];
@@ -4150,7 +4150,7 @@ dist/
       );
       manifest = JSON.parse(manifestContent);
     } catch {
-      throw new Error('Backup manifest is corrupted. Cannot rollback.');
+      throw new Error('Backup manifest is corrupted. Delete ~/.hackmyagent/backups/ and re-run hackmyagent harden --fix.');
     }
 
     // Restore existing files from backup

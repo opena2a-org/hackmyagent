@@ -130,12 +130,12 @@ export class RegistryClient {
       });
 
       if (response.status === 404) {
-        console.error(`Registry: package "${packageName}" not found in registry`);
+        console.error(`Registry: package "${packageName}" not found in registry. Check the package name or register it at https://registry.opena2a.org`);
         return null;
       }
 
       if (response.status === 429) {
-        console.error('Registry: rate limited — try again later');
+        console.error('Registry: rate limited. Try again in a few minutes, or use --skip-registry to skip registry checks.');
         return null;
       }
 

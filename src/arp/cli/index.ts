@@ -143,6 +143,12 @@ async function startProxy(): Promise<void> {
 
   if (!config.proxy) {
     console.error('  Error: No proxy configuration found. Add a "proxy" section to your config.');
+    console.error('');
+    console.error('  Example:');
+    console.error('    proxy:');
+    console.error('      listen: 127.0.0.1:8080');
+    console.error('      target: http://localhost:3000');
+    console.error('      tls: false');
     process.exit(1);
   }
 
