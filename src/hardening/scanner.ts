@@ -5763,7 +5763,7 @@ dist/
           message: `Skill matches known malicious pattern: "${matchedPattern}"`,
           file: relativePath,
           fixable: false,
-          fix: 'Remove this skill immediately - it matches known malware from the ClawHavoc campaign',
+          fix: 'Remove this skill -- it matches known malware from the ClawHavoc campaign',
         });
       }
 
@@ -5798,7 +5798,7 @@ dist/
             message: `Known C2 IP address found: ${ip}`,
             file: relativePath,
             fixable: false,
-            fix: 'Remove this skill immediately - contains known malware C2 infrastructure',
+            fix: 'Remove this skill -- contains known malware C2 infrastructure',
           });
           break;
         }
@@ -5817,7 +5817,7 @@ dist/
             message: `Known malware filename referenced: "${filename}"`,
             file: relativePath,
             fixable: false,
-            fix: 'Remove this skill immediately - references known malware payload',
+            fix: 'Remove this skill -- references known malware payload',
           });
           break;
         }

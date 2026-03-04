@@ -73,7 +73,7 @@ if (noColorEnv) {
 
 // Deprecation warning for removed HMAC auth
 if (process.env.HMA_COMMUNITY_SECRET) {
-  console.error('Warning: HMA_COMMUNITY_SECRET is deprecated and no longer used. Scan tokens are now issued automatically.');
+  console.error('Note: HMA_COMMUNITY_SECRET is deprecated and no longer used. Scan tokens are now issued automatically.');
 }
 
 program
@@ -1521,7 +1521,7 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean): void {
     if (verbose || catResult.failed > 0) {
       for (const ctrl of catResult.controls) {
         if (ctrl.status === 'failed') {
-          console.log(`     ❌ ${ctrl.controlId}: ${ctrl.name}`);
+          console.log(`     [-] ${ctrl.controlId}: ${ctrl.name}`);
           if (verbose) {
             for (const finding of ctrl.findings) {
               console.log(`        └─ ${finding}`);
@@ -2734,7 +2734,7 @@ function printAttackReport(report: AttackReport, verbose: boolean): void {
   for (const [cat, stats] of Object.entries(report.summary.byCategory)) {
     if (stats.total === 0) continue;
     const catInfo = ATTACK_CATEGORIES[cat as AttackCategory];
-    const icon = stats.successful > 0 ? '❌' : '✅';
+    const icon = stats.successful > 0 ? '[-]' : '[+]';
     console.log(`  ${icon} ${catInfo.name}: ${stats.successful}/${stats.total} successful`);
   }
   console.log();
@@ -2769,8 +2769,23 @@ function printAttackReport(report: AttackReport, verbose: boolean): void {
   }
 
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-  console.log(`\nUse --verbose for detailed attack results.`);
-  console.log(`Use --intensity aggressive for advanced attacks.\n`);
+  // Inconclusive explanation (when there are inconclusive results)
+  if (report.summary.inconclusive > 0) {
+    console.log(`Note: ${report.summary.inconclusive} result(s) were inconclusive -- no clear success or block`);
+    console.log(`indicators matched the simulated response.`);
+    if (report.targetType === 'local') {
+      console.log(`Run against a live endpoint (without --local) for active testing with real responses.`);
+    }
+    console.log();
+  }
+
+  if (!verbose) {
+    console.log(`\nUse --verbose for detailed attack results.`);
+  }
+  if (report.intensity !== 'aggressive') {
+    console.log(`Use --intensity aggressive for advanced attacks.`);
+  }
+  console.log();
 }
 
 // Generate SARIF output for attack results
@@ -3848,7 +3863,7 @@ Examples:
 
         // Warn if scan is incomplete due to plugin errors
         if (pluginErrors > 0) {
-          console.log(`\n${colors.brightRed}[!!] WARNING: ${pluginErrors} plugin(s) failed — scan results are incomplete${RESET()}`);
+          console.log(`\n${colors.brightRed}[!!] Note: ${pluginErrors} plugin(s) failed -- scan results are incomplete${RESET()}`);
           console.log(`     Re-run with --verbose for details.\n`);
         }
 

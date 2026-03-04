@@ -65,8 +65,8 @@ export class AttackScanner {
         break;
       }
 
-      // Rate limiting delay
-      if (opts.delay && opts.delay > 0) {
+      // Rate limiting delay (skip for local simulation — no network calls to throttle)
+      if (target.type !== 'local' && opts.delay && opts.delay > 0) {
         await this.sleep(opts.delay);
       }
     }
@@ -391,7 +391,10 @@ export class AttackScanner {
   private async simulateLocal(payload: AttackPayload, target: AttackTarget): Promise<string> {
     // Local simulation - useful for testing payloads without actual API
     // Returns a simulated "safe" response
-    return `[LOCAL SIMULATION] Payload ${payload.id} received. This is a simulated response for testing. The agent would respond here.`;
+    const context = target.localPath
+      ? `against local directory ${target.localPath}`
+      : 'in simulation mode';
+    return `[LOCAL SIMULATION] Payload ${payload.id} evaluated ${context}. No live endpoint available -- response patterns cannot be analyzed without a running agent.`;
   }
 
   /**
