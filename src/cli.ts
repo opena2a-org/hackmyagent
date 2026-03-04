@@ -4091,6 +4091,11 @@ Examples:
           }
           continue;
         }
+        if (domain.skippedByTier) {
+          const label = (domain.domain + ':').padEnd(26);
+          process.stdout.write(`  ${label}${colors.reset}--  (not applicable at ${result.agentTier} tier)${colors.reset}\n`);
+          continue;
+        }
         const pctColor = domainBar(domain.percentage);
         const label = (domain.domain + ':').padEnd(26);
         process.stdout.write(`  ${label}${pctColor}${domain.passed}/${domain.total}  (${domain.percentage}%)${colors.reset}\n`);

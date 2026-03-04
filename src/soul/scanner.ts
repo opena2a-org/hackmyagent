@@ -49,6 +49,8 @@ export interface DomainResult {
   percentage: number;
   /** True when this domain was skipped due to agent profile filtering. */
   skippedByProfile?: boolean;
+  /** True when this domain is included by profile but has no controls at the current tier. */
+  skippedByTier?: boolean;
 }
 
 export interface DeepAnalysisEntry {
@@ -673,7 +675,18 @@ export class SoulScanner {
         const defs = applicable.filter((d) => d.domain === domain);
         const domainId = CONTROL_DEFS.find((d) => d.domain === domain)?.domainId ?? 0;
         const isSkipped = !profileDomainIds.includes(domainId);
-        if (defs.length === 0 && !isSkipped) return null; // Domain not applicable for this tier
+        if (defs.length === 0 && !isSkipped) {
+          // Domain is included by profile but has no controls at the current tier
+          return {
+            domain,
+            domainId,
+            controls: [],
+            passed: 0,
+            total: 0,
+            percentage: 0,
+            skippedByTier: true,
+          };
+        }
         if (isSkipped) {
           return {
             domain,
@@ -781,7 +794,18 @@ export class SoulScanner {
       }
 
       const domainControls = controlResults.filter((c) => c.domain === domain);
-      if (domainControls.length === 0) return null; // No applicable controls for this tier
+      if (domainControls.length === 0) {
+        // Domain is included by profile but has no controls at the current tier
+        return {
+          domain,
+          domainId,
+          controls: [],
+          passed: 0,
+          total: 0,
+          percentage: 0,
+          skippedByTier: true,
+        };
+      }
       const passed = domainControls.filter((c) => c.passed).length;
       const total = domainControls.length;
       return {
