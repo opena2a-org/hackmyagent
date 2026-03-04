@@ -48,6 +48,7 @@ import {
   type SoulScanResult,
   type DomainResult,
   type SoulGrade,
+  type SoulLevel,
 } from './index';
 
 const program = new Command();
@@ -3895,6 +3896,38 @@ function gradeColor(grade: SoulGrade): string {
   }
 }
 
+function levelColor(level: SoulLevel): string {
+  switch (level) {
+    case 'hardened': return colors.green;
+    case 'standard': return colors.green;
+    case 'developing': return colors.yellow;
+    case 'initial': return colors.cyan;
+    case 'not-started': return colors.reset;
+  }
+}
+
+function levelLabel(level: SoulLevel): string {
+  switch (level) {
+    case 'hardened': return 'Hardened';
+    case 'standard': return 'Standard';
+    case 'developing': return 'Developing';
+    case 'initial': return 'Initial';
+    case 'not-started': return 'Not Started';
+  }
+}
+
+/**
+ * Detect how the CLI was invoked to suggest correct command prefix.
+ */
+function getCommandPrefix(): string {
+  const execPath = process.argv[1] || '';
+  if (execPath.includes('npx') || execPath.includes('.npm/_npx') ||
+      execPath.includes('node_modules/.bin')) {
+    return 'npx hackmyagent';
+  }
+  return 'hackmyagent';
+}
+
 // Domain percentage bar for text output
 function domainBar(pct: number): string {
   if (pct >= 80) return colors.green;
@@ -3915,34 +3948,32 @@ Searches for governance files in priority order:
   > .github/copilot-instructions.md > CLAUDE.md > .clinerules
   > instructions.md > constitution.md > agent-config.yaml
 
-Domains checked (OASB v2):
-  7. Trust Hierarchy         8. Capability Boundaries
-  9. Injection Hardening    10. Data Handling
-  11. Hardcoded Behaviors   12. Agentic Safety
-  13. Honesty & Transparency 14. Human Oversight
+Agent profiles filter domains by agent purpose:
+  conversational:  Injection, Hardcoded, Honesty
+  code-assistant:  + Trust, Data
+  tool-agent:      + Capability, Oversight
+  autonomous:      + Agentic Safety
+  orchestrator:    All 8 domains
 
-Grade: A (80-100), B (60-79), C (40-59), D (20-39), F (0-19)
-Critical floor: Missing SOUL-IH-003 or SOUL-HB-001 caps grade at C.
-
-Conformance levels:
-  none:      one or more critical controls missing
-  essential: all critical controls pass, score < 60
-  standard:  all critical controls pass, score >= 60
-  hardened:  all critical controls pass, score >= 75
+Maturity levels:
+  Hardened (80+), Standard (60-79), Developing (40-59),
+  Initial (1-39), Not Started (0)
 
 Examples:
   $ hackmyagent scan-soul                    Scan current directory
   $ hackmyagent scan-soul ./my-agent         Scan specific directory
   $ hackmyagent scan-soul --json             Machine-readable output
   $ hackmyagent scan-soul --verbose          Show all controls
+  $ hackmyagent scan-soul --profile conversational  Override profile
   $ hackmyagent scan-soul --deep             Enable LLM semantic analysis`)
   .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
   .option('--json', 'Output as JSON')
   .option('-v, --verbose', 'Show individual control results')
   .option('--tier <tier>', 'Override agent tier detection (BASIC, TOOL-USING, AGENTIC, MULTI-AGENT)')
+  .option('--profile <profile>', 'Override agent profile (conversational, code-assistant, tool-agent, autonomous, orchestrator, custom)')
   .option('--fail-below <score>', 'Exit 1 if score below threshold (0-100)')
   .option('--deep', 'Enable LLM semantic analysis for ambiguous controls (requires claude CLI or ANTHROPIC_API_KEY)')
-  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; failBelow?: string; deep?: boolean }) => {
+  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
@@ -3951,10 +3982,12 @@ Examples:
         process.exit(1);
       }
 
+      const prefix = getCommandPrefix();
       const scanner = new SoulScanner();
       const result = await scanner.scanSoul(targetDir, {
         verbose: options.verbose,
         tier: options.tier,
+        profile: options.profile,
         deepAnalysis: options.deep,
       });
 
@@ -3983,11 +4016,24 @@ Examples:
       }
 
       const tierLabel = result.tierForced ? `${result.agentTier} (--tier flag)` : `${result.agentTier} (auto-detected)`;
-      process.stdout.write(`Agent Tier: ${tierLabel}\n\n`);
+      const profileLabel = result.profileForced ? `${result.agentProfile} (--profile flag)` : `${result.agentProfile} (auto-detected)`;
+      process.stdout.write(`Agent Tier: ${tierLabel}\n`);
+      process.stdout.write(`Agent Profile: ${profileLabel}\n`);
+      if (result.skippedDomains.length > 0) {
+        process.stdout.write(`Skipped Domains: ${result.skippedDomains.join(', ')}\n`);
+      }
+      process.stdout.write('\n');
 
       process.stdout.write('Domain Scores:\n');
 
       for (const domain of result.domains) {
+        if (domain.skippedByProfile) {
+          if (options.verbose) {
+            const label = (domain.domain + ':').padEnd(26);
+            process.stdout.write(`  ${label}${colors.reset}--  (skipped by profile)${colors.reset}\n`);
+          }
+          continue;
+        }
         const pctColor = domainBar(domain.percentage);
         const label = (domain.domain + ':').padEnd(26);
         process.stdout.write(`  ${label}${pctColor}${domain.passed}/${domain.total}  (${domain.percentage}%)${colors.reset}\n`);
@@ -4005,9 +4051,9 @@ Examples:
 
       process.stdout.write('\n');
 
-      // Score and grade
-      const gc = gradeColor(result.grade);
-      process.stdout.write(`Governance Score: ${gc}${result.score}/100 (Grade: ${result.grade})${colors.reset}\n`);
+      // Score and level (progress-oriented)
+      const lc = levelColor(result.level);
+      process.stdout.write(`Governance Score: ${lc}${result.score}/100 [${levelLabel(result.level)}]${colors.reset}\n`);
 
       // Conformance level
       if (result.conformance === 'none') {
@@ -4028,11 +4074,12 @@ Examples:
         process.stdout.write(`Deep Analysis: ${llmUpgraded} control${llmUpgraded === 1 ? '' : 's'} upgraded by LLM semantic analysis\n`);
       }
 
-      // Path forward
+      // Path forward (recovery-oriented, not punitive)
       const missing = result.totalControls - result.totalPassed;
       if (missing > 0) {
-        process.stdout.write(`\n${missing} control${missing === 1 ? '' : 's'} missing.`);
-        process.stdout.write(` Run '${colors.cyan}hackmyagent harden-soul${colors.reset}' to remediate.\n`);
+        const recoverable = Math.min(100 - result.score, 100);
+        process.stdout.write(`\n  Path forward: +${recoverable} recoverable by addressing ${missing} control${missing === 1 ? '' : 's'}`);
+        process.stdout.write(`\n  Run '${colors.cyan}${prefix} harden-soul${colors.reset}' to remediate.\n`);
       } else {
         process.stdout.write(`\n${colors.green}All ${result.totalControls} governance controls covered.${colors.reset}\n`);
       }
@@ -4059,6 +4106,8 @@ program
 
 Runs scan-soul internally to identify missing controls, then generates
 template content for each missing domain. Existing content is preserved.
+Supports iterative hardening: if a domain heading exists but controls
+fail within it, appends targeted remediation for those controls.
 
 Modes:
   Default:    Append missing sections to SOUL.md (or create it)
@@ -4071,8 +4120,9 @@ Examples:
   $ hackmyagent harden-soul --json           Machine-readable output`)
   .argument('[directory]', 'Directory to harden (defaults to current directory)', '.')
   .option('--dry-run', 'Preview changes without modifying files')
+  .option('--profile <profile>', 'Override agent profile (conversational, code-assistant, tool-agent, autonomous, orchestrator, custom)')
   .option('--json', 'Output as JSON')
-  .action(async (directory: string, options: { dryRun?: boolean; json?: boolean }) => {
+  .action(async (directory: string, options: { dryRun?: boolean; profile?: string; json?: boolean }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
@@ -4081,8 +4131,9 @@ Examples:
         process.exit(1);
       }
 
+      const prefix = getCommandPrefix();
       const scanner = new SoulScanner();
-      const result = await scanner.hardenSoul(targetDir, { dryRun: options.dryRun });
+      const result = await scanner.hardenSoul(targetDir, { dryRun: options.dryRun, profile: options.profile });
 
       // JSON output
       if (options.json) {
@@ -4101,7 +4152,7 @@ Examples:
       // Text output
       if (result.sectionsAdded.length === 0) {
         process.stdout.write(`\n${colors.green}All governance domains already have sections in ${result.file}.${colors.reset}\n`);
-        process.stdout.write(`Run 'hackmyagent scan-soul --verbose' to see individual control coverage.\n\n`);
+        process.stdout.write(`Run '${prefix} scan-soul --verbose' to see individual control coverage.\n\n`);
         return;
       }
 
@@ -4139,7 +4190,7 @@ Examples:
         }
         process.stdout.write(`Controls covered: +${result.controlsAdded}\n\n`);
 
-        process.stdout.write(`Run '${colors.cyan}hackmyagent scan-soul${colors.reset}' to verify coverage.\n\n`);
+        process.stdout.write(`Run '${colors.cyan}${prefix} scan-soul${colors.reset}' to verify coverage.\n\n`);
       }
     } catch (error) {
       process.stderr.write(`Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`);

@@ -6,7 +6,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { SoulScanner, CONTROL_DEFS, DOMAIN_ORDER } from './scanner';
+import { SoulScanner, CONTROL_DEFS, DOMAIN_ORDER, PROFILE_DOMAINS } from './scanner';
+import type { AgentProfile } from './scanner';
+import { DOMAIN_TEMPLATES } from './templates';
 
 // Helper: create a temporary directory
 function createTempDir(): string {
@@ -428,7 +430,8 @@ Training cutoff date. Acknowledge limitation caveat.
       expect(result.existedBefore).toBe(false);
       expect(result.file).toBe('SOUL.md');
       expect(result.sectionsAdded.length).toBe(8); // all 8 domains always added (comprehensive)
-      expect(result.controlsAdded).toBe(CONTROL_DEFS.length);
+      // controlsAdded counts actually-passing controls from template content
+      expect(result.controlsAdded).toBeGreaterThanOrEqual(60);
 
       // Verify file was created with all sections
       const content = fs.readFileSync(path.join(tmpDir, 'SOUL.md'), 'utf-8');
@@ -440,10 +443,13 @@ Training cutoff date. Acknowledge limitation caveat.
       expect(content).toContain('Agentic Safety');
       expect(content).toContain('Honesty and Transparency');
       expect(content).toContain('Human Oversight');
+      // Verify tier/profile markers are written
+      expect(content).toMatch(/<!--\s*soul:tier=/);
+      expect(content).toMatch(/<!--\s*soul:profile=/);
     });
 
-    it('appends only missing sections to existing SOUL.md', async () => {
-      // Create a SOUL.md with Trust Hierarchy already covered
+    it('appends missing sections and augments existing ones', async () => {
+      // Create a SOUL.md with Trust Hierarchy heading but minimal content
       const existingContent = `# My Agent
 
 ## Trust Hierarchy
@@ -455,10 +461,12 @@ Operator sets rules, user follows.
 
       const result = await scanner.hardenSoul(tmpDir);
       expect(result.existedBefore).toBe(true);
-      // Trust Hierarchy should NOT be in sectionsAdded since the heading exists
-      expect(result.sectionsAdded).not.toContain('Trust Hierarchy');
-      // Other 7 domains should be added
-      expect(result.sectionsAdded.length).toBe(7);
+      // Trust Hierarchy should be augmented (heading exists but controls fail)
+      const thEntry = result.sectionsAdded.find((s) => s.startsWith('Trust Hierarchy'));
+      expect(thEntry).toBeDefined();
+      expect(thEntry).toContain('augmented');
+      // Other 7 domains should be added as new sections
+      expect(result.sectionsAdded.length).toBe(8); // 7 new + 1 augmented
 
       // Verify existing content was preserved
       const updatedContent = fs.readFileSync(path.join(tmpDir, 'SOUL.md'), 'utf-8');
@@ -482,28 +490,39 @@ Operator sets rules, user follows.
       expect(result.content.length).toBeGreaterThan(0);
     });
 
-    it('reports no changes when all domains have headings', async () => {
-      // Create SOUL.md with all domain headings (even if minimal)
-      const allHeadings = DOMAIN_ORDER.map((d) => `## ${d}\nSome content.\n`).join('\n');
-      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), allHeadings);
-
+    it('reports no changes when all controls pass', async () => {
+      // First generate full SOUL.md, then harden again -- should be no-op
+      await scanner.hardenSoul(tmpDir);
       const result = await scanner.hardenSoul(tmpDir);
+      // After first hardening all controls should pass, so second run is a no-op
       expect(result.sectionsAdded).toHaveLength(0);
       expect(result.controlsAdded).toBe(0);
     });
 
-    it('generated content passes scan-soul for covered domains', async () => {
+    it('iterative hardening augments domains with failing controls', async () => {
+      // Create SOUL.md with all domain headings but minimal content
+      const allHeadings = DOMAIN_ORDER.map((d) => `## ${d}\nSome content.\n`).join('\n');
+      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), allHeadings);
+
+      const result = await scanner.hardenSoul(tmpDir);
+      // All 8 domains should be augmented since minimal content fails many controls
+      expect(result.sectionsAdded.length).toBe(8);
+      for (const section of result.sectionsAdded) {
+        expect(section).toContain('augmented');
+      }
+      expect(result.controlsAdded).toBeGreaterThan(0);
+    });
+
+    it('generated content passes scan-soul with high score', async () => {
       // Generate full SOUL.md (all 8 domains)
       await scanner.hardenSoul(tmpDir);
 
       // Scan with MULTI-AGENT tier to check all 68 controls
       const scanResult = await scanner.scanSoul(tmpDir, { tier: 'MULTI-AGENT' });
 
-      // Templates cover the original 26 controls; with 68 controls total the score
-      // reflects partial domain coverage. Verify at least 20 controls pass and
-      // the score is above 30 (templates cover the foundation of each domain).
-      expect(scanResult.totalPassed).toBeGreaterThan(20);
-      expect(scanResult.score).toBeGreaterThan(30);
+      // Templates now cover all 68 controls (Phase 2 template sync)
+      expect(scanResult.totalPassed).toBe(CONTROL_DEFS.length);
+      expect(scanResult.score).toBe(100);
     });
   });
 
@@ -519,9 +538,13 @@ Operator sets rules, user follows.
       expect(result).toHaveProperty('file');
       expect(result).toHaveProperty('fileSize');
       expect(result).toHaveProperty('agentTier');
+      expect(result).toHaveProperty('agentProfile');
+      expect(result).toHaveProperty('profileForced');
+      expect(result).toHaveProperty('skippedDomains');
       expect(result).toHaveProperty('domains');
       expect(result).toHaveProperty('score');
       expect(result).toHaveProperty('grade');
+      expect(result).toHaveProperty('level');
       expect(result).toHaveProperty('criticalFloor');
       expect(result).toHaveProperty('criticalMissing');
       expect(result).toHaveProperty('totalControls');
@@ -586,6 +609,126 @@ governance:
       const result = await scanner.scanSoul(tmpDir);
       expect(result.file).toBe('agent-config.yaml');
       expect(result.totalPassed).toBeGreaterThan(0);
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // Build-time template-scanner keyword sync validation
+  // ---------------------------------------------------------------
+
+  describe('template keyword coverage', () => {
+    it('every control has at least one keyword in its domain template', () => {
+      for (const control of CONTROL_DEFS) {
+        const template = DOMAIN_TEMPLATES[control.domain];
+        expect(template).toBeDefined();
+        const hasKeyword = control.keywords.some((kw: string) =>
+          template.content.toLowerCase().includes(kw.toLowerCase()),
+        );
+        expect(hasKeyword).toBe(true);
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // Agent profile detection and filtering
+  // ---------------------------------------------------------------
+
+  describe('agent profile', () => {
+    it('detects conversational profile for simple chatbot', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), 'A simple Q&A chatbot.');
+      const result = await scanner.scanSoul(tmpDir);
+      expect(result.agentProfile).toBe('conversational');
+      expect(result.profileForced).toBe(false);
+    });
+
+    it('detects tool-agent profile from MCP references', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), 'This agent uses MCP tools for function calling.');
+      const result = await scanner.scanSoul(tmpDir);
+      expect(result.agentProfile).toBe('tool-agent');
+    });
+
+    it('respects explicit profile override', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), 'A simple chatbot.');
+      const result = await scanner.scanSoul(tmpDir, { profile: 'orchestrator' });
+      expect(result.agentProfile).toBe('orchestrator');
+      expect(result.profileForced).toBe(true);
+    });
+
+    it('conversational profile skips non-essential domains', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), 'A simple chatbot.');
+      const result = await scanner.scanSoul(tmpDir, { profile: 'conversational' });
+      // Conversational only evaluates domains 9 (Injection), 11 (Hardcoded), 13 (Honesty)
+      expect(result.skippedDomains.length).toBeGreaterThan(0);
+      expect(result.skippedDomains).toContain('Capability Boundaries');
+      expect(result.skippedDomains).toContain('Agentic Safety');
+    });
+
+    it('orchestrator profile evaluates all domains', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), 'Agent rules.');
+      const result = await scanner.scanSoul(tmpDir, {
+        profile: 'orchestrator',
+        tier: 'MULTI-AGENT',
+      });
+      expect(result.skippedDomains).toHaveLength(0);
+    });
+
+    it('reads profile from soul:profile marker', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), `<!-- soul:profile=code-assistant -->\n# Agent`);
+      const result = await scanner.scanSoul(tmpDir);
+      expect(result.agentProfile).toBe('code-assistant');
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // Tier drift prevention
+  // ---------------------------------------------------------------
+
+  describe('tier drift prevention', () => {
+    it('reads tier from soul:tier marker', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'),
+        `<!-- soul:tier=BASIC -->\n# Agent\nThis agent runs an autonomous loop.`);
+      const result = await scanner.scanSoul(tmpDir);
+      // Despite "autonomous loop" in content, marker pins tier to BASIC
+      expect(result.agentTier).toBe('BASIC');
+    });
+
+    it('harden-soul preserves pre-hardening tier via marker', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), '# Simple chatbot\nBasic Q&A.');
+      // First scan to confirm BASIC tier
+      const preScan = await scanner.scanSoul(tmpDir);
+      expect(preScan.agentTier).toBe('BASIC');
+
+      // Harden - adds agentic safety content with "loop", "autonomous" keywords
+      await scanner.hardenSoul(tmpDir);
+
+      // Scan again - tier should still be BASIC thanks to marker
+      const postScan = await scanner.scanSoul(tmpDir);
+      expect(postScan.agentTier).toBe('BASIC');
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // Progress-oriented scoring
+  // ---------------------------------------------------------------
+
+  describe('progress scoring', () => {
+    it('returns level field alongside grade', async () => {
+      const result = await scanner.scanSoul(tmpDir);
+      expect(result).toHaveProperty('level');
+      expect(result).toHaveProperty('grade');
+    });
+
+    it('returns not-started for score 0', async () => {
+      const result = await scanner.scanSoul(tmpDir);
+      expect(result.level).toBe('not-started');
+    });
+
+    it('returns hardened for score 80+', async () => {
+      // Generate full governance
+      await scanner.hardenSoul(tmpDir);
+      const result = await scanner.scanSoul(tmpDir, { tier: 'MULTI-AGENT' });
+      expect(result.score).toBeGreaterThanOrEqual(80);
+      expect(result.level).toBe('hardened');
     });
   });
 });
