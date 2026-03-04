@@ -43,6 +43,11 @@ import {
   type AttackReport,
   type AttackPayload,
   type FailPolicy,
+  // Soul scanner imports
+  SoulScanner,
+  type SoulScanResult,
+  type DomainResult,
+  type SoulGrade,
 } from './index';
 
 const program = new Command();
@@ -3814,6 +3819,244 @@ Examples:
       console.log(`  Try: "Run a deep security scan on this project"\n`);
     } catch (error) {
       console.error(`Error: ${error instanceof Error ? error.message : error}`);
+      process.exit(1);
+    }
+  });
+
+// Grade display colors
+function gradeColor(grade: SoulGrade): string {
+  switch (grade) {
+    case 'A': return colors.green;
+    case 'B': return colors.green;
+    case 'C': return colors.yellow;
+    case 'D': return colors.red;
+    case 'F': return colors.brightRed;
+  }
+}
+
+// Domain percentage bar for text output
+function domainBar(pct: number): string {
+  if (pct >= 80) return colors.green;
+  if (pct >= 60) return colors.yellow;
+  if (pct >= 40) return colors.yellow;
+  return colors.red;
+}
+
+program
+  .command('scan-soul')
+  .description(`Scan behavioral governance coverage
+
+Analyzes SOUL.md (or equivalent governance file) for coverage
+across 8 behavioral governance domains with 26 security controls.
+
+Searches for governance files in priority order:
+  SOUL.md > system-prompt.md > SYSTEM_PROMPT.md > .cursorrules
+  > .github/copilot-instructions.md > CLAUDE.md > .clinerules
+  > instructions.md > constitution.md > agent-config.yaml
+
+Domains checked (OASB v2):
+  7. Trust Hierarchy         8. Capability Boundaries
+  9. Injection Hardening    10. Data Handling
+  11. Hardcoded Behaviors   12. Agentic Safety
+  13. Honesty & Transparency 14. Human Oversight
+
+Grade: A (80-100), B (60-79), C (40-59), D (20-39), F (0-19)
+Critical floor: Missing SOUL-IH-003 or SOUL-HB-001 caps grade at C.
+
+Examples:
+  $ hackmyagent scan-soul                    Scan current directory
+  $ hackmyagent scan-soul ./my-agent         Scan specific directory
+  $ hackmyagent scan-soul --json             Machine-readable output
+  $ hackmyagent scan-soul --verbose          Show all controls`)
+  .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
+  .option('--json', 'Output as JSON')
+  .option('-v, --verbose', 'Show individual control results')
+  .option('--tier <tier>', 'Override agent tier detection (BASIC, TOOL-USING, AGENTIC, MULTI-AGENT)')
+  .option('--fail-below <score>', 'Exit 1 if score below threshold (0-100)')
+  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; failBelow?: string }) => {
+    try {
+      const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
+
+      if (!require('fs').existsSync(targetDir)) {
+        process.stderr.write(`Error: Directory '${targetDir}' does not exist.\n`);
+        process.exit(1);
+      }
+
+      const scanner = new SoulScanner();
+      const result = await scanner.scanSoul(targetDir, {
+        verbose: options.verbose,
+        tier: options.tier,
+      });
+
+      // JSON output
+      if (options.json) {
+        process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+        // Check fail threshold
+        if (options.failBelow) {
+          const threshold = parseInt(options.failBelow, 10);
+          if (!isNaN(threshold) && result.score < threshold) {
+            process.exit(1);
+          }
+        }
+        return;
+      }
+
+      // Text output
+      process.stdout.write('\nOASB v2 Behavioral Governance Scan\n');
+      process.stdout.write('----------------------------------------------------\n\n');
+
+      if (result.file) {
+        process.stdout.write(`File: ${result.file} (${result.fileSize.toLocaleString()} chars)\n`);
+      } else {
+        process.stdout.write(`File: ${colors.red}No governance file found${colors.reset}\n`);
+        process.stdout.write(`  Searched: ${['SOUL.md', 'system-prompt.md', 'CLAUDE.md', '...'].join(', ')}\n`);
+      }
+
+      process.stdout.write(`Agent Tier: ${result.agentTier} (auto-detected)\n\n`);
+
+      process.stdout.write('Domain Scores:\n');
+
+      for (const domain of result.domains) {
+        const pctColor = domainBar(domain.percentage);
+        const label = (domain.domain + ':').padEnd(26);
+        process.stdout.write(`  ${label}${pctColor}${domain.passed}/${domain.total}  (${domain.percentage}%)${colors.reset}\n`);
+
+        // Verbose: show individual controls
+        if (options.verbose) {
+          for (const ctrl of domain.controls) {
+            const status = ctrl.passed
+              ? `${colors.green}PASS${colors.reset}`
+              : `${colors.red}FAIL${colors.reset}`;
+            process.stdout.write(`    ${ctrl.id}: ${status}  ${ctrl.name}\n`);
+          }
+        }
+      }
+
+      process.stdout.write('\n');
+
+      // Score and grade
+      const gc = gradeColor(result.grade);
+      process.stdout.write(`Governance Score: ${gc}${result.score}/100 (Grade: ${result.grade})${colors.reset}\n`);
+
+      if (result.criticalFloor) {
+        process.stdout.write(`${colors.yellow}Critical Floor: APPLIED${colors.reset} (${result.criticalMissing.join(', ')} missing)\n`);
+      }
+
+      // Path forward
+      const missing = result.totalControls - result.totalPassed;
+      if (missing > 0) {
+        process.stdout.write(`\n${missing} control${missing === 1 ? '' : 's'} missing.`);
+        process.stdout.write(` Run '${colors.cyan}hackmyagent harden-soul${colors.reset}' to remediate.\n`);
+      } else {
+        process.stdout.write(`\n${colors.green}All ${result.totalControls} governance controls covered.${colors.reset}\n`);
+      }
+
+      process.stdout.write('\n');
+
+      // Check fail threshold
+      if (options.failBelow) {
+        const threshold = parseInt(options.failBelow, 10);
+        if (!isNaN(threshold) && result.score < threshold) {
+          process.stderr.write(`Score ${result.score} is below threshold ${threshold}\n`);
+          process.exit(1);
+        }
+      }
+    } catch (error) {
+      process.stderr.write(`Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('harden-soul')
+  .description(`Generate or update SOUL.md with missing governance sections
+
+Runs scan-soul internally to identify missing controls, then generates
+template content for each missing domain. Existing content is preserved.
+
+Modes:
+  Default:    Append missing sections to SOUL.md (or create it)
+  --dry-run:  Preview what would be added without modifying files
+
+Examples:
+  $ hackmyagent harden-soul                  Add missing sections
+  $ hackmyagent harden-soul --dry-run        Preview changes
+  $ hackmyagent harden-soul ./my-agent       Target specific directory
+  $ hackmyagent harden-soul --json           Machine-readable output`)
+  .argument('[directory]', 'Directory to harden (defaults to current directory)', '.')
+  .option('--dry-run', 'Preview changes without modifying files')
+  .option('--json', 'Output as JSON')
+  .action(async (directory: string, options: { dryRun?: boolean; json?: boolean }) => {
+    try {
+      const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
+
+      if (!require('fs').existsSync(targetDir)) {
+        process.stderr.write(`Error: Directory '${targetDir}' does not exist.\n`);
+        process.exit(1);
+      }
+
+      const scanner = new SoulScanner();
+      const result = await scanner.hardenSoul(targetDir, { dryRun: options.dryRun });
+
+      // JSON output
+      if (options.json) {
+        // Exclude full content from JSON to keep it concise
+        const jsonResult = {
+          file: result.file,
+          sectionsAdded: result.sectionsAdded,
+          controlsAdded: result.controlsAdded,
+          dryRun: result.dryRun,
+          existedBefore: result.existedBefore,
+        };
+        process.stdout.write(JSON.stringify(jsonResult, null, 2) + '\n');
+        return;
+      }
+
+      // Text output
+      if (result.sectionsAdded.length === 0) {
+        process.stdout.write(`\n${colors.green}All governance domains already have sections in ${result.file}.${colors.reset}\n`);
+        process.stdout.write(`Run 'hackmyagent scan-soul --verbose' to see individual control coverage.\n\n`);
+        return;
+      }
+
+      if (result.dryRun) {
+        process.stdout.write('\nHarden SOUL (dry-run)\n');
+        process.stdout.write('----------------------------------------------------\n\n');
+        process.stdout.write(`Target: ${result.file}`);
+        if (result.existedBefore) {
+          process.stdout.write(' (append)\n');
+        } else {
+          process.stdout.write(' (create)\n');
+        }
+        process.stdout.write(`Sections to add: ${result.sectionsAdded.length}\n`);
+        process.stdout.write(`Controls covered: +${result.controlsAdded}\n\n`);
+
+        process.stdout.write('Sections:\n');
+        for (const section of result.sectionsAdded) {
+          process.stdout.write(`  ${colors.cyan}+${colors.reset} ${section}\n`);
+        }
+
+        process.stdout.write(`\nRun without --dry-run to apply changes.\n\n`);
+      } else {
+        process.stdout.write('\nHarden SOUL\n');
+        process.stdout.write('----------------------------------------------------\n\n');
+
+        if (result.existedBefore) {
+          process.stdout.write(`Updated: ${result.file}\n`);
+        } else {
+          process.stdout.write(`Created: ${result.file}\n`);
+        }
+
+        process.stdout.write(`Added ${result.sectionsAdded.length} section${result.sectionsAdded.length === 1 ? '' : 's'}:\n`);
+        for (const section of result.sectionsAdded) {
+          process.stdout.write(`  ${colors.green}+${colors.reset} ${section}\n`);
+        }
+        process.stdout.write(`Controls covered: +${result.controlsAdded}\n\n`);
+
+        process.stdout.write(`Run '${colors.cyan}hackmyagent scan-soul${colors.reset}' to verify coverage.\n\n`);
+      }
+    } catch (error) {
+      process.stderr.write(`Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
       process.exit(1);
     }
   });
