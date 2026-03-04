@@ -1602,9 +1602,11 @@ Performs 147 security checks across 30 categories:
   • Encryption: At-rest encryption, secure hashing
   • And 25 more categories...
 
-Benchmark mode (--benchmark oasb-1):
-  Run OASB-1 compliance checks with L1/L2/L3 levels.
-  L1 = Essential (baseline), L2 = Standard, L3 = Hardened
+Benchmark mode (--benchmark):
+  oasb-1   OASB-1 infrastructure compliance (L1/L2/L3 levels)
+           L1 = Essential (baseline), L2 = Standard, L3 = Hardened
+  oasb-2   OASB-2 composite: infrastructure (50%) + governance (50%)
+           Combines OASB-1 scan with scan-soul for a unified score
 
 Output formats (--format):
   text   Human-readable terminal output (default)
@@ -1624,7 +1626,8 @@ Examples:
   $ hackmyagent secure -b oasb-1 -l L2           OASB-1 L2 compliance
   $ hackmyagent secure -b oasb-1 -f sarif        SARIF for GitHub
   $ hackmyagent secure -b oasb-1 -f html -o report.html
-  $ hackmyagent secure -b oasb-1 --fail-below 80 CI threshold`)
+  $ hackmyagent secure -b oasb-1 --fail-below 80 CI threshold
+  $ hackmyagent secure -b oasb-2               OASB-2 composite (infra + governance)`)
   .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
   .option('--fix', 'Automatically fix issues where possible')
   .option('--dry-run', 'Preview fixes without applying them (use with --fix)')
@@ -1659,15 +1662,16 @@ Examples:
         : [];
 
       // Validate benchmark flag if provided
-      if (options.benchmark && !isValidBenchmark(options.benchmark)) {
-        console.error(`Error: Unknown benchmark '${options.benchmark}'. Available: ${AVAILABLE_BENCHMARKS.join(', ')}`);
+      const isOasb2 = options.benchmark?.toLowerCase() === 'oasb-2';
+      if (options.benchmark && !isOasb2 && !isValidBenchmark(options.benchmark)) {
+        console.error(`Error: Unknown benchmark '${options.benchmark}'. Available: ${[...AVAILABLE_BENCHMARKS, 'oasb-2'].join(', ')}`);
         process.exit(1);
       }
 
-      // Validate level if benchmark mode
+      // Validate level if benchmark mode (not applicable for oasb-2)
       const validLevels = ['L1', 'L2', 'L3'];
       const level = (options.level?.toUpperCase() || 'L1') as BenchmarkLevel;
-      if (options.benchmark && !validLevels.includes(level)) {
+      if (options.benchmark && !isOasb2 && !validLevels.includes(level)) {
         console.error(`Error: Invalid level '${options.level}'. Use: L1, L2, or L3`);
         process.exit(1);
       }
@@ -1719,6 +1723,65 @@ Examples:
         deep: isDeep,
         onProgress,
       });
+
+      // OASB-2 composite mode: infrastructure (50%) + governance (50%)
+      if (isOasb2) {
+        const infraResult = generateBenchmarkReport(
+          result.allFindings || result.findings,
+          level,
+          options.category,
+        );
+
+        const { SoulScanner } = await import('./soul/index.js');
+        const soulScanner = new SoulScanner();
+        const govResult = await soulScanner.scanSoul(targetDir, {
+          tier: options.level, // reuse --level as tier hint if provided
+        });
+
+        const infraScore = infraResult.compliance ?? 0;
+        const govScore = govResult.score;
+        const compositeScore = Math.round((infraScore + govScore) / 2);
+
+        if (format === 'json') {
+          console.log(JSON.stringify({
+            benchmark: 'OASB-2',
+            infraScore,
+            govScore,
+            compositeScore,
+            conformance: govResult.conformance,
+            infraResult,
+            govResult,
+          }, null, 2));
+        } else {
+          process.stdout.write('\nOASB v2 Composite Security Assessment\n');
+          process.stdout.write('----------------------------------------------------\n');
+          process.stdout.write(`Infrastructure Score (OASB-1): ${infraScore}%\n`);
+          process.stdout.write(`Governance Score (OASB-2):     ${govScore}/100\n`);
+          process.stdout.write('----------------------------------------------------\n');
+          process.stdout.write(`Composite Score:               ${compositeScore}/100\n`);
+          process.stdout.write(`Conformance:                   ${govResult.conformance.toUpperCase()}\n`);
+          process.stdout.write('\n');
+
+          // Show infra report then governance report
+          printBenchmarkReport(infraResult, options.verbose ?? false);
+
+          process.stdout.write('\nGovernance Domains (scan-soul):\n');
+          for (const domain of govResult.domains) {
+            const label = (domain.domain + ':').padEnd(26);
+            process.stdout.write(`  ${label}${domain.passed}/${domain.total}  (${domain.percentage}%)\n`);
+          }
+          if (govResult.criticalFloor) {
+            process.stdout.write(`\nCritical Floor: APPLIED (${govResult.criticalMissing.join(', ')} missing)\n`);
+          }
+          process.stdout.write('\n');
+        }
+
+        if (failBelow !== undefined && compositeScore < failBelow) {
+          console.error(`Composite score ${compositeScore} is below threshold ${failBelow}`);
+          process.exit(1);
+        }
+        return;
+      }
 
       // Benchmark mode - output compliance report
       if (options.benchmark) {
@@ -3847,7 +3910,7 @@ program
   .description(`Scan behavioral governance coverage
 
 Analyzes SOUL.md (or equivalent governance file) for coverage
-across 8 behavioral governance domains with 26 security controls.
+across 8 behavioral governance domains with 68 security controls.
 
 Searches for governance files in priority order:
   SOUL.md > system-prompt.md > SYSTEM_PROMPT.md > .cursorrules
@@ -3863,17 +3926,25 @@ Domains checked (OASB v2):
 Grade: A (80-100), B (60-79), C (40-59), D (20-39), F (0-19)
 Critical floor: Missing SOUL-IH-003 or SOUL-HB-001 caps grade at C.
 
+Conformance levels:
+  none:      one or more critical controls missing
+  essential: all critical controls pass, score < 60
+  standard:  all critical controls pass, score >= 60
+  hardened:  all critical controls pass, score >= 75
+
 Examples:
   $ hackmyagent scan-soul                    Scan current directory
   $ hackmyagent scan-soul ./my-agent         Scan specific directory
   $ hackmyagent scan-soul --json             Machine-readable output
-  $ hackmyagent scan-soul --verbose          Show all controls`)
+  $ hackmyagent scan-soul --verbose          Show all controls
+  $ hackmyagent scan-soul --deep             Enable LLM semantic analysis`)
   .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
   .option('--json', 'Output as JSON')
   .option('-v, --verbose', 'Show individual control results')
   .option('--tier <tier>', 'Override agent tier detection (BASIC, TOOL-USING, AGENTIC, MULTI-AGENT)')
   .option('--fail-below <score>', 'Exit 1 if score below threshold (0-100)')
-  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; failBelow?: string }) => {
+  .option('--deep', 'Enable LLM semantic analysis for ambiguous controls (requires claude CLI or ANTHROPIC_API_KEY)')
+  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; failBelow?: string; deep?: boolean }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
@@ -3886,6 +3957,7 @@ Examples:
       const result = await scanner.scanSoul(targetDir, {
         verbose: options.verbose,
         tier: options.tier,
+        deepAnalysis: options.deep,
       });
 
       // JSON output
@@ -3938,8 +4010,23 @@ Examples:
       const gc = gradeColor(result.grade);
       process.stdout.write(`Governance Score: ${gc}${result.score}/100 (Grade: ${result.grade})${colors.reset}\n`);
 
+      // Conformance level
+      if (result.conformance === 'none') {
+        process.stdout.write(`Conformance: ${colors.red}NONE${colors.reset} -- critical control missing (${result.criticalMissing.join(', ')})\n`);
+      } else {
+        process.stdout.write(`Conformance: ${result.conformance.toUpperCase()}\n`);
+      }
+
       if (result.criticalFloor) {
         process.stdout.write(`${colors.yellow}Critical Floor: APPLIED${colors.reset} (${result.criticalMissing.join(', ')} missing)\n`);
+      }
+
+      // Deep analysis summary
+      if (result.deepAnalysisResults && result.deepAnalysisResults.length > 0) {
+        const llmUpgraded = result.deepAnalysisResults.filter((e) => e.llmPassed).length;
+        if (llmUpgraded > 0) {
+          process.stdout.write(`Deep Analysis: ${llmUpgraded} control${llmUpgraded === 1 ? '' : 's'} upgraded by LLM semantic analysis\n`);
+        }
       }
 
       // Path forward

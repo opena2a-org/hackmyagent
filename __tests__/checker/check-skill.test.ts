@@ -47,6 +47,7 @@ describe('checkSkill', () => {
   it('returns critical risk for revoked skills', async () => {
     const result = await checkSkill('@malicious/bad-skill', {
       mockRevoked: true,
+      skipDnsVerification: true,
     });
 
     expect(result.revocation.revoked).toBe(true);
