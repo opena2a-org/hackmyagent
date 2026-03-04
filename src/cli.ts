@@ -63,11 +63,12 @@ let colors = {
   red: '\x1b[31m',
   brightRed: '\x1b[91m',
   cyan: '\x1b[36m',
+  dim: '\x1b[2m',
   reset: '\x1b[0m',
 };
 
 if (noColorEnv) {
-  colors = { green: '', yellow: '', red: '', brightRed: '', cyan: '', reset: '' };
+  colors = { green: '', yellow: '', red: '', brightRed: '', cyan: '', dim: '', reset: '' };
 }
 
 // Deprecation warning for removed HMAC auth
@@ -101,16 +102,16 @@ Examples:
   .hook('preAction', (thisCommand) => {
     const opts = thisCommand.opts();
     if (opts.color === false) {
-      colors = { green: '', yellow: '', red: '', brightRed: '', cyan: '', reset: '' };
+      colors = { green: '', yellow: '', red: '', brightRed: '', cyan: '', dim: '', reset: '' };
     }
   });
 
 // Risk level colors and symbols
 const RISK_DISPLAY: Record<RiskLevel, { symbol: string; color: () => string }> = {
-  low: { symbol: '✅', color: () => colors.green },
-  medium: { symbol: '⚠️', color: () => colors.yellow },
-  high: { symbol: '🔴', color: () => colors.red },
-  critical: { symbol: '🚨', color: () => colors.brightRed },
+  low: { symbol: '[+]', color: () => colors.green },
+  medium: { symbol: '[~]', color: () => colors.yellow },
+  high: { symbol: '[!]', color: () => colors.red },
+  critical: { symbol: '[!!]', color: () => colors.brightRed },
 };
 const RESET = () => colors.reset;
 
@@ -151,17 +152,17 @@ Examples:
       // Publisher info
       console.log(`Publisher: @${result.publisher.name}`);
       if (result.publisher.verified) {
-        console.log(`├─ ✅ Verified via DNS`);
+        console.log(`├─ [+] Verified via DNS`);
         if (result.publisher.domain) {
-          console.log(`├─ 🌐 Domain: ${result.publisher.domain}`);
+          console.log(`├─ Domain: ${result.publisher.domain}`);
         }
         if (result.publisher.verifiedAt && options.verbose) {
-          console.log(`└─ 📅 Verified at: ${result.publisher.verifiedAt.toISOString()}`);
+          console.log(`└─ Verified at: ${result.publisher.verifiedAt.toISOString()}`);
         } else {
           console.log(`└─ Method: DNS TXT record`);
         }
       } else {
-        console.log(`├─ ❌ Not verified`);
+        console.log(`├─ [-] Not verified`);
         if (result.publisher.failureReason && options.verbose) {
           console.log(`└─ Reason: ${result.publisher.failureReason}`);
         } else if (options.offline) {
@@ -178,13 +179,13 @@ Examples:
         console.log('└─ None declared');
       } else {
         for (const perm of result.permissions.safe) {
-          console.log(`├─ ✅ ${perm}`);
+          console.log(`├─ [+] ${perm}`);
         }
         for (const perm of result.permissions.reviewNeeded) {
-          console.log(`├─ ⚠️  ${perm} (review needed)`);
+          console.log(`├─ [~] ${perm} (review needed)`);
         }
         for (const perm of result.permissions.dangerous) {
-          console.log(`├─ ❌ ${perm} (DANGEROUS)`);
+          console.log(`├─ [!] ${perm} (elevated risk)`);
         }
         console.log(`└─ Risk score: ${result.permissions.riskScore}/100`);
       }
@@ -193,9 +194,9 @@ Examples:
       // Revocation
       console.log('Revocation:');
       if (result.revocation.revoked) {
-        console.log(`└─ 🚨 REVOKED: ${result.revocation.reason}`);
+        console.log(`└─ [!!] Revoked: ${result.revocation.reason}`);
       } else {
-        console.log(`└─ ✅ Not on blocklist`);
+        console.log(`└─ [+] Not on blocklist`);
       }
       console.log();
 
@@ -217,10 +218,10 @@ Examples:
 
 // Severity colors and symbols for secure command
 const SEVERITY_DISPLAY: Record<Severity, { symbol: string; color: () => string }> = {
-  critical: { symbol: '🔴', color: () => colors.brightRed },
-  high: { symbol: '🟠', color: () => colors.red },
-  medium: { symbol: '🟡', color: () => colors.yellow },
-  low: { symbol: '🟢', color: () => colors.green },
+  critical: { symbol: '[!!]', color: () => colors.brightRed },
+  high: { symbol: '[!]', color: () => colors.red },
+  medium: { symbol: '[~]', color: () => colors.yellow },
+  low: { symbol: '[.]', color: () => colors.green },
 };
 
 function groupFindingsBySeverity(findings: SecurityFinding[]): Record<Severity, SecurityFinding[]> {
@@ -1513,7 +1514,7 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean): void {
   // Category breakdown
   console.log(`Categories:`);
   for (const catResult of result.categories) {
-    const statusIcon = catResult.failed === 0 ? '✅' : (catResult.passed > 0 ? '🟡' : '❌');
+    const statusIcon = catResult.failed === 0 ? '[+]' : (catResult.passed > 0 ? '[~]' : '[-]');
     console.log(`  ${statusIcon} ${catResult.category}: ${catResult.passed}/${catResult.passed + catResult.failed} (${catResult.compliance}%)`);
 
     // Show failed controls
@@ -1916,7 +1917,35 @@ Examples:
           if (finding.fix) {
             console.log(`       ${colors.cyan}Fix:${RESET()} ${finding.fix}`);
           }
+          if (options.verbose) {
+            console.log(`       ${colors.dim}Check: ${finding.checkId} | Category: ${finding.category}${RESET()}`);
+            if (finding.file) {
+              console.log(`       ${colors.dim}File: ${finding.file}${finding.line ? ` (line ${finding.line})` : ''}${RESET()}`);
+            }
+            if (finding.message && finding.message !== finding.description) {
+              console.log(`       ${colors.dim}Detail: ${finding.message}${RESET()}`);
+            }
+            if (finding.details && Object.keys(finding.details).length > 0) {
+              for (const [key, value] of Object.entries(finding.details)) {
+                console.log(`       ${colors.dim}${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}${RESET()}`);
+              }
+            }
+          }
           console.log();
+        }
+
+        // Severity breakdown summary
+        const severityCounts = { critical: 0, high: 0, medium: 0, low: 0 };
+        for (const f of issues) {
+          severityCounts[f.severity]++;
+        }
+        const summaryParts: string[] = [];
+        if (severityCounts.critical > 0) summaryParts.push(`${colors.brightRed}Critical: ${severityCounts.critical}${RESET()}`);
+        if (severityCounts.high > 0) summaryParts.push(`${colors.red}High: ${severityCounts.high}${RESET()}`);
+        if (severityCounts.medium > 0) summaryParts.push(`${colors.yellow}Medium: ${severityCounts.medium}${RESET()}`);
+        if (severityCounts.low > 0) summaryParts.push(`${colors.green}Low: ${severityCounts.low}${RESET()}`);
+        if (summaryParts.length > 0) {
+          console.log(`${summaryParts.join(' | ')}\n`);
         }
       }
 
@@ -1973,8 +2002,8 @@ Examples:
               }
             }
           }
-        } catch (reportErr: any) {
-          console.error(`Registry: failed to report scan results: ${reportErr.message || reportErr}`);
+        } catch (_reportErr: any) {
+          // Silently ignore registry errors - they are not relevant to local scan results
         }
       }
 
@@ -1998,10 +2027,10 @@ Examples:
 
 // Severity display for external scan findings
 const FINDING_SEVERITY_DISPLAY: Record<FindingSeverity, { symbol: string; color: () => string }> = {
-  critical: { symbol: '🔴', color: () => colors.brightRed },
-  high: { symbol: '🟠', color: () => colors.red },
-  medium: { symbol: '🟡', color: () => colors.yellow },
-  low: { symbol: '🟢', color: () => colors.green },
+  critical: { symbol: '[!!]', color: () => colors.brightRed },
+  high: { symbol: '[!]', color: () => colors.red },
+  medium: { symbol: '[~]', color: () => colors.yellow },
+  low: { symbol: '[.]', color: () => colors.green },
 };
 
 function groupExternalFindingsBySeverity(
@@ -2066,27 +2095,27 @@ function assessRiskLevel(findings: SecurityFinding[]): { level: string; color: s
 
   if (criticalCount > 0) {
     return {
-      level: 'CRITICAL',
+      level: 'Critical',
       color: colors.brightRed,
-      description: 'Immediate action required. Your OpenClaw installation has critical vulnerabilities.',
+      description: `${criticalCount} critical finding(s) with recommended fixes available.`,
     };
   }
   if (highCount > 0) {
     return {
-      level: 'HIGH',
+      level: 'High',
       color: colors.red,
-      description: 'Significant risks detected. Address high-severity issues promptly.',
+      description: `${highCount} high-severity finding(s) detected. Fixes available below.`,
     };
   }
   if (mediumCount > 0) {
     return {
-      level: 'MODERATE',
+      level: 'Moderate',
       color: colors.yellow,
-      description: 'Some issues found. Review and address when possible.',
+      description: 'Some findings detected. Review the recommendations below.',
     };
   }
   return {
-    level: 'LOW',
+    level: 'Low',
     color: colors.green,
     description: 'Your OpenClaw installation appears well-secured.',
   };
@@ -2121,12 +2150,12 @@ Examples:
       const targetDir = detectOpenClawDirectory(directory);
 
       if (!options.json) {
-        console.log(`\n🦞 OpenClaw Security Report`);
+        console.log(`\nOpenClaw Security Report`);
         console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
         if (options.dryRun) {
-          console.log(`🔍 Scanning ${targetDir} (dry-run - previewing fixes)...\n`);
+          console.log(`Scanning ${targetDir} (dry-run - previewing fixes)...\n`);
         } else if (options.fix) {
-          console.log(`🔧 Scanning and fixing ${targetDir}...\n`);
+          console.log(`Scanning and fixing ${targetDir}...\n`);
           console.log(`${colors.yellow}Auto-fix will:${RESET()}`);
           console.log(`  • Bind gateway to 127.0.0.1 (local-only)`);
           console.log(`  • Replace plaintext tokens with env var references`);
@@ -2134,7 +2163,7 @@ Examples:
           console.log(`  • Enable sandbox mode`);
           console.log(`\n${colors.cyan}A backup will be created for rollback if needed.${RESET()}\n`);
         } else {
-          console.log(`🔍 Scanning ${targetDir}...\n`);
+          console.log(`Scanning ${targetDir}...\n`);
         }
       }
 
@@ -2176,7 +2205,7 @@ Examples:
 
       // Show issues
       if (issues.length > 0) {
-        console.log(`${colors.red}Issues Found:${RESET()}\n`);
+        console.log(`${colors.red}Findings:${RESET()}\n`);
 
         for (const finding of issues) {
           const display = SEVERITY_DISPLAY[finding.severity];
@@ -2186,13 +2215,14 @@ Examples:
               : finding.file
             : '';
 
-          console.log(`${display.color()}${display.symbol} [${finding.checkId}] ${finding.severity.toUpperCase()}${RESET()}`);
+          const sevLabel = finding.severity.charAt(0).toUpperCase() + finding.severity.slice(1);
+          console.log(`${display.color()}${display.symbol} [${finding.checkId}] ${sevLabel}${RESET()}`);
           console.log(`   ${finding.description}`);
           if (location) {
             console.log(`   File: ${location}`);
           }
           if (finding.fix) {
-            console.log(`   ${colors.cyan}Fix:${RESET()} ${finding.fix}`);
+            console.log(`   ${colors.cyan}Recommended fix:${RESET()} ${finding.fix}`);
           }
           console.log();
         }
@@ -2202,7 +2232,7 @@ Examples:
 
       // Show fixed findings
       if (fixedFindings.length > 0) {
-        console.log(`${colors.green}✅ Auto-Remediation Applied:${RESET()}\n`);
+        console.log(`${colors.green}Auto-Remediation Applied:${RESET()}\n`);
         for (const finding of fixedFindings) {
           console.log(`  ${colors.green}✓${RESET()} [${finding.checkId}] ${finding.name}`);
           if (finding.fixMessage) {
@@ -2212,8 +2242,8 @@ Examples:
         console.log();
 
         if (result.backupPath) {
-          console.log(`${colors.yellow}📁 Backup created:${RESET()} ${result.backupPath}`);
-          console.log(`${colors.yellow}↩️  To rollback:${RESET()} hackmyagent rollback ${targetDir}`);
+          console.log(`${colors.yellow}Backup created:${RESET()} ${result.backupPath}`);
+          console.log(`${colors.yellow}To rollback:${RESET()} hackmyagent rollback ${targetDir}`);
           console.log();
           console.log(`${colors.cyan}Note:${RESET()} If you replaced tokens with env vars, set OPENCLAW_AUTH_TOKEN`);
           console.log(`      in your environment before starting OpenClaw.\n`);
@@ -2535,9 +2565,21 @@ Examples:
       }
 
       // Build target
+      // When --local is used, treat the argument as a directory path, not a URL
+      let localPath: string | undefined;
+      if (targetType === 'local' && targetUrl) {
+        const path = require('path');
+        const fs = require('fs');
+        const resolved = path.resolve(targetUrl);
+        if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+          localPath = resolved;
+        }
+      }
+
       const target: AttackTarget = {
-        url: targetUrl || '',
+        url: localPath ? '' : (targetUrl || ''),
         type: targetType,
+        localPath,
         headers: Object.keys(headers).length > 0 ? headers : undefined,
         apiFormat: apiFormat as 'openai' | 'anthropic' | 'mcp-jsonrpc' | 'a2a' | 'custom',
         model: options.model,
@@ -2571,7 +2613,7 @@ Examples:
       if (format === 'text') {
         console.log(`\n⚔️  HackMyAgent Attack Mode`);
         console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
-        console.log(`Target: ${target.type === 'local' ? 'Local Simulation' : targetUrl}`);
+        console.log(`Target: ${target.type === 'local' ? (localPath ? `Local Directory: ${localPath}` : 'Local Simulation') : targetUrl}`);
         console.log(`Intensity: ${intensity}`);
         if (customPayloads) {
           console.log(`Payloads: ${customPayloads.length} custom (from file)`);
@@ -2620,8 +2662,8 @@ Examples:
         }
       }
 
-      // Registry reporting: auto-publish to community endpoint by default
-      const shouldReport = options.registryReport || (options.registry !== false);
+      // Registry reporting: skip for local-only scans (no network calls needed)
+      const shouldReport = targetType !== 'local' && (options.registryReport || (options.registry !== false));
       if (shouldReport) {
         try {
           const core = await import('./index');
