@@ -1734,9 +1734,7 @@ Examples:
 
         const { SoulScanner } = await import('./soul/index.js');
         const soulScanner = new SoulScanner();
-        const govResult = await soulScanner.scanSoul(targetDir, {
-          tier: options.level, // reuse --level as tier hint if provided
-        });
+        const govResult = await soulScanner.scanSoul(targetDir);
 
         const infraScore = infraResult.compliance ?? 0;
         const govScore = govResult.score;
