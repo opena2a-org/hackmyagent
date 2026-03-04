@@ -5,25 +5,34 @@ import {
   PublisherVerification,
   VerificationMethod,
 } from '../../src/checker/publisher-verifier';
+import { promises as dnsPromises } from 'dns';
+
+const mockedResolveTxt = vi.fn();
+vi.spyOn(dnsPromises, 'resolveTxt').mockImplementation(mockedResolveTxt);
 
 describe('lookupDnsTxt', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('returns TXT records for a domain', async () => {
-    // Using a well-known domain that has TXT records
+    mockedResolveTxt.mockResolvedValue([['v=spf1 include:_spf.google.com ~all']]);
     const records = await lookupDnsTxt('google.com');
 
     expect(Array.isArray(records)).toBe(true);
-    // Google has SPF and other TXT records
     expect(records.length).toBeGreaterThan(0);
+    expect(mockedResolveTxt).toHaveBeenCalledWith('google.com');
   });
 
   it('returns empty array for domain with no TXT records', async () => {
-    // Use a subdomain unlikely to have TXT records
+    mockedResolveTxt.mockRejectedValue(Object.assign(new Error('queryTxt ENODATA'), { code: 'ENODATA' }));
     const records = await lookupDnsTxt('no-txt-records.example.com');
 
     expect(records).toEqual([]);
   });
 
   it('returns empty array for non-existent domain', async () => {
+    mockedResolveTxt.mockRejectedValue(Object.assign(new Error('queryTxt ENOTFOUND'), { code: 'ENOTFOUND' }));
     const records = await lookupDnsTxt('this-domain-definitely-does-not-exist-12345.com');
 
     expect(records).toEqual([]);
