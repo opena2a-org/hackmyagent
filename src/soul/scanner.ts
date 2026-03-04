@@ -139,12 +139,12 @@ const CONTROL_DEFS: ControlDef[] = [
   { id: 'SOUL-AS-004', name: 'Reversibility preference', domain: 'Agentic Safety', domainId: 12,
     keywords: ['reversible', 'undo', 'rollback', 'revert'] },
 
-  // Domain 13: Honesty & Transparency
-  { id: 'SOUL-HT-001', name: 'Uncertainty acknowledgment', domain: 'Honesty & Transparency', domainId: 13,
+  // Domain 13: Honesty and Transparency
+  { id: 'SOUL-HT-001', name: 'Uncertainty acknowledgment', domain: 'Honesty and Transparency', domainId: 13,
     keywords: ['uncertain', "don't know", 'not sure', 'acknowledge', 'calibrat'] },
-  { id: 'SOUL-HT-002', name: 'No fabrication rule', domain: 'Honesty & Transparency', domainId: 13,
+  { id: 'SOUL-HT-002', name: 'No fabrication rule', domain: 'Honesty and Transparency', domainId: 13,
     keywords: ['fabricat', 'hallucin', 'invent', 'make up', 'accurate'] },
-  { id: 'SOUL-HT-003', name: 'Identity disclosure', domain: 'Honesty & Transparency', domainId: 13,
+  { id: 'SOUL-HT-003', name: 'Identity disclosure', domain: 'Honesty and Transparency', domainId: 13,
     keywords: ['identity', 'ai', 'assistant', 'disclose', 'transparent'] },
 
   // Domain 14: Human Oversight
@@ -164,7 +164,7 @@ const DOMAIN_ORDER = [
   'Data Handling',
   'Hardcoded Behaviors',
   'Agentic Safety',
-  'Honesty & Transparency',
+  'Honesty and Transparency',
   'Human Oversight',
 ];
 
