@@ -233,6 +233,71 @@ Output formats: `text`, `json`, `sarif`, `html`, `asp` (Agent Security Profile).
 
 ---
 
+### `hackmyagent secure -b oasb-2`
+
+Run OASB-2 composite assessment: infrastructure security (OASB-1, 50%) combined with behavioral governance (scan-soul, 50%) for a unified score.
+
+```bash
+hackmyagent secure -b oasb-2              # full composite assessment
+hackmyagent secure -b oasb-2 --json       # JSON output
+hackmyagent secure -b oasb-2 --fail-below 60  # CI gate
+```
+
+Output shows infrastructure score, governance score, composite score, and conformance level. Requires a SOUL.md (or equivalent governance file) in the scanned directory.
+
+---
+
+### `hackmyagent scan-soul`
+
+Scan a SOUL.md (or equivalent governance file) against OASB v2 behavioral governance controls. Checks 8 domains and up to 68 controls depending on agent tier.
+
+```bash
+hackmyagent scan-soul                     # scan current directory
+hackmyagent scan-soul ./my-agent          # scan specific directory
+hackmyagent scan-soul --tier MULTI-AGENT  # override tier detection
+hackmyagent scan-soul --json              # JSON output for CI
+hackmyagent scan-soul --verbose           # show individual control results
+hackmyagent scan-soul --deep              # LLM semantic analysis (requires ANTHROPIC_API_KEY)
+hackmyagent scan-soul --fail-below 60     # exit 1 if score below threshold
+```
+
+Auto-detects governance file in priority order: `SOUL.md` > `system-prompt.md` > `CLAUDE.md` > `.cursorrules` > `agent-config.yaml` and others.
+
+Tier-to-control counts:
+
+| Tier | Controls | Use case |
+|------|----------|----------|
+| `BASIC` | 27 | Chatbots with no tool access |
+| `TOOL-USING` | 54 | Agents with tool/function calling |
+| `AGENTIC` | 65 | Autonomous multi-step agents |
+| `MULTI-AGENT` | 68 | Orchestrators and sub-agent systems |
+
+Conformance levels:
+
+| Level | Criteria |
+|-------|----------|
+| `none` | A critical control (SOUL-IH-003 or SOUL-HB-001) is missing — grade capped at C |
+| `essential` | All critical controls pass |
+| `standard` | All critical + high controls pass, score ≥ 60 |
+| `hardened` | All controls pass, score ≥ 75 |
+
+---
+
+### `hackmyagent harden-soul`
+
+Generate a SOUL.md, or add missing governance sections to an existing one. Existing content is always preserved.
+
+```bash
+hackmyagent harden-soul                   # add missing sections
+hackmyagent harden-soul --dry-run         # preview without writing
+hackmyagent harden-soul ./my-agent        # target specific directory
+hackmyagent harden-soul --json            # JSON output
+```
+
+Generates template content for each missing OASB v2 governance domain. Run `scan-soul` after to verify coverage improved.
+
+---
+
 ### `hackmyagent fix-all`
 
 Run all security plugins in sequence: credential vault, file signing, skill guard. Applies fixes and generates a report.
