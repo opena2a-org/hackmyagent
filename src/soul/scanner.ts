@@ -288,7 +288,7 @@ export class SoulScanner {
 
     // Detect tier early (needed for applicable control count)
     const contentForTier = govFile ? (() => { try { return fs.readFileSync(govFile, 'utf-8'); } catch { return ''; } })() : '';
-    const tier = (options?.tier as AgentTier) || this.detectTier(targetDir, contentForTier);
+    const tier = (options?.tier ? options.tier.toUpperCase() as AgentTier : null) || this.detectTier(targetDir, contentForTier);
     const applicable = this.applicableControls(tier);
 
     // No governance file found
