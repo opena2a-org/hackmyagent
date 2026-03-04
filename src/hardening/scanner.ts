@@ -518,7 +518,9 @@ export class HardeningScanner {
 
     try {
       await fs.access(path.join(targetDir, '.claude'));
-      platforms.push('claude-code');
+      if (!platforms.includes('claude-code')) {
+        platforms.push('claude-code');
+      }
     } catch {}
 
     // OpenClaw detection

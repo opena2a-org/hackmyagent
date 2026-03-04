@@ -238,15 +238,15 @@ describe('OASB-1 Benchmark', () => {
       });
 
       it('50% → Failing', () => {
-        expect(calculateRating(50, 0, 0, 'L1')).toBe('Failing');
+        expect(calculateRating(50, 0, 0, 'L1')).toBe('Not Passing');
       });
 
       it('0% → Failing', () => {
-        expect(calculateRating(0, 0, 0, 'L1')).toBe('Failing');
+        expect(calculateRating(0, 0, 0, 'L1')).toBe('Not Passing');
       });
 
       it('69% → Failing', () => {
-        expect(calculateRating(69, 0, 0, 'L1')).toBe('Failing');
+        expect(calculateRating(69, 0, 0, 'L1')).toBe('Not Passing');
       });
     });
 
@@ -277,7 +277,7 @@ describe('OASB-1 Benchmark', () => {
       });
 
       it('L1=50% → Failing', () => {
-        expect(calculateRating(50, 0, 0, 'L2')).toBe('Failing');
+        expect(calculateRating(50, 0, 0, 'L2')).toBe('Not Passing');
       });
     });
 
@@ -299,7 +299,7 @@ describe('OASB-1 Benchmark', () => {
       });
 
       it('L1=50% → Failing', () => {
-        expect(calculateRating(50, 0, 0, 'L3')).toBe('Failing');
+        expect(calculateRating(50, 0, 0, 'L3')).toBe('Not Passing');
       });
     });
 

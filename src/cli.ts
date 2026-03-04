@@ -351,7 +351,7 @@ function generateBenchmarkReport(
   const l3Compliance = l3Total > 0 ? Math.round((l3Passed / l3Total) * 100) : 100;
   const totalScored = l1Total + l2Total + l3Total;
   const totalPassed = l1Passed + l2Passed + l3Passed;
-  const overallCompliance = totalScored > 0 ? Math.round((totalPassed / totalScored) * 100) : 100;
+  const overallCompliance = totalScored > 0 ? Math.round((totalPassed / totalScored) * 100) : 0;
 
   // Group results by category
   const categoryResults: BenchmarkCategoryResult[] = [];
@@ -364,7 +364,7 @@ function generateBenchmarkReport(
     const passed = catControls.filter((r: LocalControlResult) => r.status === 'passed').length;
     const failed = catControls.filter((r: LocalControlResult) => r.status === 'failed').length;
     const unverified = catControls.filter((r: LocalControlResult) => r.status === 'unverified').length;
-    const compliance = (passed + failed) > 0 ? Math.round((passed / (passed + failed)) * 100) : 100;
+    const compliance = (passed + failed) > 0 ? Math.round((passed / (passed + failed)) * 100) : 0;
 
     categoryResults.push({
       category: category.name,
@@ -508,7 +508,7 @@ function generateHtmlReport(result: BenchmarkResult): string {
     'Compliant': '#22c55e',
     'Passing': '#eab308',
     'Needs Improvement': '#f97316',
-    'Failing': '#ef4444',
+    'Not Passing': '#ef4444',
   }[result.rating] || '#94a3b8';
 
   const ratingBg = {
@@ -516,7 +516,7 @@ function generateHtmlReport(result: BenchmarkResult): string {
     'Compliant': 'rgba(34, 197, 94, 0.15)',
     'Passing': 'rgba(234, 179, 8, 0.15)',
     'Needs Improvement': 'rgba(249, 115, 22, 0.15)',
-    'Failing': 'rgba(239, 68, 68, 0.15)',
+    'Not Passing': 'rgba(239, 68, 68, 0.15)',
   }[result.rating] || 'rgba(148, 163, 184, 0.15)';
 
   // Generate donut chart SVG
@@ -1490,11 +1490,11 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean): void {
     'Compliant': colors.green,
     'Passing': colors.yellow,
     'Needs Improvement': colors.yellow,
-    'Failing': colors.red,
+    'Not Passing': colors.red,
   };
 
   // Header
-  console.log(`\n📋 ${result.benchmark} v${result.version}`);
+  console.log(`\n${result.benchmark} v${result.version}`);
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
 
   // Level and rating
@@ -1528,7 +1528,7 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean): void {
             }
           }
         } else if (verbose && ctrl.status === 'passed') {
-          console.log(`     ✅ ${ctrl.controlId}: ${ctrl.name}`);
+          console.log(`     [+] ${ctrl.controlId}: ${ctrl.name}`);
         } else if (verbose && ctrl.status === 'unverified') {
           // Look up the original control to determine why it's unverified
           const originalControl = OASB_1_CATEGORIES
@@ -1537,7 +1537,7 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean): void {
           const reason = originalControl && (originalControl.verification === 'manual' || originalControl.verification === 'forward')
             ? 'manual/forward'
             : 'no scanner data';
-          console.log(`     ⚪ ${ctrl.controlId}: ${ctrl.name} (${reason})`);
+          console.log(`     [?] ${ctrl.controlId}: ${ctrl.name} (${reason})`);
         }
       }
     }
@@ -1549,7 +1549,7 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean): void {
   // Compliance breakdown by level
   if (verbose) {
     console.log(`\nCompliance by level: L1=${result.l1Compliance}% L2=${result.l2Compliance}% L3=${result.l3Compliance}%`);
-    console.log(`Legend: ⚪ = Manual/Forward verification required`);
+    console.log(`Legend: [?] = Manual/Forward verification required`);
   }
 
   // Show appropriate next step based on current level
@@ -1696,9 +1696,9 @@ Examples:
       // Only show progress for text output
       if (format === 'text') {
         if (options.dryRun) {
-          console.log(`\n🔍 Scanning ${targetDir} (dry-run)...\n`);
+          console.log(`\nScanning ${targetDir} (dry-run)...\n`);
         } else {
-          console.log(`\n🔍 Scanning ${targetDir}...\n`);
+          console.log(`\nScanning ${targetDir}...\n`);
         }
       }
 
@@ -1829,7 +1829,7 @@ Examples:
         }
 
         // Exit with non-zero if failing or needs improvement (default behavior)
-        if (failBelow === undefined && (benchmarkResult.rating === 'Failing' || benchmarkResult.rating === 'Needs Improvement')) {
+        if (failBelow === undefined && (benchmarkResult.rating === 'Not Passing' || benchmarkResult.rating === 'Needs Improvement')) {
           process.exit(1);
         }
         return;
@@ -2304,7 +2304,7 @@ Examples:
       options: { json?: boolean; ports?: string; timeout?: string; verbose?: boolean }
     ) => {
       try {
-        console.log(`\n🔍 Scanning ${target}...\n`);
+        console.log(`\nScanning ${target}...\n`);
 
         const scanner = new ExternalScanner();
         const customPorts = options.ports
@@ -2336,7 +2336,7 @@ Examples:
         console.log(`Duration: ${result.duration}ms\n`);
 
         if (result.findings.length === 0) {
-          console.log(`${colors.green}✅ No security issues found!${RESET()}\n`);
+          console.log(`${colors.green}[+] No security issues found!${RESET()}\n`);
           return;
         }
 
@@ -2402,7 +2402,7 @@ Examples:
       const scanner = new HardeningScanner();
       await scanner.rollback(targetDir);
 
-      console.log(`${colors.green}✅ Rollback successful!${RESET()}`);
+      console.log(`${colors.green}[+] Rollback successful!${RESET()}`);
       console.log('   All auto-fix changes have been reverted.\n');
     } catch (error) {
       console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -2611,7 +2611,7 @@ Examples:
 
       // Show header for text output
       if (format === 'text') {
-        console.log(`\n⚔️  HackMyAgent Attack Mode`);
+        console.log(`\nHackMyAgent Attack Mode`);
         console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
         console.log(`Target: ${target.type === 'local' ? (localPath ? `Local Directory: ${localPath}` : 'Local Simulation') : targetUrl}`);
         console.log(`Intensity: ${intensity}`);
@@ -2762,7 +2762,7 @@ function printAttackReport(report: AttackReport, verbose: boolean): void {
     if (blocked.length > 0) {
       console.log(`${colors.green}Blocked Attacks (${blocked.length}):${RESET()}`);
       for (const r of blocked) {
-        console.log(`  ✅ ${r.payload.id}: ${r.payload.name}`);
+        console.log(`  [+] ${r.payload.id}: ${r.payload.name}`);
       }
       console.log();
     }
