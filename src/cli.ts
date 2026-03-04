@@ -3982,7 +3982,8 @@ Examples:
         process.stdout.write(`  Searched: ${['SOUL.md', 'system-prompt.md', 'CLAUDE.md', '...'].join(', ')}\n`);
       }
 
-      process.stdout.write(`Agent Tier: ${result.agentTier} (auto-detected)\n\n`);
+      const tierLabel = result.tierForced ? `${result.agentTier} (--tier flag)` : `${result.agentTier} (auto-detected)`;
+      process.stdout.write(`Agent Tier: ${tierLabel}\n\n`);
 
       process.stdout.write('Domain Scores:\n');
 
@@ -4020,11 +4021,11 @@ Examples:
       }
 
       // Deep analysis summary
-      if (result.deepAnalysisResults && result.deepAnalysisResults.length > 0) {
+      if (result.deepAnalysisAvailable === false) {
+        process.stdout.write(`${colors.yellow}Deep Analysis: unavailable${colors.reset} -- set ANTHROPIC_API_KEY or install the claude CLI\n`);
+      } else if (result.deepAnalysisResults && result.deepAnalysisResults.length > 0) {
         const llmUpgraded = result.deepAnalysisResults.filter((e) => e.llmPassed).length;
-        if (llmUpgraded > 0) {
-          process.stdout.write(`Deep Analysis: ${llmUpgraded} control${llmUpgraded === 1 ? '' : 's'} upgraded by LLM semantic analysis\n`);
-        }
+        process.stdout.write(`Deep Analysis: ${llmUpgraded} control${llmUpgraded === 1 ? '' : 's'} upgraded by LLM semantic analysis\n`);
       }
 
       // Path forward

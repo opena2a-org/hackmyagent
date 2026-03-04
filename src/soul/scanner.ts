@@ -47,6 +47,7 @@ export interface SoulScanResult {
   file: string | null;
   fileSize: number;
   agentTier: AgentTier;
+  tierForced: boolean;
   domains: DomainResult[];
   score: number;
   grade: SoulGrade;
@@ -56,6 +57,7 @@ export interface SoulScanResult {
   totalControls: number;
   totalPassed: number;
   deepAnalysisResults?: DeepAnalysisEntry[];
+  deepAnalysisAvailable?: boolean;
 }
 
 export interface HardenResult {
@@ -354,6 +356,16 @@ export class SoulScanner {
    * Uses claude CLI first, falls back to Anthropic API.
    * Returns true if the LLM determines the content addresses the control.
    */
+  private isLlmAvailable(): boolean {
+    if (process.env.ANTHROPIC_API_KEY) return true;
+    try {
+      const claudePath = execSync('which claude 2>/dev/null', { encoding: 'utf-8' }).trim();
+      return !!claudePath;
+    } catch {
+      return false;
+    }
+  }
+
   private async analyzeControlDeep(content: string, def: ControlDef): Promise<boolean> {
     const prompt = `Does the following AI agent governance text address the control "${def.name}" (${def.id})? This control checks for: ${def.keywords.slice(0, 3).join(', ')}. Answer with YES or NO only.\n\n---\n${content.slice(0, 3000)}\n---`;
 
@@ -460,7 +472,8 @@ export class SoulScanner {
     const contentForTier = govFile
       ? (() => { try { return fs.readFileSync(govFile, 'utf-8'); } catch { return ''; } })()
       : '';
-    const tier = (options?.tier ? options.tier.toUpperCase() as AgentTier : null) || this.detectTier(targetDir, contentForTier);
+    const tierForced = !!options?.tier;
+    const tier = (tierForced ? options!.tier!.toUpperCase() as AgentTier : null) || this.detectTier(targetDir, contentForTier);
     const applicable = this.applicableControls(tier);
 
     // No governance file found
@@ -489,6 +502,7 @@ export class SoulScanner {
         file: null,
         fileSize: 0,
         agentTier: tier,
+        tierForced,
         domains: emptyDomains,
         score: 0,
         grade,
@@ -515,7 +529,10 @@ export class SoulScanner {
 
     // Layer 2: Deep LLM semantic analysis for failed controls
     const deepAnalysisResults: DeepAnalysisEntry[] = [];
-    if (options?.deepAnalysis) {
+    const deepAnalysisAvailable = options?.deepAnalysis
+      ? this.isLlmAvailable()
+      : undefined;
+    if (options?.deepAnalysis && deepAnalysisAvailable) {
       const failedControls = applicable.filter(
         (def) => !controlResults.find((c) => c.id === def.id)?.passed,
       );
@@ -574,6 +591,7 @@ export class SoulScanner {
       file: path.relative(targetDir, govFile) || path.basename(govFile),
       fileSize,
       agentTier: tier,
+      tierForced,
       domains,
       score,
       grade,
@@ -584,8 +602,11 @@ export class SoulScanner {
       totalPassed,
     };
 
-    if (options?.deepAnalysis && deepAnalysisResults.length > 0) {
-      result.deepAnalysisResults = deepAnalysisResults;
+    if (options?.deepAnalysis) {
+      result.deepAnalysisAvailable = deepAnalysisAvailable;
+      if (deepAnalysisResults.length > 0) {
+        result.deepAnalysisResults = deepAnalysisResults;
+      }
     }
 
     return result;
