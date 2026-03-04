@@ -2032,7 +2032,7 @@ dist/
       category: 'dependencies',
       severity: 'critical',
       passed: !hasDangerousScripts,
-      file: hasDangerousScripts ? pkgJsonPath : undefined,
+      file: hasDangerousScripts ? 'package.json' : undefined,
       message: hasDangerousScripts
         ? 'Dangerous patterns in npm scripts (curl|sh, eval) - review carefully'
         : 'npm scripts appear safe',
@@ -2190,7 +2190,7 @@ dist/
       category: 'process',
       severity: 'high',
       passed: hasSecureDockerfile,
-      file: !hasSecureDockerfile ? dockerfilePath : undefined,
+      file: !hasSecureDockerfile && dockerfilePath ? path.relative(targetDir, dockerfilePath) : undefined,
       message: hasSecureDockerfile
         ? 'Container runs as non-root user or no Dockerfile present'
         : 'Dockerfile runs as root - add USER directive for non-root user',
