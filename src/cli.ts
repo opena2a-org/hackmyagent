@@ -1514,8 +1514,13 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean): void {
   // Category breakdown
   console.log(`Categories:`);
   for (const catResult of result.categories) {
+    const total = catResult.passed + catResult.failed;
+    if (total === 0) {
+      console.log(`  [.] ${catResult.category}: N/A (no controls at this level)`);
+      continue;
+    }
     const statusIcon = catResult.failed === 0 ? '[+]' : (catResult.passed > 0 ? '[~]' : '[-]');
-    console.log(`  ${statusIcon} ${catResult.category}: ${catResult.passed}/${catResult.passed + catResult.failed} (${catResult.compliance}%)`);
+    console.log(`  ${statusIcon} ${catResult.category}: ${catResult.passed}/${total} (${catResult.compliance}%)`);
 
     // Show failed controls
     if (verbose || catResult.failed > 0) {
@@ -1837,6 +1842,8 @@ Examples:
 
       if (format === 'json') {
         console.log(JSON.stringify(result, null, 2));
+        const critHigh = result.findings.filter((f: SecurityFinding) => !f.passed && !f.fixed && (f.severity === 'critical' || f.severity === 'high'));
+        if (critHigh.length > 0) process.exit(1);
         return;
       }
 
@@ -2114,10 +2121,17 @@ function assessRiskLevel(findings: SecurityFinding[]): { level: string; color: s
       description: 'Some findings detected. Review the recommendations below.',
     };
   }
+  if (findings.length === 0) {
+    return {
+      level: 'None',
+      color: colors.dim,
+      description: 'No OpenClaw configuration detected. Run `hackmyagent secure` for a full scan.',
+    };
+  }
   return {
     level: 'Low',
     color: colors.green,
-    description: 'Your OpenClaw installation appears well-secured.',
+    description: 'No critical or high findings detected.',
   };
 }
 
