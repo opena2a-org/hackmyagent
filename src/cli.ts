@@ -43,6 +43,11 @@ import {
   type AttackReport,
   type AttackPayload,
   type FailPolicy,
+  // Soul scanner imports
+  SoulScanner,
+  type SoulScanResult,
+  type DomainResult,
+  type SoulGrade,
 } from './index';
 
 const program = new Command();
@@ -1597,9 +1602,11 @@ Performs 147 security checks across 30 categories:
   • Encryption: At-rest encryption, secure hashing
   • And 25 more categories...
 
-Benchmark mode (--benchmark oasb-1):
-  Run OASB-1 compliance checks with L1/L2/L3 levels.
-  L1 = Essential (baseline), L2 = Standard, L3 = Hardened
+Benchmark mode (--benchmark):
+  oasb-1   OASB-1 infrastructure compliance (L1/L2/L3 levels)
+           L1 = Essential (baseline), L2 = Standard, L3 = Hardened
+  oasb-2   OASB-2 composite: infrastructure (50%) + governance (50%)
+           Combines OASB-1 scan with scan-soul for a unified score
 
 Output formats (--format):
   text   Human-readable terminal output (default)
@@ -1619,7 +1626,8 @@ Examples:
   $ hackmyagent secure -b oasb-1 -l L2           OASB-1 L2 compliance
   $ hackmyagent secure -b oasb-1 -f sarif        SARIF for GitHub
   $ hackmyagent secure -b oasb-1 -f html -o report.html
-  $ hackmyagent secure -b oasb-1 --fail-below 80 CI threshold`)
+  $ hackmyagent secure -b oasb-1 --fail-below 80 CI threshold
+  $ hackmyagent secure -b oasb-2               OASB-2 composite (infra + governance)`)
   .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
   .option('--fix', 'Automatically fix issues where possible')
   .option('--dry-run', 'Preview fixes without applying them (use with --fix)')
@@ -1633,14 +1641,12 @@ Examples:
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
   .option('-c, --category <name>', 'Filter to specific benchmark category')
   .option('--deep', 'Enable LLM-powered semantic analysis (requires ANTHROPIC_API_KEY)')
-  .option('--live-mcp', 'Enable live MCP tool enumeration (spawns MCP servers)')
-  .option('--contribute', 'Share anonymized scan results with OpenA2A community')
   .option('--registry-report', 'Post results to OpenA2A Registry')
   .option('--no-registry', 'Skip auto-publishing results to OpenA2A Registry')
   .option('--version-id <id>', 'Registry version ID to report against')
   .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)')
   .option('--registry-key <key>', 'Registry API key (default: REGISTRY_API_KEY env)')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; liveMcp?: boolean; contribute?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string }) => {
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
@@ -1656,15 +1662,16 @@ Examples:
         : [];
 
       // Validate benchmark flag if provided
-      if (options.benchmark && !isValidBenchmark(options.benchmark)) {
-        console.error(`Error: Unknown benchmark '${options.benchmark}'. Available: ${AVAILABLE_BENCHMARKS.join(', ')}`);
+      const isOasb2 = options.benchmark?.toLowerCase() === 'oasb-2';
+      if (options.benchmark && !isOasb2 && !isValidBenchmark(options.benchmark)) {
+        console.error(`Error: Unknown benchmark '${options.benchmark}'. Available: ${[...AVAILABLE_BENCHMARKS, 'oasb-2'].join(', ')}`);
         process.exit(1);
       }
 
-      // Validate level if benchmark mode
+      // Validate level if benchmark mode (not applicable for oasb-2)
       const validLevels = ['L1', 'L2', 'L3'];
       const level = (options.level?.toUpperCase() || 'L1') as BenchmarkLevel;
-      if (options.benchmark && !validLevels.includes(level)) {
+      if (options.benchmark && !isOasb2 && !validLevels.includes(level)) {
         console.error(`Error: Invalid level '${options.level}'. Use: L1, L2, or L3`);
         process.exit(1);
       }
@@ -1714,9 +1721,65 @@ Examples:
         dryRun: options.dryRun ?? false,
         ignore: ignoreList,
         deep: isDeep,
-        liveMcp: options.liveMcp ?? false,
         onProgress,
       });
+
+      // OASB-2 composite mode: infrastructure (50%) + governance (50%)
+      if (isOasb2) {
+        const infraResult = generateBenchmarkReport(
+          result.allFindings || result.findings,
+          level,
+          options.category,
+        );
+
+        const { SoulScanner } = await import('./soul/index.js');
+        const soulScanner = new SoulScanner();
+        const govResult = await soulScanner.scanSoul(targetDir);
+
+        const infraScore = infraResult.compliance ?? 0;
+        const govScore = govResult.score;
+        const compositeScore = Math.round((infraScore + govScore) / 2);
+
+        if (format === 'json') {
+          console.log(JSON.stringify({
+            benchmark: 'OASB-2',
+            infraScore,
+            govScore,
+            compositeScore,
+            conformance: govResult.conformance,
+            infraResult,
+            govResult,
+          }, null, 2));
+        } else {
+          process.stdout.write('\nOASB v2 Composite Security Assessment\n');
+          process.stdout.write('----------------------------------------------------\n');
+          process.stdout.write(`Infrastructure Score (OASB-1): ${infraScore}%\n`);
+          process.stdout.write(`Governance Score (OASB-2):     ${govScore}/100\n`);
+          process.stdout.write('----------------------------------------------------\n');
+          process.stdout.write(`Composite Score:               ${compositeScore}/100\n`);
+          process.stdout.write(`Conformance:                   ${govResult.conformance.toUpperCase()}\n`);
+          process.stdout.write('\n');
+
+          // Show infra report then governance report
+          printBenchmarkReport(infraResult, options.verbose ?? false);
+
+          process.stdout.write('\nGovernance Domains (scan-soul):\n');
+          for (const domain of govResult.domains) {
+            const label = (domain.domain + ':').padEnd(26);
+            process.stdout.write(`  ${label}${domain.passed}/${domain.total}  (${domain.percentage}%)\n`);
+          }
+          if (govResult.criticalFloor) {
+            process.stdout.write(`\nCritical Floor: APPLIED (${govResult.criticalMissing.join(', ')} missing)\n`);
+          }
+          process.stdout.write('\n');
+        }
+
+        if (failBelow !== undefined && compositeScore < failBelow) {
+          console.error(`Composite score ${compositeScore} is below threshold ${failBelow}`);
+          process.exit(1);
+        }
+        return;
+      }
 
       // Benchmark mode - output compliance report
       if (options.benchmark) {
@@ -1911,30 +1974,6 @@ Examples:
           }
         } catch (reportErr: any) {
           console.error(`Registry: failed to report scan results: ${reportErr.message || reportErr}`);
-        }
-      }
-
-      // Anonymous contribution (opt-in via --contribute flag)
-      if (options.contribute) {
-        try {
-          const contrib = await import('./registry/contribution');
-          const artifactContent = require('fs').readdirSync(targetDir).join(',');
-          const payload = contrib.buildHardeningContribution(
-            VERSION,
-            artifactContent,
-            result.findings,
-            result.score,
-            result.maxScore,
-          );
-          const submitted = await contrib.submitContribution(
-            process.env.REGISTRY_URL || 'https://registry.opena2a.org',
-            payload,
-          );
-          if (submitted && format === 'text') {
-            console.log('Community: anonymized scan shared with OpenA2A registry');
-          }
-        } catch {
-          // Contribution failure is non-critical
         }
       }
 
@@ -3845,221 +3884,265 @@ Examples:
     }
   });
 
-// Governance scanning command
+// Grade display colors
+function gradeColor(grade: SoulGrade): string {
+  switch (grade) {
+    case 'A': return colors.green;
+    case 'B': return colors.green;
+    case 'C': return colors.yellow;
+    case 'D': return colors.red;
+    case 'F': return colors.brightRed;
+  }
+}
+
+// Domain percentage bar for text output
+function domainBar(pct: number): string {
+  if (pct >= 80) return colors.green;
+  if (pct >= 60) return colors.yellow;
+  if (pct >= 40) return colors.yellow;
+  return colors.red;
+}
+
 program
   .command('scan-soul')
-  .description(`Scan SOUL.md / system prompts for governance controls
+  .description(`Scan behavioral governance coverage
 
-Evaluates behavioral governance documents against OASB v2 domains 7-14
-(68 controls across Trust Hierarchy, Capability Boundaries, Injection
-Hardening, Data Handling, Hardcoded Behaviors, Agentic Safety, Honesty
-& Transparency, Human Oversight).
+Analyzes SOUL.md (or equivalent governance file) for coverage
+across 8 behavioral governance domains with 68 security controls.
 
-Grades: A (90-100), B (75-89), C (60-74), D (40-59), F (0-39)
+Searches for governance files in priority order:
+  SOUL.md > system-prompt.md > SYSTEM_PROMPT.md > .cursorrules
+  > .github/copilot-instructions.md > CLAUDE.md > .clinerules
+  > instructions.md > constitution.md > agent-config.yaml
+
+Domains checked (OASB v2):
+  7. Trust Hierarchy         8. Capability Boundaries
+  9. Injection Hardening    10. Data Handling
+  11. Hardcoded Behaviors   12. Agentic Safety
+  13. Honesty & Transparency 14. Human Oversight
+
+Grade: A (80-100), B (60-79), C (40-59), D (20-39), F (0-19)
+Critical floor: Missing SOUL-IH-003 or SOUL-HB-001 caps grade at C.
+
+Conformance levels:
+  none:      one or more critical controls missing
+  essential: all critical controls pass, score < 60
+  standard:  all critical controls pass, score >= 60
+  hardened:  all critical controls pass, score >= 75
 
 Examples:
-  $ hackmyagent scan-soul
-  $ hackmyagent scan-soul ./my-agent
-  $ hackmyagent scan-soul --format json
-  $ hackmyagent scan-soul --contribute`)
-  .argument('[directory]', 'Directory containing SOUL.md or system prompts', '.')
-  .option('-f, --format <format>', 'Output format: text, json (default: text)', 'text')
-  .option('-o, --output <file>', 'Write output to file')
-  .option('-v, --verbose', 'Show all controls including passed ones')
-  .option('--contribute', 'Share anonymized results with OpenA2A community')
-  .action(async (directory: string, options: { format?: string; output?: string; verbose?: boolean; contribute?: boolean }) => {
+  $ hackmyagent scan-soul                    Scan current directory
+  $ hackmyagent scan-soul ./my-agent         Scan specific directory
+  $ hackmyagent scan-soul --json             Machine-readable output
+  $ hackmyagent scan-soul --verbose          Show all controls
+  $ hackmyagent scan-soul --deep             Enable LLM semantic analysis`)
+  .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
+  .option('--json', 'Output as JSON')
+  .option('-v, --verbose', 'Show individual control results')
+  .option('--tier <tier>', 'Override agent tier detection (BASIC, TOOL-USING, AGENTIC, MULTI-AGENT)')
+  .option('--fail-below <score>', 'Exit 1 if score below threshold (0-100)')
+  .option('--deep', 'Enable LLM semantic analysis for ambiguous controls (requires claude CLI or ANTHROPIC_API_KEY)')
+  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; failBelow?: string; deep?: boolean }) => {
     try {
-      const fs = require('fs');
-      const path = require('path');
-      const targetDir = directory.startsWith('/') ? directory : path.join(process.cwd(), directory);
+      const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
-      if (!fs.existsSync(targetDir)) {
-        console.error(`Error: Directory '${targetDir}' does not exist.`);
+      if (!require('fs').existsSync(targetDir)) {
+        process.stderr.write(`Error: Directory '${targetDir}' does not exist.\n`);
         process.exit(1);
       }
 
-      // Discover governance files
-      const GOVERNANCE_FILES = [
-        'SOUL.md', 'soul.md', 'SYSTEM_PROMPT.md', 'system-prompt.md',
-        'system_prompt.md', '.cursorrules', 'GUIDELINES.md', 'RULES.md',
-      ];
+      const scanner = new SoulScanner();
+      const result = await scanner.scanSoul(targetDir, {
+        verbose: options.verbose,
+        tier: options.tier,
+        deepAnalysis: options.deep,
+      });
 
-      let governanceFile: string | null = null;
-      let content: string = '';
-
-      for (const filename of GOVERNANCE_FILES) {
-        const filePath = path.join(targetDir, filename);
-        if (fs.existsSync(filePath)) {
-          governanceFile = filePath;
-          content = fs.readFileSync(filePath, 'utf-8');
-          break;
+      // JSON output
+      if (options.json) {
+        process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+        // Check fail threshold
+        if (options.failBelow) {
+          const threshold = parseInt(options.failBelow, 10);
+          if (!isNaN(threshold) && result.score < threshold) {
+            process.exit(1);
+          }
         }
+        return;
       }
 
-      if (!governanceFile || !content) {
-        console.error('No governance file found (SOUL.md, system-prompt.md, .cursorrules, etc.)');
-        console.error('Create a SOUL.md file or run: hackmyagent harden-soul');
-        process.exit(1);
-      }
+      // Text output
+      process.stdout.write('\nOASB v2 Behavioral Governance Scan\n');
+      process.stdout.write('----------------------------------------------------\n\n');
 
-      const abgr = await import('./abgr');
-      const tier = abgr.detectTier(content);
-      const detections = abgr.detectGovernanceControls(content);
-      const score = abgr.computeGovernanceScore(detections, tier, governanceFile);
-
-      if (options.format === 'json') {
-        const output = JSON.stringify(score, null, 2);
-        if (options.output) {
-          fs.writeFileSync(options.output, output);
-          console.error(`Report written to ${options.output}`);
-        } else {
-          console.log(output);
-        }
+      if (result.file) {
+        process.stdout.write(`File: ${result.file} (${result.fileSize.toLocaleString()} chars)\n`);
       } else {
-        // Text output
-        const tierLabel = abgr.getTierLabel(tier);
-        console.log(`\nGovernance Scan: ${path.basename(governanceFile)}`);
-        console.log(`Agent Tier: ${tierLabel}`);
-        console.log(`Overall: ${score.overall}/100 (Grade ${score.grade})\n`);
+        process.stdout.write(`File: ${colors.red}No governance file found${colors.reset}\n`);
+        process.stdout.write(`  Searched: ${['SOUL.md', 'system-prompt.md', 'CLAUDE.md', '...'].join(', ')}\n`);
+      }
 
-        for (const domain of score.domains) {
-          console.log(`  ${domain.domainName}: ${domain.score}/100 (${domain.controlsPassed}/${domain.controlsTotal} controls)`);
+      const tierLabel = result.tierForced ? `${result.agentTier} (--tier flag)` : `${result.agentTier} (auto-detected)`;
+      process.stdout.write(`Agent Tier: ${tierLabel}\n\n`);
 
-          if (options.verbose) {
-            const domainResults = score.results.filter((r: any) => r.domain === domain.domain);
-            for (const r of domainResults) {
-              const mark = r.passed ? `${colors.green}PASS${RESET()}` : `${colors.red}FAIL${RESET()}`;
-              console.log(`    ${mark}  ${r.controlId} ${r.controlName}`);
-            }
+      process.stdout.write('Domain Scores:\n');
+
+      for (const domain of result.domains) {
+        const pctColor = domainBar(domain.percentage);
+        const label = (domain.domain + ':').padEnd(26);
+        process.stdout.write(`  ${label}${pctColor}${domain.passed}/${domain.total}  (${domain.percentage}%)${colors.reset}\n`);
+
+        // Verbose: show individual controls
+        if (options.verbose) {
+          for (const ctrl of domain.controls) {
+            const status = ctrl.passed
+              ? `${colors.green}PASS${colors.reset}`
+              : `${colors.red}FAIL${colors.reset}`;
+            process.stdout.write(`    ${ctrl.id}: ${status}  ${ctrl.name}\n`);
           }
-        }
-        console.log();
-
-        if (score.criticalFailures.length > 0) {
-          console.log(`${colors.red}${score.criticalFailures.length} critical controls missing${RESET()} (grade capped at C)`);
-          console.log(`Run: hackmyagent harden-soul ${directory}\n`);
         }
       }
 
-      // Anonymous contribution
-      if (options.contribute) {
-        try {
-          const contrib = await import('./registry/contribution');
-          const payload = contrib.buildGovernanceContribution(VERSION, content, score);
-          await contrib.submitContribution(
-            process.env.REGISTRY_URL || 'https://registry.opena2a.org',
-            payload,
-          );
-          if (options.format !== 'json') {
-            console.log('Community: anonymized governance scan shared with OpenA2A registry');
-          }
-        } catch {
-          // Non-critical
-        }
+      process.stdout.write('\n');
+
+      // Score and grade
+      const gc = gradeColor(result.grade);
+      process.stdout.write(`Governance Score: ${gc}${result.score}/100 (Grade: ${result.grade})${colors.reset}\n`);
+
+      // Conformance level
+      if (result.conformance === 'none') {
+        process.stdout.write(`Conformance: ${colors.red}NONE${colors.reset} -- critical control missing (${result.criticalMissing.join(', ')})\n`);
+      } else {
+        process.stdout.write(`Conformance: ${result.conformance.toUpperCase()}\n`);
       }
 
-      // Exit non-zero if grade D or F
-      if (score.grade === 'D' || score.grade === 'F') {
-        process.exit(1);
+      if (result.criticalFloor) {
+        process.stdout.write(`${colors.yellow}Critical Floor: APPLIED${colors.reset} (${result.criticalMissing.join(', ')} missing)\n`);
+      }
+
+      // Deep analysis summary
+      if (result.deepAnalysisAvailable === false) {
+        process.stdout.write(`${colors.yellow}Deep Analysis: unavailable${colors.reset} -- set ANTHROPIC_API_KEY or install the claude CLI\n`);
+      } else if (result.deepAnalysisResults && result.deepAnalysisResults.length > 0) {
+        const llmUpgraded = result.deepAnalysisResults.filter((e) => e.llmPassed).length;
+        process.stdout.write(`Deep Analysis: ${llmUpgraded} control${llmUpgraded === 1 ? '' : 's'} upgraded by LLM semantic analysis\n`);
+      }
+
+      // Path forward
+      const missing = result.totalControls - result.totalPassed;
+      if (missing > 0) {
+        process.stdout.write(`\n${missing} control${missing === 1 ? '' : 's'} missing.`);
+        process.stdout.write(` Run '${colors.cyan}hackmyagent harden-soul${colors.reset}' to remediate.\n`);
+      } else {
+        process.stdout.write(`\n${colors.green}All ${result.totalControls} governance controls covered.${colors.reset}\n`);
+      }
+
+      process.stdout.write('\n');
+
+      // Check fail threshold
+      if (options.failBelow) {
+        const threshold = parseInt(options.failBelow, 10);
+        if (!isNaN(threshold) && result.score < threshold) {
+          process.stderr.write(`Score ${result.score} is below threshold ${threshold}\n`);
+          process.exit(1);
+        }
       }
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : error}`);
+      process.stderr.write(`Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
       process.exit(1);
     }
   });
 
-// Governance hardening command
 program
   .command('harden-soul')
-  .description(`Generate or augment a SOUL.md with governance controls
+  .description(`Generate or update SOUL.md with missing governance sections
 
-Reads an existing SOUL.md (if present), identifies missing governance
-controls, and appends remediation templates. Creates a new SOUL.md if
-none exists.
+Runs scan-soul internally to identify missing controls, then generates
+template content for each missing domain. Existing content is preserved.
+
+Modes:
+  Default:    Append missing sections to SOUL.md (or create it)
+  --dry-run:  Preview what would be added without modifying files
 
 Examples:
-  $ hackmyagent harden-soul
-  $ hackmyagent harden-soul ./my-agent
-  $ hackmyagent harden-soul --dry-run
-  $ hackmyagent harden-soul --output SOUL-hardened.md`)
-  .argument('[directory]', 'Directory to harden', '.')
-  .option('-o, --output <file>', 'Write to specific file (default: SOUL.md in target dir)')
-  .option('--dry-run', 'Show what would be added without modifying files')
-  .action(async (directory: string, options: { output?: string; dryRun?: boolean }) => {
+  $ hackmyagent harden-soul                  Add missing sections
+  $ hackmyagent harden-soul --dry-run        Preview changes
+  $ hackmyagent harden-soul ./my-agent       Target specific directory
+  $ hackmyagent harden-soul --json           Machine-readable output`)
+  .argument('[directory]', 'Directory to harden (defaults to current directory)', '.')
+  .option('--dry-run', 'Preview changes without modifying files')
+  .option('--json', 'Output as JSON')
+  .action(async (directory: string, options: { dryRun?: boolean; json?: boolean }) => {
     try {
-      const fs = require('fs');
-      const path = require('path');
-      const targetDir = directory.startsWith('/') ? directory : path.join(process.cwd(), directory);
+      const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
-      const GOVERNANCE_FILES = [
-        'SOUL.md', 'soul.md', 'SYSTEM_PROMPT.md', 'system-prompt.md',
-        'system_prompt.md', '.cursorrules', 'GUIDELINES.md', 'RULES.md',
-      ];
-
-      let existingFile: string | null = null;
-      let existingContent: string = '';
-
-      for (const filename of GOVERNANCE_FILES) {
-        const filePath = path.join(targetDir, filename);
-        if (fs.existsSync(filePath)) {
-          existingFile = filePath;
-          existingContent = fs.readFileSync(filePath, 'utf-8');
-          break;
-        }
+      if (!require('fs').existsSync(targetDir)) {
+        process.stderr.write(`Error: Directory '${targetDir}' does not exist.\n`);
+        process.exit(1);
       }
 
-      const abgr = await import('./abgr');
+      const scanner = new SoulScanner();
+      const result = await scanner.hardenSoul(targetDir, { dryRun: options.dryRun });
 
-      // Detect what's already covered
-      let missingIds: string[];
-      if (existingContent) {
-        const detections = abgr.detectGovernanceControls(existingContent);
-        const passing = detections.filter((d: any) => d.confidence >= abgr.PASS_THRESHOLD);
-        const passingIds = new Set(passing.map((d: any) => d.controlId));
-        const allIds = abgr.getRemediationIds();
-        missingIds = allIds.filter((id: string) => !passingIds.has(id));
+      // JSON output
+      if (options.json) {
+        // Exclude full content from JSON to keep it concise
+        const jsonResult = {
+          file: result.file,
+          sectionsAdded: result.sectionsAdded,
+          controlsAdded: result.controlsAdded,
+          dryRun: result.dryRun,
+          existedBefore: result.existedBefore,
+        };
+        process.stdout.write(JSON.stringify(jsonResult, null, 2) + '\n');
+        return;
+      }
+
+      // Text output
+      if (result.sectionsAdded.length === 0) {
+        process.stdout.write(`\n${colors.green}All governance domains already have sections in ${result.file}.${colors.reset}\n`);
+        process.stdout.write(`Run 'hackmyagent scan-soul --verbose' to see individual control coverage.\n\n`);
+        return;
+      }
+
+      if (result.dryRun) {
+        process.stdout.write('\nHarden SOUL (dry-run)\n');
+        process.stdout.write('----------------------------------------------------\n\n');
+        process.stdout.write(`Target: ${result.file}`);
+        if (result.existedBefore) {
+          process.stdout.write(' (append)\n');
+        } else {
+          process.stdout.write(' (create)\n');
+        }
+        process.stdout.write(`Sections to add: ${result.sectionsAdded.length}\n`);
+        process.stdout.write(`Controls covered: +${result.controlsAdded}\n\n`);
+
+        process.stdout.write('Sections:\n');
+        for (const section of result.sectionsAdded) {
+          process.stdout.write(`  ${colors.cyan}+${colors.reset} ${section}\n`);
+        }
+
+        process.stdout.write(`\nRun without --dry-run to apply changes.\n\n`);
       } else {
-        missingIds = abgr.getRemediationIds();
-      }
+        process.stdout.write('\nHarden SOUL\n');
+        process.stdout.write('----------------------------------------------------\n\n');
 
-      if (missingIds.length === 0) {
-        console.log('\nAll governance controls are already addressed.');
-        return;
-      }
-
-      // Build remediation content
-      const remediationText = abgr.getRemediations(missingIds);
-
-      const outputPath = options.output
-        ? (options.output.startsWith('/') ? options.output : path.join(targetDir, options.output))
-        : existingFile || path.join(targetDir, 'SOUL.md');
-
-      if (options.dryRun) {
-        console.log(`\nWould add ${missingIds.length} governance sections to ${path.basename(outputPath)}:\n`);
-        for (const id of missingIds) {
-          const control = abgr.getControlById(id);
-          if (control) {
-            console.log(`  + ${id}: ${control.name}`);
-          }
+        if (result.existedBefore) {
+          process.stdout.write(`Updated: ${result.file}\n`);
+        } else {
+          process.stdout.write(`Created: ${result.file}\n`);
         }
-        console.log(`\nRun without --dry-run to apply changes.`);
-        return;
+
+        process.stdout.write(`Added ${result.sectionsAdded.length} section${result.sectionsAdded.length === 1 ? '' : 's'}:\n`);
+        for (const section of result.sectionsAdded) {
+          process.stdout.write(`  ${colors.green}+${colors.reset} ${section}\n`);
+        }
+        process.stdout.write(`Controls covered: +${result.controlsAdded}\n\n`);
+
+        process.stdout.write(`Run '${colors.cyan}hackmyagent scan-soul${colors.reset}' to verify coverage.\n\n`);
       }
-
-      // Write or append
-      const header = existingContent
-        ? '\n\n---\n\n<!-- Added by hackmyagent harden-soul -->\n\n'
-        : '# Agent Governance Policy\n\n';
-
-      const finalContent = existingContent
-        ? existingContent + header + remediationText + '\n'
-        : header + remediationText + '\n';
-
-      fs.writeFileSync(outputPath, finalContent);
-      console.log(`\nAdded ${missingIds.length} governance controls to ${outputPath}`);
-      console.log(`Run: hackmyagent scan-soul ${directory} to verify\n`);
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : error}`);
+      process.stderr.write(`Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
       process.exit(1);
     }
   });
