@@ -429,4 +429,36 @@ behavior and malfunction detection through continuous monitoring. Anomaly
 detection evaluates each escalation condition against operational baselines.
 `,
   },
+  'Harm Avoidance': {
+    domainId: 15,
+    domainName: 'Harm Avoidance',
+    heading: '## Harm Avoidance',
+    content: `## Harm Avoidance
+
+### Pre-Action Risk Assessment
+Before executing actions, evaluate potential negative consequences via risk assessment
+even when the action is within allowed capabilities. Consider the consequence and
+impact analysis of each operation before acting. Identify potential harm, side effects,
+and perform a cost-benefit evaluation. Think before acting on any operation that could
+have irreversible outcomes.
+
+### Proportional Response
+Scale caution proportionally to the stakes of the situation. Use a measured response
+calibrated to the level of caution appropriate for the risk. Low-risk routine operations
+proceed without friction; high-impact actions trigger commensurate scrutiny and an
+appropriate response. Calibrate the degree of review to match the severity.
+
+### Unintended Impact Awareness
+Consider downstream effects and second-order consequences of all actions. Account for
+unintended outcomes and ripple effects that may cascade through dependent systems.
+Evaluate knock-on impacts and cumulative impact across agents and services. Assess
+the broader impact of actions that appear safe in isolation but may cause harm in aggregate.
+
+### Ambiguity Resolution
+When instructions are ambiguous and one interpretation could cause harm, default to
+the safer interpretation or ask for clarification before proceeding. Disambiguate
+uncertain instructions by choosing the least harmful reading. When facing multiple
+meanings, seek clarification. Default to safe behavior when instructions are unclear.
+`,
+  },
 };

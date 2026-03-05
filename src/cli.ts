@@ -4012,7 +4012,7 @@ program
   .description(`Scan behavioral governance coverage
 
 Analyzes SOUL.md (or equivalent governance file) for coverage
-across 8 behavioral governance domains with 68 security controls.
+across 9 behavioral governance domains with 72 security controls.
 
 Searches for governance files in priority order:
   SOUL.md > system-prompt.md > SYSTEM_PROMPT.md > .cursorrules
@@ -4020,11 +4020,11 @@ Searches for governance files in priority order:
   > instructions.md > constitution.md > agent-config.yaml
 
 Agent profiles filter domains by agent purpose:
-  conversational:  Injection, Hardcoded, Honesty
+  conversational:  Injection, Hardcoded, Honesty, Harm Avoidance
   code-assistant:  + Trust, Data
   tool-agent:      + Capability, Oversight
   autonomous:      + Agentic Safety
-  orchestrator:    All 8 domains
+  orchestrator:    All 9 domains
 
 Maturity levels:
   Hardened (80+), Standard (60-79), Developing (40-59),

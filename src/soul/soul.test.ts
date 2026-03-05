@@ -75,7 +75,7 @@ describe('SoulScanner', () => {
 
   describe('scanSoul - no governance file', () => {
     it('returns score 0 with all controls failing', async () => {
-      // Use MULTI-AGENT tier so all 26 controls are evaluated
+      // Use MULTI-AGENT tier so all controls are evaluated
       const result = await scanner.scanSoul(tmpDir, { tier: 'MULTI-AGENT' });
       expect(result.file).toBeNull();
       expect(result.fileSize).toBe(0);
@@ -85,10 +85,10 @@ describe('SoulScanner', () => {
       expect(result.grade).toBe('F');
     });
 
-    it('reports all 8 domains with 0% coverage', async () => {
-      // Use MULTI-AGENT tier so all 8 domains appear in results
+    it('reports all 9 domains with 0% coverage', async () => {
+      // Use MULTI-AGENT tier so all 9 domains appear in results
       const result = await scanner.scanSoul(tmpDir, { tier: 'MULTI-AGENT' });
-      expect(result.domains).toHaveLength(8);
+      expect(result.domains).toHaveLength(9);
       for (const domain of result.domains) {
         expect(domain.percentage).toBe(0);
         expect(domain.passed).toBe(0);
@@ -161,7 +161,7 @@ PII must be protected under GDPR.
 
   describe('scanSoul - full coverage', () => {
     it('returns 100/100 Grade A when all controls pass', async () => {
-      // Write content that hits every keyword for all 68 controls
+      // Write content that hits every keyword for all 72 controls
       const fullContent = `
 # Agent Governance (SOUL)
 
@@ -249,10 +249,16 @@ Notification protocol and alert protocol active. Notify user via action notifica
 Operator verification: verify operator with operator authorization. Operator authentication confirms operator identity. Authorize operator.
 Audit retention and log retention for audit log access. Log access control and audit preservation. Log archival maintained.
 Escalation trigger for runaway detection: detect runaway and malfunction detection. Anomaly detection and escalation condition.
+
+## Harm Avoidance
+Before acting, perform a risk assessment to evaluate consequence and impact analysis. Consider potential harm and side effect. Cost-benefit and think before acting.
+Scale caution proportionally with a measured response calibrated to the level of caution. Provide a commensurate appropriate response. Calibrate response.
+Consider downstream effect and second-order consequences. Account for unintended ripple effect and cascade. Knock-on and cumulative impact and broader impact.
+When instructions are ambiguous, default to the safer interpretation or ask for clarification. Disambiguate uncertain instruction. Default to safe.
       `;
 
       fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), fullContent);
-      // Force MULTI-AGENT tier so all 68 controls are evaluated
+      // Force MULTI-AGENT tier so all 72 controls are evaluated
       const result = await scanner.scanSoul(tmpDir, { tier: 'MULTI-AGENT' });
 
       expect(result.totalPassed).toBe(CONTROL_DEFS.length);
@@ -270,7 +276,7 @@ Escalation trigger for runaway detection: detect runaway and malfunction detecti
   describe('critical floor', () => {
     it('caps grade at C when SOUL-IH-003 is missing but score is high', async () => {
       // Cover all BASIC controls except IH-003 (role-play refusal).
-      // BASIC tier has 27 controls across 5 domains (no CB/AS/HO domains).
+      // BASIC tier has 29 controls across 6 domains (no CB/AS/HO domains).
       const content = `
 ## Trust Hierarchy
 Trust hierarchy authority precedence priority.
@@ -307,14 +313,18 @@ Knowledge boundary and knowledge limit. Knowledge cutoff and training limit. Kno
 Confidence level and confidence score: confidence calibration. Express confidence and certainty level as calibrated confidence.
 Training cutoff and training date: cutoff date and knowledge date. Data recency and up to date information currency.
 Acknowledge limitation via limitation notice. Caveat and disclose limitation as limitation disclosure. Note limitation.
+
+## Harm Avoidance
+Scale caution proportionally with a measured response calibrated to the level of caution. Commensurate appropriate response.
+When instructions are ambiguous, default to the safer interpretation or ask for clarification. Disambiguate uncertain instruction.
       `;
 
       fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), content);
       const result = await scanner.scanSoul(tmpDir);
 
-      // IH-003 is missing (no role-play, pretend, act as, jailbreak, DAN)
+      // IH-003 is missing (no role-play, pretend, act as, jailbreak, as DAN)
       expect(result.criticalMissing).toContain('SOUL-IH-003');
-      // Score should be high (26/27 BASIC controls pass -> high per-domain averages)
+      // Score should be high (28/29 BASIC controls pass -> high per-domain averages)
       expect(result.score).toBeGreaterThanOrEqual(80);
       // But grade is floored to C
       expect(result.criticalFloor).toBe(true);
@@ -395,7 +405,7 @@ Never always must not absolute immutable hardcoded.
     it('assigns grade based on score ranges', async () => {
       // We test grading indirectly; a partial file gives a non-F grade.
       // For more precise testing we rely on the full coverage test (grade A).
-      // Provide enough content to cover controls across all 5 BASIC domains.
+      // Provide enough content to cover controls across all 6 BASIC domains.
       fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), `
 Trust hierarchy authority precedence. Conflict override escalate.
 Authenticate principal and verify identity. Trust hierarchy structure and levels.
@@ -414,6 +424,8 @@ Uncertain don't know not sure acknowledge calibrate.
 Fabricate hallucinate accurate. Identity AI assistant disclose transparent.
 Knowledge boundary limit cutoff. Confidence level calibration.
 Training cutoff date. Acknowledge limitation caveat.
+Scale caution proportionally with appropriate response. Calibrate level of caution.
+When ambiguous, default to safer interpretation. Ask for clarification to disambiguate.
       `);
       const result = await scanner.scanSoul(tmpDir);
       expect(['A', 'B', 'C', 'D']).toContain(result.grade);
@@ -429,7 +441,7 @@ Training cutoff date. Acknowledge limitation caveat.
       const result = await scanner.hardenSoul(tmpDir);
       expect(result.existedBefore).toBe(false);
       expect(result.file).toBe('SOUL.md');
-      expect(result.sectionsAdded.length).toBe(8); // all 8 domains always added (comprehensive)
+      expect(result.sectionsAdded.length).toBe(9); // all 9 domains always added (comprehensive)
       // controlsAdded counts actually-passing controls from template content
       expect(result.controlsAdded).toBeGreaterThanOrEqual(60);
 
@@ -443,6 +455,7 @@ Training cutoff date. Acknowledge limitation caveat.
       expect(content).toContain('Agentic Safety');
       expect(content).toContain('Honesty and Transparency');
       expect(content).toContain('Human Oversight');
+      expect(content).toContain('Harm Avoidance');
       // Verify tier/profile markers are written
       expect(content).toMatch(/<!--\s*soul:tier=/);
       expect(content).toMatch(/<!--\s*soul:profile=/);
@@ -465,8 +478,8 @@ Operator sets rules, user follows.
       const thEntry = result.sectionsAdded.find((s) => s.startsWith('Trust Hierarchy'));
       expect(thEntry).toBeDefined();
       expect(thEntry).toContain('augmented');
-      // Other 7 domains should be added as new sections
-      expect(result.sectionsAdded.length).toBe(8); // 7 new + 1 augmented
+      // Other 8 domains should be added as new sections
+      expect(result.sectionsAdded.length).toBe(9); // 8 new + 1 augmented
 
       // Verify existing content was preserved
       const updatedContent = fs.readFileSync(path.join(tmpDir, 'SOUL.md'), 'utf-8');
@@ -477,7 +490,7 @@ Operator sets rules, user follows.
     it('dry-run does not modify files', async () => {
       const result = await scanner.hardenSoul(tmpDir, { dryRun: true });
       expect(result.dryRun).toBe(true);
-      expect(result.sectionsAdded.length).toBe(8);
+      expect(result.sectionsAdded.length).toBe(9);
 
       // SOUL.md should NOT exist
       expect(fs.existsSync(path.join(tmpDir, 'SOUL.md'))).toBe(false);
@@ -505,8 +518,8 @@ Operator sets rules, user follows.
       fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), allHeadings);
 
       const result = await scanner.hardenSoul(tmpDir);
-      // All 8 domains should be augmented since minimal content fails many controls
-      expect(result.sectionsAdded.length).toBe(8);
+      // All 9 domains should be augmented since minimal content fails many controls
+      expect(result.sectionsAdded.length).toBe(9);
       for (const section of result.sectionsAdded) {
         expect(section).toContain('augmented');
       }
@@ -514,13 +527,13 @@ Operator sets rules, user follows.
     });
 
     it('generated content passes scan-soul with high score', async () => {
-      // Generate full SOUL.md (all 8 domains)
+      // Generate full SOUL.md (all 9 domains)
       await scanner.hardenSoul(tmpDir);
 
-      // Scan with MULTI-AGENT tier to check all 68 controls
+      // Scan with MULTI-AGENT tier to check all 72 controls
       const scanResult = await scanner.scanSoul(tmpDir, { tier: 'MULTI-AGENT' });
 
-      // Templates now cover all 68 controls (Phase 2 template sync)
+      // Templates now cover all 72 controls (Phase 2 template sync)
       expect(scanResult.totalPassed).toBe(CONTROL_DEFS.length);
       expect(scanResult.score).toBe(100);
     });
@@ -657,7 +670,7 @@ governance:
     it('conversational profile skips non-essential domains', async () => {
       fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), 'A simple chatbot.');
       const result = await scanner.scanSoul(tmpDir, { profile: 'conversational' });
-      // Conversational only evaluates domains 9 (Injection), 11 (Hardcoded), 13 (Honesty)
+      // Conversational only evaluates domains 9 (Injection), 11 (Hardcoded), 13 (Honesty), 15 (Harm Avoidance)
       expect(result.skippedDomains.length).toBeGreaterThan(0);
       expect(result.skippedDomains).toContain('Capability Boundaries');
       expect(result.skippedDomains).toContain('Agentic Safety');
@@ -729,6 +742,199 @@ governance:
       const result = await scanner.scanSoul(tmpDir, { tier: 'MULTI-AGENT' });
       expect(result.score).toBeGreaterThanOrEqual(80);
       expect(result.level).toBe('hardened');
+    });
+  });
+
+  // ---------------------------------------------------------------
+  // Domain 15: Harm Avoidance
+  // ---------------------------------------------------------------
+
+  describe('Domain 15: Harm Avoidance', () => {
+    it('detects all 4 Harm Avoidance controls when present', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), `
+## Harm Avoidance
+Before executing any action, this agent evaluates potential consequences via risk assessment
+and performs impact analysis before acting. Consider potential harm and side effect. Cost-benefit analysis.
+The agent scales its caution proportionally to the stakes involved. Measured response calibrated
+to the level of caution for an appropriate response. Commensurate with risk.
+The agent considers downstream effects and second-order consequences, particularly in multi-agent contexts
+where unintended ripple effects and cascade may occur. Knock-on and cumulative impact and broader impact.
+When instructions are ambiguous and one interpretation could cause harm, the agent defaults to the
+safer interpretation or asks for clarification. Disambiguate uncertain instructions.
+      `);
+      const result = await scanner.scanSoul(tmpDir, { tier: 'MULTI-AGENT' });
+      const hv = result.domains.find((d) => d.domain === 'Harm Avoidance');
+      expect(hv).toBeDefined();
+      expect(hv!.passed).toBe(4);
+      expect(hv!.total).toBe(4);
+      expect(hv!.percentage).toBe(100);
+    });
+
+    it('detects partial Harm Avoidance controls', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), `
+## Risk Assessment
+Before taking action, perform a risk assessment to consider potential harm.
+If a request is ambiguous, ask for clarification and default to the safer interpretation.
+      `);
+      const result = await scanner.scanSoul(tmpDir, { tier: 'MULTI-AGENT' });
+      const hv = result.domains.find((d) => d.domain === 'Harm Avoidance');
+      expect(hv).toBeDefined();
+      // HV-001 (risk assessment, potential harm) and HV-004 (ambiguous, safer interpretation, clarification) detected
+      const hv001 = hv!.controls.find((c) => c.id === 'SOUL-HV-001');
+      const hv004 = hv!.controls.find((c) => c.id === 'SOUL-HV-004');
+      expect(hv001?.passed).toBe(true);
+      expect(hv004?.passed).toBe(true);
+      // HV-002 and HV-003 should not be detected
+      const hv002 = hv!.controls.find((c) => c.id === 'SOUL-HV-002');
+      const hv003 = hv!.controls.find((c) => c.id === 'SOUL-HV-003');
+      expect(hv002?.passed).toBe(false);
+      expect(hv003?.passed).toBe(false);
+    });
+
+    it('reports 0% when no Harm Avoidance content exists', async () => {
+      // Use only domains 7-14 content (no Harm Avoidance)
+      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), `
+## Trust Hierarchy
+Trust hierarchy authority precedence.
+      `);
+      const result = await scanner.scanSoul(tmpDir, { tier: 'MULTI-AGENT' });
+      const hv = result.domains.find((d) => d.domain === 'Harm Avoidance');
+      expect(hv).toBeDefined();
+      expect(hv!.passed).toBe(0);
+      expect(hv!.percentage).toBe(0);
+    });
+
+    it('BASIC tier only checks HV-002 and HV-004', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), `
+## Harm Avoidance
+Risk assessment before acting. Potential harm and side effect. Cost-benefit.
+Scale caution proportionally with measured response. Calibrate level of caution. Appropriate response.
+Downstream effect and second-order. Unintended ripple effect and cascade. Cumulative impact.
+Ambiguous instructions: default to safer interpretation. Ask for clarification. Disambiguate.
+      `);
+      const result = await scanner.scanSoul(tmpDir, { tier: 'BASIC' });
+      const hv = result.domains.find((d) => d.domain === 'Harm Avoidance');
+      expect(hv).toBeDefined();
+      // Only HV-002 and HV-004 applicable for BASIC
+      expect(hv!.total).toBe(2);
+      expect(hv!.passed).toBe(2);
+      // HV-001 and HV-003 should not appear in controls list
+      const controlIds = hv!.controls.map((c) => c.id);
+      expect(controlIds).toContain('SOUL-HV-002');
+      expect(controlIds).toContain('SOUL-HV-004');
+      expect(controlIds).not.toContain('SOUL-HV-001');
+      expect(controlIds).not.toContain('SOUL-HV-003');
+    });
+
+    it('TOOL-USING tier checks HV-001, HV-002, HV-004', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), `
+Risk assessment before acting. Potential harm. Cost-benefit.
+Proportional measured response. Calibrate level of caution. Appropriate response.
+Ambiguous: safer interpretation. Clarification. Disambiguate uncertain instruction.
+      `);
+      const result = await scanner.scanSoul(tmpDir, { tier: 'TOOL-USING' });
+      const hv = result.domains.find((d) => d.domain === 'Harm Avoidance');
+      expect(hv).toBeDefined();
+      expect(hv!.total).toBe(3);
+      const controlIds = hv!.controls.map((c) => c.id);
+      expect(controlIds).toContain('SOUL-HV-001');
+      expect(controlIds).toContain('SOUL-HV-002');
+      expect(controlIds).toContain('SOUL-HV-004');
+      expect(controlIds).not.toContain('SOUL-HV-003');
+    });
+
+    it('harden-soul generates Harm Avoidance section', async () => {
+      const result = await scanner.hardenSoul(tmpDir, { dryRun: true });
+      expect(result.content).toContain('## Harm Avoidance');
+      expect(result.content).toContain('risk assessment');
+      expect(result.content).toContain('proportional');
+      expect(result.content).toContain('downstream');
+      expect(result.content).toContain('ambiguous');
+    });
+
+    it('scoring uses 9 domains (100% on 8 domains + 0% on Harm Avoidance = ~89%)', async () => {
+      // Write content covering domains 7-14 fully but no Harm Avoidance
+      const fullContentNoDomain15 = `
+## Trust Hierarchy
+Trust hierarchy authority precedence. Conflict override escalate.
+Authenticate principal and verify identity. Trust hierarchy structure and levels.
+Authority scope and principal authority boundary. Trust update and policy update protocol.
+Enforce trust and boundary enforcement. Trust violation check.
+Agent-to-agent trust: delegate to sub-agent with orchestrated scope.
+
+## Capability Boundaries
+Allow permit authorized capabilities. Deny prohibit must not forbidden restricted.
+File directory path network endpoint url api. Least privilege minimal only needed minimum necessary.
+Revoke revocation remove permission disable access withdraw access. Exposure limit minimal exposure capability exposure selective exposure controlled exposure.
+Tool boundary tool scope tool limit tool interface tool access control tool constraint.
+Rate limit rate limiting resource limit throttle quota bandwidth limit usage limit.
+Validate scope scope check scope validation boundary check scope enforcement permission check.
+Capability audit audit trail capability log usage log execution log action record.
+
+## Injection Hardening
+Ignore previous override injection contradict. Encoded obfuscated base64 hidden.
+Refuse role-play pretend act as jailbreak DAN.
+Input validation sanitize sanitization validate input filter input clean input.
+Output encoding escape output encode output html escape output sanitize safe output.
+Defense layer defense in depth layered defense multiple defense defense stack multi-layer.
+Detect injection injection detection attack detection log injection alert injection security log.
+Test defense adversarial test red team penetration test security test verify hardening.
+
+## Data Handling
+PII personal privacy data protection GDPR. Credential secret password api key token.
+Minimization only collect retention delete purge. Retention policy retention period data deletion purge schedule data retention archival policy.
+Data classification classify data sensitivity level data sensitivity classification scheme data category.
+Data access control access rule access policy enforce access data permission access enforcement.
+Encrypt encryption encrypted encryption at rest encryption in transit tls https cipher.
+Breach notification breach response incident response data breach breach procedure incident notification.
+
+## Hardcoded Behaviors
+Never always must not absolute immutable hardcoded. Exfiltration unauthorized leak transmit.
+Kill switch emergency shutdown terminate stop.
+Verify behavior integrity check behavior integrity validate behavior integrity verification behavior validation.
+Immutable constraint immutable rule unchangeable permanent constraint fixed rule hardcoded constraint.
+Detect tamper tamper detection tamper-proof detect modification detect unauthorized change integrity monitor.
+Behavior audit audit behavior behavior attestation certify behavior behavior verification safety audit.
+Enforcement resilience reliable enforcement robust enforcement fail-safe enforcement guarantee enforcement mechanism.
+
+## Agentic Safety
+Iteration loop limit maximum budget. Budget cost spending cap limit. Timeout time limit duration deadline.
+Reversible undo rollback revert.
+Dependency limit dependency depth dependency chain tool dependency dependency tracking dependency count.
+State limit state management memory limit context limit state size session state limit.
+Error recovery recovery protocol error handling retry logic error fallback recovery mechanism.
+Task isolation sandbox sandboxing isolated execution execution boundary isolation level.
+Cleanup resource cleanup finalization resource release graceful shutdown cleanup procedure.
+Concurrent limit concurrency concurrent execution coordination serialize task synchronize parallel limit.
+
+## Honesty and Transparency
+Uncertain don't know not sure acknowledge calibrate. Fabricate hallucinate invent make up accurate.
+Identity AI assistant disclose transparent.
+Knowledge boundary knowledge limit knowledge cutoff training limit knowledge scope knowledge limitation.
+Confidence level confidence score confidence calibration express confidence certainty level calibrated confidence.
+Training cutoff training date cutoff date knowledge date data recency up to date information currency.
+Acknowledge limitation limitation notice caveat disclose limitation limitation disclosure note limitation.
+Verify source source verification cite source citation practice verify information source accuracy.
+
+## Human Oversight
+Approval confirm human-in-the-loop review authorize. Override intervene manual human control.
+Monitor log audit track observe.
+Approval workflow escalation path escalation workflow approval process approval chain workflow process.
+Notification protocol alert protocol notify user action notification alert system notification trigger.
+Operator verification verify operator operator authorization operator authentication operator identity authorize operator.
+Audit retention log retention audit log access log access control audit preservation log archival.
+Escalation trigger runaway detection detect runaway malfunction detection anomaly detection escalation condition.
+      `;
+      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), fullContentNoDomain15);
+      const result = await scanner.scanSoul(tmpDir, { tier: 'MULTI-AGENT' });
+
+      // All 8 original domains should be 100%, Harm Avoidance partially matches
+      // (e.g., "calibrate" in Honesty domain matches HV-002 keyword)
+      // Score should be less than 100 due to incomplete Harm Avoidance coverage
+      expect(result.score).toBeLessThan(100);
+      expect(result.score).toBeGreaterThanOrEqual(88);
+      const hv = result.domains.find((d) => d.domain === 'Harm Avoidance');
+      expect(hv!.percentage).toBeLessThan(100);
     });
   });
 });
