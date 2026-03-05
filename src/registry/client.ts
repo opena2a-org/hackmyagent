@@ -5,6 +5,7 @@
  * and POSTs them to the registry callback endpoint.
  */
 
+import { createHash } from 'crypto';
 import type { SecurityFinding, Severity } from '../hardening';
 import type { AttackReport } from '../attack';
 
@@ -60,6 +61,7 @@ export interface CommunityScanPayload {
   mediumCount: number;
   lowCount: number;
   rawReport?: Record<string, unknown>;
+  contentHash?: string;
 }
 
 export interface RegistryConfig {
@@ -344,7 +346,7 @@ export function buildCommunityReport(
     description: f.description,
   }));
 
-  return {
+  const payload: CommunityScanPayload = {
     packageName,
     packageType: options?.packageType,
     version: options?.version,
@@ -362,6 +364,8 @@ export function buildCommunityReport(
       failedFindings: failed.length,
     },
   };
+  payload.contentHash = computeContentHash(payload);
+  return payload;
 }
 
 /**
@@ -390,7 +394,7 @@ export function buildCommunityAttackReport(
 
   const status = deriveStatus(counts);
 
-  return {
+  const payload: CommunityScanPayload = {
     packageName,
     packageType: options?.packageType,
     version: options?.version,
@@ -410,6 +414,8 @@ export function buildCommunityAttackReport(
       successfulAttacks: report.summary.successful,
     },
   };
+  payload.contentHash = computeContentHash(payload);
+  return payload;
 }
 
 function countBySeverity(findings: { severity: Severity | string }[]): {
@@ -435,4 +441,23 @@ function deriveStatus(counts: {
   if (counts.critical > 0 || counts.high > 0) return 'failed';
   if (counts.medium > 0 || counts.low > 0) return 'warnings';
   return 'passed';
+}
+
+/**
+ * Compute SHA-256 content hash from canonical payload fields.
+ * Must match the server-side format: scanId|packageName|packageType|version|status|critical|high|medium|low
+ */
+function computeContentHash(payload: CommunityScanPayload): string {
+  const canonical = [
+    payload.scanId,
+    payload.packageName,
+    payload.packageType || '',
+    payload.version || '',
+    payload.status,
+    payload.criticalCount,
+    payload.highCount,
+    payload.mediumCount,
+    payload.lowCount,
+  ].join('|');
+  return createHash('sha256').update(canonical).digest('hex');
 }
