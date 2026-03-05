@@ -336,16 +336,20 @@ export function buildCommunityReport(
   options?: { packageType?: string; version?: string },
 ): CommunityScanPayload {
   const failed = findings.filter(f => !f.passed && !f.fixed);
-  const counts = countBySeverity(failed);
+  // Only send package-relevant findings to registry — local dev hygiene
+  // checks (git, permissions, env, IDE config) don't belong on a package page
+  const registryFindings = failed.filter(isRegistryRelevant);
+  const counts = countBySeverity(registryFindings);
   const status = deriveStatus(counts);
 
-  const vulnerabilities: VulnerabilityFinding[] = failed.map(f => ({
+  const vulnerabilities: VulnerabilityFinding[] = registryFindings.map(f => ({
     id: f.checkId,
     severity: f.severity,
     title: f.name,
     description: f.description,
   }));
 
+  const localOnly = failed.length - registryFindings.length;
   const payload: CommunityScanPayload = {
     packageName,
     packageType: options?.packageType,
@@ -362,6 +366,8 @@ export function buildCommunityReport(
       generator: 'hackmyagent',
       totalFindings: findings.length,
       failedFindings: failed.length,
+      registryRelevantFindings: registryFindings.length,
+      localOnlyFindings: localOnly,
     },
   };
   payload.contentHash = computeContentHash(payload);
@@ -441,6 +447,25 @@ function deriveStatus(counts: {
   if (counts.critical > 0 || counts.high > 0) return 'failed';
   if (counts.medium > 0 || counts.low > 0) return 'warnings';
   return 'passed';
+}
+
+/**
+ * Categories that are relevant to a package listing on the registry.
+ * Local-only categories (git, permissions, environment, logging, claude-code, cursor, vscode)
+ * are filtered out — they describe local dev setup, not package security.
+ */
+const LOCAL_ONLY_CATEGORIES = new Set([
+  'git',
+  'permissions',
+  'environment',
+  'logging',
+  'claude-code',
+  'cursor',
+  'vscode',
+]);
+
+function isRegistryRelevant(finding: SecurityFinding): boolean {
+  return !LOCAL_ONLY_CATEGORIES.has(finding.category);
 }
 
 /**
