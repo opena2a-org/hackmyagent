@@ -76,6 +76,21 @@ function writeJsonStdout(data: unknown): void {
   }
 }
 
+// Resolve the CLI command name based on how we were invoked.
+// When run via `opena2a scan secure`, use `opena2a scan` prefix.
+// When run directly as `hackmyagent`, use that.
+// The HMA_CLI_PREFIX env var lets parent CLIs override explicitly.
+function resolveCliPrefix(): string {
+  if (process.env.HMA_CLI_PREFIX) return process.env.HMA_CLI_PREFIX;
+  const argv1 = process.argv[1] || '';
+  const basename = require('path').basename(argv1).replace(/\.[jt]s$/, '');
+  if (basename === 'opena2a' || basename.startsWith('opena2a-')) {
+    return 'opena2a scan';
+  }
+  return 'hackmyagent';
+}
+const CLI_PREFIX = resolveCliPrefix();
+
 // Check for NO_COLOR env or non-TTY to disable colors by default
 const noColorEnv = process.env.NO_COLOR !== undefined || process.stdout.isTTY === false;
 
@@ -1582,9 +1597,9 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean): void {
 
   // Show appropriate next step based on current level
   if (result.level === 'L1') {
-    console.log(`\nRun 'hackmyagent secure -b oasb-1 -l L2' for stricter checks.`);
+    console.log(`\nRun '${CLI_PREFIX} secure -b oasb-1 -l L2' for stricter checks.`);
   } else if (result.level === 'L2') {
-    console.log(`\nRun 'hackmyagent secure -b oasb-1 -l L3' for hardened requirements.`);
+    console.log(`\nRun '${CLI_PREFIX} secure -b oasb-1 -l L3' for hardened requirements.`);
   } else {
     console.log(`\nThis is the highest maturity level (L3 - Hardened).`);
   }
@@ -1742,7 +1757,7 @@ Examples:
         if (!process.env.ANTHROPIC_API_KEY) {
           console.log(`Layer 3: Semantic analysis — skipped (no ANTHROPIC_API_KEY)`);
           console.log(`  Tip: Add HackMyAgent as an MCP server for free LLM analysis:`);
-          console.log(`  npx hackmyagent init-mcp\n`);
+          console.log(`  npx ${CLI_PREFIX} init-mcp\n`);
         }
       }
 
@@ -1753,6 +1768,7 @@ Examples:
         dryRun: options.dryRun ?? false,
         ignore: ignoreList,
         deep: isDeep,
+        cliName: CLI_PREFIX,
         onProgress,
       });
 
@@ -2009,7 +2025,7 @@ Examples:
 
         if (result.backupPath) {
           console.log(`Backup: ${result.backupPath}`);
-          console.log(`Undo: hackmyagent rollback ${directory}\n`);
+          console.log(`Undo: ${CLI_PREFIX} rollback ${directory}\n`);
         }
       }
 
@@ -2167,7 +2183,7 @@ function assessRiskLevel(findings: SecurityFinding[]): { level: string; color: s
     return {
       level: 'None',
       color: colors.dim,
-      description: 'No OpenClaw configuration detected. Run `hackmyagent secure` for a full scan.',
+      description: `No OpenClaw configuration detected. Run \`${CLI_PREFIX} secure\` for a full scan.`,
     };
   }
   return {
@@ -2229,6 +2245,7 @@ Examples:
         autoFix: options.fix ?? false,
         dryRun: options.dryRun ?? false,
         ignore: [],
+        cliName: CLI_PREFIX,
       });
 
       // Filter to OpenClaw-specific findings
@@ -2299,7 +2316,7 @@ Examples:
 
         if (result.backupPath) {
           console.log(`${colors.yellow}Backup created:${RESET()} ${result.backupPath}`);
-          console.log(`${colors.yellow}To rollback:${RESET()} hackmyagent rollback ${targetDir}`);
+          console.log(`${colors.yellow}To rollback:${RESET()} ${CLI_PREFIX} rollback ${targetDir}`);
           console.log();
           console.log(`${colors.cyan}Note:${RESET()} If you replaced tokens with env vars, set OPENCLAW_AUTH_TOKEN`);
           console.log(`      in your environment before starting OpenClaw.\n`);
@@ -2316,7 +2333,7 @@ Examples:
       }
 
       console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      console.log(`Run 'hackmyagent secure' for a full security scan.\n`);
+      console.log(`Run '${CLI_PREFIX} secure' for a full security scan.\n`);
 
       // Exit with non-zero if critical/high issues remain
       const criticalOrHigh = issues.filter(
@@ -3911,7 +3928,7 @@ Examples:
         }
 
         console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-        console.log(`Run 'hackmyagent secure' for a full hardening scan.\n`);
+        console.log(`Run '${CLI_PREFIX} secure' for a full hardening scan.\n`);
 
         // Warn if scan is incomplete due to plugin errors
         if (pluginErrors > 0) {
