@@ -53,6 +53,29 @@ import {
 
 const program = new Command();
 
+// Write JSON to stdout synchronously with retry for pipe backpressure.
+// process.stdout.write() is async and gets truncated when process.exit()
+// runs before the stream flushes. fs.writeFileSync(1, ...) can fail with
+// EAGAIN on non-blocking pipes when the buffer (64KB on macOS) fills up.
+// This function writes in chunks with retry to handle both cases.
+function writeJsonStdout(data: unknown): void {
+  const fs = require('fs');
+  const buf = Buffer.from(JSON.stringify(data, null, 2) + '\n');
+  let offset = 0;
+  while (offset < buf.length) {
+    try {
+      const written = fs.writeSync(1, buf, offset, buf.length - offset);
+      offset += written;
+    } catch (e: unknown) {
+      if (e && typeof e === 'object' && 'code' in e && (e as {code: string}).code === 'EAGAIN') {
+        // Pipe buffer full — spin-wait briefly then retry
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
 // Check for NO_COLOR env or non-TTY to disable colors by default
 const noColorEnv = process.env.NO_COLOR !== undefined || process.stdout.isTTY === false;
 
@@ -142,7 +165,7 @@ Examples:
       });
 
       if (options.json) {
-        console.log(JSON.stringify(result, null, 2));
+        writeJsonStdout(result);
         return;
       }
 
@@ -1623,7 +1646,6 @@ Output formats (--format):
   json   Machine-readable JSON
   sarif  GitHub Security tab / IDE integration
   html   Shareable compliance report
-  asp    Agent Security Profile (our format)
 
 Severities: critical, high, medium, low
 Exit code 1 if critical/high issues found (or non-compliant in benchmark mode).
@@ -1643,7 +1665,7 @@ Examples:
   .option('--dry-run', 'Preview fixes without applying them (use with --fix)')
   .option('--ignore <checks>', 'Comma-separated check IDs to skip (e.g., CRED-001,GIT-002)')
   .option('--json', 'Output as JSON (deprecated: use --format json)')
-  .option('-f, --format <format>', 'Output format: text, json, sarif, html, asp (default: text)', 'text')
+  .option('-f, --format <format>', 'Output format: text, json, sarif, html (default: text)', 'text')
   .option('-o, --output <file>', 'Write output to file instead of stdout')
   .option('--fail-below <percent>', 'Exit 1 if compliance below threshold (0-100)')
   .option('-v, --verbose', 'Show all checks including passed ones')
@@ -1751,7 +1773,7 @@ Examples:
         const compositeScore = Math.round((infraScore + govScore) / 2);
 
         if (format === 'json') {
-          console.log(JSON.stringify({
+          const jsonOutput = JSON.stringify({
             benchmark: 'OASB-2',
             infraScore,
             govScore,
@@ -1759,7 +1781,14 @@ Examples:
             conformance: govResult.conformance,
             infraResult,
             govResult,
-          }, null, 2));
+          }, null, 2);
+          if (options.output) {
+            require('fs').writeFileSync(options.output, jsonOutput);
+            console.error(`Report written to ${options.output}`);
+          } else {
+            const fs = require('fs');
+            fs.writeFileSync(1, jsonOutput + '\n');
+          }
         } else {
           process.stdout.write('\nOASB v2 Composite Security Assessment\n');
           process.stdout.write('----------------------------------------------------\n');
@@ -1844,9 +1873,14 @@ Examples:
       }
 
       if (format === 'json') {
-        console.log(JSON.stringify(result, null, 2));
+        if (options.output) {
+          require('fs').writeFileSync(options.output, JSON.stringify(result, null, 2) + '\n');
+          console.error(`Report written to ${options.output}`);
+        } else {
+          writeJsonStdout(result);
+        }
         const critHigh = result.findings.filter((f: SecurityFinding) => !f.passed && !f.fixed && (f.severity === 'critical' || f.severity === 'high'));
-        if (critHigh.length > 0) process.exit(1);
+        if (critHigh.length > 0) process.exitCode = 1;
         return;
       }
 
@@ -2208,7 +2242,7 @@ Examples:
           passed: passedFindings.length,
           findings: allOpenClawFindings,
         };
-        console.log(JSON.stringify(jsonOutput, null, 2));
+        writeJsonStdout(jsonOutput);
         return;
       }
 
@@ -2302,7 +2336,7 @@ Detects externally exposed:
   • API keys in responses
   • Debug/admin interfaces
 
-Scoring: A (90-100), B (80-89), C (70-79), D (60-69), F (<60)
+Scoring: A (90-100), B (80-89), C (70-79), D (60-69), Needs Improvement (<60)
 Exit code 1 if critical/high issues found.
 
 Examples:
@@ -2334,7 +2368,7 @@ Examples:
         });
 
         if (options.json) {
-          console.log(JSON.stringify(result, null, 2));
+          writeJsonStdout(result);
           return;
         }
 
@@ -2414,7 +2448,7 @@ Examples:
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
-      console.log(`\n🔄 Rolling back changes in ${targetDir}...\n`);
+      console.log(`\nRolling back changes in ${targetDir}...\n`);
 
       const scanner = new HardeningScanner();
       await scanner.rollback(targetDir);
@@ -2454,12 +2488,6 @@ Target types:
   a2a         A2A agent messaging endpoint (/a2a/message)
   local       Local simulation (no API calls)
 
-Target types:
-  api         OpenAI/Anthropic chat completions (default)
-  mcp         MCP JSON-RPC server (tools/call, tools/list)
-  a2a         A2A agent messaging endpoint (/a2a/message)
-  local       Local simulation (no API calls)
-
 Examples:
   $ hackmyagent attack https://api.example.com/v1/chat
   $ hackmyagent attack https://api.example.com --intensity aggressive
@@ -2487,6 +2515,7 @@ Examples:
   .option('--stop-on-success', 'Stop after first successful attack')
   .option('--payload-file <path>', 'JSON file with custom attack payloads')
   .option('--fail-on-vulnerable [severity]', 'Exit code 1 if vulnerabilities found (optional: critical/high/medium/low)')
+  .option('--json', 'Output as JSON (shorthand for --format json)')
   .option('-f, --format <format>', 'Output format: text, json, sarif, html', 'text')
   .option('-o, --output <file>', 'Write output to file')
   .option('-v, --verbose', 'Show detailed output for each payload')
@@ -2520,6 +2549,7 @@ Examples:
     versionId?: string;
     registryUrl?: string;
     registryKey?: string;
+    json?: boolean;
   }) => {
     try {
       // Validate target
@@ -2606,9 +2636,9 @@ Examples:
         a2aRecipient: options.a2aRecipient,
       };
 
-      // Validate format
+      // Validate format (--json is shorthand for --format json)
       const validFormats = ['text', 'json', 'sarif', 'html'];
-      const format = options.format || 'text';
+      const format = options.json ? 'json' : (options.format || 'text');
       if (!validFormats.includes(format)) {
         console.error(`Error: Invalid format '${format}'. Use: ${validFormats.join(', ')}`);
         process.exit(1);
@@ -3815,7 +3845,7 @@ Examples:
               remediations: r.remediations,
             })),
           };
-          console.log(JSON.stringify(jsonOutput, null, 2));
+          writeJsonStdout(jsonOutput);
           if (pluginErrors > 0) process.exit(2);
           return;
         }
@@ -4067,7 +4097,7 @@ Examples:
 
       // JSON output
       if (options.json) {
-        process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+        writeJsonStdout(result);
         // Check fail threshold
         if (options.failBelow) {
           const threshold = parseInt(options.failBelow, 10);
@@ -4224,7 +4254,7 @@ Examples:
           dryRun: result.dryRun,
           existedBefore: result.existedBefore,
         };
-        process.stdout.write(JSON.stringify(jsonResult, null, 2) + '\n');
+        writeJsonStdout(jsonResult);
         return;
       }
 
