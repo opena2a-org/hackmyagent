@@ -79,6 +79,8 @@ export interface ScanOptions {
   deep?: boolean;
   /** Progress callback for long-running operations */
   onProgress?: (message: string) => void;
+  /** CLI command prefix for fix messages (default: 'hackmyagent') */
+  cliName?: string;
 }
 
 // Patterns for detecting exposed credentials
@@ -206,6 +208,7 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB max file size to prevent memory 
 const MAX_LINE_LENGTH = 10000; // 10KB max line length for regex safety
 
 export class HardeningScanner {
+  private cliName = 'hackmyagent';
   // Files that may be created or modified during auto-fix
   private static readonly BACKUP_FILES = [
     'config.json',
@@ -236,7 +239,8 @@ export class HardeningScanner {
   }
 
   async scan(options: ScanOptions): Promise<ScanResult> {
-    const { targetDir, autoFix = false, dryRun = false, ignore = [] } = options;
+    const { targetDir, autoFix = false, dryRun = false, ignore = [], cliName = 'hackmyagent' } = options;
+    this.cliName = cliName;
 
     // Normalize ignore list to uppercase for case-insensitive matching
     const ignoredChecks = new Set(ignore.map((id) => id.toUpperCase()));
@@ -764,7 +768,7 @@ export class HardeningScanner {
             line: firstLine,
             fixable: true,
             fixed: fileModified,
-            fix: `Run \`hackmyagent secure --fix\` to replace the hardcoded credential with a \${ENV_VAR} reference, then store the actual value in your .env file`,
+            fix: `Run \`${this.cliName} secure --fix\` to replace the hardcoded credential with a \${ENV_VAR} reference, then store the actual value in your .env file`,
           });
         }
       } catch {
@@ -903,7 +907,7 @@ export class HardeningScanner {
           file: 'mcp.json',
           fixable: true,
           fixed: mcp001Fixed,
-          fix: 'Run `hackmyagent secure --fix` to restrict filesystem access from / or ~ to project-relative paths (./data or ./)',
+          fix: `Run \`${this.cliName} secure --fix\` to restrict filesystem access from / or ~ to project-relative paths (./data or ./)`,
         });
       }
 
@@ -1041,7 +1045,7 @@ dist/
         file: '.gitignore',
         fixable: true,
         fixed: git001Fixed,
-        fix: 'Run `hackmyagent secure --fix` to create a .gitignore with security patterns (.env, secrets.json, *.pem, *.key) to prevent accidental commits',
+        fix: `Run \`${this.cliName} secure --fix\` to create a .gitignore with security patterns (.env, secrets.json, *.pem, *.key) to prevent accidental commits`,
       });
     }
 
@@ -1076,7 +1080,7 @@ dist/
         file: '.gitignore',
         fixable: true,
         fixed: git002Fixed,
-        fix: `Run \`hackmyagent secure --fix\` to add ${missingPatterns.join(', ')} to .gitignore so sensitive files won't be accidentally committed`,
+        fix: `Run \`${this.cliName} secure --fix\` to add ${missingPatterns.join(', ')} to .gitignore so sensitive files won't be accidentally committed`,
       });
     }
 
@@ -1115,7 +1119,7 @@ dist/
         file: '.env',
         fixable: true,
         fixed: git003Fixed,
-        fix: 'Run `hackmyagent secure --fix` to add .env to .gitignore so your environment variables won\'t be accidentally committed',
+        fix: `Run \`${this.cliName} secure --fix\` to add .env to .gitignore so your environment variables won't be accidentally committed`,
       });
     }
 
@@ -1168,7 +1172,7 @@ dist/
         file: 'mcp.json',
         fixable: true,
         fixed: net001Fixed,
-        fix: 'Run `hackmyagent secure --fix` to change 0.0.0.0 to 127.0.0.1 so the server only accepts local connections instead of being exposed to the network',
+        fix: `Run \`${this.cliName} secure --fix\` to change 0.0.0.0 to 127.0.0.1 so the server only accepts local connections instead of being exposed to the network`,
       });
     }
 
@@ -1274,7 +1278,7 @@ dist/
         file: 'mcp.json',
         fixable: true,
         fixed: mcp003Fixed,
-        fix: 'Run `hackmyagent secure --fix` to replace hardcoded API keys with ${ENV_VAR} references, then store actual values in .env file',
+        fix: `Run \`${this.cliName} secure --fix\` to replace hardcoded API keys with \${ENV_VAR} references, then store actual values in .env file`,
       });
     }
 
@@ -4930,7 +4934,7 @@ dist/
           fixable: true,
           fixed: gateway001Fixed,
           fixMessage: gateway001Fixed ? 'Changed gateway.host from 0.0.0.0 to 127.0.0.1' : undefined,
-          fix: 'Run `hackmyagent secure-openclaw --fix` to bind gateway to 127.0.0.1 for local-only access',
+          fix: `Run \`${this.cliName} secure-openclaw --fix\` to bind gateway to 127.0.0.1 for local-only access`,
         });
       }
 
@@ -4990,7 +4994,7 @@ dist/
           fixable: true,
           fixed: gateway003Fixed,
           fixMessage: gateway003Fixed ? 'Replaced plaintext token with ${OPENCLAW_AUTH_TOKEN} env var reference. Set OPENCLAW_AUTH_TOKEN in your environment.' : undefined,
-          fix: 'Run `hackmyagent secure-openclaw --fix` to replace plaintext token with ${OPENCLAW_AUTH_TOKEN} env var reference',
+          fix: `Run \`${this.cliName} secure-openclaw --fix\` to replace plaintext token with \${OPENCLAW_AUTH_TOKEN} env var reference`,
         });
       }
 
@@ -5041,7 +5045,7 @@ dist/
           fixable: true,
           fixed: gateway004Fixed,
           fixMessage: gateway004Fixed ? 'Enabled approval confirmations for command execution' : undefined,
-          fix: 'Run `hackmyagent secure-openclaw --fix` to enable approval confirmations for safer command execution',
+          fix: `Run \`${this.cliName} secure-openclaw --fix\` to enable approval confirmations for safer command execution`,
         });
       }
 
@@ -5073,7 +5077,7 @@ dist/
           fixable: true,
           fixed: gateway005Fixed,
           fixMessage: gateway005Fixed ? 'Enabled sandbox mode for isolated code execution' : undefined,
-          fix: 'Run `hackmyagent secure-openclaw --fix` to enable sandbox mode for safer code execution',
+          fix: `Run \`${this.cliName} secure-openclaw --fix\` to enable sandbox mode for safer code execution`,
         });
       }
 
