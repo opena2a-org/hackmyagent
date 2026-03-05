@@ -1936,7 +1936,12 @@ Examples:
           if (sa.cachedResults) scoreExtra += ` (${sa.cachedResults} cached)`;
         }
       }
-      console.log(`${projectTypeLabel} | Score: ${result.score}/${result.maxScore}${scoreExtra}\n`);
+      console.log(`${projectTypeLabel} | Score: ${result.score}/${result.maxScore}${scoreExtra}`);
+      if (issues.length > 0) {
+        const recoverable = Math.min(result.maxScore - result.score, result.maxScore);
+        console.log(`  Path forward: +${recoverable} recoverable by addressing ${issues.length} issue${issues.length === 1 ? '' : 's'}`);
+      }
+      console.log('');
 
       // No issues? Say so and exit
       if (issues.length === 0 && fixedFindings.length === 0) {
