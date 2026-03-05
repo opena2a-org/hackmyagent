@@ -1579,9 +1579,12 @@ function resolvePackageName(targetDir: string): string | null {
       if (pkg.name) return pkg.name;
     }
   } catch { /* ignore */ }
-  // Fallback: use directory name
+  // Fallback: use directory name, resolving "." to the actual directory name
   const path = require('path');
-  return path.basename(targetDir);
+  const resolved = path.resolve(targetDir);
+  const name = path.basename(resolved);
+  // Skip names that are clearly not package names
+  return name && name !== '.' && name !== '..' ? name : null;
 }
 
 function resolvePackageVersion(targetDir: string): string | null {
@@ -1971,9 +1974,9 @@ Examples:
         }
       }
 
-      // Registry reporting: auto-publish to community endpoint by default
-      const shouldReport = options.registryReport || (options.registry !== false);
-      if (shouldReport) {
+      // Registry reporting: only when explicitly requested via --version-id (CI) or --registry-report
+      // Community contributions are handled by the opena2a CLI wrapper, not HMA directly
+      if (options.versionId || options.registryReport) {
         try {
           const core = await import('./index');
           const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://registry.opena2a.org';
@@ -2676,8 +2679,8 @@ Examples:
         }
       }
 
-      // Registry reporting: skip for local-only scans (no network calls needed)
-      const shouldReport = targetType !== 'local' && (options.registryReport || (options.registry !== false));
+      // Registry reporting: only when explicitly requested via --version-id (CI) or --registry-report
+      const shouldReport = targetType !== 'local' && (options.versionId || options.registryReport);
       if (shouldReport) {
         try {
           const core = await import('./index');
@@ -2709,8 +2712,8 @@ Examples:
               console.log('Registry: attack results shared with OpenA2A community');
             }
           }
-        } catch (reportErr: any) {
-          console.error(`Registry: failed to report scan results: ${reportErr.message || reportErr}`);
+        } catch (_reportErr: any) {
+          // Silently ignore registry errors - they are not relevant to local scan results
         }
       }
 
