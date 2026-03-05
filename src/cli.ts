@@ -48,6 +48,7 @@ import {
   type SoulScanResult,
   type DomainResult,
   type SoulGrade,
+  type SoulLevel,
 } from './index';
 
 const program = new Command();
@@ -62,16 +63,17 @@ let colors = {
   red: '\x1b[31m',
   brightRed: '\x1b[91m',
   cyan: '\x1b[36m',
+  dim: '\x1b[2m',
   reset: '\x1b[0m',
 };
 
 if (noColorEnv) {
-  colors = { green: '', yellow: '', red: '', brightRed: '', cyan: '', reset: '' };
+  colors = { green: '', yellow: '', red: '', brightRed: '', cyan: '', dim: '', reset: '' };
 }
 
 // Deprecation warning for removed HMAC auth
 if (process.env.HMA_COMMUNITY_SECRET) {
-  console.error('Warning: HMA_COMMUNITY_SECRET is deprecated and no longer used. Scan tokens are now issued automatically.');
+  console.error('Note: HMA_COMMUNITY_SECRET is deprecated and no longer used. Scan tokens are now issued automatically.');
 }
 
 program
@@ -100,16 +102,16 @@ Examples:
   .hook('preAction', (thisCommand) => {
     const opts = thisCommand.opts();
     if (opts.color === false) {
-      colors = { green: '', yellow: '', red: '', brightRed: '', cyan: '', reset: '' };
+      colors = { green: '', yellow: '', red: '', brightRed: '', cyan: '', dim: '', reset: '' };
     }
   });
 
 // Risk level colors and symbols
 const RISK_DISPLAY: Record<RiskLevel, { symbol: string; color: () => string }> = {
-  low: { symbol: '✅', color: () => colors.green },
-  medium: { symbol: '⚠️', color: () => colors.yellow },
-  high: { symbol: '🔴', color: () => colors.red },
-  critical: { symbol: '🚨', color: () => colors.brightRed },
+  low: { symbol: '[+]', color: () => colors.green },
+  medium: { symbol: '[~]', color: () => colors.yellow },
+  high: { symbol: '[!]', color: () => colors.red },
+  critical: { symbol: '[!!]', color: () => colors.brightRed },
 };
 const RESET = () => colors.reset;
 
@@ -150,17 +152,17 @@ Examples:
       // Publisher info
       console.log(`Publisher: @${result.publisher.name}`);
       if (result.publisher.verified) {
-        console.log(`├─ ✅ Verified via DNS`);
+        console.log(`├─ [+] Verified via DNS`);
         if (result.publisher.domain) {
-          console.log(`├─ 🌐 Domain: ${result.publisher.domain}`);
+          console.log(`├─ Domain: ${result.publisher.domain}`);
         }
         if (result.publisher.verifiedAt && options.verbose) {
-          console.log(`└─ 📅 Verified at: ${result.publisher.verifiedAt.toISOString()}`);
+          console.log(`└─ Verified at: ${result.publisher.verifiedAt.toISOString()}`);
         } else {
           console.log(`└─ Method: DNS TXT record`);
         }
       } else {
-        console.log(`├─ ❌ Not verified`);
+        console.log(`├─ [-] Not verified`);
         if (result.publisher.failureReason && options.verbose) {
           console.log(`└─ Reason: ${result.publisher.failureReason}`);
         } else if (options.offline) {
@@ -177,13 +179,13 @@ Examples:
         console.log('└─ None declared');
       } else {
         for (const perm of result.permissions.safe) {
-          console.log(`├─ ✅ ${perm}`);
+          console.log(`├─ [+] ${perm}`);
         }
         for (const perm of result.permissions.reviewNeeded) {
-          console.log(`├─ ⚠️  ${perm} (review needed)`);
+          console.log(`├─ [~] ${perm} (review needed)`);
         }
         for (const perm of result.permissions.dangerous) {
-          console.log(`├─ ❌ ${perm} (DANGEROUS)`);
+          console.log(`├─ [!] ${perm} (elevated risk)`);
         }
         console.log(`└─ Risk score: ${result.permissions.riskScore}/100`);
       }
@@ -192,9 +194,9 @@ Examples:
       // Revocation
       console.log('Revocation:');
       if (result.revocation.revoked) {
-        console.log(`└─ 🚨 REVOKED: ${result.revocation.reason}`);
+        console.log(`└─ [!!] Revoked: ${result.revocation.reason}`);
       } else {
-        console.log(`└─ ✅ Not on blocklist`);
+        console.log(`└─ [+] Not on blocklist`);
       }
       console.log();
 
@@ -216,10 +218,10 @@ Examples:
 
 // Severity colors and symbols for secure command
 const SEVERITY_DISPLAY: Record<Severity, { symbol: string; color: () => string }> = {
-  critical: { symbol: '🔴', color: () => colors.brightRed },
-  high: { symbol: '🟠', color: () => colors.red },
-  medium: { symbol: '🟡', color: () => colors.yellow },
-  low: { symbol: '🟢', color: () => colors.green },
+  critical: { symbol: '[!!]', color: () => colors.brightRed },
+  high: { symbol: '[!]', color: () => colors.red },
+  medium: { symbol: '[~]', color: () => colors.yellow },
+  low: { symbol: '[.]', color: () => colors.green },
 };
 
 function groupFindingsBySeverity(findings: SecurityFinding[]): Record<Severity, SecurityFinding[]> {
@@ -349,7 +351,7 @@ function generateBenchmarkReport(
   const l3Compliance = l3Total > 0 ? Math.round((l3Passed / l3Total) * 100) : 100;
   const totalScored = l1Total + l2Total + l3Total;
   const totalPassed = l1Passed + l2Passed + l3Passed;
-  const overallCompliance = totalScored > 0 ? Math.round((totalPassed / totalScored) * 100) : 100;
+  const overallCompliance = totalScored > 0 ? Math.round((totalPassed / totalScored) * 100) : 0;
 
   // Group results by category
   const categoryResults: BenchmarkCategoryResult[] = [];
@@ -362,7 +364,7 @@ function generateBenchmarkReport(
     const passed = catControls.filter((r: LocalControlResult) => r.status === 'passed').length;
     const failed = catControls.filter((r: LocalControlResult) => r.status === 'failed').length;
     const unverified = catControls.filter((r: LocalControlResult) => r.status === 'unverified').length;
-    const compliance = (passed + failed) > 0 ? Math.round((passed / (passed + failed)) * 100) : 100;
+    const compliance = (passed + failed) > 0 ? Math.round((passed / (passed + failed)) * 100) : 0;
 
     categoryResults.push({
       category: category.name,
@@ -506,7 +508,7 @@ function generateHtmlReport(result: BenchmarkResult): string {
     'Compliant': '#22c55e',
     'Passing': '#eab308',
     'Needs Improvement': '#f97316',
-    'Failing': '#ef4444',
+    'Not Passing': '#ef4444',
   }[result.rating] || '#94a3b8';
 
   const ratingBg = {
@@ -514,7 +516,7 @@ function generateHtmlReport(result: BenchmarkResult): string {
     'Compliant': 'rgba(34, 197, 94, 0.15)',
     'Passing': 'rgba(234, 179, 8, 0.15)',
     'Needs Improvement': 'rgba(249, 115, 22, 0.15)',
-    'Failing': 'rgba(239, 68, 68, 0.15)',
+    'Not Passing': 'rgba(239, 68, 68, 0.15)',
   }[result.rating] || 'rgba(148, 163, 184, 0.15)';
 
   // Generate donut chart SVG
@@ -1488,11 +1490,11 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean): void {
     'Compliant': colors.green,
     'Passing': colors.yellow,
     'Needs Improvement': colors.yellow,
-    'Failing': colors.red,
+    'Not Passing': colors.red,
   };
 
   // Header
-  console.log(`\n📋 ${result.benchmark} v${result.version}`);
+  console.log(`\n${result.benchmark} v${result.version}`);
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
 
   // Level and rating
@@ -1512,21 +1514,26 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean): void {
   // Category breakdown
   console.log(`Categories:`);
   for (const catResult of result.categories) {
-    const statusIcon = catResult.failed === 0 ? '✅' : (catResult.passed > 0 ? '🟡' : '❌');
-    console.log(`  ${statusIcon} ${catResult.category}: ${catResult.passed}/${catResult.passed + catResult.failed} (${catResult.compliance}%)`);
+    const total = catResult.passed + catResult.failed;
+    if (total === 0) {
+      console.log(`  [.] ${catResult.category}: N/A (no controls at this level)`);
+      continue;
+    }
+    const statusIcon = catResult.failed === 0 ? '[+]' : (catResult.passed > 0 ? '[~]' : '[-]');
+    console.log(`  ${statusIcon} ${catResult.category}: ${catResult.passed}/${total} (${catResult.compliance}%)`);
 
     // Show failed controls
     if (verbose || catResult.failed > 0) {
       for (const ctrl of catResult.controls) {
         if (ctrl.status === 'failed') {
-          console.log(`     ❌ ${ctrl.controlId}: ${ctrl.name}`);
+          console.log(`     [-] ${ctrl.controlId}: ${ctrl.name}`);
           if (verbose) {
             for (const finding of ctrl.findings) {
               console.log(`        └─ ${finding}`);
             }
           }
         } else if (verbose && ctrl.status === 'passed') {
-          console.log(`     ✅ ${ctrl.controlId}: ${ctrl.name}`);
+          console.log(`     [+] ${ctrl.controlId}: ${ctrl.name}`);
         } else if (verbose && ctrl.status === 'unverified') {
           // Look up the original control to determine why it's unverified
           const originalControl = OASB_1_CATEGORIES
@@ -1535,7 +1542,7 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean): void {
           const reason = originalControl && (originalControl.verification === 'manual' || originalControl.verification === 'forward')
             ? 'manual/forward'
             : 'no scanner data';
-          console.log(`     ⚪ ${ctrl.controlId}: ${ctrl.name} (${reason})`);
+          console.log(`     [?] ${ctrl.controlId}: ${ctrl.name} (${reason})`);
         }
       }
     }
@@ -1547,7 +1554,7 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean): void {
   // Compliance breakdown by level
   if (verbose) {
     console.log(`\nCompliance by level: L1=${result.l1Compliance}% L2=${result.l2Compliance}% L3=${result.l3Compliance}%`);
-    console.log(`Legend: ⚪ = Manual/Forward verification required`);
+    console.log(`Legend: [?] = Manual/Forward verification required`);
   }
 
   // Show appropriate next step based on current level
@@ -1694,9 +1701,9 @@ Examples:
       // Only show progress for text output
       if (format === 'text') {
         if (options.dryRun) {
-          console.log(`\n🔍 Scanning ${targetDir} (dry-run)...\n`);
+          console.log(`\nScanning ${targetDir} (dry-run)...\n`);
         } else {
-          console.log(`\n🔍 Scanning ${targetDir}...\n`);
+          console.log(`\nScanning ${targetDir}...\n`);
         }
       }
 
@@ -1827,7 +1834,7 @@ Examples:
         }
 
         // Exit with non-zero if failing or needs improvement (default behavior)
-        if (failBelow === undefined && (benchmarkResult.rating === 'Failing' || benchmarkResult.rating === 'Needs Improvement')) {
+        if (failBelow === undefined && (benchmarkResult.rating === 'Not Passing' || benchmarkResult.rating === 'Needs Improvement')) {
           process.exit(1);
         }
         return;
@@ -1835,6 +1842,8 @@ Examples:
 
       if (format === 'json') {
         console.log(JSON.stringify(result, null, 2));
+        const critHigh = result.findings.filter((f: SecurityFinding) => !f.passed && !f.fixed && (f.severity === 'critical' || f.severity === 'high'));
+        if (critHigh.length > 0) process.exit(1);
         return;
       }
 
@@ -1915,7 +1924,35 @@ Examples:
           if (finding.fix) {
             console.log(`       ${colors.cyan}Fix:${RESET()} ${finding.fix}`);
           }
+          if (options.verbose) {
+            console.log(`       ${colors.dim}Check: ${finding.checkId} | Category: ${finding.category}${RESET()}`);
+            if (finding.file) {
+              console.log(`       ${colors.dim}File: ${finding.file}${finding.line ? ` (line ${finding.line})` : ''}${RESET()}`);
+            }
+            if (finding.message && finding.message !== finding.description) {
+              console.log(`       ${colors.dim}Detail: ${finding.message}${RESET()}`);
+            }
+            if (finding.details && Object.keys(finding.details).length > 0) {
+              for (const [key, value] of Object.entries(finding.details)) {
+                console.log(`       ${colors.dim}${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}${RESET()}`);
+              }
+            }
+          }
           console.log();
+        }
+
+        // Severity breakdown summary
+        const severityCounts = { critical: 0, high: 0, medium: 0, low: 0 };
+        for (const f of issues) {
+          severityCounts[f.severity]++;
+        }
+        const summaryParts: string[] = [];
+        if (severityCounts.critical > 0) summaryParts.push(`${colors.brightRed}Critical: ${severityCounts.critical}${RESET()}`);
+        if (severityCounts.high > 0) summaryParts.push(`${colors.red}High: ${severityCounts.high}${RESET()}`);
+        if (severityCounts.medium > 0) summaryParts.push(`${colors.yellow}Medium: ${severityCounts.medium}${RESET()}`);
+        if (severityCounts.low > 0) summaryParts.push(`${colors.green}Low: ${severityCounts.low}${RESET()}`);
+        if (summaryParts.length > 0) {
+          console.log(`${summaryParts.join(' | ')}\n`);
         }
       }
 
@@ -1972,8 +2009,8 @@ Examples:
               }
             }
           }
-        } catch (reportErr: any) {
-          console.error(`Registry: failed to report scan results: ${reportErr.message || reportErr}`);
+        } catch (_reportErr: any) {
+          // Silently ignore registry errors - they are not relevant to local scan results
         }
       }
 
@@ -1997,10 +2034,10 @@ Examples:
 
 // Severity display for external scan findings
 const FINDING_SEVERITY_DISPLAY: Record<FindingSeverity, { symbol: string; color: () => string }> = {
-  critical: { symbol: '🔴', color: () => colors.brightRed },
-  high: { symbol: '🟠', color: () => colors.red },
-  medium: { symbol: '🟡', color: () => colors.yellow },
-  low: { symbol: '🟢', color: () => colors.green },
+  critical: { symbol: '[!!]', color: () => colors.brightRed },
+  high: { symbol: '[!]', color: () => colors.red },
+  medium: { symbol: '[~]', color: () => colors.yellow },
+  low: { symbol: '[.]', color: () => colors.green },
 };
 
 function groupExternalFindingsBySeverity(
@@ -2065,29 +2102,36 @@ function assessRiskLevel(findings: SecurityFinding[]): { level: string; color: s
 
   if (criticalCount > 0) {
     return {
-      level: 'CRITICAL',
+      level: 'Critical',
       color: colors.brightRed,
-      description: 'Immediate action required. Your OpenClaw installation has critical vulnerabilities.',
+      description: `${criticalCount} critical finding(s) with recommended fixes available.`,
     };
   }
   if (highCount > 0) {
     return {
-      level: 'HIGH',
+      level: 'High',
       color: colors.red,
-      description: 'Significant risks detected. Address high-severity issues promptly.',
+      description: `${highCount} high-severity finding(s) detected. Fixes available below.`,
     };
   }
   if (mediumCount > 0) {
     return {
-      level: 'MODERATE',
+      level: 'Moderate',
       color: colors.yellow,
-      description: 'Some issues found. Review and address when possible.',
+      description: 'Some findings detected. Review the recommendations below.',
+    };
+  }
+  if (findings.length === 0) {
+    return {
+      level: 'None',
+      color: colors.dim,
+      description: 'No OpenClaw configuration detected. Run `hackmyagent secure` for a full scan.',
     };
   }
   return {
-    level: 'LOW',
+    level: 'Low',
     color: colors.green,
-    description: 'Your OpenClaw installation appears well-secured.',
+    description: 'No critical or high findings detected.',
   };
 }
 
@@ -2120,12 +2164,12 @@ Examples:
       const targetDir = detectOpenClawDirectory(directory);
 
       if (!options.json) {
-        console.log(`\n🦞 OpenClaw Security Report`);
+        console.log(`\nOpenClaw Security Report`);
         console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
         if (options.dryRun) {
-          console.log(`🔍 Scanning ${targetDir} (dry-run - previewing fixes)...\n`);
+          console.log(`Scanning ${targetDir} (dry-run - previewing fixes)...\n`);
         } else if (options.fix) {
-          console.log(`🔧 Scanning and fixing ${targetDir}...\n`);
+          console.log(`Scanning and fixing ${targetDir}...\n`);
           console.log(`${colors.yellow}Auto-fix will:${RESET()}`);
           console.log(`  • Bind gateway to 127.0.0.1 (local-only)`);
           console.log(`  • Replace plaintext tokens with env var references`);
@@ -2133,7 +2177,7 @@ Examples:
           console.log(`  • Enable sandbox mode`);
           console.log(`\n${colors.cyan}A backup will be created for rollback if needed.${RESET()}\n`);
         } else {
-          console.log(`🔍 Scanning ${targetDir}...\n`);
+          console.log(`Scanning ${targetDir}...\n`);
         }
       }
 
@@ -2175,7 +2219,7 @@ Examples:
 
       // Show issues
       if (issues.length > 0) {
-        console.log(`${colors.red}Issues Found:${RESET()}\n`);
+        console.log(`${colors.red}Findings:${RESET()}\n`);
 
         for (const finding of issues) {
           const display = SEVERITY_DISPLAY[finding.severity];
@@ -2185,13 +2229,14 @@ Examples:
               : finding.file
             : '';
 
-          console.log(`${display.color()}${display.symbol} [${finding.checkId}] ${finding.severity.toUpperCase()}${RESET()}`);
+          const sevLabel = finding.severity.charAt(0).toUpperCase() + finding.severity.slice(1);
+          console.log(`${display.color()}${display.symbol} [${finding.checkId}] ${sevLabel}${RESET()}`);
           console.log(`   ${finding.description}`);
           if (location) {
             console.log(`   File: ${location}`);
           }
           if (finding.fix) {
-            console.log(`   ${colors.cyan}Fix:${RESET()} ${finding.fix}`);
+            console.log(`   ${colors.cyan}Recommended fix:${RESET()} ${finding.fix}`);
           }
           console.log();
         }
@@ -2201,7 +2246,7 @@ Examples:
 
       // Show fixed findings
       if (fixedFindings.length > 0) {
-        console.log(`${colors.green}✅ Auto-Remediation Applied:${RESET()}\n`);
+        console.log(`${colors.green}Auto-Remediation Applied:${RESET()}\n`);
         for (const finding of fixedFindings) {
           console.log(`  ${colors.green}✓${RESET()} [${finding.checkId}] ${finding.name}`);
           if (finding.fixMessage) {
@@ -2211,8 +2256,8 @@ Examples:
         console.log();
 
         if (result.backupPath) {
-          console.log(`${colors.yellow}📁 Backup created:${RESET()} ${result.backupPath}`);
-          console.log(`${colors.yellow}↩️  To rollback:${RESET()} hackmyagent rollback ${targetDir}`);
+          console.log(`${colors.yellow}Backup created:${RESET()} ${result.backupPath}`);
+          console.log(`${colors.yellow}To rollback:${RESET()} hackmyagent rollback ${targetDir}`);
           console.log();
           console.log(`${colors.cyan}Note:${RESET()} If you replaced tokens with env vars, set OPENCLAW_AUTH_TOKEN`);
           console.log(`      in your environment before starting OpenClaw.\n`);
@@ -2273,7 +2318,7 @@ Examples:
       options: { json?: boolean; ports?: string; timeout?: string; verbose?: boolean }
     ) => {
       try {
-        console.log(`\n🔍 Scanning ${target}...\n`);
+        console.log(`\nScanning ${target}...\n`);
 
         const scanner = new ExternalScanner();
         const customPorts = options.ports
@@ -2305,7 +2350,7 @@ Examples:
         console.log(`Duration: ${result.duration}ms\n`);
 
         if (result.findings.length === 0) {
-          console.log(`${colors.green}✅ No security issues found!${RESET()}\n`);
+          console.log(`${colors.green}[+] No security issues found!${RESET()}\n`);
           return;
         }
 
@@ -2371,7 +2416,7 @@ Examples:
       const scanner = new HardeningScanner();
       await scanner.rollback(targetDir);
 
-      console.log(`${colors.green}✅ Rollback successful!${RESET()}`);
+      console.log(`${colors.green}[+] Rollback successful!${RESET()}`);
       console.log('   All auto-fix changes have been reverted.\n');
     } catch (error) {
       console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -2534,9 +2579,21 @@ Examples:
       }
 
       // Build target
+      // When --local is used, treat the argument as a directory path, not a URL
+      let localPath: string | undefined;
+      if (targetType === 'local' && targetUrl) {
+        const path = require('path');
+        const fs = require('fs');
+        const resolved = path.resolve(targetUrl);
+        if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+          localPath = resolved;
+        }
+      }
+
       const target: AttackTarget = {
-        url: targetUrl || '',
+        url: localPath ? '' : (targetUrl || ''),
         type: targetType,
+        localPath,
         headers: Object.keys(headers).length > 0 ? headers : undefined,
         apiFormat: apiFormat as 'openai' | 'anthropic' | 'mcp-jsonrpc' | 'a2a' | 'custom',
         model: options.model,
@@ -2568,9 +2625,9 @@ Examples:
 
       // Show header for text output
       if (format === 'text') {
-        console.log(`\n⚔️  HackMyAgent Attack Mode`);
+        console.log(`\nHackMyAgent Attack Mode`);
         console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
-        console.log(`Target: ${target.type === 'local' ? 'Local Simulation' : targetUrl}`);
+        console.log(`Target: ${target.type === 'local' ? (localPath ? `Local Directory: ${localPath}` : 'Local Simulation') : targetUrl}`);
         console.log(`Intensity: ${intensity}`);
         if (customPayloads) {
           console.log(`Payloads: ${customPayloads.length} custom (from file)`);
@@ -2619,8 +2676,8 @@ Examples:
         }
       }
 
-      // Registry reporting: auto-publish to community endpoint by default
-      const shouldReport = options.registryReport || (options.registry !== false);
+      // Registry reporting: skip for local-only scans (no network calls needed)
+      const shouldReport = targetType !== 'local' && (options.registryReport || (options.registry !== false));
       if (shouldReport) {
         try {
           const core = await import('./index');
@@ -2691,7 +2748,7 @@ function printAttackReport(report: AttackReport, verbose: boolean): void {
   for (const [cat, stats] of Object.entries(report.summary.byCategory)) {
     if (stats.total === 0) continue;
     const catInfo = ATTACK_CATEGORIES[cat as AttackCategory];
-    const icon = stats.successful > 0 ? '❌' : '✅';
+    const icon = stats.successful > 0 ? '[-]' : '[+]';
     console.log(`  ${icon} ${catInfo.name}: ${stats.successful}/${stats.total} successful`);
   }
   console.log();
@@ -2719,15 +2776,30 @@ function printAttackReport(report: AttackReport, verbose: boolean): void {
     if (blocked.length > 0) {
       console.log(`${colors.green}Blocked Attacks (${blocked.length}):${RESET()}`);
       for (const r of blocked) {
-        console.log(`  ✅ ${r.payload.id}: ${r.payload.name}`);
+        console.log(`  [+] ${r.payload.id}: ${r.payload.name}`);
       }
       console.log();
     }
   }
 
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-  console.log(`\nUse --verbose for detailed attack results.`);
-  console.log(`Use --intensity aggressive for advanced attacks.\n`);
+  // Inconclusive explanation (when there are inconclusive results)
+  if (report.summary.inconclusive > 0) {
+    console.log(`Note: ${report.summary.inconclusive} result(s) were inconclusive -- no clear success or block`);
+    console.log(`indicators matched the simulated response.`);
+    if (report.targetType === 'local') {
+      console.log(`Run against a live endpoint (without --local) for active testing with real responses.`);
+    }
+    console.log();
+  }
+
+  if (!verbose) {
+    console.log(`\nUse --verbose for detailed attack results.`);
+  }
+  if (report.intensity !== 'aggressive') {
+    console.log(`Use --intensity aggressive for advanced attacks.`);
+  }
+  console.log();
 }
 
 // Generate SARIF output for attack results
@@ -3805,7 +3877,7 @@ Examples:
 
         // Warn if scan is incomplete due to plugin errors
         if (pluginErrors > 0) {
-          console.log(`\n${colors.brightRed}[!!] WARNING: ${pluginErrors} plugin(s) failed — scan results are incomplete${RESET()}`);
+          console.log(`\n${colors.brightRed}[!!] Note: ${pluginErrors} plugin(s) failed -- scan results are incomplete${RESET()}`);
           console.log(`     Re-run with --verbose for details.\n`);
         }
 
@@ -3895,6 +3967,38 @@ function gradeColor(grade: SoulGrade): string {
   }
 }
 
+function levelColor(level: SoulLevel): string {
+  switch (level) {
+    case 'hardened': return colors.green;
+    case 'standard': return colors.green;
+    case 'developing': return colors.yellow;
+    case 'initial': return colors.cyan;
+    case 'not-started': return colors.reset;
+  }
+}
+
+function levelLabel(level: SoulLevel): string {
+  switch (level) {
+    case 'hardened': return 'Hardened';
+    case 'standard': return 'Standard';
+    case 'developing': return 'Developing';
+    case 'initial': return 'Initial';
+    case 'not-started': return 'Not Started';
+  }
+}
+
+/**
+ * Detect how the CLI was invoked to suggest correct command prefix.
+ */
+function getCommandPrefix(): string {
+  const execPath = process.argv[1] || '';
+  if (execPath.includes('npx') || execPath.includes('.npm/_npx') ||
+      execPath.includes('node_modules/.bin')) {
+    return 'npx hackmyagent';
+  }
+  return 'hackmyagent';
+}
+
 // Domain percentage bar for text output
 function domainBar(pct: number): string {
   if (pct >= 80) return colors.green;
@@ -3908,41 +4012,39 @@ program
   .description(`Scan behavioral governance coverage
 
 Analyzes SOUL.md (or equivalent governance file) for coverage
-across 8 behavioral governance domains with 68 security controls.
+across 9 behavioral governance domains with 72 security controls.
 
 Searches for governance files in priority order:
   SOUL.md > system-prompt.md > SYSTEM_PROMPT.md > .cursorrules
   > .github/copilot-instructions.md > CLAUDE.md > .clinerules
   > instructions.md > constitution.md > agent-config.yaml
 
-Domains checked (OASB v2):
-  7. Trust Hierarchy         8. Capability Boundaries
-  9. Injection Hardening    10. Data Handling
-  11. Hardcoded Behaviors   12. Agentic Safety
-  13. Honesty & Transparency 14. Human Oversight
+Agent profiles filter domains by agent purpose:
+  conversational:  Injection, Hardcoded, Honesty, Harm Avoidance
+  code-assistant:  + Trust, Data
+  tool-agent:      + Capability, Oversight
+  autonomous:      + Agentic Safety
+  orchestrator:    All 9 domains
 
-Grade: A (80-100), B (60-79), C (40-59), D (20-39), F (0-19)
-Critical floor: Missing SOUL-IH-003 or SOUL-HB-001 caps grade at C.
-
-Conformance levels:
-  none:      one or more critical controls missing
-  essential: all critical controls pass, score < 60
-  standard:  all critical controls pass, score >= 60
-  hardened:  all critical controls pass, score >= 75
+Maturity levels:
+  Hardened (80+), Standard (60-79), Developing (40-59),
+  Initial (1-39), Not Started (0)
 
 Examples:
   $ hackmyagent scan-soul                    Scan current directory
   $ hackmyagent scan-soul ./my-agent         Scan specific directory
   $ hackmyagent scan-soul --json             Machine-readable output
   $ hackmyagent scan-soul --verbose          Show all controls
+  $ hackmyagent scan-soul --profile conversational  Override profile
   $ hackmyagent scan-soul --deep             Enable LLM semantic analysis`)
   .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
   .option('--json', 'Output as JSON')
   .option('-v, --verbose', 'Show individual control results')
   .option('--tier <tier>', 'Override agent tier detection (BASIC, TOOL-USING, AGENTIC, MULTI-AGENT)')
+  .option('--profile <profile>', 'Override agent profile (conversational, code-assistant, tool-agent, autonomous, orchestrator, custom)')
   .option('--fail-below <score>', 'Exit 1 if score below threshold (0-100)')
   .option('--deep', 'Enable LLM semantic analysis for ambiguous controls (requires claude CLI or ANTHROPIC_API_KEY)')
-  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; failBelow?: string; deep?: boolean }) => {
+  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
@@ -3951,10 +4053,12 @@ Examples:
         process.exit(1);
       }
 
+      const prefix = getCommandPrefix();
       const scanner = new SoulScanner();
       const result = await scanner.scanSoul(targetDir, {
         verbose: options.verbose,
         tier: options.tier,
+        profile: options.profile,
         deepAnalysis: options.deep,
       });
 
@@ -3983,11 +4087,29 @@ Examples:
       }
 
       const tierLabel = result.tierForced ? `${result.agentTier} (--tier flag)` : `${result.agentTier} (auto-detected)`;
-      process.stdout.write(`Agent Tier: ${tierLabel}\n\n`);
+      const profileLabel = result.profileForced ? `${result.agentProfile} (--profile flag)` : `${result.agentProfile} (auto-detected)`;
+      process.stdout.write(`Agent Tier: ${tierLabel}\n`);
+      process.stdout.write(`Agent Profile: ${profileLabel}\n`);
+      if (result.skippedDomains.length > 0) {
+        process.stdout.write(`Skipped Domains: ${result.skippedDomains.join(', ')}\n`);
+      }
+      process.stdout.write('\n');
 
       process.stdout.write('Domain Scores:\n');
 
       for (const domain of result.domains) {
+        if (domain.skippedByProfile) {
+          if (options.verbose) {
+            const label = (domain.domain + ':').padEnd(26);
+            process.stdout.write(`  ${label}${colors.reset}--  (skipped by profile)${colors.reset}\n`);
+          }
+          continue;
+        }
+        if (domain.skippedByTier) {
+          const label = (domain.domain + ':').padEnd(26);
+          process.stdout.write(`  ${label}${colors.reset}--  (not applicable at ${result.agentTier} tier)${colors.reset}\n`);
+          continue;
+        }
         const pctColor = domainBar(domain.percentage);
         const label = (domain.domain + ':').padEnd(26);
         process.stdout.write(`  ${label}${pctColor}${domain.passed}/${domain.total}  (${domain.percentage}%)${colors.reset}\n`);
@@ -4005,9 +4127,9 @@ Examples:
 
       process.stdout.write('\n');
 
-      // Score and grade
-      const gc = gradeColor(result.grade);
-      process.stdout.write(`Governance Score: ${gc}${result.score}/100 (Grade: ${result.grade})${colors.reset}\n`);
+      // Score and level (progress-oriented)
+      const lc = levelColor(result.level);
+      process.stdout.write(`Governance Score: ${lc}${result.score}/100 [${levelLabel(result.level)}]${colors.reset}\n`);
 
       // Conformance level
       if (result.conformance === 'none') {
@@ -4028,11 +4150,12 @@ Examples:
         process.stdout.write(`Deep Analysis: ${llmUpgraded} control${llmUpgraded === 1 ? '' : 's'} upgraded by LLM semantic analysis\n`);
       }
 
-      // Path forward
+      // Path forward (recovery-oriented, not punitive)
       const missing = result.totalControls - result.totalPassed;
       if (missing > 0) {
-        process.stdout.write(`\n${missing} control${missing === 1 ? '' : 's'} missing.`);
-        process.stdout.write(` Run '${colors.cyan}hackmyagent harden-soul${colors.reset}' to remediate.\n`);
+        const recoverable = Math.min(100 - result.score, 100);
+        process.stdout.write(`\n  Path forward: +${recoverable} recoverable by addressing ${missing} control${missing === 1 ? '' : 's'}`);
+        process.stdout.write(`\n  Run '${colors.cyan}${prefix} harden-soul${colors.reset}' to remediate.\n`);
       } else {
         process.stdout.write(`\n${colors.green}All ${result.totalControls} governance controls covered.${colors.reset}\n`);
       }
@@ -4059,6 +4182,8 @@ program
 
 Runs scan-soul internally to identify missing controls, then generates
 template content for each missing domain. Existing content is preserved.
+Supports iterative hardening: if a domain heading exists but controls
+fail within it, appends targeted remediation for those controls.
 
 Modes:
   Default:    Append missing sections to SOUL.md (or create it)
@@ -4071,8 +4196,9 @@ Examples:
   $ hackmyagent harden-soul --json           Machine-readable output`)
   .argument('[directory]', 'Directory to harden (defaults to current directory)', '.')
   .option('--dry-run', 'Preview changes without modifying files')
+  .option('--profile <profile>', 'Override agent profile (conversational, code-assistant, tool-agent, autonomous, orchestrator, custom)')
   .option('--json', 'Output as JSON')
-  .action(async (directory: string, options: { dryRun?: boolean; json?: boolean }) => {
+  .action(async (directory: string, options: { dryRun?: boolean; profile?: string; json?: boolean }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
@@ -4081,8 +4207,9 @@ Examples:
         process.exit(1);
       }
 
+      const prefix = getCommandPrefix();
       const scanner = new SoulScanner();
-      const result = await scanner.hardenSoul(targetDir, { dryRun: options.dryRun });
+      const result = await scanner.hardenSoul(targetDir, { dryRun: options.dryRun, profile: options.profile });
 
       // JSON output
       if (options.json) {
@@ -4101,7 +4228,7 @@ Examples:
       // Text output
       if (result.sectionsAdded.length === 0) {
         process.stdout.write(`\n${colors.green}All governance domains already have sections in ${result.file}.${colors.reset}\n`);
-        process.stdout.write(`Run 'hackmyagent scan-soul --verbose' to see individual control coverage.\n\n`);
+        process.stdout.write(`Run '${prefix} scan-soul --verbose' to see individual control coverage.\n\n`);
         return;
       }
 
@@ -4139,7 +4266,7 @@ Examples:
         }
         process.stdout.write(`Controls covered: +${result.controlsAdded}\n\n`);
 
-        process.stdout.write(`Run '${colors.cyan}hackmyagent scan-soul${colors.reset}' to verify coverage.\n\n`);
+        process.stdout.write(`Run '${colors.cyan}${prefix} scan-soul${colors.reset}' to verify coverage.\n\n`);
       }
     } catch (error) {
       process.stderr.write(`Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`);

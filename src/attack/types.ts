@@ -104,6 +104,8 @@ export interface AttackTarget {
   url: string;
   /** Target type */
   type: 'api' | 'mcp' | 'a2a' | 'local';
+  /** Local directory path (for --local mode scanning) */
+  localPath?: string;
   /** Authentication headers */
   headers?: Record<string, string>;
   /** API format */

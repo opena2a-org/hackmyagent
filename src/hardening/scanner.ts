@@ -518,7 +518,9 @@ export class HardeningScanner {
 
     try {
       await fs.access(path.join(targetDir, '.claude'));
-      platforms.push('claude-code');
+      if (!platforms.includes('claude-code')) {
+        platforms.push('claude-code');
+      }
     } catch {}
 
     // OpenClaw detection
@@ -1996,15 +1998,24 @@ dist/
 
     // DEP-004: Check for npm scripts security
     let hasDangerousScripts = false;
-    const dangerousScriptPatterns = ['curl | sh', 'wget | bash', 'eval(', '$(curl'];
+    const dangerousScriptRegexes = [
+      /curl\b.*\|\s*sh/i,        // curl ... | sh (with anything between)
+      /curl\b.*\|\s*bash/i,      // curl ... | bash
+      /wget\b.*\|\s*sh/i,        // wget ... | sh
+      /wget\b.*\|\s*bash/i,      // wget ... | bash
+      /\beval\s*\(/,             // eval(
+      /\$\(curl\b/,             // $(curl
+      /\$\(wget\b/,             // $(wget
+    ];
+    const pkgJsonPath = path.join(targetDir, 'package.json');
     try {
-      const pkgJson = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+      const pkgJson = await fs.readFile(pkgJsonPath, 'utf-8');
       const pkg = JSON.parse(pkgJson);
       if (pkg.scripts) {
         for (const [, script] of Object.entries(pkg.scripts)) {
           if (typeof script === 'string') {
-            for (const pattern of dangerousScriptPatterns) {
-              if (script.includes(pattern)) {
+            for (const pattern of dangerousScriptRegexes) {
+              if (pattern.test(script)) {
                 hasDangerousScripts = true;
                 break;
               }
@@ -2021,6 +2032,7 @@ dist/
       category: 'dependencies',
       severity: 'critical',
       passed: !hasDangerousScripts,
+      file: hasDangerousScripts ? 'package.json' : undefined,
       message: hasDangerousScripts
         ? 'Dangerous patterns in npm scripts (curl|sh, eval) - review carefully'
         : 'npm scripts appear safe',
@@ -2147,14 +2159,28 @@ dist/
     const findings: SecurityFinding[] = [];
 
     // PROC-001: Check for Dockerfile security
+    // Search common Dockerfile locations
     let hasSecureDockerfile = true;
-    try {
-      const dockerfile = await fs.readFile(path.join(targetDir, 'Dockerfile'), 'utf-8');
-      if (dockerfile.includes('USER root') || !dockerfile.includes('USER ')) {
-        hasSecureDockerfile = false;
+    let dockerfilePath: string | undefined;
+    const dockerfileCandidates = [
+      'Dockerfile',
+      'Dockerfile.prod',
+      'Dockerfile.production',
+      'Dockerfile.dev',
+      'docker/Dockerfile',
+    ];
+    for (const candidate of dockerfileCandidates) {
+      const candidatePath = path.join(targetDir, candidate);
+      try {
+        const dockerfile = await fs.readFile(candidatePath, 'utf-8');
+        dockerfilePath = candidatePath;
+        if (dockerfile.includes('USER root') || !dockerfile.includes('USER ')) {
+          hasSecureDockerfile = false;
+        }
+        break; // Use the first Dockerfile found
+      } catch {
+        // File not found, try next candidate
       }
-    } catch {
-      // No Dockerfile, that's fine
     }
 
     findings.push({
@@ -2164,6 +2190,7 @@ dist/
       category: 'process',
       severity: 'high',
       passed: hasSecureDockerfile,
+      file: !hasSecureDockerfile && dockerfilePath ? path.relative(targetDir, dockerfilePath) : undefined,
       message: hasSecureDockerfile
         ? 'Container runs as non-root user or no Dockerfile present'
         : 'Dockerfile runs as root - add USER directive for non-root user',
@@ -5763,7 +5790,7 @@ dist/
           message: `Skill matches known malicious pattern: "${matchedPattern}"`,
           file: relativePath,
           fixable: false,
-          fix: 'Remove this skill immediately - it matches known malware from the ClawHavoc campaign',
+          fix: 'Remove this skill -- it matches known malware from the ClawHavoc campaign',
         });
       }
 
@@ -5798,7 +5825,7 @@ dist/
             message: `Known C2 IP address found: ${ip}`,
             file: relativePath,
             fixable: false,
-            fix: 'Remove this skill immediately - contains known malware C2 infrastructure',
+            fix: 'Remove this skill -- contains known malware C2 infrastructure',
           });
           break;
         }
@@ -5817,7 +5844,7 @@ dist/
             message: `Known malware filename referenced: "${filename}"`,
             file: relativePath,
             fixable: false,
-            fix: 'Remove this skill immediately - references known malware payload',
+            fix: 'Remove this skill -- references known malware payload',
           });
           break;
         }

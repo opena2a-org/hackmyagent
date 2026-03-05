@@ -255,7 +255,7 @@ function detectCredentialsInInstructions(file: AnalysisFile): SemanticFinding[] 
           file: file.path,
           line: i + 1,
           recommendation:
-            'Remove all credentials from instruction files immediately. Use environment variables or a secrets manager instead.',
+            'Remove all credentials from instruction files. Use environment variables or a secrets manager instead.',
           layer: 2,
           autoFixable: false,
         });

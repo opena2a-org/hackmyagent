@@ -72,7 +72,7 @@ export interface BenchmarkResult {
   /** L3 compliance percentage (includes L1+L2) */
   l3Compliance: number;
   /** Rating based on compliance */
-  rating: 'Certified' | 'Compliant' | 'Passing' | 'Needs Improvement' | 'Failing';
+  rating: 'Certified' | 'Compliant' | 'Passing' | 'Needs Improvement' | 'Not Passing';
   categories: BenchmarkCategoryResult[];
   /** Total controls checked */
   totalControls: number;
@@ -1385,7 +1385,7 @@ export function calculateRating(
     if (l1Compliance === 100) return 'Certified';
     if (l1Compliance >= 90) return 'Passing';
     if (l1Compliance >= 70) return 'Needs Improvement';
-    return 'Failing';
+    return 'Not Passing';
   }
 
   if (level === 'L2') {
@@ -1393,7 +1393,7 @@ export function calculateRating(
     if (l1Compliance === 100 && l2Compliance >= 90) return 'Compliant';
     if (l1Compliance >= 90) return 'Passing';
     if (l1Compliance >= 70) return 'Needs Improvement';
-    return 'Failing';
+    return 'Not Passing';
   }
 
   // L3
@@ -1401,7 +1401,7 @@ export function calculateRating(
   if (l1Compliance === 100 && l2Compliance >= 90) return 'Compliant';
   if (l1Compliance >= 90) return 'Passing';
   if (l1Compliance >= 70) return 'Needs Improvement';
-  return 'Failing';
+  return 'Not Passing';
 }
 
 export const OASB_1_VERSION = '1.0.0';

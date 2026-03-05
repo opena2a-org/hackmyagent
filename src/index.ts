@@ -3,7 +3,7 @@
  * Unified security toolkit for AI agents.
  */
 
-export const VERSION = '0.8.0';
+export const VERSION = '0.9.5';
 
 // Checker module
 export {
@@ -151,10 +151,12 @@ export { createPlugin as createSkillguardPlugin } from './plugins/skillguard';
 export { AgentRuntimeProtection } from './arp';
 
 // Soul module (Behavioral Governance Scanner)
-export { SoulScanner, CONTROL_DEFS, DOMAIN_ORDER, GOVERNANCE_FILES } from './soul';
+export { SoulScanner, CONTROL_DEFS, DOMAIN_ORDER, GOVERNANCE_FILES, PROFILE_DOMAINS } from './soul';
 export type {
   AgentTier,
+  AgentProfile,
   SoulGrade,
+  SoulLevel,
   ControlCheck,
   DomainResult,
   SoulScanResult,

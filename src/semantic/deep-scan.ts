@@ -54,7 +54,7 @@ For each finding, explain:
 - **HOW** to fix it (concrete recommendation)
 
 Severity guide:
-- **critical**: Immediate exploitation risk (exposed credentials, root filesystem access)
+- **critical**: High exploitation potential (exposed credentials, root filesystem access)
 - **high**: Significant security gap (overprivileged access, missing boundaries)
 - **medium**: Defense-in-depth issue (large attack surface, missing security terms)
 - **low**: Informational / best practice recommendation`;

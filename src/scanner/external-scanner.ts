@@ -254,7 +254,7 @@ export class ExternalScanner {
             path: '/',
             evidence: `Found ${name} API key pattern in response`,
             impact: 'API keys can be used to access services, incur costs, or steal data',
-            fix: 'Remove API keys from responses and rotate compromised keys immediately',
+            fix: 'Remove API keys from responses and rotate compromised keys',
           });
           break;
         }

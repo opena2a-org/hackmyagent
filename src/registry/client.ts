@@ -130,7 +130,7 @@ export class RegistryClient {
       });
 
       if (response.status === 404) {
-        console.error(`Registry: package "${packageName}" not found in registry. Check the package name or register it at https://registry.opena2a.org`);
+        // Package not registered yet -- silently return null
         return null;
       }
 
