@@ -21,11 +21,14 @@ Scans Claude Code, Cursor, VS Code, and any MCP server setup.
 ## Quick Start
 
 ```bash
+npx opena2a-cli review                # Full security review with HTML dashboard
 npx hackmyagent secure                # 147-check security scan
 npx hackmyagent secure --fix          # auto-fix issues (backups created automatically)
 npx hackmyagent attack --local        # red-team with 55 adversarial payloads
 npx hackmyagent secure -b oasb-1      # OASB-1 compliance benchmark
 ```
+
+> **New to AI agent security?** Start with `npx opena2a-cli review` -- it runs HackMyAgent checks plus credential scanning, config integrity, and Shield posture analysis, then opens an interactive HTML dashboard.
 
 No config files. No setup. Works out of the box on any AI agent project.
 
