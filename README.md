@@ -1,4 +1,4 @@
-> **[OpenA2A](https://github.com/opena2a-org)**: [CLI](https://github.com/opena2a-org/opena2a) · [Secretless](https://github.com/opena2a-org/secretless-ai) · [AIM](https://github.com/opena2a-org/agent-identity-management) · [Browser Guard](https://github.com/opena2a-org/AI-BrowserGuard) · [DVAA](https://github.com/opena2a-org/damn-vulnerable-ai-agent) · [Registry](https://registry.opena2a.org)
+> **[OpenA2A](https://github.com/opena2a-org)**: [CLI](https://github.com/opena2a-org/opena2a) · [Secretless](https://github.com/opena2a-org/secretless-ai) · [AIM](https://github.com/opena2a-org/agent-identity-management) · [Browser Guard](https://github.com/opena2a-org/AI-BrowserGuard)
 
 # HackMyAgent
 
@@ -10,7 +10,7 @@
 
 AI agents execute arbitrary code with your permissions. HackMyAgent finds what can go wrong before an attacker does.
 
-Security scanner and red-team toolkit for AI agents. 147 security checks across 30 categories, 55 adversarial attack payloads, auto-fix with rollback, and OASB-1 compliance benchmarking -- all in a single package.
+Security scanner and red-team toolkit for AI agents. 147 security checks across 30 categories, 55 adversarial attack payloads, auto-fix with rollback includes Agent Runtime Protection, Agent Identity Management light, Damn Vulnerable AI Agent and OASB-1+2 compliance benchmarking -- all in a single package.
 
 Scans Claude Code, Cursor, VS Code, and any MCP server setup.
 
