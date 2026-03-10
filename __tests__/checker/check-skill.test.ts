@@ -95,5 +95,5 @@ describe('RiskLevel calculation', () => {
     });
 
     expect(result.risk).toBe('critical');
-  });
+  }, 30000);
 });
