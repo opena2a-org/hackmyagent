@@ -38,7 +38,7 @@ That's it. No config files, no setup, no flags needed.
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  HackMyAgent v0.9.8 — Security Scanner           │
+│  HackMyAgent v0.9.9 — Security Scanner           │
 │  Found: 3 critical · 5 high · 12 medium          │
 │                                                  │
 │  CRED-001  critical  Hardcoded API key in .env   │
