@@ -341,6 +341,84 @@ hackmyagent fix-all --json              # JSON output
 
 ---
 
+## Runtime Protection (ARP)
+
+ARP (Agent Runtime Protection) monitors AI agents during execution with a 3-layer intelligence stack:
+
+- **L0**: Rule-based pattern matching (40+ threat patterns, every event, free)
+- **L1**: Statistical anomaly detection (z-score deviation from baseline, free)
+- **L2**: LLM-assisted assessment (micro-prompts, budget-controlled, ~$0.01/day)
+
+### Monitor Mode
+
+Watches OS-level activity: child processes, network connections, and filesystem changes.
+
+```bash
+# Generate config for your project
+opena2a runtime init
+
+# Start monitoring
+opena2a runtime start
+
+# Check status and view events
+opena2a runtime status
+opena2a runtime tail --count 20
+```
+
+### Proxy Mode
+
+HTTP reverse proxy that inspects AI protocol traffic in real-time:
+
+```bash
+npx hackmyagent arp-guard proxy --config arp.yaml
+```
+
+Detects 40+ attack patterns across three protocols:
+
+| Protocol | Detections |
+|----------|------------|
+| **OpenAI API** | Prompt injection (PI-001-003), jailbreak (JB-001-003), data exfiltration (DE-001-003), output leaks (OL-001-003), context manipulation (CM-001-002) |
+| **MCP (JSON-RPC)** | Path traversal (MCP-001), command injection (MCP-002), SSRF (MCP-003), tool allowlist enforcement |
+| **A2A** | Identity spoofing (A2A-001), delegation abuse (A2A-002), trusted agent allowlist, embedded prompt injection |
+
+### Configuration (arp.yaml)
+
+```yaml
+agentName: my-agent
+monitors:
+  process: { enabled: true, intervalMs: 5000 }
+  network: { enabled: true, intervalMs: 10000, allowedHosts: [localhost] }
+  filesystem: { enabled: true }
+aiLayer:
+  prompt: true
+  mcp-protocol: true
+  a2a-protocol: true
+proxy:
+  port: 8080
+  blockOnDetection: false
+  upstreams:
+    - pathPrefix: /v1
+      target: http://localhost:3000
+      protocol: openai-api
+```
+
+### Programmatic API
+
+```typescript
+import { AgentRuntimeProtection } from 'hackmyagent/arp';
+
+const arp = new AgentRuntimeProtection('arp.yaml');
+await arp.start();
+
+arp.onEvent((event) => console.log(event.severity, event.description));
+arp.onEnforcement((result) => console.log(result.action, result.event));
+
+// When done
+await arp.stop();
+```
+
+---
+
 ## What It Scans
 
 | Platform | What HackMyAgent detects |
@@ -410,7 +488,7 @@ npx hackmyagent secure --ignore LOG-001,RATE-001
 import { HardeningScanner } from 'hackmyagent';           // Scanner engine
 import { registerPlugin } from 'hackmyagent/plugins';      // Plugin API
 import { SemanticEngine } from 'hackmyagent/semantic';      // Semantic analysis
-import { ARPMonitor } from 'hackmyagent/arp';               // Runtime protection
+import { AgentRuntimeProtection } from 'hackmyagent/arp';    // Runtime protection
 import { OASBHarness } from 'hackmyagent/oasb';             // Benchmark harness
 ```
 
@@ -427,7 +505,7 @@ git clone https://github.com/opena2a-org/hackmyagent.git
 cd hackmyagent
 npm install
 npm run build
-npm test              # 765 tests
+npm test              # 817 tests
 ```
 
 ---
