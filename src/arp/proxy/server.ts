@@ -332,14 +332,26 @@ export class ARPProxy {
         }
       } else if (typeof parsed.params?.content === 'string') {
         content = parsed.params.content;
+      } else if (typeof parsed.message === 'string') {
+        content = parsed.message;
+      } else if (parsed.payload) {
+        // Common A2A formats: { payload: { task: "..." } } or { payload: "..." }
+        if (typeof parsed.payload === 'string') {
+          content = parsed.payload;
+        } else if (typeof parsed.payload.task === 'string') {
+          content = parsed.payload.task;
+        } else if (typeof parsed.payload.content === 'string') {
+          content = parsed.payload.content;
+        } else if (typeof parsed.payload.message === 'string') {
+          content = parsed.payload.message;
+        }
+      } else if (typeof parsed.task === 'string') {
+        content = parsed.task;
       }
 
-      if (content) {
-        const result = this.deps.a2aInterceptor.scanMessage(from, to, content);
-        return result.detected;
-      }
-
-      return false;
+      // Always scan if we have content or a sender identity to check
+      const result = this.deps.a2aInterceptor.scanMessage(from, to, content || bodyStr);
+      return result.detected;
     } catch {
       return false;
     }

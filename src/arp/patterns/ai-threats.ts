@@ -21,7 +21,7 @@ const promptInjection: ThreatPattern[] = [
     id: 'PI-001',
     category: 'prompt-injection',
     description: 'Instruction override attempt — direct override of system instructions',
-    pattern: /(?:ignore|disregard|forget|override|bypass)\s+(?:all\s+)?(?:your\s+|the\s+|my\s+)?(?:previous|prior|above|earlier|system|original)\s+(?:instructions?|prompts?|rules?|directives?|guidelines?|constraints?)/i,
+    pattern: /(?:ignore|disregard|forget|override|bypass)\s+(?:all\s+)?(?:your\s+|the\s+|my\s+)?(?:previous\s+|prior\s+|above\s+|earlier\s+|system\s+|original\s+)?(?:instructions?|prompts?|rules?|directives?|guidelines?|constraints?)/i,
     severity: 'critical',
   },
   {
@@ -47,7 +47,7 @@ const jailbreak: ThreatPattern[] = [
     id: 'JB-001',
     category: 'jailbreak',
     description: 'DAN mode — "Do Anything Now" jailbreak attempt',
-    pattern: /\b(?:DAN|D\.A\.N|do\s+anything\s+now)\b.*(?:mode|persona|act|pretend|enable|activate|jailbr[eo]ak)/i,
+    pattern: /(?:\b(?:DAN|D\.A\.N|do\s+anything\s+now)\b.*(?:mode|persona|act|pretend|enable|activate|jailbr[eo]ak)|(?:act|pretend|behave|roleplay|play)\s+(?:as|like)\s+(?:a\s+)?(?:DAN|D\.A\.N)\b|do\s+anything\s+now)/i,
     severity: 'critical',
   },
   {
@@ -80,7 +80,7 @@ const dataExfiltration: ThreatPattern[] = [
     id: 'DE-002',
     category: 'data-exfiltration',
     description: 'Credential extraction — attempting to extract secrets or API keys',
-    pattern: /(?:(?:what|show|reveal|give|tell|display|print|dump|list)\s+(?:me\s+)?(?:are\s+)?(?:your\s+|the\s+)?(?:api\s+keys?|secrets?|credentials?|passwords?|tokens?|auth(?:entication)?|(?:private|secret)\s+keys?|(?:access|bearer)\s+tokens?|environment\s+variables?|env\s+vars?|\.env))/i,
+    pattern: /(?:(?:what|show|reveal|give|tell|display|print|dump|list|output|extract|expose|leak)\s+(?:me\s+)?(?:are\s+)?(?:your\s+|the\s+|any\s+)?(?:api\s+keys?|secrets?|credentials?|passwords?|tokens?|auth(?:entication)?|(?:private|secret)\s+keys?|(?:access|bearer)\s+tokens?|environment\s+variables?|env\s+vars?|\.env))/i,
     severity: 'critical',
   },
   {
