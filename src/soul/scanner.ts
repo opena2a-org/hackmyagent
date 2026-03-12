@@ -7,7 +7,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { DOMAIN_TEMPLATES } from './templates';
 
 // ---------------------------------------------------------------------------
@@ -559,7 +559,8 @@ export class SoulScanner {
         const tmpFile = path.join(require('os').tmpdir(), `soul-deep-${Date.now()}.txt`);
         fs.writeFileSync(tmpFile, prompt, 'utf-8');
         try {
-          const result = execSync(`${claudePath} --print "$(cat ${tmpFile})"`, {
+          const promptContent = fs.readFileSync(tmpFile, 'utf-8');
+          const result = execFileSync(claudePath, ['--print', promptContent], {
             encoding: 'utf-8',
             timeout: 15000,
             stdio: ['pipe', 'pipe', 'ignore'],
