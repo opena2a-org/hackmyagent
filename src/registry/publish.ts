@@ -279,6 +279,10 @@ export async function publishScanResults(
   const keypair = readAgentKeypair();
   const isCommunity = !keypair;
 
+  if (isCommunity) {
+    console.log("No signing keys found at ~/.opena2a/keys/. Run 'opena2a claim <package>' to create keys for full-weight publishing. Submitting as community contribution (0.5x weight).");
+  }
+
   const payload = buildPublishPayload(data);
 
   // Sign if we have a keypair

@@ -1890,11 +1890,37 @@ Examples:
       }
 
       if (format === 'json') {
+        // Run publish in JSON mode and include result in output
+        let publishStatus: Record<string, unknown> | undefined;
+        if (options.publish && options.registry !== false) {
+          try {
+            const { publishScanResults } = await import('./registry/publish');
+            const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://registry.opena2a.org';
+            const packageName = resolvePackageName(targetDir);
+            if (packageName) {
+              const publishData = {
+                packageName,
+                packageVersion: resolvePackageVersion(targetDir) ?? undefined,
+                directory: targetDir,
+                hardeningFindings: result.findings,
+              };
+              const publishResult = await publishScanResults(publishData, registryUrl);
+              publishStatus = { ...publishResult, registryUrl };
+            } else {
+              publishStatus = { success: false, error: 'Could not determine package name' };
+            }
+          } catch (publishErr: unknown) {
+            const msg = publishErr instanceof Error ? publishErr.message : 'unknown error';
+            publishStatus = { success: false, error: msg };
+          }
+        }
+
+        const jsonOutput = publishStatus ? { ...result, publish: publishStatus } : result;
         if (options.output) {
-          require('fs').writeFileSync(options.output, JSON.stringify(result, null, 2) + '\n');
+          require('fs').writeFileSync(options.output, JSON.stringify(jsonOutput, null, 2) + '\n');
           console.error(`Report written to ${options.output}`);
         } else {
-          writeJsonStdout(result);
+          writeJsonStdout(jsonOutput);
         }
         const critHigh = result.findings.filter((f: SecurityFinding) => !f.passed && !f.fixed && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) process.exitCode = 1;
@@ -2074,7 +2100,11 @@ Examples:
       }
 
       // ATP Publish: push results to registry when --publish is used
-      if (options.publish) {
+      if (options.publish && options.registry === false) {
+        if (format === 'text') {
+          console.log('\nPublish skipped: --no-registry flag is active.');
+        }
+      } else if (options.publish) {
         try {
           const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
           const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://registry.opena2a.org';
@@ -2810,7 +2840,15 @@ Examples:
       }
 
       // ATP Publish: push attack results to registry when --publish is used
-      if (options.publish && targetType !== 'local') {
+      if (options.publish && options.registry === false) {
+        if (format === 'text') {
+          console.log('\nPublish skipped: --no-registry flag is active.');
+        }
+      } else if (options.publish && targetType === 'local') {
+        if (format === 'text') {
+          console.log('\nPublish skipped: only available for live target scans.');
+        }
+      } else if (options.publish && targetType !== 'local') {
         try {
           const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
           const regUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://registry.opena2a.org';
@@ -4190,7 +4228,33 @@ Examples:
 
       // JSON output
       if (options.json) {
-        writeJsonStdout(result);
+        // Run publish in JSON mode and include result in output
+        let publishStatus: Record<string, unknown> | undefined;
+        if (options.publish) {
+          try {
+            const { publishScanResults } = await import('./registry/publish');
+            const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://registry.opena2a.org';
+            const packageName = resolvePackageName(targetDir);
+            if (packageName) {
+              const publishData = {
+                packageName,
+                packageVersion: resolvePackageVersion(targetDir) ?? undefined,
+                directory: targetDir,
+                soulResult: result,
+              };
+              const publishResult = await publishScanResults(publishData, registryUrl);
+              publishStatus = { ...publishResult, registryUrl };
+            } else {
+              publishStatus = { success: false, error: 'Could not determine package name' };
+            }
+          } catch (publishErr: unknown) {
+            const msg = publishErr instanceof Error ? publishErr.message : 'unknown error';
+            publishStatus = { success: false, error: msg };
+          }
+        }
+
+        const jsonOutput = publishStatus ? { ...result, publish: publishStatus } : result;
+        writeJsonStdout(jsonOutput);
         // Check fail threshold
         if (options.failBelow) {
           const threshold = parseInt(options.failBelow, 10);
