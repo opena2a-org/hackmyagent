@@ -429,11 +429,18 @@ describe('publishScanResults', () => {
   });
 
   it('publishes as community scan when no keypair exists', async () => {
-    const mockResponse = {
+    const tokenResponse = {
+      ok: true,
+      status: 200,
+      json: async () => ({ scanToken: 'tok-community', tokenId: 'tid-c', expiresIn: '300s' }),
+    };
+    const publishResponse = {
       ok: true,
       json: async () => ({ scanId: 'scan-abc', profileUrl: 'https://registry.opena2a.org/agents/test', status: 'accepted' }),
     };
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse));
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(tokenResponse)
+      .mockResolvedValueOnce(publishResponse));
 
     const data: PublishScanData = {
       packageName: '@test/agent',
@@ -452,11 +459,18 @@ describe('publishScanResults', () => {
   it('publishes as claimed agent when keypair exists', async () => {
     createFakeKeypair(tmpHome);
 
-    const mockResponse = {
+    const tokenResponse = {
+      ok: true,
+      status: 200,
+      json: async () => ({ scanToken: 'tok-123', tokenId: 'tid-1', expiresIn: '300s' }),
+    };
+    const publishResponse = {
       ok: true,
       json: async () => ({ scanId: 'scan-xyz', profileUrl: 'https://registry.opena2a.org/agents/claimed', status: 'accepted' }),
     };
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse));
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(tokenResponse)
+      .mockResolvedValueOnce(publishResponse));
 
     const data: PublishScanData = {
       packageName: '@test/claimed-agent',
@@ -469,22 +483,34 @@ describe('publishScanResults', () => {
     expect(result.success).toBe(true);
     expect(result.isCommunity).toBe(false);
 
-    // Check that signature and publicKey were sent
+    // Check that scan token was requested and signature was sent
     const fetchCalls = (fetch as any).mock.calls;
-    expect(fetchCalls.length).toBe(1);
-    const body = JSON.parse(fetchCalls[0][1].body);
+    expect(fetchCalls.length).toBe(2);
+    // First call: scan token request
+    expect(fetchCalls[0][0]).toContain('request-scan-token');
+    // Second call: publish with signature
+    const body = JSON.parse(fetchCalls[1][1].body);
     expect(body.signature).toBeDefined();
     expect(body.publicKey).toBeDefined();
     expect(body.agentId).toBe('test-agent-123');
+    // Verify scan token header was set
+    expect(fetchCalls[1][1].headers['X-Scan-Token']).toBe('tok-123');
   });
 
   it('handles registry errors gracefully', async () => {
-    const mockResponse = {
+    const tokenFailResponse = {
       ok: false,
       status: 500,
       text: async () => 'Internal Server Error',
     };
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse));
+    const publishFailResponse = {
+      ok: false,
+      status: 500,
+      text: async () => 'Internal Server Error',
+    };
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(tokenFailResponse)
+      .mockResolvedValueOnce(publishFailResponse));
 
     const data: PublishScanData = {
       packageName: '@test/agent',
