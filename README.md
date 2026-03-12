@@ -108,6 +108,8 @@ hackmyagent secure --fix --dry-run            # preview fixes before applying
 hackmyagent secure --ignore CRED-001,GIT-002  # skip specific checks
 hackmyagent secure --json                     # JSON output for CI/CD
 hackmyagent secure --verbose                  # show all checks including passed
+hackmyagent secure --publish                  # push results to OpenA2A Registry
+hackmyagent secure --publish --registry-url https://registry.example.com  # custom registry
 ```
 
 <details>
@@ -183,6 +185,7 @@ hackmyagent attack --local --intensity aggressive              # full payload su
 hackmyagent attack --local -f sarif -o results.sarif           # SARIF output
 hackmyagent attack https://api.example.com --fail-on-vulnerable medium  # CI gate
 hackmyagent attack https://api.example.com --api-format anthropic       # Anthropic API format
+hackmyagent attack --local --publish          # push red-team results to OpenA2A Registry
 ```
 
 | Category | Payloads | Description |
@@ -289,6 +292,7 @@ hackmyagent scan-soul                     # scan current directory
 hackmyagent scan-soul --tier MULTI-AGENT  # override tier detection
 hackmyagent scan-soul --deep              # LLM semantic analysis (requires ANTHROPIC_API_KEY)
 hackmyagent scan-soul --fail-below 60     # CI gate
+hackmyagent scan-soul --publish           # push governance results to OpenA2A Registry
 ```
 
 Auto-detects governance file: `SOUL.md` > `system-prompt.md` > `CLAUDE.md` > `.cursorrules` > `agent-config.yaml`.
@@ -433,6 +437,20 @@ await arp.stop();
 | **Any MCP setup** | Transport security, tool boundaries, auth weaknesses |
 
 All platforms are scanned automatically — no flags needed.
+
+---
+
+## Registry Integration
+
+The `--publish` flag pushes scan results to the [OpenA2A Registry](https://registry.opena2a.org), building a shared trust database for AI agent security. Available on `secure`, `attack`, and `scan-soul` commands.
+
+```bash
+hackmyagent secure ./my-agent --publish
+```
+
+When signing keys are configured (via `opena2a claim`), results are published at full weight. Without signing keys, results are accepted as community contributions at 0.5x weight. The CLI shows guidance on how to claim your agent for full-weight publishing.
+
+Use `--registry-url` to publish to a custom registry endpoint (e.g., a private organizational registry).
 
 ---
 
