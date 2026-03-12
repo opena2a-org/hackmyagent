@@ -12,3 +12,18 @@ export type {
   ScanReportPayload,
   CommunityScanPayload,
 } from './client';
+
+// ATP Publish flow
+export {
+  readAgentKeypair,
+  signPayload,
+  buildPublishPayload,
+  publishScanResults,
+  formatPublishOutput,
+} from './publish';
+
+export type {
+  AgentKeypair,
+  PublishScanData,
+  PublishResult,
+} from './publish';

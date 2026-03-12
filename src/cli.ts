@@ -1688,12 +1688,13 @@ Examples:
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
   .option('-c, --category <name>', 'Filter to specific benchmark category')
   .option('--deep', 'Enable LLM-powered semantic analysis (requires ANTHROPIC_API_KEY)')
+  .option('--publish', 'Push scan results to the OpenA2A Registry (ATP)')
   .option('--registry-report', 'Post results to OpenA2A Registry')
   .option('--no-registry', 'Skip auto-publishing results to OpenA2A Registry')
   .option('--version-id <id>', 'Registry version ID to report against')
-  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)')
+  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', process.env.REGISTRY_URL || 'https://registry.opena2a.org')
   .option('--registry-key <key>', 'Registry API key (default: REGISTRY_API_KEY env)')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string }) => {
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
@@ -2069,6 +2070,43 @@ Examples:
           }
         } catch (_reportErr: any) {
           // Silently ignore registry errors - they are not relevant to local scan results
+        }
+      }
+
+      // ATP Publish: push results to registry when --publish is used
+      if (options.publish) {
+        try {
+          const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
+          const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://registry.opena2a.org';
+          const packageName = resolvePackageName(targetDir);
+
+          if (!packageName) {
+            console.error('\nCould not determine package name. Publish requires a package.json with a name field.');
+          } else {
+            if (format === 'text') {
+              console.log('\nPublishing results to registry...\n');
+            }
+
+            const publishData = {
+              packageName,
+              packageVersion: resolvePackageVersion(targetDir) ?? undefined,
+              directory: targetDir,
+              hardeningFindings: result.findings,
+            };
+
+            const publishResult = await publishScanResults(publishData, registryUrl);
+            if (format === 'text') {
+              console.log(formatPublishOutput(publishResult, publishData, registryUrl));
+              console.log();
+            } else if (format === 'json') {
+              // Append publish result to JSON output in a separate log
+              console.error(JSON.stringify({ publish: publishResult }, null, 2));
+            }
+          }
+        } catch (publishErr: unknown) {
+          const msg = publishErr instanceof Error ? publishErr.message : 'unknown error';
+          console.error(`\nFailed to publish to registry: ${msg}`);
+          console.error('Scan results are still available locally.');
         }
       }
 
@@ -2541,10 +2579,11 @@ Examples:
   .option('-f, --format <format>', 'Output format: text, json, sarif, html', 'text')
   .option('-o, --output <file>', 'Write output to file')
   .option('-v, --verbose', 'Show detailed output for each payload')
+  .option('--publish', 'Push scan results to the OpenA2A Registry (ATP)')
   .option('--registry-report', 'Post results to OpenA2A Registry')
   .option('--no-registry', 'Skip auto-publishing results to OpenA2A Registry')
   .option('--version-id <id>', 'Registry version ID to report against')
-  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)')
+  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', process.env.REGISTRY_URL || 'https://registry.opena2a.org')
   .option('--registry-key <key>', 'Registry API key (default: REGISTRY_API_KEY env)')
   .action(async (targetUrl: string | undefined, options: {
     intensity?: string;
@@ -2566,6 +2605,7 @@ Examples:
     format?: string;
     output?: string;
     verbose?: boolean;
+    publish?: boolean;
     registryReport?: boolean;
     registry?: boolean;
     versionId?: string;
@@ -2766,6 +2806,35 @@ Examples:
           }
         } catch (_reportErr: any) {
           // Silently ignore registry errors - they are not relevant to local scan results
+        }
+      }
+
+      // ATP Publish: push attack results to registry when --publish is used
+      if (options.publish && targetType !== 'local') {
+        try {
+          const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
+          const regUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://registry.opena2a.org';
+          const packageName = target.url || targetUrl || 'unknown';
+
+          if (format === 'text') {
+            console.log('\nPublishing results to registry...\n');
+          }
+
+          const publishData = {
+            packageName,
+            directory: process.cwd(),
+            attackReport: report,
+          };
+
+          const publishResult = await publishScanResults(publishData, regUrl);
+          if (format === 'text') {
+            console.log(formatPublishOutput(publishResult, publishData, regUrl));
+            console.log();
+          }
+        } catch (publishErr: unknown) {
+          const msg = publishErr instanceof Error ? publishErr.message : 'unknown error';
+          console.error(`\nFailed to publish to registry: ${msg}`);
+          console.error('Scan results are still available locally.');
         }
       }
 
@@ -4099,7 +4168,9 @@ Examples:
   .option('--profile <profile>', 'Override agent profile (conversational, code-assistant, tool-agent, autonomous, orchestrator, custom)')
   .option('--fail-below <score>', 'Exit 1 if score below threshold (0-100)')
   .option('--deep', 'Enable LLM semantic analysis for ambiguous controls (requires claude CLI or ANTHROPIC_API_KEY)')
-  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean }) => {
+  .option('--publish', 'Push scan results to the OpenA2A Registry (ATP)')
+  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', process.env.REGISTRY_URL || 'https://registry.opena2a.org')
+  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean; publish?: boolean; registryUrl?: string }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
@@ -4216,6 +4287,39 @@ Examples:
       }
 
       process.stdout.write('\n');
+
+      // ATP Publish: push SOUL results to registry when --publish is used
+      if (options.publish) {
+        try {
+          const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
+          const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://registry.opena2a.org';
+          const packageName = resolvePackageName(targetDir);
+
+          if (!packageName) {
+            process.stderr.write('Could not determine package name. Publish requires a package.json with a name field.\n');
+          } else {
+            if (!options.json) {
+              process.stdout.write('Publishing results to registry...\n\n');
+            }
+
+            const publishData = {
+              packageName,
+              packageVersion: resolvePackageVersion(targetDir) ?? undefined,
+              directory: targetDir,
+              soulResult: result,
+            };
+
+            const publishResult = await publishScanResults(publishData, registryUrl);
+            if (!options.json) {
+              process.stdout.write(formatPublishOutput(publishResult, publishData, registryUrl) + '\n\n');
+            }
+          }
+        } catch (publishErr: unknown) {
+          const msg = publishErr instanceof Error ? publishErr.message : 'unknown error';
+          process.stderr.write(`Failed to publish to registry: ${msg}\n`);
+          process.stderr.write('Scan results are still available locally.\n');
+        }
+      }
 
       // Check fail threshold
       if (options.failBelow) {

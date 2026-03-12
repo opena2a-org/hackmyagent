@@ -97,6 +97,12 @@ export {
   buildAttackReport,
   buildCommunityReport,
   buildCommunityAttackReport,
+  // ATP Publish flow
+  readAgentKeypair,
+  signPayload,
+  buildPublishPayload,
+  publishScanResults,
+  formatPublishOutput,
 } from './registry';
 
 export type {
@@ -104,6 +110,9 @@ export type {
   RegistryPackage,
   ScanReportPayload,
   CommunityScanPayload,
+  AgentKeypair,
+  PublishScanData,
+  PublishResult,
 } from './registry';
 
 // Semantic engine (Layer 2 + Layer 3 analysis)
