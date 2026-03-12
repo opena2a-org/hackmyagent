@@ -12,7 +12,7 @@ Security scanner and red-team toolkit for AI agents — 147 checks, 55 adversari
 
 Works with Claude Code, Cursor, VS Code, and any MCP server setup.
 
-[Website](https://hackmyagent.com) | [Security Checks Reference](docs/SECURITY_CHECKS.md) | [OpenA2A CLI](https://github.com/opena2a-org/opena2a)
+[Website](https://hackmyagent.com) | [Security Checks Reference](docs/SECURITY_CHECKS.md) | [Demos](https://opena2a.org/demos) | [OpenA2A CLI](https://github.com/opena2a-org/opena2a)
 
 ---
 
@@ -49,6 +49,10 @@ That's it. No config files, no setup, no flags needed.
 │  Run with --fix to auto-remediate 8 issues       │
 └──────────────────────────────────────────────────┘
 ```
+
+![HackMyAgent Demo](docs/hackmyagent-demo.gif)
+
+> See all demos at [opena2a.org/demos](https://opena2a.org/demos)
 
 ---
 
