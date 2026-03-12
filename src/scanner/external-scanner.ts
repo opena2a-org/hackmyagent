@@ -58,8 +58,40 @@ function calculateGrade(score: number): string {
   return 'F';
 }
 
+function isPrivateOrReserved(hostname: string): boolean {
+  if (hostname === '169.254.169.254' || hostname === 'metadata.google.internal') return true;
+  if (net.isIPv4(hostname)) {
+    const parts = hostname.split('.').map(Number);
+    if (parts[0] === 10) return true;
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+    if (parts[0] === 192 && parts[1] === 168) return true;
+    if (parts[0] === 0) return true;
+  }
+  return false;
+}
+
+function validateTarget(target: string): void {
+  // Validate protocol if a full URL was provided
+  if (target.includes('://')) {
+    const protocol = target.split('://')[0].toLowerCase();
+    if (protocol !== 'http' && protocol !== 'https') {
+      throw new Error(`Unsupported protocol "${protocol}". Only http and https are allowed.`);
+    }
+  }
+}
+
 export class ExternalScanner {
   async scan(target: string, options?: ScannerOptions): Promise<ExternalScanResult> {
+    // Validate protocol (block file://, gopher://, etc.)
+    validateTarget(target);
+
+    // Extract hostname for private IP warning
+    const hostname = target.replace(/^https?:\/\//, '').split(/[:/]/)[0];
+    if (isPrivateOrReserved(hostname)) {
+      // Log warning but allow — scanning local services is a core use case for security testing
+      console.warn(`[HMA] Warning: scanning private/reserved address "${hostname}". Ensure you have authorization.`);
+    }
+
     const startTime = Date.now();
     const timeout = options?.timeout ?? 5000;
     const ports = options?.ports ?? DEFAULT_PORTS;
@@ -74,8 +106,9 @@ export class ExternalScanner {
     // Run security checks on open ports
     const findings: ExternalFinding[] = [];
 
+    const insecure = options?.insecure === true;
     for (const port of openPorts) {
-      const portFindings = await this.checkPort(target, port, timeout);
+      const portFindings = await this.checkPort(target, port, timeout, insecure);
       findings.push(...portFindings);
     }
 
@@ -148,7 +181,8 @@ export class ExternalScanner {
   private async checkPort(
     target: string,
     port: number,
-    timeout: number
+    timeout: number,
+    insecure = false
   ): Promise<ExternalFinding[]> {
     const findings: ExternalFinding[] = [];
     const useHttps = port === 443;
@@ -156,7 +190,7 @@ export class ExternalScanner {
 
     // Check MCP SSE endpoints
     for (const path of MCP_SSE_PATHS) {
-      const result = await this.httpProbe(baseUrl + path, timeout);
+      const result = await this.httpProbe(baseUrl + path, timeout, insecure);
       if (result && result.contentType?.includes('text/event-stream')) {
         findings.push({
           id: generateId(),
@@ -176,7 +210,7 @@ export class ExternalScanner {
 
     // Check MCP tools endpoints
     for (const path of MCP_TOOLS_PATHS) {
-      const result = await this.httpProbe(baseUrl + path, timeout);
+      const result = await this.httpProbe(baseUrl + path, timeout, insecure);
       if (result && result.status === 200 && result.body?.includes('tools')) {
         findings.push({
           id: generateId(),
@@ -196,7 +230,7 @@ export class ExternalScanner {
 
     // Check config files
     for (const path of CONFIG_PATHS) {
-      const result = await this.httpProbe(baseUrl + path, timeout);
+      const result = await this.httpProbe(baseUrl + path, timeout, insecure);
       if (result && result.status === 200 && result.body) {
         // Check if it looks like JSON config
         if (
@@ -221,7 +255,7 @@ export class ExternalScanner {
 
     // Check CLAUDE.md
     for (const path of CLAUDE_MD_PATHS) {
-      const result = await this.httpProbe(baseUrl + path, timeout);
+      const result = await this.httpProbe(baseUrl + path, timeout, insecure);
       if (result && result.status === 200 && result.body) {
         findings.push({
           id: generateId(),
@@ -240,7 +274,7 @@ export class ExternalScanner {
     }
 
     // Check root path for API keys in responses
-    const rootResult = await this.httpProbe(baseUrl + '/', timeout);
+    const rootResult = await this.httpProbe(baseUrl + '/', timeout, insecure);
     if (rootResult && rootResult.body) {
       for (const { name, pattern } of API_KEY_PATTERNS) {
         if (pattern.test(rootResult.body)) {
@@ -266,7 +300,8 @@ export class ExternalScanner {
 
   private httpProbe(
     url: string,
-    timeout: number
+    timeout: number,
+    insecure = false
   ): Promise<{ status: number; contentType?: string; body?: string } | null> {
     return new Promise((resolve) => {
       const isHttps = url.startsWith('https://');
@@ -280,7 +315,7 @@ export class ExternalScanner {
             'User-Agent': 'HackMyAgent-Scanner/1.0',
             'ngrok-skip-browser-warning': 'true',
           },
-          rejectUnauthorized: false,
+          rejectUnauthorized: !insecure,
         },
         (res) => {
           let body = '';

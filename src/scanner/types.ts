@@ -32,4 +32,5 @@ export interface ScannerOptions {
   timeout?: number;
   ports?: number[];
   skipPortScan?: boolean;
+  insecure?: boolean;
 }
