@@ -37,7 +37,7 @@ That's it. No config files, no setup, no flags needed.
 3. **Fixes** issues automatically when you add `--fix` (backups created)
 
 ```
-┌──────────────────────────────────────────────────┐
+┌──────────────────────────────────────────┐
 │  HackMyAgent v0.10.0 — Security Scanner          │
 │  Found: 3 critical · 5 high · 12 medium          │
 │                                                  │
@@ -47,7 +47,7 @@ That's it. No config files, no setup, no flags needed.
 │  ...                                             │
 │                                                  │
 │  Run with --fix to auto-remediate 8 issues       │
-└──────────────────────────────────────────────────┘
+└──────────────────────────────────────────┘
 ```
 
 ![HackMyAgent Demo](docs/hackmyagent-demo.gif)
