@@ -1674,7 +1674,8 @@ Examples:
   $ hackmyagent secure -b oasb-1 -f sarif        SARIF for GitHub
   $ hackmyagent secure -b oasb-1 -f html -o report.html
   $ hackmyagent secure -b oasb-1 --fail-below 80 CI threshold
-  $ hackmyagent secure -b oasb-2               OASB-2 composite (infra + governance)`)
+  $ hackmyagent secure -b oasb-2               OASB-2 composite (infra + governance)
+  $ hackmyagent secure ./my-agent --publish    Scan and publish results to registry`)
   .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
   .option('--fix', 'Automatically fix issues where possible')
   .option('--dry-run', 'Preview fixes without applying them (use with --fix)')
@@ -1688,7 +1689,7 @@ Examples:
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
   .option('-c, --category <name>', 'Filter to specific benchmark category')
   .option('--deep', 'Enable LLM-powered semantic analysis (requires ANTHROPIC_API_KEY)')
-  .option('--publish', 'Push scan results to the OpenA2A Registry (ATP)')
+  .option('--publish', 'Push scan results to the OpenA2A Registry')
   .option('--registry-report', 'Post results to OpenA2A Registry')
   .option('--no-registry', 'Skip auto-publishing results to OpenA2A Registry')
   .option('--version-id <id>', 'Registry version ID to report against')
@@ -2099,7 +2100,7 @@ Examples:
         }
       }
 
-      // ATP Publish: push results to registry when --publish is used
+      // Publish: push results to registry when --publish is used
       if (options.publish && options.registry === false) {
         if (format === 'text') {
           console.log('\nPublish skipped: --no-registry flag is active.');
@@ -2587,7 +2588,8 @@ Examples:
   $ hackmyagent attack https://api.example.com --payload-file custom.json
   $ hackmyagent attack https://api.example.com --fail-on-vulnerable medium
   $ hackmyagent attack http://localhost:3010 --target-type mcp --category mcp-exploitation
-  $ hackmyagent attack http://localhost:3020 --target-type a2a --category a2a-attack`)
+  $ hackmyagent attack http://localhost:3020 --target-type a2a --category a2a-attack
+  $ hackmyagent attack https://api.example.com --publish  Attack and publish results to registry`)
   .argument('[target]', 'API endpoint to test (or use --local for simulation)')
   .option('-i, --intensity <level>', 'Attack intensity: passive, active, aggressive', 'active')
   .option('-c, --category <categories>', 'Comma-separated categories to test')
@@ -2609,7 +2611,7 @@ Examples:
   .option('-f, --format <format>', 'Output format: text, json, sarif, html', 'text')
   .option('-o, --output <file>', 'Write output to file')
   .option('-v, --verbose', 'Show detailed output for each payload')
-  .option('--publish', 'Push scan results to the OpenA2A Registry (ATP)')
+  .option('--publish', 'Push scan results to the OpenA2A Registry')
   .option('--registry-report', 'Post results to OpenA2A Registry')
   .option('--no-registry', 'Skip auto-publishing results to OpenA2A Registry')
   .option('--version-id <id>', 'Registry version ID to report against')
@@ -2839,7 +2841,7 @@ Examples:
         }
       }
 
-      // ATP Publish: push attack results to registry when --publish is used
+      // Publish: push attack results to registry when --publish is used
       if (options.publish && options.registry === false) {
         if (format === 'text') {
           console.log('\nPublish skipped: --no-registry flag is active.');
@@ -4198,7 +4200,8 @@ Examples:
   $ hackmyagent scan-soul --json             Machine-readable output
   $ hackmyagent scan-soul --verbose          Show all controls
   $ hackmyagent scan-soul --profile conversational  Override profile
-  $ hackmyagent scan-soul --deep             Enable LLM semantic analysis`)
+  $ hackmyagent scan-soul --deep             Enable LLM semantic analysis
+  $ hackmyagent scan-soul ./my-agent --publish  Scan and publish results to registry`)
   .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
   .option('--json', 'Output as JSON')
   .option('-v, --verbose', 'Show individual control results')
@@ -4206,7 +4209,7 @@ Examples:
   .option('--profile <profile>', 'Override agent profile (conversational, code-assistant, tool-agent, autonomous, orchestrator, custom)')
   .option('--fail-below <score>', 'Exit 1 if score below threshold (0-100)')
   .option('--deep', 'Enable LLM semantic analysis for ambiguous controls (requires claude CLI or ANTHROPIC_API_KEY)')
-  .option('--publish', 'Push scan results to the OpenA2A Registry (ATP)')
+  .option('--publish', 'Push scan results to the OpenA2A Registry')
   .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', process.env.REGISTRY_URL || 'https://registry.opena2a.org')
   .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean; publish?: boolean; registryUrl?: string }) => {
     try {
@@ -4352,7 +4355,7 @@ Examples:
 
       process.stdout.write('\n');
 
-      // ATP Publish: push SOUL results to registry when --publish is used
+      // Publish: push SOUL results to registry when --publish is used
       if (options.publish) {
         try {
           const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
