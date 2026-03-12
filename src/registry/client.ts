@@ -26,6 +26,31 @@ export interface ScanReportPayload {
   behavioralFindings: BehavioralFinding[];
   behavioralScore: number;
   rawReport: Record<string, unknown>;
+  // ATP publish extensions (optional, included when --publish is used)
+  /** OASB benchmark compliance percentage (0-100) */
+  oasbCompliance?: number;
+  /** OASB benchmark rating */
+  oasbRating?: string;
+  /** OASB L1 compliance percentage */
+  oasbL1?: number;
+  /** OASB L2 compliance percentage */
+  oasbL2?: number;
+  /** OASB L3 compliance percentage */
+  oasbL3?: number;
+  /** SOUL governance score (0-100) */
+  soulScore?: number;
+  /** SOUL conformance level */
+  soulConformance?: string;
+  /** SOUL agent tier */
+  soulAgentTier?: string;
+  /** Attack risk score (0-100) */
+  attackRiskScore?: number;
+  /** Attack risk rating */
+  attackRiskRating?: string;
+  /** Total attack payloads tested */
+  attackTotal?: number;
+  /** Number of successful attacks */
+  attackSucceeded?: number;
 }
 
 interface VulnerabilityFinding {
@@ -222,6 +247,62 @@ export class RegistryClient {
     }
 
     return response.json() as Promise<RegistryPackage>;
+  }
+
+  /**
+   * Post scan results as a claimed agent via ATP --publish flow.
+   * Uses Ed25519 signature for authentication.
+   * Returns the scan ID and profile URL on success.
+   */
+  async reportPublishResult(
+    payload: CommunityScanPayload & {
+      oasbCompliance?: number;
+      oasbRating?: string;
+      oasbL1?: number;
+      oasbL2?: number;
+      oasbL3?: number;
+      soulScore?: number;
+      soulConformance?: string;
+      soulAgentTier?: string;
+      attackRiskScore?: number;
+      attackRiskRating?: string;
+      attackTotal?: number;
+      attackSucceeded?: number;
+      signature?: string;
+      publicKey?: string;
+    },
+  ): Promise<{ scanId: string; profileUrl: string; status: string }> {
+    const url = `${this.config.registryUrl}/api/v1/registry/community/scan-result`;
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'User-Agent': 'HackMyAgent-CLI/ATP-Publish',
+    };
+
+    if (payload.signature) {
+      headers['X-Agent-Signature'] = payload.signature;
+    }
+    if (payload.publicKey) {
+      headers['X-Agent-Public-Key'] = payload.publicKey;
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(`Registry publish failed (${response.status}): ${body}`);
+    }
+
+    const result = await response.json() as Record<string, unknown>;
+    return {
+      scanId: (result.scanId as string) || payload.scanId,
+      profileUrl: (result.profileUrl as string) || `${this.config.registryUrl}/agents/${payload.packageName}`,
+      status: (result.status as string) || 'accepted',
+    };
   }
 }
 
