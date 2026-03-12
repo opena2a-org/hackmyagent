@@ -300,7 +300,15 @@ export async function publishScanResults(
 
   try {
     const client = new RegistryClient({ registryUrl, apiKey: '' });
-    const result = await client.reportPublishResult(payload as any);
+
+    // Request a scan token before submitting (required by registry)
+    const tokenResponse = await client.requestScanToken(data.packageName, {
+      packageType: data.packageType,
+      version: data.packageVersion,
+    });
+    const scanToken = tokenResponse?.scanToken;
+
+    const result = await client.reportPublishResult(payload as any, scanToken);
 
     return {
       success: true,

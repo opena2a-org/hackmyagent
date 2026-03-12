@@ -271,6 +271,7 @@ export class RegistryClient {
       signature?: string;
       publicKey?: string;
     },
+    scanToken?: string,
   ): Promise<{ scanId: string; profileUrl: string; status: string }> {
     const url = `${this.config.registryUrl}/api/v1/registry/community/scan-result`;
 
@@ -279,6 +280,9 @@ export class RegistryClient {
       'User-Agent': 'HackMyAgent-CLI/ATP-Publish',
     };
 
+    if (scanToken) {
+      headers['X-Scan-Token'] = scanToken;
+    }
     if (payload.signature) {
       headers['X-Agent-Signature'] = payload.signature;
     }
