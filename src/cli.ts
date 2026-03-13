@@ -1634,6 +1634,115 @@ function resolvePackageVersion(targetDir: string): string | null {
   return null;
 }
 
+/**
+ * Handle community contribution after a scan completes.
+ *
+ * Determines whether to contribute based on:
+ *   1. --contribute / --no-contribute CLI flags (highest priority)
+ *   2. ~/.opena2a/config.json contribute.enabled setting
+ *   3. Interactive opt-in prompt (first scan or scan #10)
+ *
+ * If contributing, builds an anonymized payload and submits it
+ * asynchronously (non-blocking). Failures are logged as warnings.
+ */
+async function handleContribution(
+  contributeFlag: boolean | undefined,
+  targetDir: string,
+  findings: SecurityFinding[],
+  registryUrl?: string,
+  format?: string,
+): Promise<void> {
+  try {
+    const {
+      isContributeEnabled,
+      shouldPromptContribute,
+      showContributePrompt,
+      incrementScanCount,
+      buildContributionPayloadFromDir,
+      submitContribution,
+    } = await import('./telemetry');
+
+    // Always increment scan count
+    incrementScanCount();
+
+    // Determine whether to contribute
+    let shouldContribute: boolean;
+
+    if (contributeFlag === true) {
+      // --contribute flag: always contribute this scan
+      shouldContribute = true;
+    } else if (contributeFlag === false) {
+      // --no-contribute flag: skip this scan
+      shouldContribute = false;
+    } else {
+      // Check config
+      const configSetting = isContributeEnabled();
+      if (configSetting === true) {
+        shouldContribute = true;
+      } else if (configSetting === false) {
+        shouldContribute = false;
+      } else {
+        // Not configured -- prompt if appropriate
+        if (format === 'text' && shouldPromptContribute()) {
+          shouldContribute = await showContributePrompt();
+        } else {
+          shouldContribute = false;
+        }
+      }
+    }
+
+    if (!shouldContribute) return;
+
+    // Build and submit contribution (non-blocking)
+    const packageName = resolvePackageName(targetDir);
+    if (!packageName) return;
+
+    const payload = buildContributionPayloadFromDir(packageName, targetDir, findings);
+    const result = await submitContribution(payload, registryUrl);
+
+    if (result.success && format === 'text') {
+      console.log('Shared findings with OpenA2A Registry');
+    }
+    // Failures are silently ignored -- contribution is best-effort
+  } catch {
+    // Non-fatal: contribution failure must never crash the scan
+  }
+}
+
+/**
+ * Handle community contribution for scan-soul results.
+ *
+ * Converts SoulScanResult controls into SecurityFinding-like objects
+ * for the contribution module, then delegates to handleContribution.
+ */
+async function handleSoulContribution(
+  contributeFlag: boolean | undefined,
+  targetDir: string,
+  result: SoulScanResult,
+  registryUrl?: string,
+  format?: string,
+): Promise<void> {
+  // Convert soul controls into SecurityFinding-shaped objects
+  const findings: SecurityFinding[] = [];
+  for (const domain of result.domains) {
+    if (domain.skippedByProfile || domain.skippedByTier) continue;
+    for (const ctrl of domain.controls) {
+      findings.push({
+        checkId: ctrl.id,
+        name: ctrl.name,
+        description: '',
+        category: domain.domain,
+        severity: 'medium' as Severity,
+        passed: ctrl.passed,
+        message: '',
+        fixable: false,
+      });
+    }
+  }
+
+  await handleContribution(contributeFlag, targetDir, findings, registryUrl, format);
+}
+
 program
   .command('secure')
   .description(`Scan and harden your agent setup
@@ -1691,7 +1800,9 @@ Examples:
   .option('--version-id <id>', 'Registry version ID to report against')
   .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', process.env.REGISTRY_URL || 'https://registry.opena2a.org')
   .option('--registry-key <key>', 'Registry API key (default: REGISTRY_API_KEY env)')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string }) => {
+  .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
+  .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
@@ -1919,6 +2030,8 @@ Examples:
         } else {
           writeJsonStdout(jsonOutput);
         }
+        // Community contribution (non-blocking, runs in JSON mode too)
+        await handleContribution(options.contribute, targetDir, result.findings, options.registryUrl, format);
         const critHigh = result.findings.filter((f: SecurityFinding) => !f.passed && !f.fixed && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) process.exitCode = 1;
         return;
@@ -2136,6 +2249,9 @@ Examples:
           console.error('Scan results are still available locally.');
         }
       }
+
+      // Community contribution: share anonymized findings with OpenA2A Registry
+      await handleContribution(options.contribute, targetDir, result.findings, options.registryUrl, format);
 
       // Star prompt (interactive TTY only, text format only)
       if (process.stdout.isTTY) {
@@ -4194,7 +4310,9 @@ Examples:
   .option('--deep', 'Enable LLM semantic analysis for ambiguous controls (requires claude CLI or ANTHROPIC_API_KEY)')
   .option('--publish', 'Push scan results to the OpenA2A Registry')
   .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', process.env.REGISTRY_URL || 'https://registry.opena2a.org')
-  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean; publish?: boolean; registryUrl?: string }) => {
+  .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
+  .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
+  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean; publish?: boolean; registryUrl?: string; contribute?: boolean }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
@@ -4370,6 +4488,10 @@ Examples:
           process.stderr.write('Scan results are still available locally.\n');
         }
       }
+
+      // Community contribution: share anonymized findings with OpenA2A Registry
+      const soulFormat = options.json ? 'json' : 'text';
+      await handleSoulContribution(options.contribute, targetDir, result, options.registryUrl, soulFormat);
 
       // Check fail threshold
       if (options.failBelow) {

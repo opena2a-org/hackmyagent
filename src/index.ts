@@ -174,6 +174,25 @@ export type {
 export { DOMAIN_TEMPLATES } from './soul';
 export type { DomainTemplate } from './soul';
 
+// Telemetry — community contribution of anonymized scan findings
+export {
+  generateContributorToken,
+  buildContributionPayload,
+  buildContributionPayloadFromDir,
+  submitContribution,
+  isContributeEnabled,
+  shouldPromptContribute,
+  incrementScanCount,
+  saveContributeChoice,
+  showContributePrompt,
+} from './telemetry';
+
+export type {
+  ContributionFinding,
+  ContributionPayload,
+  ContributionResult,
+} from './telemetry';
+
 // Legacy scanner (for scan command)
 export interface ScanResult {
   target: string;
