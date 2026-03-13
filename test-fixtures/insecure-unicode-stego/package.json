@@ -1,0 +1,6 @@
+{
+  "name": "insecure-unicode-stego-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Test fixtures for UNICODE-STEGO checks - intentionally contains malicious patterns"
+}

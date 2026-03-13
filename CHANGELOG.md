@@ -2,6 +2,15 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [Unreleased]
+
+### Added
+- UNICODE-STEGO-001: Invisible Unicode codepoint detection (variation selectors U+FE00-FE0F, tag characters U+E0100-E01EF)
+- UNICODE-STEGO-002: GlassWorm decoder pattern detection (.codePointAt with variation selector/tag hex literals)
+- UNICODE-STEGO-003: Eval/Function on strings with hidden Unicode payloads (few visible chars, large byte footprint)
+- UNICODE-STEGO-004: Broader Unicode tag character block detection (U+E0000-U+E01EF)
+- Test fixtures for Unicode steganography checks with byte-level test file generator
+
 ## [0.8.0] - 2026-03-02
 
 ### Changed

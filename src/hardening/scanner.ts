@@ -64,6 +64,9 @@ const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
 
   // Semantic analysis - applies to all project types
   'SEM-': ['all'],
+
+  // Unicode steganography - applies to all projects
+  'UNICODE-STEGO-': ['all'],
 };
 
 export interface ScanOptions {
@@ -411,6 +414,10 @@ export class HardeningScanner {
     // OpenClaw CVE-specific checks
     const cveFindings = await this.checkOpenclawCVE(targetDir, shouldFix);
     findings.push(...cveFindings);
+
+    // Unicode steganography checks (GlassWorm detection)
+    const unicodeStegoFindings = await this.checkUnicodeSteganography(targetDir, shouldFix);
+    findings.push(...unicodeStegoFindings);
 
     // Layer 2: Structural analysis (always on)
     let layer2Count = 0;
@@ -6049,6 +6056,288 @@ dist/
         }
       } catch {
         continue;
+      }
+    }
+
+    return findings;
+  }
+
+  /**
+   * Recursively find source files (.ts, .js, .mjs, .cjs, .tsx, .jsx)
+   * Skips node_modules, dist, .git, and hidden directories
+   */
+  private async findSourceFiles(
+    dir: string,
+    baseDir: string,
+    depth: number = 0
+  ): Promise<string[]> {
+    if (depth > 10) return [];
+
+    const sourceExtensions = new Set(['.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx']);
+    const skipDirs = new Set(['node_modules', 'dist', '.git']);
+    const files: string[] = [];
+
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return files;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+
+      // Validate path is within directory (no path traversal)
+      if (!this.isPathWithinDirectory(fullPath, baseDir)) {
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        // Skip node_modules, dist, .git, and hidden directories
+        if (skipDirs.has(entry.name)) continue;
+        if (entry.name.startsWith('.')) continue;
+
+        // Skip symlinks to prevent path traversal
+        try {
+          const stats = await fs.lstat(fullPath);
+          if (stats.isSymbolicLink()) continue;
+        } catch {
+          continue;
+        }
+
+        const subFiles = await this.findSourceFiles(fullPath, baseDir, depth + 1);
+        files.push(...subFiles);
+      } else if (entry.isFile()) {
+        const ext = path.extname(entry.name).toLowerCase();
+        if (sourceExtensions.has(ext)) {
+          files.push(fullPath);
+        }
+      }
+    }
+
+    return files;
+  }
+
+  /**
+   * Check for Unicode steganography attacks (GlassWorm detection)
+   * Detects invisible codepoints, decoder patterns, eval on empty strings,
+   * and tag character block presence in source files.
+   */
+  private async checkUnicodeSteganography(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+    const sourceFiles = await this.findSourceFiles(targetDir, targetDir);
+
+    for (const filePath of sourceFiles) {
+      const relativePath = path.relative(targetDir, filePath);
+      let rawBuffer: Buffer;
+      try {
+        rawBuffer = await fs.readFile(filePath);
+      } catch {
+        continue;
+      }
+
+      // Skip files larger than MAX_FILE_SIZE
+      if (rawBuffer.length > MAX_FILE_SIZE) continue;
+
+      // UNICODE-STEGO-001: Invisible Codepoint Detection
+      // Scan for variation selectors U+FE00-FE0F (UTF-8: EF B8 80-8F)
+      // and tag characters U+E0100-E01EF (UTF-8: F3 A0 84 80 - F3 A0 87 AF)
+      let hasVariationSelectors = false;
+      let variationSelectorLine = 1;
+      let hasTagCharsIn001 = false;
+      let tagCharLine001 = 1;
+
+      let currentLine = 1;
+      for (let i = 0; i < rawBuffer.length; i++) {
+        if (rawBuffer[i] === 0x0A) {
+          currentLine++;
+          continue;
+        }
+        // Variation selectors: EF B8 80-8F
+        if (
+          rawBuffer[i] === 0xEF &&
+          i + 2 < rawBuffer.length &&
+          rawBuffer[i + 1] === 0xB8 &&
+          rawBuffer[i + 2] >= 0x80 &&
+          rawBuffer[i + 2] <= 0x8F
+        ) {
+          if (!hasVariationSelectors) {
+            hasVariationSelectors = true;
+            variationSelectorLine = currentLine;
+          }
+        }
+        // Tag characters in U+E0100-E01EF: F3 A0 84 80 through F3 A0 87 AF
+        if (
+          rawBuffer[i] === 0xF3 &&
+          i + 2 < rawBuffer.length &&
+          rawBuffer[i + 1] === 0xA0 &&
+          rawBuffer[i + 2] >= 0x84 &&
+          rawBuffer[i + 2] <= 0x87
+        ) {
+          if (!hasTagCharsIn001) {
+            hasTagCharsIn001 = true;
+            tagCharLine001 = currentLine;
+          }
+        }
+      }
+
+      if (hasVariationSelectors || hasTagCharsIn001) {
+        const detectedTypes: string[] = [];
+        if (hasVariationSelectors) detectedTypes.push('variation selectors (U+FE00-FE0F)');
+        if (hasTagCharsIn001) detectedTypes.push('tag characters (U+E0100-E01EF)');
+        findings.push({
+          checkId: 'UNICODE-STEGO-001',
+          name: 'Invisible Unicode Codepoints Detected',
+          description: 'Source file contains invisible Unicode codepoints that can hide malicious payloads (GlassWorm attack vector)',
+          category: 'unicode-stego',
+          severity: 'critical',
+          passed: false,
+          message: `Found ${detectedTypes.join(' and ')} in ${relativePath}`,
+          file: relativePath,
+          line: hasVariationSelectors ? variationSelectorLine : tagCharLine001,
+          fixable: false,
+          fix: 'Inspect the file with a hex editor (e.g., xxd) to identify and remove invisible Unicode codepoints. Run: xxd ' + relativePath + ' | grep -E "fe0[0-9a-f]|f3a0"',
+        });
+      }
+
+      // UNICODE-STEGO-002: GlassWorm Decoder Pattern
+      // Detect .codePointAt( combined with hex literals in the variation selector or tag range
+      const content = rawBuffer.toString('utf-8');
+      const lines = content.split('\n');
+      let hasCodePointAt = false;
+      let hasHexLiteral = false;
+      let decoderLine = 1;
+
+      const hexPattern = /0x(?:FE0[0-9A-Fa-f]|fe0[0-9a-f]|E010[0-9A-Fa-f]|e010[0-9a-f]|E01[0-9A-Ea-e][0-9A-Fa-f]|e01[0-9a-e][0-9a-f])/;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.length > MAX_LINE_LENGTH) continue;
+        if (line.includes('.codePointAt(')) {
+          hasCodePointAt = true;
+          if (!decoderLine || decoderLine === 1) decoderLine = i + 1;
+        }
+        if (hexPattern.test(line)) {
+          hasHexLiteral = true;
+        }
+      }
+
+      if (hasCodePointAt && hasHexLiteral) {
+        findings.push({
+          checkId: 'UNICODE-STEGO-002',
+          name: 'GlassWorm Decoder Pattern Detected',
+          description: 'Source file contains .codePointAt() usage combined with Unicode variation selector or tag character hex literals - this is the decoder half of a GlassWorm attack',
+          category: 'unicode-stego',
+          severity: 'critical',
+          passed: false,
+          message: `Found GlassWorm decoder pattern (.codePointAt + hex range literals) in ${relativePath}`,
+          file: relativePath,
+          line: decoderLine,
+          fixable: false,
+          fix: 'Review the file for suspicious .codePointAt() logic that decodes hidden data from variation selectors (0xFE00-0xFE0F) or tag characters (0xE0100-0xE01EF). Remove the decoder function and audit the file for tampering.',
+        });
+      }
+
+      // UNICODE-STEGO-003: Eval on Empty String
+      // Find eval() or Function() calls where the string argument has few visible chars but many bytes
+      const evalPattern = /(?:eval|Function)\s*\(\s*(['"`])([\s\S]*?)\1\s*\)/g;
+      let evalMatch;
+      while ((evalMatch = evalPattern.exec(content)) !== null) {
+        const matchedStr = evalMatch[2];
+        // Count truly visible characters by excluding invisible Unicode ranges:
+        // - Control characters (U+0000-001F, U+007F-009F)
+        // - Variation selectors (U+FE00-FE0F)
+        // - Zero-width characters (U+200B-200F, U+2060, U+FEFF)
+        // - Tag characters (U+E0000-E01EF)
+        // - Combining marks and other invisible codepoints
+        let visibleChars = 0;
+        for (const ch of matchedStr) {
+          const cp = ch.codePointAt(0)!;
+          if (cp <= 0x1F) continue; // C0 controls
+          if (cp >= 0x7F && cp <= 0x9F) continue; // C1 controls
+          if (cp >= 0x200B && cp <= 0x200F) continue; // zero-width chars
+          if (cp === 0x2060 || cp === 0xFEFF) continue; // word joiner, BOM
+          if (cp >= 0xFE00 && cp <= 0xFE0F) continue; // variation selectors
+          if (cp >= 0xE0000 && cp <= 0xE01EF) continue; // tag characters
+          if (cp >= 0xE0100 && cp <= 0xE01EF) continue; // variation selector supplement
+          visibleChars++;
+        }
+        const byteLength = Buffer.byteLength(matchedStr, 'utf-8');
+
+        if (visibleChars < 5 && byteLength > 100) {
+          // Find the line number
+          const offset = evalMatch.index;
+          let evalLine = 1;
+          for (let j = 0; j < offset && j < content.length; j++) {
+            if (content[j] === '\n') evalLine++;
+          }
+
+          findings.push({
+            checkId: 'UNICODE-STEGO-003',
+            name: 'Eval on String with Hidden Payload',
+            description: 'eval() or Function() is called with a string that has very few visible characters but a large byte footprint - indicates invisible Unicode payload',
+            category: 'unicode-stego',
+            severity: 'critical',
+            passed: false,
+            message: `Found eval/Function with ${visibleChars} visible chars but ${byteLength} bytes in ${relativePath}`,
+            file: relativePath,
+            line: evalLine,
+            fixable: false,
+            fix: 'Remove the eval/Function call and inspect the string argument with a hex editor. The string likely contains invisible Unicode characters encoding a malicious payload. Run: node -e "const fs=require(\'fs\'); const s=fs.readFileSync(\'' + relativePath + '\',\'utf8\'); console.log([...s].filter(c=>c.codePointAt(0)>0x200).map(c=>c.codePointAt(0).toString(16)))"',
+          });
+          break; // One finding per file
+        }
+      }
+
+      // UNICODE-STEGO-004: Tag Character Block Presence
+      // Scan for any U+E0000-U+E01EF characters (broader than 001, covers entire tag block)
+      // UTF-8 encoding: F3 A0 80 80 through F3 A0 87 AF
+      let hasTagBlock = false;
+      let tagBlockLine = 1;
+      currentLine = 1;
+
+      for (let i = 0; i < rawBuffer.length; i++) {
+        if (rawBuffer[i] === 0x0A) {
+          currentLine++;
+          continue;
+        }
+        if (
+          rawBuffer[i] === 0xF3 &&
+          i + 3 < rawBuffer.length &&
+          rawBuffer[i + 1] === 0xA0 &&
+          rawBuffer[i + 2] >= 0x80 &&
+          rawBuffer[i + 2] <= 0x87
+        ) {
+          hasTagBlock = true;
+          tagBlockLine = currentLine;
+          break;
+        }
+      }
+
+      if (hasTagBlock) {
+        // Only add UNICODE-STEGO-004 if we did not already flag tag chars in 001
+        // (004 is broader - covers U+E0000-U+E01EF, 001 only covers U+E0100-E01EF)
+        const already001 = findings.some(
+          (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === relativePath
+        );
+        if (!already001) {
+          findings.push({
+            checkId: 'UNICODE-STEGO-004',
+            name: 'Unicode Tag Character Block Detected',
+            description: 'Source file contains characters from the Unicode Tag block (U+E0000-U+E01EF) which have no visible rendering and can be used to hide data',
+            category: 'unicode-stego',
+            severity: 'high',
+            passed: false,
+            message: `Found Unicode tag block characters in ${relativePath}`,
+            file: relativePath,
+            line: tagBlockLine,
+            fixable: false,
+            fix: 'Inspect the file with a hex editor to identify tag block characters (byte sequence starting with F3 A0). These characters are invisible and have no legitimate use in source code. Run: xxd ' + relativePath + ' | grep "f3a0"',
+          });
+        }
       }
     }
 
