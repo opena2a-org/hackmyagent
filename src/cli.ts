@@ -2423,7 +2423,7 @@ Detects externally exposed:
   • API keys in responses
   • Debug/admin interfaces
 
-Scoring: A (90-100), B (80-89), C (70-79), D (60-69), Needs Improvement (<60)
+Scoring: strong (90-100), good (80-89), moderate (70-79), improving (60-69), needs-attention (<60)
 Exit code 1 if critical/high issues found.
 
 Examples:
