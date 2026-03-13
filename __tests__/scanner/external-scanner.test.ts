@@ -33,8 +33,8 @@ describe('ExternalScanner', () => {
     it('calculates grade based on score', async () => {
       const result = await scanner.scan('localhost', { skipPortScan: true });
 
-      // Grade should be A-F based on score
-      expect(['A', 'B', 'C', 'D', 'F']).toContain(result.grade);
+      // Grade should be a descriptive label based on score
+      expect(['strong', 'good', 'moderate', 'improving', 'needs-attention']).toContain(result.grade);
     });
 
     it('returns duration in milliseconds', async () => {
@@ -282,7 +282,7 @@ describe('ExternalScanner', () => {
 
       // With no accessible ports, should have no findings
       expect(result.score).toBe(100);
-      expect(result.grade).toBe('A');
+      expect(result.grade).toBe('strong');
     });
 
     it('deducts points for critical findings', async () => {

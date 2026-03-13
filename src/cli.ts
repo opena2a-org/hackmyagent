@@ -47,7 +47,6 @@ import {
   SoulScanner,
   type SoulScanResult,
   type DomainResult,
-  type SoulGrade,
   type SoulLevel,
 } from './index';
 
@@ -647,14 +646,11 @@ function generateHtmlReport(result: BenchmarkResult): string {
 
   // Security grade based on compliance
   const getGrade = (pct: number) => {
-    if (pct >= 95) return { letter: 'A+', color: '#22c55e' };
-    if (pct >= 90) return { letter: 'A', color: '#22c55e' };
-    if (pct >= 85) return { letter: 'B+', color: '#84cc16' };
-    if (pct >= 80) return { letter: 'B', color: '#84cc16' };
-    if (pct >= 75) return { letter: 'C+', color: '#eab308' };
-    if (pct >= 70) return { letter: 'C', color: '#eab308' };
-    if (pct >= 60) return { letter: 'D', color: '#f97316' };
-    return { letter: 'F', color: '#ef4444' };
+    if (pct >= 90) return { letter: 'strong', color: '#22c55e' };
+    if (pct >= 80) return { letter: 'good', color: '#84cc16' };
+    if (pct >= 70) return { letter: 'moderate', color: '#eab308' };
+    if (pct >= 60) return { letter: 'improving', color: '#f97316' };
+    return { letter: 'needs-attention', color: '#ef4444' };
   };
   const grade = getGrade(result.compliance);
 
@@ -843,15 +839,15 @@ function generateHtmlReport(result: BenchmarkResult): string {
       border-bottom: 1px solid var(--border);
     }
     .score-grade {
-      width: 56px;
-      height: 56px;
+      width: 72px;
+      height: 72px;
       border-radius: 12px;
       border: 2px solid;
       display: flex;
       align-items: center;
       justify-content: center;
     }
-    .grade-letter { font-size: 1.75rem; font-weight: 800; }
+    .grade-letter { font-size: 0.65rem; font-weight: 800; text-transform: uppercase; text-align: center; line-height: 1.2; }
     .score-main { flex: 1; }
     .score-pct { font-size: 2rem; font-weight: 700; color: var(--text-primary); line-height: 1; }
     .score-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }
@@ -1315,7 +1311,7 @@ function generateScanHtmlReport(scanResult: { findings: SecurityFinding[]; score
   const fixedFindings = scanResult.findings.filter(f => f.fixed);
   const score = scanResult.score;
   const scoreColor = score >= 90 ? '#22c55e' : score >= 70 ? '#eab308' : score >= 50 ? '#f97316' : '#ef4444';
-  const gradeLetters = score >= 90 ? 'A' : score >= 80 ? 'B' : score >= 70 ? 'C' : score >= 60 ? 'D' : 'F';
+  const gradeLetters = score >= 90 ? 'strong' : score >= 80 ? 'good' : score >= 70 ? 'moderate' : score >= 60 ? 'improving' : 'needs-attention';
 
   const severityOrder = ['critical', 'high', 'medium', 'low'];
   const severityColors: Record<string, string> = {
@@ -1361,7 +1357,7 @@ function generateScanHtmlReport(scanResult: { findings: SecurityFinding[]; score
     h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
     .meta { color: var(--text-secondary); margin-bottom: 2rem; }
     .score-card { display: flex; align-items: center; gap: 2rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin-bottom: 2rem; }
-    .grade { font-size: 3rem; font-weight: 700; width: 80px; height: 80px; display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 3px solid ${scoreColor}; }
+    .grade { font-size: 0.75rem; font-weight: 700; width: 100px; height: 100px; display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 3px solid ${scoreColor}; text-transform: uppercase; text-align: center; line-height: 1.2; padding: 0.5rem; }
     .score-details { flex: 1; }
     .score-num { font-size: 2rem; font-weight: 700; }
     .stats { display: flex; gap: 2rem; margin-top: 0.5rem; }
@@ -2465,13 +2461,11 @@ Examples:
 
         // Print header
         const gradeColor =
-          result.grade === 'A'
+          result.grade === 'strong' || result.grade === 'good'
             ? colors.green
-            : result.grade === 'B'
-              ? colors.green
-              : result.grade === 'C'
-                ? colors.yellow
-                : colors.red;
+            : result.grade === 'moderate'
+              ? colors.yellow
+              : colors.red;
         console.log(`Target: ${result.target}`);
         console.log(`Score: ${gradeColor}${result.score}/100 (${result.grade})${RESET()}`);
         console.log(`Open Ports: ${result.openPorts.length > 0 ? result.openPorts.join(', ') : 'None detected'}`);
@@ -3019,11 +3013,11 @@ function generateAttackSarif(report: AttackReport): string {
 function generateAttackHtmlReport(report: AttackReport): string {
   // Risk grade based on score
   const getGrade = (score: number): { letter: string; color: string } => {
-    if (score <= 10) return { letter: 'A', color: '#22c55e' };
-    if (score <= 25) return { letter: 'B', color: '#84cc16' };
-    if (score <= 50) return { letter: 'C', color: '#eab308' };
-    if (score <= 70) return { letter: 'D', color: '#f97316' };
-    return { letter: 'F', color: '#ef4444' };
+    if (score <= 10) return { letter: 'strong', color: '#22c55e' };
+    if (score <= 25) return { letter: 'good', color: '#84cc16' };
+    if (score <= 50) return { letter: 'moderate', color: '#eab308' };
+    if (score <= 70) return { letter: 'improving', color: '#f97316' };
+    return { letter: 'needs-attention', color: '#ef4444' };
   };
   const grade = getGrade(report.riskScore);
 
@@ -3307,15 +3301,15 @@ function generateAttackHtmlReport(report: AttackReport): string {
       border-bottom: 1px solid var(--border);
     }
     .score-grade {
-      width: 56px;
-      height: 56px;
+      width: 72px;
+      height: 72px;
       border-radius: 12px;
       border: 2px solid;
       display: flex;
       align-items: center;
       justify-content: center;
     }
-    .grade-letter { font-size: 1.75rem; font-weight: 800; }
+    .grade-letter { font-size: 0.65rem; font-weight: 800; text-transform: uppercase; text-align: center; line-height: 1.2; }
     .score-main { flex: 1; }
     .score-pct { font-size: 2rem; font-weight: 700; color: var(--text-primary); line-height: 1; }
     .score-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0.25rem; }
@@ -4119,17 +4113,6 @@ Examples:
       process.exit(1);
     }
   });
-
-// Grade display colors
-function gradeColor(grade: SoulGrade): string {
-  switch (grade) {
-    case 'A': return colors.green;
-    case 'B': return colors.green;
-    case 'C': return colors.yellow;
-    case 'D': return colors.red;
-    case 'F': return colors.brightRed;
-  }
-}
 
 function levelColor(level: SoulLevel): string {
   switch (level) {

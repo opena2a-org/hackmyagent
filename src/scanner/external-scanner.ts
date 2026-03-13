@@ -51,11 +51,11 @@ function generateId(): string {
 }
 
 function calculateGrade(score: number): string {
-  if (score >= 90) return 'A';
-  if (score >= 80) return 'B';
-  if (score >= 70) return 'C';
-  if (score >= 60) return 'D';
-  return 'F';
+  if (score >= 90) return 'strong';
+  if (score >= 80) return 'good';
+  if (score >= 70) return 'moderate';
+  if (score >= 60) return 'improving';
+  return 'needs-attention';
 }
 
 function isPrivateOrReserved(hostname: string): boolean {
