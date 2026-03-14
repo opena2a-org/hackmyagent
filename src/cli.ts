@@ -4605,4 +4605,377 @@ Examples:
     }
   });
 
+// ---------------------------------------------------------------------------
+// trust — Trust verification via OpenA2A Registry (powered by ai-trust)
+// ---------------------------------------------------------------------------
+
+const REGISTRY_DEFAULT_URL = 'https://api.oa2a.org';
+
+interface TrustAnswer {
+  packageId?: string;
+  name: string;
+  type?: string;
+  packageType?: string;
+  trustLevel: number;
+  trustScore: number;
+  verdict: string;
+  scanStatus?: string;
+  communityScans?: number;
+  cveCount?: number;
+  recommendation?: string;
+  dependencies?: {
+    direct?: number;
+    transitive?: number;
+    totalDeps: number;
+    vulnerableDeps: number;
+    minTrustLevel: number;
+    minTrustScore: number;
+    maxDepth: number;
+    riskSummary?: { blocked: number; warning: number; safe: number };
+  };
+  found: boolean;
+}
+
+interface TrustBatchResponse {
+  results: TrustAnswer[];
+  total: number;
+  queriedAt: string;
+}
+
+async function trustCheck(name: string, registryUrl: string, type?: string): Promise<TrustAnswer> {
+  const params = new URLSearchParams({ name, includeProfile: 'true', includeDeps: 'true' });
+  if (type) params.set('type', type);
+
+  const url = `${registryUrl}/api/v1/trust/query?${params.toString()}`;
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: { 'Accept': 'application/json', 'User-Agent': `hackmyagent/${VERSION}` },
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Registry API returned ${res.status}: ${body}`);
+  }
+
+  const data = (await res.json()) as TrustAnswer;
+  data.found = !!data.packageId;
+  return data;
+}
+
+async function trustBatch(
+  packages: Array<{ name: string; type?: string }>,
+  registryUrl: string
+): Promise<{ results: TrustAnswer[]; meta: { total: number; found: number; notFound: number } }> {
+  const url = `${registryUrl}/api/v1/trust/batch`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'User-Agent': `hackmyagent/${VERSION}`,
+    },
+    body: JSON.stringify({ packages }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Registry API returned ${res.status}: ${body}`);
+  }
+
+  const raw = (await res.json()) as TrustBatchResponse;
+  const NULL_UUID = '00000000-0000-0000-0000-000000000000';
+  for (const r of raw.results) {
+    r.found = !!r.packageId && r.packageId !== NULL_UUID;
+  }
+  const found = raw.results.filter((r) => r.found).length;
+  return {
+    results: raw.results,
+    meta: { total: raw.total, found, notFound: raw.total - found },
+  };
+}
+
+function trustLevelLabel(level: number): string {
+  switch (level) {
+    case 0: return 'Blocked';
+    case 1: return 'Warning';
+    case 2: return 'Listed';
+    case 3: return 'Scanned';
+    case 4: return 'Verified';
+    default: return `Unknown (${level})`;
+  }
+}
+
+function trustLevelColor(level: number): string {
+  if (level >= 3) return colors.green;
+  if (level >= 1) return colors.yellow;
+  return colors.red;
+}
+
+function trustVerdictColor(verdict: string): string {
+  switch (verdict) {
+    case 'safe': return colors.green;
+    case 'warning': return colors.yellow;
+    case 'blocked': return colors.red;
+    default: return colors.dim;
+  }
+}
+
+function formatTrustCheck(answer: TrustAnswer): string {
+  if (!answer.found) {
+    return [
+      '',
+      `  ${answer.name}`,
+      `  ${colors.dim}Type: ${answer.packageType || 'unknown'}${colors.reset}`,
+      `  ${colors.dim}Status: Not found in registry${colors.reset}`,
+      '',
+    ].join('\n');
+  }
+
+  const vc = trustVerdictColor(answer.verdict);
+  const tc = trustLevelColor(answer.trustLevel);
+
+  const lines: string[] = [
+    '',
+    `  ${answer.name}`,
+    `  Type:           ${answer.packageType || 'unknown'}`,
+    `  Verdict:        ${vc}${answer.verdict.toUpperCase()}${colors.reset}`,
+    `  Trust Level:    ${tc}${trustLevelLabel(answer.trustLevel)}${colors.reset} (${answer.trustLevel}/4)`,
+    `  Trust Score:    ${answer.trustScore.toFixed(2)}`,
+    `  Scan Status:    ${answer.scanStatus || 'unknown'}`,
+  ];
+
+  if (answer.dependencies && answer.dependencies.totalDeps > 0) {
+    const deps = answer.dependencies;
+    lines.push('');
+    lines.push('  Dependencies');
+    lines.push(`  Total:          ${deps.totalDeps}`);
+    lines.push(`  Vulnerable:     ${deps.vulnerableDeps > 0 ? colors.red + deps.vulnerableDeps + colors.reset : colors.green + '0' + colors.reset}`);
+    lines.push(`  Min Trust:      ${deps.minTrustLevel}/4`);
+  }
+
+  lines.push('');
+  return lines.join('\n');
+}
+
+function formatTrustBatch(
+  response: { results: TrustAnswer[]; meta: { total: number; found: number; notFound: number } },
+  minTrust: number
+): string {
+  const lines: string[] = [];
+
+  lines.push('');
+  lines.push(`  Trust Audit: ${response.meta.total} packages queried, ${response.meta.found} found, ${response.meta.notFound} not found`);
+  lines.push('');
+
+  const nameW = 40, typeW = 14, verdictW = 10, levelW = 12, scoreW = 8, scanW = 10;
+
+  lines.push(
+    '  ' +
+    'PACKAGE'.padEnd(nameW) +
+    'TYPE'.padEnd(typeW) +
+    'VERDICT'.padEnd(verdictW) +
+    'TRUST'.padEnd(levelW) +
+    'SCORE'.padEnd(scoreW) +
+    'SCAN'.padEnd(scanW)
+  );
+  lines.push('  ' + '-'.repeat(nameW + typeW + verdictW + levelW + scoreW + scanW));
+
+  for (const result of response.results) {
+    const vc = trustVerdictColor(result.verdict);
+    const tc = trustLevelColor(result.trustLevel);
+
+    const name = result.name.length > nameW - 2
+      ? result.name.substring(0, nameW - 5) + '...'
+      : result.name;
+
+    lines.push(
+      '  ' +
+      name.padEnd(nameW) +
+      (result.packageType || '-').padEnd(typeW) +
+      vc + result.verdict.toUpperCase().padEnd(verdictW) + colors.reset +
+      tc + trustLevelLabel(result.trustLevel).padEnd(levelW) + colors.reset +
+      (result.found ? result.trustScore.toFixed(2) : '-').toString().padEnd(scoreW) +
+      (result.scanStatus || '-').padEnd(scanW)
+    );
+  }
+
+  const belowThreshold = response.results.filter((r) => r.found && r.trustLevel < minTrust);
+  const notFound = response.results.filter((r) => !r.found);
+
+  lines.push('');
+
+  if (belowThreshold.length > 0) {
+    lines.push(`  ${colors.yellow}[!] ${belowThreshold.length} package(s) below minimum trust level ${minTrust}:${colors.reset}`);
+    for (const pkg of belowThreshold) {
+      lines.push(`  ${colors.yellow}    - ${pkg.name} (trust level ${pkg.trustLevel}, verdict: ${pkg.verdict})${colors.reset}`);
+    }
+  }
+
+  if (notFound.length > 0) {
+    lines.push(`  ${colors.dim}[?] ${notFound.length} package(s) not found in registry:${colors.reset}`);
+    for (const pkg of notFound) {
+      lines.push(`  ${colors.dim}    - ${pkg.name}${colors.reset}`);
+    }
+  }
+
+  if (belowThreshold.length === 0 && notFound.length === 0) {
+    lines.push(`  ${colors.green}All ${response.meta.found} packages meet minimum trust level ${minTrust}.${colors.reset}`);
+  }
+
+  lines.push('');
+  return lines.join('\n');
+}
+
+async function parseDepsFile(filePath: string): Promise<Array<{ name: string }>> {
+  const fs = require('fs');
+  const path = require('path');
+  const content = fs.readFileSync(filePath, 'utf-8');
+  const fileName = path.basename(filePath);
+
+  if (fileName === 'package.json') {
+    const pkg = JSON.parse(content) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+    const packages: Array<{ name: string }> = [];
+    const seen = new Set<string>();
+    for (const deps of [pkg.dependencies, pkg.devDependencies]) {
+      if (!deps) continue;
+      for (const name of Object.keys(deps)) {
+        if (!seen.has(name)) {
+          seen.add(name);
+          packages.push({ name });
+        }
+      }
+    }
+    return packages;
+  }
+
+  if (fileName === 'requirements.txt') {
+    const packages: Array<{ name: string }> = [];
+    const seen = new Set<string>();
+    for (const rawLine of content.split('\n')) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#') || line.startsWith('-')) continue;
+      const match = line.match(/^([a-zA-Z0-9_-]+(?:\[[a-zA-Z0-9_,-]+\])?)/);
+      if (match) {
+        const name = match[1].replace(/\[.*\]/, '');
+        if (!seen.has(name)) {
+          seen.add(name);
+          packages.push({ name });
+        }
+      }
+    }
+    return packages;
+  }
+
+  throw new Error(`Unsupported dependency file: ${fileName}. Supported: package.json, requirements.txt`);
+}
+
+program
+  .command('trust')
+  .description(`Check trust level for AI packages before installing
+
+Query the OpenA2A Registry to verify trust scores, vulnerability status,
+and dependency risk for MCP servers, A2A agents, and AI tools.
+
+Modes:
+  trust <package>           Single package lookup
+  trust --audit <file>      Audit a dependency file (package.json, requirements.txt)
+  trust --batch pkg1 pkg2   Batch lookup for multiple packages
+
+Examples:
+  $ ${CLI_PREFIX} trust @anthropic/claude-mcp
+  $ ${CLI_PREFIX} trust my-mcp-server --type mcp_server
+  $ ${CLI_PREFIX} trust --audit package.json
+  $ ${CLI_PREFIX} trust --audit requirements.txt --min-trust 3
+  $ ${CLI_PREFIX} trust --batch langchain openai anthropic`)
+  .argument('[package]', 'Package name to look up')
+  .option('-t, --type <type>', 'Package type (mcp_server, a2a_agent, ai_tool, etc.)')
+  .option('--audit <file>', 'Audit a dependency file (package.json or requirements.txt)')
+  .option('--batch <names...>', 'Batch trust lookup for multiple packages')
+  .option('--min-trust <level>', 'Minimum trust level threshold (0-4)', '3')
+  .option('--registry-url <url>', 'Registry base URL', REGISTRY_DEFAULT_URL)
+  .option('--json', 'Output as JSON')
+  .action(async (
+    packageName: string | undefined,
+    opts: {
+      type?: string;
+      audit?: string;
+      batch?: string[];
+      minTrust: string;
+      registryUrl: string;
+      json?: boolean;
+    }
+  ) => {
+    const registryUrl = opts.registryUrl.replace(/\/+$/, '');
+    const minTrust = parseInt(opts.minTrust, 10);
+    if (isNaN(minTrust) || minTrust < 0 || minTrust > 4) {
+      process.stderr.write('Error: --min-trust must be a number between 0 and 4\n');
+      process.exit(1);
+    }
+
+    try {
+      // Mode: audit a dependency file
+      if (opts.audit) {
+        const packages = await parseDepsFile(opts.audit);
+        if (packages.length === 0) {
+          process.stdout.write('No dependencies found in the specified file.\n');
+          return;
+        }
+        if (packages.length > 100) {
+          process.stderr.write(`Error: Too many dependencies (${packages.length}). Maximum 100 per request.\n`);
+          process.exit(1);
+        }
+        const response = await trustBatch(packages, registryUrl);
+        if (opts.json) {
+          writeJsonStdout(response);
+        } else {
+          process.stdout.write(formatTrustBatch(response, minTrust));
+        }
+        const belowThreshold = response.results.some((r) => r.found && r.trustLevel < minTrust);
+        if (belowThreshold) process.exitCode = 1;
+        return;
+      }
+
+      // Mode: batch lookup
+      if (opts.batch && opts.batch.length > 0) {
+        if (opts.batch.length > 100) {
+          process.stderr.write(`Error: Too many packages (${opts.batch.length}). Maximum 100 per request.\n`);
+          process.exit(1);
+        }
+        const packages = opts.batch.map((name) => ({
+          name,
+          ...(opts.type ? { type: opts.type } : {}),
+        }));
+        const response = await trustBatch(packages, registryUrl);
+        if (opts.json) {
+          writeJsonStdout(response);
+        } else {
+          process.stdout.write(formatTrustBatch(response, minTrust));
+        }
+        const belowThreshold = response.results.some((r) => r.found && r.trustLevel < minTrust);
+        if (belowThreshold) process.exitCode = 1;
+        return;
+      }
+
+      // Mode: single package lookup
+      if (!packageName) {
+        process.stderr.write(`Error: Provide a package name or use --audit/--batch.\n`);
+        process.stderr.write(`Usage: ${CLI_PREFIX} trust <package>\n`);
+        process.exit(1);
+      }
+
+      const result = await trustCheck(packageName, registryUrl, opts.type);
+      if (opts.json) {
+        writeJsonStdout(result);
+      } else {
+        process.stdout.write(formatTrustCheck(result));
+      }
+      if (result.found && (result.verdict === 'blocked' || result.verdict === 'warning')) {
+        process.exitCode = 1;
+      }
+    } catch (error) {
+      process.stderr.write(`Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
+      process.exit(1);
+    }
+  });
+
 program.parse();
