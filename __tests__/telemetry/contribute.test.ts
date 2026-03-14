@@ -408,14 +408,14 @@ describe('submitContribution', () => {
       osType: 'macos',
     };
 
-    const result = await submitContribution(payload, 'https://registry.opena2a.org');
+    const result = await submitContribution(payload, 'https://api.oa2a.org');
 
     expect(result.success).toBe(true);
     expect(result.scanId).toBe('scan-123');
 
     // Verify the correct endpoint was called
     const fetchCall = (fetch as any).mock.calls[0];
-    expect(fetchCall[0]).toBe('https://registry.opena2a.org/api/v1/telemetry/scan');
+    expect(fetchCall[0]).toBe('https://api.oa2a.org/api/v1/telemetry/scan');
     expect(fetchCall[1].method).toBe('POST');
   });
 
@@ -483,6 +483,6 @@ describe('submitContribution', () => {
     await submitContribution(payload);
 
     const fetchCall = (fetch as any).mock.calls[0];
-    expect(fetchCall[0]).toBe('https://registry.opena2a.org/api/v1/telemetry/scan');
+    expect(fetchCall[0]).toBe('https://api.oa2a.org/api/v1/telemetry/scan');
   });
 });

@@ -254,14 +254,14 @@ export function isAnomalousEvent(event: ARPEvent): boolean {
 /**
  * Submit a single GTIN event to the OpenA2A Registry.
  *
- * POST to https://registry.opena2a.org/api/v1/telemetry/runtime
+ * POST to https://api.oa2a.org/api/v1/telemetry/runtime
  * Timeout: 10 seconds. Non-blocking: failures are logged as warnings, never crash.
  */
 export async function submitGTINEvent(
   payload: GTINPayload,
   registryUrl?: string,
 ): Promise<GTINSubmitResult> {
-  const baseUrl = registryUrl || 'https://registry.opena2a.org';
+  const baseUrl = registryUrl || 'https://api.oa2a.org';
   const url = `${baseUrl}/api/v1/telemetry/runtime`;
 
   try {

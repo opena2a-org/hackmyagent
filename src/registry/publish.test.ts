@@ -448,7 +448,7 @@ describe('publishScanResults', () => {
       hardeningFindings: makeHardeningFindings(),
     };
 
-    const result = await publishScanResults(data, 'https://registry.opena2a.org');
+    const result = await publishScanResults(data, 'https://api.oa2a.org');
 
     expect(result.success).toBe(true);
     expect(result.isCommunity).toBe(true);
@@ -478,7 +478,7 @@ describe('publishScanResults', () => {
       soulResult: makeSoulResult(),
     };
 
-    const result = await publishScanResults(data, 'https://registry.opena2a.org');
+    const result = await publishScanResults(data, 'https://api.oa2a.org');
 
     expect(result.success).toBe(true);
     expect(result.isCommunity).toBe(false);
@@ -518,7 +518,7 @@ describe('publishScanResults', () => {
       hardeningFindings: makeHardeningFindings(),
     };
 
-    const result = await publishScanResults(data, 'https://registry.opena2a.org');
+    const result = await publishScanResults(data, 'https://api.oa2a.org');
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('500');
@@ -534,7 +534,7 @@ describe('publishScanResults', () => {
       hardeningFindings: [],
     };
 
-    const result = await publishScanResults(data, 'https://registry.opena2a.org');
+    const result = await publishScanResults(data, 'https://api.oa2a.org');
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('ECONNREFUSED');
@@ -561,9 +561,9 @@ describe('formatPublishOutput', () => {
       hardeningFindings: makeHardeningFindings(),
     };
 
-    const output = formatPublishOutput(result, data, 'https://registry.opena2a.org');
+    const output = formatPublishOutput(result, data, 'https://api.oa2a.org');
 
-    expect(output).toContain('Published to registry.opena2a.org');
+    expect(output).toContain('Published to api.oa2a.org');
     expect(output).toContain('@anthropic/mcp-server-fetch');
     expect(output).toContain('scan-abc');
     expect(output).toContain('Trust impact');
@@ -586,9 +586,9 @@ describe('formatPublishOutput', () => {
       soulResult: makeSoulResult(),
     };
 
-    const output = formatPublishOutput(result, data, 'https://registry.opena2a.org');
+    const output = formatPublishOutput(result, data, 'https://api.oa2a.org');
 
-    expect(output).toContain('Published to registry.opena2a.org');
+    expect(output).toContain('Published to api.oa2a.org');
     expect(output).toContain('community scan (0.5x weight)');
     expect(output).toContain('opena2a claim');
   });
@@ -608,7 +608,7 @@ describe('formatPublishOutput', () => {
       directory: '/tmp/test',
     };
 
-    const output = formatPublishOutput(result, data, 'https://registry.opena2a.org');
+    const output = formatPublishOutput(result, data, 'https://api.oa2a.org');
 
     expect(output).toContain('Failed to publish');
     expect(output).toContain('Connection refused');
@@ -633,7 +633,7 @@ describe('formatPublishOutput', () => {
       oasbResult: makeOasbResult(),
     };
 
-    const output = formatPublishOutput(result, data, 'https://registry.opena2a.org');
+    const output = formatPublishOutput(result, data, 'https://api.oa2a.org');
 
     expect(output).toContain('hardening');
     expect(output).toContain('OASB');
