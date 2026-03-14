@@ -134,7 +134,7 @@ Examples:
   $ hackmyagent secure --fix                   Fix issues automatically
   $ hackmyagent fix-all                        Run all security plugins
   $ hackmyagent scan example.com               Scan external infrastructure`)
-  .version(VERSION, '-V, --version', 'Output the version number')
+  .version(VERSION, '-v, --version', 'Output the version number')
   .option('--no-color', 'Disable colored output (also respects NO_COLOR env)')
   .hook('preAction', (thisCommand) => {
     const opts = thisCommand.opts();
