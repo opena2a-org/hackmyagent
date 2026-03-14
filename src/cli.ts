@@ -49,6 +49,7 @@ import {
   type DomainResult,
   type SoulLevel,
 } from './index';
+import { resolveAndLogMcpShorthand } from './resolve-mcp';
 
 const program = new Command();
 
@@ -4897,6 +4898,8 @@ Modes:
 
 Examples:
   $ ${CLI_PREFIX} trust @anthropic/claude-mcp
+  $ ${CLI_PREFIX} trust server-filesystem          (resolves to @modelcontextprotocol/server-filesystem)
+  $ ${CLI_PREFIX} trust mcp-server-fetch            (resolves to @modelcontextprotocol/server-fetch)
   $ ${CLI_PREFIX} trust my-mcp-server --type mcp_server
   $ ${CLI_PREFIX} trust --audit package.json
   $ ${CLI_PREFIX} trust --audit requirements.txt --min-trust 3
@@ -4929,7 +4932,11 @@ Examples:
     try {
       // Mode: audit a dependency file
       if (opts.audit) {
-        const packages = await parseDepsFile(opts.audit);
+        const rawPackages = await parseDepsFile(opts.audit);
+        const packages = rawPackages.map((pkg) => ({
+          ...pkg,
+          name: resolveAndLogMcpShorthand(pkg.name),
+        }));
         if (packages.length === 0) {
           process.stdout.write('No dependencies found in the specified file.\n');
           return;
@@ -4956,7 +4963,7 @@ Examples:
           process.exit(1);
         }
         const packages = opts.batch.map((name) => ({
-          name,
+          name: resolveAndLogMcpShorthand(name),
           ...(opts.type ? { type: opts.type } : {}),
         }));
         const response = await trustBatch(packages, registryUrl);
@@ -4977,6 +4984,7 @@ Examples:
         process.exit(1);
       }
 
+      packageName = resolveAndLogMcpShorthand(packageName);
       const result = await trustCheck(packageName, registryUrl, opts.type);
       if (opts.json) {
         writeJsonStdout(result);
