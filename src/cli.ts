@@ -91,7 +91,7 @@ function resolveCliPrefix(): string {
 const CLI_PREFIX = resolveCliPrefix();
 
 // Check for NO_COLOR env or non-TTY to disable colors by default
-const noColorEnv = process.env.NO_COLOR !== undefined || process.stdout.isTTY === false;
+const noColorEnv = process.env.NO_COLOR !== undefined || !process.stdout.isTTY;
 
 // Color codes - will be cleared if --no-color is passed
 let colors = {
@@ -4653,6 +4653,9 @@ async function trustCheck(name: string, registryUrl: string, type?: string): Pro
   });
 
   if (!res.ok) {
+    if (res.status === 404) {
+      throw new Error(`Package "${name}" not found in the OpenA2A Registry.`);
+    }
     const body = await res.text();
     throw new Error(`Registry API returned ${res.status}: ${body}`);
   }
@@ -4678,6 +4681,9 @@ async function trustBatch(
   });
 
   if (!res.ok) {
+    if (res.status === 404) {
+      throw new Error('Registry batch endpoint not found. The registry may be unavailable.');
+    }
     const body = await res.text();
     throw new Error(`Registry API returned ${res.status}: ${body}`);
   }
@@ -4829,7 +4835,15 @@ function formatTrustBatch(
 async function parseDepsFile(filePath: string): Promise<Array<{ name: string }>> {
   const fs = require('fs');
   const path = require('path');
-  const content = fs.readFileSync(filePath, 'utf-8');
+  let content: string;
+  try {
+    content = fs.readFileSync(filePath, 'utf-8');
+  } catch (err: unknown) {
+    if (err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === 'ENOENT') {
+      throw new Error(`File not found: ${filePath}`);
+    }
+    throw err;
+  }
   const fileName = path.basename(filePath);
 
   if (fileName === 'package.json') {
