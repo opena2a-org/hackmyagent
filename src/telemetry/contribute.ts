@@ -163,14 +163,14 @@ export function buildContributionPayloadFromDir(
 /**
  * Submit an anonymized contribution payload to the OpenA2A Registry.
  *
- * POST to https://registry.opena2a.org/api/v1/telemetry/scan
+ * POST to https://api.oa2a.org/api/v1/telemetry/scan
  * Timeout: 10 seconds. Non-blocking: failures are logged as warnings, never crash the scan.
  */
 export async function submitContribution(
   payload: ContributionPayload,
   registryUrl?: string,
 ): Promise<ContributionResult> {
-  const baseUrl = registryUrl || 'https://registry.opena2a.org';
+  const baseUrl = registryUrl || 'https://api.oa2a.org';
   const url = `${baseUrl}/api/v1/telemetry/scan`;
 
   try {

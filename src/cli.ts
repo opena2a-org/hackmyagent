@@ -1798,7 +1798,7 @@ Examples:
   .option('--registry-report', 'Post results to OpenA2A Registry')
   .option('--no-registry', 'Skip auto-publishing results to OpenA2A Registry')
   .option('--version-id <id>', 'Registry version ID to report against')
-  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', process.env.REGISTRY_URL || 'https://registry.opena2a.org')
+  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', process.env.REGISTRY_URL || 'https://api.oa2a.org')
   .option('--registry-key <key>', 'Registry API key (default: REGISTRY_API_KEY env)')
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
@@ -2003,7 +2003,7 @@ Examples:
         if (options.publish && options.registry !== false) {
           try {
             const { publishScanResults } = await import('./registry/publish');
-            const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://registry.opena2a.org';
+            const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org';
             const packageName = resolvePackageName(targetDir);
             if (packageName) {
               const publishData = {
@@ -2171,7 +2171,7 @@ Examples:
       if (options.versionId || options.registryReport) {
         try {
           const core = await import('./index');
-          const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://registry.opena2a.org';
+          const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org';
 
           if (options.versionId) {
             // Authenticated path: existing behavior (version-id + API key)
@@ -2217,7 +2217,7 @@ Examples:
       } else if (options.publish) {
         try {
           const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
-          const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://registry.opena2a.org';
+          const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org';
           const packageName = resolvePackageName(targetDir);
 
           if (!packageName) {
@@ -2725,7 +2725,7 @@ Examples:
   .option('--registry-report', 'Post results to OpenA2A Registry')
   .option('--no-registry', 'Skip auto-publishing results to OpenA2A Registry')
   .option('--version-id <id>', 'Registry version ID to report against')
-  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', process.env.REGISTRY_URL || 'https://registry.opena2a.org')
+  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', process.env.REGISTRY_URL || 'https://api.oa2a.org')
   .option('--registry-key <key>', 'Registry API key (default: REGISTRY_API_KEY env)')
   .action(async (targetUrl: string | undefined, options: {
     intensity?: string;
@@ -2918,7 +2918,7 @@ Examples:
       if (shouldReport) {
         try {
           const core = await import('./index');
-          const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://registry.opena2a.org';
+          const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org';
 
           if (options.versionId) {
             // Authenticated path: existing behavior (version-id + API key)
@@ -2963,7 +2963,7 @@ Examples:
       } else if (options.publish && targetType !== 'local') {
         try {
           const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
-          const regUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://registry.opena2a.org';
+          const regUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org';
           const packageName = target.url || targetUrl || 'unknown';
 
           if (format === 'text') {
@@ -4309,7 +4309,7 @@ Examples:
   .option('--fail-below <score>', 'Exit 1 if score below threshold (0-100)')
   .option('--deep', 'Enable LLM semantic analysis for ambiguous controls (requires claude CLI or ANTHROPIC_API_KEY)')
   .option('--publish', 'Push scan results to the OpenA2A Registry')
-  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', process.env.REGISTRY_URL || 'https://registry.opena2a.org')
+  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', process.env.REGISTRY_URL || 'https://api.oa2a.org')
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
   .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean; publish?: boolean; registryUrl?: string; contribute?: boolean }) => {
@@ -4337,7 +4337,7 @@ Examples:
         if (options.publish) {
           try {
             const { publishScanResults } = await import('./registry/publish');
-            const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://registry.opena2a.org';
+            const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org';
             const packageName = resolvePackageName(targetDir);
             if (packageName) {
               const publishData = {
@@ -4460,7 +4460,7 @@ Examples:
       if (options.publish) {
         try {
           const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
-          const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://registry.opena2a.org';
+          const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org';
           const packageName = resolvePackageName(targetDir);
 
           if (!packageName) {

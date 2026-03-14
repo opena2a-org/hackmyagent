@@ -74,7 +74,7 @@ export interface GTINConfig {
   enabled: boolean;
   /** Sensor token override (auto-generated if not provided) */
   sensorToken?: string;
-  /** Registry URL override (default: https://registry.opena2a.org) */
+  /** Registry URL override (default: https://api.oa2a.org) */
   registryUrl?: string;
 }
 

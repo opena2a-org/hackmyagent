@@ -448,7 +448,7 @@ The `--publish` flag pushes scan results to the [OpenA2A Registry](https://regis
 hackmyagent secure ./my-agent --publish
 ```
 
-When signing keys are configured (via `opena2a claim`), results are published at full weight. Without signing keys, results are accepted as community contributions at 0.5x weight. The CLI shows guidance on how to claim your agent for full-weight publishing.
+Results are published to the backend API at `https://api.oa2a.org`. When signing keys are configured (via `opena2a claim`), results are published at full weight. Without signing keys, results are accepted as community contributions at 0.5x weight. The CLI shows guidance on how to claim your agent for full-weight publishing.
 
 Use `--registry-url` to publish to a custom registry endpoint (e.g., a private organizational registry).
 
