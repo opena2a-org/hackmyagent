@@ -23,6 +23,7 @@ export type {
   EnforcementAction,
   EnforcementResult,
   Monitor,
+  GTINConfig,
 } from './types';
 
 // Re-export components
@@ -54,6 +55,21 @@ export {
   type LicenseInfo,
 } from './license';
 
+// Re-export telemetry
+export {
+  GTINForwarder,
+  generateSensorToken,
+  buildGTINPayload,
+  submitGTINEvent,
+  isAnomalousEvent,
+  mapEventType,
+  GTINForwarderConfig,
+  GTINEventType,
+  GTINRuntimeEnv,
+  GTINPayload,
+  GTINSubmitResult,
+} from './telemetry';
+
 import * as path from 'path';
 import type { ARPConfig, ARPEvent, Monitor } from './types';
 import { EventEngine } from './engine/event-engine';
@@ -70,6 +86,8 @@ import { PromptInterceptor } from './interceptors/prompt';
 import { MCPProtocolInterceptor } from './interceptors/mcp-protocol';
 import { A2AProtocolInterceptor } from './interceptors/a2a-protocol';
 import { loadConfig } from './config/loader';
+import { GTINForwarder } from './telemetry/forwarder';
+import { generateSensorToken } from './telemetry/gtin';
 
 /**
  * Agent Runtime Protection — the main entry point.
@@ -92,6 +110,7 @@ export class AgentRuntimeProtection {
   private readonly enforcement: EnforcementEngine;
   private readonly logger: LocalLogger;
   private readonly monitors: Monitor[] = [];
+  private gtinForwarder: GTINForwarder | null = null;
   private running = false;
 
   constructor(configOrPath?: ARPConfig | string) {
@@ -155,6 +174,22 @@ export class AgentRuntimeProtection {
     if (al?.a2a?.enabled) {
       this.monitors.push(new A2AProtocolInterceptor(this.engine, al.a2a.trustedAgents));
     }
+
+    // Create GTIN forwarder if opted in
+    if (this.config.gtin?.enabled) {
+      const sensorToken = this.config.gtin.sensorToken || generateSensorToken();
+      this.gtinForwarder = new GTINForwarder({
+        enabled: true,
+        sensorToken,
+        registryUrl: this.config.gtin.registryUrl,
+        packageName: this.config.agentName,
+      });
+
+      // Subscribe forwarder to all events (it filters internally)
+      this.engine.onEvent((event) => {
+        this.gtinForwarder?.onEvent(event);
+      });
+    }
   }
 
   /** Start all monitors */
@@ -163,6 +198,11 @@ export class AgentRuntimeProtection {
 
     for (const monitor of this.monitors) {
       await monitor.start();
+    }
+
+    // Start GTIN forwarder if configured
+    if (this.gtinForwarder) {
+      this.gtinForwarder.start();
     }
 
     this.running = true;
@@ -174,6 +214,11 @@ export class AgentRuntimeProtection {
 
     for (const monitor of this.monitors) {
       await monitor.stop();
+    }
+
+    // Flush and shutdown GTIN forwarder
+    if (this.gtinForwarder) {
+      await this.gtinForwarder.shutdown();
     }
 
     await this.intelligence.stop();

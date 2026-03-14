@@ -65,6 +65,17 @@ export interface ARPConfig {
   aiLayer?: AILayerConfig;
   /** HTTP reverse proxy configuration */
   proxy?: ProxyConfig;
+  /** GTIN (Global Threat Intelligence Network) opt-in configuration */
+  gtin?: GTINConfig;
+}
+
+export interface GTINConfig {
+  /** Whether GTIN telemetry is enabled (default: false, opt-in only) */
+  enabled: boolean;
+  /** Sensor token override (auto-generated if not provided) */
+  sensorToken?: string;
+  /** Registry URL override (default: https://registry.opena2a.org) */
+  registryUrl?: string;
 }
 
 export interface MonitorConfig {
