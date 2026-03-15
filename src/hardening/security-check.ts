@@ -59,6 +59,8 @@ export interface SecurityFinding {
   line?: number;
   /** Specific fix instruction for this issue */
   fix?: string;
+  /** Attack taxonomy class this finding maps to (e.g., "CRED-HARVEST") */
+  attackClass?: string;
   details?: Record<string, unknown>;
 }
 
