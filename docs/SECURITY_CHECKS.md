@@ -1,6 +1,6 @@
 # Security Checks Reference
 
-HackMyAgent performs 147 security checks across 30 categories. This document provides detailed information about each check, including severity, description, and remediation guidance.
+HackMyAgent performs 163 security checks across 35 categories. This document provides detailed information about each check, including severity, description, and remediation guidance.
 
 ## Severity Levels
 
@@ -510,6 +510,122 @@ The following OpenClaw checks can be automatically fixed:
 | CONFIG-003 | Disable debug mode |
 | CONFIG-005 | Restrict file access to project directory |
 | CONFIG-006 | Generate skill allowlist from installed skills |
+
+---
+
+## Memory/Context Poisoning (MEM)
+
+### MEM-001: Unvalidated Memory Persistence
+- **Severity:** High
+- **Fixable:** No
+- **Description:** Memory file contains prototype pollution vectors or unvalidated external references ($ref, __proto__, constructor) that could be exploited to inject malicious context
+- **Remediation:** Sanitize all memory entries before persistence. Remove __proto__ and constructor keys. Validate $ref URIs.
+
+### MEM-002: No Memory Integrity Verification
+- **Severity:** Medium
+- **Fixable:** No
+- **Description:** Agent configuration enables memory/context persistence without integrity verification. An attacker with file access could inject malicious context.
+- **Remediation:** Enable memory integrity verification: add hash validation or signature checks for persisted context.
+
+### MEM-003: No Context Size Limits
+- **Severity:** Medium
+- **Fixable:** No
+- **Description:** Agent loads context/memory without size limits. An attacker could craft inputs that overflow the context window, pushing safety instructions out of scope.
+- **Remediation:** Set explicit context size limits: maxContextSize, memory.maxEntries, or memory.maxSize.
+
+### MEM-004: Shared Memory Without Isolation
+- **Severity:** High
+- **Fixable:** No
+- **Description:** Multiple agents share memory without isolation boundaries. A compromised agent could poison the shared context to influence other agents.
+- **Remediation:** Enable memory isolation: set sharedMemory.isolation=true or use per-agent memory scopes.
+
+### MEM-005: Conversation History Injection
+- **Severity:** High
+- **Fixable:** No
+- **Description:** System prompt includes unvalidated conversation history. An attacker could craft messages in history that inject instructions into the system prompt.
+- **Remediation:** Sanitize conversation history before including in system prompts. Strip instruction-like patterns.
+
+---
+
+## RAG Poisoning (RAG)
+
+### RAG-001: Unvalidated RAG Retrieval Source
+- **Severity:** High
+- **Fixable:** No
+- **Description:** RAG pipeline retrieves from an unverified source. An attacker who controls the source could inject malicious content into agent responses.
+- **Remediation:** Add source verification: set trustedSource=true only for validated endpoints, or enable signatureCheck.
+
+### RAG-002: No RAG Content Sanitization
+- **Severity:** High
+- **Fixable:** No
+- **Description:** Retrieved content is passed to the LLM without sanitization. Poisoned documents could inject instructions into the prompt.
+- **Remediation:** Sanitize retrieved content before including in prompts. Strip instruction-like patterns and markup.
+
+### RAG-003: Public-Writable Vector Store
+- **Severity:** Critical
+- **Fixable:** No
+- **Description:** Vector store allows public write access. An attacker could insert poisoned documents that will be retrieved and influence agent responses.
+- **Remediation:** Restrict vector store write access. Require authentication for document ingestion.
+
+### RAG-004: No Provenance Tracking
+- **Severity:** Medium
+- **Fixable:** No
+- **Description:** RAG pipeline does not track provenance of retrieved content. Without provenance, poisoned content cannot be traced back to its source.
+- **Remediation:** Enable provenance tracking: set sourceTracking=true to track which source each document came from.
+
+---
+
+## Agent Identity Spoofing (AIM)
+
+### AIM-001: No Agent Identity Declaration
+- **Severity:** Medium
+- **Fixable:** No
+- **Description:** Project appears to be an AI agent but has no formal identity declaration. Without identity, the agent cannot be verified by other agents or registries.
+- **Remediation:** Create an agent-card.json with agentId, name, publicKey, and capabilities fields.
+
+### AIM-002: Identity Without Cryptographic Binding
+- **Severity:** High
+- **Fixable:** No
+- **Description:** Agent declares an identity but has no cryptographic key binding. Any agent could claim this identity without proof.
+- **Remediation:** Bind agent identity to a cryptographic key pair. Add publicKey or keyId field to the agent card.
+
+### AIM-003: No Identity Verification Endpoint
+- **Severity:** Medium
+- **Fixable:** No
+- **Description:** Agent identity has no verification endpoint. Other agents cannot verify this agent's identity claims.
+- **Remediation:** Add a verification endpoint: verificationEndpoint URL or oidcIssuer for federated identity.
+
+---
+
+## Agent DNA Forgery (DNA)
+
+### DNA-001: No Behavioral Fingerprint
+- **Severity:** Medium
+- **Fixable:** No
+- **Description:** Agent has behavioral instructions (SOUL.md/system prompt) but no behavioral fingerprint. Without a fingerprint, behavioral integrity cannot be verified.
+- **Remediation:** Create agent-dna.json with contentHash of SOUL.md, baselineHash, and signature for integrity verification.
+
+### DNA-002: Unsigned Behavioral Profile
+- **Severity:** High
+- **Fixable:** No
+- **Description:** Agent DNA/behavioral profile exists but is not signed. An attacker could modify the profile to change agent behavior without detection.
+- **Remediation:** Sign the behavioral profile: add a contentHash (SHA-256) or signature field verified at startup.
+
+### DNA-003: No Behavioral Drift Detection
+- **Severity:** Medium
+- **Fixable:** No
+- **Description:** Agent DNA has no drift detection configured. Gradual behavioral changes would go undetected.
+- **Remediation:** Enable behavioral drift detection: set baselineHash and driftThreshold for continuous monitoring.
+
+---
+
+## Skill Memory Manipulation (SKILL-MEM)
+
+### SKILL-MEM-001: Skill With Unrestricted Memory Access
+- **Severity:** High
+- **Fixable:** No
+- **Description:** A skill declares memory/context write capabilities without explicit restrictions. A malicious skill could manipulate agent memory to alter future behavior.
+- **Remediation:** Restrict skill memory access: declare explicit read-only or scoped-write permissions in SKILL.md. Add read-only guards or scope memory writes to skill-specific namespaces.
 
 ---
 

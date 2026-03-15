@@ -13,3 +13,5 @@ export type {
   ScanResult,
   Severity,
 } from './security-check';
+
+export { getAttackClass, enrichWithTaxonomy } from './taxonomy';

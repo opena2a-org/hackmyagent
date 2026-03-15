@@ -7,6 +7,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { ScanResult, SecurityFinding, Severity, ProjectType } from './security-check';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
+import { enrichWithTaxonomy } from './taxonomy';
 
 /**
  * Defines which checks apply to which project types
@@ -67,6 +68,17 @@ const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
 
   // Unicode steganography - applies to all projects
   'UNICODE-STEGO-': ['all'],
+
+  // Agent memory/context checks
+  'MEM-': ['all'],
+  // RAG poisoning checks
+  'RAG-': ['all'],
+  // Agent identity checks
+  'AIM-': ['all'],
+  // Agent DNA integrity checks
+  'DNA-': ['all'],
+  // Skill memory manipulation checks
+  'SKILL-MEM-': ['openclaw', 'mcp'],
 };
 
 export interface ScanOptions {
@@ -418,6 +430,29 @@ export class HardeningScanner {
     // Unicode steganography checks (GlassWorm detection)
     const unicodeStegoFindings = await this.checkUnicodeSteganography(targetDir, shouldFix);
     findings.push(...unicodeStegoFindings);
+
+    // Memory/context poisoning checks
+    const memFindings = await this.checkMemoryPoisoning(targetDir, shouldFix);
+    findings.push(...memFindings);
+
+    // RAG poisoning checks
+    const ragFindings = await this.checkRAGPoisoning(targetDir, shouldFix);
+    findings.push(...ragFindings);
+
+    // Agent identity checks
+    const aimFindings = await this.checkAgentIdentity(targetDir, shouldFix);
+    findings.push(...aimFindings);
+
+    // Agent DNA integrity checks
+    const dnaFindings = await this.checkAgentDNA(targetDir, shouldFix);
+    findings.push(...dnaFindings);
+
+    // Skill memory manipulation checks
+    const skillMemFindings = await this.checkSkillMemory(targetDir, shouldFix);
+    findings.push(...skillMemFindings);
+
+    // Enrich findings with attack taxonomy mapping
+    enrichWithTaxonomy(findings);
 
     // Layer 2: Structural analysis (always on)
     let layer2Count = 0;
@@ -6116,6 +6151,582 @@ dist/
     }
 
     return files;
+  }
+
+  /**
+   * Walk a directory recursively and return files matching the given extensions.
+   * Skips node_modules, dist, .git, and hidden directories.
+   */
+  private async walkDirectory(
+    dir: string,
+    extensions: string[],
+    depth: number = 0,
+    maxDepth: number = 10
+  ): Promise<string[]> {
+    if (depth > maxDepth) return [];
+
+    const extSet = new Set(extensions.map((e) => e.toLowerCase()));
+    const skipDirs = new Set(['node_modules', 'dist', '.git', '__pycache__', '.venv']);
+    const files: string[] = [];
+
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return files;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+
+      if (entry.isSymbolicLink()) continue;
+
+      if (entry.isDirectory()) {
+        if (skipDirs.has(entry.name)) continue;
+        if (entry.name.startsWith('.')) continue;
+        const subFiles = await this.walkDirectory(fullPath, extensions, depth + 1, maxDepth);
+        files.push(...subFiles);
+      } else if (entry.isFile()) {
+        const ext = path.extname(entry.name).toLowerCase();
+        if (extSet.has(ext)) {
+          files.push(fullPath);
+        }
+      }
+    }
+
+    return files;
+  }
+
+  /**
+   * Check for memory/context poisoning risks
+   * Detects patterns that could allow attackers to poison agent memory or conversation context
+   */
+  private async checkMemoryPoisoning(targetDir: string, _autoFix: boolean): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // MEM-001: Unvalidated memory persistence
+    // Check for memory/context files that accept external input without validation
+    const memoryFiles = ['memory.json', 'context.json', '.memory', 'agent-memory.json', 'conversation-history.json'];
+    for (const memFile of memoryFiles) {
+      const filePath = path.join(targetDir, memFile);
+      try {
+        const content = await fs.readFile(filePath, 'utf-8');
+        // Check if memory file is world-writable or contains unvalidated external refs
+        if (content.includes('$ref') || content.includes('__proto__') || content.includes('constructor')) {
+          findings.push({
+            checkId: 'MEM-001',
+            name: 'Unvalidated memory persistence',
+            description: 'Memory file contains prototype pollution vectors or unvalidated external references that could be exploited to inject malicious context',
+            category: 'memory-poisoning',
+            severity: 'high',
+            passed: false,
+            message: `Memory file ${memFile} contains potentially dangerous patterns ($ref, __proto__, constructor)`,
+            fixable: false,
+            file: memFile,
+            fix: 'Sanitize all memory entries before persistence. Remove __proto__ and constructor keys. Validate $ref URIs.',
+          });
+        }
+      } catch { /* file doesn't exist - skip */ }
+    }
+
+    // MEM-002: No memory integrity verification
+    // Check if conversation/memory files have integrity checks
+    const configFiles = ['agent-config.json', 'config.json', 'settings.json', '.agent.json'];
+    for (const cfgFile of configFiles) {
+      const filePath = path.join(targetDir, cfgFile);
+      try {
+        const content = await fs.readFile(filePath, 'utf-8');
+        const config = JSON.parse(content);
+        if (config.memory || config.context || config.conversationHistory) {
+          const hasIntegrity = config.memoryIntegrity || config.contextVerification ||
+                             config.memory?.signatureVerification || config.memory?.hashValidation;
+          if (!hasIntegrity) {
+            findings.push({
+              checkId: 'MEM-002',
+              name: 'No memory integrity verification',
+              description: 'Agent configuration enables memory/context persistence without integrity verification. An attacker with file access could inject malicious context.',
+              category: 'memory-poisoning',
+              severity: 'medium',
+              passed: false,
+              message: `${cfgFile} enables memory persistence without integrity checks`,
+              fixable: false,
+              file: cfgFile,
+              fix: 'Enable memory integrity verification: add hash validation or signature checks for persisted context.',
+            });
+          }
+        }
+      } catch { /* skip */ }
+    }
+
+    // MEM-003: Context window overflow risk
+    // Check for agents that load large context without size limits
+    for (const cfgFile of configFiles) {
+      const filePath = path.join(targetDir, cfgFile);
+      try {
+        const content = await fs.readFile(filePath, 'utf-8');
+        const config = JSON.parse(content);
+        if (config.contextWindow || config.maxTokens || config.memory) {
+          const hasLimits = config.maxContextSize || config.contextWindow?.maxSize ||
+                           config.memory?.maxEntries || config.memory?.maxSize;
+          if (!hasLimits) {
+            findings.push({
+              checkId: 'MEM-003',
+              name: 'No context size limits',
+              description: 'Agent loads context/memory without size limits. An attacker could craft inputs that overflow the context window, pushing safety instructions out of scope.',
+              category: 'memory-poisoning',
+              severity: 'medium',
+              passed: false,
+              message: `${cfgFile} has no context size limits configured`,
+              fixable: false,
+              file: cfgFile,
+              fix: 'Set explicit context size limits: maxContextSize, memory.maxEntries, or memory.maxSize.',
+            });
+          }
+        }
+      } catch { /* skip */ }
+    }
+
+    // MEM-004: Shared memory without isolation
+    // Check for multi-agent setups with shared memory
+    const multiAgentFiles = ['agents.json', 'orchestrator.json', 'multi-agent.json', '.agents'];
+    for (const maFile of multiAgentFiles) {
+      const filePath = path.join(targetDir, maFile);
+      try {
+        const content = await fs.readFile(filePath, 'utf-8');
+        const config = JSON.parse(content);
+        const agents = config.agents || config.workers || [];
+        if (Array.isArray(agents) && agents.length > 1) {
+          const sharedMem = config.sharedMemory || config.shared?.memory || config.commonContext;
+          if (sharedMem) {
+            const hasIsolation = sharedMem.isolation || sharedMem.sandboxed || sharedMem.perAgent;
+            if (!hasIsolation) {
+              findings.push({
+                checkId: 'MEM-004',
+                name: 'Shared memory without isolation',
+                description: 'Multiple agents share memory without isolation boundaries. A compromised agent could poison the shared context to influence other agents.',
+                category: 'memory-poisoning',
+                severity: 'high',
+                passed: false,
+                message: `${maFile} configures shared memory for ${agents.length} agents without isolation`,
+                fixable: false,
+                file: maFile,
+                fix: 'Enable memory isolation: set sharedMemory.isolation=true or use per-agent memory scopes.',
+              });
+            }
+          }
+        }
+      } catch { /* skip */ }
+    }
+
+    // MEM-005: Conversation history injection
+    // Check source files for patterns that build prompts from unvalidated history
+    try {
+      const srcDir = path.join(targetDir, 'src');
+      const srcExists = await fs.access(srcDir).then(() => true).catch(() => false);
+      if (srcExists) {
+        const files = await this.walkDirectory(srcDir, ['.ts', '.js', '.py', '.mjs']);
+        for (const file of files.slice(0, 50)) {
+          try {
+            const content = await fs.readFile(file, 'utf-8');
+            const lines = content.split('\n');
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i];
+              // Detect direct concatenation of history into system prompts
+              if ((line.includes('systemPrompt') || line.includes('system_prompt') || line.includes('system_message')) &&
+                  (line.includes('history') || line.includes('previousMessages') || line.includes('conversation'))) {
+                if (!line.includes('sanitize') && !line.includes('validate') && !line.includes('filter')) {
+                  findings.push({
+                    checkId: 'MEM-005',
+                    name: 'Conversation history injection',
+                    description: 'System prompt includes unvalidated conversation history. An attacker could craft messages in history that inject instructions into the system prompt.',
+                    category: 'memory-poisoning',
+                    severity: 'high',
+                    passed: false,
+                    message: 'System prompt concatenates unvalidated conversation history',
+                    fixable: false,
+                    file: path.relative(targetDir, file),
+                    line: i + 1,
+                    fix: 'Sanitize conversation history before including in system prompts. Strip instruction-like patterns.',
+                  });
+                  break; // One finding per file
+                }
+              }
+            }
+          } catch { /* skip unreadable */ }
+        }
+      }
+    } catch { /* skip */ }
+
+    return findings;
+  }
+
+  /**
+   * Check for RAG (Retrieval-Augmented Generation) poisoning risks
+   * Detects patterns that could allow attackers to inject malicious content into RAG pipelines
+   */
+  private async checkRAGPoisoning(targetDir: string, _autoFix: boolean): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // RAG-001: Unvalidated retrieval sources
+    const ragConfigFiles = ['rag.json', 'retrieval.json', 'vector-store.json', 'embeddings.json'];
+    for (const ragFile of ragConfigFiles) {
+      const filePath = path.join(targetDir, ragFile);
+      try {
+        const content = await fs.readFile(filePath, 'utf-8');
+        const config = JSON.parse(content);
+        const sources = config.sources || config.dataSources || config.indices || [];
+        if (Array.isArray(sources)) {
+          for (const source of sources) {
+            const sourceUrl = source.url || source.endpoint || source.uri || '';
+            if (sourceUrl && !source.verified && !source.trustedSource && !source.signatureCheck) {
+              findings.push({
+                checkId: 'RAG-001',
+                name: 'Unvalidated RAG retrieval source',
+                description: 'RAG pipeline retrieves from an unverified source. An attacker who controls the source could inject malicious content into agent responses.',
+                category: 'rag-poisoning',
+                severity: 'high',
+                passed: false,
+                message: `RAG source ${sourceUrl} has no verification or trust validation`,
+                fixable: false,
+                file: ragFile,
+                fix: 'Add source verification: set trustedSource=true only for validated endpoints, or enable signatureCheck.',
+              });
+            }
+          }
+        }
+      } catch { /* skip */ }
+    }
+
+    // RAG-002: No content sanitization in retrieval pipeline
+    try {
+      const srcDir = path.join(targetDir, 'src');
+      const srcExists = await fs.access(srcDir).then(() => true).catch(() => false);
+      if (srcExists) {
+        const files = await this.walkDirectory(srcDir, ['.ts', '.js', '.py', '.mjs']);
+        for (const file of files.slice(0, 50)) {
+          try {
+            const content = await fs.readFile(file, 'utf-8');
+            const lines = content.split('\n');
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i];
+              if ((line.includes('retrieve') || line.includes('vectorSearch') || line.includes('similarity_search') ||
+                   line.includes('query_engine')) &&
+                  (line.includes('context') || line.includes('prompt') || line.includes('augment'))) {
+                // Check surrounding lines for sanitization
+                const surroundingLines = lines.slice(Math.max(0, i - 3), Math.min(lines.length, i + 4)).join(' ');
+                if (!surroundingLines.includes('sanitize') && !surroundingLines.includes('validate') &&
+                    !surroundingLines.includes('filter') && !surroundingLines.includes('escape')) {
+                  findings.push({
+                    checkId: 'RAG-002',
+                    name: 'No RAG content sanitization',
+                    description: 'Retrieved content is passed to the LLM without sanitization. Poisoned documents could inject instructions into the prompt.',
+                    category: 'rag-poisoning',
+                    severity: 'high',
+                    passed: false,
+                    message: 'Retrieved content flows to LLM without sanitization',
+                    fixable: false,
+                    file: path.relative(targetDir, file),
+                    line: i + 1,
+                    fix: 'Sanitize retrieved content before including in prompts. Strip instruction-like patterns and markup.',
+                  });
+                  break;
+                }
+              }
+            }
+          } catch { /* skip */ }
+        }
+      }
+    } catch { /* skip */ }
+
+    // RAG-003: Public-writable vector store
+    for (const ragFile of ragConfigFiles) {
+      const filePath = path.join(targetDir, ragFile);
+      try {
+        const content = await fs.readFile(filePath, 'utf-8');
+        const config = JSON.parse(content);
+        if (config.writeAccess === 'public' || config.allowPublicIngestion || config.openIngestion) {
+          findings.push({
+            checkId: 'RAG-003',
+            name: 'Public-writable vector store',
+            description: 'Vector store allows public write access. An attacker could insert poisoned documents that will be retrieved and influence agent responses.',
+            category: 'rag-poisoning',
+            severity: 'critical',
+            passed: false,
+            message: `${ragFile} allows public write access to vector store`,
+            fixable: false,
+            file: ragFile,
+            fix: 'Restrict vector store write access. Require authentication for document ingestion.',
+          });
+        }
+      } catch { /* skip */ }
+    }
+
+    // RAG-004: No provenance tracking on retrieved content
+    for (const ragFile of ragConfigFiles) {
+      const filePath = path.join(targetDir, ragFile);
+      try {
+        const content = await fs.readFile(filePath, 'utf-8');
+        const config = JSON.parse(content);
+        if (config.sources || config.dataSources || config.indices) {
+          if (!config.provenance && !config.sourceTracking && !config.metadata?.trackSource) {
+            findings.push({
+              checkId: 'RAG-004',
+              name: 'No provenance tracking',
+              description: 'RAG pipeline does not track provenance of retrieved content. Without provenance, poisoned content cannot be traced back to its source.',
+              category: 'rag-poisoning',
+              severity: 'medium',
+              passed: false,
+              message: `${ragFile} has no content provenance tracking`,
+              fixable: false,
+              file: ragFile,
+              fix: 'Enable provenance tracking: set sourceTracking=true to track which source each document came from.',
+            });
+          }
+        }
+      } catch { /* skip */ }
+    }
+
+    return findings;
+  }
+
+  /**
+   * Check for agent identity spoofing risks
+   * Detects missing or weak agent identity verification
+   */
+  private async checkAgentIdentity(targetDir: string, _autoFix: boolean): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // AIM-001: No agent identity declaration
+    const identityFiles = ['agent-card.json', 'agent.json', '.well-known/agent.json', 'aim.json'];
+    let hasIdentity = false;
+    for (const idFile of identityFiles) {
+      const filePath = path.join(targetDir, idFile);
+      try {
+        await fs.access(filePath);
+        hasIdentity = true;
+
+        const content = await fs.readFile(filePath, 'utf-8');
+        const config = JSON.parse(content);
+
+        // AIM-002: Identity without cryptographic binding
+        if (config.agentId || config.name || config.identity) {
+          if (!config.publicKey && !config.keyId && !config.jwk && !config.x509) {
+            findings.push({
+              checkId: 'AIM-002',
+              name: 'Identity without cryptographic binding',
+              description: 'Agent declares an identity but has no cryptographic key binding. Any agent could claim this identity without proof.',
+              category: 'identity-spoofing',
+              severity: 'high',
+              passed: false,
+              message: `${idFile} declares identity without cryptographic key binding`,
+              fixable: false,
+              file: idFile,
+              fix: 'Bind agent identity to a cryptographic key pair. Add publicKey or keyId field to the agent card.',
+            });
+          }
+        }
+
+        // AIM-003: No identity verification endpoint
+        if (config.agentId || config.identity) {
+          if (!config.verificationEndpoint && !config.oidcIssuer && !config.wellKnown) {
+            findings.push({
+              checkId: 'AIM-003',
+              name: 'No identity verification endpoint',
+              description: 'Agent identity has no verification endpoint. Other agents cannot verify this agent\'s identity claims.',
+              category: 'identity-spoofing',
+              severity: 'medium',
+              passed: false,
+              message: `${idFile} has no identity verification endpoint (verificationEndpoint, oidcIssuer, or wellKnown)`,
+              fixable: false,
+              file: idFile,
+              fix: 'Add a verification endpoint: verificationEndpoint URL or oidcIssuer for federated identity.',
+            });
+          }
+        }
+      } catch { /* skip */ }
+    }
+
+    // Also check package.json or A2A agent card
+    if (!hasIdentity) {
+      try {
+        const pkgPath = path.join(targetDir, 'package.json');
+        const pkgContent = await fs.readFile(pkgPath, 'utf-8');
+        const pkg = JSON.parse(pkgContent);
+        if (pkg.agentCard || pkg.a2a || pkg.keywords?.some((k: string) => k.includes('agent') || k.includes('a2a'))) {
+          findings.push({
+            checkId: 'AIM-001',
+            name: 'No agent identity declaration',
+            description: 'Project appears to be an AI agent but has no formal identity declaration. Without identity, the agent cannot be verified by other agents or registries.',
+            category: 'identity-spoofing',
+            severity: 'medium',
+            passed: false,
+            message: 'Agent project has no identity declaration file (agent-card.json, agent.json, aim.json)',
+            fixable: false,
+            file: 'package.json',
+            fix: 'Create an agent-card.json with agentId, name, publicKey, and capabilities fields.',
+          });
+        }
+      } catch { /* skip */ }
+    }
+
+    return findings;
+  }
+
+  /**
+   * Check for agent DNA/behavioral fingerprint forgery risks
+   * Detects integrity issues with agent behavioral profiles
+   */
+  private async checkAgentDNA(targetDir: string, _autoFix: boolean): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // DNA-001: No behavioral fingerprint
+    const dnaFiles = ['agent-dna.json', '.agent-dna', 'behavioral-profile.json'];
+    const soulFileNames = ['SOUL.md', 'system-prompt.md', '.cursorrules', 'CLAUDE.md'];
+    let hasDna = false;
+    let hasSoul = false;
+    let foundSoulFile = '';
+
+    for (const dnaFile of dnaFiles) {
+      try {
+        await fs.access(path.join(targetDir, dnaFile));
+        hasDna = true;
+
+        const content = await fs.readFile(path.join(targetDir, dnaFile), 'utf-8');
+        const config = JSON.parse(content);
+
+        // DNA-002: Unsigned behavioral profile
+        if (!config.signature && !config.hash && !config.contentHash) {
+          findings.push({
+            checkId: 'DNA-002',
+            name: 'Unsigned behavioral profile',
+            description: 'Agent DNA/behavioral profile exists but is not signed. An attacker could modify the profile to change agent behavior without detection.',
+            category: 'agent-dna',
+            severity: 'high',
+            passed: false,
+            message: `${dnaFile} has no signature or content hash`,
+            fixable: false,
+            file: dnaFile,
+            fix: 'Sign the behavioral profile: add a contentHash (SHA-256) or signature field verified at startup.',
+          });
+        }
+
+        // DNA-003: No behavioral drift detection
+        if (!config.baselineHash && !config.driftThreshold && !config.monitoringEnabled) {
+          findings.push({
+            checkId: 'DNA-003',
+            name: 'No behavioral drift detection',
+            description: 'Agent DNA has no drift detection configured. Gradual behavioral changes would go undetected.',
+            category: 'agent-dna',
+            severity: 'medium',
+            passed: false,
+            message: `${dnaFile} has no behavioral drift detection (baselineHash, driftThreshold, monitoring)`,
+            fixable: false,
+            file: dnaFile,
+            fix: 'Enable behavioral drift detection: set baselineHash and driftThreshold for continuous monitoring.',
+          });
+        }
+      } catch { /* skip */ }
+    }
+
+    for (const soulFile of soulFileNames) {
+      try {
+        await fs.access(path.join(targetDir, soulFile));
+        hasSoul = true;
+        if (!foundSoulFile) foundSoulFile = soulFile;
+      } catch { /* skip */ }
+    }
+
+    // If agent has a SOUL/system prompt but no DNA fingerprint
+    if (hasSoul && !hasDna) {
+      // Check if this is actually an agent project
+      try {
+        const pkgPath = path.join(targetDir, 'package.json');
+        const pkgContent = await fs.readFile(pkgPath, 'utf-8');
+        const pkg = JSON.parse(pkgContent);
+        if (pkg.agentCard || pkg.a2a || pkg.keywords?.some((k: string) => k.includes('agent'))) {
+          findings.push({
+            checkId: 'DNA-001',
+            name: 'No behavioral fingerprint',
+            description: 'Agent has behavioral instructions (SOUL.md/system prompt) but no behavioral fingerprint. Without a fingerprint, behavioral integrity cannot be verified.',
+            category: 'agent-dna',
+            severity: 'medium',
+            passed: false,
+            message: 'Agent has behavioral instructions but no DNA fingerprint file',
+            fixable: false,
+            file: foundSoulFile || 'SOUL.md',
+            fix: 'Create agent-dna.json with contentHash of SOUL.md, baselineHash, and signature for integrity verification.',
+          });
+        }
+      } catch { /* skip */ }
+    }
+
+    return findings;
+  }
+
+  /**
+   * Check for skill-based memory manipulation risks
+   */
+  private async checkSkillMemory(targetDir: string, _autoFix: boolean): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // SKILL-MEM-001: Skills with memory write access
+    // Check SKILL.md for memory manipulation patterns
+    try {
+      const skillMdPath = path.join(targetDir, 'SKILL.md');
+      const content = await fs.readFile(skillMdPath, 'utf-8');
+      const lowerContent = content.toLowerCase();
+
+      if ((lowerContent.includes('memory') || lowerContent.includes('context') || lowerContent.includes('state')) &&
+          (lowerContent.includes('write') || lowerContent.includes('modify') || lowerContent.includes('update') || lowerContent.includes('set'))) {
+        if (!lowerContent.includes('read-only') && !lowerContent.includes('readonly') && !lowerContent.includes('immutable')) {
+          findings.push({
+            checkId: 'SKILL-MEM-001',
+            name: 'Skill with unrestricted memory access',
+            description: 'A skill declares memory/context write capabilities without explicit restrictions. A malicious skill could manipulate agent memory to alter future behavior.',
+            category: 'skill-memory',
+            severity: 'high',
+            passed: false,
+            message: 'SKILL.md declares memory write access without read-only constraints',
+            fixable: false,
+            file: 'SKILL.md',
+            fix: 'Restrict skill memory access: declare explicit read-only or scoped-write permissions in SKILL.md.',
+          });
+        }
+      }
+    } catch { /* no SKILL.md */ }
+
+    // Check skills directory for memory manipulation patterns
+    try {
+      const skillsDir = path.join(targetDir, 'skills');
+      const dirExists = await fs.access(skillsDir).then(() => true).catch(() => false);
+      if (dirExists) {
+        const files = await this.walkDirectory(skillsDir, ['.ts', '.js', '.py', '.md']);
+        for (const file of files.slice(0, 30)) {
+          try {
+            const content = await fs.readFile(file, 'utf-8');
+            if ((content.includes('writeMemory') || content.includes('setContext') ||
+                 content.includes('updateState') || content.includes('persistMemory')) &&
+                !content.includes('readOnly') && !content.includes('read_only')) {
+              findings.push({
+                checkId: 'SKILL-MEM-001',
+                name: 'Skill with unrestricted memory access',
+                description: 'Skill file contains memory write operations without read-only guards.',
+                category: 'skill-memory',
+                severity: 'high',
+                passed: false,
+                message: 'Skill writes to agent memory without restrictions',
+                fixable: false,
+                file: path.relative(targetDir, file),
+                fix: 'Add read-only guards or scope memory writes to skill-specific namespaces.',
+              });
+              break; // One per skill dir
+            }
+          } catch { /* skip */ }
+        }
+      }
+    } catch { /* skip */ }
+
+    return findings;
   }
 
   /**
