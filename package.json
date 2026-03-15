@@ -27,6 +27,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@opena2a/shared": "^0.1.0",
     "@opena2a/aim-core": "^0.1.2",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "commander": "^12.0.0",
