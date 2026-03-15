@@ -338,6 +338,27 @@ hackmyagent fix-all --json              # JSON output
 
 ---
 
+### `hackmyagent trust` -- Package Trust Verification
+
+Check trust levels for AI packages before installing them. Queries the [OpenA2A Registry](https://registry.opena2a.org) trust graph.
+
+```bash
+hackmyagent trust server-filesystem          # MCP shorthand (resolves to @modelcontextprotocol/server-filesystem)
+hackmyagent trust mcp-server-fetch           # also resolves
+hackmyagent trust --audit package.json       # audit all dependencies
+hackmyagent trust --audit requirements.txt   # Python deps too
+hackmyagent trust --batch pkg1 pkg2 pkg3     # batch lookup
+hackmyagent trust express --json             # JSON output
+```
+
+MCP packages support shorthand: `server-*` and `mcp-server-*` automatically resolve to `@modelcontextprotocol/server-*`.
+
+Trust levels: Blocked (0), Warning (1), Listed (2), Scanned (3), Verified (4).
+
+Uses [ai-trust](https://github.com/opena2a-org/ai-trust) under the hood.
+
+---
+
 ### More Commands
 
 | Command | Description |
