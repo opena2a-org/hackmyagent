@@ -30,14 +30,14 @@ npx opena2a-cli review
 
 ## What It Finds
 
-**Attacks it tests for:**
+**Attack testing:**
 - **Prompt injection** -- tests whether agents follow injected instructions from untrusted input
 - **Data exfiltration** -- checks if agents can be tricked into leaking sensitive data to external endpoints
 - **Jailbreak and context manipulation** -- probes agent guardrails with adversarial prompts
 - **MCP exploitation** -- tests MCP servers for tool misuse, capability abuse, and unauthorized access
 - **Capability abuse** -- verifies agents can't exceed their intended permissions
 
-**Static checks it runs:**
+**Static analysis:**
 - **Hardcoded credentials** -- API keys, tokens, and passwords in source or config files
 - **MCP server misconfigurations** -- open ports, root filesystem access, missing auth
 - **AI agent CVE detection** -- scans for CVE-2026-25253 (OpenClaw WebSocket RCE), CVE-2026-25157, CVE-2026-24763, and ClawHavoc IOCs
