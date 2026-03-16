@@ -186,7 +186,10 @@ describe('INT-003: Prompt Injection with Anomaly Detection', () => {
   it('should optionally verify against live DVAA SecureBot if available', async () => {
     let dvaaAvailable = false;
     try {
-      const health = await dvaa.health(SECURE_BOT_PORT);
+      const health = await Promise.race([
+        dvaa.health(SECURE_BOT_PORT),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000)),
+      ]);
       dvaaAvailable = health.status === 'ok';
     } catch {
       dvaaAvailable = false;
