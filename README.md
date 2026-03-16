@@ -14,7 +14,6 @@ Security scanner and red-team toolkit for Claude Code, Cursor, VS Code, and any 
 npx hackmyagent secure
 ```
 
-All exports are from the root package. No subpath imports needed.
 
 That's it. No config files, no setup, no flags needed.
 
@@ -24,7 +23,6 @@ For a full security dashboard covering credentials, config integrity, shadow AI,
 npx opena2a-cli review
 ```
 
-All exports are from the root package. No subpath imports needed.
 
 [Website](https://hackmyagent.com) | [Security Checks Reference](docs/SECURITY_CHECKS.md) | [Use Cases](docs/USE-CASES.md) | [Demos](https://opena2a.org/demos) | [OpenA2A CLI](https://github.com/opena2a-org/opena2a)
 
@@ -65,13 +63,11 @@ npm install -g hackmyagent
 npm install --save-dev hackmyagent
 ```
 
-All exports are from the root package. No subpath imports needed.
 
 **Requirements:** Node.js 18+
 
 ```
 
-All exports are from the root package. No subpath imports needed.
 ┌──────────────────────────────────────────┐
 │  HackMyAgent v0.10.1 — Security Scanner          │
 │  Found: 3 critical · 5 high · 12 medium          │
@@ -85,7 +81,6 @@ All exports are from the root package. No subpath imports needed.
 └──────────────────────────────────────────┘
 ```
 
-All exports are from the root package. No subpath imports needed.
 
 ---
 
@@ -109,7 +104,6 @@ hackmyagent [command] -h    # Help for a specific command
 hackmyagent secure --ci     # Non-interactive mode for CI/CD
 ```
 
-All exports are from the root package. No subpath imports needed.
 
 ---
 
@@ -128,7 +122,6 @@ hackmyagent secure --verbose                  # show all checks including passed
 hackmyagent secure --publish                  # push results to OpenA2A Registry
 ```
 
-All exports are from the root package. No subpath imports needed.
 
 <details>
 <summary>All 30 security categories</summary>
@@ -204,7 +197,6 @@ hackmyagent attack --local -f sarif -o results.sarif           # SARIF output
 hackmyagent attack https://api.example.com --fail-on-vulnerable medium  # CI gate
 ```
 
-All exports are from the root package. No subpath imports needed.
 
 | Category | Payloads | Description |
 |----------|----------|-------------|
@@ -229,7 +221,6 @@ hackmyagent secure -b oasb-1 --fail-below 70          # CI gate
 hackmyagent secure -b oasb-2              # composite: infrastructure + governance
 ```
 
-All exports are from the root package. No subpath imports needed.
 
 ---
 
@@ -243,7 +234,6 @@ hackmyagent scan-soul --deep              # LLM semantic analysis (requires ANTH
 hackmyagent scan-soul --fail-below 60     # CI gate
 ```
 
-All exports are from the root package. No subpath imports needed.
 
 Auto-detects governance file: `SOUL.md` > `system-prompt.md` > `CLAUDE.md` > `.cursorrules` > `agent-config.yaml`.
 
@@ -256,7 +246,6 @@ hackmyagent harden-soul                   # add missing sections
 hackmyagent harden-soul --dry-run         # preview without writing
 ```
 
-All exports are from the root package. No subpath imports needed.
 
 ---
 
@@ -271,7 +260,6 @@ hackmyagent trust --batch pkg1 pkg2 pkg3     # batch lookup
 hackmyagent trust express --json             # JSON output
 ```
 
-All exports are from the root package. No subpath imports needed.
 
 Uses [ai-trust](https://github.com/opena2a-org/ai-trust) under the hood.
 
@@ -295,7 +283,6 @@ npm install -g opena2a-cli
 opena2a review    # best place to start
 ```
 
-All exports are from the root package. No subpath imports needed.
 
 ---
 
@@ -309,7 +296,6 @@ opena2a runtime start    # start monitoring
 opena2a runtime status   # check status
 ```
 
-All exports are from the root package. No subpath imports needed.
 
 Also supports HTTP reverse proxy mode for inspecting OpenAI API, MCP, and A2A protocol traffic. See `npx hackmyagent arp-guard proxy --help`.
 
@@ -333,7 +319,6 @@ jobs:
       - run: npx hackmyagent secure -b oasb-1 --fail-below 70
 ```
 
-All exports are from the root package. No subpath imports needed.
 
 <details>
 <summary>SARIF and pre-commit hook</summary>
@@ -346,7 +331,6 @@ All exports are from the root package. No subpath imports needed.
   with: { sarif_file: results.sarif }
 ```
 
-All exports are from the root package. No subpath imports needed.
 
 **Pre-commit Hook**
 
@@ -356,7 +340,6 @@ All exports are from the root package. No subpath imports needed.
 npx hackmyagent secure --ignore LOG-001,RATE-001
 ```
 
-All exports are from the root package. No subpath imports needed.
 
 </details>
 
@@ -378,7 +361,6 @@ All exports are from the root package. No subpath imports needed.
 import { HardeningScanner, AgentRuntimeProtection, AttackScanner } from 'hackmyagent';
 ```
 
-All exports are from the root package. No subpath imports needed.
 
 See the [Plugin API documentation](docs/PLUGIN_API.md) for writing custom security plugins.
 
@@ -393,7 +375,6 @@ git clone https://github.com/opena2a-org/hackmyagent.git
 cd hackmyagent && npm install && npm run build && npm test
 ```
 
-All exports are from the root package. No subpath imports needed.
 
 ## License
 
