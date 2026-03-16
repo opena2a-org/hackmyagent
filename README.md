@@ -22,12 +22,21 @@ That's it. No config files, no setup, no flags needed.
 
 ## What It Finds
 
-- **Hardcoded credentials** -- API keys, tokens, and passwords left in source or config files
+**Attacks it tests for:**
+- **Prompt injection** -- tests whether agents follow injected instructions from untrusted input
+- **Data exfiltration** -- checks if agents can be tricked into leaking sensitive data to external endpoints
+- **Jailbreak and context manipulation** -- probes agent guardrails with adversarial prompts
+- **MCP exploitation** -- tests MCP servers for tool misuse, capability abuse, and unauthorized access
+- **Capability abuse** -- verifies agents can't exceed their intended permissions
+
+**Static checks it runs:**
+- **Hardcoded credentials** -- API keys, tokens, and passwords in source or config files
 - **MCP server misconfigurations** -- open ports, root filesystem access, missing auth
-- **Prompt injection vectors** -- inputs that manipulate agent behavior or extract data
+- **Governance gaps** -- missing SOUL.md, no capability policies, unsigned MCP servers
+- **Credential scope drift** -- Google Maps keys accessing Gemini, AWS S3 keys reaching Bedrock
 - **Supply chain risks** -- vulnerable dependencies, unsigned skills, tampered packages
 
-All 147 checks run automatically across 30 categories. No flags needed.
+147 checks across 30 categories. 55+ attack payloads. No flags needed.
 
 ---
 
