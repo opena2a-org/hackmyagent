@@ -2,6 +2,11 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [0.10.2] - 2026-03-16
+
+### Fixed
+- Trust score now displays as `47/100` instead of raw decimal `0.47` for consistency with opena2a CLI
+
 ## [Unreleased]
 
 ### Added

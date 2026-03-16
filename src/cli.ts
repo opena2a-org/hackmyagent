@@ -4747,7 +4747,7 @@ function formatTrustCheck(answer: TrustAnswer): string {
     `  Type:           ${answer.packageType || 'unknown'}`,
     `  Verdict:        ${vc}${answer.verdict.toUpperCase()}${colors.reset}`,
     `  Trust Level:    ${tc}${trustLevelLabel(answer.trustLevel)}${colors.reset} (${answer.trustLevel}/4)`,
-    `  Trust Score:    ${answer.trustScore.toFixed(2)}`,
+    `  Trust Score:    ${Math.round(answer.trustScore * 100)}/100`,
     `  Scan Status:    ${answer.scanStatus || 'unknown'}`,
   ];
 
@@ -4801,7 +4801,7 @@ function formatTrustBatch(
       (result.packageType || '-').padEnd(typeW) +
       vc + result.verdict.toUpperCase().padEnd(verdictW) + colors.reset +
       tc + trustLevelLabel(result.trustLevel).padEnd(levelW) + colors.reset +
-      (result.found ? result.trustScore.toFixed(2) : '-').toString().padEnd(scoreW) +
+      (result.found ? `${Math.round(result.trustScore * 100)}/100` : '-').padEnd(scoreW) +
       (result.scanStatus || '-').padEnd(scanW)
     );
   }
