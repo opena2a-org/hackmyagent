@@ -22,7 +22,7 @@ For a full security dashboard covering credentials, config integrity, shadow AI,
 npx opena2a-cli review
 ```
 
-[Website](https://hackmyagent.com) | [Security Checks Reference](docs/SECURITY_CHECKS.md) | [Demos](https://opena2a.org/demos) | [OpenA2A CLI](https://github.com/opena2a-org/opena2a)
+[Website](https://hackmyagent.com) | [Security Checks Reference](docs/SECURITY_CHECKS.md) | [Use Cases](docs/USE-CASES.md) | [Demos](https://opena2a.org/demos) | [OpenA2A CLI](https://github.com/opena2a-org/opena2a)
 
 ---
 
@@ -76,6 +76,17 @@ npm install --save-dev hackmyagent
 │  Run with --fix to auto-remediate 8 issues       │
 └──────────────────────────────────────────┘
 ```
+
+---
+
+## Use Cases
+
+Step-by-step guides for common workflows:
+
+- **[Scan my agent](docs/use-cases/scan-my-agent.md)** -- Run all 163 checks and auto-fix findings (5 min)
+- **[Red-team MCP servers](docs/use-cases/red-team-mcp.md)** -- Test MCP servers with adversarial payloads (10 min)
+- **[Secure OpenClaw](docs/use-cases/openclaw-security.md)** -- OpenClaw-specific checks, CVE detection, ClawHavoc IOC scanning (10 min)
+- **[CI/CD pipeline](docs/use-cases/ci-pipeline.md)** -- GitHub Actions with JSON/SARIF output (5 min)
 
 ---
 
