@@ -32,8 +32,8 @@ That's it. No config files, no setup, no flags needed.
 **Static checks it runs:**
 - **Hardcoded credentials** -- API keys, tokens, and passwords in source or config files
 - **MCP server misconfigurations** -- open ports, root filesystem access, missing auth
-- **AI agent CVEs** -- scans for known CVEs in AI tools (first scanner to offer this)
-- **OpenClaw vulnerabilities** -- security checks specific to OpenClaw bot configurations and skills
+- **AI agent CVE detection** -- scans for CVE-2026-25253 (OpenClaw WebSocket RCE), CVE-2026-25157, CVE-2026-24763, and ClawHavoc IOCs
+- **OpenClaw security** -- 34 checks for OpenClaw configurations, skills, gateway, and credential redaction ([6 PRs merged upstream](https://opena2a.org/blogs/securing-openclaw-6-prs-merged))
 - **Governance gaps** -- missing SOUL.md, no capability policies, unsigned MCP servers
 - **Credential scope drift** -- Google Maps keys accessing Gemini, AWS S3 keys reaching Bedrock
 - **Supply chain risks** -- vulnerable dependencies, unsigned skills, tampered packages
