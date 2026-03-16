@@ -16,6 +16,12 @@ npx hackmyagent secure
 
 That's it. No config files, no setup, no flags needed.
 
+For a full security dashboard covering credentials, config integrity, shadow AI, and more:
+
+```bash
+npx opena2a-cli review
+```
+
 [Website](https://hackmyagent.com) | [Security Checks Reference](docs/SECURITY_CHECKS.md) | [Demos](https://opena2a.org/demos) | [OpenA2A CLI](https://github.com/opena2a-org/opena2a)
 
 ---
