@@ -6,7 +6,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Tests](https://img.shields.io/badge/tests-765%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
 
-**147 security checks for AI agents. Find what can go wrong before an attacker does.**
+**163 security checks for AI agents. Find what can go wrong before an attacker does.**
 
 Security scanner and red-team toolkit for Claude Code, Cursor, VS Code, and any MCP server setup.
 
@@ -36,7 +36,7 @@ That's it. No config files, no setup, no flags needed.
 - **Credential scope drift** -- Google Maps keys accessing Gemini, AWS S3 keys reaching Bedrock
 - **Supply chain risks** -- vulnerable dependencies, unsigned skills, tampered packages
 
-147 checks across 30 categories. 55+ attack payloads. No flags needed.
+163 checks across 34 categories. 55+ attack payloads. No flags needed.
 
 ---
 
