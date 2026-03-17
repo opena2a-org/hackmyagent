@@ -528,6 +528,10 @@ export class AttackScanner {
       'context-manipulation': { total: 0, successful: 0 },
       'mcp-exploitation': { total: 0, successful: 0 },
       'a2a-attack': { total: 0, successful: 0 },
+      'memory-weaponization': { total: 0, successful: 0 },
+      'context-window': { total: 0, successful: 0 },
+      'supply-chain': { total: 0, successful: 0 },
+      'tool-shadow': { total: 0, successful: 0 },
     };
     for (const r of results) {
       byCategory[r.payload.category].total++;
