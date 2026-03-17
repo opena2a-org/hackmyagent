@@ -235,8 +235,8 @@ function saveSignatureRecord(agentDir: string, record: SignatureRecord): void {
 
 export const metadata: PluginMetadata = {
   packageName: 'hackmyagent',
-  displayName: 'SignCrypt',
-  description: 'Configuration integrity — Ed25519 signing, hash pinning, heartbeat expiry enforcement',
+  displayName: 'File Signing',
+  description: 'Sign skill and heartbeat files with Ed25519 to verify authorship and detect tampering',
   version: VERSION,
   findings: ['SKILL-001', 'HEARTBEAT-002', 'HEARTBEAT-003'],
   scoreImprovement: 8,

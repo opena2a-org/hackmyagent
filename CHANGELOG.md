@@ -2,12 +2,30 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [Unreleased]
+
+### Added
+- **AI Visibility Protection plugin** — new 4th plugin in fix-all pipeline that blocks .env from AI tool visibility and encrypts MCP server keys (requires secretless-ai at runtime, optional)
+- **Next steps section** after `secure` scan output — recommends `fix-all --with-aim` and shows auto-fixable count
+- **Cross-tool recommendations** — suggests `npx secretless-ai init` when credential findings are detected
+- **AI visibility scanner checks** — SLAI-001 (credentials in AI context files), SLAI-003 (.env not blocked from AI tools)
+- `--fix --dry-run` now shows `[DRY RUN] Would fix:` previews for each auto-fixable finding with summary
+
+### Changed
+- Plugin display names: CredVault -> Credential Protection, SignCrypt -> File Signing, SkillGuard -> Skill Safety Scanner
+- fix-all pipeline is now 4 plugins: Credential Protection -> AI Visibility Protection -> File Signing -> Skill Safety Scanner
+- Scanner fix messages for SKILL-001, HEARTBEAT-002/003, AIM-001/002, DNA-002 now point to `fix-all --with-aim`
+- Project type detection: SKILL.md alone no longer triggers "OpenClaw Agent" label (renamed to "AI Agent")
+- Duplicate findings at the same file:line are deduplicated (highest severity kept, shows "+ N related")
+- Registry contribution message is transparent: shows `(--no-contribute to opt out)`
+- Contribution prompt only appears after 3 scans in interactive TTY mode
+
 ## [0.10.2] - 2026-03-16
 
 ### Fixed
 - Trust score now displays as `47/100` instead of raw decimal `0.47` for consistency with opena2a CLI
 
-## [Unreleased]
+## [0.10.1]
 
 ### Added
 - UNICODE-STEGO-001: Invisible Unicode codepoint detection (variation selectors U+FE00-FE0F, tag characters U+E0100-E01EF)
