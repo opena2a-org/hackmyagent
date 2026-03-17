@@ -276,8 +276,8 @@ function createEnvExample(agentDir: string, findings: Finding[]): string | null 
 
 export const metadata: PluginMetadata = {
   packageName: 'hackmyagent',
-  displayName: 'CredVault',
-  description: 'Credential protection — scan for hardcoded secrets, move to encrypted store, per-skill isolation',
+  displayName: 'Credential Protection',
+  description: 'Scan for hardcoded secrets and replace with environment variable references',
   version: VERSION,
   findings: ['CRED-001', 'CRED-002', 'CRED-003', 'CRED-004'],
   scoreImprovement: 25,

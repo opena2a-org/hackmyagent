@@ -16,6 +16,10 @@ import {
   DATA_EXFILTRATION_PAYLOADS,
   CAPABILITY_ABUSE_PAYLOADS,
   CONTEXT_MANIPULATION_PAYLOADS,
+  MEMORY_WEAPONIZATION_PAYLOADS,
+  CONTEXT_WINDOW_PAYLOADS,
+  SUPPLY_CHAIN_PAYLOADS,
+  TOOL_SHADOW_PAYLOADS,
 } from '../../src/attack/payloads';
 import { ATTACK_CATEGORIES, AttackCategory, AttackIntensity, AttackPayload, AttackReport, AttackSeverity } from '../../src/attack/types';
 import { parseCustomPayloads } from '../../src/attack/custom-payloads';
@@ -53,12 +57,16 @@ describe('Attack Payloads', () => {
         'context-manipulation': 'CM',
         'mcp-exploitation': 'MCP',
         'a2a-attack': 'A2A',
+        'memory-weaponization': 'MEM',
+        'context-window': 'CTX',
+        'supply-chain': 'SUP',
+        'tool-shadow': 'SHADOW',
       };
 
       for (const payload of ALL_PAYLOADS) {
         const expectedPrefix = prefixes[payload.category];
         expect(payload.id.startsWith(expectedPrefix)).toBe(true);
-        expect(payload.id).toMatch(/^[A-Z][A-Z0-9]{1,2}-\d{3}$/);
+        expect(payload.id).toMatch(/^[A-Z][A-Z0-9]{1,5}-\d{3}$/);
       }
     });
 
@@ -85,6 +93,10 @@ describe('Attack Payloads', () => {
       expect(PAYLOAD_STATS.byCategory['data-exfiltration']).toBe(DATA_EXFILTRATION_PAYLOADS.length);
       expect(PAYLOAD_STATS.byCategory['capability-abuse']).toBe(CAPABILITY_ABUSE_PAYLOADS.length);
       expect(PAYLOAD_STATS.byCategory['context-manipulation']).toBe(CONTEXT_MANIPULATION_PAYLOADS.length);
+      expect(PAYLOAD_STATS.byCategory['memory-weaponization']).toBe(MEMORY_WEAPONIZATION_PAYLOADS.length);
+      expect(PAYLOAD_STATS.byCategory['context-window']).toBe(CONTEXT_WINDOW_PAYLOADS.length);
+      expect(PAYLOAD_STATS.byCategory['supply-chain']).toBe(SUPPLY_CHAIN_PAYLOADS.length);
+      expect(PAYLOAD_STATS.byCategory['tool-shadow']).toBe(TOOL_SHADOW_PAYLOADS.length);
     });
 
     it('category counts sum to total', () => {
@@ -106,6 +118,10 @@ describe('Attack Payloads', () => {
         'data-exfiltration',
         'capability-abuse',
         'context-manipulation',
+        'memory-weaponization',
+        'context-window',
+        'supply-chain',
+        'tool-shadow',
       ];
 
       for (const category of categories) {
@@ -189,6 +205,10 @@ describe('ATTACK_CATEGORIES', () => {
       'data-exfiltration',
       'capability-abuse',
       'context-manipulation',
+      'memory-weaponization',
+      'context-window',
+      'supply-chain',
+      'tool-shadow',
     ];
 
     for (const category of categories) {
@@ -576,6 +596,10 @@ describe('shouldFail', () => {
           'context-manipulation': { total: 0, successful: 0 },
           'mcp-exploitation': { total: 0, successful: 0 },
           'a2a-attack': { total: 0, successful: 0 },
+          'memory-weaponization': { total: 0, successful: 0 },
+          'context-window': { total: 0, successful: 0 },
+          'supply-chain': { total: 0, successful: 0 },
+          'tool-shadow': { total: 0, successful: 0 },
         },
       },
       results: [],

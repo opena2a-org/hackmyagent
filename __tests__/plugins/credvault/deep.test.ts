@@ -482,7 +482,7 @@ describe('CredVaultPlugin (deep)', () => {
 
     it('status returns correct metadata', async () => {
       const status = await plugin.status();
-      expect(status.name).toBe('CredVault');
+      expect(status.name).toBe('Credential Protection');
       expect(status.version).toBe('0.1.0');
     });
   });

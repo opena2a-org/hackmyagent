@@ -130,16 +130,23 @@ HackMyAgent ships with 3 built-in plugins:
 
 | Plugin | Factory | What it does |
 |--------|---------|-------------|
-| CredVault | `createCredVaultPlugin()` | Credential detection and migration |
-| Signcrypt | `createSigncryptPlugin()` | Config file signing and integrity |
-| Skillguard | `createSkillguardPlugin()` | Skill/plugin safety scanning |
+| Credential Protection | `createCredVaultPlugin()` | Scan for hardcoded secrets, replace with env var references |
+| AI Visibility Protection | `createSecretlessPlugin()` | Block .env from AI tools, encrypt MCP server keys |
+| File Signing | `createSigncryptPlugin()` | Sign skill and heartbeat files with Ed25519 |
+| Skill Safety Scanner | `createSkillguardPlugin()` | Detect dangerous patterns (RCE, exfiltration, reverse shells) and pin hashes |
 
 ```typescript
-import { createCredVaultPlugin, createSigncryptPlugin, createSkillguardPlugin } from 'hackmyagent';
+import {
+  createCredVaultPlugin,
+  createSecretlessPlugin,
+  createSigncryptPlugin,
+  createSkillguardPlugin,
+} from 'hackmyagent';
 
-const credVault = createCredVaultPlugin();
-const signcrypt = createSigncryptPlugin();
-const skillguard = createSkillguardPlugin();
+const credProtection = createCredVaultPlugin();
+const aiVisibility = createSecretlessPlugin();   // requires secretless-ai at runtime
+const fileSigning = createSigncryptPlugin();
+const skillSafety = createSkillguardPlugin();
 ```
 
 ## AIM Integration
