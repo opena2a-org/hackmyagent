@@ -10,7 +10,11 @@ export type AttackCategory =
   | 'capability-abuse'  // CA - Misuse agent tools/capabilities
   | 'context-manipulation' // CM - Poison context/memory
   | 'mcp-exploitation'  // MCP - Exploit MCP tool parameters
-  | 'a2a-attack';       // A2A - Exploit agent-to-agent messaging
+  | 'a2a-attack'             // A2A - Exploit agent-to-agent messaging
+  | 'memory-weaponization'   // MEM - Weaponize agent memory systems
+  | 'context-window'         // CTX - Manipulate context window attention
+  | 'supply-chain'           // SUP - Attack agent dependency supply chain
+  | 'tool-shadow';           // SHADOW - Shadow/replace agent tools
 
 export type AttackIntensity =
   | 'passive'     // Observation only, minimal risk
@@ -200,5 +204,25 @@ export const ATTACK_CATEGORIES: Record<AttackCategory, { name: string; descripti
     name: 'A2A Attack',
     description: 'Attempts to exploit agent-to-agent messaging (identity spoofing, delegation abuse)',
     oasbControls: ['5.1', '5.2'],
+  },
+  'memory-weaponization': {
+    name: 'Memory Weaponization',
+    description: 'Attempts to poison, persist, or extract data through agent memory systems',
+    oasbControls: ['8.1', '8.2'],
+  },
+  'context-window': {
+    name: 'Context Window',
+    description: 'Attempts to manipulate context window attention to displace safety instructions',
+    oasbControls: ['3.1', '3.2'],
+  },
+  'supply-chain': {
+    name: 'Supply Chain',
+    description: 'Attempts to compromise agent dependencies through supply chain attacks',
+    oasbControls: ['6.1', '6.2', '6.3'],
+  },
+  'tool-shadow': {
+    name: 'Tool Shadow',
+    description: 'Attempts to shadow, replace, or proxy legitimate tools to intercept data or modify behavior',
+    oasbControls: ['2.2', '2.3'],
   },
 };

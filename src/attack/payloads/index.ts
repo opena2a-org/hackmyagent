@@ -10,6 +10,10 @@ import { CAPABILITY_ABUSE_PAYLOADS } from './capability-abuse';
 import { CONTEXT_MANIPULATION_PAYLOADS } from './context-manipulation';
 import { MCP_EXPLOITATION_PAYLOADS } from './mcp-exploitation';
 import { A2A_ATTACK_PAYLOADS } from './a2a-attacks';
+import { MEMORY_WEAPONIZATION_PAYLOADS } from './memory-weaponization';
+import { CONTEXT_WINDOW_PAYLOADS } from './context-window';
+import { SUPPLY_CHAIN_PAYLOADS } from './supply-chain';
+import { TOOL_SHADOW_PAYLOADS } from './tool-shadow';
 
 /** All available payloads */
 export const ALL_PAYLOADS: AttackPayload[] = [
@@ -20,6 +24,10 @@ export const ALL_PAYLOADS: AttackPayload[] = [
   ...CONTEXT_MANIPULATION_PAYLOADS,
   ...MCP_EXPLOITATION_PAYLOADS,
   ...A2A_ATTACK_PAYLOADS,
+  ...MEMORY_WEAPONIZATION_PAYLOADS,
+  ...CONTEXT_WINDOW_PAYLOADS,
+  ...SUPPLY_CHAIN_PAYLOADS,
+  ...TOOL_SHADOW_PAYLOADS,
 ];
 
 /** Get payloads by category */
@@ -67,6 +75,10 @@ export const PAYLOAD_STATS = {
     'context-manipulation': CONTEXT_MANIPULATION_PAYLOADS.length,
     'mcp-exploitation': MCP_EXPLOITATION_PAYLOADS.length,
     'a2a-attack': A2A_ATTACK_PAYLOADS.length,
+    'memory-weaponization': MEMORY_WEAPONIZATION_PAYLOADS.length,
+    'context-window': CONTEXT_WINDOW_PAYLOADS.length,
+    'supply-chain': SUPPLY_CHAIN_PAYLOADS.length,
+    'tool-shadow': TOOL_SHADOW_PAYLOADS.length,
   } as Record<AttackCategory, number>,
   byIntensity: {
     passive: ALL_PAYLOADS.filter(p => p.intensity === 'passive').length,
@@ -83,4 +95,8 @@ export {
   CONTEXT_MANIPULATION_PAYLOADS,
   MCP_EXPLOITATION_PAYLOADS,
   A2A_ATTACK_PAYLOADS,
+  MEMORY_WEAPONIZATION_PAYLOADS,
+  CONTEXT_WINDOW_PAYLOADS,
+  SUPPLY_CHAIN_PAYLOADS,
+  TOOL_SHADOW_PAYLOADS,
 };

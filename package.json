@@ -1,6 +1,6 @@
 {
   "name": "hackmyagent",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "description": "Find it. Break it. Fix it. The hacker's toolkit for AI agents.",
   "bin": {
     "hackmyagent": "dist/cli.js"
@@ -12,7 +12,11 @@
     "./plugins": "./dist/plugins/core.js",
     "./semantic": "./dist/semantic/index.js",
     "./arp": "./dist/arp/index.js",
-    "./oasb": "./dist/oasb/harness/arp-wrapper.js"
+    "./oasb": "./dist/oasb/harness/arp-wrapper.js",
+    "./memory": "./dist/attack/payloads/memory-weaponization.js",
+    "./context-window": "./dist/attack/payloads/context-window.js",
+    "./supply-chain": "./dist/attack/payloads/supply-chain.js",
+    "./shadow": "./dist/attack/payloads/tool-shadow.js"
   },
   "files": [
     "dist",

@@ -3,7 +3,7 @@
  * Unified security toolkit for AI agents.
  */
 
-export const VERSION = '0.10.0';
+export const VERSION = '0.11.0';
 
 // Checker module
 export {
@@ -51,6 +51,10 @@ export {
   shouldFail,
   MCP_EXPLOITATION_PAYLOADS,
   A2A_ATTACK_PAYLOADS,
+  MEMORY_WEAPONIZATION_PAYLOADS,
+  CONTEXT_WINDOW_PAYLOADS,
+  SUPPLY_CHAIN_PAYLOADS,
+  TOOL_SHADOW_PAYLOADS,
 } from './attack';
 
 export type {
