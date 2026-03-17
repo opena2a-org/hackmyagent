@@ -24,3 +24,17 @@ export type {
   RevocationInfo,
   RiskLevel,
 } from './check-skill';
+
+export {
+  analyzeSkillDependencies,
+  buildDependencyGraph,
+  detectCircularDeps,
+  detectPhantomDeps,
+  detectUnpinnedDeps,
+  parseSkillFrontmatter,
+} from './skill-dependency-graph';
+
+export type {
+  SkillMetadata,
+  DependencyGraph,
+} from './skill-dependency-graph';

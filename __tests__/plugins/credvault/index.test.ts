@@ -169,7 +169,7 @@ describe('CredVaultPlugin', () => {
   describe('status', () => {
     it('returns plugin status', async () => {
       const status = await plugin.status();
-      expect(status.name).toBe('CredVault');
+      expect(status.name).toBe('Credential Protection');
       expect(status.version).toBe('0.1.0');
     });
   });

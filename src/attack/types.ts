@@ -4,12 +4,12 @@
  */
 
 export type AttackCategory =
-  | 'prompt-injection'  // PI - Manipulate agent behavior via input
-  | 'jailbreak'         // JB - Bypass safety guardrails
-  | 'data-exfiltration' // DE - Extract sensitive information
-  | 'capability-abuse'  // CA - Misuse agent tools/capabilities
-  | 'context-manipulation' // CM - Poison context/memory
-  | 'mcp-exploitation'  // MCP - Exploit MCP tool parameters
+  | 'prompt-injection'       // PI - Manipulate agent behavior via input
+  | 'jailbreak'              // JB - Bypass safety guardrails
+  | 'data-exfiltration'      // DE - Extract sensitive information
+  | 'capability-abuse'       // CA - Misuse agent tools/capabilities
+  | 'context-manipulation'   // CM - Poison context/memory
+  | 'mcp-exploitation'       // MCP - Exploit MCP tool parameters
   | 'a2a-attack'             // A2A - Exploit agent-to-agent messaging
   | 'memory-weaponization'   // MEM - Weaponize agent memory systems
   | 'context-window'         // CTX - Manipulate context window attention

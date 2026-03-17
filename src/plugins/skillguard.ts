@@ -254,8 +254,8 @@ function scanForUnpinnedSkills(agentDir: string): Finding[] {
 
 export const metadata: PluginMetadata = {
   packageName: 'hackmyagent',
-  displayName: 'SkillGuard',
-  description: 'Skill integrity — hash pinning, tamper detection, dangerous pattern scanning',
+  displayName: 'Skill Safety Scanner',
+  description: 'Detect dangerous patterns in skills (RCE, exfiltration, reverse shells) and pin hashes for tamper detection',
   version: VERSION,
   findings: ['SKILL-002', 'SKILL-004', 'SKILL-005', 'SKILL-006', 'SKILL-008', 'SKILL-UNPIN', 'SKILL-TAMPER'],
   scoreImprovement: 12,

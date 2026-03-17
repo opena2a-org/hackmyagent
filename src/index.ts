@@ -10,6 +10,12 @@ export {
   checkSkill,
   parseSkillIdentifier,
   analyzePermissions,
+  analyzeSkillDependencies,
+  buildDependencyGraph,
+  detectCircularDeps,
+  detectPhantomDeps,
+  detectUnpinnedDeps,
+  parseSkillFrontmatter,
 } from './checker';
 
 export type {
@@ -21,6 +27,8 @@ export type {
   RiskLevel,
   SkillIdentifier,
   PermissionAnalysis,
+  SkillMetadata,
+  DependencyGraph,
 } from './checker';
 
 // Hardening module
@@ -162,6 +170,8 @@ export { createPlugin as createSkillguardPlugin } from './plugins/skillguard';
 
 // Agent Runtime Protection
 export { AgentRuntimeProtection } from './arp';
+export { SkillCapabilityMonitor, createCapabilityMonitor, parseDeclaredCapabilities } from './arp';
+export type { DeclaredCapabilities, ObservedBehavior, CapabilityViolation } from './arp';
 
 // Soul module (Behavioral Governance Scanner)
 export { SoulScanner, CONTROL_DEFS, DOMAIN_ORDER, GOVERNANCE_FILES, PROFILE_DOMAINS } from './soul';

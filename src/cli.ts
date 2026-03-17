@@ -1683,8 +1683,8 @@ async function handleContribution(
       } else if (configSetting === false) {
         shouldContribute = false;
       } else {
-        // Not configured -- prompt if appropriate
-        if (format === 'text' && shouldPromptContribute()) {
+        // Not configured -- prompt after 3 scans (interactive TTY only)
+        if (format === 'text' && process.stdout.isTTY && shouldPromptContribute()) {
           shouldContribute = await showContributePrompt();
         } else {
           shouldContribute = false;
@@ -1702,7 +1702,7 @@ async function handleContribution(
     const result = await submitContribution(payload, registryUrl);
 
     if (result.success && format === 'text') {
-      console.log('Shared findings with OpenA2A Registry');
+      console.log('Contributed anonymized scan summary to OpenA2A Registry (--no-contribute to opt out)');
     }
     // Failures are silently ignored -- contribution is best-effort
   } catch {
@@ -3879,6 +3879,7 @@ function generateAttackHtmlReport(report: AttackReport): string {
 // --- fix-all: Run all OpenClaw plugins to scan and remediate ---
 
 import { createPlugin as createCredVaultPlugin } from './plugins/credvault';
+import { createPlugin as createSecretlessPlugin } from './plugins/secretless';
 import { createPlugin as createSigncryptPlugin } from './plugins/signcrypt';
 import { createPlugin as createSkillguardPlugin } from './plugins/skillguard';
 import { AIMCore } from '@opena2a/aim-core';
@@ -3902,27 +3903,35 @@ program
   .description(`Run all OpenA2A security plugins to scan and auto-fix agent issues
 
 Runs the full plugin suite in order:
-  1. SkillGuard  — hash pinning, tamper detection, dangerous patterns
-  2. SignCrypt   — Ed25519 signing, heartbeat hash pins
-  3. CredVault   — credential detection, env var replacement
+  1. Credential Protection     — find hardcoded secrets, replace with env vars
+  2. AI Visibility Protection  — block .env from AI tools, encrypt MCP keys
+  3. File Signing              — sign skills and heartbeats with Ed25519
+  4. Skill Safety Scanner      — detect dangerous patterns, pin hashes
 
 Each plugin scans for findings, then auto-fixes what it can.
 Dangerous patterns (reverse shells, exfil, etc.) require manual review.
+
+Step 2 requires secretless-ai (npm install -g secretless-ai). If not
+installed, the plugin reports this and continues with the remaining steps.
+
+Use --with-aim to create a cryptographic identity for your agent.
+This enables automatic file signing, audit logging, and trust scoring
+so you don't need to manage keys or track files manually.
 
 Exit code 1 if critical/high issues remain after fixing.
 
 Examples:
   $ hackmyagent fix-all                     Scan and fix current directory
   $ hackmyagent fix-all ./my-agent          Scan specific directory
+  $ hackmyagent fix-all --with-aim          Create identity + sign + audit (recommended)
   $ hackmyagent fix-all --dry-run           Preview fixes without applying
   $ hackmyagent fix-all --scan-only         Scan without fixing
-  $ hackmyagent fix-all --json              JSON output for CI
-  $ hackmyagent fix-all --with-aim          Enable AIM identity and audit`)
+  $ hackmyagent fix-all --json              JSON output for CI`)
   .argument('[directory]', 'Agent directory to scan (default: current directory)', '')
   .option('--dry-run', 'Preview fixes without applying them')
   .option('--scan-only', 'Only scan, do not fix')
   .option('--json', 'Output as JSON (for scripting/CI)')
-  .option('--with-aim', 'Initialize AIM Core for identity-aware audit logging')
+  .option('--with-aim', 'Create agent identity for automatic signing, audit logging, and trust scoring')
   .option('-v, --verbose', 'Show all findings including passed plugins')
   .action(
     async (
@@ -3984,12 +3993,15 @@ Examples:
         }
 
         // Create and initialize plugins in execution order
-        // Order matters: CredVault replaces creds, SignCrypt signs skills,
-        // SkillGuard pins last so hashes reflect the final file state.
+        // 1. CredVault finds hardcoded secrets, replaces with ${VAR}
+        // 2. Secretless blocks .env from AI visibility (completes the credential lifecycle)
+        // 3. SignCrypt signs skill and heartbeat files
+        // 4. SkillGuard pins hashes last so they reflect the final file state
         const pluginFactories: Array<{ name: string; create: () => OpenA2APlugin }> = [
-          { name: 'CredVault', create: createCredVaultPlugin },
-          { name: 'SignCrypt', create: createSigncryptPlugin },
-          { name: 'SkillGuard', create: createSkillguardPlugin },
+          { name: 'Credential Protection', create: createCredVaultPlugin },
+          { name: 'AI Visibility Protection', create: createSecretlessPlugin },
+          { name: 'File Signing', create: createSigncryptPlugin },
+          { name: 'Skill Safety Scanner', create: createSkillguardPlugin },
         ];
 
         const plugins: Array<{ name: string; plugin: OpenA2APlugin }> = [];
