@@ -2,9 +2,9 @@
  * Skill Dependency Graph Analysis
  *
  * Parses SKILL.md files, builds a dependency graph, and detects:
- * - SKILL-010: Circular dependencies
- * - SKILL-011: Phantom dependencies (referenced but not found)
- * - SKILL-012: Unpinned dependency versions
+ * - SKILL-015: Circular dependencies
+ * - SKILL-016: Phantom dependencies (referenced but not found)
+ * - SKILL-017: Unpinned dependency versions
  */
 
 import * as fs from 'fs';
@@ -222,7 +222,7 @@ export function detectCircularDeps(graph: DependencyGraph): Finding[] {
     const cycleStr = cycle.join(' -> ');
     const node = graph.nodes.get(cycle[0]);
     findings.push({
-      id: 'SKILL-010',
+      id: 'SKILL-015',
       title: 'Circular dependency detected',
       description: `Circular dependency chain: ${cycleStr}`,
       severity: 'high' as Severity,
@@ -245,7 +245,7 @@ export function detectPhantomDeps(graph: DependencyGraph): Finding[] {
       if (!graph.nodes.has(dep)) {
         const node = graph.nodes.get(skillName);
         findings.push({
-          id: 'SKILL-011',
+          id: 'SKILL-016',
           title: 'Phantom dependency',
           description: `Skill "${skillName}" depends on "${dep}" which was not found in the scanned directory`,
           severity: 'medium' as Severity,
@@ -272,7 +272,7 @@ export function detectUnpinnedDeps(graph: DependencyGraph): Finding[] {
       const hasVersion = dep.includes('@') && dep.split('@').length === 2 && dep.split('@')[1].length > 0;
       if (!hasVersion) {
         findings.push({
-          id: 'SKILL-012',
+          id: 'SKILL-017',
           title: 'Unpinned dependency version',
           description: `Skill "${metadata.name}" depends on "${dep}" without a pinned version. Pin to a specific version (e.g., "${dep}@1.0.0") to prevent supply chain attacks.`,
           severity: 'low' as Severity,

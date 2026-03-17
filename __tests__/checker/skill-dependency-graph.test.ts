@@ -195,7 +195,7 @@ dependencies:
     const findings = detectCircularDeps(graph);
 
     expect(findings.length).toBeGreaterThan(0);
-    expect(findings[0].id).toBe('SKILL-010');
+    expect(findings[0].id).toBe('SKILL-015');
     expect(findings[0].severity).toBe('high');
     expect(findings[0].description).toContain('Circular dependency');
   });
@@ -226,7 +226,7 @@ dependencies:
     const findings = detectCircularDeps(graph);
 
     expect(findings.length).toBeGreaterThan(0);
-    expect(findings[0].id).toBe('SKILL-010');
+    expect(findings[0].id).toBe('SKILL-015');
   });
 
   it('returns empty when no circular dependencies exist', () => {
@@ -272,7 +272,7 @@ dependencies:
     const findings = detectPhantomDeps(graph);
 
     expect(findings.length).toBe(1);
-    expect(findings[0].id).toBe('SKILL-011');
+    expect(findings[0].id).toBe('SKILL-016');
     expect(findings[0].description).toContain('nonexistent-skill');
     expect(findings[0].description).toContain('not found');
   });
@@ -319,7 +319,7 @@ dependencies:
     const findings = detectUnpinnedDeps(graph);
 
     expect(findings.length).toBe(1);
-    expect(findings[0].id).toBe('SKILL-012');
+    expect(findings[0].id).toBe('SKILL-017');
     expect(findings[0].description).toContain('dep-without-version');
     expect(findings[0].description).toContain('without a pinned version');
   });
@@ -387,10 +387,10 @@ dependencies:
     const findings = analyzeSkillDependencies(tmpDir);
 
     const ids = findings.map((f) => f.id);
-    // Should have circular dep (SKILL-010), phantom dep (SKILL-011), and unpinned (SKILL-012)
-    expect(ids).toContain('SKILL-010');
-    expect(ids).toContain('SKILL-011');
-    expect(ids).toContain('SKILL-012');
+    // Should have circular dep (SKILL-015), phantom dep (SKILL-016), and unpinned (SKILL-017)
+    expect(ids).toContain('SKILL-015');
+    expect(ids).toContain('SKILL-016');
+    expect(ids).toContain('SKILL-017');
   });
 
   it('returns empty for directory with no SKILL.md files', () => {
