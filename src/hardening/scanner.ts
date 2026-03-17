@@ -4,10 +4,17 @@
  */
 
 import * as fs from 'fs/promises';
+import * as crypto from 'crypto';
 import * as path from 'path';
 import type { ScanResult, SecurityFinding, Severity, ProjectType } from './security-check';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
 import { enrichWithTaxonomy } from './taxonomy';
+import { classifySkillSection, isLikelyFalsePositive } from './skill-context';
+import {
+  parseDeclaredCapabilities as parseSkillDeclaredCaps,
+  inferActualCapabilities,
+  validateCapabilities,
+} from './skill-capability-validator';
 
 /**
  * Defines which checks apply to which project types
@@ -4346,7 +4353,18 @@ dist/
       // SKILL-001: Unsigned Skill
       const hasSignature =
         content.includes('opena2a_signature:') ||
-        content.includes('-----BEGIN SIGNATURE-----');
+        content.includes('-----BEGIN SIGNATURE-----') ||
+        content.includes('<!-- opena2a-guard hash=');
+
+      let skill001Fixed = false;
+      if (!hasSignature && autoFix) {
+        const hash = crypto.createHash('sha256').update(content).digest('hex');
+        const signedDate = new Date().toISOString();
+        const signatureBlock = `\n<!-- opena2a-guard hash="sha256:${hash}" signed="${signedDate}" -->`;
+        content = content + signatureBlock;
+        await fs.writeFile(skillFile, content);
+        skill001Fixed = true;
+      }
 
       findings.push({
         checkId: 'SKILL-001',
@@ -4354,12 +4372,16 @@ dist/
         description: 'Skill file lacks cryptographic signature for authenticity verification',
         category: 'skill',
         severity: 'medium',
-        passed: hasSignature,
+        passed: hasSignature || skill001Fixed,
         message: hasSignature
           ? 'Skill has cryptographic signature'
-          : 'Skill is unsigned - cannot verify authenticity or integrity',
+          : skill001Fixed
+            ? 'Skill was unsigned - signature added'
+            : 'Skill is unsigned - cannot verify authenticity or integrity',
         file: relativePath,
-        fixable: false,
+        fixable: true,
+        fixed: skill001Fixed,
+        fixMessage: skill001Fixed ? 'Added SHA-256 signature block to skill file' : undefined,
         fix: 'Sign the skill using: openclaw sign skill.md --key ~/.openclaw/signing-key.pem',
       });
 
@@ -4411,25 +4433,45 @@ dist/
       }
 
       // SKILL-004: Filesystem Write Outside Sandbox
-      const filesystemWildcardPattern = /filesystem:\s*\*|filesystem:\s*~\/\*|filesystem:\s*\//gi;
+      const filesystemWildcardPattern = /filesystem:\s*\*|filesystem:\s*~\/|filesystem:\s*\//gi;
+      let skill004FileModified = false;
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         filesystemWildcardPattern.lastIndex = 0;
         if (filesystemWildcardPattern.test(line)) {
+          let fixApplied = false;
+          if (autoFix) {
+            const originalLine = lines[i];
+            lines[i] = lines[i].replace(/filesystem:\s*\*/gi, 'filesystem:./');
+            lines[i] = lines[i].replace(/filesystem:\s*~\//gi, 'filesystem:./data/');
+            if (lines[i] !== originalLine) {
+              fixApplied = true;
+              skill004FileModified = true;
+            }
+          }
+
           findings.push({
             checkId: 'SKILL-004',
             name: 'Filesystem Write Outside Sandbox',
             description: 'Skill requests broad filesystem access outside sandbox',
             category: 'skill',
             severity: 'critical',
-            passed: false,
-            message: `Broad filesystem access requested: "${line.trim()}"`,
+            passed: fixApplied,
+            message: fixApplied
+              ? `Broad filesystem access restricted: "${lines[i].trim()}"`
+              : `Broad filesystem access requested: "${line.trim()}"`,
             file: relativePath,
             line: i + 1,
-            fixable: false,
+            fixable: true,
+            fixed: fixApplied,
+            fixMessage: fixApplied ? 'Restricted filesystem access to sandbox scope' : undefined,
             fix: 'Restrict filesystem access to specific directories (e.g., filesystem:./data/*)',
           });
         }
+      }
+      if (skill004FileModified) {
+        content = lines.join('\n');
+        await fs.writeFile(skillFile, content);
       }
 
       // SKILL-005: Credential File Access
@@ -4560,12 +4602,16 @@ dist/
         }
       }
 
-      // SKILL-010: Env File Exfiltration
+      // SKILL-010: Env File Exfiltration (context-aware)
       const envFilePattern = /\.env|dotenv|process\.env|environ|getenv/gi;
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         envFilePattern.lastIndex = 0;
         if (envFilePattern.test(line)) {
+          const section = classifySkillSection(content, i);
+          if (isLikelyFalsePositive('SKILL-010', line, section, content)) {
+            continue;
+          }
           findings.push({
             checkId: 'SKILL-010',
             name: 'Env File Exfiltration',
@@ -4582,12 +4628,16 @@ dist/
         }
       }
 
-      // SKILL-011: Browser Data Access
+      // SKILL-011: Browser Data Access (context-aware)
       const browserDataPattern = /chrome|firefox|cookies|localStorage|sessionStorage|browser.*data|chromium|safari.*cookies/gi;
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         browserDataPattern.lastIndex = 0;
         if (browserDataPattern.test(line)) {
+          const section = classifySkillSection(content, i);
+          if (isLikelyFalsePositive('SKILL-011', line, section, content)) {
+            continue;
+          }
           findings.push({
             checkId: 'SKILL-011',
             name: 'Browser Data Access',
@@ -4604,12 +4654,16 @@ dist/
         }
       }
 
-      // SKILL-012: Crypto Wallet Access
+      // SKILL-012: Crypto Wallet Access (context-aware)
       const cryptoWalletPattern = /wallet|solana|phantom|metamask|ledger|seed\s*phrase|mnemonic|\.sol\b|\.eth\b|private\s*key/gi;
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         cryptoWalletPattern.lastIndex = 0;
         if (cryptoWalletPattern.test(line)) {
+          const section = classifySkillSection(content, i);
+          if (isLikelyFalsePositive('SKILL-012', line, section, content)) {
+            continue;
+          }
           findings.push({
             checkId: 'SKILL-012',
             name: 'Crypto Wallet Access',
@@ -4623,6 +4677,92 @@ dist/
             fixable: false,
             fix: 'Skills should never access cryptocurrency wallets, seed phrases, or private keys',
           });
+        }
+      }
+
+      // SKILL-018: Undeclared Capability Validation
+      const declaredCaps = parseSkillDeclaredCaps(content);
+      const inferredCaps = inferActualCapabilities(content);
+      const capFindings = validateCapabilities(declaredCaps, inferredCaps, relativePath);
+      findings.push(...capFindings);
+
+      // SKILL-019: Stale Skill Signature
+      const signatureMatch = content.match(
+        /<!-- opena2a-guard hash="sha256:([a-f0-9]+)" signed="([^"]+)"(?: expires_at="([^"]+)")? -->/
+      );
+      if (signatureMatch) {
+        const storedHash = signatureMatch[1];
+        const signatureBlock = signatureMatch[0];
+        // Compute hash of content excluding the signature block
+        const contentWithoutSig = content.replace(signatureBlock, '').replace(/\n$/, '');
+        const computedHash = crypto.createHash('sha256').update(contentWithoutSig).digest('hex');
+
+        if (storedHash !== computedHash) {
+          let skill019Fixed = false;
+          if (autoFix) {
+            const newHash = crypto.createHash('sha256').update(contentWithoutSig).digest('hex');
+            const newDate = new Date().toISOString();
+            const expiresAt = signatureMatch[3]
+              ? ` expires_at="${new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()}"`
+              : '';
+            const newSigBlock = `<!-- opena2a-guard hash="sha256:${newHash}" signed="${newDate}"${expiresAt} -->`;
+            content = content.replace(signatureBlock, newSigBlock);
+            await fs.writeFile(skillFile, content);
+            skill019Fixed = true;
+          }
+
+          findings.push({
+            checkId: 'SKILL-019',
+            name: 'Stale Skill Signature',
+            description: 'Skill content has changed since it was signed - signature hash mismatch',
+            category: 'skill',
+            severity: 'medium',
+            passed: skill019Fixed,
+            message: skill019Fixed
+              ? 'Stale signature detected and re-signed'
+              : 'Signature hash does not match current content - skill may have been tampered with',
+            file: relativePath,
+            fixable: true,
+            fixed: skill019Fixed,
+            fixMessage: skill019Fixed ? 'Re-computed hash and updated signature block' : undefined,
+            fix: 'Re-sign the skill to update the hash: hackmyagent secure --fix',
+          });
+        }
+
+        // HEARTBEAT-007: Expired Heartbeat (check expires_at in signature block)
+        if (signatureMatch[3]) {
+          const expiresAt = new Date(signatureMatch[3]);
+          const now = new Date();
+          if (expiresAt < now) {
+            let hb007Fixed = false;
+            if (autoFix) {
+              const contentWithoutSig = content.replace(signatureMatch[0], '').replace(/\n$/, '');
+              const newHash = crypto.createHash('sha256').update(contentWithoutSig).digest('hex');
+              const newDate = new Date().toISOString();
+              const newExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+              const newSigBlock = `<!-- opena2a-guard hash="sha256:${newHash}" signed="${newDate}" expires_at="${newExpiry}" -->`;
+              content = content.replace(signatureMatch[0], newSigBlock);
+              await fs.writeFile(skillFile, content);
+              hb007Fixed = true;
+            }
+
+            findings.push({
+              checkId: 'HEARTBEAT-007',
+              name: 'Expired Heartbeat',
+              description: 'Skill signature has expired and needs renewal',
+              category: 'skill',
+              severity: 'high',
+              passed: hb007Fixed,
+              message: hb007Fixed
+                ? 'Expired signature renewed with 7-day validity'
+                : `Skill signature expired at ${signatureMatch[3]}`,
+              file: relativePath,
+              fixable: true,
+              fixed: hb007Fixed,
+              fixMessage: hb007Fixed ? 'Updated expiry to 7 days from now and re-signed' : undefined,
+              fix: 'Re-sign the skill with a new expiry: hackmyagent secure --fix',
+            });
+          }
         }
       }
     }
