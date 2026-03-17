@@ -44,6 +44,16 @@ export type {
   FindingSeverity,
 } from './scanner';
 
+// Hardening sub-modules
+export { classifySkillSection, isLikelyFalsePositive } from './hardening';
+export type { SkillSection } from './hardening';
+export {
+  parseDeclaredCapabilities as parseSkillDeclaredCapabilities,
+  inferActualCapabilities,
+  validateCapabilities,
+} from './hardening';
+export type { SkillDeclaredCapabilities, InferredCapability } from './hardening';
+
 // Attack module
 export { AttackScanner } from './attack';
 
