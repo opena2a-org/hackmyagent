@@ -35,6 +35,8 @@ export { AnthropicAdapter, OpenAIAdapter, OllamaAdapter, createAdapter, autoDete
 export { ProcessMonitor } from './monitors/process';
 export { NetworkMonitor } from './monitors/network';
 export { FilesystemMonitor } from './monitors/filesystem';
+export { SkillCapabilityMonitor, createCapabilityMonitor, parseDeclaredCapabilities } from './monitors/skill-capability-monitor';
+export type { DeclaredCapabilities, ObservedBehavior, CapabilityViolation } from './monitors/skill-capability-monitor';
 export { ProcessInterceptor } from './interceptors/process';
 export { NetworkInterceptor } from './interceptors/network';
 export { FilesystemInterceptor } from './interceptors/filesystem';

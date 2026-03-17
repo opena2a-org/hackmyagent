@@ -3,13 +3,19 @@
  * Unified security toolkit for AI agents.
  */
 
-export const VERSION = '0.10.0';
+export const VERSION = '0.11.0';
 
 // Checker module
 export {
   checkSkill,
   parseSkillIdentifier,
   analyzePermissions,
+  analyzeSkillDependencies,
+  buildDependencyGraph,
+  detectCircularDeps,
+  detectPhantomDeps,
+  detectUnpinnedDeps,
+  parseSkillFrontmatter,
 } from './checker';
 
 export type {
@@ -21,6 +27,8 @@ export type {
   RiskLevel,
   SkillIdentifier,
   PermissionAnalysis,
+  SkillMetadata,
+  DependencyGraph,
 } from './checker';
 
 // Hardening module
@@ -51,6 +59,10 @@ export {
   shouldFail,
   MCP_EXPLOITATION_PAYLOADS,
   A2A_ATTACK_PAYLOADS,
+  MEMORY_WEAPONIZATION_PAYLOADS,
+  CONTEXT_WINDOW_PAYLOADS,
+  SUPPLY_CHAIN_PAYLOADS,
+  TOOL_SHADOW_PAYLOADS,
 } from './attack';
 
 export type {
@@ -158,6 +170,8 @@ export { createPlugin as createSkillguardPlugin } from './plugins/skillguard';
 
 // Agent Runtime Protection
 export { AgentRuntimeProtection } from './arp';
+export { SkillCapabilityMonitor, createCapabilityMonitor, parseDeclaredCapabilities } from './arp';
+export type { DeclaredCapabilities, ObservedBehavior, CapabilityViolation } from './arp';
 
 // Soul module (Behavioral Governance Scanner)
 export { SoulScanner, CONTROL_DEFS, DOMAIN_ORDER, GOVERNANCE_FILES, PROFILE_DOMAINS } from './soul';
