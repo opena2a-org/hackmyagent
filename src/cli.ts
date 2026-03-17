@@ -118,7 +118,7 @@ program
   .name('hackmyagent')
   .description(`Find it. Break it. Fix it.
 
-The hacker's toolkit for AI agents. 147+ security checks, 75 attack
+The hacker's toolkit for AI agents. 147+ security checks, 115 attack
 payloads, auto-fix with rollback, and OASB benchmark compliance.
 
 Documentation: https://hackmyagent.com/docs
@@ -131,7 +131,7 @@ Updates (v${VERSION}):
 
 Examples:
   $ hackmyagent secure                         Find vulnerabilities (147+ checks)
-  $ hackmyagent attack --local                 Break it with 75 attack payloads
+  $ hackmyagent attack --local                 Break it with 115 attack payloads
   $ hackmyagent secure --fix                   Fix issues automatically
   $ hackmyagent fix-all                        Run all security plugins
   $ hackmyagent scan example.com               Scan external infrastructure`)
