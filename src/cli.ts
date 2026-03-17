@@ -1683,8 +1683,8 @@ async function handleContribution(
       } else if (configSetting === false) {
         shouldContribute = false;
       } else {
-        // Not configured -- prompt if appropriate
-        if (format === 'text' && shouldPromptContribute()) {
+        // Not configured -- prompt after 3 scans (interactive TTY only)
+        if (format === 'text' && process.stdout.isTTY && shouldPromptContribute()) {
           shouldContribute = await showContributePrompt();
         } else {
           shouldContribute = false;
@@ -1702,7 +1702,7 @@ async function handleContribution(
     const result = await submitContribution(payload, registryUrl);
 
     if (result.success && format === 'text') {
-      console.log('Shared findings with OpenA2A Registry');
+      console.log('Contributed anonymized scan summary to OpenA2A Registry (--no-contribute to opt out)');
     }
     // Failures are silently ignored -- contribution is best-effort
   } catch {
@@ -3173,6 +3173,10 @@ function generateAttackHtmlReport(report: AttackReport): string {
     'context-manipulation': 'CM',
     'mcp-exploitation': 'MCP',
     'a2a-attack': 'A2A',
+    'memory-weaponization': 'MEM',
+    'context-window': 'CTX',
+    'supply-chain': 'SUP',
+    'tool-shadow': 'SHADOW',
   };
 
   // Donut chart for attack results
