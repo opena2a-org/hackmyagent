@@ -3173,6 +3173,10 @@ function generateAttackHtmlReport(report: AttackReport): string {
     'context-manipulation': 'CM',
     'mcp-exploitation': 'MCP',
     'a2a-attack': 'A2A',
+    'memory-weaponization': 'MEM',
+    'context-window': 'CTX',
+    'supply-chain': 'SUP',
+    'tool-shadow': 'SHADOW',
   };
 
   // Donut chart for attack results
