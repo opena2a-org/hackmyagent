@@ -2,7 +2,7 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
-## [0.11.2] - 2026-03-18
+## [0.11.3] - 2026-03-18
 
 ### Added
 - **AI Visibility Protection plugin** — new 4th plugin in fix-all pipeline that blocks .env from AI tool visibility and encrypts MCP server keys (requires secretless-ai at runtime, optional)
