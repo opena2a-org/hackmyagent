@@ -48,6 +48,10 @@ function safeExec(cmd: string): string | null {
   }
 }
 
+function isValidContainerName(name: string): boolean {
+  return /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name);
+}
+
 function maskSecret(value: string): string {
   if (value.length <= 4) return '***';
   return value.substring(0, 4) + '***';
@@ -422,7 +426,7 @@ export class NemoClawScanner {
     }
 
     const results: SecurityFinding[] = [];
-    const names = containerNames.split('\n').filter(Boolean);
+    const names = containerNames.split('\n').filter(n => n && isValidContainerName(n));
     let foundAny = false;
 
     for (const name of names) {
@@ -1134,7 +1138,7 @@ export class NemoClawScanner {
         'No running Docker containers');
     }
 
-    const names = containerNames.split('\n').filter(Boolean);
+    const names = containerNames.split('\n').filter(n => n && isValidContainerName(n));
     const privileged: string[] = [];
 
     for (const name of names) {
@@ -1184,7 +1188,7 @@ export class NemoClawScanner {
         'No running Docker containers');
     }
 
-    const names = containerNames.split('\n').filter(Boolean);
+    const names = containerNames.split('\n').filter(n => n && isValidContainerName(n));
     const unconfined: string[] = [];
 
     for (const name of names) {
@@ -1345,7 +1349,7 @@ export class NemoClawScanner {
         'No running Docker containers');
     }
 
-    const names = containerNames.split('\n').filter(Boolean);
+    const names = containerNames.split('\n').filter(n => n && isValidContainerName(n));
     const noHeartbeat: string[] = [];
 
     for (const name of names) {
@@ -1405,7 +1409,7 @@ export class NemoClawScanner {
         'No running Docker containers');
     }
 
-    const names = containerNames.split('\n').filter(Boolean);
+    const names = containerNames.split('\n').filter(n => n && isValidContainerName(n));
     const leaking: string[] = [];
 
     for (const name of names) {
@@ -1522,7 +1526,7 @@ export class NemoClawScanner {
   private detectFirewallRule(port: number): boolean {
     if (process.platform === 'darwin') {
       // macOS: check pf
-      const pfStatus = safeExec('sudo pfctl -s rules 2>/dev/null');
+      const pfStatus = safeExec('pfctl -s rules 2>/dev/null');
       if (pfStatus && pfStatus.includes(String(port))) return true;
 
       // Also check Application Firewall
