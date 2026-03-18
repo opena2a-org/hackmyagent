@@ -1811,9 +1811,17 @@ Examples:
   .option('--registry-key <key>', 'Registry API key (default: REGISTRY_API_KEY env)')
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean }) => {
+  .option('--ci', 'CI mode: suppress interactive prompts, exit non-zero on findings')
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
+
+      // CI mode: force non-interactive defaults
+      if (options.ci) {
+        if (!options.format && !options.json) options.format = 'text';
+        // In CI, never prompt -- only contribute if explicitly --contribute
+        if (options.contribute === undefined) options.contribute = false;
+      }
 
       // Check if directory exists
       if (!require('fs').existsSync(targetDir)) {
@@ -2277,7 +2285,10 @@ Examples:
         console.log(`${colors.cyan}Helpful?${RESET()} Star the project: https://github.com/opena2a-org/opena2a\n`);
       }
 
-      // Exit with non-zero if critical/high issues remain
+      // Exit with non-zero if critical/high issues remain (or any issues in --ci mode)
+      if (options.ci && issues.length > 0) {
+        process.exit(1);
+      }
       const criticalOrHigh = issues.filter(
         (f: SecurityFinding) => f.severity === 'critical' || f.severity === 'high'
       );
@@ -2577,7 +2588,9 @@ Examples:
       options: { json?: boolean; ports?: string; timeout?: string; verbose?: boolean }
     ) => {
       try {
-        console.log(`\nScanning ${target}...\n`);
+        if (!options.json) {
+          console.log(`\nScanning ${target}...\n`);
+        }
 
         const scanner = new ExternalScanner();
         const customPorts = options.ports
@@ -4347,9 +4360,15 @@ Examples:
   .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', process.env.REGISTRY_URL || 'https://api.oa2a.org')
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
-  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean; publish?: boolean; registryUrl?: string; contribute?: boolean }) => {
+  .option('--ci', 'CI mode: suppress interactive prompts, exit non-zero on findings')
+  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean; publish?: boolean; registryUrl?: string; contribute?: boolean; ci?: boolean }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
+
+      // CI mode: force non-interactive defaults
+      if (options.ci) {
+        if (options.contribute === undefined) options.contribute = false;
+      }
 
       if (!require('fs').existsSync(targetDir)) {
         process.stderr.write(`Error: Directory '${targetDir}' does not exist.\n`);
@@ -4527,6 +4546,14 @@ Examples:
       // Community contribution: share anonymized findings with OpenA2A Registry
       const soulFormat = options.json ? 'json' : 'text';
       await handleSoulContribution(options.contribute, targetDir, result, options.registryUrl, soulFormat);
+
+      // In CI mode, exit non-zero if any controls failed
+      if (options.ci) {
+        const failedControls = result.domains.flatMap(d => d.controls).filter(c => !c.passed);
+        if (failedControls.length > 0) {
+          process.exit(1);
+        }
+      }
 
       // Check fail threshold
       if (options.failBelow) {
