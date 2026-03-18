@@ -135,9 +135,17 @@ Examples:
   $ hackmyagent secure --fix                   Fix issues automatically
   $ hackmyagent fix-all                        Run all security plugins
   $ hackmyagent scan example.com               Scan external infrastructure`)
-  .version(VERSION, '-v, --version', 'Output the version number')
-  .option('--no-color', 'Disable colored output (also respects NO_COLOR env)')
-  .hook('preAction', (thisCommand) => {
+  .version('hackmyagent ' + VERSION, '-v, --version', 'Output the version number')
+  .option('--no-color', 'Disable colored output (also respects NO_COLOR env)');
+
+program.addHelpText('beforeAll', `
+Quick start:
+  $ hackmyagent secure              Scan current directory (147+ checks)
+  $ hackmyagent fix-all --with-aim  Auto-fix + create agent identity
+  $ hackmyagent attack              Red-team your agent
+`);
+
+program.hook('preAction', (thisCommand) => {
     const opts = thisCommand.opts();
     if (opts.color === false) {
       colors = { green: '', yellow: '', red: '', brightRed: '', cyan: '', dim: '', reset: '' };
@@ -2083,9 +2091,9 @@ Examples:
       let scoreExtra = '';
       if (result.semanticAnalysis) {
         const sa = result.semanticAnalysis;
-        scoreExtra = ` | Semantic: ${sa.layer2Findings} structural`;
+        scoreExtra = ` | ${sa.layer2Findings} deep analysis finding${sa.layer2Findings === 1 ? '' : 's'}`;
         if (sa.layer3Findings > 0) {
-          scoreExtra += `, ${sa.layer3Findings} LLM`;
+          scoreExtra += `, ${sa.layer3Findings} AI-assisted`;
           if (sa.llmCost !== undefined) scoreExtra += ` ($${sa.llmCost.toFixed(3)})`;
           if (sa.cachedResults) scoreExtra += ` (${sa.cachedResults} cached)`;
         }
