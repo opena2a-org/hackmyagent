@@ -104,6 +104,214 @@ describe('UNICODE-STEGO checks', () => {
 
       expect(stego001.length).toBe(1);
     });
+
+    it('detects zero-width characters (U+200B-U+200D) in source files', async () => {
+      const content = Buffer.concat([
+        Buffer.from('const name = "admin'),
+        Buffer.from([0xE2, 0x80, 0x8B]),
+        Buffer.from('";\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'zwsp.js'), content);
+      const findings = await scanForUnicodeStego();
+      const stego001 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'zwsp.js'
+      );
+      expect(stego001.length).toBe(1);
+      expect(stego001[0].message).toContain('zero-width');
+    });
+
+    it('detects BOM (U+FEFF) in the middle of a file', async () => {
+      const content = Buffer.concat([
+        Buffer.from('const x = 1;\n'),
+        Buffer.from('const y = "test'),
+        Buffer.from([0xEF, 0xBB, 0xBF]),
+        Buffer.from('";\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'mid-bom.js'), content);
+      const findings = await scanForUnicodeStego();
+      const stego001 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'mid-bom.js'
+      );
+      expect(stego001.length).toBe(1);
+      expect(stego001[0].message).toContain('zero-width');
+    });
+
+    it('does NOT flag BOM at the very start of a file', async () => {
+      const content = Buffer.concat([
+        Buffer.from([0xEF, 0xBB, 0xBF]),
+        Buffer.from('const x = "hello";\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'start-bom.js'), content);
+      const findings = await scanForUnicodeStego();
+      const bomOnly = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'start-bom.js'
+      );
+      expect(bomOnly.length).toBe(0);
+    });
+
+    it('detects bidirectional override characters (U+202E RLO)', async () => {
+      const content = Buffer.concat([
+        Buffer.from('const filename = "'),
+        Buffer.from([0xE2, 0x80, 0xAE]),
+        Buffer.from('txt.exe";\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'bidi-override.js'), content);
+      const findings = await scanForUnicodeStego();
+      const stego001 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'bidi-override.js'
+      );
+      expect(stego001.length).toBe(1);
+      expect(stego001[0].severity).toBe('critical');
+      expect(stego001[0].message).toContain('bidirectional');
+    });
+
+    it('detects bidirectional isolate characters (U+2066 LRI)', async () => {
+      const content = Buffer.concat([
+        Buffer.from('const path = "'),
+        Buffer.from([0xE2, 0x81, 0xA6]),
+        Buffer.from('/etc/passwd";\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'bidi-isolate.ts'), content);
+      const findings = await scanForUnicodeStego();
+      const stego001 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'bidi-isolate.ts'
+      );
+      expect(stego001.length).toBe(1);
+      expect(stego001[0].severity).toBe('critical');
+      expect(stego001[0].message).toContain('bidirectional');
+    });
+
+    it('reports category as supply-chain', async () => {
+      const content = Buffer.concat([
+        Buffer.from('const x = "'),
+        Buffer.from([0xE2, 0x80, 0x8B]),
+        Buffer.from('";\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'category-check.js'), content);
+      const findings = await scanForUnicodeStego();
+      const stego001 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'category-check.js'
+      );
+      expect(stego001.length).toBe(1);
+      expect(stego001[0].category).toBe('supply-chain');
+    });
+
+    it('scans Python files for invisible codepoints', async () => {
+      const content = Buffer.concat([
+        Buffer.from('name = "admin'),
+        Buffer.from([0xE2, 0x80, 0x8C]),
+        Buffer.from('"\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'suspect.py'), content);
+      const findings = await scanForUnicodeStego();
+      const stego001 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'suspect.py'
+      );
+      expect(stego001.length).toBe(1);
+    });
+
+    it('scans Markdown files for invisible codepoints', async () => {
+      const content = Buffer.concat([
+        Buffer.from('# Instructions\n\nRun: '),
+        Buffer.from([0xE2, 0x80, 0xAE]),
+        Buffer.from('harmless\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'readme.md'), content);
+      const findings = await scanForUnicodeStego();
+      const stego001 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'readme.md'
+      );
+      expect(stego001.length).toBe(1);
+    });
+
+    it('scans YAML files for invisible codepoints', async () => {
+      const content = Buffer.concat([
+        Buffer.from('key: value'),
+        Buffer.from([0xE2, 0x80, 0x8B]),
+        Buffer.from('\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'config.yaml'), content);
+      const findings = await scanForUnicodeStego();
+      const stego001 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'config.yaml'
+      );
+      expect(stego001.length).toBe(1);
+    });
+  });
+
+  describe('UNICODE-STEGO-005: Homoglyph Substitution Detection', () => {
+    it('detects Cyrillic a (U+0430) substituted for Latin a', async () => {
+      const content = Buffer.concat([
+        Buffer.from('const '),
+        Buffer.from([0xD0, 0xB0]),
+        Buffer.from('dmin = true;\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'homoglyph.js'), content);
+      const findings = await scanForUnicodeStego();
+      const stego005 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-005' && f.file === 'homoglyph.js'
+      );
+      expect(stego005.length).toBe(1);
+      expect(stego005[0].severity).toBe('high');
+      expect(stego005[0].category).toBe('supply-chain');
+      expect(stego005[0].message).toContain('homoglyph');
+    });
+
+    it('detects Cyrillic o (U+043E) in identifiers', async () => {
+      const content = Buffer.concat([
+        Buffer.from('const passw'),
+        Buffer.from([0xD0, 0xBE]),
+        Buffer.from('rd = "secret";\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'cyrillic-o.ts'), content);
+      const findings = await scanForUnicodeStego();
+      const stego005 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-005' && f.file === 'cyrillic-o.ts'
+      );
+      expect(stego005.length).toBe(1);
+    });
+
+    it('does not flag homoglyphs in comments', async () => {
+      const content = Buffer.concat([
+        Buffer.from('// This is '),
+        Buffer.from([0xD0, 0xB0]),
+        Buffer.from(' comment\nconst x = 1;\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'comment-safe.js'), content);
+      const findings = await scanForUnicodeStego();
+      const stego005 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-005' && f.file === 'comment-safe.js'
+      );
+      expect(stego005.length).toBe(0);
+    });
+
+    it('does not scan non-code files for homoglyphs', async () => {
+      const content = Buffer.concat([
+        Buffer.from('This text has '),
+        Buffer.from([0xD0, 0xB0]),
+        Buffer.from(' character\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'readme.md'), content);
+      const findings = await scanForUnicodeStego();
+      const stego005 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-005' && f.file === 'readme.md'
+      );
+      expect(stego005.length).toBe(0);
+    });
+
+    it('detects homoglyphs in Python files', async () => {
+      const content = Buffer.concat([
+        Buffer.from('v'),
+        Buffer.from([0xD0, 0xB0]),
+        Buffer.from('lue = 42\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'confusable.py'), content);
+      const findings = await scanForUnicodeStego();
+      const stego005 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-005' && f.file === 'confusable.py'
+      );
+      expect(stego005.length).toBe(1);
+    });
   });
 
   describe('UNICODE-STEGO-002: GlassWorm Decoder Pattern', () => {
@@ -353,7 +561,7 @@ describe('UNICODE-STEGO checks', () => {
         expect(finding.checkId).toMatch(/^UNICODE-STEGO-\d{3}$/);
         expect(finding.name).toBeTruthy();
         expect(finding.description).toBeTruthy();
-        expect(finding.category).toBe('unicode-stego');
+        expect(finding.category).toBe('supply-chain');
         expect(['critical', 'high']).toContain(finding.severity);
         expect(finding.passed).toBe(false);
         expect(finding.message).toBeTruthy();

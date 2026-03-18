@@ -1644,15 +1644,45 @@ function resolvePackageVersion(targetDir: string): string | null {
 }
 
 /**
+ * Build an anonymized contribution summary from scan findings.
+ * Contains only aggregate data -- no file paths, no code, no project names.
+ */
+function buildContributionSummary(
+  findings: SecurityFinding[],
+  score: number,
+  projectType: string,
+): {
+  packageType: string;
+  findingCategories: string[];
+  findingCounts: { critical: number; high: number; medium: number; low: number };
+  score: number;
+  toolVersion: string;
+} {
+  const failed = findings.filter((f) => !f.passed);
+  const categories = [...new Set(failed.map((f) => f.category).filter(Boolean))].sort();
+  const counts = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const f of failed) {
+    if (f.severity in counts) counts[f.severity as keyof typeof counts]++;
+  }
+  return {
+    packageType: projectType,
+    findingCategories: categories,
+    findingCounts: counts,
+    score,
+    toolVersion: VERSION,
+  };
+}
+
+/**
  * Handle community contribution after a scan completes.
  *
  * Determines whether to contribute based on:
  *   1. --contribute / --no-contribute CLI flags (highest priority)
- *   2. ~/.opena2a/config.json contribute.enabled setting
- *   3. Interactive opt-in prompt (first scan or scan #10)
+ *   2. --ci mode: skip prompt, only contribute if --contribute is explicit
+ *   3. ~/.opena2a/config.json contribute.enabled setting
+ *   4. Interactive opt-in prompt (first scan or scan #10)
  *
- * If contributing, builds an anonymized payload and submits it
- * asynchronously (non-blocking). Failures are logged as warnings.
+ * Shows what will be sent before sending (transparency).
  */
 async function handleContribution(
   contributeFlag: boolean | undefined,
@@ -1660,6 +1690,7 @@ async function handleContribution(
   findings: SecurityFinding[],
   registryUrl?: string,
   format?: string,
+  contributionOptions?: { ci?: boolean; score?: number; projectType?: string },
 ): Promise<void> {
   try {
     const {
@@ -1674,6 +1705,8 @@ async function handleContribution(
     // Always increment scan count
     incrementScanCount();
 
+    const isCi = contributionOptions?.ci === true;
+
     // Determine whether to contribute
     let shouldContribute: boolean;
 
@@ -1683,6 +1716,9 @@ async function handleContribution(
     } else if (contributeFlag === false) {
       // --no-contribute flag: skip this scan
       shouldContribute = false;
+    } else if (isCi) {
+      // CI mode: never prompt, only contribute if --contribute was explicit
+      shouldContribute = false;
     } else {
       // Check config
       const configSetting = isContributeEnabled();
@@ -1691,7 +1727,7 @@ async function handleContribution(
       } else if (configSetting === false) {
         shouldContribute = false;
       } else {
-        // Not configured -- prompt after 3 scans (interactive TTY only)
+        // Not configured -- prompt (interactive TTY only)
         if (format === 'text' && process.stdout.isTTY && shouldPromptContribute()) {
           shouldContribute = await showContributePrompt();
         } else {
@@ -1701,6 +1737,23 @@ async function handleContribution(
     }
 
     if (!shouldContribute) return;
+
+    // Build the anonymized contribution summary for transparency display
+    const score = contributionOptions?.score ?? 0;
+    const projectType = contributionOptions?.projectType ?? 'unknown';
+    const summary = buildContributionSummary(findings, score, projectType);
+
+    // Transparency: show what will be sent before sending
+    if (format === 'text' && !isCi) {
+      console.log('');
+      console.log('Contributing anonymized scan summary to OpenA2A Registry:');
+      console.log(`  Package type: ${summary.packageType}`);
+      console.log(`  Categories:   ${summary.findingCategories.join(', ') || '(none)'}`);
+      console.log(`  Findings:     ${summary.findingCounts.critical} critical, ${summary.findingCounts.high} high, ${summary.findingCounts.medium} medium, ${summary.findingCounts.low} low`);
+      console.log(`  Score:        ${summary.score}`);
+      console.log(`  Tool version: ${summary.toolVersion}`);
+      console.log('  (No file paths, code, or project names are sent)');
+    }
 
     // Build and submit contribution (non-blocking)
     const packageName = resolvePackageName(targetDir);
@@ -1730,6 +1783,7 @@ async function handleSoulContribution(
   result: SoulScanResult,
   registryUrl?: string,
   format?: string,
+  contributionOptions?: { ci?: boolean },
 ): Promise<void> {
   // Convert soul controls into SecurityFinding-shaped objects
   const findings: SecurityFinding[] = [];
@@ -1749,7 +1803,11 @@ async function handleSoulContribution(
     }
   }
 
-  await handleContribution(contributeFlag, targetDir, findings, registryUrl, format);
+  await handleContribution(contributeFlag, targetDir, findings, registryUrl, format, {
+    ci: contributionOptions?.ci,
+    score: result.score,
+    projectType: 'soul',
+  });
 }
 
 program
@@ -1811,7 +1869,8 @@ Examples:
   .option('--registry-key <key>', 'Registry API key (default: REGISTRY_API_KEY env)')
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean }) => {
+  .option('--ci', 'CI mode: suppress interactive prompts, machine-friendly output')
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
@@ -2040,7 +2099,7 @@ Examples:
           writeJsonStdout(jsonOutput);
         }
         // Community contribution (non-blocking, runs in JSON mode too)
-        await handleContribution(options.contribute, targetDir, result.findings, options.registryUrl, format);
+        await handleContribution(options.contribute, targetDir, result.findings, options.registryUrl, format, { ci: options.ci, score: result.score, projectType: result.projectType });
         const critHigh = result.findings.filter((f: SecurityFinding) => !f.passed && !f.fixed && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) process.exitCode = 1;
         return;
@@ -2260,7 +2319,7 @@ Examples:
       }
 
       // Community contribution: share anonymized findings with OpenA2A Registry
-      await handleContribution(options.contribute, targetDir, result.findings, options.registryUrl, format);
+      await handleContribution(options.contribute, targetDir, result.findings, options.registryUrl, format, { ci: options.ci, score: result.score, projectType: result.projectType });
 
       // Star prompt (interactive TTY only, text format only)
       if (process.stdout.isTTY) {
@@ -4337,7 +4396,8 @@ Examples:
   .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', process.env.REGISTRY_URL || 'https://api.oa2a.org')
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
-  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean; publish?: boolean; registryUrl?: string; contribute?: boolean }) => {
+  .option('--ci', 'CI mode: suppress interactive prompts, machine-friendly output')
+  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean; publish?: boolean; registryUrl?: string; contribute?: boolean; ci?: boolean }) => {
     try {
       const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
 
@@ -4516,7 +4576,7 @@ Examples:
 
       // Community contribution: share anonymized findings with OpenA2A Registry
       const soulFormat = options.json ? 'json' : 'text';
-      await handleSoulContribution(options.contribute, targetDir, result, options.registryUrl, soulFormat);
+      await handleSoulContribution(options.contribute, targetDir, result, options.registryUrl, soulFormat, { ci: options.ci });
 
       // Check fail threshold
       if (options.failBelow) {

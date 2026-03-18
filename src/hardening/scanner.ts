@@ -6879,7 +6879,12 @@ dist/
     _autoFix: boolean
   ): Promise<SecurityFinding[]> {
     const findings: SecurityFinding[] = [];
-    const sourceFiles = await this.findSourceFiles(targetDir, targetDir);
+    // Scan a broad set of file types for unicode stego -- not just JS/TS
+    const stegoExtensions = [
+      '.js', '.ts', '.mjs', '.cjs', '.tsx', '.jsx',
+      '.py', '.md', '.txt', '.yaml', '.yml', '.json', '.toml',
+    ];
+    const sourceFiles = await this.walkDirectory(targetDir, stegoExtensions);
 
     for (const filePath of sourceFiles) {
       const relativePath = path.relative(targetDir, filePath);
@@ -6894,18 +6899,77 @@ dist/
       if (rawBuffer.length > MAX_FILE_SIZE) continue;
 
       // UNICODE-STEGO-001: Invisible Codepoint Detection
-      // Scan for variation selectors U+FE00-FE0F (UTF-8: EF B8 80-8F)
-      // and tag characters U+E0100-E01EF (UTF-8: F3 A0 84 80 - F3 A0 87 AF)
+      // Scan for:
+      //   - Zero-width characters: U+200B (ZWSP), U+200C (ZWNJ), U+200D (ZWJ), U+FEFF (BOM mid-file)
+      //   - Variation selectors U+FE00-FE0F
+      //   - Tag characters U+E0100-E01EF
+      //   - Bidirectional override chars U+202A-U+202E and U+2066-U+2069
       let hasVariationSelectors = false;
       let variationSelectorLine = 1;
       let hasTagCharsIn001 = false;
       let tagCharLine001 = 1;
+      let hasZeroWidth = false;
+      let zeroWidthLine = 1;
+      let hasBidiOverride = false;
+      let bidiOverrideLine = 1;
 
       let currentLine = 1;
       for (let i = 0; i < rawBuffer.length; i++) {
         if (rawBuffer[i] === 0x0A) {
           currentLine++;
           continue;
+        }
+        // Zero-width characters: E2 80 8B (ZWSP), E2 80 8C (ZWNJ), E2 80 8D (ZWJ)
+        if (
+          rawBuffer[i] === 0xE2 &&
+          i + 2 < rawBuffer.length &&
+          rawBuffer[i + 1] === 0x80 &&
+          rawBuffer[i + 2] >= 0x8B &&
+          rawBuffer[i + 2] <= 0x8D
+        ) {
+          if (!hasZeroWidth) {
+            hasZeroWidth = true;
+            zeroWidthLine = currentLine;
+          }
+        }
+        // BOM / Zero-width no-break space U+FEFF: EF BB BF (only suspicious mid-file)
+        if (
+          rawBuffer[i] === 0xEF &&
+          i + 2 < rawBuffer.length &&
+          rawBuffer[i + 1] === 0xBB &&
+          rawBuffer[i + 2] === 0xBF &&
+          i > 0
+        ) {
+          if (!hasZeroWidth) {
+            hasZeroWidth = true;
+            zeroWidthLine = currentLine;
+          }
+        }
+        // Bidirectional override chars U+202A-U+202E: E2 80 AA-AE
+        if (
+          rawBuffer[i] === 0xE2 &&
+          i + 2 < rawBuffer.length &&
+          rawBuffer[i + 1] === 0x80 &&
+          rawBuffer[i + 2] >= 0xAA &&
+          rawBuffer[i + 2] <= 0xAE
+        ) {
+          if (!hasBidiOverride) {
+            hasBidiOverride = true;
+            bidiOverrideLine = currentLine;
+          }
+        }
+        // Bidirectional isolate chars U+2066-U+2069: E2 81 A6-A9
+        if (
+          rawBuffer[i] === 0xE2 &&
+          i + 2 < rawBuffer.length &&
+          rawBuffer[i + 1] === 0x81 &&
+          rawBuffer[i + 2] >= 0xA6 &&
+          rawBuffer[i + 2] <= 0xA9
+        ) {
+          if (!hasBidiOverride) {
+            hasBidiOverride = true;
+            bidiOverrideLine = currentLine;
+          }
         }
         // Variation selectors: EF B8 80-8F
         if (
@@ -6935,22 +6999,31 @@ dist/
         }
       }
 
-      if (hasVariationSelectors || hasTagCharsIn001) {
+      if (hasZeroWidth || hasVariationSelectors || hasTagCharsIn001 || hasBidiOverride) {
         const detectedTypes: string[] = [];
+        if (hasZeroWidth) detectedTypes.push('zero-width characters (U+200B-U+200D, U+FEFF)');
+        if (hasBidiOverride) detectedTypes.push('bidirectional overrides (U+202A-U+202E, U+2066-U+2069)');
         if (hasVariationSelectors) detectedTypes.push('variation selectors (U+FE00-FE0F)');
         if (hasTagCharsIn001) detectedTypes.push('tag characters (U+E0100-E01EF)');
+        const lineNumbers: number[] = [];
+        if (hasZeroWidth) lineNumbers.push(zeroWidthLine);
+        if (hasBidiOverride) lineNumbers.push(bidiOverrideLine);
+        if (hasVariationSelectors) lineNumbers.push(variationSelectorLine);
+        if (hasTagCharsIn001) lineNumbers.push(tagCharLine001);
+        const earliestLine = Math.min(...lineNumbers);
+        const severity: Severity = hasBidiOverride || hasVariationSelectors || hasTagCharsIn001 ? 'critical' : 'high';
         findings.push({
           checkId: 'UNICODE-STEGO-001',
           name: 'Invisible Unicode Codepoints Detected',
-          description: 'Source file contains invisible Unicode codepoints that can hide malicious payloads (GlassWorm attack vector)',
-          category: 'unicode-stego',
-          severity: 'critical',
+          description: 'Source file contains invisible Unicode codepoints that can hide malicious payloads (zero-width characters, bidirectional overrides, variation selectors, or tag characters)',
+          category: 'supply-chain',
+          severity,
           passed: false,
           message: `Found ${detectedTypes.join(' and ')} in ${relativePath}`,
           file: relativePath,
-          line: hasVariationSelectors ? variationSelectorLine : tagCharLine001,
+          line: earliestLine,
           fixable: false,
-          fix: 'Inspect the file with a hex editor (e.g., xxd) to identify and remove invisible Unicode codepoints. Run: xxd ' + relativePath + ' | grep -E "fe0[0-9a-f]|f3a0"',
+          fix: 'Inspect the file with a hex editor (e.g., xxd) to identify and remove invisible Unicode codepoints. Run: xxd ' + relativePath + ' | grep -iE "e280 8[bcd]|efbb bf|e280 a[a-e]|e281 a[6-9]|efb8 8|f3a0"',
         });
       }
 
@@ -6981,7 +7054,7 @@ dist/
           checkId: 'UNICODE-STEGO-002',
           name: 'GlassWorm Decoder Pattern Detected',
           description: 'Source file contains .codePointAt() usage combined with Unicode variation selector or tag character hex literals - this is the decoder half of a GlassWorm attack',
-          category: 'unicode-stego',
+          category: 'supply-chain',
           severity: 'critical',
           passed: false,
           message: `Found GlassWorm decoder pattern (.codePointAt + hex range literals) in ${relativePath}`,
@@ -7030,7 +7103,7 @@ dist/
             checkId: 'UNICODE-STEGO-003',
             name: 'Eval on String with Hidden Payload',
             description: 'eval() or Function() is called with a string that has very few visible characters but a large byte footprint - indicates invisible Unicode payload',
-            category: 'unicode-stego',
+            category: 'supply-chain',
             severity: 'critical',
             passed: false,
             message: `Found eval/Function with ${visibleChars} visible chars but ${byteLength} bytes in ${relativePath}`,
@@ -7079,7 +7152,7 @@ dist/
             checkId: 'UNICODE-STEGO-004',
             name: 'Unicode Tag Character Block Detected',
             description: 'Source file contains characters from the Unicode Tag block (U+E0000-U+E01EF) which have no visible rendering and can be used to hide data',
-            category: 'unicode-stego',
+            category: 'supply-chain',
             severity: 'high',
             passed: false,
             message: `Found Unicode tag block characters in ${relativePath}`,
@@ -7089,6 +7162,72 @@ dist/
             fix: 'Inspect the file with a hex editor to identify tag block characters (byte sequence starting with F3 A0). These characters are invisible and have no legitimate use in source code. Run: xxd ' + relativePath + ' | grep "f3a0"',
           });
         }
+      }
+    }
+
+    // UNICODE-STEGO-005: Homoglyph Substitution Detection
+    // Detect Cyrillic/Greek/fullwidth letters that look identical to Latin letters.
+    // Only scan code files where identifiers matter.
+    const codeExtensions = new Set(['.js', '.ts', '.mjs', '.cjs', '.tsx', '.jsx', '.py']);
+    const codeFiles = sourceFiles.filter((f) => codeExtensions.has(path.extname(f).toLowerCase()));
+
+    const HOMOGLYPHS: Record<number, string> = {
+      0x0430: 'a', 0x0435: 'e', 0x043E: 'o', 0x0440: 'p',
+      0x0441: 'c', 0x0443: 'y', 0x0445: 'x', 0x0456: 'i',
+      0x0455: 's', 0x04BB: 'h', 0x0501: 'd', 0x051B: 'q',
+      0x03B1: 'a', 0x03BF: 'o', 0x03C1: 'p',
+      0xFF41: 'a', 0xFF45: 'e', 0xFF4F: 'o',
+    };
+    const homoglyphCodes = new Set(Object.keys(HOMOGLYPHS).map(Number));
+
+    for (const filePath of codeFiles) {
+      const relativePath = path.relative(targetDir, filePath);
+      let content: string;
+      try {
+        content = await fs.readFile(filePath, 'utf-8');
+      } catch {
+        continue;
+      }
+      if (content.length > MAX_FILE_SIZE) continue;
+
+      const lines = content.split('\n');
+      const foundHomoglyphs: { line: number; lookalike: string; cp: number }[] = [];
+
+      for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+        const line = lines[lineIdx];
+        if (line.length > MAX_LINE_LENGTH) continue;
+        const trimmed = line.trimStart();
+        if (trimmed.startsWith('//') || trimmed.startsWith('#') || trimmed.startsWith('*')) continue;
+
+        for (const ch of line) {
+          const cp = ch.codePointAt(0)!;
+          if (homoglyphCodes.has(cp)) {
+            foundHomoglyphs.push({ line: lineIdx + 1, lookalike: HOMOGLYPHS[cp], cp });
+            break;
+          }
+        }
+        if (foundHomoglyphs.length >= 5) break;
+      }
+
+      if (foundHomoglyphs.length > 0) {
+        const examples = foundHomoglyphs
+          .slice(0, 3)
+          .map((h) => `U+${h.cp.toString(16).toUpperCase().padStart(4, '0')} (looks like '${h.lookalike}') at line ${h.line}`)
+          .join(', ');
+
+        findings.push({
+          checkId: 'UNICODE-STEGO-005',
+          name: 'Homoglyph Character Substitution Detected',
+          description: 'Source file contains non-Latin characters (Cyrillic, Greek, or fullwidth) that visually mimic Latin letters. This can disguise malicious identifiers or imports.',
+          category: 'supply-chain',
+          severity: 'high',
+          passed: false,
+          message: `Found ${foundHomoglyphs.length} homoglyph substitution(s) in ${relativePath}: ${examples}`,
+          file: relativePath,
+          line: foundHomoglyphs[0].line,
+          fixable: false,
+          fix: 'Replace non-Latin lookalike characters with their ASCII equivalents. Run: node -e "const s=require(\'fs\').readFileSync(\'' + relativePath + '\',\'utf8\');[...s].forEach((c,i)=>{const cp=c.codePointAt(0);if(cp>0x7F&&cp<0xFFFF)console.log(\'offset\',i,\'U+\'+cp.toString(16),JSON.stringify(c))})"',
+        });
       }
     }
 
