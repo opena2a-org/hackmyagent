@@ -4416,6 +4416,7 @@ Examples:
             process.exit(1);
           }
         }
+        await handleSoulContribution(options.contribute, targetDir, result, soulScanDurationMs, options.registryUrl, 'json');
         return;
       }
 
