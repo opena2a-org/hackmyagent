@@ -3,13 +3,16 @@
  */
 
 export {
+  getContributorToken,
   generateContributorToken,
-  buildContributionPayload,
+  buildScanEvent,
   buildContributionPayloadFromDir,
+  queueEvent,
+  queueAndMaybeFlush,
+  flushQueue,
   submitContribution,
-  type ContributionFinding,
-  type ContributionPayload,
-  type ContributionResult,
+  type ContributionEvent,
+  type ContributionBatch,
 } from './contribute';
 
 export {
@@ -18,4 +21,6 @@ export {
   incrementScanCount,
   saveContributeChoice,
   showContributePrompt,
+  recordScanAndMaybeShowTip,
+  _resetBackend,
 } from './opt-in';

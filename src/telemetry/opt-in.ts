@@ -1,8 +1,9 @@
 /**
- * Contribution Opt-In Prompt
+ * Contribution Consent and Scan Counting
  *
- * Handles the user's consent to share anonymized scan findings
- * with the OpenA2A Registry.
+ * Manages the user's consent to share anonymized scan findings
+ * with the OpenA2A Registry. Uses a delayed consent tip shown
+ * after the 3rd scan (non-interactive, no blocking prompts).
  *
  * Config/counting is delegated to @opena2a/shared (the canonical
  * source for ~/.opena2a/config.json). If @opena2a/shared is not
@@ -20,6 +21,7 @@ interface ConfigBackend {
   isContributeEnabled(): boolean;
   setContributeEnabled(enabled: boolean): void;
   incrementScanCount(): number;
+  getScanCount(): number;
   shouldPromptContribute(): boolean;
   dismissContributePrompt(): void;
 }
@@ -27,30 +29,40 @@ interface ConfigBackend {
 /** Resolved backend -- lazy-initialized on first call. */
 let _backend: ConfigBackend | undefined;
 
+/** Reset cached backend (for testing). */
+export function _resetBackend(): void {
+  _backend = undefined;
+}
+
 function resolveBackend(): ConfigBackend {
   if (_backend) return _backend;
 
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const shared = require('@opena2a/shared');
-    if (
-      typeof shared.isContributeEnabled === 'function' &&
-      typeof shared.setContributeEnabled === 'function' &&
-      typeof shared.incrementScanCount === 'function' &&
-      typeof shared.shouldPromptContribute === 'function' &&
-      typeof shared.dismissContributePrompt === 'function'
-    ) {
-      _backend = {
-        isContributeEnabled: shared.isContributeEnabled,
-        setContributeEnabled: shared.setContributeEnabled,
-        incrementScanCount: shared.incrementScanCount,
-        shouldPromptContribute: shared.shouldPromptContribute,
-        dismissContributePrompt: shared.dismissContributePrompt,
-      };
-      return _backend;
+  // When OPENA2A_HOME is set, always use local backend so the custom
+  // home directory is respected (important for testing and isolation).
+  if (!process.env.OPENA2A_HOME) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const shared = require('@opena2a/shared');
+      if (
+        typeof shared.isContributeEnabled === 'function' &&
+        typeof shared.setContributeEnabled === 'function' &&
+        typeof shared.incrementScanCount === 'function' &&
+        typeof shared.shouldPromptContribute === 'function' &&
+        typeof shared.dismissContributePrompt === 'function'
+      ) {
+        _backend = {
+          isContributeEnabled: shared.isContributeEnabled,
+          setContributeEnabled: shared.setContributeEnabled,
+          incrementScanCount: shared.incrementScanCount,
+          getScanCount: shared.getScanCount || (() => 0),
+          shouldPromptContribute: shared.shouldPromptContribute,
+          dismissContributePrompt: shared.dismissContributePrompt,
+        };
+        return _backend;
+      }
+    } catch {
+      // @opena2a/shared not installed -- fall through to local backend
     }
-  } catch {
-    // @opena2a/shared not installed -- fall through to local backend
   }
 
   _backend = createLocalBackend();
@@ -65,8 +77,10 @@ function resolveBackend(): ConfigBackend {
 interface Opena2aConfig {
   contribute?: {
     enabled?: boolean;
+  };
+  telemetry?: {
     scanCount?: number;
-    promptedAtTen?: boolean;
+    contributePromptDismissedAt?: string;
   };
   [key: string]: unknown;
 }
@@ -95,6 +109,9 @@ function writeConfig(config: Opena2aConfig): void {
   writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
 }
 
+/** Cooldown for the consent tip: 30 days after dismissal. */
+const TIP_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
+
 function createLocalBackend(): ConfigBackend {
   return {
     isContributeEnabled(): boolean {
@@ -106,39 +123,52 @@ function createLocalBackend(): ConfigBackend {
       const config = readConfig();
       if (!config.contribute) config.contribute = {};
       config.contribute.enabled = enabled;
-      const scanCount = config.contribute.scanCount ?? 0;
-      if (scanCount >= 9) config.contribute.promptedAtTen = true;
       writeConfig(config);
     },
 
     incrementScanCount(): number {
       const config = readConfig();
-      if (!config.contribute) config.contribute = {};
-      config.contribute.scanCount = (config.contribute.scanCount ?? 0) + 1;
+      if (!config.telemetry) config.telemetry = {};
+      config.telemetry.scanCount = (config.telemetry.scanCount ?? 0) + 1;
       writeConfig(config);
-      return config.contribute.scanCount;
+      return config.telemetry.scanCount;
+    },
+
+    getScanCount(): number {
+      const config = readConfig();
+      return config.telemetry?.scanCount ?? 0;
     },
 
     shouldPromptContribute(): boolean {
       const config = readConfig();
-      if (config.contribute?.enabled === true || config.contribute?.enabled === false) return false;
-      const scanCount = config.contribute?.scanCount ?? 0;
-      if (scanCount === 0) return true;
-      if (scanCount >= 9 && !config.contribute?.promptedAtTen) return true;
-      return false;
+      // Already decided -- do not prompt
+      if (config.contribute?.enabled === true || config.contribute?.enabled === false) {
+        return false;
+      }
+      const count = config.telemetry?.scanCount ?? 0;
+      if (count < 3) return false;
+
+      // Check cooldown
+      const dismissed = config.telemetry?.contributePromptDismissedAt;
+      if (dismissed) {
+        const dismissedMs = new Date(dismissed).getTime();
+        if (Date.now() - dismissedMs < TIP_COOLDOWN_MS) return false;
+      }
+
+      return true;
     },
 
     dismissContributePrompt(): void {
       const config = readConfig();
-      if (!config.contribute) config.contribute = {};
-      config.contribute.promptedAtTen = true;
+      if (!config.telemetry) config.telemetry = {};
+      config.telemetry.contributePromptDismissedAt = new Date().toISOString();
       writeConfig(config);
     },
   };
 }
 
 // ---------------------------------------------------------------------------
-// Public API (signatures preserved for backward compatibility)
+// Public API
 // ---------------------------------------------------------------------------
 
 /**
@@ -147,23 +177,19 @@ function createLocalBackend(): ConfigBackend {
  * Returns:
  *   true  - user explicitly opted in
  *   false - user explicitly opted out (or default in shared backend)
- *   undefined - not yet configured (local fallback only; shared backend
- *               defaults to false, so callers should rely on
- *               shouldPromptContribute() for prompt logic)
+ *   undefined - not yet configured
  */
 export function isContributeEnabled(): boolean | undefined {
   return resolveBackend().isContributeEnabled() || undefined;
 }
 
 /**
- * Check whether we should show the contribution prompt.
+ * Check whether we should show the contribution tip.
  *
- * HMA-specific: also checks for TTY (non-interactive environments
- * should never prompt). The backend handles scan-count thresholds
- * and cooldown/dismiss logic.
+ * Returns true after the 3rd scan if the user hasn't opted in,
+ * opted out, or dismissed the tip within the last 30 days.
  */
 export function shouldPromptContribute(): boolean {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
   return resolveBackend().shouldPromptContribute();
 }
 
@@ -171,8 +197,8 @@ export function shouldPromptContribute(): boolean {
  * Increment the scan count. Called after each scan completes,
  * regardless of contribution setting.
  */
-export function incrementScanCount(): void {
-  resolveBackend().incrementScanCount();
+export function incrementScanCount(): number {
+  return resolveBackend().incrementScanCount();
 }
 
 /**
@@ -186,71 +212,40 @@ export function saveContributeChoice(enabled: boolean): void {
 }
 
 /**
- * Display the contribution opt-in prompt and return the user's choice.
+ * Record a scan and return a consent tip string if the threshold is reached.
  *
- * Uses raw stdin to read a single keypress (Y/N).
- * Returns true if the user opted in, false otherwise.
+ * After the 3rd scan, returns a non-interactive tip encouraging the user
+ * to enable contribution. Returns null if tip should not be shown.
+ * This replaces the previous interactive Y/N prompt.
  */
-export async function showContributePrompt(): Promise<boolean> {
-  const lines = [
+export function recordScanAndMaybeShowTip(): string | null {
+  incrementScanCount();
+
+  if (!shouldPromptContribute()) return null;
+
+  // Mark as shown so we respect the 30-day cooldown
+  resolveBackend().dismissContributePrompt();
+
+  return [
     '',
-    'Help improve security for the AI agent community.',
+    '  Tip: Your scans help build community trust data for MCP servers and AI agents.',
+    '  Share anonymized results so other developers can make informed security decisions.',
+    '  Enable: npx hackmyagent scan --contribute  (or: opena2a config contribute on)',
     '',
-    'Share anonymized scan findings with the OpenA2A Registry?',
-    'No personal data. No source code. Only check pass/fail results.',
-    'You can opt out anytime: opena2a config set contribute false',
-    '',
-    '[Y] Yes, contribute   [N] No thanks',
-  ];
-
-  for (const line of lines) {
-    process.stdout.write(line + '\n');
-  }
-
-  const answer = await readSingleKey();
-  const enabled = answer.toLowerCase() === 'y';
-  saveContributeChoice(enabled);
-
-  if (enabled) {
-    process.stdout.write('\nContribution enabled. Thank you.\n');
-  } else {
-    process.stdout.write('\nContribution disabled. You can enable it later: opena2a config set contribute true\n');
-  }
-
-  return enabled;
+  ].join('\n');
 }
 
 /**
- * Read a single keypress from stdin.
- * Falls back to 'n' after a 30-second timeout.
+ * Display the contribution opt-in prompt and return the user's choice.
+ *
+ * @deprecated Use recordScanAndMaybeShowTip() instead. This is kept
+ * for backward compatibility but now shows a non-interactive tip
+ * rather than blocking for input.
  */
-function readSingleKey(): Promise<string> {
-  return new Promise((resolve) => {
-    const stdin = process.stdin;
-    const wasRaw = stdin.isRaw;
-
-    const timer = setTimeout(() => {
-      cleanup();
-      resolve('n');
-    }, 30_000);
-
-    function cleanup(): void {
-      clearTimeout(timer);
-      stdin.removeListener('data', onData);
-      if (stdin.isRaw !== wasRaw) {
-        stdin.setRawMode(wasRaw ?? false);
-      }
-      stdin.pause();
-    }
-
-    function onData(data: Buffer): void {
-      const char = data.toString().trim().toLowerCase();
-      cleanup();
-      resolve(char || 'n');
-    }
-
-    stdin.setRawMode(true);
-    stdin.resume();
-    stdin.once('data', onData);
-  });
+export async function showContributePrompt(): Promise<boolean> {
+  const tip = recordScanAndMaybeShowTip();
+  if (tip) {
+    process.stdout.write(tip + '\n');
+  }
+  return false;
 }

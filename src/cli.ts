@@ -1649,30 +1649,34 @@ function resolvePackageVersion(targetDir: string): string | null {
  * Determines whether to contribute based on:
  *   1. --contribute / --no-contribute CLI flags (highest priority)
  *   2. ~/.opena2a/config.json contribute.enabled setting
- *   3. Interactive opt-in prompt (first scan or scan #10)
  *
- * If contributing, builds an anonymized payload and submits it
- * asynchronously (non-blocking). Failures are logged as warnings.
+ * If contributing, queues an anonymized event to ~/.opena2a/contribute-queue.json
+ * (compatible with @opena2a/contribute format) and flushes when threshold reached.
+ *
+ * Also records the scan and shows a delayed consent tip after the 3rd scan
+ * if the user hasn't opted in or dismissed.
  */
 async function handleContribution(
   contributeFlag: boolean | undefined,
   targetDir: string,
   findings: SecurityFinding[],
+  durationMs: number,
   registryUrl?: string,
   format?: string,
 ): Promise<void> {
   try {
     const {
       isContributeEnabled,
-      shouldPromptContribute,
-      showContributePrompt,
-      incrementScanCount,
-      buildContributionPayloadFromDir,
-      submitContribution,
+      recordScanAndMaybeShowTip,
+      buildScanEvent,
+      queueAndMaybeFlush,
     } = await import('./telemetry');
 
-    // Always increment scan count
-    incrementScanCount();
+    // Record scan count and maybe show the delayed consent tip
+    const tip = recordScanAndMaybeShowTip();
+    if (tip && format === 'text' && process.stdout.isTTY) {
+      process.stdout.write(tip + '\n');
+    }
 
     // Determine whether to contribute
     let shouldContribute: boolean;
@@ -1685,34 +1689,21 @@ async function handleContribution(
       shouldContribute = false;
     } else {
       // Check config
-      const configSetting = isContributeEnabled();
-      if (configSetting === true) {
-        shouldContribute = true;
-      } else if (configSetting === false) {
-        shouldContribute = false;
-      } else {
-        // Not configured -- prompt after 3 scans (interactive TTY only)
-        if (format === 'text' && process.stdout.isTTY && shouldPromptContribute()) {
-          shouldContribute = await showContributePrompt();
-        } else {
-          shouldContribute = false;
-        }
-      }
+      shouldContribute = isContributeEnabled() === true;
     }
 
     if (!shouldContribute) return;
 
-    // Build and submit contribution (non-blocking)
+    // Build and queue contribution event (non-blocking, flushes at threshold)
     const packageName = resolvePackageName(targetDir);
     if (!packageName) return;
 
-    const payload = buildContributionPayloadFromDir(packageName, targetDir, findings);
-    const result = await submitContribution(payload, registryUrl);
+    const event = buildScanEvent(packageName, targetDir, findings, durationMs);
+    await queueAndMaybeFlush(event, registryUrl, format === 'text');
 
-    if (result.success && format === 'text') {
-      console.log('Contributed anonymized scan summary to OpenA2A Registry (--no-contribute to opt out)');
+    if (format === 'text') {
+      process.stdout.write('Queued anonymized scan summary for OpenA2A Registry (--no-contribute to opt out)\n');
     }
-    // Failures are silently ignored -- contribution is best-effort
   } catch {
     // Non-fatal: contribution failure must never crash the scan
   }
@@ -1728,6 +1719,7 @@ async function handleSoulContribution(
   contributeFlag: boolean | undefined,
   targetDir: string,
   result: SoulScanResult,
+  durationMs: number,
   registryUrl?: string,
   format?: string,
 ): Promise<void> {
@@ -1749,7 +1741,7 @@ async function handleSoulContribution(
     }
   }
 
-  await handleContribution(contributeFlag, targetDir, findings, registryUrl, format);
+  await handleContribution(contributeFlag, targetDir, findings, durationMs, registryUrl, format);
 }
 
 program
@@ -1888,6 +1880,7 @@ Examples:
       }
 
       const scanner = new HardeningScanner();
+      const scanStartMs = Date.now();
       const result = await scanner.scan({
         targetDir,
         autoFix: options.fix ?? false,
@@ -1897,6 +1890,7 @@ Examples:
         cliName: CLI_PREFIX,
         onProgress,
       });
+      const scanDurationMs = Date.now() - scanStartMs;
 
       // OASB-2 composite mode: infrastructure (50%) + governance (50%)
       if (isOasb2) {
@@ -2048,7 +2042,7 @@ Examples:
           writeJsonStdout(jsonOutput);
         }
         // Community contribution (non-blocking, runs in JSON mode too)
-        await handleContribution(options.contribute, targetDir, result.findings, options.registryUrl, format);
+        await handleContribution(options.contribute, targetDir, result.findings, scanDurationMs, options.registryUrl, format);
         const critHigh = result.findings.filter((f: SecurityFinding) => !f.passed && !f.fixed && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) process.exitCode = 1;
         return;
@@ -2278,7 +2272,7 @@ Examples:
       }
 
       // Community contribution: share anonymized findings with OpenA2A Registry
-      await handleContribution(options.contribute, targetDir, result.findings, options.registryUrl, format);
+      await handleContribution(options.contribute, targetDir, result.findings, scanDurationMs, options.registryUrl, format);
 
       // Star prompt (interactive TTY only, text format only)
       if (process.stdout.isTTY) {
@@ -4377,12 +4371,14 @@ Examples:
 
       const prefix = getCommandPrefix();
       const scanner = new SoulScanner();
+      const soulScanStartMs = Date.now();
       const result = await scanner.scanSoul(targetDir, {
         verbose: options.verbose,
         tier: options.tier,
         profile: options.profile,
         deepAnalysis: options.deep,
       });
+      const soulScanDurationMs = Date.now() - soulScanStartMs;
 
       // JSON output
       if (options.json) {
@@ -4545,7 +4541,7 @@ Examples:
 
       // Community contribution: share anonymized findings with OpenA2A Registry
       const soulFormat = options.json ? 'json' : 'text';
-      await handleSoulContribution(options.contribute, targetDir, result, options.registryUrl, soulFormat);
+      await handleSoulContribution(options.contribute, targetDir, result, soulScanDurationMs, options.registryUrl, soulFormat);
 
       // In CI mode, exit non-zero if any controls failed
       if (options.ci) {

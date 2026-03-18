@@ -201,20 +201,24 @@ export type { DomainTemplate } from './soul';
 // Telemetry — community contribution of anonymized scan findings
 export {
   generateContributorToken,
-  buildContributionPayload,
+  getContributorToken,
+  buildScanEvent,
   buildContributionPayloadFromDir,
+  queueEvent,
+  queueAndMaybeFlush,
+  flushQueue,
   submitContribution,
   isContributeEnabled,
   shouldPromptContribute,
   incrementScanCount,
   saveContributeChoice,
   showContributePrompt,
+  recordScanAndMaybeShowTip,
 } from './telemetry';
 
 export type {
-  ContributionFinding,
-  ContributionPayload,
-  ContributionResult,
+  ContributionEvent,
+  ContributionBatch,
 } from './telemetry';
 
 // Legacy scanner (for scan command)
