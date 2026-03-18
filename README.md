@@ -4,9 +4,9 @@
 
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-765%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
+[![Tests](https://img.shields.io/badge/tests-1050%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
 
-**163 security checks for AI agents. Find what can go wrong before an attacker does.**
+**173 security checks for AI agents. Find what can go wrong before an attacker does.**
 
 Security scanner and red-team toolkit for Claude Code, Cursor, VS Code, and any MCP server setup.
 
@@ -30,14 +30,19 @@ npx opena2a-cli review
 
 ## What It Finds
 
-**Attack testing:**
+**Attack testing (115 payloads across 11 categories):**
 - **Prompt injection** -- tests whether agents follow injected instructions from untrusted input
 - **Data exfiltration** -- checks if agents can be tricked into leaking sensitive data to external endpoints
 - **Jailbreak and context manipulation** -- probes agent guardrails with adversarial prompts
 - **MCP exploitation** -- tests MCP servers for tool misuse, capability abuse, and unauthorized access
 - **Capability abuse** -- verifies agents can't exceed their intended permissions
+- **Supply chain attacks** -- dependency confusion, tool shadowing, package impersonation
+- **Memory weaponization** -- persistent instruction injection via agent memory systems
+- **A2A protocol attacks** -- identity spoofing, capability escalation in multi-agent communication
+- **Context window attacks** -- token flooding, attention manipulation, context poisoning
 
-**Static analysis:**
+**Static analysis (173 checks across 34 categories):**
+- **Unicode steganography** -- invisible codepoints (variation selectors, tag characters), zero-width characters (U+200B-200D), mid-file BOM injection, bidi override attacks (U+202A-202E), homoglyph confusables (Cyrillic/Greek/Fullwidth lookalikes), GlassWorm decoder patterns, and eval-on-invisible-payload detection. Scans JS, TS, Python, Markdown, YAML, JSON, and TOML files. ([real-world: os-info-checker-es6 npm attack, May 2025](https://thehackernews.com/2025/05/malicious-npm-package-leverages-unicode.html))
 - **Hardcoded credentials** -- API keys, tokens, and passwords in source or config files
 - **MCP server misconfigurations** -- open ports, root filesystem access, missing auth
 - **AI agent CVE detection** -- scans for CVE-2026-25253 (OpenClaw WebSocket RCE), CVE-2026-25157, CVE-2026-24763, and ClawHavoc IOCs
@@ -45,8 +50,10 @@ npx opena2a-cli review
 - **Governance gaps** -- missing SOUL.md, no capability policies, unsigned MCP servers
 - **Credential scope drift** -- Google Maps keys accessing Gemini, AWS S3 keys reaching Bedrock
 - **Supply chain risks** -- vulnerable dependencies, unsigned skills, tampered packages
+- **Memory and RAG poisoning** -- persistent instruction injection, knowledge base contamination
+- **Agent identity** -- missing cryptographic identity, capability claims without attestation
 
-163 checks across 34 categories. 55+ attack payloads. No flags needed.
+173 checks across 34 categories. 115 attack payloads. No flags needed.
 
 ---
 
@@ -69,7 +76,7 @@ npm install --save-dev hackmyagent
 ```
 
 ┌──────────────────────────────────────────┐
-│  HackMyAgent v0.10.1 — Security Scanner          │
+│  HackMyAgent v0.11.4 — Security Scanner          │
 │  Found: 3 critical · 5 high · 12 medium          │
 │                                                  │
 │  CRED-001  critical  Hardcoded API key in .env   │
@@ -88,7 +95,7 @@ npm install --save-dev hackmyagent
 
 Step-by-step guides for common workflows:
 
-- **[Scan my agent](docs/use-cases/scan-my-agent.md)** -- Run all 163 checks and auto-fix findings (5 min)
+- **[Scan my agent](docs/use-cases/scan-my-agent.md)** -- Run all 173 checks and auto-fix findings (5 min)
 - **[Red-team MCP servers](docs/use-cases/red-team-mcp.md)** -- Test MCP servers with adversarial payloads (10 min)
 - **[Secure OpenClaw](docs/use-cases/openclaw-security.md)** -- OpenClaw-specific checks, CVE detection, ClawHavoc IOC scanning (10 min)
 - **[CI/CD pipeline](docs/use-cases/ci-pipeline.md)** -- GitHub Actions with JSON/SARIF output (5 min)
@@ -124,7 +131,7 @@ hackmyagent secure --publish                  # push results to OpenA2A Registry
 
 
 <details>
-<summary>All 30 security categories</summary>
+<summary>All 34 security categories</summary>
 
 | Category | Checks | What it detects |
 |----------|--------|-----------------|
@@ -157,7 +164,11 @@ hackmyagent secure --publish                  # push results to OpenA2A Registry
 | CONFIG | 9 | Insecure default settings |
 | SUPPLY | 8 | Supply chain attack vectors |
 | SKILL | 12 | Malicious skill/tool detection |
-| HEARTBEAT | 6 | Heartbeat/cron abuse |
+| HEARTBEAT | 7 | Heartbeat/cron abuse |
+| UNICODE-STEGO | 5 | Invisible codepoints, zero-width chars, bidi attacks, homoglyphs, GlassWorm decoders |
+| MEM | 5 | Memory poisoning, context injection |
+| RAG | 4 | RAG/knowledge base poisoning |
+| AIM | 3 | Agent identity verification |
 
 </details>
 
@@ -185,7 +196,7 @@ Use `--dry-run` to preview changes. Backups are created in `.hackmyagent-backup/
 
 ### `hackmyagent attack` -- Red Team
 
-Test your AI agent with 55 adversarial payloads across 5 attack categories.
+Test your AI agent with 115 adversarial payloads across 11 attack categories.
 
 ```bash
 hackmyagent attack --local                                    # local simulation
@@ -205,6 +216,12 @@ hackmyagent attack https://api.example.com --fail-on-vulnerable medium  # CI gat
 | `data-exfiltration` | 11 | Extract sensitive data, system prompts, credentials |
 | `capability-abuse` | 10 | Misuse agent tools for unintended actions |
 | `context-manipulation` | 10 | Poison agent context or memory |
+| `supply-chain` | 10 | Dependency confusion, package impersonation |
+| `tool-shadow` | 10 | Tool shadowing, capability escalation |
+| `mcp-exploitation` | 10 | MCP protocol abuse, tool injection |
+| `memory-weaponization` | 10 | Persistent memory poisoning attacks |
+| `a2a-attacks` | 10 | Agent-to-agent identity spoofing |
+| `context-window` | 10 | Token flooding, attention manipulation |
 
 > Only test systems you own or have written authorization to test.
 
