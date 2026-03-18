@@ -15,6 +15,7 @@ export type {
 } from './security-check';
 
 export { getAttackClass, enrichWithTaxonomy } from './taxonomy';
+export { NemoClawScanner, NEMOCLAW_CATEGORIES } from './nemoclaw-scanner';
 export { classifySkillSection, isLikelyFalsePositive } from './skill-context';
 export type { SkillSection } from './skill-context';
 export {
