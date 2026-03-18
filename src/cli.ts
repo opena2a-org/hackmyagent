@@ -2588,7 +2588,9 @@ Examples:
       options: { json?: boolean; ports?: string; timeout?: string; verbose?: boolean }
     ) => {
       try {
-        console.log(`\nScanning ${target}...\n`);
+        if (!options.json) {
+          console.log(`\nScanning ${target}...\n`);
+        }
 
         const scanner = new ExternalScanner();
         const customPorts = options.ports
