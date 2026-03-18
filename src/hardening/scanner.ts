@@ -4382,7 +4382,7 @@ dist/
         fixable: true,
         fixed: skill001Fixed,
         fixMessage: skill001Fixed ? 'Added SHA-256 signature block to skill file' : undefined,
-        fix: 'Sign the skill using: openclaw sign skill.md --key ~/.openclaw/signing-key.pem',
+        fix: 'Run `hackmyagent fix-all --with-aim` to automatically sign all skill files with a cryptographic identity',
       });
 
       // SKILL-002: Remote Fetch Pattern
@@ -4903,7 +4903,7 @@ dist/
           : 'Heartbeat lacks hash pinning - content integrity cannot be verified',
         file: relativePath,
         fixable: false,
-        fix: 'Add pinned_hash: sha256:<hash> to verify heartbeat content integrity',
+        fix: 'Run `hackmyagent fix-all --with-aim` to automatically pin and sign heartbeat files',
       });
 
       // HEARTBEAT-003: Unsigned Heartbeat
@@ -4924,7 +4924,7 @@ dist/
           : 'Heartbeat is unsigned - cannot verify authenticity or integrity',
         file: relativePath,
         fixable: false,
-        fix: 'Sign the heartbeat using: openclaw sign heartbeat.md --key ~/.openclaw/signing-key.pem',
+        fix: 'Run `hackmyagent fix-all --with-aim` to automatically sign all heartbeat files with a cryptographic identity',
       });
 
       // HEARTBEAT-004: Dangerous Capabilities
@@ -6661,7 +6661,7 @@ dist/
               message: `${idFile} declares identity without cryptographic key binding`,
               fixable: false,
               file: idFile,
-              fix: 'Bind agent identity to a cryptographic key pair. Add publicKey or keyId field to the agent card.',
+              fix: 'Run `hackmyagent fix-all --with-aim` to bind identity to an Ed25519 key pair automatically',
             });
           }
         }
@@ -6703,7 +6703,7 @@ dist/
             message: 'Agent project has no identity declaration file (agent-card.json, agent.json, aim.json)',
             fixable: false,
             file: 'package.json',
-            fix: 'Create an agent-card.json with agentId, name, publicKey, and capabilities fields.',
+            fix: 'Run `hackmyagent fix-all --with-aim` to create a cryptographic identity with Ed25519 key pair, audit logging, and trust scoring',
           });
         }
       } catch { /* skip */ }
@@ -6746,7 +6746,7 @@ dist/
             message: `${dnaFile} has no signature or content hash`,
             fixable: false,
             file: dnaFile,
-            fix: 'Sign the behavioral profile: add a contentHash (SHA-256) or signature field verified at startup.',
+            fix: 'Run `hackmyagent fix-all --with-aim` to automatically sign behavioral profiles with a cryptographic identity',
           });
         }
 

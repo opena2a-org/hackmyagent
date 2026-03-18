@@ -326,6 +326,22 @@ export class SignCryptPlugin implements OpenA2APlugin {
       this.aimCore.setTrustHints({ configSigned: true });
     }
 
+    // If files were signed without AIM identity, add a recommendation finding
+    if (!this.aimCore && remediations.length > 0) {
+      // Check if an identity already exists on disk
+      const aimDir = path.join(agentDir, '.opena2a', 'aim', 'identity.json');
+      if (!fs.existsSync(aimDir)) {
+        remediations.push({
+          findingId: 'SIGN-TIP',
+          description: 'Files signed with hash pins only (no cryptographic identity). ' +
+            'Run with --with-aim to create an Ed25519 identity for automatic signature management, ' +
+            'audit logging, and trust scoring.',
+          filesModified: [],
+          rollbackAvailable: false,
+        });
+      }
+    }
+
     return remediations;
   }
 
