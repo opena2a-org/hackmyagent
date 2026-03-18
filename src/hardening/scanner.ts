@@ -5455,8 +5455,8 @@ dist/
           continue;
         }
 
-        // Skip node_modules and .git directories
-        if (entryName === 'node_modules' || entryName === '.git') {
+        // Skip node_modules, .git, and backup directories
+        if (entryName === 'node_modules' || entryName === '.git' || entryName === '.hackmyagent-backup') {
           continue;
         }
 
