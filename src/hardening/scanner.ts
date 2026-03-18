@@ -86,6 +86,8 @@ const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
   'DNA-': ['all'],
   // Skill memory manipulation checks
   'SKILL-MEM-': ['openclaw', 'mcp'],
+  // NemoClaw/sandbox static analysis checks
+  'NEMO-': ['all'],
 };
 
 export interface ScanOptions {
@@ -463,6 +465,10 @@ export class HardeningScanner {
     // Skill memory manipulation checks
     const skillMemFindings = await this.checkSkillMemory(targetDir, shouldFix);
     findings.push(...skillMemFindings);
+
+    // NemoClaw codebase pattern checks
+    const nemoFindings = await this.checkNemoClawPatterns(targetDir, shouldFix);
+    findings.push(...nemoFindings);
 
     // Enrich findings with attack taxonomy mapping
     enrichWithTaxonomy(findings);
@@ -7232,6 +7238,609 @@ dist/
           fix: 'Inspect the file for characters that look like Latin letters but are actually Cyrillic, Greek, or Fullwidth. Replace them with their ASCII equivalents. Run: node -e "const fs=require(\'fs\'); [...fs.readFileSync(' + JSON.stringify(relativePath) + ',\'utf8\')].forEach((c,i)=>{const cp=c.codePointAt(0); if(cp>0x7F && cp<0xFFFF) console.log(i, cp.toString(16), c)})"',
         });
       }
+    }
+
+    return findings;
+  }
+
+  /**
+   * NemoClaw static analysis checks (NEMO-001 through NEMO-010)
+   * Detects vulnerability patterns in any codebase: unsafe installs, missing
+   * digest verification, injection vectors, secret leaks, deserialization, and
+   * egress policy gaps.
+   */
+  private async checkNemoClawPatterns(
+    targetDir: string,
+    _shouldFix: boolean,
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // Collect source files by extension (max depth 5, skips node_modules/.git/dist/build)
+    const shFiles = await this.walkDirectory(targetDir, ['.sh'], 0, 5);
+    const tsJsFiles = await this.walkDirectory(targetDir, ['.ts', '.js'], 0, 5);
+    const pyFiles = await this.walkDirectory(targetDir, ['.py'], 0, 5);
+    const yamlFiles = await this.walkDirectory(targetDir, ['.yaml', '.yml'], 0, 5);
+
+    // Cap file counts to avoid scanning enormous repos
+    const maxFiles = 200;
+    const cappedSh = shFiles.slice(0, maxFiles);
+    const cappedTsJs = tsJsFiles.slice(0, maxFiles);
+    const cappedPy = pyFiles.slice(0, maxFiles);
+    const cappedYaml = yamlFiles.slice(0, maxFiles);
+
+    // ---------- NEMO-001: Curl-pipe install without checksum ----------
+    let nemo001Found = false;
+    for (const file of cappedSh) {
+      try {
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (/curl.*\|\s*(ba)?sh/i.test(line) || /curl.*\|\s*sudo/i.test(line)) {
+            // Check surrounding 20 lines for checksum verification
+            const windowStart = Math.max(0, i - 10);
+            const windowEnd = Math.min(lines.length, i + 11);
+            const window = lines.slice(windowStart, windowEnd).join('\n').toLowerCase();
+            if (!window.includes('sha256') && !window.includes('checksum') && !window.includes('gpg --verify')) {
+              nemo001Found = true;
+              findings.push({
+                checkId: 'NEMO-001',
+                name: 'Curl-pipe install without checksum',
+                description: 'A shell script pipes curl output directly into a shell interpreter without verifying a checksum or GPG signature. An attacker who compromises the remote host can inject arbitrary code.',
+                category: 'nemo-install',
+                severity: 'critical',
+                passed: false,
+                message: `Curl-pipe install without integrity check at line ${i + 1}`,
+                fixable: false,
+                file: path.relative(targetDir, file),
+                line: i + 1,
+                fix: 'Download to temp file, verify checksum, then execute: curl -o /tmp/install.sh URL && echo "EXPECTED_SHA256 /tmp/install.sh" | sha256sum -c && bash /tmp/install.sh',
+              });
+            }
+          }
+        }
+      } catch { /* skip unreadable */ }
+    }
+    if (!nemo001Found && cappedSh.length > 0) {
+      findings.push({
+        checkId: 'NEMO-001',
+        name: 'Curl-pipe install without checksum',
+        description: 'No curl-pipe-to-shell patterns found without checksum verification.',
+        category: 'nemo-install',
+        severity: 'critical',
+        passed: true,
+        message: 'No unsafe curl-pipe installs detected',
+        fixable: false,
+      });
+    }
+
+    // ---------- NEMO-002: Blueprint/artifact digest verification gap ----------
+    let nemo002Found = false;
+    // Check YAML files for empty digest fields
+    for (const file of cappedYaml) {
+      try {
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (/digest:\s*["']?\s*["']?\s*$/.test(line) || /digest:\s*["']{2}/.test(line)) {
+            nemo002Found = true;
+            findings.push({
+              checkId: 'NEMO-002',
+              name: 'Empty digest field in blueprint/artifact',
+              description: 'A YAML manifest declares a digest field with an empty value. Artifacts without digests cannot be verified for integrity, enabling supply-chain injection.',
+              category: 'nemo-integrity',
+              severity: 'critical',
+              passed: false,
+              message: `Empty digest field at line ${i + 1}`,
+              fixable: false,
+              file: path.relative(targetDir, file),
+              line: i + 1,
+              fix: 'Require non-empty digest; fail verification if digest is missing. Compute with: sha256sum <artifact>',
+            });
+          }
+        }
+      } catch { /* skip */ }
+    }
+    // Check TS/JS files for digest skip logic
+    for (const file of cappedTsJs) {
+      try {
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (/if\s*\(\s*!?.*digest\s*&&/.test(line) || /if\s*\(\s*!.*digest\s*\)/.test(line)) {
+            nemo002Found = true;
+            findings.push({
+              checkId: 'NEMO-002',
+              name: 'Digest verification skipped on falsy value',
+              description: 'Code skips digest verification when the digest field is falsy. An attacker who removes the digest from a manifest bypasses integrity checks entirely.',
+              category: 'nemo-integrity',
+              severity: 'critical',
+              passed: false,
+              message: `Digest verification skipped when falsy at line ${i + 1}`,
+              fixable: false,
+              file: path.relative(targetDir, file),
+              line: i + 1,
+              fix: 'Require non-empty digest; fail verification if digest is missing instead of skipping the check.',
+            });
+          }
+        }
+      } catch { /* skip */ }
+    }
+    if (!nemo002Found && (cappedYaml.length > 0 || cappedTsJs.length > 0)) {
+      findings.push({
+        checkId: 'NEMO-002',
+        name: 'Blueprint/artifact digest verification gap',
+        description: 'No empty digest fields or digest-skip logic found.',
+        category: 'nemo-integrity',
+        severity: 'critical',
+        passed: true,
+        message: 'No digest verification gaps detected',
+        fixable: false,
+      });
+    }
+
+    // ---------- NEMO-003: Hot-reload policy paths reachable from user input ----------
+    let nemo003Found = false;
+    for (const file of cappedTsJs) {
+      try {
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (/policy.*reload|reload.*policy|hot.*reload/i.test(line)) {
+            // Check surrounding 10 lines for user input references
+            const windowStart = Math.max(0, i - 5);
+            const windowEnd = Math.min(lines.length, i + 6);
+            const window = lines.slice(windowStart, windowEnd).join('\n');
+            if (/req\.|request\.|input\.|user\./i.test(window)) {
+              nemo003Found = true;
+              findings.push({
+                checkId: 'NEMO-003',
+                name: 'Hot-reload policy path reachable from user input',
+                description: 'A policy reload mechanism is within code proximity of user input handling. An attacker could trigger policy changes through crafted requests.',
+                category: 'nemo-policy',
+                severity: 'high',
+                passed: false,
+                message: `Policy reload near user input handling at line ${i + 1}`,
+                fixable: false,
+                file: path.relative(targetDir, file),
+                line: i + 1,
+                fix: 'Gate policy reload behind operator authentication, not agent output or user requests.',
+              });
+            }
+          }
+        }
+      } catch { /* skip */ }
+    }
+    if (!nemo003Found && cappedTsJs.length > 0) {
+      findings.push({
+        checkId: 'NEMO-003',
+        name: 'Hot-reload policy paths reachable from user input',
+        description: 'No policy reload paths reachable from user input found.',
+        category: 'nemo-policy',
+        severity: 'high',
+        passed: true,
+        message: 'No unsafe policy reload paths detected',
+        fixable: false,
+      });
+    }
+
+    // ---------- NEMO-004: API key passed as CLI argument ----------
+    let nemo004Found = false;
+    const nemo004Files = [...cappedTsJs, ...cappedPy];
+    for (const file of nemo004Files) {
+      try {
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (
+            /--credential.*\$\{.*key/i.test(line) ||
+            /--api-key.*\$\{/i.test(line) ||
+            /--token.*\$\{/i.test(line) ||
+            /execSync.*--credential/i.test(line) ||
+            /spawn.*--credential/i.test(line) ||
+            /subprocess.*--credential/i.test(line)
+          ) {
+            nemo004Found = true;
+            findings.push({
+              checkId: 'NEMO-004',
+              name: 'API key passed as CLI argument',
+              description: 'Credentials are passed as command-line arguments to a subprocess. CLI arguments are visible in process listings (ps aux) and shell history.',
+              category: 'nemo-secrets',
+              severity: 'high',
+              passed: false,
+              message: `Credential passed as CLI argument at line ${i + 1}`,
+              fixable: false,
+              file: path.relative(targetDir, file),
+              line: i + 1,
+              fix: 'Pass credentials via environment variables or stdin, not command-line arguments.',
+            });
+          }
+        }
+      } catch { /* skip */ }
+    }
+    if (!nemo004Found && nemo004Files.length > 0) {
+      findings.push({
+        checkId: 'NEMO-004',
+        name: 'API key passed as CLI argument',
+        description: 'No credentials passed as CLI arguments detected.',
+        category: 'nemo-secrets',
+        severity: 'high',
+        passed: true,
+        message: 'No CLI credential exposure detected',
+        fixable: false,
+      });
+    }
+
+    // ---------- NEMO-005: exec() with user-controlled string interpolation ----------
+    let nemo005Found = false;
+    for (const file of cappedTsJs) {
+      try {
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          // Match exec( or execSync( with template literal containing user-controlled vars
+          // Exclude execFile (safe) patterns
+          if (
+            /\bexec(Sync)?\s*\(/.test(line) &&
+            !/\bexecFile/.test(line) &&
+            /`[^`]*\$\{[^}]*(name|Name|id|Id|input|arg|param|flag|option)/i.test(line)
+          ) {
+            nemo005Found = true;
+            findings.push({
+              checkId: 'NEMO-005',
+              name: 'exec() with user-controlled string interpolation',
+              description: 'exec() or execSync() is called with a template literal containing user-controlled variables. This enables command injection.',
+              category: 'nemo-injection',
+              severity: 'critical',
+              passed: false,
+              message: `exec() with user-controlled interpolation at line ${i + 1}`,
+              fixable: false,
+              file: path.relative(targetDir, file),
+              line: i + 1,
+              fix: 'Use execFile() or spawn() with array arguments instead of exec() with string interpolation.',
+            });
+          }
+        }
+      } catch { /* skip */ }
+    }
+    if (!nemo005Found && cappedTsJs.length > 0) {
+      findings.push({
+        checkId: 'NEMO-005',
+        name: 'exec() with user-controlled string interpolation',
+        description: 'No exec() calls with user-controlled string interpolation found.',
+        category: 'nemo-injection',
+        severity: 'critical',
+        passed: true,
+        message: 'No command injection via exec() detected',
+        fixable: false,
+      });
+    }
+
+    // ---------- NEMO-006: Predictable /tmp paths without mktemp ----------
+    let nemo006Found = false;
+    for (const file of cappedSh) {
+      try {
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          // Skip lines that ARE mktemp commands
+          if (/mktemp/.test(line)) continue;
+          // Match hardcoded /tmp/ writes
+          if (
+            /\/tmp\//.test(line) &&
+            (/>/.test(line) || />>/.test(line) || /-o\s+\/tmp\//.test(line) || /install.*\/tmp\//.test(line))
+          ) {
+            nemo006Found = true;
+            findings.push({
+              checkId: 'NEMO-006',
+              name: 'Predictable /tmp path without mktemp',
+              description: 'A shell script writes to a hardcoded /tmp path instead of using mktemp. Predictable temp file names enable symlink attacks (CWE-377).',
+              category: 'nemo-filesystem',
+              severity: 'high',
+              passed: false,
+              message: `Hardcoded /tmp path at line ${i + 1}`,
+              fixable: false,
+              file: path.relative(targetDir, file),
+              line: i + 1,
+              fix: 'Use mktemp for all temporary files; add trap EXIT for cleanup: TMPDIR=$(mktemp -d) && trap "rm -rf $TMPDIR" EXIT',
+            });
+          }
+        }
+      } catch { /* skip */ }
+    }
+    if (!nemo006Found && cappedSh.length > 0) {
+      findings.push({
+        checkId: 'NEMO-006',
+        name: 'Predictable /tmp paths without mktemp',
+        description: 'No hardcoded /tmp paths found in shell scripts.',
+        category: 'nemo-filesystem',
+        severity: 'high',
+        passed: true,
+        message: 'No predictable temp file paths detected',
+        fixable: false,
+      });
+    }
+
+    // ---------- NEMO-007: Full process.env passthrough to subprocess ----------
+    let nemo007Found = false;
+    for (const file of cappedTsJs) {
+      try {
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (/env:\s*\{[^}]*\.\.\.process\.env/.test(line)) {
+            nemo007Found = true;
+            findings.push({
+              checkId: 'NEMO-007',
+              name: 'Full process.env passthrough to subprocess',
+              description: 'process.env is spread into subprocess options, leaking all environment variables (including secrets) to child processes.',
+              category: 'nemo-secrets',
+              severity: 'high',
+              passed: false,
+              message: `Full process.env spread into subprocess at line ${i + 1}`,
+              fixable: false,
+              file: path.relative(targetDir, file),
+              line: i + 1,
+              fix: 'Use an explicit env var allowlist instead of spreading process.env: env: { PATH: process.env.PATH, NODE_ENV: process.env.NODE_ENV }',
+            });
+          }
+        }
+      } catch { /* skip */ }
+    }
+    if (!nemo007Found && cappedTsJs.length > 0) {
+      findings.push({
+        checkId: 'NEMO-007',
+        name: 'Full process.env passthrough to subprocess',
+        description: 'No full process.env passthrough to subprocesses found.',
+        category: 'nemo-secrets',
+        severity: 'high',
+        passed: true,
+        message: 'No process.env leakage to subprocesses detected',
+        fixable: false,
+      });
+    }
+
+    // ---------- NEMO-008: TOCTOU race between verify and apply ----------
+    let nemo008Found = false;
+    // Heuristic: look for verify/validate in one file AND exec/spawn in the same directory tree
+    const dirVerifyMap = new Map<string, { verifyFile: string; verifyLine: number }>();
+    const dirExecMap = new Map<string, { execFile: string; execLine: number }>();
+    for (const file of cappedTsJs) {
+      try {
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        const dir = path.dirname(file);
+        for (let i = 0; i < lines.length; i++) {
+          if (/verify.*digest|validate.*hash|check.*integrity/i.test(lines[i])) {
+            if (!dirVerifyMap.has(dir)) {
+              dirVerifyMap.set(dir, { verifyFile: file, verifyLine: i + 1 });
+            }
+          }
+          if (/\bspawn\s*\(|\bexec\s*\(|\bexecSync\s*\(|\bexecFile\s*\(/.test(lines[i])) {
+            if (!dirExecMap.has(dir)) {
+              dirExecMap.set(dir, { execFile: file, execLine: i + 1 });
+            }
+          }
+        }
+      } catch { /* skip */ }
+    }
+    for (const [dir, verify] of dirVerifyMap) {
+      const exec = dirExecMap.get(dir);
+      if (exec && verify.verifyFile !== exec.execFile) {
+        nemo008Found = true;
+        findings.push({
+          checkId: 'NEMO-008',
+          name: 'TOCTOU race between verify and apply',
+          description: 'Integrity verification and execution happen in separate files, creating a time-of-check-time-of-use window where the artifact can be swapped between verification and use.',
+          category: 'nemo-integrity',
+          severity: 'high',
+          passed: false,
+          message: `Verify in ${path.relative(targetDir, verify.verifyFile)}:${verify.verifyLine}, exec in ${path.relative(targetDir, exec.execFile)}:${exec.execLine}`,
+          fixable: false,
+          file: path.relative(targetDir, verify.verifyFile),
+          line: verify.verifyLine,
+          fix: 'Copy artifact to temp dir, verify the copy, execute from the copy (atomic verify-then-execute in the same function).',
+        });
+      }
+    }
+    if (!nemo008Found && cappedTsJs.length > 0) {
+      findings.push({
+        checkId: 'NEMO-008',
+        name: 'TOCTOU race between verify and apply',
+        description: 'No verify/apply TOCTOU patterns detected.',
+        category: 'nemo-integrity',
+        severity: 'high',
+        passed: true,
+        message: 'No TOCTOU race conditions detected',
+        fixable: false,
+      });
+    }
+
+    // ---------- NEMO-009: Unsafe deserialization of untrusted data ----------
+    let nemo009Found = false;
+    // Python files: pickle.load, yaml.load without SafeLoader, eval(), exec()
+    for (const file of cappedPy) {
+      try {
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (/pickle\.load/i.test(line)) {
+            nemo009Found = true;
+            findings.push({
+              checkId: 'NEMO-009',
+              name: 'Unsafe deserialization: pickle.load',
+              description: 'pickle.load() deserializes arbitrary Python objects, enabling remote code execution if the data source is untrusted.',
+              category: 'nemo-deserialization',
+              severity: 'critical',
+              passed: false,
+              message: `pickle.load() at line ${i + 1}`,
+              fixable: false,
+              file: path.relative(targetDir, file),
+              line: i + 1,
+              fix: 'Use json.load() or a restricted deserializer instead of pickle for untrusted data.',
+            });
+          }
+          if (/yaml\.load\s*\(/.test(line) && !/Loader\s*=\s*SafeLoader/.test(line) && !/safe_load/.test(line)) {
+            nemo009Found = true;
+            findings.push({
+              checkId: 'NEMO-009',
+              name: 'Unsafe deserialization: yaml.load without SafeLoader',
+              description: 'yaml.load() without SafeLoader can execute arbitrary Python code embedded in YAML documents.',
+              category: 'nemo-deserialization',
+              severity: 'high',
+              passed: false,
+              message: `yaml.load() without SafeLoader at line ${i + 1}`,
+              fixable: false,
+              file: path.relative(targetDir, file),
+              line: i + 1,
+              fix: 'Use yaml.safe_load() or yaml.load(data, Loader=yaml.SafeLoader).',
+            });
+          }
+          if (/\beval\s*\(/.test(line) || /\bexec\s*\(/.test(line)) {
+            nemo009Found = true;
+            findings.push({
+              checkId: 'NEMO-009',
+              name: 'Unsafe deserialization: eval/exec in Python',
+              description: 'eval() or exec() executes arbitrary code. If the input originates from untrusted sources, this enables code injection.',
+              category: 'nemo-deserialization',
+              severity: 'critical',
+              passed: false,
+              message: `eval()/exec() at line ${i + 1}`,
+              fixable: false,
+              file: path.relative(targetDir, file),
+              line: i + 1,
+              fix: 'Replace eval/exec with ast.literal_eval() for data parsing, or use a safe DSL.',
+            });
+          }
+        }
+      } catch { /* skip */ }
+    }
+    // TS/JS files: eval(), new Function(), JSON5.parse
+    for (const file of cappedTsJs) {
+      try {
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (/\beval\s*\(/.test(line)) {
+            nemo009Found = true;
+            findings.push({
+              checkId: 'NEMO-009',
+              name: 'Unsafe deserialization: eval()',
+              description: 'eval() executes arbitrary JavaScript code. If the input comes from untrusted sources, this enables code injection.',
+              category: 'nemo-deserialization',
+              severity: 'critical',
+              passed: false,
+              message: `eval() at line ${i + 1}`,
+              fixable: false,
+              file: path.relative(targetDir, file),
+              line: i + 1,
+              fix: 'Use JSON.parse() for data, or a sandboxed evaluator for expressions.',
+            });
+          }
+          if (/new\s+Function\s*\(/.test(line)) {
+            nemo009Found = true;
+            findings.push({
+              checkId: 'NEMO-009',
+              name: 'Unsafe deserialization: new Function()',
+              description: 'new Function() creates executable code from strings, equivalent to eval() for code injection risks.',
+              category: 'nemo-deserialization',
+              severity: 'critical',
+              passed: false,
+              message: `new Function() at line ${i + 1}`,
+              fixable: false,
+              file: path.relative(targetDir, file),
+              line: i + 1,
+              fix: 'Use JSON.parse() for data, or a sandboxed evaluator for expressions.',
+            });
+          }
+          if (/JSON5\.parse/.test(line)) {
+            nemo009Found = true;
+            findings.push({
+              checkId: 'NEMO-009',
+              name: 'Unsafe deserialization: JSON5.parse',
+              description: 'JSON5.parse() is more lenient than JSON.parse(), accepting comments, trailing commas, and unquoted keys. This expanded surface can introduce parsing ambiguities.',
+              category: 'nemo-deserialization',
+              severity: 'high',
+              passed: false,
+              message: `JSON5.parse() at line ${i + 1}`,
+              fixable: false,
+              file: path.relative(targetDir, file),
+              line: i + 1,
+              fix: 'Use JSON.parse() instead of JSON5.parse() for untrusted data.',
+            });
+          }
+        }
+      } catch { /* skip */ }
+    }
+    if (!nemo009Found && (cappedPy.length > 0 || cappedTsJs.length > 0)) {
+      findings.push({
+        checkId: 'NEMO-009',
+        name: 'Unsafe deserialization of untrusted data',
+        description: 'No unsafe deserialization patterns detected.',
+        category: 'nemo-deserialization',
+        severity: 'critical',
+        passed: true,
+        message: 'No unsafe deserialization detected',
+        fixable: false,
+      });
+    }
+
+    // ---------- NEMO-010: Network egress policy allows data exfiltration ----------
+    let nemo010Found = false;
+    const egressEndpoints = [
+      'api.telegram.org',
+      'discord.com/api',
+      'hooks.slack.com',
+      'webhook.site',
+      'requestbin',
+    ];
+    for (const file of cappedYaml) {
+      try {
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].toLowerCase();
+          for (const endpoint of egressEndpoints) {
+            if (line.includes(endpoint.toLowerCase())) {
+              nemo010Found = true;
+              findings.push({
+                checkId: 'NEMO-010',
+                name: 'Messaging API in egress policy',
+                description: `Sandbox policy pre-allows access to ${endpoint}. Agents can exfiltrate data via messaging APIs without explicit operator approval.`,
+                category: 'nemo-egress',
+                severity: 'high',
+                passed: false,
+                message: `Messaging endpoint "${endpoint}" in egress policy at line ${i + 1}`,
+                fixable: false,
+                file: path.relative(targetDir, file),
+                line: i + 1,
+                fix: 'Remove messaging APIs from base sandbox policy; require explicit operator opt-in per deployment.',
+              });
+            }
+          }
+        }
+      } catch { /* skip */ }
+    }
+    if (!nemo010Found && cappedYaml.length > 0) {
+      findings.push({
+        checkId: 'NEMO-010',
+        name: 'Network egress policy allows data exfiltration',
+        description: 'No messaging API endpoints found in egress policies.',
+        category: 'nemo-egress',
+        severity: 'high',
+        passed: true,
+        message: 'No exfiltration-prone egress endpoints detected',
+        fixable: false,
+      });
     }
 
     return findings;
