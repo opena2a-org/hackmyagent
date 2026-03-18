@@ -104,6 +104,157 @@ describe('UNICODE-STEGO checks', () => {
 
       expect(stego001.length).toBe(1);
     });
+
+    it('detects zero-width characters (U+200B-200D) in source files', async () => {
+      // U+200B = E2 80 8B (zero-width space)
+      const content = Buffer.concat([
+        Buffer.from('const x = "hello'),
+        Buffer.from([0xE2, 0x80, 0x8B]), // U+200B ZWSP
+        Buffer.from('world";\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'zwsp.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego001 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'zwsp.js'
+      );
+
+      expect(stego001.length).toBe(1);
+      expect(stego001[0].severity).toBe('high'); // zero-width-only is high, not critical
+      expect(stego001[0].message).toContain('zero-width');
+    });
+
+    it('detects mid-file BOM (U+FEFF) but not start-of-file BOM', async () => {
+      // Start-of-file BOM should NOT trigger
+      const bomAtStart = Buffer.concat([
+        Buffer.from([0xEF, 0xBB, 0xBF]), // BOM at offset 0
+        Buffer.from('const x = 1;\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'bom-start.js'), bomAtStart);
+
+      // Mid-file BOM SHOULD trigger
+      const bomMidFile = Buffer.concat([
+        Buffer.from('const x = "test'),
+        Buffer.from([0xEF, 0xBB, 0xBF]), // BOM mid-file
+        Buffer.from('";\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'bom-mid.js'), bomMidFile);
+
+      const findings = await scanForUnicodeStego();
+
+      const startFindings = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'bom-start.js'
+      );
+      expect(startFindings.length).toBe(0);
+
+      const midFindings = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'bom-mid.js'
+      );
+      expect(midFindings.length).toBe(1);
+      expect(midFindings[0].message).toContain('mid-file BOM');
+    });
+
+    it('detects bidi override characters (U+202A-202E)', async () => {
+      // U+202E = E2 80 AE (right-to-left override)
+      const content = Buffer.concat([
+        Buffer.from('const x = "'),
+        Buffer.from([0xE2, 0x80, 0xAE]), // U+202E RLO
+        Buffer.from('admin";\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'bidi.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego001 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'bidi.js'
+      );
+
+      expect(stego001.length).toBe(1);
+      expect(stego001[0].severity).toBe('critical'); // bidi is critical
+      expect(stego001[0].message).toContain('bidi overrides');
+    });
+
+    it('detects bidi isolate characters (U+2066-2069)', async () => {
+      // U+2066 = E2 81 A6 (left-to-right isolate)
+      const content = Buffer.concat([
+        Buffer.from('const x = "'),
+        Buffer.from([0xE2, 0x81, 0xA6]), // U+2066 LRI
+        Buffer.from('test";\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'bidi-isolate.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego001 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'bidi-isolate.js'
+      );
+
+      expect(stego001.length).toBe(1);
+      expect(stego001[0].severity).toBe('critical');
+    });
+
+    it('zero-width-only files get high severity, not critical', async () => {
+      // Only zero-width chars, no bidi/variation/tags
+      const content = Buffer.concat([
+        Buffer.from('const x = "'),
+        Buffer.from([0xE2, 0x80, 0x8C]), // U+200C ZWNJ
+        Buffer.from('";\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'zwonly.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego001 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'zwonly.js'
+      );
+
+      expect(stego001.length).toBe(1);
+      expect(stego001[0].severity).toBe('high');
+    });
+  });
+
+  describe('Expanded file type scanning', () => {
+    it('detects invisible codepoints in .py files', async () => {
+      const content = Buffer.concat([
+        Buffer.from('x = "hello'),
+        Buffer.from([0xE2, 0x80, 0x8B]), // U+200B
+        Buffer.from('"\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'script.py'), content);
+
+      const findings = await scanForUnicodeStego();
+      const pyFindings = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'script.py'
+      );
+      expect(pyFindings.length).toBe(1);
+    });
+
+    it('detects invisible codepoints in .md files', async () => {
+      const content = Buffer.concat([
+        Buffer.from('# Hello '),
+        Buffer.from([0xE2, 0x80, 0xAE]), // U+202E bidi
+        Buffer.from('World\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'readme.md'), content);
+
+      const findings = await scanForUnicodeStego();
+      const mdFindings = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'readme.md'
+      );
+      expect(mdFindings.length).toBe(1);
+    });
+
+    it('detects invisible codepoints in .yaml files', async () => {
+      const content = Buffer.concat([
+        Buffer.from('key: "value'),
+        Buffer.from([0xE2, 0x80, 0x8D]), // U+200D ZWJ
+        Buffer.from('"\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'config.yaml'), content);
+
+      const findings = await scanForUnicodeStego();
+      const yamlFindings = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'config.yaml'
+      );
+      expect(yamlFindings.length).toBe(1);
+    });
   });
 
   describe('UNICODE-STEGO-002: GlassWorm Decoder Pattern', () => {
@@ -332,6 +483,128 @@ describe('UNICODE-STEGO checks', () => {
       );
 
       expect(nestedFindings.length).toBe(1);
+    });
+  });
+
+  describe('UNICODE-STEGO-005: Homoglyph Confusable Detection', () => {
+    it('detects Cyrillic homoglyphs in non-comment code', async () => {
+      // U+0410 = Cyrillic A (D0 90 in UTF-8), looks identical to Latin A
+      const content = Buffer.concat([
+        Buffer.from('const '),
+        Buffer.from([0xD0, 0x90]), // Cyrillic A
+        Buffer.from('dmin = true;\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'homoglyph.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego005 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-005' && f.file === 'homoglyph.js'
+      );
+
+      expect(stego005.length).toBe(1);
+      expect(stego005[0].severity).toBe('high');
+      expect(stego005[0].passed).toBe(false);
+      expect(stego005[0].message).toContain('U+0410');
+    });
+
+    it('detects Cyrillic lowercase homoglyphs', async () => {
+      // U+0435 = Cyrillic e (D0 B5 in UTF-8)
+      const content = Buffer.concat([
+        Buffer.from('const t'),
+        Buffer.from([0xD0, 0xB5]), // Cyrillic e
+        Buffer.from('st = 1;\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'homo-lower.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego005 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-005' && f.file === 'homo-lower.js'
+      );
+
+      expect(stego005.length).toBe(1);
+    });
+
+    it('skips homoglyphs in comment lines (// prefix)', async () => {
+      const content = Buffer.concat([
+        Buffer.from('// '),
+        Buffer.from([0xD0, 0x90]), // Cyrillic A in a comment
+        Buffer.from('dmin note\n'),
+        Buffer.from('const x = 1;\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'comment-slash.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego005 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-005' && f.file === 'comment-slash.js'
+      );
+
+      expect(stego005.length).toBe(0);
+    });
+
+    it('skips homoglyphs in comment lines (# prefix)', async () => {
+      const content = Buffer.concat([
+        Buffer.from('# '),
+        Buffer.from([0xD0, 0x90]), // Cyrillic A in a Python comment
+        Buffer.from('dmin note\n'),
+        Buffer.from('x = 1\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'comment-hash.py'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego005 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-005' && f.file === 'comment-hash.py'
+      );
+
+      expect(stego005.length).toBe(0);
+    });
+
+    it('skips homoglyphs in block comment lines (* prefix)', async () => {
+      const content = Buffer.concat([
+        Buffer.from(' * '),
+        Buffer.from([0xD0, 0x90]), // Cyrillic A in a block comment line
+        Buffer.from('dmin note\n'),
+        Buffer.from('const x = 1;\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'comment-star.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego005 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-005' && f.file === 'comment-star.js'
+      );
+
+      expect(stego005.length).toBe(0);
+    });
+
+    it('reports only one finding per file', async () => {
+      const content = Buffer.concat([
+        Buffer.from('const '),
+        Buffer.from([0xD0, 0x90]), // Cyrillic A
+        Buffer.from(' = 1;\nconst '),
+        Buffer.from([0xD0, 0x92]), // Cyrillic B
+        Buffer.from(' = 2;\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'multi-homo.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego005 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-005' && f.file === 'multi-homo.js'
+      );
+
+      expect(stego005.length).toBe(1);
+    });
+
+    it('does not flag files with only ASCII characters', async () => {
+      await fs.writeFile(
+        path.join(tempDir, 'ascii-only.js'),
+        'const admin = true;\nconsole.log(admin);\n'
+      );
+
+      const findings = await scanForUnicodeStego();
+      const stego005 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-005' && f.file === 'ascii-only.js'
+      );
+
+      expect(stego005.length).toBe(0);
     });
   });
 

@@ -161,6 +161,43 @@ export function buildContributionPayloadFromDir(
 }
 
 /**
+ * Build a human-readable summary of what would be contributed.
+ * Used by --ci mode to show transparency without prompting.
+ */
+export function buildContributionSummary(payload: ContributionPayload): string {
+  const passed = payload.findings.filter(f => f.result === 'pass').length;
+  const failed = payload.findings.filter(f => f.result === 'fail').length;
+  const total = payload.findings.length;
+
+  const severityCounts: Record<string, number> = {};
+  for (const f of payload.findings) {
+    if (f.result === 'fail') {
+      severityCounts[f.severity] = (severityCounts[f.severity] || 0) + 1;
+    }
+  }
+
+  const severityLine = Object.entries(severityCounts)
+    .sort(([a], [b]) => {
+      const order = ['critical', 'high', 'medium', 'low'];
+      return order.indexOf(a) - order.indexOf(b);
+    })
+    .map(([sev, count]) => `${count} ${sev}`)
+    .join(', ');
+
+  const lines = [
+    `Contribution summary (anonymized):`,
+    `  Package: ${payload.packageName} ${payload.packageVersion || '(unknown version)'}`,
+    `  Ecosystem: ${payload.ecosystem}`,
+    `  Checks: ${total} total, ${passed} passed, ${failed} failed`,
+  ];
+  if (severityLine) {
+    lines.push(`  Failures by severity: ${severityLine}`);
+  }
+  lines.push(`  Data sent: check IDs, pass/fail, severity (no file paths, no code)`);
+  return lines.join('\n');
+}
+
+/**
  * Submit an anonymized contribution payload to the OpenA2A Registry.
  *
  * POST to https://api.oa2a.org/api/v1/telemetry/scan
