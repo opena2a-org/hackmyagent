@@ -229,6 +229,12 @@ const SEVERITY_WEIGHTS: Record<Severity, number> = {
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB max file size to prevent memory exhaustion
 const MAX_LINE_LENGTH = 10000; // 10KB max line length for regex safety
 
+/** Shell-escape a string for safe interpolation into advisory fix commands. */
+function shellEscape(s: string): string {
+  // Wrap in single quotes and escape embedded single quotes: ' -> '\''
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
 export class HardeningScanner {
   private cliName = 'hackmyagent';
   // Files that may be created or modified during auto-fix
@@ -6899,7 +6905,7 @@ dist/
       // Scan for:
       //   - Variation selectors U+FE00-FE0F (UTF-8: EF B8 80-8F)
       //   - Tag characters U+E0100-E01EF (UTF-8: F3 A0 84 80 - F3 A0 87 AF)
-      //   - Zero-width chars: U+200B (EF 80 8B), U+200C (E2 80 8C), U+200D (E2 80 8D)
+      //   - Zero-width chars: U+200B (E2 80 8B), U+200C (E2 80 8C), U+200D (E2 80 8D)
       //   - Mid-file BOM: U+FEFF (EF BB BF) -- skip offset 0
       //   - Bidi overrides: U+202A-202E (E2 80 AA-AE), U+2066-2069 (E2 81 A6-A9)
       let hasVariationSelectors = false;
@@ -7033,7 +7039,7 @@ dist/
           file: relativePath,
           line: firstLine,
           fixable: false,
-          fix: 'Inspect the file with a hex editor (e.g., xxd) to identify and remove invisible Unicode codepoints. Run: xxd ' + relativePath + ' | grep -iE "e280[8-9a-e]|efbb|efb8|f3a0"',
+          fix: 'Inspect the file with a hex editor (e.g., xxd) to identify and remove invisible Unicode codepoints. Run: xxd ' + shellEscape(relativePath) + ' | grep -iE "e280[8-9a-e]|efbb|efb8|f3a0"',
         });
       }
 
@@ -7120,7 +7126,7 @@ dist/
             file: relativePath,
             line: evalLine,
             fixable: false,
-            fix: 'Remove the eval/Function call and inspect the string argument with a hex editor. The string likely contains invisible Unicode characters encoding a malicious payload. Run: node -e "const fs=require(\'fs\'); const s=fs.readFileSync(\'' + relativePath + '\',\'utf8\'); console.log([...s].filter(c=>c.codePointAt(0)>0x200).map(c=>c.codePointAt(0).toString(16)))"',
+            fix: 'Remove the eval/Function call and inspect the string argument with a hex editor. The string likely contains invisible Unicode characters encoding a malicious payload. Run: node -e "const fs=require(\'fs\'); const s=fs.readFileSync(' + JSON.stringify(relativePath) + ',\'utf8\'); console.log([...s].filter(c=>c.codePointAt(0)>0x200).map(c=>c.codePointAt(0).toString(16)))"',
           });
           break; // One finding per file
         }
@@ -7169,7 +7175,7 @@ dist/
             file: relativePath,
             line: tagBlockLine,
             fixable: false,
-            fix: 'Inspect the file with a hex editor to identify tag block characters (byte sequence starting with F3 A0). These characters are invisible and have no legitimate use in source code. Run: xxd ' + relativePath + ' | grep "f3a0"',
+            fix: 'Inspect the file with a hex editor to identify tag block characters (byte sequence starting with F3 A0). These characters are invisible and have no legitimate use in source code. Run: xxd ' + shellEscape(relativePath) + ' | grep "f3a0"',
           });
         }
       }
@@ -7223,7 +7229,7 @@ dist/
           file: relativePath,
           line: homoglyphLine,
           fixable: false,
-          fix: 'Inspect the file for characters that look like Latin letters but are actually Cyrillic, Greek, or Fullwidth. Replace them with their ASCII equivalents. Run: node -e "const fs=require(\'fs\'); [...fs.readFileSync(\'' + relativePath + '\',\'utf8\')].forEach((c,i)=>{const cp=c.codePointAt(0); if(cp>0x7F && cp<0xFFFF) console.log(i, cp.toString(16), c)})"',
+          fix: 'Inspect the file for characters that look like Latin letters but are actually Cyrillic, Greek, or Fullwidth. Replace them with their ASCII equivalents. Run: node -e "const fs=require(\'fs\'); [...fs.readFileSync(' + JSON.stringify(relativePath) + ',\'utf8\')].forEach((c,i)=>{const cp=c.codePointAt(0); if(cp>0x7F && cp<0xFFFF) console.log(i, cp.toString(16), c)})"',
         });
       }
     }
