@@ -2120,10 +2120,11 @@ Examples:
               : finding.file
             : '';
 
-          // Format: SEVERITY  file:line
+          // Format: SEVERITY  [DRY RUN] Would fix: file:line
           //         Description
           //         Fix: command
-          console.log(`${display.color()}${display.symbol} ${finding.severity.toUpperCase()}${RESET()}  ${location}`);
+          const dryRunPrefix = (finding as any).wouldFix ? `${colors.cyan}[DRY RUN] Would fix: ${RESET()}` : '';
+          console.log(`${display.color()}${display.symbol} ${finding.severity.toUpperCase()}${RESET()}  ${dryRunPrefix}${location}`);
           console.log(`       ${finding.description}`);
           if (finding.fix) {
             console.log(`       ${colors.cyan}Fix:${RESET()} ${finding.fix}`);
@@ -2157,6 +2158,15 @@ Examples:
         if (severityCounts.low > 0) summaryParts.push(`${colors.green}Low: ${severityCounts.low}${RESET()}`);
         if (summaryParts.length > 0) {
           console.log(`${summaryParts.join(' | ')}\n`);
+        }
+
+        // Dry-run summary
+        if (result.dryRun) {
+          const wouldFixCount = issues.filter((f: any) => f.wouldFix).length;
+          if (wouldFixCount > 0) {
+            console.log(`${colors.cyan}Dry run complete:${RESET()} ${wouldFixCount} issue${wouldFixCount === 1 ? '' : 's'} auto-fixable. Run without --dry-run to apply.`);
+          }
+          console.log(`  No changes were made.\n`);
         }
       }
 
