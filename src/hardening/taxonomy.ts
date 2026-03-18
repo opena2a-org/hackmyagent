@@ -108,7 +108,8 @@ const TAXONOMY_MAP: Record<string, string> = {
   // Skill memory
   'SKILL-MEM-001': 'SKILL-MEM-AMP',
 
-  // Adversarial skill
+  // Adversarial skill / frontmatter injection
+  'ASKILL-002': 'SKILL-FRONTMATTER',
   'SKILL-001': 'SKILL-FRONTMATTER',
   'SKILL-004': 'SKILL-FRONTMATTER',
   'SKILL-005': 'SKILL-FRONTMATTER',
