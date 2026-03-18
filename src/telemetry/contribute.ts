@@ -6,7 +6,7 @@
  * events queued by HMA are flushed by opena2a-cli and vice versa.
  *
  * Queue file: ~/.opena2a/contribute-queue.json
- * Endpoint:   POST registry.opena2a.org/api/v1/contribute
+ * Endpoint:   POST api.oa2a.org/api/v1/contribute
  *
  * PRIVACY: Only summary statistics are sent (totalChecks, passed,
  * severity counts, score, verdict). No file paths, no source code,
@@ -24,7 +24,7 @@ import type { SecurityFinding } from '../hardening';
 // Paths and constants
 // ---------------------------------------------------------------------------
 
-const REGISTRY_URL = 'https://registry.opena2a.org';
+const REGISTRY_URL = 'https://api.oa2a.org';
 const FLUSH_THRESHOLD = 10;
 const MAX_QUEUE_SIZE = 100;
 const TIMEOUT_MS = 10_000;

@@ -427,7 +427,7 @@ describe('flushQueue', () => {
 
     expect(ok).toBe(true);
     const fetchCall = (fetch as any).mock.calls[0];
-    expect(fetchCall[0]).toBe('https://registry.opena2a.org/api/v1/contribute');
+    expect(fetchCall[0]).toBe('https://api.oa2a.org/api/v1/contribute');
     expect(fetchCall[1].method).toBe('POST');
 
     // Queue should be empty after successful flush
