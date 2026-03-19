@@ -7913,7 +7913,7 @@ dist/
         description: 'Ollama server configured to listen on all interfaces. Our research found 294K+ exposed AI services on the internet — many are Ollama instances.',
         fix: 'Set OLLAMA_HOST=127.0.0.1 to restrict to localhost. If remote access is needed, use a reverse proxy with authentication.' },
       { id: 'LLM-001', name: 'Ollama Port Exposed', service: 'Ollama',
-        pattern: /["']?11434["']?\s*:\s*["']?11434["']?/,
+        pattern: /^(?!.*127\.0\.0\.1).*["']?11434["']?\s*:\s*["']?11434["']?/,
         fixPattern: /(["']?)11434(["']?\s*:\s*["']?11434["']?)/,
         fixReplacement: '$1127.0.0.1:11434$2',
         severity: 'high' as Severity,
