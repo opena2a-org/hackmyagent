@@ -8367,10 +8367,22 @@ dist/
 
                 if (autoFix) {
                   // Replace credential with process.env reference
+                  // Also strip surrounding quotes so `"sk-proj-..."` becomes `process.env.VAR` not `"process.env.VAR"`
                   const envVar = name.replace(/\s+/g, '_').toUpperCase();
                   pattern.lastIndex = 0;
                   const original = lines[i];
-                  lines[i] = lines[i].replace(pattern, `process.env.${envVar}`);
+                  const envRef = `process.env.${envVar}`;
+                  // Replace quoted credential: "sk-..." or 'sk-...' → process.env.VAR (no quotes)
+                  const quotedPattern = new RegExp(`(['"])${pattern.source}\\1`, pattern.flags);
+                  quotedPattern.lastIndex = 0;
+                  if (quotedPattern.test(lines[i])) {
+                    quotedPattern.lastIndex = 0;
+                    lines[i] = lines[i].replace(quotedPattern, envRef);
+                  } else {
+                    // No quotes, just replace the credential directly
+                    pattern.lastIndex = 0;
+                    lines[i] = lines[i].replace(pattern, envRef);
+                  }
                   if (lines[i] !== original) {
                     fixed = true;
                     fileModified = true;
