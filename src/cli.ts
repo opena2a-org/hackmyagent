@@ -53,6 +53,7 @@ import { resolveAndLogMcpShorthand } from './resolve-mcp';
 import { NemoClawScanner, NEMOCLAW_CATEGORIES } from './hardening/nemoclaw-scanner';
 
 const program = new Command();
+program.showHelpAfterError('(run with --help for usage)');
 
 // Write JSON to stdout synchronously with retry for pipe backpressure.
 // process.stdout.write() is async and gets truncated when process.exit()
@@ -1807,7 +1808,7 @@ Examples:
   .option('--ci', 'CI mode: suppress interactive prompts, exit non-zero on findings')
   .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean }) => {
     try {
-      const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
+      const targetDir = require("path").resolve(directory);
 
       // CI mode: force non-interactive defaults
       if (options.ci) {
@@ -2892,7 +2893,7 @@ Examples:
   .argument('[directory]', 'Directory to rollback (defaults to current directory)', '.')
   .action(async (directory: string) => {
     try {
-      const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
+      const targetDir = require("path").resolve(directory);
 
       console.log(`\nRolling back changes in ${targetDir}...\n`);
 
@@ -4468,7 +4469,7 @@ Examples:
   .option('-t, --tool <name>', 'Force specific tool: claude, cursor, vscode')
   .action(async (directory: string, options: { tool?: string }) => {
     try {
-      const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
+      const targetDir = require("path").resolve(directory);
       const { initMcp } = await import('./init-mcp');
       const result = initMcp(targetDir, options.tool);
 
@@ -4576,7 +4577,7 @@ Examples:
   .option('--ci', 'CI mode: suppress interactive prompts, exit non-zero on findings')
   .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean; publish?: boolean; registryUrl?: string; contribute?: boolean; ci?: boolean }) => {
     try {
-      const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
+      const targetDir = require("path").resolve(directory);
 
       // CI mode: force non-interactive defaults
       if (options.ci) {
@@ -4809,7 +4810,7 @@ Examples:
   .option('--json', 'Output as JSON')
   .action(async (directory: string, options: { dryRun?: boolean; profile?: string; json?: boolean }) => {
     try {
-      const targetDir = directory.startsWith('/') ? directory : process.cwd() + '/' + directory;
+      const targetDir = require("path").resolve(directory);
 
       if (!require('fs').existsSync(targetDir)) {
         process.stderr.write(`Error: Directory '${targetDir}' does not exist.\n`);
