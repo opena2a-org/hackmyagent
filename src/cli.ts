@@ -2112,8 +2112,12 @@ Examples:
       if (issues.length === 0 && fixedFindings.length === 0) {
         console.log(`${colors.green}No issues found.${RESET()}\n`);
       } else if (issues.length > 0) {
-        // Print issues - clean format
-        console.log(`${issues.length} issue${issues.length === 1 ? '' : 's'} found:\n`);
+        // Print issues - clean format with fixable count
+        const fixableCount = issues.filter((f: SecurityFinding) => f.fixable).length;
+        const fixableNote = fixableCount > 0
+          ? ` (${fixableCount} auto-fixable with \`${CLI_PREFIX} secure --fix\`)`
+          : '';
+        console.log(`${issues.length} issue${issues.length === 1 ? '' : 's'} found${fixableNote}:\n`);
 
         for (const finding of issues) {
           const display = SEVERITY_DISPLAY[finding.severity];
@@ -2173,18 +2177,27 @@ Examples:
         }
       }
 
-      // Print fixed findings
+      // Print fixed findings with detailed summary
       if (fixedFindings.length > 0) {
         console.log(`${colors.green}Fixed ${fixedFindings.length} issue${fixedFindings.length === 1 ? '' : 's'}:${RESET()}`);
         for (const finding of fixedFindings) {
-          const location = finding.file || '';
-          console.log(`  ${colors.green}✓${RESET()} ${location} - ${finding.name}`);
+          const location = finding.file ? (finding.line ? `${finding.file}:${finding.line}` : finding.file) : '';
+          console.log(`  ${colors.green}✓${RESET()} [${finding.checkId}] ${location} - ${finding.name}`);
+          if (finding.fixMessage) {
+            console.log(`    ${colors.cyan}→${RESET()} ${finding.fixMessage}`);
+          }
         }
         console.log();
 
+        // Remaining fixable issues
+        const remainingFixable = issues.filter((f: SecurityFinding) => f.fixable && !f.fixed);
+        if (remainingFixable.length > 0) {
+          console.log(`${colors.yellow}${remainingFixable.length} more issue${remainingFixable.length === 1 ? '' : 's'} can be auto-fixed.${RESET()} Run \`${CLI_PREFIX} secure --fix\` again.\n`);
+        }
+
         if (result.backupPath) {
-          console.log(`Backup: ${result.backupPath}`);
-          console.log(`Undo: ${CLI_PREFIX} rollback ${directory}\n`);
+          console.log(`${colors.yellow}Backup created:${RESET()} ${result.backupPath}`);
+          console.log(`${colors.yellow}Something wrong?${RESET()} Run \`${CLI_PREFIX} rollback ${directory}\` to undo all changes.\n`);
         }
       }
 

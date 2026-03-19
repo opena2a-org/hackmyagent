@@ -263,6 +263,16 @@ export class HardeningScanner {
     'package.json',
     'openclaw.json',
     'moltbot.json',
+    // AI infrastructure files (research gap checks)
+    'docker-compose.yml',
+    'docker-compose.yaml',
+    'compose.yml',
+    'compose.yaml',
+    'Dockerfile',
+    'jupyter_notebook_config.py',
+    'jupyter_server_config.py',
+    '.well-known/agent.json',
+    '.well-known/mcp.json',
   ];
 
   /**
