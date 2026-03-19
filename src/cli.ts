@@ -120,7 +120,7 @@ program
   .name('hackmyagent')
   .description(`Find it. Break it. Fix it.
 
-The hacker's toolkit for AI agents. 183 security checks, 115 attack
+The hacker's toolkit for AI agents. 187 security checks, 115 attack
 payloads, auto-fix with rollback, and OASB benchmark compliance.
 
 Documentation: https://hackmyagent.com/docs

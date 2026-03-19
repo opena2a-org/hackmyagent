@@ -17,7 +17,7 @@ From your OpenClaw project directory:
 npx hackmyagent secure
 ```
 
-HMA auto-detects OpenClaw by looking for `gateway.yaml`, `skills/`, and OpenClaw configuration files. All 34 OpenClaw checks run automatically alongside the standard 163 checks.
+HMA auto-detects OpenClaw by looking for `gateway.yaml`, `skills/`, and OpenClaw configuration files. All 34 OpenClaw checks run automatically alongside the standard 187 checks.
 
 **Expected output (OpenClaw-specific findings):**
 
@@ -25,7 +25,7 @@ HMA auto-detects OpenClaw by looking for `gateway.yaml`, `skills/`, and OpenClaw
 HackMyAgent v0.10.1 -- Security Scanner
 
 Scanning: /home/user/openclaw-project
-Checks:  163 across 30 categories (34 OpenClaw-specific)
+Checks:  187 across 39 categories (34 OpenClaw-specific)
 
   CRITICAL  CVE-001   CVE-2026-25253 -- OpenClaw WebSocket RCE
             Found: openclaw v0.3.2 in package-lock.json (affected: < 0.3.5)

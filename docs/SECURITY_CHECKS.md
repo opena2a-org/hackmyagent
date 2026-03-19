@@ -1,6 +1,6 @@
 # Security Checks Reference
 
-HackMyAgent performs 163 security checks across 35 categories. This document provides detailed information about each check, including severity, description, and remediation guidance.
+HackMyAgent performs 187 security checks across 39 categories. This document provides detailed information about each check, including severity, description, and remediation guidance.
 
 ## Severity Levels
 

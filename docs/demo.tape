@@ -1,5 +1,5 @@
 # HackMyAgent Demo
-# Security scanner for AI agents -- 147 checks, attack mode, auto-fix
+# Security scanner for AI agents -- 187 checks, attack mode, auto-fix
 # Run: vhs docs/demo.tape
 
 Output docs/hackmyagent-demo.gif
@@ -24,7 +24,7 @@ Show
 # Title pause
 Sleep 1s
 
-# Step 1: Run security scan with 147 checks
+# Step 1: Run security scan with 187 checks
 Type "npx hackmyagent secure ."
 Enter
 Sleep 6s

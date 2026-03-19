@@ -36,7 +36,7 @@ const TOOL_DEFINITIONS = [
   {
     name: 'hackmyagent_scan',
     description:
-      'Scan the current project for AI agent security issues. Runs 147+ pattern checks + structural analysis across 30 categories: credentials, MCP configs, permissions, git security, dependencies, and more. Returns actionable findings with severity and fix recommendations.',
+      'Scan the current project for AI agent security issues. Runs 187 security checks across 39 categories: credentials, MCP configs, permissions, git security, dependencies, and more. Returns actionable findings with severity and fix recommendations.',
     inputSchema: {
       type: 'object' as const,
       properties: {

@@ -57,7 +57,7 @@ The `--format json` output structure:
   "timestamp": "2026-03-15T10:30:00Z",
   "directory": "/home/runner/work/my-agent/my-agent",
   "summary": {
-    "total": 163,
+    "total": 187,
     "critical": 1,
     "high": 2,
     "medium": 3,
