@@ -4,9 +4,9 @@
 
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-1050%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
+[![Tests](https://img.shields.io/badge/tests-1051%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
 
-**173 security checks for AI agents. Find what can go wrong before an attacker does.**
+**183 security checks for AI agents. Find what can go wrong before an attacker does.**
 
 Security scanner and red-team toolkit for Claude Code, Cursor, VS Code, and any MCP server setup.
 
@@ -30,7 +30,13 @@ npx opena2a-cli review
 
 ## What It Finds
 
-**Attack testing (115 payloads across 11 categories):**
+**Attack testing** -- 115 adversarial payloads across 11 categories (prompt injection, data exfiltration, jailbreak, MCP exploitation, supply chain, memory weaponization, A2A protocol attacks, context window attacks).
+
+**Static analysis** -- 183 security checks across 35 categories covering credentials, MCP configs, OpenClaw/NemoClaw, Unicode steganography, CVE detection, governance, supply chain, memory poisoning, agent identity, and sandbox escape patterns.
+
+<details>
+<summary>Attack testing details (115 payloads)</summary>
+
 - **Prompt injection** -- tests whether agents follow injected instructions from untrusted input
 - **Data exfiltration** -- checks if agents can be tricked into leaking sensitive data to external endpoints
 - **Jailbreak and context manipulation** -- probes agent guardrails with adversarial prompts
@@ -41,19 +47,26 @@ npx opena2a-cli review
 - **A2A protocol attacks** -- identity spoofing, capability escalation in multi-agent communication
 - **Context window attacks** -- token flooding, attention manipulation, context poisoning
 
-**Static analysis (173 checks across 34 categories):**
-- **Unicode steganography** -- invisible codepoints (variation selectors, tag characters), zero-width characters (U+200B-200D), mid-file BOM injection, bidi override attacks (U+202A-202E), homoglyph confusables (Cyrillic/Greek/Fullwidth lookalikes), GlassWorm decoder patterns, and eval-on-invisible-payload detection. Scans JS, TS, Python, Markdown, YAML, JSON, and TOML files. ([real-world: os-info-checker-es6 npm attack, May 2025](https://thehackernews.com/2025/05/malicious-npm-package-leverages-unicode.html))
+</details>
+
+<details>
+<summary>Static analysis details (183 checks)</summary>
+
+- **Unicode steganography** -- invisible codepoints, zero-width chars, bidi attacks, homoglyph confusables, GlassWorm decoders ([real-world: os-info-checker-es6 npm attack, May 2025](https://thehackernews.com/2025/05/malicious-npm-package-leverages-unicode.html))
 - **Hardcoded credentials** -- API keys, tokens, and passwords in source or config files
 - **MCP server misconfigurations** -- open ports, root filesystem access, missing auth
-- **AI agent CVE detection** -- scans for CVE-2026-25253 (OpenClaw WebSocket RCE), CVE-2026-25157, CVE-2026-24763, and ClawHavoc IOCs
-- **OpenClaw security** -- 34 checks for OpenClaw configurations, skills, gateway, and credential redaction ([6 PRs merged upstream](https://opena2a.org/blogs/securing-openclaw-6-prs-merged))
+- **AI agent CVE detection** -- CVE-2026-25253 (OpenClaw RCE), CVE-2026-25157, CVE-2026-24763, ClawHavoc IOCs
+- **OpenClaw security** -- 34 checks for configurations, skills, gateway, credential redaction ([6 PRs merged upstream](https://opena2a.org/blogs/securing-openclaw-6-prs-merged))
+- **NemoClaw/sandbox patterns** -- curl-pipe without checksum, empty artifact digests, exec() injection, predictable /tmp paths, process.env leakage, TOCTOU races, unsafe deserialization, messaging API egress
 - **Governance gaps** -- missing SOUL.md, no capability policies, unsigned MCP servers
 - **Credential scope drift** -- Google Maps keys accessing Gemini, AWS S3 keys reaching Bedrock
 - **Supply chain risks** -- vulnerable dependencies, unsigned skills, tampered packages
 - **Memory and RAG poisoning** -- persistent instruction injection, knowledge base contamination
 - **Agent identity** -- missing cryptographic identity, capability claims without attestation
 
-173 checks across 34 categories. 115 attack payloads. No flags needed.
+</details>
+
+183 checks across 35 categories. 115 attack payloads. No flags needed.
 
 ---
 
@@ -76,7 +89,7 @@ npm install --save-dev hackmyagent
 ```
 
 ┌──────────────────────────────────────────┐
-│  HackMyAgent v0.11.4 — Security Scanner          │
+│  HackMyAgent v0.11.5 — Security Scanner          │
 │  Found: 3 critical · 5 high · 12 medium          │
 │                                                  │
 │  CRED-001  critical  Hardcoded API key in .env   │
@@ -95,9 +108,10 @@ npm install --save-dev hackmyagent
 
 Step-by-step guides for common workflows:
 
-- **[Scan my agent](docs/use-cases/scan-my-agent.md)** -- Run all 173 checks and auto-fix findings (5 min)
+- **[Scan my agent](docs/use-cases/scan-my-agent.md)** -- Run all 183 checks and auto-fix findings (5 min)
 - **[Red-team MCP servers](docs/use-cases/red-team-mcp.md)** -- Test MCP servers with adversarial payloads (10 min)
 - **[Secure OpenClaw](docs/use-cases/openclaw-security.md)** -- OpenClaw-specific checks, CVE detection, ClawHavoc IOC scanning (10 min)
+- **Secure NemoClaw** -- Scan NVIDIA NemoClaw sandbox installations for credential exposure, network misconfig, and sandbox escape vectors (5 min)
 - **[CI/CD pipeline](docs/use-cases/ci-pipeline.md)** -- GitHub Actions with JSON/SARIF output (5 min)
 
 ---
@@ -131,7 +145,7 @@ hackmyagent secure --publish                  # push results to OpenA2A Registry
 
 
 <details>
-<summary>All 34 security categories</summary>
+<summary>All 35 security categories</summary>
 
 | Category | Checks | What it detects |
 |----------|--------|-----------------|
@@ -169,6 +183,7 @@ hackmyagent secure --publish                  # push results to OpenA2A Registry
 | MEM | 5 | Memory poisoning, context injection |
 | RAG | 4 | RAG/knowledge base poisoning |
 | AIM | 3 | Agent identity verification |
+| NEMO | 10 | NemoClaw/sandbox patterns: curl-pipe, digest bypass, exec injection, /tmp races, env leakage |
 
 </details>
 
@@ -266,9 +281,23 @@ hackmyagent harden-soul --dry-run         # preview without writing
 
 ---
 
+### `hackmyagent secure-nemoclaw` -- NemoClaw Sandbox Scanner
+
+Scan NVIDIA NemoClaw installations for credential exposure, network misconfiguration, blueprint integrity issues, sandbox escape vectors, and inherited OpenClaw vulnerabilities. 28 checks across 6 categories.
+
+```bash
+hackmyagent secure-nemoclaw                  # scan auto-detected directory
+hackmyagent secure-nemoclaw ~/.nemoclaw      # scan specific directory
+hackmyagent secure-nemoclaw --json           # JSON output for CI
+hackmyagent secure-nemoclaw --verbose        # show all checks including passed
+```
+
+
+---
+
 ### `hackmyagent trust` -- Package Trust Verification
 
-Check trust levels for AI packages before installing them. Queries the [OpenA2A Registry](https://registry.opena2a.org) trust graph.
+Check trust levels for AI packages before installing them. Queries the OpenA2A Registry trust graph (launching April 2026).
 
 ```bash
 hackmyagent trust server-filesystem          # MCP shorthand
