@@ -5,7 +5,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Tests](https://img.shields.io/badge/tests-1051%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
 
-**183 security checks for AI agents. Find what can go wrong before an attacker does.**
+**187 security checks for AI agents. Find what can go wrong before an attacker does.**
 
 Security scanner and red-team toolkit for Claude Code, Cursor, VS Code, and any MCP server setup.
 
@@ -31,7 +31,7 @@ npx opena2a-cli review
 
 **Attack testing** -- 115 adversarial payloads across 11 categories (prompt injection, data exfiltration, jailbreak, MCP exploitation, supply chain, memory weaponization, A2A protocol attacks, context window attacks).
 
-**Static analysis** -- 183 security checks across 35 categories covering credentials, MCP configs, OpenClaw/NemoClaw, Unicode steganography, CVE detection, governance, supply chain, memory poisoning, agent identity, and sandbox escape patterns.
+**Static analysis** -- 187 security checks across 39 categories covering credentials, MCP configs, OpenClaw/NemoClaw, Unicode steganography, CVE detection, governance, supply chain, memory poisoning, agent identity, and sandbox escape patterns.
 
 <details>
 <summary>Attack testing details (115 payloads)</summary>
@@ -49,7 +49,7 @@ npx opena2a-cli review
 </details>
 
 <details>
-<summary>Static analysis details (183 checks)</summary>
+<summary>Static analysis details (187 checks)</summary>
 
 - **Unicode steganography** -- invisible codepoints, zero-width chars, bidi attacks, homoglyph confusables, GlassWorm decoders ([real-world: os-info-checker-es6 npm attack, May 2025](https://thehackernews.com/2025/05/malicious-npm-package-leverages-unicode.html))
 - **Hardcoded credentials** -- API keys, tokens, and passwords in source or config files
@@ -65,7 +65,7 @@ npx opena2a-cli review
 
 </details>
 
-183 checks across 35 categories. 115 attack payloads. No flags needed.
+187 checks across 39 categories. 115 attack payloads. No flags needed.
 
 ---
 
@@ -107,7 +107,7 @@ npm install --save-dev hackmyagent
 
 Step-by-step guides for common workflows:
 
-- **[Scan my agent](docs/use-cases/scan-my-agent.md)** -- Run all 183 checks and auto-fix findings (5 min)
+- **[Scan my agent](docs/use-cases/scan-my-agent.md)** -- Run all 187 checks and auto-fix findings (5 min)
 - **[Red-team MCP servers](docs/use-cases/red-team-mcp.md)** -- Test MCP servers with adversarial payloads (10 min)
 - **[Secure OpenClaw](docs/use-cases/openclaw-security.md)** -- OpenClaw-specific checks, CVE detection, ClawHavoc IOC scanning (10 min)
 - **Secure NemoClaw** -- Scan NVIDIA NemoClaw sandbox installations for credential exposure, network misconfig, and sandbox escape vectors (5 min)

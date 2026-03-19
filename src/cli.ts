@@ -128,10 +128,10 @@ Updates (v${VERSION}):
   - NemoClaw sandbox scanner (28 installation checks)
   - 10 new static analysis patterns (NEMO series)
   - Community trust contributions
-  - 183 checks across 35 categories
+  - 187 checks across 39 categories
 
 Examples:
-  $ hackmyagent secure                         Find vulnerabilities (183 checks)
+  $ hackmyagent secure                         Find vulnerabilities (187 checks)
   $ hackmyagent attack --local                 Break it with 115 attack payloads
   $ hackmyagent secure --fix                   Fix issues automatically
   $ hackmyagent fix-all                        Run all security plugins
@@ -141,7 +141,7 @@ Examples:
 
 program.addHelpText('beforeAll', `
 Quick start:
-  $ hackmyagent secure              Scan current directory (183 checks)
+  $ hackmyagent secure              Scan current directory (187 checks)
   $ hackmyagent fix-all --with-aim  Auto-fix + create agent identity
   $ hackmyagent attack              Red-team your agent
 `);
@@ -1749,7 +1749,7 @@ program
   .command('secure')
   .description(`Scan and harden your agent setup
 
-Performs 183 security checks across 35 categories:
+Performs 187 security checks across 39 categories:
   • Credentials: API key exposure, secrets in configs
   • MCP: Server configs, tool permissions, secrets
   • Network: TLS, interface bindings, CORS
@@ -4480,7 +4480,7 @@ Examples:
       console.log(`\n  Detected: ${result.tool}\n`);
       console.log(`  Added HackMyAgent MCP server to ${result.configPath}\n`);
       console.log(`  Available tools in ${result.tool}:`);
-      console.log(`    hackmyagent_scan       — 183 checks + structural analysis`);
+      console.log(`    hackmyagent_scan       — 187 checks + structural analysis`);
       console.log(`    hackmyagent_deep_scan  — Full analysis with LLM reasoning`);
       console.log(`    hackmyagent_analyze_file — Analyze a single file`);
       console.log(`    hackmyagent_benchmark  — OASB-1 compliance assessment\n`);

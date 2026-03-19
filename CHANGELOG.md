@@ -2,6 +2,27 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [0.11.7] - 2026-03-19
+
+### Added
+- **6 new research-gap detection checks** — closes every gap between ARIA internet-wide research findings (294K+ exposed AI services) and HMA detection capabilities:
+  - LLM-001 to LLM-004: Exposed LLM inference endpoints (Ollama, vLLM, LocalAI, text-generation-webui)
+  - AITOOL-001 to AITOOL-004: Exposed AI tooling (Jupyter, Gradio, Streamlit, MLflow, LangServe)
+  - A2A-001 to A2A-002: A2A protocol exposure (.well-known/agent.json, unauthenticated task endpoints)
+  - MCP-011: MCP discovery endpoint exposure (.well-known/mcp)
+  - WEBCRED-001: Credentials in web-served files (public/, static/, dist/)
+- **Auto-fix for 9 of 12 new checks** — deterministic transforms, no LLM needed (bind address fixes, token generation, quote-aware credential replacement)
+- **Post-fix verification** — after applying fixes, HMA re-scans to confirm each fix actually resolved the issue. CLI shows `✓✓` for verified fixes, `✓?` for unverified
+- **Fixable count in scan output** — "104 issues found (11 auto-fixable with `hackmyagent secure --fix`)"
+- **Expanded backup coverage** — docker-compose, Jupyter configs, .well-known files included in rollback snapshots
+- **3 new attack taxonomy classes** — LLM-EXPOSE, AITOOL-EXPOSE, A2A-EXPOSE (synced with registry)
+- **Taxonomy sync verification script** — `scripts/verify-taxonomy-sync.ts` compares HMA and registry attack classes
+
+### Changed
+- Check count: 183 → 187
+- Category count: 35 → 39
+- Rollback messaging improved: "Something wrong? Run `hackmyagent rollback` to undo all changes"
+
 ## [0.11.3] - 2026-03-18
 
 ### Added
