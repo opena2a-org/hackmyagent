@@ -7904,6 +7904,8 @@ dist/
         fix: 'Set OLLAMA_HOST=127.0.0.1 to restrict to localhost. If remote access is needed, use a reverse proxy with authentication.' },
       { id: 'LLM-001', name: 'Ollama Port Exposed', service: 'Ollama',
         pattern: /["']?11434["']?\s*:\s*["']?11434["']?/,
+        fixPattern: /(["']?)11434(["']?\s*:\s*["']?11434["']?)/,
+        fixReplacement: '$1127.0.0.1:11434$2',
         severity: 'high' as Severity,
         description: 'Ollama default port (11434) mapped in container config. Without bind restrictions, this exposes the inference API to the network.',
         fix: 'Map to localhost only: "127.0.0.1:11434:11434" instead of "11434:11434".' },
@@ -7916,6 +7918,8 @@ dist/
         fix: 'Use --host 127.0.0.1 or bind to localhost. Use a reverse proxy with auth for remote access.' },
       { id: 'LLM-003', name: 'Text Generation WebUI Exposed', service: 'text-generation-webui',
         pattern: /--listen\s|--share\s|GRADIO_SERVER_NAME\s*=\s*["']?0\.0\.0\.0/i,
+        fixPattern: /\s*--listen\s?|\s*--share\s?|(GRADIO_SERVER_NAME\s*=\s*["']?)0\.0\.0\.0/gi,
+        fixReplacement: '$1127.0.0.1',
         severity: 'high' as Severity,
         description: 'Text generation UI configured for public access with --listen or --share flag.',
         fix: 'Remove --listen and --share flags. Access via localhost or SSH tunnel.' },
@@ -7983,9 +7987,28 @@ dist/
    */
   private async checkAIToolExposure(
     targetDir: string,
-    _autoFix: boolean
+    autoFix: boolean
   ): Promise<SecurityFinding[]> {
     const findings: SecurityFinding[] = [];
+
+    // Fix transforms for AI tool patterns
+    const AI_TOOL_FIXES: Record<string, Array<{ match: RegExp; replace: string }>> = {
+      'AITOOL-001': [
+        { match: /(NotebookApp\.token\s*=\s*)['"]{2}/, replace: `$1'${crypto.randomBytes(32).toString('hex')}'` },
+        { match: /(NotebookApp\.password\s*=\s*)['"]{2}/, replace: `$1'${crypto.randomBytes(32).toString('hex')}'` },
+        { match: /(ServerApp\.token\s*=\s*)['"]{2}/, replace: `$1'${crypto.randomBytes(32).toString('hex')}'` },
+        { match: /(--ip\s*=?\s*["']?)0\.0\.0\.0/, replace: '$1127.0.0.1' },
+        { match: /--NotebookApp\.token=['"]?\s/, replace: `--NotebookApp.token=${crypto.randomBytes(32).toString('hex')} ` },
+      ],
+      'AITOOL-002': [
+        { match: /(share\s*=\s*)True/, replace: '$1False' },
+        { match: /(GRADIO_SERVER_NAME\s*=\s*["']?)0\.0\.0\.0/, replace: '$1127.0.0.1' },
+        { match: /(server\.address\s*=\s*["']?)0\.0\.0\.0/, replace: '$1127.0.0.1' },
+      ],
+      'AITOOL-003': [
+        { match: /(--host\s+)0\.0\.0\.0/i, replace: '$1127.0.0.1' },
+      ],
+    };
 
     const AI_TOOL_PATTERNS: Array<{
       id: string; name: string; severity: Severity; description: string; fix: string;
@@ -8043,11 +8066,13 @@ dist/
     ];
 
     for (const check of AI_TOOL_PATTERNS) {
+      const fixTransforms = AI_TOOL_FIXES[check.id];
+      const isFixable = !!fixTransforms;
+
       for (const filePattern of check.filePatterns) {
         const filesToCheck: string[] = [];
 
         if (filePattern.includes('*')) {
-          // Glob-style: check common locations
           try {
             const entries = await fs.readdir(targetDir, { withFileTypes: true });
             const ext = filePattern.replace('*', '');
@@ -8064,7 +8089,7 @@ dist/
         for (const filename of filesToCheck) {
           const filePath = path.join(targetDir, filename);
           try {
-            const content = await fs.readFile(filePath, 'utf-8');
+            let content = await fs.readFile(filePath, 'utf-8');
             if (content.length > 10 * 1024 * 1024) continue;
             const lines = content.split('\n');
 
@@ -8072,11 +8097,24 @@ dist/
               for (let i = 0; i < lines.length; i++) {
                 pattern.lastIndex = 0;
                 if (pattern.test(lines[i])) {
-                  // For AITOOL-004 (LangServe), only flag if both import AND route are present
                   if (check.id === 'AITOOL-004' && /from\s+langserve/.test(lines[i])) {
                     const hasRoutes = content.includes('add_routes');
                     const hasBind = /0\.0\.0\.0/.test(content);
                     if (!hasRoutes || !hasBind) continue;
+                  }
+
+                  let fixed = false;
+                  if (autoFix && fixTransforms) {
+                    for (const ft of fixTransforms) {
+                      if (ft.match.test(lines[i])) {
+                        lines[i] = lines[i].replace(ft.match, ft.replace);
+                        fixed = true;
+                      }
+                    }
+                    if (fixed) {
+                      content = lines.join('\n');
+                      await fs.writeFile(filePath, content);
+                    }
                   }
 
                   findings.push({
@@ -8085,14 +8123,15 @@ dist/
                     description: check.description,
                     category: 'ai-tool-exposure',
                     severity: check.severity,
-                    passed: false,
+                    passed: fixed,
                     message: `${check.name} in ${filename}`,
                     file: filename,
                     line: i + 1,
-                    fixable: false,
+                    fixable: isFixable,
+                    fixed,
                     fix: check.fix,
                   });
-                  break; // One finding per pattern per file
+                  break;
                 }
               }
             }
@@ -8246,7 +8285,7 @@ dist/
    */
   private async checkWebServedCredentials(
     targetDir: string,
-    _autoFix: boolean
+    autoFix: boolean
   ): Promise<SecurityFinding[]> {
     const findings: SecurityFinding[] = [];
 
@@ -8267,32 +8306,55 @@ dist/
 
       for (const filePath of webFiles) {
         try {
-          const content = await fs.readFile(filePath, 'utf-8');
+          let content = await fs.readFile(filePath, 'utf-8');
           if (content.length > 10 * 1024 * 1024) continue;
-          const lines = content.split('\n');
+          let lines = content.split('\n');
           const relativePath = path.relative(targetDir, filePath);
+          let fileModified = false;
 
           for (const { name, pattern } of CREDENTIAL_PATTERNS) {
             for (let i = 0; i < lines.length; i++) {
-              if (lines[i].length > 10000) continue; // Skip extremely long lines
+              if (lines[i].length > 10000) continue;
               pattern.lastIndex = 0;
               if (pattern.test(lines[i])) {
+                let fixed = false;
+
+                if (autoFix) {
+                  // Replace credential with process.env reference
+                  const envVar = name.replace(/\s+/g, '_').toUpperCase();
+                  pattern.lastIndex = 0;
+                  const original = lines[i];
+                  lines[i] = lines[i].replace(pattern, `process.env.${envVar}`);
+                  if (lines[i] !== original) {
+                    fixed = true;
+                    fileModified = true;
+                  }
+                }
+
                 findings.push({
                   checkId: 'WEBCRED-001',
                   name: 'Credential in Web-Served File',
                   description: `${name} found in a file within a web-served directory. This credential is likely accessible to anyone who visits the site. Our research found API keys exposed in HTML source on the public internet.`,
                   category: 'web-credentials',
                   severity: 'critical',
-                  passed: false,
-                  message: `${name} exposed in ${relativePath}`,
+                  passed: fixed,
+                  message: fixed
+                    ? `${name} in ${relativePath} replaced with environment variable reference`
+                    : `${name} exposed in ${relativePath}`,
                   file: relativePath,
                   line: i + 1,
-                  fixable: false,
+                  fixable: true,
+                  fixed,
                   fix: `Move credentials to server-side environment variables. Never include API keys in client-side code or static assets. Use a backend proxy for API calls.`,
                 });
-                break; // One finding per pattern per file
+                break;
               }
             }
+          }
+
+          if (fileModified) {
+            content = lines.join('\n');
+            await fs.writeFile(filePath, content);
           }
         } catch { /* skip unreadable files */ }
       }
