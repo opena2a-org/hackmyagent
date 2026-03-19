@@ -88,6 +88,12 @@ const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
   'SKILL-MEM-': ['openclaw', 'mcp'],
   // NemoClaw/sandbox static analysis checks
   'NEMO-': ['all'],
+
+  // AI infrastructure exposure checks (research gap coverage)
+  'LLM-': ['all'], // LLM inference endpoint exposure
+  'AITOOL-': ['all'], // AI tooling exposure (Jupyter, Gradio, etc.)
+  'A2A-': ['all'], // A2A protocol exposure
+  'WEBCRED-': ['all'], // Credentials in web-served files
 };
 
 export interface ScanOptions {
@@ -469,6 +475,22 @@ export class HardeningScanner {
     // NemoClaw codebase pattern checks
     const nemoFindings = await this.checkNemoClawPatterns(targetDir, shouldFix);
     findings.push(...nemoFindings);
+
+    // AI infrastructure exposure checks (research gap coverage)
+    const llmFindings = await this.checkLLMExposure(targetDir, shouldFix);
+    findings.push(...llmFindings);
+
+    const aiToolFindings = await this.checkAIToolExposure(targetDir, shouldFix);
+    findings.push(...aiToolFindings);
+
+    const a2aFindings = await this.checkA2AExposure(targetDir, shouldFix);
+    findings.push(...a2aFindings);
+
+    const mcpDiscoveryFindings = await this.checkMCPDiscovery(targetDir, shouldFix);
+    findings.push(...mcpDiscoveryFindings);
+
+    const webCredFindings = await this.checkWebServedCredentials(targetDir, shouldFix);
+    findings.push(...webCredFindings);
 
     // Enrich findings with attack taxonomy mapping
     enrichWithTaxonomy(findings);
@@ -7844,5 +7866,471 @@ dist/
     }
 
     return findings;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // AI Infrastructure Exposure Checks (Research Gap Coverage)
+  // These checks detect the root causes that lead to internet-exposed
+  // AI services found by Shodan sweeps in the OpenA2A research program.
+  // ═══════════════════════════════════════════════════════════════════
+
+  /**
+   * LLM-001 to LLM-004: Exposed LLM inference endpoints
+   * Detects Ollama, vLLM, LocalAI, text-generation-webui configs bound
+   * to public interfaces or missing authentication.
+   */
+  private async checkLLMExposure(
+    targetDir: string,
+    autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // Patterns for LLM server configs that indicate exposure risk
+    const llmConfigFiles = [
+      { name: 'docker-compose.yml', altNames: ['docker-compose.yaml', 'compose.yml', 'compose.yaml'] },
+      { name: 'Dockerfile', altNames: [] },
+      { name: '.env', altNames: ['.env.local', '.env.production'] },
+      { name: 'config.json', altNames: ['config.yaml', 'config.yml'] },
+      { name: 'package.json', altNames: [] },
+    ];
+
+    const LLM_EXPOSURE_PATTERNS = [
+      { id: 'LLM-001', name: 'Ollama Bound to Public Interface', service: 'Ollama',
+        pattern: /OLLAMA_HOST\s*[=:]\s*["']?0\.0\.0\.0/i,
+        fixPattern: /(OLLAMA_HOST\s*[=:]\s*["']?)0\.0\.0\.0/i,
+        fixReplacement: '$1127.0.0.1',
+        severity: 'critical' as Severity,
+        description: 'Ollama server configured to listen on all interfaces. Our research found 294K+ exposed AI services on the internet — many are Ollama instances.',
+        fix: 'Set OLLAMA_HOST=127.0.0.1 to restrict to localhost. If remote access is needed, use a reverse proxy with authentication.' },
+      { id: 'LLM-001', name: 'Ollama Port Exposed', service: 'Ollama',
+        pattern: /["']?11434["']?\s*:\s*["']?11434["']?/,
+        severity: 'high' as Severity,
+        description: 'Ollama default port (11434) mapped in container config. Without bind restrictions, this exposes the inference API to the network.',
+        fix: 'Map to localhost only: "127.0.0.1:11434:11434" instead of "11434:11434".' },
+      { id: 'LLM-002', name: 'vLLM/LocalAI Public Binding', service: 'vLLM/LocalAI',
+        pattern: /--host\s+0\.0\.0\.0|host:\s*["']?0\.0\.0\.0/i,
+        fixPattern: /(--host\s+|host:\s*["']?)0\.0\.0\.0/i,
+        fixReplacement: '$1127.0.0.1',
+        severity: 'critical' as Severity,
+        description: 'LLM inference server configured to bind to all interfaces.',
+        fix: 'Use --host 127.0.0.1 or bind to localhost. Use a reverse proxy with auth for remote access.' },
+      { id: 'LLM-003', name: 'Text Generation WebUI Exposed', service: 'text-generation-webui',
+        pattern: /--listen\s|--share\s|GRADIO_SERVER_NAME\s*=\s*["']?0\.0\.0\.0/i,
+        severity: 'high' as Severity,
+        description: 'Text generation UI configured for public access with --listen or --share flag.',
+        fix: 'Remove --listen and --share flags. Access via localhost or SSH tunnel.' },
+      { id: 'LLM-004', name: 'OpenAI-Compatible API No Auth', service: 'OpenAI-compatible',
+        pattern: /\/v1\/chat\/completions|\/v1\/completions|\/v1\/models/,
+        severity: 'medium' as Severity,
+        description: 'Project exposes OpenAI-compatible API endpoints. Verify authentication is enforced.',
+        fix: 'Ensure API key or token authentication is required for all inference endpoints.' },
+    ];
+
+    for (const configDef of llmConfigFiles) {
+      const filesToCheck = [configDef.name, ...configDef.altNames];
+      for (const filename of filesToCheck) {
+        const filePath = path.join(targetDir, filename);
+        try {
+          let content = await fs.readFile(filePath, 'utf-8');
+          if (content.length > 10 * 1024 * 1024) continue; // Skip files > 10MB
+          const lines = content.split('\n');
+
+          for (const check of LLM_EXPOSURE_PATTERNS) {
+            for (let i = 0; i < lines.length; i++) {
+              if (check.pattern.test(lines[i])) {
+                let fixed = false;
+                if (autoFix && check.fixPattern && check.fixReplacement) {
+                  const original = lines[i];
+                  lines[i] = lines[i].replace(check.fixPattern, check.fixReplacement);
+                  if (lines[i] !== original) {
+                    fixed = true;
+                    content = lines.join('\n');
+                    await fs.writeFile(filePath, content);
+                  }
+                }
+
+                findings.push({
+                  checkId: check.id,
+                  name: check.name,
+                  description: check.description,
+                  category: 'llm-exposure',
+                  severity: check.severity,
+                  passed: fixed,
+                  message: `${check.service} exposure detected in ${filename}`,
+                  file: filename,
+                  line: i + 1,
+                  fixable: !!check.fixPattern,
+                  fixed,
+                  fix: check.fix,
+                });
+                break; // One finding per pattern per file
+              }
+            }
+          }
+        } catch {
+          // File doesn't exist, skip
+        }
+      }
+    }
+
+    return findings;
+  }
+
+  /**
+   * AITOOL-001 to AITOOL-004: Exposed AI development tooling
+   * Detects Jupyter, Gradio, Streamlit, MLflow, LangServe configs
+   * that are publicly accessible.
+   */
+  private async checkAIToolExposure(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    const AI_TOOL_PATTERNS: Array<{
+      id: string; name: string; severity: Severity; description: string; fix: string;
+      filePatterns: string[]; contentPatterns: RegExp[];
+    }> = [
+      {
+        id: 'AITOOL-001', name: 'Jupyter Notebook Publicly Accessible',
+        severity: 'critical',
+        description: 'Jupyter notebook server configured without authentication or bound to public interface. Our research found exposed Jupyter instances with full code execution on the internet.',
+        fix: 'Set c.NotebookApp.token or c.NotebookApp.password. Bind to 127.0.0.1. Never use --NotebookApp.token=\'\' in production.',
+        filePatterns: ['jupyter_notebook_config.py', 'jupyter_server_config.py', 'docker-compose.yml', 'docker-compose.yaml', 'Dockerfile'],
+        contentPatterns: [
+          /NotebookApp\.token\s*=\s*['"]{2}/,          // Empty token
+          /NotebookApp\.password\s*=\s*['"]{2}/,        // Empty password
+          /--NotebookApp\.token=['"]{0,2}\s/,            // CLI empty token
+          /--ip\s*=?\s*["']?0\.0\.0\.0/,                 // Bind all interfaces
+          /ServerApp\.token\s*=\s*['"]{2}/,              // Jupyter Server empty token
+        ],
+      },
+      {
+        id: 'AITOOL-002', name: 'Gradio/Streamlit Public Sharing',
+        severity: 'high',
+        description: 'ML demo framework configured for public access. Gradio share links and public Streamlit deployments can expose model inference and data pipelines.',
+        fix: 'Remove share=True from Gradio launch(). For Streamlit, add authentication or use private deployment.',
+        filePatterns: ['*.py', 'app.py', 'main.py', 'streamlit_app.py', 'demo.py'],
+        contentPatterns: [
+          /\.launch\s*\([^)]*share\s*=\s*True/,                // Gradio share=True
+          /GRADIO_SERVER_NAME\s*=\s*["']?0\.0\.0\.0/,          // Gradio bind all
+          /server\.address\s*=\s*["']?0\.0\.0\.0/,             // Streamlit bind all
+        ],
+      },
+      {
+        id: 'AITOOL-003', name: 'MLflow Tracking Server No Auth',
+        severity: 'high',
+        description: 'MLflow tracking server configured without authentication. Exposed MLflow instances leak experiment data, model artifacts, and parameters.',
+        fix: 'Configure MLflow with --backend-store-uri and authentication. Use a reverse proxy with auth for remote access.',
+        filePatterns: ['docker-compose.yml', 'docker-compose.yaml', 'Dockerfile', 'Makefile', '*.sh'],
+        contentPatterns: [
+          /mlflow\s+server\s+.*--host\s+0\.0\.0\.0/i,
+          /mlflow\s+ui\s+.*--host\s+0\.0\.0\.0/i,
+          /MLFLOW_TRACKING_URI\s*=\s*["']?http:\/\//,
+        ],
+      },
+      {
+        id: 'AITOOL-004', name: 'LangServe Endpoint Exposed',
+        severity: 'high',
+        description: 'LangChain LangServe endpoint configured for public access. Exposed LangServe instances allow arbitrary chain invocation.',
+        fix: 'Add authentication middleware to LangServe routes. Bind to 127.0.0.1 for local-only access.',
+        filePatterns: ['*.py', 'app.py', 'main.py', 'server.py'],
+        contentPatterns: [
+          /add_routes\s*\(/,                                    // LangServe route
+          /from\s+langserve\s+import/,                          // LangServe import
+        ],
+      },
+    ];
+
+    for (const check of AI_TOOL_PATTERNS) {
+      for (const filePattern of check.filePatterns) {
+        const filesToCheck: string[] = [];
+
+        if (filePattern.includes('*')) {
+          // Glob-style: check common locations
+          try {
+            const entries = await fs.readdir(targetDir, { withFileTypes: true });
+            const ext = filePattern.replace('*', '');
+            for (const entry of entries) {
+              if (entry.isFile() && entry.name.endsWith(ext)) {
+                filesToCheck.push(entry.name);
+              }
+            }
+          } catch { /* skip */ }
+        } else {
+          filesToCheck.push(filePattern);
+        }
+
+        for (const filename of filesToCheck) {
+          const filePath = path.join(targetDir, filename);
+          try {
+            const content = await fs.readFile(filePath, 'utf-8');
+            if (content.length > 10 * 1024 * 1024) continue;
+            const lines = content.split('\n');
+
+            for (const pattern of check.contentPatterns) {
+              for (let i = 0; i < lines.length; i++) {
+                pattern.lastIndex = 0;
+                if (pattern.test(lines[i])) {
+                  // For AITOOL-004 (LangServe), only flag if both import AND route are present
+                  if (check.id === 'AITOOL-004' && /from\s+langserve/.test(lines[i])) {
+                    const hasRoutes = content.includes('add_routes');
+                    const hasBind = /0\.0\.0\.0/.test(content);
+                    if (!hasRoutes || !hasBind) continue;
+                  }
+
+                  findings.push({
+                    checkId: check.id,
+                    name: check.name,
+                    description: check.description,
+                    category: 'ai-tool-exposure',
+                    severity: check.severity,
+                    passed: false,
+                    message: `${check.name} in ${filename}`,
+                    file: filename,
+                    line: i + 1,
+                    fixable: false,
+                    fix: check.fix,
+                  });
+                  break; // One finding per pattern per file
+                }
+              }
+            }
+          } catch { /* file doesn't exist, skip */ }
+        }
+      }
+    }
+
+    return findings;
+  }
+
+  /**
+   * A2A-001 to A2A-002: A2A protocol exposure
+   * Detects .well-known/agent.json and task submission endpoints
+   * that are publicly accessible without authentication.
+   */
+  private async checkA2AExposure(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // Check for .well-known/agent.json (A2A discovery file)
+    const wellKnownPaths = [
+      path.join(targetDir, '.well-known', 'agent.json'),
+      path.join(targetDir, 'public', '.well-known', 'agent.json'),
+      path.join(targetDir, 'static', '.well-known', 'agent.json'),
+    ];
+
+    for (const agentJsonPath of wellKnownPaths) {
+      try {
+        const content = await fs.readFile(agentJsonPath, 'utf-8');
+        const relativePath = path.relative(targetDir, agentJsonPath);
+
+        // Parse and check for sensitive capabilities
+        let agentCard: Record<string, unknown> = {};
+        try { agentCard = JSON.parse(content); } catch { /* invalid JSON, still flag it */ }
+
+        const hasAuth = content.includes('"authentication"') || content.includes('"auth"');
+
+        findings.push({
+          checkId: 'A2A-001',
+          name: 'A2A Agent Discovery File Exposed',
+          description: 'A .well-known/agent.json file makes this agent discoverable via the A2A protocol. Our research found exposed agent.json files that allow unauthenticated task submission.',
+          category: 'a2a-exposure',
+          severity: hasAuth ? 'medium' : 'high',
+          passed: false,
+          message: hasAuth
+            ? 'Agent card found with authentication configured'
+            : 'Agent card found WITHOUT authentication — any client can submit tasks',
+          file: relativePath,
+          fixable: false,
+          fix: 'Add authentication requirements to your agent card. Restrict task submission to authenticated clients.',
+          details: { hasAuth, capabilities: agentCard.capabilities },
+        });
+        break; // Found one, no need to check other paths
+      } catch { /* doesn't exist */ }
+    }
+
+    // Check source files for A2A task endpoints without auth middleware
+    const sourceFiles = ['server.py', 'app.py', 'main.py', 'server.ts', 'app.ts', 'index.ts'];
+    for (const filename of sourceFiles) {
+      try {
+        const content = await fs.readFile(path.join(targetDir, filename), 'utf-8');
+        if (content.length > 10 * 1024 * 1024) continue;
+
+        const hasTaskEndpoint = /\/tasks\/send|\/tasks\/get|\/tasks\/cancel/.test(content);
+        const hasAuthMiddleware = /auth|authenticate|verify.*token|api.?key|bearer/i.test(content);
+
+        if (hasTaskEndpoint && !hasAuthMiddleware) {
+          const lines = content.split('\n');
+          for (let i = 0; i < lines.length; i++) {
+            if (/\/tasks\/send|\/tasks\/get/.test(lines[i])) {
+              findings.push({
+                checkId: 'A2A-002',
+                name: 'A2A Task Endpoint Without Authentication',
+                description: 'A2A task submission endpoint found without visible authentication middleware.',
+                category: 'a2a-exposure',
+                severity: 'high',
+                passed: false,
+                message: `Unauthenticated task endpoint in ${filename}`,
+                file: filename,
+                line: i + 1,
+                fixable: false,
+                fix: 'Add authentication middleware to /tasks/send and /tasks/get endpoints. Require API key or bearer token.',
+              });
+              break;
+            }
+          }
+        }
+      } catch { /* skip */ }
+    }
+
+    return findings;
+  }
+
+  /**
+   * MCP-011: MCP discovery endpoint exposure
+   * Detects .well-known/mcp files that make MCP servers discoverable.
+   */
+  private async checkMCPDiscovery(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    const mcpDiscoveryPaths = [
+      path.join(targetDir, '.well-known', 'mcp'),
+      path.join(targetDir, '.well-known', 'mcp.json'),
+      path.join(targetDir, 'public', '.well-known', 'mcp'),
+      path.join(targetDir, 'public', '.well-known', 'mcp.json'),
+      path.join(targetDir, 'static', '.well-known', 'mcp'),
+      path.join(targetDir, 'static', '.well-known', 'mcp.json'),
+    ];
+
+    for (const mcpPath of mcpDiscoveryPaths) {
+      try {
+        const content = await fs.readFile(mcpPath, 'utf-8');
+        const relativePath = path.relative(targetDir, mcpPath);
+
+        const hasCredentials = CREDENTIAL_PATTERNS.some(({ pattern }) => {
+          pattern.lastIndex = 0;
+          return pattern.test(content);
+        });
+
+        findings.push({
+          checkId: 'MCP-011',
+          name: 'MCP Discovery Endpoint Exposed',
+          description: 'A .well-known/mcp discovery file makes MCP servers publicly discoverable. Our research found exposed MCP endpoints via this mechanism.',
+          category: 'mcp',
+          severity: hasCredentials ? 'critical' : 'high',
+          passed: false,
+          message: hasCredentials
+            ? 'MCP discovery file contains credentials — CRITICAL exposure'
+            : 'MCP discovery file found — servers are publicly discoverable',
+          file: relativePath,
+          fixable: false,
+          fix: 'Remove .well-known/mcp from public-facing directories, or restrict access via web server configuration. Never include credentials in discovery files.',
+        });
+        break;
+      } catch { /* doesn't exist */ }
+    }
+
+    return findings;
+  }
+
+  /**
+   * WEBCRED-001 to WEBCRED-002: Credentials in web-served files
+   * Detects API keys in HTML, JS, and other files typically served
+   * by web servers. Distinct from CRED-001 which checks config files.
+   */
+  private async checkWebServedCredentials(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // Directories that are typically web-served
+    const webDirs = ['public', 'static', 'dist', 'build', 'out', 'www', '_site'];
+    const webFileExts = ['.html', '.htm', '.js', '.jsx', '.tsx', '.css', '.svg'];
+
+    for (const webDir of webDirs) {
+      const dirPath = path.join(targetDir, webDir);
+      try {
+        await fs.access(dirPath);
+      } catch {
+        continue; // Directory doesn't exist
+      }
+
+      // Recursively scan web-served directory (max depth 3)
+      const webFiles = await this.findWebFiles(dirPath, webFileExts, 0, dirPath);
+
+      for (const filePath of webFiles) {
+        try {
+          const content = await fs.readFile(filePath, 'utf-8');
+          if (content.length > 10 * 1024 * 1024) continue;
+          const lines = content.split('\n');
+          const relativePath = path.relative(targetDir, filePath);
+
+          for (const { name, pattern } of CREDENTIAL_PATTERNS) {
+            for (let i = 0; i < lines.length; i++) {
+              if (lines[i].length > 10000) continue; // Skip extremely long lines
+              pattern.lastIndex = 0;
+              if (pattern.test(lines[i])) {
+                findings.push({
+                  checkId: 'WEBCRED-001',
+                  name: 'Credential in Web-Served File',
+                  description: `${name} found in a file within a web-served directory. This credential is likely accessible to anyone who visits the site. Our research found API keys exposed in HTML source on the public internet.`,
+                  category: 'web-credentials',
+                  severity: 'critical',
+                  passed: false,
+                  message: `${name} exposed in ${relativePath}`,
+                  file: relativePath,
+                  line: i + 1,
+                  fixable: false,
+                  fix: `Move credentials to server-side environment variables. Never include API keys in client-side code or static assets. Use a backend proxy for API calls.`,
+                });
+                break; // One finding per pattern per file
+              }
+            }
+          }
+        } catch { /* skip unreadable files */ }
+      }
+    }
+
+    return findings;
+  }
+
+  /** Helper: recursively find files in web-served directories */
+  private async findWebFiles(
+    dir: string,
+    extensions: string[],
+    depth: number,
+    rootDir: string
+  ): Promise<string[]> {
+    if (depth > 3) return [];
+    const results: string[] = [];
+
+    try {
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isSymbolicLink()) continue;
+        const fullPath = path.join(dir, entry.name);
+
+        if (!this.isPathWithinDirectory(fullPath, rootDir)) continue;
+
+        if (entry.isDirectory()) {
+          if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+          const subFiles = await this.findWebFiles(fullPath, extensions, depth + 1, rootDir);
+          results.push(...subFiles);
+        } else if (entry.isFile()) {
+          if (extensions.some(ext => entry.name.endsWith(ext))) {
+            results.push(fullPath);
+          }
+        }
+      }
+    } catch { /* skip inaccessible dirs */ }
+
+    return results;
   }
 }

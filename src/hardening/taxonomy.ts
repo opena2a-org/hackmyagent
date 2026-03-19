@@ -175,6 +175,20 @@ const TAXONOMY_MAP: Record<string, string> = {
   'HMA-NMC-051': 'NEMO-NETWORK-EXPOSE',
   'HMA-NMC-052': 'NEMO-NETWORK-EXPOSE',
 
+  // AI infrastructure exposure (research gap coverage)
+  'LLM-001': 'LLM-EXPOSE',
+  'LLM-002': 'LLM-EXPOSE',
+  'LLM-003': 'LLM-EXPOSE',
+  'LLM-004': 'LLM-EXPOSE',
+  'AITOOL-001': 'AITOOL-EXPOSE',
+  'AITOOL-002': 'AITOOL-EXPOSE',
+  'AITOOL-003': 'AITOOL-EXPOSE',
+  'AITOOL-004': 'AITOOL-EXPOSE',
+  'A2A-001': 'A2A-EXPOSE',
+  'A2A-002': 'A2A-EXPOSE',
+  'MCP-011': 'MCP-EXPLOIT',
+  'WEBCRED-001': 'RETROACTIVE-PRIV',
+
   // NemoClaw novel threat checks (NEMO-00x series)
   'NEMO-001': 'NEMO-SUPPLY-CHAIN',
   'NEMO-002': 'NEMO-SUPPLY-CHAIN',
