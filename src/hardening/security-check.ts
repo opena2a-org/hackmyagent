@@ -51,6 +51,8 @@ export interface SecurityFinding {
   fixable: boolean;
   fixed?: boolean;
   fixMessage?: string;
+  /** Set after fix: true if re-scan confirms the issue is resolved */
+  fixVerified?: boolean;
   /** Set in dry-run mode to indicate this would be fixed */
   wouldFix?: boolean;
   /** File path where the issue was found (relative to scan directory) */

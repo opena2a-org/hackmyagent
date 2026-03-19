@@ -540,6 +540,42 @@ export class HardeningScanner {
       }
     }
 
+    // Verify fixes: re-scan fixed files to confirm issues are actually resolved
+    if (shouldFix) {
+      const fixedFindings = findings.filter(f => f.fixed && f.file);
+      if (fixedFindings.length > 0) {
+        // Re-run a targeted scan (no fix, just detect) to verify
+        const verifyScanner = new HardeningScanner();
+        const verifyResult = await verifyScanner.scan({
+          targetDir,
+          autoFix: false,
+          ignore: ignoredChecks.size > 0 ? [...ignoredChecks] : [],
+          cliName: this.cliName,
+        });
+
+        // For each fixed finding, check if the same checkId still appears as failed
+        const stillFailing = new Set(
+          verifyResult.findings
+            .filter(f => !f.passed && !f.fixed)
+            .map(f => `${f.checkId}:${f.file}`)
+        );
+
+        for (const finding of fixedFindings) {
+          const key = `${finding.checkId}:${finding.file}`;
+          finding.fixVerified = !stillFailing.has(key);
+          if (!finding.fixVerified) {
+            finding.fixMessage = (finding.fixMessage || '') + ' [FIX NOT VERIFIED - issue may persist]';
+          }
+        }
+
+        if (options.onProgress) {
+          const verified = fixedFindings.filter(f => f.fixVerified).length;
+          const total = fixedFindings.length;
+          options.onProgress(`Fix verification: ${verified}/${total} fixes confirmed`);
+        }
+      }
+    }
+
     // Filter findings to only show real, actionable issues:
     // 1. Only failed checks (passed: false)
     // 2. Only checks with a file path (concrete findings, not generic advice)

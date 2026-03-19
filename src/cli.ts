@@ -2179,13 +2179,20 @@ Examples:
 
       // Print fixed findings with detailed summary
       if (fixedFindings.length > 0) {
-        console.log(`${colors.green}Fixed ${fixedFindings.length} issue${fixedFindings.length === 1 ? '' : 's'}:${RESET()}`);
+        const verifiedCount = fixedFindings.filter((f: SecurityFinding) => (f as any).fixVerified).length;
+        const unverifiedCount = fixedFindings.filter((f: SecurityFinding) => (f as any).fixVerified === false).length;
+        console.log(`${colors.green}Fixed ${fixedFindings.length} issue${fixedFindings.length === 1 ? '' : 's'}${verifiedCount > 0 ? ` (${verifiedCount} verified)` : ''}:${RESET()}`);
         for (const finding of fixedFindings) {
           const location = finding.file ? (finding.line ? `${finding.file}:${finding.line}` : finding.file) : '';
-          console.log(`  ${colors.green}✓${RESET()} [${finding.checkId}] ${location} - ${finding.name}`);
+          const verified = (finding as any).fixVerified;
+          const verifyIcon = verified === true ? `${colors.green}✓✓${RESET()}` : verified === false ? `${colors.yellow}✓?${RESET()}` : `${colors.green}✓${RESET()}`;
+          console.log(`  ${verifyIcon} [${finding.checkId}] ${location} - ${finding.name}`);
           if (finding.fixMessage) {
             console.log(`    ${colors.cyan}→${RESET()} ${finding.fixMessage}`);
           }
+        }
+        if (unverifiedCount > 0) {
+          console.log(`\n  ${colors.yellow}${unverifiedCount} fix${unverifiedCount === 1 ? '' : 'es'} could not be verified. Review these manually.${RESET()}`);
         }
         console.log();
 
