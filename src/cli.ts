@@ -5455,42 +5455,33 @@ Examples:
 
 program
   .command('check-metadata')
-  .description('Export static metadata for all security checks (JSON)')
-  .action(() => {
+  .description('Export metadata for all security checks by scanning test fixtures (JSON)')
+  .option('-d, --directory <dir>', 'Directory to scan for check metadata extraction')
+  .action(async (options: { directory?: string }) => {
     const { getAttackClass } = require('./hardening/taxonomy');
-    const metadata: Record<string, { checkId: string; category: string; attackClass: string; severity: string; guidance: string }> = {};
+    const targetDir = options.directory || process.cwd();
 
-    const checks: Record<string, { category: string; severity: string; guidance: string }> = {
-      // SKILL checks
-      'SKILL-001': { category: 'skill', severity: 'medium', guidance: 'Unsigned skills cannot be verified for authenticity or integrity. Sign with a cryptographic identity to enable tamper detection.' },
-      'SKILL-002': { category: 'skill', severity: 'critical', guidance: 'Remote code execution patterns download and execute arbitrary code. Replace with a pinned dependency or vendored script with checksum verification.' },
-      'SKILL-003': { category: 'skill', severity: 'high', guidance: 'Skills that install heartbeats or cron jobs gain persistent execution beyond the user session.' },
-      'SKILL-004': { category: 'skill', severity: 'critical', guidance: 'Broad filesystem access lets skills read/write anywhere. Restrict to specific directories.' },
-      'SKILL-005': { category: 'skill', severity: 'critical', guidance: 'Skills accessing credential files can exfiltrate API keys and secrets.' },
-      'SKILL-006': { category: 'skill', severity: 'critical', guidance: 'Data exfiltration patterns send local data to external servers.' },
-      'SKILL-007': { category: 'skill', severity: 'critical', guidance: 'ClickFix social engineering tricks users into copying and pasting malicious commands.' },
-      'SKILL-008': { category: 'skill', severity: 'critical', guidance: 'Reverse shell patterns establish remote command execution. Strong indicator of malicious intent.' },
-      'SKILL-009': { category: 'skill', severity: 'high', guidance: 'Typosquatting uses names similar to popular skills to trick users into installing malicious versions.' },
-      'SKILL-010': { category: 'skill', severity: 'critical', guidance: 'Skills accessing .env files or process.env can exfiltrate API keys and secrets.' },
-      'SKILL-011': { category: 'skill', severity: 'critical', guidance: 'Skills accessing browser data can steal session tokens and authentication state.' },
-      'SKILL-012': { category: 'skill', severity: 'critical', guidance: 'Skills accessing wallets or seed phrases can drain cryptocurrency funds.' },
-      // SUPPLY checks
-      'SUPPLY-001': { category: 'supply', severity: 'high', guidance: 'Unverified publishers cannot be trusted. Verify via DNS TXT record.' },
-      'SUPPLY-002': { category: 'supply', severity: 'medium', guidance: 'Unregistered skills have no community trust signal.' },
-      'SUPPLY-003': { category: 'supply', severity: 'critical', guidance: 'Matches known malicious patterns from the ClawHavoc campaign. Remove immediately.' },
-      'SUPPLY-004': { category: 'supply', severity: 'high', guidance: 'Without installed_hash, skill modifications cannot be detected.' },
-      'SUPPLY-005': { category: 'supply', severity: 'critical', guidance: 'Contains known ClawHavoc C2 IP address. Remove and check network logs.' },
-      'SUPPLY-006': { category: 'supply', severity: 'critical', guidance: 'References known ClawHavoc malware payload filename.' },
-      'SUPPLY-007': { category: 'supply', severity: 'high', guidance: 'ClickFix patterns trick users into downloading and executing malware.' },
-      'SUPPLY-008': { category: 'supply', severity: 'high', guidance: 'Password-protected archives bypass AV scanning.' },
-    };
+    // Run a real scan to collect all check metadata from findings
+    const scanner = new HardeningScanner();
+    const result = await scanner.scan({ targetDir, autoFix: false, scanDepth: 'deep' as any });
 
-    for (const [checkId, info] of Object.entries(checks)) {
-      const attackClass = getAttackClass(checkId) || 'UNKNOWN';
-      metadata[checkId] = { checkId, category: info.category, attackClass, severity: info.severity, guidance: info.guidance };
+    const metadata: Record<string, { checkId: string; name: string; category: string; attackClass: string; severity: string; fix: string; guidance: string }> = {};
+
+    for (const finding of result.findings) {
+      if (!metadata[finding.checkId]) {
+        metadata[finding.checkId] = {
+          checkId: finding.checkId,
+          name: finding.name,
+          category: finding.category,
+          attackClass: getAttackClass(finding.checkId) || '',
+          severity: finding.severity,
+          fix: finding.fix || '',
+          guidance: (finding as any).guidance || '',
+        };
+      }
     }
 
-    writeJsonStdout(metadata);
+    writeJsonStdout({ totalChecks: Object.keys(metadata).length, checks: metadata });
   });
 
 // Show help and exit 0 when no arguments provided

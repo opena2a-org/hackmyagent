@@ -1004,7 +1004,8 @@ export class HardeningScanner {
             line: firstLine,
             fixable: true,
             fixed: fileModified,
-            fix: `Run \`${this.cliName} secure --fix\` to replace the hardcoded credential with a \${ENV_VAR} reference, then store the actual value in your .env file`,
+            fix: `${this.cliName} secure --fix`,
+            guidance: 'Replaces hardcoded credentials with ${ENV_VAR} references. Store actual values in your .env file, which should be in .gitignore.',
           });
         }
       } catch {
@@ -1063,7 +1064,8 @@ export class HardeningScanner {
           file: 'CLAUDE.md',
           line: credentialLine,
           fixable: false,
-          fix: 'Manually move the credential to a .env file and reference it as ${ENV_VAR}. CLAUDE.md may be committed to git and exposed publicly',
+          fix: 'npx secretless-ai init',
+          guidance: 'CLAUDE.md is often committed to git and exposed publicly. Move credentials to a .env file and reference as ${ENV_VAR}. Secretless AI blocks credential access from AI tool context.',
         });
       }
     } catch {
@@ -1143,7 +1145,8 @@ export class HardeningScanner {
           file: 'mcp.json',
           fixable: true,
           fixed: mcp001Fixed,
-          fix: `Run \`${this.cliName} secure --fix\` to restrict filesystem access from / or ~ to project-relative paths (./data or ./)`,
+          fix: `${this.cliName} secure --fix`,
+          guidance: 'Root or home directory access lets MCP servers read/write any file on the system. Restrict to project-relative paths (./data or ./) to limit blast radius.',
         });
       }
 
@@ -1158,7 +1161,8 @@ export class HardeningScanner {
           message: 'Add allowedCommands to restrict shell access',
           file: 'mcp.json',
           fixable: false,
-          fix: 'Manually add an "allowedCommands" array to your shell server config in mcp.json to whitelist specific commands (e.g., ["ls", "cat", "grep"])',
+          fix: 'Add "allowedCommands": ["ls", "cat", "grep"] to the shell server config in mcp.json',
+          guidance: 'Unrestricted shell access lets the AI execute any command including destructive operations. Whitelisting specific commands limits what can be run.',
         });
       }
     } catch {
@@ -1281,7 +1285,8 @@ dist/
         file: '.gitignore',
         fixable: true,
         fixed: git001Fixed,
-        fix: `Run \`${this.cliName} secure --fix\` to create a .gitignore with security patterns (.env, secrets.json, *.pem, *.key) to prevent accidental commits`,
+        fix: `${this.cliName} secure --fix`,
+        guidance: 'Without .gitignore, sensitive files (.env, secrets.json, *.pem, *.key) can be accidentally committed to version control and exposed.',
       });
     }
 
@@ -1318,7 +1323,8 @@ dist/
           file: '.gitignore',
           fixable: true,
           fixed: git002Fixed,
-          fix: `Run \`${this.cliName} secure --fix\` to add ${missingPatterns.join(', ')} to .gitignore so sensitive files won't be accidentally committed`,
+          fix: `${this.cliName} secure --fix`,
+          guidance: `Missing patterns (${missingPatterns.join(', ')}) in .gitignore mean sensitive files could be accidentally committed and pushed to remote repositories.`,
         });
       }
     }
@@ -1358,7 +1364,8 @@ dist/
         file: '.env',
         fixable: true,
         fixed: git003Fixed,
-        fix: `Run \`${this.cliName} secure --fix\` to add .env to .gitignore so your environment variables won't be accidentally committed`,
+        fix: `${this.cliName} secure --fix`,
+        guidance: '.env files contain API keys and secrets. Without .gitignore protection, a single git add . can expose all credentials in your repository history.',
       });
     }
 
@@ -1411,7 +1418,8 @@ dist/
         file: 'mcp.json',
         fixable: true,
         fixed: net001Fixed,
-        fix: `Run \`${this.cliName} secure --fix\` to change 0.0.0.0 to 127.0.0.1 so the server only accepts local connections instead of being exposed to the network`,
+        fix: `${this.cliName} secure --fix`,
+        guidance: 'Binding to 0.0.0.0 exposes the server to the entire network. Use 127.0.0.1 for local-only access. If remote access is needed, use a reverse proxy with authentication.',
       });
     }
 
@@ -1438,7 +1446,8 @@ dist/
         message: 'Change http:// to https://',
         file: 'mcp.json',
         fixable: false,
-        fix: 'Manually change http:// to https:// in mcp.json to encrypt traffic and prevent man-in-the-middle attacks',
+        fix: 'Update URL to https:// in mcp.json',
+        guidance: 'HTTP traffic is unencrypted and vulnerable to man-in-the-middle attacks. An attacker on the network can intercept and modify MCP server communications.',
       });
     }
 
@@ -1517,7 +1526,8 @@ dist/
         file: 'mcp.json',
         fixable: true,
         fixed: mcp003Fixed,
-        fix: `Run \`${this.cliName} secure --fix\` to replace hardcoded API keys with \${ENV_VAR} references, then store actual values in .env file`,
+        fix: `${this.cliName} secure --fix`,
+        guidance: 'Hardcoded API keys in mcp.json are exposed to anyone with repo access. Use ${ENV_VAR} references and store actual values in .env (which should be in .gitignore).',
       });
     }
 
@@ -1550,7 +1560,8 @@ dist/
         message: 'Change to strong unique password',
         file: 'mcp.json',
         fixable: false,
-        fix: 'Manually change the default password in mcp.json to a strong, unique password (use `openssl rand -base64 24` to generate one)',
+        fix: 'openssl rand -base64 24',
+        guidance: 'Default passwords (postgres, admin, root, etc.) are the first thing attackers try. Generate a strong random password and update mcp.json.',
       });
     }
 
@@ -1577,7 +1588,8 @@ dist/
         message: 'Restrict to specific tools needed',
         file: 'mcp.json',
         fixable: false,
-        fix: 'Manually replace "*" with a list of specific tool names you need (e.g., ["read_file", "list_directory"]) to limit what the AI can access',
+        fix: 'Replace "*" with specific tool names in allowedTools (e.g., ["read_file", "list_directory"])',
+        guidance: 'Wildcard tool access gives the AI unrestricted capabilities. Limit to only the tools your workflow actually needs to reduce attack surface.',
       });
     }
 
@@ -1621,7 +1633,8 @@ dist/
         message: 'Scope permissions to specific paths',
         file: '.claude/settings.json',
         fixable: false,
-        fix: 'Manually replace wildcards like Bash(*) or Read(*) with specific paths (e.g., Bash(npm test) or Read(/src/**)) to limit AI access',
+        fix: 'Replace Bash(*) with Bash(npm test) and Read(*) with Read(/src/**) in .claude/settings.json',
+        guidance: 'Wildcard permissions give the AI unrestricted shell, read, or write access. Scope each permission to the specific commands and paths your workflow needs.',
       });
     }
 
@@ -1653,7 +1666,8 @@ dist/
         message: 'Remove rm -rf, sudo, etc.',
         file: '.claude/settings.json',
         fixable: false,
-        fix: 'Manually remove dangerous commands (rm -rf, sudo, chmod 777, etc.) from the allow list in .claude/settings.json to prevent accidental destructive operations',
+        fix: 'Remove rm -rf, sudo, chmod 777 patterns from the allow list in .claude/settings.json',
+        guidance: 'Allowing destructive commands means a single AI mistake can delete files, escalate privileges, or weaken permissions. Restrict to safe, reversible operations.',
       });
     }
 
@@ -4944,7 +4958,8 @@ dist/
             fixable: true,
             fixed: skill019Fixed,
             fixMessage: skill019Fixed ? 'Re-computed hash and updated signature block' : undefined,
-            fix: 'Re-sign the skill to update the hash: hackmyagent secure --fix',
+            fix: 'hackmyagent secure --fix',
+            guidance: 'The signature hash no longer matches the file content. This could indicate tampering or a legitimate edit that was not re-signed.',
           });
         }
 
@@ -4979,7 +4994,8 @@ dist/
               fixable: true,
               fixed: hb007Fixed,
               fixMessage: hb007Fixed ? 'Updated expiry to 7 days from now and re-signed' : undefined,
-              fix: 'Re-sign the skill with a new expiry: hackmyagent secure --fix',
+              fix: 'hackmyagent secure --fix',
+              guidance: 'Expired signatures mean the skill has not been re-verified since its expiry date. Re-signing renews the validity period and re-verifies content integrity.',
             });
           }
         }
@@ -5100,6 +5116,7 @@ dist/
             line: i + 1,
             fixable: false,
             fix: 'Verify the URL is from a trusted source and add hash pinning for integrity',
+            guidance: 'Heartbeats that contact external URLs without verification can be redirected to malicious endpoints. Pin the expected hash to detect tampering.',
           });
         }
       }
@@ -5122,7 +5139,8 @@ dist/
           : 'Heartbeat lacks hash pinning - content integrity cannot be verified',
         file: relativePath,
         fixable: false,
-        fix: 'Run `hackmyagent fix-all --with-aim` to automatically pin and sign heartbeat files',
+        fix: 'hackmyagent fix-all --with-aim',
+        guidance: 'Without hash pinning, heartbeat content can be modified without detection. Pinning creates a cryptographic fingerprint to verify integrity on each execution.',
       });
 
       // HEARTBEAT-003: Unsigned Heartbeat
@@ -5143,7 +5161,8 @@ dist/
           : 'Heartbeat is unsigned - cannot verify authenticity or integrity',
         file: relativePath,
         fixable: false,
-        fix: 'Run `hackmyagent fix-all --with-aim` to automatically sign all heartbeat files with a cryptographic identity',
+        fix: 'hackmyagent fix-all --with-aim',
+        guidance: 'Unsigned heartbeats cannot prove who created them or whether they have been modified. Cryptographic signatures enable authenticity and integrity verification.',
       });
 
       // HEARTBEAT-004: Dangerous Capabilities
@@ -5163,6 +5182,7 @@ dist/
               line: i + 1,
               fixable: false,
               fix: 'Heartbeats should use minimal capabilities - avoid shell:*, filesystem:*, network:*',
+              guidance: 'Wildcard capabilities (shell:*, filesystem:*, network:*) give heartbeats unrestricted access. A compromised heartbeat with these permissions can execute arbitrary commands, read any file, or exfiltrate data.',
             });
           }
         }
@@ -5200,6 +5220,7 @@ dist/
               line: i + 1,
               fixable: false,
               fix: 'Increase heartbeat interval to at least 5 minutes to prevent resource exhaustion',
+              guidance: 'High-frequency heartbeats consume CPU, memory, and network bandwidth. Intervals under 5 minutes can cause resource exhaustion and may mask malicious polling behavior.',
             });
           }
         }
@@ -5225,6 +5246,7 @@ dist/
         file: relativePath,
         fixable: false,
         fix: 'Add activeHours: or schedule: to limit when the heartbeat can run',
+        guidance: 'Unrestricted heartbeats run 24/7 including off-hours when no one monitors them. Time-of-day limits reduce the window for undetected malicious activity.',
       });
     }
 
@@ -5335,7 +5357,8 @@ dist/
           fixable: true,
           fixed: gateway001Fixed,
           fixMessage: gateway001Fixed ? 'Changed gateway.host from 0.0.0.0 to 127.0.0.1' : undefined,
-          fix: `Run \`${this.cliName} secure-openclaw --fix\` to bind gateway to 127.0.0.1 for local-only access`,
+          fix: `${this.cliName} secure-openclaw --fix`,
+          guidance: 'Binding to 0.0.0.0 exposes the gateway to all network interfaces. Use 127.0.0.1 for local-only access unless remote access is explicitly needed with proper authentication.',
         });
       }
 
@@ -5354,7 +5377,8 @@ dist/
           : 'Missing security.websocketOrigins - vulnerable to GHSA-g8p2 cross-origin attacks',
         file: relativePath,
         fixable: false,
-        fix: 'Manually add security.websocketOrigins array with your allowed origins (e.g., ["http://localhost:3000"])',
+        fix: 'Add security.websocketOrigins: ["http://localhost:3000"] to the gateway config',
+        guidance: 'Without origin validation, any website can connect to the gateway via WebSocket (GHSA-g8p2). This enables cross-origin command execution attacks.',
       });
 
       // GATEWAY-003: Token Exposed in Config
@@ -5395,7 +5419,8 @@ dist/
           fixable: true,
           fixed: gateway003Fixed,
           fixMessage: gateway003Fixed ? 'Replaced plaintext token with ${OPENCLAW_AUTH_TOKEN} env var reference. Set OPENCLAW_AUTH_TOKEN in your environment.' : undefined,
-          fix: `Run \`${this.cliName} secure-openclaw --fix\` to replace plaintext token with \${OPENCLAW_AUTH_TOKEN} env var reference`,
+          fix: `${this.cliName} secure-openclaw --fix`,
+          guidance: 'Plaintext tokens in config files are exposed to anyone with repo access. Use environment variable references so credentials stay outside version control.',
         });
       }
 
@@ -5446,7 +5471,8 @@ dist/
           fixable: true,
           fixed: gateway004Fixed,
           fixMessage: gateway004Fixed ? 'Enabled approval confirmations for command execution' : undefined,
-          fix: `Run \`${this.cliName} secure-openclaw --fix\` to enable approval confirmations for safer command execution`,
+          fix: `${this.cliName} secure-openclaw --fix`,
+          guidance: 'Without approval confirmations, commands execute immediately without user review. This removes the last line of defense against malicious or accidental destructive operations.',
         });
       }
 
@@ -5478,7 +5504,8 @@ dist/
           fixable: true,
           fixed: gateway005Fixed,
           fixMessage: gateway005Fixed ? 'Enabled sandbox mode for isolated code execution' : undefined,
-          fix: `Run \`${this.cliName} secure-openclaw --fix\` to enable sandbox mode for safer code execution`,
+          fix: `${this.cliName} secure-openclaw --fix`,
+          guidance: 'Without sandbox isolation, executed code has full system access including filesystem, network, and process control. Sandbox mode limits the blast radius of malicious or buggy code.',
         });
       }
 
@@ -5509,7 +5536,8 @@ dist/
           message: `Container escape risk: ${issues.join(', ')}`,
           file: relativePath,
           fixable: false,
-          fix: 'Manually disable privileged mode and remove sensitive host mounts - requires careful review',
+          fix: 'Disable docker.privileged and remove sensitive mounts (/var/run/docker.sock, /etc/passwd, /:/) from the config',
+          guidance: 'Privileged mode and sensitive host mounts allow container escape -- the agent can access the host system, other containers, and all their data.',
         });
       }
 
@@ -5549,6 +5577,7 @@ dist/
           file: relativePath,
           fixable: false,
           fix: 'Replace wildcard "*" in allowFrom with specific allowed sender IDs or domains',
+          guidance: 'An open DM policy with wildcard allows any entity to send messages to the agent. Attackers can use this to inject commands or exfiltrate data via conversation.',
         });
       }
 
@@ -5569,6 +5598,7 @@ dist/
           file: relativePath,
           fixable: false,
           fix: 'Disable Tailscale Funnel unless public access is intentional. Use Tailscale ACLs to restrict access.',
+          guidance: 'Tailscale Funnel exposes the agent to the public internet, bypassing Tailscale\'s private network protection. Only enable if you explicitly need public access.',
         });
       }
 
@@ -5587,7 +5617,8 @@ dist/
             message: `Applied ${fixesApplied.length} fix(es): ${fixesApplied.join('; ')}`,
             file: relativePath,
             fixable: false,
-            fix: 'Use `hackmyagent rollback` to undo these changes if needed',
+            fix: 'hackmyagent rollback',
+            guidance: 'Auto-fixes were applied to this configuration. Use rollback to revert if any fix caused unexpected behavior.',
           });
         } catch (writeError) {
           findings.push({
@@ -5601,6 +5632,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Check file permissions and try again',
+            guidance: 'The auto-fix could not write changes to the configuration file. Verify the file is not read-only and that you have write permissions.',
           });
         }
       }
@@ -5736,6 +5768,7 @@ dist/
         file: relativePath,
         fixable: false,
         fix: 'Move session files outside the project directory or add to .gitignore',
+        guidance: 'Session and token files contain credentials that grant access to messaging platforms. If committed to git, anyone with repo access can hijack these sessions.',
       });
     }
 
@@ -5780,6 +5813,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Review and remove suspicious patterns from SOUL.md',
+            guidance: 'SOUL.md defines agent behavior. Prompt injection patterns embedded here can override safety instructions and make the agent act maliciously.',
           });
           break; // Only report first match per file
         }
@@ -5829,6 +5863,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Run daemon as non-root user with minimal privileges',
+            guidance: 'Daemons running as root have unrestricted system access. A compromised root-level daemon can modify any file, install backdoors, or pivot to other systems.',
           });
           break; // Only report first match per file
         }
@@ -5876,6 +5911,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Use a secrets manager or ensure .env is in .gitignore',
+            guidance: 'Plaintext API keys in .env files can be accidentally committed. Use a secrets manager for production, and always ensure .env is in .gitignore.',
           });
           break; // Only report first match per file
         }
@@ -5929,6 +5965,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Review and sanitize memory.json contents',
+            guidance: 'Agent memory files can be poisoned with prompt injections, eval calls, or base64-encoded payloads that execute when the agent loads its context.',
           });
           break; // Only report first match per file
         }
@@ -5976,6 +6013,7 @@ dist/
           file: relativePath,
           fixable: false,
           fix: 'Disable autoFollow or review moltbook security settings',
+          guidance: 'Auto-following untrusted agents can expose your agent to malicious instructions, data exfiltration, or prompt injection from compromised peers.',
         });
       }
 
@@ -6002,6 +6040,7 @@ dist/
           file: relativePath,
           fixable: false,
           fix: 'Set tools.elevated.defaultLevel to "restricted" and enable exec.approvals',
+          guidance: 'Unrestricted elevated execution gives tools maximum system privileges without approval gates. This bypasses all safety checks for destructive operations.',
         });
       }
 
@@ -6026,6 +6065,7 @@ dist/
           file: relativePath,
           fixable: false,
           fix: 'Enable sandbox: set sandbox.enabled to true or tools.exec.sandbox to true',
+          guidance: 'Without sandbox isolation, tool execution has direct access to the host filesystem, network, and processes. Enable sandboxing to contain potential damage.',
         });
       }
 
@@ -6049,7 +6089,8 @@ dist/
           message: `Token is only ${tokenValue.length} characters - minimum 24 recommended`,
           file: relativePath,
           fixable: false,
-          fix: 'Generate a stronger token: openssl rand -base64 32',
+          fix: 'openssl rand -base64 32',
+          guidance: 'Short tokens are vulnerable to brute-force attacks. Use at least 24 characters of cryptographically random data for authentication tokens.',
         });
       }
     }
@@ -6347,7 +6388,8 @@ dist/
               : `OpenClaw ${openclawVersion} includes CVE-2026-25253 fix`,
             file: 'package.json',
             fixable: false,
-            fix: 'Upgrade openclaw to v2026.1.29 or later: npm install openclaw@latest',
+            fix: 'npm install openclaw@latest',
+            guidance: 'CVE-2026-25253 (CVSS 8.8) enables WebSocket hijacking for remote code execution. Upgrade to v2026.1.29 or later which includes the fix.',
           });
           // CVE-003: OS Command Injection via SSH Path (same fix version)
           if (isVulnerable) {
@@ -6361,7 +6403,8 @@ dist/
               message: `OpenClaw ${openclawVersion} is vulnerable to CVE-2026-25157 - upgrade to v2026.1.29+`,
               file: 'package.json',
               fixable: false,
-              fix: 'Upgrade openclaw to v2026.1.29 or later: npm install openclaw@latest',
+              fix: 'npm install openclaw@latest',
+              guidance: 'CVE-2026-25157 (CVSS 7.8) allows OS command injection via unescaped SSH project paths. Upgrade to v2026.1.29 or later which includes the fix.',
             });
           } else {
             findings.push({
@@ -6390,7 +6433,8 @@ dist/
               message: `OpenClaw ${openclawVersion} is vulnerable to CVE-2026-24763 - upgrade to v2026.1.29+`,
               file: 'package.json',
               fixable: false,
-              fix: 'Upgrade openclaw to v2026.1.29 or later: npm install openclaw@latest',
+              fix: 'npm install openclaw@latest',
+              guidance: 'CVE-2026-24763 (CVSS 8.8) allows command injection through unsafe PATH handling in Docker sandbox. Upgrade to v2026.1.29 or later which includes the fix.',
             });
           } else {
             findings.push({
@@ -6441,6 +6485,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Add gateway.controlUi.allowedOrigins with your allowed origins (e.g., ["http://localhost:3000"])',
+            guidance: 'Without origin restrictions, the control UI can be accessed from any origin. Adding allowedOrigins provides defense-in-depth against cross-origin attacks.',
           });
         } else if (hasAuth && hasAllowedOrigins) {
           findings.push({
@@ -6591,6 +6636,7 @@ dist/
             fixable: false,
             file: memFile,
             fix: 'Sanitize all memory entries before persistence. Remove __proto__ and constructor keys. Validate $ref URIs.',
+            guidance: 'Prototype pollution via __proto__ or constructor can alter object behavior. External $ref URIs can load malicious content into agent memory at runtime.',
           });
         }
       } catch { /* file doesn't exist - skip */ }
@@ -6619,6 +6665,7 @@ dist/
               fixable: false,
               file: cfgFile,
               fix: 'Enable memory integrity verification: add hash validation or signature checks for persisted context.',
+              guidance: 'Without integrity checks, an attacker with file access can modify persisted memory to inject malicious instructions that the agent will trust on reload.',
             });
           }
         }
@@ -6647,6 +6694,7 @@ dist/
               fixable: false,
               file: cfgFile,
               fix: 'Set explicit context size limits: maxContextSize, memory.maxEntries, or memory.maxSize.',
+              guidance: 'Without size limits, an attacker can craft inputs that overflow the context window, pushing safety instructions out of scope and taking over agent behavior.',
             });
           }
         }
@@ -6678,6 +6726,7 @@ dist/
                 fixable: false,
                 file: maFile,
                 fix: 'Enable memory isolation: set sharedMemory.isolation=true or use per-agent memory scopes.',
+                guidance: 'Shared memory without isolation lets a compromised agent poison context used by all other agents. Use per-agent scopes to prevent cross-agent influence.',
               });
             }
           }
@@ -6714,6 +6763,7 @@ dist/
                     file: path.relative(targetDir, file),
                     line: i + 1,
                     fix: 'Sanitize conversation history before including in system prompts. Strip instruction-like patterns.',
+                    guidance: 'Unvalidated conversation history concatenated into system prompts enables indirect prompt injection. Attackers can craft messages that inject instructions.',
                   });
                   break; // One finding per file
                 }
@@ -6757,6 +6807,7 @@ dist/
                 fixable: false,
                 file: ragFile,
                 fix: 'Add source verification: set trustedSource=true only for validated endpoints, or enable signatureCheck.',
+                guidance: 'Unverified RAG sources can be compromised to inject malicious instructions into agent context. Verify sources with signatures or explicit trust markers.',
               });
             }
           }
@@ -6795,6 +6846,7 @@ dist/
                     file: path.relative(targetDir, file),
                     line: i + 1,
                     fix: 'Sanitize retrieved content before including in prompts. Strip instruction-like patterns and markup.',
+                    guidance: 'Poisoned documents in a vector store can contain prompt injections that override agent behavior when retrieved. Sanitize before including in prompts.',
                   });
                   break;
                 }
@@ -6823,6 +6875,7 @@ dist/
             fixable: false,
             file: ragFile,
             fix: 'Restrict vector store write access. Require authentication for document ingestion.',
+            guidance: 'Public-writable vector stores let anyone inject poisoned documents. These documents are retrieved by the agent and can influence its responses and behavior.',
           });
         }
       } catch { /* skip */ }
@@ -6847,6 +6900,7 @@ dist/
               fixable: false,
               file: ragFile,
               fix: 'Enable provenance tracking: set sourceTracking=true to track which source each document came from.',
+              guidance: 'Without provenance tracking, poisoned content cannot be traced to its source during incident response. Source tracking enables rapid identification and removal.',
             });
           }
         }
@@ -6888,7 +6942,8 @@ dist/
               message: `${idFile} declares identity without cryptographic key binding`,
               fixable: false,
               file: idFile,
-              fix: 'Run `hackmyagent fix-all --with-aim` to bind identity to an Ed25519 key pair automatically',
+              fix: 'hackmyagent fix-all --with-aim',
+              guidance: 'Without cryptographic binding, any agent can impersonate this identity. Ed25519 key pairs provide proof of identity through digital signatures.',
             });
           }
         }
@@ -6907,6 +6962,7 @@ dist/
               fixable: false,
               file: idFile,
               fix: 'Add a verification endpoint: verificationEndpoint URL or oidcIssuer for federated identity.',
+              guidance: 'Without a verification endpoint, other agents and registries cannot verify identity claims. This enables identity spoofing in multi-agent systems.',
             });
           }
         }
@@ -6930,7 +6986,8 @@ dist/
             message: 'Agent project has no identity declaration file (agent-card.json, agent.json, aim.json)',
             fixable: false,
             file: 'package.json',
-            fix: 'Run `hackmyagent fix-all --with-aim` to create a cryptographic identity with Ed25519 key pair, audit logging, and trust scoring',
+            fix: 'hackmyagent fix-all --with-aim',
+            guidance: 'Without a formal identity declaration, the agent cannot be verified by other agents, registries, or trust frameworks. Creates an Ed25519 key pair with audit logging.',
           });
         }
       } catch { /* skip */ }
@@ -6973,7 +7030,8 @@ dist/
             message: `${dnaFile} has no signature or content hash`,
             fixable: false,
             file: dnaFile,
-            fix: 'Run `hackmyagent fix-all --with-aim` to automatically sign behavioral profiles with a cryptographic identity',
+            fix: 'hackmyagent fix-all --with-aim',
+            guidance: 'Unsigned behavioral profiles can be silently modified to change agent behavior. Cryptographic signatures enable tamper detection on every load.',
           });
         }
 
@@ -6990,6 +7048,7 @@ dist/
             fixable: false,
             file: dnaFile,
             fix: 'Enable behavioral drift detection: set baselineHash and driftThreshold for continuous monitoring.',
+            guidance: 'Without drift detection, gradual behavioral changes (prompt drift, personality shifts) go unnoticed. A baseline hash detects any deviation from expected behavior.',
           });
         }
       } catch { /* skip */ }
@@ -7022,6 +7081,7 @@ dist/
             fixable: false,
             file: foundSoulFile || 'SOUL.md',
             fix: 'Create agent-dna.json with contentHash of SOUL.md, baselineHash, and signature for integrity verification.',
+            guidance: 'A behavioral fingerprint enables continuous integrity verification of agent instructions. Without it, modifications to SOUL.md cannot be detected.',
           });
         }
       } catch { /* skip */ }
@@ -7057,6 +7117,7 @@ dist/
             fixable: false,
             file: 'SKILL.md',
             fix: 'Restrict skill memory access: declare explicit read-only or scoped-write permissions in SKILL.md.',
+            guidance: 'Skills with unrestricted memory write access can poison agent context, alter future responses, or plant persistent backdoors that survive restarts.',
           });
         }
       }
@@ -7085,6 +7146,7 @@ dist/
                 fixable: false,
                 file: path.relative(targetDir, file),
                 fix: 'Add read-only guards or scope memory writes to skill-specific namespaces.',
+                guidance: 'Unrestricted memory writes from skills can alter agent state across all contexts. Scope writes to skill-specific namespaces to prevent cross-skill interference.',
               });
               break; // One per skill dir
             }
@@ -7260,7 +7322,8 @@ dist/
           file: relativePath,
           line: firstLine,
           fixable: false,
-          fix: 'Inspect the file with a hex editor (e.g., xxd) to identify and remove invisible Unicode codepoints. Run: xxd ' + shellEscape(relativePath) + ' | grep -iE "e280[8-9a-e]|efbb|efb8|f3a0"',
+          fix: 'xxd ' + shellEscape(relativePath) + ' | grep -iE "e280[8-9a-e]|efbb|efb8|f3a0"',
+          guidance: 'Invisible Unicode codepoints (zero-width chars, variation selectors, tag characters, bidi overrides) can hide malicious payloads in source code. This is the GlassWorm attack vector. Inspect with a hex editor and remove all non-functional invisible characters.',
         });
       }
 
@@ -7298,7 +7361,8 @@ dist/
           file: relativePath,
           line: decoderLine,
           fixable: false,
-          fix: 'Review the file for suspicious .codePointAt() logic that decodes hidden data from variation selectors (0xFE00-0xFE0F) or tag characters (0xE0100-0xE01EF). Remove the decoder function and audit the file for tampering.',
+          fix: 'Review the file for suspicious .codePointAt() logic that decodes hidden data from variation selectors (0xFE00-0xFE0F) or tag characters (0xE0100-0xE01EF). Remove the decoder function.',
+          guidance: 'The GlassWorm attack encodes malicious payloads in invisible Unicode characters and uses .codePointAt() to decode them at runtime. This is the decoder half of the attack.',
         });
       }
 
@@ -7347,7 +7411,8 @@ dist/
             file: relativePath,
             line: evalLine,
             fixable: false,
-            fix: 'Remove the eval/Function call and inspect the string argument with a hex editor. The string likely contains invisible Unicode characters encoding a malicious payload. Run: node -e "const fs=require(\'fs\'); const s=fs.readFileSync(' + JSON.stringify(relativePath) + ',\'utf8\'); console.log([...s].filter(c=>c.codePointAt(0)>0x200).map(c=>c.codePointAt(0).toString(16)))"',
+            fix: 'node -e "const fs=require(\'fs\'); const s=fs.readFileSync(' + JSON.stringify(relativePath) + ',\'utf8\'); console.log([...s].filter(c=>c.codePointAt(0)>0x200).map(c=>c.codePointAt(0).toString(16)))"',
+            guidance: 'eval() or Function() called with mostly invisible characters is a strong indicator of a GlassWorm payload. The string contains hidden Unicode characters encoding malicious code. Remove the eval/Function call and audit the file.',
           });
           break; // One finding per file
         }
@@ -7396,7 +7461,8 @@ dist/
             file: relativePath,
             line: tagBlockLine,
             fixable: false,
-            fix: 'Inspect the file with a hex editor to identify tag block characters (byte sequence starting with F3 A0). These characters are invisible and have no legitimate use in source code. Run: xxd ' + shellEscape(relativePath) + ' | grep "f3a0"',
+            fix: 'xxd ' + shellEscape(relativePath) + ' | grep "f3a0"',
+            guidance: 'Unicode Tag block characters (U+E0000-U+E01EF) are invisible and have no legitimate use in source code. They can encode hidden data or malicious payloads. Remove all tag block characters found.',
           });
         }
       }
@@ -7450,7 +7516,8 @@ dist/
           file: relativePath,
           line: homoglyphLine,
           fixable: false,
-          fix: 'Inspect the file for characters that look like Latin letters but are actually Cyrillic, Greek, or Fullwidth. Replace them with their ASCII equivalents. Run: node -e "const fs=require(\'fs\'); [...fs.readFileSync(' + JSON.stringify(relativePath) + ',\'utf8\')].forEach((c,i)=>{const cp=c.codePointAt(0); if(cp>0x7F && cp<0xFFFF) console.log(i, cp.toString(16), c)})"',
+          fix: 'node -e "const fs=require(\'fs\'); [...fs.readFileSync(' + JSON.stringify(relativePath) + ',\'utf8\')].forEach((c,i)=>{const cp=c.codePointAt(0); if(cp>0x7F && cp<0xFFFF) console.log(i, cp.toString(16), c)})"',
+          guidance: 'Homoglyph confusables (Cyrillic/Greek/Fullwidth characters that look like Latin letters) can create variable names that appear identical in code review but reference different values at runtime. Replace with ASCII equivalents.',
         });
       }
     }
@@ -7509,7 +7576,8 @@ dist/
                 fixable: false,
                 file: path.relative(targetDir, file),
                 line: i + 1,
-                fix: 'Download to temp file, verify checksum, then execute: curl -o /tmp/install.sh URL && echo "EXPECTED_SHA256 /tmp/install.sh" | sha256sum -c && bash /tmp/install.sh',
+                fix: 'curl -o /tmp/install.sh URL && echo "EXPECTED_SHA256 /tmp/install.sh" | sha256sum -c && bash /tmp/install.sh',
+                guidance: 'Piping curl directly to sh executes whatever the remote server returns. A compromised or MITM-ed server can inject arbitrary code. Always download, verify, then execute.',
               });
             }
           }
@@ -7551,7 +7619,8 @@ dist/
               fixable: false,
               file: path.relative(targetDir, file),
               line: i + 1,
-              fix: 'Require non-empty digest; fail verification if digest is missing. Compute with: sha256sum <artifact>',
+              fix: 'sha256sum <artifact>',
+              guidance: 'Empty digest fields bypass integrity verification entirely. Require non-empty digests and fail builds when they are missing, so tampered artifacts cannot pass.',
             });
           }
         }
@@ -7578,6 +7647,7 @@ dist/
               file: path.relative(targetDir, file),
               line: i + 1,
               fix: 'Require non-empty digest; fail verification if digest is missing instead of skipping the check.',
+              guidance: 'Skipping digest verification when the value is falsy means an attacker can remove the digest field to bypass integrity checks. Treat missing digest as a hard failure.',
             });
           }
         }
@@ -7623,6 +7693,7 @@ dist/
                 file: path.relative(targetDir, file),
                 line: i + 1,
                 fix: 'Gate policy reload behind operator authentication, not agent output or user requests.',
+                guidance: 'User-reachable policy reload paths allow attackers to modify security policies via crafted requests. Only operators (authenticated admins) should trigger policy changes.',
               });
             }
           }
@@ -7672,6 +7743,7 @@ dist/
               file: path.relative(targetDir, file),
               line: i + 1,
               fix: 'Pass credentials via environment variables or stdin, not command-line arguments.',
+              guidance: 'CLI arguments are visible in process listings (ps aux), shell history, and log files. Environment variables and stdin are not exposed to other processes.',
             });
           }
         }
@@ -7718,6 +7790,7 @@ dist/
               file: path.relative(targetDir, file),
               line: i + 1,
               fix: 'Use execFile() or spawn() with array arguments instead of exec() with string interpolation.',
+              guidance: 'exec() passes the entire string to /bin/sh, which interprets shell metacharacters. execFile() and spawn() with arrays bypass the shell entirely, preventing injection.',
             });
           }
         }
@@ -7763,7 +7836,8 @@ dist/
               fixable: false,
               file: path.relative(targetDir, file),
               line: i + 1,
-              fix: 'Use mktemp for all temporary files; add trap EXIT for cleanup: TMPDIR=$(mktemp -d) && trap "rm -rf $TMPDIR" EXIT',
+              fix: 'TMPDIR=$(mktemp -d) && trap "rm -rf $TMPDIR" EXIT',
+              guidance: 'Hardcoded /tmp paths are predictable and enable symlink attacks (CWE-377). An attacker can pre-create a symlink at the expected path to redirect writes to sensitive files.',
             });
           }
         }
@@ -7803,7 +7877,8 @@ dist/
               fixable: false,
               file: path.relative(targetDir, file),
               line: i + 1,
-              fix: 'Use an explicit env var allowlist instead of spreading process.env: env: { PATH: process.env.PATH, NODE_ENV: process.env.NODE_ENV }',
+              fix: 'env: { PATH: process.env.PATH, NODE_ENV: process.env.NODE_ENV }',
+              guidance: 'Spreading process.env leaks all environment variables (including API keys, tokens, database URLs) to child processes. Use an explicit allowlist of only the variables the child needs.',
             });
           }
         }
@@ -7862,6 +7937,7 @@ dist/
           file: path.relative(targetDir, verify.verifyFile),
           line: verify.verifyLine,
           fix: 'Copy artifact to temp dir, verify the copy, execute from the copy (atomic verify-then-execute in the same function).',
+          guidance: 'When verify and execute are in separate files, an attacker can swap the artifact between verification and use (TOCTOU). Atomic verify-then-execute eliminates this race window.',
         });
       }
     }
@@ -7901,6 +7977,7 @@ dist/
               file: path.relative(targetDir, file),
               line: i + 1,
               fix: 'Use json.load() or a restricted deserializer instead of pickle for untrusted data.',
+              guidance: 'pickle.load() can execute arbitrary Python code during deserialization. A crafted pickle payload achieves full remote code execution.',
             });
           }
           if (/yaml\.load\s*\(/.test(line) && !/Loader\s*=\s*SafeLoader/.test(line) && !/safe_load/.test(line)) {
@@ -7917,6 +7994,7 @@ dist/
               file: path.relative(targetDir, file),
               line: i + 1,
               fix: 'Use yaml.safe_load() or yaml.load(data, Loader=yaml.SafeLoader).',
+              guidance: 'yaml.load() without SafeLoader can construct arbitrary Python objects, including those that execute code. SafeLoader restricts to basic data types.',
             });
           }
           if (/\beval\s*\(/.test(line) || /\bexec\s*\(/.test(line)) {
@@ -7933,6 +8011,7 @@ dist/
               file: path.relative(targetDir, file),
               line: i + 1,
               fix: 'Replace eval/exec with ast.literal_eval() for data parsing, or use a safe DSL.',
+              guidance: 'eval() and exec() execute arbitrary code. If input originates from untrusted sources (user input, network, files), this is a direct code injection vector.',
             });
           }
         }
@@ -7959,6 +8038,7 @@ dist/
               file: path.relative(targetDir, file),
               line: i + 1,
               fix: 'Use JSON.parse() for data, or a sandboxed evaluator for expressions.',
+              guidance: 'eval() executes arbitrary JavaScript. If the string comes from user input, network data, or files, an attacker can inject any code.',
             });
           }
           if (/new\s+Function\s*\(/.test(line)) {
@@ -7975,6 +8055,7 @@ dist/
               file: path.relative(targetDir, file),
               line: i + 1,
               fix: 'Use JSON.parse() for data, or a sandboxed evaluator for expressions.',
+              guidance: 'new Function() is equivalent to eval() -- it creates executable code from strings. If the string source is untrusted, this enables arbitrary code execution.',
             });
           }
           if (/JSON5\.parse/.test(line)) {
@@ -7991,6 +8072,7 @@ dist/
               file: path.relative(targetDir, file),
               line: i + 1,
               fix: 'Use JSON.parse() instead of JSON5.parse() for untrusted data.',
+              guidance: 'JSON5 accepts comments, trailing commas, and unquoted keys, expanding the parsing surface. For untrusted input, strict JSON.parse() reduces ambiguity and attack surface.',
             });
           }
         }
@@ -8039,6 +8121,7 @@ dist/
                 file: path.relative(targetDir, file),
                 line: i + 1,
                 fix: 'Remove messaging APIs from base sandbox policy; require explicit operator opt-in per deployment.',
+                guidance: 'Pre-allowed messaging APIs (Telegram, Discord, Slack, webhook.site) enable agents to exfiltrate data without user approval. Require explicit operator opt-in per deployment.',
               });
             }
           }
@@ -8094,33 +8177,38 @@ dist/
         fixReplacement: '$1127.0.0.1',
         severity: 'critical' as Severity,
         description: 'Ollama server configured to listen on all interfaces. Our research found 294K+ exposed AI services on the internet — many are Ollama instances.',
-        fix: 'Set OLLAMA_HOST=127.0.0.1 to restrict to localhost. If remote access is needed, use a reverse proxy with authentication.' },
+        fix: 'Set OLLAMA_HOST=127.0.0.1 to restrict to localhost. If remote access is needed, use a reverse proxy with authentication.',
+        guidance: 'Our research found 294K+ exposed AI services on the internet. Public Ollama instances allow anyone to run inference, steal models, or use your GPU resources.' },
       { id: 'LLM-001', name: 'Ollama Port Exposed', service: 'Ollama',
         pattern: /^(?!.*127\.0\.0\.1).*["']?11434["']?\s*:\s*["']?11434["']?/,
         fixPattern: /(["']?)11434(["']?\s*:\s*["']?11434["']?)/,
         fixReplacement: '$1127.0.0.1:11434$2',
         severity: 'high' as Severity,
         description: 'Ollama default port (11434) mapped in container config. Without bind restrictions, this exposes the inference API to the network.',
-        fix: 'Map to localhost only: "127.0.0.1:11434:11434" instead of "11434:11434".' },
+        fix: 'Map to localhost only: "127.0.0.1:11434:11434" instead of "11434:11434".',
+        guidance: 'Docker port mappings without host binding expose the port on all interfaces. Prefix with 127.0.0.1: to restrict to localhost only.' },
       { id: 'LLM-002', name: 'vLLM/LocalAI Public Binding', service: 'vLLM/LocalAI',
         pattern: /--host\s+0\.0\.0\.0|host:\s*["']?0\.0\.0\.0/i,
         fixPattern: /(--host\s+|host:\s*["']?)0\.0\.0\.0/i,
         fixReplacement: '$1127.0.0.1',
         severity: 'critical' as Severity,
         description: 'LLM inference server configured to bind to all interfaces.',
-        fix: 'Use --host 127.0.0.1 or bind to localhost. Use a reverse proxy with auth for remote access.' },
+        fix: 'Use --host 127.0.0.1 or bind to localhost. Use a reverse proxy with auth for remote access.',
+        guidance: 'vLLM and LocalAI bound to 0.0.0.0 expose the inference API to all network interfaces. Anyone on the network can query models or abuse GPU resources.' },
       { id: 'LLM-003', name: 'Text Generation WebUI Exposed', service: 'text-generation-webui',
         pattern: /--listen\s|--share\s|GRADIO_SERVER_NAME\s*=\s*["']?0\.0\.0\.0/i,
         fixPattern: /\s*--listen\s?|\s*--share\s?|(GRADIO_SERVER_NAME\s*=\s*["']?)0\.0\.0\.0/gi,
         fixReplacement: '$1127.0.0.1',
         severity: 'high' as Severity,
         description: 'Text generation UI configured for public access with --listen or --share flag.',
-        fix: 'Remove --listen and --share flags. Access via localhost or SSH tunnel.' },
+        fix: 'Remove --listen and --share flags. Access via localhost or SSH tunnel.',
+        guidance: '--listen binds to all interfaces and --share creates a public Gradio URL. Both expose the text generation UI to the internet without authentication.' },
       { id: 'LLM-004', name: 'OpenAI-Compatible API No Auth', service: 'OpenAI-compatible',
         pattern: /\/v1\/chat\/completions|\/v1\/completions|\/v1\/models/,
         severity: 'medium' as Severity,
         description: 'Project exposes OpenAI-compatible API endpoints. Verify authentication is enforced.',
-        fix: 'Ensure API key or token authentication is required for all inference endpoints.' },
+        fix: 'Ensure API key or token authentication is required for all inference endpoints.',
+        guidance: 'OpenAI-compatible API endpoints without authentication allow anyone to query your models, consume compute resources, and potentially extract training data.' },
     ];
 
     for (const configDef of llmConfigFiles) {
@@ -8159,6 +8247,7 @@ dist/
                   fixable: !!check.fixPattern,
                   fixed,
                   fix: check.fix,
+                  guidance: (check as Record<string, unknown>).guidance as string | undefined,
                 });
                 break; // One finding per pattern per file
               }
@@ -8205,13 +8294,14 @@ dist/
 
     const AI_TOOL_PATTERNS: Array<{
       id: string; name: string; severity: Severity; description: string; fix: string;
-      filePatterns: string[]; contentPatterns: RegExp[];
+      guidance: string; filePatterns: string[]; contentPatterns: RegExp[];
     }> = [
       {
         id: 'AITOOL-001', name: 'Jupyter Notebook Publicly Accessible',
         severity: 'critical',
         description: 'Jupyter notebook server configured without authentication or bound to public interface. Our research found exposed Jupyter instances with full code execution on the internet.',
         fix: 'Set c.NotebookApp.token or c.NotebookApp.password. Bind to 127.0.0.1. Never use --NotebookApp.token=\'\' in production.',
+        guidance: 'Jupyter notebooks allow arbitrary code execution. A publicly accessible instance with no auth gives attackers full shell access on the host machine.',
         filePatterns: ['jupyter_notebook_config.py', 'jupyter_server_config.py', 'docker-compose.yml', 'docker-compose.yaml', 'Dockerfile'],
         contentPatterns: [
           /NotebookApp\.token\s*=\s*['"]{2}/,          // Empty token
@@ -8226,6 +8316,7 @@ dist/
         severity: 'high',
         description: 'ML demo framework configured for public access. Gradio share links and public Streamlit deployments can expose model inference and data pipelines.',
         fix: 'Remove share=True from Gradio launch(). For Streamlit, add authentication or use private deployment.',
+        guidance: 'Gradio share links create public URLs that bypass network security. Streamlit on 0.0.0.0 exposes the app to the internet. Both can leak model inference and data pipelines.',
         filePatterns: ['*.py', 'app.py', 'main.py', 'streamlit_app.py', 'demo.py'],
         contentPatterns: [
           /\.launch\s*\([^)]*share\s*=\s*True/,                // Gradio share=True
@@ -8238,6 +8329,7 @@ dist/
         severity: 'high',
         description: 'MLflow tracking server configured without authentication. Exposed MLflow instances leak experiment data, model artifacts, and parameters.',
         fix: 'Configure MLflow with --backend-store-uri and authentication. Use a reverse proxy with auth for remote access.',
+        guidance: 'Exposed MLflow instances leak experiment data, model artifacts, hyperparameters, and metrics. Add authentication before exposing to any network.',
         filePatterns: ['docker-compose.yml', 'docker-compose.yaml', 'Dockerfile', 'Makefile', '*.sh'],
         contentPatterns: [
           /mlflow\s+server\s+.*--host\s+0\.0\.0\.0/i,
@@ -8250,6 +8342,7 @@ dist/
         severity: 'high',
         description: 'LangChain LangServe endpoint configured for public access. Exposed LangServe instances allow arbitrary chain invocation.',
         fix: 'Add authentication middleware to LangServe routes. Bind to 127.0.0.1 for local-only access.',
+        guidance: 'LangServe exposes LangChain chains as REST endpoints. Without auth, anyone can invoke arbitrary chain operations, potentially accessing sensitive data or incurring costs.',
         filePatterns: ['*.py', 'app.py', 'main.py', 'server.py'],
         contentPatterns: [
           /add_routes\s*\(/,                                    // LangServe route
@@ -8323,6 +8416,7 @@ dist/
                     fixable: isFixable,
                     fixed,
                     fix: check.fix,
+                    guidance: check.guidance,
                   });
                   break;
                 }
@@ -8378,6 +8472,7 @@ dist/
           file: relativePath,
           fixable: false,
           fix: 'Add authentication requirements to your agent card. Restrict task submission to authenticated clients.',
+          guidance: 'A2A agent cards make your agent discoverable on the network. Without authentication requirements, any client can submit tasks and consume resources or access sensitive data.',
           details: { hasAuth, capabilities: agentCard.capabilities },
         });
         break; // Found one, no need to check other paths
@@ -8410,6 +8505,7 @@ dist/
                 line: i + 1,
                 fixable: false,
                 fix: 'Add authentication middleware to /tasks/send and /tasks/get endpoints. Require API key or bearer token.',
+                guidance: 'Unauthenticated A2A task endpoints allow anyone to submit tasks to your agent. This can lead to resource abuse, data exfiltration, or unauthorized actions.',
               });
               break;
             }
@@ -8463,6 +8559,7 @@ dist/
           file: relativePath,
           fixable: false,
           fix: 'Remove .well-known/mcp from public-facing directories, or restrict access via web server configuration. Never include credentials in discovery files.',
+          guidance: 'MCP discovery files make servers publicly discoverable. If they contain credentials, those are exposed to anyone who requests the URL. Restrict access or remove from public directories.',
         });
         break;
       } catch { /* doesn't exist */ }
@@ -8551,6 +8648,7 @@ dist/
                   fixable: true,
                   fixed,
                   fix: `Move credentials to server-side environment variables. Never include API keys in client-side code or static assets. Use a backend proxy for API calls.`,
+                  guidance: 'Credentials in web-served files (HTML, JS, CSS) are visible to anyone who views the page source. API keys in client-side code can be extracted and abused for unauthorized access.',
                 });
                 break;
               }
@@ -8607,6 +8705,7 @@ dist/
               line: i + 1,
               fixable: false,
               fix: 'Use execFile() or execFileSync() with an array of arguments instead of exec() with string interpolation.',
+              guidance: 'Template literals in exec() are interpreted by /bin/sh, allowing shell metacharacters in interpolated values to execute arbitrary commands. Array-based APIs bypass the shell.',
             });
             break; // One finding per file
           }
@@ -8654,6 +8753,7 @@ dist/
               line: i + 1,
               fixable: false,
               fix: 'Download the script to a file first, verify its checksum (sha256sum), then execute it.',
+              guidance: 'Piping directly to sh executes whatever the remote server returns without verification. A compromised or MITM-ed server can inject arbitrary code into your system.',
             });
             break;
           }
@@ -8705,6 +8805,7 @@ dist/
                 line: i + 1,
                 fixable: false,
                 fix: 'Pass credentials via environment variables, stdin, or a config file instead of CLI arguments.',
+                guidance: 'CLI arguments are visible to all users via ps aux, logged in shell history, and often captured in audit logs. Environment variables and stdin are not exposed to other processes.',
               });
               break;
             }
@@ -8753,6 +8854,7 @@ dist/
               line: i + 1,
               fixable: false,
               fix: 'Require the integrity value to be present. Throw an error if digest/hash is missing rather than skipping verification.',
+              guidance: 'A truthiness check on digest/hash silently skips verification when the value is empty. An attacker can remove the digest from a manifest to bypass all integrity checks.',
             });
             break;
           }
@@ -8817,6 +8919,7 @@ dist/
               line: verifyLine,
               fixable: false,
               fix: 'Use atomic file operations: verify and load in a single locked operation, or copy to a temp location before verification.',
+              guidance: 'TOCTOU races allow file replacement between verification and use. An attacker can swap a verified file with a malicious one in the time window between the two operations.',
             });
           }
         }
@@ -8867,6 +8970,7 @@ dist/
               line: i + 1,
               fixable: false,
               fix: 'Use mktemp to create a unique temporary file/directory instead of hardcoded /tmp paths.',
+              guidance: 'Predictable /tmp paths enable symlink attacks (CWE-377). Another user can create a symlink at the expected path, redirecting writes to sensitive files like /etc/passwd.',
             });
             break;
           }
@@ -8915,6 +9019,7 @@ dist/
                 line: i + 1,
                 fixable: false,
                 fix: 'Avoid passing user-controlled variables to docker exec. Validate and sanitize all inputs, and avoid bash -c with interpolated variables.',
+                guidance: 'Variable interpolation in docker exec allows command injection. If the variable contains shell metacharacters, an attacker can execute arbitrary commands inside or escape the container.',
               });
               break;
           }
@@ -8968,6 +9073,7 @@ dist/
                 line: i + 1,
                 fixable: false,
                 fix: 'Pass only the specific environment variables the child process needs: env: { PATH: process.env.PATH, NODE_ENV: process.env.NODE_ENV }.',
+                guidance: 'Spreading process.env passes all secrets (API keys, DB passwords, tokens) to child processes. A compromised or malicious child can read and exfiltrate these credentials.',
               });
               break;
             }
@@ -9033,6 +9139,7 @@ dist/
                   line: i + 1,
                   fixable: false,
                   fix: 'Remove messaging services from pre-allowed URLs. Require explicit user approval for outbound messaging.',
+                  guidance: 'Pre-allowed messaging APIs let sandbox code exfiltrate data silently via Telegram, Slack, or Discord without triggering permission prompts. Require explicit approval for each outbound message.',
                 });
                 break;
               }
@@ -9096,6 +9203,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Move CLAUDE.md out of the web-served directory. Add it to .gitignore and your build exclusion list.',
+            guidance: 'CLAUDE.md contains system prompts and operational instructions. Publicly accessible CLAUDE.md reveals agent behavior, security controls, and attack surface to potential adversaries.',
           });
         } catch { /* file doesn't exist */ }
       }
@@ -9117,6 +9225,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Remove .env files from web-served directories immediately. Store environment files in the project root (outside public/) and rotate any exposed credentials.',
+            guidance: '.env files in web directories are directly downloadable by anyone. All credentials in these files should be considered compromised and rotated immediately.',
           });
         } catch { /* file doesn't exist */ }
       }
@@ -9138,6 +9247,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: `Move ${configFile} out of the web-served directory. Serve only the minimal configuration needed by the client.`,
+            guidance: 'Configuration files in web directories expose MCP server addresses, API endpoints, authentication settings, and other operational details that aid attackers in targeting your infrastructure.',
           });
         } catch { /* file doesn't exist */ }
       }
@@ -9159,6 +9269,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Remove the .claude/ directory from web-served directories. Add it to your build exclusion list.',
+            guidance: 'The .claude/ directory contains Claude Code settings, tool permissions, and potentially system prompts. Public access reveals your AI tool configuration and attack surface.',
           });
         } catch { /* directory doesn't exist */ }
       }
@@ -9220,6 +9331,7 @@ dist/
               line: soulLine,
               fixable: false,
               fix: 'Add trust boundaries between SOUL.md (trusted) and SKILL.md (untrusted) content. Mark skill content as untrusted and instruct the model to not follow instructions from skill content.',
+              guidance: 'Without trust boundaries, a malicious SKILL.md can include instructions that override the agent\'s core identity, safety rules, and behavioral constraints defined in SOUL.md.',
             });
           }
         }
@@ -9255,6 +9367,7 @@ dist/
               line: 1,
               fixable: false,
               fix: 'Add trust boundaries between SOUL.md (trusted) and SKILL.md (untrusted) content. Mark skill content as untrusted and instruct the model to not follow instructions from skill content.',
+              guidance: 'SKILL.md contains override/escalation patterns that can bypass SOUL.md safety rules. Mark skill content as untrusted so the model knows not to follow instructions from it.',
             });
           }
         }
@@ -9309,6 +9422,7 @@ dist/
                 line: i + 1,
                 fixable: false,
                 fix: 'Sanitize all user-provided text before storing. Strip instruction-like patterns and HTML/script content.',
+                guidance: 'Unsanitized user input persisted to memory can contain prompt injections or XSS payloads that affect future sessions. Sanitize before storage to prevent persistent poisoning.',
               });
               break;
             }
@@ -9379,6 +9493,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Add credential protection instructions to the system prompt: "Never print, echo, or output API keys, tokens, passwords, or environment variable values. Reference credentials only by variable name."',
+            guidance: 'Agents with exec/shell access can be tricked into echoing environment variables containing API keys and passwords. Explicit instructions in the system prompt add a defense layer.',
           });
         }
       } catch { /* skip unreadable files */ }
