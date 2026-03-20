@@ -2,6 +2,30 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [0.11.9] - 2026-03-20
+
+### Added
+- **15 new security checks (202 total)** — complete coverage of every verified ARIA research finding:
+  - CODEINJ-001: exec() with template literal interpolation (command injection)
+  - INSTALL-001: curl|sh without checksum in install scripts
+  - CLIPASS-001: Credentials passed as CLI arguments (visible in ps)
+  - INTEGRITY-001: Digest/hash bypass on empty/falsy value
+  - TOCTOU-001: Verify-then-use race condition
+  - TMPPATH-001: Hardcoded /tmp paths (symlink attack)
+  - DOCKERINJ-001: Docker exec with variable interpolation
+  - ENVLEAK-001: process.env spread to child process
+  - SANDBOX-005: Messaging API pre-allowed in sandbox policy
+  - WEBEXPOSE-001/002/003: CLAUDE.md, .env, config files in web directories
+  - SOUL-OVERRIDE-001: Skill content can override SOUL.md
+  - MEM-006: Memory store without input sanitization
+  - AGENT-CRED-001: No credential output protection in system prompt
+- **HTTPS enforcement** for registry URL overrides (rejects http:// unless localhost)
+
+### Changed
+- Check count: 187 → 202
+- Category count: 39 → 46
+- Auto-detection: OpenClaw and NemoClaw checks run automatically with `hackmyagent secure` when platform files are detected. Separate `secure-openclaw` and `secure-nemoclaw` commands still work as aliases.
+
 ## [0.11.7] - 2026-03-19
 
 ### Added
