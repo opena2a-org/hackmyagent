@@ -2477,6 +2477,7 @@ dist/
         ? 'Container runs as non-root user or no Dockerfile present'
         : 'Dockerfile runs as root - add USER directive for non-root user',
       fixable: false,
+      guidance: 'A container running as root means any exploit that escapes the application gets full control of the container and potentially the host system.',
     });
 
     // PROC-002: Check for security headers middleware
@@ -2497,6 +2498,7 @@ dist/
         ? 'Security headers middleware detected (helmet)'
         : 'Consider using helmet or similar for security headers',
       fixable: false,
+      guidance: 'Missing security headers (CSP, X-Frame-Options, HSTS) leave your app vulnerable to clickjacking, XSS, and protocol downgrade attacks.',
     });
 
     // PROC-003: Check for input validation
@@ -2517,6 +2519,7 @@ dist/
         ? 'Input validation library detected'
         : 'No input validation library found - validate all user inputs',
       fixable: false,
+      guidance: 'Without input validation, attackers can inject SQL, scripts, or malformed data that corrupts state, steals data, or crashes the application.',
     });
 
     // PROC-004: Check for error handling
@@ -2547,6 +2550,7 @@ dist/
         ? 'Error handling patterns detected'
         : 'Ensure proper error handling to prevent information disclosure',
       fixable: false,
+      guidance: 'Unhandled errors can crash the process, leak stack traces with internal paths and variable names, and create denial-of-service conditions.',
     });
 
     return findings;
@@ -2582,6 +2586,7 @@ dist/
           ? 'Consider adding deny rules to block dangerous operations'
           : 'No Claude settings file found',
       fixable: false,
+      guidance: 'Claude Code settings files may contain project-specific overrides that weaken security boundaries or grant excessive tool permissions.',
     });
 
     // CLAUDE-005: Check for memory/context persistence
@@ -2599,6 +2604,7 @@ dist/
         ? 'Claude memory enabled - be aware sensitive data may persist'
         : 'Claude memory not explicitly enabled',
       fixable: false,
+      guidance: 'Unrestricted MCP tool access in Claude Code config means any tool can execute without user approval, including dangerous operations like shell commands.',
     });
 
     // CLAUDE-006: Check CLAUDE.md for sensitive instructions
@@ -2626,6 +2632,7 @@ dist/
         ? 'CLAUDE.md contains sensitive instructions - these may be extractable via prompt injection'
         : 'No obviously sensitive instructions detected in CLAUDE.md',
       fixable: false,
+      guidance: 'Claude Code with unrestricted shell access can execute any command on your system. A prompt injection could escalate to full system compromise.',
     });
 
     // CLAUDE-007: Check for tool timeout configuration
@@ -2644,6 +2651,7 @@ dist/
           ? 'Consider setting tool timeouts to prevent runaway operations'
           : 'No Claude settings found',
       fixable: false,
+      guidance: 'Disabling Claude Code safety features removes guardrails that prevent accidental file deletion, credential exposure, and unauthorized system changes.',
     });
 
     return findings;
@@ -2678,6 +2686,7 @@ dist/
           ? 'Consider setting request timeouts for MCP servers'
           : 'No MCP config found',
       fixable: false,
+      guidance: 'MCP servers with database access can read, modify, or delete all data. Without query restrictions, a compromised server can exfiltrate entire databases.',
     });
 
     // MCP-007: Check for retry limits
@@ -2696,6 +2705,7 @@ dist/
           ? 'Consider setting retry limits to prevent infinite loops'
           : 'No MCP config found',
       fixable: false,
+      guidance: 'An MCP server configured with write access to sensitive directories can modify system files, install backdoors, or corrupt application data.',
     });
 
     // MCP-008: Check for localhost binding
@@ -2723,6 +2733,7 @@ dist/
         ? 'MCP servers properly bound to localhost'
         : 'Some MCP servers not bound to localhost - may be network accessible',
       fixable: false,
+      guidance: 'MCP servers running over network (SSE/HTTP) without authentication let any network-adjacent attacker connect and issue tool calls.',
     });
 
     // MCP-009: Check for sensitive tool names
@@ -2751,6 +2762,7 @@ dist/
         ? 'Sensitive tool names detected (shell, exec, eval) - ensure proper restrictions'
         : 'No obviously sensitive tool names in MCP config',
       fixable: false,
+      guidance: 'An MCP server with both shell access and network access can be used as a remote code execution endpoint by any attacker who reaches it.',
     });
 
     // MCP-010: Check for logging configuration
@@ -2775,6 +2787,7 @@ dist/
         ? 'MCP logging appears to be configured - ensure sensitive data is not logged'
         : 'No explicit MCP logging configuration detected',
       fixable: false,
+      guidance: 'Unverified MCP servers from unknown sources may contain malicious tool implementations that steal data or execute unauthorized actions.',
     });
 
     return findings;
@@ -2814,6 +2827,7 @@ dist/
         ? 'HTTPS/TLS configuration detected'
         : 'No HTTPS configuration found - ensure production uses TLS',
       fixable: false,
+      guidance: 'CORS misconfiguration allows malicious websites to make authenticated requests to your API, potentially stealing data or performing actions on behalf of users.',
     });
 
     // NET-004: Check for exposed debug endpoints
@@ -2848,6 +2862,7 @@ dist/
         ? 'Debug/admin endpoints detected - ensure they are protected or disabled in production'
         : 'No obvious debug endpoints found',
       fixable: false,
+      guidance: 'Missing TLS means all traffic including credentials and API keys is transmitted in plaintext, readable by anyone on the network.',
     });
 
     // NET-005: Check for WebSocket security
@@ -2887,6 +2902,7 @@ dist/
           ? 'WebSocket authentication detected'
           : 'WebSocket without obvious authentication - ensure connections are verified',
       fixable: false,
+      guidance: 'Exposing internal service ports to the public internet gives attackers direct access to management interfaces, databases, and debugging endpoints.',
     });
 
     // NET-006: Check for proxy configuration
@@ -2906,6 +2922,7 @@ dist/
         passed: true, // Informational
         message: 'HTTP proxy library detected - verify SSRF protections are in place',
         fixable: false,
+      guidance: 'WebSocket connections without authentication or origin validation let any website establish persistent connections to your backend.',
       });
     }
 
@@ -2946,6 +2963,7 @@ dist/
         ? 'API versioning pattern detected'
         : 'Consider implementing API versioning for backwards compatibility',
       fixable: false,
+      guidance: 'API endpoints without authentication accept requests from anyone. Sensitive data and operations are fully exposed to the internet.',
     });
 
     // API-002: Check for API documentation
@@ -2966,6 +2984,7 @@ dist/
         ? 'API documentation library detected'
         : 'Consider adding OpenAPI/Swagger documentation',
       fixable: false,
+      guidance: 'Without input validation, attackers can send malformed data to trigger crashes, SQL injection, or buffer overflows.',
     });
 
     // API-003: Check for API key in URL
@@ -2998,6 +3017,7 @@ dist/
         ? 'API key in URL pattern detected - use headers instead'
         : 'No obvious API key in URL patterns found',
       fixable: false,
+      guidance: 'Verbose API error responses reveal internal implementation details, database schemas, and file paths that help attackers craft targeted exploits.',
     });
 
     // API-004: Check for response headers security
@@ -3028,6 +3048,7 @@ dist/
         ? 'Security headers detected in responses'
         : 'Add security headers (X-Content-Type-Options, X-Frame-Options, CSP)',
       fixable: false,
+      guidance: 'APIs without rate limiting allow brute-force attacks, credential stuffing, and resource exhaustion at no cost to the attacker.',
     });
 
     return findings;
@@ -3057,6 +3078,7 @@ dist/
         ? 'Secret management capability detected'
         : 'Consider using a secret manager (Vault, AWS Secrets Manager, doppler)',
       fixable: false,
+      guidance: 'Missing Content-Security-Policy allows cross-site scripting attacks to execute arbitrary JavaScript in users browsers.',
     });
 
     // SEC-002: Check for encryption library
@@ -3077,6 +3099,7 @@ dist/
         ? 'Encryption library detected'
         : 'Consider using encryption for sensitive data (bcrypt, argon2)',
       fixable: false,
+      guidance: 'Without HTTPS redirect, users can be silently downgraded to unencrypted HTTP where credentials and session tokens are visible to network attackers.',
     });
 
     // SEC-003: Check for key rotation support
@@ -3105,6 +3128,7 @@ dist/
         ? 'Key rotation support detected'
         : 'Consider implementing key rotation for long-lived secrets',
       fixable: false,
+      guidance: 'Missing security headers (X-Frame-Options, X-Content-Type-Options) leave the application vulnerable to clickjacking and MIME-type confusion attacks.',
     });
 
     // SEC-004: Check for hardcoded connection strings
@@ -3139,6 +3163,7 @@ dist/
         ? 'Hardcoded connection strings detected - use environment variables'
         : 'No hardcoded connection strings found',
       fixable: false,
+      guidance: 'Serving static files from the project root risks exposing .env files, source code, and configuration files to anyone who guesses the URL.',
     });
 
     return findings;
@@ -3187,6 +3212,7 @@ dist/
           ? 'File upload validation detected'
           : 'File upload without obvious validation - add file type/size limits',
       fixable: false,
+      guidance: 'File paths constructed from user input without sanitization allow path traversal attacks that read or write any file on the system.',
     });
 
     // IO-002: Check for SQL/NoSQL injection protection
@@ -3216,6 +3242,7 @@ dist/
           ? 'ORM/query builder detected - provides parameterization'
           : 'Raw database driver detected - ensure parameterized queries are used',
       fixable: false,
+      guidance: 'Temporary files with predictable names in shared directories are vulnerable to symlink attacks that can overwrite arbitrary files.',
     });
 
     // IO-003: Check for XSS protection
@@ -3236,6 +3263,7 @@ dist/
         ? 'XSS protection library detected'
         : 'No XSS protection library found - sanitize user input before rendering',
       fixable: false,
+      guidance: 'Writing to files without atomic operations risks data corruption if the process crashes mid-write or multiple processes write simultaneously.',
     });
 
     // IO-004: Check for path traversal protection
@@ -3268,6 +3296,7 @@ dist/
         ? 'Potential path traversal detected - use path.resolve/normalize'
         : 'No obvious path traversal vulnerabilities found',
       fixable: false,
+      guidance: 'Reading files without size limits allows denial-of-service through memory exhaustion when processing attacker-controlled large files.',
     });
 
     return findings;
@@ -3307,6 +3336,7 @@ dist/
         ? 'Prompt boundaries detected in CLAUDE.md'
         : 'Consider adding prompt boundary markers to prevent injection attacks',
       fixable: false,
+      guidance: 'Without a system prompt, the AI agent has no behavioral boundaries. User inputs can freely direct it to perform any action including harmful ones.',
     });
 
     // PROMPT-002: Check for injection defense instructions
@@ -3332,6 +3362,7 @@ dist/
         ? 'Injection defense instructions found'
         : 'Consider adding injection defense instructions to system prompts',
       fixable: false,
+      guidance: 'System prompts without injection defenses can be overridden by user inputs that say "ignore previous instructions", bypassing all safety rules.',
     });
 
     // PROMPT-003: Check for output constraints
@@ -3357,6 +3388,7 @@ dist/
         ? 'Output confidentiality rules defined'
         : 'Consider defining what information should not be disclosed',
       fixable: false,
+      guidance: 'Exposing the full system prompt to users reveals internal logic, security boundaries, and tool configurations that help craft targeted attacks.',
     });
 
     // PROMPT-004: Check for role confusion protection
@@ -3381,6 +3413,7 @@ dist/
         ? 'Role definition found in prompts'
         : 'Consider clearly defining the AI role to prevent role confusion attacks',
       fixable: false,
+      guidance: 'Without output filtering, the agent can leak credentials, internal data, or harmful content in its responses.',
     });
 
     return findings;
@@ -3430,6 +3463,7 @@ dist/
         ? 'Input validation library detected'
         : 'Consider using zod, joi, or similar for input validation',
       fixable: false,
+      guidance: 'Command injection through unsanitized user input in shell commands gives attackers full system access. Always use parameterized execution.',
     });
 
     // INJ-002: Check for XSS protection patterns
@@ -3466,6 +3500,7 @@ dist/
         ? 'XSS protection patterns detected'
         : 'Consider implementing output escaping for user-facing content',
       fixable: false,
+      guidance: 'SQL injection through string concatenation lets attackers read, modify, or delete any data in your database. Use parameterized queries.',
     });
 
     // INJ-003: Check for SQL injection protection
@@ -3504,6 +3539,7 @@ dist/
         ? 'Parameterized queries or ORM detected'
         : 'Ensure all database queries use parameterized statements',
       fixable: false,
+      guidance: 'Template injection in server-side rendering engines can execute arbitrary code on the server through crafted template expressions.',
     });
 
     // INJ-004: Check for command injection protection
@@ -3545,6 +3581,7 @@ dist/
         ? 'Safe command execution patterns detected or no shell commands found'
         : 'Use execFile instead of exec, or disable shell interpolation',
       fixable: false,
+      guidance: 'Deserializing untrusted data can trigger arbitrary code execution. Attackers craft serialized payloads that run commands when deserialized.',
     });
 
     return findings;
@@ -3584,6 +3621,7 @@ dist/
         ? 'Rate limiting library detected'
         : 'Consider implementing rate limiting to prevent abuse',
       fixable: false,
+      guidance: 'Without rate limiting on authentication endpoints, attackers can try millions of password combinations per hour.',
     });
 
     // RATE-002: Check for retry/backoff patterns
@@ -3619,6 +3657,7 @@ dist/
         ? 'Retry/backoff patterns detected'
         : 'Consider implementing exponential backoff for external calls',
       fixable: false,
+      guidance: 'Unlimited API requests let attackers exhaust your cloud provider quotas, causing service outages and unexpected billing charges.',
     });
 
     // RATE-003: Check for timeout configurations
@@ -3653,6 +3692,7 @@ dist/
         ? 'Timeout configurations detected'
         : 'Consider setting timeouts for external calls and long-running operations',
       fixable: false,
+      guidance: 'File upload endpoints without size or rate limits allow attackers to fill disk storage, causing denial-of-service.',
     });
 
     // RATE-004: Check for concurrent request limiting
@@ -3688,6 +3728,7 @@ dist/
         ? 'Concurrency limiting detected'
         : 'Consider limiting concurrent operations to prevent resource exhaustion',
       fixable: false,
+      guidance: 'WebSocket connections without message rate limits can flood the server with messages, consuming memory and CPU until the service crashes.',
     });
 
     return findings;
@@ -3830,6 +3871,7 @@ dist/
         ? 'Secure token storage detected'
         : 'Consider using secure storage for sensitive tokens',
       fixable: false,
+      guidance: 'Tokens stored in plaintext files or localStorage can be stolen by any process with file access or XSS attack, allowing full account takeover without credentials.',
     });
 
     return findings;
@@ -3877,6 +3919,7 @@ dist/
         ? 'Encryption implementation detected'
         : 'Consider encrypting sensitive data at rest',
       fixable: false,
+      guidance: 'Without encryption at rest, anyone with disk access (stolen laptop, compromised server, backup leak) can read sensitive data including credentials and user information.',
     });
 
     // ENCRYPT-002: Check for secure hashing
@@ -3912,6 +3955,7 @@ dist/
         ? 'Secure hashing algorithm detected (bcrypt/argon2/scrypt)'
         : 'Use bcrypt, argon2, or scrypt for password hashing',
       fixable: false,
+      guidance: 'Passwords hashed with fast algorithms (MD5, SHA1) can be cracked in bulk using rainbow tables or GPU brute-force. Bcrypt, argon2, and scrypt are deliberately slow to resist this.',
     });
 
     // ENCRYPT-003: Check for weak algorithms
@@ -3947,6 +3991,7 @@ dist/
         ? 'Weak algorithms detected (MD5/SHA1/DES) - use SHA-256+ and AES'
         : 'No weak cryptographic algorithms detected',
       fixable: false,
+      guidance: 'MD5 and SHA1 have known collision attacks, and DES has a 56-bit key easily brute-forced with modern hardware. Data protected by these algorithms should be considered unprotected.',
     });
 
     // ENCRYPT-004: Check for TLS configuration
@@ -3982,6 +4027,7 @@ dist/
         ? 'TLS/HTTPS configuration detected'
         : 'Ensure all communications use TLS',
       fixable: false,
+      guidance: 'Without TLS, all network traffic including credentials, tokens, and sensitive data is transmitted in plaintext and can be intercepted by anyone on the network path.',
     });
 
     return findings;
@@ -4029,6 +4075,7 @@ dist/
         ? 'Audit logging implementation detected'
         : 'Consider implementing audit logging for security events',
       fixable: false,
+      guidance: 'Missing audit logs mean you cannot detect or investigate security incidents after they occur. Attackers operate undetected and forensic analysis becomes impossible.',
     });
 
     // AUDIT-002: Check for log rotation
@@ -4063,6 +4110,7 @@ dist/
         ? 'Log rotation configuration detected'
         : 'Consider configuring log rotation to manage disk space',
       fixable: false,
+      guidance: 'Without log rotation, logs grow until they fill the disk, causing service outages. Attackers can also exploit this to trigger denial-of-service by generating excessive log entries.',
     });
 
     // AUDIT-003: Check for error tracking
@@ -4086,6 +4134,7 @@ dist/
         ? 'Error tracking service detected'
         : 'Consider using an error tracking service for production',
       fixable: false,
+      guidance: 'Without error tracking, security-related failures (auth errors, injection attempts, rate limit hits) go unnoticed in production, giving attackers time to refine their approach.',
     });
 
     // AUDIT-004: Check for no sensitive data in logs
@@ -4120,6 +4169,7 @@ dist/
         ? 'Log sanitization patterns detected'
         : 'Consider redacting sensitive data (passwords, tokens) from logs',
       fixable: false,
+      guidance: 'Unsanitized logs containing passwords, tokens, or PII become a secondary breach vector. Log aggregation services, backups, and support teams all gain access to sensitive data.',
     });
 
     return findings;
@@ -4160,6 +4210,7 @@ dist/
         ? 'Container configuration detected'
         : 'Consider running in Docker containers for isolation',
       fixable: false,
+      guidance: 'Without container isolation, a compromised application has direct access to the host filesystem, network, and other processes. Containers limit the blast radius of a breach.',
     });
 
     // SANDBOX-002: Check for non-root execution
@@ -4181,6 +4232,7 @@ dist/
         ? 'Non-root user configured in Dockerfile'
         : 'Configure containers to run as non-root user',
       fixable: false,
+      guidance: 'Containers running as root can escape container isolation more easily. A container breakout as root grants full control of the host system.',
     });
 
     // SANDBOX-003: Check for resource limits
@@ -4207,6 +4259,7 @@ dist/
         ? 'Resource limits configured'
         : 'Consider setting CPU and memory limits for containers',
       fixable: false,
+      guidance: 'Without resource limits, a single compromised or buggy container can consume all host CPU and memory, causing denial-of-service for every other service on the machine.',
     });
 
     // SANDBOX-004: Check for read-only filesystem
@@ -4228,6 +4281,7 @@ dist/
         ? 'Read-only filesystem configured'
         : 'Consider using read-only filesystem for containers',
       fixable: false,
+      guidance: 'A writable filesystem allows attackers to drop malware, modify binaries, or plant persistence mechanisms inside the container. Read-only filesystems prevent post-exploitation tampering.',
     });
 
     return findings;
@@ -4271,6 +4325,7 @@ dist/
         ? 'Tool whitelisting configured'
         : 'Configure allowedTools to restrict MCP server capabilities',
       fixable: false,
+      guidance: 'Without an explicit tool whitelist, MCP servers expose all available tools to the AI agent. A prompt injection attack can invoke any tool, including destructive ones.',
     });
 
     // TOOL-002: Check for resource constraints
@@ -4295,6 +4350,7 @@ dist/
         ? 'Resource constraints configured'
         : 'Consider setting maxTokens and timeout for MCP tools',
       fixable: false,
+      guidance: 'Without token limits and timeouts, a runaway or malicious tool call can consume unlimited API credits and block the agent indefinitely.',
     });
 
     // TOOL-003: Check for dangerous tool usage
@@ -4322,6 +4378,7 @@ dist/
         ? 'Potentially dangerous tools detected (shell/exec) - ensure proper restrictions'
         : 'No obvious dangerous tools detected',
       fixable: false,
+      guidance: 'Shell and exec tools give the AI agent arbitrary command execution on the host. A prompt injection can leverage these to exfiltrate data, install malware, or pivot to other systems.',
     });
 
     // TOOL-004: Check for tool confirmation requirements
@@ -4346,6 +4403,7 @@ dist/
         ? 'Tool confirmation instructions detected'
         : 'Consider requiring confirmation for destructive operations',
       fixable: false,
+      guidance: 'Without confirmation gates, the AI agent can execute destructive operations (file deletion, database drops, deployments) in a single step with no human checkpoint.',
     });
 
     return findings;
@@ -4587,6 +4645,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Reduce file size or exclude from scan',
+            guidance: 'Oversized files can be used to evade security scanning. Attackers hide malicious content in large files knowing scanners will skip them.',
           });
           continue;
         }
@@ -5113,6 +5172,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Reduce file size or exclude from scan',
+            guidance: 'Oversized files can be used to evade security scanning. Attackers hide malicious content in large files knowing scanners will skip them.',
           });
           continue;
         }
@@ -5344,6 +5404,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Reduce file size or exclude from scan',
+            guidance: 'Oversized files can be used to evade security scanning. Attackers hide malicious content in large files knowing scanners will skip them.',
           });
           continue;
         }
@@ -5819,6 +5880,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Reduce file size or exclude from scan',
+            guidance: 'Oversized files can be used to evade security scanning. Attackers hide malicious content in large files knowing scanners will skip them.',
           });
           continue;
         }
@@ -5869,6 +5931,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Reduce file size or exclude from scan',
+            guidance: 'Oversized files can be used to evade security scanning. Attackers hide malicious content in large files knowing scanners will skip them.',
           });
           continue;
         }
@@ -5917,6 +5980,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Reduce file size or exclude from scan',
+            guidance: 'Oversized files can be used to evade security scanning. Attackers hide malicious content in large files knowing scanners will skip them.',
           });
           continue;
         }
@@ -5971,6 +6035,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Reduce file size or exclude from scan',
+            guidance: 'Oversized files can be used to evade security scanning. Attackers hide malicious content in large files knowing scanners will skip them.',
           });
           continue;
         }
@@ -6019,6 +6084,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Reduce file size or exclude from scan',
+            guidance: 'Oversized files can be used to evade security scanning. Attackers hide malicious content in large files knowing scanners will skip them.',
           });
           continue;
         }
@@ -6175,6 +6241,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'Reduce file size or exclude from scan',
+            guidance: 'Oversized files can be used to evade security scanning. Attackers hide malicious content in large files knowing scanners will skip them.',
           });
           continue;
         }
@@ -6446,6 +6513,7 @@ dist/
               file: 'package.json',
               fixable: false,
               fix: 'No action needed',
+              guidance: 'CVE-2026-25157 (CVSS 7.8) allows OS command injection via unescaped SSH project paths. Your version includes the fix.',
             });
           }
 
@@ -6476,6 +6544,7 @@ dist/
               file: 'package.json',
               fixable: false,
               fix: 'No action needed',
+              guidance: 'CVE-2026-24763 (CVSS 8.8) allows command injection through unsafe PATH handling in Docker sandbox. Your version includes the fix.',
             });
           }
         }
@@ -6527,6 +6596,7 @@ dist/
             file: relativePath,
             fixable: false,
             fix: 'No action needed',
+            guidance: 'Origin restrictions prevent cross-origin attacks against the control UI. Your configuration is correctly limiting allowed origins.',
           });
         }
       } catch {
@@ -7622,6 +7692,7 @@ dist/
         passed: true,
         message: 'No unsafe curl-pipe installs detected',
         fixable: false,
+        guidance: 'Piping curl directly to sh executes whatever the remote server returns. A compromised or MITM-ed server can inject arbitrary code.',
       });
     }
 
@@ -7691,6 +7762,7 @@ dist/
         passed: true,
         message: 'No digest verification gaps detected',
         fixable: false,
+        guidance: 'Empty or missing digest fields bypass integrity verification, allowing tampered artifacts to pass through the supply chain unchecked.',
       });
     }
 
@@ -7738,6 +7810,7 @@ dist/
         passed: true,
         message: 'No unsafe policy reload paths detected',
         fixable: false,
+        guidance: 'User-reachable policy reload paths allow attackers to modify security policies via crafted requests, potentially disabling protections at runtime.',
       });
     }
 
@@ -7787,6 +7860,7 @@ dist/
         passed: true,
         message: 'No CLI credential exposure detected',
         fixable: false,
+        guidance: 'CLI arguments are visible in process listings (ps aux), shell history, and log files. Environment variables and stdin keep credentials out of these surfaces.',
       });
     }
 
@@ -7834,6 +7908,7 @@ dist/
         passed: true,
         message: 'No command injection via exec() detected',
         fixable: false,
+        guidance: 'exec() passes strings to /bin/sh, which interprets shell metacharacters. User-controlled interpolation in exec() enables arbitrary command execution.',
       });
     }
 
@@ -7881,6 +7956,7 @@ dist/
         passed: true,
         message: 'No predictable temp file paths detected',
         fixable: false,
+        guidance: 'Hardcoded /tmp paths are predictable and enable symlink attacks (CWE-377). An attacker can pre-create a symlink to redirect writes to sensitive files.',
       });
     }
 
@@ -7922,6 +7998,7 @@ dist/
         passed: true,
         message: 'No process.env leakage to subprocesses detected',
         fixable: false,
+        guidance: 'Spreading process.env leaks all environment variables (including API keys and tokens) to child processes. Use an explicit allowlist of only needed variables.',
       });
     }
 
@@ -7979,6 +8056,7 @@ dist/
         passed: true,
         message: 'No TOCTOU race conditions detected',
         fixable: false,
+        guidance: 'When verify and execute are separate steps, an attacker can swap the artifact between verification and use. Atomic verify-then-execute eliminates this race window.',
       });
     }
 
@@ -8116,6 +8194,7 @@ dist/
         passed: true,
         message: 'No unsafe deserialization detected',
         fixable: false,
+        guidance: 'Unsafe deserialization (pickle, eval, yaml.load) can execute arbitrary code during data parsing. A crafted payload achieves full remote code execution.',
       });
     }
 
@@ -8166,6 +8245,7 @@ dist/
         passed: true,
         message: 'No exfiltration-prone egress endpoints detected',
         fixable: false,
+        guidance: 'Pre-allowed messaging APIs (Telegram, Discord, Slack) enable agents to exfiltrate data without user approval. Require explicit operator opt-in per deployment.',
       });
     }
 
