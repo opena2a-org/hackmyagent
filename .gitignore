@@ -30,6 +30,11 @@ yarn-error.log*
 .env.local
 .env.*.local
 
+# Secrets and keys
+secrets.json
+*.pem
+*.key
+
 # Test coverage
 coverage/
 .nyc_output/

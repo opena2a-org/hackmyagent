@@ -6,3 +6,9 @@ __tests__/
 
 # Attack payloads are intentionally adversarial (prompt injection, jailbreak, etc.)
 src/attack/payloads/
+
+# Scanner contains detection regex patterns that match the threats they detect
+src/hardening/
+
+# OASB harness manages DVAA (deliberately vulnerable agent) — flagged as malicious
+src/oasb/
