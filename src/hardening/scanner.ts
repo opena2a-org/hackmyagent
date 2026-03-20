@@ -1223,6 +1223,7 @@ export class HardeningScanner {
       fixed: autoFix && !passed,
       fixMessage: autoFix && !passed ? 'Changed permissions to 600' : undefined,
       details: passed ? undefined : { files: permissionIssues },
+      guidance: 'Overly broad file permissions let any user on the system read sensitive config files that may contain credentials or API keys.',
     });
 
     return findings;
@@ -1710,6 +1711,7 @@ dist/
         ? 'Cursor rules contain exposed credentials - remove and use environment variables'
         : 'No credentials found in Cursor rules',
       fixable: false,
+      guidance: 'Cursor rules files are often committed to git. Credentials embedded there get pushed to remotes where anyone with repo access can extract them.',
     });
 
     return findings;
@@ -1749,6 +1751,7 @@ dist/
         ? 'VSCode MCP config contains exposed credentials'
         : 'No credentials in VSCode MCP config',
       fixable: false,
+      guidance: 'MCP config files are shared across workspaces and often committed to repos. Credentials there are exposed to every tool and extension that reads the config.',
     });
 
     // VSCODE-002: Check for overly permissive paths
@@ -1773,6 +1776,7 @@ dist/
         ? 'VSCode MCP server has dangerous filesystem access'
         : 'VSCode MCP filesystem access is scoped',
       fixable: false,
+      guidance: 'An MCP server with root or home directory access can read SSH keys, cloud credentials, and any file on the system. Scope access to the project directory only.',
     });
 
     return findings;
@@ -1809,6 +1813,7 @@ dist/
         : `Private key files found: ${foundKeys.join(', ')} - move to secure location`,
       fixable: false,
       details: foundKeys.length > 0 ? { files: foundKeys } : undefined,
+      guidance: 'Private key files (.pem, .key) in a project directory are easily committed to git. Once pushed, the keys are compromised and must be rotated.',
     });
 
     // CRED-003: Check package.json for hardcoded secrets
@@ -1834,6 +1839,7 @@ dist/
         ? 'package.json contains hardcoded secrets - move to environment variables'
         : 'No secrets found in package.json',
       fixable: false,
+      guidance: 'package.json is always committed to git and published to npm. Secrets there are visible to anyone who installs or forks your package.',
     });
 
     // CRED-004: Check for JWT secrets in config
@@ -1863,6 +1869,7 @@ dist/
         ? 'JWT secret hardcoded in config - use environment variable'
         : 'No hardcoded JWT secrets found',
       fixable: false,
+      guidance: 'A hardcoded JWT secret lets anyone who reads the config forge valid authentication tokens and impersonate any user.',
     });
 
     return findings;
@@ -1901,6 +1908,7 @@ dist/
       fixable: true,
       fixed: false,
       details: executableConfigs.length > 0 ? { files: executableConfigs } : undefined,
+      guidance: 'Executable config files can be run as scripts. An attacker who modifies a config file with execute permission can trick the system into running arbitrary code.',
     });
 
     // PERM-003: Check for group-writable sensitive files
@@ -1930,6 +1938,7 @@ dist/
       fixable: true,
       fixed: false,
       details: groupWritable.length > 0 ? { files: groupWritable } : undefined,
+      guidance: 'Group-writable sensitive files allow other users in the same group to modify credentials or inject malicious configuration values.',
     });
 
     return findings;
@@ -1969,6 +1978,7 @@ dist/
         ? 'Development mode enabled - ensure this is disabled in production'
         : 'No development mode indicators found',
       fixable: false,
+      guidance: 'Development mode typically disables security features like CSRF protection, strict CORS, and error sanitization, leaving the application exposed in production.',
     });
 
     // ENV-002: Check for debug flags
@@ -1998,6 +2008,7 @@ dist/
         ? 'Debug flags enabled - may expose sensitive information in logs'
         : 'No debug flags detected',
       fixable: false,
+      guidance: 'Debug and verbose logging flags can leak internal state, database queries, and credential values into log files or console output.',
     });
 
     // ENV-003: Check for error verbosity settings
@@ -2027,6 +2038,7 @@ dist/
         ? 'Verbose error messages enabled - may leak sensitive information'
         : 'Error verbosity settings are appropriate',
       fixable: false,
+      guidance: 'Verbose error messages expose stack traces, file paths, and internal logic to attackers, making it easier to find exploitable weaknesses.',
     });
 
     // ENV-004: Check for production environment validation
@@ -2047,6 +2059,7 @@ dist/
         ? 'Environment validation library detected'
         : 'Consider using env validation (dotenv, envalid) to catch misconfigurations',
       fixable: false,
+      guidance: 'Without environment validation, missing or malformed variables cause silent failures. A missing DB_HOST might fall back to an insecure default rather than failing fast.',
     });
 
     return findings;
@@ -2076,6 +2089,7 @@ dist/
         ? 'Structured logging library detected'
         : 'Consider using structured logging (winston, pino) for better security auditing',
       fixable: false,
+      guidance: 'Unstructured console.log output is hard to filter, search, or redact. Structured logging makes it possible to automatically mask sensitive fields and detect anomalies.',
     });
 
     // LOG-002: Check for sensitive data in log patterns
@@ -2110,6 +2124,7 @@ dist/
         ? 'Code may be logging sensitive data - review console.log statements'
         : 'No obvious sensitive data logging patterns found',
       fixable: false,
+      guidance: 'Passwords, API keys, and tokens logged to console or files persist in log aggregators and crash reports, where they can be harvested by anyone with log access.',
     });
 
     // LOG-003: Check for log file permissions
@@ -2138,6 +2153,7 @@ dist/
         : `World-readable log files: ${worldReadableLogs.join(', ')}`,
       fixable: true,
       fixed: false,
+      guidance: 'World-readable log files let any local user read application logs, which often contain request details, internal errors, and sometimes credentials.',
     });
 
     // LOG-004: Check for audit logging capability
@@ -2158,6 +2174,7 @@ dist/
         ? 'Audit logging capability detected'
         : 'Consider implementing audit logging for security events',
       fixable: false,
+      guidance: 'Without audit logging, there is no record of who accessed what or when. Incident response becomes guesswork without a trail of security-relevant events.',
     });
 
     return findings;
@@ -2197,6 +2214,7 @@ dist/
         ? 'Dependency lock file present'
         : 'No lock file found - dependency versions may vary between installs',
       fixable: false,
+      guidance: 'Without a lock file, npm install can resolve to different package versions on different machines, including versions with known vulnerabilities or supply-chain backdoors.',
     });
 
     // DEP-002: Check for known vulnerable packages
@@ -2224,6 +2242,7 @@ dist/
         ? 'Potentially vulnerable package detected - run npm audit'
         : 'No known vulnerable packages in direct dependencies',
       fixable: false,
+      guidance: 'These packages have confirmed supply-chain compromises (e.g., event-stream injected a cryptocurrency-stealing payload). Remove or replace them immediately.',
     });
 
     // DEP-003: Check for wildcard versions
@@ -2251,6 +2270,7 @@ dist/
         ? 'Wildcard versions detected - pin dependencies for reproducible builds'
         : 'All dependency versions are properly specified',
       fixable: false,
+      guidance: 'Wildcard (*) or "latest" versions accept any future release, including ones compromised by supply-chain attacks. Pin versions and use a lock file.',
     });
 
     // DEP-004: Check for npm scripts security
@@ -2294,6 +2314,7 @@ dist/
         ? 'Dangerous patterns in npm scripts (curl|sh, eval) - review carefully'
         : 'npm scripts appear safe',
       fixable: false,
+      guidance: 'Scripts that pipe curl/wget to sh execute arbitrary remote code during npm install. An attacker who compromises the URL controls your build environment.',
     });
 
     return findings;
@@ -2330,6 +2351,7 @@ dist/
         ? 'Authentication configuration detected'
         : 'No authentication library detected - ensure endpoints are protected',
       fixable: false,
+      guidance: 'Without authentication, any network-reachable client can access your API endpoints, including reading data, triggering actions, and modifying state.',
     });
 
     // AUTH-002: Check for rate limiting
@@ -2350,6 +2372,7 @@ dist/
         ? 'Rate limiting library detected'
         : 'No rate limiting detected - API may be vulnerable to abuse',
       fixable: false,
+      guidance: 'Without rate limiting, attackers can brute-force credentials, scrape data, or exhaust resources with automated requests at no cost.',
     });
 
     // AUTH-003: Check for session security
@@ -2384,6 +2407,7 @@ dist/
         ? 'Secure session configuration detected'
         : 'Ensure sessions use secure, httpOnly cookies',
       fixable: false,
+      guidance: 'Sessions without secure and httpOnly flags are vulnerable to theft via XSS attacks or network sniffing, allowing attackers to hijack authenticated sessions.',
     });
 
     // AUTH-004: Check for CORS configuration
@@ -2404,6 +2428,7 @@ dist/
         ? 'CORS library detected'
         : 'No CORS configuration detected - ensure cross-origin requests are properly handled',
       fixable: false,
+      guidance: 'Without explicit CORS configuration, browsers may block legitimate cross-origin requests or, worse, a permissive default may allow malicious sites to make authenticated requests to your API.',
     });
 
     return findings;
@@ -3709,6 +3734,7 @@ dist/
         ? 'Secure cookie flags detected'
         : 'Set httpOnly, secure, and sameSite on session cookies',
       fixable: false,
+      guidance: 'Session cookies without secure flags can be stolen via XSS (missing httpOnly), sent over plain HTTP (missing secure), or exploited in cross-site attacks (missing sameSite).',
     });
 
     // SESSION-002: Check for session expiry
@@ -3744,6 +3770,7 @@ dist/
         ? 'Session expiry configuration detected'
         : 'Configure appropriate session expiry times',
       fixable: false,
+      guidance: 'Sessions without expiry remain valid indefinitely. A stolen session token grants permanent access until the server is restarted or the token is manually revoked.',
     });
 
     // SESSION-003: Check for CSRF protection
@@ -3767,6 +3794,7 @@ dist/
         ? 'CSRF protection library detected'
         : 'Consider implementing CSRF protection for state-changing operations',
       fixable: false,
+      guidance: 'Without CSRF protection, a malicious website can trick authenticated users into performing unwanted actions (transfers, password changes, data deletion) by forging requests from their browser.',
     });
 
     // SESSION-004: Check for secure token storage
