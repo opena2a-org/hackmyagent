@@ -94,6 +94,20 @@ const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
   'AITOOL-': ['all'], // AI tooling exposure (Jupyter, Gradio, etc.)
   'A2A-': ['all'], // A2A protocol exposure
   'WEBCRED-': ['all'], // Credentials in web-served files
+
+  // Code injection and supply chain checks
+  'CODEINJ-': ['all'], // Code injection via exec with interpolation
+  'INSTALL-': ['all'], // Unsafe install scripts (curl|sh)
+  'CLIPASS-': ['all'], // Credentials passed as CLI arguments
+  'INTEGRITY-': ['all'], // Integrity check bypass
+  'TOCTOU-': ['all'], // Time-of-check-time-of-use race conditions
+  'TMPPATH-': ['all'], // Hardcoded /tmp path attacks
+  'DOCKERINJ-': ['all'], // Docker exec with variable injection
+  'ENVLEAK-': ['all'], // Environment variable leakage to child processes
+  'SANDBOX-005': ['openclaw', 'mcp'], // Messaging API pre-allowed in sandbox
+  'WEBEXPOSE-': ['all'], // Sensitive files in web-served directories
+  'AGENT-CRED-': ['all'], // Missing credential protection in system prompts
+  'SOUL-OVERRIDE-': ['all'], // Skill content overriding SOUL.md
 };
 
 export interface ScanOptions {
@@ -534,6 +548,46 @@ export class HardeningScanner {
 
     const webCredFindings = await this.checkWebServedCredentials(targetDir, shouldFix);
     findings.push(...webCredFindings);
+
+    // Code injection, supply chain, and operational security checks
+    const codeInjFindings = await this.checkCodeInjection(targetDir, shouldFix);
+    findings.push(...codeInjFindings);
+
+    const installFindings = await this.checkInstallScripts(targetDir, shouldFix);
+    findings.push(...installFindings);
+
+    const cliPassFindings = await this.checkCLICredentialPassthrough(targetDir, shouldFix);
+    findings.push(...cliPassFindings);
+
+    const integrityFindings = await this.checkIntegrityBypass(targetDir, shouldFix);
+    findings.push(...integrityFindings);
+
+    const toctouFindings = await this.checkTOCTOU(targetDir, shouldFix);
+    findings.push(...toctouFindings);
+
+    const tmpPathFindings = await this.checkTmpPaths(targetDir, shouldFix);
+    findings.push(...tmpPathFindings);
+
+    const dockerInjFindings = await this.checkDockerInjection(targetDir, shouldFix);
+    findings.push(...dockerInjFindings);
+
+    const envLeakFindings = await this.checkEnvLeak(targetDir, shouldFix);
+    findings.push(...envLeakFindings);
+
+    const sandboxMsgFindings = await this.checkSandboxMessaging(targetDir, shouldFix);
+    findings.push(...sandboxMsgFindings);
+
+    const webExposeFindings = await this.checkWebExposedFiles(targetDir, shouldFix);
+    findings.push(...webExposeFindings);
+
+    const soulOverrideFindings = await this.checkSoulOverride(targetDir, shouldFix);
+    findings.push(...soulOverrideFindings);
+
+    const memSanitizeFindings = await this.checkMemoryStoreSanitization(targetDir, shouldFix);
+    findings.push(...memSanitizeFindings);
+
+    const agentCredFindings = await this.checkAgentCredentialProtection(targetDir, shouldFix);
+    findings.push(...agentCredFindings);
 
     // Enrich findings with attack taxonomy mapping
     enrichWithTaxonomy(findings);
@@ -8452,6 +8506,825 @@ dist/
           }
         } catch { /* skip unreadable files */ }
       }
+    }
+
+    return findings;
+  }
+
+  /**
+   * CODEINJ-001: exec() with template literal interpolation
+   * Detects shell injection via exec/execSync called with template literals.
+   */
+  private async checkCodeInjection(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+    const files = await this.walkDirectory(targetDir, ['.ts', '.js', '.mjs'], 0, 2);
+
+    // Match exec( or execSync( followed by a backtick (template literal)
+    // Do NOT match execFile or execFileSync (those use array args, safe)
+    const pattern = /\b(?<!File)exec(?:Sync)?\s*\(\s*`/g;
+
+    for (const file of files.slice(0, 100)) {
+      try {
+        const stat = await fs.stat(file);
+        if (stat.size > MAX_FILE_SIZE) continue;
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        const relativePath = path.relative(targetDir, file);
+
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].length > MAX_LINE_LENGTH) continue;
+          pattern.lastIndex = 0;
+          if (pattern.test(lines[i])) {
+            findings.push({
+              checkId: 'CODEINJ-001',
+              name: 'exec() with template literal interpolation',
+              description: 'exec() or execSync() called with a template literal allows shell injection. User-controlled values in the template can break out of the intended command.',
+              category: 'code-injection',
+              severity: 'critical',
+              passed: false,
+              message: `Shell injection risk: exec() with template literal in ${relativePath}`,
+              file: relativePath,
+              line: i + 1,
+              fixable: false,
+              fix: 'Use execFile() or execFileSync() with an array of arguments instead of exec() with string interpolation.',
+            });
+            break; // One finding per file
+          }
+        }
+      } catch { /* skip unreadable files */ }
+    }
+
+    return findings;
+  }
+
+  /**
+   * INSTALL-001: curl|sh without checksum in shell scripts
+   * Detects piped-to-shell install patterns in .sh files.
+   */
+  private async checkInstallScripts(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+    const files = await this.walkDirectory(targetDir, ['.sh'], 0, 2);
+
+    const pattern = /\b(curl|wget)\b[^|]*\|\s*(ba)?sh\b/g;
+
+    for (const file of files.slice(0, 100)) {
+      try {
+        const stat = await fs.stat(file);
+        if (stat.size > MAX_FILE_SIZE) continue;
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        const relativePath = path.relative(targetDir, file);
+
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].length > MAX_LINE_LENGTH) continue;
+          pattern.lastIndex = 0;
+          if (pattern.test(lines[i])) {
+            findings.push({
+              checkId: 'INSTALL-001',
+              name: 'curl|sh without checksum verification',
+              description: 'Shell script downloads and executes code via curl|sh or wget|sh without verifying a checksum. A MITM or compromised server can inject arbitrary code.',
+              category: 'supply-chain',
+              severity: 'critical',
+              passed: false,
+              message: `Unsafe pipe-to-shell install in ${relativePath}`,
+              file: relativePath,
+              line: i + 1,
+              fixable: false,
+              fix: 'Download the script to a file first, verify its checksum (sha256sum), then execute it.',
+            });
+            break;
+          }
+        }
+      } catch { /* skip unreadable files */ }
+    }
+
+    return findings;
+  }
+
+  /**
+   * CLIPASS-001: Credentials passed as CLI arguments
+   * Detects --token, --password, --api-key, --secret followed by variable interpolation.
+   */
+  private async checkCLICredentialPassthrough(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+    const files = await this.walkDirectory(targetDir, ['.ts', '.js', '.mjs'], 0, 2);
+
+    const pattern = /--(token|password|api[_-]?key|secret|auth)\s*[=\s]\s*[`$"']\s*\$?\{?|["']--(token|password|api[_-]?key|secret|auth)["']/g;
+
+    for (const file of files.slice(0, 100)) {
+      try {
+        const stat = await fs.stat(file);
+        if (stat.size > MAX_FILE_SIZE) continue;
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        const relativePath = path.relative(targetDir, file);
+
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].length > MAX_LINE_LENGTH) continue;
+          pattern.lastIndex = 0;
+          if (pattern.test(lines[i])) {
+            // Verify it's in a spawn/exec context
+            const contextStart = Math.max(0, i - 5);
+            const context = lines.slice(contextStart, i + 1).join('\n');
+            if (/\b(exec\w*|spawn\w*|fork|run)\b/i.test(context)) {
+              findings.push({
+                checkId: 'CLIPASS-001',
+                name: 'Credentials passed as CLI arguments',
+                description: 'Credentials are passed as command-line arguments (--token, --password, etc.) with variable interpolation. CLI args are visible in process listings (ps aux) and shell history.',
+                category: 'credential-exposure',
+                severity: 'high',
+                passed: false,
+                message: `Credentials passed as CLI arguments in ${relativePath}`,
+                file: relativePath,
+                line: i + 1,
+                fixable: false,
+                fix: 'Pass credentials via environment variables, stdin, or a config file instead of CLI arguments.',
+              });
+              break;
+            }
+          }
+        }
+      } catch { /* skip unreadable files */ }
+    }
+
+    return findings;
+  }
+
+  /**
+   * INTEGRITY-001: Digest/hash verification bypass on falsy value
+   * Detects patterns like `if (digest &&` or `if (hash &&` where empty value skips check.
+   */
+  private async checkIntegrityBypass(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+    const files = await this.walkDirectory(targetDir, ['.ts', '.js', '.mjs'], 0, 2);
+
+    const pattern = /if\s*\(\s*(digest|hash|checksum|signature|integrity)\s*&&/g;
+
+    for (const file of files.slice(0, 100)) {
+      try {
+        const stat = await fs.stat(file);
+        if (stat.size > MAX_FILE_SIZE) continue;
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        const relativePath = path.relative(targetDir, file);
+
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].length > MAX_LINE_LENGTH) continue;
+          pattern.lastIndex = 0;
+          if (pattern.test(lines[i])) {
+            findings.push({
+              checkId: 'INTEGRITY-001',
+              name: 'Integrity check bypass on falsy value',
+              description: 'Integrity verification (digest/hash/checksum) is guarded by a truthiness check. If the value is empty, undefined, or null, the entire integrity check is silently skipped.',
+              category: 'integrity-bypass',
+              severity: 'critical',
+              passed: false,
+              message: `Integrity check bypass risk in ${relativePath}`,
+              file: relativePath,
+              line: i + 1,
+              fixable: false,
+              fix: 'Require the integrity value to be present. Throw an error if digest/hash is missing rather than skipping verification.',
+            });
+            break;
+          }
+        }
+      } catch { /* skip unreadable files */ }
+    }
+
+    return findings;
+  }
+
+  /**
+   * TOCTOU-001: Verify then use without atomic operation
+   * Detects files that verify and then execute on the same path without atomicity.
+   */
+  private async checkTOCTOU(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+    const files = await this.walkDirectory(targetDir, ['.ts', '.js', '.mjs'], 0, 2);
+
+    for (const file of files.slice(0, 100)) {
+      try {
+        const stat = await fs.stat(file);
+        if (stat.size > MAX_FILE_SIZE) continue;
+        const content = await fs.readFile(file, 'utf-8');
+        const relativePath = path.relative(targetDir, file);
+
+        // Look for verify/check followed by execute/apply/run on the same path variable
+        const hasVerify = /\b(verify|validate|check)(File|Path|Hash|Integrity|Signature|Digest|Config)?\s*\(/i.test(content);
+        const hasExecute = /\b(execute|apply|run|install|load|import)(File|Path|Module|Script|Plugin|Config)?\s*\(/i.test(content);
+        const hasFilePath = /\b(filePath|targetPath|scriptPath|modulePath|configPath)\b/.test(content);
+        // Also detect inline TOCTOU: multiple readFile/readFileSync calls on the same path variable
+        const readCalls = content.match(/\breadFile(Sync)?\s*\(\s*(\w+)/g) || [];
+        const hasMultipleReads = readCalls.length >= 2;
+
+        if ((hasVerify && hasExecute && hasFilePath) || (hasMultipleReads && hasFilePath)) {
+          // Check that there's no file locking or atomic operation (ignore comments)
+          const codeLines = content.split('\n').filter(l => !l.trimStart().startsWith('//') && !l.trimStart().startsWith('#') && !l.trimStart().startsWith('*'));
+          const codeContent = codeLines.join('\n');
+          const hasAtomic = /\b(atomic|lock|flock|rename|O_EXCL|O_CREAT)\b/i.test(codeContent);
+          if (!hasAtomic) {
+            // Find the line with verify for reporting
+            const lines = content.split('\n');
+            let verifyLine = 0;
+            const verifyPattern = /\b(verify|validate|check)(File|Path|Hash|Integrity|Signature|Digest|Config)?\s*\(|\breadFileSync?\s*\(/i;
+            for (let i = 0; i < lines.length; i++) {
+              if (verifyPattern.test(lines[i])) {
+                verifyLine = i + 1;
+                break;
+              }
+            }
+            findings.push({
+              checkId: 'TOCTOU-001',
+              name: 'Time-of-check-time-of-use race condition',
+              description: 'File is verified (checksum/signature) and then used (executed/loaded) in separate operations without file locking. An attacker can replace the file between verify and use.',
+              category: 'toctou-race',
+              severity: 'high',
+              passed: false,
+              message: `TOCTOU risk: verify-then-use without atomic operation in ${relativePath}`,
+              file: relativePath,
+              line: verifyLine,
+              fixable: false,
+              fix: 'Use atomic file operations: verify and load in a single locked operation, or copy to a temp location before verification.',
+            });
+          }
+        }
+      } catch { /* skip unreadable files */ }
+    }
+
+    return findings;
+  }
+
+  /**
+   * TMPPATH-001: Hardcoded /tmp paths without mktemp
+   * Detects writes to /tmp/ with hardcoded paths in shell scripts.
+   */
+  private async checkTmpPaths(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+    const files = await this.walkDirectory(targetDir, ['.sh'], 0, 2);
+
+    const pattern = /(>|>>)\s*\/tmp\/|(-o)\s+\/tmp\/|\s\/tmp\/\S+/g;
+
+    for (const file of files.slice(0, 100)) {
+      try {
+        const stat = await fs.stat(file);
+        if (stat.size > MAX_FILE_SIZE) continue;
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        const relativePath = path.relative(targetDir, file);
+
+        // Only flag if the script does NOT actually use mktemp (ignore comments)
+        const nonCommentLines = lines.filter(l => !l.trimStart().startsWith('#'));
+        if (/\bmktemp\b/.test(nonCommentLines.join('\n'))) continue;
+
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].length > MAX_LINE_LENGTH) continue;
+          pattern.lastIndex = 0;
+          if (pattern.test(lines[i])) {
+            findings.push({
+              checkId: 'TMPPATH-001',
+              name: 'Hardcoded /tmp path without mktemp',
+              description: 'Shell script writes to a hardcoded /tmp/ path. Another user or process can create a symlink at that path to redirect writes (symlink attack).',
+              category: 'tmppath-attack',
+              severity: 'high',
+              passed: false,
+              message: `Hardcoded /tmp path in ${relativePath}`,
+              file: relativePath,
+              line: i + 1,
+              fixable: false,
+              fix: 'Use mktemp to create a unique temporary file/directory instead of hardcoded /tmp paths.',
+            });
+            break;
+          }
+        }
+      } catch { /* skip unreadable files */ }
+    }
+
+    return findings;
+  }
+
+  /**
+   * DOCKERINJ-001: Docker exec with variable interpolation
+   * Detects docker exec commands with unquoted variable expansion.
+   */
+  private async checkDockerInjection(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+    const files = await this.walkDirectory(targetDir, ['.sh'], 0, 2);
+
+    const pattern = /docker\s+exec\b.*?(\$\{?\w+\}?)/g;
+
+    for (const file of files.slice(0, 100)) {
+      try {
+        const stat = await fs.stat(file);
+        if (stat.size > MAX_FILE_SIZE) continue;
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        const relativePath = path.relative(targetDir, file);
+
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].length > MAX_LINE_LENGTH) continue;
+          const line = lines[i];
+          // Detect docker exec with any variable interpolation (quoted or not)
+          if (/docker\s+exec\b/.test(line) && /\$\{?\w+\}?/.test(line)) {
+              findings.push({
+                checkId: 'DOCKERINJ-001',
+                name: 'Docker exec with variable interpolation',
+                description: 'docker exec command uses shell variable expansion. An attacker who controls the variable value can inject additional docker commands or escape the container context, even when quoted (e.g., in bash -c contexts).',
+                category: 'code-injection',
+                severity: 'high',
+                passed: false,
+                message: `Variable interpolation in docker exec in ${relativePath}`,
+                file: relativePath,
+                line: i + 1,
+                fixable: false,
+                fix: 'Avoid passing user-controlled variables to docker exec. Validate and sanitize all inputs, and avoid bash -c with interpolated variables.',
+              });
+              break;
+          }
+        }
+      } catch { /* skip unreadable files */ }
+    }
+
+    return findings;
+  }
+
+  /**
+   * ENVLEAK-001: process.env spread to child process
+   * Detects passing all environment variables (including secrets) to child processes.
+   */
+  private async checkEnvLeak(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+    const files = await this.walkDirectory(targetDir, ['.ts', '.js', '.mjs'], 0, 2);
+
+    const spreadPattern = /env:\s*\{\s*\.\.\.process\.env/g;
+    const directPattern = /\benv:\s*process\.env\b/g;
+
+    for (const file of files.slice(0, 100)) {
+      try {
+        const stat = await fs.stat(file);
+        if (stat.size > MAX_FILE_SIZE) continue;
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        const relativePath = path.relative(targetDir, file);
+
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].length > MAX_LINE_LENGTH) continue;
+          spreadPattern.lastIndex = 0;
+          directPattern.lastIndex = 0;
+          if (spreadPattern.test(lines[i]) || directPattern.test(lines[i])) {
+            // Verify it's in a spawn/exec context
+            const contextStart = Math.max(0, i - 5);
+            const context = lines.slice(contextStart, i + 3).join('\n');
+            if (/\b(spawn|exec|fork|execFile|execSync|spawnSync)\b/.test(context)) {
+              findings.push({
+                checkId: 'ENVLEAK-001',
+                name: 'process.env spread to child process',
+                description: 'All environment variables (including secrets like API keys, database passwords) are passed to a child process via env: process.env or { ...process.env }.',
+                category: 'env-leak',
+                severity: 'high',
+                passed: false,
+                message: `Full environment leaked to child process in ${relativePath}`,
+                file: relativePath,
+                line: i + 1,
+                fixable: false,
+                fix: 'Pass only the specific environment variables the child process needs: env: { PATH: process.env.PATH, NODE_ENV: process.env.NODE_ENV }.',
+              });
+              break;
+            }
+          }
+        }
+      } catch { /* skip unreadable files */ }
+    }
+
+    return findings;
+  }
+
+  /**
+   * SANDBOX-005: Messaging API pre-allowed in sandbox policy
+   * Detects pre-allowed URLs for messaging services in sandbox policies.
+   */
+  private async checkSandboxMessaging(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // Scan YAML/JSON files in policies/ and config/ directories
+    const policyDirs = ['policies', 'config', '.openclaw'];
+    const policyExts = ['.yml', '.yaml', '.json'];
+
+    for (const dirName of policyDirs) {
+      const dirPath = path.join(targetDir, dirName);
+      try {
+        await fs.access(dirPath);
+      } catch {
+        continue;
+      }
+
+      const files = await this.walkDirectory(dirPath, policyExts, 0, 2);
+      const messagingPattern = /\b(telegram|slack|discord|webhook\.site|requestbin|pipedream)\b/gi;
+
+      for (const file of files.slice(0, 50)) {
+        try {
+          const stat = await fs.stat(file);
+          if (stat.size > MAX_FILE_SIZE) continue;
+          const content = await fs.readFile(file, 'utf-8');
+          const lines = content.split('\n');
+          const relativePath = path.relative(targetDir, file);
+
+          for (let i = 0; i < lines.length; i++) {
+            if (lines[i].length > MAX_LINE_LENGTH) continue;
+            messagingPattern.lastIndex = 0;
+            const match = messagingPattern.exec(lines[i]);
+            if (match) {
+              // Check if this is in an allow/whitelist context
+              const contextStart = Math.max(0, i - 3);
+              const context = lines.slice(contextStart, i + 1).join('\n').toLowerCase();
+              if (/\b(allow\w*|whitelist\w*|permit\w*|pre[_-]?allow\w*|approved|trusted)\b/.test(context)) {
+                findings.push({
+                  checkId: 'SANDBOX-005',
+                  name: 'Messaging API pre-allowed in sandbox policy',
+                  description: `Messaging service (${match[1]}) is pre-allowed in sandbox policy. An attacker who gains code execution inside the sandbox can exfiltrate data via this channel without triggering additional permission prompts.`,
+                  category: 'sandbox-escape',
+                  severity: 'high',
+                  passed: false,
+                  message: `Messaging API (${match[1]}) pre-allowed in ${relativePath}`,
+                  file: relativePath,
+                  line: i + 1,
+                  fixable: false,
+                  fix: 'Remove messaging services from pre-allowed URLs. Require explicit user approval for outbound messaging.',
+                });
+                break;
+              }
+            }
+          }
+        } catch { /* skip unreadable files */ }
+      }
+    }
+
+    return findings;
+  }
+
+  /**
+   * WEBEXPOSE-001: CLAUDE.md in web-served directories
+   * WEBEXPOSE-002: .env files in web-served directories
+   * WEBEXPOSE-003: Sensitive config files in web-served directories
+   */
+  private async checkWebExposedFiles(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    const webDirs = ['public', 'static', 'dist', 'build', 'out', 'www'];
+    // Track seen real paths to avoid duplicates on case-insensitive filesystems
+    const seenPaths = new Set<string>();
+
+    // WEBEXPOSE-001: CLAUDE.md in web directories
+    const claudeFiles = ['CLAUDE.md', 'claude.md'];
+    // WEBEXPOSE-002: .env files in web directories
+    const envFiles = ['.env', '.env.local', '.env.production'];
+    // WEBEXPOSE-003: Sensitive config files in web directories
+    const configFiles = ['mcp.json', 'config.json', 'settings.json', 'openclaw.json'];
+    const configDirs = ['.claude'];
+
+    for (const webDir of webDirs) {
+      const dirPath = path.join(targetDir, webDir);
+      try {
+        await fs.access(dirPath);
+      } catch {
+        continue;
+      }
+
+      // WEBEXPOSE-001: CLAUDE.md
+      for (const claudeFile of claudeFiles) {
+        const filePath = path.join(dirPath, claudeFile);
+        try {
+          await fs.access(filePath);
+          const realPath = await fs.realpath(filePath);
+          if (seenPaths.has(realPath)) continue;
+          seenPaths.add(realPath);
+          const relativePath = path.relative(targetDir, filePath);
+          findings.push({
+            checkId: 'WEBEXPOSE-001',
+            name: 'CLAUDE.md in web-served directory',
+            description: 'CLAUDE.md found in a web-served directory. This file often contains system prompts, instructions, and operational details that should not be publicly accessible.',
+            category: 'web-exposure',
+            severity: 'high',
+            passed: false,
+            message: `CLAUDE.md exposed in web directory: ${relativePath}`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Move CLAUDE.md out of the web-served directory. Add it to .gitignore and your build exclusion list.',
+          });
+        } catch { /* file doesn't exist */ }
+      }
+
+      // WEBEXPOSE-002: .env files
+      for (const envFile of envFiles) {
+        const filePath = path.join(dirPath, envFile);
+        try {
+          await fs.access(filePath);
+          const relativePath = path.relative(targetDir, filePath);
+          findings.push({
+            checkId: 'WEBEXPOSE-002',
+            name: '.env file in web-served directory',
+            description: 'Environment file found in a web-served directory. This file likely contains API keys, database credentials, and other secrets accessible to anyone who visits the site.',
+            category: 'web-exposure',
+            severity: 'critical',
+            passed: false,
+            message: `Environment file exposed in web directory: ${relativePath}`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Remove .env files from web-served directories immediately. Store environment files in the project root (outside public/) and rotate any exposed credentials.',
+          });
+        } catch { /* file doesn't exist */ }
+      }
+
+      // WEBEXPOSE-003: Sensitive config files
+      for (const configFile of configFiles) {
+        const filePath = path.join(dirPath, configFile);
+        try {
+          await fs.access(filePath);
+          const relativePath = path.relative(targetDir, filePath);
+          findings.push({
+            checkId: 'WEBEXPOSE-003',
+            name: 'Sensitive config file in web-served directory',
+            description: `Configuration file (${configFile}) found in a web-served directory. This may expose MCP server configs, API endpoints, or other sensitive operational details.`,
+            category: 'web-exposure',
+            severity: 'high',
+            passed: false,
+            message: `Config file exposed in web directory: ${relativePath}`,
+            file: relativePath,
+            fixable: false,
+            fix: `Move ${configFile} out of the web-served directory. Serve only the minimal configuration needed by the client.`,
+          });
+        } catch { /* file doesn't exist */ }
+      }
+
+      // WEBEXPOSE-003: Sensitive config directories
+      for (const configDir of configDirs) {
+        const configDirPath = path.join(dirPath, configDir);
+        try {
+          await fs.access(configDirPath);
+          const relativePath = path.relative(targetDir, configDirPath);
+          findings.push({
+            checkId: 'WEBEXPOSE-003',
+            name: 'Sensitive config directory in web-served directory',
+            description: `.claude/ directory found in a web-served directory. This directory contains Claude Code settings and may expose system prompts or tool configurations.`,
+            category: 'web-exposure',
+            severity: 'high',
+            passed: false,
+            message: `Config directory exposed in web directory: ${relativePath}`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Remove the .claude/ directory from web-served directories. Add it to your build exclusion list.',
+          });
+        } catch { /* directory doesn't exist */ }
+      }
+    }
+
+    return findings;
+  }
+
+  /**
+   * SOUL-OVERRIDE-001: Skill content can override SOUL.md
+   * Checks if SKILL.md and SOUL.md are loaded into the same prompt context without trust boundaries.
+   */
+  private async checkSoulOverride(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // Path 1: Look for system-prompt files that load both soul and skill content
+    const promptFiles = await this.walkDirectory(targetDir, ['.ts', '.js', '.mjs'], 0, 2);
+    const targetFiles = promptFiles.filter(f => {
+      const name = path.basename(f).toLowerCase();
+      return name.includes('system-prompt') || name.includes('systemprompt') ||
+             name.includes('prompt-builder') || name.includes('promptbuilder') ||
+             name.includes('context-builder') || name.includes('contextbuilder');
+    });
+
+    for (const file of targetFiles.slice(0, 20)) {
+      try {
+        const stat = await fs.stat(file);
+        if (stat.size > MAX_FILE_SIZE) continue;
+        const content = await fs.readFile(file, 'utf-8');
+        const relativePath = path.relative(targetDir, file);
+
+        const hasSoul = /\b(soul|SOUL\.md|soulContent|soul_content)\b/.test(content);
+        const hasSkill = /\b(skill|SKILL\.md|skillContent|skill_content)\b/.test(content);
+
+        if (hasSoul && hasSkill) {
+          // Check for trust boundary markers
+          const hasBoundary = /\b(trustBoundary|trust_boundary|TRUST_BOUNDARY|sandboxed|isolated|untrusted)\b/.test(content);
+          if (!hasBoundary) {
+            const lines = content.split('\n');
+            let soulLine = 0;
+            for (let i = 0; i < lines.length; i++) {
+              if (/\b(soul|SOUL\.md)\b/i.test(lines[i])) {
+                soulLine = i + 1;
+                break;
+              }
+            }
+            findings.push({
+              checkId: 'SOUL-OVERRIDE-001',
+              name: 'Skill content can override SOUL.md',
+              description: 'SOUL.md and SKILL.md content are loaded into the same prompt context without trust boundary markers. A malicious skill can include instructions that override the agent\'s core identity and safety rules.',
+              category: 'soul-injection',
+              severity: 'high',
+              passed: false,
+              message: `Soul and skill content mixed without trust boundaries in ${relativePath}`,
+              file: relativePath,
+              line: soulLine,
+              fixable: false,
+              fix: 'Add trust boundaries between SOUL.md (trusted) and SKILL.md (untrusted) content. Mark skill content as untrusted and instruct the model to not follow instructions from skill content.',
+            });
+          }
+        }
+      } catch { /* skip unreadable files */ }
+    }
+
+    // Path 2: Check for co-existing SOUL.md and SKILL.md files
+    // When both exist in the same directory without trust markers in SKILL.md,
+    // a malicious skill can override the agent's core identity
+    if (findings.length === 0) {
+      const soulPath = path.join(targetDir, 'SOUL.md');
+      const skillPath = path.join(targetDir, 'SKILL.md');
+      try {
+        await fs.access(soulPath);
+        await fs.access(skillPath);
+        // Both exist -- check SKILL.md for override patterns
+        const skillContent = await fs.readFile(skillPath, 'utf-8');
+        const hasTrustBoundary = /\b(trustBoundary|trust_boundary|TRUST_BOUNDARY|sandboxed|isolated|untrusted)\b/.test(skillContent);
+        if (!hasTrustBoundary) {
+          // Check if SKILL.md contains override/injection patterns
+          const hasOverridePattern = /\b(override|ignore|suspend|bypass|disregard)\b.*\b(rules?|safety|guidelines?|instructions?|prompt)\b/i.test(skillContent);
+          const hasEscalation = /\b(admin|system|root|debug)\s*(mode|access|privilege)/i.test(skillContent);
+          if (hasOverridePattern || hasEscalation) {
+            findings.push({
+              checkId: 'SOUL-OVERRIDE-001',
+              name: 'Skill content can override SOUL.md',
+              description: 'SKILL.md co-exists with SOUL.md and contains instructions that attempt to override safety rules. A malicious skill can include instructions that override the agent\'s core identity and safety rules.',
+              category: 'soul-injection',
+              severity: 'high',
+              passed: false,
+              message: 'SKILL.md contains override patterns that can bypass SOUL.md safety rules',
+              file: 'SKILL.md',
+              line: 1,
+              fixable: false,
+              fix: 'Add trust boundaries between SOUL.md (trusted) and SKILL.md (untrusted) content. Mark skill content as untrusted and instruct the model to not follow instructions from skill content.',
+            });
+          }
+        }
+      } catch { /* one or both files don't exist */ }
+    }
+
+    return findings;
+  }
+
+  /**
+   * MEM-006: Memory store without input sanitization
+   * Detects memory/persistence plugins that store user-provided text without sanitization.
+   */
+  private async checkMemoryStoreSanitization(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+    const files = await this.walkDirectory(targetDir, ['.ts', '.js', '.mjs'], 0, 2);
+
+    // Look for store/save/persist calls with text/content parameter (method or function)
+    const storePattern = /(?:\.|^|\s|\()(store|save|persist|insert|upsert|push)\s*\(\s*\{[^}]*(text|content|message|input)\b/g;
+
+    for (const file of files.slice(0, 100)) {
+      try {
+        const stat = await fs.stat(file);
+        if (stat.size > MAX_FILE_SIZE) continue;
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        const relativePath = path.relative(targetDir, file);
+
+        // Skip if file has sanitization functions
+        if (/\b(sanitize|sanitise|escapeHtml|htmlEncode|stripTags|DOMPurify|xss)\b/.test(content)) continue;
+
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].length > MAX_LINE_LENGTH) continue;
+          storePattern.lastIndex = 0;
+          if (storePattern.test(lines[i])) {
+            // Check surrounding context for validation
+            const contextStart = Math.max(0, i - 5);
+            const context = lines.slice(contextStart, i).join('\n');
+            if (!/\b(validate|sanitize|filter|clean|escape|strip)\b/.test(context)) {
+              findings.push({
+                checkId: 'MEM-006',
+                name: 'Memory store without input sanitization',
+                description: 'User-provided text is stored in a persistence layer without sanitization. An attacker can inject malicious content (prompt injection, XSS payloads) that persists and affects future sessions.',
+                category: 'memory-poisoning',
+                severity: 'high',
+                passed: false,
+                message: `Unsanitized input stored in memory/persistence in ${relativePath}`,
+                file: relativePath,
+                line: i + 1,
+                fixable: false,
+                fix: 'Sanitize all user-provided text before storing. Strip instruction-like patterns and HTML/script content.',
+              });
+              break;
+            }
+          }
+        }
+      } catch { /* skip unreadable files */ }
+    }
+
+    return findings;
+  }
+
+  /**
+   * AGENT-CRED-001: No credential output protection in system prompt
+   * Checks system prompts that mention exec/shell but lack credential protection instructions.
+   */
+  private async checkAgentCredentialProtection(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+
+    // System prompt files to check
+    const promptFileNames = ['SOUL.md', 'CLAUDE.md', 'system-prompt.md', 'system-prompt.txt'];
+    const promptFilePatterns = ['system-prompt.ts', 'system-prompt.js', 'systemprompt.ts', 'systemprompt.js'];
+
+    const allFiles: Array<{ path: string; rel: string }> = [];
+
+    // Check known file names
+    for (const name of promptFileNames) {
+      const filePath = path.join(targetDir, name);
+      try {
+        await fs.access(filePath);
+        allFiles.push({ path: filePath, rel: name });
+      } catch { /* skip */ }
+    }
+
+    // Check for system-prompt source files
+    const srcFiles = await this.walkDirectory(targetDir, ['.ts', '.js', '.md', '.txt'], 0, 2);
+    for (const file of srcFiles) {
+      const basename = path.basename(file).toLowerCase();
+      if (promptFilePatterns.some(p => basename === p.toLowerCase())) {
+        allFiles.push({ path: file, rel: path.relative(targetDir, file) });
+      }
+    }
+
+    for (const { path: filePath, rel: relativePath } of allFiles.slice(0, 20)) {
+      try {
+        const stat = await fs.stat(filePath);
+        if (stat.size > MAX_FILE_SIZE) continue;
+        const content = await fs.readFile(filePath, 'utf-8');
+
+        // Check if the prompt mentions exec/shell capabilities
+        const hasExecCapability = /\b(exec|execute|shell|command|subprocess|spawn|terminal|bash)\b/i.test(content);
+        if (!hasExecCapability) continue;
+
+        // Check if there's credential protection language
+        const hasCredProtection = /\b(credential|secret|api[_\s-]?key|environment[_\s]variable|never\s+(print|echo|output|display|log)\s+(secret|credential|key|token|password))\b/i.test(content);
+
+        if (!hasCredProtection) {
+          findings.push({
+            checkId: 'AGENT-CRED-001',
+            name: 'No credential output protection in system prompt',
+            description: 'System prompt grants exec/shell capabilities but does not include instructions to protect credentials from being output. An attacker can craft prompts that cause the agent to echo environment variables or credential files.',
+            category: 'agent-credential',
+            severity: 'medium',
+            passed: false,
+            message: `System prompt in ${relativePath} grants exec access without credential protection instructions`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Add credential protection instructions to the system prompt: "Never print, echo, or output API keys, tokens, passwords, or environment variable values. Reference credentials only by variable name."',
+          });
+        }
+      } catch { /* skip unreadable files */ }
     }
 
     return findings;

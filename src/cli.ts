@@ -120,7 +120,7 @@ program
   .name('hackmyagent')
   .description(`Find it. Break it. Fix it.
 
-The hacker's toolkit for AI agents. 187 security checks, 115 attack
+The hacker's toolkit for AI agents. 202 security checks, 115 attack
 payloads, auto-fix with rollback, and OASB benchmark compliance.
 
 Documentation: https://hackmyagent.com/docs
@@ -129,10 +129,10 @@ Updates (v${VERSION}):
   - NemoClaw sandbox scanner (28 installation checks)
   - 10 new static analysis patterns (NEMO series)
   - Community trust contributions
-  - 187 checks across 39 categories
+  - 202 checks across 39 categories
 
 Examples:
-  $ hackmyagent secure                         Find vulnerabilities (187 checks)
+  $ hackmyagent secure                         Find vulnerabilities (202 checks)
   $ hackmyagent attack --local                 Break it with 115 attack payloads
   $ hackmyagent secure --fix                   Fix issues automatically
   $ hackmyagent fix-all                        Run all security plugins
@@ -142,7 +142,7 @@ Examples:
 
 program.addHelpText('beforeAll', `
 Quick start:
-  $ hackmyagent secure              Scan current directory (187 checks)
+  $ hackmyagent secure              Scan current directory (202 checks)
   $ hackmyagent fix-all --with-aim  Auto-fix + create agent identity
   $ hackmyagent attack              Red-team your agent
 `);
@@ -1750,7 +1750,7 @@ program
   .command('secure')
   .description(`Scan and harden your agent setup
 
-Performs 187 security checks across 39 categories:
+Performs 202 security checks across 39 categories:
   • Credentials: API key exposure, secrets in configs
   • MCP: Server configs, tool permissions, secrets
   • Network: TLS, interface bindings, CORS
@@ -4481,7 +4481,7 @@ Examples:
       console.log(`\n  Detected: ${result.tool}\n`);
       console.log(`  Added HackMyAgent MCP server to ${result.configPath}\n`);
       console.log(`  Available tools in ${result.tool}:`);
-      console.log(`    hackmyagent_scan       — 187 checks + structural analysis`);
+      console.log(`    hackmyagent_scan       — 202 checks + structural analysis`);
       console.log(`    hackmyagent_deep_scan  — Full analysis with LLM reasoning`);
       console.log(`    hackmyagent_analyze_file — Analyze a single file`);
       console.log(`    hackmyagent_benchmark  — OASB-1 compliance assessment\n`);
