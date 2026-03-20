@@ -50,6 +50,7 @@ export function toSecurityFinding(finding: SemanticFinding): SecurityFinding {
     file: finding.file,
     line: finding.line,
     fix: finding.recommendation,
+    guidance: finding.rationale,
   };
 }
 
