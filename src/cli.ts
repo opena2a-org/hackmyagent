@@ -1826,7 +1826,7 @@ Performs 199 security checks across 60 categories:
   • Network: TLS, interface bindings, CORS
   • Prompt: Injection defenses, role protection
   • Encryption: At-rest encryption, secure hashing
-  • And 25 more categories...
+  • And 54 more categories...
 
 Benchmark mode (--benchmark):
   oasb-1   OASB-1 infrastructure compliance (L1/L2/L3 levels)
