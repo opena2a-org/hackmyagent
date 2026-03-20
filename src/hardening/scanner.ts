@@ -2586,7 +2586,7 @@ dist/
           ? 'Consider adding deny rules to block dangerous operations'
           : 'No Claude settings file found',
       fixable: false,
-      guidance: 'Claude Code settings files may contain project-specific overrides that weaken security boundaries or grant excessive tool permissions.',
+      guidance: 'Without deny rules, Claude Code can execute any tool or command. Deny rules act as a blocklist to prevent dangerous operations like rm -rf or credential access.',
     });
 
     // CLAUDE-005: Check for memory/context persistence
@@ -2604,7 +2604,7 @@ dist/
         ? 'Claude memory enabled - be aware sensitive data may persist'
         : 'Claude memory not explicitly enabled',
       fixable: false,
-      guidance: 'Unrestricted MCP tool access in Claude Code config means any tool can execute without user approval, including dangerous operations like shell commands.',
+      guidance: 'Persistent memory can retain API keys, internal URLs, or confidential instructions across sessions. An attacker who gains access to the memory store can extract this data.',
     });
 
     // CLAUDE-006: Check CLAUDE.md for sensitive instructions
@@ -2632,7 +2632,7 @@ dist/
         ? 'CLAUDE.md contains sensitive instructions - these may be extractable via prompt injection'
         : 'No obviously sensitive instructions detected in CLAUDE.md',
       fixable: false,
-      guidance: 'Claude Code with unrestricted shell access can execute any command on your system. A prompt injection could escalate to full system compromise.',
+      guidance: 'CLAUDE.md is typically committed to version control. Sensitive instructions there can be extracted via prompt injection or by anyone with repo access.',
     });
 
     // CLAUDE-007: Check for tool timeout configuration
@@ -2651,7 +2651,7 @@ dist/
           ? 'Consider setting tool timeouts to prevent runaway operations'
           : 'No Claude settings found',
       fixable: false,
-      guidance: 'Disabling Claude Code safety features removes guardrails that prevent accidental file deletion, credential exposure, and unauthorized system changes.',
+      guidance: 'Without tool timeouts, a stuck or malicious tool call can hang indefinitely, consuming resources and blocking the agent from responding.',
     });
 
     return findings;
@@ -2686,7 +2686,7 @@ dist/
           ? 'Consider setting request timeouts for MCP servers'
           : 'No MCP config found',
       fixable: false,
-      guidance: 'MCP servers with database access can read, modify, or delete all data. Without query restrictions, a compromised server can exfiltrate entire databases.',
+      guidance: 'Without request timeouts, a hung or malicious MCP server can block the agent indefinitely, causing denial-of-service and preventing other tools from executing.',
     });
 
     // MCP-007: Check for retry limits
@@ -2705,7 +2705,7 @@ dist/
           ? 'Consider setting retry limits to prevent infinite loops'
           : 'No MCP config found',
       fixable: false,
-      guidance: 'An MCP server configured with write access to sensitive directories can modify system files, install backdoors, or corrupt application data.',
+      guidance: 'Without retry limits, a failing MCP server can trigger infinite retry loops that waste API credits, saturate network connections, and stall the agent.',
     });
 
     // MCP-008: Check for localhost binding
@@ -2762,7 +2762,7 @@ dist/
         ? 'Sensitive tool names detected (shell, exec, eval) - ensure proper restrictions'
         : 'No obviously sensitive tool names in MCP config',
       fixable: false,
-      guidance: 'An MCP server with both shell access and network access can be used as a remote code execution endpoint by any attacker who reaches it.',
+      guidance: 'Tools named shell, exec, or eval typically provide arbitrary code execution. A prompt injection that invokes these tools can fully compromise the host system.',
     });
 
     // MCP-010: Check for logging configuration
@@ -2787,7 +2787,7 @@ dist/
         ? 'MCP logging appears to be configured - ensure sensitive data is not logged'
         : 'No explicit MCP logging configuration detected',
       fixable: false,
-      guidance: 'Unverified MCP servers from unknown sources may contain malicious tool implementations that steal data or execute unauthorized actions.',
+      guidance: 'Logging MCP requests and responses creates an audit trail for detecting misuse. Without it, malicious tool calls leave no trace for incident response.',
     });
 
     return findings;
@@ -2827,7 +2827,7 @@ dist/
         ? 'HTTPS/TLS configuration detected'
         : 'No HTTPS configuration found - ensure production uses TLS',
       fixable: false,
-      guidance: 'CORS misconfiguration allows malicious websites to make authenticated requests to your API, potentially stealing data or performing actions on behalf of users.',
+      guidance: 'Without TLS, all traffic including API keys, tokens, and user data is transmitted in plaintext. Anyone on the network can intercept and read it.',
     });
 
     // NET-004: Check for exposed debug endpoints
@@ -2862,7 +2862,7 @@ dist/
         ? 'Debug/admin endpoints detected - ensure they are protected or disabled in production'
         : 'No obvious debug endpoints found',
       fixable: false,
-      guidance: 'Missing TLS means all traffic including credentials and API keys is transmitted in plaintext, readable by anyone on the network.',
+      guidance: 'Debug and admin endpoints expose internal state, configuration, and metrics. Attackers use these to map your infrastructure and find weaknesses.',
     });
 
     // NET-005: Check for WebSocket security
@@ -2902,7 +2902,7 @@ dist/
           ? 'WebSocket authentication detected'
           : 'WebSocket without obvious authentication - ensure connections are verified',
       fixable: false,
-      guidance: 'Exposing internal service ports to the public internet gives attackers direct access to management interfaces, databases, and debugging endpoints.',
+      guidance: 'Unauthenticated WebSocket connections let any client send commands to your backend. Unlike HTTP, WebSockets maintain persistent connections that bypass traditional request-based security.',
     });
 
     // NET-006: Check for proxy configuration
@@ -2922,7 +2922,7 @@ dist/
         passed: true, // Informational
         message: 'HTTP proxy library detected - verify SSRF protections are in place',
         fixable: false,
-      guidance: 'WebSocket connections without authentication or origin validation let any website establish persistent connections to your backend.',
+      guidance: 'HTTP proxies without SSRF protections allow attackers to reach internal services, cloud metadata endpoints, and private networks through your server.',
       });
     }
 
@@ -2963,7 +2963,7 @@ dist/
         ? 'API versioning pattern detected'
         : 'Consider implementing API versioning for backwards compatibility',
       fixable: false,
-      guidance: 'API endpoints without authentication accept requests from anyone. Sensitive data and operations are fully exposed to the internet.',
+      guidance: 'Without API versioning, breaking changes affect all clients immediately. Versioning enables safe deprecation and prevents accidental security regressions.',
     });
 
     // API-002: Check for API documentation
@@ -2984,7 +2984,7 @@ dist/
         ? 'API documentation library detected'
         : 'Consider adding OpenAPI/Swagger documentation',
       fixable: false,
-      guidance: 'Without input validation, attackers can send malformed data to trigger crashes, SQL injection, or buffer overflows.',
+      guidance: 'Undocumented APIs are harder to use correctly and easier to misuse. Clear documentation reduces the chance of insecure integrations by consumers.',
     });
 
     // API-003: Check for API key in URL
@@ -3017,7 +3017,7 @@ dist/
         ? 'API key in URL pattern detected - use headers instead'
         : 'No obvious API key in URL patterns found',
       fixable: false,
-      guidance: 'Verbose API error responses reveal internal implementation details, database schemas, and file paths that help attackers craft targeted exploits.',
+      guidance: 'API keys in URLs are logged by browsers, proxies, and web servers. They appear in referrer headers and browser history, making them easy to steal.',
     });
 
     // API-004: Check for response headers security
@@ -3048,7 +3048,7 @@ dist/
         ? 'Security headers detected in responses'
         : 'Add security headers (X-Content-Type-Options, X-Frame-Options, CSP)',
       fixable: false,
-      guidance: 'APIs without rate limiting allow brute-force attacks, credential stuffing, and resource exhaustion at no cost to the attacker.',
+      guidance: 'Missing security headers like X-Frame-Options and CSP leave your API responses vulnerable to clickjacking, MIME-sniffing, and cross-site scripting attacks.',
     });
 
     return findings;
@@ -3078,7 +3078,7 @@ dist/
         ? 'Secret management capability detected'
         : 'Consider using a secret manager (Vault, AWS Secrets Manager, doppler)',
       fixable: false,
-      guidance: 'Missing Content-Security-Policy allows cross-site scripting attacks to execute arbitrary JavaScript in users browsers.',
+      guidance: 'Without a secret manager, credentials end up in .env files, config files, or source code where they can be leaked through version control or log files.',
     });
 
     // SEC-002: Check for encryption library
@@ -3099,7 +3099,7 @@ dist/
         ? 'Encryption library detected'
         : 'Consider using encryption for sensitive data (bcrypt, argon2)',
       fixable: false,
-      guidance: 'Without HTTPS redirect, users can be silently downgraded to unencrypted HTTP where credentials and session tokens are visible to network attackers.',
+      guidance: 'Without encryption, sensitive data like passwords and tokens are stored in plaintext. A database breach or file leak exposes everything immediately.',
     });
 
     // SEC-003: Check for key rotation support
@@ -3128,7 +3128,7 @@ dist/
         ? 'Key rotation support detected'
         : 'Consider implementing key rotation for long-lived secrets',
       fixable: false,
-      guidance: 'Missing security headers (X-Frame-Options, X-Content-Type-Options) leave the application vulnerable to clickjacking and MIME-type confusion attacks.',
+      guidance: 'Without key rotation, a single compromised key grants permanent access. Regular rotation limits the window of exposure when a key is leaked.',
     });
 
     // SEC-004: Check for hardcoded connection strings
@@ -3163,7 +3163,7 @@ dist/
         ? 'Hardcoded connection strings detected - use environment variables'
         : 'No hardcoded connection strings found',
       fixable: false,
-      guidance: 'Serving static files from the project root risks exposing .env files, source code, and configuration files to anyone who guesses the URL.',
+      guidance: 'Hardcoded connection strings contain database hostnames, ports, and credentials. Anyone with code access can connect directly to your database.',
     });
 
     return findings;
@@ -3212,7 +3212,7 @@ dist/
           ? 'File upload validation detected'
           : 'File upload without obvious validation - add file type/size limits',
       fixable: false,
-      guidance: 'File paths constructed from user input without sanitization allow path traversal attacks that read or write any file on the system.',
+      guidance: 'Unrestricted file uploads let attackers send malicious executables, web shells, or oversized files that can compromise the server or exhaust disk space.',
     });
 
     // IO-002: Check for SQL/NoSQL injection protection
@@ -3242,7 +3242,7 @@ dist/
           ? 'ORM/query builder detected - provides parameterization'
           : 'Raw database driver detected - ensure parameterized queries are used',
       fixable: false,
-      guidance: 'Temporary files with predictable names in shared directories are vulnerable to symlink attacks that can overwrite arbitrary files.',
+      guidance: 'Raw database queries built with string concatenation let attackers inject SQL or NoSQL commands that can read, modify, or delete all data in the database.',
     });
 
     // IO-003: Check for XSS protection
@@ -3263,7 +3263,7 @@ dist/
         ? 'XSS protection library detected'
         : 'No XSS protection library found - sanitize user input before rendering',
       fixable: false,
-      guidance: 'Writing to files without atomic operations risks data corruption if the process crashes mid-write or multiple processes write simultaneously.',
+      guidance: 'Without XSS protection, user-supplied content rendered in the browser can execute arbitrary JavaScript, stealing session tokens and user data.',
     });
 
     // IO-004: Check for path traversal protection
@@ -3296,7 +3296,7 @@ dist/
         ? 'Potential path traversal detected - use path.resolve/normalize'
         : 'No obvious path traversal vulnerabilities found',
       fixable: false,
-      guidance: 'Reading files without size limits allows denial-of-service through memory exhaustion when processing attacker-controlled large files.',
+      guidance: 'Path traversal (../) in file paths lets attackers read sensitive files like /etc/passwd or .env by escaping the intended directory.',
     });
 
     return findings;
@@ -3336,7 +3336,7 @@ dist/
         ? 'Prompt boundaries detected in CLAUDE.md'
         : 'Consider adding prompt boundary markers to prevent injection attacks',
       fixable: false,
-      guidance: 'Without a system prompt, the AI agent has no behavioral boundaries. User inputs can freely direct it to perform any action including harmful ones.',
+      guidance: 'Without clear boundary markers, attackers can inject instructions that blend with the system prompt, making it impossible for the model to distinguish trusted from untrusted content.',
     });
 
     // PROMPT-002: Check for injection defense instructions
@@ -3388,7 +3388,7 @@ dist/
         ? 'Output confidentiality rules defined'
         : 'Consider defining what information should not be disclosed',
       fixable: false,
-      guidance: 'Exposing the full system prompt to users reveals internal logic, security boundaries, and tool configurations that help craft targeted attacks.',
+      guidance: 'Without output confidentiality rules, the agent may freely reveal system prompts, internal tool names, API keys, or other sensitive context when asked.',
     });
 
     // PROMPT-004: Check for role confusion protection
@@ -3413,7 +3413,7 @@ dist/
         ? 'Role definition found in prompts'
         : 'Consider clearly defining the AI role to prevent role confusion attacks',
       fixable: false,
-      guidance: 'Without output filtering, the agent can leak credentials, internal data, or harmful content in its responses.',
+      guidance: 'Without a clear role definition, attackers can use "you are now a hacker assistant" style prompts to override the agent identity and bypass safety constraints.',
     });
 
     return findings;
@@ -3463,7 +3463,7 @@ dist/
         ? 'Input validation library detected'
         : 'Consider using zod, joi, or similar for input validation',
       fixable: false,
-      guidance: 'Command injection through unsanitized user input in shell commands gives attackers full system access. Always use parameterized execution.',
+      guidance: 'Without schema validation, any malformed or malicious input reaches your application logic. This is the root cause of injection, overflow, and type confusion attacks.',
     });
 
     // INJ-002: Check for XSS protection patterns
@@ -3500,7 +3500,7 @@ dist/
         ? 'XSS protection patterns detected'
         : 'Consider implementing output escaping for user-facing content',
       fixable: false,
-      guidance: 'SQL injection through string concatenation lets attackers read, modify, or delete any data in your database. Use parameterized queries.',
+      guidance: 'Unescaped user content rendered in HTML lets attackers inject scripts that steal cookies, hijack sessions, and impersonate users.',
     });
 
     // INJ-003: Check for SQL injection protection
@@ -3539,7 +3539,7 @@ dist/
         ? 'Parameterized queries or ORM detected'
         : 'Ensure all database queries use parameterized statements',
       fixable: false,
-      guidance: 'Template injection in server-side rendering engines can execute arbitrary code on the server through crafted template expressions.',
+      guidance: 'SQL injection via string concatenation lets attackers read, modify, or delete any data in your database. Parameterized queries prevent this entirely.',
     });
 
     // INJ-004: Check for command injection protection
@@ -3581,7 +3581,7 @@ dist/
         ? 'Safe command execution patterns detected or no shell commands found'
         : 'Use execFile instead of exec, or disable shell interpolation',
       fixable: false,
-      guidance: 'Deserializing untrusted data can trigger arbitrary code execution. Attackers craft serialized payloads that run commands when deserialized.',
+      guidance: 'Using exec() with user-controlled input lets attackers inject shell metacharacters (;, |, $()) to run arbitrary commands on the host system.',
     });
 
     return findings;
@@ -3621,7 +3621,7 @@ dist/
         ? 'Rate limiting library detected'
         : 'Consider implementing rate limiting to prevent abuse',
       fixable: false,
-      guidance: 'Without rate limiting on authentication endpoints, attackers can try millions of password combinations per hour.',
+      guidance: 'Without rate limiting, attackers can make unlimited API calls, exhausting your quota and running up costs. It also enables brute-force and credential stuffing attacks.',
     });
 
     // RATE-002: Check for retry/backoff patterns
@@ -3657,7 +3657,7 @@ dist/
         ? 'Retry/backoff patterns detected'
         : 'Consider implementing exponential backoff for external calls',
       fixable: false,
-      guidance: 'Unlimited API requests let attackers exhaust your cloud provider quotas, causing service outages and unexpected billing charges.',
+      guidance: 'Without exponential backoff, retries hammer external services at full speed during outages, worsening the problem and potentially getting your API key banned.',
     });
 
     // RATE-003: Check for timeout configurations
@@ -3692,7 +3692,7 @@ dist/
         ? 'Timeout configurations detected'
         : 'Consider setting timeouts for external calls and long-running operations',
       fixable: false,
-      guidance: 'File upload endpoints without size or rate limits allow attackers to fill disk storage, causing denial-of-service.',
+      guidance: 'Without timeouts, a slow or unresponsive external service can cause your application to hang indefinitely, tying up connections and eventually crashing.',
     });
 
     // RATE-004: Check for concurrent request limiting
@@ -3728,7 +3728,7 @@ dist/
         ? 'Concurrency limiting detected'
         : 'Consider limiting concurrent operations to prevent resource exhaustion',
       fixable: false,
-      guidance: 'WebSocket connections without message rate limits can flood the server with messages, consuming memory and CPU until the service crashes.',
+      guidance: 'Without concurrency limits, a burst of requests can spawn unbounded parallel operations that exhaust memory, file descriptors, and CPU, crashing the service.',
     });
 
     return findings;
