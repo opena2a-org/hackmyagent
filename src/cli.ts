@@ -93,6 +93,20 @@ function resolveCliPrefix(): string {
 }
 const CLI_PREFIX = resolveCliPrefix();
 
+/**
+ * Validate that a registry URL uses HTTPS.
+ * Allows http://localhost for local development.
+ * Rejects all other non-HTTPS URLs to prevent credential leakage.
+ */
+function validateRegistryUrl(url: string): string {
+  if (url && !url.startsWith('https://') && !url.startsWith('http://localhost')) {
+    console.error('Error: Registry URL must use HTTPS. Got: ' + url);
+    console.error('Only https:// URLs and http://localhost are allowed.');
+    process.exit(1);
+  }
+  return url;
+}
+
 // Check for NO_COLOR env or non-TTY to disable colors by default
 const noColorEnv = process.env.NO_COLOR !== undefined || !process.stdout.isTTY;
 
@@ -1801,7 +1815,7 @@ Examples:
   .option('--registry-report', 'Post results to OpenA2A Registry')
   .option('--no-registry', 'Skip auto-publishing results to OpenA2A Registry')
   .option('--version-id <id>', 'Registry version ID to report against')
-  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', process.env.REGISTRY_URL || 'https://api.oa2a.org')
+  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', validateRegistryUrl(process.env.REGISTRY_URL || 'https://api.oa2a.org'))
   .option('--registry-key <key>', 'Registry API key (default: REGISTRY_API_KEY env)')
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
@@ -2016,7 +2030,7 @@ Examples:
         if (options.publish && options.registry !== false) {
           try {
             const { publishScanResults } = await import('./registry/publish');
-            const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org';
+            const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
             const packageName = resolvePackageName(targetDir);
             if (packageName) {
               const publishData = {
@@ -2214,7 +2228,7 @@ Examples:
       if (options.versionId || options.registryReport) {
         try {
           const core = await import('./index');
-          const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org';
+          const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
 
           if (options.versionId) {
             // Authenticated path: existing behavior (version-id + API key)
@@ -2260,7 +2274,7 @@ Examples:
       } else if (options.publish) {
         try {
           const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
-          const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org';
+          const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
           const packageName = resolvePackageName(targetDir);
 
           if (!packageName) {
@@ -2971,7 +2985,7 @@ Examples:
   .option('--registry-report', 'Post results to OpenA2A Registry')
   .option('--no-registry', 'Skip auto-publishing results to OpenA2A Registry')
   .option('--version-id <id>', 'Registry version ID to report against')
-  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', process.env.REGISTRY_URL || 'https://api.oa2a.org')
+  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', validateRegistryUrl(process.env.REGISTRY_URL || 'https://api.oa2a.org'))
   .option('--registry-key <key>', 'Registry API key (default: REGISTRY_API_KEY env)')
   .action(async (targetUrl: string | undefined, options: {
     intensity?: string;
@@ -3164,7 +3178,7 @@ Examples:
       if (shouldReport) {
         try {
           const core = await import('./index');
-          const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org';
+          const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
 
           if (options.versionId) {
             // Authenticated path: existing behavior (version-id + API key)
@@ -3209,7 +3223,7 @@ Examples:
       } else if (options.publish && targetType !== 'local') {
         try {
           const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
-          const regUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org';
+          const regUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
           const packageName = target.url || targetUrl || 'unknown';
 
           if (format === 'text') {
@@ -4571,7 +4585,7 @@ Examples:
   .option('--fail-below <score>', 'Exit 1 if score below threshold (0-100)')
   .option('--deep', 'Enable LLM semantic analysis for ambiguous controls (requires claude CLI or ANTHROPIC_API_KEY)')
   .option('--publish', 'Push scan results to the OpenA2A Registry')
-  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', process.env.REGISTRY_URL || 'https://api.oa2a.org')
+  .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', validateRegistryUrl(process.env.REGISTRY_URL || 'https://api.oa2a.org'))
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
   .option('--ci', 'CI mode: suppress interactive prompts, exit non-zero on findings')
@@ -4607,7 +4621,7 @@ Examples:
         if (options.publish) {
           try {
             const { publishScanResults } = await import('./registry/publish');
-            const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org';
+            const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
             const packageName = resolvePackageName(targetDir);
             if (packageName) {
               const publishData = {
@@ -4731,7 +4745,7 @@ Examples:
       if (options.publish) {
         try {
           const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
-          const registryUrl = options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org';
+          const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
           const packageName = resolvePackageName(targetDir);
 
           if (!packageName) {
@@ -5187,7 +5201,7 @@ Examples:
   .option('--audit <file>', 'Audit a dependency file (package.json or requirements.txt)')
   .option('--batch <names...>', 'Batch trust lookup for multiple packages')
   .option('--min-trust <level>', 'Minimum trust level threshold (0-4)', '3')
-  .option('--registry-url <url>', 'Registry base URL', REGISTRY_DEFAULT_URL)
+  .option('--registry-url <url>', 'Registry base URL', validateRegistryUrl(REGISTRY_DEFAULT_URL))
   .option('--json', 'Output as JSON')
   .action(async (
     packageName: string | undefined,
@@ -5200,7 +5214,7 @@ Examples:
       json?: boolean;
     }
   ) => {
-    const registryUrl = opts.registryUrl.replace(/\/+$/, '');
+    const registryUrl = validateRegistryUrl(opts.registryUrl).replace(/\/+$/, '');
     const minTrust = parseInt(opts.minTrust, 10);
     if (isNaN(minTrust) || minTrust < 0 || minTrust > 4) {
       process.stderr.write('Error: --min-trust must be a number between 0 and 4\n');
