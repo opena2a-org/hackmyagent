@@ -110,6 +110,9 @@ const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
   'SOUL-OVERRIDE-': ['all'], // Skill content overriding SOUL.md
 };
 
+/** Scan depth for CAAT tiered scanning */
+export type ScanDepth = 'quick' | 'standard' | 'deep';
+
 export interface ScanOptions {
   targetDir: string;
   autoFix?: boolean;
@@ -121,6 +124,13 @@ export interface ScanOptions {
   ignorePaths?: string[];
   /** Enable Layer 3 LLM analysis (requires ANTHROPIC_API_KEY in CLI mode) */
   deep?: boolean;
+  /**
+   * CAAT scan depth tier:
+   *   quick    — config checks, credential detection, basic file analysis only (Tier 4)
+   *   standard — all hardening checks + dependency audit (default, Tier 2-3)
+   *   deep     — everything + LLM semantic analysis + attack simulation (Tier 1)
+   */
+  scanDepth?: ScanDepth;
   /** Progress callback for long-running operations */
   onProgress?: (message: string) => void;
   /** CLI command prefix for fix messages (default: 'hackmyagent') */
@@ -330,6 +340,11 @@ export class HardeningScanner {
     const { targetDir, autoFix = false, dryRun = false, ignore = [], cliName = 'hackmyagent' } = options;
     this.cliName = cliName;
 
+    // Resolve effective scan depth — --deep flag implies 'deep' depth
+    const scanDepth: ScanDepth = options.scanDepth || (options.deep ? 'deep' : 'standard');
+    const isQuick = scanDepth === 'quick';
+    const isDeepScan = scanDepth === 'deep';
+
     // Load .hmaignore for path-based exclusions
     const hmaIgnorePaths = await this.loadHmaIgnore(targetDir);
     // Merge with any programmatic ignorePaths
@@ -381,6 +396,8 @@ export class HardeningScanner {
     const netFindings = await this.checkNetworkSecurity(targetDir, shouldFix);
     findings.push(...netFindings);
 
+    // --- Standard and Deep checks (skipped in quick mode) ---
+    if (!isQuick) {
     // Additional MCP checks
     const mcpAdvFindings = await this.checkMcpAdvanced(targetDir, shouldFix);
     findings.push(...mcpAdvFindings);
@@ -588,15 +605,17 @@ export class HardeningScanner {
 
     const agentCredFindings = await this.checkAgentCredentialProtection(targetDir, shouldFix);
     findings.push(...agentCredFindings);
+    } // end of standard/deep checks
 
     // Enrich findings with attack taxonomy mapping
     enrichWithTaxonomy(findings);
 
-    // Layer 2: Structural analysis (always on)
+    // Layer 2: Structural analysis (standard and deep only)
     let layer2Count = 0;
     let layer3Count = 0;
     let llmCost: number | undefined;
     let cachedResults: number | undefined;
+    if (!isQuick) {
     try {
       const structural = new StructuralAnalyzer();
       const structuralFindings = await structural.analyze(targetDir);
@@ -606,9 +625,10 @@ export class HardeningScanner {
     } catch {
       // Structural analysis failure is non-fatal
     }
+    }
 
-    // Layer 3: LLM analysis (only with --deep + API key in CLI mode)
-    if (options.deep && process.env.ANTHROPIC_API_KEY) {
+    // Layer 3: LLM analysis (only in deep mode + API key)
+    if ((isDeepScan || options.deep) && process.env.ANTHROPIC_API_KEY) {
       try {
         const structural = new StructuralAnalyzer();
         const files = await structural.discoverFiles(targetDir);
@@ -4339,8 +4359,25 @@ dist/
       createdFiles: [],
     };
 
-    // Backup each file that exists
-    for (const file of HardeningScanner.BACKUP_FILES) {
+    // Backup each file that exists (static list + web directory scan)
+    const filesToBackup = [...HardeningScanner.BACKUP_FILES];
+
+    // Also discover files in web-served directories that --fix may modify
+    const webDirs = ['public', 'static', 'dist', 'build', 'out', 'www', '_site'];
+    const webExts = ['.html', '.htm', '.js', '.jsx', '.tsx', '.css', '.py', '.md'];
+    for (const webDir of webDirs) {
+      const webDirPath = path.join(targetDir, webDir);
+      try {
+        const entries = await fs.readdir(webDirPath, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isFile() && webExts.some(ext => entry.name.endsWith(ext))) {
+            filesToBackup.push(path.join(webDir, entry.name));
+          }
+        }
+      } catch { /* dir doesn't exist */ }
+    }
+
+    for (const file of filesToBackup) {
       const sourcePath = path.join(targetDir, file);
       try {
         await fs.access(sourcePath);
