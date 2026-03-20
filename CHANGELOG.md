@@ -2,6 +2,13 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [0.11.10] - 2026-03-20
+
+### Fixed
+- **Guidance coverage: 136 → 232 checks (100%)** — all hardening checks now include a plain-language `guidance` field explaining why the finding matters
+- **Semantic findings (SEM-*) now include guidance** — the finding adapter maps `rationale` to `guidance`, so SEM-CRED and other semantic findings show risk explanations
+- **35 mismatched guidance strings corrected** — batch addition had mapped some explanations to the wrong checks
+
 ## [0.11.9] - 2026-03-20
 
 ### Added

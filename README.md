@@ -88,7 +88,7 @@ npm install --save-dev hackmyagent
 ```
 
 ┌──────────────────────────────────────────┐
-│  HackMyAgent v0.11.5 — Security Scanner          │
+│  HackMyAgent v0.11.10 — Security Scanner         │
 │  Found: 3 critical · 5 high · 12 medium          │
 │                                                  │
 │  CRED-001  critical  Hardcoded API key in .env   │
