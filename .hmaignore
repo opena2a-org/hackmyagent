@@ -1,0 +1,8 @@
+# Intentionally vulnerable test fixtures — git-only, excluded from scans and npm publish
+test-fixtures/
+
+# Test files contain intentional attack patterns and vulnerable code samples
+__tests__/
+
+# Attack payloads are intentionally adversarial (prompt injection, jailbreak, etc.)
+src/attack/payloads/

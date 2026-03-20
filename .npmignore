@@ -1,0 +1,15 @@
+test-fixtures/
+__tests__/
+*.test.ts
+*.test.js
+.github/
+docs/
+*.md
+!README.md
+!CHANGELOG.md
+src/
+.hmaignore
+.eslintrc*
+tsconfig.json
+vitest.config.*
+.gitignore

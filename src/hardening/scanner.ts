@@ -284,9 +284,42 @@ export class HardeningScanner {
     return normalizedFile.startsWith(normalizedDir + path.sep) || normalizedFile === normalizedDir;
   }
 
+  /**
+   * Load .hmaignore file from target directory. Returns list of path prefixes to exclude.
+   */
+  private async loadHmaIgnore(targetDir: string): Promise<string[]> {
+    const ignorePath = path.join(targetDir, '.hmaignore');
+    try {
+      const content = await fs.readFile(ignorePath, 'utf-8');
+      return content
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line && !line.startsWith('#'));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Check if a file path matches any .hmaignore pattern.
+   */
+  private isPathIgnored(filePath: string, ignoredPaths: string[]): boolean {
+    if (!filePath || ignoredPaths.length === 0) return false;
+    const normalized = filePath.replace(/\\/g, '/');
+    return ignoredPaths.some(pattern => {
+      const normalizedPattern = pattern.replace(/\\/g, '/').replace(/\/$/, '');
+      return normalized.startsWith(normalizedPattern + '/') || normalized === normalizedPattern;
+    });
+  }
+
   async scan(options: ScanOptions): Promise<ScanResult> {
     const { targetDir, autoFix = false, dryRun = false, ignore = [], cliName = 'hackmyagent' } = options;
     this.cliName = cliName;
+
+    // Load .hmaignore for path-based exclusions
+    const hmaIgnorePaths = await this.loadHmaIgnore(targetDir);
+    // Merge with any programmatic ignorePaths
+    const allIgnoredPaths = [...hmaIgnorePaths, ...(options.ignorePaths || [])];
 
     // Normalize ignore list to uppercase for case-insensitive matching
     const ignoredChecks = new Set(ignore.map((id) => id.toUpperCase()));
@@ -590,6 +623,9 @@ export class HardeningScanner {
 
       // Filter out ignored checks
       if (ignoredChecks.has(f.checkId.toUpperCase())) return false;
+
+      // Filter out paths matching .hmaignore
+      if (f.file && this.isPathIgnored(f.file, allIgnoredPaths)) return false;
 
       return true;
     });
