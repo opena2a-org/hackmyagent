@@ -9,11 +9,59 @@
  */
 
 import { createHash } from 'crypto';
+import { readdirSync, statSync, readFileSync } from 'fs';
+import { join, relative } from 'path';
 import type { SecurityFinding, Severity } from '../hardening';
 import type { AttackReport } from '../attack';
 import type { SoulScanResult } from '../soul';
 import type { BenchmarkResult } from '../benchmarks';
 import { RegistryClient, type CommunityScanPayload } from './client';
+
+/**
+ * Compute a deterministic tree hash of a directory's contents.
+ * Used by the CAAT pipeline to deduplicate scans across forks:
+ * same content = same hash = cache hit.
+ *
+ * Walks all files (excluding common non-source dirs), sorts entries,
+ * and produces a SHA-256 over "relPath:fileHash\n" lines.
+ */
+export function computeTreeHash(directory: string): string {
+  const entries: string[] = [];
+  const skipDirs = new Set(['.git', 'node_modules', '__pycache__', '.venv', 'dist', 'build']);
+
+  function walk(dir: string) {
+    let dirEntries;
+    try {
+      dirEntries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return; // Skip unreadable directories
+    }
+    for (const entry of dirEntries) {
+      if (skipDirs.has(entry.name)) continue;
+      const fullPath = join(dir, entry.name);
+      try {
+        if (entry.isDirectory()) {
+          walk(fullPath);
+        } else {
+          const relPath = relative(directory, fullPath);
+          const fileHash = createHash('sha256').update(readFileSync(fullPath)).digest('hex');
+          entries.push(`${relPath}:${fileHash}`);
+        }
+      } catch {
+        // Skip unreadable files (permission errors, special files, etc.)
+      }
+    }
+  }
+
+  walk(directory);
+  entries.sort();
+
+  const h = createHash('sha256');
+  for (const entry of entries) {
+    h.update(entry + '\n');
+  }
+  return h.digest('hex');
+}
 
 /** Result of reading a keypair from ~/.opena2a/keys/ */
 export interface AgentKeypair {
@@ -36,6 +84,8 @@ export interface PublishScanData {
   soulResult?: SoulScanResult;
   /** OASB benchmark result (from `secure -b oasb-1`) */
   oasbResult?: BenchmarkResult;
+  /** CAAT tree hash — deterministic content hash of the scanned directory */
+  treeHash?: string;
 }
 
 /** Result returned after publishing to registry */
@@ -238,6 +288,11 @@ export function buildPublishPayload(data: PublishScanData): CommunityScanPayload
     contentHash,
   };
 
+  // Include CAAT tree hash if computed
+  if (data.treeHash) {
+    payload.treeHash = data.treeHash;
+  }
+
   // Add ATP extension fields
   if (data.oasbResult) {
     payload.oasbCompliance = data.oasbResult.compliance;
@@ -281,6 +336,15 @@ export async function publishScanResults(
 
   if (isCommunity) {
     console.log("No signing keys found at ~/.opena2a/keys/. Run 'opena2a claim <package>' to create keys for full-weight publishing. Submitting as community contribution (0.5x weight).");
+  }
+
+  // Compute CAAT tree hash from the scanned directory if not already set
+  if (!data.treeHash && data.directory) {
+    try {
+      data.treeHash = computeTreeHash(data.directory);
+    } catch {
+      // Tree hash computation is non-fatal (e.g., permission errors)
+    }
   }
 
   const payload = buildPublishPayload(data);

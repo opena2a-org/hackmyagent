@@ -308,6 +308,40 @@ export class RegistryClient {
       status: (result.status as string) || 'accepted',
     };
   }
+
+  /**
+   * Submit a CI scan result to the CAAT pipeline endpoint.
+   * Signs the payload with HMAC-SHA256 using the provided secret.
+   * Returns trust impact information from the registry.
+   */
+  async submitCIScanResult(params: CIScanResultParams): Promise<{ valid: boolean; trustImpact: string }> {
+    const { createHmac } = await import('crypto');
+    const canonical = [
+      params.scanId, params.packageName, params.packageType || '',
+      params.version || '', params.status,
+      params.criticalCount, params.highCount, params.mediumCount, params.lowCount,
+      params.contentHash,
+    ].join('|');
+    const hmacSignature = createHmac('sha256', params.hmacSecret)
+      .update(canonical).digest('hex');
+
+    const { hmacSecret: _, ...payloadWithoutSecret } = params;
+    const response = await fetch(`${this.config.registryUrl}/api/v1/registry/ci/scan-result`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'HackMyAgent-CLI/CI',
+      },
+      body: JSON.stringify({ ...payloadWithoutSecret, hmacSignature }),
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(`CI scan result submission failed (${response.status}): ${body}`);
+    }
+
+    return response.json() as Promise<{ valid: boolean; trustImpact: string }>;
+  }
 }
 
 /**
@@ -507,6 +541,24 @@ export function buildCommunityAttackReport(
   };
   payload.contentHash = computeContentHash(payload);
   return payload;
+}
+
+/** Parameters for submitting a CI scan result via the CAAT pipeline */
+export interface CIScanResultParams {
+  packageName: string;
+  packageType?: string;
+  version?: string;
+  repoUrl: string;
+  scanId: string;
+  status: string;
+  criticalCount: number;
+  highCount: number;
+  mediumCount: number;
+  lowCount: number;
+  contentHash: string;
+  scannerVersion: string;
+  hmacSecret: string;
+  rawReport?: Record<string, unknown>;
 }
 
 function countBySeverity(findings: { severity: Severity | string }[]): {

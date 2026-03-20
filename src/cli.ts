@@ -1660,6 +1660,62 @@ function resolvePackageVersion(targetDir: string): string | null {
 }
 
 /**
+ * Resolve package name from pyproject.toml (Python projects).
+ */
+function resolvePackageNamePyproject(targetDir: string): string | null {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const pyprojectPath = path.join(targetDir, 'pyproject.toml');
+    if (fs.existsSync(pyprojectPath)) {
+      const content = fs.readFileSync(pyprojectPath, 'utf-8');
+      // Match [project] section's name field
+      const nameMatch = content.match(/\[project\][\s\S]*?name\s*=\s*"([^"]+)"/);
+      if (nameMatch) return nameMatch[1];
+      // Also try [tool.poetry] section
+      const poetryMatch = content.match(/\[tool\.poetry\][\s\S]*?name\s*=\s*"([^"]+)"/);
+      if (poetryMatch) return poetryMatch[1];
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+/**
+ * Resolve package version from pyproject.toml (Python projects).
+ */
+function resolvePackageVersionPyproject(targetDir: string): string | null {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const pyprojectPath = path.join(targetDir, 'pyproject.toml');
+    if (fs.existsSync(pyprojectPath)) {
+      const content = fs.readFileSync(pyprojectPath, 'utf-8');
+      const versionMatch = content.match(/\[project\][\s\S]*?version\s*=\s*"([^"]+)"/);
+      if (versionMatch) return versionMatch[1];
+      const poetryMatch = content.match(/\[tool\.poetry\][\s\S]*?version\s*=\s*"([^"]+)"/);
+      if (poetryMatch) return poetryMatch[1];
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+/**
+ * Resolve the repository URL from the git remote 'origin'.
+ */
+function resolveRepoUrl(targetDir: string): string | null {
+  try {
+    const { execSync } = require('child_process');
+    const url = execSync('git remote get-url origin', {
+      cwd: targetDir,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    return url || null;
+  } catch { /* ignore */ }
+  return null;
+}
+
+/**
  * Handle community contribution after a scan completes.
  *
  * Determines whether to contribute based on:
@@ -1811,6 +1867,8 @@ Examples:
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
   .option('-c, --category <name>', 'Filter to specific benchmark category')
   .option('--deep', 'Enable LLM-powered semantic analysis (requires ANTHROPIC_API_KEY)')
+  .option('--scan-depth <depth>', 'CAAT scan depth: quick (config+creds only), standard (default), deep (+ LLM analysis)', 'standard')
+  .option('--ci-publish', 'Submit scan results to registry CI endpoint (requires CI_SCAN_HMAC_SECRET env)')
   .option('--publish', 'Push scan results to the OpenA2A Registry')
   .option('--registry-report', 'Post results to OpenA2A Registry')
   .option('--no-registry', 'Skip auto-publishing results to OpenA2A Registry')
@@ -1820,7 +1878,7 @@ Examples:
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
   .option('--ci', 'CI mode: suppress interactive prompts, exit non-zero on findings')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean }) => {
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; scanDepth?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean }) => {
     try {
       const targetDir = require("path").resolve(directory);
 
@@ -1881,8 +1939,16 @@ Examples:
         }
       }
 
-      // Deep mode progress display
-      const isDeep = options.deep ?? false;
+      // Validate scan depth
+      const validDepths = ['quick', 'standard', 'deep'];
+      const scanDepth = (options.scanDepth || 'standard') as 'quick' | 'standard' | 'deep';
+      if (!validDepths.includes(scanDepth)) {
+        console.error(`Error: Invalid scan depth '${options.scanDepth}'. Use: ${validDepths.join(', ')}`);
+        process.exit(1);
+      }
+
+      // Deep mode: --deep flag OR --scan-depth deep
+      const isDeep = options.deep ?? (scanDepth === 'deep');
       const onProgress = isDeep && format === 'text'
         ? (msg: string) => process.stdout.write(msg)
         : undefined;
@@ -1895,6 +1961,10 @@ Examples:
         }
       }
 
+      if (scanDepth === 'quick' && format === 'text') {
+        console.log(`Scan depth: quick (config checks + credential detection only)\n`);
+      }
+
       const scanner = new HardeningScanner();
       const scanStartMs = Date.now();
       const result = await scanner.scan({
@@ -1903,6 +1973,7 @@ Examples:
         dryRun: options.dryRun ?? false,
         ignore: ignoreList,
         deep: isDeep,
+        scanDepth,
         cliName: CLI_PREFIX,
         onProgress,
       });
@@ -2303,6 +2374,96 @@ Examples:
         } catch (publishErr: unknown) {
           const msg = publishErr instanceof Error ? publishErr.message : 'unknown error';
           console.error(`\nFailed to publish to registry: ${msg}`);
+          console.error('Scan results are still available locally.');
+        }
+      }
+
+      // CI publish: submit results to registry CAAT pipeline endpoint
+      if (options.ciPublish) {
+        const hmacSecret = process.env.CI_SCAN_HMAC_SECRET;
+        if (!hmacSecret) {
+          console.error('\nError: --ci-publish requires the CI_SCAN_HMAC_SECRET environment variable.');
+          process.exit(1);
+        }
+
+        try {
+          const { RegistryClient } = await import('./registry/client');
+          const { computeTreeHash } = await import('./registry/publish');
+          const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
+          const packageName = resolvePackageName(targetDir) || resolvePackageNamePyproject(targetDir);
+          const packageVersion = resolvePackageVersion(targetDir) || resolvePackageVersionPyproject(targetDir);
+          const repoUrl = resolveRepoUrl(targetDir);
+
+          if (!packageName) {
+            console.error('\nCould not determine package name from package.json or pyproject.toml.');
+          } else if (!repoUrl) {
+            console.error('\nCould not determine repo URL from git remote. Ensure a git remote is configured.');
+          } else {
+            // Compute CAAT tree hash
+            let contentHash = '';
+            try {
+              contentHash = computeTreeHash(targetDir);
+            } catch {
+              console.error('Warning: Could not compute tree hash. Using empty hash.');
+            }
+
+            // Count severity
+            const failed = result.findings.filter((f: SecurityFinding) => !f.passed && !f.fixed);
+            const counts = { critical: 0, high: 0, medium: 0, low: 0 };
+            for (const f of failed) {
+              if (f.severity === 'critical') counts.critical++;
+              else if (f.severity === 'high') counts.high++;
+              else if (f.severity === 'medium') counts.medium++;
+              else if (f.severity === 'low') counts.low++;
+            }
+
+            const status = (counts.critical > 0 || counts.high > 0) ? 'failed'
+              : (counts.medium > 0 || counts.low > 0) ? 'warnings' : 'passed';
+
+            const client = new RegistryClient({ registryUrl, apiKey: '' });
+            const scanId = `hma-ci-${Date.now()}`;
+
+            // Get scanner version from package.json
+            let scannerVersion = 'unknown';
+            try {
+              const hmaPackagePath = require('path').resolve(__dirname, '../package.json');
+              scannerVersion = require(hmaPackagePath).version || 'unknown';
+            } catch { /* ignore */ }
+
+            const ciResult = await client.submitCIScanResult({
+              packageName,
+              packageType: undefined,
+              version: packageVersion ?? undefined,
+              repoUrl,
+              scanId,
+              status,
+              criticalCount: counts.critical,
+              highCount: counts.high,
+              mediumCount: counts.medium,
+              lowCount: counts.low,
+              contentHash,
+              scannerVersion,
+              hmacSecret,
+              rawReport: {
+                generator: 'hackmyagent',
+                totalFindings: result.findings.length,
+                failedFindings: failed.length,
+                scanDepth,
+              },
+            });
+
+            if (format === 'text') {
+              console.log(`\nCI scan result submitted to registry.`);
+              console.log(`  Scan ID: ${scanId}`);
+              console.log(`  Valid: ${ciResult.valid}`);
+              console.log(`  Trust impact: ${ciResult.trustImpact}\n`);
+            } else if (format === 'json') {
+              console.error(JSON.stringify({ ciPublish: { scanId, ...ciResult } }, null, 2));
+            }
+          }
+        } catch (ciErr: unknown) {
+          const msg = ciErr instanceof Error ? ciErr.message : 'unknown error';
+          console.error(`\nFailed to submit CI scan result: ${msg}`);
           console.error('Scan results are still available locally.');
         }
       }

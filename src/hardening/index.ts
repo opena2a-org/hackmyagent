@@ -3,7 +3,7 @@
  */
 
 export { HardeningScanner } from './scanner';
-export type { ScanOptions } from './scanner';
+export type { ScanOptions, ScanDepth } from './scanner';
 
 export type {
   SecurityCheck,

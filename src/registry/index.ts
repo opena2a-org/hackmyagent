@@ -11,6 +11,7 @@ export type {
   RegistryPackage,
   ScanReportPayload,
   CommunityScanPayload,
+  CIScanResultParams,
 } from './client';
 
 // ATP Publish flow
@@ -20,6 +21,7 @@ export {
   buildPublishPayload,
   publishScanResults,
   formatPublishOutput,
+  computeTreeHash,
 } from './publish';
 
 export type {
