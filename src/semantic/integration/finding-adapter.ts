@@ -24,6 +24,7 @@ export interface SecurityFinding {
   file?: string;
   line?: number;
   fix?: string;
+  guidance?: string;
 }
 
 const CATEGORY_LABELS: Record<string, string> = {

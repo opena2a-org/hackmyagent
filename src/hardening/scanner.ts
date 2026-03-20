@@ -567,8 +567,7 @@ export class HardeningScanner {
     findings.push(...webCredFindings);
 
     // Code injection, supply chain, and operational security checks
-    const codeInjFindings = await this.checkCodeInjection(targetDir, shouldFix);
-    findings.push(...codeInjFindings);
+    // NOTE: CODEINJ-001 removed — deduplicated with NEMO-005 (same detection)
 
     const installFindings = await this.checkInstallScripts(targetDir, shouldFix);
     findings.push(...installFindings);
@@ -582,14 +581,12 @@ export class HardeningScanner {
     const toctouFindings = await this.checkTOCTOU(targetDir, shouldFix);
     findings.push(...toctouFindings);
 
-    const tmpPathFindings = await this.checkTmpPaths(targetDir, shouldFix);
-    findings.push(...tmpPathFindings);
+    // NOTE: TMPPATH-001 removed — deduplicated with NEMO-006 (same detection)
 
     const dockerInjFindings = await this.checkDockerInjection(targetDir, shouldFix);
     findings.push(...dockerInjFindings);
 
-    const envLeakFindings = await this.checkEnvLeak(targetDir, shouldFix);
-    findings.push(...envLeakFindings);
+    // NOTE: ENVLEAK-001 removed — deduplicated with NEMO-007 (same detection)
 
     const sandboxMsgFindings = await this.checkSandboxMessaging(targetDir, shouldFix);
     findings.push(...sandboxMsgFindings);
@@ -1289,38 +1286,41 @@ dist/
     }
 
     // GIT-002: Check for missing sensitive patterns in .gitignore
-    const sensitivePatterns = ['.env', 'secrets.json', '*.pem', '*.key'];
-    const missingPatterns: string[] = [];
+    // Only check if .gitignore exists — GIT-001 handles creation
+    if (gitignoreExists) {
+      const sensitivePatterns = ['.env', 'secrets.json', '*.pem', '*.key'];
+      const missingPatterns: string[] = [];
 
-    for (const pattern of sensitivePatterns) {
-      if (!gitignoreContent.includes(pattern) && !gitignoreContent.includes(pattern.replace('*', ''))) {
-        missingPatterns.push(pattern);
+      for (const pattern of sensitivePatterns) {
+        if (!gitignoreContent.includes(pattern) && !gitignoreContent.includes(pattern.replace('*', ''))) {
+          missingPatterns.push(pattern);
+        }
       }
-    }
 
-    let git002Fixed = false;
-    if (missingPatterns.length > 0 && autoFix) {
-      const patternsToAdd = '\n# Security patterns (auto-added)\n' + missingPatterns.join('\n') + '\n';
-      gitignoreContent += patternsToAdd;
-      await fs.writeFile(gitignorePath, gitignoreContent);
-      git002Fixed = true;
-    }
+      let git002Fixed = false;
+      if (missingPatterns.length > 0 && autoFix) {
+        const patternsToAdd = '\n# Security patterns (auto-added)\n' + missingPatterns.join('\n') + '\n';
+        gitignoreContent += patternsToAdd;
+        await fs.writeFile(gitignorePath, gitignoreContent);
+        git002Fixed = true;
+      }
 
-    // Only report if patterns are missing
-    if (missingPatterns.length > 0) {
-      findings.push({
-        checkId: 'GIT-002',
-        name: 'Incomplete .gitignore',
-        description: `Missing: ${missingPatterns.join(', ')}`,
-        category: 'git',
-        severity: 'high',
-        passed: git002Fixed,
-        message: `Add patterns: ${missingPatterns.join(', ')}`,
-        file: '.gitignore',
-        fixable: true,
-        fixed: git002Fixed,
-        fix: `Run \`${this.cliName} secure --fix\` to add ${missingPatterns.join(', ')} to .gitignore so sensitive files won't be accidentally committed`,
-      });
+      // Only report if patterns are missing
+      if (missingPatterns.length > 0) {
+        findings.push({
+          checkId: 'GIT-002',
+          name: 'Incomplete .gitignore',
+          description: `Missing: ${missingPatterns.join(', ')}`,
+          category: 'git',
+          severity: 'high',
+          passed: git002Fixed,
+          message: `Add patterns: ${missingPatterns.join(', ')}`,
+          file: '.gitignore',
+          fixable: true,
+          fixed: git002Fixed,
+          fix: `Run \`${this.cliName} secure --fix\` to add ${missingPatterns.join(', ')} to .gitignore so sensitive files won't be accidentally committed`,
+        });
+      }
     }
 
     // GIT-003: Check if .env exists but not in .gitignore
@@ -4589,7 +4589,8 @@ dist/
         fixable: true,
         fixed: skill001Fixed,
         fixMessage: skill001Fixed ? 'Added SHA-256 signature block to skill file' : undefined,
-        fix: 'Run `hackmyagent fix-all --with-aim` to automatically sign all skill files with a cryptographic identity',
+        fix: 'hackmyagent fix-all --with-aim',
+        guidance: 'Unsigned skills cannot be verified for authenticity or integrity. Sign with a cryptographic identity to enable tamper detection.',
       });
 
       // SKILL-002: Remote Fetch Pattern
@@ -4610,7 +4611,8 @@ dist/
               file: relativePath,
               line: i + 1,
               fixable: false,
-              fix: 'Remove curl|sh, wget|sh, and other remote code execution patterns',
+              fix: 'Remove the curl|sh or wget|sh pattern from this file',
+              guidance: 'Remote code execution patterns download and execute arbitrary code. Replace with a pinned dependency or vendored script with checksum verification.',
             });
             break; // One finding per line
           }
@@ -4634,7 +4636,8 @@ dist/
             file: relativePath,
             line: i + 1,
             fixable: false,
-            fix: 'Heartbeats should be configured separately with restricted permissions, not bundled in skills',
+            fix: 'Move scheduled task configuration to a separate heartbeat config file',
+            guidance: 'Skills that install heartbeats or cron jobs gain persistent execution beyond the user session. Heartbeats should be configured separately with restricted permissions.',
           });
         }
       }
@@ -4672,7 +4675,8 @@ dist/
             fixable: true,
             fixed: fixApplied,
             fixMessage: fixApplied ? 'Restricted filesystem access to sandbox scope' : undefined,
-            fix: 'Restrict filesystem access to specific directories (e.g., filesystem:./data/*)',
+            fix: 'hackmyagent secure --fix',
+            guidance: 'Broad filesystem access (filesystem:* or filesystem:~/) lets skills read/write anywhere. Restrict to specific directories (e.g., filesystem:./data/*).',
           });
         }
       }
@@ -4698,7 +4702,8 @@ dist/
               file: relativePath,
               line: i + 1,
               fixable: false,
-              fix: 'Skills should never access credential files like ~/.ssh, ~/.aws, wallets, or .env files',
+              fix: 'Remove credential file access patterns from this skill',
+              guidance: 'Skills accessing ~/.ssh, ~/.aws, wallets, or .env files can exfiltrate credentials. Use npx secretless-ai init to protect credentials from AI tool context.',
             });
             break; // One finding per line per check
           }
@@ -4722,7 +4727,8 @@ dist/
               file: relativePath,
               line: i + 1,
               fixable: false,
-              fix: 'Remove webhook.site, requestbin, ngrok, and suspicious POST patterns',
+              fix: 'Remove the exfiltration endpoint from this skill',
+              guidance: 'Data exfiltration patterns (webhook.site, requestbin, ngrok, suspicious POST) send local data to external servers. Remove or replace with audited, allow-listed endpoints.',
             });
             break; // One finding per line per check
           }
@@ -4746,7 +4752,8 @@ dist/
               file: relativePath,
               line: i + 1,
               fixable: false,
-              fix: 'Remove social engineering instructions that trick users into copying/pasting commands',
+              fix: 'Remove the copy/paste instruction block from this skill',
+              guidance: 'ClickFix social engineering tricks users into copying and pasting malicious commands. This technique was used extensively in the ClawHavoc campaign.',
             });
             break; // One finding per line per check
           }
@@ -4770,7 +4777,8 @@ dist/
               file: relativePath,
               line: i + 1,
               fixable: false,
-              fix: 'Remove netcat, bash -i, /dev/tcp, and other reverse shell patterns',
+              fix: 'Remove the reverse shell pattern from this skill',
+              guidance: 'Reverse shell patterns (netcat, bash -i, /dev/tcp) establish remote command execution. This is a strong indicator of malicious intent.',
             });
             break; // One finding per line per check
           }
@@ -4803,7 +4811,8 @@ dist/
             message: `Skill name "${skillBasename}" is similar to popular skill "${popular}" (potential typosquatting)`,
             file: relativePath,
             fixable: false,
-            fix: 'Rename the skill to avoid confusion with popular skills, or verify this is intentional',
+            fix: `hackmyagent check ${relativePath}`,
+            guidance: 'Typosquatting uses names similar to popular skills to trick users into installing malicious versions. Verify the skill source and rename if unintentional.',
           });
           break; // One typosquatting finding per skill file
         }
@@ -4830,7 +4839,8 @@ dist/
             file: relativePath,
             line: i + 1,
             fixable: false,
-            fix: 'Skills should not access .env files or environment variables containing secrets',
+            fix: 'npx secretless-ai init',
+            guidance: 'Skills accessing .env files or process.env can exfiltrate API keys and secrets. Use Secretless AI to block credential access from AI tool context.',
           });
         }
       }
@@ -4856,7 +4866,8 @@ dist/
             file: relativePath,
             line: i + 1,
             fixable: false,
-            fix: 'Skills should not access browser data, cookies, localStorage, or sessionStorage',
+            fix: 'Remove browser data access patterns from this skill',
+            guidance: 'Skills accessing browser data (cookies, localStorage, sessionStorage) can steal session tokens and authentication state.',
           });
         }
       }
@@ -4882,7 +4893,8 @@ dist/
             file: relativePath,
             line: i + 1,
             fixable: false,
-            fix: 'Skills should never access cryptocurrency wallets, seed phrases, or private keys',
+            fix: 'Remove crypto wallet access patterns from this skill',
+            guidance: 'Skills accessing wallets, seed phrases, or private keys can drain cryptocurrency funds. No legitimate skill needs this access.',
           });
         }
       }
@@ -6130,7 +6142,8 @@ dist/
             : 'Skill lacks publisher metadata - cannot verify source',
         file: relativePath,
         fixable: false,
-        fix: 'Add publisher: and publisher_verified: true to skill frontmatter after verification',
+        fix: `hackmyagent check ${relativePath}`,
+        guidance: 'Unverified publishers cannot be trusted. Add publisher: and publisher_verified: true to skill frontmatter after DNS TXT record verification.',
       });
 
       // SUPPLY-002: Skill Not in Registry
@@ -6148,7 +6161,8 @@ dist/
           : 'Skill lacks registry_attestation - not listed in trusted registry',
         file: relativePath,
         fixable: false,
-        fix: 'Register skill with a trusted registry (e.g., clawhub.io, skillregistry.openclaw.org)',
+        fix: 'Add registry_attestation: to skill frontmatter after registry submission',
+        guidance: 'Unregistered skills have no community trust signal. Register with a trusted registry to enable trust scoring and vulnerability alerts.',
       });
 
       // SUPPLY-003: Known Malicious Skill Pattern (ClawHavoc campaign)
@@ -6183,7 +6197,8 @@ dist/
           message: `Skill matches known malicious pattern: "${matchedPattern}"`,
           file: relativePath,
           fixable: false,
-          fix: 'Remove this skill -- it matches known malware from the ClawHavoc campaign',
+          fix: `rm ${relativePath}`,
+          guidance: 'This skill matches known malicious patterns from the ClawHavoc campaign. Remove immediately and audit any systems it had access to.',
         });
       }
 
@@ -6202,7 +6217,8 @@ dist/
           : 'Skill lacks installed_hash - cannot detect version drift or tampering',
         file: relativePath,
         fixable: false,
-        fix: 'Add installed_hash: with SHA-256 hash of the original skill content',
+        fix: 'hackmyagent fix-all --with-aim',
+        guidance: 'Without an installed_hash, modifications to the skill cannot be detected. The hash enables tamper detection on every scan.',
       });
 
       // SUPPLY-005: ClawHavoc C2 IP
@@ -6218,7 +6234,8 @@ dist/
             message: `Known C2 IP address found: ${ip}`,
             file: relativePath,
             fixable: false,
-            fix: 'Remove this skill -- contains known malware C2 infrastructure',
+            fix: `rm ${relativePath}`,
+            guidance: 'This skill contains a known ClawHavoc command-and-control IP address. Remove immediately and check network logs for connections to this IP.',
           });
           break;
         }
@@ -6237,7 +6254,8 @@ dist/
             message: `Known malware filename referenced: "${filename}"`,
             file: relativePath,
             fixable: false,
-            fix: 'Remove this skill -- references known malware payload',
+            fix: `rm ${relativePath}`,
+            guidance: 'This skill references a known ClawHavoc malware payload filename. Remove and scan for other indicators of compromise.',
           });
           break;
         }
@@ -6257,7 +6275,8 @@ dist/
             message: `ClickFix social engineering pattern detected: "${match[0]}"`,
             file: relativePath,
             fixable: false,
-            fix: 'Review and remove suspicious download/execute instructions',
+            fix: 'Remove the download/execute instruction from this skill',
+            guidance: 'ClickFix patterns trick users into downloading and executing malware. This technique is associated with the ClawHavoc campaign.',
           });
           break;
         }
@@ -6276,7 +6295,8 @@ dist/
           message: `Suspicious archive password pattern: "${archiveMatch[0]}"`,
           file: relativePath,
           fixable: false,
-          fix: 'Investigate password-protected archive reference - common malware distribution technique',
+          fix: 'Remove the archive password reference from this skill',
+          guidance: 'Password-protected archives are a common malware distribution technique to bypass antivirus scanning. Investigate the archive source.',
         });
       }
     }

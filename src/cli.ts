@@ -134,7 +134,7 @@ program
   .name('hackmyagent')
   .description(`Find it. Break it. Fix it.
 
-The hacker's toolkit for AI agents. 202 security checks, 115 attack
+The hacker's toolkit for AI agents. 199 security checks, 115 attack
 payloads, auto-fix with rollback, and OASB benchmark compliance.
 
 Documentation: https://hackmyagent.com/docs
@@ -143,10 +143,10 @@ Updates (v${VERSION}):
   - NemoClaw sandbox scanner (28 installation checks)
   - 10 new static analysis patterns (NEMO series)
   - Community trust contributions
-  - 202 checks across 39 categories
+  - 199 checks across 60 categories
 
 Examples:
-  $ hackmyagent secure                         Find vulnerabilities (202 checks)
+  $ hackmyagent secure                         Find vulnerabilities (199 checks)
   $ hackmyagent attack --local                 Break it with 115 attack payloads
   $ hackmyagent secure --fix                   Fix issues automatically
   $ hackmyagent fix-all                        Run all security plugins
@@ -156,7 +156,7 @@ Examples:
 
 program.addHelpText('beforeAll', `
 Quick start:
-  $ hackmyagent secure              Scan current directory (202 checks)
+  $ hackmyagent secure              Scan current directory (199 checks)
   $ hackmyagent fix-all --with-aim  Auto-fix + create agent identity
   $ hackmyagent attack              Red-team your agent
 `);
@@ -1820,7 +1820,7 @@ program
   .command('secure')
   .description(`Scan and harden your agent setup
 
-Performs 202 security checks across 39 categories:
+Performs 199 security checks across 60 categories:
   • Credentials: API key exposure, secrets in configs
   • MCP: Server configs, tool permissions, secrets
   • Network: TLS, interface bindings, CORS
@@ -4656,7 +4656,7 @@ Examples:
       console.log(`\n  Detected: ${result.tool}\n`);
       console.log(`  Added HackMyAgent MCP server to ${result.configPath}\n`);
       console.log(`  Available tools in ${result.tool}:`);
-      console.log(`    hackmyagent_scan       — 202 checks + structural analysis`);
+      console.log(`    hackmyagent_scan       — 199 checks + structural analysis`);
       console.log(`    hackmyagent_deep_scan  — Full analysis with LLM reasoning`);
       console.log(`    hackmyagent_analyze_file — Analyze a single file`);
       console.log(`    hackmyagent_benchmark  — OASB-1 compliance assessment\n`);
@@ -5452,5 +5452,51 @@ Examples:
       process.exit(1);
     }
   });
+
+program
+  .command('check-metadata')
+  .description('Export static metadata for all security checks (JSON)')
+  .action(() => {
+    const { getAttackClass } = require('./hardening/taxonomy');
+    const metadata: Record<string, { checkId: string; category: string; attackClass: string; severity: string; guidance: string }> = {};
+
+    const checks: Record<string, { category: string; severity: string; guidance: string }> = {
+      // SKILL checks
+      'SKILL-001': { category: 'skill', severity: 'medium', guidance: 'Unsigned skills cannot be verified for authenticity or integrity. Sign with a cryptographic identity to enable tamper detection.' },
+      'SKILL-002': { category: 'skill', severity: 'critical', guidance: 'Remote code execution patterns download and execute arbitrary code. Replace with a pinned dependency or vendored script with checksum verification.' },
+      'SKILL-003': { category: 'skill', severity: 'high', guidance: 'Skills that install heartbeats or cron jobs gain persistent execution beyond the user session.' },
+      'SKILL-004': { category: 'skill', severity: 'critical', guidance: 'Broad filesystem access lets skills read/write anywhere. Restrict to specific directories.' },
+      'SKILL-005': { category: 'skill', severity: 'critical', guidance: 'Skills accessing credential files can exfiltrate API keys and secrets.' },
+      'SKILL-006': { category: 'skill', severity: 'critical', guidance: 'Data exfiltration patterns send local data to external servers.' },
+      'SKILL-007': { category: 'skill', severity: 'critical', guidance: 'ClickFix social engineering tricks users into copying and pasting malicious commands.' },
+      'SKILL-008': { category: 'skill', severity: 'critical', guidance: 'Reverse shell patterns establish remote command execution. Strong indicator of malicious intent.' },
+      'SKILL-009': { category: 'skill', severity: 'high', guidance: 'Typosquatting uses names similar to popular skills to trick users into installing malicious versions.' },
+      'SKILL-010': { category: 'skill', severity: 'critical', guidance: 'Skills accessing .env files or process.env can exfiltrate API keys and secrets.' },
+      'SKILL-011': { category: 'skill', severity: 'critical', guidance: 'Skills accessing browser data can steal session tokens and authentication state.' },
+      'SKILL-012': { category: 'skill', severity: 'critical', guidance: 'Skills accessing wallets or seed phrases can drain cryptocurrency funds.' },
+      // SUPPLY checks
+      'SUPPLY-001': { category: 'supply', severity: 'high', guidance: 'Unverified publishers cannot be trusted. Verify via DNS TXT record.' },
+      'SUPPLY-002': { category: 'supply', severity: 'medium', guidance: 'Unregistered skills have no community trust signal.' },
+      'SUPPLY-003': { category: 'supply', severity: 'critical', guidance: 'Matches known malicious patterns from the ClawHavoc campaign. Remove immediately.' },
+      'SUPPLY-004': { category: 'supply', severity: 'high', guidance: 'Without installed_hash, skill modifications cannot be detected.' },
+      'SUPPLY-005': { category: 'supply', severity: 'critical', guidance: 'Contains known ClawHavoc C2 IP address. Remove and check network logs.' },
+      'SUPPLY-006': { category: 'supply', severity: 'critical', guidance: 'References known ClawHavoc malware payload filename.' },
+      'SUPPLY-007': { category: 'supply', severity: 'high', guidance: 'ClickFix patterns trick users into downloading and executing malware.' },
+      'SUPPLY-008': { category: 'supply', severity: 'high', guidance: 'Password-protected archives bypass AV scanning.' },
+    };
+
+    for (const [checkId, info] of Object.entries(checks)) {
+      const attackClass = getAttackClass(checkId) || 'UNKNOWN';
+      metadata[checkId] = { checkId, category: info.category, attackClass, severity: info.severity, guidance: info.guidance };
+    }
+
+    writeJsonStdout(metadata);
+  });
+
+// Show help and exit 0 when no arguments provided
+if (process.argv.length <= 2) {
+  program.outputHelp();
+  process.exit(0);
+}
 
 program.parse();

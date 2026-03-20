@@ -190,14 +190,14 @@ const TAXONOMY_MAP: Record<string, string> = {
   'WEBCRED-001': 'RETROACTIVE-PRIV',
 
   // Code injection, supply chain, operational security
-  'CODEINJ-001': 'CODE-INJECTION',
+  // CODEINJ-001 removed — deduplicated with NEMO-005
   'INSTALL-001': 'SUPPLY-CHAIN-INSTALL',
   'CLIPASS-001': 'RETROACTIVE-PRIV',
   'INTEGRITY-001': 'INTEGRITY-BYPASS',
   'TOCTOU-001': 'TOCTOU-RACE',
-  'TMPPATH-001': 'TMPPATH-ATTACK',
+  // TMPPATH-001 removed — deduplicated with NEMO-006
   'DOCKERINJ-001': 'CODE-INJECTION',
-  'ENVLEAK-001': 'RETROACTIVE-PRIV',
+  // ENVLEAK-001 removed — deduplicated with NEMO-007
   'SANDBOX-005': 'SANDBOX-ESCAPE',
   'WEBEXPOSE-001': 'RETROACTIVE-PRIV',
   'WEBEXPOSE-002': 'RETROACTIVE-PRIV',

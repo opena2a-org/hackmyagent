@@ -59,8 +59,10 @@ export interface SecurityFinding {
   file?: string;
   /** Line number in the file where the issue was found */
   line?: number;
-  /** Specific fix instruction for this issue */
+  /** Runnable command or concise action to fix this issue */
   fix?: string;
+  /** Human-readable explanation of why this matters and how to remediate */
+  guidance?: string;
   /** Attack taxonomy class this finding maps to (e.g., "CRED-HARVEST") */
   attackClass?: string;
   details?: Record<string, unknown>;
