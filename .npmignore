@@ -1,7 +1,12 @@
 test-fixtures/
+fixtures/
 __tests__/
+test-server/
+scripts/
 *.test.ts
 *.test.js
+*.spec.ts
+*.spec.js
 .github/
 docs/
 *.md
@@ -13,3 +18,12 @@ src/
 tsconfig.json
 vitest.config.*
 .gitignore
+*.tgz
+
+# Defense-in-depth: sensitive file patterns
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
