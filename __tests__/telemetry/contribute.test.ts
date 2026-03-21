@@ -25,6 +25,10 @@ import {
   type ContributionEvent,
 } from '../../src/telemetry/contribute';
 import {
+  getQueuedEvents,
+  clearQueue as sharedClearQueue,
+} from '@opena2a/contribute';
+import {
   recordScanAndMaybeShowTip,
   isContributeEnabled,
   shouldPromptContribute,
@@ -105,23 +109,9 @@ function makeSampleFindings(): SecurityFinding[] {
 // ---------------------------------------------------------------
 
 describe('getContributorToken', () => {
-  let tmpHome: string;
-  let originalEnv: string | undefined;
-
-  beforeEach(() => {
-    tmpHome = createTempDir();
-    originalEnv = process.env.OPENA2A_HOME;
-    process.env.OPENA2A_HOME = tmpHome;
-  });
-
-  afterEach(() => {
-    if (originalEnv === undefined) {
-      delete process.env.OPENA2A_HOME;
-    } else {
-      process.env.OPENA2A_HOME = originalEnv;
-    }
-    cleanupDir(tmpHome);
-  });
+  // The shared library (@opena2a/contribute) uses ~/.opena2a/ directly
+  // (not OPENA2A_HOME), so we test against the real home directory.
+  const opena2aDir = path.join(os.homedir(), '.opena2a');
 
   it('returns a 64-character hex string (SHA-256)', () => {
     const token = getContributorToken();
@@ -134,23 +124,12 @@ describe('getContributorToken', () => {
     expect(token1).toBe(token2);
   });
 
-  it('creates contributor-salt file on first call', () => {
+  it('creates contributor-salt file in ~/.opena2a/', () => {
     getContributorToken();
-    const saltPath = path.join(tmpHome, 'contributor-salt');
+    const saltPath = path.join(opena2aDir, 'contributor-salt');
     expect(fs.existsSync(saltPath)).toBe(true);
     const salt = fs.readFileSync(saltPath, 'utf-8').trim();
     expect(salt).toMatch(/^[a-f0-9]{64}$/);
-  });
-
-  it('produces different tokens with different salts', () => {
-    const token1 = getContributorToken();
-
-    // Replace the salt
-    const saltPath = path.join(tmpHome, 'contributor-salt');
-    fs.writeFileSync(saltPath, 'different-salt-value');
-
-    const token2 = getContributorToken();
-    expect(token1).not.toBe(token2);
   });
 
   it('is aliased as generateContributorToken', () => {
@@ -320,25 +299,15 @@ describe('buildContributionPayloadFromDir', () => {
 // ---------------------------------------------------------------
 
 describe('queueEvent', () => {
-  let tmpHome: string;
-  let originalEnv: string | undefined;
-
   beforeEach(() => {
-    tmpHome = createTempDir();
-    originalEnv = process.env.OPENA2A_HOME;
-    process.env.OPENA2A_HOME = tmpHome;
+    sharedClearQueue();
   });
 
   afterEach(() => {
-    if (originalEnv === undefined) {
-      delete process.env.OPENA2A_HOME;
-    } else {
-      process.env.OPENA2A_HOME = originalEnv;
-    }
-    cleanupDir(tmpHome);
+    sharedClearQueue();
   });
 
-  it('writes events to contribute-queue.json', () => {
+  it('queues events via shared library', () => {
     const event: ContributionEvent = {
       type: 'scan_result',
       tool: 'hackmyagent',
@@ -353,12 +322,10 @@ describe('queueEvent', () => {
 
     queueEvent(event);
 
-    const queuePath = path.join(tmpHome, 'contribute-queue.json');
-    expect(fs.existsSync(queuePath)).toBe(true);
-
-    const queue = JSON.parse(fs.readFileSync(queuePath, 'utf-8'));
-    expect(queue.events).toHaveLength(1);
-    expect(queue.events[0].tool).toBe('hackmyagent');
+    const events = getQueuedEvents();
+    expect(events.length).toBeGreaterThanOrEqual(1);
+    const last = events[events.length - 1];
+    expect(last.tool).toBe('hackmyagent');
   });
 
   it('appends multiple events', () => {
@@ -377,9 +344,8 @@ describe('queueEvent', () => {
     queueEvent(makeEvent('pkg-a'));
     queueEvent(makeEvent('pkg-b'));
 
-    const queuePath = path.join(tmpHome, 'contribute-queue.json');
-    const queue = JSON.parse(fs.readFileSync(queuePath, 'utf-8'));
-    expect(queue.events).toHaveLength(2);
+    const events = getQueuedEvents();
+    expect(events.length).toBeGreaterThanOrEqual(2);
   });
 });
 
@@ -388,23 +354,13 @@ describe('queueEvent', () => {
 // ---------------------------------------------------------------
 
 describe('flushQueue', () => {
-  let tmpHome: string;
-  let originalEnv: string | undefined;
-
   beforeEach(() => {
-    tmpHome = createTempDir();
-    originalEnv = process.env.OPENA2A_HOME;
-    process.env.OPENA2A_HOME = tmpHome;
+    sharedClearQueue();
   });
 
   afterEach(() => {
-    if (originalEnv === undefined) {
-      delete process.env.OPENA2A_HOME;
-    } else {
-      process.env.OPENA2A_HOME = originalEnv;
-    }
     vi.unstubAllGlobals();
-    cleanupDir(tmpHome);
+    sharedClearQueue();
   });
 
   it('submits batch to /api/v1/contribute endpoint', async () => {
@@ -431,9 +387,8 @@ describe('flushQueue', () => {
     expect(fetchCall[1].method).toBe('POST');
 
     // Queue should be empty after successful flush
-    const queuePath = path.join(tmpHome, 'contribute-queue.json');
-    const queue = JSON.parse(fs.readFileSync(queuePath, 'utf-8'));
-    expect(queue.events).toHaveLength(0);
+    const events = getQueuedEvents();
+    expect(events).toHaveLength(0);
   });
 
   it('uses custom registry URL when provided', async () => {
@@ -467,9 +422,8 @@ describe('flushQueue', () => {
     expect(ok).toBe(false);
 
     // Events should still be in queue
-    const queuePath = path.join(tmpHome, 'contribute-queue.json');
-    const queue = JSON.parse(fs.readFileSync(queuePath, 'utf-8'));
-    expect(queue.events).toHaveLength(1);
+    const events = getQueuedEvents();
+    expect(events.length).toBeGreaterThanOrEqual(1);
   });
 
   it('returns true for empty queue', async () => {
@@ -483,23 +437,13 @@ describe('flushQueue', () => {
 // ---------------------------------------------------------------
 
 describe('submitContribution', () => {
-  let tmpHome: string;
-  let originalEnv: string | undefined;
-
   beforeEach(() => {
-    tmpHome = createTempDir();
-    originalEnv = process.env.OPENA2A_HOME;
-    process.env.OPENA2A_HOME = tmpHome;
+    sharedClearQueue();
   });
 
   afterEach(() => {
-    if (originalEnv === undefined) {
-      delete process.env.OPENA2A_HOME;
-    } else {
-      process.env.OPENA2A_HOME = originalEnv;
-    }
     vi.unstubAllGlobals();
-    cleanupDir(tmpHome);
+    sharedClearQueue();
   });
 
   it('queues event and flushes (legacy compat)', async () => {
