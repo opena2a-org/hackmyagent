@@ -1,9 +1,10 @@
 /**
  * Community Contribution Module
  *
- * Queue-based contribution of anonymized HMA scan summaries to the
- * OpenA2A Registry. Compatible with @opena2a/contribute queue format:
- * events queued by HMA are flushed by opena2a-cli and vice versa.
+ * Delegates queue, flush, and contributor token operations to
+ * @opena2a/contribute. Retains HMA-specific logic for building
+ * scan events from SecurityFinding arrays (ecosystem detection,
+ * finding-to-summary conversion).
  *
  * Queue file: ~/.opena2a/contribute-queue.json
  * Endpoint:   POST api.oa2a.org/api/v1/contribute
@@ -13,147 +14,45 @@
  * no raw finding descriptions, no PII.
  */
 
-import { createHash, randomBytes } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { hostname, type as osType, userInfo } from 'os';
+import {
+  getContributorToken as sharedGetContributorToken,
+  queueEvent as sharedQueueEvent,
+  shouldFlush as sharedShouldFlush,
+  buildBatch as sharedBuildBatch,
+  clearQueue as sharedClearQueue,
+  submitBatch,
+} from '@opena2a/contribute';
+import type {
+  ContributionEvent,
+  ContributionBatch,
+} from '@opena2a/contribute';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { VERSION } from '../index';
 import type { SecurityFinding } from '../hardening';
 
 // ---------------------------------------------------------------------------
-// Paths and constants
+// Re-export types from @opena2a/contribute
 // ---------------------------------------------------------------------------
 
-const REGISTRY_URL = 'https://api.oa2a.org';
-const FLUSH_THRESHOLD = 10;
-const MAX_QUEUE_SIZE = 100;
-const TIMEOUT_MS = 10_000;
-
-function getOpena2aHome(): string {
-  return process.env.OPENA2A_HOME || join(require('os').homedir(), '.opena2a');
-}
-
-function ensureDir(): void {
-  const dir = getOpena2aHome();
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-}
+export type { ContributionEvent, ContributionBatch };
 
 // ---------------------------------------------------------------------------
-// @opena2a/contribute-compatible types
+// Contributor token (delegated to @opena2a/contribute)
 // ---------------------------------------------------------------------------
 
-/** Matches ContributionEvent from @opena2a/contribute/types. */
-export interface ContributionEvent {
-  type: 'scan_result' | 'detection' | 'behavior' | 'interaction' | 'adoption';
-  tool: string;
-  toolVersion: string;
-  timestamp: string;
-  package?: {
-    name: string;
-    version?: string;
-    ecosystem?: string;
-  };
-  scanSummary?: {
-    totalChecks: number;
-    passed: number;
-    critical: number;
-    high: number;
-    medium: number;
-    low: number;
-    score: number;
-    verdict: string;
-    durationMs: number;
-  };
-}
-
-/** Matches ContributionBatch from @opena2a/contribute/types. */
-export interface ContributionBatch {
-  contributorToken: string;
-  events: ContributionEvent[];
-  submittedAt: string;
-}
-
-interface QueueFile {
-  events: ContributionEvent[];
-  lastFlushAttempt?: string;
-}
+export const getContributorToken = sharedGetContributorToken;
 
 // ---------------------------------------------------------------------------
-// Contributor token (stable per-device, SHA256-hashed)
+// Queue operations (delegated to @opena2a/contribute)
 // ---------------------------------------------------------------------------
-
-export function getContributorToken(): string {
-  const home = getOpena2aHome();
-  const saltPath = join(home, 'contributor-salt');
-
-  let salt: string;
-  if (existsSync(saltPath)) {
-    salt = readFileSync(saltPath, 'utf-8').trim();
-  } else {
-    salt = randomBytes(32).toString('hex');
-    ensureDir();
-    writeFileSync(saltPath, salt, { mode: 0o600 });
-  }
-
-  const input = `${hostname()}|${userInfo().username}|${salt}`;
-  return createHash('sha256').update(input).digest('hex');
-}
-
-// ---------------------------------------------------------------------------
-// Queue operations (compatible with @opena2a/contribute queue format)
-// ---------------------------------------------------------------------------
-
-function queuePath(): string {
-  return join(getOpena2aHome(), 'contribute-queue.json');
-}
-
-function loadQueue(): QueueFile {
-  const path = queuePath();
-  if (!existsSync(path)) return { events: [] };
-  try {
-    return JSON.parse(readFileSync(path, 'utf-8'));
-  } catch {
-    return { events: [] };
-  }
-}
-
-function saveQueue(queue: QueueFile): void {
-  ensureDir();
-  writeFileSync(queuePath(), JSON.stringify(queue), { mode: 0o600 });
-}
 
 export function queueEvent(event: ContributionEvent): void {
-  const queue = loadQueue();
-  queue.events.push(event);
-
-  if (queue.events.length > MAX_QUEUE_SIZE) {
-    queue.events = queue.events.slice(-MAX_QUEUE_SIZE);
-  }
-
-  saveQueue(queue);
-}
-
-function shouldFlush(): boolean {
-  return loadQueue().events.length >= FLUSH_THRESHOLD;
-}
-
-function buildBatch(): ContributionBatch | null {
-  const events = loadQueue().events;
-  if (events.length === 0) return null;
-
-  return {
-    contributorToken: getContributorToken(),
-    events,
-    submittedAt: new Date().toISOString(),
-  };
-}
-
-function clearQueue(): void {
-  saveQueue({ events: [] });
+  sharedQueueEvent(event);
 }
 
 // ---------------------------------------------------------------------------
-// Ecosystem and version detection
+// Ecosystem and version detection (HMA-specific)
 // ---------------------------------------------------------------------------
 
 function detectEcosystem(directory: string): string {
@@ -188,18 +87,7 @@ function detectPackageVersion(directory: string, ecosystem: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Map OS type
-// ---------------------------------------------------------------------------
-
-function resolveOsType(): string {
-  const t = osType();
-  if (t === 'Darwin') return 'macos';
-  if (t === 'Windows_NT') return 'windows';
-  return 'linux';
-}
-
-// ---------------------------------------------------------------------------
-// Build contribution event from scan findings
+// Build contribution event from scan findings (HMA-specific adapter)
 // ---------------------------------------------------------------------------
 
 function computeVerdict(findings: SecurityFinding[]): string {
@@ -254,7 +142,7 @@ export function buildScanEvent(
 }
 
 // ---------------------------------------------------------------------------
-// Submit: queue + flush
+// Submit: queue + flush (delegated to @opena2a/contribute)
 // ---------------------------------------------------------------------------
 
 /**
@@ -266,9 +154,9 @@ export async function queueAndMaybeFlush(
   registryUrl?: string,
   verbose?: boolean,
 ): Promise<void> {
-  queueEvent(event);
+  sharedQueueEvent(event);
 
-  if (shouldFlush()) {
+  if (sharedShouldFlush()) {
     await flushQueue(registryUrl, verbose);
   }
 }
@@ -281,42 +169,14 @@ export async function flushQueue(
   registryUrl?: string,
   verbose?: boolean,
 ): Promise<boolean> {
-  const batch = buildBatch();
+  const batch = sharedBuildBatch();
   if (!batch) return true;
 
-  const url = `${(registryUrl || REGISTRY_URL).replace(/\/+$/, '')}/api/v1/contribute`;
-
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': `HackMyAgent-CLI/${VERSION}`,
-      },
-      body: JSON.stringify(batch),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timer);
-
-    if (response.ok) {
-      clearQueue();
-      if (verbose) {
-        process.stderr.write(
-          `  Shared: anonymized results for ${batch.events.length} scan(s) (community trust)\n`,
-        );
-      }
-      return true;
-    }
-
-    return false;
-  } catch {
-    // Offline or unreachable -- events stay in queue for next time
-    return false;
+  const success = await submitBatch(batch, registryUrl, verbose);
+  if (success) {
+    sharedClearQueue();
   }
+  return success;
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +197,7 @@ export async function submitContribution(
   payload: ContributionEvent,
   registryUrl?: string,
 ): Promise<{ success: boolean; scanId?: string; error?: string }> {
-  queueEvent(payload);
+  sharedQueueEvent(payload);
   const ok = await flushQueue(registryUrl);
   return { success: ok };
 }
