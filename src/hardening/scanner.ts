@@ -5191,6 +5191,11 @@ dist/
         /os\.environ/,
         /\$ENV\{/,
         /System\.getenv/,
+        /printenv/,
+        /\$\(env\)/,
+        /\$\(printenv/,
+        /\$HOME\b/,
+        /\$\{[A-Z_]+\}/,
       ];
       const outboundPatterns = [
         /network:outbound/,
@@ -5228,6 +5233,10 @@ dist/
         { pattern: /String\.fromCharCode/, label: 'String.fromCharCode obfuscation' },
         { pattern: /\\x[0-9a-fA-F]{2}/, label: 'hex-encoded string' },
         { pattern: /(?:atob|Buffer\.from)\s*\([^)]+\)[\s\S]*?eval\s*\(/, label: 'base64+eval combo' },
+        { pattern: /base64\s+-d/, label: 'shell base64 decode' },
+        { pattern: /eval\s+\$\(/, label: 'shell eval $(...)' },
+        { pattern: /\becho\s+['"][A-Za-z0-9+/=]{20,}['"]\s*\|\s*base64/, label: 'echo+base64 pipe' },
+        { pattern: /new\s+Function\s*\(/, label: 'new Function() dynamic execution' },
       ];
 
       for (const { pattern, label } of obfuscationPatterns) {

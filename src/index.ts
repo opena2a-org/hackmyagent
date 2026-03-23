@@ -3,7 +3,7 @@
  * Unified security toolkit for AI agents.
  */
 
-export const VERSION = '0.11.9';
+export const VERSION = '0.11.11';
 
 // Checker module
 export {
