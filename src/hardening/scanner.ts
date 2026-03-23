@@ -4618,7 +4618,7 @@ dist/
   }
 
   /**
-   * OpenClaw skill security checks (SKILL-001 to SKILL-006)
+   * OpenClaw skill security checks (SKILL-001 to SKILL-024)
    */
   private async checkOpenclawSkills(
     targetDir: string,
@@ -5085,6 +5085,194 @@ dist/
               guidance: 'Expired signatures mean the skill has not been re-verified since its expiry date. Re-signing renews the validity period and re-verifies content integrity.',
             });
           }
+        }
+      }
+
+      // SKILL-020: Missing/invalid frontmatter
+      const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      if (!fmMatch) {
+        findings.push({
+          checkId: 'SKILL-020',
+          name: 'Missing YAML Frontmatter',
+          description: 'Skill file lacks required YAML frontmatter for capability declaration',
+          category: 'skill',
+          severity: 'high',
+          passed: false,
+          message: `${relativePath}: Skill file lacks required YAML frontmatter (---). Add frontmatter with name, version, and capabilities fields.`,
+          file: relativePath,
+          fixable: true,
+          fix: 'Add YAML frontmatter block with name, version, and capabilities fields',
+          guidance: 'Skills without frontmatter cannot declare their capabilities, making permission validation impossible. Add a --- delimited YAML block at the top of the file.',
+        });
+      } else {
+        const fmRaw = fmMatch[1];
+        const requiredFields = ['name', 'version', 'capabilities'];
+        const missingFields = requiredFields.filter(f => !new RegExp(`^${f}:`, 'm').test(fmRaw));
+        if (missingFields.length > 0) {
+          findings.push({
+            checkId: 'SKILL-020',
+            name: 'Incomplete Frontmatter',
+            description: 'Skill frontmatter is missing required fields',
+            category: 'skill',
+            severity: 'high',
+            passed: false,
+            message: `${relativePath}: Missing required frontmatter fields: ${missingFields.join(', ')}. These are needed for capability declaration and version tracking.`,
+            file: relativePath,
+            fixable: true,
+            fix: `Add missing fields to frontmatter: ${missingFields.join(', ')}`,
+            guidance: 'Incomplete frontmatter prevents proper capability validation. Every skill should declare name, version, and capabilities.',
+          });
+        } else {
+          findings.push({
+            checkId: 'SKILL-020',
+            name: 'Valid Frontmatter',
+            description: 'Skill file has valid YAML frontmatter with required fields',
+            category: 'skill',
+            severity: 'high',
+            passed: true,
+            message: 'Skill has valid frontmatter with name, version, and capabilities',
+            file: relativePath,
+            fixable: false,
+            fix: 'No action needed',
+            guidance: 'Skill frontmatter is properly configured.',
+          });
+        }
+      }
+
+      // SKILL-021: Overprivileged permissions (dangerous capability combinations)
+      const dangerousCombos: Array<{ combo: [string, string]; reason: string }> = [
+        {
+          combo: ['filesystem:*', 'network:outbound'],
+          reason: 'filesystem:* + network:outbound enables data exfiltration',
+        },
+        {
+          combo: ['credential:read', 'network:outbound'],
+          reason: 'credential:read + network:outbound enables credential exfiltration',
+        },
+      ];
+      const capPatterns = content.match(/(?:filesystem|network|credential|tool):[a-z*]+/g) || [];
+      const allCaps = [...new Set(capPatterns)];
+      // Also include capabilities from frontmatter if parsed
+      const declaredCapsForPriv = parseSkillDeclaredCaps(content);
+      for (const dc of declaredCapsForPriv.capabilities) {
+        if (!allCaps.includes(dc)) allCaps.push(dc);
+      }
+
+      for (const { combo, reason } of dangerousCombos) {
+        const matchCap = (actual: string, pattern: string): boolean => {
+          if (actual === pattern) return true;
+          if (pattern.endsWith(':*')) return actual.startsWith(pattern.slice(0, -1));
+          if (actual.endsWith(':*')) return pattern.startsWith(actual.slice(0, -1));
+          return false;
+        };
+        const hasFirst = allCaps.some(c => matchCap(c, combo[0]));
+        const hasSecond = allCaps.some(c => matchCap(c, combo[1]));
+
+        if (hasFirst && hasSecond) {
+          findings.push({
+            checkId: 'SKILL-021',
+            name: 'Overprivileged Permissions',
+            description: 'Skill has dangerous capability combination that enables exfiltration',
+            category: 'skill',
+            severity: 'high',
+            passed: false,
+            message: `${relativePath}: ${reason}. Restrict filesystem access to specific paths or remove outbound network access.`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Restrict capabilities to minimum required permissions',
+            guidance: 'Dangerous capability combinations can enable data or credential exfiltration. Follow the principle of least privilege.',
+          });
+        }
+      }
+
+      // SKILL-022: Environment variable exfiltration
+      const envAccessPatterns = [
+        /process\.env/,
+        /os\.environ/,
+        /\$ENV\{/,
+        /System\.getenv/,
+      ];
+      const outboundPatterns = [
+        /network:outbound/,
+        /fetch\s*\(/,
+        /https?:\/\//,
+        /XMLHttpRequest/,
+        /\.send\s*\(/,
+        /curl\s/,
+        /wget\s/,
+      ];
+      const hasEnvAccess = envAccessPatterns.some(p => p.test(content));
+      const hasOutbound = outboundPatterns.some(p => p.test(content));
+
+      if (hasEnvAccess && hasOutbound) {
+        findings.push({
+          checkId: 'SKILL-022',
+          name: 'Environment Variable Exfiltration Risk',
+          description: 'Skill accesses environment variables and has outbound network capability',
+          category: 'skill',
+          severity: 'critical',
+          passed: false,
+          message: `${relativePath}: Skill accesses environment variables AND has outbound network capability. This combination can exfiltrate secrets via network requests.`,
+          file: relativePath,
+          fixable: false,
+          fix: 'Remove outbound network access or environment variable reads',
+          guidance: 'Skills that read environment variables and send data externally can exfiltrate API keys, tokens, and other secrets stored in environment variables.',
+        });
+      }
+
+      // SKILL-023: Obfuscated code patterns
+      const obfuscationPatterns = [
+        { pattern: /atob\s*\(/, label: 'atob() base64 decode' },
+        { pattern: /Buffer\.from\s*\(/, label: 'Buffer.from() decode' },
+        { pattern: /eval\s*\(/, label: 'eval() dynamic execution' },
+        { pattern: /String\.fromCharCode/, label: 'String.fromCharCode obfuscation' },
+        { pattern: /\\x[0-9a-fA-F]{2}/, label: 'hex-encoded string' },
+        { pattern: /(?:atob|Buffer\.from)\s*\([^)]+\)[\s\S]*?eval\s*\(/, label: 'base64+eval combo' },
+      ];
+
+      for (const { pattern, label } of obfuscationPatterns) {
+        if (pattern.test(content)) {
+          findings.push({
+            checkId: 'SKILL-023',
+            name: 'Obfuscated Code Pattern',
+            description: 'Skill contains obfuscated code that may hide malicious behavior',
+            category: 'skill',
+            severity: 'high',
+            passed: false,
+            message: `${relativePath}: Detected ${label}. Obfuscated code in skills can hide malicious behavior and should be reviewed.`,
+            file: relativePath,
+            fixable: false,
+            fix: 'Replace obfuscated code with readable equivalent',
+            guidance: 'Obfuscated code (base64 decode, eval, hex-encoded strings) in skills is a strong indicator of hidden malicious behavior. Review and replace with transparent code.',
+          });
+          break; // One finding per file for obfuscation
+        }
+      }
+
+      // SKILL-024: Unbounded tool chaining
+      const hasToolChain = allCaps.some(c => c.includes('tool:chain'));
+      if (hasToolChain) {
+        const hasFm = !!fmMatch;
+        const fmContent = hasFm ? fmMatch[1] : '';
+        const hasMaxIterations = hasFm && (
+          /maxIterations/i.test(fmContent) ||
+          /iterationLimit/i.test(fmContent)
+        );
+
+        if (!hasMaxIterations) {
+          findings.push({
+            checkId: 'SKILL-024',
+            name: 'Unbounded Tool Chaining',
+            description: 'Skill declares tool:chain capability without iteration limits',
+            category: 'skill',
+            severity: 'medium',
+            passed: false,
+            message: `${relativePath}: Skill declares tool:chain capability without maxIterations or iterationLimit. Unbounded chaining can lead to infinite loops or resource exhaustion.`,
+            file: relativePath,
+            fixable: true,
+            fix: 'Add maxIterations or iterationLimit to skill frontmatter',
+            guidance: 'Tool chaining without iteration limits can cause infinite loops, resource exhaustion, or runaway costs. Set a reasonable maxIterations value in frontmatter.',
+          });
         }
       }
     }
