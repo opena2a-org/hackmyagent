@@ -1859,7 +1859,9 @@ Examples:
   .option('--dry-run', 'Preview fixes without applying them (use with --fix)')
   .option('--ignore <checks>', 'Comma-separated check IDs to skip (e.g., CRED-001,GIT-002)')
   .option('--json', 'Output as JSON (deprecated: use --format json)')
-  .option('-f, --format <format>', 'Output format: text, json, sarif, html (default: text)', 'text')
+  .option('-f, --format <format>', 'Output format: text, json, sarif, html, asff (default: text)', 'text')
+  .option('--aws-account-id <id>', 'AWS account ID for ASFF format')
+  .option('--aws-region <region>', 'AWS region for ASFF format')
   .option('-o, --output <file>', 'Write output to file instead of stdout')
   .option('--fail-below <percent>', 'Exit 1 if compliance below threshold (0-100)')
   .option('-v, --verbose', 'Show all checks including passed ones')
@@ -1916,7 +1918,7 @@ Examples:
       }
 
       // Determine output format (--json is deprecated alias for --format json)
-      const validFormats = ['text', 'json', 'sarif', 'html', 'asp'];
+      const validFormats = ['text', 'json', 'sarif', 'html', 'asp', 'asff'];
       const format = options.json ? 'json' : (options.format || 'text');
       if (!validFormats.includes(format)) {
         console.error(`Error: Invalid format '${format}'. Use: ${validFormats.join(', ')}`);
@@ -2154,6 +2156,25 @@ Examples:
         if (options.output) {
           require('fs').writeFileSync(options.output, output);
           console.error(`Report written to ${options.output}`);
+        } else {
+          console.log(output);
+        }
+        const critHigh = result.findings.filter((f: SecurityFinding) => !f.passed && !f.fixed && (f.severity === 'critical' || f.severity === 'high'));
+        if (critHigh.length > 0) process.exit(1);
+        return;
+      }
+
+      if (format === 'asff') {
+        const { toASSF } = await import('./output/asff.js');
+        const output = toASSF(result.findings as any, {
+          awsAccountId: (options as any).awsAccountId,
+          awsRegion: (options as any).awsRegion,
+          targetDir,
+        });
+        if (options.output) {
+          require('fs').writeFileSync(options.output, output);
+          console.error(`ASFF report written to ${options.output}`);
+          console.error(`Import: aws securityhub batch-import-findings --findings file://${options.output}`);
         } else {
           console.log(output);
         }
