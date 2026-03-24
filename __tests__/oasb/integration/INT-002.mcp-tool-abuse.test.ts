@@ -126,10 +126,11 @@ describe('INT-002: MCP Tool Abuse Detection', () => {
       },
     });
 
-    const enforcements = arp.collector.getEnforcements();
+    // Filter out enforcements triggered by synthetic correlation events
+    const enforcements = arp.collector.getEnforcements().filter((e) => !e.event?.data?.correlationKey);
     expect(enforcements.length).toBe(2);
 
-    const alertActions = arp.collector.enforcementsByAction('alert');
+    const alertActions = arp.collector.enforcementsByAction('alert').filter((e) => !e.event?.data?.correlationKey);
     expect(alertActions.length).toBe(2);
 
     // Verify each enforcement references the correct rule
@@ -173,17 +174,17 @@ describe('INT-002: MCP Tool Abuse Detection', () => {
       await arp.injectEvent(event);
     }
 
-    const allViolations = arp.collector.eventsByCategory('violation');
+    const allViolations = arp.collector.eventsByCategory('violation').filter((e) => !e.data?.correlationKey);
     expect(allViolations.length).toBe(4);
 
-    const fsViolations = arp.collector.eventsBySource('filesystem');
+    const fsViolations = arp.collector.eventsBySource('filesystem').filter((e) => !e.data?.correlationKey);
     expect(fsViolations.length).toBe(2);
 
-    const procViolations = arp.collector.eventsBySource('process');
+    const procViolations = arp.collector.eventsBySource('process').filter((e) => !e.data?.correlationKey);
     expect(procViolations.length).toBe(2);
 
-    // All violations should trigger alert enforcement
-    const alertActions = arp.collector.enforcementsByAction('alert');
+    // All violations should trigger alert enforcement (exclude correlation-triggered)
+    const alertActions = arp.collector.enforcementsByAction('alert').filter((e) => !e.event?.data?.correlationKey);
     expect(alertActions.length).toBe(4);
   });
 
