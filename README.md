@@ -90,18 +90,17 @@ npm install --save-dev hackmyagent
 **Requirements:** Node.js 18+
 
 ```
-
-┌──────────────────────────────────────────┐
-│  HackMyAgent v0.11.10 — Security Scanner         │
-│  Found: 3 critical · 5 high · 12 medium          │
-│                                                  │
-│  CRED-001  critical  Hardcoded API key in .env   │
-│  MCP-003   high      MCP server on 0.0.0.0       │
-│  NET-001   high      Open port exposed           │
-│  ...                                             │
-│                                                  │
-│  Run with --fix to auto-remediate 8 issues       │
-└──────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│  HackMyAgent v0.11.10 — Security Scanner            │
+│  Found: 3 critical · 5 high · 12 medium             │
+│                                                     │
+│  CRED-001  critical  Hardcoded API key in .env      │
+│  MCP-003   high      MCP server on 0.0.0.0          │
+│  NET-001   high      Open port exposed              │
+│  ...                                                │
+│                                                     │
+│  Run with --fix to auto-remediate 8 issues          │
+└─────────────────────────────────────────────────────┘
 ```
 
 
