@@ -16,7 +16,9 @@ npx hackmyagent secure
 
 That's it. No config files, no setup, no flags needed.
 
-[See terminal demos](https://opena2a.org/demos) (select HackMyAgent tab)
+![HackMyAgent Demo](docs/hackmyagent-demo.gif)
+
+[More demos](https://opena2a.org/demos)
 
 For a full security dashboard covering credentials, config integrity, shadow AI, and more:
 
