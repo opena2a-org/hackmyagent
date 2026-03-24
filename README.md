@@ -16,6 +16,10 @@ npx hackmyagent secure
 
 That's it. No config files, no setup, no flags needed.
 
+![HackMyAgent Demo](docs/hackmyagent-demo.gif)
+
+[More demos](https://opena2a.org/demos)
+
 For a full security dashboard covering credentials, config integrity, shadow AI, and more:
 
 ```bash
@@ -417,6 +421,4 @@ cd hackmyagent && npm install && npm run build && npm test
 
 Apache-2.0
 
-## OpenA2A Ecosystem
-
-[OpenA2A CLI](https://github.com/opena2a-org/opena2a) | [Secretless AI](https://github.com/opena2a-org/secretless-ai) | [AIM](https://github.com/opena2a-org/agent-identity-management) | [AI Browser Guard](https://github.com/opena2a-org/AI-BrowserGuard) | [DVAA](https://github.com/opena2a-org/damn-vulnerable-ai-agent)
+HackMyAgent is part of the [OpenA2A](https://opena2a.org) security platform. See all tools: [opena2a.org](https://opena2a.org)
