@@ -1,12 +1,11 @@
-# HackMyAgent Demo
-# Security scanner for AI agents -- 204 checks, attack mode, auto-fix
+# HackMyAgent Demo — 204 security checks with findings and auto-fix hints
 # Run: vhs docs/demo.tape
 
 Output docs/hackmyagent-demo.gif
 
-Set Width 900
-Set Height 500
-Set FontSize 16
+Set Width 880
+Set Height 650
+Set FontSize 15
 Set FontFamily "JetBrains Mono"
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 30ms
@@ -18,8 +17,8 @@ Enter
 Sleep 500ms
 Show
 
-Type "npx hackmyagent secure ."
+Type "npx hackmyagent secure . --ci"
 Enter
 Sleep 8s
 
-Sleep 3s
+Sleep 4s
