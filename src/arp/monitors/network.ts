@@ -33,11 +33,22 @@ export class NetworkMonitor implements Monitor {
   private readonly intervalMs: number;
   private readonly allowedHosts: Set<string>;
   private knownDestinations = new Set<string>();
+  /** Sliding window of connection timestamps for burst detection */
+  private connectionTimestamps: number[] = [];
+  /** Rolling average of connections per minute (exponential moving average) */
+  private rollingAvgPerMinute = 0;
+  /** Number of completed windows used for the rolling average */
+  private windowCount = 0;
+  /** Configurable burst threshold multiplier (default: 3x rolling average) */
+  private readonly burstThreshold: number;
+  /** Sliding window duration in ms (1 minute) */
+  private readonly burstWindowMs = 60000;
 
-  constructor(engine: EventEngine, intervalMs: number = 10000, allowedHosts?: string[]) {
+  constructor(engine: EventEngine, intervalMs: number = 10000, allowedHosts?: string[], burstThreshold: number = 3) {
     this.engine = engine;
     this.intervalMs = intervalMs;
     this.allowedHosts = new Set(allowedHosts ?? []);
+    this.burstThreshold = burstThreshold;
   }
 
   async start(): Promise<void> {
@@ -115,8 +126,60 @@ export class NetworkMonitor implements Monitor {
           this.knownDestinations.add(dest);
         }
       }
+      // Burst detection: track connection count in sliding window
+      this.checkConnectionBurst(connections.length);
     } catch {
       // lsof/ss failed — skip
+    }
+  }
+
+  /**
+   * Track connections per minute and detect bursts.
+   * Emits a 'violation' event if current window exceeds burstThreshold * rolling average.
+   */
+  private checkConnectionBurst(connectionCount: number): void {
+    const now = Date.now();
+
+    // Add current connections to the timestamp window
+    for (let i = 0; i < connectionCount; i++) {
+      this.connectionTimestamps.push(now);
+    }
+
+    // Trim timestamps outside the 1-minute window
+    const cutoff = now - this.burstWindowMs;
+    this.connectionTimestamps = this.connectionTimestamps.filter((t) => t >= cutoff);
+
+    const currentWindowCount = this.connectionTimestamps.length;
+
+    // Update rolling average (exponential moving average, alpha = 0.2)
+    if (this.windowCount === 0) {
+      this.rollingAvgPerMinute = currentWindowCount;
+      this.windowCount = 1;
+      return; // First window — no baseline to compare against
+    }
+
+    const alpha = 0.2;
+    const previousAvg = this.rollingAvgPerMinute;
+    this.rollingAvgPerMinute = alpha * currentWindowCount + (1 - alpha) * previousAvg;
+    this.windowCount++;
+
+    // Need at least 3 windows before burst detection activates
+    if (this.windowCount < 3) return;
+
+    const threshold = previousAvg * this.burstThreshold;
+    if (threshold > 0 && currentWindowCount > threshold) {
+      this.engine.emit({
+        source: 'network',
+        category: 'violation',
+        severity: 'high',
+        description: `Connection burst detected: ${currentWindowCount} connections in last 60s (threshold: ${Math.round(threshold)}, avg: ${Math.round(previousAvg)})`,
+        data: {
+          currentCount: currentWindowCount,
+          rollingAverage: Math.round(previousAvg),
+          threshold: Math.round(threshold),
+          burstMultiplier: this.burstThreshold,
+        },
+      });
     }
   }
 

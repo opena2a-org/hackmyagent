@@ -8,6 +8,7 @@ import type {
   EnforcementAction,
   EnforcementResult,
 } from '../types';
+import { CorrelationEngine } from './correlation';
 
 type EventHandler = (event: ARPEvent) => void | Promise<void>;
 type EnforcementHandler = (result: EnforcementResult) => void | Promise<void>;
@@ -28,9 +29,11 @@ export class EventEngine {
   private rules: AlertRule[];
   private eventBuffer: ARPEvent[] = [];
   private readonly maxBufferSize = 10000;
+  private readonly correlation: CorrelationEngine;
 
   constructor(config: ARPConfig) {
     this.rules = config.rules ?? defaultRules();
+    this.correlation = new CorrelationEngine();
   }
 
   /** Register a handler for all events (for logging, reporting, etc.) */
@@ -92,6 +95,21 @@ export class EventEngine {
         } catch {
           // Enforcement handler errors don't block
         }
+      }
+    }
+
+    // Cross-monitor correlation check (skip for synthetic correlation events to prevent loops)
+    if (!fullEvent.data.correlationKey) {
+      const correlationEvent = this.correlation.correlate(fullEvent);
+      if (correlationEvent) {
+        // Emit the synthetic correlation event through the same pipeline
+        await this.emit({
+          source: correlationEvent.source,
+          category: correlationEvent.category,
+          severity: correlationEvent.severity,
+          description: correlationEvent.description,
+          data: correlationEvent.data,
+        });
       }
     }
 
