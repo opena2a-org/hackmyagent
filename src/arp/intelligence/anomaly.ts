@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import type { ARPEvent, MonitorType } from '../types';
 
 interface TimeSeriesPoint {
@@ -79,6 +81,54 @@ export class AnomalyDetector {
   reset(): void {
     this.timeSeries.clear();
     this.baselines.clear();
+  }
+
+  /** Persist timeSeries and baselines to disk as JSON */
+  save(dataDir: string): void {
+    const filePath = path.join(dataDir, 'anomaly-baselines.json');
+    const payload = {
+      timeSeries: Object.fromEntries(
+        Array.from(this.timeSeries.entries()).map(([k, v]) => [k, v]),
+      ),
+      baselines: Object.fromEntries(
+        Array.from(this.baselines.entries()).map(([k, v]) => [k, v]),
+      ),
+    };
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf-8');
+  }
+
+  /** Load persisted timeSeries and baselines from disk */
+  static load(dataDir: string): AnomalyDetector {
+    const filePath = path.join(dataDir, 'anomaly-baselines.json');
+    const detector = new AnomalyDetector();
+
+    if (!fs.existsSync(filePath)) {
+      return detector;
+    }
+
+    try {
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      const parsed = JSON.parse(raw) as {
+        timeSeries: Record<string, TimeSeriesPoint[]>;
+        baselines: Record<string, BaselineStats>;
+      };
+
+      if (parsed.timeSeries) {
+        for (const [key, value] of Object.entries(parsed.timeSeries)) {
+          detector.timeSeries.set(key as MonitorType, value);
+        }
+      }
+      if (parsed.baselines) {
+        for (const [key, value] of Object.entries(parsed.baselines)) {
+          detector.baselines.set(key as MonitorType, value);
+        }
+      }
+    } catch {
+      // Corrupted file — start fresh
+    }
+
+    return detector;
   }
 
   private updateBaseline(source: MonitorType, series: TimeSeriesPoint[]): void {

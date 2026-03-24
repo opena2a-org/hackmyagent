@@ -196,18 +196,18 @@ describe('INT-007: Budget Exhaustion Attack', () => {
       },
     });
 
-    // L0 rules still detect the real attack
-    const violations = arp.collector.eventsByCategory('violation');
+    // L0 rules still detect the real attack (filter out correlation events)
+    const violations = arp.collector.eventsByCategory('violation').filter((e) => !e.data?.correlationKey);
     expect(violations.length).toBe(1);
 
-    const threats = arp.collector.eventsByCategory('threat');
+    const threats = arp.collector.eventsByCategory('threat').filter((e) => !e.data?.correlationKey);
     expect(threats.length).toBe(1);
 
-    // Enforcement still fires
-    const alertActions = arp.collector.enforcementsByAction('alert');
+    // Enforcement still fires (filter out correlation-triggered enforcements)
+    const alertActions = arp.collector.enforcementsByAction('alert').filter((e) => !e.event?.data?.correlationKey);
     expect(alertActions.length).toBe(1);
 
-    const killActions = arp.collector.enforcementsByAction('kill');
+    const killActions = arp.collector.enforcementsByAction('kill').filter((e) => !e.event?.data?.correlationKey);
     expect(killActions.length).toBe(1);
 
     // Document: L2 assessment cannot run because budget is exhausted.

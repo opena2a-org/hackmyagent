@@ -28,6 +28,7 @@ export type {
 
 // Re-export components
 export { EventEngine } from './engine/event-engine';
+export { CorrelationEngine } from './engine/correlation';
 export { IntelligenceCoordinator } from './intelligence/coordinator';
 export { BudgetController } from './intelligence/budget';
 export { AnomalyDetector } from './intelligence/anomaly';

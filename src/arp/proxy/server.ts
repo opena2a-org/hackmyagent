@@ -61,6 +61,12 @@ export class ARPProxy {
   }
 
   getPort(): number {
+    if (this.server) {
+      const addr = this.server.address();
+      if (typeof addr === 'object' && addr) {
+        return addr.port;
+      }
+    }
     return this.config.port;
   }
 
@@ -186,10 +192,28 @@ export class ARPProxy {
       }
       case 'passthrough':
       default:
+        // Scan raw response body through prompt interceptor for output leaks
+        detected = this.inspectRawResponseBody(bodyStr);
         break;
     }
 
     return detected;
+  }
+
+  /** Maximum response body size to scan (100KB) — skip larger bodies for performance */
+  private static readonly MAX_SCAN_BODY_BYTES = 100 * 1024;
+
+  /**
+   * Scan raw HTTP response body through PromptInterceptor output patterns.
+   * Skips bodies larger than MAX_SCAN_BODY_BYTES to avoid performance issues.
+   */
+  private inspectRawResponseBody(bodyStr: string): boolean {
+    if (!this.deps.promptInterceptor) return false;
+    if (!bodyStr) return false;
+    if (Buffer.byteLength(bodyStr, 'utf-8') > ARPProxy.MAX_SCAN_BODY_BYTES) return false;
+
+    const result = this.deps.promptInterceptor.scanOutput(bodyStr);
+    return result.detected;
   }
 
   // --- Protocol-specific inspectors ---

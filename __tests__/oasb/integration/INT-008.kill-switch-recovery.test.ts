@@ -219,11 +219,11 @@ describe('INT-008: Kill Switch and Recovery', () => {
       data: { phase: 'recovery', newThreat: true },
     });
 
-    // Verify events were captured after the kill
-    const allEvents = arp.collector.getEvents();
+    // Verify events were captured after the kill (filter out correlation events)
+    const allEvents = arp.collector.getEvents().filter((e) => !e.data?.correlationKey);
     expect(allEvents.length).toBe(2);
 
-    const normalEvents = arp.collector.eventsByCategory('normal');
+    const normalEvents = arp.collector.eventsByCategory('normal').filter((e) => !e.data?.correlationKey);
     expect(normalEvents.length).toBe(1);
     expect(normalEvents[0].data.eventAfterKill).toBe(true);
 
