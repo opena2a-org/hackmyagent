@@ -32,6 +32,7 @@ export { CorrelationEngine } from './engine/correlation';
 export { IntelligenceCoordinator } from './intelligence/coordinator';
 export { BudgetController } from './intelligence/budget';
 export { AnomalyDetector } from './intelligence/anomaly';
+export { NanoMindL1 } from './intelligence/nanomind-l1';
 export { AnthropicAdapter, OpenAIAdapter, OllamaAdapter, createAdapter, autoDetectAdapter } from './intelligence/adapters';
 export { ProcessMonitor } from './monitors/process';
 export { NetworkMonitor } from './monitors/network';
