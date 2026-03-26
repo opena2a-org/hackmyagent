@@ -36,6 +36,9 @@ export { SemanticCompiler } from './compiler/semantic-compiler.js';
 // Analyzers
 export { analyzeCapabilities } from './analyzers/capability-analyzer.js';
 export type { ASTFinding } from './analyzers/capability-analyzer.js';
+export { analyzeCredentials } from './analyzers/credential-analyzer.js';
+export { analyzeGovernance } from './analyzers/governance-analyzer.js';
+export { analyzeScope } from './analyzers/scope-analyzer.js';
 
 // Ingestion
 export { parseArtifact, classifyArtifactType, computeHash } from './ingestion/artifact-parser.js';
