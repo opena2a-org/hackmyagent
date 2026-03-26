@@ -42,6 +42,14 @@ export { analyzeScope } from './analyzers/scope-analyzer.js';
 export { analyzePrompt } from './analyzers/prompt-analyzer.js';
 export { analyzeCode } from './analyzers/code-analyzer.js';
 
+// Verification
+export { validateAST } from './verification/ast-validator.js';
+export type { ASTValidationResult, ClaimValidation, Discrepancy } from './verification/ast-validator.js';
+
+// Security
+export { enforceSeverityFloor, validateEnhancement, requireBenignConsensus, redactSecretsForNanoMind, assertASTIntegrity, SecurityError, verifyTrainingProvenance, logSecurityEvent, getAuditEvents } from './security/defense-in-depth.js';
+export { verifyAll, EventChain, generateManifest } from './security/integrity-verifier.js';
+
 // Ingestion
 export { parseArtifact, classifyArtifactType, computeHash } from './ingestion/artifact-parser.js';
 export { sanitizeForNanoMind, detectManipulation } from './ingestion/input-sanitizer.js';
