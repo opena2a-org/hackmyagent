@@ -24,6 +24,21 @@ export { toSecurityFinding, toSecurityFindings } from './integration/finding-ada
 export { SEMANTIC_OASB_MAPPINGS, getSemanticCheckIds, getUpgradedControlIds } from './integration/oasb-upgrader';
 export { CostEstimator } from './integration/cost-estimator';
 
+// Layer 4: NanoMind Local Semantic Analysis (--semantic flag)
+export {
+  isDaemonAvailable,
+  analyzeSkillIntent,
+  analyzeSoulCompleteness,
+  analyzeMCPScope,
+  analyzePromptIntent,
+  explainFinding,
+} from './nanomind-analyzer';
+export type {
+  NanoMindInferRequest,
+  NanoMindInferResponse,
+  SemanticFinding as NanoMindFinding,
+} from './nanomind-analyzer';
+
 // Deep scan builder (for MCP server)
 export { buildDeepScanResult } from './deep-scan';
 

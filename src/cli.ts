@@ -1868,8 +1868,9 @@ Examples:
   .option('-b, --benchmark <name>', 'Run benchmark compliance check (e.g., oasb-1)')
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
   .option('-c, --category <name>', 'Filter to specific benchmark category')
-  .option('--deep', 'Enable LLM-powered semantic analysis (requires ANTHROPIC_API_KEY)')
-  .option('--scan-depth <depth>', 'CAAT scan depth: quick (config+creds only), standard (default), deep (+ LLM analysis)', 'standard')
+  .option('--deep', 'Maximum analysis: static + NanoMind + behavioral simulation + adaptive attacks (~30s per artifact)')
+  .option('--static-only', 'Disable NanoMind and simulation (static checks only, fast, deterministic)')
+  .option('--scan-depth <depth>', 'CAAT scan depth: quick (config+creds only), standard (default), deep (+ simulation)', 'standard')
   .option('--ci-publish', 'Submit scan results to registry CI endpoint (requires CI_SCAN_HMAC_SECRET env)')
   .option('--publish', 'Push scan results to the OpenA2A Registry')
   .option('--registry-report', 'Post results to OpenA2A Registry')
@@ -1949,18 +1950,40 @@ Examples:
         process.exit(1);
       }
 
-      // Deep mode: --deep flag OR --scan-depth deep
+      // Analysis mode: smart defaults, minimal flags
+      // Default: static + NanoMind (if daemon available)
+      // --deep: everything (static + NanoMind + simulation + adaptive attacks)
+      // --static-only: just static checks (CI/deterministic)
+      // --ci: implies --static-only
+      const isStaticOnly = (options as Record<string, unknown>).staticOnly as boolean ?? false;
       const isDeep = options.deep ?? (scanDepth === 'deep');
-      const onProgress = isDeep && format === 'text'
+
+      // Auto-detect NanoMind daemon
+      let nanomindAvailable = false;
+      if (!isStaticOnly && !options.ci) {
+        try {
+          const { isDaemonAvailable } = await import('./semantic/nanomind-analyzer.js');
+          nanomindAvailable = await isDaemonAvailable();
+        } catch { /* daemon not installed */ }
+      }
+
+      const onProgress = format === 'text'
         ? (msg: string) => process.stdout.write(msg)
         : undefined;
 
-      if (isDeep && format === 'text') {
-        if (!process.env.ANTHROPIC_API_KEY) {
-          console.log(`Layer 3: Semantic analysis — skipped (no ANTHROPIC_API_KEY)`);
-          console.log(`  Tip: Add HackMyAgent as an MCP server for free LLM analysis:`);
-          console.log(`  npx ${CLI_PREFIX} init-mcp\n`);
+      // Show analysis mode to user
+      if (format === 'text') {
+        if (isStaticOnly || options.ci) {
+          // Static only -- no extra output
+        } else if (nanomindAvailable && isDeep) {
+          console.log(`Analysis: static + NanoMind + behavioral simulation + adaptive attacks\n`);
+        } else if (nanomindAvailable) {
+          console.log(`Analysis: static + NanoMind (enhanced accuracy)\n`);
+        } else if (isDeep) {
+          console.log(`Analysis: static + behavioral simulation\n`);
+          console.log(`  Tip: Install NanoMind for even better results: nanomind-daemon start\n`);
         }
+        // Default static-only: no message needed, it's the baseline
       }
 
       if (scanDepth === 'quick' && format === 'text') {
@@ -1980,6 +2003,53 @@ Examples:
         onProgress,
       });
       const scanDurationMs = Date.now() - scanStartMs;
+
+      // Behavioral simulation: auto-runs on --deep, or when NanoMind detects ambiguity
+      if (isDeep && format === 'text') {
+        try {
+          const { SimulationEngine, parseSkillProfile } = await import('./simulation/index.js');
+          const { readFileSync, readdirSync, statSync } = await import('node:fs');
+          const { join } = await import('node:path');
+
+          // Find skill files in target directory
+          const skillFiles: string[] = [];
+          const findSkills = (dir: string) => {
+            try {
+              for (const entry of readdirSync(dir)) {
+                const fullPath = join(dir, entry);
+                const stat = statSync(fullPath);
+                if (stat.isDirectory() && !entry.startsWith('.') && entry !== 'node_modules') {
+                  findSkills(fullPath);
+                } else if (entry.endsWith('.md') || entry.endsWith('.yaml') || entry.endsWith('.yml')) {
+                  skillFiles.push(fullPath);
+                }
+              }
+            } catch { /* skip inaccessible dirs */ }
+          };
+          findSkills(targetDir);
+
+          if (skillFiles.length > 0) {
+            process.stdout.write(`\n[Simulation] Running behavioral simulation on ${skillFiles.length} artifact(s)...\n`);
+            const sim = new SimulationEngine();
+
+            for (const file of skillFiles.slice(0, 10)) { // Cap at 10 files
+              const content = readFileSync(file, 'utf-8');
+              const profile = parseSkillProfile(content, file.split('/').pop() ?? 'unknown');
+              const simResult = await sim.runLayer3(profile);
+
+              const icon = simResult.verdict === 'CLEAN' ? 'PASS' : simResult.verdict === 'SUSPICIOUS' ? 'WARN' : 'FAIL';
+              process.stdout.write(`  [${icon}] ${file.split('/').pop()} — ${simResult.verdict} (${(simResult.confidence * 100).toFixed(0)}% confidence, ${simResult.failedProbes.length}/${simResult.probeCount} probes failed)\n`);
+
+              // Auto-export training data
+              const { exportSimulationTraining } = await import('./attack-engine/training-pipeline.js');
+              exportSimulationTraining(content, simResult);
+            }
+            process.stdout.write(`[Simulation] Complete.\n\n`);
+          }
+        } catch (err) {
+          process.stdout.write(`[Simulation] Skipped: ${err instanceof Error ? err.message : 'unknown error'}\n\n`);
+        }
+      }
 
       // OASB-2 composite mode: infrastructure (50%) + governance (50%)
       if (isOasb2) {
@@ -4765,7 +4835,8 @@ Examples:
   .option('--tier <tier>', 'Override agent tier detection (BASIC, TOOL-USING, AGENTIC, MULTI-AGENT)')
   .option('--profile <profile>', 'Override agent profile (conversational, code-assistant, tool-agent, autonomous, orchestrator, custom)')
   .option('--fail-below <score>', 'Exit 1 if score below threshold (0-100)')
-  .option('--deep', 'Enable LLM semantic analysis for ambiguous controls (requires claude CLI or ANTHROPIC_API_KEY)')
+  .option('--deep', 'Maximum analysis: NanoMind + SOUL governance simulation (~15s)')
+  .option('--static-only', 'Disable NanoMind (static governance checks only)')
   .option('--publish', 'Push scan results to the OpenA2A Registry')
   .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', validateRegistryUrl(process.env.REGISTRY_URL || 'https://api.oa2a.org'))
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
@@ -5506,6 +5577,100 @@ program
   });
 
 // Show help and exit 0 when no arguments provided
+// explain command: NanoMind-powered finding explanation
+program
+  .command('explain')
+  .argument('<findingId>', 'Finding ID to explain (e.g., SKILL-SEMANTIC-007 or CRED-001)')
+  .description('Explain a security finding in plain English using NanoMind')
+  .action(async (findingId: string) => {
+    const { isDaemonAvailable, explainFinding } = await import('./semantic/nanomind-analyzer.js');
+    const available = await isDaemonAvailable();
+    if (!available) {
+      console.error('NanoMind daemon is not running. Start with: nanomind-daemon start');
+      process.exit(1);
+    }
+
+    console.log(`Explaining finding: ${findingId}\n`);
+
+    const explanation = await explainFinding(JSON.stringify({ findingId }));
+    if (explanation) {
+      console.log(explanation);
+    } else {
+      console.log(`Could not generate explanation for ${findingId}. The NanoMind model may not recognize this finding ID.`);
+    }
+  });
+
+// attack command: NanoMind-powered adaptive red team
+program
+  .command('attack')
+  .argument('<target>', 'Path to artifact to attack (skill, SOUL.md, MCP config, system prompt)')
+  .description('Run adaptive attack session against an artifact. NanoMind generates target-specific attacks, observes responses, adapts, and maps defenses.')
+  .option('--iterations <n>', 'Max attack iterations per category', '5')
+  .option('--json', 'Output results as JSON')
+  .action(async (target: string, options: { iterations?: string; json?: boolean }) => {
+    const { readFileSync } = await import('node:fs');
+    const { runAttackSession, exportTrainingData } = await import('./attack-engine/feedback-loop.js');
+    const { exportAttackTraining } = await import('./attack-engine/training-pipeline.js');
+
+    let content: string;
+    try {
+      content = readFileSync(target, 'utf-8');
+    } catch {
+      console.error(`Cannot read file: ${target}`);
+      process.exit(1);
+    }
+
+    const artifactType = target.toLowerCase().includes('soul') ? 'soul' as const
+      : target.toLowerCase().includes('mcp') ? 'mcp_tool' as const
+      : 'skill' as const;
+    const name = target.split('/').pop() ?? 'unknown';
+
+    if (!options.json) {
+      console.log(`\nAdaptive Attack Engine`);
+      console.log(`Target: ${name} (${artifactType})`);
+      console.log(`Max iterations: ${options.iterations ?? 5} per category\n`);
+    }
+
+    const result = await runAttackSession(content, artifactType, name, {
+      maxIterations: parseInt(options.iterations ?? '5', 10),
+    });
+
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(`Results:`);
+      console.log(`  Payloads generated: ${result.totalPayloads}`);
+      console.log(`  Successful attacks: ${result.successCount}`);
+      console.log(`  Partial successes:  ${result.partialCount}`);
+      console.log(`  Resilience score:   ${(result.defenseMap.resilienceScore * 100).toFixed(0)}%`);
+      console.log(`  Duration:           ${result.durationMs}ms\n`);
+
+      if (result.vulnerabilities.length > 0) {
+        console.log(`Vulnerabilities Found:`);
+        for (const vuln of result.vulnerabilities) {
+          console.log(`  [${vuln.severity.toUpperCase()}] ${vuln.title}`);
+          console.log(`    ${vuln.description}`);
+          console.log(`    Fix: ${vuln.remediation}\n`);
+        }
+      } else {
+        console.log(`No vulnerabilities found. All defenses held.\n`);
+      }
+
+      if (result.defenseMap.strongCategories.length > 0) {
+        console.log(`Strong defenses: ${result.defenseMap.strongCategories.join(', ')}`);
+      }
+      if (result.defenseMap.weakCategories.length > 0) {
+        console.log(`Weak defenses:   ${result.defenseMap.weakCategories.join(', ')}`);
+      }
+    }
+
+    // Auto-export training data
+    const trainingCount = exportAttackTraining(result);
+    if (!options.json && trainingCount > 0) {
+      console.log(`\n${trainingCount} training samples exported to NanoMind corpus.`);
+    }
+  });
+
 if (process.argv.length <= 2) {
   program.outputHelp();
   process.exit(0);
