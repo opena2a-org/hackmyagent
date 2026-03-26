@@ -5722,9 +5722,44 @@ program
     }
   });
 
-if (process.argv.length <= 2) {
-  program.outputHelp();
-  process.exit(0);
-}
+// Self-securing: verify own integrity before running any command
+// A security tool that doesn't verify itself is worse than no security tool
+(async () => {
+  try {
+    const { verifyAll } = await import('./nanomind-core/security/integrity-verifier.js');
+    const integrity = await verifyAll();
 
-program.parse();
+    if (integrity.status === 'QUARANTINE') {
+      // Binary tampered -- refuse to run
+      process.stderr.write(
+        '\nINTEGRITY CHECK FAILED: HackMyAgent binary may have been tampered with.\n' +
+        'This could indicate a supply chain attack.\n\n' +
+        'Actions:\n' +
+        '  1. Reinstall: npm install -g hackmyagent\n' +
+        '  2. Verify: npm audit signatures\n' +
+        '  3. Report: https://github.com/opena2a-org/hackmyagent/security\n\n'
+      );
+      for (const check of integrity.checks.filter(c => !c.passed)) {
+        process.stderr.write(`  Failed: ${check.name} -- ${check.reason}\n`);
+      }
+      process.exit(3); // Exit code 3 = integrity failure
+    }
+
+    if (integrity.status === 'DEGRADE') {
+      // Model or rules tampered -- warn but continue with fallback
+      process.stderr.write(
+        '\nIntegrity warning: some components could not be verified.\n' +
+        'Continuing with baseline analysis (reduced accuracy).\n\n'
+      );
+    }
+  } catch {
+    // Integrity check itself failed -- continue (don't block on missing manifest in dev)
+  }
+
+  if (process.argv.length <= 2) {
+    program.outputHelp();
+    process.exit(0);
+  }
+
+  program.parse();
+})();
