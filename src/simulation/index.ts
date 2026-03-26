@@ -3,7 +3,7 @@
  *
  * Behavioral simulation that observes what skills actually DO.
  * Three layers: NanoMind semantic (8ms) -> targeted probes (3s) -> full simulation (30s).
- * Target: < 1% false positive rate vs industry 95.8%.
+ * Target: < 1% false positive rate vs industry 0.12% scanner agreement (theweatherreport.ai).
  */
 
 export { SimulationEngine, parseSkillProfile } from './engine.js';
