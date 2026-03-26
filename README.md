@@ -3,11 +3,14 @@
 
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-1113%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
+[![Tests](https://img.shields.io/badge/tests-1285%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
+[![NanoMind](https://img.shields.io/badge/NanoMind-semantic%20compiler-teal)](https://huggingface.co/ecolibria/nanomind-v0.1-security-classifier)
 
-**204 security checks + behavioral simulation for AI agents. Find what can go wrong before an attacker does.**
+**204 security checks + 28 semantic checks + behavioral simulation. The first security scanner that secures itself.**
 
-Security scanner, red-team toolkit, and behavioral simulation engine for Claude Code, Cursor, VS Code, and any MCP server setup. NanoMind-powered semantic analysis runs by default when available.
+Security scanner, red-team toolkit, behavioral simulation engine, and skill builder for AI agents. Powered by the NanoMind Semantic Compiler -- a compiler-style architecture where every artifact is compiled into an Abstract Security Tree before analysis.
+
+[Seven scanners agree on only 0.12% of skills](https://theweatherreport.ai/posts/skill-scanner-disagreement/). HackMyAgent uses semantic understanding instead of regex to achieve near-zero false positives.
 
 ```bash
 npx hackmyagent secure
@@ -33,9 +36,15 @@ npx opena2a-cli review
 
 ## What It Finds
 
-**Behavioral simulation** (NEW) -- 20-probe simulation battery that observes what skills actually do, not what they look like. Targets < 1% false positive rate vs industry 95.8%. Run with `--deep`.
+**NanoMind Semantic Compiler** -- compiles every artifact (skills, MCP configs, SOUL.md, system prompts) into an Abstract Security Tree. 28 semantic checks query the AST instead of regex on raw text. Catches what pattern matching can't: undeclared capabilities, constraint weakness, scope mismatches, scanner evasion attempts.
 
-**Adaptive red team** (NEW) -- `hackmyagent red-team <file>` generates target-specific attack payloads, observes responses, adapts after failures, and maps all defenses. NanoMind-powered.
+**Self-securing** -- verifies its own binary integrity on every startup. Tampered binaries enter QUARANTINE mode (exit code 3). Tampered models fall back to baseline. The first security scanner that secures itself.
+
+**Behavioral simulation** -- 20-probe simulation battery that observes what skills actually do, not what they look like. Run with `--deep`.
+
+**Adaptive red team** -- `hackmyagent red-team <file>` generates target-specific attack payloads, observes responses, adapts after failures, and maps all defenses.
+
+**Skills builder** -- `hackmyagent create-skill "describe what you need"` generates a complete, secured skill with SOUL.md governance, capability manifest, and security metadata.
 
 **Attack testing** -- 115 adversarial payloads across 11 categories (prompt injection, data exfiltration, jailbreak, MCP exploitation, supply chain, memory weaponization, A2A protocol attacks, context window attacks).
 
