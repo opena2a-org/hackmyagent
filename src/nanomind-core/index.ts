@@ -39,6 +39,8 @@ export type { ASTFinding } from './analyzers/capability-analyzer.js';
 export { analyzeCredentials } from './analyzers/credential-analyzer.js';
 export { analyzeGovernance } from './analyzers/governance-analyzer.js';
 export { analyzeScope } from './analyzers/scope-analyzer.js';
+export { analyzePrompt } from './analyzers/prompt-analyzer.js';
+export { analyzeCode } from './analyzers/code-analyzer.js';
 
 // Ingestion
 export { parseArtifact, classifyArtifactType, computeHash } from './ingestion/artifact-parser.js';
