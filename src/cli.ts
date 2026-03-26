@@ -5600,10 +5600,10 @@ program
     }
   });
 
-// attack command: NanoMind-powered adaptive red team
+// red-team command: NanoMind-powered adaptive attack engine
 program
-  .command('attack')
-  .argument('<target>', 'Path to artifact to attack (skill, SOUL.md, MCP config, system prompt)')
+  .command('red-team')
+  .argument('<target>', 'Path to artifact to red-team (skill, SOUL.md, MCP config, system prompt)')
   .description('Run adaptive attack session against an artifact. NanoMind generates target-specific attacks, observes responses, adapts, and maps defenses.')
   .option('--iterations <n>', 'Max attack iterations per category', '5')
   .option('--json', 'Output results as JSON')
