@@ -2004,36 +2004,34 @@ Examples:
       });
       const scanDurationMs = Date.now() - scanStartMs;
 
-      // NanoMind enhancement: runs automatically on all findings when daemon available
-      if (nanomindAvailable && !isStaticOnly && !options.ci) {
+      // NanoMind Semantic Compiler: AST-based analysis runs alongside static checks
+      // Defense-in-depth: static findings can NEVER be suppressed, only upgraded
+      if (!isStaticOnly && !options.ci) {
         try {
-          const { enhanceScanFindings, getEnhancementStats } = await import('./semantic/nanomind-enhancer.js');
-          const { readFileSync } = await import('node:fs');
+          const { runNanoMindScan } = await import('./nanomind-core/scanner-bridge.js');
 
-          // Build source file map for findings that reference files
-          const sourceFiles = new Map<string, string>();
-          const allFindings = result.allFindings || result.findings || [];
-          for (const f of allFindings) {
-            if (f.file && !sourceFiles.has(f.file)) {
-              try { sourceFiles.set(f.file, readFileSync(f.file, 'utf-8')); } catch {}
+          const existingFindings = result.allFindings || result.findings || [];
+          const nmResult = await runNanoMindScan(targetDir, existingFindings);
+
+          if (format === 'text' && nmResult.astFindings.length > 0) {
+            const newFindings = nmResult.astFindings.filter(f => !f.passed);
+            if (newFindings.length > 0) {
+              process.stdout.write(`\nNanoMind: ${nmResult.compiledArtifacts} artifact(s) compiled, ${newFindings.length} semantic finding(s) added\n`);
+            }
+            if (nmResult.integrityStatus !== 'CLEAN') {
+              process.stdout.write(`  Integrity: ${nmResult.integrityStatus}\n`);
             }
           }
 
-          if (allFindings.length > 0 && sourceFiles.size > 0) {
-            const enhanced = await enhanceScanFindings(allFindings, sourceFiles);
-            const stats = getEnhancementStats(enhanced);
-
-            if (format === 'text' && (stats.falsePositivesDetected > 0 || stats.upgraded > 0)) {
-              process.stdout.write(`\nNanoMind: ${stats.falsePositivesDetected} false positive(s) suppressed, ${stats.upgraded} finding(s) upgraded, ${stats.confirmed} confirmed\n`);
-            }
-
-            // Update findings with enhanced versions
-            if (result.allFindings) {
-              result.allFindings = enhanced as unknown as typeof result.allFindings;
-            }
+          // Merge: AST findings ADD to static (never remove)
+          if (result.allFindings) {
+            result.allFindings = nmResult.mergedFindings as typeof result.allFindings;
+          }
+          if (result.findings) {
+            result.findings = nmResult.mergedFindings.filter((f: any) => !f.passed) as typeof result.findings;
           }
         } catch {
-          // Enhancement failed silently -- scan results are still valid
+          // NanoMind unavailable -- static results are still valid
         }
       }
 
