@@ -5722,6 +5722,22 @@ program
     }
   });
 
+
+// create-skill: generate best-practice, secured skills from plain English
+program
+  .command('create-skill')
+  .argument('<description>', 'What the skill should do (plain English)')
+  .description('Generate a complete, secured skill package with SOUL governance')
+  .option('-n, --name <name>', 'Skill name (auto-derived if not provided)')
+  .option('-o, --output <dir>', 'Output directory')
+  .action(async (description: string, options: { name?: string; output?: string }) => {
+    const { writeSkill } = await import('./skills/builder.js');
+    console.log(`\nGenerating secured skill...\n`);
+    const result = writeSkill({ purpose: description, name: options.name, outputDir: options.output });
+    console.log(`Created ${result.dirName}/`);
+    for (const file of result.filesWritten) { console.log(`  ${file.split('/').pop()}`); }
+    console.log(`\nYour skill is ready. Verify security with: hackmyagent secure ${result.dirName}/`);
+  });
 // Self-securing: verify own integrity before running any command
 // A security tool that doesn't verify itself is worse than no security tool
 (async () => {
