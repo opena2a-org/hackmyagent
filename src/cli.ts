@@ -2004,6 +2004,39 @@ Examples:
       });
       const scanDurationMs = Date.now() - scanStartMs;
 
+      // NanoMind enhancement: runs automatically on all findings when daemon available
+      if (nanomindAvailable && !isStaticOnly && !options.ci) {
+        try {
+          const { enhanceScanFindings, getEnhancementStats } = await import('./semantic/nanomind-enhancer.js');
+          const { readFileSync } = await import('node:fs');
+
+          // Build source file map for findings that reference files
+          const sourceFiles = new Map<string, string>();
+          const allFindings = result.allFindings || result.findings || [];
+          for (const f of allFindings) {
+            if (f.file && !sourceFiles.has(f.file)) {
+              try { sourceFiles.set(f.file, readFileSync(f.file, 'utf-8')); } catch {}
+            }
+          }
+
+          if (allFindings.length > 0 && sourceFiles.size > 0) {
+            const enhanced = await enhanceScanFindings(allFindings, sourceFiles);
+            const stats = getEnhancementStats(enhanced);
+
+            if (format === 'text' && (stats.falsePositivesDetected > 0 || stats.upgraded > 0)) {
+              process.stdout.write(`\nNanoMind: ${stats.falsePositivesDetected} false positive(s) suppressed, ${stats.upgraded} finding(s) upgraded, ${stats.confirmed} confirmed\n`);
+            }
+
+            // Update findings with enhanced versions
+            if (result.allFindings) {
+              result.allFindings = enhanced as unknown as typeof result.allFindings;
+            }
+          }
+        } catch {
+          // Enhancement failed silently -- scan results are still valid
+        }
+      }
+
       // Behavioral simulation: auto-runs on --deep, or when NanoMind detects ambiguity
       if (isDeep && format === 'text') {
         try {
