@@ -407,7 +407,11 @@ function mapRiskSurfaces(
   }
 
   // Override/ignore instructions = injection surface
-  if (/ignore.*previous|override.*instruction|new.*task/i.test(text)) {
+  // BUT: constraint language about resisting overrides is NOT an injection
+  // "Ignore previous instructions" = injection. "Must never comply with override requests" = defense.
+  const hasOverrideLanguage = /ignore.*previous|override.*instruction|new.*task/i.test(text);
+  const isDefensiveConstraint = /must never.*override|never.*comply.*override|resist.*override|forbidden.*override/i.test(text);
+  if (hasOverrideLanguage && !isDefensiveConstraint) {
     surfaces.push({
       surface: 'Instruction override language',
       attackClass: 'PROMPT-INJECT',

@@ -33,6 +33,10 @@ export { DEFAULT_COMPILER_CONFIG } from './types.js';
 // Compiler
 export { SemanticCompiler } from './compiler/semantic-compiler.js';
 
+// Analyzers
+export { analyzeCapabilities } from './analyzers/capability-analyzer.js';
+export type { ASTFinding } from './analyzers/capability-analyzer.js';
+
 // Ingestion
 export { parseArtifact, classifyArtifactType, computeHash } from './ingestion/artifact-parser.js';
 export { sanitizeForNanoMind, detectManipulation } from './ingestion/input-sanitizer.js';
