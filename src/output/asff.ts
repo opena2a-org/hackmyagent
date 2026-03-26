@@ -11,6 +11,8 @@
  * Reference: https://docs.aws.amazon.com/securityhub/latest/userguide/securityhub-findings-format.html
  */
 
+import { VERSION } from '../index.js';
+
 export interface SecurityFinding {
   checkId: string;
   name: string;
@@ -124,7 +126,7 @@ export function toASSF(
       ProductFields: {
         'opena2a/checkId': f.checkId,
         'opena2a/scanner': 'hackmyagent',
-        'opena2a/scannerVersion': '0.11.11',
+        'opena2a/scannerVersion': VERSION,
       },
       RecordState: 'ACTIVE',
       Workflow: { Status: 'NEW' },

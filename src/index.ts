@@ -3,7 +3,15 @@
  * Unified security toolkit for AI agents.
  */
 
-export const VERSION = '0.11.11';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+let _version = '0.12.0';
+try {
+  const pkgJson = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+  _version = pkgJson.version;
+} catch { /* use fallback */ }
+export const VERSION: string = _version;
 
 // Checker module
 export {

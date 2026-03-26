@@ -2028,9 +2028,11 @@ Examples:
           };
           findSkills(targetDir);
 
-          if (skillFiles.length > 0) {
+          if (skillFiles.length === 0) {
+            process.stdout.write(`\n[Simulation] No skill/SOUL/MCP artifacts found. Simulation skipped.\n\n`);
+          } else {
             process.stdout.write(`\n[Simulation] Running behavioral simulation on ${skillFiles.length} artifact(s)...\n`);
-            const sim = new SimulationEngine({ useLLM: true });
+            const sim = new SimulationEngine({ useLLM: nanomindAvailable });
 
             for (const file of skillFiles.slice(0, 10)) { // Cap at 10 files
               const content = readFileSync(file, 'utf-8');
@@ -2045,7 +2047,7 @@ Examples:
               exportSimulationTraining(content, simResult);
             }
             process.stdout.write(`[Simulation] Complete.\n\n`);
-          }
+          } // end skillFiles.length > 0
         } catch (err) {
           process.stdout.write(`[Simulation] Skipped: ${err instanceof Error ? err.message : 'unknown error'}\n\n`);
         }
@@ -5583,20 +5585,38 @@ program
   .argument('<findingId>', 'Finding ID to explain (e.g., SKILL-SEMANTIC-007 or CRED-001)')
   .description('Explain a security finding in plain English using NanoMind')
   .action(async (findingId: string) => {
-    const { isDaemonAvailable, explainFinding } = await import('./semantic/nanomind-analyzer.js');
-    const available = await isDaemonAvailable();
-    if (!available) {
-      console.error('NanoMind daemon is not running. Start with: nanomind-daemon start');
-      process.exit(1);
-    }
-
     console.log(`Explaining finding: ${findingId}\n`);
 
-    const explanation = await explainFinding(JSON.stringify({ findingId }));
+    // Try NanoMind daemon first for dynamic explanation
+    const { isDaemonAvailable, explainFinding } = await import('./semantic/nanomind-analyzer.js');
+    const available = await isDaemonAvailable();
+    if (available) {
+      const explanation = await explainFinding(JSON.stringify({ findingId }));
+      if (explanation) {
+        console.log(explanation);
+        return;
+      }
+    }
+
+    // Fallback: static explanation from check metadata
+    const checkId = findingId.toUpperCase();
+    const staticExplanations: Record<string, string> = {
+      'CRED-001': 'Hardcoded credential detected. API keys, tokens, or passwords are embedded directly in source code. Replace with environment variable references ($VAR_NAME) and rotate the exposed credential immediately.',
+      'CRED-002': 'OpenAI API key pattern detected (sk-...). Move to environment variable OPENAI_API_KEY.',
+      'CRED-003': 'Anthropic API key pattern detected (sk-ant-...). Move to environment variable ANTHROPIC_API_KEY.',
+      'CRED-004': 'AWS credential pattern detected. Use AWS SDK credential chain or environment variables.',
+      'MCP-001': 'MCP server running without TLS. Agent-to-server communication is unencrypted.',
+      'SKILL-005': 'External endpoint in skill capability declaration. Verify the endpoint is trusted.',
+    };
+
+    const explanation = staticExplanations[checkId];
     if (explanation) {
-      console.log(explanation);
+      console.log(`${checkId}: ${explanation}`);
     } else {
-      console.log(`Could not generate explanation for ${findingId}. The NanoMind model may not recognize this finding ID.`);
+      console.log(`No explanation available for ${findingId}.`);
+      if (!available) {
+        console.log(`\nFor dynamic explanations, install NanoMind: npm install -g @nanomind/cli && nanomind-daemon start`);
+      }
     }
   });
 
