@@ -2030,7 +2030,7 @@ Examples:
 
           if (skillFiles.length > 0) {
             process.stdout.write(`\n[Simulation] Running behavioral simulation on ${skillFiles.length} artifact(s)...\n`);
-            const sim = new SimulationEngine();
+            const sim = new SimulationEngine({ useLLM: true });
 
             for (const file of skillFiles.slice(0, 10)) { // Cap at 10 files
               const content = readFileSync(file, 'utf-8');

@@ -8,6 +8,8 @@
 
 export { SimulationEngine, parseSkillProfile } from './engine.js';
 export { MockToolEnvironment } from './mock-tools.js';
+export { detectBestBackend, NanoMindBackend, AnthropicBackend, OllamaBackend, executeProbeLLM } from './llm-executor.js';
+export type { LLMBackend } from './llm-executor.js';
 export { ALL_PROBES, LAYER2_PROBES, LAYER3_PROBES, getProbesByCategory, getProbeCategoryCounts } from './probes.js';
 export type {
   SimulationResult,

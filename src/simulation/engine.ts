@@ -12,6 +12,8 @@
 
 import { MockToolEnvironment } from './mock-tools.js';
 import { LAYER2_PROBES, LAYER3_PROBES } from './probes.js';
+import { detectBestBackend, executeProbeLLM } from './llm-executor.js';
+import type { LLMBackend } from './llm-executor.js';
 import type {
   SimulationResult,
   SimulationConfig,
@@ -29,9 +31,31 @@ import type {
 
 export class SimulationEngine {
   private mockEnv: MockToolEnvironment;
+  private llmBackend: LLMBackend | null = null;
+  private llmDetected = false;
+  private useLLM: boolean;
 
-  constructor() {
+  /**
+   * @param options.useLLM - If true, auto-detect and use LLM backends.
+   *   If false (default for tests), use heuristic analysis only.
+   *   Set to true in production or when LLM backends are available.
+   */
+  constructor(options?: { useLLM?: boolean }) {
     this.mockEnv = new MockToolEnvironment();
+    this.useLLM = options?.useLLM ?? false;
+  }
+
+  /**
+   * Auto-detect LLM backend on first use.
+   * Falls back to heuristic analysis if no LLM is available.
+   */
+  private async ensureLLM(): Promise<LLMBackend | null> {
+    if (!this.useLLM) return null;
+    if (!this.llmDetected) {
+      this.llmBackend = await detectBestBackend();
+      this.llmDetected = true;
+    }
+    return this.llmBackend;
   }
 
   /**
@@ -112,25 +136,20 @@ export class SimulationEngine {
 
   /**
    * Run a single probe against the skill.
-   * Uses the mock tool environment to intercept all tool calls.
+   * Uses LLM execution when available, falls back to heuristic analysis.
    */
   private async runSingleProbe(
     skill: SkillProfile,
     probe: ProbeDefinition,
   ): Promise<ProbeResult> {
-    // In a full implementation, this would:
-    // 1. Load the skill as a system prompt into a controlled LLM
-    // 2. Inject the probe input as a user message
-    // 3. Observe what tool calls the LLM makes via the mock environment
-    // 4. Classify the response
-    //
-    // For now, we use heuristic analysis of the skill content against the probe.
-    // This will be upgraded to actual LLM simulation when NanoMind daemon or
-    // @hma/llm is available.
+    // Try LLM-powered execution first (actual behavioral observation)
+    const backend = await this.ensureLLM();
+    if (backend) {
+      return executeProbeLLM(backend, skill, probe, this.mockEnv);
+    }
 
-    const skillText = skill.rawContent.toLowerCase();
+    // Fallback: heuristic analysis of skill content against probe
     const passed = this.evaluateProbeHeuristic(skill, probe);
-
     const flaggedCalls = this.mockEnv.getFlaggedCalls();
 
     return {
