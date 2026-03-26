@@ -3,11 +3,11 @@
 
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-1051%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
+[![Tests](https://img.shields.io/badge/tests-1113%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
 
-**204 security checks for AI agents. Find what can go wrong before an attacker does.**
+**204 security checks + behavioral simulation for AI agents. Find what can go wrong before an attacker does.**
 
-Security scanner and red-team toolkit for Claude Code, Cursor, VS Code, and any MCP server setup.
+Security scanner, red-team toolkit, and behavioral simulation engine for Claude Code, Cursor, VS Code, and any MCP server setup. NanoMind-powered semantic analysis runs by default when available.
 
 ```bash
 npx hackmyagent secure
@@ -32,6 +32,10 @@ npx opena2a-cli review
 ---
 
 ## What It Finds
+
+**Behavioral simulation** (NEW) -- 20-probe simulation battery that observes what skills actually do, not what they look like. Targets < 1% false positive rate vs industry 95.8%. Run with `--deep`.
+
+**Adaptive red team** (NEW) -- `hackmyagent red-team <file>` generates target-specific attack payloads, observes responses, adapts after failures, and maps all defenses. NanoMind-powered.
 
 **Attack testing** -- 115 adversarial payloads across 11 categories (prompt injection, data exfiltration, jailbreak, MCP exploitation, supply chain, memory weaponization, A2A protocol attacks, context window attacks).
 
@@ -136,12 +140,31 @@ hackmyagent secure --ci     # Non-interactive mode for CI/CD
 ```bash
 hackmyagent secure                            # scan current directory
 hackmyagent secure ./my-project               # scan specific directory
+hackmyagent secure --deep                     # full behavioral simulation (20 probes)
+hackmyagent secure --static-only              # static checks only (fast, CI mode)
 hackmyagent secure --fix                      # auto-fix issues
 hackmyagent secure --fix --dry-run            # preview fixes before applying
 hackmyagent secure --ignore CRED-001,GIT-002  # skip specific checks
 hackmyagent secure --json                     # JSON output for CI/CD
 hackmyagent secure --verbose                  # show all checks including passed
 hackmyagent secure --publish                  # push results to OpenA2A Registry
+```
+
+### `hackmyagent red-team` -- Adaptive Attack Engine
+
+```bash
+hackmyagent red-team ./my-skill.md            # red-team a skill file
+hackmyagent red-team ./SOUL.md --iterations 10 # more attack iterations
+hackmyagent red-team ./mcp-config.json --json  # JSON output
+```
+
+Generates target-specific attacks from the skill's own language and constraints. Iterates up to 5x per attack category, maps all defenses, and produces specific remediation.
+
+### `hackmyagent explain` -- Finding Explanations
+
+```bash
+hackmyagent explain CRED-001                  # explain a finding
+hackmyagent explain SKILL-SEMANTIC-007        # explain NanoMind finding
 ```
 
 
