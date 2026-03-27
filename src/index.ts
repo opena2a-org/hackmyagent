@@ -65,6 +65,10 @@ export type { SkillDeclaredCapabilities, InferredCapability } from './hardening'
 // Attack module
 export { AttackScanner } from './attack';
 
+// Wild scanner module
+export { WildScanner } from './wild';
+export type { WildScanReport, WildPageResult, WildScanOptions } from './wild';
+
 export {
   ATTACK_CATEGORIES,
   ALL_PAYLOADS,

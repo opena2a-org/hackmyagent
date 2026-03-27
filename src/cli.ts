@@ -50,6 +50,7 @@ import {
   type SoulLevel,
 } from './index';
 import { resolveAndLogMcpShorthand } from './resolve-mcp';
+import { WildScanner, type WildScanReport } from './wild';
 import { NemoClawScanner, NEMOCLAW_CATEGORIES } from './hardening/nemoclaw-scanner';
 
 const program = new Command();
@@ -5724,6 +5725,150 @@ program
     }
   });
 
+
+// wild: test AI agent resilience against real-world web-based attacks
+program
+  .command('wild')
+  .description(`Test AI agent resilience in the wild
+
+Fetches pages from AgentPwn (agentpwn.com) and analyzes hidden injection
+payloads that AI agents encounter when browsing the web. Reports which
+attack surfaces exist and computes a wild resilience score.
+
+Attack categories (11):
+  prompt-injection, jailbreak, data-exfiltration, capability-abuse,
+  context-manipulation, mcp-exploitation, a2a-attack,
+  memory-weaponization, context-window, supply-chain, tool-shadow
+
+Injection surfaces detected:
+  html-comment, invisible-span, json-ld, meta-tag, http-header,
+  aria-label, image-alt, unicode-stego
+
+Also tests: robots.txt, llms.txt, sitemap.xml for embedded payloads
+
+Examples:
+  $ hackmyagent wild
+  $ hackmyagent wild https://agentpwn.com
+  $ hackmyagent wild --category prompt-injection
+  $ hackmyagent wild --tier 5
+  $ hackmyagent wild --json
+  $ hackmyagent wild -v -o report.json`)
+  .argument('[url]', 'Target URL to scan', 'https://agentpwn.com')
+  .option('-c, --category <category>', 'Filter by attack category')
+  .option('-t, --tier <tier>', 'Filter by specific difficulty tier')
+  .option('--timeout <ms>', 'Request timeout in milliseconds', '15000')
+  .option('--delay <ms>', 'Delay between requests in milliseconds', '500')
+  .option('--json', 'Output as JSON')
+  .option('-o, --output <file>', 'Write output to file')
+  .option('--verbose', 'Show detailed output for each page')
+  .action(async (url: string, options: {
+    category?: string;
+    tier?: string;
+    timeout?: string;
+    delay?: string;
+    json?: boolean;
+    output?: string;
+    verbose?: boolean;
+  }) => {
+    try {
+      const scanner = new WildScanner({
+        url: url || 'https://agentpwn.com',
+        category: options.category,
+        tier: options.tier ? parseInt(options.tier, 10) : undefined,
+        timeout: parseInt(options.timeout || '15000', 10),
+        delay: parseInt(options.delay || '500', 10),
+        verbose: options.verbose || false,
+        json: options.json || false,
+      });
+
+      if (!options.json) {
+        console.log(`\n${colors.cyan}HackMyAgent Wild Scanner${colors.reset}`);
+        console.log(`${'━'.repeat(50)}\n`);
+        console.log(`Target: ${url || 'https://agentpwn.com'}`);
+        if (options.category) console.log(`Category: ${options.category}`);
+        if (options.tier) console.log(`Tier: ${options.tier}`);
+        console.log('');
+      }
+
+      const report = await scanner.scan();
+
+      if (options.json) {
+        const output = JSON.stringify(report, null, 2);
+        if (options.output) {
+          const fs = await import('fs');
+          fs.writeFileSync(options.output, output);
+          process.stderr.write(`Report written to ${options.output}\n`);
+        } else {
+          console.log(output);
+        }
+      } else {
+        printWildReport(report);
+        if (options.output) {
+          const fs = await import('fs');
+          fs.writeFileSync(options.output, JSON.stringify(report, null, 2));
+          console.log(`\nJSON report written to ${options.output}`);
+        }
+      }
+
+      // Exit with non-zero if resilience is poor
+      if (report.resilienceRating === 'critical' || report.resilienceRating === 'poor') {
+        process.exit(1);
+      }
+    } catch (error) {
+      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      process.exit(1);
+    }
+  });
+
+function printWildReport(report: WildScanReport): void {
+  // File fetches
+  console.log(`${colors.dim}File-Level Attack Surfaces${colors.reset}`);
+  for (const f of report.fileFetches) {
+    const status = f.hasPayload
+      ? `${colors.red}PAYLOAD FOUND${colors.reset}`
+      : `${colors.green}clean${colors.reset}`;
+    console.log(`  ${f.file}: ${f.statusCode} [${status}]`);
+    if (f.payloadExcerpt) {
+      console.log(`    ${colors.dim}${f.payloadExcerpt}${colors.reset}`);
+    }
+  }
+
+  // Page results by category
+  console.log(`\n${colors.dim}Attack Pages (${report.pagesScanned} scanned)${colors.reset}`);
+  const categories = Object.keys(report.summary.byCategory).sort();
+  for (const cat of categories) {
+    const stats = report.summary.byCategory[cat];
+    console.log(`  ${cat}: ${stats.pages} pages, ${stats.payloads} payloads`);
+  }
+
+  // Injection surfaces
+  console.log(`\n${colors.dim}Injection Surfaces Detected${colors.reset}`);
+  const surfaces = Object.entries(report.summary.bySurface).sort((a, b) => b[1] - a[1]);
+  for (const [surface, count] of surfaces) {
+    console.log(`  ${surface}: ${count}`);
+  }
+
+  // Score
+  const scoreColor = report.wildResilienceScore >= 60
+    ? colors.green
+    : report.wildResilienceScore >= 40
+      ? colors.yellow
+      : colors.red;
+
+  console.log(`\n${'━'.repeat(50)}`);
+  console.log(`\n${colors.dim}Wild Resilience Score:${colors.reset} ${scoreColor}${report.wildResilienceScore}/100 (${report.resilienceRating})${colors.reset}`);
+  console.log(`${colors.dim}Pages Scanned:${colors.reset} ${report.pagesScanned}`);
+  console.log(`${colors.dim}Total Payloads:${colors.reset} ${report.summary.totalPayloads}`);
+  console.log(`${colors.dim}Callback Pages:${colors.reset} ${report.summary.callbackPages}`);
+  console.log(`${colors.dim}Canary Pages:${colors.reset} ${report.summary.canaryPages}`);
+  console.log(`${colors.dim}Max Tier:${colors.reset} ${report.summary.maxTier}`);
+  console.log(`${colors.dim}Duration:${colors.reset} ${(report.duration / 1000).toFixed(1)}s`);
+
+  console.log(`\n${colors.dim}Note: This score reflects the attack surface coverage of the target`);
+  console.log(`site. To test your actual agent's resilience, use --model to pipe`);
+  console.log(`page content through an LLM. For static config scanning, use:${colors.reset}`);
+  console.log(`  ${colors.cyan}npx hackmyagent secure${colors.reset}`);
+}
 
 // create-skill: generate best-practice, secured skills from plain English
 program
