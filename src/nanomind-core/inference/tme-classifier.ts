@@ -39,6 +39,8 @@ export class TMEClassifier {
   private loaded = false;
   private modelPath: string;
   private tokenizerPath: string;
+  private onnxSession: any = null;
+  private useOnnx = false;
 
   constructor(modelDir?: string) {
     // Look for model in standard locations (ordered by preference)
@@ -50,6 +52,7 @@ export class TMEClassifier {
       join(home, '.nanomind', 'models'),
       join(home, '.opena2a', 'nanomind', 'models'),
       // Development: nanomind training repo (monorepo sibling)
+      join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models-tme-v2'),
       join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models-tme'),
       join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models'),
       join(__dirname, '..', '..', '..', '..', 'nanomind-training', 'models'),
@@ -62,20 +65,26 @@ export class TMEClassifier {
       const tokenizer = join(dir, 'tokenizer.json');
       if (existsSync(tokenizer)) {
         this.tokenizerPath = tokenizer;
-        // Prefer TME model, fall back to MLP
+        // Prefer ONNX model for real neural inference
+        const onnx = join(dir, 'nanomind-tme.onnx');
         const tme = join(dir, 'nanomind-tme-classifier.npz');
         const mlp = join(dir, 'nanomind-sft-classifier.npz');
-        this.modelPath = existsSync(tme) ? tme : existsSync(mlp) ? mlp : '';
+        if (existsSync(onnx)) {
+          this.modelPath = onnx;
+          this.useOnnx = true;
+        } else {
+          this.modelPath = existsSync(tme) ? tme : existsSync(mlp) ? mlp : '';
+        }
         break;
       }
     }
   }
 
+  private onnxReady = false;
+  private onnxLoading: Promise<void> | null = null;
+
   /**
-   * Load the tokenizer. Model weights are not loaded in JS --
-   * the actual neural network inference happens via the Python training
-   * pipeline. This classifier uses a heuristic approximation based
-   * on the tokenizer's vocabulary and the model's learned patterns.
+   * Load the tokenizer. Kicks off async ONNX model load if available.
    */
   load(): boolean {
     if (this.loaded) return true;
@@ -83,11 +92,32 @@ export class TMEClassifier {
 
     try {
       this.vocab = JSON.parse(readFileSync(this.tokenizerPath, 'utf-8'));
+
+      // Start async ONNX load (non-blocking, classify falls back to vocab until ready)
+      if (this.useOnnx && this.modelPath) {
+        this.onnxLoading = this.loadOnnx();
+      }
+
       this.loaded = true;
       return true;
     } catch {
       return false;
     }
+  }
+
+  private async loadOnnx(): Promise<void> {
+    try {
+      const ort = require('onnxruntime-node');
+      this.onnxSession = await ort.InferenceSession.create(this.modelPath);
+      this.onnxReady = true;
+    } catch {
+      this.useOnnx = false;
+    }
+  }
+
+  /** Wait for ONNX to be ready (call before classify for neural inference) */
+  async ensureReady(): Promise<void> {
+    if (this.onnxLoading) await this.onnxLoading;
   }
 
   /**
@@ -105,6 +135,9 @@ export class TMEClassifier {
     }
 
     const tokens = this.tokenize(text);
+
+    // Sync classify always uses vocabulary scoring.
+    // For ONNX neural inference, use classifyAsync() from async contexts.
     const { raw, normalized } = this.score(tokens);
 
     // Use raw scores for intent (normalization dilutes multi-category attacks)
@@ -127,6 +160,58 @@ export class TMEClassifier {
       confidence: topRaw.score,
       topClasses: normSorted.slice(0, 3),
     };
+  }
+
+  /**
+   * Async classify using ONNX neural inference (real Mamba model).
+   * Use this from async contexts like the Semantic Compiler.
+   */
+  async classifyAsync(text: string): Promise<TMEClassification> {
+    if (!this.load()) {
+      return { intentClass: 'benign', attackClass: 'none', confidence: 0.5, topClasses: [] };
+    }
+
+    await this.ensureReady();
+
+    if (this.onnxReady && this.onnxSession) {
+      const tokens = this.tokenize(text);
+      const padded = tokens.slice(0, 128);
+      while (padded.length < 128) padded.push(0);
+
+      try {
+        const ort = require('onnxruntime-node');
+        const inputTensor = new ort.Tensor('int64', BigInt64Array.from(padded.map(BigInt)), [1, 128]);
+        const output = await this.onnxSession.run({ input_ids: inputTensor });
+        const logits = Array.from(output.logits.data as Float32Array);
+
+        // Softmax
+        const maxLogit = Math.max(...logits);
+        const exps = logits.map((l: number) => Math.exp(l - maxLogit));
+        const sumExps = exps.reduce((a: number, b: number) => a + b, 0);
+        const probs = exps.map((e: number) => e / sumExps);
+
+        const sorted = CLASSES.map((cls, i) => ({ class: cls, score: probs[i] }))
+          .sort((a, b) => b.score - a.score);
+        const topClass = sorted[0];
+
+        let intentClass: TMEClassification['intentClass'] = 'benign';
+        if (topClass.class !== 'benign' && topClass.score > 0.4) {
+          intentClass = topClass.score > 0.7 ? 'malicious' : 'suspicious';
+        }
+
+        return {
+          intentClass,
+          attackClass: topClass.class === 'benign' ? 'none' : topClass.class,
+          confidence: topClass.score,
+          topClasses: sorted.slice(0, 3),
+        };
+      } catch {
+        // ONNX inference failed, fall back to vocab
+      }
+    }
+
+    // Fall back to sync vocabulary scoring
+    return this.classify(text);
   }
 
   private tokenize(text: string): number[] {

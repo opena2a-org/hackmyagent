@@ -184,9 +184,9 @@ export class SemanticCompiler {
     confidence: number;
     inferredCapabilities: Capability[];
   } | null> {
-    // Tier 1: Local TME classifier (sub-millisecond, no network needed)
+    // Tier 1: Local TME classifier (ONNX neural if available, vocab fallback)
     const tme = getTMEClassifier();
-    const tmeResult = tme.classify(sanitizedContent);
+    const tmeResult = await tme.classifyAsync(sanitizedContent);
     if (tmeResult.confidence > 0.6) {
       return {
         intentClass: tmeResult.intentClass,
