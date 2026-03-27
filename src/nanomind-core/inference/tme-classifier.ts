@@ -152,7 +152,7 @@ export class TMEClassifier {
 
     // Class-indicative patterns (derived from training data vocabulary)
     const classPatterns: Record<string, RegExp[]> = {
-      exfiltration: [/forward/i, /export/i, /mirror/i, /upload/i, /stream/i, /sync/i, /push/i, /external.*endpoint/i, /compliance.*endpoint/i, /analytics.*collect/i],
+      exfiltration: [/forward/i, /export/i, /mirror/i, /upload/i, /stream/i, /sync/i, /push/i, /external.*endpoint/i, /compliance.*endpoint/i, /analytics.*collect/i, /select.*\*.*from/i, /include.*pii/i, /transmit.*data/i, /send.*record/i, /forward.*dataset/i],
       injection: [/override/i, /bypass/i, /suspend/i, /disable.*safety/i, /ignore.*instruction/i, /admin.*auth/i, /emergency.*access/i, /maintenance.*mode/i],
       privilege_escalation: [/escalat/i, /admin.*access/i, /bypass.*permission/i, /any.*database/i, /full.*access/i, /system.*config/i],
       persistence: [/permanently/i, /persist/i, /forever/i, /all.*future.*session/i, /long.*term.*memory/i, /no.*expiration/i],

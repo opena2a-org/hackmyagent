@@ -465,6 +465,51 @@ function mapRiskSurfaces(
     });
   }
 
+  // Bulk data export = data exfiltration surface
+  if (/select\s+\*\s+from/i.test(text) && /https?:\/\/[^\s]+/i.test(content)) {
+    surfaces.push({
+      surface: 'Bulk database export to external endpoint',
+      attackClass: 'DATA-EXFIL',
+      confidence: 0.85,
+      evidence: 'SELECT * queries combined with external URL transmission',
+    });
+  } else if (/include.*pii|transmit.*pii|forward.*record|export.*data.*external/i.test(text)) {
+    surfaces.push({
+      surface: 'PII/data export to external endpoint',
+      attackClass: 'DATA-EXFIL',
+      confidence: 0.8,
+      evidence: 'PII or bulk data export to external service',
+    });
+  }
+
+  // Supply chain: typosquatted package names
+  const knownOrgs = ['modelcontextprotocol', 'anthropic-ai', 'opena2a-org', 'opena2a'];
+  const packageRefs = content.match(/@[a-z0-9_-]+(?:\/[a-z0-9_.-]+)?/gi) ?? [];
+  for (const ref of packageRefs) {
+    const org = ref.replace(/^@/, '').split('/')[0].toLowerCase();
+    for (const known of knownOrgs) {
+      if (org !== known && levenshtein(org, known) <= 2 && levenshtein(org, known) > 0) {
+        surfaces.push({
+          surface: `Typosquatted package: ${ref}`,
+          attackClass: 'SUPPLY-CHAIN',
+          confidence: 0.95,
+          evidence: `Package "${ref}" looks like a typosquat of @${known}`,
+        });
+        break;
+      }
+    }
+  }
+
+  // Supply chain: postinstall/exec in MCP config
+  if (/postinstall|pre-?install|curl.*\|.*sh|wget.*\|.*bash/i.test(text)) {
+    surfaces.push({
+      surface: 'Shell execution in package/config',
+      attackClass: 'SUPPLY-CHAIN',
+      confidence: 0.9,
+      evidence: 'Shell command execution pattern in configuration',
+    });
+  }
+
   // Undeclared capabilities (inferred but not declared)
   for (const cap of inferred) {
     if (!cap.declared && cap.riskLevel !== 'low') {
@@ -478,6 +523,22 @@ function mapRiskSurfaces(
   }
 
   return surfaces;
+}
+
+/** Simple Levenshtein distance for typosquat detection */
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => i === 0 ? j : j === 0 ? i : 0)
+  );
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
 }
 
 function extractEvidenceSpans(content: string, risks: RiskSurface[]): EvidenceSpan[] {
