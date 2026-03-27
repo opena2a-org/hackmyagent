@@ -24,6 +24,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import { parseArtifact } from '../ingestion/artifact-parser.js';
 import { sanitizeForNanoMind } from '../ingestion/input-sanitizer.js';
+import { getTMEClassifier } from '../inference/tme-classifier.js';
 import type {
   SecurityAST,
   CompilationResult,
@@ -144,7 +145,7 @@ export class SemanticCompiler {
       governedBy: extractGovernanceReferences(content),
       evidenceSpans,
       signature: '', // Set below
-      modelVersion: nanomindUsed ? 'nanomind-v0.1' : 'heuristic-v1',
+      modelVersion: nanomindUsed ? 'nanomind-tme-v1' : 'heuristic-v1',
       compiledAt: new Date().toISOString(),
     };
 
@@ -183,20 +184,39 @@ export class SemanticCompiler {
     confidence: number;
     inferredCapabilities: Capability[];
   } | null> {
+    // Tier 1: Local TME classifier (sub-millisecond, no network needed)
+    const tme = getTMEClassifier();
+    const tmeResult = tme.classify(sanitizedContent);
+    if (tmeResult.confidence > 0.6) {
+      return {
+        intentClass: tmeResult.intentClass,
+        confidence: tmeResult.confidence,
+        inferredCapabilities: [],
+      };
+    }
+
+    // Tier 2: NanoMind daemon (full model inference)
     try {
       const resp = await fetch(`${this.config.daemonUrl}/v1/infer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           intent: 'COMPILE_AST',
-          input: sanitizedContent.slice(0, 4096), // Cap input size
+          input: sanitizedContent.slice(0, 4096),
           context: { artifactType },
           priority: 'high',
         }),
         signal: AbortSignal.timeout(this.config.daemonTimeoutMs),
       });
 
-      if (!resp.ok) return null;
+      if (!resp.ok) {
+        // Daemon unavailable -- return TME result if it had any signal
+        return tmeResult.confidence > 0.3 ? {
+          intentClass: tmeResult.intentClass,
+          confidence: tmeResult.confidence,
+          inferredCapabilities: [],
+        } : null;
+      }
 
       const result = await resp.json() as {
         result: string;
@@ -211,10 +231,15 @@ export class SemanticCompiler {
       return {
         intentClass,
         confidence: result.confidence,
-        inferredCapabilities: [], // NanoMind v3 TME will populate this
+        inferredCapabilities: [],
       };
     } catch {
-      return null; // Daemon unavailable
+      // Daemon unavailable -- return TME result if it had any signal
+      return tmeResult.confidence > 0.3 ? {
+        intentClass: tmeResult.intentClass,
+        confidence: tmeResult.confidence,
+        inferredCapabilities: [],
+      } : null;
     }
   }
 

@@ -9,6 +9,7 @@
   "types": "dist/index.d.ts",
   "exports": {
     ".": "./dist/index.js",
+    "./nanomind-core": "./dist/nanomind-core/index.js",
     "./plugins": "./dist/plugins/core.js",
     "./semantic": "./dist/semantic/index.js",
     "./arp": "./dist/arp/index.js",

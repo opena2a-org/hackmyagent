@@ -50,6 +50,10 @@ export type { ASTValidationResult, ClaimValidation, Discrepancy } from './verifi
 export { enforceSeverityFloor, validateEnhancement, requireBenignConsensus, redactSecretsForNanoMind, assertASTIntegrity, SecurityError, verifyTrainingProvenance, logSecurityEvent, getAuditEvents } from './security/defense-in-depth.js';
 export { verifyAll, EventChain, generateManifest } from './security/integrity-verifier.js';
 
+// Inference
+export { TMEClassifier, getTMEClassifier } from './inference/tme-classifier.js';
+export type { TMEClassification } from './inference/tme-classifier.js';
+
 // Ingestion
 export { parseArtifact, classifyArtifactType, computeHash } from './ingestion/artifact-parser.js';
 export { sanitizeForNanoMind, detectManipulation } from './ingestion/input-sanitizer.js';
