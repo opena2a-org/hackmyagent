@@ -972,7 +972,10 @@ export class HardeningScanner {
             if (pattern.test(lines[i]) && !lines[i].includes('${' + envVar + '}')) {
               keysFoundInFile.push({ name, line: i + 1 });
 
-              if (autoFix) {
+              // Fix: replace credential with env var reference (but NOT in .env files
+              // where the actual value is supposed to live)
+              const isEnvFile = filename.startsWith('.env');
+              if (autoFix && !isEnvFile) {
                 pattern.lastIndex = 0;
                 lines[i] = lines[i].replace(pattern, '${' + envVar + '}');
                 fileModified = true;
@@ -992,20 +995,25 @@ export class HardeningScanner {
             await fs.writeFile(filePath, content);
           }
 
+          const isEnvFile = filename.startsWith('.env');
           findings.push({
             checkId: 'CRED-001',
             name: 'Exposed Credential',
             description: `${keyNames.join(', ')} found in plaintext`,
             category: 'credentials',
             severity: 'critical',
-            passed: fileModified, // Fixed if we replaced it
+            passed: fileModified,
             message: keyNames.join(', '),
             file: filename,
             line: firstLine,
-            fixable: true,
+            fixable: !isEnvFile, // .env files can't be auto-fixed (that's where values belong)
             fixed: fileModified,
-            fix: `${this.cliName} secure --fix`,
-            guidance: 'Replaces hardcoded credentials with ${ENV_VAR} references. Store actual values in your .env file, which should be in .gitignore.',
+            fix: isEnvFile
+              ? 'Add .env to .gitignore to prevent committing secrets'
+              : `${this.cliName} secure --fix`,
+            guidance: isEnvFile
+              ? 'Credentials in .env are expected but the file must be in .gitignore. Run `hackmyagent secure --fix` to create a .gitignore.'
+              : 'Replaces hardcoded credentials with ${ENV_VAR} references. Store actual values in your .env file, which should be in .gitignore.',
           });
         }
       } catch {
