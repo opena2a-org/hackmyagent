@@ -3,7 +3,7 @@
 
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-1285%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
+[![Tests](https://img.shields.io/badge/tests-1301%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
 [![NanoMind](https://img.shields.io/badge/NanoMind-semantic%20compiler-teal)](https://huggingface.co/ecolibria/nanomind-v0.1-security-classifier)
 
 **204 security checks + 28 semantic checks + behavioral simulation. The first security scanner that secures itself.**
@@ -104,7 +104,7 @@ npm install --save-dev hackmyagent
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  HackMyAgent v0.11.10 — Security Scanner            │
+│  HackMyAgent v0.12.1 -- Security Scanner             │
 │  Found: 3 critical · 5 high · 12 medium             │
 │                                                     │
 │  CRED-001  critical  Hardcoded API key in .env      │
@@ -424,6 +424,7 @@ npx hackmyagent secure --ignore LOG-001,RATE-001
 | `0` | Clean -- no critical/high issues |
 | `1` | Critical or high severity issues found |
 | `2` | Incomplete scan -- one or more plugins failed |
+| `3` | QUARANTINE -- binary integrity check failed (tampered installation) |
 
 ---
 
@@ -431,6 +432,24 @@ npx hackmyagent secure --ignore LOG-001,RATE-001
 
 ```typescript
 import { HardeningScanner, AgentRuntimeProtection, AttackScanner } from 'hackmyagent';
+
+// NanoMind Semantic Compiler -- compile artifacts into Abstract Security Trees
+import {
+  SemanticCompiler,
+  analyzeCapabilities,
+  analyzeCredentials,
+  analyzeGovernance,
+  analyzeScope,
+  analyzePrompt,
+  analyzeCode,
+  getTMEClassifier,
+} from 'hackmyagent/nanomind-core';
+
+const compiler = new SemanticCompiler();
+const { ast } = await compiler.compile(skillContent, 'my-skill.skill.md');
+// ast.intentClassification: 'benign' | 'suspicious' | 'malicious'
+// ast.inferredCapabilities, ast.declaredConstraints, ast.inferredRiskSurface
+const findings = analyzeCapabilities(ast);
 ```
 
 
