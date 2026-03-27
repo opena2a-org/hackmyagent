@@ -48,6 +48,8 @@ export interface AttackPayload {
   cwe?: string;
   /** Remediation guidance */
   remediation: string;
+  /** Wild prevalence score from AgentPwn data (0-100, populated via --enrich) */
+  wildPrevalence?: number;
 }
 
 export interface AttackResult {
