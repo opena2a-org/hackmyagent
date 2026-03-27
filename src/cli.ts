@@ -5881,9 +5881,10 @@ program
     const { writeSkill } = await import('./skills/builder.js');
     console.log(`\nGenerating secured skill...\n`);
     const result = writeSkill({ purpose: description, name: options.name, outputDir: options.output });
-    console.log(`Created ${result.dirName}/`);
+    const outputDir = options.output ?? result.dirName;
+    console.log(`Created ${outputDir}/`);
     for (const file of result.filesWritten) { console.log(`  ${file.split('/').pop()}`); }
-    console.log(`\nYour skill is ready. Verify security with: hackmyagent secure ${result.dirName}/`);
+    console.log(`\nYour skill is ready. Verify security with: hackmyagent secure ${outputDir}/`);
   });
 // Self-securing: verify own integrity before running any command
 // A security tool that doesn't verify itself is worse than no security tool
