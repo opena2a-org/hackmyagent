@@ -88,7 +88,7 @@ export class ExternalScanner {
     // Extract hostname for private IP warning
     const hostname = target.replace(/^https?:\/\//, '').split(/[:/]/)[0];
     if (isPrivateOrReserved(hostname)) {
-      // Log warning but allow — scanning local services is a core use case for security testing
+      // Log warning but allow -- scanning local services is a core use case for security testing
       console.warn(`[HMA] Warning: scanning private/reserved address "${hostname}". Ensure you have authorization.`);
     }
 
@@ -97,41 +97,53 @@ export class ExternalScanner {
     const ports = options?.ports ?? DEFAULT_PORTS;
     const skipPortScan = options?.skipPortScan ?? false;
 
-    // Port scan
-    let openPorts: number[] = [];
-    if (!skipPortScan) {
-      openPorts = await this.scanPorts(target, ports, timeout);
-    }
+    // Global scan timeout: per-port timeout * port count, capped at 60s
+    const globalTimeout = Math.min(timeout * ports.length, 60_000);
 
-    // Run security checks on open ports
-    const findings: ExternalFinding[] = [];
+    // Race the scan against a global timeout
+    const scanWork = async (): Promise<ExternalScanResult> => {
+      // Port scan
+      let openPorts: number[] = [];
+      if (!skipPortScan) {
+        openPorts = await this.scanPorts(target, ports, timeout);
+      }
 
-    const insecure = options?.insecure === true;
-    for (const port of openPorts) {
-      const portFindings = await this.checkPort(target, port, timeout, insecure);
-      findings.push(...portFindings);
-    }
+      // Run security checks on open ports
+      const findings: ExternalFinding[] = [];
 
-    // Calculate score
-    let score = 100;
-    for (const finding of findings) {
-      score -= SEVERITY_WEIGHTS[finding.severity];
-    }
-    score = Math.max(0, score);
+      const insecure = options?.insecure === true;
+      for (const port of openPorts) {
+        const portFindings = await this.checkPort(target, port, timeout, insecure);
+        findings.push(...portFindings);
+      }
 
-    const grade = calculateGrade(score);
-    const duration = Date.now() - startTime;
+      // Calculate score
+      let score = 100;
+      for (const finding of findings) {
+        score -= SEVERITY_WEIGHTS[finding.severity];
+      }
+      score = Math.max(0, score);
 
-    return {
-      id: generateId(),
-      target,
-      score,
-      grade,
-      findings,
-      duration,
-      timestamp: new Date(),
-      openPorts,
+      const grade = calculateGrade(score);
+      const duration = Date.now() - startTime;
+
+      return {
+        id: generateId(),
+        target,
+        score,
+        grade,
+        findings,
+        duration,
+        timestamp: new Date(),
+        openPorts,
+      };
     };
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Scan timed out after ${globalTimeout}ms. Try fewer ports or increase -t timeout.`)), globalTimeout)
+    );
+
+    return Promise.race([scanWork(), timeoutPromise]);
   }
 
   private async scanPorts(

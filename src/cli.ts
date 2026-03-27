@@ -3101,18 +3101,20 @@ Examples:
       options: { json?: boolean; ports?: string; timeout?: string; verbose?: boolean }
     ) => {
       try {
-        if (!options.json) {
-          console.log(`\nScanning ${target}...\n`);
-        }
-
-        const scanner = new ExternalScanner();
+        const timeoutMs = parseInt(options.timeout ?? '5000', 10);
         const customPorts = options.ports
           ? options.ports.split(',').map((p) => parseInt(p.trim(), 10))
           : undefined;
+        const portCount = customPorts?.length ?? 11;
 
+        if (!options.json) {
+          console.log(`\nScanning ${target} (${portCount} ports, ${timeoutMs}ms timeout)...\n`);
+        }
+
+        const scanner = new ExternalScanner();
         const result = await scanner.scan(target, {
           ports: customPorts,
-          timeout: parseInt(options.timeout ?? '5000', 10),
+          timeout: timeoutMs,
         });
 
         if (options.json) {
