@@ -191,7 +191,7 @@ Risk levels: low, medium, high, critical
 Exit code 1 if high/critical risk detected.
 
 Examples:
-  $ hackmyagent check @anthropic/claude-mcp
+  $ hackmyagent check server-filesystem
   $ hackmyagent check @publisher/skill --verbose
   $ hackmyagent check @publisher/skill --json`)
   .argument('<skill>', 'Skill identifier (e.g., @publisher/skill)')
@@ -5563,7 +5563,7 @@ Modes:
   trust --batch pkg1 pkg2   Batch lookup for multiple packages
 
 Examples:
-  $ ${CLI_PREFIX} trust @anthropic/claude-mcp
+  $ ${CLI_PREFIX} trust server-filesystem
   $ ${CLI_PREFIX} trust server-filesystem          (resolves to @modelcontextprotocol/server-filesystem)
   $ ${CLI_PREFIX} trust mcp-server-fetch            (resolves to @modelcontextprotocol/server-fetch)
   $ ${CLI_PREFIX} trust my-mcp-server --type mcp_server

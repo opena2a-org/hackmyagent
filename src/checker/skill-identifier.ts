@@ -62,5 +62,5 @@ export function parseSkillIdentifier(identifier: string): SkillIdentifier {
     };
   }
 
-  throw new Error('Invalid skill identifier: unrecognized format');
+  throw new Error('Invalid skill identifier: unrecognized format. Expected @publisher/skill-name, a GitHub URL, or a registry package name.');
 }

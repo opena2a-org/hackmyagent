@@ -140,7 +140,7 @@ export class ExternalScanner {
     };
 
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`Scan timed out after ${globalTimeout}ms. Try fewer ports or increase -t timeout.`)), globalTimeout)
+      setTimeout(() => reject(new Error(`Scan timed out after ${globalTimeout}ms (${ports.length} ports x ${timeout}ms each). Try fewer ports (-p 80,443) or increase -t timeout.`)), globalTimeout)
     );
 
     return Promise.race([scanWork(), timeoutPromise]);
