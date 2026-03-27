@@ -6089,6 +6089,15 @@ dist/
       for (const pattern of PROMPT_INJECTION_PATTERNS) {
         const match = content.match(pattern);
         if (match) {
+          // Exclude matches inside defensive constraint sentences
+          // e.g., "Must never ignore previous instructions" is a defense, not an attack
+          const matchIdx = content.indexOf(match[0]);
+          const surroundingStart = Math.max(0, matchIdx - 80);
+          const surroundingEnd = Math.min(content.length, matchIdx + match[0].length + 40);
+          const surrounding = content.slice(surroundingStart, surroundingEnd).toLowerCase();
+          const isDefensive = /must never|forbidden|should not|must not|never comply|resist|reject|refuse|do not/.test(surrounding);
+          if (isDefensive) continue;
+
           findings.push({
             checkId: 'CONFIG-002',
             name: 'SOUL.md Injection Vectors',
