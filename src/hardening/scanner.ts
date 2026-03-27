@@ -6089,14 +6089,16 @@ dist/
       for (const pattern of PROMPT_INJECTION_PATTERNS) {
         const match = content.match(pattern);
         if (match) {
-          // Exclude matches inside defensive constraint sentences
-          // e.g., "Must never ignore previous instructions" is a defense, not an attack
+          // Exclude matches inside defensive/governance context
+          // SOUL.md templates quote attack phrases to teach defense against them
           const matchIdx = content.indexOf(match[0]);
-          const surroundingStart = Math.max(0, matchIdx - 80);
-          const surroundingEnd = Math.min(content.length, matchIdx + match[0].length + 40);
+          const surroundingStart = Math.max(0, matchIdx - 200);
+          const surroundingEnd = Math.min(content.length, matchIdx + match[0].length + 100);
           const surrounding = content.slice(surroundingStart, surroundingEnd).toLowerCase();
-          const isDefensive = /must never|forbidden|should not|must not|never comply|resist|reject|refuse|do not/.test(surrounding);
-          if (isDefensive) continue;
+          const isDefensive = /must never|forbidden|should not|must not|never comply|resist|reject|refuse|do not|defense|hardening|such as|attempt|detect/i.test(surrounding);
+          // Also check if the document is a governance doc (3+ constraint phrases)
+          const constraintCount = (content.match(/must never|must not|must always|should not|forbidden|prohibited|restricted to|shall not/gi) || []).length;
+          if (isDefensive || constraintCount >= 3) continue;
 
           findings.push({
             checkId: 'CONFIG-002',

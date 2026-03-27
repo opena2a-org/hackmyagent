@@ -412,6 +412,19 @@ function extractGovernanceReferences(content: string): string[] {
   return refs;
 }
 
+/**
+ * Detect governance content that talks ABOUT security constraints.
+ * These documents set rules ("must never share credentials") not perform attacks.
+ * Without this check, governance docs that mention attack patterns defensively
+ * get flagged as malicious.
+ */
+function isGovernanceContent(text: string): boolean {
+  const constraintCount = (text.match(/must never|must not|must always|should not|should never|forbidden|prohibited|restricted to|shall not/gi) || []).length;
+  const sectionHeaders = /## (?:trust|governance|constraint|oversight|data handling|behavioral|identity|error|credential|scope|permission|boundary)/i.test(text);
+  // 3+ constraint phrases or governance section headers = governance doc
+  return constraintCount >= 3 || sectionHeaders;
+}
+
 function mapRiskSurfaces(
   content: string,
   declared: Capability[],
@@ -421,8 +434,13 @@ function mapRiskSurfaces(
   const surfaces: RiskSurface[] = [];
   const text = content.toLowerCase();
 
+  // Detect governance documents -- these talk ABOUT security, not perform attacks
+  // SOUL.md, governance docs, and system prompts with constraint language
+  const isGovernanceDoc = isGovernanceContent(text);
+
   // External URL + data forwarding = exfiltration surface
-  if (/https?:\/\/[^\s]+\.(co|io|com|net|org)/.test(content) && /forward|send|transmit|export/i.test(text)) {
+  // Skip for governance docs (they describe rules about data handling, not perform exfiltration)
+  if (!isGovernanceDoc && /https?:\/\/[^\s]+\.(co|io|com|net|org)/.test(content) && /forward|send|transmit|export/i.test(text)) {
     surfaces.push({
       surface: 'External data transmission',
       attackClass: 'SKILL-EXFIL',
@@ -432,10 +450,10 @@ function mapRiskSurfaces(
   }
 
   // Override/ignore instructions = injection surface
-  // BUT: constraint language about resisting overrides is NOT an injection
-  // "Ignore previous instructions" = injection. "Must never comply with override requests" = defense.
+  // Defensive constraint language is NOT an injection
   const hasOverrideLanguage = /ignore.*previous|override.*instruction|new.*task/i.test(text);
-  const isDefensiveConstraint = /must never.*override|never.*comply.*override|resist.*override|forbidden.*override/i.test(text);
+  const isDefensiveConstraint = /must never|must not|never comply|resist|reject|refuse|forbidden|should not|do not|prohibited/.test(text)
+    && /override|ignore|bypass|injection|inject/i.test(text);
   if (hasOverrideLanguage && !isDefensiveConstraint) {
     surfaces.push({
       surface: 'Instruction override language',
@@ -446,7 +464,8 @@ function mapRiskSurfaces(
   }
 
   // Credential access patterns
-  if (/password|credential|api[_-]?key|secret|token/i.test(text) && /ask|request|share|provide/i.test(text)) {
+  // Skip for governance docs (they set rules about credentials, not harvest them)
+  if (!isGovernanceDoc && /password|credential|api[_-]?key|secret|token/i.test(text) && /ask|request|share|provide/i.test(text)) {
     surfaces.push({
       surface: 'Credential harvesting',
       attackClass: 'CRED-HARVEST',
@@ -465,15 +484,15 @@ function mapRiskSurfaces(
     });
   }
 
-  // Bulk data export = data exfiltration surface
-  if (/select\s+\*\s+from/i.test(text) && /https?:\/\/[^\s]+/i.test(content)) {
+  // Bulk data export = data exfiltration surface (skip governance docs)
+  if (!isGovernanceDoc && /select\s+\*\s+from/i.test(text) && /https?:\/\/[^\s]+/i.test(content)) {
     surfaces.push({
       surface: 'Bulk database export to external endpoint',
       attackClass: 'DATA-EXFIL',
       confidence: 0.85,
       evidence: 'SELECT * queries combined with external URL transmission',
     });
-  } else if (/include.*pii|transmit.*pii|forward.*record|export.*data.*external/i.test(text)) {
+  } else if (!isGovernanceDoc && /include.*pii|transmit.*pii|forward.*record|export.*data.*external/i.test(text)) {
     surfaces.push({
       surface: 'PII/data export to external endpoint',
       attackClass: 'DATA-EXFIL',
