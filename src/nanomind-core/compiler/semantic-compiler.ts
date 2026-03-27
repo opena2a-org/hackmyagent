@@ -25,6 +25,7 @@ import { createHash, createHmac } from 'node:crypto';
 import { parseArtifact } from '../ingestion/artifact-parser.js';
 import { sanitizeForNanoMind } from '../ingestion/input-sanitizer.js';
 import { getTMEClassifier } from '../inference/tme-classifier.js';
+import { TMENeuralClassifier } from '../inference/tme-neural.js';
 import type {
   SecurityAST,
   CompilationResult,
@@ -184,7 +185,20 @@ export class SemanticCompiler {
     confidence: number;
     inferredCapabilities: Capability[];
   } | null> {
-    // Tier 1: Local TME classifier (ONNX neural if available, vocab fallback)
+    // Tier 0: Pure neural inference (7MB binary model, no dependencies)
+    const neural = new TMENeuralClassifier();
+    if (neural.load()) {
+      const neuralResult = neural.classify(sanitizedContent);
+      if (neuralResult.confidence > 0.6 && neuralResult.intentClass !== 'benign') {
+        return {
+          intentClass: neuralResult.intentClass,
+          confidence: neuralResult.confidence,
+          inferredCapabilities: [],
+        };
+      }
+    }
+
+    // Tier 1: TME vocabulary scorer + ONNX if available
     const tme = getTMEClassifier();
     const tmeResult = await tme.classifyAsync(sanitizedContent);
     if (tmeResult.confidence > 0.6) {
