@@ -5205,6 +5205,8 @@ interface TrustAnswer {
   communityScans?: number;
   cveCount?: number;
   recommendation?: string;
+  confidence?: number;
+  lastScannedAt?: string;
   dependencies?: {
     direct?: number;
     transitive?: number;
@@ -5299,13 +5301,46 @@ function trustLevelColor(level: number): string {
   return colors.red;
 }
 
-function trustVerdictColor(verdict: string): string {
+function normalizeTrustVerdict(verdict: string): string {
   switch (verdict) {
+    case 'safe': case 'passed': return 'safe';
+    case 'warning': case 'warnings': return 'warning';
+    case 'blocked': case 'failed': return 'blocked';
+    case 'listed': return 'listed';
+    default: return verdict;
+  }
+}
+
+function trustVerdictColor(verdict: string): string {
+  const n = normalizeTrustVerdict(verdict);
+  switch (n) {
     case 'safe': return colors.green;
     case 'warning': return colors.yellow;
     case 'blocked': return colors.red;
+    case 'listed': return colors.cyan;
     default: return colors.dim;
   }
+}
+
+function formatTrustScore(trustScore: number, scanStatus?: string): string {
+  if (trustScore === 0 && (!scanStatus || scanStatus === '')) return 'Not scanned';
+  return `${Math.round(trustScore * 100)}/100`;
+}
+
+function formatTrustConfidence(confidence?: number): string | null {
+  if (!confidence || confidence === 0) return null;
+  if (confidence >= 0.7) return 'high confidence';
+  if (confidence >= 0.4) return 'moderate confidence';
+  return 'low confidence';
+}
+
+function formatTrustScanAge(lastScannedAt?: string): string | null {
+  if (!lastScannedAt) return null;
+  const days = Math.floor((Date.now() - new Date(lastScannedAt).getTime()) / (1000 * 60 * 60 * 24));
+  if (days === 0) return 'today';
+  if (days === 1) return '1 day ago';
+  if (days > 90) return `${days} days ago (stale)`;
+  return `${days} days ago`;
 }
 
 function formatTrustCheck(answer: TrustAnswer): string {
@@ -5316,21 +5351,45 @@ function formatTrustCheck(answer: TrustAnswer): string {
       `  ${colors.dim}Type: ${answer.packageType || 'unknown'}${colors.reset}`,
       `  ${colors.dim}Status: Not found in registry${colors.reset}`,
       '',
+      '  To scan it locally:',
+      `    ${colors.cyan}ai-trust check ${answer.name} --scan-if-missing${colors.reset}`,
+      '',
+      '  Or scan your full project:',
+      `    ${colors.cyan}npx hackmyagent secure .${colors.reset}`,
+      '',
     ].join('\n');
   }
 
+  const normalized = normalizeTrustVerdict(answer.verdict);
   const vc = trustVerdictColor(answer.verdict);
   const tc = trustLevelColor(answer.trustLevel);
+  const scoreDisplay = formatTrustScore(answer.trustScore, answer.scanStatus);
+  const isUnscanned = scoreDisplay === 'Not scanned';
 
   const lines: string[] = [
     '',
     `  ${answer.name}`,
     `  Type:           ${answer.packageType || 'unknown'}`,
-    `  Verdict:        ${vc}${answer.verdict.toUpperCase()}${colors.reset}`,
+    `  Verdict:        ${vc}${normalized.toUpperCase()}${colors.reset}`,
     `  Trust Level:    ${tc}${trustLevelLabel(answer.trustLevel)}${colors.reset} (${answer.trustLevel}/4)`,
-    `  Trust Score:    ${Math.round(answer.trustScore * 100)}/100`,
-    `  Scan Status:    ${answer.scanStatus || 'unknown'}`,
+    `  Trust Score:    ${isUnscanned ? colors.dim + scoreDisplay + colors.reset : scoreDisplay}`,
   ];
+
+  const conf = formatTrustConfidence(answer.confidence);
+  if (conf) lines.push(`  Confidence:     ${conf}`);
+
+  const scanAge = formatTrustScanAge(answer.lastScannedAt);
+  if (scanAge) {
+    lines.push(`  Last Scanned:   ${scanAge.includes('stale') ? colors.yellow + scanAge + colors.reset : scanAge}`);
+  } else if (!isUnscanned) {
+    lines.push(`  Scan Status:    ${answer.scanStatus || 'unknown'}`);
+  }
+
+  if (isUnscanned) {
+    lines.push('');
+    lines.push(`  ${colors.yellow}This package has not been security-scanned.${colors.reset}`);
+    lines.push(`  ${colors.yellow}Trust level reflects registry listing only.${colors.reset}`);
+  }
 
   if (answer.dependencies && answer.dependencies.totalDeps > 0) {
     const deps = answer.dependencies;
@@ -5355,7 +5414,7 @@ function formatTrustBatch(
   lines.push(`  Trust Audit: ${response.meta.total} packages queried, ${response.meta.found} found, ${response.meta.notFound} not found`);
   lines.push('');
 
-  const nameW = 40, typeW = 14, verdictW = 10, levelW = 12, scoreW = 8, scanW = 10;
+  const nameW = 40, typeW = 14, verdictW = 10, levelW = 12, scoreW = 14, scanW = 10;
 
   lines.push(
     '  ' +
@@ -5369,20 +5428,35 @@ function formatTrustBatch(
   lines.push('  ' + '-'.repeat(nameW + typeW + verdictW + levelW + scoreW + scanW));
 
   for (const result of response.results) {
-    const vc = trustVerdictColor(result.verdict);
-    const tc = trustLevelColor(result.trustLevel);
-
     const name = result.name.length > nameW - 2
       ? result.name.substring(0, nameW - 5) + '...'
       : result.name;
+
+    if (!result.found) {
+      lines.push(
+        '  ' +
+        name.padEnd(nameW) +
+        '-'.padEnd(typeW) +
+        colors.dim + 'NO DATA'.padEnd(verdictW) + colors.reset +
+        colors.dim + '-'.padEnd(levelW) + colors.reset +
+        '-'.padEnd(scoreW) +
+        '-'.padEnd(scanW)
+      );
+      continue;
+    }
+
+    const normalized = normalizeTrustVerdict(result.verdict);
+    const vc = trustVerdictColor(result.verdict);
+    const tc = trustLevelColor(result.trustLevel);
+    const scoreDisplay = formatTrustScore(result.trustScore, result.scanStatus);
 
     lines.push(
       '  ' +
       name.padEnd(nameW) +
       (result.packageType || '-').padEnd(typeW) +
-      vc + result.verdict.toUpperCase().padEnd(verdictW) + colors.reset +
+      vc + normalized.toUpperCase().padEnd(verdictW) + colors.reset +
       tc + trustLevelLabel(result.trustLevel).padEnd(levelW) + colors.reset +
-      (result.found ? `${Math.round(result.trustScore * 100)}/100` : '-').padEnd(scoreW) +
+      scoreDisplay.padEnd(scoreW) +
       (result.scanStatus || '-').padEnd(scanW)
     );
   }
@@ -5400,15 +5474,26 @@ function formatTrustBatch(
   }
 
   if (notFound.length > 0) {
-    lines.push(`  ${colors.dim}[?] ${notFound.length} package(s) not found in registry:${colors.reset}`);
+    lines.push(`  ${colors.yellow}[?] ${notFound.length} package(s) not found in registry (no trust data):${colors.reset}`);
     for (const pkg of notFound) {
-      lines.push(`  ${colors.dim}    - ${pkg.name}${colors.reset}`);
+      lines.push(`  ${colors.yellow}    - ${pkg.name}${colors.reset}`);
     }
   }
 
   if (belowThreshold.length === 0 && notFound.length === 0) {
     lines.push(`  ${colors.green}All ${response.meta.found} packages meet minimum trust level ${minTrust}.${colors.reset}`);
   }
+
+  // Next steps
+  lines.push('');
+  if (notFound.length > 0) {
+    lines.push(`  ${colors.dim}Scan unknown packages: ai-trust audit <file> --scan-missing${colors.reset}`);
+    lines.push(`  ${colors.dim}Or individually: ai-trust check <name> --scan-if-missing${colors.reset}`);
+  }
+  if (belowThreshold.length > 0) {
+    lines.push(`  ${colors.dim}Inspect flagged packages: ai-trust check <name>${colors.reset}`);
+  }
+  lines.push(`  ${colors.dim}Full project security scan: npx hackmyagent secure .${colors.reset}`);
 
   lines.push('');
   return lines.join('\n');
@@ -5489,7 +5574,7 @@ Examples:
   .option('-t, --type <type>', 'Package type (mcp_server, a2a_agent, ai_tool, etc.)')
   .option('--audit <file>', 'Audit a dependency file (package.json or requirements.txt)')
   .option('--batch <names...>', 'Batch trust lookup for multiple packages')
-  .option('--min-trust <level>', 'Minimum trust level threshold (0-4)', '3')
+  .option('--min-trust <level>', 'Minimum trust level threshold (0-4)', '2')
   .option('--registry-url <url>', 'Registry base URL', validateRegistryUrl(REGISTRY_DEFAULT_URL))
   .option('--json', 'Output as JSON')
   .action(async (
@@ -5533,7 +5618,8 @@ Examples:
           process.stdout.write(formatTrustBatch(response, minTrust));
         }
         const belowThreshold = response.results.some((r) => r.found && r.trustLevel < minTrust);
-        if (belowThreshold) process.exitCode = 1;
+        const hasNotFound = response.results.some((r) => !r.found);
+        if (belowThreshold || hasNotFound) process.exitCode = 1;
         return;
       }
 
@@ -5554,7 +5640,8 @@ Examples:
           process.stdout.write(formatTrustBatch(response, minTrust));
         }
         const belowThreshold = response.results.some((r) => r.found && r.trustLevel < minTrust);
-        if (belowThreshold) process.exitCode = 1;
+        const hasNotFound = response.results.some((r) => !r.found);
+        if (belowThreshold || hasNotFound) process.exitCode = 1;
         return;
       }
 
