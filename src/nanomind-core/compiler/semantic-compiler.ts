@@ -463,6 +463,56 @@ function mapRiskSurfaces(
     });
   }
 
+  // Structural injection patterns (JSON configs, code blocks, hidden directives)
+  if (/systemprompt.*override|systemprompt.*ignore|systemprompt.*bypass/i.test(text.replace(/[_\-\s]/g, ''))) {
+    surfaces.push({
+      surface: 'Hidden system prompt override in config',
+      attackClass: 'PROMPT-INJECT',
+      confidence: 0.9,
+      evidence: 'systemPrompt field contains override directives',
+    });
+  }
+  if (/\[inst\]|\[\/inst\]|<<sys>>|<\|im_start\|>/i.test(text)) {
+    surfaces.push({
+      surface: 'LLM control tokens in content',
+      attackClass: 'PROMPT-INJECT',
+      confidence: 0.85,
+      evidence: 'Contains LLM instruction tokens ([INST], <<SYS>>, etc.)',
+    });
+  }
+  if (/new\s+function\s*\(|eval\s*\(|node\s+-e\s+['"]/i.test(text)) {
+    surfaces.push({
+      surface: 'Dynamic code execution in config',
+      attackClass: 'HEARTBEAT-RCE',
+      confidence: 0.9,
+      evidence: 'Config contains eval/Function constructor for remote code execution',
+    });
+  }
+  if (/curl\s+.*\|\s*(ba)?sh|wget\s+.*\|\s*(ba)?sh/i.test(content)) {
+    surfaces.push({
+      surface: 'Shell pipe execution',
+      attackClass: 'HEARTBEAT-RCE',
+      confidence: 0.95,
+      evidence: 'curl/wget piped to shell for remote command execution',
+    });
+  }
+  if (/setinterval|settimeout|while\s+true|cron|every\s+\d+\s*(min|sec|hour)/i.test(text) && /https?:\/\//i.test(content)) {
+    surfaces.push({
+      surface: 'Periodic remote callback',
+      attackClass: 'HEARTBEAT-RCE',
+      confidence: 0.85,
+      evidence: 'Periodic timer with remote URL (heartbeat/beacon pattern)',
+    });
+  }
+  if (/"command"\s*:\s*"(bash|sh|node|python)"/i.test(content) && /"args"\s*:\s*\[.*(-e|-c|eval|exec)/i.test(content)) {
+    surfaces.push({
+      surface: 'Inline code execution in MCP config',
+      attackClass: 'HEARTBEAT-RCE',
+      confidence: 0.9,
+      evidence: 'MCP server uses inline script execution via -e/-c flag',
+    });
+  }
+
   // Credential access patterns
   // Skip for governance docs (they set rules about credentials, not harvest them)
   if (!isGovernanceDoc && /password|credential|api[_-]?key|secret|token/i.test(text) && /ask|request|share|provide/i.test(text)) {
