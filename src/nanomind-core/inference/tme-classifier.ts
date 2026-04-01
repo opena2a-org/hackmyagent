@@ -93,9 +93,20 @@ export class TMEClassifier {
       }
     }
 
-    // If no model found locally, mark for auto-download
+    // Auto-download if: no model found, no ONNX, or cached model is outdated
     if (!this.tokenizerPath) {
       this.needsDownload = true;
+    } else if (!this.useOnnx) {
+      this.needsDownload = true;
+    } else {
+      // Verify cached model version matches expected SHA
+      try {
+        const cachedHash = createHash('sha256').update(readFileSync(this.tokenizerPath)).digest('hex');
+        const expectedHash = MODEL_FILES.find(f => f.name === 'tokenizer.json')?.sha256;
+        if (expectedHash && cachedHash !== expectedHash) {
+          this.needsDownload = true; // Stale model, trigger update
+        }
+      } catch { /* hash check failed, use cached model */ }
     }
   }
 
