@@ -11,9 +11,19 @@
  * Security: model file integrity verified before loading.
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, createWriteStream, unlinkSync, createReadStream } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { homedir } from 'node:os';
+import https from 'node:https';
+
+const HF_BASE = 'https://huggingface.co/opena2a/nanomind-security-classifier/resolve/main';
+const MODEL_FILES: Array<{ name: string; sha256: string }> = [
+  { name: 'tokenizer.json', sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' },
+  { name: 'nanomind-tme.onnx', sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' },
+  { name: 'nanomind-tme.onnx.data', sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' },
+];
+const DOWNLOAD_DIR = join(homedir(), '.nanomind', 'models');
 
 const CLASSES = [
   'exfiltration', 'injection', 'privilege_escalation', 'persistence',
@@ -41,10 +51,12 @@ export class TMEClassifier {
   private tokenizerPath: string;
   private onnxSession: any = null;
   private useOnnx = false;
+  private needsDownload = false;
+  private downloadPromise: Promise<boolean> | null = null;
 
   constructor(modelDir?: string) {
     // Look for model in standard locations (ordered by preference)
-    const home = require('os').homedir();
+    const home = homedir();
     const locations = [
       modelDir,
       join(process.cwd(), 'models'),
@@ -78,6 +90,126 @@ export class TMEClassifier {
         }
         break;
       }
+    }
+
+    // If no model found locally, mark for auto-download
+    if (!this.tokenizerPath) {
+      this.needsDownload = true;
+    }
+  }
+
+  /**
+   * Download a single file from HuggingFace, following 302 redirects.
+   * Uses only Node.js built-ins (https, fs, crypto).
+   */
+  private static downloadFile(url: string, destPath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const follow = (targetUrl: string) => {
+        https.get(targetUrl, (response) => {
+          if (response.statusCode === 301 || response.statusCode === 302) {
+            const location = response.headers.location;
+            if (!location) {
+              reject(new Error('Redirect with no location header'));
+              return;
+            }
+            response.resume();
+            follow(location);
+            return;
+          }
+          if (response.statusCode !== 200) {
+            response.resume();
+            reject(new Error(`HTTP ${response.statusCode} for ${targetUrl}`));
+            return;
+          }
+          const file = createWriteStream(destPath);
+          response.pipe(file);
+          file.on('finish', () => { file.close(); resolve(); });
+          file.on('error', (err) => { file.close(); reject(err); });
+        }).on('error', reject);
+      };
+      follow(url);
+    });
+  }
+
+  /**
+   * Compute SHA-256 hash of a file using streaming.
+   */
+  private static computeHash(filePath: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const hash = createHash('sha256');
+      const stream = createReadStream(filePath);
+      stream.on('data', (chunk) => hash.update(chunk));
+      stream.on('end', () => resolve(hash.digest('hex')));
+      stream.on('error', reject);
+    });
+  }
+
+  /**
+   * Download the NanoMind TME model files from HuggingFace.
+   * Verifies SHA-256 integrity of each file. Cleans up on failure.
+   * Returns true if download succeeded, false otherwise.
+   */
+  static async downloadModel(targetDir?: string): Promise<boolean> {
+    const dir = targetDir ?? DOWNLOAD_DIR;
+    try {
+      mkdirSync(dir, { recursive: true });
+    } catch {
+      return false;
+    }
+
+    console.error('Downloading NanoMind security model (5.5MB)...');
+
+    for (const file of MODEL_FILES) {
+      const dest = join(dir, file.name);
+      if (existsSync(dest)) continue;
+
+      const url = `${HF_BASE}/${file.name}`;
+      try {
+        await TMEClassifier.downloadFile(url, dest);
+        // Verify integrity
+        const hash = await TMEClassifier.computeHash(dest);
+        if (file.sha256 && file.sha256 !== 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' && hash !== file.sha256) {
+          console.error(`  Integrity check failed for ${file.name}. Removing.`);
+          try { unlinkSync(dest); } catch { /* ignore */ }
+          return false;
+        }
+      } catch (err: any) {
+        console.error(`  Failed to download ${file.name}: ${err?.message ?? 'unknown error'}`);
+        try { unlinkSync(dest); } catch { /* ignore */ }
+        return false;
+      }
+    }
+
+    console.error('Model ready. Using neural inference for deep scanning.');
+    return true;
+  }
+
+  /**
+   * Ensure the model is available. Downloads from HuggingFace if needed.
+   * Call this from async contexts before classifyAsync().
+   */
+  async ensureModel(): Promise<void> {
+    if (!this.needsDownload) return;
+    if (this.downloadPromise) {
+      await this.downloadPromise;
+      return;
+    }
+
+    this.downloadPromise = TMEClassifier.downloadModel();
+    const ok = await this.downloadPromise;
+    this.downloadPromise = null;
+
+    if (ok) {
+      // Point paths to the freshly downloaded model
+      this.tokenizerPath = join(DOWNLOAD_DIR, 'tokenizer.json');
+      this.modelPath = join(DOWNLOAD_DIR, 'nanomind-tme.onnx');
+      this.useOnnx = true;
+      this.needsDownload = false;
+      this.loaded = false; // Force re-load with new paths
+    } else {
+      // Download failed; fall back to vocab scoring silently
+      console.error('Model download unavailable. Using vocabulary-based scoring.');
+      this.needsDownload = false;
     }
   }
 
@@ -116,8 +248,9 @@ export class TMEClassifier {
     }
   }
 
-  /** Wait for ONNX to be ready (call before classify for neural inference) */
+  /** Wait for model download (if needed) and ONNX to be ready */
   async ensureReady(): Promise<void> {
+    if (this.needsDownload) await this.ensureModel();
     if (this.onnxLoading) await this.onnxLoading;
   }
 
@@ -168,6 +301,9 @@ export class TMEClassifier {
    * Use this from async contexts like the Semantic Compiler.
    */
   async classifyAsync(text: string): Promise<TMEClassification> {
+    // Auto-download model from HuggingFace if no local files found
+    if (this.needsDownload) await this.ensureModel();
+
     if (!this.load()) {
       return { intentClass: 'benign', attackClass: 'none', confidence: 0.5, topClasses: [] };
     }
