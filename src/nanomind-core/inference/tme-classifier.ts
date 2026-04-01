@@ -51,7 +51,8 @@ export class TMEClassifier {
       join(__dirname, '..', '..', '..', 'models'),
       join(home, '.nanomind', 'models'),
       join(home, '.opena2a', 'nanomind', 'models'),
-      // Development: nanomind training repo (monorepo sibling)
+      // Development: nanomind training repo (monorepo sibling, newest first)
+      join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models-tme-v3'),
       join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models-tme-v2'),
       join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models-tme'),
       join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models'),
