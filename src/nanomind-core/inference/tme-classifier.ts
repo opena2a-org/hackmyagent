@@ -19,9 +19,9 @@ import https from 'node:https';
 
 const HF_BASE = 'https://huggingface.co/opena2a/nanomind-security-classifier/resolve/main';
 const MODEL_FILES: Array<{ name: string; sha256: string }> = [
-  { name: 'tokenizer.json', sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' },
-  { name: 'nanomind-tme.onnx', sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' },
-  { name: 'nanomind-tme.onnx.data', sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' },
+  { name: 'tokenizer.json', sha256: '4095fd6fd3ae765b2bcfba0b03d59e8efa4fb96d6b92a20e3b362e497ea8dec5' },
+  { name: 'nanomind-tme.onnx', sha256: '93450d5ec31a3ede7aec5be7c0cf8ff3914c4b2c831a0ab822a8999c88714794' },
+  { name: 'nanomind-tme.onnx.data', sha256: 'e63ea7b5d89eda823a5c958b8f5d9a3f0e16e956895496d8d09a4b400d911f96' },
 ];
 const DOWNLOAD_DIR = join(homedir(), '.nanomind', 'models');
 
@@ -168,7 +168,7 @@ export class TMEClassifier {
         await TMEClassifier.downloadFile(url, dest);
         // Verify integrity
         const hash = await TMEClassifier.computeHash(dest);
-        if (file.sha256 && file.sha256 !== 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' && hash !== file.sha256) {
+        if (file.sha256 && hash !== file.sha256) {
           console.error(`  Integrity check failed for ${file.name}. Removing.`);
           try { unlinkSync(dest); } catch { /* ignore */ }
           return false;
