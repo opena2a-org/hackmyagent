@@ -64,6 +64,7 @@ export class TMEClassifier {
       join(home, '.nanomind', 'models'),
       join(home, '.opena2a', 'nanomind', 'models'),
       // Development: nanomind training repo (monorepo sibling, newest first)
+      join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models-tme-v4'),
       join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models-tme-v3'),
       join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models-tme-v2'),
       join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models-tme'),
@@ -106,14 +107,16 @@ export class TMEClassifier {
     return new Promise((resolve, reject) => {
       const follow = (targetUrl: string) => {
         https.get(targetUrl, (response) => {
-          if (response.statusCode === 301 || response.statusCode === 302) {
+          if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400) {
             const location = response.headers.location;
             if (!location) {
               reject(new Error('Redirect with no location header'));
               return;
             }
             response.resume();
-            follow(location);
+            // Handle relative redirects by resolving against the request URL
+            const resolved = location.startsWith('http') ? location : new URL(location, targetUrl).href;
+            follow(resolved);
             return;
           }
           if (response.statusCode !== 200) {
