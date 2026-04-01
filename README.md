@@ -4,7 +4,7 @@
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Tests](https://img.shields.io/badge/tests-1301%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
-[![NanoMind](https://img.shields.io/badge/NanoMind-semantic%20compiler-teal)](https://huggingface.co/ecolibria/nanomind-v0.1-security-classifier)
+[![NanoMind](https://img.shields.io/badge/NanoMind-semantic%20compiler-teal)](https://huggingface.co/opena2a/nanomind-security-classifier)
 
 **204 security checks + 28 semantic checks + behavioral simulation. The first security scanner that secures itself.**
 
@@ -104,7 +104,7 @@ npm install --save-dev hackmyagent
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  HackMyAgent v0.12.3 -- Security Scanner             │
+│  HackMyAgent v0.12.5 -- Security Scanner             │
 │  Found: 3 critical · 5 high · 12 medium             │
 │                                                     │
 │  CRED-001  critical  Hardcoded API key in .env      │
@@ -158,6 +158,30 @@ hackmyagent secure --json                     # JSON output for CI/CD
 hackmyagent secure --verbose                  # show all checks including passed
 hackmyagent secure --publish                  # push results to OpenA2A Registry
 ```
+
+### NanoMind Semantic Analysis
+
+NanoMind runs automatically on every `secure` scan. No flags, no config. On first use, it downloads the ONNX model from HuggingFace (~5.5MB) and caches it locally.
+
+**What it detects (9 attack classes):** exfiltration, injection, privilege_escalation, persistence, credential_abuse, lateral_movement, social_engineering, policy_violation, benign.
+
+**6 AST analyzers** compile every artifact into an Abstract Security Tree before querying:
+
+| Analyzer | What it checks |
+|----------|---------------|
+| `capability` | Undeclared capabilities, permission mismatches |
+| `credential` | Credential patterns, scope drift, hardcoded secrets |
+| `governance` | Constraint completeness, policy gaps |
+| `scope` | Access boundary violations, resource overreach |
+| `prompt` | Injection vectors, instruction leakage |
+| `code` | Unsafe patterns, exec injection, deserialization |
+
+**Flags that affect NanoMind:**
+
+- `--deep` -- adds behavioral simulation (20 probes) on top of NanoMind static analysis
+- `--static-only` -- disables NanoMind semantic analysis entirely for CI/deterministic mode
+
+---
 
 ### `hackmyagent red-team` -- Adaptive Attack Engine
 
