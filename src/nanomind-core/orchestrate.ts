@@ -57,6 +57,15 @@ export async function orchestrateNanoMind(
   }
 
   try {
+    // Pre-download the ONNX model before scanning starts.
+    // For npm users without cached models, this triggers a one-time
+    // download from HuggingFace (~5.5MB). Without this, the download
+    // happens lazily during the first file compilation which can cause
+    // the model to not be ready for subsequent files in the same scan.
+    const { getTMEClassifier } = await import('./inference/tme-classifier.js');
+    const tme = getTMEClassifier();
+    await tme.ensureModel();
+
     const { runNanoMindScan } = await import('./scanner-bridge.js');
     const nmResult: NanoMindScanResult = await runNanoMindScan(targetDir, existingFindings);
 
