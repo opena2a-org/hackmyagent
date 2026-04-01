@@ -4982,7 +4982,11 @@ Examples:
 
       // Text output
       process.stdout.write('\nOASB v2 Behavioral Governance Scan\n');
-      process.stdout.write('----------------------------------------------------\n\n');
+      process.stdout.write('----------------------------------------------------\n');
+      if (options.deep) {
+        process.stdout.write(`Analysis: static + NanoMind semantic (deep)\n`);
+      }
+      process.stdout.write('\n');
 
       if (result.file) {
         process.stdout.write(`File: ${result.file} (${result.fileSize.toLocaleString()} chars)\n`);
@@ -5048,11 +5052,15 @@ Examples:
       }
 
       // Deep analysis summary
-      if (result.deepAnalysisAvailable === false) {
-        process.stdout.write(`${colors.yellow}Deep Analysis: unavailable${colors.reset} -- set ANTHROPIC_API_KEY or install the claude CLI\n`);
-      } else if (result.deepAnalysisResults && result.deepAnalysisResults.length > 0) {
-        const llmUpgraded = result.deepAnalysisResults.filter((e) => e.llmPassed).length;
-        process.stdout.write(`Deep Analysis: ${llmUpgraded} control${llmUpgraded === 1 ? '' : 's'} upgraded by LLM semantic analysis\n`);
+      if (options.deep) {
+        if (result.deepAnalysisAvailable === false) {
+          process.stdout.write(`${colors.yellow}Deep Analysis: unavailable${colors.reset} -- set ANTHROPIC_API_KEY or install the claude CLI\n`);
+        } else if (result.deepAnalysisResults && result.deepAnalysisResults.length > 0) {
+          const llmUpgraded = result.deepAnalysisResults.filter((e) => e.llmPassed).length;
+          process.stdout.write(`Deep Analysis: ${llmUpgraded} control${llmUpgraded === 1 ? '' : 's'} upgraded by NanoMind semantic analysis\n`);
+        } else {
+          process.stdout.write(`Deep Analysis: all controls passed, no further analysis needed\n`);
+        }
       }
 
       // Path forward (recovery-oriented, not punitive)
