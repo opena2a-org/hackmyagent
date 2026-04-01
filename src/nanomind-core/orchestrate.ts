@@ -44,8 +44,9 @@ export async function orchestrateNanoMind(
 ): Promise<OrchestrationResult> {
   const { staticOnly = false, ci = false, silent = false } = options;
 
-  // Skip NanoMind for static-only or CI mode
-  if (staticOnly || ci) {
+  // Skip NanoMind only when explicitly opted out
+  // CI mode still runs NanoMind (deterministic, no cost, better results)
+  if (staticOnly) {
     return {
       mergedFindings: [...existingFindings],
       nanomindUsed: false,

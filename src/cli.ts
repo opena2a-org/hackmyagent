@@ -1987,13 +1987,14 @@ Examples:
       // Default: static + NanoMind (if daemon available)
       // --deep: everything (static + NanoMind + simulation + adaptive attacks)
       // --static-only: just static checks (CI/deterministic)
-      // --ci: implies --static-only
+      // NanoMind runs by default on every scan (including CI)
+      // --static-only is the only way to disable it
       const isStaticOnly = (options as Record<string, unknown>).staticOnly as boolean ?? false;
       const isDeep = options.deep ?? (scanDepth === 'deep');
 
-      // Auto-detect NanoMind daemon
+      // Auto-detect NanoMind daemon (for additional analysis beyond local TME)
       let nanomindAvailable = false;
-      if (!isStaticOnly && !options.ci) {
+      if (!isStaticOnly) {
         try {
           const { isDaemonAvailable } = await import('./semantic/nanomind-analyzer.js');
           nanomindAvailable = await isDaemonAvailable();
@@ -2006,7 +2007,7 @@ Examples:
 
       // Show analysis mode to user
       if (format === 'text') {
-        if (isStaticOnly || options.ci) {
+        if (isStaticOnly) {
           // Static only -- no extra output
         } else if (nanomindAvailable && isDeep) {
           console.log(`Analysis: static + NanoMind + behavioral simulation + adaptive attacks\n`);
