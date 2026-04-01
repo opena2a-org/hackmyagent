@@ -30,6 +30,7 @@ import { analyzeGovernance } from './analyzers/governance-analyzer.js';
 import { analyzeScope } from './analyzers/scope-analyzer.js';
 import { analyzePrompt } from './analyzers/prompt-analyzer.js';
 import { analyzeCode } from './analyzers/code-analyzer.js';
+import { enrichFindings } from './fix-generator.js';
 import { enforceSeverityFloor, validateEnhancement } from './security/defense-in-depth.js';
 import type { SeverityLevel } from './security/defense-in-depth.js';
 import { verifyAll } from './security/integrity-verifier.js';
@@ -233,7 +234,8 @@ async function isWithinSizeLimit(filePath: string): Promise<boolean> {
 // ============================================================================
 
 /**
- * Run all four AST analyzers against a compiled SecurityAST.
+ * Run all six AST analyzers against a compiled SecurityAST, then enrich
+ * findings with context-aware fix suggestions using the fix generator.
  * Each analyzer independently queries the AST structure.
  */
 function runAllAnalyzers(
@@ -254,7 +256,10 @@ function runAllAnalyzers(
   findings.push(...analyzePrompt(ast, verifier));
   findings.push(...analyzeCode(ast, verifier));
 
-  return findings;
+  // Enrich all findings with context-aware fix suggestions
+  // Uses TME classification + AST context to produce specific, actionable fixes
+  // instead of generic template strings
+  return enrichFindings(findings, ast);
 }
 
 // ============================================================================
