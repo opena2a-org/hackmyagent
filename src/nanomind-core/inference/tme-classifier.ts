@@ -19,9 +19,9 @@ import https from 'node:https';
 
 const HF_BASE = 'https://huggingface.co/opena2a/nanomind-security-classifier/resolve/main';
 const MODEL_FILES: Array<{ name: string; sha256: string }> = [
-  { name: 'tokenizer.json', sha256: '4095fd6fd3ae765b2bcfba0b03d59e8efa4fb96d6b92a20e3b362e497ea8dec5' },
-  { name: 'nanomind-tme.onnx', sha256: '93450d5ec31a3ede7aec5be7c0cf8ff3914c4b2c831a0ab822a8999c88714794' },
-  { name: 'nanomind-tme.onnx.data', sha256: 'e63ea7b5d89eda823a5c958b8f5d9a3f0e16e956895496d8d09a4b400d911f96' },
+  { name: 'tokenizer.json', sha256: '8ab079d9275a34fcd81b8dc9dc66d74bb4d42fd16e9a291709dcb25b093de53d' },
+  { name: 'nanomind-tme.onnx', sha256: '9d9b150292d466832488cec3ad7a8cc4ae8fb5731ab6e93d15ce115cb22b0b73' },
+  { name: 'nanomind-tme.onnx.data', sha256: 'f2a7eb40011925ac882b02de41043d43a3dc7dc0c9307b73abb6145705ddcdf5' },
 ];
 const DOWNLOAD_DIR = join(homedir(), '.nanomind', 'models');
 
@@ -64,6 +64,7 @@ export class TMEClassifier {
       join(home, '.nanomind', 'models'),
       join(home, '.opena2a', 'nanomind', 'models'),
       // Development: nanomind training repo (monorepo sibling, newest first)
+      join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models-tme-v5'),
       join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models-tme-v4'),
       join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models-tme-v3'),
       join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models-tme-v2'),
