@@ -194,42 +194,75 @@ Examples:
   $ hackmyagent check server-filesystem
   $ hackmyagent check @publisher/skill --verbose
   $ hackmyagent check @publisher/skill --json`)
-  .argument('<skill>', 'Skill identifier (e.g., @publisher/skill)')
+  .argument('<skill>', 'Skill identifier or local path (e.g., @publisher/skill, ./SKILL.md, ./agent-dir/)')
   .option('-v, --verbose', 'Show detailed verification info')
   .option('--json', 'Output as JSON (for scripting/CI)')
   .option('--offline', 'Skip DNS verification (offline mode)')
   .action(async (skill: string, options: { verbose?: boolean; json?: boolean; offline?: boolean }) => {
     try {
+      // Detect local file/directory paths - run NanoMind scan instead of registry lookup
+      const { existsSync, statSync } = await import('node:fs');
+      const { resolve, dirname } = await import('node:path');
+      const resolved = resolve(skill);
+      const isLocalPath = existsSync(resolved) && (statSync(resolved).isFile() || statSync(resolved).isDirectory());
+
+      if (isLocalPath) {
+        // Local path: run NanoMind semantic analysis directly
+        const targetDir = statSync(resolved).isFile() ? dirname(resolved) : resolved;
+        const targetFile = statSync(resolved).isFile() ? resolved : null;
+
+        const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
+        const nmResult = await orchestrateNanoMind(targetDir, [], { silent: !!options.json });
+
+        const issues = nmResult.mergedFindings.filter((f: any) => !f.passed);
+        const critical = issues.filter((f: any) => f.severity === 'critical');
+        const high = issues.filter((f: any) => f.severity === 'high');
+
+        if (options.json) {
+          writeJsonStdout({
+            path: resolved,
+            type: 'local-scan',
+            nanomindUsed: nmResult.nanomindUsed,
+            compiledArtifacts: nmResult.compiledArtifacts,
+            findings: issues.length,
+            critical: critical.length,
+            high: high.length,
+            risk: critical.length > 0 ? 'critical' : high.length > 0 ? 'high' : issues.length > 0 ? 'medium' : 'low',
+            details: issues,
+          });
+          return;
+        }
+
+        const risk = critical.length > 0 ? 'critical' : high.length > 0 ? 'high' : issues.length > 0 ? 'medium' : 'low';
+        const riskDisplay = RISK_DISPLAY[risk as keyof typeof RISK_DISPLAY];
+        console.log(`\n${riskDisplay.color()}${riskDisplay.symbol} ${risk.toUpperCase()} RISK${RESET()}\n`);
+        console.log(`Path: ${resolved}`);
+        console.log(`NanoMind: ${nmResult.compiledArtifacts} artifact(s) compiled\n`);
+
+        if (issues.length === 0) {
+          console.log(`${colors.green}No security issues detected.${RESET()}\n`);
+        } else {
+          console.log(`Findings: ${critical.length} critical, ${high.length} high, ${issues.length - critical.length - high.length} other\n`);
+          for (const f of issues.slice(0, 10)) {
+            const sev = SEVERITY_DISPLAY[(f as any).severity as keyof typeof SEVERITY_DISPLAY];
+            console.log(`${sev.color()}${sev.symbol} [${(f as any).checkId}] ${(f as any).description}${RESET()}`);
+            if ((f as any).fix) console.log(`  Fix: ${(f as any).fix}`);
+          }
+          if (issues.length > 10) console.log(`\n  ... and ${issues.length - 10} more`);
+          console.log();
+        }
+
+        if (risk === 'critical' || risk === 'high') process.exit(1);
+        return;
+      }
+
+      // Registry lookup path (non-local identifier)
       const result = await checkSkill(skill, {
         skipDnsVerification: options.offline,
       });
 
-      // NanoMind semantic analysis: if the skill resolves to a local path, analyze content
-      let semanticRisk: { intentClass: string; attackClass: string; confidence: number } | null = null;
-      try {
-        const { existsSync, statSync } = await import('node:fs');
-        const { resolve } = await import('node:path');
-        const resolved = resolve(skill);
-        if (existsSync(resolved) && (statSync(resolved).isFile() || statSync(resolved).isDirectory())) {
-          const targetDir = statSync(resolved).isFile() ? require('node:path').dirname(resolved) : resolved;
-          const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-          const nmResult = await orchestrateNanoMind(targetDir, [], { silent: true });
-          if (nmResult.nanomindUsed && nmResult.newSemanticFindings > 0) {
-            const malicious = nmResult.mergedFindings.filter((f: any) => !f.passed && f.severity === 'critical');
-            if (malicious.length > 0) {
-              semanticRisk = { intentClass: 'malicious', attackClass: malicious[0].checkId || 'unknown', confidence: 0.9 };
-            } else {
-              const suspicious = nmResult.mergedFindings.filter((f: any) => !f.passed);
-              if (suspicious.length > 0) {
-                semanticRisk = { intentClass: 'suspicious', attackClass: suspicious[0].checkId || 'unknown', confidence: 0.7 };
-              }
-            }
-          }
-        }
-      } catch { /* NanoMind unavailable or not a local path */ }
-
       if (options.json) {
-        writeJsonStdout({ ...result, semanticAnalysis: semanticRisk });
+        writeJsonStdout(result);
         return;
       }
 
@@ -287,22 +320,14 @@ Examples:
       }
       console.log();
 
-      // NanoMind semantic analysis
-      if (semanticRisk) {
-        console.log('Semantic Analysis (NanoMind):');
-        const color = semanticRisk.intentClass === 'malicious' ? colors.red : colors.yellow;
-        console.log(`└─ ${color}[${semanticRisk.intentClass.toUpperCase()}]${RESET()} ${semanticRisk.attackClass} (${Math.round(semanticRisk.confidence * 100)}% confidence)`);
-        console.log();
-      }
-
       // Verbose details
       if (options.verbose) {
         console.log('Details:');
         console.log(`└─ Checked at: ${result.revocation.checkedAt.toISOString()}`);
       }
 
-      // Exit with non-zero for high/critical risk (or malicious semantic)
-      if (result.risk === 'critical' || result.risk === 'high' || semanticRisk?.intentClass === 'malicious') {
+      // Exit with non-zero for high/critical risk
+      if (result.risk === 'critical' || result.risk === 'high') {
         process.exit(1);
       }
     } catch (error) {
