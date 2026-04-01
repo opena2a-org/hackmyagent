@@ -204,8 +204,32 @@ Examples:
         skipDnsVerification: options.offline,
       });
 
+      // NanoMind semantic analysis: if the skill resolves to a local path, analyze content
+      let semanticRisk: { intentClass: string; attackClass: string; confidence: number } | null = null;
+      try {
+        const { existsSync, statSync } = await import('node:fs');
+        const { resolve } = await import('node:path');
+        const resolved = resolve(skill);
+        if (existsSync(resolved) && (statSync(resolved).isFile() || statSync(resolved).isDirectory())) {
+          const targetDir = statSync(resolved).isFile() ? require('node:path').dirname(resolved) : resolved;
+          const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
+          const nmResult = await orchestrateNanoMind(targetDir, [], { silent: true });
+          if (nmResult.nanomindUsed && nmResult.newSemanticFindings > 0) {
+            const malicious = nmResult.mergedFindings.filter((f: any) => !f.passed && f.severity === 'critical');
+            if (malicious.length > 0) {
+              semanticRisk = { intentClass: 'malicious', attackClass: malicious[0].checkId || 'unknown', confidence: 0.9 };
+            } else {
+              const suspicious = nmResult.mergedFindings.filter((f: any) => !f.passed);
+              if (suspicious.length > 0) {
+                semanticRisk = { intentClass: 'suspicious', attackClass: suspicious[0].checkId || 'unknown', confidence: 0.7 };
+              }
+            }
+          }
+        }
+      } catch { /* NanoMind unavailable or not a local path */ }
+
       if (options.json) {
-        writeJsonStdout(result);
+        writeJsonStdout({ ...result, semanticAnalysis: semanticRisk });
         return;
       }
 
@@ -263,14 +287,22 @@ Examples:
       }
       console.log();
 
+      // NanoMind semantic analysis
+      if (semanticRisk) {
+        console.log('Semantic Analysis (NanoMind):');
+        const color = semanticRisk.intentClass === 'malicious' ? colors.red : colors.yellow;
+        console.log(`└─ ${color}[${semanticRisk.intentClass.toUpperCase()}]${RESET()} ${semanticRisk.attackClass} (${Math.round(semanticRisk.confidence * 100)}% confidence)`);
+        console.log();
+      }
+
       // Verbose details
       if (options.verbose) {
         console.log('Details:');
         console.log(`└─ Checked at: ${result.revocation.checkedAt.toISOString()}`);
       }
 
-      // Exit with non-zero for high/critical risk
-      if (result.risk === 'critical' || result.risk === 'high') {
+      // Exit with non-zero for high/critical risk (or malicious semantic)
+      if (result.risk === 'critical' || result.risk === 'high' || semanticRisk?.intentClass === 'malicious') {
         process.exit(1);
       }
     } catch (error) {
@@ -2007,32 +2039,21 @@ Examples:
 
       // NanoMind Semantic Compiler: AST-based analysis runs alongside static checks
       // Defense-in-depth: static findings can NEVER be suppressed, only upgraded
-      if (!isStaticOnly && !options.ci) {
-        try {
-          const { runNanoMindScan } = await import('./nanomind-core/scanner-bridge.js');
+      {
+        const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
+        const existingFindings = result.allFindings || result.findings || [];
+        const nmResult = await orchestrateNanoMind(targetDir, existingFindings, {
+          staticOnly: isStaticOnly,
+          ci: options.ci,
+          deep: isDeep,
+          silent: format !== 'text',
+        });
 
-          const existingFindings = result.allFindings || result.findings || [];
-          const nmResult = await runNanoMindScan(targetDir, existingFindings);
-
-          if (format === 'text' && nmResult.astFindings.length > 0) {
-            const newFindings = nmResult.astFindings.filter(f => !f.passed);
-            if (newFindings.length > 0) {
-              process.stdout.write(`\nNanoMind: ${nmResult.compiledArtifacts} artifact(s) compiled, ${newFindings.length} semantic finding(s) added\n`);
-            }
-            if (nmResult.integrityStatus !== 'CLEAN') {
-              process.stdout.write(`  Integrity: ${nmResult.integrityStatus}\n`);
-            }
-          }
-
-          // Merge: AST findings ADD to static (never remove)
-          if (result.allFindings) {
-            result.allFindings = nmResult.mergedFindings as typeof result.allFindings;
-          }
-          if (result.findings) {
-            result.findings = nmResult.mergedFindings.filter((f: any) => !f.passed) as typeof result.findings;
-          }
-        } catch {
-          // NanoMind unavailable -- static results are still valid
+        if (result.allFindings) {
+          result.allFindings = nmResult.mergedFindings as typeof result.allFindings;
+        }
+        if (result.findings) {
+          result.findings = nmResult.mergedFindings.filter((f: any) => !f.passed) as typeof result.findings;
         }
       }
 
@@ -2775,6 +2796,13 @@ Examples:
         cliName: CLI_PREFIX,
       });
 
+      // NanoMind semantic analysis (defense-in-depth)
+      try {
+        const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
+        const nmResult = await orchestrateNanoMind(targetDir, result.findings, { silent: !!options.json });
+        result.findings = nmResult.mergedFindings as typeof result.findings;
+      } catch { /* NanoMind unavailable */ }
+
       // Filter to OpenClaw-specific findings
       const allOpenClawFindings = filterOpenClawFindings(result.findings);
       const issues = allOpenClawFindings.filter((f) => !f.passed && !f.fixed);
@@ -2988,17 +3016,25 @@ Examples:
       const { enrichWithTaxonomy } = require('./hardening/taxonomy');
       enrichWithTaxonomy(findings);
 
-      const issues = findings.filter((f: SecurityFinding) => !f.passed);
-      const passedFindings = findings.filter((f: SecurityFinding) => f.passed);
+      // NanoMind semantic analysis (defense-in-depth)
+      let mergedFindings = findings;
+      try {
+        const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
+        const nmResult = await orchestrateNanoMind(targetDir, findings, { silent: !!options.json });
+        mergedFindings = nmResult.mergedFindings as typeof findings;
+      } catch { /* NanoMind unavailable */ }
+
+      const issues = mergedFindings.filter((f: SecurityFinding) => !f.passed);
+      const passedFindings = mergedFindings.filter((f: SecurityFinding) => f.passed);
 
       if (options.json) {
         const jsonOutput = {
           target: targetDir,
           riskLevel: assessNemoClawRiskLevel(issues).level,
-          totalChecks: findings.length,
+          totalChecks: mergedFindings.length,
           issues: issues.length,
           passed: passedFindings.length,
-          findings: findings,
+          findings: mergedFindings,
         };
         writeJsonStdout(jsonOutput);
         return;

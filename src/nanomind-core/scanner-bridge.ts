@@ -28,6 +28,8 @@ import { analyzeCapabilities } from './analyzers/capability-analyzer.js';
 import { analyzeCredentials } from './analyzers/credential-analyzer.js';
 import { analyzeGovernance } from './analyzers/governance-analyzer.js';
 import { analyzeScope } from './analyzers/scope-analyzer.js';
+import { analyzePrompt } from './analyzers/prompt-analyzer.js';
+import { analyzeCode } from './analyzers/code-analyzer.js';
 import { enforceSeverityFloor, validateEnhancement } from './security/defense-in-depth.js';
 import type { SeverityLevel } from './security/defense-in-depth.js';
 import { verifyAll } from './security/integrity-verifier.js';
@@ -247,6 +249,10 @@ function runAllAnalyzers(
   findings.push(...analyzeCredentials(ast, verifier));
   findings.push(...analyzeGovernance(ast, verifier));
   findings.push(...analyzeScope(ast, verifier));
+
+  // Prompt and code analyzers: jailbreak susceptibility, injection patterns, etc.
+  findings.push(...analyzePrompt(ast, verifier));
+  findings.push(...analyzeCode(ast, verifier));
 
   return findings;
 }
