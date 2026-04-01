@@ -534,21 +534,43 @@ export class SoulScanner {
   }
 
   /**
-   * LLM-powered semantic analysis for a single control.
-   * Uses claude CLI first, falls back to Anthropic API.
-   * Returns true if the LLM determines the content addresses the control.
+   * Check if deep analysis is available.
+   * Prefers NanoMind (free, local) over LLM (paid, cloud).
    */
-  private isLlmAvailable(): boolean {
-    if (process.env.ANTHROPIC_API_KEY) return true;
-    try {
-      const claudePath = execSync('which claude 2>/dev/null', { encoding: 'utf-8' }).trim();
-      return !!claudePath;
-    } catch {
-      return false;
-    }
+  private isDeepAnalysisAvailable(): boolean {
+    // NanoMind is always available (local inference)
+    return true;
   }
 
+  /**
+   * @deprecated Use isDeepAnalysisAvailable() instead.
+   */
+  private isLlmAvailable(): boolean {
+    return this.isDeepAnalysisAvailable();
+  }
+
+  /**
+   * Semantic analysis for a single control.
+   * Tier 1: NanoMind local inference (free, fast)
+   * Tier 2: Claude CLI (if available)
+   * Tier 3: Anthropic API (if key set)
+   */
   private async analyzeControlDeep(content: string, def: ControlDef): Promise<boolean> {
+    // Tier 1: NanoMind local semantic analysis
+    try {
+      const { SemanticCompiler } = await import('../nanomind-core/compiler/semantic-compiler.js');
+      const compiler = new SemanticCompiler({ useNanoMind: true });
+      const result = await compiler.compile(content, 'SOUL.md');
+      if (result.ast) {
+        const governance = result.ast.declaredConstraints || [];
+        const keywords = def.keywords.map(k => k.toLowerCase());
+        const govText = governance.map((c: any) => `${c.domain || ''} ${c.description || ''}`).join(' ').toLowerCase();
+        const matched = keywords.some(k => govText.includes(k));
+        if (matched) return true;
+      }
+    } catch { /* NanoMind unavailable, fall through */ }
+
+    // Tier 2+3: LLM fallback for ambiguous cases
     const prompt = `Does the following AI agent governance text address the control "${def.name}" (${def.id})? This control checks for: ${def.keywords.slice(0, 3).join(', ')}. Answer with YES or NO only.\n\n---\n${content.slice(0, 3000)}\n---`;
 
     // Try claude CLI first
