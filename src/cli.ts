@@ -152,7 +152,7 @@ Examples:
   $ hackmyagent secure --fix                   Fix issues automatically
   $ hackmyagent fix-all                        Run all security plugins
   $ hackmyagent scan example.com               Scan external infrastructure`)
-  .version('hackmyagent ' + VERSION, '-v, --version', 'Output the version number')
+  .version('hackmyagent ' + VERSION, '-V, --version', 'Output the version number')
   .option('--no-color', 'Disable colored output (also respects NO_COLOR env)');
 
 program.addHelpText('beforeAll', `
