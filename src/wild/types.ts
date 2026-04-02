@@ -82,7 +82,7 @@ export interface WildScanReport {
   /** Overall wild resilience score (0-100) */
   wildResilienceScore: number;
   /** Resilience rating */
-  resilienceRating: 'excellent' | 'good' | 'moderate' | 'poor' | 'critical';
+  resilienceRating: 'strong' | 'good' | 'moderate' | 'needs-attention' | 'critical';
   /** File fetches tested (robots.txt, llms.txt, sitemap.xml) */
   fileFetches: FileFetchResult[];
 }

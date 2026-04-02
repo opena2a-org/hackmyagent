@@ -56,14 +56,14 @@ import { NemoClawScanner, NEMOCLAW_CATEGORIES } from './hardening/nemoclaw-scann
 const program = new Command();
 program.showHelpAfterError('(run with --help for usage)');
 
-// Write JSON to stdout synchronously with retry for pipe backpressure.
+// Write a string to stdout synchronously with retry for pipe backpressure.
 // process.stdout.write() is async and gets truncated when process.exit()
 // runs before the stream flushes. fs.writeFileSync(1, ...) can fail with
 // EAGAIN on non-blocking pipes when the buffer (64KB on macOS) fills up.
 // This function writes in chunks with retry to handle both cases.
-function writeJsonStdout(data: unknown): void {
+function writeLargeStdout(text: string): void {
   const fs = require('fs');
-  const buf = Buffer.from(JSON.stringify(data, null, 2) + '\n');
+  const buf = Buffer.from(text);
   let offset = 0;
   while (offset < buf.length) {
     try {
@@ -71,12 +71,16 @@ function writeJsonStdout(data: unknown): void {
       offset += written;
     } catch (e: unknown) {
       if (e && typeof e === 'object' && 'code' in e && (e as {code: string}).code === 'EAGAIN') {
-        // Pipe buffer full — spin-wait briefly then retry
+        // Pipe buffer full -- spin-wait briefly then retry
         continue;
       }
       throw e;
     }
   }
+}
+
+function writeJsonStdout(data: unknown): void {
+  writeLargeStdout(JSON.stringify(data, null, 2) + '\n');
 }
 
 // Resolve the CLI command name based on how we were invoked.
@@ -107,6 +111,11 @@ function validateRegistryUrl(url: string): string {
   }
   return url;
 }
+
+// Global CI mode flag -- set before parse() by stripping --ci from argv.
+// Commands that already define --ci (secure, scan-soul) use their own opts;
+// all others can check this module-level flag.
+let globalCiMode = false;
 
 // Check for NO_COLOR env or non-TTY to disable colors by default
 const noColorEnv = process.env.NO_COLOR !== undefined || !process.stdout.isTTY;
@@ -237,7 +246,7 @@ Examples:
         const riskDisplay = RISK_DISPLAY[risk as keyof typeof RISK_DISPLAY];
         console.log(`\n${riskDisplay.color()}${riskDisplay.symbol} ${risk.toUpperCase()} RISK${RESET()}\n`);
         console.log(`Path: ${resolved}`);
-        console.log(`NanoMind: ${nmResult.compiledArtifacts} artifact(s) compiled\n`);
+        console.log(`Semantic analysis: ${nmResult.compiledArtifacts} file(s) analyzed\n`);
 
         if (issues.length === 0) {
           console.log(`${colors.green}No security issues detected.${RESET()}\n`);
@@ -256,10 +265,17 @@ Examples:
         return;
       }
 
-      // Registry lookup path (non-local identifier)
-      const result = await checkSkill(skill, {
+      // Registry lookup path (non-local identifier) with 10s timeout
+      const checkPromise = checkSkill(skill, {
         skipDnsVerification: options.offline,
       });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(
+          `Timed out verifying "${skill}" (10s). The publisher may not exist or DNS is unreachable.\n` +
+          `Try: ${CLI_PREFIX.replace(' scan', '')} check ${skill} --offline`
+        )), 10000)
+      );
+      const result = await Promise.race([checkPromise, timeoutPromise]);
 
       if (options.json) {
         writeJsonStdout(result);
@@ -1926,8 +1942,8 @@ Examples:
   .option('-b, --benchmark <name>', 'Run benchmark compliance check (e.g., oasb-1)')
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
   .option('-c, --category <name>', 'Filter to specific benchmark category')
-  .option('--deep', 'Maximum analysis: static + NanoMind + behavioral simulation + adaptive attacks (~30s per artifact)')
-  .option('--static-only', 'Disable NanoMind and simulation (static checks only, fast, deterministic)')
+  .option('--deep', 'Maximum analysis: static + semantic + behavioral simulation + adaptive attacks (~30s per file)')
+  .option('--static-only', 'Disable semantic analysis and simulation (static checks only, fast, deterministic)')
   .option('--scan-depth <depth>', 'CAAT scan depth: quick (config+creds only), standard (default), deep (+ simulation)', 'standard')
   .option('--ci-publish', 'Submit scan results to registry CI endpoint (requires CI_SCAN_HMAC_SECRET env)')
   .option('--publish', 'Push scan results to the OpenA2A Registry')
@@ -2035,12 +2051,11 @@ Examples:
         if (isStaticOnly) {
           // Static only -- no extra output
         } else if (nanomindAvailable && isDeep) {
-          console.log(`Analysis: static + NanoMind + behavioral simulation + adaptive attacks\n`);
+          console.log(`Analysis: static + semantic + behavioral simulation + adaptive attacks\n`);
         } else if (nanomindAvailable) {
-          console.log(`Analysis: static + NanoMind (enhanced accuracy)\n`);
+          console.log(`Analysis: static + semantic (ML-enhanced accuracy)\n`);
         } else if (isDeep) {
           console.log(`Analysis: static + behavioral simulation\n`);
-          console.log(`  Tip: Install NanoMind for even better results: nanomind-daemon start\n`);
         }
         // Default static-only: no message needed, it's the baseline
       }
@@ -2225,13 +2240,13 @@ Examples:
             output = '';
         }
 
-        // Write output
+        // Write output (use writeLargeStdout to avoid 64KB pipe truncation)
         if (output) {
           if (options.output) {
             require('fs').writeFileSync(options.output, output);
             console.error(`Report written to ${options.output}`);
           } else {
-            console.log(output);
+            writeLargeStdout(output + '\n');
           }
         }
 
@@ -2295,7 +2310,7 @@ Examples:
           require('fs').writeFileSync(options.output, output);
           console.error(`Report written to ${options.output}`);
         } else {
-          console.log(output);
+          writeLargeStdout(output + '\n');
         }
         const critHigh = result.findings.filter((f: SecurityFinding) => !f.passed && !f.fixed && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) process.exit(1);
@@ -3164,6 +3179,20 @@ Examples:
       options: { json?: boolean; ports?: string; timeout?: string; verbose?: boolean }
     ) => {
       try {
+        // Detect local path confusion: user probably wants 'secure' not 'scan'
+        const fs = require('fs');
+        if (fs.existsSync(target) && (target === '.' || target.startsWith('./') || target.startsWith('/') || target.startsWith('..'))) {
+          const secureCmd = CLI_PREFIX.includes('scan')
+            ? CLI_PREFIX.replace('scan', 'secure')
+            : `${CLI_PREFIX} secure`;
+          console.error(
+            `\n"scan" is for external targets (hostnames/IPs).` +
+            `\nTo scan a local project, use:\n` +
+            `\n  ${secureCmd} ${target}` +
+            `\n`
+          );
+          process.exit(1);
+        }
         const timeoutMs = parseInt(options.timeout ?? '5000', 10);
         const customPorts = options.ports
           ? options.ports.split(',').map((p) => parseInt(p.trim(), 10))
@@ -3513,13 +3542,13 @@ Examples:
           output = '';
       }
 
-      // Write output
+      // Write output (use writeLargeStdout to avoid 64KB pipe truncation)
       if (output) {
         if (options.output) {
           require('fs').writeFileSync(options.output, output);
           console.error(`Report written to ${options.output}`);
         } else {
-          console.log(output);
+          writeLargeStdout(output + '\n');
         }
       }
 
@@ -4933,8 +4962,8 @@ Examples:
   .option('--tier <tier>', 'Override agent tier detection (BASIC, TOOL-USING, AGENTIC, MULTI-AGENT)')
   .option('--profile <profile>', 'Override agent profile (conversational, code-assistant, tool-agent, autonomous, orchestrator, custom)')
   .option('--fail-below <score>', 'Exit 1 if score below threshold (0-100)')
-  .option('--deep', 'Maximum analysis: NanoMind + SOUL governance simulation (~15s)')
-  .option('--static-only', 'Disable NanoMind (static governance checks only)')
+  .option('--deep', 'Maximum analysis: semantic + SOUL governance simulation (~15s)')
+  .option('--static-only', 'Disable semantic analysis (static governance checks only)')
   .option('--publish', 'Push scan results to the OpenA2A Registry')
   .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', validateRegistryUrl(process.env.REGISTRY_URL || 'https://api.oa2a.org'))
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
@@ -5009,7 +5038,7 @@ Examples:
       process.stdout.write('\nOASB v2 Behavioral Governance Scan\n');
       process.stdout.write('----------------------------------------------------\n');
       if (options.deep) {
-        process.stdout.write(`Analysis: static + NanoMind semantic (deep)\n`);
+        process.stdout.write(`Analysis: static + semantic (ML-enhanced deep scan)\n`);
       }
       process.stdout.write('\n');
 
@@ -5082,7 +5111,7 @@ Examples:
           process.stdout.write(`${colors.yellow}Deep Analysis: unavailable${colors.reset} -- set ANTHROPIC_API_KEY or install the claude CLI\n`);
         } else if (result.deepAnalysisResults && result.deepAnalysisResults.length > 0) {
           const llmUpgraded = result.deepAnalysisResults.filter((e) => e.llmPassed).length;
-          process.stdout.write(`Deep Analysis: ${llmUpgraded} control${llmUpgraded === 1 ? '' : 's'} upgraded by NanoMind semantic analysis\n`);
+          process.stdout.write(`Deep Analysis: ${llmUpgraded} control${llmUpgraded === 1 ? '' : 's'} upgraded by ML semantic analysis\n`);
         } else {
           process.stdout.write(`Deep Analysis: all controls passed, no further analysis needed\n`);
         }
@@ -5774,7 +5803,7 @@ program
 program
   .command('explain')
   .argument('<findingId>', 'Finding ID to explain (e.g., SKILL-SEMANTIC-007 or CRED-001)')
-  .description('Explain a security finding in plain English using NanoMind')
+  .description('Explain a security finding in plain English')
   .action(async (findingId: string) => {
     console.log(`Explaining finding: ${findingId}\n`);
 
@@ -5968,7 +5997,7 @@ Examples:
       }
 
       // Exit with non-zero if resilience is poor
-      if (report.resilienceRating === 'critical' || report.resilienceRating === 'poor') {
+      if (report.resilienceRating === 'critical' || report.resilienceRating === 'needs-attention') {
         process.exit(1);
       }
     } catch (error) {
@@ -6247,6 +6276,13 @@ program
     }
   } catch {
     // Integrity check itself failed -- continue (don't block on missing manifest in dev)
+  }
+
+  // Global --ci flag: strip from argv so individual commands don't reject it.
+  // Any command can check globalCiMode to adjust behavior.
+  if (process.argv.includes('--ci')) {
+    globalCiMode = true;
+    process.argv = process.argv.filter(a => a !== '--ci');
   }
 
   if (process.argv.length <= 2) {

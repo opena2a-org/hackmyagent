@@ -171,7 +171,7 @@ export class TMEClassifier {
       return false;
     }
 
-    console.error('Downloading NanoMind security model (5.5MB)...');
+    console.error('Downloading security analysis model (5.5MB)...');
 
     for (const file of MODEL_FILES) {
       const dest = join(dir, file.name);

@@ -2,6 +2,24 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [0.13.0] - 2026-04-02
+
+### Added
+- **Global --ci flag** for all commands (previously only `secure` and `scan-soul` supported it)
+- **Scan vs secure redirect** -- `hackmyagent scan .` now detects local paths and redirects to `secure` with a helpful message
+- **10-second timeout** on `check` command DNS lookups to prevent indefinite hangs on unreachable publishers
+- **writeLargeStdout helper** for safe output of large SARIF/HTML reports through pipes
+
+### Changed
+- **Unified scoring labels** across all commands: `wild` now uses strong/good/moderate/needs-attention/critical (was excellent/good/moderate/poor/critical)
+- **Clearer CLI terminology** -- replaced internal "NanoMind" jargon with "semantic analysis" / "ML-enhanced" in all user-facing output
+- **Better check error messages** with format examples when skill identifier is invalid
+- Model download message now says "security analysis model" instead of "NanoMind"
+- --deep/--static-only option descriptions updated to remove internal terminology
+
+### Fixed
+- **SARIF output truncation at 64KB** -- benchmark, scan, and attack SARIF output was silently truncated at pipe buffer limit when using console.log(); now uses sync write with backpressure handling
+
 ## [0.11.10] - 2026-03-20
 
 ### Fixed
