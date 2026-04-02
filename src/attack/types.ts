@@ -17,7 +17,8 @@ export type AttackCategory =
   | 'tool-shadow'            // SHADOW - Shadow/replace agent tools
   | 'parser-differential'    // PARSE - Exploit parser interpretation differences
   | 'persistent-agent'       // PERSIST - Attack persistent agent state/memory
-  | 'fake-tool';             // FAKETOOL - MCP tool impersonation and squatting
+  | 'fake-tool'              // FAKETOOL - MCP tool impersonation and squatting
+  | 'context-lifecycle';     // LIFECYCLE - Assembly-surviving injection attacks
 
 export type AttackIntensity =
   | 'passive'     // Observation only, minimal risk
@@ -244,5 +245,10 @@ export const ATTACK_CATEGORIES: Record<AttackCategory, { name: string; descripti
     name: 'Fake Tool Detection',
     description: 'MCP tool impersonation, shadow tool injection, and tool name squatting attacks',
     oasbControls: ['2.2', '2.3', '6.2'],
+  },
+  'context-lifecycle': {
+    name: 'Context Lifecycle',
+    description: 'Attacks targeting the system prompt assembly pipeline: cross-component injections, displacement, priority hijacking',
+    oasbControls: ['3.1', '3.2', '8.1', '8.2'],
   },
 };

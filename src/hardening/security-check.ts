@@ -95,3 +95,65 @@ export interface ScanResult {
     cachedResults?: number;
   };
 }
+
+/**
+ * Lifecycle stages for context evolution analysis.
+ *
+ * Stage 0 (static): Current HMA scan -- files on disk as-is.
+ * Stage 1 (assembly): System prompt assembly simulation -- models how
+ *   components (SOUL.md, tool descriptions, memory, user prefs) combine
+ *   into the final system prompt, detecting injections that survive assembly.
+ * Stage 2 (runtime): Future -- runtime behavior monitoring via ARP.
+ */
+export type LifecycleStage = 0 | 1 | 2;
+
+/**
+ * A component that contributes to the assembled system prompt.
+ * Each component has a source file, role, and raw content.
+ */
+export interface AssemblyComponent {
+  /** Source file path (relative to scan directory) */
+  source: string;
+  /** Component role in the assembly pipeline */
+  role: 'soul' | 'toolDescription' | 'memory' | 'userPreference' | 'conversationHistory' | 'systemInstruction';
+  /** Raw content before assembly */
+  content: string;
+  /** Byte offset in the assembled prompt where this component starts */
+  assembledOffset?: number;
+  /** Byte length of this component in the assembled prompt */
+  assembledLength?: number;
+}
+
+/**
+ * Result of an assembly-stage interaction analysis.
+ * Tracks which components combined to create a finding.
+ */
+export interface AssemblyInteraction {
+  /** Components involved in this interaction */
+  components: string[];
+  /** Type of cross-component attack detected */
+  attackType: 'crossComponentInjection' | 'displacementAttack' | 'priorityHijack' | 'instructionDilution' | 'semanticSplit';
+  /** The assembled text segment that triggered detection */
+  assembledSegment: string;
+  /** Confidence that this is a real attack (0-1) */
+  confidence: number;
+}
+
+/**
+ * Wraps a ScanResult with lifecycle stage metadata.
+ * Stage 0 results are backward-compatible with plain ScanResult.
+ */
+export interface LifecycleScanResult {
+  /** The lifecycle stage this result covers */
+  stage: LifecycleStage;
+  /** The underlying scan result for this stage */
+  scanResult: ScanResult;
+  /** Components discovered during assembly simulation (Stage 1+) */
+  assemblyComponents?: AssemblyComponent[];
+  /** Cross-component interactions detected (Stage 1+) */
+  assemblyInteractions?: AssemblyInteraction[];
+  /** The fully assembled system prompt (Stage 1+) */
+  assembledPrompt?: string;
+  /** Total token estimate of the assembled prompt */
+  assembledTokenEstimate?: number;
+}

@@ -64,6 +64,7 @@ describe('Attack Payloads', () => {
         'parser-differential': 'PARSE',
         'persistent-agent': 'PERSIST',
         'fake-tool': 'FAKETOOL',
+        'context-lifecycle': 'LIFECYCLE',
       };
 
       for (const payload of ALL_PAYLOADS) {
