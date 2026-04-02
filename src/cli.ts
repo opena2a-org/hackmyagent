@@ -6027,6 +6027,178 @@ function printWildReport(report: WildScanReport): void {
   console.log(`  ${colors.cyan}npx hackmyagent secure${colors.reset}`);
 }
 
+// pull-stubs: fetch pending HMA check stubs from the registry
+program
+  .command('pull-stubs')
+  .description(`Fetch pending HMA check stubs from the registry for review.
+
+The ARIA pipeline discovers new attack patterns and creates stub definitions
+for checks that HMA doesn't yet implement. This command pulls those stubs
+so you can review, refine, and integrate them.
+
+Requires INTERNAL_API_KEY environment variable for registry authentication.
+
+Examples:
+  $ ${CLI_PREFIX} pull-stubs
+  $ ${CLI_PREFIX} pull-stubs --status review
+  $ ${CLI_PREFIX} pull-stubs --json`)
+  .option('--status <status>', 'Filter by stub status (draft, review, integrated, rejected)', 'draft')
+  .option('--registry-url <url>', 'Registry base URL', validateRegistryUrl(process.env.REGISTRY_URL || 'https://api.oa2a.org'))
+  .option('--json', 'Output raw JSON instead of formatted table')
+  .action(async (opts: {
+    status: string;
+    registryUrl: string;
+    json?: boolean;
+  }) => {
+    const validStatuses = ['draft', 'review', 'integrated', 'rejected'];
+    if (!validStatuses.includes(opts.status)) {
+      process.stderr.write(`Error: --status must be one of: ${validStatuses.join(', ')}\n`);
+      process.stderr.write(`  Got: ${opts.status}\n`);
+      process.exit(1);
+    }
+
+    const apiKey = process.env.INTERNAL_API_KEY;
+    if (!apiKey) {
+      process.stderr.write('Error: INTERNAL_API_KEY environment variable is not set.\n');
+      process.stderr.write('\nThis command requires registry authentication.\n');
+      process.stderr.write('Set the variable and retry:\n');
+      process.stderr.write('  export INTERNAL_API_KEY=<your-key>\n');
+      process.stderr.write(`  ${CLI_PREFIX} pull-stubs\n`);
+      process.exit(1);
+    }
+
+    const registryUrl = validateRegistryUrl(opts.registryUrl).replace(/\/+$/, '');
+    const endpoint = `${registryUrl}/internal/aria/hma-stubs`;
+
+    let responseData: { stubs: Array<{
+      id: string;
+      ariaFindingId: string;
+      checkId: string;
+      series: string;
+      name: string;
+      description: string;
+      severity: string;
+      detectionLogic: string;
+      status: string;
+      createdAt: string;
+      updatedAt: string;
+    }>; total: number };
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15_000);
+      const res = await fetch(endpoint, {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Accept': 'application/json',
+        },
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        process.stderr.write(`Error: Registry returned ${res.status} ${res.statusText}\n`);
+        if (res.status === 401 || res.status === 403) {
+          process.stderr.write('  Your INTERNAL_API_KEY may be invalid or expired.\n');
+        }
+        if (body) process.stderr.write(`  ${body.slice(0, 200)}\n`);
+        process.exit(1);
+      }
+
+      responseData = await res.json() as typeof responseData;
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        process.stderr.write(`Error: Registry request timed out after 15s.\n`);
+        process.stderr.write(`  URL: ${endpoint}\n`);
+        process.stderr.write(`  Check your network connection and registry URL.\n`);
+      } else {
+        process.stderr.write(`Error: Could not reach the registry.\n`);
+        process.stderr.write(`  URL: ${endpoint}\n`);
+        process.stderr.write(`  ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+      process.exit(1);
+    }
+
+    // Filter by status
+    const stubs = responseData.stubs.filter(s => s.status === opts.status);
+
+    if (stubs.length === 0) {
+      if (opts.json) {
+        writeJsonStdout({ stubs: [], total: responseData.total, filtered: 0, status: opts.status });
+      } else {
+        console.log(`No stubs with status "${opts.status}" found.`);
+        if (responseData.total > 0) {
+          console.log(`  Registry has ${responseData.total} total stub(s). Try a different --status filter.`);
+        }
+      }
+      return;
+    }
+
+    // JSON output mode
+    if (opts.json) {
+      writeJsonStdout({ stubs, total: responseData.total, filtered: stubs.length, status: opts.status });
+      return;
+    }
+
+    // Formatted output
+    const severityColor: Record<string, string> = {
+      critical: colors.brightRed,
+      high: colors.red,
+      medium: colors.yellow,
+      low: colors.cyan,
+      info: colors.dim,
+    };
+
+    console.log(`\nHMA Check Stubs (status: ${opts.status})\n`);
+
+    for (const stub of stubs) {
+      const sc = severityColor[stub.severity?.toLowerCase()] || '';
+      console.log(`${'='.repeat(60)}`);
+      console.log(`  Check ID:   ${stub.checkId}`);
+      console.log(`  Series:     ${stub.series}`);
+      console.log(`  Name:       ${stub.name}`);
+      console.log(`  Severity:   ${sc}${stub.severity}${colors.reset}`);
+      console.log(`  ARIA ID:    ${stub.ariaFindingId}`);
+      console.log(`  Status:     ${stub.status}`);
+      if (stub.description) {
+        console.log(`  Description: ${stub.description}`);
+      }
+      if (stub.detectionLogic) {
+        console.log(`  Detection logic:`);
+        for (const line of stub.detectionLogic.split('\n')) {
+          console.log(`    ${line}`);
+        }
+      }
+      console.log('');
+    }
+
+    // Summary
+    console.log('='.repeat(60));
+    console.log(`\nSummary`);
+    console.log(`  Total in registry:  ${responseData.total}`);
+    console.log(`  Matching "${opts.status}":  ${stubs.length}`);
+
+    // By series
+    const bySeries: Record<string, number> = {};
+    for (const s of stubs) { bySeries[s.series] = (bySeries[s.series] || 0) + 1; }
+    console.log(`\n  By series:`);
+    for (const [series, count] of Object.entries(bySeries).sort((a, b) => b[1] - a[1])) {
+      console.log(`    ${series}: ${count}`);
+    }
+
+    // By severity
+    const bySeverity: Record<string, number> = {};
+    for (const s of stubs) { bySeverity[s.severity] = (bySeverity[s.severity] || 0) + 1; }
+    console.log(`\n  By severity:`);
+    for (const [sev, count] of Object.entries(bySeverity).sort((a, b) => b[1] - a[1])) {
+      const sc = severityColor[sev?.toLowerCase()] || '';
+      console.log(`    ${sc}${sev}${colors.reset}: ${count}`);
+    }
+
+    console.log('');
+  });
+
 // create-skill: generate best-practice, secured skills from plain English
 program
   .command('create-skill')
