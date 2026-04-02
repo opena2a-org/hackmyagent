@@ -29,3 +29,9 @@ export type {
   PublishScanData,
   PublishResult,
 } from './publish';
+
+// Remediation tracking
+export {
+  reportFindings,
+  reportRemediation,
+} from './remediation';
