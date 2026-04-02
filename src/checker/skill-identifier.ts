@@ -62,5 +62,15 @@ export function parseSkillIdentifier(identifier: string): SkillIdentifier {
     };
   }
 
-  throw new Error('Invalid skill identifier: unrecognized format. Expected @publisher/skill-name, a GitHub URL, or a registry package name.');
+  throw new Error(
+    'Invalid skill identifier: unrecognized format.\n' +
+    'Expected one of:\n' +
+    '  @publisher/skill-name    Scoped registry identifier\n' +
+    '  https://github.com/...   GitHub URL\n' +
+    '  ./path/to/skill          Local file or directory\n' +
+    '\nExamples:\n' +
+    '  hackmyagent check @anthropic/code-review\n' +
+    '  hackmyagent check https://github.com/org/skill\n' +
+    '  hackmyagent check ./skills/my-skill.md'
+  );
 }

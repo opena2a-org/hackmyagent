@@ -56,14 +56,14 @@ import { NemoClawScanner, NEMOCLAW_CATEGORIES } from './hardening/nemoclaw-scann
 const program = new Command();
 program.showHelpAfterError('(run with --help for usage)');
 
-// Write JSON to stdout synchronously with retry for pipe backpressure.
+// Write a string to stdout synchronously with retry for pipe backpressure.
 // process.stdout.write() is async and gets truncated when process.exit()
 // runs before the stream flushes. fs.writeFileSync(1, ...) can fail with
 // EAGAIN on non-blocking pipes when the buffer (64KB on macOS) fills up.
 // This function writes in chunks with retry to handle both cases.
-function writeJsonStdout(data: unknown): void {
+function writeLargeStdout(text: string): void {
   const fs = require('fs');
-  const buf = Buffer.from(JSON.stringify(data, null, 2) + '\n');
+  const buf = Buffer.from(text);
   let offset = 0;
   while (offset < buf.length) {
     try {
@@ -71,12 +71,16 @@ function writeJsonStdout(data: unknown): void {
       offset += written;
     } catch (e: unknown) {
       if (e && typeof e === 'object' && 'code' in e && (e as {code: string}).code === 'EAGAIN') {
-        // Pipe buffer full — spin-wait briefly then retry
+        // Pipe buffer full -- spin-wait briefly then retry
         continue;
       }
       throw e;
     }
   }
+}
+
+function writeJsonStdout(data: unknown): void {
+  writeLargeStdout(JSON.stringify(data, null, 2) + '\n');
 }
 
 // Resolve the CLI command name based on how we were invoked.
@@ -261,10 +265,17 @@ Examples:
         return;
       }
 
-      // Registry lookup path (non-local identifier)
-      const result = await checkSkill(skill, {
+      // Registry lookup path (non-local identifier) with 10s timeout
+      const checkPromise = checkSkill(skill, {
         skipDnsVerification: options.offline,
       });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(
+          `Timed out verifying "${skill}" (10s). The publisher may not exist or DNS is unreachable.\n` +
+          `Try: ${CLI_PREFIX.replace(' scan', '')} check ${skill} --offline`
+        )), 10000)
+      );
+      const result = await Promise.race([checkPromise, timeoutPromise]);
 
       if (options.json) {
         writeJsonStdout(result);
@@ -2229,13 +2240,13 @@ Examples:
             output = '';
         }
 
-        // Write output
+        // Write output (use writeLargeStdout to avoid 64KB pipe truncation)
         if (output) {
           if (options.output) {
             require('fs').writeFileSync(options.output, output);
             console.error(`Report written to ${options.output}`);
           } else {
-            console.log(output);
+            writeLargeStdout(output + '\n');
           }
         }
 
@@ -2299,7 +2310,7 @@ Examples:
           require('fs').writeFileSync(options.output, output);
           console.error(`Report written to ${options.output}`);
         } else {
-          console.log(output);
+          writeLargeStdout(output + '\n');
         }
         const critHigh = result.findings.filter((f: SecurityFinding) => !f.passed && !f.fixed && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) process.exit(1);
@@ -3531,13 +3542,13 @@ Examples:
           output = '';
       }
 
-      // Write output
+      // Write output (use writeLargeStdout to avoid 64KB pipe truncation)
       if (output) {
         if (options.output) {
           require('fs').writeFileSync(options.output, output);
           console.error(`Report written to ${options.output}`);
         } else {
-          console.log(output);
+          writeLargeStdout(output + '\n');
         }
       }
 
