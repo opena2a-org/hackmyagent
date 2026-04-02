@@ -43,6 +43,15 @@ export type {
 export { HardeningScanner } from './hardening';
 export type { ScanOptions, SecurityFinding, Severity } from './hardening';
 
+// Context Lifecycle Scanner (Stage 0-1)
+export { scanAssembly, toLifecycleResult } from './lifecycle';
+export type {
+  LifecycleStage,
+  LifecycleScanResult,
+  AssemblyComponent,
+  AssemblyInteraction,
+} from './lifecycle';
+
 // External scanner module
 export { ExternalScanner } from './scanner';
 export type {

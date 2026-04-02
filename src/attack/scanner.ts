@@ -543,6 +543,7 @@ export class AttackScanner {
       'parser-differential': { total: 0, successful: 0 },
       'persistent-agent': { total: 0, successful: 0 },
       'fake-tool': { total: 0, successful: 0 },
+      'context-lifecycle': { total: 0, successful: 0 },
     };
     for (const r of results) {
       byCategory[r.payload.category].total++;

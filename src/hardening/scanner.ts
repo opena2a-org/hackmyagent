@@ -10,6 +10,7 @@ import type { ScanResult, SecurityFinding, Severity, ProjectType } from './secur
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
 import { enrichWithTaxonomy } from './taxonomy';
 import { classifySkillSection, isLikelyFalsePositive } from './skill-context';
+import { scanAssembly } from '../lifecycle/assembly-scanner';
 import {
   parseDeclaredCapabilities as parseSkillDeclaredCaps,
   inferActualCapabilities,
@@ -108,6 +109,9 @@ const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
   'WEBEXPOSE-': ['all'], // Sensitive files in web-served directories
   'AGENT-CRED-': ['all'], // Missing credential protection in system prompts
   'SOUL-OVERRIDE-': ['all'], // Skill content overriding SOUL.md
+
+  // Context lifecycle checks (assembly-stage analysis)
+  'LIFECYCLE-': ['all'],
 };
 
 /** Scan depth for CAAT tiered scanning */
@@ -602,6 +606,10 @@ export class HardeningScanner {
 
     const agentCredFindings = await this.checkAgentCredentialProtection(targetDir, shouldFix);
     findings.push(...agentCredFindings);
+
+    // Context lifecycle assembly checks (Stage 1)
+    const lifecycleFindings = await this.checkContextLifecycle(targetDir, options);
+    findings.push(...lifecycleFindings);
     } // end of standard/deep checks
 
     // Enrich findings with attack taxonomy mapping
@@ -9824,6 +9832,27 @@ dist/
     }
 
     return findings;
+  }
+
+  /**
+   * Stage 1: Context lifecycle assembly checks.
+   * Simulates how the agent assembles its system prompt from multiple components
+   * and detects injections that only activate post-assembly.
+   */
+  private async checkContextLifecycle(
+    targetDir: string,
+    options: ScanOptions,
+  ): Promise<SecurityFinding[]> {
+    try {
+      const result = await scanAssembly({
+        targetDir,
+        onProgress: options.onProgress,
+      });
+      return result.findings;
+    } catch {
+      // Assembly scan failure is non-fatal
+      return [];
+    }
   }
 
   /** Helper: recursively find files in web-served directories */

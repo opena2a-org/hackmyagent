@@ -3818,6 +3818,7 @@ function generateAttackHtmlReport(report: AttackReport): string {
     'parser-differential': 'PARSE',
     'persistent-agent': 'PERSIST',
     'fake-tool': 'FAKETOOL',
+    'context-lifecycle': 'LIFECYCLE',
   };
 
   // Donut chart for attack results
