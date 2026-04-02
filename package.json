@@ -17,7 +17,10 @@
     "./memory": "./dist/attack/payloads/memory-weaponization.js",
     "./context-window": "./dist/attack/payloads/context-window.js",
     "./supply-chain": "./dist/attack/payloads/supply-chain.js",
-    "./shadow": "./dist/attack/payloads/tool-shadow.js"
+    "./shadow": "./dist/attack/payloads/tool-shadow.js",
+    "./parser-differential": "./dist/attack/payloads/parser-differential.js",
+    "./persistent-agent": "./dist/attack/payloads/persistent-agent.js",
+    "./fake-tool": "./dist/attack/payloads/fake-tool.js"
   },
   "files": [
     "dist",

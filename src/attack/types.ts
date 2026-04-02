@@ -14,7 +14,10 @@ export type AttackCategory =
   | 'memory-weaponization'   // MEM - Weaponize agent memory systems
   | 'context-window'         // CTX - Manipulate context window attention
   | 'supply-chain'           // SUP - Attack agent dependency supply chain
-  | 'tool-shadow';           // SHADOW - Shadow/replace agent tools
+  | 'tool-shadow'            // SHADOW - Shadow/replace agent tools
+  | 'parser-differential'    // PARSE - Exploit parser interpretation differences
+  | 'persistent-agent'       // PERSIST - Attack persistent agent state/memory
+  | 'fake-tool';             // FAKETOOL - MCP tool impersonation and squatting
 
 export type AttackIntensity =
   | 'passive'     // Observation only, minimal risk
@@ -226,5 +229,20 @@ export const ATTACK_CATEGORIES: Record<AttackCategory, { name: string; descripti
     name: 'Tool Shadow',
     description: 'Attempts to shadow, replace, or proxy legitimate tools to intercept data or modify behavior',
     oasbControls: ['2.2', '2.3'],
+  },
+  'parser-differential': {
+    name: 'Parser Differential',
+    description: 'Exploits differences in how parsers (JSON, YAML, markdown) interpret the same input to bypass security controls',
+    oasbControls: ['3.1', '3.2', '8.1'],
+  },
+  'persistent-agent': {
+    name: 'Persistent Agent Security',
+    description: 'Attacks that persist across agent sessions via memory poisoning, state tampering, or cached context injection',
+    oasbControls: ['8.1', '8.2', '4.3'],
+  },
+  'fake-tool': {
+    name: 'Fake Tool Detection',
+    description: 'MCP tool impersonation, shadow tool injection, and tool name squatting attacks',
+    oasbControls: ['2.2', '2.3', '6.2'],
   },
 };

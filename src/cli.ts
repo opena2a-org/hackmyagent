@@ -3815,6 +3815,9 @@ function generateAttackHtmlReport(report: AttackReport): string {
     'context-window': 'CTX',
     'supply-chain': 'SUP',
     'tool-shadow': 'SHADOW',
+    'parser-differential': 'PARSE',
+    'persistent-agent': 'PERSIST',
+    'fake-tool': 'FAKETOOL',
   };
 
   // Donut chart for attack results

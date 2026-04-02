@@ -540,6 +540,9 @@ export class AttackScanner {
       'context-window': { total: 0, successful: 0 },
       'supply-chain': { total: 0, successful: 0 },
       'tool-shadow': { total: 0, successful: 0 },
+      'parser-differential': { total: 0, successful: 0 },
+      'persistent-agent': { total: 0, successful: 0 },
+      'fake-tool': { total: 0, successful: 0 },
     };
     for (const r of results) {
       byCategory[r.payload.category].total++;
