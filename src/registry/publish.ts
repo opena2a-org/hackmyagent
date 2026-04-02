@@ -16,6 +16,7 @@ import type { AttackReport } from '../attack';
 import type { SoulScanResult } from '../soul';
 import type { BenchmarkResult } from '../benchmarks';
 import { RegistryClient, type CommunityScanPayload } from './client';
+import { reportFindings, reportRemediation } from './remediation';
 
 /**
  * Compute a deterministic tree hash of a directory's contents.
@@ -373,6 +374,24 @@ export async function publishScanResults(
     const scanToken = tokenResponse?.scanToken;
 
     const result = await client.reportPublishResult(payload as any, scanToken);
+
+    // Report remediation tracking (non-blocking)
+    if (data.hardeningFindings) {
+      const score = data.hardeningFindings.length > 0
+        ? Math.round(
+            (data.hardeningFindings.filter(f => f.passed || f.fixed).length /
+              data.hardeningFindings.length) *
+              100,
+          )
+        : 100;
+
+      try {
+        await reportFindings(registryUrl, result.scanId, data.packageName, data.hardeningFindings, score);
+        await reportRemediation(registryUrl, result.scanId, data.packageName, data.hardeningFindings, score);
+      } catch {
+        // Non-blocking -- remediation tracking should never fail the publish
+      }
+    }
 
     return {
       success: true,
