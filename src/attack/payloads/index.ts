@@ -14,6 +14,9 @@ import { MEMORY_WEAPONIZATION_PAYLOADS } from './memory-weaponization';
 import { CONTEXT_WINDOW_PAYLOADS } from './context-window';
 import { SUPPLY_CHAIN_PAYLOADS } from './supply-chain';
 import { TOOL_SHADOW_PAYLOADS } from './tool-shadow';
+import { PARSER_DIFFERENTIAL_PAYLOADS } from './parser-differential';
+import { PERSISTENT_AGENT_PAYLOADS } from './persistent-agent';
+import { FAKE_TOOL_PAYLOADS } from './fake-tool';
 
 /** All available payloads */
 export const ALL_PAYLOADS: AttackPayload[] = [
@@ -28,6 +31,9 @@ export const ALL_PAYLOADS: AttackPayload[] = [
   ...CONTEXT_WINDOW_PAYLOADS,
   ...SUPPLY_CHAIN_PAYLOADS,
   ...TOOL_SHADOW_PAYLOADS,
+  ...PARSER_DIFFERENTIAL_PAYLOADS,
+  ...PERSISTENT_AGENT_PAYLOADS,
+  ...FAKE_TOOL_PAYLOADS,
 ];
 
 /** Get payloads by category */
@@ -79,6 +85,9 @@ export const PAYLOAD_STATS = {
     'context-window': CONTEXT_WINDOW_PAYLOADS.length,
     'supply-chain': SUPPLY_CHAIN_PAYLOADS.length,
     'tool-shadow': TOOL_SHADOW_PAYLOADS.length,
+    'parser-differential': PARSER_DIFFERENTIAL_PAYLOADS.length,
+    'persistent-agent': PERSISTENT_AGENT_PAYLOADS.length,
+    'fake-tool': FAKE_TOOL_PAYLOADS.length,
   } as Record<AttackCategory, number>,
   byIntensity: {
     passive: ALL_PAYLOADS.filter(p => p.intensity === 'passive').length,
@@ -99,4 +108,7 @@ export {
   CONTEXT_WINDOW_PAYLOADS,
   SUPPLY_CHAIN_PAYLOADS,
   TOOL_SHADOW_PAYLOADS,
+  PARSER_DIFFERENTIAL_PAYLOADS,
+  PERSISTENT_AGENT_PAYLOADS,
+  FAKE_TOOL_PAYLOADS,
 };

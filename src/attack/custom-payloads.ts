@@ -14,6 +14,9 @@ import {
 const VALID_CATEGORIES: AttackCategory[] = [
   'prompt-injection', 'jailbreak', 'data-exfiltration',
   'capability-abuse', 'context-manipulation',
+  'mcp-exploitation', 'a2a-attack', 'memory-weaponization',
+  'context-window', 'supply-chain', 'tool-shadow',
+  'parser-differential', 'persistent-agent', 'fake-tool',
 ];
 
 const VALID_INTENSITIES: AttackIntensity[] = ['passive', 'active', 'aggressive'];

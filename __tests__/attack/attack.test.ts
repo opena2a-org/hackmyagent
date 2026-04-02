@@ -61,12 +61,15 @@ describe('Attack Payloads', () => {
         'context-window': 'CTX',
         'supply-chain': 'SUP',
         'tool-shadow': 'SHADOW',
+        'parser-differential': 'PARSE',
+        'persistent-agent': 'PERSIST',
+        'fake-tool': 'FAKETOOL',
       };
 
       for (const payload of ALL_PAYLOADS) {
         const expectedPrefix = prefixes[payload.category];
         expect(payload.id.startsWith(expectedPrefix)).toBe(true);
-        expect(payload.id).toMatch(/^[A-Z][A-Z0-9]{1,5}-\d{3}$/);
+        expect(payload.id).toMatch(/^[A-Z][A-Z0-9]{1,8}-\d{3}$/);
       }
     });
 
