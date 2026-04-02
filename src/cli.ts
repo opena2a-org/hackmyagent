@@ -5988,7 +5988,7 @@ Examples:
           fs.writeFileSync(options.output, output);
           process.stderr.write(`Report written to ${options.output}\n`);
         } else {
-          console.log(output);
+          writeLargeStdout(output + '\n');
         }
       } else {
         printWildReport(report);
