@@ -2469,10 +2469,10 @@ Examples:
         }
         console.log();
 
-        // Remaining fixable issues
-        const remainingFixable = issues.filter((f: SecurityFinding) => f.fixable && !f.fixed);
-        if (remainingFixable.length > 0) {
-          console.log(`${colors.yellow}${remainingFixable.length} more issue${remainingFixable.length === 1 ? '' : 's'} can be auto-fixed.${RESET()} Run \`${CLI_PREFIX} secure --fix\` again.\n`);
+        // Remaining issues with fix guidance (not yet auto-fixed)
+        const remainingWithFix = issues.filter((f: SecurityFinding) => !f.fixed && (f.fix || f.fixable));
+        if (remainingWithFix.length > 0) {
+          console.log(`${remainingWithFix.length} remaining issue${remainingWithFix.length === 1 ? '' : 's'} ${remainingWithFix.length === 1 ? 'has' : 'have'} fix guidance. Run \`${CLI_PREFIX} fix-all\` to apply all available fixes.\n`);
         }
 
         if (result.backupPath) {
