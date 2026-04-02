@@ -109,10 +109,10 @@ export function computeResilienceScore(input: ScoreInput): {
   const score = Math.max(0, Math.round(100 - Math.min(deductions, 100)));
 
   let rating: WildScanReport['resilienceRating'];
-  if (score >= 80) rating = 'excellent';
+  if (score >= 80) rating = 'strong';
   else if (score >= 60) rating = 'good';
   else if (score >= 40) rating = 'moderate';
-  else if (score >= 20) rating = 'poor';
+  else if (score >= 20) rating = 'needs-attention';
   else rating = 'critical';
 
   return { score, rating, summary };
