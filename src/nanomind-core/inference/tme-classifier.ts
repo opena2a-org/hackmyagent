@@ -69,7 +69,6 @@ export class TMEClassifier {
       join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models-tme-v2'),
       join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models-tme'),
       join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models'),
-      join(__dirname, '..', '..', '..', '..', 'nanomind-training', 'models'),
     ].filter(Boolean) as string[];
 
     this.modelPath = '';

@@ -25,6 +25,7 @@ import * as path from 'path';
 // ---------------------------------------------------------------------------
 
 const HMA_ROOT = path.resolve(__dirname, '..');
+// Local development only: requires sibling checkout of the registry repo
 const REGISTRY_ROOT = path.resolve(HMA_ROOT, '..', 'opena2a-registry');
 
 const TAXONOMY_TS = path.join(HMA_ROOT, 'src', 'hardening', 'taxonomy.ts');
