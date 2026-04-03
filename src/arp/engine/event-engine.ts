@@ -73,13 +73,15 @@ export class EventEngine {
     // Evaluate rules
     const matchedRules = this.evaluateRules(fullEvent);
     for (const rule of matchedRules) {
-      // If rule requires LLM confirmation, emit a pending-confirmation event
-      // and skip immediate enforcement (L2 will handle it later)
+      // CR-002: LLM confirmation is no longer a deferral gate.
+      // If a rule matches, enforcement executes immediately.
+      // L2 assessment runs asynchronously and can UPGRADE severity,
+      // but the initial matched action always fires (fail-closed).
       if (rule.requireLlmConfirmation) {
-        fullEvent.data._pendingConfirmation = true;
-        fullEvent.data._pendingAction = rule.action;
-        fullEvent.data._pendingRule = rule.name;
-        continue;
+        // Tag event for L2 follow-up assessment, but enforce NOW
+        fullEvent.data._llmReviewRequested = true;
+        fullEvent.data._initialAction = rule.action;
+        fullEvent.data._matchedRule = rule.name;
       }
 
       const result: EnforcementResult = {

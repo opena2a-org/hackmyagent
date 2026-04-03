@@ -235,7 +235,9 @@ export class ARPProxy {
       }
       return detected;
     } catch {
-      return false;
+      // CR-001: Parse failure = DENY. Unparseable requests are not trusted.
+      this.emitParseFailure('openai-api', 'request', bodyStr);
+      return true;
     }
   }
 
@@ -257,7 +259,9 @@ export class ARPProxy {
       }
       return detected;
     } catch {
-      return false;
+      // CR-001: Parse failure = DENY
+      this.emitParseFailure('openai-api', 'response', bodyStr);
+      return true;
     }
   }
 
@@ -279,7 +283,9 @@ export class ARPProxy {
 
       return false;
     } catch {
-      return false;
+      // CR-001: Parse failure = DENY
+      this.emitParseFailure('mcp-http', 'request', bodyStr);
+      return true;
     }
   }
 
@@ -309,7 +315,9 @@ export class ARPProxy {
 
       return false;
     } catch {
-      return false;
+      // CR-001: Parse failure = DENY
+      this.emitParseFailure('mcp-http', 'response', bodyStr);
+      return true;
     }
   }
 
@@ -328,7 +336,9 @@ export class ARPProxy {
 
       return false;
     } catch {
-      return false;
+      // CR-001: Parse failure = DENY
+      this.emitParseFailure('a2a', 'response', bodyStr);
+      return true;
     }
   }
 
@@ -377,7 +387,34 @@ export class ARPProxy {
       const result = this.deps.a2aInterceptor.scanMessage(from, to, content || bodyStr);
       return result.detected;
     } catch {
-      return false;
+      // CR-001: Parse failure = DENY
+      this.emitParseFailure('a2a', 'request', bodyStr);
+      return true;
     }
+  }
+
+  /**
+   * CR-001: Emit a POLICY_PARSE_FAILURE event when protocol parsing fails.
+   * Parse failures are treated as threats (fail-closed semantics).
+   * No raw body content is included in telemetry (privacy).
+   */
+  private emitParseFailure(
+    protocol: string,
+    direction: 'request' | 'response',
+    bodyStr: string,
+  ): void {
+    this.deps.engine.emit({
+      source: 'prompt',
+      category: 'threat',
+      severity: 'high',
+      description: `Policy parse failure: unparseable ${protocol} ${direction} body (${bodyStr.length} bytes)`,
+      data: {
+        policyParseFailure: true,
+        protocol,
+        direction,
+        bodyLength: bodyStr.length,
+        // CR-001: No raw body in telemetry. Only length for diagnostics.
+      },
+    });
   }
 }

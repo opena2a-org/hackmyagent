@@ -10,6 +10,33 @@ const SUSPICIOUS_BINARIES = [
 ];
 
 /**
+ * CR-001: Command complexity analysis for adversarial bash pipeline detection.
+ *
+ * Counts shell operators (pipes, semicolons, command substitutions, etc.)
+ * to detect adversarial command chains that attempt to exceed enforcement
+ * thresholds. Any command exceeding MAX_SUBCOMMANDS is treated as a threat.
+ *
+ * NOTE: tree-sitter-bash (v0.25.1) was evaluated for full AST parsing but
+ * requires native compilation (node-gyp). This regex-based approach covers
+ * the adversarial pipeline attack vector without the native dependency.
+ * tree-sitter-bash remains a candidate for future upgrade if the native
+ * dep becomes acceptable.
+ */
+const MAX_SUBCOMMANDS = 10;
+
+/** Shell metacharacters that separate commands */
+const SHELL_OPERATORS = /[|;&]|\$\(|`/g;
+
+function analyzeCommandComplexity(command: string): { subcommandCount: number; isAdversarial: boolean } {
+  const operators = command.match(SHELL_OPERATORS);
+  const subcommandCount = (operators?.length ?? 0) + 1;
+  return {
+    subcommandCount,
+    isAdversarial: subcommandCount > MAX_SUBCOMMANDS,
+  };
+}
+
+/**
  * Process interceptor — hooks child_process.spawn/exec/execFile/fork to
  * intercept ALL process creation at the application level.
  *
@@ -126,18 +153,32 @@ export class ProcessInterceptor implements Monitor {
     const binary = path.basename(parts[0]);
     const isSuspicious = SUSPICIOUS_BINARIES.includes(binary);
 
+    // CR-001: Analyze command complexity for adversarial pipeline detection
+    const complexity = analyzeCommandComplexity(command);
+    const isAdversarial = complexity.isAdversarial;
+
+    // Adversarial pipelines are always threats, regardless of binary name
+    const category = isAdversarial ? 'threat' : (isSuspicious ? 'violation' : 'normal');
+    const severity = isAdversarial ? 'critical' : (isSuspicious ? 'high' : 'info');
+
+    const description = isAdversarial
+      ? `Adversarial command pipeline detected: ${complexity.subcommandCount} subcommands (max ${MAX_SUBCOMMANDS})`
+      : isSuspicious
+        ? `Intercepted suspicious exec: ${binary} -- ${command.slice(0, 100)}`
+        : `Intercepted exec: ${command.slice(0, 100)}`;
+
     this.engine.emit({
       source: 'process',
-      category: isSuspicious ? 'violation' : 'normal',
-      severity: isSuspicious ? 'high' : 'info',
-      description: isSuspicious
-        ? `Intercepted suspicious exec: ${binary} — ${command.slice(0, 100)}`
-        : `Intercepted exec: ${command.slice(0, 100)}`,
+      category,
+      severity,
+      description,
       data: {
         binary,
         command,
         intercepted: true,
         suspicious: isSuspicious,
+        adversarialPipeline: isAdversarial,
+        subcommandCount: complexity.subcommandCount,
       },
     });
   }

@@ -307,10 +307,13 @@ Format: EVENT_NUM: ALLOW/ALERT/PAUSE/KILL — one sentence reason`;
 
 function parseAssessment(content: string, tokens: number, cost: number): LLMAssessment {
   const lines = content.trim().split('\n');
-  let consistent = true;
+  // CR-001: Default to deny-safe values. If the LLM response can't be parsed,
+  // we assume the worst (inconsistent behavior, recommend alert).
+  let consistent = false;
   let confidence = 0.5;
-  let reasoning = 'No assessment available';
-  let recommendation: LLMAssessment['recommendation'] = 'allow';
+  let reasoning = 'Assessment parse incomplete — defaulting to deny-safe';
+  let recommendation: LLMAssessment['recommendation'] = 'alert';
+  let hasAction = false;
 
   for (const line of lines) {
     const upper = line.toUpperCase();
@@ -322,12 +325,21 @@ function parseAssessment(content: string, tokens: number, cost: number): LLMAsse
     } else if (upper.startsWith('REASONING:')) {
       reasoning = line.split(':').slice(1).join(':').trim();
     } else if (upper.startsWith('ACTION:')) {
+      hasAction = true;
       const action = line.split(':')[1]?.trim().toUpperCase();
-      if (action === 'ALERT') recommendation = 'alert';
+      if (action === 'ALLOW') recommendation = 'allow';
+      else if (action === 'ALERT') recommendation = 'alert';
       else if (action === 'PAUSE') recommendation = 'pause';
       else if (action === 'KILL') recommendation = 'kill';
-      else recommendation = 'allow';
+      // CR-001: Unrecognized action string defaults to 'alert', not 'allow'
+      else recommendation = 'alert';
     }
+  }
+
+  // CR-001: If no ACTION line was found, keep the deny-safe default ('alert')
+  if (!hasAction) {
+    recommendation = 'alert';
+    consistent = false;
   }
 
   return { consistent, confidence, reasoning, recommendation, tokensUsed: tokens, estimatedCost: cost };
