@@ -329,6 +329,36 @@ export function findingAppliesTo(finding: SecurityFinding, projectType: ProjectT
   return true;
 }
 
+/**
+ * Load .hmaignore patterns from a target directory. Exported so CLI
+ * can re-apply ignore filtering after NanoMind merge.
+ */
+export async function loadHmaIgnore(targetDir: string): Promise<string[]> {
+  const ignorePath = path.join(targetDir, '.hmaignore');
+  try {
+    const content = await fs.readFile(ignorePath, 'utf-8');
+    return content
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line && !line.startsWith('#'));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Check if a file path matches any .hmaignore pattern. Exported so CLI
+ * can filter findings after NanoMind merge.
+ */
+export function isPathIgnored(filePath: string, ignoredPaths: string[]): boolean {
+  if (!filePath || ignoredPaths.length === 0) return false;
+  const normalized = filePath.replace(/\\/g, '/');
+  return ignoredPaths.some(pattern => {
+    const normalizedPattern = pattern.replace(/\\/g, '/').replace(/\/$/, '');
+    return normalized.startsWith(normalizedPattern + '/') || normalized === normalizedPattern;
+  });
+}
+
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB max file size to prevent memory exhaustion
 const MAX_LINE_LENGTH = 10000; // 10KB max line length for regex safety
 

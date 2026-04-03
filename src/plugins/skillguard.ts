@@ -136,19 +136,21 @@ function findSkillFiles(dir: string, depth: number = 0): string[] {
   return results;
 }
 
-function computeHash(filePath: string): string {
-  const content = fs.readFileSync(filePath);
-  return crypto.createHash('sha256').update(content).digest('hex');
+function computeHash(filePath: string): string | null {
+  try {
+    const content = fs.readFileSync(filePath);
+    return crypto.createHash('sha256').update(content).digest('hex');
+  } catch {
+    return null; // File missing or unreadable
+  }
 }
 
 function loadPins(agentDir: string): SkillPin[] {
   const pinsPath = path.join(agentDir, GUARD_DIR, PINS_FILE);
-  if (!fs.existsSync(pinsPath)) return [];
-
   try {
     return JSON.parse(fs.readFileSync(pinsPath, 'utf-8'));
   } catch {
-    return [];
+    return []; // File missing or unparseable
   }
 }
 
@@ -199,7 +201,8 @@ function scanForTampering(agentDir: string): Finding[] {
 
   for (const pin of pins) {
     const fullPath = path.join(agentDir, pin.filePath);
-    if (!fs.existsSync(fullPath)) {
+    const currentHash = computeHash(fullPath);
+    if (currentHash === null) {
       findings.push({
         id: 'SKILL-TAMPER',
         title: 'Pinned skill file missing',
@@ -211,7 +214,6 @@ function scanForTampering(agentDir: string): Finding[] {
       continue;
     }
 
-    const currentHash = computeHash(fullPath);
     if (currentHash !== pin.hash) {
       findings.push({
         id: 'SKILL-TAMPER',
@@ -323,9 +325,8 @@ export class SkillGuardPlugin implements OpenA2APlugin {
         if (!finding.filePath) continue;
 
         const fullPath = path.join(agentDir, finding.filePath);
-        if (!fs.existsSync(fullPath)) continue;
-
         const hash = computeHash(fullPath);
+        if (!hash) continue; // File missing or unreadable
         const skillName = path.basename(finding.filePath, '.skill.md')
           .replace('.md', '');
 
