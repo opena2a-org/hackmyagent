@@ -344,5 +344,5 @@ curl -X POST https://registry.opena2a.org/api/v1/registry/internal/recalculate-t
 
 - [HackMyAgent Documentation](https://github.com/ecolibria/hackmyagent)
 - [OpenA2A Registry API Docs](https://registry.opena2a.org/docs)
-- [Trust Scoring Algorithm](https://github.com/opena2a-org/opena2a-registry/blob/main/QUALITY_ASSURANCE_REPORT.md)
+- [Trust Scoring Algorithm](https://docs.opena2a.org/registry/trust-scoring)
 - [OASB Attack Scenarios](https://oasb.ai/)
