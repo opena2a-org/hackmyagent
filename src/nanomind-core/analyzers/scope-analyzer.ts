@@ -74,7 +74,7 @@ function checkWildcardToolAccess(ast: SecurityAST): ASTFinding[] {
       severity: isFullWildcard ? 'critical' : 'high',
       passed: false,
       message: `Wildcard access: ${cap.name} (scope: ${scope})`,
-      fixable: true,
+      fixable: false,
       file: ast.artifactPath,
       fix: isFullWildcard
         ? `Replace wildcard "*" with an explicit allowlist of needed tools. ` +
@@ -112,7 +112,7 @@ function checkWildcardToolAccess(ast: SecurityAST): ASTFinding[] {
           severity: 'high',
           passed: false,
           message: `Implicit wildcard: MCP server ${cap.scope}`,
-          fixable: true,
+          fixable: false,
           file: ast.artifactPath,
           fix:
             `Add an "allowedTools" list to the "${cap.scope}" server configuration. ` +
@@ -181,7 +181,7 @@ function checkUndeclaredPermissions(ast: SecurityAST): ASTFinding[] {
       severity,
       passed: false,
       message: `Undeclared permission: ${cap.name} (${cap.riskLevel}-risk)`,
-      fixable: true,
+      fixable: false,
       file: ast.artifactPath,
       fix:
         `Either declare "${cap.name}" in your capability manifest (if intended) ` +
@@ -268,7 +268,7 @@ function checkScopePurposeMismatch(ast: SecurityAST): ASTFinding[] {
         severity: cap.riskLevel === 'critical' ? 'critical' : 'high',
         passed: false,
         message: `"${cap.name}" does not match purpose "${truncate(ast.declaredPurpose, 50)}"`,
-        fixable: true,
+        fixable: false,
         file: ast.artifactPath,
         fix:
           `Either update the purpose description to explain why "${cap.name}" is needed, ` +

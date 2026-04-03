@@ -105,7 +105,7 @@ function checkCommandInjection(ast: SecurityAST): ASTFinding[] {
         severity: 'critical',
         passed: false,
         message: `Command injection: ${truncate(bestEvidence, 80)}`,
-        fixable: true,
+        fixable: false,
         file: ast.artifactPath,
         fix:
           'Replace shell execution with safer alternatives: ' +
@@ -134,7 +134,7 @@ function checkCommandInjection(ast: SecurityAST): ASTFinding[] {
         severity: 'medium',
         passed: false,
         message: `Shell execution: ${execCapabilities.map(c => c.name).join(', ')}`,
-        fixable: true,
+        fixable: false,
         file: ast.artifactPath,
         fix:
           'Audit all shell execution calls to ensure no user-controlled data reaches them. ' +
@@ -213,7 +213,7 @@ function checkUnsafeDeserialization(ast: SecurityAST): ASTFinding[] {
       severity: hasRiskSurface || hasUserInput ? 'critical' : 'high',
       passed: false,
       message: `Unsafe deserialization: ${truncate(bestEvidence, 80)}`,
-      fixable: true,
+      fixable: false,
       file: ast.artifactPath,
       fix:
         'Remove eval(), new Function(), and similar dynamic code execution: ' +
@@ -288,7 +288,7 @@ function checkPathTraversal(ast: SecurityAST): ASTFinding[] {
         severity: surface.confidence >= 0.7 ? 'critical' : 'high',
         passed: false,
         message: `Path traversal: ${truncate(surface.evidence, 80)}`,
-        fixable: true,
+        fixable: false,
         file: ast.artifactPath,
         fix:
           surface.mitigation ??
@@ -330,7 +330,7 @@ function checkPathTraversal(ast: SecurityAST): ASTFinding[] {
         severity: hasWriteCapability ? 'high' : 'medium',
         passed: false,
         message: `File ${hasWriteCapability ? 'write' : 'access'} without path sanitization`,
-        fixable: true,
+        fixable: false,
         file: ast.artifactPath,
         fix:
           'Add path sanitization: ' +

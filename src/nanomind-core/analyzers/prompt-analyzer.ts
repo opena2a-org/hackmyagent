@@ -91,7 +91,7 @@ function checkJailbreakSusceptibility(ast: SecurityAST): ASTFinding[] {
       severity,
       passed: false,
       message: `Weak instruction hierarchy (${(hierarchyScore * 100).toFixed(0)}% strength)`,
-      fixable: true,
+      fixable: false,
       file: ast.artifactPath,
       fix:
         'Strengthen the instruction hierarchy: ' +
@@ -122,7 +122,7 @@ function checkJailbreakSusceptibility(ast: SecurityAST): ASTFinding[] {
         severity: surface.confidence >= 0.8 ? 'high' : 'medium',
         passed: false,
         message: `Jailbreak surface: ${truncate(surface.evidence, 80)}`,
-        fixable: true,
+        fixable: false,
         file: ast.artifactPath,
         fix: surface.mitigation ?? 'Add explicit resistance to the detected jailbreak pattern.',
         attackClass: surface.attackClass,
@@ -210,7 +210,7 @@ function checkCapabilityCreep(ast: SecurityAST): ASTFinding[] {
       severity: highRiskUndeclared > 0 ? 'high' : 'medium',
       passed: false,
       message: `Capability creep: ${undeclaredCount} text-extracted vs ${declaredCount} manifest-declared`,
-      fixable: true,
+      fixable: false,
       file: ast.artifactPath,
       fix:
         `Align declared capabilities with actual behavior. Either: ` +
@@ -242,7 +242,7 @@ function checkCapabilityCreep(ast: SecurityAST): ASTFinding[] {
       severity: 'medium',
       passed: false,
       message: `Loophole: ${truncate(constraint.text, 60)}`,
-      fixable: true,
+      fixable: false,
       file: ast.artifactPath,
       fix:
         `Remove conditional language from the constraint. ` +
@@ -275,7 +275,7 @@ function checkCapabilityCreep(ast: SecurityAST): ASTFinding[] {
         severity: 'medium',
         passed: false,
         message: `Escalation loophole: ${truncate(surface.evidence, 60)}`,
-        fixable: true,
+        fixable: false,
         file: ast.artifactPath,
         fix:
           'Remove conditional escalation language. ' +
@@ -351,7 +351,7 @@ function checkMissingInjectionResistance(ast: SecurityAST): ASTFinding[] {
       severity,
       passed: false,
       message: 'No injection resistance in system prompt',
-      fixable: true,
+      fixable: false,
       file: ast.artifactPath,
       fix:
         'Add explicit injection resistance to your system prompt: ' +
@@ -411,7 +411,7 @@ function checkAuthorityConfusion(ast: SecurityAST): ASTFinding[] {
       severity: 'high',
       passed: false,
       message: 'No trust hierarchy defined',
-      fixable: true,
+      fixable: false,
       file: ast.artifactPath,
       fix:
         'Define a trust hierarchy in the system prompt: ' +
@@ -448,7 +448,7 @@ function checkAuthorityConfusion(ast: SecurityAST): ASTFinding[] {
         severity: 'medium',
         passed: false,
         message: `Weak trust hierarchy (${(constraint.bypassRisk * 100).toFixed(0)}% bypass risk)`,
-        fixable: true,
+        fixable: false,
         file: ast.artifactPath,
         fix:
           'Strengthen the trust hierarchy constraint with mandatory language. ' +
@@ -477,7 +477,7 @@ function checkAuthorityConfusion(ast: SecurityAST): ASTFinding[] {
       severity: surface.confidence >= 0.7 ? 'high' : 'medium',
       passed: false,
       message: `Authority confusion: ${truncate(surface.evidence, 80)}`,
-      fixable: true,
+      fixable: false,
       file: ast.artifactPath,
       fix: surface.mitigation ?? 'Clarify the trust hierarchy and remove conflicting authority statements.',
       attackClass: surface.attackClass,

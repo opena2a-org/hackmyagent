@@ -90,7 +90,7 @@ function checkCredentialsInNonEnvContext(ast: SecurityAST): ASTFinding[] {
       severity,
       passed: false,
       message: `Credential ${access.accessMode} in ${ast.artifactType} context`,
-      fixable: true,
+      fixable: false,
       file: ast.artifactPath,
       fix:
         'Replace inline credentials with environment variable references (e.g., $API_KEY or process.env.API_KEY). ' +
@@ -171,7 +171,7 @@ function checkCredentialForwarding(ast: SecurityAST): ASTFinding[] {
       severity: 'critical',
       passed: false,
       message: `Credential forwarding to ${destination}`,
-      fixable: true,
+      fixable: false,
       file: ast.artifactPath,
       fix:
         `Remove credential transmission to ${destination}. ` +
@@ -212,7 +212,7 @@ function checkCredentialForwarding(ast: SecurityAST): ASTFinding[] {
           severity: 'high',
           passed: false,
           message: `Inferred credential forwarding via ${cap.name}`,
-          fixable: true,
+          fixable: false,
           file: ast.artifactPath,
           fix:
             'Remove or restrict the capability that forwards credential data. ' +
@@ -310,7 +310,7 @@ function checkHardcodedSecrets(ast: SecurityAST): ASTFinding[] {
     severity,
     passed: false,
     message: `Hardcoded secret: ${evidenceSummary.slice(0, 80)}`,
-    fixable: true,
+    fixable: false,
     file: ast.artifactPath,
     fix:
       'Move all secrets to environment variables or a secret manager. ' +

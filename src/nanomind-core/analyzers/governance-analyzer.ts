@@ -137,7 +137,7 @@ function checkDomainCoverage(ast: SecurityAST): ASTFinding[] {
       severity: 'high',
       passed: false,
       message: `Missing critical governance: ${labels}`,
-      fixable: true,
+      fixable: false,
       file: ast.artifactPath,
       fix:
         `Add constraints covering: ${labels}. ` +
@@ -163,7 +163,7 @@ function checkDomainCoverage(ast: SecurityAST): ASTFinding[] {
       severity: 'medium',
       passed: false,
       message: `Missing governance: ${labels}`,
-      fixable: true,
+      fixable: false,
       file: ast.artifactPath,
       fix:
         `Add constraints covering: ${labels}. ` +
@@ -213,7 +213,7 @@ function checkConstraintEnforceability(ast: SecurityAST): ASTFinding[] {
       severity: isDecoration ? 'high' : 'medium',
       passed: false,
       message: `Weak constraint (${(constraint.enforceability * 100).toFixed(0)}% enforceable): ${truncate(constraint.text, 60)}`,
-      fixable: true,
+      fixable: false,
       file: ast.artifactPath,
       fix:
         `Replace advisory language with mandatory language. ` +
@@ -256,7 +256,7 @@ function checkMissingGovernance(ast: SecurityAST): ASTFinding[] {
         severity: 'high',
         passed: false,
         message: 'Zero constraints for active capabilities',
-        fixable: true,
+        fixable: false,
         file: ast.artifactPath,
         fix:
           'Add a SOUL.md or governance section with constraints. Minimum required: ' +
@@ -297,7 +297,7 @@ function checkMissingGovernance(ast: SecurityAST): ASTFinding[] {
         severity: cap.riskLevel === 'critical' ? 'high' : 'medium',
         passed: false,
         message: `No constraint governs ${cap.name} (${cap.riskLevel}-risk)`,
-        fixable: true,
+        fixable: false,
         file: ast.artifactPath,
         fix:
           `Add a constraint for "${cap.name}": ` +
@@ -358,7 +358,7 @@ function checkOverrideResistance(ast: SecurityAST): ASTFinding[] {
       severity: 'high',
       passed: false,
       message: 'Missing override/injection resistance constraint',
-      fixable: true,
+      fixable: false,
       file: ast.artifactPath,
       fix:
         'Add an explicit override resistance constraint: ' +
@@ -419,7 +419,7 @@ function checkGovernanceRatio(ast: SecurityAST): ASTFinding[] {
     severity: ratio < 0.25 ? 'high' : 'medium',
     passed: false,
     message: `Governance ratio: ${totalConstraints} constraints / ${totalCaps} capabilities = ${ratio.toFixed(2)}`,
-    fixable: true,
+    fixable: false,
     file: ast.artifactPath,
     fix:
       `Add at least ${Math.ceil(totalCaps * 0.5) - totalConstraints} more constraint(s) ` +
