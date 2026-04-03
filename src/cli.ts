@@ -3828,6 +3828,7 @@ function generateAttackHtmlReport(report: AttackReport): string {
     'persistent-agent': 'PERSIST',
     'fake-tool': 'FAKETOOL',
     'context-lifecycle': 'LIFECYCLE',
+    'policy-enforcement-integrity': 'PEI',
   };
 
   // Donut chart for attack results

@@ -18,6 +18,7 @@ import { PARSER_DIFFERENTIAL_PAYLOADS } from './parser-differential';
 import { PERSISTENT_AGENT_PAYLOADS } from './persistent-agent';
 import { FAKE_TOOL_PAYLOADS } from './fake-tool';
 import { LIFECYCLE_PAYLOADS } from './lifecycle';
+import { POLICY_ENFORCEMENT_INTEGRITY_PAYLOADS } from './policy-enforcement-integrity';
 
 /** All available payloads */
 export const ALL_PAYLOADS: AttackPayload[] = [
@@ -36,6 +37,7 @@ export const ALL_PAYLOADS: AttackPayload[] = [
   ...PERSISTENT_AGENT_PAYLOADS,
   ...FAKE_TOOL_PAYLOADS,
   ...LIFECYCLE_PAYLOADS,
+  ...POLICY_ENFORCEMENT_INTEGRITY_PAYLOADS,
 ];
 
 /** Get payloads by category */
@@ -91,6 +93,7 @@ export const PAYLOAD_STATS = {
     'persistent-agent': PERSISTENT_AGENT_PAYLOADS.length,
     'fake-tool': FAKE_TOOL_PAYLOADS.length,
     'context-lifecycle': LIFECYCLE_PAYLOADS.length,
+    'policy-enforcement-integrity': POLICY_ENFORCEMENT_INTEGRITY_PAYLOADS.length,
   } as Record<AttackCategory, number>,
   byIntensity: {
     passive: ALL_PAYLOADS.filter(p => p.intensity === 'passive').length,
@@ -115,4 +118,5 @@ export {
   PERSISTENT_AGENT_PAYLOADS,
   FAKE_TOOL_PAYLOADS,
   LIFECYCLE_PAYLOADS,
+  POLICY_ENFORCEMENT_INTEGRITY_PAYLOADS,
 };

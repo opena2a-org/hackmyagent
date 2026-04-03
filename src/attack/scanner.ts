@@ -544,6 +544,7 @@ export class AttackScanner {
       'persistent-agent': { total: 0, successful: 0 },
       'fake-tool': { total: 0, successful: 0 },
       'context-lifecycle': { total: 0, successful: 0 },
+      'policy-enforcement-integrity': { total: 0, successful: 0 },
     };
     for (const r of results) {
       byCategory[r.payload.category].total++;
