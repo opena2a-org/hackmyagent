@@ -1,5 +1,6 @@
 # Intentionally vulnerable test fixtures — git-only, excluded from scans and npm publish
 test-fixtures/
+test/
 
 # Test files contain intentional attack patterns and vulnerable code samples
 __tests__/
@@ -10,5 +11,34 @@ src/attack/payloads/
 # Scanner contains detection regex patterns that match the threats they detect
 src/hardening/
 
+# NanoMind core contains eval/Function detection regex that triggers NEMO-009
+src/nanomind-core/
+
+# Build scripts — verify-then-use patterns are not exploitable in build context
+scripts/
+
+# Documentation files — contain security terminology that triggers false positives
+CHANGELOG.md
+CONTRIBUTING.md
+
+# Plugins use verify-then-act patterns on local files (not exploitable TOCTOU)
+src/plugins/
+
+# Lifecycle scanners use verify-then-scan (read-only, no execution risk)
+src/lifecycle/
+
 # OASB harness manages DVAA (deliberately vulnerable agent) — flagged as malicious
 src/oasb/
+
+# Benchmark files contain intentional attack patterns for testing
+src/benchmarks/
+
+# HMA is a CLI tool that also exposes MCP tools. These MCP infrastructure
+# checks don't apply to a local CLI scanner.
+!SANDBOX-*
+!TOOL-*
+!PROMPT-*
+!LOG-*
+!ENV-*
+!SEC-*
+!AUTH-*

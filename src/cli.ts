@@ -2090,12 +2090,17 @@ Examples:
           silent: format !== 'text',
         });
 
+        // Re-apply .hmaignore filters after NanoMind merge (merge uses allFindings which is unfiltered)
+        const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir);
         if (result.allFindings) {
-          result.allFindings = nmResult.mergedFindings as typeof result.allFindings;
+          result.allFindings = refiltered as typeof result.allFindings;
         }
         if (result.findings) {
-          result.findings = nmResult.mergedFindings.filter((f: any) => !f.passed) as typeof result.findings;
+          result.findings = refiltered.filter((f: any) => !f.passed) as typeof result.findings;
         }
+        // Recalculate score from filtered findings (score was set pre-NanoMind)
+        const forScore = refiltered.filter((f: any) => !f.passed && !f.fixed);
+        result.score = scanner.calculateScore(forScore).score;
       }
 
       // Behavioral simulation: auto-runs on --deep, or when NanoMind detects ambiguity
@@ -2841,7 +2846,11 @@ Examples:
       try {
         const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
         const nmResult = await orchestrateNanoMind(targetDir, result.findings, { silent: !!options.json });
-        result.findings = nmResult.mergedFindings as typeof result.findings;
+        // Re-apply .hmaignore filters and recalculate score after NanoMind merge
+        const hRefiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir);
+        result.findings = hRefiltered as typeof result.findings;
+        const hForScore = hRefiltered.filter((f: any) => !f.passed && !f.fixed);
+        result.score = scanner.calculateScore(hForScore).score;
       } catch { /* NanoMind unavailable */ }
 
       // Filter to OpenClaw-specific findings

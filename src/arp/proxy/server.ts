@@ -5,7 +5,6 @@ import type { PromptInterceptor } from '../interceptors/prompt';
 import type { MCPProtocolInterceptor } from '../interceptors/mcp-protocol';
 import type { A2AProtocolInterceptor } from '../interceptors/a2a-protocol';
 import { bufferBody, forwardRequest, sendResponse, sendError } from './forward';
-import { hasFeature, PREMIUM_FEATURES } from '../license';
 
 export interface ARPProxyDeps {
   engine: EventEngine;
@@ -90,13 +89,8 @@ export class ARPProxy {
     // Pre-flight inspection (scan request)
     const blocked = await this.inspectRequest(upstream, bodyStr, url);
     if (blocked && this.config.blockOnDetection) {
-      // Blocking mode is a premium feature
-      const canBlock = await hasFeature(PREMIUM_FEATURES.BLOCKING_MODE);
-      if (canBlock) {
-        sendError(res, 403, 'Request blocked by ARP: threat detected');
-        return;
-      }
-      // Community edition: alert only, request passes through
+      sendError(res, 403, 'Request blocked by ARP: threat detected');
+      return;
     }
 
     // Strip the pathPrefix from the URL before forwarding
@@ -235,7 +229,9 @@ export class ARPProxy {
       }
       return detected;
     } catch {
-      return false;
+      // CR-001: Parse failure = DENY. Unparseable requests are not trusted.
+      this.emitParseFailure('openai-api', 'request', bodyStr);
+      return true;
     }
   }
 
@@ -257,7 +253,9 @@ export class ARPProxy {
       }
       return detected;
     } catch {
-      return false;
+      // CR-001: Parse failure = DENY
+      this.emitParseFailure('openai-api', 'response', bodyStr);
+      return true;
     }
   }
 
@@ -279,7 +277,9 @@ export class ARPProxy {
 
       return false;
     } catch {
-      return false;
+      // CR-001: Parse failure = DENY
+      this.emitParseFailure('mcp-http', 'request', bodyStr);
+      return true;
     }
   }
 
@@ -309,7 +309,9 @@ export class ARPProxy {
 
       return false;
     } catch {
-      return false;
+      // CR-001: Parse failure = DENY
+      this.emitParseFailure('mcp-http', 'response', bodyStr);
+      return true;
     }
   }
 
@@ -328,7 +330,9 @@ export class ARPProxy {
 
       return false;
     } catch {
-      return false;
+      // CR-001: Parse failure = DENY
+      this.emitParseFailure('a2a', 'response', bodyStr);
+      return true;
     }
   }
 
@@ -377,7 +381,34 @@ export class ARPProxy {
       const result = this.deps.a2aInterceptor.scanMessage(from, to, content || bodyStr);
       return result.detected;
     } catch {
-      return false;
+      // CR-001: Parse failure = DENY
+      this.emitParseFailure('a2a', 'request', bodyStr);
+      return true;
     }
+  }
+
+  /**
+   * CR-001: Emit a POLICY_PARSE_FAILURE event when protocol parsing fails.
+   * Parse failures are treated as threats (fail-closed semantics).
+   * No raw body content is included in telemetry (privacy).
+   */
+  private emitParseFailure(
+    protocol: string,
+    direction: 'request' | 'response',
+    bodyStr: string,
+  ): void {
+    this.deps.engine.emit({
+      source: 'prompt',
+      category: 'threat',
+      severity: 'high',
+      description: `Policy parse failure: unparseable ${protocol} ${direction} body (${bodyStr.length} bytes)`,
+      data: {
+        policyParseFailure: true,
+        protocol,
+        direction,
+        bodyLength: bodyStr.length,
+        // CR-001: No raw body in telemetry. Only length for diagnostics.
+      },
+    });
   }
 }

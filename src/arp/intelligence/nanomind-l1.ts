@@ -156,9 +156,9 @@ export class NanoMindL1 {
     else if (source.includes('mcp')) eventType = 'MCP_CALL';
     else if (source.includes('capability')) eventType = 'CAPABILITY_CHECK';
 
-    // Map L0 decision
+    // Map L0 decision (CR-002: use _initialAction from fail-closed enforcement)
     let l0Decision: 'allow' | 'block' | 'alert' = 'allow';
-    if (event.data?._pendingAction === 'block') l0Decision = 'block';
+    if (event.data?._initialAction === 'kill' || event.data?._initialAction === 'pause') l0Decision = 'block';
     else if (event.category === 'threat' || event.category === 'violation') l0Decision = 'alert';
     else if (event.severity === 'high' || event.severity === 'critical') l0Decision = 'alert';
 

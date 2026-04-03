@@ -26,7 +26,8 @@ export type GTINEventType =
   | 'capability_escalation'
   | 'suspicious_sequence'
   | 'idle_activation'
-  | 'env_probe';
+  | 'env_probe'
+  | 'policy_parse_failure';
 
 /** Runtime environment identifier */
 export type GTINRuntimeEnv = 'node' | 'python' | 'deno';
@@ -99,6 +100,11 @@ export function generateSensorToken(): string {
  */
 export function mapEventType(event: ARPEvent): GTINEventType {
   const { source, data } = event;
+
+  // CR-001: Policy parse failure events get their own telemetry type
+  if (data.policyParseFailure) {
+    return 'policy_parse_failure';
+  }
 
   // Check for sequence detection first (can come from any source)
   if (data.sequence || data.sequenceDetected || data.patternType === 'sequence') {

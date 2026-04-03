@@ -313,19 +313,72 @@ export class HardeningScanner {
   }
 
   /**
-   * Load .hmaignore file from target directory. Returns list of path prefixes to exclude.
+   * Load .hmaignore file from target directory.
+   * Returns path patterns (plain lines) and check ID suppression patterns (lines starting with !).
    */
-  private async loadHmaIgnore(targetDir: string): Promise<string[]> {
+  private async loadHmaIgnore(targetDir: string): Promise<{ paths: string[]; checkIds: string[] }> {
     const ignorePath = path.join(targetDir, '.hmaignore');
     try {
       const content = await fs.readFile(ignorePath, 'utf-8');
-      return content
+      const lines = content
         .split('\n')
         .map(line => line.trim())
         .filter(line => line && !line.startsWith('#'));
+      const paths: string[] = [];
+      const checkIds: string[] = [];
+      for (const line of lines) {
+        if (line.startsWith('!')) {
+          // Check ID suppression pattern: strip the ! prefix, store uppercase
+          checkIds.push(line.slice(1).toUpperCase());
+        } else {
+          paths.push(line);
+        }
+      }
+      return { paths, checkIds };
     } catch {
-      return [];
+      return { paths: [], checkIds: [] };
     }
+  }
+
+  /**
+   * Check if a check ID matches any suppression pattern from .hmaignore.
+   * Supports exact match and wildcard (*) at the end (e.g. SANDBOX-* matches SANDBOX-001).
+   */
+  private isCheckIdSuppressed(checkId: string, patterns: string[]): boolean {
+    if (patterns.length === 0) return false;
+    const upper = checkId.toUpperCase();
+    return patterns.some(pattern => {
+      if (pattern.includes('*')) {
+        // Convert glob pattern to regex: escape special chars, replace * with .*
+        const regexStr = '^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$';
+        return new RegExp(regexStr).test(upper);
+      }
+      return upper === pattern;
+    });
+  }
+
+  /**
+   * Re-apply .hmaignore filters to a set of findings.
+   * Call this after NanoMind merge overwrites result.findings with unfiltered data.
+   */
+  async reapplyIgnoreFilters(
+    findings: SecurityFinding[],
+    targetDir: string,
+    additionalIgnorePaths?: string[],
+  ): Promise<SecurityFinding[]> {
+    const hmaIgnore = await this.loadHmaIgnore(targetDir);
+    const allIgnoredPaths = [...hmaIgnore.paths, ...(additionalIgnorePaths || [])];
+    const suppressedCheckPatterns = hmaIgnore.checkIds;
+
+    if (allIgnoredPaths.length === 0 && suppressedCheckPatterns.length === 0) {
+      return findings;
+    }
+
+    return findings.filter(f => {
+      if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) return false;
+      if (f.file && this.isPathIgnored(f.file, allIgnoredPaths)) return false;
+      return true;
+    });
   }
 
   /**
@@ -349,10 +402,12 @@ export class HardeningScanner {
     const isQuick = scanDepth === 'quick';
     const isDeepScan = scanDepth === 'deep';
 
-    // Load .hmaignore for path-based exclusions
-    const hmaIgnorePaths = await this.loadHmaIgnore(targetDir);
+    // Load .hmaignore for path-based exclusions and check ID suppressions
+    const hmaIgnore = await this.loadHmaIgnore(targetDir);
     // Merge with any programmatic ignorePaths
-    const allIgnoredPaths = [...hmaIgnorePaths, ...(options.ignorePaths || [])];
+    const allIgnoredPaths = [...hmaIgnore.paths, ...(options.ignorePaths || [])];
+    // Check ID suppression patterns from .hmaignore (supports wildcards)
+    const suppressedCheckPatterns = hmaIgnore.checkIds;
 
     // Normalize ignore list to uppercase for case-insensitive matching
     const ignoredChecks = new Set(ignore.map((id) => id.toUpperCase()));
@@ -700,8 +755,11 @@ export class HardeningScanner {
       // Only show concrete findings (has a file path)
       if (!f.file) return false;
 
-      // Filter out ignored checks
+      // Filter out ignored checks (from --ignore flag)
       if (ignoredChecks.has(f.checkId.toUpperCase())) return false;
+
+      // Filter out check IDs suppressed via .hmaignore (supports wildcards)
+      if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) return false;
 
       // Filter out paths matching .hmaignore
       if (f.file && this.isPathIgnored(f.file, allIgnoredPaths)) return false;
@@ -4425,7 +4483,7 @@ dist/
     return findings;
   }
 
-  private calculateScore(findings: SecurityFinding[]): {
+  calculateScore(findings: SecurityFinding[]): {
     score: number;
     maxScore: number;
   } {
