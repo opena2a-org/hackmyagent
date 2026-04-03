@@ -18,7 +18,7 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join, relative, extname, basename } from 'node:path';
 
-import type { SecurityFinding, Severity } from '../hardening/security-check.js';
+import type { SecurityFinding, Severity, ProjectType } from '../hardening/security-check.js';
 import type { SecurityAST, CompilationResult } from './types.js';
 import type { ASTFinding } from './analyzers/capability-analyzer.js';
 import type { IntegrityStatus } from './security/integrity-verifier.js';
@@ -88,6 +88,7 @@ export interface NanoMindScanResult {
 export async function runNanoMindScan(
   targetDir: string,
   existingFindings: SecurityFinding[],
+  projectType?: ProjectType,
 ): Promise<NanoMindScanResult> {
   // Step 1: Integrity check before anything else
   const integrity = verifyAll();
@@ -155,8 +156,6 @@ export async function runNanoMindScan(
       const agentTypes = new Set(['soul', 'skill', 'agent_config', 'a2a_card', 'mcp_config']);
       // system_prompt is agent-like ONLY if it's an actual system prompt file,
       // not a developer instruction file (CLAUDE.md, .cursorrules, .clinerules, .windsurfrules).
-      // Developer instruction files teach AI how to work on the project — they're not
-      // agent system prompts that need override resistance or injection hardening.
       const pathLower = (result.ast.artifactPath ?? '').toLowerCase();
       const isDevInstructionFile = result.ast.artifactType === 'system_prompt' && (
         pathLower.includes('claude.md') || pathLower.includes('.cursorrules') ||
@@ -166,7 +165,7 @@ export async function runNanoMindScan(
         (result.ast.artifactType === 'system_prompt' && !isDevInstructionFile);
       const isSourceCode = result.ast.artifactType === 'source_code';
       const findings = isAgent
-        ? runAllAnalyzers(result.ast, verifier)
+        ? runAllAnalyzers(result.ast, verifier, projectType)
         : isSourceCode
           ? runCodeAnalyzers(result.ast, verifier)
           : runNonAgentAnalyzers(result.ast, verifier);
@@ -177,8 +176,11 @@ export async function runNanoMindScan(
     }
   }
 
-  // Step 5: Merge using defense-in-depth rules
-  const mergedFindings = mergeFindings(existingFindings, allASTFindings);
+  // Step 5: Deduplicate AST findings (group by checkId, keep representative)
+  const dedupedASTFindings = deduplicateFindings(allASTFindings);
+
+  // Step 6: Merge using defense-in-depth rules
+  const mergedFindings = mergeFindings(existingFindings, dedupedASTFindings);
 
   return {
     mergedFindings,
@@ -293,19 +295,20 @@ async function isWithinSizeLimit(filePath: string): Promise<boolean> {
 function runAllAnalyzers(
   ast: SecurityAST,
   verifier: (ast: SecurityAST) => boolean,
+  projectType?: ProjectType,
 ): ASTFinding[] {
   const findings: ASTFinding[] = [];
 
   // Capability analyzer does not require verifier (checks internally)
-  findings.push(...analyzeCapabilities(ast));
+  findings.push(...analyzeCapabilities(ast, projectType));
 
   // Credential, governance, and scope analyzers require AST integrity verification
-  findings.push(...analyzeCredentials(ast, verifier));
-  findings.push(...analyzeGovernance(ast, verifier));
-  findings.push(...analyzeScope(ast, verifier));
+  findings.push(...analyzeCredentials(ast, verifier, projectType));
+  findings.push(...analyzeGovernance(ast, verifier, projectType));
+  findings.push(...analyzeScope(ast, verifier, projectType));
 
   // Prompt and code analyzers: jailbreak susceptibility, injection patterns, etc.
-  findings.push(...analyzePrompt(ast, verifier));
+  findings.push(...analyzePrompt(ast, verifier, projectType));
   findings.push(...analyzeCode(ast, verifier));
 
   // Steganography analyzer: semantic Unicode analysis (emoji, i18n, homoglyphs)
@@ -349,6 +352,68 @@ function runCodeAnalyzers(
   findings.push(...analyzeCredentials(ast, verifier));
   findings.push(...analyzeCode(ast, verifier));
   return enrichFindings(findings, ast);
+}
+
+// ============================================================================
+// Finding Deduplication
+// ============================================================================
+
+/**
+ * Deduplicate AST findings by checkId. When the same check fires on many
+ * files (e.g., AST-GOV-002 on 60 constraints, AST-EXFIL-001 on 19 risk
+ * surfaces), keep one representative finding per checkId with the highest
+ * severity and annotate it with instance count and affected files.
+ *
+ * Passed findings are kept as-is (they don't affect scoring).
+ */
+function deduplicateFindings(findings: ASTFinding[]): ASTFinding[] {
+  const failed: ASTFinding[] = [];
+  const passed: ASTFinding[] = [];
+
+  for (const f of findings) {
+    if (f.passed) {
+      passed.push(f);
+    } else {
+      failed.push(f);
+    }
+  }
+
+  // Group failed findings by checkId
+  const groups = new Map<string, ASTFinding[]>();
+  for (const f of failed) {
+    const group = groups.get(f.checkId) ?? [];
+    group.push(f);
+    groups.set(f.checkId, group);
+  }
+
+  const deduped: ASTFinding[] = [];
+  for (const [, group] of groups) {
+    // Sort by severity (highest first), then confidence (highest first)
+    group.sort((a, b) => {
+      const sevDiff = (SEVERITY_RANK[normalizeSeverity(b.severity)] ?? 0)
+        - (SEVERITY_RANK[normalizeSeverity(a.severity)] ?? 0);
+      if (sevDiff !== 0) return sevDiff;
+      return (b.confidence ?? 0) - (a.confidence ?? 0);
+    });
+
+    const representative = { ...group[0] };
+
+    if (group.length > 1) {
+      // Collect unique affected files
+      const files = [...new Set(group.map(f => f.file).filter(Boolean))];
+      const fileList = files.slice(0, 4).join(', ');
+      const suffix = files.length > 4 ? `, +${files.length - 4} more` : '';
+      representative.evidence =
+        `${representative.evidence ?? ''} [${group.length} instances across: ${fileList}${suffix}]`.trim();
+    }
+
+    // Store instance count for downstream scoring
+    (representative as ASTFinding & { instanceCount?: number }).instanceCount = group.length;
+
+    deduped.push(representative);
+  }
+
+  return [...deduped, ...passed];
 }
 
 // ============================================================================
@@ -469,6 +534,7 @@ function astFindingToSecurityFinding(ast: ASTFinding): SecurityFinding {
       source: 'nanomind-ast',
       confidence: ast.confidence,
       evidence: ast.evidence,
+      instanceCount: (ast as ASTFinding & { instanceCount?: number }).instanceCount ?? 1,
     },
   };
 }

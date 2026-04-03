@@ -1985,8 +1985,8 @@ function generateScanHtmlReport(scanResult: { findings: SecurityFinding[]; score
       </tr>`).join('');
 
   const projectTypeLabel: Record<string, string> = {
-    cli: 'CLI Tool', library: 'Library', webapp: 'Web App', api: 'API Server',
-    mcp: 'MCP Server', openclaw: 'OpenClaw Agent', all: 'Project',
+    cli: 'CLI Tool', library: 'Library', sdk: 'SDK/API Client', webapp: 'Web App',
+    api: 'API Server', mcp: 'MCP Server', openclaw: 'OpenClaw Agent', all: 'Project',
   };
 
   return `<!DOCTYPE html>
@@ -2636,6 +2636,7 @@ Examples:
         deep: isDeep,
         analm: options.analm,
         silent: format !== 'text',
+        projectType: result.projectType,
       });
 
       {
@@ -2653,6 +2654,7 @@ Examples:
           ) as typeof result.findings;
         }
         // Recalculate score from filtered findings (score was set pre-NanoMind)
+        // findings already filtered by project type above, so just exclude passed/fixed
         const forScore = (result.findings || []).filter((f: any) => !f.passed && !f.fixed);
         result.score = scanner.calculateScore(forScore).score;
       }
@@ -2919,6 +2921,7 @@ Examples:
       const projectTypeLabel = {
         cli: 'CLI Tool',
         library: 'Library',
+        sdk: 'SDK/API Client',
         webapp: 'Web App',
         api: 'API Server',
         mcp: 'MCP Server',
@@ -3450,7 +3453,7 @@ Examples:
       // NanoMind semantic analysis (defense-in-depth)
       try {
         const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-        const nmResult = await orchestrateNanoMind(targetDir, result.findings, { silent: !!options.json });
+        const nmResult = await orchestrateNanoMind(targetDir, result.findings, { silent: !!options.json, projectType: result.projectType });
         // Re-apply .hmaignore filters and recalculate score after NanoMind merge
         const hRefiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir);
         result.findings = hRefiltered as typeof result.findings;

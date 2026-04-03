@@ -200,6 +200,7 @@ describe('mergeFindings', () => {
         source: 'nanomind-ast',
         confidence: 0.85,
         evidence: 'Forward token to external URL',
+        instanceCount: 1,
       });
     });
 

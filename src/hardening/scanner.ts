@@ -314,6 +314,21 @@ export function calculateSecurityScore(findings: Array<{ passed?: boolean; fixed
   return { score, maxScore: 100 };
 }
 
+/**
+ * Check if a finding applies to the given project type based on the
+ * CHECK_PROJECT_TYPES map. Exported so CLI can filter findings after
+ * NanoMind merge.
+ */
+export function findingAppliesTo(finding: SecurityFinding, projectType: ProjectType): boolean {
+  for (const [prefix, types] of Object.entries(CHECK_PROJECT_TYPES)) {
+    if (finding.checkId.startsWith(prefix)) {
+      if (types.includes('all')) return true;
+      return types.includes(projectType);
+    }
+  }
+  return true;
+}
+
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB max file size to prevent memory exhaustion
 const MAX_LINE_LENGTH = 10000; // 10KB max line length for regex safety
 
@@ -918,6 +933,9 @@ export class HardeningScanner {
       // Filter out paths matching .hmaignore
       if (f.file && this.isPathIgnored(f.file, allIgnoredPaths)) return false;
 
+      // Filter out checks that don't apply to this project type
+      if (!this.findingAppliesTo(f, projectType)) return false;
+
       return true;
     });
 
@@ -1035,7 +1053,7 @@ export class HardeningScanner {
    */
   private async detectProjectType(targetDir: string): Promise<ProjectType> {
     // Check for OpenClaw project indicators (check first as it's more specific)
-    const openclawIndicators = ['.openclaw', '.moltbot', '.clawdbot', 'SKILL.md', 'openclaw.json'];
+    const openclawIndicators = ['.openclaw', '.moltbot', '.clawdbot', 'SKILL.md', 'HEARTBEAT.md', 'openclaw.json'];
     for (const indicator of openclawIndicators) {
       try {
         await fs.access(path.join(targetDir, indicator));
@@ -1043,12 +1061,18 @@ export class HardeningScanner {
       } catch {}
     }
 
-    // Check for *.skill.md files (OpenClaw skill project)
+    // Check for *.skill.md files at root level (OpenClaw skill project)
     try {
       const files = await fs.readdir(targetDir);
       if (files.some(f => f.endsWith('.skill.md'))) {
         return 'openclaw';
       }
+    } catch {}
+
+    // Check for skills/ subdirectory with SKILL.md files (common OpenClaw layout)
+    try {
+      await fs.access(path.join(targetDir, 'skills'));
+      return 'openclaw';
     } catch {}
 
     try {
@@ -1069,6 +1093,13 @@ export class HardeningScanner {
         pkg.name?.includes('mcp')
       ) {
         return 'mcp';
+      }
+
+      // Check for SDK/API client packages (requires 2+ signals).
+      // Must run before CLI check: some SDKs ship CLI shims (e.g., openai)
+      // but are primarily libraries.
+      if (this.detectSDKPackage(pkg, allDeps)) {
+        return 'sdk';
       }
 
       // Check if it's a CLI tool (has bin field)
@@ -1126,6 +1157,57 @@ export class HardeningScanner {
 
     // Default to library for generic projects
     return 'library';
+  }
+
+  /**
+   * Detect if a package is an SDK/API client. Requires 2+ independent
+   * signals to avoid false positives (a random library with axios isn't
+   * necessarily an SDK).
+   */
+  private detectSDKPackage(
+    pkg: Record<string, unknown>,
+    allDeps: Record<string, string>,
+  ): boolean {
+    const name = ((pkg.name as string) ?? '').toLowerCase();
+    const desc = ((pkg.description as string) ?? '').toLowerCase();
+    const keywords = (pkg.keywords as string[]) ?? [];
+
+    // Signal 1: Package name contains SDK/client indicators
+    const nameSignals = ['/sdk', '-sdk', '-client', 'api-client', '-api']
+      .some(s => name.includes(s)) || name.endsWith('sdk');
+
+    // Signal 2: Description mentions SDK/client/wrapper/library-for-API patterns
+    const descSignals = [
+      'sdk', 'client library', 'api client', 'api wrapper', 'official client',
+      'library for the', 'library for', 'client for the', 'client for',
+    ].some(s => desc.includes(s)) && desc.includes('api');
+
+    // Signal 3: Has library exports (main/exports). SDKs may also ship CLI
+    // shims, so we don't exclude on bin presence.
+    const hasLibraryExports = !!(pkg.main || pkg.exports || pkg.module);
+
+    // Signal 4: Depends on HTTP clients
+    const httpDeps = ['node-fetch', 'axios', 'got', 'undici', 'cross-fetch', 'ky', 'superagent']
+      .some(d => d in allDeps);
+
+    // Signal 5: Keywords include sdk/client
+    const kwSignals = keywords.some(k =>
+      ['sdk', 'client', 'api-client', 'wrapper'].includes(k.toLowerCase()),
+    );
+
+    // Signal 6: Description pattern "for the X API" -- strong signal that
+    // this is an API client library
+    const forApiPattern = /\bfor\s+the\s+\w+\s+api\b/i.test(desc) ||
+      /\b(official|typescript|javascript|node)\s+\w*\s*(library|client|sdk)\b/i.test(desc);
+
+    const signalCount = [
+      nameSignals,
+      descSignals,
+      hasLibraryExports && httpDeps,
+      kwSignals,
+      forApiPattern && hasLibraryExports,
+    ].filter(Boolean).length;
+    return signalCount >= 2;
   }
 
   /**

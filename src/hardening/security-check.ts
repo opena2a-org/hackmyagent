@@ -8,13 +8,14 @@ export type Severity = 'critical' | 'high' | 'medium' | 'low';
  * Project types for filtering relevant checks
  * - cli: Command-line tools (bin field in package.json)
  * - library: NPM packages for use by other code
+ * - sdk: API client libraries/SDKs (openai, @anthropic-ai/sdk, etc.)
  * - webapp: Web applications (React, Vue, etc.)
  * - api: Backend API servers (Express, Fastify, etc.)
  * - mcp: MCP server implementations
  * - openclaw: OpenClaw AI agent projects (SKILL.md, HEARTBEAT.md)
  * - all: Applies to all project types
  */
-export type ProjectType = 'cli' | 'library' | 'webapp' | 'api' | 'mcp' | 'openclaw' | 'all';
+export type ProjectType = 'cli' | 'library' | 'sdk' | 'webapp' | 'api' | 'mcp' | 'openclaw' | 'all';
 
 export interface SecurityCheck {
   id: string;

@@ -13,6 +13,7 @@
 
 import type { SecurityAST, Capability } from '../types.js';
 import type { ASTFinding } from './capability-analyzer.js';
+import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
 
 // ============================================================================
@@ -26,8 +27,15 @@ import { assertASTIntegrity } from '../security/defense-in-depth.js';
 export function analyzeScope(
   ast: SecurityAST,
   verifier: (ast: SecurityAST) => boolean,
+  projectType?: ProjectType,
 ): ASTFinding[] {
   assertASTIntegrity(ast, verifier);
+
+  // SDKs and libraries don't declare tool access, permissions, or purpose
+  // in the OASB sense. Scope checks only apply to agents.
+  if (projectType === 'sdk' || projectType === 'library') {
+    return [];
+  }
 
   const findings: ASTFinding[] = [];
 
