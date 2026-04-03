@@ -2094,7 +2094,9 @@ Examples:
           result.allFindings = nmResult.mergedFindings as typeof result.allFindings;
         }
         if (result.findings) {
-          result.findings = nmResult.mergedFindings.filter((f: any) => !f.passed) as typeof result.findings;
+          // Re-apply .hmaignore filters after NanoMind merge (merge uses allFindings which is unfiltered)
+          const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir);
+          result.findings = refiltered.filter((f: any) => !f.passed) as typeof result.findings;
         }
       }
 
@@ -2841,7 +2843,8 @@ Examples:
       try {
         const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
         const nmResult = await orchestrateNanoMind(targetDir, result.findings, { silent: !!options.json });
-        result.findings = nmResult.mergedFindings as typeof result.findings;
+        // Re-apply .hmaignore filters after NanoMind merge
+        result.findings = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir) as typeof result.findings;
       } catch { /* NanoMind unavailable */ }
 
       // Filter to OpenClaw-specific findings
