@@ -18,7 +18,8 @@ export type AttackCategory =
   | 'parser-differential'    // PARSE - Exploit parser interpretation differences
   | 'persistent-agent'       // PERSIST - Attack persistent agent state/memory
   | 'fake-tool'              // FAKETOOL - MCP tool impersonation and squatting
-  | 'context-lifecycle';     // LIFECYCLE - Assembly-surviving injection attacks
+  | 'context-lifecycle'              // LIFECYCLE - Assembly-surviving injection attacks
+  | 'policy-enforcement-integrity';  // PEI - Policy enforcement bypass via fallbacks, config injection, parser gaps
 
 export type AttackIntensity =
   | 'passive'     // Observation only, minimal risk
@@ -250,5 +251,10 @@ export const ATTACK_CATEGORIES: Record<AttackCategory, { name: string; descripti
     name: 'Context Lifecycle',
     description: 'Attacks targeting the system prompt assembly pipeline: cross-component injections, displacement, priority hijacking',
     oasbControls: ['3.1', '3.2', '8.1', '8.2'],
+  },
+  'policy-enforcement-integrity': {
+    name: 'Policy Enforcement Integrity',
+    description: 'Attacks that bypass policy enforcement via threshold fallbacks, config file injection, or parser error paths that fail open',
+    oasbControls: ['3.1', '4.1', '4.2'],
   },
 };

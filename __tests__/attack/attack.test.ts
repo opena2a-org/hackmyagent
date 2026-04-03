@@ -65,6 +65,7 @@ describe('Attack Payloads', () => {
         'persistent-agent': 'PERSIST',
         'fake-tool': 'FAKETOOL',
         'context-lifecycle': 'LIFECYCLE',
+        'policy-enforcement-integrity': 'PEI',
       };
 
       for (const payload of ALL_PAYLOADS) {
