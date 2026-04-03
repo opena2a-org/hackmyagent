@@ -5,7 +5,6 @@ import type { PromptInterceptor } from '../interceptors/prompt';
 import type { MCPProtocolInterceptor } from '../interceptors/mcp-protocol';
 import type { A2AProtocolInterceptor } from '../interceptors/a2a-protocol';
 import { bufferBody, forwardRequest, sendResponse, sendError } from './forward';
-import { hasFeature, PREMIUM_FEATURES } from '../license';
 
 export interface ARPProxyDeps {
   engine: EventEngine;
@@ -90,13 +89,8 @@ export class ARPProxy {
     // Pre-flight inspection (scan request)
     const blocked = await this.inspectRequest(upstream, bodyStr, url);
     if (blocked && this.config.blockOnDetection) {
-      // Blocking mode is a premium feature
-      const canBlock = await hasFeature(PREMIUM_FEATURES.BLOCKING_MODE);
-      if (canBlock) {
-        sendError(res, 403, 'Request blocked by ARP: threat detected');
-        return;
-      }
-      // Community edition: alert only, request passes through
+      sendError(res, 403, 'Request blocked by ARP: threat detected');
+      return;
     }
 
     // Strip the pathPrefix from the URL before forwarding

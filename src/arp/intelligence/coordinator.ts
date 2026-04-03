@@ -9,7 +9,6 @@ import type {
 import { BudgetController } from './budget';
 import { autoDetectAdapter, createAdapter } from './adapters';
 import { AnomalyDetector } from './anomaly';
-import { hasFeature, PREMIUM_FEATURES } from '../license';
 
 const SEVERITY_ORDER: EventSeverity[] = ['info', 'low', 'medium', 'high', 'critical'];
 
@@ -80,12 +79,6 @@ export class IntelligenceCoordinator {
 
     // L2: LLM assessment (only if L1 flagged and budget allows)
     if (this.shouldEscalateToL2(event)) {
-      // AI-layer L2 assessment requires premium license
-      if (AI_LAYER_SOURCES.has(event.source)) {
-        const licensed = await hasFeature(PREMIUM_FEATURES.AI_LAYER_L2);
-        if (!licensed) return null;
-      }
-
       if (this.config.enableBatching && event.severity !== 'critical') {
         return this.queueForBatch(event);
       }
