@@ -330,24 +330,38 @@ export function findingAppliesTo(finding: SecurityFinding, projectType: ProjectT
 }
 
 /**
+ * Parsed .hmaignore rules split into path patterns and check ID patterns.
+ * Check ID patterns start with `!` and support trailing `*` wildcards.
+ * Example: `!SANDBOX-*` suppresses all SANDBOX checks.
+ */
+export interface HmaIgnoreRules {
+  paths: string[];
+  checkIds: string[];
+}
+
+/**
  * Load .hmaignore patterns from a target directory. Exported so CLI
  * can re-apply ignore filtering after NanoMind merge.
  */
-export async function loadHmaIgnore(targetDir: string): Promise<string[]> {
+export async function loadHmaIgnore(targetDir: string): Promise<HmaIgnoreRules> {
   const ignorePath = path.join(targetDir, '.hmaignore');
   try {
     const content = await fs.readFile(ignorePath, 'utf-8');
-    return content
+    const lines = content
       .split('\n')
       .map(line => line.trim())
       .filter(line => line && !line.startsWith('#'));
+    return {
+      paths: lines.filter(l => !l.startsWith('!')),
+      checkIds: lines.filter(l => l.startsWith('!')).map(l => l.slice(1)),
+    };
   } catch {
-    return [];
+    return { paths: [], checkIds: [] };
   }
 }
 
 /**
- * Check if a file path matches any .hmaignore pattern. Exported so CLI
+ * Check if a file path matches any .hmaignore path pattern. Exported so CLI
  * can filter findings after NanoMind merge.
  */
 export function isPathIgnored(filePath: string, ignoredPaths: string[]): boolean {
@@ -356,6 +370,20 @@ export function isPathIgnored(filePath: string, ignoredPaths: string[]): boolean
   return ignoredPaths.some(pattern => {
     const normalizedPattern = pattern.replace(/\\/g, '/').replace(/\/$/, '');
     return normalized.startsWith(normalizedPattern + '/') || normalized === normalizedPattern;
+  });
+}
+
+/**
+ * Check if a checkId matches any .hmaignore check ID pattern.
+ * Supports exact match and trailing `*` wildcard (e.g. `SANDBOX-*`).
+ */
+export function isCheckIgnored(checkId: string, ignoredChecks: string[]): boolean {
+  if (!checkId || ignoredChecks.length === 0) return false;
+  return ignoredChecks.some(pattern => {
+    if (pattern.endsWith('*')) {
+      return checkId.startsWith(pattern.slice(0, -1));
+    }
+    return checkId === pattern;
   });
 }
 
@@ -605,6 +633,7 @@ export class HardeningScanner {
     const suppressedCheckPatterns = hmaIgnore.checkIds;
 
     // Normalize ignore list to uppercase for case-insensitive matching
+    // Merge CLI --ignore flags with .hmaignore !-prefixed check IDs
     const ignoredChecks = new Set(ignore.map((id) => id.toUpperCase()));
 
     // In dry-run mode, we detect what would be fixed but don't modify anything
@@ -962,9 +991,6 @@ export class HardeningScanner {
 
       // Filter out paths matching .hmaignore
       if (f.file && this.isPathIgnored(f.file, allIgnoredPaths)) return false;
-
-      // Filter out checks that don't apply to this project type
-      if (!this.findingAppliesTo(f, projectType)) return false;
 
       return true;
     });

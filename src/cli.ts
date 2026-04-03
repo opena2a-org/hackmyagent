@@ -247,13 +247,14 @@ Examples:
         const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
         const nmResult = await orchestrateNanoMind(targetDir, [], { silent: !!options.json, analm: options.analm });
 
-        // Apply .hmaignore filtering
-        const { loadHmaIgnore: loadIgnore, isPathIgnored: pathIgnored } = await import('./hardening/scanner.js');
-        const skillIgnorePaths = await loadIgnore(targetDir);
+        // Apply .hmaignore filtering (paths + check IDs)
+        const { loadHmaIgnore: loadIgnore, isPathIgnored: pathIgnored, isCheckIgnored: checkIgnored } = await import('./hardening/scanner.js');
+        const skillIgnoreRules = await loadIgnore(targetDir);
         let skillFindings = nmResult.mergedFindings;
-        if (skillIgnorePaths.length > 0) {
+        if (skillIgnoreRules.paths.length > 0 || skillIgnoreRules.checkIds.length > 0) {
           skillFindings = skillFindings.filter((f: any) =>
-            !(f.file && pathIgnored(f.file, skillIgnorePaths)));
+            !(f.file && pathIgnored(f.file, skillIgnoreRules.paths)) &&
+            !checkIgnored(f.checkId, skillIgnoreRules.checkIds));
         }
 
         const issues = skillFindings.filter((f: any) => !f.passed);
@@ -3689,13 +3690,14 @@ Examples:
         mergedFindings = nmResult.mergedFindings as typeof findings;
       } catch { /* NanoMind unavailable */ }
 
-      // Re-apply .hmaignore filtering after NanoMind merge
+      // Re-apply .hmaignore filtering after NanoMind merge (paths + check IDs)
       try {
-        const { loadHmaIgnore: loadIgnore, isPathIgnored: pathIgnored } = await import('./hardening/scanner.js');
-        const ncIgnorePaths = await loadIgnore(targetDir);
-        if (ncIgnorePaths.length > 0) {
+        const { loadHmaIgnore: loadIgnore, isPathIgnored: pathIgnored, isCheckIgnored: checkIgnored } = await import('./hardening/scanner.js');
+        const ncIgnoreRules = await loadIgnore(targetDir);
+        if (ncIgnoreRules.paths.length > 0 || ncIgnoreRules.checkIds.length > 0) {
           mergedFindings = mergedFindings.filter((f: SecurityFinding) =>
-            !(f.file && pathIgnored(f.file, ncIgnorePaths)));
+            !(f.file && pathIgnored(f.file, ncIgnoreRules.paths)) &&
+            !checkIgnored(f.checkId, ncIgnoreRules.checkIds));
         }
       } catch { /* ignore filter unavailable */ }
 
