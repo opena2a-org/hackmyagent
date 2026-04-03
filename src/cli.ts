@@ -3317,14 +3317,8 @@ program
   .command('attack')
   .description(`Adversarial security testing for AI agents
 
-Red team your AI agent with ${PAYLOAD_STATS.total} attack payloads across 7 categories:
-  • Prompt Injection: ${PAYLOAD_STATS.byCategory['prompt-injection']} payloads
-  • Jailbreaking: ${PAYLOAD_STATS.byCategory['jailbreak']} payloads
-  • Data Exfiltration: ${PAYLOAD_STATS.byCategory['data-exfiltration']} payloads
-  • Capability Abuse: ${PAYLOAD_STATS.byCategory['capability-abuse']} payloads
-  • Context Manipulation: ${PAYLOAD_STATS.byCategory['context-manipulation']} payloads
-  • MCP Exploitation: ${PAYLOAD_STATS.byCategory['mcp-exploitation']} payloads
-  • A2A Attacks: ${PAYLOAD_STATS.byCategory['a2a-attack']} payloads
+Red team your AI agent with ${PAYLOAD_STATS.total} attack payloads across ${Object.keys(PAYLOAD_STATS.byCategory).length} categories:
+${Object.entries(PAYLOAD_STATS.byCategory).map(([cat, count]) => `  • ${ATTACK_CATEGORIES[cat as AttackCategory].name}: ${count} payloads`).join('\n')}
 
 Intensity levels (controls how many payloads run):
   passive     Observation only (${PAYLOAD_STATS.byIntensity.passive} payloads)
