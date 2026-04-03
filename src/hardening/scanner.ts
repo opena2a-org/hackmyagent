@@ -4483,7 +4483,7 @@ dist/
     return findings;
   }
 
-  private calculateScore(findings: SecurityFinding[]): {
+  calculateScore(findings: SecurityFinding[]): {
     score: number;
     maxScore: number;
   } {
