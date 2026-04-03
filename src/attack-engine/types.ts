@@ -38,7 +38,7 @@ export interface VulnerabilitySurfaceEntry {
 }
 
 // ============================================================================
-// Attack Categories (11 from HMA)
+// Attack Categories (12 from HMA)
 // ============================================================================
 
 export type AttackCategory =
@@ -52,7 +52,8 @@ export type AttackCategory =
   | 'indirect_injection'
   | 'capability_abuse'
   | 'persistence'
-  | 'semantic_mismatch';
+  | 'semantic_mismatch'
+  | 'policy_enforcement_integrity';
 
 // ============================================================================
 // Attack Payloads
