@@ -46,12 +46,12 @@ const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
   'NET-': ['webapp', 'api'], // Network security (HTTPS, etc.)
   'IO-': ['webapp', 'api'], // Input/output (XSS, etc.)
 
-  // OpenClaw-specific checks
-  'SKILL-': ['openclaw', 'mcp'], // Skill file security
-  'HEARTBEAT-': ['openclaw'], // Heartbeat/periodic task security
+  // Skill/config checks - apply to all because if these files exist, they matter
+  'SKILL-': ['all'], // Skill file security (fires only when skill files exist)
+  'HEARTBEAT-': ['all'], // Heartbeat/periodic task security (fires only when HEARTBEAT.md exists)
   'GATEWAY-': ['openclaw'], // Gateway configuration security
-  'CONFIG-': ['openclaw', 'mcp'], // Configuration file security
-  'SUPPLY-': ['openclaw', 'mcp'], // Supply chain security
+  'CONFIG-': ['all'], // Configuration file security (fires only when config files exist)
+  'SUPPLY-': ['all'], // Supply chain security (fires only when skill files exist)
   'CVE-': ['openclaw'], // CVE-specific detection
   'API-': ['api'], // API security headers
   'RATE-': ['webapp', 'api'], // Rate limiting
@@ -746,7 +746,8 @@ export class HardeningScanner {
     // Filter findings to only show real, actionable issues:
     // 1. Only failed checks (passed: false)
     // 2. Only checks with a file path (concrete findings, not generic advice)
-    // 3. Filter out ignored checks
+    // 3. Only checks that apply to this project type (e.g., no SQL checks on MCP servers)
+    // 4. Filter out ignored checks
     let filteredFindings = findings.filter((f) => {
       // Keep fixed findings (so users can see what was fixed)
       // Otherwise, only show failed checks
@@ -754,6 +755,9 @@ export class HardeningScanner {
 
       // Only show concrete findings (has a file path)
       if (!f.file) return false;
+
+      // Only show checks relevant to this project type
+      if (!this.findingAppliesTo(f, projectType)) return false;
 
       // Filter out ignored checks (from --ignore flag)
       if (ignoredChecks.has(f.checkId.toUpperCase())) return false;
@@ -977,7 +981,7 @@ export class HardeningScanner {
   /**
    * Check if a finding applies to the given project type
    */
-  private findingAppliesTo(finding: SecurityFinding, projectType: ProjectType): boolean {
+  findingAppliesTo(finding: SecurityFinding, projectType: ProjectType): boolean {
     // Find the matching rule based on check ID prefix
     for (const [prefix, types] of Object.entries(CHECK_PROJECT_TYPES)) {
       if (finding.checkId.startsWith(prefix)) {

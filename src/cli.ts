@@ -2090,16 +2090,21 @@ Examples:
           silent: format !== 'text',
         });
 
-        // Re-apply .hmaignore filters after NanoMind merge (merge uses allFindings which is unfiltered)
+        // Re-apply all filters after NanoMind merge (merge uses allFindings which is unfiltered)
         const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir);
         if (result.allFindings) {
           result.allFindings = refiltered as typeof result.allFindings;
         }
         if (result.findings) {
-          result.findings = refiltered.filter((f: any) => !f.passed) as typeof result.findings;
+          // Re-apply the same gates as the original filter:
+          // 1. Only failed checks  2. Has file path  3. Applies to project type
+          const projectType = result.projectType || 'library';
+          result.findings = refiltered.filter((f: any) =>
+            !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
+          ) as typeof result.findings;
         }
         // Recalculate score from filtered findings (score was set pre-NanoMind)
-        const forScore = refiltered.filter((f: any) => !f.passed && !f.fixed);
+        const forScore = (result.findings || []).filter((f: any) => !f.passed && !f.fixed);
         result.score = scanner.calculateScore(forScore).score;
       }
 
