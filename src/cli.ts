@@ -6492,6 +6492,47 @@ function displayRegistryResult(data: RegistryTrustData): void {
 }
 
 /**
+ * Search the npm registry for packages similar to the given name.
+ * Returns up to 3 package name suggestions. Fails silently on any error.
+ */
+async function suggestSimilarPackages(name: string): Promise<string[]> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+
+  try {
+    // Build search queries: the name itself, plus the unscoped name for scoped packages
+    const queries = [name];
+    const scopeMatch = name.match(/^@[^/]+\/(.+)$/);
+    if (scopeMatch) {
+      queries.push(scopeMatch[1]);
+    }
+
+    const seen = new Set<string>();
+    const suggestions: string[] = [];
+
+    for (const query of queries) {
+      if (suggestions.length >= 3) break;
+      const url = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(query)}&size=5`;
+      const res = await fetch(url, { signal: controller.signal });
+      if (!res.ok) continue;
+      const data = await res.json() as { objects?: Array<{ package: { name: string } }> };
+      if (!data.objects) continue;
+      for (const obj of data.objects) {
+        const pkg = obj.package.name;
+        if (pkg === name || seen.has(pkg)) continue;
+        seen.add(pkg);
+        suggestions.push(pkg);
+        if (suggestions.length >= 3) break;
+      }
+    }
+
+    return suggestions;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
  * Download an npm package, run full HMA secure scan, display results, clean up.
  * Checks the registry first; only downloads if data is missing or stale.
  */
@@ -6653,6 +6694,19 @@ async function checkNpmPackage(
     // Clean npm error messages
     if (message.includes('404') || message.includes('Not Found')) {
       console.error(`Error: Package "${name}" not found on npm.`);
+      // Suggest similar packages via npm registry search
+      try {
+        const suggestions = await suggestSimilarPackages(name);
+        if (suggestions.length > 0) {
+          console.error(`\nDid you mean?`);
+          for (const s of suggestions) {
+            console.error(`  ${s}`);
+          }
+          console.error();
+        }
+      } catch {
+        // Search failed — just show the original error
+      }
     } else {
       console.error(`Error: ${message}`);
     }
