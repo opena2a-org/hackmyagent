@@ -1,0 +1,29 @@
+{
+  "name": "test",
+  "version": "1.0.0",
+  "description": "test",
+  "capabilities": [
+    {
+      "name": "data.read",
+      "scope": "declared data sources only",
+      "required": true
+    }
+  ],
+  "dataAccess": [
+    {
+      "type": "general",
+      "mode": "read",
+      "justification": "Required for test"
+    }
+  ],
+  "governance": {
+    "soulMd": true,
+    "overrideResistance": true,
+    "auditLogging": true
+  },
+  "security": {
+    "oasbLevel": "L2",
+    "scanRequired": true,
+    "nanomindClassification": "pending"
+  }
+}
