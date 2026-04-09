@@ -89,6 +89,11 @@ export async function orchestrateNanoMind(
       process.stderr.write(`  Integrity: ${nmResult.integrityStatus}\n`);
     }
 
+    // Flush NanoMind classification telemetry (non-blocking, best-effort)
+    import('../telemetry/nanomind-telemetry.js')
+      .then(m => m.flushNanoMindTelemetry())
+      .catch(() => {});
+
     return {
       mergedFindings: nmResult.mergedFindings,
       nanomindUsed: nmResult.nanomindAvailable,

@@ -35,6 +35,7 @@ import { enrichFindings } from './fix-generator.js';
 import { enforceSeverityFloor, validateEnhancement } from './security/defense-in-depth.js';
 import type { SeverityLevel } from './security/defense-in-depth.js';
 import { verifyAll } from './security/integrity-verifier.js';
+import { queueClassificationStat } from '../telemetry/nanomind-telemetry.js';
 
 // ============================================================================
 // Constants
@@ -125,6 +126,15 @@ export async function runNanoMindScan(
       if (result.nanomindUsed) {
         nanomindUsedAtLeastOnce = true;
       }
+
+      // Queue classification telemetry (anonymous, opt-in via contribute.enabled)
+      queueClassificationStat(
+        result.ast.artifactType,
+        content,
+        result.ast.intentClassification,
+        result.ast.intentConfidence,
+        result.ast.modelVersion,
+      );
 
       // Skip documentation and metadata files — these are not security artifacts.
       // URLs in package.json are not exfiltration, "should" in README is not governance.
