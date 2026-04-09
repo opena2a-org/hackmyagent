@@ -73,6 +73,14 @@ const RESPONSE_TABLE: Array<{ threshold: number; action: ARPAction; label: strin
 
 // === L1 Anomaly Detector ===
 
+// Gradient dimensions (one per event type + timing + error + capability novelty)
+const GRADIENT_DIMS = 9; // 6 event types + timing_z + error_rate + novelty_rate
+const GRADIENT_FLUSH_INTERVAL = 300; // events between gradient submissions
+const EVENT_TYPE_INDEX: Record<string, number> = {
+  TOOL_CALL: 0, CAPABILITY_CHECK: 1, MCP_CALL: 2,
+  MEMORY_READ: 3, MEMORY_WRITE: 4, EXTERNAL_CALL: 5,
+};
+
 export class NanoMindL1 {
   private agentId: string;
   private sessionId: string;
@@ -82,11 +90,18 @@ export class NanoMindL1 {
   private lastEventTime = Date.now();
   private eventLogPath: string;
   private enabled: boolean;
+  private gradientAccumulator: number[] = new Array(GRADIENT_DIMS).fill(0);
+  private gradientEventCount = 0;
+  private gradientLossSum = 0;
+  private fleetEnabled: boolean;
+  private agentCategory: string;
 
-  constructor(agentId: string, config?: { enabled?: boolean }) {
+  constructor(agentId: string, config?: { enabled?: boolean; fleetEnabled?: boolean; agentCategory?: string }) {
     this.agentId = agentId;
     this.sessionId = crypto.randomUUID();
     this.enabled = config?.enabled ?? true;
+    this.fleetEnabled = config?.fleetEnabled ?? false; // opt-in only
+    this.agentCategory = config?.agentCategory ?? 'general';
     this.eventLogPath = path.join(os.homedir(), '.opena2a', 'arp', 'events.jsonl');
 
     // Load baseline if exists
@@ -131,6 +146,9 @@ export class NanoMindL1 {
 
     const score = this.computeAnomalyScore(event);
     const response = this.getResponse(score);
+
+    // Accumulate gradient for fleet submission
+    this.accumulateGradient(event, score);
 
     return {
       score,
@@ -291,5 +309,120 @@ export class NanoMindL1 {
         }) + '\n'
       );
     } catch {}
+  }
+
+  // === Fleet Gradient Submission ===
+
+  /**
+   * Accumulate behavioral features into gradient vector.
+   * Each event contributes to a running gradient that captures the
+   * distribution of event types, timing anomalies, error rates,
+   * and capability novelty seen by this agent.
+   */
+  private accumulateGradient(event: BehavioralEvent, anomalyScore: number): void {
+    if (!this.fleetEnabled) return;
+
+    this.gradientEventCount++;
+    this.gradientLossSum += anomalyScore;
+
+    // Event type distribution (dims 0-5)
+    const typeIdx = EVENT_TYPE_INDEX[event.eventType] ?? 0;
+    this.gradientAccumulator[typeIdx] += 1.0;
+
+    // Timing z-score (dim 6)
+    if (this.baseline && this.baseline.stdTimingDelta > 0) {
+      const z = (event.timestampDelta - this.baseline.avgTimingDelta) / this.baseline.stdTimingDelta;
+      this.gradientAccumulator[6] += Math.min(Math.abs(z), 10.0);
+    }
+
+    // Error indicator (dim 7)
+    if (event.responseCode > 0) {
+      this.gradientAccumulator[7] += 1.0;
+    }
+
+    // Capability novelty (dim 8)
+    if (this.baseline && !this.baseline.capabilitySet.has(event.capability)) {
+      this.gradientAccumulator[8] += 1.0;
+    }
+
+    // Flush when we've accumulated enough events
+    if (this.gradientEventCount >= GRADIENT_FLUSH_INTERVAL) {
+      this.flushGradient();
+    }
+  }
+
+  /**
+   * Submit accumulated gradient to Registry fleet endpoint.
+   * Normalizes by event count before submission (the fleet module
+   * handles clipping and differential privacy noise).
+   */
+  private async flushGradient(): Promise<void> {
+    if (this.gradientEventCount === 0) return;
+
+    // Normalize gradient by event count
+    const normalized = this.gradientAccumulator.map(
+      g => g / this.gradientEventCount,
+    );
+    const avgLoss = this.gradientLossSum / this.gradientEventCount;
+    const count = this.gradientEventCount;
+
+    // Reset accumulators
+    this.gradientAccumulator = new Array(GRADIENT_DIMS).fill(0);
+    this.gradientEventCount = 0;
+    this.gradientLossSum = 0;
+
+    // Submit gradient with differential privacy inline.
+    // This reimplements the fleet.ts logic locally to avoid cross-package
+    // import issues. The privacy guarantees are identical:
+    // gradient clipping (L2 norm <= 1.0) + Gaussian noise (epsilon=1.0, delta=1e-5)
+    try {
+      const noisyGradient = this.addPrivacyNoise(normalized);
+      await fetch('https://api.oa2a.org/api/v1/telemetry/behavioral-gradient', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agentCategory: this.agentCategory,
+          gradientVector: noisyGradient,
+          localLoss: avgLoss,
+          eventCount: count,
+          privacyEpsilon: 1.0,
+          modelVersion: '1.0.0',
+          timestamp: new Date().toISOString(),
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch {
+      // Non-fatal: gradient submission failure should never affect ARP
+    }
+  }
+
+  /**
+   * Apply differential privacy: clip to L2 norm 1.0, add Gaussian noise.
+   * Matches the privacy guarantees in @nanomind/runtime/fleet.ts
+   * (epsilon=1.0, delta=1e-5).
+   */
+  private addPrivacyNoise(gradient: number[]): number[] {
+    // Clip to max L2 norm = 1.0
+    const norm = Math.sqrt(gradient.reduce((s, g) => s + g * g, 0));
+    const clipped = norm <= 1.0 ? [...gradient] : gradient.map(g => g / norm);
+
+    // Gaussian noise: sigma = sensitivity * sqrt(2*ln(1.25/delta)) / epsilon
+    const sigma = 1.0 * Math.sqrt(2 * Math.log(1.25 / 1e-5)) / 1.0;
+    return clipped.map(g => {
+      // Box-Muller transform
+      const u1 = Math.random();
+      const u2 = Math.random();
+      const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+      return g + sigma * z;
+    });
+  }
+
+  /**
+   * Force flush any remaining gradient (call on shutdown).
+   */
+  async shutdown(): Promise<void> {
+    if (this.fleetEnabled && this.gradientEventCount > 0) {
+      await this.flushGradient();
+    }
   }
 }
