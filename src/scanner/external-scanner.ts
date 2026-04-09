@@ -9,7 +9,7 @@ import * as https from 'https';
 import type { ExternalScanResult, ExternalFinding, ScannerOptions, FindingSeverity } from './types';
 
 // Default ports to scan
-const DEFAULT_PORTS = [80, 443, 3000, 3001, 4000, 5000, 8000, 8080, 8888, 18789, 18790];
+const DEFAULT_PORTS = [80, 443, 8080, 3000, 8000];
 
 // Config file paths to check
 const CONFIG_PATHS = [
@@ -115,6 +115,31 @@ export class ExternalScanner {
       for (const port of openPorts) {
         const portFindings = await this.checkPort(target, port, timeout, insecure);
         findings.push(...portFindings);
+      }
+
+      // If no ports were reachable, score reflects that nothing was tested
+      if (openPorts.length === 0 && !skipPortScan) {
+        const duration = Date.now() - startTime;
+        return {
+          id: generateId(),
+          target,
+          score: -1,
+          grade: 'N/A',
+          findings: [{
+            id: generateId(),
+            checkId: 'SCAN-UNREACHABLE',
+            severity: 'medium' as FindingSeverity,
+            title: 'Target unreachable',
+            description: `No open ports detected on ${target}. The target may be offline, blocking connections, or the ports are filtered. Score is not applicable — nothing was tested.`,
+            port: 0,
+            evidence: 'Port scan returned 0 open ports',
+            impact: 'Cannot assess security posture of an unreachable target',
+            fix: 'Verify the target is running and accessible. Try specifying ports explicitly with -p (e.g., -p 80,443).',
+          }],
+          duration,
+          timestamp: new Date(),
+          openPorts: [],
+        };
       }
 
       // Calculate score using exponential decay (diminishing returns per finding)

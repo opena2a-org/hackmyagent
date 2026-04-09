@@ -428,7 +428,7 @@ export async function scanAssembly(options: AssemblyScanOptions): Promise<{
 }> {
   const { targetDir, onProgress } = options;
 
-  if (onProgress) onProgress('Discovering assembly components...');
+  if (onProgress) onProgress('Discovering assembly components...\n');
   const rawComponents = await discoverComponents(targetDir);
 
   if (rawComponents.length === 0) {
@@ -441,10 +441,10 @@ export async function scanAssembly(options: AssemblyScanOptions): Promise<{
     };
   }
 
-  if (onProgress) onProgress(`Found ${rawComponents.length} assembly components, simulating assembly...`);
+  if (onProgress) onProgress(`Found ${rawComponents.length} assembly components, simulating assembly...\n`);
   const { assembled, components } = assemblePrompt(rawComponents);
 
-  if (onProgress) onProgress('Scanning assembled prompt for lifecycle attacks...');
+  if (onProgress) onProgress('Scanning assembled prompt for lifecycle attacks...\n');
   const { findings, interactions } = scanAssembledPrompt(assembled, components);
 
   // Rough token estimate: ~4 chars per token for English

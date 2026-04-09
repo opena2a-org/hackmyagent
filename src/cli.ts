@@ -56,7 +56,7 @@ program.showHelpAfterError('(run with --help for usage)');
 
 // Total security check count across all scanner modules.
 // Update when adding new checks (verify with: grep -r "checkId:" src/hardening/ | grep -o "checkId: '[^']*'" | sort -u | wc -l)
-const CHECK_COUNT = 208;
+const CHECK_COUNT = 209;
 
 // Write a string to stdout synchronously with retry for pipe backpressure.
 // process.stdout.write() is async and gets truncated when process.exit()
@@ -3081,7 +3081,7 @@ Examples:
         const customPorts = options.ports
           ? options.ports.split(',').map((p) => parseInt(p.trim(), 10))
           : undefined;
-        const portCount = customPorts?.length ?? 11;
+        const portCount = customPorts?.length ?? 5;
 
         if (!options.json) {
           console.log(`\nScanning ${target} (${portCount} ports, ${timeoutMs}ms timeout)...\n`);
@@ -5761,9 +5761,48 @@ program
     if (explanation) {
       console.log(`${checkId}: ${explanation}`);
     } else {
-      console.log(`No explanation available for ${findingId}.`);
-      if (!available) {
-        console.log(`\nFor dynamic explanations, install NanoMind: npm install -g @nanomind/cli && nanomind-daemon start`);
+      // Fallback: generate explanation from taxonomy metadata
+      const { getAttackClass } = require('./hardening/taxonomy');
+      const attackClass = getAttackClass(checkId);
+
+      // Map check ID prefixes to human-readable category descriptions
+      const prefixDescriptions: Record<string, string> = {
+        'CRED': 'Credential exposure',
+        'MCP': 'MCP server configuration',
+        'SKILL': 'Skill package security',
+        'GOV': 'Governance policy',
+        'PERM': 'Permission scope',
+        'SOUL': 'Behavioral governance (SOUL.md)',
+        'PRIV': 'Privacy and data handling',
+        'DATA': 'Data protection',
+        'INJECT': 'Prompt injection defense',
+        'ATTEST': 'Agent attestation',
+        'SUPPLY': 'Supply chain security',
+        'NET': 'Network security',
+        'GIT': 'Git repository hygiene',
+        'PROMPT': 'Prompt security',
+        'NEMO': 'Static analysis pattern',
+        'LIFECYCLE': 'Prompt assembly lifecycle',
+        'AST': 'Deep code analysis',
+        'ENCRYPT': 'Encryption and hashing',
+        'LOG': 'Logging and audit',
+        'AUTH': 'Authentication',
+        'TOOL': 'Tool permission and safety',
+      };
+
+      const prefix = checkId.split('-')[0];
+      const categoryDesc = prefixDescriptions[prefix];
+
+      if (attackClass || categoryDesc) {
+        console.log(`${checkId}: ${categoryDesc || 'Security check'}.`);
+        if (attackClass) {
+          console.log(`  Attack class: ${attackClass}`);
+        }
+        console.log(`\n  Run 'hackmyagent secure --verbose' to see this check in context with fix guidance.`);
+        console.log(`  Run 'hackmyagent check-metadata --json' for full check details.`);
+      } else {
+        console.log(`No explanation available for ${findingId}. This may not be a valid check ID.`);
+        console.log(`\nRun 'hackmyagent check-metadata --json' to see all ${CHECK_COUNT} valid check IDs.`);
       }
     }
   });
@@ -6478,6 +6517,20 @@ async function suggestSimilarPackages(name: string): Promise<string[]> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
 
+  // Simple Levenshtein distance for filtering relevant suggestions
+  function levenshtein(a: string, b: string): number {
+    const m = a.length, n = b.length;
+    const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
+      Array.from({ length: n + 1 }, (_, j) => i === 0 ? j : j === 0 ? i : 0)
+    );
+    for (let i = 1; i <= m; i++)
+      for (let j = 1; j <= n; j++)
+        dp[i][j] = a[i-1] === b[j-1]
+          ? dp[i-1][j-1]
+          : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+    return dp[m][n];
+  }
+
   try {
     // Build search queries: the name itself, plus the unscoped name for scoped packages
     const queries = [name];
@@ -6487,11 +6540,10 @@ async function suggestSimilarPackages(name: string): Promise<string[]> {
     }
 
     const seen = new Set<string>();
-    const suggestions: string[] = [];
+    const candidates: Array<{ name: string; distance: number }> = [];
 
     for (const query of queries) {
-      if (suggestions.length >= 3) break;
-      const url = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(query)}&size=5`;
+      const url = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(query)}&size=10`;
       const res = await fetch(url, { signal: controller.signal });
       if (!res.ok) continue;
       const data = await res.json() as { objects?: Array<{ package: { name: string } }> };
@@ -6500,12 +6552,21 @@ async function suggestSimilarPackages(name: string): Promise<string[]> {
         const pkg = obj.package.name;
         if (pkg === name || seen.has(pkg)) continue;
         seen.add(pkg);
-        suggestions.push(pkg);
-        if (suggestions.length >= 3) break;
+        // Compare unscoped names for better matching
+        const unscopedInput = name.replace(/^@[^/]+\//, '');
+        const unscopedPkg = pkg.replace(/^@[^/]+\//, '');
+        const dist = levenshtein(unscopedInput.toLowerCase(), unscopedPkg.toLowerCase());
+        // Only suggest if reasonably similar (distance < half the input length + 3)
+        const maxDist = Math.floor(unscopedInput.length / 2) + 3;
+        if (dist <= maxDist) {
+          candidates.push({ name: pkg, distance: dist });
+        }
       }
     }
 
-    return suggestions;
+    // Sort by edit distance and return top 3
+    candidates.sort((a, b) => a.distance - b.distance);
+    return candidates.slice(0, 3).map(c => c.name);
   } finally {
     clearTimeout(timeout);
   }
