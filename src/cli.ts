@@ -189,21 +189,23 @@ const RESET = () => colors.reset;
 
 program
   .command('check')
-  .description(`Verify a skill before installing
+  .description(`Check if a package or skill is safe
 
-Analyzes skill safety by checking:
-  • Publisher identity via DNS TXT records
-  • Permissions requested (filesystem, network, shell)
-  • Revocation status against global blocklist
+Accepts npm packages, local paths, or skill identifiers:
+  • npm package: downloads and runs full security analysis (204 checks + NanoMind)
+  • Local path: runs NanoMind semantic analysis
+  • Skill identifier: verifies publisher, permissions, revocation
 
 Risk levels: low, medium, high, critical
 Exit code 1 if high/critical risk detected.
 
 Examples:
-  $ hackmyagent check server-filesystem
-  $ hackmyagent check @publisher/skill --verbose
-  $ hackmyagent check @publisher/skill --json`)
-  .argument('<skill>', 'Skill identifier or local path (e.g., @publisher/skill, ./SKILL.md, ./agent-dir/)')
+  $ hackmyagent check express
+  $ hackmyagent check @modelcontextprotocol/server-filesystem
+  $ hackmyagent check @modelcontextprotocol/server-filesystem --json
+  $ hackmyagent check ./my-agent/
+  $ hackmyagent check @publisher/skill --verbose`)
+  .argument('<target>', 'npm package name, local path, or skill identifier')
   .option('-v, --verbose', 'Show detailed verification info')
   .option('--json', 'Output as JSON (for scripting/CI)')
   .option('--offline', 'Skip DNS verification (offline mode)')
@@ -262,6 +264,12 @@ Examples:
         }
 
         if (risk === 'critical' || risk === 'high') process.exit(1);
+        return;
+      }
+
+      // npm package name: download, run full HMA scan, clean up
+      if (looksLikeNpmPackage(skill)) {
+        await checkNpmPackage(skill, options);
         return;
       }
 
@@ -6257,6 +6265,282 @@ program
     for (const file of result.filesWritten) { console.log(`  ${file.split('/').pop()}`); }
     console.log(`\nYour skill is ready. Verify security with: hackmyagent secure ${outputDir}/`);
   });
+// ============================================================================
+// npm package scanning helpers (used by `check <package>`)
+// ============================================================================
+
+/**
+ * Detect whether a string looks like an npm package name rather than
+ * a hostname, IP address, or local path.
+ *
+ * npm package names: express, @scope/name, lodash, my-pkg
+ * NOT packages: example.com, 192.168.1.1, ./dir, /path, .
+ */
+function looksLikeNpmPackage(target: string): boolean {
+  // Local paths
+  if (target.startsWith('.') || target.startsWith('/')) return false;
+  // Scoped packages are always npm
+  if (target.startsWith('@') && target.includes('/')) return true;
+  // IPs
+  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(target)) return false;
+  // Hostnames have dots (example.com, sub.domain.org)
+  if (target.includes('.')) return false;
+  // What's left: bare names like express, lodash, hackmyagent
+  // npm names are lowercase, may contain hyphens and digits
+  return /^[a-z0-9][a-z0-9._-]*$/.test(target);
+}
+
+const REGISTRY_URL = 'https://api.oa2a.org';
+const STALE_SCAN_DAYS = 3;
+
+interface RegistryTrustData {
+  found: boolean;
+  name: string;
+  trustScore: number;
+  trustLevel: number;
+  verdict: string;
+  scanStatus?: string;
+  lastScannedAt?: string;
+  packageType?: string;
+}
+
+/**
+ * Query the OpenA2A Registry for existing trust data.
+ * Returns null on any error (network, 404, timeout).
+ */
+async function queryRegistry(name: string): Promise<RegistryTrustData | null> {
+  try {
+    const params = new URLSearchParams({ name, includeProfile: 'true' });
+    const response = await fetch(`${REGISTRY_URL}/api/v1/trust/query?${params}`, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json', 'User-Agent': `hackmyagent/${VERSION}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) return null;
+    const data = await response.json() as Record<string, unknown>;
+    if (!data.packageId) return null;
+    return {
+      found: true,
+      name: (data.name as string) ?? name,
+      trustScore: (data.trustScore as number) ?? 0,
+      trustLevel: (data.trustLevel as number) ?? 0,
+      verdict: (data.verdict as string) ?? 'unknown',
+      scanStatus: data.scanStatus as string | undefined,
+      lastScannedAt: data.lastScannedAt as string | undefined,
+      packageType: data.packageType as string | undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if scan data is stale (older than STALE_SCAN_DAYS).
+ */
+function isScanStale(lastScannedAt?: string): boolean {
+  if (!lastScannedAt) return true;
+  const scanned = new Date(lastScannedAt);
+  const now = new Date();
+  const days = (now.getTime() - scanned.getTime()) / (1000 * 60 * 60 * 24);
+  return days > STALE_SCAN_DAYS;
+}
+
+/**
+ * Publish scan results to the community registry.
+ */
+async function publishToRegistry(
+  name: string,
+  result: { score: number; maxScore: number; projectType: string; findings: SecurityFinding[] },
+): Promise<boolean> {
+  try {
+    const response = await fetch(`${REGISTRY_URL}/api/v1/trust/scans`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': `hackmyagent/${VERSION}`,
+      },
+      body: JSON.stringify({
+        name,
+        score: result.score,
+        maxScore: result.maxScore,
+        projectType: result.projectType,
+        findings: result.findings.map(f => ({
+          checkId: f.checkId,
+          name: f.name,
+          severity: f.severity,
+          passed: f.passed,
+          message: f.message,
+          category: f.category,
+        })),
+        scanTimestamp: new Date().toISOString(),
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Display registry trust data in the terminal.
+ */
+function displayRegistryResult(data: RegistryTrustData): void {
+  const scoreRatio = data.trustScore;
+  const scoreColor = scoreRatio >= 0.7 ? colors.green : scoreRatio >= 0.4 ? colors.yellow : colors.red;
+  const score = Math.round(scoreRatio * 100);
+
+  console.log(`\n  ${data.name}`);
+  console.log(`  Type:       ${data.packageType ?? 'unknown'}`);
+  console.log(`  Score:      ${scoreColor}${score}/100${RESET()}  (registry)`);
+  console.log(`  Verdict:    ${data.verdict}`);
+  if (data.lastScannedAt) {
+    const days = Math.floor((Date.now() - new Date(data.lastScannedAt).getTime()) / (1000 * 60 * 60 * 24));
+    console.log(`  Scanned:    ${days === 0 ? 'today' : days + ' day(s) ago'}`);
+  }
+  console.log();
+}
+
+/**
+ * Download an npm package, run full HMA secure scan, display results, clean up.
+ * Checks the registry first; only downloads if data is missing or stale.
+ */
+async function checkNpmPackage(
+  name: string,
+  options: { verbose?: boolean; json?: boolean; offline?: boolean },
+): Promise<void> {
+  // Step 1: Check registry for existing trust data
+  if (!options.offline) {
+    const registryData = await queryRegistry(name);
+
+    if (registryData?.found && !isScanStale(registryData.lastScannedAt)) {
+      // Fresh data in registry — show it
+      if (options.json) {
+        writeJsonStdout({ ...registryData, source: 'registry' });
+        return;
+      }
+      displayRegistryResult(registryData);
+      return;
+    }
+
+    // Stale or missing — tell the user we're scanning
+    if (registryData?.found && registryData.lastScannedAt) {
+      if (!options.json && !globalCiMode) {
+        const days = Math.floor((Date.now() - new Date(registryData.lastScannedAt).getTime()) / (1000 * 60 * 60 * 24));
+        console.error(`\nRegistry data is ${days} day(s) old. Re-scanning...`);
+      }
+    }
+  }
+
+  // Step 2: Download and scan
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const execAsync = promisify(execFile);
+
+  if (!options.json && !globalCiMode) {
+    console.error(`Downloading ${name} from npm...`);
+  }
+
+  const tempDir = await mkdtemp(join(tmpdir(), 'hma-check-'));
+
+  try {
+    // Download and extract
+    const { stdout } = await execAsync(
+      'npm', ['pack', name, '--pack-destination', tempDir],
+      { timeout: 60_000 },
+    );
+    const tarball = stdout.trim().split('\n').pop()!;
+    await execAsync('tar', ['xzf', join(tempDir, tarball), '-C', tempDir], { timeout: 30_000 });
+
+    const packageDir = join(tempDir, 'package');
+
+    // Run full HMA scan
+    const scanner = new HardeningScanner();
+    const result = await scanner.scan({ targetDir: packageDir, autoFix: false });
+
+    const failed = result.findings.filter(f => !f.passed);
+    const critical = failed.filter(f => f.severity === 'critical');
+    const high = failed.filter(f => f.severity === 'high');
+    const medium = failed.filter(f => f.severity === 'medium');
+    const low = failed.filter(f => f.severity === 'low');
+
+    if (options.json) {
+      writeJsonStdout({
+        name,
+        type: 'npm-package',
+        source: 'local-scan',
+        projectType: result.projectType,
+        score: result.score,
+        maxScore: result.maxScore,
+        findings: result.findings,
+      });
+      return;
+    }
+
+    // Display results
+    const scoreRatio = result.score / result.maxScore;
+    const scoreColor = scoreRatio >= 0.7 ? colors.green : scoreRatio >= 0.4 ? colors.yellow : colors.red;
+
+    console.log(`\n  ${name}`);
+    console.log(`  Type:       ${result.projectType}`);
+    console.log(`  Score:      ${scoreColor}${result.score}/${result.maxScore}${RESET()}`);
+    console.log(`  Findings:   ${critical.length} critical, ${high.length} high, ${medium.length} medium, ${low.length} low`);
+
+    if (failed.length > 0) {
+      console.log();
+      const limit = options.verbose ? failed.length : 15;
+      for (const f of failed.slice(0, limit)) {
+        const sev = SEVERITY_DISPLAY[f.severity];
+        const attackClass = (f as any).attackClass ? ` (${(f as any).attackClass})` : '';
+        console.log(`  ${sev.color()}${sev.symbol}${RESET()} ${f.name}: ${f.message}${colors.dim}${attackClass}${RESET()}`);
+      }
+      if (failed.length > limit) {
+        console.log(`\n  ... and ${failed.length - limit} more (use --verbose to see all)`);
+      }
+    } else {
+      console.log(`\n  ${colors.green}No security issues found.${RESET()}`);
+    }
+
+    // Step 3: Offer to share with community (interactive only)
+    if (process.stdin.isTTY && !globalCiMode) {
+      const readline = await import('node:readline');
+      const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+      const answer = await new Promise<string>(resolve => {
+        rl.question(`\n  Share this scan with the community? [Y/n] `, resolve);
+      });
+      rl.close();
+
+      if (answer.trim().toLowerCase() !== 'n') {
+        const ok = await publishToRegistry(name, result);
+        if (ok) {
+          console.error(`  ${colors.green}Shared. Thank you for building trust in AI.${RESET()}`);
+        } else {
+          console.error(`  ${colors.dim}Could not reach registry. Scan saved locally.${RESET()}`);
+        }
+      }
+    }
+
+    console.log(`\n  Full project scan: ${CLI_PREFIX} secure <dir>`);
+    console.log();
+
+    if (critical.length > 0 || high.length > 0) process.exit(1);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Clean npm error messages
+    if (message.includes('404') || message.includes('Not Found')) {
+      console.error(`Error: Package "${name}" not found on npm.`);
+    } else {
+      console.error(`Error: ${message}`);
+    }
+    process.exit(1);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
 // Self-securing: verify own integrity before running any command
 // A security tool that doesn't verify itself is worse than no security tool
 (async () => {
