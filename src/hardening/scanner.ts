@@ -271,6 +271,104 @@ function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
+/**
+ * Check if a variation selector at position i in rawBuffer is a legitimate
+ * emoji presentation selector (U+FE0F following an emoji base character).
+ *
+ * Emoji base characters that commonly precede FE0F:
+ * - Keycap digits/symbols: 0-9, #, * (encoded as single ASCII bytes)
+ * - BMP symbols: U+2600-27BF range (encoded as 3-byte UTF-8: E2 XX XX or E2 XX XX)
+ * - SMP emoji: U+1F300-1FAFF (encoded as 4-byte UTF-8: F0 9F XX XX)
+ */
+function isEmojiVariationSelector(buf: Buffer, vsStart: number): boolean {
+  // Walk backward to find the preceding character
+  // The variation selector is at vsStart (3 bytes: EF B8 8F)
+  // We need to check what character precedes it
+
+  if (vsStart === 0) return false;
+
+  // Check for 4-byte SMP emoji before (F0 9F XX XX) — most common case
+  if (vsStart >= 4) {
+    const b0 = buf[vsStart - 4];
+    const b1 = buf[vsStart - 3];
+    if (b0 === 0xF0 && b1 === 0x9F) return true; // U+1F000-1FFFF (emoji range)
+  }
+
+  // Check for 3-byte BMP symbol before (E2 XX XX) — symbols like warning, gear, etc.
+  if (vsStart >= 3) {
+    const b0 = buf[vsStart - 3];
+    const b1 = buf[vsStart - 2];
+    if (b0 === 0xE2) {
+      // U+2600-27BF: Misc Symbols, Dingbats (E2 98 80 through E2 9E BF)
+      if (b1 >= 0x98 && b1 <= 0x9E) return true;
+      // U+2300-23FF: Misc Technical (E2 8C 80 through E2 8F BF) — includes hourglass, etc.
+      if (b1 >= 0x8C && b1 <= 0x8F) return true;
+    }
+    // U+2700-27BF also encoded as E2 9C XX - E2 9E XX
+    if (b0 === 0xE2 && b1 >= 0x9C && b1 <= 0x9E) return true;
+  }
+
+  // Check for 1-byte ASCII keycap base: #, *, 0-9
+  if (vsStart >= 1) {
+    const prev = buf[vsStart - 1];
+    if (prev === 0x23 || prev === 0x2A) return true; // # or *
+    if (prev >= 0x30 && prev <= 0x39) return true;   // 0-9
+  }
+
+  return false;
+}
+
+/**
+ * Check if a Cyrillic character at position ci in chars[] is in a Cyrillic
+ * text context (legitimate i18n) rather than mixed into a Latin word (attack).
+ *
+ * Looks at a window of nearby characters. If the neighborhood contains
+ * mostly Cyrillic or other non-Latin chars, it's i18n. If surrounded by
+ * Latin chars, it's a homoglyph attack.
+ */
+function isCyrillicInCyrillicContext(chars: string[], ci: number): boolean {
+  // Look at a window of 10 chars in each direction
+  const windowSize = 10;
+  const start = Math.max(0, ci - windowSize);
+  const end = Math.min(chars.length, ci + windowSize + 1);
+
+  let latinCount = 0;
+  let cyrillicCount = 0;
+
+  for (let j = start; j < end; j++) {
+    if (j === ci) continue;
+    const cp = chars[j].codePointAt(0)!;
+    // Latin letter
+    if ((cp >= 0x41 && cp <= 0x5A) || (cp >= 0x61 && cp <= 0x7A)) {
+      latinCount++;
+    }
+    // Any Cyrillic (U+0400-052F)
+    if (cp >= 0x0400 && cp <= 0x052F) {
+      cyrillicCount++;
+    }
+  }
+
+  // If there are at least 3 other Cyrillic chars nearby, this is i18n text
+  // (translations, i18n badges, etc. always have multiple Cyrillic chars together)
+  if (cyrillicCount >= 3) return true;
+
+  // If the immediate neighbors are both Latin, this is a homoglyph attack
+  const prevLatin = ci > 0 && (() => {
+    const cp = chars[ci - 1].codePointAt(0)!;
+    return (cp >= 0x41 && cp <= 0x5A) || (cp >= 0x61 && cp <= 0x7A);
+  })();
+  const nextLatin = ci < chars.length - 1 && (() => {
+    const cp = chars[ci + 1].codePointAt(0)!;
+    return (cp >= 0x41 && cp <= 0x5A) || (cp >= 0x61 && cp <= 0x7A);
+  })();
+
+  if (prevLatin && nextLatin) return false; // Sandwiched in Latin = attack
+
+  // Ambiguous case: not enough context. If there are ANY other Cyrillic
+  // chars nearby, give benefit of the doubt (i18n).
+  return cyrillicCount > 0;
+}
+
 export class HardeningScanner {
   private cliName = 'hackmyagent';
   // Files that may be created or modified during auto-fix
@@ -7592,7 +7690,9 @@ dist/
           currentLine++;
           continue;
         }
-        // Variation selectors: EF B8 80-8F
+        // Variation selectors: EF B8 80-8F (U+FE00-FE0F)
+        // Skip U+FE0F (EF B8 8F) when preceded by an emoji base character,
+        // as it's the standard emoji presentation selector (not steganography).
         if (
           rawBuffer[i] === 0xEF &&
           i + 2 < rawBuffer.length &&
@@ -7600,7 +7700,10 @@ dist/
           rawBuffer[i + 2] >= 0x80 &&
           rawBuffer[i + 2] <= 0x8F
         ) {
-          if (!hasVariationSelectors) {
+          // Check if this is an emoji presentation selector (FE0F after emoji base)
+          if (rawBuffer[i + 2] === 0x8F && isEmojiVariationSelector(rawBuffer, i)) {
+            // Legitimate emoji — skip
+          } else if (!hasVariationSelectors) {
             hasVariationSelectors = true;
             variationSelectorLine = currentLine;
           }
@@ -7876,9 +7979,17 @@ dist/
         const trimmed = line.trimStart();
         if (trimmed.startsWith('//') || trimmed.startsWith('#') || trimmed.startsWith('*')) continue;
 
-        for (const ch of line) {
-          const cp = ch.codePointAt(0)!;
+        const chars = [...line];
+        for (let ci = 0; ci < chars.length; ci++) {
+          const cp = chars[ci].codePointAt(0)!;
           if (homoglyphCodepoints.has(cp)) {
+            // Check if this Cyrillic char is in a Cyrillic text block (i18n)
+            // vs mixed into a Latin word (homoglyph attack).
+            // Look at neighboring characters: if surrounded by other Cyrillic
+            // or non-Latin chars, it's legitimate i18n text.
+            if (isCyrillicInCyrillicContext(chars, ci)) {
+              continue; // Legitimate i18n — skip
+            }
             homoglyphFound = true;
             homoglyphLine = lineIdx + 1;
             homoglyphChar = `U+${cp.toString(16).toUpperCase().padStart(4, '0')}`;
