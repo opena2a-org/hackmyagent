@@ -189,10 +189,11 @@ const RESET = () => colors.reset;
 
 program
   .command('check')
-  .description(`Check if a package or skill is safe
+  .description(`Check if a package, repo, or skill is safe
 
-Accepts npm packages, local paths, or skill identifiers:
+Accepts npm packages, GitHub repos, local paths, or skill identifiers:
   • npm package: downloads and runs full security analysis (204 checks + NanoMind)
+  • GitHub repo: shallow clones and runs full security analysis
   • Local path: runs NanoMind semantic analysis
   • Skill identifier: verifies publisher, permissions, revocation
 
@@ -202,9 +203,11 @@ Exit code 1 if high/critical risk detected.
 Examples:
   $ hackmyagent check express
   $ hackmyagent check @modelcontextprotocol/server-filesystem
-  $ hackmyagent check @modelcontextprotocol/server-filesystem --json
+  $ hackmyagent check modelcontextprotocol/servers
+  $ hackmyagent check https://github.com/punkpeye/awesome-mcp-servers
   $ hackmyagent check ./my-agent/
-  $ hackmyagent check @publisher/skill --verbose`)
+  $ hackmyagent check @publisher/skill --verbose
+  $ hackmyagent check modelcontextprotocol/servers --json`)
   .argument('<target>', 'npm package name, local path, or skill identifier')
   .option('-v, --verbose', 'Show detailed verification info')
   .option('--json', 'Output as JSON (for scripting/CI)')
@@ -264,6 +267,12 @@ Examples:
         }
 
         if (risk === 'critical' || risk === 'high') process.exit(1);
+        return;
+      }
+
+      // GitHub repo: clone, run full HMA scan, clean up
+      if (looksLikeGitHubRepo(skill)) {
+        await checkGitHubRepo(skill, options);
         return;
       }
 
@@ -6279,6 +6288,8 @@ program
 function looksLikeNpmPackage(target: string): boolean {
   // Local paths
   if (target.startsWith('.') || target.startsWith('/')) return false;
+  // GitHub URLs are not npm packages
+  if (looksLikeGitHubRepo(target)) return false;
   // Scoped packages are always npm
   if (target.startsWith('@') && target.includes('/')) return true;
   // IPs
@@ -6288,6 +6299,53 @@ function looksLikeNpmPackage(target: string): boolean {
   // What's left: bare names like express, lodash, hackmyagent
   // npm names are lowercase, may contain hyphens and digits
   return /^[a-z0-9][a-z0-9._-]*$/.test(target);
+}
+
+/**
+ * Detect whether a string looks like a GitHub repository.
+ *
+ * Matches:
+ * - Full URLs: https://github.com/org/repo, http://github.com/org/repo
+ * - With .git suffix: https://github.com/org/repo.git
+ * - With subpath: https://github.com/org/repo/tree/main/subdir
+ * - Shorthand: org/repo (exactly one slash, no dots, not a scoped npm package)
+ */
+function looksLikeGitHubRepo(target: string): boolean {
+  // Full GitHub URLs
+  if (/^https?:\/\/(www\.)?github\.com\/[^/]+\/[^/]+/.test(target)) return true;
+  // Shorthand: org/repo — exactly one slash, no dots, no @, no protocol
+  if (!target.includes(':') && !target.includes('.') && !target.startsWith('@') && !target.startsWith('/')) {
+    const parts = target.split('/');
+    if (parts.length === 2 && parts[0].length > 0 && parts[1].length > 0) {
+      // Both parts must look like GitHub identifiers (alphanumeric, hyphens, underscores)
+      return /^[a-zA-Z0-9_-]+$/.test(parts[0]) && /^[a-zA-Z0-9._-]+$/.test(parts[1]);
+    }
+  }
+  return false;
+}
+
+/**
+ * Parse a GitHub target into org/repo and optional clone URL.
+ * Returns { org, repo, cloneUrl }
+ */
+function parseGitHubTarget(target: string): { org: string; repo: string; cloneUrl: string } {
+  // Full URL: https://github.com/org/repo[.git][/tree/...]
+  const urlMatch = target.match(/^https?:\/\/(www\.)?github\.com\/([^/]+)\/([^/.]+)/);
+  if (urlMatch) {
+    return {
+      org: urlMatch[2],
+      repo: urlMatch[3],
+      cloneUrl: `https://github.com/${urlMatch[2]}/${urlMatch[3]}.git`,
+    };
+  }
+  // Shorthand: org/repo
+  const parts = target.split('/');
+  const repo = parts[1].replace(/\.git$/, '');
+  return {
+    org: parts[0],
+    repo,
+    cloneUrl: `https://github.com/${parts[0]}/${repo}.git`,
+  };
 }
 
 const REGISTRY_URL = 'https://api.oa2a.org';
@@ -6529,6 +6587,179 @@ async function suggestSimilarPackages(name: string): Promise<string[]> {
     return suggestions;
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+/**
+ * Clone a GitHub repo (shallow), run full HMA secure scan, display results, clean up.
+ * Checks the registry first; only clones if data is missing or stale.
+ */
+async function checkGitHubRepo(
+  target: string,
+  options: { verbose?: boolean; json?: boolean; offline?: boolean },
+): Promise<void> {
+  const { org, repo, cloneUrl } = parseGitHubTarget(target);
+  const displayName = `${org}/${repo}`;
+
+  // Step 1: Check registry for existing trust data
+  if (!options.offline) {
+    const registryData = await queryRegistry(displayName);
+
+    if (registryData?.found && !isScanStale(registryData.lastScannedAt)) {
+      if (options.json) {
+        writeJsonStdout({ ...registryData, source: 'registry' });
+        return;
+      }
+      displayRegistryResult(registryData);
+      return;
+    }
+
+    if (registryData?.found && registryData.lastScannedAt) {
+      if (!options.json && !globalCiMode) {
+        const days = Math.floor((Date.now() - new Date(registryData.lastScannedAt).getTime()) / (1000 * 60 * 60 * 24));
+        console.error(`\nRegistry data is ${days} day(s) old. Re-scanning...`);
+      }
+    }
+  }
+
+  // Step 2: Clone and scan
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const execAsync = promisify(execFile);
+
+  if (!options.json && !globalCiMode) {
+    console.error(`Cloning ${displayName} from GitHub...`);
+  }
+
+  const tempDir = await mkdtemp(join(tmpdir(), 'hma-check-gh-'));
+
+  try {
+    // Shallow clone — fast, minimal disk
+    await execAsync(
+      'git', ['clone', '--depth', '1', '--single-branch', cloneUrl, join(tempDir, repo)],
+      { timeout: 120_000 },
+    );
+
+    const repoDir = join(tempDir, repo);
+
+    // Run full HMA scan + NanoMind (same pipeline as `secure` and `checkNpmPackage`)
+    const scanner = new HardeningScanner();
+    const result = await scanner.scan({ targetDir: repoDir, autoFix: false });
+
+    // Run NanoMind semantic analysis and re-filter
+    try {
+      const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
+      const nmResult = await orchestrateNanoMind(repoDir, result.findings, { silent: true });
+      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, repoDir);
+      const projectType = result.projectType || 'library';
+      result.findings = refiltered.filter((f: any) =>
+        !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
+      ) as typeof result.findings;
+      result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
+    } catch {
+      // NanoMind unavailable — use base scan results
+    }
+
+    const failed = result.findings.filter(f => !f.passed);
+    const critical = failed.filter(f => f.severity === 'critical');
+    const high = failed.filter(f => f.severity === 'high');
+    const medium = failed.filter(f => f.severity === 'medium');
+    const low = failed.filter(f => f.severity === 'low');
+
+    if (options.json) {
+      writeJsonStdout({
+        name: displayName,
+        type: 'github-repo',
+        source: 'local-scan',
+        projectType: result.projectType,
+        score: result.score,
+        maxScore: result.maxScore,
+        findings: result.findings,
+      });
+      return;
+    }
+
+    // Display results
+    const scoreRatio = result.score / result.maxScore;
+    const scoreColor = scoreRatio >= 0.7 ? colors.green : scoreRatio >= 0.4 ? colors.yellow : colors.red;
+
+    console.log(`\n  ${displayName} ${colors.dim}(GitHub)${RESET()}`);
+    console.log(`  Type:       ${result.projectType}`);
+    console.log(`  Score:      ${scoreColor}${result.score}/${result.maxScore}${RESET()}`);
+    console.log(`  Findings:   ${critical.length} critical, ${high.length} high, ${medium.length} medium, ${low.length} low`);
+
+    if (failed.length > 0) {
+      console.log();
+      const limit = options.verbose ? failed.length : 15;
+      for (const f of failed.slice(0, limit)) {
+        const sev = SEVERITY_DISPLAY[f.severity];
+        const attackClass = (f as any).attackClass ? ` (${(f as any).attackClass})` : '';
+        console.log(`  ${sev.color()}${sev.symbol}${RESET()} ${f.name}: ${f.message}${colors.dim}${attackClass}${RESET()}`);
+      }
+      if (failed.length > limit) {
+        console.log(`\n  ... and ${failed.length - limit} more (use --verbose to see all)`);
+      }
+    } else {
+      console.log(`\n  ${colors.green}No security issues found.${RESET()}`);
+    }
+
+    // Step 3: Community contribution
+    if (process.stdin.isTTY && !globalCiMode) {
+      const scanCount = incrementScanCounter();
+      if (scanCount >= 3 && !hasContributeChoice()) {
+        console.log();
+        console.log(`  ${colors.dim}Your scans help other developers make safer choices.`);
+        console.log(`  Sharing adds anonymized results to the OpenA2A trust registry`);
+        console.log(`  so others can check packages before installing.${RESET()}`);
+
+        const readline = await import('node:readline');
+        const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+        const answer = await new Promise<string>(resolve => {
+          rl.question(`\n  Share scans with the community? [Y/n] `, resolve);
+        });
+        rl.close();
+
+        const wantsToShare = answer.trim().toLowerCase() !== 'n';
+        saveContributeChoice(wantsToShare);
+
+        if (wantsToShare) {
+          const ok = await publishToRegistry(displayName, result);
+          if (ok) {
+            console.error(`  ${colors.green}Shared. Future scans will auto-share.${RESET()}`);
+          } else {
+            queuePendingScan(displayName, result);
+          }
+        }
+      } else if (isContributeEnabled()) {
+        flushPendingScans();
+        const ok = await publishToRegistry(displayName, result);
+        if (!ok) queuePendingScan(displayName, result);
+      }
+    }
+
+    console.log(`\n  Full project scan: ${CLI_PREFIX} secure <dir>`);
+    console.log();
+
+    if (critical.length > 0 || high.length > 0) process.exit(1);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
+      console.error(`Error: Repository "${displayName}" not found on GitHub.`);
+      console.error(`\nVerify the URL: https://github.com/${displayName}`);
+    } else if (message.includes('timeout') || message.includes('Timeout')) {
+      console.error(`Error: Cloning "${displayName}" timed out (120s). The repo may be too large.`);
+      console.error(`\nTry cloning manually and scanning the local path:`);
+      console.error(`  git clone --depth 1 ${cloneUrl}`);
+      console.error(`  ${CLI_PREFIX} check ./${repo}/`);
+    } else {
+      console.error(`Error: ${message}`);
+    }
+    process.exit(1);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
   }
 }
 
