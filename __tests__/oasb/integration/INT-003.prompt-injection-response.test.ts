@@ -190,7 +190,8 @@ describe('INT-003: Prompt Injection with Anomaly Detection', () => {
         dvaa.health(SECURE_BOT_PORT),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000)),
       ]);
-      dvaaAvailable = health.status === 'ok';
+      // Verify it's actually DVAA, not another service on the same port
+      dvaaAvailable = health.status === 'ok' && 'bots' in health;
     } catch {
       dvaaAvailable = false;
     }
