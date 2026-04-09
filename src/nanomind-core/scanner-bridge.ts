@@ -30,6 +30,7 @@ import { analyzeGovernance } from './analyzers/governance-analyzer.js';
 import { analyzeScope } from './analyzers/scope-analyzer.js';
 import { analyzePrompt } from './analyzers/prompt-analyzer.js';
 import { analyzeCode } from './analyzers/code-analyzer.js';
+import { analyzeSteganography } from './analyzers/stego-analyzer.js';
 import { enrichFindings } from './fix-generator.js';
 import { enforceSeverityFloor, validateEnhancement } from './security/defense-in-depth.js';
 import type { SeverityLevel } from './security/defense-in-depth.js';
@@ -280,6 +281,9 @@ function runAllAnalyzers(
   // Prompt and code analyzers: jailbreak susceptibility, injection patterns, etc.
   findings.push(...analyzePrompt(ast, verifier));
   findings.push(...analyzeCode(ast, verifier));
+
+  // Steganography analyzer: semantic Unicode analysis (emoji, i18n, homoglyphs)
+  findings.push(...analyzeSteganography(ast));
 
   // Enrich all findings with context-aware fix suggestions
   // Uses TME classification + AST context to produce specific, actionable fixes
