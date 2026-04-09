@@ -259,7 +259,7 @@ describe('signPayload', () => {
 // ---------------------------------------------------------------
 
 describe('buildPublishPayload', () => {
-  const TOOL_VERSION = '0.15.6';
+  const TOOL_VERSION = '0.15.7';
 
   it('builds unified payload from hardening findings', () => {
     const data: PublishScanData = {
