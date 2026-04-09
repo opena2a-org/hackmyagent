@@ -51,10 +51,12 @@ import {
 } from './index';
 import { resolveAndLogMcpShorthand } from './resolve-mcp';
 import { WildScanner, type WildScanReport } from './wild';
-import { NemoClawScanner, NEMOCLAW_CATEGORIES } from './hardening/nemoclaw-scanner';
-
 const program = new Command();
 program.showHelpAfterError('(run with --help for usage)');
+
+// Total security check count across all scanner modules.
+// Update when adding new checks (verify with: grep -r "checkId:" src/hardening/ | grep -o "checkId: '[^']*'" | sort -u | wc -l)
+const CHECK_COUNT = 208;
 
 // Write a string to stdout synchronously with retry for pipe backpressure.
 // process.stdout.write() is async and gets truncated when process.exit()
@@ -144,20 +146,19 @@ program
   .name('hackmyagent')
   .description(`Find it. Break it. Fix it.
 
-The hacker's toolkit for AI agents. 204 security checks, 115 attack
+The hacker's toolkit for AI agents. ${CHECK_COUNT} security checks, ${PAYLOAD_STATS.total} attack
 payloads, auto-fix with rollback, and OASB benchmark compliance.
 
 Documentation: https://hackmyagent.com/docs
 
 Updates (v${VERSION}):
-  - NemoClaw sandbox scanner (28 installation checks)
   - 10 new static analysis patterns (NEMO series)
   - Community trust contributions
-  - 204 checks across 60 categories
+  - ${CHECK_COUNT} checks across 60 categories
 
 Examples:
-  $ hackmyagent secure                         Find vulnerabilities (204 checks)
-  $ hackmyagent attack --local                 Break it with 115 attack payloads
+  $ hackmyagent secure                         Find vulnerabilities (${CHECK_COUNT} checks)
+  $ hackmyagent attack --local                 Break it with ${PAYLOAD_STATS.total} attack payloads
   $ hackmyagent secure --fix                   Fix issues automatically
   $ hackmyagent fix-all                        Run all security plugins
   $ hackmyagent scan example.com               Scan external infrastructure`)
@@ -166,7 +167,7 @@ Examples:
 
 program.addHelpText('beforeAll', `
 Quick start:
-  $ hackmyagent secure              Scan current directory (204 checks)
+  $ hackmyagent secure              Scan current directory (${CHECK_COUNT} checks)
   $ hackmyagent fix-all --with-aim  Auto-fix + create agent identity
   $ hackmyagent attack              Red-team your agent
 `);
@@ -192,7 +193,7 @@ program
   .description(`Check if a package, repo, or skill is safe
 
 Accepts npm packages, GitHub repos, local paths, or skill identifiers:
-  • npm package: downloads and runs full security analysis (204 checks + NanoMind)
+  • npm package: downloads and runs full security analysis (${CHECK_COUNT} checks + NanoMind)
   • GitHub repo: shallow clones and runs full security analysis
   • Local path: runs NanoMind semantic analysis
   • Skill identifier: verifies publisher, permissions, revocation
@@ -376,6 +377,46 @@ const SEVERITY_DISPLAY: Record<Severity, { symbol: string; color: () => string }
   medium: { symbol: '[~]', color: () => colors.yellow },
   low: { symbol: '[.]', color: () => colors.green },
 };
+
+/**
+ * Display check command findings with optional verbose details.
+ * When verbose is true, shows checkId, category, file location, and fix/guidance for each finding.
+ */
+function displayCheckFindings(
+  failed: SecurityFinding[],
+  verbose: boolean,
+): void {
+  if (failed.length > 0) {
+    console.log();
+    const limit = verbose ? failed.length : 15;
+    for (const f of failed.slice(0, limit)) {
+      const sev = SEVERITY_DISPLAY[f.severity];
+      const attackClass = (f as any).attackClass ? ` (${(f as any).attackClass})` : '';
+      console.log(`  ${sev.color()}${sev.symbol}${RESET()} ${f.name}: ${f.message}${colors.dim}${attackClass}${RESET()}`);
+      if (verbose) {
+        console.log(`    ${colors.dim}Check:    ${f.checkId}${RESET()}`);
+        if (f.category) {
+          console.log(`    ${colors.dim}Category: ${f.category}${RESET()}`);
+        }
+        if (f.file) {
+          const location = f.line ? `${f.file}:${f.line}` : f.file;
+          console.log(`    ${colors.dim}File:     ${location}${RESET()}`);
+        }
+        if (f.fix) {
+          console.log(`    ${colors.cyan}Fix:      ${f.fix}${RESET()}`);
+        }
+        if ((f as any).guidance) {
+          console.log(`    ${colors.dim}Guidance: ${(f as any).guidance}${RESET()}`);
+        }
+      }
+    }
+    if (failed.length > limit) {
+      console.log(`\n  ... and ${failed.length - limit} more (use --verbose to see all)`);
+    }
+  } else {
+    console.log(`\n  ${colors.green}No security issues found.${RESET()}`);
+  }
+}
 
 function groupFindingsBySeverity(findings: SecurityFinding[]): Record<Severity, SecurityFinding[]> {
   const grouped: Record<Severity, SecurityFinding[]> = {
@@ -1911,7 +1952,7 @@ program
   .command('secure')
   .description(`Scan and harden your agent setup
 
-Performs 204 security checks across 60 categories:
+Performs ${CHECK_COUNT} security checks across 60 categories:
   • Credentials: API key exposure, secrets in configs
   • MCP: Server configs, tool permissions, secrets
   • Network: TLS, interface bindings, CORS
@@ -2975,211 +3016,7 @@ Examples:
     }
   });
 
-// NemoClaw-specific helpers
-const NEMOCLAW_CHECK_CATEGORIES = NEMOCLAW_CATEGORIES;
 
-function detectNemoClawDirectory(providedDir: string): string {
-  const os = require('os');
-  const fs = require('fs');
-  const path = require('path');
-
-  if (providedDir && providedDir !== '') {
-    return providedDir.startsWith('/') ? providedDir : path.join(process.cwd(), providedDir);
-  }
-
-  const homeDir = os.homedir();
-  const candidates = [
-    path.join(homeDir, '.nemoclaw'),
-    path.join(homeDir, '.openshell'),
-    path.join(homeDir, '.openclaw'),
-  ];
-
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-
-  return process.cwd();
-}
-
-function filterNemoClawFindings(findings: SecurityFinding[]): SecurityFinding[] {
-  return findings.filter((f) => {
-    const checkId = f.checkId.toUpperCase();
-    return checkId.startsWith('HMA-NMC-');
-  });
-}
-
-function assessNemoClawRiskLevel(findings: SecurityFinding[]): { level: string; color: string; description: string } {
-  const criticalCount = findings.filter((f) => f.severity === 'critical').length;
-  const highCount = findings.filter((f) => f.severity === 'high').length;
-  const mediumCount = findings.filter((f) => f.severity === 'medium').length;
-
-  if (criticalCount > 0) {
-    return {
-      level: 'Critical',
-      color: colors.brightRed,
-      description: `${criticalCount} critical finding(s) with recommended fixes available.`,
-    };
-  }
-  if (highCount > 0) {
-    return {
-      level: 'High',
-      color: colors.red,
-      description: `${highCount} high-severity finding(s) detected. Fixes available below.`,
-    };
-  }
-  if (mediumCount > 0) {
-    return {
-      level: 'Moderate',
-      color: colors.yellow,
-      description: 'Some findings detected. Review the recommendations below.',
-    };
-  }
-  if (findings.length === 0) {
-    return {
-      level: 'None',
-      color: colors.dim,
-      description: `No NemoClaw installation detected. Run \`${CLI_PREFIX} secure\` for a full scan.`,
-    };
-  }
-  return {
-    level: 'Low',
-    color: colors.green,
-    description: 'No critical or high findings detected.',
-  };
-}
-
-program
-  .command('secure-nemoclaw')
-  .description(`Security scan for NVIDIA NemoClaw installations
-
-Performs focused security checks for NemoClaw sandbox deployments:
-  - Secrets: NVIDIA API key exposure in configs, logs, Docker, shell history
-  - Network: Gateway/k3s/inference port binding, Docker socket, egress policies
-  - Skills: Blueprint integrity, skill verification, directory permissions
-  - Process: Sandbox privileges, seccomp/Landlock enforcement, root execution
-  - OpenClaw layer: Inherited misconfigs that survive NemoClaw sandboxing
-
-Auto-detects ~/.nemoclaw, ~/.openshell, or ~/.openclaw directories.
-Exit code 1 if critical/high issues found.
-
-Examples:
-  $ hackmyagent secure-nemoclaw                  Scan auto-detected directory
-  $ hackmyagent secure-nemoclaw ~/.nemoclaw      Scan specific directory
-  $ hackmyagent secure-nemoclaw --json           JSON output for CI`)
-  .argument('[directory]', 'Directory to scan (default: ~/.nemoclaw or ~/.openshell)', '')
-  .option('--json', 'Output as JSON (for scripting/CI)')
-  .option('-v, --verbose', 'Show all checks including passed ones')
-  .action(async (directory: string, options: { json?: boolean; verbose?: boolean }) => {
-    try {
-      const targetDir = detectNemoClawDirectory(directory);
-
-      if (!options.json) {
-        console.log(`\nNemoClaw Security Report`);
-        console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
-        console.log(`Scanning ${targetDir}...\n`);
-      }
-
-      const scanner = new NemoClawScanner();
-      const findings = await scanner.scan(targetDir, {});
-
-      // Enrich with taxonomy
-      const { enrichWithTaxonomy } = require('./hardening/taxonomy');
-      enrichWithTaxonomy(findings);
-
-      // NanoMind semantic analysis (defense-in-depth)
-      let mergedFindings = findings;
-      try {
-        const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-        const nmResult = await orchestrateNanoMind(targetDir, findings, { silent: !!options.json });
-        mergedFindings = nmResult.mergedFindings as typeof findings;
-      } catch { /* NanoMind unavailable */ }
-
-      const issues = mergedFindings.filter((f: SecurityFinding) => !f.passed);
-      const passedFindings = mergedFindings.filter((f: SecurityFinding) => f.passed);
-
-      if (options.json) {
-        const jsonOutput = {
-          target: targetDir,
-          riskLevel: assessNemoClawRiskLevel(issues).level,
-          totalChecks: mergedFindings.length,
-          issues: issues.length,
-          passed: passedFindings.length,
-          findings: mergedFindings,
-        };
-        writeJsonStdout(jsonOutput);
-        return;
-      }
-
-      // Risk assessment
-      const risk = assessNemoClawRiskLevel(issues);
-      console.log(`Risk Level: ${risk.color}${risk.level}${RESET()}`);
-      console.log(`${risk.description}\n`);
-
-      // Summary stats
-      console.log(`Checks: ${findings.length} total | ${issues.length} issues | ${passedFindings.length} passed\n`);
-
-      // Show issues
-      if (issues.length > 0) {
-        console.log(`${colors.red}Findings:${RESET()}\n`);
-
-        for (const finding of issues) {
-          const display = SEVERITY_DISPLAY[finding.severity];
-          const location = finding.file
-            ? finding.line
-              ? `${finding.file}:${finding.line}`
-              : finding.file
-            : '';
-
-          const sevLabel = finding.severity.charAt(0).toUpperCase() + finding.severity.slice(1);
-          console.log(`${display.color()}${display.symbol} [${finding.checkId}] ${sevLabel}${RESET()}`);
-          console.log(`   ${finding.description}`);
-          if (location) {
-            console.log(`   File: ${location}`);
-          }
-          if (finding.fix) {
-            console.log(`   ${colors.cyan}Recommended fix:${RESET()} ${finding.fix}`);
-          }
-          console.log();
-        }
-      } else {
-        console.log(`${colors.green}No NemoClaw-specific issues found.${RESET()}\n`);
-      }
-
-      // Show passed checks in verbose mode
-      if (options.verbose && passedFindings.length > 0) {
-        console.log(`${colors.green}Passed Checks:${RESET()}`);
-        for (const finding of passedFindings) {
-          console.log(`  ${colors.green}[ok]${RESET()} [${finding.checkId}] ${finding.name}`);
-        }
-        console.log();
-      }
-
-      // Shodan self-check guidance
-      if (issues.some((f: SecurityFinding) => f.category === 'network')) {
-        console.log(`${colors.yellow}Internet Exposure Check:${RESET()}`);
-        console.log(`  Check if your instance is visible on Shodan:`);
-        console.log(`  https://www.shodan.io/host/<YOUR-IP>`);
-        console.log(`  Known NemoClaw dorks: port:18789, port:6443 ssl.cert.subject.cn:"k3s-serving"\n`);
-      }
-
-      console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      console.log(`Run '${CLI_PREFIX} secure-openclaw' for OpenClaw-specific checks.`);
-      console.log(`Run '${CLI_PREFIX} secure' for a full security scan.\n`);
-
-      // Exit with non-zero if critical/high issues remain
-      const criticalOrHigh = issues.filter(
-        (f: SecurityFinding) => f.severity === 'critical' || f.severity === 'high'
-      );
-      if (criticalOrHigh.length > 0) {
-        process.exit(1);
-      }
-    } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      process.exit(1);
-    }
-  });
 
 program
   .command('scan')
@@ -4904,7 +4741,7 @@ Examples:
       console.log(`\n  Detected: ${result.tool}\n`);
       console.log(`  Added HackMyAgent MCP server to ${result.configPath}\n`);
       console.log(`  Available tools in ${result.tool}:`);
-      console.log(`    hackmyagent_scan       — 204 checks + structural analysis`);
+      console.log(`    hackmyagent_scan       — ${CHECK_COUNT} checks + structural analysis`);
       console.log(`    hackmyagent_deep_scan  — Full analysis with LLM reasoning`);
       console.log(`    hackmyagent_analyze_file — Analyze a single file`);
       console.log(`    hackmyagent_benchmark  — OASB-1 compliance assessment\n`);
@@ -5851,12 +5688,39 @@ program
     // Fallback: static explanation from check metadata
     const checkId = findingId.toUpperCase();
     const staticExplanations: Record<string, string> = {
+      // Credential checks
       'CRED-001': 'Hardcoded credential detected. API keys, tokens, or passwords are embedded directly in source code. Replace with environment variable references ($VAR_NAME) and rotate the exposed credential immediately.',
       'CRED-002': 'OpenAI API key pattern detected (sk-...). Move to environment variable OPENAI_API_KEY.',
       'CRED-003': 'Anthropic API key pattern detected (sk-ant-...). Move to environment variable ANTHROPIC_API_KEY.',
       'CRED-004': 'AWS credential pattern detected. Use AWS SDK credential chain or environment variables.',
-      'MCP-001': 'MCP server running without TLS. Agent-to-server communication is unencrypted.',
-      'SKILL-005': 'External endpoint in skill capability declaration. Verify the endpoint is trusted.',
+      // MCP checks
+      'MCP-001': 'MCP server running without TLS. Agent-to-server communication is unencrypted. Enable TLS on the MCP server or use a reverse proxy with TLS termination.',
+      // Skill checks
+      'SKILL-005': 'External endpoint in skill capability declaration. Verify the endpoint is trusted and uses HTTPS.',
+      // Governance checks
+      'GOV-001': 'No governance policy found. Agents should declare behavioral constraints in a SOUL.md or governance file. Create a SOUL.md with mission, boundaries, and allowed actions.',
+      'GOV-002': 'Governance file lacks boundary definitions. Without explicit boundaries, the agent may act outside intended scope. Add "boundaries" or "constraints" sections to your governance file.',
+      'GOV-003': 'Governance file missing escalation policy. Define when and how the agent should escalate to a human. Add an escalation section with trigger conditions and contact methods.',
+      // Permission checks
+      'PERM-001': 'Overly broad file system permissions detected. The agent has write access to directories outside its working scope. Restrict file permissions to the minimum required paths.',
+      'PERM-002': 'Network permissions not restricted. The agent can make outbound requests to any host. Define an allowlist of permitted domains in the agent configuration.',
+      'PERM-003': 'Execution permissions too permissive. The agent can spawn arbitrary processes. Restrict executable permissions to specific, required binaries only.',
+      // SOUL checks
+      'SOUL-001': 'No SOUL.md file found. SOUL.md defines the agent identity, mission, and behavioral constraints. Run `hackmyagent secure --fix` to generate one.',
+      'SOUL-002': 'SOUL.md missing identity section. The agent lacks a declared identity, making impersonation easier. Add name, version, and publisher fields.',
+      'SOUL-003': 'SOUL.md missing behavioral boundaries. Without explicit limits, the agent may perform unintended actions. Add a boundaries section listing prohibited behaviors.',
+      // Privacy checks
+      'PRIV-001': 'PII handling not declared. The agent processes data but has no privacy policy or data handling declaration. Add a data handling section specifying what data is collected, stored, and shared.',
+      // Data checks
+      'DATA-001': 'Sensitive data logged to console or file. Credentials, tokens, or PII appear in log output. Sanitize log statements to redact sensitive values before output.',
+      'DATA-002': 'Data retention policy missing. The agent stores data without a defined retention or deletion policy. Define how long data is kept and when it is purged.',
+      // Injection checks
+      'INJECT-001': 'No prompt injection defense detected. The agent does not validate or sanitize inputs against injection attacks. Add input validation and consider using a system prompt with injection resistance instructions.',
+      'INJECT-002': 'Indirect prompt injection surface found. External data (URLs, files, API responses) is passed to the LLM without sanitization. Sanitize or sandbox external content before including it in prompts.',
+      // Attestation checks
+      'ATTEST-001': 'No attestation mechanism found. The agent cannot prove its identity or integrity to other agents. Implement agent attestation using signed identity tokens or SOUL.md signatures.',
+      // Supply chain checks
+      'SUPPLY-001': 'Dependency with known vulnerability detected. A transitive or direct dependency has a published CVE. Update the affected package to a patched version.',
     };
 
     const explanation = staticExplanations[checkId];
@@ -6691,20 +6555,7 @@ async function checkGitHubRepo(
     console.log(`  Score:      ${scoreColor}${result.score}/${result.maxScore}${RESET()}`);
     console.log(`  Findings:   ${critical.length} critical, ${high.length} high, ${medium.length} medium, ${low.length} low`);
 
-    if (failed.length > 0) {
-      console.log();
-      const limit = options.verbose ? failed.length : 15;
-      for (const f of failed.slice(0, limit)) {
-        const sev = SEVERITY_DISPLAY[f.severity];
-        const attackClass = (f as any).attackClass ? ` (${(f as any).attackClass})` : '';
-        console.log(`  ${sev.color()}${sev.symbol}${RESET()} ${f.name}: ${f.message}${colors.dim}${attackClass}${RESET()}`);
-      }
-      if (failed.length > limit) {
-        console.log(`\n  ... and ${failed.length - limit} more (use --verbose to see all)`);
-      }
-    } else {
-      console.log(`\n  ${colors.green}No security issues found.${RESET()}`);
-    }
+    displayCheckFindings(failed, !!options.verbose);
 
     // Step 3: Community contribution
     if (process.stdin.isTTY && !globalCiMode) {
@@ -6865,20 +6716,7 @@ async function checkNpmPackage(
     console.log(`  Score:      ${scoreColor}${result.score}/${result.maxScore}${RESET()}`);
     console.log(`  Findings:   ${critical.length} critical, ${high.length} high, ${medium.length} medium, ${low.length} low`);
 
-    if (failed.length > 0) {
-      console.log();
-      const limit = options.verbose ? failed.length : 15;
-      for (const f of failed.slice(0, limit)) {
-        const sev = SEVERITY_DISPLAY[f.severity];
-        const attackClass = (f as any).attackClass ? ` (${(f as any).attackClass})` : '';
-        console.log(`  ${sev.color()}${sev.symbol}${RESET()} ${f.name}: ${f.message}${colors.dim}${attackClass}${RESET()}`);
-      }
-      if (failed.length > limit) {
-        console.log(`\n  ... and ${failed.length - limit} more (use --verbose to see all)`);
-      }
-    } else {
-      console.log(`\n  ${colors.green}No security issues found.${RESET()}`);
-    }
+    displayCheckFindings(failed, !!options.verbose);
 
     // Step 3: Community contribution (after 3 scans, interactive only)
     if (process.stdin.isTTY && !globalCiMode) {
