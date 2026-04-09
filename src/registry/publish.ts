@@ -15,7 +15,7 @@ import type { SecurityFinding, Severity } from '../hardening';
 import type { AttackReport } from '../attack';
 import type { SoulScanResult } from '../soul';
 import type { BenchmarkResult } from '../benchmarks';
-import { RegistryClient, type CommunityScanPayload } from './client';
+import { RegistryClient, type UnifiedPublishPayload, type UnifiedFinding } from './client';
 import { reportFindings, reportRemediation } from './remediation';
 
 /**
@@ -154,67 +154,72 @@ export function signPayload(payload: string, privateKeyPem: string): string | nu
 }
 
 /**
- * Build a unified publish payload from scan data.
- * Combines results from hardening, attack, SOUL, and OASB scans.
+ * Build a unified publish payload matching the POST /api/v1/trust/publish contract.
+ * Combines results from hardening, attack, SOUL, and OASB scans into a single payload.
  */
-export function buildPublishPayload(data: PublishScanData): CommunityScanPayload & Record<string, unknown> {
-  const scanId = `hma-publish-${Date.now()}`;
-  const completedAt = new Date().toISOString();
+export function buildPublishPayload(data: PublishScanData, toolVersion: string): UnifiedPublishPayload {
+  const scanTimestamp = new Date().toISOString();
+  const findings: UnifiedFinding[] = [];
 
-  // Determine overall status from hardening findings
-  let status: 'passed' | 'failed' | 'warnings' | 'error' = 'passed';
-  let criticalCount = 0;
-  let highCount = 0;
-  let mediumCount = 0;
-  let lowCount = 0;
-  const vulnerabilities: Array<{
-    id: string;
-    severity: string;
-    title: string;
-    description: string;
-  }> = [];
-
+  // Map hardening findings
   if (data.hardeningFindings) {
-    const failed = data.hardeningFindings.filter(f => !f.passed && !f.fixed);
-    for (const f of failed) {
-      if (f.severity === 'critical') criticalCount++;
-      else if (f.severity === 'high') highCount++;
-      else if (f.severity === 'medium') mediumCount++;
-      else if (f.severity === 'low') lowCount++;
-
-      vulnerabilities.push({
-        id: f.checkId,
+    for (const f of data.hardeningFindings) {
+      findings.push({
+        checkId: f.checkId,
+        name: f.name,
         severity: f.severity,
-        title: f.name,
-        description: f.description,
+        passed: f.passed || !!f.fixed,
+        message: f.description,
+        category: f.category,
       });
     }
   }
 
-  // Incorporate attack results into severity counts
+  // Map attack results as findings
   if (data.attackReport) {
-    const successfulAttacks = data.attackReport.results.filter(r => r.success);
-    for (const r of successfulAttacks) {
-      if (r.payload.severity === 'critical') criticalCount++;
-      else if (r.payload.severity === 'high') highCount++;
-      else if (r.payload.severity === 'medium') mediumCount++;
-      else lowCount++;
-
-      vulnerabilities.push({
-        id: r.payload.id,
+    for (const r of data.attackReport.results) {
+      findings.push({
+        checkId: r.payload.id,
+        name: `Attack: ${r.payload.category} - ${r.payload.id}`,
         severity: r.payload.severity,
-        title: `Attack: ${r.payload.category} - ${r.payload.id}`,
-        description: r.response?.substring(0, 500) || 'Attack succeeded',
+        passed: !r.success,
+        message: r.success ? (r.response?.substring(0, 500) || 'Attack succeeded') : 'Attack blocked',
+        category: 'attack',
+        attackClass: r.payload.category,
       });
     }
   }
 
-  // Derive overall status
-  if (criticalCount > 0 || highCount > 0) status = 'failed';
-  else if (mediumCount > 0 || lowCount > 0) status = 'warnings';
+  // Map SOUL control results as findings
+  if (data.soulResult && (data.soulResult as any).controls) {
+    for (const c of (data.soulResult as any).controls) {
+      findings.push({
+        checkId: c.id || c.checkId,
+        name: c.name,
+        severity: c.severity || 'medium',
+        passed: c.passed,
+        message: c.description || c.message || '',
+        category: 'governance',
+      });
+    }
+  }
 
-  // Build raw report with all scan type data
-  const rawReport: Record<string, unknown> = {
+  // Compute score: passed / total * 100
+  const totalFindings = findings.length;
+  const passedFindings = findings.filter(f => f.passed).length;
+  const score = totalFindings > 0 ? Math.round((passedFindings / totalFindings) * 100) : 100;
+
+  // Derive verdict
+  const failedCritical = findings.filter(f => !f.passed && f.severity === 'critical').length;
+  const failedHigh = findings.filter(f => !f.passed && f.severity === 'high').length;
+  const failedMedium = findings.filter(f => !f.passed && f.severity === 'medium').length;
+  const failedLow = findings.filter(f => !f.passed && f.severity === 'low').length;
+  let verdict: 'pass' | 'warn' | 'fail' = 'pass';
+  if (failedCritical > 0 || failedHigh > 0) verdict = 'fail';
+  else if (failedMedium > 0 || failedLow > 0) verdict = 'warn';
+
+  // Build sub-reports from each scan type
+  const subReports: Record<string, unknown> = {
     generator: 'hackmyagent',
     publishedVia: 'atp-publish',
   };
@@ -222,7 +227,7 @@ export function buildPublishPayload(data: PublishScanData): CommunityScanPayload
   if (data.hardeningFindings) {
     const total = data.hardeningFindings.length;
     const failed = data.hardeningFindings.filter(f => !f.passed && !f.fixed).length;
-    rawReport.hardening = {
+    subReports.hardening = {
       totalChecks: total,
       failedChecks: failed,
       passRate: total > 0 ? Math.round(((total - failed) / total) * 100) : 100,
@@ -230,7 +235,7 @@ export function buildPublishPayload(data: PublishScanData): CommunityScanPayload
   }
 
   if (data.attackReport) {
-    rawReport.attack = {
+    subReports.attack = {
       riskScore: data.attackReport.riskScore,
       riskRating: data.attackReport.riskRating,
       totalPayloads: data.attackReport.summary.total,
@@ -240,7 +245,7 @@ export function buildPublishPayload(data: PublishScanData): CommunityScanPayload
   }
 
   if (data.soulResult) {
-    rawReport.soul = {
+    subReports.soul = {
       score: data.soulResult.score,
       conformance: data.soulResult.conformance,
       agentTier: data.soulResult.agentTier,
@@ -250,7 +255,7 @@ export function buildPublishPayload(data: PublishScanData): CommunityScanPayload
   }
 
   if (data.oasbResult) {
-    rawReport.oasb = {
+    subReports.oasb = {
       compliance: data.oasbResult.compliance,
       rating: data.oasbResult.rating,
       l1Compliance: data.oasbResult.l1Compliance,
@@ -261,59 +266,34 @@ export function buildPublishPayload(data: PublishScanData): CommunityScanPayload
 
   // Compute content hash
   const canonical = [
-    scanId,
     data.packageName,
     data.packageType || '',
     data.packageVersion || '',
-    status,
-    criticalCount,
-    highCount,
-    mediumCount,
-    lowCount,
+    verdict,
+    failedCritical,
+    failedHigh,
+    failedMedium,
+    failedLow,
   ].join('|');
   const contentHash = createHash('sha256').update(canonical).digest('hex');
 
-  const payload: CommunityScanPayload & Record<string, unknown> = {
-    packageName: data.packageName,
-    packageType: data.packageType,
+  const payload: UnifiedPublishPayload = {
+    name: data.packageName,
+    type: data.packageType,
     version: data.packageVersion,
-    scanId,
-    status,
-    completedAt,
-    vulnerabilities,
-    criticalCount,
-    highCount,
-    mediumCount,
-    lowCount,
-    rawReport,
+    score,
+    maxScore: 100,
+    tool: 'hackmyagent',
+    toolVersion,
+    findings,
+    scanTimestamp,
+    verdict,
+    subReports,
     contentHash,
   };
 
-  // Include CAAT tree hash if computed
   if (data.treeHash) {
     payload.treeHash = data.treeHash;
-  }
-
-  // Add ATP extension fields
-  if (data.oasbResult) {
-    payload.oasbCompliance = data.oasbResult.compliance;
-    payload.oasbRating = data.oasbResult.rating;
-    payload.oasbL1 = data.oasbResult.l1Compliance;
-    payload.oasbL2 = data.oasbResult.l2Compliance;
-    payload.oasbL3 = data.oasbResult.l3Compliance;
-  }
-
-  if (data.soulResult) {
-    payload.soulScore = data.soulResult.score;
-    payload.soulConformance = data.soulResult.conformance;
-    payload.soulAgentTier = data.soulResult.agentTier;
-  }
-
-  if (data.attackReport) {
-    payload.attackRiskScore = data.attackReport.riskScore;
-    payload.attackRiskRating = data.attackReport.riskRating;
-    payload.attackTotal = data.attackReport.summary.total;
-    payload.attackSucceeded = data.attackReport.summary.successful;
   }
 
   return payload;
@@ -348,18 +328,27 @@ export async function publishScanResults(
     }
   }
 
-  const payload = buildPublishPayload(data);
+  // Read tool version from package.json
+  let toolVersion = '0.0.0';
+  try {
+    const pkgPath = require('path').join(__dirname, '../../package.json');
+    toolVersion = require(pkgPath).version;
+  } catch {
+    // Fallback version
+  }
 
-  // Sign if we have a keypair
+  const payload = buildPublishPayload(data, toolVersion);
+
+  // Sign and include identity in body (not headers)
   if (keypair) {
     const payloadString = JSON.stringify(payload);
     const signature = signPayload(payloadString, keypair.privateKey);
     if (signature) {
-      (payload as Record<string, unknown>).signature = signature;
-      (payload as Record<string, unknown>).publicKey = keypair.publicKey;
+      payload.signature = signature;
+      payload.publicKey = keypair.publicKey;
     }
     if (keypair.agentId) {
-      (payload as Record<string, unknown>).agentId = keypair.agentId;
+      payload.agentId = keypair.agentId;
     }
   }
 
@@ -373,7 +362,11 @@ export async function publishScanResults(
     });
     const scanToken = tokenResponse?.scanToken;
 
-    const result = await client.reportPublishResult(payload as any, scanToken);
+    const result = await client.reportPublishResult(payload, scanToken);
+
+    if (result.publishId) {
+      console.log(`Published to registry (${result.publishId.slice(0, 8)})`);
+    }
 
     // Report remediation tracking (non-blocking)
     if (data.hardeningFindings) {
@@ -404,7 +397,7 @@ export async function publishScanResults(
     const message = err instanceof Error ? err.message : 'Unknown error';
     return {
       success: false,
-      scanId: payload.scanId,
+      scanId: `hma-publish-${Date.now()}`,
       profileUrl: `${registryUrl}/agents/${data.packageName}`,
       status: 'error',
       isCommunity,
