@@ -16,7 +16,7 @@
  */
 
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { join, relative, extname } from 'node:path';
+import { join, relative, extname, basename } from 'node:path';
 
 import type { SecurityFinding, Severity } from '../hardening/security-check.js';
 import type { SecurityAST, CompilationResult } from './types.js';
@@ -125,9 +125,15 @@ export async function runNanoMindScan(
         nanomindUsedAtLeastOnce = true;
       }
 
-      // Run ALL four analyzers against this AST
+      // Run analyzers against this AST.
+      // Skip governance analysis for READMEs — they describe the tool,
+      // they're not governance artifacts. "Should" in a README is documentation,
+      // not a weak constraint.
       const verifier = (ast: SecurityAST) => compiler.verifyAST(ast);
-      const findings = runAllAnalyzers(result.ast, verifier);
+      const isReadme = /^readme/i.test(basename(filePath));
+      const findings = isReadme
+        ? runNonGovernanceAnalyzers(result.ast, verifier)
+        : runAllAnalyzers(result.ast, verifier);
       allASTFindings.push(...findings);
     } catch {
       // Skip files that fail to read or compile -- do not block the scan
@@ -269,6 +275,25 @@ function runAllAnalyzers(
   // Enrich all findings with context-aware fix suggestions
   // Uses TME classification + AST context to produce specific, actionable fixes
   // instead of generic template strings
+  return enrichFindings(findings, ast);
+}
+
+/**
+ * Run analyzers EXCEPT governance on a SecurityAST.
+ * Used for README files where "should"/"must" language is documentation,
+ * not governance constraints.
+ */
+function runNonGovernanceAnalyzers(
+  ast: SecurityAST,
+  verifier: (ast: SecurityAST) => boolean,
+): ASTFinding[] {
+  const findings: ASTFinding[] = [];
+  findings.push(...analyzeCapabilities(ast));
+  findings.push(...analyzeCredentials(ast, verifier));
+  // Skip: analyzeGovernance — README language is not governance
+  findings.push(...analyzeScope(ast, verifier));
+  findings.push(...analyzePrompt(ast, verifier));
+  findings.push(...analyzeCode(ast, verifier));
   return enrichFindings(findings, ast);
 }
 

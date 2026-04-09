@@ -6457,9 +6457,23 @@ async function checkNpmPackage(
 
     const packageDir = join(tempDir, 'package');
 
-    // Run full HMA scan
+    // Run full HMA scan + NanoMind (same pipeline as `secure`)
     const scanner = new HardeningScanner();
     const result = await scanner.scan({ targetDir: packageDir, autoFix: false });
+
+    // Run NanoMind semantic analysis and re-filter (matches secure command pipeline)
+    try {
+      const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
+      const nmResult = await orchestrateNanoMind(packageDir, result.findings, { silent: true });
+      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, packageDir);
+      const projectType = result.projectType || 'library';
+      result.findings = refiltered.filter((f: any) =>
+        !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
+      ) as typeof result.findings;
+      result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
+    } catch {
+      // NanoMind unavailable — use base scan results
+    }
 
     const failed = result.findings.filter(f => !f.passed);
     const critical = failed.filter(f => f.severity === 'critical');
