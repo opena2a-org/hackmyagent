@@ -165,7 +165,12 @@ const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', 'coverage',
   '.next', '.nuxt', '__pycache__', '.venv', 'venv',
   '.tox', '.mypy_cache', 'target', '.cache',
+  '__tests__', '__test__', '__mocks__', '__fixtures__',
+  'test', 'tests', 'spec', 'specs',
 ]);
+
+/** Test file patterns -- these contain test assertions, not governance constraints */
+const TEST_FILE_PATTERN = /\.(test|spec|e2e|integration)\.(ts|js|mjs|py|go)$/;
 
 async function walkDir(dir: string, results: string[], depth: number): Promise<void> {
   if (depth > 10 || results.length >= MAX_FILES_PER_SCAN) return;
@@ -200,6 +205,11 @@ async function walkDir(dir: string, results: string[], depth: number): Promise<v
       if (await isWithinSizeLimit(fullPath)) {
         results.push(fullPath);
       }
+      continue;
+    }
+
+    // Skip test files -- their `should`/`expect` language is not governance
+    if (TEST_FILE_PATTERN.test(entry.name)) {
       continue;
     }
 

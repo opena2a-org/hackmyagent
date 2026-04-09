@@ -906,24 +906,24 @@ export class HardeningScanner {
       const content = await fs.readFile(pkgPath, 'utf-8');
       const pkg = JSON.parse(content);
 
-      // Check if it's a CLI tool (has bin field)
-      if (pkg.bin) {
-        return 'cli';
-      }
-
       // Check dependencies for framework detection
       const allDeps = {
         ...pkg.dependencies,
         ...pkg.devDependencies,
       };
 
-      // Check for MCP server
+      // Check for MCP server BEFORE cli -- MCP servers often have bin fields
       if (
         allDeps['@modelcontextprotocol/sdk'] ||
         allDeps['mcp'] ||
         pkg.name?.includes('mcp')
       ) {
         return 'mcp';
+      }
+
+      // Check if it's a CLI tool (has bin field)
+      if (pkg.bin) {
+        return 'cli';
       }
 
       // Check for web frameworks
