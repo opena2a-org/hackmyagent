@@ -208,8 +208,10 @@ Examples:
   $ hackmyagent check https://github.com/punkpeye/awesome-mcp-servers
   $ hackmyagent check ./my-agent/
   $ hackmyagent check @publisher/skill --verbose
+  $ hackmyagent check pip:requests
+  $ hackmyagent check pypi:flask
   $ hackmyagent check modelcontextprotocol/servers --json`)
-  .argument('<target>', 'npm package name, local path, or skill identifier')
+  .argument('<target>', 'npm package, PyPI package (pip: or pypi: prefix), local path, GitHub repo, or skill identifier')
   .option('-v, --verbose', 'Show detailed verification info')
   .option('--json', 'Output as JSON (for scripting/CI)')
   .option('--offline', 'Skip DNS verification (offline mode)')
@@ -268,6 +270,12 @@ Examples:
         }
 
         if (risk === 'critical' || risk === 'high') process.exit(1);
+        return;
+      }
+
+      // PyPI package: download, run full HMA scan, clean up
+      if (looksLikePyPiPackage(skill)) {
+        await checkPyPiPackage(skill, options);
         return;
       }
 
@@ -6143,6 +6151,19 @@ program
 // ============================================================================
 
 /**
+ * Detect whether a string looks like a PyPI package reference.
+ *
+ * Requires an explicit prefix:
+ * - pip:package-name
+ * - pypi:package-name
+ *
+ * Bare names are NOT auto-detected as PyPI (they fall through to npm).
+ */
+function looksLikePyPiPackage(target: string): boolean {
+  return target.startsWith('pip:') || target.startsWith('pypi:');
+}
+
+/**
  * Detect whether a string looks like an npm package name rather than
  * a hostname, IP address, or local path.
  *
@@ -6618,6 +6639,158 @@ async function checkGitHubRepo(
  * Download an npm package, run full HMA secure scan, display results, clean up.
  * Checks the registry first; only downloads if data is missing or stale.
  */
+/**
+ * Download a PyPI package, scan it with HMA + NanoMind, and display results.
+ * Accepts targets prefixed with pip: or pypi: (e.g. pip:requests, pypi:flask).
+ */
+async function checkPyPiPackage(
+  target: string,
+  options: { verbose?: boolean; json?: boolean; offline?: boolean },
+): Promise<void> {
+  // Strip prefix to get the bare package name
+  const name = target.replace(/^(pip|pypi):/, '');
+
+  const { mkdtemp, rm, readdir } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { execFileSync } = await import('node:child_process');
+
+  if (!options.json && !globalCiMode) {
+    console.error(`Downloading ${name} from PyPI...`);
+  }
+
+  const tempDir = await mkdtemp(join(tmpdir(), 'hma-check-pypi-'));
+
+  try {
+    // Fetch package metadata from PyPI JSON API
+    const metaRes = await fetch(`https://pypi.org/pypi/${encodeURIComponent(name)}/json`);
+    if (!metaRes.ok) {
+      if (metaRes.status === 404) {
+        console.error(`Error: Package "${name}" not found on PyPI.`);
+      } else {
+        console.error(`Error: PyPI API returned ${metaRes.status} for "${name}".`);
+      }
+      process.exit(1);
+    }
+
+    const meta = await metaRes.json() as {
+      urls: Array<{ packagetype: string; url: string; filename: string }>;
+      info: { name: string; version: string; summary: string };
+    };
+
+    // Prefer sdist (source tarball) for scanning; fall back to first wheel
+    const sdist = meta.urls.find((u: any) => u.packagetype === 'sdist');
+    const wheel = meta.urls.find((u: any) => u.packagetype === 'bdist_wheel');
+    const dist = sdist || wheel || meta.urls[0];
+
+    if (!dist) {
+      console.error(`Error: No downloadable distribution found for "${name}" on PyPI.`);
+      process.exit(1);
+    }
+
+    // Download the archive
+    const archiveRes = await fetch(dist.url);
+    if (!archiveRes.ok) {
+      throw new Error(`Failed to download ${dist.filename}: HTTP ${archiveRes.status}`);
+    }
+    const archiveBuffer = Buffer.from(await archiveRes.arrayBuffer());
+    const archivePath = join(tempDir, dist.filename);
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(archivePath, archiveBuffer);
+
+    // Extract
+    const extractDir = join(tempDir, 'package');
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(extractDir, { recursive: true });
+
+    if (dist.filename.endsWith('.tar.gz') || dist.filename.endsWith('.tgz')) {
+      execFileSync('tar', ['xzf', archivePath, '-C', extractDir, '--strip-components=1'], { timeout: 30_000 });
+    } else if (dist.filename.endsWith('.zip') || dist.filename.endsWith('.whl')) {
+      execFileSync('unzip', ['-q', '-o', archivePath, '-d', extractDir], { timeout: 30_000 });
+    } else {
+      throw new Error(`Unsupported archive format: ${dist.filename}`);
+    }
+
+    // Run full HMA scan + NanoMind (same pipeline as checkNpmPackage)
+    const scanner = new HardeningScanner();
+    const result = await scanner.scan({ targetDir: extractDir, autoFix: false });
+
+    // Run NanoMind semantic analysis and re-filter
+    try {
+      const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
+      const nmResult = await orchestrateNanoMind(extractDir, result.findings, { silent: true });
+      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, extractDir);
+      const projectType = result.projectType || 'library';
+      result.findings = refiltered.filter((f: any) =>
+        !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
+      ) as typeof result.findings;
+      result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
+    } catch {
+      // NanoMind unavailable -- use base scan results
+    }
+
+    const failed = result.findings.filter(f => !f.passed);
+    const critical = failed.filter(f => f.severity === 'critical');
+    const high = failed.filter(f => f.severity === 'high');
+    const medium = failed.filter(f => f.severity === 'medium');
+    const low = failed.filter(f => f.severity === 'low');
+
+    if (options.json) {
+      writeJsonStdout({
+        name,
+        type: 'pypi-package',
+        source: 'local-scan',
+        version: meta.info.version,
+        projectType: result.projectType,
+        score: result.score,
+        maxScore: result.maxScore,
+        findings: result.findings,
+      });
+      return;
+    }
+
+    // Display results
+    const scoreRatio = result.score / result.maxScore;
+    const scoreColor = scoreRatio >= 0.7 ? colors.green : scoreRatio >= 0.4 ? colors.yellow : colors.red;
+
+    console.log(`\n  ${name} (PyPI)`);
+    console.log(`  Version:    ${meta.info.version}`);
+    console.log(`  Type:       ${result.projectType}`);
+    console.log(`  Score:      ${scoreColor}${result.score}/${result.maxScore}${RESET()}`);
+    console.log(`  Findings:   ${critical.length} critical, ${high.length} high, ${medium.length} medium, ${low.length} low`);
+
+    if (failed.length > 0) {
+      console.log();
+      const limit = options.verbose ? failed.length : 15;
+      for (const f of failed.slice(0, limit)) {
+        const sev = SEVERITY_DISPLAY[f.severity];
+        const attackClass = (f as any).attackClass ? ` (${(f as any).attackClass})` : '';
+        console.log(`  ${sev.color()}${sev.symbol}${RESET()} ${f.name}: ${f.message}${colors.dim}${attackClass}${RESET()}`);
+      }
+      if (failed.length > limit) {
+        console.log(`\n  ... and ${failed.length - limit} more (use --verbose to see all)`);
+      }
+    } else {
+      console.log(`\n  ${colors.green}No security issues found.${RESET()}`);
+    }
+
+    console.log(`\n  Full project scan: ${CLI_PREFIX} secure <dir>`);
+    console.log();
+
+    if (critical.length > 0 || high.length > 0) process.exit(1);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes('not found on PyPI')) {
+      console.error(`Error: ${message}`);
+    } else {
+      console.error(`Error scanning PyPI package "${name}": ${message}`);
+    }
+    process.exit(1);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
 async function checkNpmPackage(
   name: string,
   options: { verbose?: boolean; json?: boolean; offline?: boolean },
