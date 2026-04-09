@@ -89,6 +89,42 @@ export interface CommunityScanPayload {
   contentHash?: string;
 }
 
+/** Unified publish payload matching POST /api/v1/trust/publish contract */
+export interface UnifiedPublishPayload {
+  name: string;
+  score: number;
+  maxScore: number;
+  tool: string;
+  toolVersion: string;
+  findings: UnifiedFinding[];
+  scanTimestamp: string;
+  verdict: 'pass' | 'warn' | 'fail';
+  type?: string;
+  version?: string;
+  /** Ed25519 signature (base64) — moved from headers to body */
+  signature?: string;
+  /** Public key (PEM) of the signer */
+  publicKey?: string;
+  /** Agent identity ID */
+  agentId?: string;
+  /** Sub-reports from different scan types (hardening, attack, soul, oasb) */
+  subReports?: Record<string, unknown>;
+  /** CAAT tree hash for deduplication */
+  treeHash?: string;
+  /** SHA-256 content hash */
+  contentHash?: string;
+}
+
+export interface UnifiedFinding {
+  checkId: string;
+  name: string;
+  severity: string;
+  passed: boolean;
+  message: string;
+  category?: string;
+  attackClass?: string;
+}
+
 export interface RegistryConfig {
   registryUrl: string;
   apiKey: string;
@@ -250,27 +286,67 @@ export class RegistryClient {
   }
 
   /**
-   * Post scan results as a claimed agent via ATP --publish flow.
-   * Uses Ed25519 signature for authentication.
-   * Returns the scan ID and profile URL on success.
+   * Publish scan results via the unified /api/v1/trust/publish endpoint.
+   * Falls back to the legacy /api/v1/registry/community/scan-result on 404.
+   * Signature and publicKey are sent in the body (not headers).
    */
   async reportPublishResult(
-    payload: CommunityScanPayload & {
-      oasbCompliance?: number;
-      oasbRating?: string;
-      oasbL1?: number;
-      oasbL2?: number;
-      oasbL3?: number;
-      soulScore?: number;
-      soulConformance?: string;
-      soulAgentTier?: string;
-      attackRiskScore?: number;
-      attackRiskRating?: string;
-      attackTotal?: number;
-      attackSucceeded?: number;
-      signature?: string;
-      publicKey?: string;
-    },
+    payload: UnifiedPublishPayload,
+    scanToken?: string,
+  ): Promise<{ scanId: string; profileUrl: string; status: string; publishId?: string }> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'User-Agent': 'HackMyAgent-CLI/ATP-Publish',
+    };
+
+    if (scanToken) {
+      headers['X-Scan-Token'] = scanToken;
+    }
+
+    const body = JSON.stringify(payload);
+
+    // Try unified endpoint first
+    const unifiedUrl = `${this.config.registryUrl}/api/v1/trust/publish`;
+    try {
+      const response = await fetch(unifiedUrl, {
+        method: 'POST',
+        headers,
+        body,
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (response.ok) {
+        const result = await response.json() as Record<string, unknown>;
+        return {
+          scanId: payload.scanTimestamp,
+          profileUrl: (result.profileUrl as string) || `${this.config.registryUrl}/agents/${payload.name}`,
+          status: (result.consensusStatus as string) || 'accepted',
+          publishId: result.publishId as string | undefined,
+        };
+      }
+
+      // Fall back to legacy endpoint on 404
+      if (response.status === 404) {
+        return this.reportPublishResultLegacy(payload, scanToken);
+      }
+
+      const errBody = await response.text().catch(() => '');
+      throw new Error(`Registry publish failed (${response.status}): ${errBody}`);
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('Registry publish failed')) {
+        throw err;
+      }
+      // Network error — try legacy endpoint
+      return this.reportPublishResultLegacy(payload, scanToken);
+    }
+  }
+
+  /**
+   * Legacy fallback: POST to /api/v1/registry/community/scan-result.
+   * Maps unified payload back to the old CommunityScanPayload format.
+   */
+  private async reportPublishResultLegacy(
+    payload: UnifiedPublishPayload,
     scanToken?: string,
   ): Promise<{ scanId: string; profileUrl: string; status: string }> {
     const url = `${this.config.registryUrl}/api/v1/registry/community/scan-result`;
@@ -290,10 +366,30 @@ export class RegistryClient {
       headers['X-Agent-Public-Key'] = payload.publicKey;
     }
 
+    // Map unified format back to legacy CommunityScanPayload
+    const legacyPayload: Record<string, unknown> = {
+      packageName: payload.name,
+      packageType: payload.type,
+      scanId: `hma-publish-${Date.now()}`,
+      status: payload.verdict === 'fail' ? 'failed' : payload.verdict === 'warn' ? 'warnings' : 'passed',
+      completedAt: payload.scanTimestamp,
+      vulnerabilities: payload.findings.filter(f => !f.passed).map(f => ({
+        id: f.checkId,
+        severity: f.severity,
+        title: f.name,
+        description: f.message,
+      })),
+      criticalCount: payload.findings.filter(f => !f.passed && f.severity === 'critical').length,
+      highCount: payload.findings.filter(f => !f.passed && f.severity === 'high').length,
+      mediumCount: payload.findings.filter(f => !f.passed && f.severity === 'medium').length,
+      lowCount: payload.findings.filter(f => !f.passed && f.severity === 'low').length,
+      rawReport: payload.subReports,
+    };
+
     const response = await fetch(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify(payload),
+      body: JSON.stringify(legacyPayload),
     });
 
     if (!response.ok) {
@@ -303,8 +399,8 @@ export class RegistryClient {
 
     const result = await response.json() as Record<string, unknown>;
     return {
-      scanId: (result.scanId as string) || payload.scanId,
-      profileUrl: (result.profileUrl as string) || `${this.config.registryUrl}/agents/${payload.packageName}`,
+      scanId: (result.scanId as string) || legacyPayload.scanId as string,
+      profileUrl: (result.profileUrl as string) || `${this.config.registryUrl}/agents/${payload.name}`,
       status: (result.status as string) || 'accepted',
     };
   }

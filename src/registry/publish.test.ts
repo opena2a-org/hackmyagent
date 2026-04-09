@@ -259,7 +259,9 @@ describe('signPayload', () => {
 // ---------------------------------------------------------------
 
 describe('buildPublishPayload', () => {
-  it('builds payload from hardening findings', () => {
+  const TOOL_VERSION = '0.15.6';
+
+  it('builds unified payload from hardening findings', () => {
     const data: PublishScanData = {
       packageName: '@test/my-agent',
       packageVersion: '1.0.0',
@@ -267,66 +269,70 @@ describe('buildPublishPayload', () => {
       hardeningFindings: makeHardeningFindings(),
     };
 
-    const payload = buildPublishPayload(data);
+    const payload = buildPublishPayload(data, TOOL_VERSION);
 
-    expect(payload.packageName).toBe('@test/my-agent');
+    expect(payload.name).toBe('@test/my-agent');
     expect(payload.version).toBe('1.0.0');
-    expect(payload.scanId).toMatch(/^hma-publish-/);
-    expect(payload.status).toBe('failed'); // has a critical finding
-    expect(payload.criticalCount).toBe(1);
-    expect(payload.mediumCount).toBe(1);
-    expect(payload.vulnerabilities).toHaveLength(2); // 2 failed (critical + medium)
+    expect(payload.tool).toBe('hackmyagent');
+    expect(payload.toolVersion).toBe(TOOL_VERSION);
+    expect(payload.verdict).toBe('fail'); // has a critical finding
+    expect(payload.maxScore).toBe(100);
+    expect(payload.findings).toHaveLength(3); // all 3 findings (passed + failed)
+    expect(payload.findings.filter(f => !f.passed)).toHaveLength(2);
     expect(payload.contentHash).toBeDefined();
     expect(typeof payload.contentHash).toBe('string');
   });
 
-  it('builds payload from attack report', () => {
+  it('builds unified payload from attack report', () => {
     const data: PublishScanData = {
       packageName: 'my-target',
       directory: '/tmp/test',
       attackReport: makeAttackReport(),
     };
 
-    const payload = buildPublishPayload(data);
+    const payload = buildPublishPayload(data, TOOL_VERSION);
 
-    expect(payload.status).toBe('failed');
-    expect(payload.criticalCount).toBe(1);
-    expect(payload.highCount).toBe(1);
-    expect(payload.attackRiskScore).toBe(65);
-    expect(payload.attackRiskRating).toBe('high');
-    expect(payload.attackTotal).toBe(10);
-    expect(payload.attackSucceeded).toBe(2);
+    expect(payload.verdict).toBe('fail');
+    expect(payload.findings.filter(f => !f.passed && f.severity === 'critical')).toHaveLength(1);
+    expect(payload.findings.filter(f => !f.passed && f.severity === 'high')).toHaveLength(1);
+    const sub = payload.subReports as Record<string, any>;
+    expect(sub.attack.riskScore).toBe(65);
+    expect(sub.attack.riskRating).toBe('high');
+    expect(sub.attack.totalPayloads).toBe(10);
+    expect(sub.attack.successfulAttacks).toBe(2);
   });
 
-  it('builds payload from SOUL scan result', () => {
+  it('builds unified payload from SOUL scan result', () => {
     const data: PublishScanData = {
       packageName: '@test/agent',
       directory: '/tmp/test',
       soulResult: makeSoulResult(),
     };
 
-    const payload = buildPublishPayload(data);
+    const payload = buildPublishPayload(data, TOOL_VERSION);
 
-    expect(payload.status).toBe('passed');
-    expect(payload.soulScore).toBe(72);
-    expect(payload.soulConformance).toBe('standard');
-    expect(payload.soulAgentTier).toBe('AGENTIC');
+    expect(payload.verdict).toBe('pass');
+    const sub = payload.subReports as Record<string, any>;
+    expect(sub.soul.score).toBe(72);
+    expect(sub.soul.conformance).toBe('standard');
+    expect(sub.soul.agentTier).toBe('AGENTIC');
   });
 
-  it('builds payload from OASB benchmark result', () => {
+  it('builds unified payload from OASB benchmark result', () => {
     const data: PublishScanData = {
       packageName: '@test/agent',
       directory: '/tmp/test',
       oasbResult: makeOasbResult(),
     };
 
-    const payload = buildPublishPayload(data);
+    const payload = buildPublishPayload(data, TOOL_VERSION);
 
-    expect(payload.oasbCompliance).toBe(85);
-    expect(payload.oasbRating).toBe('Compliant');
-    expect(payload.oasbL1).toBe(90);
-    expect(payload.oasbL2).toBe(78);
-    expect(payload.oasbL3).toBe(65);
+    const sub = payload.subReports as Record<string, any>;
+    expect(sub.oasb.compliance).toBe(85);
+    expect(sub.oasb.rating).toBe('Compliant');
+    expect(sub.oasb.l1Compliance).toBe(90);
+    expect(sub.oasb.l2Compliance).toBe(78);
+    expect(sub.oasb.l3Compliance).toBe(65);
   });
 
   it('combines all scan types into a unified payload', () => {
@@ -340,22 +346,19 @@ describe('buildPublishPayload', () => {
       oasbResult: makeOasbResult(),
     };
 
-    const payload = buildPublishPayload(data);
+    const payload = buildPublishPayload(data, TOOL_VERSION);
 
-    expect(payload.vulnerabilities.length).toBeGreaterThan(0);
-    expect(payload.oasbCompliance).toBe(85);
-    expect(payload.soulScore).toBe(72);
-    expect(payload.attackRiskScore).toBe(65);
+    expect(payload.findings.length).toBeGreaterThan(0);
 
-    const raw = payload.rawReport as Record<string, unknown>;
-    expect(raw.hardening).toBeDefined();
-    expect(raw.attack).toBeDefined();
-    expect(raw.soul).toBeDefined();
-    expect(raw.oasb).toBeDefined();
-    expect(raw.publishedVia).toBe('atp-publish');
+    const sub = payload.subReports as Record<string, any>;
+    expect(sub.hardening).toBeDefined();
+    expect(sub.attack).toBeDefined();
+    expect(sub.soul).toBeDefined();
+    expect(sub.oasb).toBeDefined();
+    expect(sub.publishedVia).toBe('atp-publish');
   });
 
-  it('sets status to passed when no failed findings exist', () => {
+  it('sets verdict to pass when no failed findings exist', () => {
     const passingFindings: SecurityFinding[] = [
       {
         checkId: 'GIT-001',
@@ -374,13 +377,12 @@ describe('buildPublishPayload', () => {
       hardeningFindings: passingFindings,
     };
 
-    const payload = buildPublishPayload(data);
-    expect(payload.status).toBe('passed');
-    expect(payload.criticalCount).toBe(0);
-    expect(payload.highCount).toBe(0);
+    const payload = buildPublishPayload(data, TOOL_VERSION);
+    expect(payload.verdict).toBe('pass');
+    expect(payload.score).toBe(100);
   });
 
-  it('sets status to warnings when only medium/low findings', () => {
+  it('sets verdict to warn when only medium/low findings', () => {
     const findings: SecurityFinding[] = [
       {
         checkId: 'LOG-001',
@@ -399,8 +401,8 @@ describe('buildPublishPayload', () => {
       hardeningFindings: findings,
     };
 
-    const payload = buildPublishPayload(data);
-    expect(payload.status).toBe('warnings');
+    const payload = buildPublishPayload(data, TOOL_VERSION);
+    expect(payload.verdict).toBe('warn');
   });
 });
 
@@ -436,7 +438,7 @@ describe('publishScanResults', () => {
     };
     const publishResponse = {
       ok: true,
-      json: async () => ({ scanId: 'scan-abc', profileUrl: 'https://registry.opena2a.org/agents/test', status: 'accepted' }),
+      json: async () => ({ accepted: true, publishId: 'pub-abc', consensusStatus: 'pending', weight: 0.5 }),
     };
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(tokenResponse)
@@ -452,8 +454,15 @@ describe('publishScanResults', () => {
 
     expect(result.success).toBe(true);
     expect(result.isCommunity).toBe(true);
-    expect(result.scanId).toBe('scan-abc');
-    expect(result.status).toBe('accepted');
+    expect(result.status).toBe('pending');
+
+    // Verify unified endpoint was called
+    const fetchCalls = (fetch as any).mock.calls;
+    expect(fetchCalls[1][0]).toContain('/api/v1/trust/publish');
+    const body = JSON.parse(fetchCalls[1][1].body);
+    expect(body.name).toBe('@test/agent');
+    expect(body.tool).toBe('hackmyagent');
+    expect(body.findings).toBeDefined();
   });
 
   it('publishes as claimed agent when keypair exists', async () => {
@@ -466,7 +475,7 @@ describe('publishScanResults', () => {
     };
     const publishResponse = {
       ok: true,
-      json: async () => ({ scanId: 'scan-xyz', profileUrl: 'https://registry.opena2a.org/agents/claimed', status: 'accepted' }),
+      json: async () => ({ accepted: true, publishId: 'pub-xyz', consensusStatus: 'pending', weight: 1.0 }),
     };
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(tokenResponse)
@@ -483,18 +492,50 @@ describe('publishScanResults', () => {
     expect(result.success).toBe(true);
     expect(result.isCommunity).toBe(false);
 
-    // Check that scan token was requested and signature was sent
+    // Check that scan token was requested and signature is in the body (not headers)
     const fetchCalls = (fetch as any).mock.calls;
     expect(fetchCalls.length).toBe(2);
-    // First call: scan token request
     expect(fetchCalls[0][0]).toContain('request-scan-token');
-    // Second call: publish with signature
+    expect(fetchCalls[1][0]).toContain('/api/v1/trust/publish');
     const body = JSON.parse(fetchCalls[1][1].body);
     expect(body.signature).toBeDefined();
     expect(body.publicKey).toBeDefined();
     expect(body.agentId).toBe('test-agent-123');
-    // Verify scan token header was set
     expect(fetchCalls[1][1].headers['X-Scan-Token']).toBe('tok-123');
+  });
+
+  it('falls back to legacy endpoint on 404', async () => {
+    const tokenResponse = {
+      ok: true,
+      status: 200,
+      json: async () => ({ scanToken: 'tok-fb', tokenId: 'tid-fb', expiresIn: '300s' }),
+    };
+    const unified404 = {
+      ok: false,
+      status: 404,
+      text: async () => 'Not Found',
+    };
+    const legacyOk = {
+      ok: true,
+      json: async () => ({ scanId: 'scan-legacy', profileUrl: 'https://api.oa2a.org/agents/test', status: 'accepted' }),
+    };
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(tokenResponse)
+      .mockResolvedValueOnce(unified404)
+      .mockResolvedValueOnce(legacyOk));
+
+    const data: PublishScanData = {
+      packageName: '@test/agent',
+      directory: '/tmp/test',
+      hardeningFindings: makeHardeningFindings(),
+    };
+
+    const result = await publishScanResults(data, 'https://api.oa2a.org');
+
+    expect(result.success).toBe(true);
+    const fetchCalls = (fetch as any).mock.calls;
+    // Third call should be to legacy endpoint
+    expect(fetchCalls[2][0]).toContain('/api/v1/registry/community/scan-result');
   });
 
   it('handles registry errors gracefully', async () => {
@@ -504,6 +545,12 @@ describe('publishScanResults', () => {
       text: async () => 'Internal Server Error',
     };
     const publishFailResponse = {
+      ok: false,
+      status: 500,
+      text: async () => 'Internal Server Error',
+    };
+    // Network error on legacy fallback too
+    const legacyFailResponse = {
       ok: false,
       status: 500,
       text: async () => 'Internal Server Error',
