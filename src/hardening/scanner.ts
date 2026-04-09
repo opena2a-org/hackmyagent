@@ -187,7 +187,9 @@ const SKILL_CREDENTIAL_ACCESS_PATTERNS: RegExp[] = [
   /wallet.*\.json/gi,
   /seed.*phrase/gi,
   /private.*key/gi,
-  /\.env/gi,
+  // Match .env as a standalone file reference, not as part of process.env or documentation
+  // like ".env.example in sync" or "set in .env.local"
+  /(?:^|[\s"'`(])\.env(?:\.local|\.production|\.development)?(?:[\s"'`)]|$)/gi,
   /credentials\.json/gi,
 ];
 
@@ -4963,17 +4965,34 @@ dist/
       }
 
       // SKILL-005: Credential File Access
+      // Only flag as CRITICAL inside frontmatter (capabilities section).
+      // Body text often describes credential handling in documentation,
+      // which is informational, not an actual access pattern.
+      let inSkill005Frontmatter = false;
+      let skill005FrontmatterDelimiters = 0;
       for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i].trim();
+        if (trimmed === '---') {
+          skill005FrontmatterDelimiters++;
+          inSkill005Frontmatter = skill005FrontmatterDelimiters === 1;
+          if (skill005FrontmatterDelimiters >= 2) inSkill005Frontmatter = false;
+          continue;
+        }
         const line = lines[i];
         for (const pattern of SKILL_CREDENTIAL_ACCESS_PATTERNS) {
           pattern.lastIndex = 0;
           if (pattern.test(line)) {
+            // Frontmatter = actual capability declaration (CRITICAL)
+            // Body = still suspicious but lower severity (MEDIUM)
+            const severity = inSkill005Frontmatter ? 'critical' : 'medium';
             findings.push({
               checkId: 'SKILL-005',
               name: 'Credential File Access',
-              description: 'Skill attempts to access credential or sensitive configuration files',
+              description: inSkill005Frontmatter
+                ? 'Skill declares access to credential or sensitive configuration files'
+                : 'Skill body mentions credential file patterns',
               category: 'skill',
-              severity: 'critical',
+              severity,
               passed: false,
               message: `Credential file access pattern detected: "${line.trim().substring(0, 80)}..."`,
               file: relativePath,

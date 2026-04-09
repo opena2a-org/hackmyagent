@@ -350,15 +350,27 @@ function isDocumentationOrTestContext(ast: SecurityAST): boolean {
     return true;
   }
 
-  // Documentation (but not .skill.md, .soul.md, or CLAUDE.md which are functional)
+  // Documentation (but not .skill.md or .soul.md which are functional)
+  // CLAUDE.md and AGENTS.md are instructions/documentation, not credential access code
   if (
     (path.endsWith('.md') &&
       !path.endsWith('.skill.md') &&
-      !path.endsWith('.soul.md') &&
-      !path.endsWith('claude.md')) ||
+      !path.endsWith('.soul.md')) ||
     path.includes('doc/') ||
     path.includes('docs/') ||
     path.includes('readme')
+  ) {
+    return true;
+  }
+
+  // Lock files and env examples contain credential-like patterns but are not attack surfaces
+  if (
+    path.endsWith('pnpm-lock.yaml') ||
+    path.endsWith('package-lock.json') ||
+    path.endsWith('yarn.lock') ||
+    path.endsWith('.env.example') ||
+    path.endsWith('.env.sample') ||
+    path.endsWith('.env.template')
   ) {
     return true;
   }
