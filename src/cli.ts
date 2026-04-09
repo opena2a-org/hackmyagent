@@ -6293,6 +6293,96 @@ function looksLikeNpmPackage(target: string): boolean {
 const REGISTRY_URL = 'https://api.oa2a.org';
 const STALE_SCAN_DAYS = 3;
 
+// ============================================================================
+// Scan counter + contribute preference (~/.hackmyagent/config.json)
+// ============================================================================
+
+function getConfigPath(): string {
+  const { join } = require('node:path');
+  const home = process.env.HOME || process.env.USERPROFILE || '/tmp';
+  return join(home, '.hackmyagent', 'config.json');
+}
+
+function readConfig(): Record<string, unknown> {
+  const fs = require('node:fs');
+  try {
+    return JSON.parse(fs.readFileSync(getConfigPath(), 'utf-8'));
+  } catch {
+    return {};
+  }
+}
+
+function writeConfig(config: Record<string, unknown>): void {
+  const fs = require('node:fs');
+  const { dirname } = require('node:path');
+  const configPath = getConfigPath();
+  try {
+    fs.mkdirSync(dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  } catch {
+    // Non-fatal — config is convenience, not critical
+  }
+}
+
+function incrementScanCounter(): number {
+  const config = readConfig();
+  const count = ((config.scanCount as number) || 0) + 1;
+  writeConfig({ ...config, scanCount: count });
+  return count;
+}
+
+function hasContributeChoice(): boolean {
+  const config = readConfig();
+  return config.contribute !== undefined;
+}
+
+function isContributeEnabled(): boolean {
+  const config = readConfig();
+  return config.contribute === true;
+}
+
+function saveContributeChoice(enabled: boolean): void {
+  const config = readConfig();
+  writeConfig({ ...config, contribute: enabled });
+}
+
+function queuePendingScan(
+  name: string,
+  result: { score: number; maxScore: number; projectType: string; findings: SecurityFinding[] },
+): void {
+  const config = readConfig();
+  const queue = (config.pendingScans as Array<Record<string, unknown>>) || [];
+  queue.push({
+    name,
+    score: result.score,
+    maxScore: result.maxScore,
+    projectType: result.projectType,
+    findingCount: result.findings.filter(f => !f.passed).length,
+    timestamp: new Date().toISOString(),
+  });
+  // Keep max 20 pending scans
+  writeConfig({ ...config, pendingScans: queue.slice(-20) });
+}
+
+async function flushPendingScans(): Promise<void> {
+  const config = readConfig();
+  const queue = (config.pendingScans as Array<Record<string, unknown>>) || [];
+  if (queue.length === 0) return;
+
+  // Try to publish each, keep failures
+  const remaining: Array<Record<string, unknown>> = [];
+  for (const scan of queue) {
+    const ok = await publishToRegistry(scan.name as string, {
+      score: scan.score as number,
+      maxScore: scan.maxScore as number,
+      projectType: scan.projectType as string,
+      findings: [], // Summary only for queued scans
+    });
+    if (!ok) remaining.push(scan);
+  }
+  writeConfig({ ...config, pendingScans: remaining });
+}
+
 interface RegistryTrustData {
   found: boolean;
   name: string;
@@ -6353,7 +6443,7 @@ async function publishToRegistry(
   result: { score: number; maxScore: number; projectType: string; findings: SecurityFinding[] },
 ): Promise<boolean> {
   try {
-    const response = await fetch(`${REGISTRY_URL}/api/v1/trust/scans`, {
+    const response = await fetch(`${REGISTRY_URL}/api/v1/trust/publish`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -6518,22 +6608,39 @@ async function checkNpmPackage(
       console.log(`\n  ${colors.green}No security issues found.${RESET()}`);
     }
 
-    // Step 3: Offer to share with community (interactive only)
+    // Step 3: Community contribution (after 3 scans, interactive only)
     if (process.stdin.isTTY && !globalCiMode) {
-      const readline = await import('node:readline');
-      const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
-      const answer = await new Promise<string>(resolve => {
-        rl.question(`\n  Share this scan with the community? [Y/n] `, resolve);
-      });
-      rl.close();
+      const scanCount = incrementScanCounter();
+      if (scanCount >= 3 && !hasContributeChoice()) {
+        console.log();
+        console.log(`  ${colors.dim}Your scans help other developers make safer choices.`);
+        console.log(`  Sharing adds anonymized results to the OpenA2A trust registry`);
+        console.log(`  so others can check packages before installing.${RESET()}`);
 
-      if (answer.trim().toLowerCase() !== 'n') {
-        const ok = await publishToRegistry(name, result);
-        if (ok) {
-          console.error(`  ${colors.green}Shared. Thank you for building trust in AI.${RESET()}`);
-        } else {
-          console.error(`  ${colors.dim}Could not reach registry. Scan saved locally.${RESET()}`);
+        const readline = await import('node:readline');
+        const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+        const answer = await new Promise<string>(resolve => {
+          rl.question(`\n  Share scans with the community? [Y/n] `, resolve);
+        });
+        rl.close();
+
+        const wantsToShare = answer.trim().toLowerCase() !== 'n';
+        saveContributeChoice(wantsToShare);
+
+        if (wantsToShare) {
+          const ok = await publishToRegistry(name, result);
+          if (ok) {
+            console.error(`  ${colors.green}Shared. Future scans will auto-share.${RESET()}`);
+          } else {
+            // Silent — queue locally and retry on next scan
+            queuePendingScan(name, result);
+          }
         }
+      } else if (isContributeEnabled()) {
+        // Auto-share silently, queue on failure
+        flushPendingScans();
+        const ok = await publishToRegistry(name, result);
+        if (!ok) queuePendingScan(name, result);
       }
     }
 
