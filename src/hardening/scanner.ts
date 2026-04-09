@@ -7972,9 +7972,23 @@ dist/
       const contentForHomoglyph = content || rawBuffer.toString('utf-8');
       const homoglyphLines = contentForHomoglyph.split('\n');
 
+      // Track markdown code fences: homoglyphs inside ```...``` blocks in .md files
+      // are documentation examples, not executable code — skip them.
+      const isMarkdown = relativePath.endsWith('.md') || relativePath.endsWith('.txt');
+      let inCodeFence = false;
+
       for (let lineIdx = 0; lineIdx < homoglyphLines.length; lineIdx++) {
         const line = homoglyphLines[lineIdx];
         if (line.length > MAX_LINE_LENGTH) continue;
+
+        // Track code fence boundaries in markdown files
+        if (isMarkdown && line.trimStart().startsWith('```')) {
+          inCodeFence = !inCodeFence;
+          continue;
+        }
+        // Skip lines inside markdown code fences (documentation examples)
+        if (isMarkdown && inCodeFence) continue;
+
         // Skip comment lines
         const trimmed = line.trimStart();
         if (trimmed.startsWith('//') || trimmed.startsWith('#') || trimmed.startsWith('*')) continue;
