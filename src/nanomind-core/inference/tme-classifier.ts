@@ -53,6 +53,7 @@ export class TMEClassifier {
   private useOnnx = false;
   private needsDownload = false;
   private downloadPromise: Promise<boolean> | null = null;
+  private quiet = false;
 
   constructor(modelDir?: string) {
     // Look for model in standard locations (ordered by preference)
@@ -162,7 +163,7 @@ export class TMEClassifier {
    * Verifies SHA-256 integrity of each file. Cleans up on failure.
    * Returns true if download succeeded, false otherwise.
    */
-  static async downloadModel(targetDir?: string): Promise<boolean> {
+  static async downloadModel(targetDir?: string, quiet = false): Promise<boolean> {
     const dir = targetDir ?? DOWNLOAD_DIR;
     try {
       mkdirSync(dir, { recursive: true });
@@ -170,7 +171,7 @@ export class TMEClassifier {
       return false;
     }
 
-    console.error('Downloading security analysis model (5.5MB)...');
+    if (!quiet) console.error('Downloading security analysis model (5.5MB)...');
 
     for (const file of MODEL_FILES) {
       const dest = join(dir, file.name);
@@ -182,18 +183,18 @@ export class TMEClassifier {
         // Verify integrity
         const hash = await TMEClassifier.computeHash(dest);
         if (file.sha256 && hash !== file.sha256) {
-          console.error(`  Integrity check failed for ${file.name}. Removing.`);
+          if (!quiet) console.error(`  Integrity check failed for ${file.name}. Removing.`);
           try { unlinkSync(dest); } catch { /* ignore */ }
           return false;
         }
       } catch (err: any) {
-        console.error(`  Failed to download ${file.name}: ${err?.message ?? 'unknown error'}`);
+        if (!quiet) console.error(`  Failed to download ${file.name}: ${err?.message ?? 'unknown error'}`);
         try { unlinkSync(dest); } catch { /* ignore */ }
         return false;
       }
     }
 
-    console.error('Model ready. Using neural inference for deep scanning.');
+    if (!quiet) console.error('Model ready. Using neural inference for deep scanning.');
     return true;
   }
 
@@ -201,14 +202,15 @@ export class TMEClassifier {
    * Ensure the model is available. Downloads from HuggingFace if needed.
    * Call this from async contexts before classifyAsync().
    */
-  async ensureModel(): Promise<void> {
+  async ensureModel(quiet = false): Promise<void> {
+    this.quiet = quiet;
     if (!this.needsDownload) return;
     if (this.downloadPromise) {
       await this.downloadPromise;
       return;
     }
 
-    this.downloadPromise = TMEClassifier.downloadModel();
+    this.downloadPromise = TMEClassifier.downloadModel(undefined, quiet);
     const ok = await this.downloadPromise;
     this.downloadPromise = null;
 
@@ -221,7 +223,7 @@ export class TMEClassifier {
       this.loaded = false; // Force re-load with new paths
     } else {
       // Download failed; fall back to vocab scoring silently
-      console.error('Model download unavailable. Using vocabulary-based scoring.');
+      if (!quiet) console.error('Model download unavailable. Using vocabulary-based scoring.');
       this.needsDownload = false;
     }
   }
@@ -315,7 +317,7 @@ export class TMEClassifier {
    */
   async classifyAsync(text: string): Promise<TMEClassification> {
     // Auto-download model from HuggingFace if no local files found
-    if (this.needsDownload) await this.ensureModel();
+    if (this.needsDownload) await this.ensureModel(this.quiet);
 
     if (!this.load()) {
       return { intentClass: 'benign', attackClass: 'none', confidence: 0.5, topClasses: [] };

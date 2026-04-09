@@ -72,7 +72,7 @@ export async function orchestrateNanoMind(
     // the model to not be ready for subsequent files in the same scan.
     const { getTMEClassifier } = await import('./inference/tme-classifier.js');
     const tme = getTMEClassifier();
-    await tme.ensureModel();
+    await tme.ensureModel(silent);
 
     const { runNanoMindScan } = await import('./scanner-bridge.js');
     const nmResult: NanoMindScanResult = await runNanoMindScan(targetDir, existingFindings);

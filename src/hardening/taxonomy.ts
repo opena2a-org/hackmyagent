@@ -275,6 +275,11 @@ export function getAttackClass(checkId: string): string | undefined {
   return TAXONOMY_MAP[checkId];
 }
 
+/** Return a copy of the full taxonomy map (checkId -> attackClass). */
+export function getTaxonomyMap(): Record<string, string> {
+  return { ...TAXONOMY_MAP };
+}
+
 /**
  * Enrich an array of SecurityFindings with their attack class mappings.
  * Modifies findings in place.

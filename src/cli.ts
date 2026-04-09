@@ -5652,29 +5652,47 @@ Examples:
 
 program
   .command('check-metadata')
-  .description('Export metadata for all security checks by scanning test fixtures (JSON)')
-  .option('-d, --directory <dir>', 'Directory to scan for check metadata extraction')
+  .description('Export metadata for all security checks (JSON)')
+  .option('-d, --directory <dir>', 'Scan a specific directory to collect check metadata from findings')
+  .option('--json', 'Output as JSON (default)')
   .action(async (options: { directory?: string }) => {
-    const { getAttackClass } = require('./hardening/taxonomy');
-    const targetDir = options.directory || process.cwd();
+    const { getAttackClass, getTaxonomyMap } = require('./hardening/taxonomy');
 
-    // Run a real scan to collect all check metadata from findings
-    const scanner = new HardeningScanner();
-    const result = await scanner.scan({ targetDir, autoFix: false, scanDepth: 'deep' as any });
+    // Build static registry from taxonomy map (covers all known checks)
+    const taxMap = getTaxonomyMap();
+    const metadata: Record<string, { checkId: string; name: string; category: string; attackClass: string; severity: string }> = {};
 
-    const metadata: Record<string, { checkId: string; name: string; category: string; attackClass: string; severity: string; fix: string; guidance: string }> = {};
+    // Add all checks from taxonomy (the authoritative source of check IDs)
+    for (const checkId of Object.keys(taxMap)) {
+      const prefix = checkId.split('-').slice(0, -1).join('-') || checkId.split('-')[0];
+      metadata[checkId] = {
+        checkId,
+        name: checkId,
+        category: prefix.toLowerCase(),
+        attackClass: taxMap[checkId] || '',
+        severity: '',
+      };
+    }
 
-    for (const finding of result.findings) {
-      if (!metadata[finding.checkId]) {
-        metadata[finding.checkId] = {
-          checkId: finding.checkId,
-          name: finding.name,
-          category: finding.category,
-          attackClass: getAttackClass(finding.checkId) || '',
-          severity: finding.severity,
-          fix: finding.fix || '',
-          guidance: (finding as any).guidance || '',
-        };
+    // If a directory is provided, enrich with actual finding data (names, severity, etc.)
+    if (options.directory) {
+      const scanner = new HardeningScanner();
+      const result = await scanner.scan({ targetDir: options.directory, autoFix: false, scanDepth: 'deep' as any });
+
+      for (const finding of result.findings) {
+        if (metadata[finding.checkId]) {
+          metadata[finding.checkId].name = finding.name;
+          metadata[finding.checkId].category = finding.category;
+          metadata[finding.checkId].severity = finding.severity;
+        } else {
+          metadata[finding.checkId] = {
+            checkId: finding.checkId,
+            name: finding.name,
+            category: finding.category,
+            attackClass: getAttackClass(finding.checkId) || '',
+            severity: finding.severity,
+          };
+        }
       }
     }
 

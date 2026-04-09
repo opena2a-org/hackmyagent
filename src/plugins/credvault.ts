@@ -128,10 +128,17 @@ function scanFileForCredentials(filePath: string, agentDir: string): Finding[] {
   const relativePath = path.relative(agentDir, filePath);
   const lines = content.split('\n');
 
+  // Sensitive key names in .env files — flag even if the value doesn't match
+  // a known format (the key NAME reveals it's a credential)
+  const isEnvFile = relativePath.startsWith('.env') || relativePath.endsWith('.env');
+  const ENV_KEY_PATTERNS = /^(.*(?:API_KEY|SECRET_KEY|ACCESS_KEY|AUTH_TOKEN|PASSWORD|PRIVATE_KEY|CLIENT_SECRET|DATABASE_URL|MONGO_URI|REDIS_URL|JWT_SECRET|ENCRYPTION_KEY))\s*=/i;
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (line.length > 4096) continue; // Skip long lines to prevent ReDoS
+    if (line.trimStart().startsWith('#')) continue; // Skip comments
 
+    let found = false;
     for (const pattern of CREDENTIAL_PATTERNS) {
       if (pattern.regex.test(line)) {
         findings.push({
@@ -144,7 +151,26 @@ function scanFileForCredentials(filePath: string, agentDir: string): Finding[] {
           oasbControl: '1.1',
           autoFixable: true,
         });
+        found = true;
         break; // One finding per line
+      }
+    }
+
+    // For .env files, also flag by key name even if value format is unknown
+    if (!found && isEnvFile) {
+      const keyMatch = line.match(ENV_KEY_PATTERNS);
+      if (keyMatch) {
+        const keyName = keyMatch[1].trim();
+        findings.push({
+          id: 'CRED-001',
+          title: `Hardcoded credential: ${keyName}`,
+          description: `${keyName} found in ${relativePath} at line ${i + 1}. Use a secrets manager or environment variable injection instead of hardcoding values.`,
+          severity: 'high',
+          filePath: relativePath,
+          line: i + 1,
+          oasbControl: '1.1',
+          autoFixable: true,
+        });
       }
     }
   }
