@@ -125,15 +125,17 @@ export async function runNanoMindScan(
         nanomindUsedAtLeastOnce = true;
       }
 
-      // Run analyzers against this AST.
-      // Skip governance analysis for READMEs — they describe the tool,
-      // they're not governance artifacts. "Should" in a README is documentation,
-      // not a weak constraint.
+      // Skip READMEs entirely — they're human documentation, not security
+      // artifacts. A README describing filesystem operations is not an
+      // exfiltration surface, and "should" in a README is documentation
+      // language, not a weak governance constraint.
+      if (/^readme/i.test(basename(filePath))) {
+        continue;
+      }
+
+      // Run ALL analyzers against this AST
       const verifier = (ast: SecurityAST) => compiler.verifyAST(ast);
-      const isReadme = /^readme/i.test(basename(filePath));
-      const findings = isReadme
-        ? runNonGovernanceAnalyzers(result.ast, verifier)
-        : runAllAnalyzers(result.ast, verifier);
+      const findings = runAllAnalyzers(result.ast, verifier);
       allASTFindings.push(...findings);
     } catch {
       // Skip files that fail to read or compile -- do not block the scan
