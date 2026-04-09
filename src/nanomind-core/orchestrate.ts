@@ -57,6 +57,14 @@ export async function orchestrateNanoMind(
   }
 
   try {
+    // Ensure NanoMind daemon is running for Tier 2 inference.
+    // Non-blocking: if daemon can't start, Tier 0/1 (local TME) still works.
+    const { ensureDaemon } = await import('./daemon-lifecycle.js');
+    const daemonAvailable = await ensureDaemon();
+    if (!silent && daemonAvailable) {
+      process.stderr.write('NanoMind daemon: connected\n');
+    }
+
     // Pre-download the ONNX model before scanning starts.
     // For npm users without cached models, this triggers a one-time
     // download from HuggingFace (~5.5MB). Without this, the download
