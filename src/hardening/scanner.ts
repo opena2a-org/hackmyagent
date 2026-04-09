@@ -7696,6 +7696,14 @@ dist/
       //   - Zero-width chars: U+200B (E2 80 8B), U+200C (E2 80 8C), U+200D (E2 80 8D)
       //   - Mid-file BOM: U+FEFF (EF BB BF) -- skip offset 0
       //   - Bidi overrides: U+202A-202E (E2 80 AA-AE), U+2066-2069 (E2 81 A6-A9)
+
+      // Skip variation selector checks for documentation files where emoji are
+      // decorative, not steganographic. The isEmojiVariationSelector heuristic
+      // can't cover all valid emoji bases across Unicode versions, and FE0F in
+      // docs is essentially always an emoji presentation selector.
+      const isDocFile = /\.(md|txt)$/i.test(relativePath) ||
+        /^(README|CHANGELOG|CONTRIBUTING|AGENTS|CLAUDE|LICENSE|AUTHORS|HISTORY)/i.test(path.basename(relativePath));
+
       let hasVariationSelectors = false;
       let variationSelectorLine = 1;
       let hasTagCharsIn001 = false;
@@ -7714,9 +7722,11 @@ dist/
           continue;
         }
         // Variation selectors: EF B8 80-8F (U+FE00-FE0F)
-        // Skip U+FE0F (EF B8 8F) when preceded by an emoji base character,
-        // as it's the standard emoji presentation selector (not steganography).
+        // Skip entirely for doc files (variation selectors in markdown/changelogs
+        // are virtually always emoji presentation selectors, not steganography).
+        // For source files, check if preceded by a known emoji base character.
         if (
+          !isDocFile &&
           rawBuffer[i] === 0xEF &&
           i + 2 < rawBuffer.length &&
           rawBuffer[i + 1] === 0xB8 &&
