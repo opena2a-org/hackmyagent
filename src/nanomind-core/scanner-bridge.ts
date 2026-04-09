@@ -125,17 +125,24 @@ export async function runNanoMindScan(
         nanomindUsedAtLeastOnce = true;
       }
 
-      // Skip READMEs entirely — they're human documentation, not security
-      // artifacts. A README describing filesystem operations is not an
-      // exfiltration surface, and "should" in a README is documentation
-      // language, not a weak governance constraint.
-      if (/^readme/i.test(basename(filePath))) {
+      // Skip documentation and metadata files — these are not security artifacts.
+      // URLs in package.json are not exfiltration, "should" in README is not governance.
+      const fileName = basename(filePath).toLowerCase();
+      if (/^(readme|changelog|license|contributing|history|authors)/i.test(fileName) ||
+          fileName === 'package.json' || fileName === 'package-lock.json' ||
+          fileName === 'tsconfig.json' || fileName === '.npmrc') {
         continue;
       }
 
-      // Run ALL analyzers against this AST
+      // Select analyzers based on artifact type:
+      // - Security artifacts (SOUL, system prompts, skills, configs): ALL analyzers
+      // - Source code: credential + code analysis only (no governance/scope/exfil)
+      // - Everything else: ALL analyzers
       const verifier = (ast: SecurityAST) => compiler.verifyAST(ast);
-      const findings = runAllAnalyzers(result.ast, verifier);
+      const isSourceCode = result.ast.artifactType === 'source_code';
+      const findings = isSourceCode
+        ? runCodeAnalyzers(result.ast, verifier)
+        : runAllAnalyzers(result.ast, verifier);
       allASTFindings.push(...findings);
     } catch {
       // Skip files that fail to read or compile -- do not block the scan
@@ -281,20 +288,17 @@ function runAllAnalyzers(
 }
 
 /**
- * Run analyzers EXCEPT governance on a SecurityAST.
- * Used for README files where "should"/"must" language is documentation,
- * not governance constraints.
+ * Run only credential and code analyzers against a SecurityAST.
+ * Used for source code files (.ts, .js, .py, etc.) where governance,
+ * scope, exfiltration, and prompt analysis produce false positives.
+ * Source code "should" is a variable name or comment, not a constraint.
  */
-function runNonGovernanceAnalyzers(
+function runCodeAnalyzers(
   ast: SecurityAST,
   verifier: (ast: SecurityAST) => boolean,
 ): ASTFinding[] {
   const findings: ASTFinding[] = [];
-  findings.push(...analyzeCapabilities(ast));
   findings.push(...analyzeCredentials(ast, verifier));
-  // Skip: analyzeGovernance — README language is not governance
-  findings.push(...analyzeScope(ast, verifier));
-  findings.push(...analyzePrompt(ast, verifier));
   findings.push(...analyzeCode(ast, verifier));
   return enrichFindings(findings, ast);
 }
