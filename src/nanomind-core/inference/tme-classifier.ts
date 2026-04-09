@@ -19,16 +19,16 @@ import https from 'node:https';
 
 const HF_BASE = 'https://huggingface.co/opena2a/nanomind-security-classifier/resolve/main';
 const MODEL_FILES: Array<{ name: string; sha256: string }> = [
-  { name: 'tokenizer.json', sha256: '4095fd6fd3ae765b2bcfba0b03d59e8efa4fb96d6b92a20e3b362e497ea8dec5' },
-  { name: 'nanomind-tme.onnx', sha256: '93450d5ec31a3ede7aec5be7c0cf8ff3914c4b2c831a0ab822a8999c88714794' },
-  { name: 'nanomind-tme.onnx.data', sha256: 'e63ea7b5d89eda823a5c958b8f5d9a3f0e16e956895496d8d09a4b400d911f96' },
+  { name: 'tokenizer.json', sha256: '5ace7e6441505cf24dfb84d10b237c66edccaece075b3c5b0736c007d65355ce' },
+  { name: 'nanomind-tme.onnx', sha256: 'cf6c38ba2fcbea34b1ba9bd11ce7d93f8bca9cc583eedcc39ff29b6d415f0613' },
+  { name: 'nanomind-tme.onnx.data', sha256: '2baea7d74a289fe40ba005a9a5129939e69d8e2d3cfcb633ffff802b153f53e3' },
 ];
 const DOWNLOAD_DIR = join(homedir(), '.nanomind', 'models');
 
 const CLASSES = [
   'exfiltration', 'injection', 'privilege_escalation', 'persistence',
   'credential_abuse', 'lateral_movement', 'social_engineering',
-  'policy_violation', 'benign',
+  'policy_violation', 'benign', 'steganography',
 ];
 
 export interface TMEClassification {
@@ -395,6 +395,7 @@ export class TMEClassifier {
       social_engineering: [/urgent/i, /emergency/i, /compromised/i, /immediate/i, /failure.*will/i, /act.*now/i, /authorized.*by/i],
       lateral_movement: [/fetch.*config/i, /download.*instruction/i, /check.*update.*from/i, /load.*from.*http/i, /sync.*with.*remote/i],
       policy_violation: [/bypass.*soul/i, /override.*governance/i, /suspend.*constraint/i, /exception.*code/i, /relax.*safety/i],
+      steganography: [/invisible/i, /zero.width/i, /homoglyph/i, /codePointAt/i, /variation.*selector/i, /bidi.*override/i, /tag.*character/i, /glassworm/i, /stego/i, /hidden.*unicode/i],
     };
 
     for (let i = 0; i < CLASSES.length; i++) {
@@ -408,9 +409,11 @@ export class TMEClassifier {
       scores[i] = Math.min(0.95, matches * 0.15 + (matches > 0 ? 0.3 : 0));
     }
 
-    // Benign = inverse of max attack score
-    const maxAttack = Math.max(...scores.slice(0, -1));
-    scores[CLASSES.length - 1] = maxAttack > 0.3 ? 1 - maxAttack : 0.8;
+    // Benign = inverse of max attack score (exclude benign itself at index 8)
+    const benignIdx = CLASSES.indexOf('benign');
+    const attackScores = scores.filter((_, i) => i !== benignIdx);
+    const maxAttack = Math.max(...attackScores);
+    scores[benignIdx] = maxAttack > 0.3 ? 1 - maxAttack : 0.8;
 
     // Keep raw scores for intent classification
     const raw = [...scores];
