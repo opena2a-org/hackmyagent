@@ -210,7 +210,9 @@ Examples:
   $ hackmyagent check @publisher/skill --verbose
   $ hackmyagent check pip:requests
   $ hackmyagent check pypi:flask
-  $ hackmyagent check modelcontextprotocol/servers --json`)
+  $ hackmyagent check modelcontextprotocol/servers --json
+  $ hackmyagent check https://gitlab.com/org/repo
+  $ hackmyagent check https://example.com/agent-v1.tar.gz`)
   .argument('<target>', 'npm package, PyPI package (pip: or pypi: prefix), local path, GitHub repo, or skill identifier')
   .option('-v, --verbose', 'Show detailed verification info')
   .option('--json', 'Output as JSON (for scripting/CI)')
@@ -282,6 +284,12 @@ Examples:
       // GitHub repo: clone, run full HMA scan, clean up
       if (looksLikeGitHubRepo(skill)) {
         await checkGitHubRepo(skill, options);
+        return;
+      }
+
+      // Raw URL (non-GitHub): fetch/clone based on content type
+      if (looksLikeRawUrl(skill)) {
+        await checkRawUrl(skill, options);
         return;
       }
 
@@ -6210,6 +6218,16 @@ function looksLikeGitHubRepo(target: string): boolean {
 }
 
 /**
+ * Detect whether a string is an HTTP(S) URL that is NOT a GitHub repo.
+ * GitHub URLs are handled by looksLikeGitHubRepo; this catches everything else:
+ * GitLab, Bitbucket, self-hosted git, raw tarballs, zip archives, single files, etc.
+ */
+function looksLikeRawUrl(target: string): boolean {
+  if (looksLikeGitHubRepo(target)) return false;
+  return /^https?:\/\/.+/.test(target);
+}
+
+/**
  * Parse a GitHub target into org/repo and optional clone URL.
  * Returns { org, repo, cloneUrl }
  */
@@ -6784,6 +6802,191 @@ async function checkPyPiPackage(
       console.error(`Error: ${message}`);
     } else {
       console.error(`Error scanning PyPI package "${name}": ${message}`);
+    }
+    process.exit(1);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Fetch a raw URL, detect its type (git repo, tarball, zip, or single file),
+ * download to a temp dir, run full HMA + NanoMind scan, display results, clean up.
+ */
+async function checkRawUrl(
+  url: string,
+  options: { verbose?: boolean; json?: boolean; offline?: boolean },
+): Promise<void> {
+  const { mkdtemp, rm, writeFile, readdir } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join, basename } = await import('node:path');
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const execAsync = promisify(execFile);
+
+  const tempDir = await mkdtemp(join(tmpdir(), 'hma-check-url-'));
+  let scanDir = tempDir;
+  let displayName = url;
+
+  try {
+    // Git clone for known forge URLs and .git suffix
+    const isGitUrl = url.endsWith('.git')
+      || /^https?:\/\/(gitlab\.com|bitbucket\.org|codeberg\.org|gitea\.com|sr\.ht)\//.test(url);
+
+    if (isGitUrl) {
+      const repoName = basename(url.replace(/\.git$/, '')) || 'repo';
+      displayName = url.replace(/^https?:\/\//, '').replace(/\.git$/, '');
+
+      if (!options.json && !globalCiMode) {
+        console.error(`Cloning ${displayName}...`);
+      }
+
+      await execAsync(
+        'git', ['clone', '--depth', '1', '--single-branch', url, join(tempDir, repoName)],
+        { timeout: 120_000 },
+      );
+      scanDir = join(tempDir, repoName);
+    } else {
+      // HTTP fetch — use HEAD to determine content type
+      if (!options.json && !globalCiMode) {
+        console.error(`Fetching ${url}...`);
+      }
+
+      const headRes = await fetch(url, { method: 'HEAD', redirect: 'follow' });
+      if (!headRes.ok) {
+        console.error(`Error: HTTP ${headRes.status} fetching "${url}".`);
+        process.exit(1);
+      }
+
+      const contentType = headRes.headers.get('content-type') || '';
+      const finalUrl = headRes.url;
+      const fileName = basename(new URL(finalUrl).pathname) || 'download';
+
+      const isArchive = /\.(tar\.gz|tgz|tar\.bz2|tar\.xz|zip)$/i.test(fileName)
+        || contentType.includes('gzip')
+        || contentType.includes('tar')
+        || contentType.includes('zip')
+        || contentType.includes('compressed');
+
+      const bodyRes = await fetch(finalUrl, { redirect: 'follow' });
+      if (!bodyRes.ok || !bodyRes.body) {
+        console.error(`Error: Failed to download "${url}" (HTTP ${bodyRes.status}).`);
+        process.exit(1);
+      }
+      const buffer = Buffer.from(await bodyRes.arrayBuffer());
+
+      if (isArchive) {
+        const archivePath = join(tempDir, fileName);
+        await writeFile(archivePath, buffer);
+
+        const extractDir = join(tempDir, 'extracted');
+        await execAsync('mkdir', ['-p', extractDir]);
+
+        if (/\.(tar\.gz|tgz)$/i.test(fileName) || contentType.includes('gzip') || contentType.includes('tar')) {
+          await execAsync('tar', ['xzf', archivePath, '-C', extractDir], { timeout: 30_000 });
+        } else if (/\.tar\.bz2$/i.test(fileName)) {
+          await execAsync('tar', ['xjf', archivePath, '-C', extractDir], { timeout: 30_000 });
+        } else if (/\.tar\.xz$/i.test(fileName)) {
+          await execAsync('tar', ['xJf', archivePath, '-C', extractDir], { timeout: 30_000 });
+        } else if (/\.zip$/i.test(fileName)) {
+          await execAsync('unzip', ['-q', archivePath, '-d', extractDir], { timeout: 30_000 });
+        }
+
+        // If extraction produced a single directory, scan that
+        const entries = await readdir(extractDir);
+        if (entries.length === 1) {
+          const { statSync } = await import('node:fs');
+          const innerPath = join(extractDir, entries[0]);
+          if (statSync(innerPath).isDirectory()) {
+            scanDir = innerPath;
+          } else {
+            scanDir = extractDir;
+          }
+        } else {
+          scanDir = extractDir;
+        }
+
+        displayName = fileName;
+      } else {
+        // Single file: save for scanning
+        await writeFile(join(tempDir, fileName), buffer);
+        scanDir = tempDir;
+        displayName = fileName;
+      }
+    }
+
+    // Run full HMA scan + NanoMind
+    const scanner = new HardeningScanner();
+    const result = await scanner.scan({ targetDir: scanDir, autoFix: false });
+
+    try {
+      const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
+      const nmResult = await orchestrateNanoMind(scanDir, result.findings, { silent: true });
+      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, scanDir);
+      const projectType = result.projectType || 'library';
+      result.findings = refiltered.filter((f: any) =>
+        !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
+      ) as typeof result.findings;
+      result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
+    } catch {
+      // NanoMind unavailable — use base scan results
+    }
+
+    const failed = result.findings.filter(f => !f.passed);
+    const critical = failed.filter(f => f.severity === 'critical');
+    const high = failed.filter(f => f.severity === 'high');
+    const medium = failed.filter(f => f.severity === 'medium');
+    const low = failed.filter(f => f.severity === 'low');
+
+    if (options.json) {
+      writeJsonStdout({
+        name: displayName,
+        url,
+        type: 'raw-url',
+        source: 'local-scan',
+        projectType: result.projectType,
+        score: result.score,
+        maxScore: result.maxScore,
+        findings: result.findings,
+      });
+      return;
+    }
+
+    // Display results
+    const scoreRatio = result.score / result.maxScore;
+    const scoreColor = scoreRatio >= 0.7 ? colors.green : scoreRatio >= 0.4 ? colors.yellow : colors.red;
+
+    console.log(`\n  ${displayName} ${colors.dim}(URL)${RESET()}`);
+    console.log(`  Type:       ${result.projectType}`);
+    console.log(`  Score:      ${scoreColor}${result.score}/${result.maxScore}${RESET()}`);
+    console.log(`  Findings:   ${critical.length} critical, ${high.length} high, ${medium.length} medium, ${low.length} low`);
+
+    displayCheckFindings(failed, !!options.verbose);
+
+    // Community contribution (auto-share if opted in, no first-time prompt for URLs)
+    if (process.stdin.isTTY && !globalCiMode) {
+      if (isContributeEnabled()) {
+        flushPendingScans();
+        const ok = await publishToRegistry(displayName, result);
+        if (!ok) queuePendingScan(displayName, result);
+      }
+    }
+
+    console.log(`\n  Full project scan: ${CLI_PREFIX} secure <dir>`);
+    console.log();
+
+    if (critical.length > 0 || high.length > 0) process.exit(1);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
+      console.error(`Error: Could not clone repository from "${url}".`);
+      console.error(`\nVerify the URL is accessible and contains a git repository.`);
+    } else if (message.includes('timeout') || message.includes('Timeout')) {
+      console.error(`Error: Fetching "${url}" timed out. The target may be too large.`);
+      console.error(`\nTry downloading manually and scanning the local path:`);
+      console.error(`  ${CLI_PREFIX} check ./downloaded-dir/`);
+    } else {
+      console.error(`Error scanning URL: ${message}`);
     }
     process.exit(1);
   } finally {
