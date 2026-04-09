@@ -56,6 +56,10 @@ import { NemoClawScanner, NEMOCLAW_CATEGORIES } from './hardening/nemoclaw-scann
 const program = new Command();
 program.showHelpAfterError('(run with --help for usage)');
 
+// Total security check count across all scanner modules.
+// Update when adding new checks (verify with: grep -r "checkId:" src/hardening/ | grep -o "checkId: '[^']*'" | sort -u | wc -l)
+const CHECK_COUNT = 208;
+
 // Write a string to stdout synchronously with retry for pipe backpressure.
 // process.stdout.write() is async and gets truncated when process.exit()
 // runs before the stream flushes. fs.writeFileSync(1, ...) can fail with
