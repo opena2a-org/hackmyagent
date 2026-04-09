@@ -20,8 +20,8 @@ import https from 'node:https';
 const HF_BASE = 'https://huggingface.co/opena2a/nanomind-security-classifier/resolve/main';
 const MODEL_FILES: Array<{ name: string; sha256: string }> = [
   { name: 'tokenizer.json', sha256: '5ace7e6441505cf24dfb84d10b237c66edccaece075b3c5b0736c007d65355ce' },
-  { name: 'nanomind-tme.onnx', sha256: 'cf6c38ba2fcbea34b1ba9bd11ce7d93f8bca9cc583eedcc39ff29b6d415f0613' },
-  { name: 'nanomind-tme.onnx.data', sha256: '2baea7d74a289fe40ba005a9a5129939e69d8e2d3cfcb633ffff802b153f53e3' },
+  { name: 'nanomind-tme.onnx', sha256: '1c9c6db00385e0e871ee6d2508d90a3210eddd4abf45365151fb859d8abab9eb' },
+  { name: 'nanomind-tme.onnx.data', sha256: '1367c0d3086b8d5c698dc37ae309c3afdb41ffa4d35ecac9b8f1882ffeb1d018' },
 ];
 const DOWNLOAD_DIR = join(homedir(), '.nanomind', 'models');
 
