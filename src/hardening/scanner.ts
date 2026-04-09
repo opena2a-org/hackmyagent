@@ -4591,19 +4591,23 @@ dist/
     score: number;
     maxScore: number;
   } {
-    let score = 100;
-
-    // All findings passed in are concrete issues (already filtered)
+    // Sum severity weights for all failed, unfixed findings
+    let weightedSum = 0;
     for (const finding of findings) {
-      const weight = SEVERITY_WEIGHTS[finding.severity];
-
       if (!finding.passed && !finding.fixed) {
-        score -= weight;
+        weightedSum += SEVERITY_WEIGHTS[finding.severity];
       }
     }
 
-    // Normalize to 0-100
-    score = Math.max(0, score);
+    // Exponential decay: each additional finding has diminishing impact.
+    // Prevents score=0 for repos with many findings (e.g. full-clone GitHub repos)
+    // while preserving near-identical scores for sparse scans (1-2 findings).
+    // Decay constant 150 calibrated so: 1 medium(8)=95, 1 critical(25)=85,
+    // 3crit+9high(210)=25, extreme(700)=1
+    const DECAY_CONSTANT = 150;
+    const score = weightedSum === 0
+      ? 100
+      : Math.round(100 * Math.exp(-weightedSum / DECAY_CONSTANT));
     const maxScore = 100;
 
     return { score, maxScore };

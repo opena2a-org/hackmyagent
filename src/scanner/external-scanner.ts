@@ -117,12 +117,15 @@ export class ExternalScanner {
         findings.push(...portFindings);
       }
 
-      // Calculate score
-      let score = 100;
+      // Calculate score using exponential decay (diminishing returns per finding)
+      let weightedSum = 0;
       for (const finding of findings) {
-        score -= SEVERITY_WEIGHTS[finding.severity];
+        weightedSum += SEVERITY_WEIGHTS[finding.severity];
       }
-      score = Math.max(0, score);
+      const DECAY_CONSTANT = 150;
+      const score = weightedSum === 0
+        ? 100
+        : Math.round(100 * Math.exp(-weightedSum / DECAY_CONSTANT));
 
       const grade = calculateGrade(score);
       const duration = Date.now() - startTime;
