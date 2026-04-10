@@ -32,3 +32,15 @@ export {
   hybridVerify,
   validateKeySize,
 } from './hybrid-signing';
+
+export {
+  CapabilityManifestError,
+  MANIFEST_SIGNATURE_ALGORITHM,
+  MANIFEST_VERSION,
+  MAX_MANIFEST_SIZE_BYTES,
+  canonicalizeManifestPayload,
+  loadCapabilityManifest,
+  parseCapabilityManifest,
+} from './manifest-loader';
+
+export type { CapabilityManifestErrorCode } from './manifest-loader';
