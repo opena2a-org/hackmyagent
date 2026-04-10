@@ -1,9 +1,12 @@
 import type {
   ARPEvent,
   ARPConfig,
+  CapabilityManifest,
+  ComplyOnViolation,
   IntelligenceConfig,
   LLMAdapter,
   LLMAssessment,
+  EventCategory,
   EventSeverity,
 } from '../types';
 import { BudgetController } from './budget';
@@ -11,6 +14,27 @@ import { autoDetectAdapter, createAdapter } from './adapters';
 import { AnomalyDetector } from './anomaly';
 
 const SEVERITY_ORDER: EventSeverity[] = ['info', 'low', 'medium', 'high', 'critical'];
+
+/**
+ * Reason the comply gate denied a classified event. `prohibited` means the
+ * class is on the explicit deny list; `unknown` means the class is not on
+ * the allow list and parse-to-deny applies (per CR-001).
+ */
+export type ComplyDenyReason = 'prohibited' | 'unknown';
+
+/**
+ * Structured record of a comply gate decision. Written to `event.data.comply`
+ * so downstream enforcement can route on the reason without re-checking the
+ * manifest, and so tests can assert the outcome without scraping logs.
+ */
+export interface ComplyDecision {
+  /** Classification label the gate evaluated. */
+  classification: string;
+  /** Reason for the deny: `prohibited` or `unknown` (parse-to-deny). */
+  reason: ComplyDenyReason;
+  /** Action routed from the manifest's `comply.on_violation` field. */
+  action: ComplyOnViolation;
+}
 
 /**
  * The 3-Layer Intelligence Coordinator.
@@ -29,11 +53,22 @@ export class IntelligenceCoordinator {
   private adapter: LLMAdapter | null = null;
   private batchQueue: ARPEvent[] = [];
   private batchTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * Capability manifest used to enforce the `comply` envelope on classified
+   * events. Optional: when null the comply gate is inert and the coordinator
+   * runs the L0/L1/L2 stack unchanged.
+   */
+  private manifest: CapabilityManifest | null;
 
-  constructor(arpConfig: ARPConfig, dataDir: string) {
+  constructor(
+    arpConfig: ARPConfig,
+    dataDir: string,
+    manifest: CapabilityManifest | null = null,
+  ) {
     this.config = arpConfig.intelligence ?? {};
     this.budget = new BudgetController(dataDir, this.config);
     this.anomaly = new AnomalyDetector();
+    this.manifest = manifest;
 
     // Build agent context for LLM prompts
     this.agentContext = buildAgentContext(arpConfig);
@@ -54,11 +89,33 @@ export class IntelligenceCoordinator {
   }
 
   /**
+   * Replace or clear the capability manifest used for the comply gate.
+   * Exposed so the hosting runtime (e.g. the ARP proxy) can reload the
+   * manifest without tearing down the coordinator.
+   */
+  setCapabilityManifest(manifest: CapabilityManifest | null): void {
+    this.manifest = manifest;
+  }
+
+  /** The currently installed manifest, or null if none is set. */
+  getCapabilityManifest(): CapabilityManifest | null {
+    return this.manifest;
+  }
+
+  /**
    * Analyze an event through the 3-layer stack.
    * Mutates the event's category, severity, and classifiedBy fields.
    * Returns the LLM assessment if L2 was invoked.
    */
   async analyze(event: ARPEvent): Promise<LLMAssessment | null> {
+    // L0-comply: capability manifest gate. Runs before L1 so a classified
+    // event that violates the comply envelope short-circuits the stack and
+    // does not pollute the anomaly baseline or burn L2 budget. Inert when no
+    // manifest is installed, or when the event carries no classification.
+    if (this.manifest && applyComplyGate(event, this.manifest)) {
+      return null;
+    }
+
     // L0: Already classified by the monitor that emitted it
 
     // L1: Statistical anomaly detection (free)
@@ -340,4 +397,124 @@ function parseAssessment(content: string, tokens: number, cost: number): LLMAsse
 
 function severityIndex(severity: EventSeverity): number {
   return SEVERITY_ORDER.indexOf(severity);
+}
+
+/**
+ * Extract a classification label from an event's `data` bag. The coordinator
+ * recognizes `data.classification` as the canonical field (what
+ * NanoMind-Guard writes). Returns null when the event is not tagged with a
+ * classifier output, in which case the comply gate is inert.
+ */
+function getEventClassification(event: ARPEvent): string | null {
+  const raw = event.data?.classification;
+  return typeof raw === 'string' && raw.length > 0 ? raw : null;
+}
+
+/**
+ * Evaluate a classified event against the manifest's comply envelope and
+ * mutate the event in place when a policy deny fires. Returns `true` when
+ * the gate denied and the caller should short-circuit the rest of the
+ * analyze() stack; `false` when the event passed through (either because it
+ * carries no classification, or because the class is on the permitted list).
+ *
+ * Parse-to-deny ordering (CR-001):
+ *   1. Classification on `prohibited_classes` denies first, even if it also
+ *      appears on the permitted list. The deny list takes precedence.
+ *   2. Classification on `permitted_classes` passes through.
+ *   3. Any other classification is treated as unknown and denied via the
+ *      same `on_violation` action. The default of "unknown is denied" is
+ *      the parse-to-deny invariant documented in CR-001.
+ */
+function applyComplyGate(
+  event: ARPEvent,
+  manifest: CapabilityManifest,
+): boolean {
+  const classification = getEventClassification(event);
+  if (classification === null) {
+    // No classifier output on this event; comply gate cannot interpret it.
+    // Leaving it alone is intentional: the manifest governs classified
+    // traffic only, and we do not invent a class to deny on.
+    return false;
+  }
+
+  const { permitted_classes, prohibited_classes, on_violation } = manifest.comply;
+
+  let reason: ComplyDenyReason | null = null;
+  if (prohibited_classes.includes(classification)) {
+    reason = 'prohibited';
+  } else if (!permitted_classes.includes(classification)) {
+    reason = 'unknown';
+  }
+
+  if (reason === null) return false;
+
+  const decision: ComplyDecision = {
+    classification,
+    reason,
+    action: on_violation,
+  };
+  event.data.comply = decision;
+  event.classifiedBy = 'L0-comply';
+
+  applyComplyAction(event, on_violation);
+  return true;
+}
+
+/**
+ * Map a `ComplyOnViolation` action to concrete event category/severity
+ * mutations. Severity is only ever raised, never lowered, so a previously
+ * escalated event keeps its higher level. `log` is intentionally a no-op
+ * beyond the `comply` decision record already written by the caller.
+ */
+function applyComplyAction(
+  event: ARPEvent,
+  action: ComplyOnViolation,
+): void {
+  switch (action) {
+    case 'log':
+      // Decision is recorded on event.data.comply; no category/severity
+      // mutation so downstream rule engines can still classify.
+      return;
+    case 'alert':
+      event.category = raiseCategory(event.category, 'violation');
+      event.severity = raiseSeverity(event.severity, 'medium');
+      return;
+    case 'pause':
+      event.category = raiseCategory(event.category, 'violation');
+      event.severity = raiseSeverity(event.severity, 'high');
+      return;
+    case 'kill':
+      event.category = 'threat';
+      event.severity = 'critical';
+      return;
+    case 'deny':
+      // Proxy-level denial in coordinator terms is equivalent to a critical
+      // threat: the event must not be allowed to propagate normally.
+      event.category = 'threat';
+      event.severity = 'critical';
+      return;
+  }
+}
+
+const CATEGORY_ORDER: EventCategory[] = [
+  'normal',
+  'anomaly',
+  'violation',
+  'threat',
+];
+
+function raiseCategory(
+  current: EventCategory,
+  floor: EventCategory,
+): EventCategory {
+  return CATEGORY_ORDER.indexOf(current) >= CATEGORY_ORDER.indexOf(floor)
+    ? current
+    : floor;
+}
+
+function raiseSeverity(
+  current: EventSeverity,
+  floor: EventSeverity,
+): EventSeverity {
+  return severityIndex(current) >= severityIndex(floor) ? current : floor;
 }

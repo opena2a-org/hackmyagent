@@ -17,7 +17,7 @@ export interface ARPEvent {
   /** Structured event data (monitor-specific) */
   data: Record<string, unknown>;
   /** Which intelligence layer classified this event */
-  classifiedBy: 'L0-rules' | 'L1-statistical' | 'L2-llm';
+  classifiedBy: 'L0-rules' | 'L0-comply' | 'L1-statistical' | 'L2-llm';
   /** LLM assessment (only if classified by L2) */
   llmAssessment?: LLMAssessment;
 }
