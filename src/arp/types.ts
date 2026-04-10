@@ -237,3 +237,63 @@ export interface Monitor {
   stop(): Promise<void>;
   isRunning(): boolean;
 }
+
+// --- Capability Manifest (AIComply P1, brief Section 5.4) ---
+
+/**
+ * Capability tier that bounds what ARP is permitted to do on behalf of an agent.
+ * Higher tiers imply broader permitted classes and stricter signing requirements.
+ * Per AIComply brief Section 5.4 / AC-010 (seven key hierarchies).
+ */
+export type CapabilityTier = 'minimal' | 'read' | 'execute' | 'mutate' | 'privileged';
+
+/**
+ * Action to take when an agent attempts a class listed in `prohibited_classes`
+ * or a class outside `permitted_classes`.
+ * Maps onto the existing ARP enforcement actions.
+ */
+export type ComplyOnViolation = 'log' | 'alert' | 'pause' | 'kill' | 'deny';
+
+/**
+ * Compliance envelope for a capability manifest.
+ * Allow-list and deny-list of classification classes (as produced by NanoMind-Guard)
+ * with a violation policy. If a classification is not in `permitted_classes` and
+ * not in `prohibited_classes`, the default policy is `deny` (parse-to-deny, CR-001).
+ */
+export interface ComplyEnvelope {
+  /** Classes the agent is explicitly allowed to operate on */
+  permitted_classes: string[];
+  /** Classes the agent is explicitly forbidden from (takes precedence over permitted) */
+  prohibited_classes: string[];
+  /** Action on violation (allow/prohibited class, or unknown class under parse-to-deny) */
+  on_violation: ComplyOnViolation;
+}
+
+/**
+ * Capability manifest for an AIComply-governed agent.
+ * Must be signed with an Ed25519+ML-DSA-65 hybrid signature before ARP will load it
+ * (see `src/arp/crypto/hybrid-signing.ts`). Invalid or missing signatures trigger
+ * parse-to-deny via the existing CR-001 code path.
+ *
+ * Wire format (YAML on disk) carries the fields below as the signed payload, plus a
+ * detached `signature` block. The runtime shape (this interface) is what the loader
+ * returns after verification.
+ */
+export interface CapabilityManifest {
+  /** Manifest format version (semver). Current supported: "1.0.0". */
+  version: string;
+  /** Stable identifier for the governed agent (matches ARPConfig.agentName). */
+  agentId: string;
+  /** Capability tier for this agent. */
+  tier: CapabilityTier;
+  /** Compliance envelope (permitted/prohibited classes, violation policy). */
+  comply: ComplyEnvelope;
+  /** ISO timestamp when the manifest was issued. */
+  issuedAt: string;
+  /** Optional ISO timestamp when the manifest expires. */
+  expiresAt?: string;
+  /** Base64-encoded Ed25519 public key used to co-sign the manifest. */
+  ed25519PublicKey: string;
+  /** Base64-encoded ML-DSA-65 public key used to co-sign the manifest. */
+  mldsa65PublicKey: string;
+}
