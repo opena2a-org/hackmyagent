@@ -218,6 +218,30 @@ export interface ProxyConfig {
   upstreams: ProxyUpstream[];
   /** Block requests on detection (default: false, alert only) */
   blockOnDetection?: boolean;
+  /**
+   * Optional path to a signed capability manifest YAML file. When set, the
+   * proxy loads and verifies the manifest at `start()`. On any verification
+   * failure the proxy enters a deny-all state and every request is answered
+   * with 403. See `src/arp/crypto/manifest-loader.ts` for the wire format.
+   */
+  manifestPath?: string;
+}
+
+/**
+ * Structured log emitted when a capability manifest is rejected at proxy
+ * start. Passed to `ARPProxyDeps.onManifestRejection` so callers can route
+ * the rejection to a SIEM or audit trail. The client that triggered the
+ * request never sees these details; it only gets a generic 403 deny reason.
+ */
+export interface ManifestRejectionLog {
+  /** Discrete error code from the loader (e.g. SIGNATURE_INVALID, EXPIRED). */
+  code: string;
+  /** Absolute or relative path the loader attempted to read, if any. */
+  manifestPath?: string;
+  /** Short, non-sensitive reason string for the rejection. */
+  reason?: string;
+  /** ISO timestamp when the rejection was observed. */
+  timestamp: string;
 }
 
 export interface ProxyUpstream {

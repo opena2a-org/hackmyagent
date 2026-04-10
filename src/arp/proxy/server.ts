@@ -1,9 +1,19 @@
 import * as http from 'http';
-import type { ProxyConfig, ProxyUpstream, ARPEvent } from '../types';
+import type {
+  ProxyConfig,
+  ProxyUpstream,
+  ARPEvent,
+  CapabilityManifest,
+  ManifestRejectionLog,
+} from '../types';
 import type { EventEngine } from '../engine/event-engine';
 import type { PromptInterceptor } from '../interceptors/prompt';
 import type { MCPProtocolInterceptor } from '../interceptors/mcp-protocol';
 import type { A2AProtocolInterceptor } from '../interceptors/a2a-protocol';
+import {
+  CapabilityManifestError,
+  loadCapabilityManifest,
+} from '../crypto/manifest-loader';
 import { bufferBody, forwardRequest, sendResponse, sendError } from './forward';
 
 export interface ARPProxyDeps {
@@ -11,6 +21,17 @@ export interface ARPProxyDeps {
   promptInterceptor?: PromptInterceptor;
   mcpInterceptor?: MCPProtocolInterceptor;
   a2aInterceptor?: A2AProtocolInterceptor;
+  /**
+   * Optional hook invoked when a capability manifest is rejected at proxy
+   * start. Implementations should forward the structured log to a SIEM or
+   * audit trail. If not provided, a single-line structured JSON record is
+   * written to stderr via `console.error` so that a deployed proxy still
+   * leaves evidence of the rejection.
+   *
+   * The rejection entry never crosses the wire to clients; clients only see
+   * a generic 403 deny reason.
+   */
+  onManifestRejection?: (entry: ManifestRejectionLog) => void;
 }
 
 /**
@@ -20,17 +41,63 @@ export interface ARPProxyDeps {
  * Zero external dependencies (uses Node.js built-in http module).
  * Alert-only by default; optional blockOnDetection mode.
  */
+/**
+ * Generic client-facing reason for any manifest-related deny. Detail leaks
+ * (which code fired, why) are kept out of the HTTP response and routed to the
+ * rejection log hook instead.
+ */
+const MANIFEST_DENY_CLIENT_REASON =
+  'Request blocked by ARP: agent registration denied';
+
 export class ARPProxy {
   private readonly config: ProxyConfig;
   private readonly deps: ARPProxyDeps;
   private server: http.Server | null = null;
+  /**
+   * Loaded capability manifest once verification succeeds at start(). Kept on
+   * the instance so downstream wiring (e.g. IntelligenceCoordinator comply
+   * checks) can read it without re-loading the YAML.
+   */
+  private manifest: CapabilityManifest | null = null;
+  /**
+   * Set to true when manifest loading failed at start(). In this state the
+   * HTTP server still accepts connections (so the deploy does not crash) but
+   * every request is answered with the generic 403 deny reason. Fail closed
+   * per CR-001.
+   */
+  private manifestRejected = false;
 
   constructor(config: ProxyConfig, deps: ARPProxyDeps) {
     this.config = config;
     this.deps = deps;
   }
 
+  /** The verified manifest, or null if none was configured / it was rejected. */
+  getManifest(): CapabilityManifest | null {
+    return this.manifest;
+  }
+
+  /** True if the proxy is in deny-all state due to a manifest rejection. */
+  isManifestRejected(): boolean {
+    return this.manifestRejected;
+  }
+
   async start(): Promise<void> {
+    // Capability manifest gate runs before the HTTP server starts listening.
+    // Any failure transitions the proxy into a deny-all state but still brings
+    // the listener up, so the deployment surface is deterministic and the
+    // rejection is observable through the 403 responses (and the structured
+    // log hook) rather than via a crash loop.
+    if (this.config.manifestPath) {
+      try {
+        this.manifest = await loadCapabilityManifest(this.config.manifestPath);
+      } catch (err) {
+        this.manifestRejected = true;
+        this.manifest = null;
+        this.reportManifestRejection(err);
+      }
+    }
+
     return new Promise((resolve) => {
       this.server = http.createServer((req, res) => {
         this.handleRequest(req, res).catch((err) => {
@@ -47,6 +114,49 @@ export class ARPProxy {
         resolve();
       });
     });
+  }
+
+  /**
+   * Emit a structured log entry for a manifest rejection. Client responses
+   * only ever carry the generic deny reason; the discrete error code and any
+   * loader-provided reason stay in the log channel.
+   *
+   * Wraps the user-supplied hook in a try/catch so that a misbehaving hook
+   * cannot convert a soft rejection into a hard crash.
+   */
+  private reportManifestRejection(err: unknown): void {
+    const entry: ManifestRejectionLog =
+      err instanceof CapabilityManifestError
+        ? {
+            code: err.code,
+            manifestPath: this.config.manifestPath,
+            reason: err.details?.reason,
+            timestamp: new Date().toISOString(),
+          }
+        : {
+            // Unknown error types funnel into a synthetic code so callers can
+            // still switch on the shape without parsing the loader internals.
+            code: 'UNKNOWN_ERROR',
+            manifestPath: this.config.manifestPath,
+            reason: err instanceof Error ? err.message : String(err),
+            timestamp: new Date().toISOString(),
+          };
+
+    const hook = this.deps.onManifestRejection;
+    if (hook) {
+      try {
+        hook(entry);
+      } catch {
+        // Hook misbehavior must never turn a deny into a crash. Swallow.
+      }
+      return;
+    }
+    // Default sink: single-line structured JSON to stderr so a deployed proxy
+    // still leaves a trace without depending on a logger being wired up.
+    // eslint-disable-next-line no-console
+    console.error(
+      `[arp/proxy] capability manifest rejected ${JSON.stringify(entry)}`,
+    );
   }
 
   async stop(): Promise<void> {
@@ -73,6 +183,14 @@ export class ARPProxy {
     req: http.IncomingMessage,
     res: http.ServerResponse,
   ): Promise<void> {
+    // Deny-all short circuit when the capability manifest failed to verify at
+    // start(). Runs before any routing or body buffering so a rejected proxy
+    // cannot be coerced into touching upstream services or inspectors.
+    if (this.manifestRejected) {
+      sendError(res, 403, MANIFEST_DENY_CLIENT_REASON);
+      return;
+    }
+
     const url = req.url ?? '/';
 
     // Find matching upstream
