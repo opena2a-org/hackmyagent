@@ -134,6 +134,81 @@ export class NanoMindL1 {
   }
 
   /**
+   * Score an ARP event for behavioral risk WITHOUT mutating any twin state.
+   *
+   * Used by the behavioral risk IPC server (behavioral-risk-server.ts) to
+   * answer on-demand scoring requests from a coordinator running in another
+   * process, or by InProcessBehavioralRiskSource for single-process wiring.
+   * Unlike `processEvent`, this does not advance the sequence number, append
+   * to the event log, add to the event buffer, or accumulate the gradient.
+   * It is a pure read against the current baseline.
+   *
+   * Returns null when the twin is disabled or the baseline is not yet
+   * trained (totalEvents < 100). The caller must surface this to the IPC
+   * client as a NOT_READY signal; silently returning a zero score would
+   * misrepresent the twin's confidence.
+   */
+  scoreARPEvent(event: ARPEvent): AnomalyResult | null {
+    if (!this.enabled) return null;
+    if (!this.baseline || this.baseline.totalEvents < 100) return null;
+    const behavioral = this.convertEventReadonly(event);
+    if (!behavioral) return null;
+    const score = this.computeAnomalyScore(behavioral);
+    const response = this.getResponse(score);
+    return { score, action: response.action, reason: response.label };
+  }
+
+  /**
+   * Readonly variant of convertEvent that does not mutate lastEventTime or
+   * sequenceNum. Used by scoreARPEvent for on-demand IPC scoring.
+   */
+  private convertEventReadonly(event: ARPEvent): BehavioralEvent | null {
+    const now = Date.now();
+    const delta = this.lastEventTime > 0 ? now - this.lastEventTime : 0;
+    const sequenceNum = this.sequenceNum + 1;
+
+    let eventType: EventType = 'TOOL_CALL';
+    const source = String(event.data?.source || event.data?.monitor || '');
+    if (source.includes('network')) eventType = 'EXTERNAL_CALL';
+    else if (source.includes('filesystem')) eventType = 'MEMORY_READ';
+    else if (source.includes('mcp')) eventType = 'MCP_CALL';
+    else if (source.includes('capability')) eventType = 'CAPABILITY_CHECK';
+
+    let l0Decision: 'allow' | 'block' | 'alert' = 'allow';
+    if (event.data?._initialAction === 'kill' || event.data?._initialAction === 'pause') l0Decision = 'block';
+    else if (event.category === 'threat' || event.category === 'violation') l0Decision = 'alert';
+    else if (event.severity === 'high' || event.severity === 'critical') l0Decision = 'alert';
+
+    const capability = String(event.data?.capability || event.data?.type || 'unknown');
+    const toolName = event.data?.toolName ? String(event.data.toolName) : null;
+    const responseSize = typeof event.data?.responseSize === 'number' ? event.data.responseSize : 0;
+
+    return {
+      agentId: this.agentId,
+      sessionId: this.sessionId,
+      sequenceNum,
+      eventType,
+      capability,
+      toolName,
+      argHash: crypto.createHash('sha256').update(JSON.stringify(event.data || {})).digest('hex').substring(0, 16),
+      timestampDelta: delta,
+      wallClock: now,
+      responseSize,
+      responseCode: event.data?.error ? 1 : 0,
+      l0Decision,
+    };
+  }
+
+  /**
+   * Test-only seam: force-install a baseline so unit tests can exercise
+   * scoreARPEvent without first calling processEvent a hundred times. Marked
+   * with a leading underscore so it is easy to grep for in production code.
+   */
+  _setBaselineForTest(baseline: BaselineStats): void {
+    this.baseline = baseline;
+  }
+
+  /**
    * Process a behavioral event and return anomaly score.
    */
   processEvent(event: BehavioralEvent): AnomalyResult {

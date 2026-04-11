@@ -17,7 +17,13 @@ export interface ARPEvent {
   /** Structured event data (monitor-specific) */
   data: Record<string, unknown>;
   /** Which intelligence layer classified this event */
-  classifiedBy: 'L0-rules' | 'L1-statistical' | 'L2-llm';
+  classifiedBy:
+    | 'L0-rules'
+    | 'L0-comply'
+    | 'L1-statistical'
+    | 'L1-behavioral-risk'
+    | 'L1-guard-anomaly'
+    | 'L2-llm';
   /** LLM assessment (only if classified by L2) */
   llmAssessment?: LLMAssessment;
 }
@@ -141,6 +147,15 @@ export interface IntelligenceConfig {
   enableBatching?: boolean;
   /** Batch window in ms (default: 300000 = 5 min) */
   batchWindowMs?: number;
+  /**
+   * Deadline in milliseconds for a single behavioral risk IPC round-trip.
+   * Enforced by `BehavioralRiskSource.getBehavioralRiskSignal`. Default is
+   * 25 ms (see DEFAULT_BEHAVIORAL_RISK_TIMEOUT_MS in
+   * `src/arp/intelligence/behavioral-risk.ts`). Only meaningful when a
+   * behavioral risk source is attached to the coordinator; ignored
+   * otherwise.
+   */
+  behavioralRiskTimeoutMs?: number;
 }
 
 export type LLMAdapterType =
@@ -218,6 +233,30 @@ export interface ProxyConfig {
   upstreams: ProxyUpstream[];
   /** Block requests on detection (default: false, alert only) */
   blockOnDetection?: boolean;
+  /**
+   * Optional path to a signed capability manifest YAML file. When set, the
+   * proxy loads and verifies the manifest at `start()`. On any verification
+   * failure the proxy enters a deny-all state and every request is answered
+   * with 403. See `src/arp/crypto/manifest-loader.ts` for the wire format.
+   */
+  manifestPath?: string;
+}
+
+/**
+ * Structured log emitted when a capability manifest is rejected at proxy
+ * start. Passed to `ARPProxyDeps.onManifestRejection` so callers can route
+ * the rejection to a SIEM or audit trail. The client that triggered the
+ * request never sees these details; it only gets a generic 403 deny reason.
+ */
+export interface ManifestRejectionLog {
+  /** Discrete error code from the loader (e.g. SIGNATURE_INVALID, EXPIRED). */
+  code: string;
+  /** Absolute or relative path the loader attempted to read, if any. */
+  manifestPath?: string;
+  /** Short, non-sensitive reason string for the rejection. */
+  reason?: string;
+  /** ISO timestamp when the rejection was observed. */
+  timestamp: string;
 }
 
 export interface ProxyUpstream {
@@ -267,6 +306,106 @@ export interface ComplyEnvelope {
   prohibited_classes: string[];
   /** Action on violation (allow/prohibited class, or unknown class under parse-to-deny) */
   on_violation: ComplyOnViolation;
+}
+
+// --- NanoMind-Guard Classification (AIComply P1, producer side) ---
+
+/**
+ * Wire shape of a classification result emitted by NanoMind-Guard.
+ *
+ * NanoMind-Guard is the producer of the classification labels that the ARP
+ * coordinator's L0-comply gate consumes at `event.data.classification`. Every
+ * emitted result is hybrid-signed with the high-throughput ML-DSA-44 variant
+ * (Ed25519+ML-DSA-44) so the coordinator can verify that a classification
+ * actually originated from the Guard and has not been tampered with in transit.
+ *
+ * ML-DSA-44 is deliberately chosen over ML-DSA-65 (used for capability
+ * manifests) to keep signing cost low on the per-event hot path. Manifests
+ * are loaded once at startup; classifications are signed per event.
+ *
+ * Wire format on disk or on the network is a JSON object with the
+ * `signature` field as an `EncodedHybridSignature`. The signed payload is
+ * the result object with the `signature` field removed, serialized to
+ * canonical JSON (sorted keys, no whitespace) by
+ * `canonicalizeGuardResultPayload` in `verify-classification.ts`.
+ */
+export interface NanoMindGuardResult {
+  /** Classification label the Guard produced for this event (non-empty). */
+  classification: string;
+  /** Model confidence in the classification, in [0, 1]. */
+  confidence: number;
+  /** Semver of the NanoMind-Guard model that produced the result. */
+  modelVersion: string;
+  /** SHA-256 hex digest of the event payload that was classified. */
+  contentHash: string;
+  /** Unix ms timestamp when the Guard signed the result. */
+  timestamp: number;
+  /** Hybrid Ed25519+ML-DSA-44 signature in the wire-encoded form. */
+  signature: import('./crypto/types').EncodedHybridSignature;
+}
+
+/**
+ * Error codes returned by `verifyClassification` when a NanoMind-Guard
+ * result is rejected. Kept as a discrete union so callers can route on the
+ * reason without parsing strings. Stable surface.
+ */
+export type NanoMindGuardVerifyErrorCode =
+  | 'SCHEMA_ERROR'
+  | 'ALGORITHM_UNSUPPORTED'
+  | 'KEY_FORMAT_ERROR'
+  | 'SIGNATURE_INVALID'
+  | 'STALE'
+  | 'FUTURE_DATED'
+  | 'TIER_REJECTED'
+  | 'UNKNOWN_CLASSIFICATION'
+  | 'ABSOLUTE_DENY';
+
+/**
+ * Result of `verifyClassification`. On the valid branch the `classification`
+ * field is the cleared label the caller writes into `event.data.classification`
+ * before handing the event to the coordinator. On the invalid branch `code`
+ * and `reason` describe the rejection.
+ */
+export type NanoMindGuardVerifyResult =
+  | {
+      valid: true;
+      classification: string;
+      tier: CapabilityTier;
+      confidence: number;
+    }
+  | {
+      valid: false;
+      code: NanoMindGuardVerifyErrorCode;
+      reason: string;
+    };
+
+/**
+ * Configuration passed to `verifyClassification`. The caller supplies the
+ * trusted Guard public key (Ed25519+ML-DSA-44), the capability manifest that
+ * bounds the agent, and optional freshness parameters.
+ *
+ * A clock override is exposed so the unit tests can drive the freshness
+ * check without mocking the global clock.
+ */
+export interface NanoMindGuardVerifyOptions {
+  /** Trusted Guard hybrid public key (Ed25519+ML-DSA-44). */
+  guardPublicKey: import('./crypto/types').EncodedHybridPublicKey;
+  /** Capability manifest whose `tier` keys the rejection matrix. */
+  manifest: CapabilityManifest;
+  /**
+   * Maximum age of a Guard signature before it is rejected as STALE.
+   * Default: 5 minutes (300_000 ms). Per-event signing is expected to be
+   * well under a second, so anything older is a replay suspect.
+   */
+  maxAgeMs?: number;
+  /**
+   * Tolerance for signatures that appear to be timestamped slightly in the
+   * future (clock skew between producer and consumer). Default: 30 seconds.
+   * Anything beyond this is rejected as FUTURE_DATED.
+   */
+  futureSkewMs?: number;
+  /** Clock override. Defaults to `Date.now`. Used by the test harness. */
+  now?: () => number;
 }
 
 /**

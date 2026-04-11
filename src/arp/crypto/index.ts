@@ -1,5 +1,5 @@
 /**
- * ARP crypto module barrel (scaffolding, AIComply P1).
+ * ARP crypto module barrel.
  *
  * Public entry point for hybrid Ed25519 + ML-DSA signing primitives used by:
  * - Capability manifest loader (verifies Ed25519+ML-DSA-65 signature before load)
@@ -8,19 +8,39 @@
  */
 
 export type {
-  MLDsaVariant,
+  EncodedHybridPublicKey,
+  EncodedHybridSignature,
   HybridAlgorithm,
   HybridKeyPair,
   HybridPublicKey,
   HybridSignature,
-  EncodedHybridSignature,
   HybridVerifyResult,
+  MLDsaVariant,
 } from './types';
 
 export {
-  NotImplementedError,
+  HybridCryptoError,
+  KEY_SIZES,
+  decodeHybridPublicKey,
+  decodeHybridSignature,
+  encodeHybridPublicKey,
+  encodeHybridSignature,
   generateHybridKeyPair,
+  getHybridPublicKey,
+  hybridAlgorithmFor,
   hybridSign,
   hybridVerify,
-  hybridAlgorithmFor,
+  validateKeySize,
 } from './hybrid-signing';
+
+export {
+  CapabilityManifestError,
+  MANIFEST_SIGNATURE_ALGORITHM,
+  MANIFEST_VERSION,
+  MAX_MANIFEST_SIZE_BYTES,
+  canonicalizeManifestPayload,
+  loadCapabilityManifest,
+  parseCapabilityManifest,
+} from './manifest-loader';
+
+export type { CapabilityManifestErrorCode } from './manifest-loader';

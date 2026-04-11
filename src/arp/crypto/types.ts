@@ -59,6 +59,14 @@ export interface EncodedHybridSignature {
   ts: number;
 }
 
+/** Base64-encoded form of a hybrid public key (for YAML/JSON transport). */
+export interface EncodedHybridPublicKey {
+  algorithm: HybridAlgorithm;
+  ed25519PublicKey: string;
+  mldsaPublicKey: string;
+  mldsaVariant: MLDsaVariant;
+}
+
 /** Result of a hybrid signature verification. */
 export interface HybridVerifyResult {
   /** True only if BOTH ed25519 and mldsa halves verify successfully. */
