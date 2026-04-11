@@ -12,6 +12,12 @@ import type {
 import { BudgetController } from './budget';
 import { autoDetectAdapter, createAdapter } from './adapters';
 import { AnomalyDetector } from './anomaly';
+import {
+  DEFAULT_BEHAVIORAL_RISK_TIMEOUT_MS,
+  type BehavioralRiskResult,
+  type BehavioralRiskSource,
+  type BehavioralRiskUnavailableCode,
+} from './behavioral-risk';
 
 const SEVERITY_ORDER: EventSeverity[] = ['info', 'low', 'medium', 'high', 'critical'];
 
@@ -21,6 +27,30 @@ const SEVERITY_ORDER: EventSeverity[] = ['info', 'low', 'medium', 'high', 'criti
  * the allow list and parse-to-deny applies (per CR-001).
  */
 export type ComplyDenyReason = 'prohibited' | 'unknown';
+
+/**
+ * Record written to `event.data.behavioralRisk` by the coordinator after
+ * it queries the behavioral twin. The ok branch carries the fused score
+ * and the band the coordinator used; the unavailable branch carries a
+ * code so downstream audit can tell a healthy 0.0 from an IPC outage.
+ *
+ * The coordinator's unavailable policy is record-and-ignore: an IPC
+ * failure is not evidence of threat, so severity is not mutated. A
+ * deployment that wants a stricter policy can layer it on top by
+ * reading `event.data.behavioralRisk` after analyze() returns.
+ */
+export type BehavioralRiskRecord =
+  | {
+      status: 'ok';
+      score: number;
+      action: 'allow' | 'alert' | 'throttle' | 'suspend' | 'kill';
+      source: string;
+      band: 'low' | 'elevated' | 'high' | 'critical';
+    }
+  | {
+      status: 'unavailable';
+      code: BehavioralRiskUnavailableCode;
+    };
 
 /**
  * Structured record of a comply gate decision. Written to `event.data.comply`
@@ -59,16 +89,26 @@ export class IntelligenceCoordinator {
    * runs the L0/L1/L2 stack unchanged.
    */
   private manifest: CapabilityManifest | null;
+  /**
+   * Optional behavioral risk source. When set, `analyze()` fuses the
+   * signal returned by the source with the classification decision after
+   * the comply gate and before L1 statistical. When null, the coordinator
+   * runs the L0/L1/L2 stack unchanged. See `behavioral-risk.ts` for the
+   * IPC contract and the two shipping implementations.
+   */
+  private behavioralRiskSource: BehavioralRiskSource | null;
 
   constructor(
     arpConfig: ARPConfig,
     dataDir: string,
     manifest: CapabilityManifest | null = null,
+    behavioralRiskSource: BehavioralRiskSource | null = null,
   ) {
     this.config = arpConfig.intelligence ?? {};
     this.budget = new BudgetController(dataDir, this.config);
     this.anomaly = new AnomalyDetector();
     this.manifest = manifest;
+    this.behavioralRiskSource = behavioralRiskSource;
 
     // Build agent context for LLM prompts
     this.agentContext = buildAgentContext(arpConfig);
@@ -103,6 +143,20 @@ export class IntelligenceCoordinator {
   }
 
   /**
+   * Replace or clear the behavioral risk source. Exposed so a hosting
+   * runtime can swap from an in-process source to a unix socket source
+   * (or vice versa) without tearing down the coordinator.
+   */
+  setBehavioralRiskSource(source: BehavioralRiskSource | null): void {
+    this.behavioralRiskSource = source;
+  }
+
+  /** The currently installed behavioral risk source, or null. */
+  getBehavioralRiskSource(): BehavioralRiskSource | null {
+    return this.behavioralRiskSource;
+  }
+
+  /**
    * Analyze an event through the 3-layer stack.
    * Mutates the event's category, severity, and classifiedBy fields.
    * Returns the LLM assessment if L2 was invoked.
@@ -114,6 +168,21 @@ export class IntelligenceCoordinator {
     // manifest is installed, or when the event carries no classification.
     if (this.manifest && applyComplyGate(event, this.manifest)) {
       return null;
+    }
+
+    // Behavioral risk fusion. Runs AFTER the comply gate (a denied event
+    // should not burn an IPC round-trip) and BEFORE L1 statistical (so
+    // the behavioral signal can raise severity before L1 records its
+    // baseline). Bounded by a timeout enforced inside the source; every
+    // error path resolves to an `unavailable` result. Ignored when no
+    // source is attached.
+    if (this.behavioralRiskSource) {
+      const timeoutMs = this.config.behavioralRiskTimeoutMs ?? DEFAULT_BEHAVIORAL_RISK_TIMEOUT_MS;
+      const riskResult = await this.behavioralRiskSource.getBehavioralRiskSignal(
+        event,
+        timeoutMs,
+      );
+      applyBehavioralRisk(event, riskResult);
     }
 
     // L0: Already classified by the monitor that emitted it
@@ -517,4 +586,85 @@ function raiseSeverity(
   floor: EventSeverity,
 ): EventSeverity {
   return severityIndex(current) >= severityIndex(floor) ? current : floor;
+}
+
+/**
+ * Bands the behavioral risk score is sorted into, matched to severity
+ * floors raised on the event when the band fires. The score ranges come
+ * from NanoMindL1's response table; they are deliberately mirrored here
+ * rather than imported, so the coordinator's policy can drift
+ * independently of the twin's internal action labels if needed.
+ *
+ *   >= 0.8 : critical   -> event.category >= threat, severity >= critical
+ *   >= 0.6 : high       -> event.category >= violation, severity >= high
+ *   >= 0.4 : elevated   -> event.category >= anomaly, severity >= medium
+ *   <  0.4 : low        -> no mutation, record only
+ */
+function bandForScore(score: number): 'low' | 'elevated' | 'high' | 'critical' {
+  if (score >= 0.8) return 'critical';
+  if (score >= 0.6) return 'high';
+  if (score >= 0.4) return 'elevated';
+  return 'low';
+}
+
+/**
+ * Fuse a `BehavioralRiskResult` into an ARPEvent. Writes a structured
+ * record to `event.data.behavioralRisk` in both branches so downstream
+ * audit can distinguish a healthy low score from an IPC outage. On the
+ * `ok` branch, raises category and severity floors according to the
+ * band. On the `unavailable` branch, records the code and leaves
+ * category/severity untouched (record-and-ignore policy).
+ *
+ * `classifiedBy` is only rewritten to `L1-behavioral-risk` when the
+ * event has not already been classified by a stricter layer; the L0
+ * labels stay as-is so the origin of the decision is preserved.
+ */
+function applyBehavioralRisk(
+  event: ARPEvent,
+  result: BehavioralRiskResult,
+): void {
+  if (result.status === 'unavailable') {
+    const record: BehavioralRiskRecord = {
+      status: 'unavailable',
+      code: result.code,
+    };
+    event.data.behavioralRisk = record;
+    return;
+  }
+  const { score, action, source } = result.signal;
+  const band = bandForScore(score);
+  const record: BehavioralRiskRecord = {
+    status: 'ok',
+    score,
+    action,
+    source,
+    band,
+  };
+  event.data.behavioralRisk = record;
+
+  if (band === 'critical') {
+    event.category = 'threat';
+    event.severity = 'critical';
+    if (event.classifiedBy === 'L0-rules') {
+      event.classifiedBy = 'L1-behavioral-risk';
+    }
+    return;
+  }
+  if (band === 'high') {
+    event.category = raiseCategory(event.category, 'violation');
+    event.severity = raiseSeverity(event.severity, 'high');
+    if (event.classifiedBy === 'L0-rules') {
+      event.classifiedBy = 'L1-behavioral-risk';
+    }
+    return;
+  }
+  if (band === 'elevated') {
+    event.category = raiseCategory(event.category, 'anomaly');
+    event.severity = raiseSeverity(event.severity, 'medium');
+    if (event.classifiedBy === 'L0-rules') {
+      event.classifiedBy = 'L1-behavioral-risk';
+    }
+    return;
+  }
+  // Low band: record only, no mutation.
 }

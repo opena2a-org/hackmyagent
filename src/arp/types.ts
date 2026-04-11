@@ -17,7 +17,7 @@ export interface ARPEvent {
   /** Structured event data (monitor-specific) */
   data: Record<string, unknown>;
   /** Which intelligence layer classified this event */
-  classifiedBy: 'L0-rules' | 'L0-comply' | 'L1-statistical' | 'L2-llm';
+  classifiedBy: 'L0-rules' | 'L0-comply' | 'L1-statistical' | 'L1-behavioral-risk' | 'L2-llm';
   /** LLM assessment (only if classified by L2) */
   llmAssessment?: LLMAssessment;
 }
@@ -141,6 +141,15 @@ export interface IntelligenceConfig {
   enableBatching?: boolean;
   /** Batch window in ms (default: 300000 = 5 min) */
   batchWindowMs?: number;
+  /**
+   * Deadline in milliseconds for a single behavioral risk IPC round-trip.
+   * Enforced by `BehavioralRiskSource.getBehavioralRiskSignal`. Default is
+   * 25 ms (see DEFAULT_BEHAVIORAL_RISK_TIMEOUT_MS in
+   * `src/arp/intelligence/behavioral-risk.ts`). Only meaningful when a
+   * behavioral risk source is attached to the coordinator; ignored
+   * otherwise.
+   */
+  behavioralRiskTimeoutMs?: number;
 }
 
 export type LLMAdapterType =
