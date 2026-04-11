@@ -156,6 +156,66 @@ export interface IntelligenceConfig {
    * otherwise.
    */
   behavioralRiskTimeoutMs?: number;
+
+  /**
+   * Runtime twin (NanoMindL1 behavioral twin) configuration. When enabled,
+   * `AgentRuntimeProtection` constructs an in-process `NanoMindL1`, wraps
+   * it in `InProcessBehavioralRiskSource`, and passes it to the
+   * `IntelligenceCoordinator` so behavioral risk signals are fused into
+   * every analyzed event.
+   *
+   * Default: enabled when `intelligence.enabled !== false`. Opt out by
+   * setting `runtimeTwin.enabled = false`. Fleet federated learning is a
+   * separate, explicit opt-in governed by `fleetEnabled`.
+   *
+   * The twin boots with a cold baseline and returns `NOT_READY` until it
+   * has observed at least 100 events. During that warm-up the coordinator
+   * records the unavailable signal and does not raise severity, matching
+   * the record-and-ignore policy documented on `BehavioralRiskRecord`.
+   */
+  runtimeTwin?: {
+    /** Default: true when intelligence is enabled. */
+    enabled?: boolean;
+    /** Default: false. Opt-in fleet federated learning participation. */
+    fleetEnabled?: boolean;
+    /** Default: 'general'. Agent category for fleet aggregation bucketing. */
+    agentCategory?: string;
+  };
+
+  /**
+   * Guard anomaly (classification distribution drift) detector
+   * configuration. When `baseline` is provided, `AgentRuntimeProtection`
+   * constructs a `GuardAnomalyDetector` and passes it to the
+   * `IntelligenceCoordinator` so every classified event contributes to
+   * the drift window. Without a baseline the detector is not instantiated
+   * and drift detection is inert.
+   *
+   * The baseline is intentionally injected rather than auto-bootstrapped
+   * to prevent a compromised learning period from baking an attack into
+   * the reference distribution. Callers should source the baseline from
+   * the Registry-exported Guard training distribution in production
+   * deployments, or from a snapshotted JSON file in pre-Registry
+   * deployments.
+   *
+   * See `src/arp/intelligence/guard-anomaly.ts` for the chi-square drift
+   * model, bounded-memory contract, and parameter semantics.
+   */
+  guardAnomaly?: {
+    /** Default: true when a baseline is provided. */
+    enabled?: boolean;
+    /** Required. Keys are classification labels, values are counts or probabilities. */
+    baseline?: Record<string, number>;
+    /** Sliding window capacity. Default: 200. */
+    windowSize?: number;
+    /** Chi-square statistic threshold that triggers a drift alarm. Default: ~21.666. */
+    alarmThreshold?: number;
+    /** Laplace smoothing alpha. Default: 0.01. */
+    smoothing?: number;
+    /** Minimum observations before drift scoring activates. Default: max(30, windowSize / 4). */
+    minObservations?: number;
+    /** Audit source tag. Default: 'guard-anomaly'. */
+    sourceName?: string;
+  };
 }
 
 export type LLMAdapterType =
