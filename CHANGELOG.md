@@ -2,6 +2,18 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [0.16.6] - 2026-04-11
+
+### Fixed
+- **Reflexive false positives on security-scanning source code.** The config-oriented pattern detectors (`mapRiskSurfaces`, `extractDataAccessPatterns`) are no longer applied to `source_code` artifacts. These detectors were designed for skills, agent configs, and system prompts — where every byte is semantically meaningful — and produced near-100% false positive rates when run against Go/TypeScript/Python source files. A file whose purpose was to scan for `eval(`, `curl | sh`, or hardcoded credentials was flagged as *containing* those attacks. On opena2a-registry the reflexive false positive count dropped from 11 Critical / 62 High on Go source to 0 / 0.
+- **Source code preprocessor (`source-code-preprocessor.ts`).** Added a language-aware preprocessor that strips comments, import statements/blocks, and string literals from Go, TypeScript, JavaScript, Python, Rust, Java, and Ruby source before the config detectors see it. Keeps identifier and control-flow tokens visible for analysis, preserves byte offsets via whitespace-replacement so downstream index-based code still works.
+- **Source code classification precedence.** Recognized source extensions (`.go`, `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.py`, `.pyi`, `.rs`, `.java`, `.rb`) now win over content-based heuristics in `classifyArtifactType`. Previously a Go domain file with `json:"agentType"` struct tags was misclassified as an A2A agent card, and a Go scanner file containing `sk-ant-api\d{2}-...` regex literals was misclassified as a credential dump. Both now correctly classify as `source_code`.
+- **Canonical credential-format scan for source files.** Added a targeted scan that detects concrete secret formats (Anthropic, OpenAI, AWS, GitHub PAT/OAuth/app, Slack, Google, Stripe, PEM private keys) in source code, running against the unstripped content so real hardcoded secrets in string literals are still caught. The scan suppresses matches adjacent to regex metacharacters (scanner rule definitions) and matches containing placeholder markers (`FAKE`, `EXAMPLE`, `PLACEHOLDER`, etc.) directly inside the key bytes or variable name.
+- **Declared purpose extraction for source files.** `extractDeclaredPurpose` now skips language comment lines (`//`, `/*`, `*`, `#`, `"""`, `'''`) when reading the first paragraph. Previously a leading doc comment saying "fixture for testing credential flow" became the declared purpose, which then tripped `isDocumentationOrTestContext` and silenced legitimate credential findings on the same file.
+
+### Added
+- 26 regression tests covering the preprocessor (per-language strip behavior), the source-code classification precedence fix, the canonical credential-format scanner (positive and negative cases), and a direct regression for the opena2a-registry false-positive reproduction.
+
 ## [0.13.0] - 2026-04-02
 
 ### Added

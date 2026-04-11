@@ -36,6 +36,20 @@ export interface ParsedArtifact {
 // ============================================================================
 
 const TYPE_SIGNATURES: Array<{ test: (content: string, path?: string) => boolean; type: ArtifactType }> = [
+  // Source code: recognized source extensions.
+  //
+  // IMPORTANT: Extension-based source classification runs first so that
+  // content-based heuristics further down (a2a_card, agent_config,
+  // credential_file, system_prompt) cannot misclassify source files.
+  // A Go file containing the JSON tag string `"capabilities"` is still a
+  // Go file, not an agent card. A security scanner's regex patterns that
+  // match `sk-ant-api...` are still source code, not a credential dump.
+  // The downstream pipeline uses the `source_code` classification to apply
+  // language-aware preprocessing and AST-based credential analysis.
+  {
+    test: (_, path) => /\.(ts|tsx|js|jsx|mjs|cjs|py|pyi|go|rs|java|rb)$/.test(path ?? ''),
+    type: 'source_code',
+  },
   // Skills: SKILL.md, *.skill.md, or YAML frontmatter with capabilities
   {
     test: (content, path) =>
@@ -84,16 +98,11 @@ const TYPE_SIGNATURES: Array<{ test: (content: string, path?: string) => boolean
     test: (_, path) => /\.env($|\.)/.test(path ?? ''),
     type: 'env_file',
   },
-  // Credential file: contains API keys or secrets
+  // Credential file: contains API keys or secrets (non-source, non-env)
   {
     test: (content) =>
       /sk-ant-|sk-proj-|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36}|-----BEGIN .* KEY-----/.test(content),
     type: 'credential_file',
-  },
-  // Source code: .ts, .js, .py, .go, .rs
-  {
-    test: (_, path) => /\.(ts|js|py|go|rs|java|rb)$/.test(path ?? ''),
-    type: 'source_code',
   },
 ];
 
