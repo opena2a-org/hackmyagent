@@ -293,6 +293,106 @@ export interface ComplyEnvelope {
   on_violation: ComplyOnViolation;
 }
 
+// --- NanoMind-Guard Classification (AIComply P1, producer side) ---
+
+/**
+ * Wire shape of a classification result emitted by NanoMind-Guard.
+ *
+ * NanoMind-Guard is the producer of the classification labels that the ARP
+ * coordinator's L0-comply gate consumes at `event.data.classification`. Every
+ * emitted result is hybrid-signed with the high-throughput ML-DSA-44 variant
+ * (Ed25519+ML-DSA-44) so the coordinator can verify that a classification
+ * actually originated from the Guard and has not been tampered with in transit.
+ *
+ * ML-DSA-44 is deliberately chosen over ML-DSA-65 (used for capability
+ * manifests) to keep signing cost low on the per-event hot path. Manifests
+ * are loaded once at startup; classifications are signed per event.
+ *
+ * Wire format on disk or on the network is a JSON object with the
+ * `signature` field as an `EncodedHybridSignature`. The signed payload is
+ * the result object with the `signature` field removed, serialized to
+ * canonical JSON (sorted keys, no whitespace) by
+ * `canonicalizeGuardResultPayload` in `verify-classification.ts`.
+ */
+export interface NanoMindGuardResult {
+  /** Classification label the Guard produced for this event (non-empty). */
+  classification: string;
+  /** Model confidence in the classification, in [0, 1]. */
+  confidence: number;
+  /** Semver of the NanoMind-Guard model that produced the result. */
+  modelVersion: string;
+  /** SHA-256 hex digest of the event payload that was classified. */
+  contentHash: string;
+  /** Unix ms timestamp when the Guard signed the result. */
+  timestamp: number;
+  /** Hybrid Ed25519+ML-DSA-44 signature in the wire-encoded form. */
+  signature: import('./crypto/types').EncodedHybridSignature;
+}
+
+/**
+ * Error codes returned by `verifyClassification` when a NanoMind-Guard
+ * result is rejected. Kept as a discrete union so callers can route on the
+ * reason without parsing strings. Stable surface.
+ */
+export type NanoMindGuardVerifyErrorCode =
+  | 'SCHEMA_ERROR'
+  | 'ALGORITHM_UNSUPPORTED'
+  | 'KEY_FORMAT_ERROR'
+  | 'SIGNATURE_INVALID'
+  | 'STALE'
+  | 'FUTURE_DATED'
+  | 'TIER_REJECTED'
+  | 'UNKNOWN_CLASSIFICATION'
+  | 'ABSOLUTE_DENY';
+
+/**
+ * Result of `verifyClassification`. On the valid branch the `classification`
+ * field is the cleared label the caller writes into `event.data.classification`
+ * before handing the event to the coordinator. On the invalid branch `code`
+ * and `reason` describe the rejection.
+ */
+export type NanoMindGuardVerifyResult =
+  | {
+      valid: true;
+      classification: string;
+      tier: CapabilityTier;
+      confidence: number;
+    }
+  | {
+      valid: false;
+      code: NanoMindGuardVerifyErrorCode;
+      reason: string;
+    };
+
+/**
+ * Configuration passed to `verifyClassification`. The caller supplies the
+ * trusted Guard public key (Ed25519+ML-DSA-44), the capability manifest that
+ * bounds the agent, and optional freshness parameters.
+ *
+ * A clock override is exposed so the unit tests can drive the freshness
+ * check without mocking the global clock.
+ */
+export interface NanoMindGuardVerifyOptions {
+  /** Trusted Guard hybrid public key (Ed25519+ML-DSA-44). */
+  guardPublicKey: import('./crypto/types').EncodedHybridPublicKey;
+  /** Capability manifest whose `tier` keys the rejection matrix. */
+  manifest: CapabilityManifest;
+  /**
+   * Maximum age of a Guard signature before it is rejected as STALE.
+   * Default: 5 minutes (300_000 ms). Per-event signing is expected to be
+   * well under a second, so anything older is a replay suspect.
+   */
+  maxAgeMs?: number;
+  /**
+   * Tolerance for signatures that appear to be timestamped slightly in the
+   * future (clock skew between producer and consumer). Default: 30 seconds.
+   * Anything beyond this is rejected as FUTURE_DATED.
+   */
+  futureSkewMs?: number;
+  /** Clock override. Defaults to `Date.now`. Used by the test harness. */
+  now?: () => number;
+}
+
 /**
  * Capability manifest for an AIComply-governed agent.
  * Must be signed with an Ed25519+ML-DSA-65 hybrid signature before ARP will load it
