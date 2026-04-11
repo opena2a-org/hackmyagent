@@ -16,9 +16,10 @@
  *
  * A slow attacker whose individual events stay below the per-event
  * risk threshold but whose actions collectively shift the class
- * distribution (for example a sustained 5x over-rate of
- * `credential-access` attempts against the baseline) is invisible to
- * the per-event layer and obvious to the drift detector.
+ * distribution (for example a sustained 5x over-rate of a
+ * sensitive-class label relative to the training baseline) is
+ * invisible to the per-event layer and obvious to the drift
+ * detector.
  *
  * ## Design decisions
  *
