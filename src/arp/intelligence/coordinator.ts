@@ -18,6 +18,7 @@ import {
   type BehavioralRiskSource,
   type BehavioralRiskUnavailableCode,
 } from './behavioral-risk';
+import type { GuardAnomalySource, GuardAnomalyStatus } from './guard-anomaly';
 
 const SEVERITY_ORDER: EventSeverity[] = ['info', 'low', 'medium', 'high', 'critical'];
 
@@ -97,18 +98,30 @@ export class IntelligenceCoordinator {
    * IPC contract and the two shipping implementations.
    */
   private behavioralRiskSource: BehavioralRiskSource | null;
+  /**
+   * Optional guard anomaly (classification drift) detector. When set,
+   * `analyze()` records every classified event's label before the
+   * comply gate runs, so drift observations include denied attempts.
+   * Drift state is written to `event.data.guardAnomaly` in every
+   * branch (baseline-pending, normal, drift); only the drift branch
+   * raises severity. See `guard-anomaly.ts` for the bounded memory
+   * contract and the chi-square drift model.
+   */
+  private guardAnomaly: GuardAnomalySource | null;
 
   constructor(
     arpConfig: ARPConfig,
     dataDir: string,
     manifest: CapabilityManifest | null = null,
     behavioralRiskSource: BehavioralRiskSource | null = null,
+    guardAnomaly: GuardAnomalySource | null = null,
   ) {
     this.config = arpConfig.intelligence ?? {};
     this.budget = new BudgetController(dataDir, this.config);
     this.anomaly = new AnomalyDetector();
     this.manifest = manifest;
     this.behavioralRiskSource = behavioralRiskSource;
+    this.guardAnomaly = guardAnomaly;
 
     // Build agent context for LLM prompts
     this.agentContext = buildAgentContext(arpConfig);
@@ -157,11 +170,39 @@ export class IntelligenceCoordinator {
   }
 
   /**
+   * Replace or clear the guard anomaly detector. Exposed so a
+   * hosting runtime can hot-swap the drift model (for example to
+   * install a refreshed baseline from the Registry) without tearing
+   * down the coordinator.
+   */
+  setGuardAnomaly(guardAnomaly: GuardAnomalySource | null): void {
+    this.guardAnomaly = guardAnomaly;
+  }
+
+  /** The currently installed guard anomaly detector, or null. */
+  getGuardAnomaly(): GuardAnomalySource | null {
+    return this.guardAnomaly;
+  }
+
+  /**
    * Analyze an event through the 3-layer stack.
    * Mutates the event's category, severity, and classifiedBy fields.
    * Returns the LLM assessment if L2 was invoked.
    */
   async analyze(event: ARPEvent): Promise<LLMAssessment | null> {
+    // Guard anomaly (classification distribution drift) detection. Runs
+    // FIRST so the drift window observes every classified event,
+    // including those the comply gate will reject below. A burst of
+    // attempted prohibited-class calls IS the drift signal we want to
+    // catch, and short-circuiting before recording would blind the
+    // detector to attacks. Pure local computation, no IO, bounded
+    // memory; safe to run before any short-circuit. Record-and-lift
+    // policy: the status is always written, severity is only raised
+    // on the `drift` branch.
+    if (this.guardAnomaly) {
+      applyGuardAnomaly(event, this.guardAnomaly);
+    }
+
     // L0-comply: capability manifest gate. Runs before L1 so a classified
     // event that violates the comply envelope short-circuits the stack and
     // does not pollute the anomaly baseline or burn L2 budget. Inert when no
@@ -667,4 +708,39 @@ function applyBehavioralRisk(
     return;
   }
   // Low band: record only, no mutation.
+}
+
+/**
+ * Record a classified event's label into the guard anomaly detector
+ * and fuse the resulting drift status into the event. Always writes
+ * `event.data.guardAnomaly` with the current status. Only the
+ * `drift` branch raises category to `anomaly` and severity to
+ * `medium`; `baseline-pending` and `normal` are record-only.
+ *
+ * `classifiedBy` is only rewritten to `L1-guard-anomaly` when the
+ * prior layer was `L0-rules`, preserving the origin of any stricter
+ * decision already on the event. The comply gate runs AFTER this
+ * helper, so on a denied event the comply gate will overwrite
+ * `classifiedBy` to `L0-comply`, which correctly reflects the
+ * strictest decider.
+ *
+ * Skips silently on events with no classification label: drift is
+ * defined over classified traffic, and inventing a synthetic label
+ * would corrupt the baseline.
+ */
+function applyGuardAnomaly(
+  event: ARPEvent,
+  detector: GuardAnomalySource,
+): void {
+  const classification = getEventClassification(event);
+  if (classification === null) return;
+  const status: GuardAnomalyStatus = detector.record(classification);
+  event.data.guardAnomaly = status;
+  if (status.status === 'drift') {
+    event.category = raiseCategory(event.category, 'anomaly');
+    event.severity = raiseSeverity(event.severity, 'medium');
+    if (event.classifiedBy === 'L0-rules') {
+      event.classifiedBy = 'L1-guard-anomaly';
+    }
+  }
 }
