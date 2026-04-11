@@ -78,6 +78,15 @@ import * as path from 'path';
 import type { ARPConfig, ARPEvent, Monitor } from './types';
 import { EventEngine } from './engine/event-engine';
 import { IntelligenceCoordinator } from './intelligence/coordinator';
+import { NanoMindL1 } from './intelligence/nanomind-l1';
+import {
+  InProcessBehavioralRiskSource,
+  type BehavioralRiskSource,
+} from './intelligence/behavioral-risk';
+import {
+  GuardAnomalyDetector,
+  type GuardAnomalySource,
+} from './intelligence/guard-anomaly';
 import { EnforcementEngine, type AlertCallback } from './enforcement/kill-switch';
 import { LocalLogger } from './reporting/local-log';
 import { ProcessMonitor } from './monitors/process';
@@ -116,6 +125,23 @@ export class AgentRuntimeProtection {
   private readonly monitors: Monitor[] = [];
   private gtinForwarder: GTINForwarder | null = null;
   private running = false;
+  /**
+   * In-process runtime twin (behavioral anomaly scorer). Held for the
+   * lifetime of the ARP instance, attached to the event engine in
+   * start() so every event trains the twin's baseline. Null when the
+   * runtime twin is disabled in config.
+   */
+  private readonly runtimeTwin: NanoMindL1 | null;
+  /**
+   * Transport-agnostic view of the runtime twin passed to the
+   * coordinator. Null when the twin is disabled.
+   */
+  private readonly behavioralRiskSource: BehavioralRiskSource | null;
+  /**
+   * Classification drift detector. Non-null only when the caller
+   * provided a baseline in `config.intelligence.guardAnomaly.baseline`.
+   */
+  private readonly guardAnomaly: GuardAnomalySource | null;
 
   constructor(configOrPath?: ARPConfig | string) {
     if (typeof configOrPath === 'string') {
@@ -127,7 +153,33 @@ export class AgentRuntimeProtection {
     const dataDir = this.config.dataDir ?? path.join(process.cwd(), '.opena2a', 'arp');
 
     this.engine = new EventEngine(this.config);
-    this.intelligence = new IntelligenceCoordinator(this.config, dataDir);
+
+    // Build the runtime twin and behavioral risk source. Runtime twin is
+    // on by default when intelligence is enabled; opt out via
+    // `intelligence.runtimeTwin.enabled = false`. We do NOT attach the
+    // twin to the event engine here; start() does that so a user who
+    // constructs an ARP without calling start() does not get surprise
+    // event handlers.
+    this.runtimeTwin = buildRuntimeTwin(this.config);
+    this.behavioralRiskSource = this.runtimeTwin
+      ? new InProcessBehavioralRiskSource(this.runtimeTwin, 'runtime-twin-inproc')
+      : null;
+
+    // Build the guard anomaly detector. Only constructed when the caller
+    // injected a baseline; otherwise drift detection is inert.
+    this.guardAnomaly = buildGuardAnomaly(this.config);
+
+    // Wire both sources into the coordinator. The third argument
+    // (manifest) stays null here; capability manifests are loaded by
+    // ARPProxy.start for HTTP proxy deployments and are not part of the
+    // AgentRuntimeProtection constructor surface today.
+    this.intelligence = new IntelligenceCoordinator(
+      this.config,
+      dataDir,
+      null,
+      this.behavioralRiskSource,
+      this.guardAnomaly,
+    );
     this.enforcement = new EnforcementEngine();
     this.logger = new LocalLogger(dataDir);
 
@@ -199,6 +251,14 @@ export class AgentRuntimeProtection {
   /** Start all monitors */
   async start(): Promise<void> {
     if (this.running) return;
+
+    // Attach the runtime twin to the event engine BEFORE monitors start
+    // so the twin observes every event from the first tick. The twin
+    // trains its own baseline over the first 100 events and does not
+    // mutate the event or block the L0 decision.
+    if (this.runtimeTwin) {
+      this.runtimeTwin.attach(this.engine);
+    }
 
     for (const monitor of this.monitors) {
       await monitor.start();
@@ -283,4 +343,69 @@ export class AgentRuntimeProtection {
   getEnforcement(): EnforcementEngine {
     return this.enforcement;
   }
+
+  /**
+   * Get the intelligence coordinator. Exposed so tests can assert the
+   * coordinator was constructed with the expected behavioral risk and
+   * guard anomaly sources, and so advanced integrations can swap
+   * sources at runtime via `setBehavioralRiskSource` / `setGuardAnomaly`.
+   */
+  getIntelligence(): IntelligenceCoordinator {
+    return this.intelligence;
+  }
+
+  /** The runtime twin instance, or null when disabled. */
+  getRuntimeTwin(): NanoMindL1 | null {
+    return this.runtimeTwin;
+  }
+}
+
+/**
+ * Construct an in-process `NanoMindL1` runtime twin from the ARP config,
+ * or return null when the caller disabled intelligence or the runtime
+ * twin explicitly. Kept as a free function so the constructor stays
+ * short and the default policy is visible in one place.
+ *
+ * Default policy:
+ *   - When `intelligence.enabled === false`: no twin (L2 disabled implies
+ *     the behavioral layer is also unwanted).
+ *   - When `intelligence.runtimeTwin.enabled === false`: no twin.
+ *   - Otherwise: construct a twin seeded from `config.agentName`, with
+ *     fleet federation opt-in from the config (default off).
+ */
+function buildRuntimeTwin(config: ARPConfig): NanoMindL1 | null {
+  const ic = config.intelligence;
+  if (ic?.enabled === false) return null;
+  const twinCfg = ic?.runtimeTwin;
+  if (twinCfg?.enabled === false) return null;
+  return new NanoMindL1(config.agentName, {
+    enabled: true,
+    fleetEnabled: twinCfg?.fleetEnabled ?? false,
+    agentCategory: twinCfg?.agentCategory ?? 'general',
+  });
+}
+
+/**
+ * Construct a `GuardAnomalyDetector` from the ARP config, or return
+ * null when no baseline was provided or the caller explicitly disabled
+ * guard anomaly detection. A baseline is required: drift detection
+ * without a reference distribution is nonsense, so we refuse to
+ * auto-bootstrap one from observations. The caller supplies a
+ * Registry-exported training distribution in production, or a
+ * snapshotted JSON file pre-Registry.
+ */
+function buildGuardAnomaly(config: ARPConfig): GuardAnomalySource | null {
+  const gaCfg = config.intelligence?.guardAnomaly;
+  if (!gaCfg) return null;
+  if (gaCfg.enabled === false) return null;
+  const baseline = gaCfg.baseline;
+  if (!baseline || Object.keys(baseline).length === 0) return null;
+  return new GuardAnomalyDetector({
+    baseline,
+    windowSize: gaCfg.windowSize,
+    alarmThreshold: gaCfg.alarmThreshold,
+    smoothing: gaCfg.smoothing,
+    minObservations: gaCfg.minObservations,
+    sourceName: gaCfg.sourceName,
+  });
 }
