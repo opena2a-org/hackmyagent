@@ -349,8 +349,23 @@ HackMyAgent performs 187 security checks across 39 categories. This document pro
 
 ## Additional Categories
 
-### Git Security (GIT-001 to GIT-003)
-- Missing .gitignore, incomplete patterns, .env at risk
+### GIT-001: Missing .gitignore
+- **Severity:** Medium
+- **Fixable:** Yes
+- **Description:** No .gitignore file to prevent accidental commits of sensitive files
+- **Remediation:** Run `npx hackmyagent secure --fix` to create a .gitignore with standard security patterns. Without .gitignore, sensitive files (.env, secrets.json, *.pem, *.key) can be accidentally committed to version control and exposed.
+
+### GIT-002: Incomplete .gitignore
+- **Severity:** High
+- **Fixable:** Yes
+- **Description:** Critical patterns (.env, secrets.json, *.pem, *.key) are missing from .gitignore, allowing sensitive files to be accidentally committed
+- **Remediation:** Run `npx hackmyagent secure --fix` to add missing patterns to .gitignore. Missing patterns mean sensitive files could be accidentally committed and pushed to remote repositories.
+
+### GIT-003: .env Not Ignored
+- **Severity:** Critical
+- **Fixable:** Yes
+- **Description:** .env file exists but is not listed in .gitignore, putting secrets at risk of being committed
+- **Remediation:** Run `npx hackmyagent secure --fix` to add .env to .gitignore. .env files contain API keys and secrets. Without .gitignore protection, a single `git add .` can expose all credentials in your repository history.
 
 ### File Permissions (PERM-001 to PERM-003)
 - World-readable files, executable permissions, ownership
