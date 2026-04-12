@@ -195,37 +195,43 @@ program
   .command('check')
   .description(`Check if a package, repo, or skill is safe
 
-Accepts npm packages, GitHub repos, local paths, or skill identifiers:
-  • npm package: queries the registry; downloads + scans (${CHECK_COUNT} checks + NanoMind) if data is missing or stale (>${STALE_SCAN_DAYS}d)
-  • PyPI package: downloads + scans (${CHECK_COUNT} checks + NanoMind)
-  • GitHub repo: queries the registry; shallow clones + scans if data is missing or stale (>${STALE_SCAN_DAYS}d)
-  • Local path: runs NanoMind semantic analysis
-  • Skill identifier: verifies publisher, permissions, revocation
+Downloads + scans (${CHECK_COUNT} checks + NanoMind) by default, with trust context from the OpenA2A registry.
 
-Use --rescan to skip the registry cache and force a fresh local scan.
+Accepts:
+  • npm package: hackmyagent check express
+  • PyPI package: hackmyagent check pip:requests
+  • GitHub repo:  hackmyagent check getsentry/sentry-mcp
+  • Local path:   hackmyagent check ./my-agent/
+  • Skill:        hackmyagent check @publisher/skill
+  • URL:          hackmyagent check https://example.com/agent-v1.tar.gz
+
+Output includes: verdict, security score, findings with fix commands, registry trust context, and path forward for recovery.
 
 Risk levels: low, medium, high, critical
 Exit code 1 if high/critical risk detected.
 
 Examples:
-  $ hackmyagent check express
-  $ hackmyagent check @modelcontextprotocol/server-filesystem
-  $ hackmyagent check @sentry/mcp-server --rescan
-  $ hackmyagent check modelcontextprotocol/servers
-  $ hackmyagent check https://github.com/punkpeye/awesome-mcp-servers
-  $ hackmyagent check ./my-agent/
-  $ hackmyagent check @publisher/skill --verbose
-  $ hackmyagent check pip:requests
-  $ hackmyagent check pypi:flask
-  $ hackmyagent check modelcontextprotocol/servers --json
-  $ hackmyagent check https://gitlab.com/org/repo
-  $ hackmyagent check https://example.com/agent-v1.tar.gz`)
+  $ hackmyagent check @sentry/mcp-server
+  $ hackmyagent check pip:flask
+  $ hackmyagent check getsentry/sentry-mcp --verbose
+  $ hackmyagent check ./my-agent/ --json
+  $ hackmyagent check express --no-scan    # registry only (fast)
+  $ hackmyagent check express --no-registry # offline mode`)
   .argument('<target>', 'npm package, PyPI package (pip: or pypi: prefix), local path, GitHub repo, or skill identifier')
-  .option('-v, --verbose', 'Show detailed verification info')
+  .option('-v, --verbose', 'Show detailed verification info (check IDs, categories)')
   .option('--json', 'Output as JSON (for scripting/CI)')
-  .option('--offline', 'Skip DNS verification (offline mode)')
-  .option('--rescan', 'Force a fresh local scan, bypassing cached registry data')
-  .action(async (skill: string, options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean }) => {
+  .option('--no-scan', 'Registry only, skip local scan (fast mode for CI)')
+  .option('--no-registry', 'Local scan only, skip registry lookup (offline mode)')
+  .option('--offline', 'Alias for --no-registry')
+  .option('--rescan', 'Deprecated: local scan is now the default')
+  .action(async (skill: string, options: { verbose?: boolean; json?: boolean; scan?: boolean; registry?: boolean; offline?: boolean; rescan?: boolean }) => {
+    // Commander parses --no-scan as scan:false, --no-registry as registry:false
+    // Normalize: --offline is alias for --no-registry
+    if (options.offline) options.registry = false;
+    // --rescan deprecation
+    if (options.rescan && !options.json && !globalCiMode) {
+      console.error(`${colors.yellow}Note: --rescan is deprecated. Local scan is now the default.${RESET()}`);
+    }
     try {
       // Detect local file/directory paths - run NanoMind scan instead of registry lookup
       const { existsSync, statSync } = await import('node:fs');
@@ -236,7 +242,6 @@ Examples:
       if (isLocalPath) {
         // Local path: run NanoMind semantic analysis directly
         const targetDir = statSync(resolved).isFile() ? dirname(resolved) : resolved;
-        const targetFile = statSync(resolved).isFile() ? resolved : null;
 
         const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
         const nmResult = await orchestrateNanoMind(targetDir, [], { silent: !!options.json });
@@ -260,27 +265,17 @@ Examples:
           return;
         }
 
+        displayUnifiedCheck({
+          name: resolved,
+          sourceLabel: 'local',
+          nanomindScan: {
+            compiledArtifacts: nmResult.compiledArtifacts,
+            findings: issues as any[],
+          },
+          verbose: !!options.verbose,
+        });
+
         const risk = critical.length > 0 ? 'critical' : high.length > 0 ? 'high' : issues.length > 0 ? 'medium' : 'low';
-        const riskDisplay = RISK_DISPLAY[risk as keyof typeof RISK_DISPLAY];
-        console.log(`\n${riskDisplay.color()}${riskDisplay.symbol} ${risk.toUpperCase()} RISK${RESET()}\n`);
-        console.log(`Path: ${resolved}`);
-        console.log(`Semantic analysis: ${nmResult.compiledArtifacts} file(s) analyzed\n`);
-
-        if (issues.length === 0) {
-          console.log(`${colors.green}No security issues detected.${RESET()}\n`);
-        } else {
-          console.log(`Findings: ${critical.length} critical, ${high.length} high, ${issues.length - critical.length - high.length} other\n`);
-          for (const f of issues.slice(0, 10)) {
-            const sev = SEVERITY_DISPLAY[(f as any).severity as keyof typeof SEVERITY_DISPLAY];
-            console.log(`${sev.color()}${sev.symbol} [${(f as any).checkId}] ${(f as any).description}${RESET()}`);
-            if ((f as any).fix) console.log(`  Fix: ${(f as any).fix}`);
-          }
-          if (issues.length > 10) console.log(`\n  ... and ${issues.length - 10} more`);
-          console.log();
-        }
-
-        printCheckNextSteps(resolved);
-
         if (risk === 'critical' || risk === 'high') process.exit(1);
         return;
       }
@@ -448,6 +443,196 @@ function displayCheckFindings(
   } else {
     console.log(`\n  ${colors.green}No security issues found.${RESET()}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Unified check display — one function for all target types (0.17.0)
+// ---------------------------------------------------------------------------
+
+interface UnifiedCheckDisplayOptions {
+  name: string;
+  sourceLabel?: string;
+  projectType?: string;
+  localScan?: {
+    score: number;
+    maxScore: number;
+    findings: SecurityFinding[];
+    filesScanned?: number;
+  };
+  registry?: RegistryTrustData | null;
+  verbose?: boolean;
+  version?: string;
+  nanomindScan?: {
+    compiledArtifacts: number;
+    findings: Array<{ severity: string; checkId?: string; description?: string; name?: string; message?: string; fix?: string; guidance?: string; file?: string; line?: number; passed?: boolean; attackClass?: string }>;
+  };
+}
+
+function stripAnsi(s: string): string {
+  return s.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
+  const { name, sourceLabel, projectType, localScan, registry, verbose, version, nanomindScan } = opts;
+
+  const typeLabel = (registry?.packageType || projectType || 'unknown').replace(/_/g, ' ');
+  const sourceSuffix = sourceLabel ? ` ${colors.dim}(${sourceLabel})${RESET()}` : '';
+  console.log(`\n  ${name}${sourceSuffix}`);
+  if (version) {
+    console.log(`  ${colors.dim}Version:    ${version}${RESET()}`);
+  }
+  console.log(`  ${colors.dim}Type:       ${typeLabel}${RESET()}`);
+
+  let failed: SecurityFinding[] = [];
+  let score = 0;
+  let maxScore = 100;
+  let critical = 0, high = 0, medium = 0, low = 0;
+
+  if (localScan) {
+    failed = localScan.findings.filter(f => !f.passed);
+    score = localScan.score;
+    maxScore = localScan.maxScore;
+    critical = failed.filter(f => f.severity === 'critical').length;
+    high = failed.filter(f => f.severity === 'high').length;
+    medium = failed.filter(f => f.severity === 'medium').length;
+    low = failed.filter(f => f.severity === 'low').length;
+  } else if (nanomindScan) {
+    const issues = nanomindScan.findings.filter(f => !f.passed);
+    critical = issues.filter(f => f.severity === 'critical').length;
+    high = issues.filter(f => f.severity === 'high').length;
+    medium = issues.filter(f => f.severity === 'medium').length;
+    low = issues.filter(f => f.severity === 'low').length;
+    failed = issues.map(f => ({
+      checkId: f.checkId || '',
+      name: f.name || f.description || '',
+      description: f.description || '',
+      category: '',
+      severity: f.severity as Severity,
+      passed: false,
+      message: f.message || f.description || '',
+      fixable: false,
+      file: f.file,
+      line: f.line,
+      fix: f.fix,
+      guidance: f.guidance,
+      attackClass: f.attackClass,
+    }));
+    score = critical > 0 ? 0 : high > 0 ? 30 : issues.length > 0 ? 60 : 100;
+    maxScore = 100;
+  } else if (registry?.found) {
+    score = Math.round(registry.trustScore * 100);
+    maxScore = 100;
+  }
+
+  const totalFindings = critical + high + medium + low;
+  const scoreColor = score >= 70 ? colors.green : score >= 40 ? colors.yellow : colors.red;
+
+  if (localScan || nanomindScan) {
+    let verdict: string;
+    if (critical > 0) {
+      verdict = `${colors.brightRed}CRITICAL -- ${critical} critical issue${critical > 1 ? 's' : ''} found${RESET()}`;
+    } else if (high > 0) {
+      verdict = `${colors.red}WARNING -- ${high} high severity issue${high > 1 ? 's' : ''} found${RESET()}`;
+    } else if (totalFindings > 0) {
+      verdict = `${colors.yellow}NOTICE -- ${totalFindings} issue${totalFindings > 1 ? 's' : ''} found (none critical or high)${RESET()}`;
+    } else {
+      verdict = `${colors.green}SAFE -- no security issues found${RESET()}`;
+    }
+    const pad = Math.max(1, 50 - stripAnsi(verdict).length);
+    console.log(`\n  ${verdict}${' '.repeat(pad)}${scoreColor}${score}/${maxScore} security${RESET()}`);
+  } else if (registry?.found) {
+    const normalized = normalizeTrustVerdict(registry.verdict);
+    let verdict: string;
+    if (normalized === 'blocked') {
+      verdict = `${colors.red}BLOCKED -- known malicious or policy violation${RESET()}`;
+    } else if (normalized === 'warning') {
+      verdict = `${colors.yellow}WARNING -- potential risks detected${RESET()}`;
+    } else if (normalized === 'safe') {
+      verdict = `${colors.green}SAFE -- passed community review${RESET()}`;
+    } else {
+      verdict = `${colors.dim}${registry.verdict}${RESET()}`;
+    }
+    const pad = Math.max(1, 50 - stripAnsi(verdict).length);
+    console.log(`\n  ${verdict}${' '.repeat(pad)}${scoreColor}${score}/100 trust${RESET()}`);
+  }
+
+  if (localScan) {
+    const filesLabel = localScan.filesScanned ? `${localScan.filesScanned} files` : 'files';
+    console.log(`\n  ${colors.dim}Security scan: ${filesLabel} · ${CHECK_COUNT} checks · ${totalFindings} finding${totalFindings !== 1 ? 's' : ''}${RESET()}`);
+  } else if (nanomindScan) {
+    console.log(`\n  ${colors.dim}Semantic analysis: ${nanomindScan.compiledArtifacts} file(s) analyzed${RESET()}`);
+  }
+
+  if (failed.length > 0) {
+    console.log();
+    const limit = verbose ? failed.length : 10;
+    for (const f of failed.slice(0, limit)) {
+      const sev = SEVERITY_DISPLAY[f.severity];
+      const fileLoc = f.file ? ` in ${f.file}${f.line ? ':' + f.line : ''}` : '';
+      console.log(`  ${sev.color()}${sev.symbol}${RESET()} ${f.name || f.message}${colors.dim}${fileLoc}${RESET()}`);
+      if (f.guidance) {
+        console.log(`       ${colors.dim}Why: ${f.guidance}${RESET()}`);
+      }
+      if (f.fix) {
+        console.log(`       ${colors.cyan}Fix: ${f.fix}${RESET()}`);
+      }
+      if (verbose) {
+        if (f.checkId) console.log(`       ${colors.dim}Check:    ${f.checkId}${RESET()}`);
+        if (f.category) console.log(`       ${colors.dim}Category: ${f.category}${RESET()}`);
+        if (f.attackClass) console.log(`       ${colors.dim}Attack:   ${f.attackClass}${RESET()}`);
+      }
+    }
+    if (failed.length > limit) {
+      console.log(`\n  ... and ${failed.length - limit} more (use --verbose to see all)`);
+    }
+
+    console.log(`\n  ${critical} critical · ${high} high · ${medium} medium · ${low} low`);
+
+    if (critical > 0 || high > 0) {
+      const critWeight = 25, highWeight = 15;
+      const fixableWeight = (critical * critWeight) + (high * highWeight);
+      const DECAY_CONSTANT = 150;
+      const currentWeight = score > 0 ? -DECAY_CONSTANT * Math.log(score / 100) : 700;
+      const remainingWeight = Math.max(0, currentWeight - fixableWeight);
+      const projectedScore = remainingWeight <= 0 ? 100 : Math.round(100 * Math.exp(-remainingWeight / DECAY_CONSTANT));
+      console.log(`  ${colors.cyan}Path forward: ${score} -> ${projectedScore} by fixing ${critical + high} critical/high issue${(critical + high) > 1 ? 's' : ''}${RESET()}`);
+    }
+  } else if (localScan || nanomindScan) {
+    console.log(`\n  ${colors.green}No security issues found.${RESET()}`);
+  }
+
+  if (registry?.found) {
+    const trustScore = Math.round(registry.trustScore * 100);
+    const trustColor = trustScore >= 70 ? colors.green : trustScore >= 40 ? colors.yellow : colors.red;
+
+    if (localScan || nanomindScan) {
+      console.log(`\n  ${colors.dim}Trust context (registry)${RESET()}${' '.repeat(30)}${trustColor}${trustScore}/100 trust${RESET()}`);
+    }
+    console.log(`  ${colors.dim}Trust level:    ${RESET()}${trustLevelColor(registry.trustLevel)}${trustLevelLabel(registry.trustLevel)}${RESET()} ${colors.dim}(${registry.trustLevel}/4)${RESET()}`);
+
+    if (registry.communityScans !== undefined) {
+      console.log(`  ${colors.dim}Community:      ${RESET()}${registry.communityScans} scan${registry.communityScans !== 1 ? 's' : ''} shared`);
+    }
+    if (registry.cveCount !== undefined && registry.cveCount > 0) {
+      console.log(`  ${colors.dim}Known CVEs:     ${RESET()}${colors.red}${registry.cveCount}${RESET()}`);
+    }
+    if (registry.dependencies) {
+      const d = registry.dependencies;
+      const depParts: string[] = [];
+      if (d.totalDeps !== undefined) depParts.push(`${d.totalDeps} total`);
+      if (d.vulnerableDeps !== undefined && d.vulnerableDeps > 0) depParts.push(`${colors.red}${d.vulnerableDeps} vulnerable${RESET()}`);
+      else if (d.vulnerableDeps !== undefined) depParts.push(`0 vulnerable`);
+      if (depParts.length > 0) {
+        console.log(`  ${colors.dim}Dependencies:   ${RESET()}${depParts.join(' · ')}`);
+      }
+    }
+
+    if (registry.recommendation) {
+      console.log(`\n  ${colors.dim}${registry.recommendation}${RESET()}`);
+    }
+  }
+
+  printCheckNextSteps(name);
 }
 
 function groupFindingsBySeverity(findings: SecurityFinding[]): Record<Severity, SecurityFinding[]> {
@@ -6425,6 +6610,15 @@ interface RegistryTrustData {
   scanStatus?: string;
   lastScannedAt?: string;
   packageType?: string;
+  recommendation?: string;
+  cveCount?: number;
+  communityScans?: number;
+  dependencies?: {
+    totalDeps?: number;
+    vulnerableDeps?: number;
+    minTrustLevel?: number;
+    riskSummary?: Record<string, unknown>;
+  };
 }
 
 /**
@@ -6442,6 +6636,7 @@ async function queryRegistry(name: string): Promise<RegistryTrustData | null> {
     if (!response.ok) return null;
     const data = await response.json() as Record<string, unknown>;
     if (!data.packageId) return null;
+    const deps = data.dependencies as Record<string, unknown> | undefined;
     return {
       found: true,
       name: (data.name as string) ?? name,
@@ -6451,6 +6646,15 @@ async function queryRegistry(name: string): Promise<RegistryTrustData | null> {
       scanStatus: data.scanStatus as string | undefined,
       lastScannedAt: data.lastScannedAt as string | undefined,
       packageType: data.packageType as string | undefined,
+      recommendation: data.recommendation as string | undefined,
+      cveCount: typeof data.cveCount === 'number' ? data.cveCount : undefined,
+      communityScans: typeof data.communityScans === 'number' ? data.communityScans : undefined,
+      dependencies: deps ? {
+        totalDeps: typeof deps.totalDeps === 'number' ? deps.totalDeps : undefined,
+        vulnerableDeps: typeof deps.vulnerableDeps === 'number' ? deps.vulnerableDeps : undefined,
+        minTrustLevel: typeof deps.minTrustLevel === 'number' ? deps.minTrustLevel : undefined,
+        riskSummary: deps.riskSummary as Record<string, unknown> | undefined,
+      } : undefined,
     };
   } catch {
     return null;
@@ -6487,14 +6691,16 @@ async function publishToRegistry(
         score: result.score,
         maxScore: result.maxScore,
         projectType: result.projectType,
-        findings: result.findings.map(f => ({
-          checkId: f.checkId,
-          name: f.name,
-          severity: f.severity,
-          passed: f.passed,
-          message: f.message,
-          category: f.category,
-        })),
+        findings: result.findings
+          .filter(f => !PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES.has(f.category))
+          .map(f => ({
+            checkId: f.checkId,
+            name: f.name,
+            severity: f.severity,
+            passed: f.passed,
+            message: f.message,
+            category: f.category,
+          })),
         scanTimestamp: new Date().toISOString(),
       }),
       signal: AbortSignal.timeout(10000),
@@ -6677,32 +6883,28 @@ async function suggestSimilarPackages(name: string): Promise<string[]> {
  */
 async function checkGitHubRepo(
   target: string,
-  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean },
+  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean; scan?: boolean; registry?: boolean },
 ): Promise<void> {
   const { org, repo, cloneUrl } = parseGitHubTarget(target);
   const displayName = `${org}/${repo}`;
 
-  // Step 1: Check registry for existing trust data (unless --rescan forces a fresh scan)
-  if (!options.offline && !options.rescan) {
-    const registryData = await queryRegistry(displayName);
+  // Fetch registry data in parallel with clone (unless --no-registry)
+  const registryPromise = options.registry === false ? Promise.resolve(null) : queryRegistry(displayName);
 
-    if (registryData?.found && !isScanStale(registryData.lastScannedAt)) {
+  // Registry-only mode (--no-scan): skip local scan
+  if (options.scan === false) {
+    const registryData = await registryPromise;
+    if (registryData?.found) {
       if (options.json) {
         writeJsonStdout({ ...registryData, source: 'registry' });
         return;
       }
-      displayRegistryResult(registryData);
+      displayUnifiedCheck({ name: displayName, sourceLabel: 'GitHub', registry: registryData, verbose: !!options.verbose });
       return;
     }
-
-    if (registryData?.found && registryData.lastScannedAt) {
-      if (!options.json && !globalCiMode) {
-        const days = Math.floor((Date.now() - new Date(registryData.lastScannedAt).getTime()) / (1000 * 60 * 60 * 24));
-        console.error(`\nRegistry data is ${days} day(s) old. Re-scanning...`);
-      }
+    if (!options.json && !globalCiMode) {
+      console.error(`No registry data found for ${displayName}. Running local scan...`);
     }
-  } else if (options.rescan && !options.json && !globalCiMode) {
-    console.error(`Forcing fresh local scan (--rescan)...`);
   }
 
   // Step 2: Clone and scan
@@ -6768,19 +6970,20 @@ async function checkGitHubRepo(
       return;
     }
 
-    // Display results
-    const scoreRatio = result.score / result.maxScore;
-    const scoreColor = scoreRatio >= 0.7 ? colors.green : scoreRatio >= 0.4 ? colors.yellow : colors.red;
+    // Await registry data (started in parallel with clone)
+    const registryData = await registryPromise;
 
-    console.log(`\n  ${displayName} ${colors.dim}(GitHub)${RESET()}`);
-    console.log(`  Type:       ${result.projectType}`);
-    console.log(`  Score:      ${scoreColor}${result.score}/${result.maxScore}${RESET()}`);
-    console.log(`  Findings:   ${critical.length} critical, ${high.length} high, ${medium.length} medium, ${low.length} low`);
+    // Display results using unified display
+    displayUnifiedCheck({
+      name: displayName,
+      sourceLabel: 'GitHub',
+      projectType: result.projectType,
+      localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
+      registry: registryData,
+      verbose: !!options.verbose,
+    });
 
-    displayCheckFindings(failed, !!options.verbose);
-    printCheckNextSteps(displayName);
-
-    // Step 3: Community contribution
+    // Community contribution
     if (process.stdin.isTTY && !globalCiMode) {
       const scanCount = incrementScanCounter();
       if (scanCount >= 3 && !hasContributeChoice()) {
@@ -6843,7 +7046,7 @@ async function checkGitHubRepo(
  */
 async function checkPyPiPackage(
   target: string,
-  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean },
+  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean; scan?: boolean; registry?: boolean },
 ): Promise<void> {
   // Strip prefix to get the bare package name
   const name = target.replace(/^(pip|pypi):/, '');
@@ -6950,34 +7153,19 @@ async function checkPyPiPackage(
       return;
     }
 
-    // Display results
-    const scoreRatio = result.score / result.maxScore;
-    const scoreColor = scoreRatio >= 0.7 ? colors.green : scoreRatio >= 0.4 ? colors.yellow : colors.red;
+    // Display results using unified display
+    // Query registry for trust context (PyPI packages have pip: prefix in registry)
+    const registryData = options.registry === false ? null : await queryRegistry(`pip:${name}`);
 
-    console.log(`\n  ${name} (PyPI)`);
-    console.log(`  Version:    ${meta.info.version}`);
-    console.log(`  Type:       ${result.projectType}`);
-    console.log(`  Score:      ${scoreColor}${result.score}/${result.maxScore}${RESET()}`);
-    console.log(`  Findings:   ${critical.length} critical, ${high.length} high, ${medium.length} medium, ${low.length} low`);
-
-    if (failed.length > 0) {
-      console.log();
-      const limit = options.verbose ? failed.length : 15;
-      for (const f of failed.slice(0, limit)) {
-        const sev = SEVERITY_DISPLAY[f.severity];
-        const attackClass = (f as any).attackClass ? ` (${(f as any).attackClass})` : '';
-        console.log(`  ${sev.color()}${sev.symbol}${RESET()} ${f.name}: ${f.message}${colors.dim}${attackClass}${RESET()}`);
-      }
-      if (failed.length > limit) {
-        console.log(`\n  ... and ${failed.length - limit} more (use --verbose to see all)`);
-      }
-    } else {
-      console.log(`\n  ${colors.green}No security issues found.${RESET()}`);
-    }
-
-    // Pass the original target (with pip: / pypi: prefix preserved) so the
-    // rescan hint stays runnable — `hackmyagent check requests` would try npm.
-    printCheckNextSteps(target);
+    displayUnifiedCheck({
+      name,
+      sourceLabel: 'PyPI',
+      projectType: result.projectType,
+      version: meta.info.version,
+      localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
+      registry: registryData,
+      verbose: !!options.verbose,
+    });
 
     if (critical.length > 0 || high.length > 0) process.exit(1);
   } catch (err: unknown) {
@@ -7139,16 +7327,14 @@ async function checkRawUrl(
       return;
     }
 
-    // Display results
-    const scoreRatio = result.score / result.maxScore;
-    const scoreColor = scoreRatio >= 0.7 ? colors.green : scoreRatio >= 0.4 ? colors.yellow : colors.red;
-
-    console.log(`\n  ${displayName} ${colors.dim}(URL)${RESET()}`);
-    console.log(`  Type:       ${result.projectType}`);
-    console.log(`  Score:      ${scoreColor}${result.score}/${result.maxScore}${RESET()}`);
-    console.log(`  Findings:   ${critical.length} critical, ${high.length} high, ${medium.length} medium, ${low.length} low`);
-
-    displayCheckFindings(failed, !!options.verbose);
+    // Display results using unified display
+    displayUnifiedCheck({
+      name: displayName,
+      sourceLabel: 'URL',
+      projectType: result.projectType,
+      localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
+      verbose: !!options.verbose,
+    });
 
     // Community contribution (auto-share if opted in, no first-time prompt for URLs)
     if (process.stdin.isTTY && !globalCiMode) {
@@ -7158,8 +7344,6 @@ async function checkRawUrl(
         if (!ok) queuePendingScan(displayName, result);
       }
     }
-
-    printCheckNextSteps(displayName);
 
     if (critical.length > 0 || high.length > 0) process.exit(1);
   } catch (err: unknown) {
@@ -7182,34 +7366,28 @@ async function checkRawUrl(
 
 async function checkNpmPackage(
   name: string,
-  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean },
+  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean; scan?: boolean; registry?: boolean },
 ): Promise<void> {
-  // Step 1: Check registry for existing trust data (unless --rescan forces a fresh scan)
-  if (!options.offline && !options.rescan) {
-    const registryData = await queryRegistry(name);
+  // Fetch registry data in parallel with download+scan (unless --no-registry)
+  const registryPromise = options.registry === false ? Promise.resolve(null) : queryRegistry(name);
 
-    if (registryData?.found && !isScanStale(registryData.lastScannedAt)) {
-      // Fresh data in registry — show it
+  // Registry-only mode (--no-scan): skip local scan
+  if (options.scan === false) {
+    const registryData = await registryPromise;
+    if (registryData?.found) {
       if (options.json) {
         writeJsonStdout({ ...registryData, source: 'registry' });
         return;
       }
-      displayRegistryResult(registryData);
+      displayUnifiedCheck({ name, registry: registryData, verbose: !!options.verbose });
       return;
     }
-
-    // Stale or missing — tell the user we're scanning
-    if (registryData?.found && registryData.lastScannedAt) {
-      if (!options.json && !globalCiMode) {
-        const days = Math.floor((Date.now() - new Date(registryData.lastScannedAt).getTime()) / (1000 * 60 * 60 * 24));
-        console.error(`\nRegistry data is ${days} day(s) old. Re-scanning...`);
-      }
+    if (!options.json && !globalCiMode) {
+      console.error(`No registry data found for ${name}. Running local scan...`);
     }
-  } else if (options.rescan && !options.json && !globalCiMode) {
-    console.error(`Forcing fresh local scan (--rescan)...`);
   }
 
-  // Step 2: Download and scan
+  // Download and scan
   const { mkdtemp, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
@@ -7258,8 +7436,6 @@ async function checkNpmPackage(
     const failed = result.findings.filter(f => !f.passed);
     const critical = failed.filter(f => f.severity === 'critical');
     const high = failed.filter(f => f.severity === 'high');
-    const medium = failed.filter(f => f.severity === 'medium');
-    const low = failed.filter(f => f.severity === 'low');
 
     if (options.json) {
       writeJsonStdout({
@@ -7274,19 +7450,19 @@ async function checkNpmPackage(
       return;
     }
 
-    // Display results
-    const scoreRatio = result.score / result.maxScore;
-    const scoreColor = scoreRatio >= 0.7 ? colors.green : scoreRatio >= 0.4 ? colors.yellow : colors.red;
+    // Await registry data (started in parallel with download)
+    const registryData = await registryPromise;
 
-    console.log(`\n  ${name}`);
-    console.log(`  Type:       ${result.projectType}`);
-    console.log(`  Score:      ${scoreColor}${result.score}/${result.maxScore}${RESET()}`);
-    console.log(`  Findings:   ${critical.length} critical, ${high.length} high, ${medium.length} medium, ${low.length} low`);
+    // Display results using unified display
+    displayUnifiedCheck({
+      name,
+      projectType: result.projectType,
+      localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
+      registry: registryData,
+      verbose: !!options.verbose,
+    });
 
-    displayCheckFindings(failed, !!options.verbose);
-    printCheckNextSteps(name);
-
-    // Step 3: Community contribution (after 3 scans, interactive only)
+    // Community contribution (after 3 scans, interactive only)
     if (process.stdin.isTTY && !globalCiMode) {
       const scanCount = incrementScanCounter();
       if (scanCount >= 3 && !hasContributeChoice()) {
