@@ -264,6 +264,39 @@ const SEVERITY_WEIGHTS: Record<Severity, number> = {
   low: 3,
 };
 
+/**
+ * Standalone scoring function using exponential decay with governance weight.
+ * This is the canonical scoring formula — all score paths must use it.
+ *
+ * Accepts findings with at minimum: { passed?, fixed?, severity, category, checkId }.
+ */
+export function calculateSecurityScore(findings: Array<{ passed?: boolean; fixed?: boolean; severity: string; category?: string; checkId?: string }>): {
+  score: number;
+  maxScore: number;
+} {
+  const GOVERNANCE_CATEGORIES = new Set(['governance', 'Governance', 'injection-hardening', 'trust-hierarchy']);
+  const GOVERNANCE_PREFIXES = ['AST-GOV', 'AST-GOVERN', 'AST-PROMPT', 'AST-HEARTBEAT'];
+  const GOVERNANCE_WEIGHT = 0.4;
+  const DECAY_CONSTANT = 150;
+
+  let weightedSum = 0;
+  for (const finding of findings) {
+    if (!finding.passed && !finding.fixed) {
+      const isGovernance = GOVERNANCE_CATEGORIES.has(finding.category || '') ||
+        GOVERNANCE_PREFIXES.some(p => (finding.checkId || '').startsWith(p));
+      const multiplier = isGovernance ? GOVERNANCE_WEIGHT : 1;
+      const sevWeight = SEVERITY_WEIGHTS[finding.severity as Severity] ?? 0;
+      weightedSum += sevWeight * multiplier;
+    }
+  }
+
+  const score = weightedSum === 0
+    ? 100
+    : Math.round(100 * Math.exp(-weightedSum / DECAY_CONSTANT));
+
+  return { score, maxScore: 100 };
+}
+
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB max file size to prevent memory exhaustion
 const MAX_LINE_LENGTH = 10000; // 10KB max line length for regex safety
 
@@ -4591,37 +4624,7 @@ dist/
     score: number;
     maxScore: number;
   } {
-    // Governance findings (weak constraints, missing domains, prompt hardening)
-    // are important but shouldn't tank scores the way code vulnerabilities do.
-    // A project with only governance gaps is not malware — it needs hardening.
-    const GOVERNANCE_CATEGORIES = new Set(['governance', 'Governance', 'injection-hardening', 'trust-hierarchy']);
-    const GOVERNANCE_PREFIXES = ['AST-GOV', 'AST-GOVERN', 'AST-PROMPT', 'AST-HEARTBEAT'];
-    const GOVERNANCE_WEIGHT = 0.4; // 40% of normal weight
-
-    // Sum severity weights for all failed, unfixed findings
-    let weightedSum = 0;
-    for (const finding of findings) {
-      if (!finding.passed && !finding.fixed) {
-        const isGovernance = GOVERNANCE_CATEGORIES.has(finding.category) ||
-          GOVERNANCE_PREFIXES.some(p => finding.checkId.startsWith(p));
-        const multiplier = isGovernance ? GOVERNANCE_WEIGHT : 1;
-        weightedSum += SEVERITY_WEIGHTS[finding.severity] * multiplier;
-      }
-    }
-
-    // Exponential decay: each additional finding has diminishing impact.
-    // Prevents score=0 for repos with many findings (e.g. full-clone GitHub repos)
-    // while preserving near-identical scores for sparse scans (1-2 findings).
-    // Decay constant 150 calibrated so: 1 medium(8)=95, 1 critical(25)=85,
-    // 3crit+9high(210)=25, extreme(700)=1
-    // With governance at 0.4x: 1 gov-critical(10)=94, 6 gov-high(36)=79
-    const DECAY_CONSTANT = 150;
-    const score = weightedSum === 0
-      ? 100
-      : Math.round(100 * Math.exp(-weightedSum / DECAY_CONSTANT));
-    const maxScore = 100;
-
-    return { score, maxScore };
+    return calculateSecurityScore(findings);
   }
 
   /**

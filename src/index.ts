@@ -40,7 +40,7 @@ export type {
 } from './checker';
 
 // Hardening module
-export { HardeningScanner } from './hardening';
+export { HardeningScanner, calculateSecurityScore } from './hardening';
 export type { ScanOptions, SecurityFinding, Severity } from './hardening';
 
 // Context Lifecycle Scanner (Stage 0-1)

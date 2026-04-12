@@ -2,7 +2,7 @@
  * Hardening module
  */
 
-export { HardeningScanner } from './scanner';
+export { HardeningScanner, calculateSecurityScore } from './scanner';
 export type { ScanOptions, ScanDepth } from './scanner';
 
 export type {

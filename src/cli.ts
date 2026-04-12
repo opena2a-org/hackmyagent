@@ -9,6 +9,7 @@ import {
   VERSION,
   checkSkill,
   HardeningScanner,
+  calculateSecurityScore,
   ExternalScanner,
   type RiskLevel,
   type Severity,
@@ -298,9 +299,21 @@ Examples:
       }
 
       // npm package name: download, run full HMA scan, clean up
+      // On npm 404, fall through to skill check (skill identifiers look like @scope/name)
       if (looksLikeNpmPackage(skill)) {
-        await checkNpmPackage(skill, options);
-        return;
+        try {
+          await checkNpmPackage(skill, options);
+          return;
+        } catch (npmErr: unknown) {
+          if (npmErr instanceof Error && npmErr.name === 'NpmNotFoundError') {
+            // Not on npm — fall through to skill check
+            if (!options.json && !globalCiMode) {
+              console.error(`Package "${skill}" not found on npm. Trying as skill identifier...`);
+            }
+          } else {
+            throw npmErr; // Re-throw non-404 errors
+          }
+        }
       }
 
       // --rescan only applies to targets that otherwise hit the registry cache.
@@ -564,21 +577,10 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       guidance: f.guidance,
       attackClass: f.attackClass,
     }));
-    // Score governance-only scans more fairly — governance gaps aren't code vulns
-    const hasCodeFindings = issues.some(f => {
-      const cat = (f.category || '').toLowerCase();
-      const id = f.checkId || '';
-      return cat !== 'governance' && cat !== 'injection-hardening' && cat !== 'trust-hierarchy'
-        && !id.startsWith('AST-GOV') && !id.startsWith('AST-GOVERN')
-        && !id.startsWith('AST-PROMPT') && !id.startsWith('AST-HEARTBEAT');
-    });
-    if (hasCodeFindings) {
-      score = critical > 0 ? Math.max(10, 100 - critical * 20 - high * 10 - medium * 5) : high > 0 ? Math.max(30, 100 - high * 10 - medium * 5) : Math.max(50, 100 - medium * 5 - low * 2);
-    } else {
-      // Governance-only: floor at 25, each finding costs less
-      score = Math.max(25, 100 - critical * 8 - high * 5 - medium * 3 - low * 1);
-    }
-    maxScore = 100;
+    // Use the canonical scoring formula (exponential decay + 0.4x governance weight)
+    const scoreResult = calculateSecurityScore(issues);
+    score = scoreResult.score;
+    maxScore = scoreResult.maxScore;
   } else if (registry?.found) {
     score = Math.round(registry.trustScore * 100);
     maxScore = 100;
@@ -6987,6 +6989,9 @@ const AI_TOOLING_PATH_PATTERNS = [
   /^\.aider/,
   /^\.copilot\//,
   /^\.github\/copilot/,
+  /\.env\.example$/i,   // Example env files are not real credentials
+  /\.env\.sample$/i,
+  /\.env\.template$/i,
 ];
 
 /** Governance-related categories/checkId prefixes that are noise on AI tooling files */
@@ -7030,11 +7035,11 @@ function filterLocalOnlyFindings(
     // Remove local-only categories (git, permissions, env, etc.)
     if (PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES.has(f.category)) return false;
 
-    // Remove governance findings on AI tooling files (CLAUDE.md, .claude/, etc.)
-    if (f.file && isAiToolingFile(f.file)) {
-      if (GOVERNANCE_CATEGORIES.has(f.category)) return false;
-      if (GOVERNANCE_CHECK_PREFIXES.some(p => f.checkId.startsWith(p))) return false;
-    }
+    // Exclude ALL findings on AI tooling files (CLAUDE.md, .claude/, .cursorrules, etc.)
+    // These files contain instructions to AI assistants, not package source code.
+    // Credential patterns, injection patterns, and governance findings in these
+    // files are false positives — they describe security practices, not vulnerabilities.
+    if (f.file && isAiToolingFile(f.file)) return false;
 
     return true;
   });
@@ -7785,20 +7790,10 @@ async function checkNpmPackage(
     const message = err instanceof Error ? err.message : String(err);
     // Clean npm error messages
     if (message.includes('404') || message.includes('Not Found')) {
-      console.error(`Error: Package "${name}" not found on npm.`);
-      // Suggest similar packages via npm registry search
-      try {
-        const suggestions = await suggestSimilarPackages(name);
-        if (suggestions.length > 0) {
-          console.error(`\nDid you mean?`);
-          for (const s of suggestions) {
-            console.error(`  ${s}`);
-          }
-          console.error();
-        }
-      } catch {
-        // Search failed — just show the original error
-      }
+      // Throw a typed error so the router can fall through to skill check
+      const notFound = new Error(`NPM_NOT_FOUND:${name}`);
+      notFound.name = 'NpmNotFoundError';
+      throw notFound;
     } else {
       console.error(`Error: ${message}`);
     }

@@ -12,6 +12,7 @@ import { createHash } from 'crypto';
 import { readdirSync, statSync, readFileSync } from 'fs';
 import { join, relative } from 'path';
 import type { SecurityFinding, Severity } from '../hardening';
+import { calculateSecurityScore } from '../hardening';
 import type { AttackReport } from '../attack';
 import type { SoulScanResult } from '../soul';
 import type { BenchmarkResult } from '../benchmarks';
@@ -204,10 +205,8 @@ export function buildPublishPayload(data: PublishScanData, toolVersion: string):
     }
   }
 
-  // Compute score: passed / total * 100
-  const totalFindings = findings.length;
-  const passedFindings = findings.filter(f => f.passed).length;
-  const score = totalFindings > 0 ? Math.round((passedFindings / totalFindings) * 100) : 100;
+  // Use canonical scoring formula (exponential decay + 0.4x governance weight)
+  const { score } = calculateSecurityScore(findings);
 
   // Derive verdict
   const failedCritical = findings.filter(f => !f.passed && f.severity === 'critical').length;
