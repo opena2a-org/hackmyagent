@@ -58,6 +58,9 @@ program.showHelpAfterError('(run with --help for usage)');
 // Update when adding new checks (verify with: grep -r "checkId:" src/hardening/ | grep -o "checkId: '[^']*'" | sort -u | wc -l)
 const CHECK_COUNT = 209;
 
+// How long registry-cached scan data is considered fresh before `check` re-scans.
+const STALE_SCAN_DAYS = 3;
+
 // Write a string to stdout synchronously with retry for pipe backpressure.
 // process.stdout.write() is async and gets truncated when process.exit()
 // runs before the stream flushes. fs.writeFileSync(1, ...) can fail with
@@ -193,10 +196,13 @@ program
   .description(`Check if a package, repo, or skill is safe
 
 Accepts npm packages, GitHub repos, local paths, or skill identifiers:
-  • npm package: downloads and runs full security analysis (${CHECK_COUNT} checks + NanoMind)
-  • GitHub repo: shallow clones and runs full security analysis
+  • npm package: queries the registry; downloads + scans (${CHECK_COUNT} checks + NanoMind) if data is missing or stale (>${STALE_SCAN_DAYS}d)
+  • PyPI package: downloads + scans (${CHECK_COUNT} checks + NanoMind)
+  • GitHub repo: queries the registry; shallow clones + scans if data is missing or stale (>${STALE_SCAN_DAYS}d)
   • Local path: runs NanoMind semantic analysis
   • Skill identifier: verifies publisher, permissions, revocation
+
+Use --rescan to skip the registry cache and force a fresh local scan.
 
 Risk levels: low, medium, high, critical
 Exit code 1 if high/critical risk detected.
@@ -204,6 +210,7 @@ Exit code 1 if high/critical risk detected.
 Examples:
   $ hackmyagent check express
   $ hackmyagent check @modelcontextprotocol/server-filesystem
+  $ hackmyagent check @sentry/mcp-server --rescan
   $ hackmyagent check modelcontextprotocol/servers
   $ hackmyagent check https://github.com/punkpeye/awesome-mcp-servers
   $ hackmyagent check ./my-agent/
@@ -217,7 +224,8 @@ Examples:
   .option('-v, --verbose', 'Show detailed verification info')
   .option('--json', 'Output as JSON (for scripting/CI)')
   .option('--offline', 'Skip DNS verification (offline mode)')
-  .action(async (skill: string, options: { verbose?: boolean; json?: boolean; offline?: boolean }) => {
+  .option('--rescan', 'Force a fresh local scan, bypassing cached registry data')
+  .action(async (skill: string, options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean }) => {
     try {
       // Detect local file/directory paths - run NanoMind scan instead of registry lookup
       const { existsSync, statSync } = await import('node:fs');
@@ -271,6 +279,8 @@ Examples:
           console.log();
         }
 
+        printCheckNextSteps(resolved);
+
         if (risk === 'critical' || risk === 'high') process.exit(1);
         return;
       }
@@ -299,6 +309,12 @@ Examples:
         return;
       }
 
+      // --rescan only applies to targets that otherwise hit the registry cache.
+      // For skill identifiers we fall through to the registry lookup below.
+      if (options.rescan && !options.json) {
+        console.error(`Note: --rescan has no effect on skill identifiers; it applies to npm/PyPI/GitHub targets.`);
+      }
+
       // Registry lookup path (non-local identifier) with 10s timeout
       const checkPromise = checkSkill(skill, {
         skipDnsVerification: options.offline,
@@ -306,7 +322,7 @@ Examples:
       const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error(
           `Timed out verifying "${skill}" (10s). The publisher may not exist or DNS is unreachable.\n` +
-          `Try: ${CLI_PREFIX.replace(' scan', '')} check ${skill} --offline`
+          `Try: ${getCheckCommand()} ${skill} --offline`
         )), 10000)
       );
       const result = await Promise.race([checkPromise, timeoutPromise]);
@@ -6309,7 +6325,6 @@ function parseGitHubTarget(target: string): { org: string; repo: string; cloneUr
 }
 
 const REGISTRY_URL = 'https://api.oa2a.org';
-const STALE_SCAN_DAYS = 3;
 
 // ============================================================================
 // Scan counter + contribute preference (~/.hackmyagent/config.json)
@@ -6506,6 +6521,57 @@ function displayRegistryResult(data: RegistryTrustData): void {
     const days = Math.floor((Date.now() - new Date(data.lastScannedAt).getTime()) / (1000 * 60 * 60 * 24));
     console.log(`  Scanned:    ${days === 0 ? 'today' : days + ' day(s) ago'}`);
   }
+  printCheckNextSteps(data.name);
+}
+
+/**
+ * Resolve the "run a check" command string for use in user-facing hints.
+ *
+ * Precedence:
+ *   1. HMA_CHECK_COMMAND env var (full command string, e.g. "opena2a check")
+ *   2. `${CLI_PREFIX} check` — sensible default derived from how HMA was
+ *      invoked.
+ *
+ * Parent CLIs should set HMA_CHECK_COMMAND when their verb layout differs
+ * from hackmyagent's, rather than trying to encode the full verb into
+ * HMA_CLI_PREFIX (which is treated as a binary-level prefix everywhere else).
+ */
+function getCheckCommand(): string {
+  const override = process.env.HMA_CHECK_COMMAND?.trim();
+  if (override) return override;
+  return `${CLI_PREFIX} check`;
+}
+
+/**
+ * Resolve the "full project scan" hint command string.
+ *
+ * Precedence:
+ *   1. HMA_FULL_SCAN_HINT env var (full command string, e.g. "opena2a review")
+ *   2. `${CLI_PREFIX} secure <dir>` — default.
+ */
+function getFullScanHint(): string {
+  const override = process.env.HMA_FULL_SCAN_HINT?.trim();
+  if (override) return override;
+  return `${CLI_PREFIX} secure <dir>`;
+}
+
+/**
+ * Print the standard 3-line next-steps footer shown after every `check`
+ * invocation. Lines:
+ *   1. How to force a fresh local scan of *this* target.
+ *   2. How to run the full project scan (respects HMA_FULL_SCAN_HINT so that
+ *      sibling CLIs like opena2a can redirect users to their own flagship
+ *      command instead of `hackmyagent secure <dir>`).
+ *   3. Discoverability: the other target syntaxes `check` accepts.
+ *
+ * Suppressed in --ci so machine-readable output stays clean.
+ */
+function printCheckNextSteps(target: string): void {
+  if (globalCiMode) return;
+  console.log();
+  console.log(`  ${colors.dim}Run a fresh local scan: ${getCheckCommand()} ${target} --rescan${RESET()}`);
+  console.log(`  ${colors.dim}Full project scan:      ${getFullScanHint()}${RESET()}`);
+  console.log(`  ${colors.dim}Also accepts: pip:<pkg> · <owner>/<repo> · ./<dir> · @publisher/skill${RESET()}`);
   console.log();
 }
 
@@ -6578,13 +6644,13 @@ async function suggestSimilarPackages(name: string): Promise<string[]> {
  */
 async function checkGitHubRepo(
   target: string,
-  options: { verbose?: boolean; json?: boolean; offline?: boolean },
+  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean },
 ): Promise<void> {
   const { org, repo, cloneUrl } = parseGitHubTarget(target);
   const displayName = `${org}/${repo}`;
 
-  // Step 1: Check registry for existing trust data
-  if (!options.offline) {
+  // Step 1: Check registry for existing trust data (unless --rescan forces a fresh scan)
+  if (!options.offline && !options.rescan) {
     const registryData = await queryRegistry(displayName);
 
     if (registryData?.found && !isScanStale(registryData.lastScannedAt)) {
@@ -6602,6 +6668,8 @@ async function checkGitHubRepo(
         console.error(`\nRegistry data is ${days} day(s) old. Re-scanning...`);
       }
     }
+  } else if (options.rescan && !options.json && !globalCiMode) {
+    console.error(`Forcing fresh local scan (--rescan)...`);
   }
 
   // Step 2: Clone and scan
@@ -6709,8 +6777,7 @@ async function checkGitHubRepo(
       }
     }
 
-    console.log(`\n  Full project scan: ${CLI_PREFIX} secure <dir>`);
-    console.log();
+    printCheckNextSteps(displayName);
 
     if (critical.length > 0 || high.length > 0) process.exit(1);
   } catch (err: unknown) {
@@ -6722,7 +6789,7 @@ async function checkGitHubRepo(
       console.error(`Error: Cloning "${displayName}" timed out (120s). The repo may be too large.`);
       console.error(`\nTry cloning manually and scanning the local path:`);
       console.error(`  git clone --depth 1 ${cloneUrl}`);
-      console.error(`  ${CLI_PREFIX} check ./${repo}/`);
+      console.error(`  ${getCheckCommand()} ./${repo}/`);
     } else {
       console.error(`Error: ${message}`);
     }
@@ -6742,7 +6809,7 @@ async function checkGitHubRepo(
  */
 async function checkPyPiPackage(
   target: string,
-  options: { verbose?: boolean; json?: boolean; offline?: boolean },
+  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean },
 ): Promise<void> {
   // Strip prefix to get the bare package name
   const name = target.replace(/^(pip|pypi):/, '');
@@ -6871,8 +6938,9 @@ async function checkPyPiPackage(
       console.log(`\n  ${colors.green}No security issues found.${RESET()}`);
     }
 
-    console.log(`\n  Full project scan: ${CLI_PREFIX} secure <dir>`);
-    console.log();
+    // Pass the original target (with pip: / pypi: prefix preserved) so the
+    // rescan hint stays runnable — `hackmyagent check requests` would try npm.
+    printCheckNextSteps(target);
 
     if (critical.length > 0 || high.length > 0) process.exit(1);
   } catch (err: unknown) {
@@ -7051,8 +7119,7 @@ async function checkRawUrl(
       }
     }
 
-    console.log(`\n  Full project scan: ${CLI_PREFIX} secure <dir>`);
-    console.log();
+    printCheckNextSteps(displayName);
 
     if (critical.length > 0 || high.length > 0) process.exit(1);
   } catch (err: unknown) {
@@ -7063,7 +7130,7 @@ async function checkRawUrl(
     } else if (message.includes('timeout') || message.includes('Timeout')) {
       console.error(`Error: Fetching "${url}" timed out. The target may be too large.`);
       console.error(`\nTry downloading manually and scanning the local path:`);
-      console.error(`  ${CLI_PREFIX} check ./downloaded-dir/`);
+      console.error(`  ${getCheckCommand()} ./downloaded-dir/`);
     } else {
       console.error(`Error scanning URL: ${message}`);
     }
@@ -7075,10 +7142,10 @@ async function checkRawUrl(
 
 async function checkNpmPackage(
   name: string,
-  options: { verbose?: boolean; json?: boolean; offline?: boolean },
+  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean },
 ): Promise<void> {
-  // Step 1: Check registry for existing trust data
-  if (!options.offline) {
+  // Step 1: Check registry for existing trust data (unless --rescan forces a fresh scan)
+  if (!options.offline && !options.rescan) {
     const registryData = await queryRegistry(name);
 
     if (registryData?.found && !isScanStale(registryData.lastScannedAt)) {
@@ -7098,6 +7165,8 @@ async function checkNpmPackage(
         console.error(`\nRegistry data is ${days} day(s) old. Re-scanning...`);
       }
     }
+  } else if (options.rescan && !options.json && !globalCiMode) {
+    console.error(`Forcing fresh local scan (--rescan)...`);
   }
 
   // Step 2: Download and scan
@@ -7209,8 +7278,7 @@ async function checkNpmPackage(
       }
     }
 
-    console.log(`\n  Full project scan: ${CLI_PREFIX} secure <dir>`);
-    console.log();
+    printCheckNextSteps(name);
 
     if (critical.length > 0 || high.length > 0) process.exit(1);
   } catch (err: unknown) {
