@@ -6077,7 +6077,7 @@ program
   .option('-d, --directory <dir>', 'Scan a specific directory to collect check metadata from findings')
   .option('--json', 'Output as JSON (default)')
   .action(async (options: { directory?: string }) => {
-    const { getAttackClass, getTaxonomyMap } = require('./hardening/taxonomy');
+    const { getAttackClass, getTaxonomyMap, getCheckSeverity } = require('./hardening/taxonomy');
 
     // Build static registry from taxonomy map (covers all known checks)
     const taxMap = getTaxonomyMap();
@@ -6091,7 +6091,7 @@ program
         name: checkId,
         category: prefix.toLowerCase(),
         attackClass: taxMap[checkId] || '',
-        severity: '',
+        severity: getCheckSeverity(checkId),
       };
     }
 

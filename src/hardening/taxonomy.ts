@@ -268,6 +268,72 @@ const TAXONOMY_MAP: Record<string, string> = {
 };
 
 /**
+ * Default severity by check ID prefix. Based on the security impact
+ * of each category. Individual checks may override via SEVERITY_OVERRIDES.
+ */
+const PREFIX_SEVERITY: Record<string, string> = {
+  CRED: 'critical',
+  WEBCRED: 'critical',
+  LLM: 'critical',
+  AITOOL: 'critical',
+  DEP: 'critical',
+  GATEWAY: 'critical',
+  HEARTBEAT: 'critical',
+  FAKETOOL: 'critical',
+  DOCKERINJ: 'critical',
+  TOCTOU: 'critical',
+  SANDBOX: 'critical',
+  INSTALL: 'critical',
+  INTEGRITY: 'critical',
+  CLIPASS: 'critical',
+  PERSIST: 'high',
+  MEM: 'high',
+  SOUL: 'high',
+  SKILL: 'high',
+  MCP: 'high',
+  PROMPT: 'high',
+  SUPPLY: 'high',
+  LIFECYCLE: 'high',
+  A2A: 'high',
+  AIM: 'high',
+  NET: 'high',
+  GIT: 'high',
+  AGENT: 'high',
+  RAG: 'high',
+  ASKILL: 'high',
+  HMA: 'medium',
+  NEMO: 'medium',
+  PARSE: 'medium',
+  UNICODE: 'medium',
+  DNA: 'medium',
+  WEBEXPOSE: 'medium',
+};
+
+/** Per-check severity overrides where the default prefix doesn't apply. */
+const SEVERITY_OVERRIDES: Record<string, string> = {
+  'HEARTBEAT-006': 'medium',
+  'SKILL-005': 'medium',
+  'SKILL-018': 'medium',
+  'SUPPLY-002': 'medium',
+  'SEM-MCP-006': 'low',
+};
+
+/**
+ * Look up the default severity for a check ID.
+ * Returns 'medium' if no mapping exists.
+ */
+export function getCheckSeverity(checkId: string): string {
+  if (SEVERITY_OVERRIDES[checkId]) return SEVERITY_OVERRIDES[checkId];
+  // Try progressively shorter prefixes: SEM-CRED -> SEM, SOUL-TH -> SOUL
+  const parts = checkId.replace(/-\d+$/, '').split('-');
+  for (let i = parts.length; i > 0; i--) {
+    const prefix = parts.slice(0, i).join('-');
+    if (PREFIX_SEVERITY[prefix]) return PREFIX_SEVERITY[prefix];
+  }
+  return 'medium';
+}
+
+/**
  * Look up the attack class for a given HMA check ID.
  * Returns undefined if no mapping exists.
  */
