@@ -128,18 +128,22 @@ const noColorEnv = process.env.NO_COLOR !== undefined || !process.stdout.isTTY;
 // Color codes - will be cleared if --no-color is passed
 let colors = {
   green: '\x1b[32m',
+  brightGreen: '\x1b[92m',
   yellow: '\x1b[33m',
   red: '\x1b[31m',
   brightRed: '\x1b[91m',
   cyan: '\x1b[36m',
+  blue: '\x1b[34m',
+  magenta: '\x1b[35m',
   dim: '\x1b[2m',
   bold: '\x1b[1m',
   white: '\x1b[97m',
+  underline: '\x1b[4m',
   reset: '\x1b[0m',
 };
 
 if (noColorEnv) {
-  colors = { green: '', yellow: '', red: '', brightRed: '', cyan: '', dim: '', bold: '', white: '', reset: '' };
+  colors = { green: '', brightGreen: '', yellow: '', red: '', brightRed: '', cyan: '', blue: '', magenta: '', dim: '', bold: '', white: '', underline: '', reset: '' };
 }
 
 // Deprecation warning for removed HMAC auth
@@ -149,38 +153,31 @@ if (process.env.HMA_COMMUNITY_SECRET) {
 
 program
   .name('hackmyagent')
-  .description(`Find it. Break it. Fix it.
+  .description(`Security scanner for AI agents. ${CHECK_COUNT} checks, ${PAYLOAD_STATS.total} attack payloads, auto-fix.
 
-The hacker's toolkit for AI agents. ${CHECK_COUNT} security checks, ${PAYLOAD_STATS.total} attack
-payloads, auto-fix with rollback, and OASB benchmark compliance.
-
-Documentation: https://hackmyagent.com/docs
-
-Updates (v${VERSION}):
-  - 10 new static analysis patterns (NEMO series)
-  - Community trust contributions
-  - ${CHECK_COUNT} checks across 60 categories
+Scan before you install. Harden before you deploy. Red-team before you ship.
 
 Examples:
-  $ hackmyagent secure                         Find vulnerabilities (${CHECK_COUNT} checks)
-  $ hackmyagent attack --local                 Break it with ${PAYLOAD_STATS.total} attack payloads
-  $ hackmyagent secure --fix                   Fix issues automatically
-  $ hackmyagent fix-all                        Run all security plugins
-  $ hackmyagent scan example.com               Scan external infrastructure`)
-  .version('hackmyagent ' + VERSION, '-v, --version', 'Output the version number')
+  $ hackmyagent check <package>                Is this package safe to install?
+  $ hackmyagent secure                         Full project scan (${CHECK_COUNT} checks)
+  $ hackmyagent secure --fix                   Auto-fix with rollback
+  $ hackmyagent attack --local                 Red-team with ${PAYLOAD_STATS.total} payloads
+  $ hackmyagent scan-soul                      Governance compliance scan
+  $ hackmyagent scan example.com               External infrastructure scan`)
+  .version(`hackmyagent ${VERSION} — security scanner for AI agents`, '-v, --version', 'Output the version number')
   .option('--no-color', 'Disable colored output (also respects NO_COLOR env)');
 
 program.addHelpText('beforeAll', `
 Quick start:
+  $ hackmyagent check <package>     Is this safe to install?
   $ hackmyagent secure              Scan current directory (${CHECK_COUNT} checks)
-  $ hackmyagent fix-all --with-aim  Auto-fix + create agent identity
-  $ hackmyagent attack              Red-team your agent
+  $ hackmyagent secure --fix        Auto-fix with rollback
 `);
 
 program.hook('preAction', (thisCommand) => {
     const opts = thisCommand.opts();
     if (opts.color === false) {
-      colors = { green: '', yellow: '', red: '', brightRed: '', cyan: '', dim: '', bold: '', white: '', reset: '' };
+      colors = { green: '', brightGreen: '', yellow: '', red: '', brightRed: '', cyan: '', blue: '', magenta: '', dim: '', bold: '', white: '', underline: '', reset: '' };
     }
   });
 
@@ -509,15 +506,28 @@ function shortenPath(filePath: string): string {
 function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   const { name, sourceLabel, projectType, localScan, registry, verbose, version, nanomindScan } = opts;
 
-  // ── Header ──────────────────────────────────────────────────────────
-  const typeLabel = (registry?.packageType || projectType || 'unknown').replace(/_/g, ' ');
-  console.log(`\n  ${colors.bold}${colors.white}${name}${RESET()}`);
-  if (version) {
-    console.log(`  Version:        ${version}${sourceLabel ? ` (${sourceLabel})` : ''}`);
-  } else if (sourceLabel) {
-    console.log(`  Source:         ${sourceLabel}`);
-  }
-  console.log(`  Type:           ${typeLabel}`);
+  // ── Visual helpers ──────────────────────────────────────────────────
+  const METER_WIDTH = 20;
+  const divider = (label?: string) => {
+    if (label) {
+      console.log(`\n  ${colors.dim}──${RESET()} ${colors.bold}${label}${RESET()} ${colors.dim}${'─'.repeat(Math.max(1, 56 - label.length))}${RESET()}`);
+    } else {
+      console.log(`  ${colors.dim}${'─'.repeat(62)}${RESET()}`);
+    }
+  };
+
+  const scoreMeter = (value: number, max: number = 100) => {
+    const pct = Math.round((value / max) * METER_WIDTH);
+    const meterColor = value >= 70 ? colors.green : value >= 40 ? colors.yellow : colors.red;
+    const filled = '━'.repeat(pct);
+    const empty = '━'.repeat(METER_WIDTH - pct);
+    return `${meterColor}${filled}${RESET()}${colors.dim}${empty}${RESET()} ${meterColor}${colors.bold}${value}${RESET()}${colors.dim}/${max}${RESET()}`;
+  };
+
+  const sevBadge = (sev: Severity) => {
+    const d = SEVERITY_DISPLAY[sev];
+    return `${d.color()}${colors.bold}${d.label}${RESET()}`;
+  };
 
   // ── Compute findings ────────────────────────────────────────────────
   let failed: SecurityFinding[] = [];
@@ -554,7 +564,20 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       guidance: f.guidance,
       attackClass: f.attackClass,
     }));
-    score = critical > 0 ? 0 : high > 0 ? 30 : issues.length > 0 ? 60 : 100;
+    // Score governance-only scans more fairly — governance gaps aren't code vulns
+    const hasCodeFindings = issues.some(f => {
+      const cat = (f.category || '').toLowerCase();
+      const id = f.checkId || '';
+      return cat !== 'governance' && cat !== 'injection-hardening' && cat !== 'trust-hierarchy'
+        && !id.startsWith('AST-GOV') && !id.startsWith('AST-GOVERN')
+        && !id.startsWith('AST-PROMPT') && !id.startsWith('AST-HEARTBEAT');
+    });
+    if (hasCodeFindings) {
+      score = critical > 0 ? Math.max(10, 100 - critical * 20 - high * 10 - medium * 5) : high > 0 ? Math.max(30, 100 - high * 10 - medium * 5) : Math.max(50, 100 - medium * 5 - low * 2);
+    } else {
+      // Governance-only: floor at 25, each finding costs less
+      score = Math.max(25, 100 - critical * 8 - high * 5 - medium * 3 - low * 1);
+    }
     maxScore = 100;
   } else if (registry?.found) {
     score = Math.round(registry.trustScore * 100);
@@ -562,55 +585,71 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   }
 
   const totalFindings = critical + high + medium + low;
-  const scoreColor = score >= 70 ? colors.green : score >= 40 ? colors.yellow : colors.red;
 
-  // ── Verdict ─────────────────────────────────────────────────────────
+  // ── Header ──────────────────────────────────────────────────────────
+  const typeLabel = (registry?.packageType || projectType || 'unknown').replace(/_/g, ' ');
+  const meta: string[] = [typeLabel];
+  if (version) meta.unshift(`v${version}`);
+  if (sourceLabel) meta.push(sourceLabel);
+  if (nanomindScan) meta.push(`${nanomindScan.compiledArtifacts} files analyzed`);
+  if (localScan?.filesScanned) meta.push(`${localScan.filesScanned} files scanned`);
+
+  console.log();
+  console.log(`  ${colors.bold}${colors.white}${name}${RESET()}  ${colors.dim}${meta.join(' · ')}${RESET()}`);
+
+  // ── Verdict + Score ─────────────────────────────────────────────────
   if (localScan || nanomindScan) {
-    let verdictLabel: string;
+    let verdictText: string;
+    let verdictColor: string;
     if (critical > 0) {
-      verdictLabel = `${colors.brightRed}CRITICAL${RESET()}`;
+      verdictColor = colors.brightRed;
+      verdictText = `${critical} critical issue${critical > 1 ? 's' : ''} found`;
     } else if (high > 0) {
-      verdictLabel = `${colors.red}WARNING${RESET()}`;
+      verdictColor = colors.red;
+      verdictText = `${high} high-severity issue${high > 1 ? 's' : ''} found`;
     } else if (totalFindings > 0) {
-      verdictLabel = `${colors.yellow}NOTICE${RESET()}`;
+      verdictColor = colors.yellow;
+      verdictText = `${totalFindings} issue${totalFindings > 1 ? 's' : ''} found`;
     } else {
-      verdictLabel = `${colors.green}SAFE${RESET()}`;
+      verdictColor = colors.green;
+      verdictText = 'No security issues found';
     }
-    console.log(`  Verdict:        ${verdictLabel}`);
-    console.log(`  Security Score: ${scoreColor}${score}/${maxScore}${RESET()}`);
-    if (nanomindScan) {
-      console.log(`  Files Analyzed: ${nanomindScan.compiledArtifacts}`);
-    }
+    console.log(`  ${verdictColor}${colors.bold}${verdictText}${RESET()}`);
+    console.log();
+    console.log(`  Security  ${scoreMeter(score, maxScore)}`);
   } else if (registry?.found) {
     const normalized = normalizeTrustVerdict(registry.verdict);
-    let verdictLabel: string;
+    let verdictText: string;
+    let verdictColor: string;
     if (normalized === 'blocked') {
-      verdictLabel = `${colors.red}BLOCKED${RESET()}`;
+      verdictColor = colors.brightRed;
+      verdictText = 'Blocked by registry';
     } else if (normalized === 'warning') {
-      verdictLabel = `${colors.yellow}WARNING${RESET()}`;
+      verdictColor = colors.yellow;
+      verdictText = 'Warning — review before installing';
     } else {
-      verdictLabel = `${colors.green}SAFE${RESET()}`;
+      verdictColor = colors.green;
+      verdictText = 'No known issues';
     }
-    console.log(`  Verdict:        ${verdictLabel}`);
-    console.log(`  Trust Score:    ${scoreColor}${score}/100${RESET()}`);
+    console.log(`  ${verdictColor}${colors.bold}${verdictText}${RESET()}`);
+    console.log();
+    console.log(`  Trust     ${scoreMeter(score, maxScore)}`);
   }
 
   // ── Findings ────────────────────────────────────────────────────────
   if (failed.length > 0) {
-    console.log();
-    console.log(`  ${colors.bold}Findings${RESET()}`);
-
-    // Severity summary line with colored counts
+    // Severity summary as colored pills
     const summaryParts: string[] = [];
-    if (critical > 0) summaryParts.push(`${colors.brightRed}${critical} critical${RESET()}`);
-    if (high > 0) summaryParts.push(`${colors.red}${high} high${RESET()}`);
+    if (critical > 0) summaryParts.push(`${colors.brightRed}${colors.bold}${critical} critical${RESET()}`);
+    if (high > 0) summaryParts.push(`${colors.red}${colors.bold}${high} high${RESET()}`);
     if (medium > 0) summaryParts.push(`${colors.yellow}${medium} medium${RESET()}`);
-    if (low > 0) summaryParts.push(`${colors.green}${low} low${RESET()}`);
-    console.log(`  ${summaryParts.join(`${colors.dim} · ${RESET()}`)}`);
+    if (low > 0) summaryParts.push(`${colors.dim}${low} low${RESET()}`);
+
+    divider('Findings');
+    console.log(`  ${summaryParts.join('  ')}`);
 
     // High-count mode: group by category when > 20 findings
     if (totalFindings > 20 && !verbose) {
-      console.log();
       const groups = new Map<string, { critical: number; high: number; medium: number; low: number; files: Set<string> }>();
       for (const f of failed) {
         const key = f.category || f.name || 'Other';
@@ -624,22 +663,22 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         const wb = b[1].critical * 4 + b[1].high * 3 + b[1].medium * 2 + b[1].low;
         return wb - wa;
       });
+      console.log();
       for (const [cat, g] of sorted.slice(0, 8)) {
         const counts: string[] = [];
-        if (g.critical > 0) counts.push(`${colors.brightRed}${g.critical} critical${RESET()}`);
+        if (g.critical > 0) counts.push(`${colors.brightRed}${g.critical} crit${RESET()}`);
         if (g.high > 0) counts.push(`${colors.red}${g.high} high${RESET()}`);
-        if (g.medium > 0) counts.push(`${colors.dim}${g.medium} medium${RESET()}`);
+        if (g.medium > 0) counts.push(`${colors.dim}${g.medium} med${RESET()}`);
         if (g.low > 0) counts.push(`${colors.dim}${g.low} low${RESET()}`);
         const fileHint = g.files.size <= 3 ? `  ${colors.dim}${[...g.files].join(', ')}${RESET()}` : '';
-        console.log(`    ${cat.padEnd(28)} ${counts.join(', ')}${fileHint}`);
+        console.log(`  ${colors.dim}│${RESET()} ${cat.padEnd(26)} ${counts.join(', ')}${fileHint}`);
       }
       if (sorted.length > 8) {
-        console.log(`    ${colors.dim}... ${sorted.length - 8} more categories${RESET()}`);
+        console.log(`  ${colors.dim}│ + ${sorted.length - 8} more categories${RESET()}`);
       }
 
       // Top 3 issues with full detail
-      console.log();
-      console.log(`  ${colors.bold}Top Issues${RESET()}`);
+      divider('Top Issues');
       const topFindings = [...failed]
         .sort((a, b) => {
           const sw: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
@@ -647,21 +686,23 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         })
         .slice(0, 3);
       for (const f of topFindings) {
-        const sev = SEVERITY_DISPLAY[f.severity];
         const shortFile = f.file ? shortenPath(f.file) : '';
         const loc = shortFile + (f.line ? `:${f.line}` : '');
+        const borderColor = SEVERITY_DISPLAY[f.severity].color();
         console.log();
-        console.log(`  ${sev.color()}${sev.label}${RESET()}  ${colors.bold}${f.name || f.message}${RESET()}`);
-        if (loc) console.log(`  ${colors.dim}${loc}${RESET()}`);
+        console.log(`  ${borderColor}│${RESET()} ${sevBadge(f.severity)}  ${colors.bold}${colors.white}${f.name || f.message}${RESET()}`);
+        if (loc) console.log(`  ${borderColor}│${RESET()} ${colors.dim}${loc}${RESET()}`);
         if (f.guidance) {
-          console.log(`  ${colors.dim}${cleanFixText(f.guidance, f.file)}${RESET()}`);
+          console.log(`  ${borderColor}│${RESET()} ${cleanFixText(f.guidance, f.file)}`);
         }
         if (f.fix) {
-          console.log(`  ${colors.cyan}Fix: ${cleanFixText(f.fix, f.file)}${RESET()}`);
+          console.log(`  ${borderColor}│${RESET()} ${colors.cyan}Fix:${RESET()} ${cleanFixText(f.fix, f.file)}`);
         }
       }
     } else {
-      // Normal mode: individual findings with collapse
+      // Normal mode: individual findings sorted by severity, with collapse
+      const sevWeight: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+      failed.sort((a, b) => (sevWeight[b.severity] || 0) - (sevWeight[a.severity] || 0));
       const skipped = new Set<number>();
       let shown = 0;
       const limit = verbose ? failed.length : 10;
@@ -670,21 +711,21 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         if (shown >= limit) break;
         if (skipped.has(i)) continue;
         const f = failed[i];
-        const sev = SEVERITY_DISPLAY[f.severity];
         const shortFile = f.file ? shortenPath(f.file) : '';
         const loc = shortFile + (f.line ? `:${f.line}` : '');
+        const borderColor = SEVERITY_DISPLAY[f.severity].color();
         console.log();
-        console.log(`  ${sev.color()}${sev.label}${RESET()}  ${colors.bold}${f.name || f.message}${RESET()}`);
-        if (loc) console.log(`  ${colors.dim}${loc}${RESET()}`);
+        console.log(`  ${borderColor}│${RESET()} ${sevBadge(f.severity)}  ${colors.bold}${colors.white}${f.name || f.message}${RESET()}`);
+        if (loc) console.log(`  ${borderColor}│${RESET()} ${colors.dim}${loc}${RESET()}`);
         if (f.guidance) {
-          console.log(`  ${colors.dim}${cleanFixText(f.guidance, f.file)}${RESET()}`);
+          console.log(`  ${borderColor}│${RESET()} ${cleanFixText(f.guidance, f.file)}`);
         }
         if (f.fix) {
-          console.log(`  ${colors.cyan}Fix: ${cleanFixText(f.fix, f.file)}${RESET()}`);
+          console.log(`  ${borderColor}│${RESET()} ${colors.cyan}Fix:${RESET()} ${cleanFixText(f.fix, f.file)}`);
         }
         if (verbose) {
-          if (f.checkId) console.log(`  ${colors.dim}Check: ${f.checkId}${RESET()}`);
-          if (f.category) console.log(`  ${colors.dim}Category: ${f.category}${RESET()}`);
+          if (f.checkId) console.log(`  ${borderColor}│${RESET()} ${colors.dim}Check: ${f.checkId}${RESET()}`);
+          if (f.category) console.log(`  ${borderColor}│${RESET()} ${colors.dim}Category: ${f.category}${RESET()}`);
         }
         shown++;
 
@@ -701,62 +742,94 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
             }
           }
           if (similarCount > 0) {
-            console.log(`  ${colors.dim}+ ${similarCount} similar${dir ? ` in ${shortenPath(dir)}` : ''}${RESET()}`);
+            console.log(`  ${borderColor}│${RESET()} ${colors.dim}+ ${similarCount} similar${dir ? ` in ${shortenPath(dir)}` : ''}${RESET()}`);
           }
         }
       }
       const remaining = failed.length - shown - skipped.size;
       if (remaining > 0) {
-        console.log(`\n  ${colors.dim}${remaining} more findings (use --verbose to see all)${RESET()}`);
+        console.log(`\n  ${colors.dim}+ ${remaining} more findings (use --verbose to see all)${RESET()}`);
       }
     }
 
-    // Path forward
+    // Path forward with recovery math
     if (critical > 0 || high > 0) {
+      const recoveryParts: string[] = [];
+      if (critical > 0) recoveryParts.push(`${critical} critical`);
+      if (high > 0) recoveryParts.push(`${high} high`);
+      // Estimate recovered score: governance findings recover less per fix
+      const govFindings = failed.filter(f => {
+        const cat = (f.category || '').toLowerCase();
+        const id = f.checkId || '';
+        return cat === 'governance' || cat === 'injection-hardening' || cat === 'trust-hierarchy'
+          || id.startsWith('AST-GOV') || id.startsWith('AST-GOVERN')
+          || id.startsWith('AST-PROMPT') || id.startsWith('AST-HEARTBEAT');
+      });
+      const isGovernanceOnly = govFindings.length === failed.length;
+      const estRecovery = isGovernanceOnly
+        ? Math.min(100, score + (critical * 8 + high * 5))
+        : Math.min(100, score + (critical * 15 + high * 8));
       console.log();
-      console.log(`  ${colors.cyan}Path forward: fix ${critical + high} critical/high issue${(critical + high) > 1 ? 's' : ''}${RESET()}`);
+      console.log(`  ${colors.cyan}${colors.bold}Path forward:${RESET()} ${colors.cyan}${score} ${colors.dim}->${RESET()} ${colors.green}${colors.bold}${estRecovery}${RESET()} ${colors.cyan}by fixing ${recoveryParts.join(' + ')}${RESET()}`);
     }
   }
 
   // ── Registry ────────────────────────────────────────────────────────
   if (registry?.found) {
     const trustScore = Math.round(registry.trustScore * 100);
-    const trustColor = trustScore >= 70 ? colors.green : trustScore >= 40 ? colors.yellow : colors.red;
 
-    console.log();
     if (localScan || nanomindScan) {
-      // Show as separate section when local scan was also performed
-      console.log(`  ${colors.bold}Registry${RESET()}`);
-      console.log(`  Trust Score:    ${trustColor}${trustScore}/100${RESET()}`);
+      divider('Registry');
+      console.log(`  Trust     ${scoreMeter(trustScore)}`);
     }
-    console.log(`  Trust Level:    ${trustLevelColor(registry.trustLevel)}${trustLevelLabel(registry.trustLevel)}${RESET()} (${registry.trustLevel}/4)`);
+    const tlColor = trustLevelColor(registry.trustLevel);
+    const tlLabel = trustLevelLabel(registry.trustLevel);
+    console.log(`  Level     ${tlColor}${colors.bold}${tlLabel}${RESET()} ${colors.dim}(${registry.trustLevel}/4)${RESET()}`);
     if (registry.communityScans !== undefined) {
-      console.log(`  Community:      ${registry.communityScans} scan${registry.communityScans !== 1 ? 's' : ''} shared`);
+      console.log(`  Community ${registry.communityScans > 0 ? colors.green : colors.dim}${registry.communityScans} scan${registry.communityScans !== 1 ? 's' : ''} shared${RESET()}`);
     }
     if (registry.cveCount !== undefined && registry.cveCount > 0) {
-      console.log(`  Known CVEs:     ${colors.red}${registry.cveCount}${RESET()}`);
+      console.log(`  CVEs      ${colors.brightRed}${colors.bold}${registry.cveCount}${RESET()}`);
     }
     if (registry.dependencies) {
       const d = registry.dependencies;
-      console.log();
-      console.log(`  ${colors.bold}Dependencies${RESET()}`);
-      if (d.totalDeps !== undefined) console.log(`  Total:          ${d.totalDeps}`);
-      if (d.vulnerableDeps !== undefined) {
-        console.log(`  Vulnerable:     ${d.vulnerableDeps > 0 ? colors.red + d.vulnerableDeps + RESET() : colors.green + '0' + RESET()}`);
+      const depParts: string[] = [];
+      if (d.totalDeps !== undefined) depParts.push(`${d.totalDeps} total`);
+      if (d.vulnerableDeps !== undefined && d.vulnerableDeps > 0) depParts.push(`${colors.red}${d.vulnerableDeps} vulnerable${RESET()}`);
+      if (d.minTrustLevel !== undefined) depParts.push(`min trust ${d.minTrustLevel}/4`);
+      if (depParts.length > 0) {
+        console.log(`  Deps      ${depParts.join(`${colors.dim} · ${RESET()}`)}`);
       }
-      if (d.minTrustLevel !== undefined) console.log(`  Min Trust:      ${d.minTrustLevel}/4`);
     }
 
     // Trust level legend (when not fully verified)
     if (registry.trustLevel < 4) {
-      console.log();
-      console.log(`  ${colors.dim}Trust levels: Blocked (0) < Warning (1) < Listed (2) < Scanned (3) < Verified (4)${RESET()}`);
+      const levels = ['Blocked', 'Warning', 'Listed', 'Scanned', 'Verified'];
+      const legend = levels.map((l, i) => {
+        if (i === registry.trustLevel) return `${tlColor}${colors.bold}${l}${RESET()}`;
+        if (i < registry.trustLevel) return `${colors.dim}${l}${RESET()}`;
+        return `${colors.dim}${l}${RESET()}`;
+      }).join(`${colors.dim} > ${RESET()}`);
+      console.log(`  ${colors.dim}${legend}${RESET()}`);
     }
   }
 
   // ── Next steps ──────────────────────────────────────────────────────
   const hasGovIssues = failed.some(f => f.category === 'governance' || f.category === 'Governance' || f.checkId?.startsWith('AST-GOV') || f.checkId?.startsWith('AST-PROMPT'));
-  printCheckNextSteps(name, { hasGovernanceIssues: hasGovIssues, hasFindings: totalFindings > 0 });
+  const hasCredIssues = failed.some(f => f.checkId?.startsWith('CRED-') || f.name?.toLowerCase().includes('credential') || f.name?.toLowerCase().includes('api key') || f.name?.toLowerCase().includes('hardcoded'));
+  const hasCodeVulns = failed.some(f => {
+    const cat = (f.category || '').toLowerCase();
+    return cat !== 'governance' && cat !== 'injection-hardening' && cat !== 'trust-hierarchy'
+      && !f.checkId?.startsWith('AST-GOV') && !f.checkId?.startsWith('AST-GOVERN')
+      && !f.checkId?.startsWith('AST-PROMPT') && !f.checkId?.startsWith('AST-HEARTBEAT');
+  });
+  printCheckNextSteps(name, {
+    hasGovernanceIssues: hasGovIssues,
+    hasFindings: totalFindings > 0,
+    hasCredentialFindings: hasCredIssues,
+    hasCodeVulns,
+    isCleanScan: totalFindings === 0 && (!!localScan || !!nanomindScan),
+  });
 }
 
 function groupFindingsBySeverity(findings: SecurityFinding[]): Record<Severity, SecurityFinding[]> {
@@ -6993,18 +7066,34 @@ function filterLocalOnlyFindings(
  */
 function printCheckNextSteps(
   target: string,
-  context?: { hasGovernanceIssues?: boolean; hasFindings?: boolean },
+  context?: {
+    hasGovernanceIssues?: boolean;
+    hasFindings?: boolean;
+    hasCredentialFindings?: boolean;
+    hasCodeVulns?: boolean;
+    isCleanScan?: boolean;
+  },
 ): void {
   if (globalCiMode) return;
   console.log();
-  console.log(`  ${colors.bold}Next steps${RESET()}`);
+  console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
+
   if (context?.hasGovernanceIssues) {
-    console.log(`  ${colors.dim}Fix governance issues: ${CLI_PREFIX} harden-soul ${target}${RESET()}`);
+    console.log(`  ${colors.cyan}Auto-fix governance:${RESET()}  ${CLI_PREFIX} harden-soul ${target}`);
+  }
+  if (context?.hasCredentialFindings) {
+    console.log(`  ${colors.cyan}Protect credentials:${RESET()}  npx secretless-ai scan`);
+  }
+  if (context?.hasCodeVulns) {
+    console.log(`  ${colors.cyan}Auto-fix all issues:${RESET()}  ${CLI_PREFIX} secure --fix`);
   }
   if (context?.hasFindings) {
-    console.log(`  ${colors.dim}Full project audit:   ${getFullScanHint()}${RESET()}`);
+    console.log(`  ${colors.cyan}Full project audit:${RESET()}   ${getFullScanHint()}`);
+  } else if (context?.isCleanScan) {
+    console.log(`  ${colors.cyan}Governance scan:${RESET()}      ${CLI_PREFIX} scan-soul ${target}`);
+    console.log(`  ${colors.cyan}Red-team test:${RESET()}        ${CLI_PREFIX} attack --local`);
   } else {
-    console.log(`  ${colors.dim}Full project audit:   ${getFullScanHint()}${RESET()}`);
+    console.log(`  ${colors.cyan}Deep scan:${RESET()}            ${CLI_PREFIX} check ${target} --rescan`);
   }
   console.log();
 }
