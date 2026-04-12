@@ -118,6 +118,13 @@ function checkCredentialsInNonEnvContext(ast: SecurityAST): ASTFinding[] {
 function checkCredentialForwarding(ast: SecurityAST): ASTFinding[] {
   const findings: ASTFinding[] = [];
 
+  // Documentation and test files that mention credentials + external services
+  // are teaching credential management, not performing credential exfiltration.
+  // e.g., secretless docs/use-cases/team-setup.md references STRIPE_KEY + 1Password + CI/CD
+  if (isDocumentationOrTestContext(ast)) {
+    return findings;
+  }
+
   // Find credential data that is transmitted externally
   // Direct: credentials type with transmit mode
   const directCredTransmit = ast.declaredDataAccess.filter(
