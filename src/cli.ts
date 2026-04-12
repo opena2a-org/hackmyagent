@@ -400,11 +400,11 @@ Examples:
   });
 
 // Severity colors and symbols for secure command
-const SEVERITY_DISPLAY: Record<Severity, { symbol: string; color: () => string }> = {
-  critical: { symbol: '[!!]', color: () => colors.brightRed },
-  high: { symbol: '[!]', color: () => colors.red },
-  medium: { symbol: '[~]', color: () => colors.yellow },
-  low: { symbol: '[.]', color: () => colors.green },
+const SEVERITY_DISPLAY: Record<Severity, { symbol: string; label: string; color: () => string }> = {
+  critical: { symbol: '[!!]', label: 'CRITICAL', color: () => colors.brightRed },
+  high: { symbol: '[!]', label: 'HIGH', color: () => colors.red },
+  medium: { symbol: '[~]', label: 'MEDIUM', color: () => colors.yellow },
+  low: { symbol: '[.]', label: 'LOW', color: () => colors.green },
 };
 
 /**
@@ -482,13 +482,28 @@ function rightAlign(left: string, right: string, width: number = 68): string {
   return `${left}${' '.repeat(pad)}${right}`;
 }
 
-/** Truncate a fix string to one concise line */
-function truncateFix(fix: string): string {
-  // Take first sentence or first line, whichever is shorter
-  const firstLine = fix.split('\n')[0].trim();
-  const firstSentence = firstLine.split(/\.\s/)[0];
-  const result = firstSentence.endsWith('.') ? firstSentence : firstSentence + '.';
-  return result.length > 80 ? result.slice(0, 77) + '...' : result;
+/** Extract the actionable core of a fix/guidance string.
+ *  Takes the first sentence, strips file path prefixes that duplicate
+ *  the finding header, and wraps at terminal width. Never truncates with "...".
+ */
+function cleanFixText(text: string, fileAlreadyShown?: string): string {
+  // Take first meaningful line (skip blank lines)
+  let line = text.split('\n').map(l => l.trim()).filter(Boolean)[0] || text;
+  // Strip "In <file>," prefix when file is already shown in the finding header
+  if (fileAlreadyShown) {
+    const escapedFile = fileAlreadyShown.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    line = line.replace(new RegExp(`^In ${escapedFile},?\\s*`, 'i'), '');
+    // Capitalize first letter after stripping
+    if (line.length > 0) line = line[0].toUpperCase() + line.slice(1);
+  }
+  return line;
+}
+
+/** Shorten a file path for display — show filename + parent dir only */
+function shortenPath(filePath: string): string {
+  const parts = filePath.split('/');
+  if (parts.length <= 2) return filePath;
+  return parts.slice(-2).join('/');
 }
 
 function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
@@ -583,7 +598,15 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   // ── Findings ────────────────────────────────────────────────────────
   if (failed.length > 0) {
     console.log();
-    console.log(`  ${colors.bold}Findings${RESET()}  ${critical} critical, ${high} high, ${medium} medium, ${low} low`);
+    console.log(`  ${colors.bold}Findings${RESET()}`);
+
+    // Severity summary line with colored counts
+    const summaryParts: string[] = [];
+    if (critical > 0) summaryParts.push(`${colors.brightRed}${critical} critical${RESET()}`);
+    if (high > 0) summaryParts.push(`${colors.red}${high} high${RESET()}`);
+    if (medium > 0) summaryParts.push(`${colors.yellow}${medium} medium${RESET()}`);
+    if (low > 0) summaryParts.push(`${colors.green}${low} low${RESET()}`);
+    console.log(`  ${summaryParts.join(`${colors.dim} · ${RESET()}`)}`);
 
     // High-count mode: group by category when > 20 findings
     if (totalFindings > 20 && !verbose) {
@@ -625,18 +648,20 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         .slice(0, 3);
       for (const f of topFindings) {
         const sev = SEVERITY_DISPLAY[f.severity];
-        const fileLoc = f.file ? `${f.file}${f.line ? ':' + f.line : ''}` : '';
-        console.log(`\n  ${sev.color()}${sev.symbol}${RESET()} ${colors.bold}${f.name || f.message}${RESET()}  ${colors.dim}${fileLoc}${RESET()}`);
+        const shortFile = f.file ? shortenPath(f.file) : '';
+        const loc = shortFile + (f.line ? `:${f.line}` : '');
+        console.log();
+        console.log(`  ${sev.color()}${sev.label}${RESET()}  ${colors.bold}${f.name || f.message}${RESET()}`);
+        if (loc) console.log(`  ${colors.dim}${loc}${RESET()}`);
         if (f.guidance) {
-          console.log(`     ${colors.dim}${truncateFix(f.guidance)}${RESET()}`);
+          console.log(`  ${colors.dim}${cleanFixText(f.guidance, f.file)}${RESET()}`);
         }
         if (f.fix) {
-          console.log(`     ${colors.cyan}Fix: ${truncateFix(f.fix)}${RESET()}`);
+          console.log(`  ${colors.cyan}Fix: ${cleanFixText(f.fix, f.file)}${RESET()}`);
         }
       }
     } else {
       // Normal mode: individual findings with collapse
-      console.log();
       const skipped = new Set<number>();
       let shown = 0;
       const limit = verbose ? failed.length : 10;
@@ -646,17 +671,20 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         if (skipped.has(i)) continue;
         const f = failed[i];
         const sev = SEVERITY_DISPLAY[f.severity];
-        const fileLoc = f.file ? `${f.file}${f.line ? ':' + f.line : ''}` : '';
-        console.log(`  ${sev.color()}${sev.symbol}${RESET()} ${colors.bold}${f.name || f.message}${RESET()}  ${colors.dim}${fileLoc}${RESET()}`);
+        const shortFile = f.file ? shortenPath(f.file) : '';
+        const loc = shortFile + (f.line ? `:${f.line}` : '');
+        console.log();
+        console.log(`  ${sev.color()}${sev.label}${RESET()}  ${colors.bold}${f.name || f.message}${RESET()}`);
+        if (loc) console.log(`  ${colors.dim}${loc}${RESET()}`);
         if (f.guidance) {
-          console.log(`     ${colors.dim}${truncateFix(f.guidance)}${RESET()}`);
+          console.log(`  ${colors.dim}${cleanFixText(f.guidance, f.file)}${RESET()}`);
         }
         if (f.fix) {
-          console.log(`     ${colors.cyan}Fix: ${truncateFix(f.fix)}${RESET()}`);
+          console.log(`  ${colors.cyan}Fix: ${cleanFixText(f.fix, f.file)}${RESET()}`);
         }
         if (verbose) {
-          if (f.checkId) console.log(`     ${colors.dim}Check: ${f.checkId}${RESET()}`);
-          if (f.category) console.log(`     ${colors.dim}Category: ${f.category}${RESET()}`);
+          if (f.checkId) console.log(`  ${colors.dim}Check: ${f.checkId}${RESET()}`);
+          if (f.category) console.log(`  ${colors.dim}Category: ${f.category}${RESET()}`);
         }
         shown++;
 
@@ -673,19 +701,20 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
             }
           }
           if (similarCount > 0) {
-            console.log(`     ${colors.dim}${similarCount} similar in ${dir || '.'}${RESET()}`);
+            console.log(`  ${colors.dim}+ ${similarCount} similar${dir ? ` in ${shortenPath(dir)}` : ''}${RESET()}`);
           }
         }
       }
       const remaining = failed.length - shown - skipped.size;
       if (remaining > 0) {
-        console.log(`\n  ${colors.dim}${remaining} more (--verbose)${RESET()}`);
+        console.log(`\n  ${colors.dim}${remaining} more findings (use --verbose to see all)${RESET()}`);
       }
     }
 
     // Path forward
     if (critical > 0 || high > 0) {
-      console.log(`\n  ${colors.cyan}Path forward: fix ${critical + high} critical/high issue${(critical + high) > 1 ? 's' : ''}${RESET()}`);
+      console.log();
+      console.log(`  ${colors.cyan}Path forward: fix ${critical + high} critical/high issue${(critical + high) > 1 ? 's' : ''}${RESET()}`);
     }
   }
 
