@@ -6778,17 +6778,79 @@ const PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES = new Set([
 ]);
 
 /**
+ * Paths that are AI tooling artifacts, not package source code.
+ * Governance findings on these files are noise when scanning a downloaded
+ * package or cloned repo — they're instructions to an AI assistant, not
+ * security vulnerabilities in the package itself.
+ */
+const AI_TOOLING_PATH_PATTERNS = [
+  /^\.claude\//,
+  /^CLAUDE\.md$/i,
+  /^\.cursorrules$/i,
+  /^\.aider/,
+  /^\.copilot\//,
+  /^\.github\/copilot/,
+];
+
+/** Governance-related categories/checkId prefixes that are noise on AI tooling files */
+const GOVERNANCE_CATEGORIES = new Set([
+  'governance',
+  'injection-hardening',
+  'trust-hierarchy',
+]);
+const GOVERNANCE_CHECK_PREFIXES = ['AST-GOV', 'AST-GOVERN', 'AST-PROMPT'];
+
+/** Test file path patterns — findings here are lower risk */
+const TEST_FILE_PATTERNS = [
+  /\btests?\//i,
+  /\b__tests__\//,
+  /\btest_[^/]+$/,
+  /[^/]+_test\.\w+$/,
+  /[^/]+\.test\.\w+$/,
+  /[^/]+\.spec\.\w+$/,
+  /\bfixtures?\//i,
+];
+
+function isTestFile(filePath: string): boolean {
+  return TEST_FILE_PATTERNS.some(p => p.test(filePath));
+}
+
+function isAiToolingFile(filePath: string): boolean {
+  return AI_TOOLING_PATH_PATTERNS.some(p => p.test(filePath));
+}
+
+/**
  * Filter out local-dev-only findings that are meaningless for downloaded
- * packages (e.g. "Missing .gitignore" on an npm tarball).  Mutates
- * `result.findings` in place and recalculates the score.
+ * packages (e.g. "Missing .gitignore" on an npm tarball).  Also filters
+ * governance findings on AI tooling files and demotes test file findings.
+ * Mutates `result.findings` in place and recalculates the score.
  */
 function filterLocalOnlyFindings(
   result: { findings: SecurityFinding[]; score: number; maxScore: number },
   scanner: HardeningScanner,
 ): void {
-  result.findings = result.findings.filter(
-    f => !PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES.has(f.category),
-  );
+  result.findings = result.findings.filter(f => {
+    // Remove local-only categories (git, permissions, env, etc.)
+    if (PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES.has(f.category)) return false;
+
+    // Remove governance findings on AI tooling files (CLAUDE.md, .claude/, etc.)
+    if (f.file && isAiToolingFile(f.file)) {
+      if (GOVERNANCE_CATEGORIES.has(f.category)) return false;
+      if (GOVERNANCE_CHECK_PREFIXES.some(p => f.checkId.startsWith(p))) return false;
+    }
+
+    return true;
+  });
+
+  // Demote test file findings to low severity (test code patterns are
+  // lower risk — pickle.load in a test file is not an attack surface)
+  for (const f of result.findings) {
+    if (f.file && isTestFile(f.file) && (f.severity === 'critical' || f.severity === 'high')) {
+      (f as any).originalSeverity = f.severity;
+      f.severity = 'low';
+    }
+  }
+
   result.score = scanner.calculateScore(
     result.findings.filter((f: any) => !f.passed && !f.fixed),
   ).score;
