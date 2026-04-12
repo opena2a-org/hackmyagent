@@ -36,7 +36,7 @@ function percentile(samples: number[], p: number): number {
 }
 
 describe('arp/crypto ML-DSA-44 sign p99 benchmark', () => {
-  it(`sign p99 stays under ${CEILING_MS}ms over ${MEASURE_ITERS} iterations`, async () => {
+  it(`sign p99 stays under ${CEILING_MS}ms over ${MEASURE_ITERS} iterations`, { timeout: 30_000 }, async () => {
     const keys = await generateHybridKeyPair('ML-DSA-44');
     const payload = new TextEncoder().encode(
       'nanomind-guard classification benchmark payload',

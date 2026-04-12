@@ -6556,6 +6556,39 @@ function getFullScanHint(): string {
 }
 
 /**
+ * Categories that describe local dev-environment setup, not package security.
+ * Findings in these categories are filtered from display when scanning a
+ * *downloaded* package (npm pack, pip download, git clone to temp dir).
+ * They remain visible when scanning a user's own project directory.
+ */
+const PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES = new Set([
+  'git',
+  'permissions',
+  'environment',
+  'logging',
+  'claude-code',
+  'cursor',
+  'vscode',
+]);
+
+/**
+ * Filter out local-dev-only findings that are meaningless for downloaded
+ * packages (e.g. "Missing .gitignore" on an npm tarball).  Mutates
+ * `result.findings` in place and recalculates the score.
+ */
+function filterLocalOnlyFindings(
+  result: { findings: SecurityFinding[]; score: number; maxScore: number },
+  scanner: HardeningScanner,
+): void {
+  result.findings = result.findings.filter(
+    f => !PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES.has(f.category),
+  );
+  result.score = scanner.calculateScore(
+    result.findings.filter((f: any) => !f.passed && !f.fixed),
+  ).score;
+}
+
+/**
  * Print the standard 3-line next-steps footer shown after every `check`
  * invocation. Lines:
  *   1. How to force a fresh local scan of *this* target.
@@ -6713,6 +6746,9 @@ async function checkGitHubRepo(
       // NanoMind unavailable — use base scan results
     }
 
+    // Filter local-dev-only findings irrelevant to cloned repos
+    filterLocalOnlyFindings(result, scanner);
+
     const failed = result.findings.filter(f => !f.passed);
     const critical = failed.filter(f => f.severity === 'critical');
     const high = failed.filter(f => f.severity === 'high');
@@ -6742,12 +6778,12 @@ async function checkGitHubRepo(
     console.log(`  Findings:   ${critical.length} critical, ${high.length} high, ${medium.length} medium, ${low.length} low`);
 
     displayCheckFindings(failed, !!options.verbose);
+    printCheckNextSteps(displayName);
 
     // Step 3: Community contribution
     if (process.stdin.isTTY && !globalCiMode) {
       const scanCount = incrementScanCounter();
       if (scanCount >= 3 && !hasContributeChoice()) {
-        console.log();
         console.log(`  ${colors.dim}Your scans help other developers make safer choices.`);
         console.log(`  Sharing adds anonymized results to the OpenA2A trust registry`);
         console.log(`  so others can check packages before installing.${RESET()}`);
@@ -6765,7 +6801,7 @@ async function checkGitHubRepo(
         if (wantsToShare) {
           const ok = await publishToRegistry(displayName, result);
           if (ok) {
-            console.error(`  ${colors.green}Shared. Future scans will auto-share.${RESET()}`);
+            console.error(`\n  ${colors.green}Thanks for sharing! Future scans will auto-contribute.${RESET()}\n`);
           } else {
             queuePendingScan(displayName, result);
           }
@@ -6776,8 +6812,6 @@ async function checkGitHubRepo(
         if (!ok) queuePendingScan(displayName, result);
       }
     }
-
-    printCheckNextSteps(displayName);
 
     if (critical.length > 0 || high.length > 0) process.exit(1);
   } catch (err: unknown) {
@@ -6892,6 +6926,9 @@ async function checkPyPiPackage(
     } catch {
       // NanoMind unavailable -- use base scan results
     }
+
+    // Filter local-dev-only findings irrelevant to downloaded packages
+    filterLocalOnlyFindings(result, scanner);
 
     const failed = result.findings.filter(f => !f.passed);
     const critical = failed.filter(f => f.severity === 'critical');
@@ -7079,6 +7116,9 @@ async function checkRawUrl(
       // NanoMind unavailable — use base scan results
     }
 
+    // Filter local-dev-only findings irrelevant to downloaded URLs
+    filterLocalOnlyFindings(result, scanner);
+
     const failed = result.findings.filter(f => !f.passed);
     const critical = failed.filter(f => f.severity === 'critical');
     const high = failed.filter(f => f.severity === 'high');
@@ -7212,6 +7252,9 @@ async function checkNpmPackage(
       // NanoMind unavailable — use base scan results
     }
 
+    // Filter local-dev-only findings irrelevant to downloaded packages
+    filterLocalOnlyFindings(result, scanner);
+
     const failed = result.findings.filter(f => !f.passed);
     const critical = failed.filter(f => f.severity === 'critical');
     const high = failed.filter(f => f.severity === 'high');
@@ -7241,12 +7284,12 @@ async function checkNpmPackage(
     console.log(`  Findings:   ${critical.length} critical, ${high.length} high, ${medium.length} medium, ${low.length} low`);
 
     displayCheckFindings(failed, !!options.verbose);
+    printCheckNextSteps(name);
 
     // Step 3: Community contribution (after 3 scans, interactive only)
     if (process.stdin.isTTY && !globalCiMode) {
       const scanCount = incrementScanCounter();
       if (scanCount >= 3 && !hasContributeChoice()) {
-        console.log();
         console.log(`  ${colors.dim}Your scans help other developers make safer choices.`);
         console.log(`  Sharing adds anonymized results to the OpenA2A trust registry`);
         console.log(`  so others can check packages before installing.${RESET()}`);
@@ -7264,9 +7307,8 @@ async function checkNpmPackage(
         if (wantsToShare) {
           const ok = await publishToRegistry(name, result);
           if (ok) {
-            console.error(`  ${colors.green}Shared. Future scans will auto-share.${RESET()}`);
+            console.error(`\n  ${colors.green}Thanks for sharing! Future scans will auto-contribute.${RESET()}\n`);
           } else {
-            // Silent — queue locally and retry on next scan
             queuePendingScan(name, result);
           }
         }
@@ -7277,8 +7319,6 @@ async function checkNpmPackage(
         if (!ok) queuePendingScan(name, result);
       }
     }
-
-    printCheckNextSteps(name);
 
     if (critical.length > 0 || high.length > 0) process.exit(1);
   } catch (err: unknown) {
