@@ -2,6 +2,17 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [0.16.7] - 2026-04-11
+
+### Added
+- **`--rescan` flag on `check`.** Forces a fresh local scan regardless of how fresh the cached registry data is. Previously the only way to bypass the registry cache was to wait for it to go stale (>3 days). Users who suspect the cached score is wrong, want to verify a recent fix, or are debugging a scanner regression can now force a re-scan on demand. Threaded through `checkNpmPackage`, `checkPyPiPackage`, and `checkGitHubRepo`; each skips its `queryRegistry`/`isScanStale` shortcut when `--rescan` is set and prints `Forcing fresh local scan (--rescan)...` before downloading. For skill identifiers the flag has no effect; a one-line note explains that to the user.
+- **3-line next-steps footer on `check`.** Every `check` invocation (registry cache hit, fresh scan, and local-path alike) now ends with a dim 3-line footer giving the user exactly what to run next: a rescan command, a full-project scan hint, and the list of accepted target formats. Suppressed in `--ci` mode; `--json` has never printed footers and still doesn't.
+- **`HMA_CHECK_COMMAND` and `HMA_FULL_SCAN_HINT` environment variables.** Let a parent CLI override the command strings used in the footer. Each carries a complete command string, not a prefix. Solves the long-standing duplicated-verb bug where opena2a-cli's router was setting `HMA_CLI_PREFIX='opena2a check'` and HMA was appending `check` to it, producing `opena2a check check <pkg>` in hint output. New helpers `getCheckCommand()` and `getFullScanHint()` read the env vars and fall back to `CLI_PREFIX`-derived defaults.
+
+### Fixed
+- **PyPI rescan hint preserves `pip:` prefix.** The PyPI path was passing the stripped package name (`requests`) to the next-steps footer instead of the original target (`pip:requests`), so the suggested rerun command was `hackmyagent check requests --rescan`, which would fall through to npm and fail with "Package not found on npm". Now preserves the original target string.
+- **Stale error-message paths route through `getCheckCommand()`.** Two error paths in `checkGitHubRepo` (clone timeout) and `checkRawUrl` (fetch timeout) suggested `${CLI_PREFIX} check ./<dir>/` as the follow-up, which produced `opena2a check check ./...` under opena2a delegation. The skill-lookup timeout message also used a `CLI_PREFIX.replace(' scan', '')` hack. All three now use `getCheckCommand()`.
+
 ## [0.16.6] - 2026-04-11
 
 ### Fixed
