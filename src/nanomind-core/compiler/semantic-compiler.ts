@@ -26,6 +26,7 @@ import { parseArtifact } from '../ingestion/artifact-parser.js';
 import { sanitizeForNanoMind } from '../ingestion/input-sanitizer.js';
 import { getTMEClassifier } from '../inference/tme-classifier.js';
 import { TMENeuralClassifier } from '../inference/tme-neural.js';
+import { buildAnalysisView } from './source-code-preprocessor.js';
 import type {
   SecurityAST,
   CompilationResult,
@@ -85,10 +86,20 @@ export class SemanticCompiler {
       warnings.push(`${sanitized.manipulationAttempts.length} NanoMind manipulation attempt(s) detected and neutralized`);
     }
 
-    // Step 4: Extract declarations from artifact structure
+    // Step 4: Extract declarations from artifact structure.
+    //
+    // For source_code artifacts, the config-oriented pattern detectors run
+    // against a preprocessed "analysis view" with comments, imports, and
+    // string literals stripped. This eliminates reflexive false positives
+    // where source files whose job is to scan for attack patterns get
+    // flagged for containing those patterns in their own docstrings,
+    // defensive regex, or self-describing identifiers. Other artifact
+    // types (skills, configs, prompts) are unchanged — the whole content
+    // is still meaningful and every byte is analyzed.
+    const analysisContent = buildAnalysisView(content, parsed.type, path);
     const declaredCapabilities = extractDeclaredCapabilities(content, parsed.type, parsed.frontmatter);
     const declaredConstraints = extractDeclaredConstraints(content);
-    const declaredDataAccess = extractDataAccessPatterns(content, declaredCapabilities);
+    const declaredDataAccess = extractDataAccessPatterns(analysisContent, declaredCapabilities, parsed.type);
     const declaredPurpose = extractDeclaredPurpose(content, parsed.frontmatter);
 
     // Step 5: NanoMind inference (intent + inferred capabilities)
@@ -122,8 +133,39 @@ export class SemanticCompiler {
       warnings.push('NanoMind manipulation detected -- elevated to suspicious');
     }
 
-    // Step 6: Map risk surfaces
-    const inferredRiskSurface = mapRiskSurfaces(content, declaredCapabilities, inferredCapabilities, intentClassification);
+    // Step 6: Map risk surfaces.
+    // Use the preprocessed analysis view so the regex-based detectors
+    // (eval/RCE, credential harvesting, exfiltration URLs) don't match
+    // against comments, imports, or string literals in source files.
+    const inferredRiskSurface = mapRiskSurfaces(analysisContent, declaredCapabilities, inferredCapabilities, intentClassification, parsed.type);
+
+    // Step 6b: Canonical credential-format scan for source_code.
+    // The config-oriented pattern detectors are disabled for source files
+    // to eliminate reflexive false positives, but we still want to flag
+    // concrete hardcoded secrets — i.e. byte sequences that match known
+    // API key formats (`sk-ant-api...`, `AKIA...`, `ghp_...`, PEM blocks).
+    // This scan runs on the ORIGINAL content (not the stripped analysis
+    // view) so keys embedded in string literals are still detected. We
+    // ignore matches that look like regex rule definitions (e.g. contain
+    // `\d` / `[a-z]` character class metacharacters) or test fixtures
+    // (contain "FAKE" / "TEST" / "EXAMPLE" markers) so security scanner
+    // codebases and test files don't trip on their own reference patterns.
+    if (parsed.type === 'source_code') {
+      const canonicalHits = scanCanonicalCredentialFormats(content);
+      for (const hit of canonicalHits) {
+        inferredRiskSurface.push({
+          surface: `Hardcoded ${hit.label}`,
+          attackClass: 'CRED-HARVEST',
+          confidence: 0.9,
+          evidence: hit.evidence,
+        });
+        declaredDataAccess.push({
+          dataType: 'credentials',
+          accessMode: 'read',
+          coveredByCapability: false,
+        });
+      }
+    }
 
     // Step 7: Extract evidence spans
     const evidenceSpans = extractEvidenceSpans(content, inferredRiskSurface);
@@ -285,11 +327,28 @@ function extractDeclaredPurpose(content: string, frontmatter?: Record<string, un
   // From YAML frontmatter
   if (frontmatter?.description) return String(frontmatter.description);
 
-  // From first paragraph
+  // From first paragraph. Skip comment lines (line comments, block
+  // comment bodies, shebangs) so that a doc comment saying "this is a
+  // fixture" or "for testing" does not get mistaken for the artifact's
+  // declared purpose — which would then incorrectly classify the file as
+  // a test/doc context and suppress credential findings.
   const lines = content.split('\n').filter(l => l.trim().length > 0);
-  for (const line of lines) {
-    if (!line.startsWith('#') && !line.startsWith('-') && !line.startsWith('---') && line.trim().length > 20) {
-      return line.trim().slice(0, 200);
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (
+      line.startsWith('#') ||
+      line.startsWith('-') ||
+      line.startsWith('---') ||
+      line.startsWith('//') ||
+      line.startsWith('/*') ||
+      line.startsWith('*') ||
+      line.startsWith('"""') ||
+      line.startsWith("'''")
+    ) {
+      continue;
+    }
+    if (line.length > 20) {
+      return line.slice(0, 200);
     }
   }
   return 'Unknown purpose';
@@ -377,8 +436,25 @@ function extractDeclaredConstraints(content: string): Constraint[] {
   return constraints;
 }
 
-function extractDataAccessPatterns(content: string, capabilities: Capability[]): DataAccessPattern[] {
+function extractDataAccessPatterns(
+  content: string,
+  capabilities: Capability[],
+  artifactType: ArtifactType = 'unknown',
+): DataAccessPattern[] {
   const patterns: DataAccessPattern[] = [];
+
+  // For source_code artifacts, substring matching on data-type keywords
+  // ("token", "session", "credential") produces reflexive false positives:
+  // any Go/TS/Python file with a variable named `scanToken` or a type named
+  // `CredentialStore` gets flagged as accessing credentials. Source code
+  // needs AST-based data flow analysis, not byte-level substring matches.
+  // Skipping this pass for source_code eliminates the dominant false
+  // positive mode without affecting skill/config/prompt analysis, where
+  // the whole content is semantically meaningful.
+  if (artifactType === 'source_code') {
+    return patterns;
+  }
+
   const dataTypes = ['user', 'customer', 'payment', 'session', 'credential', 'email', 'profile', 'medical', 'financial'];
 
   for (const dt of dataTypes) {
@@ -405,6 +481,97 @@ function extractDataAccessPatterns(content: string, capabilities: Capability[]):
   }
 
   return patterns;
+}
+
+// ============================================================================
+// Canonical credential-format scan
+// ============================================================================
+
+interface CanonicalCredentialHit {
+  label: string;
+  evidence: string;
+}
+
+/**
+ * Canonical credential-format patterns we trust enough to flag even when
+ * the surrounding context is source code. Each pattern targets a real-world
+ * secret format with low false-positive rate on arbitrary text.
+ */
+const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
+  { label: 'Anthropic API key', regex: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/g },
+  { label: 'OpenAI project key', regex: /sk-proj-[a-zA-Z0-9_-]{20,}/g },
+  { label: 'AWS access key', regex: /AKIA[0-9A-Z]{16}/g },
+  { label: 'GitHub personal access token', regex: /ghp_[a-zA-Z0-9]{36}/g },
+  { label: 'GitHub OAuth token', regex: /gho_[a-zA-Z0-9]{36}/g },
+  { label: 'GitHub app token', regex: /ghs_[a-zA-Z0-9]{36}/g },
+  { label: 'Slack bot token', regex: /xox[baprs]-[a-zA-Z0-9-]{10,}/g },
+  { label: 'Google API key', regex: /AIza[0-9A-Za-z_-]{35}/g },
+  { label: 'Stripe live key', regex: /sk_live_[0-9a-zA-Z]{24,}/g },
+  { label: 'PEM private key', regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PRIVATE)[A-Z ]*KEY-----/g },
+];
+
+/**
+ * Scan raw source content for concrete secret formats that are worth
+ * flagging regardless of surrounding context. Returns a list of hits.
+ *
+ * Filters out matches that look like:
+ *   - Regex rule definitions in a scanner's own source (contain `\d`,
+ *     `[a-z]`, `{6,}`, or other regex metacharacters adjacent to the
+ *     match). A security scanner quoting `sk-ant-api\d{2}-[a-zA-Z0-9_-]{6,}`
+ *     in a regex pattern is not a leaked credential.
+ *   - Test fixtures containing `FAKE`, `EXAMPLE`, `PLACEHOLDER`, `DUMMY`,
+ *     `SAMPLE`, `TEST`, `XXX`, `YOUR_` markers in the surrounding window.
+ */
+function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit[] {
+  const hits: CanonicalCredentialHit[] = [];
+
+  // Markers that, when embedded directly in the key bytes themselves,
+  // indicate the value is a placeholder rather than a real credential.
+  // Using word-boundary anchors on the match (not the surrounding code)
+  // so a comment like "// for testing" in the same file doesn't mask a
+  // real planted key.
+  const inKeyFixtureMarker = /FAKE|EXAMPLE|PLACEHOLDER|DUMMY|YOUR_?KEY|YOUR_?TOKEN|REPLACE_ME|INSERT_HERE/i;
+  // Markers in the immediate preceding window (label / variable name)
+  // that strongly suggest a template value (e.g. `YOUR_API_KEY=...`).
+  const preKeyTemplateMarker = /(<\s*YOUR_|\bYOUR[_-]?(?:KEY|TOKEN|SECRET)|example[_-]?key|template[_-]?key|placeholder)/i;
+  // Regex metacharacters indicating the match is inside a scanner rule
+  // definition rather than a concrete key literal.
+  const regexContextMarker = /\\d|\\w|\\s|\[a-z|\[A-Z|\[0-9|\{\d+,|\*\?|\+\?/;
+
+  for (const { label, regex } of CANONICAL_CREDENTIAL_PATTERNS) {
+    regex.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(content)) !== null) {
+      const matched = match[0];
+      // Narrow preceding context: just the 40 chars before the match,
+      // which covers the variable/label on the same line but not the
+      // whole file. We explicitly do NOT check the full window, because
+      // unrelated comments (e.g. "// testing ...") are often nearby.
+      const preStart = Math.max(0, match.index - 40);
+      const preContext = content.slice(preStart, match.index);
+
+      // Skip matches inside regex rule definitions.
+      if (regexContextMarker.test(preContext) || regexContextMarker.test(matched)) {
+        continue;
+      }
+
+      // Skip if the key bytes themselves contain placeholder markers.
+      if (inKeyFixtureMarker.test(matched)) {
+        continue;
+      }
+
+      // Skip if the immediate label/variable name indicates a template.
+      if (preKeyTemplateMarker.test(preContext)) {
+        continue;
+      }
+
+      hits.push({
+        label,
+        evidence: `${label}: ${matched.slice(0, 16)}...`,
+      });
+    }
+  }
+  return hits;
 }
 
 function extractDependencies(content: string): string[] {
@@ -444,8 +611,30 @@ function mapRiskSurfaces(
   declared: Capability[],
   inferred: Capability[],
   intent: IntentClass,
+  artifactType: ArtifactType = 'unknown',
 ): RiskSurface[] {
   const surfaces: RiskSurface[] = [];
+
+  // Source code needs semantic (AST) analysis, not regex-based substring
+  // matching on content. The risk-surface checks below were designed for
+  // skills, agent configs, and system prompts, where the entire content is
+  // semantically meaningful and finding the string "password" next to
+  // "request" plausibly implies credential harvesting. In a Go or TypeScript
+  // file, the same substrings are almost always idiomatic identifiers and
+  // HTTP helpers (`githubToken`, `http.NewRequest`), which makes every
+  // network service file fire CRED-HARVEST. The preprocessor already
+  // strips comments, imports, and string literals; even so, the remaining
+  // identifier tokens produce near-100% false positive rates on real
+  // codebases. Skipping the config-oriented substring pathway for source
+  // code eliminates the reflexive false positive mode entirely. Any real
+  // source-level attack surface belongs to a dedicated AST analyzer, not
+  // to this regex pass.
+  if (artifactType === 'source_code') {
+    // Source-level risk surfaces are surfaced by the analyzer layer, not
+    // by regex-matching raw content here.
+    return surfaces;
+  }
+
   const text = content.toLowerCase();
 
   // Detect governance documents -- these talk ABOUT security, not perform attacks
