@@ -4591,11 +4591,21 @@ dist/
     score: number;
     maxScore: number;
   } {
+    // Governance findings (weak constraints, missing domains, prompt hardening)
+    // are important but shouldn't tank scores the way code vulnerabilities do.
+    // A project with only governance gaps is not malware — it needs hardening.
+    const GOVERNANCE_CATEGORIES = new Set(['governance', 'Governance', 'injection-hardening', 'trust-hierarchy']);
+    const GOVERNANCE_PREFIXES = ['AST-GOV', 'AST-GOVERN', 'AST-PROMPT', 'AST-HEARTBEAT'];
+    const GOVERNANCE_WEIGHT = 0.4; // 40% of normal weight
+
     // Sum severity weights for all failed, unfixed findings
     let weightedSum = 0;
     for (const finding of findings) {
       if (!finding.passed && !finding.fixed) {
-        weightedSum += SEVERITY_WEIGHTS[finding.severity];
+        const isGovernance = GOVERNANCE_CATEGORIES.has(finding.category) ||
+          GOVERNANCE_PREFIXES.some(p => finding.checkId.startsWith(p));
+        const multiplier = isGovernance ? GOVERNANCE_WEIGHT : 1;
+        weightedSum += SEVERITY_WEIGHTS[finding.severity] * multiplier;
       }
     }
 
@@ -4604,6 +4614,7 @@ dist/
     // while preserving near-identical scores for sparse scans (1-2 findings).
     // Decay constant 150 calibrated so: 1 medium(8)=95, 1 critical(25)=85,
     // 3crit+9high(210)=25, extreme(700)=1
+    // With governance at 0.4x: 1 gov-critical(10)=94, 6 gov-high(36)=79
     const DECAY_CONSTANT = 150;
     const score = weightedSum === 0
       ? 100
