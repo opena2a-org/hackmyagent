@@ -146,14 +146,30 @@ export async function runNanoMindScan(
       }
 
       // Select analyzers based on artifact type:
-      // - Security artifacts (SOUL, system prompts, skills, configs): ALL analyzers
+      // - Agent artifacts (soul, system_prompt, skill, agent_config, a2a_card, mcp_config):
+      //   ALL analyzers — governance, prompt, scope, capability checks are relevant
       // - Source code: credential + code analysis only (no governance/scope/exfil)
-      // - Everything else: ALL analyzers
+      // - Everything else (docs, unknown, env_file, credential_file, ide configs):
+      //   credential + code + stego only — governance/prompt/scope/capability are FPs
       const verifier = (ast: SecurityAST) => compiler.verifyAST(ast);
+      const agentTypes = new Set(['soul', 'skill', 'agent_config', 'a2a_card', 'mcp_config']);
+      // system_prompt is agent-like ONLY if it's an actual system prompt file,
+      // not a developer instruction file (CLAUDE.md, .cursorrules, .clinerules, .windsurfrules).
+      // Developer instruction files teach AI how to work on the project — they're not
+      // agent system prompts that need override resistance or injection hardening.
+      const pathLower = (result.ast.artifactPath ?? '').toLowerCase();
+      const isDevInstructionFile = result.ast.artifactType === 'system_prompt' && (
+        pathLower.includes('claude.md') || pathLower.includes('.cursorrules') ||
+        pathLower.includes('.clinerules') || pathLower.includes('.windsurfrules')
+      );
+      const isAgent = agentTypes.has(result.ast.artifactType) ||
+        (result.ast.artifactType === 'system_prompt' && !isDevInstructionFile);
       const isSourceCode = result.ast.artifactType === 'source_code';
-      const findings = isSourceCode
-        ? runCodeAnalyzers(result.ast, verifier)
-        : runAllAnalyzers(result.ast, verifier);
+      const findings = isAgent
+        ? runAllAnalyzers(result.ast, verifier)
+        : isSourceCode
+          ? runCodeAnalyzers(result.ast, verifier)
+          : runNonAgentAnalyzers(result.ast, verifier);
       allASTFindings.push(...findings);
     } catch {
       // Skip files that fail to read or compile -- do not block the scan
@@ -298,6 +314,24 @@ function runAllAnalyzers(
   // Enrich all findings with context-aware fix suggestions
   // Uses TME classification + AST context to produce specific, actionable fixes
   // instead of generic template strings
+  return enrichFindings(findings, ast);
+}
+
+/**
+ * Run credential, code, and stego analyzers against non-agent artifacts.
+ * Used for documentation, IDE configs, env files, unknown types — anything
+ * that isn't an agent artifact or source code. Governance, prompt, scope,
+ * and capability analyzers are skipped because these files don't have
+ * override resistance, trust hierarchies, or declared capabilities.
+ */
+function runNonAgentAnalyzers(
+  ast: SecurityAST,
+  verifier: (ast: SecurityAST) => boolean,
+): ASTFinding[] {
+  const findings: ASTFinding[] = [];
+  findings.push(...analyzeCredentials(ast, verifier));
+  findings.push(...analyzeCode(ast, verifier));
+  findings.push(...analyzeSteganography(ast));
   return enrichFindings(findings, ast);
 }
 
