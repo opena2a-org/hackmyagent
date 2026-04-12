@@ -2,9 +2,9 @@
  * Behavioral risk signal channel (AIComply P1, coordinator hot path).
  *
  * The `IntelligenceCoordinator` needs a way to ask the behavioral twin
- * (`NanoMindL1` in `nanomind-l1.ts`) "how anomalous does this event look
- * against the agent's behavioral baseline?" without importing the twin
- * directly into the comply path. Direct coupling would re-introduce the
+ * (`RuntimeTwin` in `runtime-twin.ts`) "how anomalous does this event
+ * look against the agent's behavioral baseline?" without importing the
+ * twin directly into the comply path. Direct coupling would re-introduce the
  * layering break that the L0-comply gate was added to prevent: the twin
  * would sit inline with the crypto verifier, and a bug in the twin would
  * cascade into every classified event.
@@ -16,8 +16,8 @@
  *   - `InProcessBehavioralRiskSource` wraps any object that exposes
  *     `scoreARPEvent(event)`. This is the single-process fast path: no
  *     serialization, no socket, just a direct call guarded by a try/catch.
- *     `NanoMindL1` satisfies the interface via its readonly scoreARPEvent
- *     method, but tests can inject any stub.
+ *     `RuntimeTwin` satisfies the interface via its readonly
+ *     scoreARPEvent method, but tests can inject any stub.
  *
  *   - `UnixSocketBehavioralRiskSource` speaks newline-delimited JSON over
  *     a unix domain socket (or a Windows named pipe via node `net`). This
@@ -56,10 +56,10 @@ import * as path from 'path';
 import type { ARPEvent } from '../types';
 
 /**
- * Shape returned by the twin's on-demand scorer. Mirrors NanoMindL1's
+ * Shape returned by the twin's on-demand scorer. Mirrors RuntimeTwin's
  * internal AnomalyResult so this module does not need to import the twin
  * directly, and so test stubs can produce it without depending on the
- * full NanoMindL1 class surface.
+ * full RuntimeTwin class surface.
  */
 export interface BehavioralRiskScore {
   /** Normalized anomaly score in [0, 1]. Higher is riskier. */
@@ -72,7 +72,7 @@ export interface BehavioralRiskScore {
 
 /**
  * Minimum interface an in-process twin handle must satisfy to be plugged
- * into `InProcessBehavioralRiskSource`. NanoMindL1.scoreARPEvent matches
+ * into `InProcessBehavioralRiskSource`. RuntimeTwin.scoreARPEvent matches
  * this shape by construction.
  */
 export interface BehavioralRiskScoreable {
@@ -182,7 +182,7 @@ export function defaultBehavioralRiskSocketPath(agentId: string): string {
  * misbehaving twin that throws.
  *
  * Decoupling rationale: the coordinator holds this as a
- * `BehavioralRiskSource`, not as a `NanoMindL1`. The comply path has no
+ * `BehavioralRiskSource`, not as a `RuntimeTwin`. The comply path has no
  * knowledge of twin internals and a bug in the twin surfaces as an
  * `unavailable` result, not a cascade failure.
  */

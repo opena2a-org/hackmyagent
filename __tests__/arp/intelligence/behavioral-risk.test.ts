@@ -15,7 +15,7 @@ import {
 } from '../../../src/arp/intelligence/behavioral-risk';
 import { startBehavioralRiskServer } from '../../../src/arp/intelligence/behavioral-risk-server';
 import type { ARPEvent } from '../../../src/arp/types';
-import { NanoMindL1 } from '../../../src/arp/intelligence/nanomind-l1';
+import { RuntimeTwin } from '../../../src/arp/intelligence/runtime-twin';
 
 /**
  * Coverage for the behavioral risk IPC surface.
@@ -323,15 +323,15 @@ describe('UnixSocketBehavioralRiskSource circuit breaker', () => {
   });
 });
 
-describe('NanoMindL1.scoreARPEvent readonly seam', () => {
+describe('RuntimeTwin.scoreARPEvent readonly seam', () => {
   it('returns null when the baseline is not yet trained', () => {
-    const twin = new NanoMindL1('test-agent-seam-1');
+    const twin = new RuntimeTwin('test-agent-seam-1');
     const result = twin.scoreARPEvent(makeEvent());
     expect(result).toBeNull();
   });
 
   it('returns a score when a baseline is installed via the test seam', () => {
-    const twin = new NanoMindL1('test-agent-seam-2');
+    const twin = new RuntimeTwin('test-agent-seam-2');
     twin._setBaselineForTest({
       eventTypeCounts: { TOOL_CALL: 200 },
       avgTimingDelta: 100,
@@ -353,7 +353,7 @@ describe('NanoMindL1.scoreARPEvent readonly seam', () => {
   });
 
   it('does not advance sequenceNum or lastEventTime when scoring', () => {
-    const twin = new NanoMindL1('test-agent-seam-3');
+    const twin = new RuntimeTwin('test-agent-seam-3');
     twin._setBaselineForTest({
       eventTypeCounts: { TOOL_CALL: 200 },
       avgTimingDelta: 0,

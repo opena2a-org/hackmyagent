@@ -632,8 +632,8 @@ function raiseSeverity(
 /**
  * Bands the behavioral risk score is sorted into, matched to severity
  * floors raised on the event when the band fires. The score ranges come
- * from NanoMindL1's response table; they are deliberately mirrored here
- * rather than imported, so the coordinator's policy can drift
+ * from RuntimeTwin's response table; they are deliberately mirrored
+ * here rather than imported, so the coordinator's policy can drift
  * independently of the twin's internal action labels if needed.
  *
  *   >= 0.8 : critical   -> event.category >= threat, severity >= critical

@@ -32,7 +32,7 @@ export { CorrelationEngine } from './engine/correlation';
 export { IntelligenceCoordinator } from './intelligence/coordinator';
 export { BudgetController } from './intelligence/budget';
 export { AnomalyDetector } from './intelligence/anomaly';
-export { NanoMindL1 } from './intelligence/nanomind-l1';
+export { RuntimeTwin } from './intelligence/runtime-twin';
 export { AnthropicAdapter, OpenAIAdapter, OllamaAdapter, createAdapter, autoDetectAdapter } from './intelligence/adapters';
 export { ProcessMonitor } from './monitors/process';
 export { NetworkMonitor } from './monitors/network';
@@ -78,7 +78,7 @@ import * as path from 'path';
 import type { ARPConfig, ARPEvent, Monitor } from './types';
 import { EventEngine } from './engine/event-engine';
 import { IntelligenceCoordinator } from './intelligence/coordinator';
-import { NanoMindL1 } from './intelligence/nanomind-l1';
+import { RuntimeTwin } from './intelligence/runtime-twin';
 import {
   InProcessBehavioralRiskSource,
   type BehavioralRiskSource,
@@ -131,7 +131,7 @@ export class AgentRuntimeProtection {
    * start() so every event trains the twin's baseline. Null when the
    * runtime twin is disabled in config.
    */
-  private readonly runtimeTwin: NanoMindL1 | null;
+  private readonly runtimeTwin: RuntimeTwin | null;
   /**
    * Transport-agnostic view of the runtime twin passed to the
    * coordinator. Null when the twin is disabled.
@@ -355,16 +355,16 @@ export class AgentRuntimeProtection {
   }
 
   /** The runtime twin instance, or null when disabled. */
-  getRuntimeTwin(): NanoMindL1 | null {
+  getRuntimeTwin(): RuntimeTwin | null {
     return this.runtimeTwin;
   }
 }
 
 /**
- * Construct an in-process `NanoMindL1` runtime twin from the ARP config,
- * or return null when the caller disabled intelligence or the runtime
- * twin explicitly. Kept as a free function so the constructor stays
- * short and the default policy is visible in one place.
+ * Construct an in-process `RuntimeTwin` from the ARP config, or return
+ * null when the caller disabled intelligence or the runtime twin
+ * explicitly. Kept as a free function so the constructor stays short
+ * and the default policy is visible in one place.
  *
  * Default policy:
  *   - When `intelligence.enabled === false`: no twin (L2 disabled implies
@@ -373,12 +373,12 @@ export class AgentRuntimeProtection {
  *   - Otherwise: construct a twin seeded from `config.agentName`, with
  *     fleet federation opt-in from the config (default off).
  */
-function buildRuntimeTwin(config: ARPConfig): NanoMindL1 | null {
+function buildRuntimeTwin(config: ARPConfig): RuntimeTwin | null {
   const ic = config.intelligence;
   if (ic?.enabled === false) return null;
   const twinCfg = ic?.runtimeTwin;
   if (twinCfg?.enabled === false) return null;
-  return new NanoMindL1(config.agentName, {
+  return new RuntimeTwin(config.agentName, {
     enabled: true,
     fleetEnabled: twinCfg?.fleetEnabled ?? false,
     agentCategory: twinCfg?.agentCategory ?? 'general',

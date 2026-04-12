@@ -4,7 +4,7 @@
  * Partner to `behavioral-risk.ts`. Listens on a unix domain socket (or
  * Windows named pipe) and answers risk signal requests by delegating to a
  * caller-supplied `BehavioralRiskScoreable`, which in production is a
- * `NanoMindL1` instance running in the twin's own process.
+ * `RuntimeTwin` instance running in the twin's own process.
  *
  * The server is deliberately narrow: one request per connection, no
  * session state, no authentication beyond filesystem permissions on the
@@ -44,7 +44,7 @@ import {
 export interface BehavioralRiskServerOptions {
   /**
    * Handle that knows how to score an ARP event. In production this is a
-   * NanoMindL1 instance. In tests it can be any stub that returns a
+   * RuntimeTwin instance. In tests it can be any stub that returns a
    * deterministic risk score.
    */
   twin: BehavioralRiskScoreable;
