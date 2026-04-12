@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NanoMindL1 } from './nanomind-l1';
+import { RuntimeTwin } from './runtime-twin';
 import { EventEngine } from '../engine/event-engine';
 import type { ARPEvent, ARPConfig } from '../types';
 
@@ -24,17 +24,17 @@ function emitTestEvent(engine: EventEngine, overrides: Partial<ARPEvent> = {}): 
   });
 }
 
-describe('NanoMindL1 E2E Integration', () => {
+describe('RuntimeTwin E2E Integration', () => {
   it('attaches to EventEngine without errors', () => {
     const engine = new EventEngine(testConfig);
-    const l1 = new NanoMindL1('test-agent');
+    const l1 = new RuntimeTwin('test-agent');
     l1.attach(engine);
     expect(true).toBe(true);
   });
 
   it('processes events through L1 pipeline', async () => {
     const engine = new EventEngine(testConfig);
-    const l1 = new NanoMindL1('pipeline-test');
+    const l1 = new RuntimeTwin('pipeline-test');
     l1.attach(engine);
 
     // Emit 10 events
@@ -49,7 +49,7 @@ describe('NanoMindL1 E2E Integration', () => {
 
   it('builds baseline from normal events', async () => {
     const engine = new EventEngine(testConfig);
-    const l1 = new NanoMindL1('baseline-test');
+    const l1 = new RuntimeTwin('baseline-test');
     l1.attach(engine);
 
     // Feed 150 normal events to build baseline
@@ -66,7 +66,7 @@ describe('NanoMindL1 E2E Integration', () => {
 
   it('detects anomalous events after baseline', async () => {
     const engine = new EventEngine(testConfig);
-    const l1 = new NanoMindL1('anomaly-test');
+    const l1 = new RuntimeTwin('anomaly-test');
     l1.attach(engine);
 
     // Build baseline with normal events
@@ -93,7 +93,7 @@ describe('NanoMindL1 E2E Integration', () => {
 
   it('respects enabled=false', () => {
     const engine = new EventEngine(testConfig);
-    const l1 = new NanoMindL1('disabled-test', { enabled: false });
+    const l1 = new RuntimeTwin('disabled-test', { enabled: false });
     l1.attach(engine);
     // Should not crash and should not process events
     expect(true).toBe(true);
@@ -101,7 +101,7 @@ describe('NanoMindL1 E2E Integration', () => {
 
   it('L1 does not block L0 event processing', async () => {
     const engine = new EventEngine(testConfig);
-    const l1 = new NanoMindL1('nonblocking-test');
+    const l1 = new RuntimeTwin('nonblocking-test');
     l1.attach(engine);
 
     // Time L0 event emission

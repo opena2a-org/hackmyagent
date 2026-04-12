@@ -158,9 +158,10 @@ export interface IntelligenceConfig {
   behavioralRiskTimeoutMs?: number;
 
   /**
-   * Runtime twin (NanoMindL1 behavioral twin) configuration. When enabled,
-   * `AgentRuntimeProtection` constructs an in-process `NanoMindL1`, wraps
-   * it in `InProcessBehavioralRiskSource`, and passes it to the
+   * Runtime twin (RuntimeTwin behavioral scorer) configuration. When
+   * enabled, `AgentRuntimeProtection` constructs an in-process
+   * `RuntimeTwin`, wraps it in `InProcessBehavioralRiskSource`, and
+   * passes it to the
    * `IntelligenceCoordinator` so behavioral risk signals are fused into
    * every analyzed event.
    *

@@ -1,15 +1,32 @@
 /**
- * NanoMind L1 — Behavioral Anomaly Detection Layer
+ * RuntimeTwin - Behavioral Anomaly Detection Layer (L1).
  *
- * Integrates NanoMind-Runtime into ARP's event pipeline.
- * Processes every L0 event through the behavioral twin for anomaly scoring.
+ * Integrates the RuntimeTwin behavioral scorer into ARP's event pipeline.
+ * Processes every L0 event through the twin for anomaly scoring.
  *
  * Three-tier ARP model:
- *   L0: Rule-based (EventEngine) — microseconds, always runs
- *   L1: NanoMind-Runtime behavioral twin — milliseconds, this module
- *   L2: Claude/LLM intelligence — seconds, existing IntelligenceCoordinator
+ *   L0: Rule-based (EventEngine)           microseconds, always runs
+ *   L1: RuntimeTwin behavioral twin        milliseconds, this module
+ *   L2: Claude or local LLM intelligence   seconds, IntelligenceCoordinator
  *
- * L1 runs in parallel with L0 — never blocks the L0 decision.
+ * L1 runs in parallel with L0. It never blocks the L0 decision.
+ *
+ * === SOURCE-OF-TRUTH NOTE ===
+ *
+ * The canonical implementation of this class lives at:
+ *     opena2a-org/nanomind/packages/nanomind-runtime-core/src/index.ts
+ *
+ * This file is a temporary integration-layer mirror maintained in lockstep
+ * with the canonical source until PR 1b publishes @nanomind/runtime-core
+ * to npm. Until that cut-over, any change to the LSTM scoring logic,
+ * gradient accumulation, or differential privacy path MUST be made in
+ * both files. See todo/NANOMIND_V3_AUDIT.md Section 8 PR 1 and Section 9
+ * item 1 for the rationale.
+ *
+ * This mirror retains the hackmyagent-local imports of ARPEvent and
+ * ARPConfig so ARP integration stays type-safe. The canonical package
+ * defines a structural ARPEventInput equivalent to keep itself free of
+ * cross-repo dependencies.
  */
 
 import * as crypto from 'crypto';
@@ -19,7 +36,7 @@ import * as os from 'os';
 import type { ARPEvent, ARPConfig, EnforcementAction } from '../types';
 import type { EventEngine } from '../engine/event-engine';
 
-// === Types (mirroring @nanomind/runtime) ===
+// === Types (mirroring @nanomind/runtime-core) ===
 
 type EventType =
   | 'TOOL_CALL'
@@ -81,7 +98,7 @@ const EVENT_TYPE_INDEX: Record<string, number> = {
   MEMORY_READ: 3, MEMORY_WRITE: 4, EXTERNAL_CALL: 5,
 };
 
-export class NanoMindL1 {
+export class RuntimeTwin {
   private agentId: string;
   private sessionId: string;
   private baseline: BaselineStats | null = null;
@@ -276,7 +293,7 @@ export class NanoMindL1 {
   }
 
   /**
-   * Compute anomaly score (same algorithm as @nanomind/runtime).
+   * Compute anomaly score (same algorithm as @nanomind/runtime-core).
    */
   private computeAnomalyScore(event: BehavioralEvent): number {
     if (!this.baseline || this.baseline.totalEvents < 100) {
@@ -473,8 +490,9 @@ export class NanoMindL1 {
 
   /**
    * Apply differential privacy: clip to L2 norm 1.0, add Gaussian noise.
-   * Matches the privacy guarantees in @nanomind/runtime/fleet.ts
-   * (epsilon=1.0, delta=1e-5).
+   * Matches the privacy guarantees inlined in @nanomind/runtime-core
+   * (epsilon=1.0, delta=1e-5). The statistical twin's @nanomind/runtime
+   * package was retired in the Q5 split (audit Section 9 item 1).
    */
   private addPrivacyNoise(gradient: number[]): number[] {
     // Clip to max L2 norm = 1.0
