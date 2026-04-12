@@ -9,7 +9,7 @@ import * as https from 'https';
 import type { ExternalScanResult, ExternalFinding, ScannerOptions, FindingSeverity } from './types';
 
 // Default ports to scan
-const DEFAULT_PORTS = [80, 443, 8080, 3000, 8000];
+const DEFAULT_PORTS = [80, 443];
 
 // Config file paths to check
 const CONFIG_PATHS = [
@@ -93,7 +93,7 @@ export class ExternalScanner {
     }
 
     const startTime = Date.now();
-    const timeout = options?.timeout ?? 5000;
+    const timeout = options?.timeout ?? 2000;
     const ports = options?.ports ?? DEFAULT_PORTS;
     const skipPortScan = options?.skipPortScan ?? false;
 

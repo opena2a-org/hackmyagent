@@ -3455,7 +3455,7 @@ Examples:
   .argument('<target>', 'Target hostname or IP address')
   .option('--json', 'Output as JSON (for scripting/CI)')
   .option('-p, --ports <ports>', 'Comma-separated ports to scan (default: common MCP ports)')
-  .option('-t, --timeout <ms>', 'Connection timeout in milliseconds', '5000')
+  .option('-t, --timeout <ms>', 'Connection timeout in milliseconds', '2000')
   .option('-v, --verbose', 'Show detailed finding information')
   .action(
     async (
@@ -3477,11 +3477,11 @@ Examples:
           );
           process.exit(1);
         }
-        const timeoutMs = parseInt(options.timeout ?? '5000', 10);
+        const timeoutMs = parseInt(options.timeout ?? '2000', 10);
         const customPorts = options.ports
           ? options.ports.split(',').map((p) => parseInt(p.trim(), 10))
           : undefined;
-        const portCount = customPorts?.length ?? 5;
+        const portCount = customPorts?.length ?? 2;
 
         if (!options.json) {
           console.log(`\nScanning ${target} (${portCount} ports, ${timeoutMs}ms timeout)...\n`);
@@ -6038,6 +6038,27 @@ Examples:
       const result = await trustCheck(packageName, registryUrl, opts.type);
       if (opts.json) {
         writeJsonStdout(result);
+      } else if (result.found) {
+        // Use the unified display (same as `check --no-scan`) for visual consistency
+        const registryData: RegistryTrustData = {
+          found: true,
+          name: result.name,
+          trustScore: result.trustScore,
+          trustLevel: result.trustLevel,
+          verdict: result.verdict,
+          scanStatus: result.scanStatus,
+          lastScannedAt: result.lastScannedAt,
+          packageType: result.packageType,
+          recommendation: result.recommendation,
+          cveCount: result.cveCount,
+          communityScans: result.communityScans,
+          dependencies: result.dependencies ? {
+            totalDeps: result.dependencies.totalDeps,
+            vulnerableDeps: result.dependencies.vulnerableDeps,
+            minTrustLevel: result.dependencies.minTrustLevel,
+          } : undefined,
+        };
+        displayUnifiedCheck({ name: packageName, registry: registryData, verbose: false });
       } else {
         process.stdout.write(formatTrustCheck(result));
       }
@@ -7699,7 +7720,30 @@ async function checkNpmPackage(
     const tarball = stdout.trim().split('\n').pop()!;
     await execAsync('tar', ['xzf', join(tempDir, tarball), '-C', tempDir], { timeout: 30_000 });
 
-    const packageDir = join(tempDir, 'package');
+    // npm tarballs normally extract to 'package/', but some packages (e.g. @types/*)
+    // may use a different directory name. Detect the actual extracted directory.
+    const { readdir, stat } = await import('node:fs/promises');
+    let packageDir = join(tempDir, 'package');
+    try {
+      await stat(packageDir);
+    } catch {
+      // 'package/' doesn't exist — find the extracted directory (skip the .tgz file)
+      const entries = await readdir(tempDir);
+      const dirs = [];
+      for (const entry of entries) {
+        if (entry.endsWith('.tgz') || entry.endsWith('.tar.gz')) continue;
+        const s = await stat(join(tempDir, entry));
+        if (s.isDirectory()) dirs.push(entry);
+      }
+      if (dirs.length === 1) {
+        packageDir = join(tempDir, dirs[0]);
+      } else if (dirs.length === 0) {
+        throw new Error(`Tarball extraction produced no directory in ${tempDir}`);
+      } else {
+        // Multiple dirs — pick the first non-hidden one
+        packageDir = join(tempDir, dirs.find(d => !d.startsWith('.')) || dirs[0]);
+      }
+    }
 
     // Run full HMA scan + NanoMind (same pipeline as `secure`)
     const scanner = new HardeningScanner();

@@ -602,8 +602,15 @@ function extractGovernanceReferences(content: string): string[] {
 function isGovernanceContent(text: string): boolean {
   const constraintCount = (text.match(/must never|must not|must always|should not|should never|forbidden|prohibited|restricted to|shall not/gi) || []).length;
   const sectionHeaders = /## (?:trust|governance|constraint|oversight|data handling|behavioral|identity|error|credential|scope|permission|boundary)/i.test(text);
-  // 3+ constraint phrases or governance section headers = governance doc
-  return constraintCount >= 3 || sectionHeaders;
+
+  // Credential-protection instruction patterns: files that TEACH credential
+  // safety should not be flagged for credential harvesting.
+  // Counter-signals: "never hardcode", "use environment variables", "rotate",
+  // "protect credentials", "secretless", "blocked file patterns", etc.
+  const credProtectionSignals = (text.match(/never hardcode|use environment variable|rotate.*credential|protect.*credential|credential.*protect|secretless|blocked.?file.?pattern|do not.*print.*key|never.*echo.*secret|env\.example/gi) || []).length;
+
+  // 3+ constraint phrases, governance section headers, or 2+ credential-protection signals
+  return constraintCount >= 3 || sectionHeaders || credProtectionSignals >= 2;
 }
 
 function mapRiskSurfaces(
