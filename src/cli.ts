@@ -464,7 +464,7 @@ interface UnifiedCheckDisplayOptions {
   version?: string;
   nanomindScan?: {
     compiledArtifacts: number;
-    findings: Array<{ severity: string; checkId?: string; description?: string; name?: string; message?: string; fix?: string; guidance?: string; file?: string; line?: number; passed?: boolean; attackClass?: string }>;
+    findings: Array<{ severity: string; checkId?: string; description?: string; name?: string; message?: string; fix?: string; guidance?: string; file?: string; line?: number; passed?: boolean; attackClass?: string; category?: string }>;
   };
 }
 
@@ -472,17 +472,38 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
+/** Right-align a value at a fixed column width */
+function rightAlign(left: string, right: string, width: number = 68): string {
+  const leftLen = stripAnsi(left).length;
+  const rightLen = stripAnsi(right).length;
+  const pad = Math.max(1, width - leftLen - rightLen);
+  return `${left}${' '.repeat(pad)}${right}`;
+}
+
+/** Truncate a fix string to one concise line */
+function truncateFix(fix: string): string {
+  // Take first sentence or first line, whichever is shorter
+  const firstLine = fix.split('\n')[0].trim();
+  const firstSentence = firstLine.split(/\.\s/)[0];
+  const result = firstSentence.endsWith('.') ? firstSentence : firstSentence + '.';
+  return result.length > 80 ? result.slice(0, 77) + '...' : result;
+}
+
 function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   const { name, sourceLabel, projectType, localScan, registry, verbose, version, nanomindScan } = opts;
 
+  // --- Header: name + type on one line, right-aligned ---
   const typeLabel = (registry?.packageType || projectType || 'unknown').replace(/_/g, ' ');
-  const sourceSuffix = sourceLabel ? ` ${colors.dim}(${sourceLabel})${RESET()}` : '';
-  console.log(`\n  ${name}${sourceSuffix}`);
-  if (version) {
-    console.log(`  ${colors.dim}Version:    ${version}${RESET()}`);
+  const displayName = sourceLabel ? name : name;
+  const versionSuffix = version ? ` ${colors.dim}(${version})${RESET()}` : '';
+  const sourceSuffix = sourceLabel && sourceLabel !== 'local' ? ` ${colors.dim}(${sourceLabel})${RESET()}` : '';
+  if (sourceLabel === 'local') {
+    console.log(`\n  ${rightAlign(displayName, `${colors.dim}local scan${RESET()}`)}`);
+  } else {
+    console.log(`\n  ${rightAlign(`${displayName}${versionSuffix}${sourceSuffix}`, `${colors.dim}${typeLabel}${RESET()}`)}`);
   }
-  console.log(`  ${colors.dim}Type:       ${typeLabel}${RESET()}`);
 
+  // --- Compute findings ---
   let failed: SecurityFinding[] = [];
   let score = 0;
   let maxScore = 100;
@@ -506,7 +527,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       checkId: f.checkId || '',
       name: f.name || f.description || '',
       description: f.description || '',
-      category: '',
+      category: f.category || '',
       severity: f.severity as Severity,
       passed: false,
       message: f.message || f.description || '',
@@ -527,94 +548,180 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   const totalFindings = critical + high + medium + low;
   const scoreColor = score >= 70 ? colors.green : score >= 40 ? colors.yellow : colors.red;
 
+  // --- Verdict line: sentence + score, right-aligned ---
   if (localScan || nanomindScan) {
-    let verdict: string;
+    let verdictText: string;
+    let verdictColor: string;
     if (critical > 0) {
-      verdict = `${colors.brightRed}CRITICAL -- ${critical} critical issue${critical > 1 ? 's' : ''} found${RESET()}`;
+      verdictText = `${critical} critical issue${critical > 1 ? 's' : ''}`;
+      verdictColor = colors.brightRed;
     } else if (high > 0) {
-      verdict = `${colors.red}WARNING -- ${high} high severity issue${high > 1 ? 's' : ''} found${RESET()}`;
+      verdictText = `${high} high issue${high > 1 ? 's' : ''}`;
+      verdictColor = colors.red;
     } else if (totalFindings > 0) {
-      verdict = `${colors.yellow}NOTICE -- ${totalFindings} issue${totalFindings > 1 ? 's' : ''} found (none critical or high)${RESET()}`;
+      verdictText = `${totalFindings} low issue${totalFindings > 1 ? 's' : ''}`;
+      verdictColor = colors.yellow;
     } else {
-      verdict = `${colors.green}SAFE -- no security issues found${RESET()}`;
+      verdictText = 'SAFE';
+      verdictColor = colors.green;
     }
-    const pad = Math.max(1, 50 - stripAnsi(verdict).length);
-    console.log(`\n  ${verdict}${' '.repeat(pad)}${scoreColor}${score}/${maxScore} security${RESET()}`);
+    const verdict = `${verdictColor}${verdictText}${RESET()}`;
+    const scoreStr = `${scoreColor}${score}/${maxScore} security${RESET()}`;
+    console.log(`\n  ${rightAlign(verdict, scoreStr)}`);
   } else if (registry?.found) {
     const normalized = normalizeTrustVerdict(registry.verdict);
-    let verdict: string;
+    let verdictText: string;
+    let verdictColor: string;
     if (normalized === 'blocked') {
-      verdict = `${colors.red}BLOCKED -- known malicious or policy violation${RESET()}`;
+      verdictText = 'BLOCKED';
+      verdictColor = colors.red;
     } else if (normalized === 'warning') {
-      verdict = `${colors.yellow}WARNING -- potential risks detected${RESET()}`;
-    } else if (normalized === 'safe') {
-      verdict = `${colors.green}SAFE -- passed community review${RESET()}`;
+      verdictText = 'WARNING';
+      verdictColor = colors.yellow;
     } else {
-      verdict = `${colors.dim}${registry.verdict}${RESET()}`;
+      verdictText = 'SAFE';
+      verdictColor = colors.green;
     }
-    const pad = Math.max(1, 50 - stripAnsi(verdict).length);
-    console.log(`\n  ${verdict}${' '.repeat(pad)}${scoreColor}${score}/100 trust${RESET()}`);
+    const verdict = `${verdictColor}${verdictText}${RESET()}`;
+    const scoreStr = `${scoreColor}${score}/100 trust${RESET()}`;
+    console.log(`\n  ${rightAlign(verdict, scoreStr)}`);
   }
 
-  if (localScan) {
-    const filesLabel = localScan.filesScanned ? `${localScan.filesScanned} files` : 'files';
-    console.log(`\n  ${colors.dim}Security scan: ${filesLabel} · ${CHECK_COUNT} checks · ${totalFindings} finding${totalFindings !== 1 ? 's' : ''}${RESET()}`);
-  } else if (nanomindScan) {
-    console.log(`\n  ${colors.dim}Semantic analysis: ${nanomindScan.compiledArtifacts} file(s) analyzed${RESET()}`);
+  // --- Scan info (only when relevant) ---
+  if (nanomindScan) {
+    console.log(`  ${colors.dim}${nanomindScan.compiledArtifacts} files analyzed${RESET()}`);
   }
 
+  // --- Findings display ---
   if (failed.length > 0) {
-    console.log();
-    const limit = verbose ? failed.length : 10;
-    for (const f of failed.slice(0, limit)) {
-      const sev = SEVERITY_DISPLAY[f.severity];
-      const fileLoc = f.file ? ` in ${f.file}${f.line ? ':' + f.line : ''}` : '';
-      console.log(`  ${sev.color()}${sev.symbol}${RESET()} ${f.name || f.message}${colors.dim}${fileLoc}${RESET()}`);
-      if (f.guidance) {
-        console.log(`       ${colors.dim}Why: ${f.guidance}${RESET()}`);
+    // High-count mode: group by category when > 20 findings
+    if (totalFindings > 20 && !verbose) {
+      console.log();
+      console.log(`  ${colors.dim}By category:${RESET()}`);
+
+      // Group by category (or by name for NanoMind findings without category)
+      const groups = new Map<string, { critical: number; high: number; medium: number; low: number; files: Set<string> }>();
+      for (const f of failed) {
+        const key = f.category || f.name || 'Other';
+        if (!groups.has(key)) groups.set(key, { critical: 0, high: 0, medium: 0, low: 0, files: new Set() });
+        const g = groups.get(key)!;
+        g[f.severity]++;
+        if (f.file) g.files.add(f.file.split('/')[0] || f.file);
       }
-      if (f.fix) {
-        console.log(`       ${colors.cyan}Fix: ${f.fix}${RESET()}`);
+
+      // Sort by severity weight (critical first)
+      const sorted = [...groups.entries()].sort((a, b) => {
+        const wa = a[1].critical * 4 + a[1].high * 3 + a[1].medium * 2 + a[1].low;
+        const wb = b[1].critical * 4 + b[1].high * 3 + b[1].medium * 2 + b[1].low;
+        return wb - wa;
+      });
+
+      for (const [cat, g] of sorted.slice(0, 8)) {
+        const counts: string[] = [];
+        if (g.critical > 0) counts.push(`${colors.brightRed}${g.critical} critical${RESET()}`);
+        if (g.high > 0) counts.push(`${colors.red}${g.high} high${RESET()}`);
+        if (g.medium > 0) counts.push(`${g.medium} medium`);
+        if (g.low > 0) counts.push(`${g.low} low`);
+        const fileHint = g.files.size <= 3 ? `  ${colors.dim}${[...g.files].join(', ')}${RESET()}` : '';
+        console.log(`    ${cat.padEnd(28)} ${counts.join(', ')}${fileHint}`);
       }
-      if (verbose) {
-        if (f.checkId) console.log(`       ${colors.dim}Check:    ${f.checkId}${RESET()}`);
-        if (f.category) console.log(`       ${colors.dim}Category: ${f.category}${RESET()}`);
-        if (f.attackClass) console.log(`       ${colors.dim}Attack:   ${f.attackClass}${RESET()}`);
+      if (sorted.length > 8) {
+        console.log(`    ${colors.dim}... ${sorted.length - 8} more categories${RESET()}`);
       }
-    }
-    if (failed.length > limit) {
-      console.log(`\n  ... and ${failed.length - limit} more (use --verbose to see all)`);
+
+      // Show top 3 most impactful findings
+      console.log();
+      console.log(`  ${colors.dim}Top issues:${RESET()}`);
+      const topFindings = failed
+        .sort((a, b) => {
+          const sw: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+          return (sw[b.severity] || 0) - (sw[a.severity] || 0);
+        })
+        .slice(0, 3);
+
+      for (const f of topFindings) {
+        const sev = SEVERITY_DISPLAY[f.severity];
+        const fileLoc = f.file ? `${colors.dim}${f.file}${f.line ? ':' + f.line : ''}${RESET()}` : '';
+        console.log(`  ${sev.color()}${sev.symbol}${RESET()} ${rightAlign(f.name || f.message, fileLoc)}`);
+        if (f.fix) {
+          console.log(`       ${colors.cyan}${truncateFix(f.fix)}${RESET()}`);
+        }
+      }
+    } else {
+      // Normal mode: show individual findings, collapsing duplicates
+      console.log();
+
+      const skipped = new Set<number>();
+      let shown = 0;
+      const limit = verbose ? failed.length : 10;
+
+      for (let i = 0; i < failed.length; i++) {
+        if (shown >= limit) break;
+        if (skipped.has(i)) continue;
+
+        const f = failed[i];
+        const sev = SEVERITY_DISPLAY[f.severity];
+        const fileLoc = f.file ? `${colors.dim}${f.file}${f.line ? ':' + f.line : ''}${RESET()}` : '';
+        console.log(`  ${sev.color()}${sev.symbol}${RESET()} ${rightAlign(f.name || f.message, fileLoc)}`);
+        if (f.fix) {
+          console.log(`       ${colors.cyan}${truncateFix(f.fix)}${RESET()}`);
+        }
+        if (verbose) {
+          if (f.checkId) console.log(`       ${colors.dim}${f.checkId}${RESET()}`);
+          if (f.category) console.log(`       ${colors.dim}${f.category}${RESET()}`);
+        }
+        shown++;
+
+        // Collapse similar findings (same name, same directory)
+        if (!verbose) {
+          const dir = f.file?.split('/').slice(0, -1).join('/') || '';
+          let similarCount = 0;
+          for (let j = i + 1; j < failed.length; j++) {
+            if (skipped.has(j)) continue;
+            const other = failed[j];
+            if (other.name === f.name) {
+              const otherDir = other.file?.split('/').slice(0, -1).join('/') || '';
+              if (otherDir === dir) {
+                skipped.add(j);
+                similarCount++;
+              }
+            }
+          }
+          if (similarCount > 0) {
+            console.log(`       ${colors.dim}${similarCount} similar in ${dir || '.'}${RESET()}`);
+          }
+        }
+      }
+
+      const remaining = failed.length - shown - skipped.size;
+      if (remaining > 0) {
+        console.log(`\n  ${colors.dim}${remaining} more (--verbose)${RESET()}`);
+      }
     }
 
+    // Severity summary
     console.log(`\n  ${critical} critical · ${high} high · ${medium} medium · ${low} low`);
 
+    // Path forward
     if (critical > 0 || high > 0) {
-      const critWeight = 25, highWeight = 15;
-      const fixableWeight = (critical * critWeight) + (high * highWeight);
-      const DECAY_CONSTANT = 150;
-      const currentWeight = score > 0 ? -DECAY_CONSTANT * Math.log(score / 100) : 700;
-      const remainingWeight = Math.max(0, currentWeight - fixableWeight);
-      const projectedScore = remainingWeight <= 0 ? 100 : Math.round(100 * Math.exp(-remainingWeight / DECAY_CONSTANT));
-      console.log(`  ${colors.cyan}Path forward: ${score} -> ${projectedScore} by fixing ${critical + high} critical/high issue${(critical + high) > 1 ? 's' : ''}${RESET()}`);
+      console.log(`  ${colors.cyan}Path forward: fix ${critical + high} critical/high issue${(critical + high) > 1 ? 's' : ''}${RESET()}`);
     }
-  } else if (localScan || nanomindScan) {
-    console.log(`\n  ${colors.green}No security issues found.${RESET()}`);
   }
 
+  // --- Registry section ---
   if (registry?.found) {
     const trustScore = Math.round(registry.trustScore * 100);
     const trustColor = trustScore >= 70 ? colors.green : trustScore >= 40 ? colors.yellow : colors.red;
 
     if (localScan || nanomindScan) {
-      console.log(`\n  ${colors.dim}Trust context (registry)${RESET()}${' '.repeat(30)}${trustColor}${trustScore}/100 trust${RESET()}`);
+      console.log(`\n  ${rightAlign(`${colors.dim}Registry${RESET()}`, `${trustColor}${trustScore}/100 trust${RESET()}`)}`);
     }
-    console.log(`  ${colors.dim}Trust level:    ${RESET()}${trustLevelColor(registry.trustLevel)}${trustLevelLabel(registry.trustLevel)}${RESET()} ${colors.dim}(${registry.trustLevel}/4)${RESET()}`);
-
+    console.log(`  ${colors.dim}  Trust level     ${RESET()}${trustLevelColor(registry.trustLevel)}${trustLevelLabel(registry.trustLevel)}${RESET()} ${colors.dim}(${registry.trustLevel}/4)${RESET()}`);
     if (registry.communityScans !== undefined) {
-      console.log(`  ${colors.dim}Community:      ${RESET()}${registry.communityScans} scan${registry.communityScans !== 1 ? 's' : ''} shared`);
+      console.log(`  ${colors.dim}  Community       ${RESET()}${registry.communityScans} scan${registry.communityScans !== 1 ? 's' : ''} shared`);
     }
     if (registry.cveCount !== undefined && registry.cveCount > 0) {
-      console.log(`  ${colors.dim}Known CVEs:     ${RESET()}${colors.red}${registry.cveCount}${RESET()}`);
+      console.log(`  ${colors.dim}  Known CVEs      ${RESET()}${colors.red}${registry.cveCount}${RESET()}`);
     }
     if (registry.dependencies) {
       const d = registry.dependencies;
@@ -623,16 +730,13 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       if (d.vulnerableDeps !== undefined && d.vulnerableDeps > 0) depParts.push(`${colors.red}${d.vulnerableDeps} vulnerable${RESET()}`);
       else if (d.vulnerableDeps !== undefined) depParts.push(`0 vulnerable`);
       if (depParts.length > 0) {
-        console.log(`  ${colors.dim}Dependencies:   ${RESET()}${depParts.join(' · ')}`);
+        console.log(`  ${colors.dim}  Dependencies    ${RESET()}${depParts.join(' · ')}`);
       }
-    }
-
-    if (registry.recommendation) {
-      console.log(`\n  ${colors.dim}${registry.recommendation}${RESET()}`);
     }
   }
 
-  printCheckNextSteps(name);
+  // --- Contextual next step ---
+  printCheckNextSteps(name, { hasGovernanceIssues: failed.some(f => f.category === 'governance' || f.category === 'Governance' || f.checkId?.startsWith('AST-GOV') || f.checkId?.startsWith('AST-PROMPT')), hasFindings: totalFindings > 0 });
 }
 
 function groupFindingsBySeverity(findings: SecurityFinding[]): Record<Severity, SecurityFinding[]> {
@@ -6867,12 +6971,20 @@ function filterLocalOnlyFindings(
  *
  * Suppressed in --ci so machine-readable output stays clean.
  */
-function printCheckNextSteps(target: string): void {
+function printCheckNextSteps(
+  target: string,
+  context?: { hasGovernanceIssues?: boolean; hasFindings?: boolean },
+): void {
   if (globalCiMode) return;
   console.log();
-  console.log(`  ${colors.dim}Run a fresh local scan: ${getCheckCommand()} ${target} --rescan${RESET()}`);
-  console.log(`  ${colors.dim}Full project scan:      ${getFullScanHint()}${RESET()}`);
-  console.log(`  ${colors.dim}Also accepts: pip:<pkg> · <owner>/<repo> · ./<dir> · @publisher/skill${RESET()}`);
+  // Contextual next step: suggest the most relevant action
+  if (context?.hasGovernanceIssues) {
+    console.log(`  ${colors.dim}Next: ${CLI_PREFIX} harden-soul ${target}${RESET()}`);
+  } else if (context?.hasFindings) {
+    console.log(`  ${colors.dim}Next: ${getFullScanHint()}${RESET()}`);
+  } else {
+    console.log(`  ${colors.dim}Next: ${getFullScanHint()}${RESET()}`);
+  }
   console.log();
 }
 
