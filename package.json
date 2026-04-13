@@ -1,6 +1,6 @@
 {
   "name": "hackmyagent",
-  "version": "0.17.2",
+  "version": "0.17.3",
   "description": "Find it. Break it. Fix it. The hacker's toolkit for AI agents.",
   "bin": {
     "hackmyagent": "dist/cli.js"
