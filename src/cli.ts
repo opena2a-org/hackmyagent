@@ -2417,6 +2417,7 @@ Examples:
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
   .option('-c, --category <name>', 'Filter to specific benchmark category')
   .option('--deep', 'Maximum analysis: static + semantic + behavioral simulation + adaptive attacks (~30s per file)')
+  .option('--analyze', 'AI-powered threat analysis using NanoMind Security Analyst (requires analyst setup)')
   .option('--static-only', 'Disable semantic analysis and simulation (static checks only, fast, deterministic)')
   .option('--scan-depth <depth>', 'CAAT scan depth: quick (config+creds only), standard (default), deep (+ simulation)', 'standard')
   .option('--ci-publish', 'Submit scan results to registry CI endpoint (requires CI_SCAN_HMAC_SECRET env)')
@@ -2429,7 +2430,7 @@ Examples:
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
   .option('--ci', 'CI mode: suppress interactive prompts, exit non-zero on findings')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; scanDepth?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean }) => {
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; analyze?: boolean; scanDepth?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean }) => {
     try {
       const targetDir = require("path").resolve(directory);
 
@@ -2554,16 +2555,17 @@ Examples:
 
       // NanoMind Semantic Compiler: AST-based analysis runs alongside static checks
       // Defense-in-depth: static findings can NEVER be suppressed, only upgraded
-      {
-        const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-        const existingFindings = result.allFindings || result.findings || [];
-        const nmResult = await orchestrateNanoMind(targetDir, existingFindings, {
-          staticOnly: isStaticOnly,
-          ci: options.ci,
-          deep: isDeep,
-          silent: format !== 'text',
-        });
+      const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
+      const existingFindings = result.allFindings || result.findings || [];
+      const nmResult = await orchestrateNanoMind(targetDir, existingFindings, {
+        staticOnly: isStaticOnly,
+        ci: options.ci,
+        deep: isDeep,
+        analyze: options.analyze,
+        silent: format !== 'text',
+      });
 
+      {
         // Re-apply all filters after NanoMind merge (merge uses allFindings which is unfiltered)
         const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir);
         if (result.allFindings) {
@@ -2773,7 +2775,10 @@ Examples:
           }
         }
 
-        const jsonOutput = publishStatus ? { ...result, publish: publishStatus } : result;
+        const jsonBase = nmResult.analystFindings?.length
+          ? { ...result, analystFindings: nmResult.analystFindings }
+          : result;
+        const jsonOutput = publishStatus ? { ...jsonBase, publish: publishStatus } : jsonBase;
         if (options.output) {
           require('fs').writeFileSync(options.output, JSON.stringify(jsonOutput, null, 2) + '\n');
           console.error(`Report written to ${options.output}`);
@@ -2922,6 +2927,40 @@ Examples:
         if (severityCounts.low > 0) summaryParts.push(`${colors.green}Low: ${severityCounts.low}${RESET()}`);
         if (summaryParts.length > 0) {
           console.log(`${summaryParts.join(' | ')}\n`);
+        }
+
+        // Analyst findings (--analyze)
+        if (nmResult.analystFindings && nmResult.analystFindings.length > 0) {
+          console.log(`${colors.cyan}--- AI Analysis (NanoMind Security Analyst) ---${RESET()}\n`);
+          for (const af of nmResult.analystFindings) {
+            const r = af.result;
+            if (af.taskType === 'threatAnalysis') {
+              const level = String(r.threatLevel ?? 'unknown').toUpperCase();
+              const levelColor = level === 'CRITICAL' || level === 'HIGH' ? colors.red : level === 'MEDIUM' ? colors.yellow : colors.dim;
+              console.log(`  ${levelColor}${level}${RESET()}  ${r.attackVector ?? ''}`);
+              if (r.description) console.log(`       ${r.description}`);
+              if (Array.isArray(r.mitigations) && r.mitigations.length > 0) {
+                for (const m of r.mitigations) {
+                  console.log(`       ${colors.cyan}Fix:${RESET()} ${m}`);
+                }
+              }
+            } else if (af.taskType === 'credentialContextClassification') {
+              const cls = String(r.classification ?? 'unknown');
+              const clsColor = cls === 'real' ? colors.red : cls === 'test' || cls === 'example' ? colors.green : colors.yellow;
+              console.log(`  Credential: ${clsColor}${cls}${RESET()}`);
+              if (r.reasoning) console.log(`       ${r.reasoning}`);
+            } else {
+              // Generic display for other task types
+              console.log(`  ${af.taskType}: ${JSON.stringify(r)}`);
+            }
+            console.log(`       ${colors.dim}Confidence: ${Math.round(af.confidence * 100)}% | ${af.modelVersion} (${af.durationMs}ms)${RESET()}`);
+            console.log();
+          }
+        }
+
+        // Analyst hint (shown when model is available but --analyze not used)
+        if (nmResult.analystHint && issues.length > 0) {
+          console.log(`${colors.dim}Tip: ${nmResult.analystHint}${RESET()}\n`);
         }
 
         // Dry-run summary
@@ -6632,6 +6671,68 @@ program
     for (const file of result.filesWritten) { console.log(`  ${file.split('/').pop()}`); }
     console.log(`\nYour skill is ready. Verify security with: hackmyagent secure ${outputDir}/`);
   });
+// analyst: manage the NanoMind Security Analyst generative model
+const analystCmd = program
+  .command('analyst')
+  .description('Manage the NanoMind Security Analyst model for AI-powered analysis');
+
+analystCmd
+  .command('setup')
+  .description('Download the NanoMind Security Analyst model')
+  .action(async () => {
+    const { getAnalystStatus, setupAnalystModel } = await import('./nanomind-core/inference/security-analyst.js');
+    const status = await getAnalystStatus();
+
+    console.log('NanoMind Security Analyst');
+    console.log(`  Platform: ${status.platform}`);
+    console.log(`  Backend:  ${status.backend === 'none' ? 'not available' : status.backend}`);
+    console.log(`  Model:    ${status.modelCached ? 'cached' : 'not downloaded'}`);
+    console.log('');
+
+    if (status.backend === 'none') {
+      console.log('No supported inference backend found.');
+      if (process.platform !== 'darwin') {
+        console.log('Currently requires Apple Silicon Mac with MLX.');
+        console.log('Cross-platform support (llama.cpp/GGUF) coming soon.');
+      } else {
+        console.log('Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh');
+      }
+      process.exit(1);
+    }
+
+    if (status.modelCached) {
+      console.log('Model already downloaded. Use --analyze with any scan command.');
+      return;
+    }
+
+    const ok = await setupAnalystModel(false);
+    if (!ok) process.exit(1);
+  });
+
+analystCmd
+  .command('status')
+  .description('Check the status of the analyst model and runtime')
+  .action(async () => {
+    const { getAnalystStatus } = await import('./nanomind-core/inference/security-analyst.js');
+    const status = await getAnalystStatus();
+
+    console.log('NanoMind Security Analyst');
+    console.log(`  Platform:  ${status.platform}`);
+    console.log(`  Backend:   ${status.backend === 'none' ? `${colors.red}not available${RESET()}` : `${colors.green}${status.backend}${RESET()}`}`);
+    console.log(`  Model:     ${status.modelCached ? `${colors.green}cached${RESET()}` : `${colors.yellow}not downloaded${RESET()}`}`);
+    console.log(`  Ready:     ${status.available ? `${colors.green}yes${RESET()}` : `${colors.yellow}no${RESET()}`}`);
+    console.log('');
+
+    if (status.available) {
+      console.log('Use --analyze with any scan command for AI-powered analysis.');
+      console.log(`  Example: hackmyagent secure ./my-agent --analyze`);
+    } else if (status.backend !== 'none') {
+      console.log(`Run: hackmyagent analyst setup`);
+    } else if (process.platform !== 'darwin') {
+      console.log('Cross-platform support (llama.cpp/GGUF) coming soon.');
+    }
+  });
+
 // ============================================================================
 // npm package scanning helpers (used by `check <package>`)
 // ============================================================================

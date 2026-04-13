@@ -16,12 +16,15 @@
 
 import type { SecurityFinding } from '../hardening/security-check.js';
 import type { NanoMindScanResult } from './scanner-bridge.js';
+import type { AnalystResponse } from './inference/security-analyst.js';
 
 export interface OrchestrationOptions {
   staticOnly?: boolean;
   ci?: boolean;
   deep?: boolean;
   silent?: boolean;
+  /** Run the generative analyst model (--analyze flag). */
+  analyze?: boolean;
 }
 
 export interface OrchestrationResult {
@@ -30,6 +33,10 @@ export interface OrchestrationResult {
   compiledArtifacts: number;
   newSemanticFindings: number;
   integrityStatus: string;
+  /** Analyst results (present when --analyze is used and model is available). */
+  analystFindings?: AnalystResponse[];
+  /** Hint shown to user when analyst is available but not used. */
+  analystHint?: string;
 }
 
 /**
@@ -42,7 +49,7 @@ export async function orchestrateNanoMind(
   existingFindings: SecurityFinding[],
   options: OrchestrationOptions = {},
 ): Promise<OrchestrationResult> {
-  const { staticOnly = false, ci = false, silent = false } = options;
+  const { staticOnly = false, ci = false, silent = false, analyze = false } = options;
 
   // Skip NanoMind only when explicitly opted out
   // CI mode still runs NanoMind (deterministic, no cost, better results)
@@ -94,13 +101,46 @@ export async function orchestrateNanoMind(
       .then(m => m.flushNanoMindTelemetry())
       .catch(() => {});
 
-    return {
+    const result: OrchestrationResult = {
       mergedFindings: nmResult.mergedFindings,
       nanomindUsed: nmResult.nanomindAvailable,
       compiledArtifacts: nmResult.compiledArtifacts,
       newSemanticFindings: newFindings,
       integrityStatus: nmResult.integrityStatus,
     };
+
+    // --- Security Analyst (generative model, --analyze flag) ---
+    const { isAnalystReady, runAnalystInference } = await import('./inference/security-analyst.js');
+
+    if (analyze) {
+      const ready = await isAnalystReady();
+      if (ready) {
+        if (!silent) process.stderr.write('Running AI analysis...\n');
+        result.analystFindings = await runAnalystOnFindings(
+          nmResult.mergedFindings,
+          runAnalystInference,
+        );
+        if (!silent && result.analystFindings.length > 0) {
+          process.stderr.write(
+            `Analyst: ${result.analystFindings.length} finding(s) analyzed\n`,
+          );
+        }
+      } else {
+        if (!silent) {
+          process.stderr.write(
+            'Analyst model not set up. Run: hackmyagent analyst setup\n',
+          );
+        }
+      }
+    } else if (!silent && !ci) {
+      // Check if analyst is available but not used -- show hint once
+      const ready = await isAnalystReady();
+      if (ready) {
+        result.analystHint = 'Add --analyze for AI-powered threat analysis';
+      }
+    }
+
+    return result;
   } catch {
     // NanoMind unavailable -- static results are still valid
     return {
@@ -111,4 +151,54 @@ export async function orchestrateNanoMind(
       integrityStatus: 'UNAVAILABLE',
     };
   }
+}
+
+/**
+ * Run the analyst model on failed findings that warrant deeper analysis.
+ * Targets: suspicious/malicious classifications, credential findings,
+ * and high/critical severity findings.
+ */
+async function runAnalystOnFindings(
+  findings: SecurityFinding[],
+  runInference: typeof import('./inference/security-analyst.js').runAnalystInference,
+): Promise<AnalystResponse[]> {
+  const results: AnalystResponse[] = [];
+  const failed = findings.filter(f => !f.passed && !f.fixed);
+
+  // Limit to top 10 most important findings to keep inference time reasonable
+  const prioritized = failed
+    .sort((a, b) => {
+      const sevRank: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+      return (sevRank[b.severity] ?? 0) - (sevRank[a.severity] ?? 0);
+    })
+    .slice(0, 10);
+
+  for (const finding of prioritized) {
+    // Choose task type based on finding category
+    const isCredential = finding.checkId?.startsWith('CRED') ||
+      finding.attackClass === 'credential_abuse';
+    const taskType = isCredential
+      ? 'credentialContextClassification' as const
+      : 'threatAnalysis' as const;
+
+    const content = [
+      finding.name,
+      finding.description,
+      finding.message,
+      finding.file ? `File: ${finding.file}` : '',
+      finding.attackClass ? `Attack class: ${finding.attackClass}` : '',
+    ].filter(Boolean).join('\n');
+
+    const response = await runInference({
+      taskType,
+      content,
+      context: `Check ID: ${finding.checkId}, Severity: ${finding.severity}`,
+    });
+
+    if (response) {
+      results.push(response);
+    }
+  }
+
+  return results;
 }

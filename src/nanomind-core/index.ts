@@ -50,9 +50,31 @@ export type { ASTValidationResult, ClaimValidation, Discrepancy } from './verifi
 export { enforceSeverityFloor, validateEnhancement, requireBenignConsensus, redactSecretsForNanoMind, assertASTIntegrity, SecurityError, verifyTrainingProvenance, logSecurityEvent, getAuditEvents } from './security/defense-in-depth.js';
 export { verifyAll, EventChain, generateManifest } from './security/integrity-verifier.js';
 
-// Inference
+// Inference -- TME Classifier (ONNX, 10-class labels)
 export { TMEClassifier, getTMEClassifier } from './inference/tme-classifier.js';
 export type { TMEClassification } from './inference/tme-classifier.js';
+
+// Inference -- Security Analyst (generative, structured JSON)
+export {
+  getAnalystStatus,
+  isAnalystReady,
+  setupAnalystModel,
+  runAnalystInference,
+  analyzeThreat,
+  assessCredentialContext,
+  assessFalsePositive,
+  generateIntelReport,
+} from './inference/security-analyst.js';
+export type {
+  AnalystTaskType,
+  AnalystRequest,
+  AnalystResponse,
+  AnalystBackend,
+  AnalystStatus,
+  ThreatAnalysis,
+  CredentialContext,
+  FalsePositiveAssessment,
+} from './inference/security-analyst.js';
 
 // Ingestion
 export { parseArtifact, classifyArtifactType, computeHash } from './ingestion/artifact-parser.js';
