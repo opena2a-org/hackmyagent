@@ -115,15 +115,30 @@ export async function orchestrateNanoMind(
     if (analm) {
       const ready = await isAnalystReady();
       if (ready) {
-        if (!silent) process.stderr.write('Running AnaLM analysis...\n');
-        result.analystFindings = await runAnalystOnFindings(
-          nmResult.mergedFindings,
-          runAnalystInference,
-        );
-        if (!silent && result.analystFindings.length > 0) {
-          process.stderr.write(
-            `Analyst: ${result.analystFindings.length} finding(s) analyzed\n`,
+        const failed = nmResult.mergedFindings.filter(f => !f.passed && !f.fixed);
+        if (failed.length > 0) {
+          if (!silent) process.stderr.write('Running AnaLM analysis...\n');
+          result.analystFindings = await runAnalystOnFindings(
+            nmResult.mergedFindings,
+            runAnalystInference,
           );
+          if (!silent && result.analystFindings.length > 0) {
+            process.stderr.write(
+              `AnaLM: ${result.analystFindings.length} finding(s) analyzed\n`,
+            );
+          }
+        } else {
+          // Clean scan -- generate an intel report summary instead
+          if (!silent) process.stderr.write('Running AnaLM intel report...\n');
+          const allFindings = nmResult.mergedFindings;
+          const summary = `Clean scan: ${allFindings.length} checks passed, ${nmResult.compiledArtifacts} artifacts compiled. No security findings.`;
+          const intelResponse = await runAnalystInference({
+            taskType: 'intelReport',
+            content: summary,
+          });
+          if (intelResponse) {
+            result.analystFindings = [intelResponse];
+          }
         }
       } else {
         if (!silent) {
@@ -133,10 +148,13 @@ export async function orchestrateNanoMind(
         }
       }
     } else if (!silent && !ci) {
-      // Check if analyst is available but not used -- show hint once
-      const ready = await isAnalystReady();
-      if (ready) {
-        result.analystHint = 'Add --analm for AI-powered threat analysis';
+      // Show hint only if analyst is available and there are findings to analyze
+      const failed = nmResult.mergedFindings.filter(f => !f.passed && !f.fixed);
+      if (failed.length > 0) {
+        const ready = await isAnalystReady();
+        if (ready) {
+          result.analystHint = 'Add --analm for AI-powered threat analysis';
+        }
       }
     }
 

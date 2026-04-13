@@ -274,6 +274,7 @@ Examples:
             findings: issues as any[],
           },
           verbose: !!options.verbose,
+          usedAnalm: !!options.analm,
         });
 
         const risk = critical.length > 0 ? 'critical' : high.length > 0 ? 'high' : issues.length > 0 ? 'medium' : 'low';
@@ -479,6 +480,7 @@ interface UnifiedCheckDisplayOptions {
     compiledArtifacts: number;
     findings: Array<{ severity: string; checkId?: string; description?: string; name?: string; message?: string; fix?: string; guidance?: string; file?: string; line?: number; passed?: boolean; attackClass?: string; category?: string }>;
   };
+  usedAnalm?: boolean;
 }
 
 function stripAnsi(s: string): string {
@@ -518,7 +520,7 @@ function shortenPath(filePath: string): string {
 }
 
 function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
-  const { name, sourceLabel, projectType, localScan, registry, verbose, version, nanomindScan } = opts;
+  const { name, sourceLabel, projectType, localScan, registry, verbose, version, nanomindScan, usedAnalm } = opts;
 
   // ── Visual helpers ──────────────────────────────────────────────────
   const METER_WIDTH = 20;
@@ -832,6 +834,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     hasCredentialFindings: hasCredIssues,
     hasCodeVulns,
     isCleanScan: totalFindings === 0 && (!!localScan || !!nanomindScan),
+    usedAnalm,
   });
 }
 
@@ -2950,9 +2953,22 @@ Examples:
               const clsColor = cls === 'real' ? colors.red : cls === 'test' || cls === 'example' ? colors.green : colors.yellow;
               console.log(`  Credential: ${clsColor}${cls}${RESET()}`);
               if (r.reasoning) console.log(`       ${r.reasoning}`);
+            } else if (af.taskType === 'intelReport') {
+              if (r.summary) console.log(`  ${colors.cyan}Summary:${RESET()} ${r.summary}`);
+              if (Array.isArray(r.keyFindings) && r.keyFindings.length > 0) {
+                for (const kf of r.keyFindings) {
+                  console.log(`       ${kf}`);
+                }
+              }
+              if (r.riskAssessment) console.log(`  ${colors.cyan}Risk:${RESET()}    ${r.riskAssessment}`);
+              if (Array.isArray(r.recommendations) && r.recommendations.length > 0) {
+                for (const rec of r.recommendations) {
+                  console.log(`       ${colors.dim}${rec}${RESET()}`);
+                }
+              }
             } else {
               // Generic display for other task types
-              console.log(`  ${af.taskType}: ${JSON.stringify(r)}`);
+              if (r.description) console.log(`  ${r.description}`);
             }
             console.log(`       ${colors.dim}Confidence: ${Math.round(af.confidence * 100)}% | ${af.modelVersion} (${af.durationMs}ms)${RESET()}`);
             console.log();
@@ -7203,6 +7219,7 @@ function printCheckNextSteps(
     hasCodeVulns?: boolean;
     isCleanScan?: boolean;
     isLocalTarget?: boolean;
+    usedAnalm?: boolean;
   },
 ): void {
   if (globalCiMode) return;
@@ -7225,9 +7242,13 @@ function printCheckNextSteps(
     console.log(`  ${colors.cyan}Governance scan:${RESET()}      ${CLI_PREFIX} scan-soul ${target}`);
     console.log(`  ${colors.cyan}Red-team test:${RESET()}        ${CLI_PREFIX} attack --local`);
   } else if (context?.isCleanScan) {
-    console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm`);
+    if (!context?.usedAnalm) {
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm`);
+    }
   } else {
-    console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm`);
+    if (!context?.usedAnalm) {
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm`);
+    }
   }
   console.log();
 }
@@ -7317,7 +7338,7 @@ async function checkGitHubRepo(
         writeJsonStdout({ ...registryData, source: 'registry' });
         return;
       }
-      displayUnifiedCheck({ name: displayName, sourceLabel: 'GitHub', registry: registryData, verbose: !!options.verbose });
+      displayUnifiedCheck({ name: displayName, sourceLabel: 'GitHub', registry: registryData, verbose: !!options.verbose, usedAnalm: !!options.analm });
       return;
     }
     if (!options.json && !globalCiMode) {
