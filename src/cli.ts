@@ -3675,8 +3675,9 @@ Examples:
         console.log(`Scanning ${targetDir}...\n`);
       }
 
-      const scanner = new NemoClawScanner();
-      const findings = await scanner.scan(targetDir, {});
+      const scanner = new HardeningScanner();
+      const result = await scanner.scan({ targetDir, autoFix: false });
+      const findings = result.findings;
 
       // Enrich with taxonomy
       const { enrichWithTaxonomy } = require('./hardening/taxonomy');
@@ -3730,7 +3731,7 @@ Examples:
         console.log(`${colors.red}Findings:${RESET()}\n`);
 
         for (const finding of issues) {
-          const display = SEVERITY_DISPLAY[finding.severity];
+          const display = SEVERITY_DISPLAY[finding.severity as Severity];
           const location = finding.file
             ? finding.line
               ? `${finding.file}:${finding.line}`
