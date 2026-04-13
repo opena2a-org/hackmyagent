@@ -7249,11 +7249,31 @@ const DOCS_AND_GENERATED_PATTERNS = [
   /\bHISTORY/i,                   // history files
   /\bLICENSE/i,                   // license files
   /\bCONTRIBUTING/i,              // contributing guides
+  /\.tmLanguage\.json$/i,          // TextMate grammars
+  /\.schema\.json$/i,              // JSON schema definitions
+  /\.nls\.json$/i,                 // localization/NLS files
+  /\bcglicenses/i,                 // CG license files
+  /\blicenses?\//i,                // license directories
 ];
 
-function isDocsOrGenerated(filePath: string): boolean {
-  return DOCS_AND_GENERATED_PATTERNS.some(p => p.test(filePath));
-}
+/**
+ * Check IDs for security-sensitive pattern matches that produce false
+ * positives on documentation and generated files. These checks look for
+ * credential patterns, prompt injection, governance gaps, and skill
+ * definitions — all of which appear naturally in docs that DESCRIBE
+ * these concepts without being vulnerable.
+ */
+const DOCS_FALSE_POSITIVE_PREFIXES = [
+  'AST-GOV',       // governance checks
+  'AST-GOVERN',    // governance checks
+  'AST-PROMPT',    // prompt security checks
+  'AST-HEARTBEAT', // heartbeat/liveness checks
+  'AST-CRED',      // credential pattern checks
+  'AST-INJECT',    // injection pattern checks
+  'AST-EXFIL',     // exfiltration pattern checks
+  'SKILL-',        // skill definition checks
+  'SUPPLY-',       // supply chain checks
+];
 
 /**
  * Build scripts, CI/CD pipelines, and infrastructure files.
@@ -7277,31 +7297,16 @@ const BUILD_CI_PATTERNS = [
   /\binfra\//i,                    // infra/ directory
 ];
 
-function isBuildOrCiFile(filePath: string): boolean {
-  return BUILD_CI_PATTERNS.some(p => p.test(filePath));
-}
-
-/**
- * Check IDs for security-sensitive pattern matches that produce false
- * positives on documentation and generated files. These checks look for
- * credential patterns, prompt injection, governance gaps, and skill
- * definitions — all of which appear naturally in docs that DESCRIBE
- * these concepts without being vulnerable.
- */
-const DOCS_FALSE_POSITIVE_PREFIXES = [
-  'AST-GOV',       // governance checks
-  'AST-GOVERN',    // governance checks
-  'AST-PROMPT',    // prompt security checks
-  'AST-HEARTBEAT', // heartbeat/liveness checks
-  'AST-CRED',      // credential pattern checks
-  'AST-INJECT',    // injection pattern checks
-  'AST-EXFIL',     // exfiltration pattern checks
-  'SKILL-',        // skill definition checks
-  'SUPPLY-',       // supply chain checks
-];
-
 function isTestFile(filePath: string): boolean {
   return TEST_FILE_PATTERNS.some(p => p.test(filePath));
+}
+
+function isDocsOrGenerated(filePath: string): boolean {
+  return DOCS_AND_GENERATED_PATTERNS.some(p => p.test(filePath));
+}
+
+function isBuildOrCiFile(filePath: string): boolean {
+  return BUILD_CI_PATTERNS.some(p => p.test(filePath));
 }
 
 function isAiToolingFile(filePath: string): boolean {
@@ -7313,8 +7318,8 @@ function isAiToolingFile(filePath: string): boolean {
  * packages (e.g. "Missing .gitignore" on an npm tarball).  Also filters
  * governance findings on AI tooling files, removes false-positive
  * pattern matches on documentation/generated files, and demotes test
- * file findings. Mutates `result.findings` in place and recalculates
- * the score.
+ * and build file findings. Mutates `result.findings` in place and
+ * recalculates the score.
  */
 function filterLocalOnlyFindings(
   result: { findings: SecurityFinding[]; score: number; maxScore: number },
