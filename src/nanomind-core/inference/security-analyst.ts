@@ -290,46 +290,25 @@ async function runMlxInference(request: AnalystRequest): Promise<AnalystResponse
     ? `Context: ${request.context}\n\nContent:\n${truncatedContent}`
     : truncatedContent;
 
-  // Escape for safe embedding in Python string
-  const escapedSystem = JSON.stringify(systemPrompt);
-  const escapedUser = JSON.stringify(userMessage);
-
-  const inferenceScript = `
-import json, sys, re
-from mlx_lm import load, generate
-
-model, tokenizer = load("${HF_REPO}")
-
-messages = [
-    {"role": "system", "content": ${escapedSystem}},
-    {"role": "user", "content": ${escapedUser}},
-]
-
-prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-response = generate(model, tokenizer, prompt=prompt, max_tokens=512, verbose=False)
-
-# Extract JSON from response
-try:
-    parsed = json.loads(response)
-    print(json.dumps({"ok": True, "result": parsed}))
-except json.JSONDecodeError:
-    match = re.search(r'\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\}', response, re.DOTALL)
-    if match:
-        try:
-            parsed = json.loads(match.group())
-            print(json.dumps({"ok": True, "result": parsed}))
-        except json.JSONDecodeError:
-            print(json.dumps({"ok": False, "raw": response[:500]}))
-    else:
-        print(json.dumps({"ok": False, "raw": response[:500]}))
-`;
+  // Use external Python script to avoid template literal escaping issues
+  const scriptPath = join(__dirname, 'analm-infer.py');
 
   try {
     const result = await execAsync('uv', [
-      'run', '--with', 'mlx-lm', 'python3', '-c', inferenceScript,
+      'run', '--with', 'mlx-lm', 'python3', scriptPath,
+      HF_REPO,
+      request.taskType,
+      JSON.stringify(systemPrompt),
+      JSON.stringify(userMessage),
     ], { timeout: INFERENCE_TIMEOUT_MS });
 
-    const parsed = JSON.parse(result.stdout.trim());
+    // stdout may contain HuggingFace progress bars before the JSON line
+    const jsonLine = result.stdout.trim().split('\n')
+      .reverse()
+      .find(line => line.trim().startsWith('{'));
+    if (!jsonLine) return null;
+
+    const parsed = JSON.parse(jsonLine.trim());
     const durationMs = Date.now() - startMs;
 
     if (parsed.ok && parsed.result) {
