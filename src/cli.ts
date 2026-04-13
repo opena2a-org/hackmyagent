@@ -7225,9 +7225,9 @@ function printCheckNextSteps(
     console.log(`  ${colors.cyan}Governance scan:${RESET()}      ${CLI_PREFIX} scan-soul ${target}`);
     console.log(`  ${colors.cyan}Red-team test:${RESET()}        ${CLI_PREFIX} attack --local`);
   } else if (context?.isCleanScan) {
-    console.log(`  ${colors.cyan}Deep scan:${RESET()}            ${CLI_PREFIX} check ${target} --deep`);
+    console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm`);
   } else {
-    console.log(`  ${colors.cyan}Deep scan:${RESET()}            ${CLI_PREFIX} check ${target} --deep`);
+    console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm`);
   }
   console.log();
 }
