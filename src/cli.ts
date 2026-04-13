@@ -6900,7 +6900,8 @@ function looksLikeRawUrl(target: string): boolean {
  */
 function parseGitHubTarget(target: string): { org: string; repo: string; cloneUrl: string } {
   // Full URL: https://github.com/org/repo[.git][/tree/...]
-  const urlMatch = target.match(/^https?:\/\/(www\.)?github\.com\/([^/]+)\/([^/.]+)/);
+  // Allow dots in repo names (e.g. next.js, vue.js) but strip trailing .git
+  const urlMatch = target.match(/^https?:\/\/(www\.)?github\.com\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/|$)/);
   if (urlMatch) {
     return {
       org: urlMatch[2],
@@ -7223,6 +7224,82 @@ const TEST_FILE_PATTERNS = [
   /\bfixtures?\//i,
 ];
 
+/**
+ * Documentation and generated file patterns.
+ * These files describe security concepts (credentials, prompts, governance)
+ * but are not attack surfaces themselves. Governance/credential/prompt
+ * findings on these are almost always false positives in cloned repos.
+ */
+const DOCS_AND_GENERATED_PATTERNS = [
+  /\.md$/i,                        // Markdown documentation
+  /\.rst$/i,                       // reStructuredText docs
+  /\bdocs?\//i,                    // docs/ directory
+  /\bdocumentation\//i,            // documentation/ directory
+  /\bexamples?\//i,                // examples/ directory
+  /\bsamples?\//i,                 // samples/ directory
+  /openapi[^/]*\.json$/i,          // OpenAPI spec files
+  /openapi[^/]*\.ya?ml$/i,         // OpenAPI spec YAML files
+  /swagger[^/]*\.json$/i,          // Swagger spec files
+  /swagger[^/]*\.ya?ml$/i,         // Swagger spec YAML files
+  /\bapi\/openapi-spec\//i,        // API spec directories
+  /\bapi\/discovery\//i,           // API discovery docs
+  /\bvendor\//i,                   // vendored dependencies
+  /\bthird.?party\//i,             // third-party code
+  /\bCHANGELOG/i,                 // changelog files
+  /\bHISTORY/i,                   // history files
+  /\bLICENSE/i,                   // license files
+  /\bCONTRIBUTING/i,              // contributing guides
+];
+
+function isDocsOrGenerated(filePath: string): boolean {
+  return DOCS_AND_GENERATED_PATTERNS.some(p => p.test(filePath));
+}
+
+/**
+ * Build scripts, CI/CD pipelines, and infrastructure files.
+ * These are not runtime attack surfaces — findings here are lower risk.
+ */
+const BUILD_CI_PATTERNS = [
+  /\bbuild\//i,                    // build/ directory
+  /\bdist\//i,                     // dist/ directory
+  /\b\.github\//,                  // GitHub Actions
+  /\b\.circleci\//,                // CircleCI
+  /\bazure-pipelines/i,            // Azure Pipelines
+  /\bjenkins/i,                    // Jenkins
+  /\b\.gitlab-ci/,                 // GitLab CI
+  /\bMakefile$/i,                  // Makefiles
+  /\bGruntfile/i,                  // Grunt
+  /\bgulpfile/i,                   // Gulp
+  /\bwebpack\.\w+\.js$/i,          // Webpack configs
+  /\brollup\.\w+\.js$/i,           // Rollup configs
+  /\bscripts\//i,                  // scripts/ directory
+  /\btools?\//i,                   // tools/ directory
+  /\binfra\//i,                    // infra/ directory
+];
+
+function isBuildOrCiFile(filePath: string): boolean {
+  return BUILD_CI_PATTERNS.some(p => p.test(filePath));
+}
+
+/**
+ * Check IDs for security-sensitive pattern matches that produce false
+ * positives on documentation and generated files. These checks look for
+ * credential patterns, prompt injection, governance gaps, and skill
+ * definitions — all of which appear naturally in docs that DESCRIBE
+ * these concepts without being vulnerable.
+ */
+const DOCS_FALSE_POSITIVE_PREFIXES = [
+  'AST-GOV',       // governance checks
+  'AST-GOVERN',    // governance checks
+  'AST-PROMPT',    // prompt security checks
+  'AST-HEARTBEAT', // heartbeat/liveness checks
+  'AST-CRED',      // credential pattern checks
+  'AST-INJECT',    // injection pattern checks
+  'AST-EXFIL',     // exfiltration pattern checks
+  'SKILL-',        // skill definition checks
+  'SUPPLY-',       // supply chain checks
+];
+
 function isTestFile(filePath: string): boolean {
   return TEST_FILE_PATTERNS.some(p => p.test(filePath));
 }
@@ -7234,8 +7311,10 @@ function isAiToolingFile(filePath: string): boolean {
 /**
  * Filter out local-dev-only findings that are meaningless for downloaded
  * packages (e.g. "Missing .gitignore" on an npm tarball).  Also filters
- * governance findings on AI tooling files and demotes test file findings.
- * Mutates `result.findings` in place and recalculates the score.
+ * governance findings on AI tooling files, removes false-positive
+ * pattern matches on documentation/generated files, and demotes test
+ * file findings. Mutates `result.findings` in place and recalculates
+ * the score.
  */
 function filterLocalOnlyFindings(
   result: { findings: SecurityFinding[]; score: number; maxScore: number },
@@ -7251,15 +7330,31 @@ function filterLocalOnlyFindings(
     // files are false positives — they describe security practices, not vulnerabilities.
     if (f.file && isAiToolingFile(f.file)) return false;
 
+    // Exclude governance/credential/prompt/skill pattern-match findings on
+    // documentation, generated specs, and vendored files. These files
+    // naturally describe security concepts without being vulnerable.
+    // Structural checks (unicode steganography, TOCTOU, deserialization)
+    // are kept — those detect actual content issues regardless of file type.
+    if (f.file && isDocsOrGenerated(f.file)) {
+      const checkId = f.checkId || '';
+      if (DOCS_FALSE_POSITIVE_PREFIXES.some(p => checkId.startsWith(p))) {
+        return false;
+      }
+    }
+
     return true;
   });
 
-  // Demote test file findings to low severity (test code patterns are
-  // lower risk — pickle.load in a test file is not an attack surface)
+  // Demote test file and build script findings to low severity.
+  // Test code patterns are lower risk (pickle.load in a test file is not
+  // an attack surface). Build scripts, CI configs, and vendored code are
+  // not runtime attack surfaces for the end user.
   for (const f of result.findings) {
-    if (f.file && isTestFile(f.file) && (f.severity === 'critical' || f.severity === 'high')) {
-      (f as any).originalSeverity = f.severity;
-      f.severity = 'low';
+    if (f.file && (f.severity === 'critical' || f.severity === 'high')) {
+      if (isTestFile(f.file) || isBuildOrCiFile(f.file)) {
+        (f as any).originalSeverity = f.severity;
+        f.severity = 'low';
+      }
     }
   }
 
