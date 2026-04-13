@@ -7201,28 +7201,32 @@ function printCheckNextSteps(
     hasCredentialFindings?: boolean;
     hasCodeVulns?: boolean;
     isCleanScan?: boolean;
+    isLocalTarget?: boolean;
   },
 ): void {
   if (globalCiMode) return;
+  const isLocal = context?.isLocalTarget ?? (target.startsWith('.') || target.startsWith('/') || target.startsWith('~'));
   console.log();
   console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
 
-  if (context?.hasGovernanceIssues) {
+  if (context?.hasGovernanceIssues && isLocal) {
     console.log(`  ${colors.cyan}Auto-fix governance:${RESET()}  ${CLI_PREFIX} harden-soul ${target}`);
   }
   if (context?.hasCredentialFindings) {
     console.log(`  ${colors.cyan}Protect credentials:${RESET()}  npx secretless-ai scan`);
   }
-  if (context?.hasCodeVulns) {
+  if (context?.hasCodeVulns && isLocal) {
     console.log(`  ${colors.cyan}Auto-fix all issues:${RESET()}  ${CLI_PREFIX} secure --fix`);
   }
   if (context?.hasFindings) {
     console.log(`  ${colors.cyan}Full project audit:${RESET()}   ${getFullScanHint()}`);
-  } else if (context?.isCleanScan) {
+  } else if (context?.isCleanScan && isLocal) {
     console.log(`  ${colors.cyan}Governance scan:${RESET()}      ${CLI_PREFIX} scan-soul ${target}`);
     console.log(`  ${colors.cyan}Red-team test:${RESET()}        ${CLI_PREFIX} attack --local`);
+  } else if (context?.isCleanScan) {
+    console.log(`  ${colors.cyan}Deep scan:${RESET()}            ${CLI_PREFIX} check ${target} --deep`);
   } else {
-    console.log(`  ${colors.cyan}Deep scan:${RESET()}            ${CLI_PREFIX} check ${target} --rescan`);
+    console.log(`  ${colors.cyan}Deep scan:${RESET()}            ${CLI_PREFIX} check ${target} --deep`);
   }
   console.log();
 }
