@@ -2518,7 +2518,7 @@ Examples:
       }
 
       const onProgress = format === 'text'
-        ? (msg: string) => process.stdout.write(msg)
+        ? (msg: string) => process.stdout.write(msg.endsWith('\n') ? msg : msg + '\n')
         : undefined;
 
       // Show analysis mode to user
