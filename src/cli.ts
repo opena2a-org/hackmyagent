@@ -3018,7 +3018,8 @@ Examples:
               console.error('Error: --registry-key or REGISTRY_API_KEY env is required when using --version-id');
               process.exit(1);
             }
-            const client = new core.RegistryClient({ registryUrl, apiKey: registryKey });
+            const atcToken = process.env.ATC_TOKEN;
+            const client = new core.RegistryClient({ registryUrl, apiKey: registryKey, atcToken });
             const payload = core.buildScanReport(options.versionId, result.findings);
             await client.reportScanResult(payload);
             console.log(`Registry: scan results reported for version ${options.versionId}`);
@@ -3883,7 +3884,8 @@ Examples:
               console.error('Error: --registry-key or REGISTRY_API_KEY env is required when using --version-id');
               process.exit(1);
             }
-            const client = new core.RegistryClient({ registryUrl, apiKey: registryKey });
+            const atcToken = process.env.ATC_TOKEN;
+            const client = new core.RegistryClient({ registryUrl, apiKey: registryKey, atcToken });
             const payload = core.buildAttackReport(options.versionId, report);
             await client.reportScanResult(payload);
             console.log(`Registry: attack results reported for version ${options.versionId}`);

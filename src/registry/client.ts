@@ -128,6 +128,7 @@ export interface UnifiedFinding {
 export interface RegistryConfig {
   registryUrl: string;
   apiKey: string;
+  atcToken?: string; // CBOR ATC token (base64url). If set, prefer ATC auth over Bearer.
 }
 
 export interface RegistryPackage {
@@ -145,6 +146,16 @@ export class RegistryClient {
   }
 
   /**
+   * Returns the Authorization header value: ATC token if available, otherwise Bearer.
+   */
+  private getAuthHeader(): string {
+    if (this.config.atcToken) {
+      return `ATC ${this.config.atcToken}`;
+    }
+    return `Bearer ${this.config.apiKey}`;
+  }
+
+  /**
    * Post scan results to registry callback endpoint.
    */
   async reportScanResult(payload: ScanReportPayload): Promise<void> {
@@ -154,7 +165,7 @@ export class RegistryClient {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.config.apiKey}`,
+        'Authorization': this.getAuthHeader(),
         'User-Agent': 'HackMyAgent-CLI',
       },
       body: JSON.stringify(payload),
