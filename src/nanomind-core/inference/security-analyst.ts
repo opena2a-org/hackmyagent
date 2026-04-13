@@ -7,7 +7,7 @@
  *
  * Two inference backends (auto-detected):
  *   1. MLX (mlx_lm)     -- Apple Silicon only, safetensors (1.8GB)
- *   2. llama.cpp         -- Cross-platform, GGUF Q4_K_M (~1GB) [planned]
+ *   2. llama.cpp         -- Cross-platform, GGUF Q4_K_M (544MB)
  *
  * Task types:
  *   - threatAnalysis, credentialContextClassification, falsePositiveDetection,
@@ -119,33 +119,40 @@ async function detectBackend(): Promise<AnalystBackend> {
     }
   }
 
-  // Try llama.cpp (cross-platform) -- planned for future release
-  // When implemented, check for llama-cpp-python or llamafile binary
-  // try {
-  //   await execAsync('uv', [
-  //     'run', '--with', 'llama-cpp-python', 'python3', '-c',
-  //     'from llama_cpp import Llama; print("ok")',
-  //   ], { timeout: 15_000 });
-  //   _detectedBackend = 'llamacpp';
-  //   return _detectedBackend;
-  // } catch { /* not available */ }
+  // Try llama.cpp (cross-platform)
+  try {
+    await execAsync('uv', [
+      'run', '--with', 'llama-cpp-python', 'python3', '-c',
+      'from llama_cpp import Llama; print("ok")',
+    ], { timeout: 30_000 });
+    _detectedBackend = 'llamacpp';
+    return _detectedBackend;
+  } catch { /* llama-cpp-python not available */ }
 
   _detectedBackend = 'none';
   return _detectedBackend;
 }
 
+/** GGUF filename on HuggingFace */
+const GGUF_FILENAME = 'nanomind-security-analyst.Q4_K_M.gguf';
+
 /**
  * Check if the model is already cached locally.
+ * For MLX: checks for config.json (safetensors model).
+ * For llama.cpp: checks for the GGUF file.
  */
 async function isModelCached(): Promise<boolean> {
   if (_modelCached !== undefined) return _modelCached;
+
+  const backend = _detectedBackend ?? 'mlx';
+  const fileToCheck = backend === 'llamacpp' ? GGUF_FILENAME : 'config.json';
 
   try {
     const checkScript = `
 from huggingface_hub import try_to_load_from_cache
 import json
-path = try_to_load_from_cache("${HF_REPO}", "config.json")
-print(json.dumps({"cached": path is not None}))
+path = try_to_load_from_cache("${HF_REPO}", "${fileToCheck}")
+print(json.dumps({"cached": path is not None and path is not False}))
 `;
     const result = await execAsync('uv', [
       'run', '--with', 'huggingface-hub', 'python3', '-c', checkScript,
@@ -160,6 +167,28 @@ print(json.dumps({"cached": path is not None}))
 }
 
 /**
+ * Resolve the local path to the cached GGUF file.
+ * Returns null if not cached.
+ */
+async function resolveGgufPath(): Promise<string | null> {
+  try {
+    const resolveScript = `
+from huggingface_hub import hf_hub_download
+import json
+path = hf_hub_download("${HF_REPO}", "${GGUF_FILENAME}", local_files_only=True)
+print(json.dumps({"path": path}))
+`;
+    const result = await execAsync('uv', [
+      'run', '--with', 'huggingface-hub', 'python3', '-c', resolveScript,
+    ], { timeout: 10_000 });
+    const parsed = JSON.parse(result.stdout.trim());
+    return parsed.path ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Get the full status of the analyst subsystem.
  * Used by `analyst status` and scan hints.
  */
@@ -171,7 +200,11 @@ export async function getAnalystStatus(): Promise<AnalystStatus> {
     available: backend !== 'none' && cached,
     backend,
     modelCached: cached,
-    platform: process.platform === 'darwin' ? 'Apple Silicon (MLX)' : process.platform,
+    platform: backend === 'mlx'
+      ? 'Apple Silicon (MLX)'
+      : backend === 'llamacpp'
+        ? `${process.platform} (llama.cpp)`
+        : process.platform,
     setupCommand: 'hackmyagent analm setup',
   };
 }
@@ -202,10 +235,11 @@ export async function setupAnalystModel(quiet = false): Promise<boolean> {
     if (!quiet) {
       process.stderr.write(
         'No supported inference backend found.\n' +
+        'Install uv (https://docs.astral.sh/uv/) and run:\n' +
+        '  uv pip install llama-cpp-python   # any platform\n' +
         (process.platform === 'darwin'
-          ? 'Install uv (https://docs.astral.sh/uv/) and run again.\n'
-          : 'Cross-platform support (llama.cpp) coming soon.\n' +
-            'Currently requires Apple Silicon Mac with MLX.\n'),
+          ? '  uv pip install mlx-lm             # Apple Silicon (faster)\n'
+          : ''),
       );
     }
     return false;
@@ -216,15 +250,26 @@ export async function setupAnalystModel(quiet = false): Promise<boolean> {
     return true;
   }
 
+  const isGguf = backend === 'llamacpp';
+  const sizeLabel = isGguf ? '544MB GGUF Q4_K_M' : '1.8GB safetensors';
+
   if (!quiet) {
     process.stderr.write(
-      `Downloading AnaLM v${MODEL_VERSION} ` +
-      `(${backend === 'mlx' ? '1.8GB safetensors' : '~1GB GGUF'})...\n`,
+      `Downloading AnaLM v${MODEL_VERSION} (${sizeLabel})...\n`,
     );
   }
 
   try {
-    const downloadScript = `
+    // For llama.cpp: download only the GGUF file
+    // For MLX: download the full snapshot (safetensors + tokenizer)
+    const downloadScript = isGguf
+      ? `
+from huggingface_hub import hf_hub_download
+import json
+path = hf_hub_download("${HF_REPO}", "${GGUF_FILENAME}")
+print(json.dumps({"status": "ok", "path": path}))
+`
+      : `
 from huggingface_hub import snapshot_download
 import json
 path = snapshot_download("${HF_REPO}")
@@ -277,7 +322,10 @@ export async function runAnalystInference(
     return runMlxInference(request);
   }
 
-  // llamacpp backend -- planned
+  if (backend === 'llamacpp') {
+    return runLlamaCppInference(request);
+  }
+
   return null;
 }
 
@@ -319,6 +367,54 @@ async function runMlxInference(request: AnalystRequest): Promise<AnalystResponse
         modelVersion: `nanomind-analyst-v${MODEL_VERSION}`,
         durationMs,
         backend: 'mlx',
+      };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function runLlamaCppInference(request: AnalystRequest): Promise<AnalystResponse | null> {
+  const startMs = Date.now();
+
+  const ggufPath = await resolveGgufPath();
+  if (!ggufPath) return null;
+
+  const truncatedContent = request.content.slice(0, MAX_INPUT_CHARS);
+  const systemPrompt = getSystemPrompt(request.taskType);
+  const userMessage = request.context
+    ? `Context: ${request.context}\n\nContent:\n${truncatedContent}`
+    : truncatedContent;
+
+  const scriptPath = join(__dirname, 'analm-infer-llamacpp.py');
+
+  try {
+    const result = await execAsync('uv', [
+      'run', '--with', 'llama-cpp-python', 'python3', scriptPath,
+      ggufPath,
+      request.taskType,
+      JSON.stringify(systemPrompt),
+      JSON.stringify(userMessage),
+    ], { timeout: INFERENCE_TIMEOUT_MS });
+
+    const jsonLine = result.stdout.trim().split('\n')
+      .reverse()
+      .find(line => line.trim().startsWith('{'));
+    if (!jsonLine) return null;
+
+    const parsed = JSON.parse(jsonLine.trim());
+    const durationMs = Date.now() - startMs;
+
+    if (parsed.ok && parsed.result) {
+      return {
+        taskType: request.taskType,
+        result: parsed.result,
+        confidence: typeof parsed.result.confidence === 'number' ? parsed.result.confidence : 0.5,
+        modelVersion: `nanomind-analyst-v${MODEL_VERSION}`,
+        durationMs,
+        backend: 'llamacpp',
       };
     }
 
