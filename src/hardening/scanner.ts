@@ -269,6 +269,13 @@ const SEVERITY_WEIGHTS: Record<Severity, number> = {
  * This is the canonical scoring formula — all score paths must use it.
  *
  * Accepts findings with at minimum: { passed?, fixed?, severity, category, checkId }.
+ *
+ * Per-check capping: only the first MAX_FINDINGS_PER_CHECK instances of each
+ * unique checkId contribute to the weighted sum at full weight. Additional
+ * instances contribute at a steeply diminished rate (10%). This prevents a
+ * single pattern-match check (e.g. AST-CRED-001) from dominating the score
+ * when it fires across dozens of files in a large repository. All findings
+ * are still reported — only the score contribution is capped.
  */
 export function calculateSecurityScore(findings: Array<{ passed?: boolean; fixed?: boolean; severity: string; category?: string; checkId?: string }>): {
   score: number;
@@ -278,15 +285,25 @@ export function calculateSecurityScore(findings: Array<{ passed?: boolean; fixed
   const GOVERNANCE_PREFIXES = ['AST-GOV', 'AST-GOVERN', 'AST-PROMPT', 'AST-HEARTBEAT'];
   const GOVERNANCE_WEIGHT = 0.4;
   const DECAY_CONSTANT = 150;
+  const MAX_FINDINGS_PER_CHECK = 3;
+  const OVERFLOW_WEIGHT = 0.1; // 10% weight for findings beyond the cap
+
+  // Count occurrences per checkId to apply diminishing returns
+  const checkIdCounts = new Map<string, number>();
 
   let weightedSum = 0;
   for (const finding of findings) {
     if (!finding.passed && !finding.fixed) {
+      const checkId = finding.checkId || '_unknown_';
+      const count = (checkIdCounts.get(checkId) || 0) + 1;
+      checkIdCounts.set(checkId, count);
+
       const isGovernance = GOVERNANCE_CATEGORIES.has(finding.category || '') ||
         GOVERNANCE_PREFIXES.some(p => (finding.checkId || '').startsWith(p));
-      const multiplier = isGovernance ? GOVERNANCE_WEIGHT : 1;
+      const governanceMultiplier = isGovernance ? GOVERNANCE_WEIGHT : 1;
+      const capMultiplier = count <= MAX_FINDINGS_PER_CHECK ? 1 : OVERFLOW_WEIGHT;
       const sevWeight = SEVERITY_WEIGHTS[finding.severity as Severity] ?? 0;
-      weightedSum += sevWeight * multiplier;
+      weightedSum += sevWeight * governanceMultiplier * capMultiplier;
     }
   }
 
