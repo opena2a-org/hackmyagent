@@ -13,7 +13,7 @@
  *   - threatAnalysis, credentialContextClassification, falsePositiveDetection,
  *     artifactClassification, checkExplanation, governanceReasoning, intelReport
  *
- * Gated behind --analyze flag. Model downloaded on-demand via `analyst setup`.
+ * Gated behind --analm flag. Model downloaded on-demand via `analm setup`.
  */
 
 import { join } from 'node:path';
@@ -172,7 +172,7 @@ export async function getAnalystStatus(): Promise<AnalystStatus> {
     backend,
     modelCached: cached,
     platform: process.platform === 'darwin' ? 'Apple Silicon (MLX)' : process.platform,
-    setupCommand: 'hackmyagent analyst setup',
+    setupCommand: 'hackmyagent analm setup',
   };
 }
 
@@ -192,7 +192,7 @@ export async function isAnalystReady(): Promise<boolean> {
 // ============================================================================
 
 /**
- * Download the analyst model. Called by `analyst setup` command.
+ * Download the AnaLM model. Called by `analm setup` command.
  * Returns true on success.
  */
 export async function setupAnalystModel(quiet = false): Promise<boolean> {
@@ -212,13 +212,13 @@ export async function setupAnalystModel(quiet = false): Promise<boolean> {
   }
 
   if (await isModelCached()) {
-    if (!quiet) process.stderr.write('Analyst model already downloaded.\n');
+    if (!quiet) process.stderr.write('AnaLM model already downloaded.\n');
     return true;
   }
 
   if (!quiet) {
     process.stderr.write(
-      `Downloading NanoMind Security Analyst v${MODEL_VERSION} ` +
+      `Downloading AnaLM v${MODEL_VERSION} ` +
       `(${backend === 'mlx' ? '1.8GB safetensors' : '~1GB GGUF'})...\n`,
     );
   }
@@ -238,8 +238,8 @@ print(json.dumps({"status": "ok", "path": path}))
     if (parsed.status === 'ok') {
       _modelCached = true;
       if (!quiet) {
-        process.stderr.write('Analyst model ready.\n');
-        process.stderr.write('Use --analyze with any scan command for AI-powered analysis.\n');
+        process.stderr.write('AnaLM model ready.\n');
+        process.stderr.write('Use --analm with any scan command for AI-powered analysis.\n');
       }
       return true;
     }

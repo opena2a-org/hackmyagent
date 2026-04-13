@@ -2417,7 +2417,7 @@ Examples:
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
   .option('-c, --category <name>', 'Filter to specific benchmark category')
   .option('--deep', 'Maximum analysis: static + semantic + behavioral simulation + adaptive attacks (~30s per file)')
-  .option('--analyze', 'AI-powered threat analysis using NanoMind Security Analyst (requires analyst setup)')
+  .option('--analm', 'AI-powered threat analysis using AnaLM (requires analm setup)')
   .option('--static-only', 'Disable semantic analysis and simulation (static checks only, fast, deterministic)')
   .option('--scan-depth <depth>', 'CAAT scan depth: quick (config+creds only), standard (default), deep (+ simulation)', 'standard')
   .option('--ci-publish', 'Submit scan results to registry CI endpoint (requires CI_SCAN_HMAC_SECRET env)')
@@ -2430,7 +2430,7 @@ Examples:
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
   .option('--ci', 'CI mode: suppress interactive prompts, exit non-zero on findings')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; analyze?: boolean; scanDepth?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean }) => {
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; analm?: boolean; scanDepth?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean }) => {
     try {
       const targetDir = require("path").resolve(directory);
 
@@ -2561,7 +2561,7 @@ Examples:
         staticOnly: isStaticOnly,
         ci: options.ci,
         deep: isDeep,
-        analyze: options.analyze,
+        analm: options.analm,
         silent: format !== 'text',
       });
 
@@ -2931,7 +2931,7 @@ Examples:
 
         // Analyst findings (--analyze)
         if (nmResult.analystFindings && nmResult.analystFindings.length > 0) {
-          console.log(`${colors.cyan}--- AI Analysis (NanoMind Security Analyst) ---${RESET()}\n`);
+          console.log(`${colors.cyan}--- AnaLM Analysis ---${RESET()}\n`);
           for (const af of nmResult.analystFindings) {
             const r = af.result;
             if (af.taskType === 'threatAnalysis') {
@@ -6671,19 +6671,19 @@ program
     for (const file of result.filesWritten) { console.log(`  ${file.split('/').pop()}`); }
     console.log(`\nYour skill is ready. Verify security with: hackmyagent secure ${outputDir}/`);
   });
-// analyst: manage the NanoMind Security Analyst generative model
-const analystCmd = program
-  .command('analyst')
-  .description('Manage the NanoMind Security Analyst model for AI-powered analysis');
+// analm: manage the AnaLM generative model
+const analmCmd = program
+  .command('analm')
+  .description('Manage the AnaLM model for AI-powered security analysis');
 
-analystCmd
+analmCmd
   .command('setup')
-  .description('Download the NanoMind Security Analyst model')
+  .description('Download the AnaLM model')
   .action(async () => {
     const { getAnalystStatus, setupAnalystModel } = await import('./nanomind-core/inference/security-analyst.js');
     const status = await getAnalystStatus();
 
-    console.log('NanoMind Security Analyst');
+    console.log('AnaLM (NanoMind Security Analyst)');
     console.log(`  Platform: ${status.platform}`);
     console.log(`  Backend:  ${status.backend === 'none' ? 'not available' : status.backend}`);
     console.log(`  Model:    ${status.modelCached ? 'cached' : 'not downloaded'}`);
@@ -6701,7 +6701,7 @@ analystCmd
     }
 
     if (status.modelCached) {
-      console.log('Model already downloaded. Use --analyze with any scan command.');
+      console.log('Model already downloaded. Use --analm with any scan command.');
       return;
     }
 
@@ -6709,14 +6709,14 @@ analystCmd
     if (!ok) process.exit(1);
   });
 
-analystCmd
+analmCmd
   .command('status')
-  .description('Check the status of the analyst model and runtime')
+  .description('Check the status of AnaLM model and runtime')
   .action(async () => {
     const { getAnalystStatus } = await import('./nanomind-core/inference/security-analyst.js');
     const status = await getAnalystStatus();
 
-    console.log('NanoMind Security Analyst');
+    console.log('AnaLM (NanoMind Security Analyst)');
     console.log(`  Platform:  ${status.platform}`);
     console.log(`  Backend:   ${status.backend === 'none' ? `${colors.red}not available${RESET()}` : `${colors.green}${status.backend}${RESET()}`}`);
     console.log(`  Model:     ${status.modelCached ? `${colors.green}cached${RESET()}` : `${colors.yellow}not downloaded${RESET()}`}`);
@@ -6724,10 +6724,10 @@ analystCmd
     console.log('');
 
     if (status.available) {
-      console.log('Use --analyze with any scan command for AI-powered analysis.');
-      console.log(`  Example: hackmyagent secure ./my-agent --analyze`);
+      console.log('Use --analm with any scan command for AI-powered analysis.');
+      console.log(`  Example: hackmyagent secure ./my-agent --analm`);
     } else if (status.backend !== 'none') {
-      console.log(`Run: hackmyagent analyst setup`);
+      console.log(`Run: hackmyagent analm setup`);
     } else if (process.platform !== 'darwin') {
       console.log('Cross-platform support (llama.cpp/GGUF) coming soon.');
     }

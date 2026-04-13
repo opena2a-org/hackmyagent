@@ -23,8 +23,8 @@ export interface OrchestrationOptions {
   ci?: boolean;
   deep?: boolean;
   silent?: boolean;
-  /** Run the generative analyst model (--analyze flag). */
-  analyze?: boolean;
+  /** Run AnaLM generative analysis (--analm flag). */
+  analm?: boolean;
 }
 
 export interface OrchestrationResult {
@@ -33,7 +33,7 @@ export interface OrchestrationResult {
   compiledArtifacts: number;
   newSemanticFindings: number;
   integrityStatus: string;
-  /** Analyst results (present when --analyze is used and model is available). */
+  /** AnaLM results (present when --analm is used and model is available). */
   analystFindings?: AnalystResponse[];
   /** Hint shown to user when analyst is available but not used. */
   analystHint?: string;
@@ -49,7 +49,7 @@ export async function orchestrateNanoMind(
   existingFindings: SecurityFinding[],
   options: OrchestrationOptions = {},
 ): Promise<OrchestrationResult> {
-  const { staticOnly = false, ci = false, silent = false, analyze = false } = options;
+  const { staticOnly = false, ci = false, silent = false, analm = false } = options;
 
   // Skip NanoMind only when explicitly opted out
   // CI mode still runs NanoMind (deterministic, no cost, better results)
@@ -112,10 +112,10 @@ export async function orchestrateNanoMind(
     // --- Security Analyst (generative model, --analyze flag) ---
     const { isAnalystReady, runAnalystInference } = await import('./inference/security-analyst.js');
 
-    if (analyze) {
+    if (analm) {
       const ready = await isAnalystReady();
       if (ready) {
-        if (!silent) process.stderr.write('Running AI analysis...\n');
+        if (!silent) process.stderr.write('Running AnaLM analysis...\n');
         result.analystFindings = await runAnalystOnFindings(
           nmResult.mergedFindings,
           runAnalystInference,
@@ -128,7 +128,7 @@ export async function orchestrateNanoMind(
       } else {
         if (!silent) {
           process.stderr.write(
-            'Analyst model not set up. Run: hackmyagent analyst setup\n',
+            'AnaLM not set up. Run: hackmyagent analm setup\n',
           );
         }
       }
@@ -136,7 +136,7 @@ export async function orchestrateNanoMind(
       // Check if analyst is available but not used -- show hint once
       const ready = await isAnalystReady();
       if (ready) {
-        result.analystHint = 'Add --analyze for AI-powered threat analysis';
+        result.analystHint = 'Add --analm for AI-powered threat analysis';
       }
     }
 
