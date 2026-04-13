@@ -15,6 +15,7 @@
 
 import type { SecurityAST, Constraint, RiskSurface } from '../types.js';
 import type { ASTFinding } from './capability-analyzer.js';
+import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
 
 // ============================================================================
@@ -28,8 +29,15 @@ import { assertASTIntegrity } from '../security/defense-in-depth.js';
 export function analyzePrompt(
   ast: SecurityAST,
   verifier: (ast: SecurityAST) => boolean,
+  projectType?: ProjectType,
 ): ASTFinding[] {
   assertASTIntegrity(ast, verifier);
+
+  // SDKs and libraries don't have system prompts, instruction hierarchies,
+  // or trust boundaries. Prompt security checks only apply to agents.
+  if (projectType === 'sdk' || projectType === 'library') {
+    return [];
+  }
 
   const findings: ASTFinding[] = [];
 

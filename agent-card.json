@@ -1,0 +1,25 @@
+{
+  "name": "hackmyagent",
+  "description": "Security scanner and hardening toolkit for AI agents, MCP servers, and skills",
+  "version": "0.14.1",
+  "provider": {
+    "organization": "OpenA2A",
+    "url": "https://opena2a.org"
+  },
+  "capabilities": {
+    "scanning": true,
+    "hardening": true,
+    "mcpTools": true,
+    "fixGeneration": true
+  },
+  "authentication": {
+    "type": "none",
+    "description": "Local CLI tool, no authentication required"
+  },
+  "protocols": ["mcp"],
+  "trustPolicy": {
+    "dataHandling": "local-only",
+    "credentialAccess": "read-only-scanning",
+    "networkAccess": "optional-registry-queries"
+  }
+}

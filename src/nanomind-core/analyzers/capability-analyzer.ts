@@ -14,6 +14,7 @@
  */
 
 import type { SecurityAST, Capability, RiskSurface } from '../types.js';
+import type { ProjectType } from '../../hardening/security-check.js';
 
 // ============================================================================
 // Finding Type (compatible with HMA SecurityFinding)
@@ -47,38 +48,53 @@ export interface ASTFinding {
  * Analyze a SecurityAST for capability-related security issues.
  * Replaces SKILL-*, TOOL-*, and related regex checks.
  */
-export function analyzeCapabilities(ast: SecurityAST): ASTFinding[] {
+export function analyzeCapabilities(ast: SecurityAST, projectType?: ProjectType): ASTFinding[] {
   const findings: ASTFinding[] = [];
+  const isSDK = projectType === 'sdk';
+  const isLibOrSDK = isSDK || projectType === 'library';
 
   // Check 1: Undeclared capabilities (inferred but not declared)
   findings.push(...checkUndeclaredCapabilities(ast));
 
   // Check 2: High-risk capabilities without constraints
-  findings.push(...checkUnconstrainedCapabilities(ast));
+  // Skip for SDK/library -- they don't declare capabilities in manifests
+  if (!isLibOrSDK) {
+    findings.push(...checkUnconstrainedCapabilities(ast));
+  }
 
   // Check 3: Data exfiltration patterns
-  findings.push(...checkExfiltrationSurface(ast));
+  findings.push(...checkExfiltrationSurface(ast, projectType));
 
   // Check 4: Instruction override / prompt injection surfaces
-  findings.push(...checkInjectionSurface(ast));
+  // Skip for SDK/library -- they don't have system prompts or take user prompts
+  if (!isLibOrSDK) {
+    findings.push(...checkInjectionSurface(ast));
+  }
 
   // Check 5: Remote instruction fetch (heartbeat RCE)
+  // Kept for all types -- eval/Function constructor is dangerous in any context
   findings.push(...checkRemoteInstructionFetch(ast));
 
   // Check 6: Credential harvesting patterns
-  findings.push(...checkCredentialHarvesting(ast));
+  findings.push(...checkCredentialHarvesting(ast, projectType));
 
   // Check 7: Memory/persistence attack patterns
   findings.push(...checkPersistencePatterns(ast));
 
   // Check 8: Constraint weakness analysis
-  findings.push(...checkConstraintWeaknesses(ast));
+  // Skip for SDK/library -- no constraints expected
+  if (!isLibOrSDK) {
+    findings.push(...checkConstraintWeaknesses(ast));
+  }
 
   // Check 9: NanoMind manipulation detected
   findings.push(...checkManipulationAttempts(ast));
 
   // Check 10: Scope mismatch (declared purpose vs capabilities)
-  findings.push(...checkScopeMismatch(ast));
+  // Skip for SDK/library -- they don't declare purpose/capabilities
+  if (!isLibOrSDK) {
+    findings.push(...checkScopeMismatch(ast));
+  }
 
   return findings;
 }
@@ -150,27 +166,36 @@ function checkUnconstrainedCapabilities(ast: SecurityAST): ASTFinding[] {
   return findings;
 }
 
-function checkExfiltrationSurface(ast: SecurityAST): ASTFinding[] {
+function checkExfiltrationSurface(ast: SecurityAST, projectType?: ProjectType): ASTFinding[] {
   const findings: ASTFinding[] = [];
+  const isSDK = projectType === 'sdk';
 
   const exfilSurfaces = ast.inferredRiskSurface.filter(r =>
     r.attackClass === 'SKILL-EXFIL' || r.attackClass === 'DATA-EXFIL'
   );
 
   for (const surface of exfilSurfaces) {
+    // For SDKs, data transmission is expected behavior -- an SDK's core job
+    // is sending data to its service's API. Downgrade but still report.
+    const baseSeverity: ASTFinding['severity'] =
+      surface.confidence >= 0.8 ? 'critical' : surface.confidence >= 0.5 ? 'high' : 'medium';
+    const severity: ASTFinding['severity'] = isSDK ? 'low' : baseSeverity;
+
     findings.push({
       checkId: `AST-EXFIL-001`,
       name: 'Data Exfiltration Surface',
-      description: surface.surface,
+      description: isSDK
+        ? `[Expected SDK behavior] ${surface.surface}`
+        : surface.surface,
       category: 'Data Security',
-      severity: surface.confidence >= 0.8 ? 'critical' : surface.confidence >= 0.5 ? 'high' : 'medium',
+      severity,
       passed: false,
       message: `Exfiltration risk: ${surface.evidence}`,
       fixable: false,
       file: ast.artifactPath,
       fix: surface.mitigation ?? 'Remove external data transmission or restrict to declared endpoints only.',
       attackClass: surface.attackClass,
-      confidence: surface.confidence,
+      confidence: isSDK ? Math.min(surface.confidence, 0.3) : surface.confidence,
       evidence: surface.evidence,
     });
   }
@@ -234,27 +259,33 @@ function checkRemoteInstructionFetch(ast: SecurityAST): ASTFinding[] {
   return findings;
 }
 
-function checkCredentialHarvesting(ast: SecurityAST): ASTFinding[] {
+function checkCredentialHarvesting(ast: SecurityAST, projectType?: ProjectType): ASTFinding[] {
   const findings: ASTFinding[] = [];
+  const isSDK = projectType === 'sdk';
 
   const credSurfaces = ast.inferredRiskSurface.filter(r =>
     r.attackClass === 'CRED-HARVEST'
   );
 
   for (const surface of credSurfaces) {
+    // For SDKs, reading an API key from env and sending it to the API is
     findings.push({
       checkId: `AST-CRED-001`,
       name: 'Credential Harvesting Pattern',
-      description: surface.surface,
+      description: isSDK
+        ? `[Expected SDK behavior] ${surface.surface}`
+        : surface.surface,
       category: 'Credential Security',
-      severity: 'critical',
+      severity: isSDK ? 'low' : 'critical',
       passed: false,
       message: `Credential risk: ${surface.evidence}`,
       fixable: false,
       file: ast.artifactPath,
-      fix: 'Never request, store, or retransmit credentials. Direct users to official credential management flows.',
+      fix: isSDK
+        ? 'Expected behavior for an SDK. Credentials are sent to the service API over HTTPS.'
+        : 'Never request, store, or retransmit credentials. Direct users to official credential management flows.',
       attackClass: 'CRED-HARVEST',
-      confidence: surface.confidence,
+      confidence: isSDK ? Math.min(surface.confidence, 0.3) : surface.confidence,
       evidence: surface.evidence,
     });
   }
@@ -398,3 +429,4 @@ function checkScopeMismatch(ast: SecurityAST): ASTFinding[] {
 
   return findings;
 }
+

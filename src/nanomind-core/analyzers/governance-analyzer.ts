@@ -15,6 +15,7 @@
 
 import type { SecurityAST, Constraint, ConstraintDomain, Capability } from '../types.js';
 import type { ASTFinding } from './capability-analyzer.js';
+import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
 
 // ============================================================================
@@ -74,8 +75,16 @@ const CRITICAL_DOMAINS: ConstraintDomain[] = [
 export function analyzeGovernance(
   ast: SecurityAST,
   verifier: (ast: SecurityAST) => boolean,
+  projectType?: ProjectType,
 ): ASTFinding[] {
   assertASTIntegrity(ast, verifier);
+
+  // SDKs and libraries are not agents -- they don't have SOUL.md governance,
+  // capability boundaries, or override resistance. Governance checks would
+  // only produce noise (e.g., "no constraints" for every source file).
+  if (projectType === 'sdk' || projectType === 'library') {
+    return [];
+  }
 
   const findings: ASTFinding[] = [];
 

@@ -13,6 +13,7 @@
 
 import type { SecurityAST, DataAccessPattern, EvidenceSpan } from '../types.js';
 import type { ASTFinding } from './capability-analyzer.js';
+import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
 
 // ============================================================================
@@ -26,13 +27,14 @@ import { assertASTIntegrity } from '../security/defense-in-depth.js';
 export function analyzeCredentials(
   ast: SecurityAST,
   verifier: (ast: SecurityAST) => boolean,
+  projectType?: ProjectType,
 ): ASTFinding[] {
   assertASTIntegrity(ast, verifier);
 
   const findings: ASTFinding[] = [];
 
-  findings.push(...checkCredentialsInNonEnvContext(ast));
-  findings.push(...checkCredentialForwarding(ast));
+  findings.push(...checkCredentialsInNonEnvContext(ast, projectType));
+  findings.push(...checkCredentialForwarding(ast, projectType));
   findings.push(...checkHardcodedSecrets(ast));
 
   return findings;
@@ -50,8 +52,9 @@ export function analyzeCredentials(
  * Uses AST.declaredDataAccess to find credential-type data patterns
  * and checks whether the artifact type is an appropriate context.
  */
-function checkCredentialsInNonEnvContext(ast: SecurityAST): ASTFinding[] {
+function checkCredentialsInNonEnvContext(ast: SecurityAST, projectType?: ProjectType): ASTFinding[] {
   const findings: ASTFinding[] = [];
+  const isSDK = projectType === 'sdk';
 
   // Env files and credential files are expected to contain credentials
   const safeContextTypes = new Set(['env_file', 'credential_file']);
@@ -77,29 +80,38 @@ function checkCredentialsInNonEnvContext(ast: SecurityAST): ASTFinding[] {
       continue;
     }
 
-    const severity = deriveSeverity(access, ast);
+    let severity = deriveSeverity(access, ast);
+
+    // For SDKs, reading credentials from source code (to send to their API)
+    // is expected behavior. Downgrade to low.
+    if (isSDK && (access.accessMode === 'read' || access.accessMode === 'transmit')) {
+      severity = 'low';
+    }
 
     findings.push({
       checkId: 'AST-CRED-001',
       name: 'Credentials in Non-Environment Context',
-      description:
-        `Credential data (${access.accessMode}) detected in a ${ast.artifactType} artifact. ` +
-        'Credentials should only be referenced via environment variables or secret managers, ' +
-        'never embedded in skills, configs, or source code.',
+      description: isSDK
+        ? `[Expected SDK behavior] Credential data (${access.accessMode}) in ${ast.artifactType}. SDKs read credentials to authenticate API calls.`
+        : `Credential data (${access.accessMode}) detected in a ${ast.artifactType} artifact. ` +
+          'Credentials should only be referenced via environment variables or secret managers, ' +
+          'never embedded in skills, configs, or source code.',
       category: 'Credential Security',
       severity,
       passed: false,
       message: `Credential ${access.accessMode} in ${ast.artifactType} context`,
       fixable: false,
       file: ast.artifactPath,
-      fix:
-        'Replace inline credentials with environment variable references (e.g., $API_KEY or process.env.API_KEY). ' +
-        'Use a secret manager for production deployments.',
-      guidance:
-        'Credentials embedded in non-env artifacts can be leaked through version control, ' +
-        'logs, or prompt injection attacks that extract artifact content.',
+      fix: isSDK
+        ? 'Expected behavior for an SDK. Credentials are read from environment variables and sent to the service API.'
+        : 'Replace inline credentials with environment variable references (e.g., $API_KEY or process.env.API_KEY). ' +
+          'Use a secret manager for production deployments.',
+      guidance: isSDK
+        ? 'This is expected behavior for an API client SDK. The SDK reads API keys to authenticate requests.'
+        : 'Credentials embedded in non-env artifacts can be leaked through version control, ' +
+          'logs, or prompt injection attacks that extract artifact content.',
       attackClass: 'CRED-EXPOSURE',
-      confidence: isDocOrTest ? 0.3 : 0.8,
+      confidence: isSDK ? 0.3 : isDocOrTest ? 0.3 : 0.8,
     });
   }
 
@@ -115,8 +127,9 @@ function checkCredentialsInNonEnvContext(ast: SecurityAST): ASTFinding[] {
  * Cross-references AST.declaredDataAccess (transmit mode) with
  * credential data types to find forwarding patterns.
  */
-function checkCredentialForwarding(ast: SecurityAST): ASTFinding[] {
+function checkCredentialForwarding(ast: SecurityAST, projectType?: ProjectType): ASTFinding[] {
   const findings: ASTFinding[] = [];
+  const isSDK = projectType === 'sdk';
 
   // Documentation and test files that mention credentials + external services
   // are teaching credential management, not performing credential exfiltration.
@@ -163,30 +176,38 @@ function checkCredentialForwarding(ast: SecurityAST): ASTFinding[] {
       r => r.attackClass === 'CRED-HARVEST' || r.attackClass === 'SKILL-EXFIL',
     );
 
-    const confidence = corroboratingRisk
+    const baseConfidence = corroboratingRisk
       ? Math.max(corroboratingRisk.confidence, 0.8)
       : 0.7;
+
+    // For SDKs, credential forwarding to the package's own API is the core
+    // function. Downgrade to low severity.
+    const sdkExpected = isSDK;
+    const confidence = sdkExpected ? Math.min(baseConfidence, 0.3) : baseConfidence;
 
     findings.push({
       checkId: 'AST-CRED-002',
       name: 'Credential Forwarding Detected',
-      description:
-        `Credentials are being transmitted to ${destination}. ` +
-        'Credential forwarding is a primary exfiltration vector. ' +
-        'Even legitimate logging must never include credential values.',
+      description: sdkExpected
+        ? `[Expected SDK behavior] Credentials transmitted to ${destination}. This is the core function of an API client SDK.`
+        : `Credentials are being transmitted to ${destination}. ` +
+          'Credential forwarding is a primary exfiltration vector. ' +
+          'Even legitimate logging must never include credential values.',
       category: 'Credential Security',
-      severity: 'critical',
+      severity: sdkExpected ? 'low' : 'critical',
       passed: false,
       message: `Credential forwarding to ${destination}`,
       fixable: false,
       file: ast.artifactPath,
-      fix:
-        `Remove credential transmission to ${destination}. ` +
-        'If external auth is needed, use OAuth token exchange or a credential broker. ' +
-        'Never forward raw credentials.',
-      guidance:
-        'Credential forwarding enables account takeover. Even forwarding to "trusted" ' +
-        'endpoints is risky because the destination can be compromised or spoofed.',
+      fix: sdkExpected
+        ? 'Expected behavior for an SDK. Credentials are sent to the service API over HTTPS for authentication.'
+        : `Remove credential transmission to ${destination}. ` +
+          'If external auth is needed, use OAuth token exchange or a credential broker. ' +
+          'Never forward raw credentials.',
+      guidance: sdkExpected
+        ? 'This is expected behavior for an API client SDK. The SDK sends API keys over HTTPS to authenticate requests.'
+        : 'Credential forwarding enables account takeover. Even forwarding to "trusted" ' +
+          'endpoints is risky because the destination can be compromised or spoofed.',
       attackClass: 'CRED-EXFIL',
       confidence,
       evidence: corroboratingRisk?.evidence,
@@ -212,20 +233,22 @@ function checkCredentialForwarding(ast: SecurityAST): ASTFinding[] {
         findings.push({
           checkId: 'AST-CRED-002',
           name: 'Credential Forwarding Detected',
-          description:
-            `Inferred capability "${cap.name}" involves credential data. ` +
-            'This pattern suggests credentials may be forwarded externally.',
+          description: isSDK
+            ? `[Expected SDK behavior] Inferred capability "${cap.name}" involves credential data.`
+            : `Inferred capability "${cap.name}" involves credential data. ` +
+              'This pattern suggests credentials may be forwarded externally.',
           category: 'Credential Security',
-          severity: 'high',
+          severity: isSDK ? 'low' : 'high',
           passed: false,
           message: `Inferred credential forwarding via ${cap.name}`,
           fixable: false,
           file: ast.artifactPath,
-          fix:
-            'Remove or restrict the capability that forwards credential data. ' +
-            'Use environment variable references instead of passing credential values.',
+          fix: isSDK
+            ? 'Expected behavior for an SDK. Credentials are forwarded to the service API.'
+            : 'Remove or restrict the capability that forwards credential data. ' +
+              'Use environment variable references instead of passing credential values.',
           attackClass: 'CRED-EXFIL',
-          confidence: 0.6,
+          confidence: isSDK ? 0.3 : 0.6,
           evidence: cap.evidence,
         });
       }

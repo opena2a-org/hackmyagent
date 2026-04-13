@@ -314,6 +314,79 @@ export function calculateSecurityScore(findings: Array<{ passed?: boolean; fixed
   return { score, maxScore: 100 };
 }
 
+/**
+ * Check if a finding applies to the given project type based on the
+ * CHECK_PROJECT_TYPES map. Exported so CLI can filter findings after
+ * NanoMind merge.
+ */
+export function findingAppliesTo(finding: SecurityFinding, projectType: ProjectType): boolean {
+  for (const [prefix, types] of Object.entries(CHECK_PROJECT_TYPES)) {
+    if (finding.checkId.startsWith(prefix)) {
+      if (types.includes('all')) return true;
+      return types.includes(projectType);
+    }
+  }
+  return true;
+}
+
+/**
+ * Parsed .hmaignore rules split into path patterns and check ID patterns.
+ * Check ID patterns start with `!` and support trailing `*` wildcards.
+ * Example: `!SANDBOX-*` suppresses all SANDBOX checks.
+ */
+export interface HmaIgnoreRules {
+  paths: string[];
+  checkIds: string[];
+}
+
+/**
+ * Load .hmaignore patterns from a target directory. Exported so CLI
+ * can re-apply ignore filtering after NanoMind merge.
+ */
+export async function loadHmaIgnore(targetDir: string): Promise<HmaIgnoreRules> {
+  const ignorePath = path.join(targetDir, '.hmaignore');
+  try {
+    const content = await fs.readFile(ignorePath, 'utf-8');
+    const lines = content
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line && !line.startsWith('#'));
+    return {
+      paths: lines.filter(l => !l.startsWith('!')),
+      checkIds: lines.filter(l => l.startsWith('!')).map(l => l.slice(1)),
+    };
+  } catch {
+    return { paths: [], checkIds: [] };
+  }
+}
+
+/**
+ * Check if a file path matches any .hmaignore path pattern. Exported so CLI
+ * can filter findings after NanoMind merge.
+ */
+export function isPathIgnored(filePath: string, ignoredPaths: string[]): boolean {
+  if (!filePath || ignoredPaths.length === 0) return false;
+  const normalized = filePath.replace(/\\/g, '/');
+  return ignoredPaths.some(pattern => {
+    const normalizedPattern = pattern.replace(/\\/g, '/').replace(/\/$/, '');
+    return normalized.startsWith(normalizedPattern + '/') || normalized === normalizedPattern;
+  });
+}
+
+/**
+ * Check if a checkId matches any .hmaignore check ID pattern.
+ * Supports exact match and trailing `*` wildcard (e.g. `SANDBOX-*`).
+ */
+export function isCheckIgnored(checkId: string, ignoredChecks: string[]): boolean {
+  if (!checkId || ignoredChecks.length === 0) return false;
+  return ignoredChecks.some(pattern => {
+    if (pattern.endsWith('*')) {
+      return checkId.startsWith(pattern.slice(0, -1));
+    }
+    return checkId === pattern;
+  });
+}
+
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB max file size to prevent memory exhaustion
 const MAX_LINE_LENGTH = 10000; // 10KB max line length for regex safety
 
@@ -560,6 +633,7 @@ export class HardeningScanner {
     const suppressedCheckPatterns = hmaIgnore.checkIds;
 
     // Normalize ignore list to uppercase for case-insensitive matching
+    // Merge CLI --ignore flags with .hmaignore !-prefixed check IDs
     const ignoredChecks = new Set(ignore.map((id) => id.toUpperCase()));
 
     // In dry-run mode, we detect what would be fixed but don't modify anything
@@ -1035,7 +1109,7 @@ export class HardeningScanner {
    */
   private async detectProjectType(targetDir: string): Promise<ProjectType> {
     // Check for OpenClaw project indicators (check first as it's more specific)
-    const openclawIndicators = ['.openclaw', '.moltbot', '.clawdbot', 'SKILL.md', 'openclaw.json'];
+    const openclawIndicators = ['.openclaw', '.moltbot', '.clawdbot', 'SKILL.md', 'HEARTBEAT.md', 'openclaw.json'];
     for (const indicator of openclawIndicators) {
       try {
         await fs.access(path.join(targetDir, indicator));
@@ -1043,12 +1117,18 @@ export class HardeningScanner {
       } catch {}
     }
 
-    // Check for *.skill.md files (OpenClaw skill project)
+    // Check for *.skill.md files at root level (OpenClaw skill project)
     try {
       const files = await fs.readdir(targetDir);
       if (files.some(f => f.endsWith('.skill.md'))) {
         return 'openclaw';
       }
+    } catch {}
+
+    // Check for skills/ subdirectory with SKILL.md files (common OpenClaw layout)
+    try {
+      await fs.access(path.join(targetDir, 'skills'));
+      return 'openclaw';
     } catch {}
 
     try {
@@ -1069,6 +1149,13 @@ export class HardeningScanner {
         pkg.name?.includes('mcp')
       ) {
         return 'mcp';
+      }
+
+      // Check for SDK/API client packages (requires 2+ signals).
+      // Must run before CLI check: some SDKs ship CLI shims (e.g., openai)
+      // but are primarily libraries.
+      if (this.detectSDKPackage(pkg, allDeps)) {
+        return 'sdk';
       }
 
       // Check if it's a CLI tool (has bin field)
@@ -1126,6 +1213,57 @@ export class HardeningScanner {
 
     // Default to library for generic projects
     return 'library';
+  }
+
+  /**
+   * Detect if a package is an SDK/API client. Requires 2+ independent
+   * signals to avoid false positives (a random library with axios isn't
+   * necessarily an SDK).
+   */
+  private detectSDKPackage(
+    pkg: Record<string, unknown>,
+    allDeps: Record<string, string>,
+  ): boolean {
+    const name = ((pkg.name as string) ?? '').toLowerCase();
+    const desc = ((pkg.description as string) ?? '').toLowerCase();
+    const keywords = (pkg.keywords as string[]) ?? [];
+
+    // Signal 1: Package name contains SDK/client indicators
+    const nameSignals = ['/sdk', '-sdk', '-client', 'api-client', '-api']
+      .some(s => name.includes(s)) || name.endsWith('sdk');
+
+    // Signal 2: Description mentions SDK/client/wrapper/library-for-API patterns
+    const descSignals = [
+      'sdk', 'client library', 'api client', 'api wrapper', 'official client',
+      'library for the', 'library for', 'client for the', 'client for',
+    ].some(s => desc.includes(s)) && desc.includes('api');
+
+    // Signal 3: Has library exports (main/exports). SDKs may also ship CLI
+    // shims, so we don't exclude on bin presence.
+    const hasLibraryExports = !!(pkg.main || pkg.exports || pkg.module);
+
+    // Signal 4: Depends on HTTP clients
+    const httpDeps = ['node-fetch', 'axios', 'got', 'undici', 'cross-fetch', 'ky', 'superagent']
+      .some(d => d in allDeps);
+
+    // Signal 5: Keywords include sdk/client
+    const kwSignals = keywords.some(k =>
+      ['sdk', 'client', 'api-client', 'wrapper'].includes(k.toLowerCase()),
+    );
+
+    // Signal 6: Description pattern "for the X API" -- strong signal that
+    // this is an API client library
+    const forApiPattern = /\bfor\s+the\s+\w+\s+api\b/i.test(desc) ||
+      /\b(official|typescript|javascript|node)\s+\w*\s*(library|client|sdk)\b/i.test(desc);
+
+    const signalCount = [
+      nameSignals,
+      descSignals,
+      hasLibraryExports && httpDeps,
+      kwSignals,
+      forApiPattern && hasLibraryExports,
+    ].filter(Boolean).length;
+    return signalCount >= 2;
   }
 
   /**

@@ -163,10 +163,14 @@ function scanHeartbeatFiles(agentDir: string): Finding[] {
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB limit for hash computation
 
 function computeFileHash(filePath: string): string | null {
-  const stat = fs.statSync(filePath);
-  if (!stat.isFile() || stat.size > MAX_FILE_SIZE) return null;
-  const content = fs.readFileSync(filePath);
-  return crypto.createHash('sha256').update(content).digest('hex');
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || stat.size > MAX_FILE_SIZE) return null;
+    const content = fs.readFileSync(filePath);
+    return crypto.createHash('sha256').update(content).digest('hex');
+  } catch {
+    return null; // File missing, unreadable, or race condition
+  }
 }
 
 function appendSignatureBlock(filePath: string, hash: string, aimCore?: AIMCore): void {
@@ -290,10 +294,8 @@ export class SignCryptPlugin implements OpenA2APlugin {
       if (!finding.filePath || !finding.autoFixable) continue;
 
       const fullPath = path.join(agentDir, finding.filePath);
-      if (!fs.existsSync(fullPath)) continue;
-
       const hash = computeFileHash(fullPath);
-      if (!hash) continue; // Skip files too large or not regular files
+      if (!hash) continue; // Skip missing, too-large, or non-regular files
       appendSignatureBlock(fullPath, hash, this.aimCore);
 
       const now = new Date().toISOString();

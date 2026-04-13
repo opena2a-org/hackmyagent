@@ -83,7 +83,7 @@ export async function orchestrateNanoMind(
     await tme.ensureModel(silent);
 
     const { runNanoMindScan } = await import('./scanner-bridge.js');
-    const nmResult: NanoMindScanResult = await runNanoMindScan(targetDir, existingFindings);
+    const nmResult: NanoMindScanResult = await runNanoMindScan(targetDir, existingFindings, options.projectType);
 
     const newFindings = nmResult.astFindings.filter(f => !f.passed).length;
 

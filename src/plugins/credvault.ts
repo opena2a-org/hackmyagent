@@ -77,14 +77,17 @@ function initStore(agentDir: string): void {
   const storeDir = getStoreDir(agentDir);
   fs.mkdirSync(storeDir, { recursive: true });
 
+  // Use exclusive-create (wx) to atomically create-if-not-exists (avoids TOCTOU)
   const metaPath = path.join(storeDir, STORE_META_FILE);
-  if (!fs.existsSync(metaPath)) {
+  try {
     const meta: SecretStoreMeta = { version: '1', entries: {} };
-    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), 'utf-8');
+    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), { encoding: 'utf-8', flag: 'wx' });
+  } catch (e: any) {
+    if (e.code !== 'EEXIST') throw e;
   }
 
   const storePath = path.join(storeDir, STORE_FILE);
-  if (!fs.existsSync(storePath)) {
+  try {
     // Generate encryption key and create empty store
     const key = crypto.randomBytes(32);
     const iv = crypto.randomBytes(12); // 12 bytes for GCM
@@ -93,15 +96,18 @@ function initStore(agentDir: string): void {
     const authTag = cipher.getAuthTag();
 
     // Store key alongside (in production, this would use OS keychain)
-    fs.writeFileSync(path.join(storeDir, 'store.key'), key.toString('hex'), 'utf-8');
+    const keyPath = path.join(storeDir, 'store.key');
+    fs.writeFileSync(keyPath, key.toString('hex'), { encoding: 'utf-8', flag: 'wx' });
     // Format: iv:authTag:ciphertext (all hex)
     fs.writeFileSync(
       storePath,
       iv.toString('hex') + ':' + authTag.toString('hex') + ':' + encrypted.toString('hex'),
-      'utf-8'
+      { encoding: 'utf-8', flag: 'wx' }
     );
     // Restrict key file permissions (owner read/write only)
-    try { fs.chmodSync(path.join(storeDir, 'store.key'), 0o600); } catch { /* Windows */ }
+    try { fs.chmodSync(keyPath, 0o600); } catch { /* Windows */ }
+  } catch (e: any) {
+    if (e.code !== 'EEXIST') throw e;
   }
 }
 

@@ -247,7 +247,17 @@ Examples:
         const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
         const nmResult = await orchestrateNanoMind(targetDir, [], { silent: !!options.json, analm: options.analm });
 
-        const issues = nmResult.mergedFindings.filter((f: any) => !f.passed);
+        // Apply .hmaignore filtering (paths + check IDs)
+        const { loadHmaIgnore: loadIgnore, isPathIgnored: pathIgnored, isCheckIgnored: checkIgnored } = await import('./hardening/scanner.js');
+        const skillIgnoreRules = await loadIgnore(targetDir);
+        let skillFindings = nmResult.mergedFindings;
+        if (skillIgnoreRules.paths.length > 0 || skillIgnoreRules.checkIds.length > 0) {
+          skillFindings = skillFindings.filter((f: any) =>
+            !(f.file && pathIgnored(f.file, skillIgnoreRules.paths)) &&
+            !checkIgnored(f.checkId, skillIgnoreRules.checkIds));
+        }
+
+        const issues = skillFindings.filter((f: any) => !f.passed);
         const critical = issues.filter((f: any) => f.severity === 'critical');
         const high = issues.filter((f: any) => f.severity === 'high');
 
@@ -1985,8 +1995,8 @@ function generateScanHtmlReport(scanResult: { findings: SecurityFinding[]; score
       </tr>`).join('');
 
   const projectTypeLabel: Record<string, string> = {
-    cli: 'CLI Tool', library: 'Library', webapp: 'Web App', api: 'API Server',
-    mcp: 'MCP Server', openclaw: 'OpenClaw Agent', all: 'Project',
+    cli: 'CLI Tool', library: 'Library', sdk: 'SDK/API Client', webapp: 'Web App',
+    api: 'API Server', mcp: 'MCP Server', openclaw: 'OpenClaw Agent', all: 'Project',
   };
 
   return `<!DOCTYPE html>
@@ -2636,6 +2646,7 @@ Examples:
         deep: isDeep,
         analm: options.analm,
         silent: format !== 'text',
+        projectType: result.projectType,
       });
 
       {
@@ -2653,6 +2664,7 @@ Examples:
           ) as typeof result.findings;
         }
         // Recalculate score from filtered findings (score was set pre-NanoMind)
+        // findings already filtered by project type above, so just exclude passed/fixed
         const forScore = (result.findings || []).filter((f: any) => !f.passed && !f.fixed);
         result.score = scanner.calculateScore(forScore).score;
       }
@@ -2919,6 +2931,7 @@ Examples:
       const projectTypeLabel = {
         cli: 'CLI Tool',
         library: 'Library',
+        sdk: 'SDK/API Client',
         webapp: 'Web App',
         api: 'API Server',
         mcp: 'MCP Server',
@@ -3450,7 +3463,7 @@ Examples:
       // NanoMind semantic analysis (defense-in-depth)
       try {
         const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-        const nmResult = await orchestrateNanoMind(targetDir, result.findings, { silent: !!options.json });
+        const nmResult = await orchestrateNanoMind(targetDir, result.findings, { silent: !!options.json, projectType: result.projectType });
         // Re-apply .hmaignore filters and recalculate score after NanoMind merge
         const hRefiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir);
         result.findings = hRefiltered as typeof result.findings;
@@ -3559,6 +3572,220 @@ Examples:
   });
 
 
+function detectNemoClawDirectory(providedDir: string): string {
+  const os = require('os');
+  const fs = require('fs');
+  const path = require('path');
+
+  if (providedDir && providedDir !== '') {
+    return providedDir.startsWith('/') ? providedDir : path.join(process.cwd(), providedDir);
+  }
+
+  const homeDir = os.homedir();
+  const candidates = [
+    path.join(homeDir, '.nemoclaw'),
+    path.join(homeDir, '.openshell'),
+    path.join(homeDir, '.openclaw'),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return process.cwd();
+}
+
+function filterNemoClawFindings(findings: SecurityFinding[]): SecurityFinding[] {
+  return findings.filter((f) => {
+    const checkId = f.checkId.toUpperCase();
+    return checkId.startsWith('HMA-NMC-');
+  });
+}
+
+function assessNemoClawRiskLevel(findings: SecurityFinding[]): { level: string; color: string; description: string } {
+  const criticalCount = findings.filter((f) => f.severity === 'critical').length;
+  const highCount = findings.filter((f) => f.severity === 'high').length;
+  const mediumCount = findings.filter((f) => f.severity === 'medium').length;
+
+  if (criticalCount > 0) {
+    return {
+      level: 'Critical',
+      color: colors.brightRed,
+      description: `${criticalCount} critical finding(s) with recommended fixes available.`,
+    };
+  }
+  if (highCount > 0) {
+    return {
+      level: 'High',
+      color: colors.red,
+      description: `${highCount} high-severity finding(s) detected. Fixes available below.`,
+    };
+  }
+  if (mediumCount > 0) {
+    return {
+      level: 'Moderate',
+      color: colors.yellow,
+      description: 'Some findings detected. Review the recommendations below.',
+    };
+  }
+  if (findings.length === 0) {
+    return {
+      level: 'None',
+      color: colors.dim,
+      description: `No NemoClaw installation detected. Run \`${CLI_PREFIX} secure\` for a full scan.`,
+    };
+  }
+  return {
+    level: 'Low',
+    color: colors.green,
+    description: 'No critical or high findings detected.',
+  };
+}
+
+program
+  .command('secure-nemoclaw')
+  .description(`Security scan for NVIDIA NemoClaw installations
+
+Performs focused security checks for NemoClaw sandbox deployments:
+  - Secrets: NVIDIA API key exposure in configs, logs, Docker, shell history
+  - Network: Gateway/k3s/inference port binding, Docker socket, egress policies
+  - Skills: Blueprint integrity, skill verification, directory permissions
+  - Process: Sandbox privileges, seccomp/Landlock enforcement, root execution
+  - OpenClaw layer: Inherited misconfigs that survive NemoClaw sandboxing
+
+Auto-detects ~/.nemoclaw, ~/.openshell, or ~/.openclaw directories.
+Exit code 1 if critical/high issues found.
+
+Examples:
+  $ hackmyagent secure-nemoclaw                  Scan auto-detected directory
+  $ hackmyagent secure-nemoclaw ~/.nemoclaw      Scan specific directory
+  $ hackmyagent secure-nemoclaw --json           JSON output for CI`)
+  .argument('[directory]', 'Directory to scan (default: ~/.nemoclaw or ~/.openshell)', '')
+  .option('--json', 'Output as JSON (for scripting/CI)')
+  .option('-v, --verbose', 'Show all checks including passed ones')
+  .action(async (directory: string, options: { json?: boolean; verbose?: boolean }) => {
+    try {
+      const targetDir = detectNemoClawDirectory(directory);
+
+      if (!options.json) {
+        console.log(`\nNemoClaw Security Report`);
+        console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
+        console.log(`Scanning ${targetDir}...\n`);
+      }
+
+      const scanner = new HardeningScanner();
+      const result = await scanner.scan({ targetDir, autoFix: false });
+      const findings = result.findings;
+
+      // Enrich with taxonomy
+      const { enrichWithTaxonomy } = require('./hardening/taxonomy');
+      enrichWithTaxonomy(findings);
+
+      // NanoMind semantic analysis (defense-in-depth)
+      let mergedFindings = findings;
+      try {
+        const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
+        const nmResult = await orchestrateNanoMind(targetDir, findings, { silent: !!options.json });
+        mergedFindings = nmResult.mergedFindings as typeof findings;
+      } catch { /* NanoMind unavailable */ }
+
+      // Re-apply .hmaignore filtering after NanoMind merge (paths + check IDs)
+      try {
+        const { loadHmaIgnore: loadIgnore, isPathIgnored: pathIgnored, isCheckIgnored: checkIgnored } = await import('./hardening/scanner.js');
+        const ncIgnoreRules = await loadIgnore(targetDir);
+        if (ncIgnoreRules.paths.length > 0 || ncIgnoreRules.checkIds.length > 0) {
+          mergedFindings = mergedFindings.filter((f: SecurityFinding) =>
+            !(f.file && pathIgnored(f.file, ncIgnoreRules.paths)) &&
+            !checkIgnored(f.checkId, ncIgnoreRules.checkIds));
+        }
+      } catch { /* ignore filter unavailable */ }
+
+      const issues = mergedFindings.filter((f: SecurityFinding) => !f.passed);
+      const passedFindings = mergedFindings.filter((f: SecurityFinding) => f.passed);
+
+      if (options.json) {
+        const jsonOutput = {
+          target: targetDir,
+          riskLevel: assessNemoClawRiskLevel(issues).level,
+          totalChecks: mergedFindings.length,
+          issues: issues.length,
+          passed: passedFindings.length,
+          findings: mergedFindings,
+        };
+        writeJsonStdout(jsonOutput);
+        return;
+      }
+
+      // Risk assessment
+      const risk = assessNemoClawRiskLevel(issues);
+      console.log(`Risk Level: ${risk.color}${risk.level}${RESET()}`);
+      console.log(`${risk.description}\n`);
+
+      // Summary stats
+      console.log(`Checks: ${findings.length} total | ${issues.length} issues | ${passedFindings.length} passed\n`);
+
+      // Show issues
+      if (issues.length > 0) {
+        console.log(`${colors.red}Findings:${RESET()}\n`);
+
+        for (const finding of issues) {
+          const display = SEVERITY_DISPLAY[finding.severity as Severity];
+          const location = finding.file
+            ? finding.line
+              ? `${finding.file}:${finding.line}`
+              : finding.file
+            : '';
+
+          const sevLabel = finding.severity.charAt(0).toUpperCase() + finding.severity.slice(1);
+          console.log(`${display.color()}${display.symbol} [${finding.checkId}] ${sevLabel}${RESET()}`);
+          console.log(`   ${finding.description}`);
+          if (location) {
+            console.log(`   File: ${location}`);
+          }
+          if (finding.fix) {
+            console.log(`   ${colors.cyan}Recommended fix:${RESET()} ${finding.fix}`);
+          }
+          console.log();
+        }
+      } else {
+        console.log(`${colors.green}No NemoClaw-specific issues found.${RESET()}\n`);
+      }
+
+      // Show passed checks in verbose mode
+      if (options.verbose && passedFindings.length > 0) {
+        console.log(`${colors.green}Passed Checks:${RESET()}`);
+        for (const finding of passedFindings) {
+          console.log(`  ${colors.green}[ok]${RESET()} [${finding.checkId}] ${finding.name}`);
+        }
+        console.log();
+      }
+
+      // Shodan self-check guidance
+      if (issues.some((f: SecurityFinding) => f.category === 'network')) {
+        console.log(`${colors.yellow}Internet Exposure Check:${RESET()}`);
+        console.log(`  Check if your instance is visible on Shodan:`);
+        console.log(`  https://www.shodan.io/host/<YOUR-IP>`);
+        console.log(`  Known NemoClaw dorks: port:18789, port:6443 ssl.cert.subject.cn:"k3s-serving"\n`);
+      }
+
+      console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      console.log(`Run '${CLI_PREFIX} secure-openclaw' for OpenClaw-specific checks.`);
+      console.log(`Run '${CLI_PREFIX} secure' for a full security scan.\n`);
+
+      // Exit with non-zero if critical/high issues remain
+      const criticalOrHigh = issues.filter(
+        (f: SecurityFinding) => f.severity === 'critical' || f.severity === 'high'
+      );
+      if (criticalOrHigh.length > 0) {
+        process.exit(1);
+      }
+    } catch (error) {
+      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      process.exit(1);
+    }
+  });
 
 program
   .command('scan')
