@@ -223,8 +223,9 @@ Examples:
   .option('--no-scan', 'Registry only, skip local scan (fast mode for CI)')
   .option('--no-registry', 'Local scan only, skip registry lookup (offline mode)')
   .option('--offline', 'Alias for --no-registry')
+  .option('--analm', 'AI-powered threat analysis using AnaLM (requires analm setup)')
   .option('--rescan', 'Deprecated: local scan is now the default')
-  .action(async (skill: string, options: { verbose?: boolean; json?: boolean; scan?: boolean; registry?: boolean; offline?: boolean; rescan?: boolean }) => {
+  .action(async (skill: string, options: { verbose?: boolean; json?: boolean; scan?: boolean; registry?: boolean; offline?: boolean; analm?: boolean; rescan?: boolean }) => {
     // Commander parses --no-scan as scan:false, --no-registry as registry:false
     // Normalize: --offline is alias for --no-registry
     if (options.offline) options.registry = false;
@@ -244,7 +245,7 @@ Examples:
         const targetDir = statSync(resolved).isFile() ? dirname(resolved) : resolved;
 
         const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-        const nmResult = await orchestrateNanoMind(targetDir, [], { silent: !!options.json });
+        const nmResult = await orchestrateNanoMind(targetDir, [], { silent: !!options.json, analm: options.analm });
 
         const issues = nmResult.mergedFindings.filter((f: any) => !f.passed);
         const critical = issues.filter((f: any) => f.severity === 'critical');
@@ -7300,7 +7301,7 @@ async function suggestSimilarPackages(name: string): Promise<string[]> {
  */
 async function checkGitHubRepo(
   target: string,
-  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean; scan?: boolean; registry?: boolean },
+  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean; scan?: boolean; registry?: boolean; analm?: boolean },
 ): Promise<void> {
   const { org, repo, cloneUrl } = parseGitHubTarget(target);
   const displayName = `${org}/${repo}`;
@@ -7354,7 +7355,7 @@ async function checkGitHubRepo(
     // Run NanoMind semantic analysis and re-filter
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-      const nmResult = await orchestrateNanoMind(repoDir, result.findings, { silent: true });
+      const nmResult = await orchestrateNanoMind(repoDir, result.findings, { silent: true, analm: options.analm });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, repoDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
@@ -7463,7 +7464,7 @@ async function checkGitHubRepo(
  */
 async function checkPyPiPackage(
   target: string,
-  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean; scan?: boolean; registry?: boolean },
+  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean; scan?: boolean; registry?: boolean; analm?: boolean },
 ): Promise<void> {
   // Strip prefix to get the bare package name
   const name = target.replace(/^(pip|pypi):/, '');
@@ -7536,7 +7537,7 @@ async function checkPyPiPackage(
     // Run NanoMind semantic analysis and re-filter
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-      const nmResult = await orchestrateNanoMind(extractDir, result.findings, { silent: true });
+      const nmResult = await orchestrateNanoMind(extractDir, result.findings, { silent: true, analm: options.analm });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, extractDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
@@ -7604,7 +7605,7 @@ async function checkPyPiPackage(
  */
 async function checkRawUrl(
   url: string,
-  options: { verbose?: boolean; json?: boolean; offline?: boolean },
+  options: { verbose?: boolean; json?: boolean; offline?: boolean; analm?: boolean },
 ): Promise<void> {
   const { mkdtemp, rm, writeFile, readdir } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
@@ -7710,7 +7711,7 @@ async function checkRawUrl(
 
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-      const nmResult = await orchestrateNanoMind(scanDir, result.findings, { silent: true });
+      const nmResult = await orchestrateNanoMind(scanDir, result.findings, { silent: true, analm: options.analm });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, scanDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
@@ -7783,7 +7784,7 @@ async function checkRawUrl(
 
 async function checkNpmPackage(
   name: string,
-  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean; scan?: boolean; registry?: boolean },
+  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean; scan?: boolean; registry?: boolean; analm?: boolean },
 ): Promise<void> {
   // Fetch registry data in parallel with download+scan (unless --no-registry)
   const registryPromise = options.registry === false ? Promise.resolve(null) : queryRegistry(name);
@@ -7859,7 +7860,7 @@ async function checkNpmPackage(
     // Run NanoMind semantic analysis and re-filter (matches secure command pipeline)
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-      const nmResult = await orchestrateNanoMind(packageDir, result.findings, { silent: true });
+      const nmResult = await orchestrateNanoMind(packageDir, result.findings, { silent: true, analm: options.analm });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, packageDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
