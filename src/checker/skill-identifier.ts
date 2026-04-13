@@ -62,6 +62,7 @@ export function parseSkillIdentifier(identifier: string): SkillIdentifier {
     };
   }
 
+  const cli = process.env.HMA_CHECK_COMMAND ?? `${process.env.HMA_CLI_PREFIX ?? 'hackmyagent'} check`;
   throw new Error(
     'Invalid skill identifier: unrecognized format.\n' +
     'Expected one of:\n' +
@@ -69,8 +70,8 @@ export function parseSkillIdentifier(identifier: string): SkillIdentifier {
     '  https://github.com/...   GitHub URL\n' +
     '  ./path/to/skill          Local file or directory\n' +
     '\nExamples:\n' +
-    '  hackmyagent check @anthropic/code-review\n' +
-    '  hackmyagent check https://github.com/org/skill\n' +
-    '  hackmyagent check ./skills/my-skill.md'
+    `  ${cli} @anthropic/code-review\n` +
+    `  ${cli} https://github.com/org/skill\n` +
+    `  ${cli} ./skills/my-skill.md`
   );
 }
