@@ -14,7 +14,7 @@
  * Defense-in-depth: static findings can NEVER be suppressed, only upgraded.
  */
 
-import type { SecurityFinding } from '../hardening/security-check.js';
+import type { SecurityFinding, ProjectType } from '../hardening/security-check.js';
 import type { NanoMindScanResult } from './scanner-bridge.js';
 import type { AnalystResponse } from './inference/security-analyst.js';
 
@@ -25,6 +25,7 @@ export interface OrchestrationOptions {
   silent?: boolean;
   /** Run AnaLM generative analysis (--analm flag). */
   analm?: boolean;
+  projectType?: ProjectType;
 }
 
 export interface OrchestrationResult {
