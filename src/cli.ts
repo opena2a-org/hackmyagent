@@ -275,6 +275,7 @@ Examples:
           },
           verbose: !!options.verbose,
           usedAnalm: !!options.analm,
+          analystFindings: nmResult.analystFindings,
         });
 
         const risk = critical.length > 0 ? 'critical' : high.length > 0 ? 'high' : issues.length > 0 ? 'medium' : 'low';
@@ -481,6 +482,14 @@ interface UnifiedCheckDisplayOptions {
     findings: Array<{ severity: string; checkId?: string; description?: string; name?: string; message?: string; fix?: string; guidance?: string; file?: string; line?: number; passed?: boolean; attackClass?: string; category?: string }>;
   };
   usedAnalm?: boolean;
+  analystFindings?: Array<{
+    taskType: string;
+    result: Record<string, unknown>;
+    confidence: number;
+    modelVersion: string;
+    durationMs: number;
+    backend: string;
+  }>;
 }
 
 function stripAnsi(s: string): string {
@@ -816,6 +825,66 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         return `${colors.dim}${l}${RESET()}`;
       }).join(`${colors.dim} > ${RESET()}`);
       console.log(`  ${colors.dim}${legend}${RESET()}`);
+    }
+  }
+
+  // ── AnaLM Analysis ──────────────────────────────────────────────────
+  if (opts.analystFindings && opts.analystFindings.length > 0) {
+    divider('AnaLM Analysis');
+    for (const af of opts.analystFindings) {
+      const r = af.result;
+      if (af.taskType === 'threatAnalysis') {
+        const level = String(r.threatLevel ?? 'unknown').toUpperCase();
+        const levelColor = level === 'CRITICAL' || level === 'HIGH' ? colors.red : level === 'MEDIUM' ? colors.yellow : colors.dim;
+        console.log(`  ${levelColor}${colors.bold}${level}${RESET()}  ${r.attackVector ?? ''}`);
+        if (r.description) console.log(`  ${colors.dim}${r.description}${RESET()}`);
+        if (Array.isArray(r.mitigations) && r.mitigations.length > 0) {
+          for (const m of r.mitigations) {
+            console.log(`  ${colors.cyan}Fix:${RESET()} ${m}`);
+          }
+        }
+      } else if (af.taskType === 'credentialContextClassification') {
+        const cls = String(r.classification ?? 'unknown');
+        const clsColor = cls === 'real' ? colors.red : cls === 'test' || cls === 'example' ? colors.green : colors.yellow;
+        console.log(`  Credential: ${clsColor}${colors.bold}${cls}${RESET()}`);
+        if (r.reasoning) console.log(`  ${colors.dim}${r.reasoning}${RESET()}`);
+      } else if (af.taskType === 'intelReport') {
+        if (r.summary) console.log(`  ${colors.cyan}Summary:${RESET()} ${r.summary}`);
+        if (Array.isArray(r.keyFindings) && r.keyFindings.length > 0) {
+          for (const kf of r.keyFindings) {
+            console.log(`  ${colors.dim}${kf}${RESET()}`);
+          }
+        }
+        if (r.riskAssessment) console.log(`  ${colors.cyan}Risk:${RESET()}    ${r.riskAssessment}`);
+        if (Array.isArray(r.recommendations) && r.recommendations.length > 0) {
+          for (const rec of r.recommendations) {
+            console.log(`  ${colors.dim}${rec}${RESET()}`);
+          }
+        }
+      } else if (af.taskType === 'governanceReasoning') {
+        if (Array.isArray(r.gaps) && r.gaps.length > 0) {
+          console.log(`  ${colors.yellow}Governance gaps:${RESET()}`);
+          for (const gap of r.gaps) console.log(`  ${colors.dim}- ${gap}${RESET()}`);
+        }
+        if (Array.isArray(r.recommendations) && r.recommendations.length > 0) {
+          for (const rec of r.recommendations) {
+            console.log(`  ${colors.cyan}Fix:${RESET()} ${rec}`);
+          }
+        }
+      } else if (af.taskType === 'checkExplanation') {
+        if (r.explanation) console.log(`  ${r.explanation}`);
+        if (r.impact) console.log(`  ${colors.yellow}Impact:${RESET()} ${r.impact}`);
+        if (r.recommendation) console.log(`  ${colors.cyan}Fix:${RESET()} ${r.recommendation}`);
+      } else if (af.taskType === 'falsePositiveDetection') {
+        const fp = Boolean(r.isFalsePositive);
+        console.log(`  ${fp ? colors.green : colors.yellow}${fp ? 'Likely false positive' : 'Likely real finding'}${RESET()}`);
+        if (r.reasoning) console.log(`  ${colors.dim}${r.reasoning}${RESET()}`);
+      } else {
+        // Generic display
+        if (r.description) console.log(`  ${r.description}`);
+      }
+      console.log(`  ${colors.dim}Confidence: ${Math.round(af.confidence * 100)}% | ${af.modelVersion} (${af.durationMs}ms)${RESET()}`);
+      console.log();
     }
   }
 
@@ -7238,9 +7307,15 @@ function printCheckNextSteps(
   }
   if (context?.hasFindings) {
     console.log(`  ${colors.cyan}Full project audit:${RESET()}   ${getFullScanHint()}`);
+    if (!context?.usedAnalm) {
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm`);
+    }
   } else if (context?.isCleanScan && isLocal) {
     console.log(`  ${colors.cyan}Governance scan:${RESET()}      ${CLI_PREFIX} scan-soul ${target}`);
     console.log(`  ${colors.cyan}Red-team test:${RESET()}        ${CLI_PREFIX} attack --local`);
+    if (!context?.usedAnalm) {
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm`);
+    }
   } else if (context?.isCleanScan) {
     if (!context?.usedAnalm) {
       console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm`);
@@ -7374,6 +7449,7 @@ async function checkGitHubRepo(
     const result = await scanner.scan({ targetDir: repoDir, autoFix: false });
 
     // Run NanoMind semantic analysis and re-filter
+    let analystFindings: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(repoDir, result.findings, { silent: true, analm: options.analm });
@@ -7383,6 +7459,7 @@ async function checkGitHubRepo(
         !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
       result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
+      analystFindings = nmResult.analystFindings;
     } catch {
       // NanoMind unavailable — use base scan results
     }
@@ -7397,7 +7474,7 @@ async function checkGitHubRepo(
     const low = failed.filter(f => f.severity === 'low');
 
     if (options.json) {
-      writeJsonStdout({
+      const jsonOut: Record<string, any> = {
         name: displayName,
         type: 'github-repo',
         source: 'local-scan',
@@ -7405,7 +7482,9 @@ async function checkGitHubRepo(
         score: result.score,
         maxScore: result.maxScore,
         findings: result.findings,
-      });
+      };
+      if (analystFindings?.length) jsonOut.analystFindings = analystFindings;
+      writeJsonStdout(jsonOut);
       return;
     }
 
@@ -7420,6 +7499,8 @@ async function checkGitHubRepo(
       localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
       registry: registryData,
       verbose: !!options.verbose,
+      usedAnalm: !!options.analm,
+      analystFindings,
     });
 
     // Community contribution
@@ -7556,6 +7637,7 @@ async function checkPyPiPackage(
     const result = await scanner.scan({ targetDir: extractDir, autoFix: false });
 
     // Run NanoMind semantic analysis and re-filter
+    let analystFindings: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(extractDir, result.findings, { silent: true, analm: options.analm });
@@ -7565,6 +7647,7 @@ async function checkPyPiPackage(
         !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
       result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
+      analystFindings = nmResult.analystFindings;
     } catch {
       // NanoMind unavailable -- use base scan results
     }
@@ -7579,7 +7662,7 @@ async function checkPyPiPackage(
     const low = failed.filter(f => f.severity === 'low');
 
     if (options.json) {
-      writeJsonStdout({
+      const jsonOut: Record<string, any> = {
         name,
         type: 'pypi-package',
         source: 'local-scan',
@@ -7588,7 +7671,9 @@ async function checkPyPiPackage(
         score: result.score,
         maxScore: result.maxScore,
         findings: result.findings,
-      });
+      };
+      if (analystFindings?.length) jsonOut.analystFindings = analystFindings;
+      writeJsonStdout(jsonOut);
       return;
     }
 
@@ -7604,6 +7689,8 @@ async function checkPyPiPackage(
       localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
       registry: registryData,
       verbose: !!options.verbose,
+      usedAnalm: !!options.analm,
+      analystFindings,
     });
 
     if (critical.length > 0 || high.length > 0) process.exit(1);
@@ -7730,6 +7817,7 @@ async function checkRawUrl(
     const scanner = new HardeningScanner();
     const result = await scanner.scan({ targetDir: scanDir, autoFix: false });
 
+    let analystFindings: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(scanDir, result.findings, { silent: true, analm: options.analm });
@@ -7739,6 +7827,7 @@ async function checkRawUrl(
         !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
       result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
+      analystFindings = nmResult.analystFindings;
     } catch {
       // NanoMind unavailable — use base scan results
     }
@@ -7753,7 +7842,7 @@ async function checkRawUrl(
     const low = failed.filter(f => f.severity === 'low');
 
     if (options.json) {
-      writeJsonStdout({
+      const jsonOut: Record<string, any> = {
         name: displayName,
         url,
         type: 'raw-url',
@@ -7762,7 +7851,9 @@ async function checkRawUrl(
         score: result.score,
         maxScore: result.maxScore,
         findings: result.findings,
-      });
+      };
+      if (analystFindings?.length) jsonOut.analystFindings = analystFindings;
+      writeJsonStdout(jsonOut);
       return;
     }
 
@@ -7773,6 +7864,8 @@ async function checkRawUrl(
       projectType: result.projectType,
       localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
       verbose: !!options.verbose,
+      usedAnalm: !!options.analm,
+      analystFindings,
     });
 
     // Community contribution (auto-share if opted in, no first-time prompt for URLs)
@@ -7818,7 +7911,7 @@ async function checkNpmPackage(
         writeJsonStdout({ ...registryData, source: 'registry' });
         return;
       }
-      displayUnifiedCheck({ name, registry: registryData, verbose: !!options.verbose });
+      displayUnifiedCheck({ name, registry: registryData, verbose: !!options.verbose, usedAnalm: !!options.analm });
       return;
     }
     if (!options.json && !globalCiMode) {
@@ -7879,6 +7972,7 @@ async function checkNpmPackage(
     const result = await scanner.scan({ targetDir: packageDir, autoFix: false });
 
     // Run NanoMind semantic analysis and re-filter (matches secure command pipeline)
+    let analystFindings: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(packageDir, result.findings, { silent: true, analm: options.analm });
@@ -7888,6 +7982,7 @@ async function checkNpmPackage(
         !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
       result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
+      analystFindings = nmResult.analystFindings;
     } catch {
       // NanoMind unavailable — use base scan results
     }
@@ -7900,7 +7995,7 @@ async function checkNpmPackage(
     const high = failed.filter(f => f.severity === 'high');
 
     if (options.json) {
-      writeJsonStdout({
+      const jsonOut: Record<string, any> = {
         name,
         type: 'npm-package',
         source: 'local-scan',
@@ -7908,7 +8003,9 @@ async function checkNpmPackage(
         score: result.score,
         maxScore: result.maxScore,
         findings: result.findings,
-      });
+      };
+      if (analystFindings?.length) jsonOut.analystFindings = analystFindings;
+      writeJsonStdout(jsonOut);
       return;
     }
 
@@ -7922,6 +8019,8 @@ async function checkNpmPackage(
       localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
       registry: registryData,
       verbose: !!options.verbose,
+      usedAnalm: !!options.analm,
+      analystFindings,
     });
 
     // Community contribution (after 3 scans, interactive only)

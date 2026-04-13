@@ -193,11 +193,25 @@ async function runAnalystOnFindings(
 
   for (const finding of prioritized) {
     // Choose task type based on finding category
-    const isCredential = finding.checkId?.startsWith('CRED') ||
-      finding.attackClass === 'credential_abuse';
-    const taskType = isCredential
-      ? 'credentialContextClassification' as const
-      : 'threatAnalysis' as const;
+    const checkId = finding.checkId || '';
+    const category = (finding.category || '').toLowerCase();
+    const attackClass = finding.attackClass || '';
+
+    let taskType: 'threatAnalysis' | 'credentialContextClassification' | 'governanceReasoning' | 'checkExplanation' | 'falsePositiveDetection';
+
+    if (checkId.startsWith('CRED') || attackClass === 'credential_abuse') {
+      taskType = 'credentialContextClassification';
+    } else if (
+      category === 'governance' || category === 'trust-hierarchy' ||
+      checkId.startsWith('AST-GOV') || checkId.startsWith('AST-GOVERN') ||
+      checkId.startsWith('AST-PROMPT') || checkId.startsWith('AST-HEARTBEAT')
+    ) {
+      taskType = 'governanceReasoning';
+    } else if (finding.severity === 'critical' || finding.severity === 'high') {
+      taskType = 'threatAnalysis';
+    } else {
+      taskType = 'checkExplanation';
+    }
 
     const content = [
       finding.name,
@@ -205,6 +219,7 @@ async function runAnalystOnFindings(
       finding.message,
       finding.file ? `File: ${finding.file}` : '',
       finding.attackClass ? `Attack class: ${finding.attackClass}` : '',
+      finding.category ? `Category: ${finding.category}` : '',
     ].filter(Boolean).join('\n');
 
     const response = await runInference({
