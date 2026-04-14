@@ -96,6 +96,12 @@ export class EnforcementEngine {
     }
 
     try {
+      // A SIGSTOPped process can't process SIGTERM — the signal stays queued
+      // until SIGCONT wakes it. Resume paused targets first so graceful kill works.
+      if (this.paused.has(pid)) {
+        try { process.kill(pid, 'SIGCONT'); } catch { /* already gone */ }
+      }
+
       // Graceful first
       process.kill(pid, 'SIGTERM');
 
