@@ -7049,6 +7049,79 @@ analmCmd
   });
 
 // ============================================================================
+// eval oracle -- red-team accuracy harness
+// ============================================================================
+
+program
+  .command('eval')
+  .description('Run accuracy evaluation against an oracle fixture set')
+  .addCommand(
+    (() => {
+      const sub = new (program.constructor as typeof import('commander').Command)();
+      sub
+        .name('oracle')
+        .description(
+          'Evaluate scanner + classifier accuracy against hand-labeled oracle fixtures.\n\n' +
+          'Fixture dir must contain subdirectories, each with a label.json and scannable content.\n' +
+          'See: hackmyagent-redteam-oracle/METHODOLOGY.md for fixture format and release-gate thresholds.'
+        )
+        .requiredOption('--oracle-dir <path>', 'Path to oracle fixture directory')
+        .option('--format <format>', 'Output format: text or json', 'text')
+        .option('--output <file>', 'Write results to file (JSON) in addition to console output')
+        .option('--surface <surface>', 'Filter to a specific surface (skill, soul, mcp, arp-input)')
+        .option('--fail-on-gate', 'Exit with code 1 if release gate fails (useful in CI)')
+        .action(async (opts: { oracleDir: string; format: string; output?: string; surface?: string; failOnGate?: boolean }) => {
+          const fsSync = require('fs') as typeof import('fs');
+          const { runOracleEval, printOracleReport } = await import('./eval/oracle.js');
+          const oraclePath = opts.oracleDir.replace(/^~/, process.env.HOME ?? '~');
+
+          if (!fsSync.existsSync(oraclePath)) {
+            console.error(`Error: oracle-dir not found: ${oraclePath}`);
+            console.error('  Clone or create the oracle fixture directory first.');
+            process.exit(1);
+          }
+
+          console.log(`Running oracle eval against: ${oraclePath}`);
+
+          let report = await runOracleEval(oraclePath);
+
+          // Surface filter (post-eval filter for display)
+          if (opts.surface) {
+            report = {
+              ...report,
+              all: report.all.filter(r => r.surface === opts.surface),
+              misclassified: report.misclassified.filter(r => r.surface === opts.surface),
+            };
+          }
+
+          if (opts.format === 'json') {
+            const json = JSON.stringify(report, null, 2);
+            console.log(json);
+            if (opts.output) fsSync.writeFileSync(opts.output, json, 'utf8');
+          } else {
+            printOracleReport(report);
+            if (opts.output) {
+              fsSync.writeFileSync(opts.output, JSON.stringify(report, null, 2), 'utf8');
+              console.log(`Results written to: ${opts.output}`);
+            }
+          }
+
+          if (opts.failOnGate) {
+            const o = report.overall;
+            const gate =
+              o.recall >= 0.85 &&
+              o.precision >= 0.90 &&
+              o.f1 >= 0.80 &&
+              o.criticalMissed === 0 &&
+              Object.values(report.bySurface).every(m => m.recall >= 0.85 && m.precision >= 0.90);
+            if (!gate) process.exit(1);
+          }
+        });
+      return sub;
+    })()
+  );
+
+// ============================================================================
 // npm package scanning helpers (used by `check <package>`)
 // ============================================================================
 
