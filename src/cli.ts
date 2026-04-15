@@ -7072,7 +7072,7 @@ program
         .option('--fail-on-gate', 'Exit with code 1 if release gate fails (useful in CI)')
         .action(async (opts: { oracleDir: string; format: string; output?: string; surface?: string; failOnGate?: boolean }) => {
           const fsSync = require('fs') as typeof import('fs');
-          const { runOracleEval, printOracleReport } = await import('./eval/oracle.js');
+          const { runOracleEval, printOracleReport, GATE_RECALL, GATE_PRECISION, GATE_F1 } = await import('./eval/oracle.js');
           const oraclePath = opts.oracleDir.replace(/^~/, process.env.HOME ?? '~');
 
           if (!fsSync.existsSync(oraclePath)) {
@@ -7109,11 +7109,11 @@ program
           if (opts.failOnGate) {
             const o = report.overall;
             const gate =
-              o.recall >= 0.85 &&
-              o.precision >= 0.90 &&
-              o.f1 >= 0.80 &&
+              o.recall >= GATE_RECALL &&
+              o.precision >= GATE_PRECISION &&
+              o.f1 >= GATE_F1 &&
               o.criticalMissed === 0 &&
-              Object.values(report.bySurface).every(m => m.recall >= 0.85 && m.precision >= 0.90);
+              Object.values(report.bySurface).every(m => m.recall >= GATE_RECALL && m.precision >= GATE_PRECISION);
             if (!gate) process.exit(1);
           }
         });
