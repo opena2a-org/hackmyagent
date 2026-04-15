@@ -3,7 +3,7 @@
 
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-1301%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
+[![Tests](https://img.shields.io/badge/tests-1580%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
 [![NanoMind](https://img.shields.io/badge/NanoMind-semantic%20compiler-teal)](https://huggingface.co/opena2a/nanomind-security-classifier)
 
 **204 security checks + 28 semantic checks + behavioral simulation. The first security scanner that secures itself.**
