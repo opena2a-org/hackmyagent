@@ -1,0 +1,85 @@
+name: noble-post-quantum drift guard
+
+# When a PR bumps @noble/post-quantum, force the ML-DSA-44 benchmark to run
+# in strict mode (BENCH_FAIL_ON_OVER=1) and require sign p99 to stay under
+# budget. AIComply D17 records that noble 0.6.x regressed ML-DSA-44 sign
+# by ~6-7x vs 0.2.x. Silent upgrades are the risk this job exists to catch.
+
+on:
+  pull_request:
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+
+jobs:
+  detect-noble-change:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+      base_version: ${{ steps.check.outputs.base_version }}
+      head_version: ${{ steps.check.outputs.head_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect @noble/post-quantum version change
+        id: check
+        run: |
+          base_version=$(git show ${{ github.event.pull_request.base.sha }}:package.json 2>/dev/null | node -e "let d=''; process.stdin.on('data',c=>d+=c).on('end',()=>{try{const p=JSON.parse(d);console.log((p.dependencies||{})['@noble/post-quantum']||'')}catch{console.log('')}})" || echo "")
+          head_version=$(node -e "const p=require('./package.json');console.log((p.dependencies||{})['@noble/post-quantum']||'')")
+          echo "base_version=$base_version" >> $GITHUB_OUTPUT
+          echo "head_version=$head_version" >> $GITHUB_OUTPUT
+          if [ "$base_version" != "$head_version" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "::warning::@noble/post-quantum version changed: $base_version -> $head_version. Strict ML-DSA-44 benchmark required."
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+  enforce-bench:
+    needs: detect-noble-change
+    if: needs.detect-noble-change.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Run ML-DSA-44 bench in strict mode
+        env:
+          BENCH_FAIL_ON_OVER: '1'
+        run: |
+          echo "Enforcing sign p99 budget because @noble/post-quantum changed from '${{ needs.detect-noble-change.outputs.base_version }}' to '${{ needs.detect-noble-change.outputs.head_version }}'."
+          echo "Reference: AIComply D17 in opena2a-org/todo/AICOMPLY_DECISIONS.md"
+          node scripts/bench-ml-dsa-44.mjs --iters=1000
+
+      - name: Comment on PR with noble drift notice
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const base = '${{ needs.detect-noble-change.outputs.base_version }}';
+            const head = '${{ needs.detect-noble-change.outputs.head_version }}';
+            const body = [
+              `## @noble/post-quantum version change detected`,
+              ``,
+              `Base: \`${base}\` -> Head: \`${head}\``,
+              ``,
+              `AIComply D17 requires re-benchmarking on any noble version bump. This PR ran the bench in strict mode (fail if sign p99 > 2.5ms).`,
+              ``,
+              `**Reviewer checklist:**`,
+              `- [ ] Sign p99 still under 2.5ms on ubuntu-latest`,
+              `- [ ] If p99 exceeds budget, evaluate Option D (native ML-DSA binding) per escalation doc`,
+              `- [ ] Update AIComply D17 if budget revision is approved`,
+            ].join('\n');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
