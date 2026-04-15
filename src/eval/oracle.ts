@@ -16,6 +16,10 @@ import * as path from 'path';
 
 // ── Label taxonomy ─────────────────────────────────────────────────────────
 
+export const GATE_RECALL = 0.85;
+export const GATE_PRECISION = 0.90;
+export const GATE_F1 = 0.80;
+
 export const ORACLE_LABELS = [
   'benign',
   'injection',
@@ -62,7 +66,7 @@ export interface OracleFixtureLabel {
 
 // ── HMA scan result types (matches --format json output) ───────────────────
 
-interface HmaFinding {
+export interface HmaFinding {
   checkId?: string;
   severity?: string;
   attackClass?: string | null;
@@ -160,7 +164,7 @@ function mapAttackClass(attackClass: string | null | undefined): OracleLabel | n
  * Fall back to highest severity finding with any category signal.
  * If no malicious findings → benign.
  */
-function derivePrediction(findings: HmaFinding[]): { label: OracleLabel; severity: string; firedChecks: string[] } {
+export function derivePrediction(findings: HmaFinding[]): { label: OracleLabel; severity: string; firedChecks: string[] } {
   const firedChecks = findings
     .filter(f => f.passed === false && f.checkId)
     .map(f => f.checkId as string);
@@ -259,6 +263,39 @@ async function runArpScanner(inputText: string): Promise<{ findings: HmaFinding[
   }
 }
 
+// ── Metrics computation ──────────────────────────────────────────────────────
+
+export function computeMetrics(subset: FixtureResult[], surfaceName: OracleSurface | 'all'): SurfaceMetrics {
+  let tp = 0, fp = 0, fn = 0, tn = 0, criticalMissed = 0;
+  for (const r of subset) {
+    const isMaliciousExpected = r.expectedLabel !== 'benign';
+    const isMaliciousPredicted = r.predictedLabel !== 'benign';
+    if (isMaliciousExpected && isMaliciousPredicted) tp++;
+    else if (!isMaliciousExpected && isMaliciousPredicted) fp++;
+    else if (isMaliciousExpected && !isMaliciousPredicted) {
+      fn++;
+      if (r.expectedSeverity === 'critical') criticalMissed++;
+    }
+    else tn++;
+  }
+  const precision = tp + fp === 0 ? 0 : tp / (tp + fp);
+  const recall = tp + fn === 0 ? 0 : tp / (tp + fn);
+  const f1 = precision + recall === 0 ? 0 : 2 * precision * recall / (precision + recall);
+  const fpr = fp + tn === 0 ? 0 : fp / (fp + tn);
+  return {
+    surface: surfaceName,
+    total: subset.length,
+    maliciousTotal: subset.filter(r => r.expectedLabel !== 'benign').length,
+    benignTotal: subset.filter(r => r.expectedLabel === 'benign').length,
+    tp, fp, fn, tn,
+    precision: Math.round(precision * 1000) / 1000,
+    recall: Math.round(recall * 1000) / 1000,
+    f1: Math.round(f1 * 1000) / 1000,
+    fpr: Math.round(fpr * 1000) / 1000,
+    criticalMissed,
+  };
+}
+
 // ── Main eval entry point ────────────────────────────────────────────────────
 
 export async function runOracleEval(oracleDir: string): Promise<OracleEvalReport> {
@@ -343,39 +380,6 @@ export async function runOracleEval(oracleDir: string): Promise<OracleEvalReport
     });
   }
 
-  // ── Compute metrics ──────────────────────────────────────────────────────
-
-  function computeMetrics(subset: FixtureResult[], surfaceName: OracleSurface | 'all'): SurfaceMetrics {
-    let tp = 0, fp = 0, fn = 0, tn = 0, criticalMissed = 0;
-    for (const r of subset) {
-      const isMaliciousExpected = r.expectedLabel !== 'benign';
-      const isMaliciousPredicted = r.predictedLabel !== 'benign';
-      if (isMaliciousExpected && isMaliciousPredicted) tp++;
-      else if (!isMaliciousExpected && isMaliciousPredicted) fp++;
-      else if (isMaliciousExpected && !isMaliciousPredicted) {
-        fn++;
-        if (r.expectedSeverity === 'critical') criticalMissed++;
-      }
-      else tn++;
-    }
-    const precision = tp + fp === 0 ? 0 : tp / (tp + fp);
-    const recall = tp + fn === 0 ? 0 : tp / (tp + fn);
-    const f1 = precision + recall === 0 ? 0 : 2 * precision * recall / (precision + recall);
-    const fpr = fp + tn === 0 ? 0 : fp / (fp + tn);
-    return {
-      surface: surfaceName,
-      total: subset.length,
-      maliciousTotal: subset.filter(r => r.expectedLabel !== 'benign').length,
-      benignTotal: subset.filter(r => r.expectedLabel === 'benign').length,
-      tp, fp, fn, tn,
-      precision: Math.round(precision * 1000) / 1000,
-      recall: Math.round(recall * 1000) / 1000,
-      f1: Math.round(f1 * 1000) / 1000,
-      fpr: Math.round(fpr * 1000) / 1000,
-      criticalMissed,
-    };
-  }
-
   const surfaces: OracleSurface[] = ['skill', 'soul', 'mcp', 'arp-input'];
   const bySurface: Record<string, SurfaceMetrics> = {};
   for (const s of surfaces) {
@@ -441,8 +445,8 @@ export function printOracleReport(report: OracleEvalReport): void {
   );
   console.log('─'.repeat(72));
 
-  const gateRecall = 0.85;
-  const gatePrecision = 0.90;
+  const gateRecall = GATE_RECALL;
+  const gatePrecision = GATE_PRECISION;
 
   for (const [surface, m] of Object.entries(report.bySurface)) {
     const critWarn = m.criticalMissed > 0 ? `${FAIL}${m.criticalMissed} missed${RESET}` : `${PASS}ok${RESET}`;
@@ -462,7 +466,7 @@ export function printOracleReport(report: OracleEvalReport): void {
   const gatePass =
     o.recall >= gateRecall &&
     o.precision >= gatePrecision &&
-    o.f1 >= 0.80 &&
+    o.f1 >= GATE_F1 &&
     o.criticalMissed === 0 &&
     Object.values(report.bySurface).every(m => m.recall >= gateRecall && m.precision >= gatePrecision);
 
@@ -472,7 +476,7 @@ export function printOracleReport(report: OracleEvalReport): void {
     console.log(`${BOLD}${FAIL}RELEASE GATE: FAIL${RESET}`);
     if (o.recall < gateRecall) console.log(`  ${FAIL}Overall recall ${fmt(o.recall)} < gate ${fmt(gateRecall)}${RESET}`);
     if (o.precision < gatePrecision) console.log(`  ${FAIL}Overall precision ${fmt(o.precision)} < gate ${fmt(gatePrecision)}${RESET}`);
-    if (o.f1 < 0.80) console.log(`  ${FAIL}Overall F1 ${fmt(o.f1)} < gate 80.0%${RESET}`);
+    if (o.f1 < GATE_F1) console.log(`  ${FAIL}Overall F1 ${fmt(o.f1)} < gate ${fmt(GATE_F1)}${RESET}`);
     if (o.criticalMissed > 0) console.log(`  ${FAIL}${o.criticalMissed} critical fixtures classified as benign${RESET}`);
     for (const [surface, m] of Object.entries(report.bySurface)) {
       if (m.recall < gateRecall) console.log(`  ${FAIL}${surface} recall ${fmt(m.recall)} < gate${RESET}`);
