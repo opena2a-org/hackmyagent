@@ -232,6 +232,23 @@ export class SemanticCompiler {
     if (neural.load()) {
       const neuralResult = neural.classify(sanitizedContent);
       if (neuralResult.confidence > 0.6 && neuralResult.intentClass !== 'benign') {
+        // Post-neural context adjustment: the neural model was trained on attack
+        // data without hard-negative benign examples, so it keys off vocabulary
+        // without reasoning about authorization, educational framing, or negation.
+        // Strong benign context signals override the neural classification.
+        const benignScore = detectContextualBenignSignals(sanitizedContent);
+        if (benignScore >= 4) {
+          // Authorization, research, IRB, or negation-list context is definitive
+          return { intentClass: 'benign', confidence: 0.7, inferredCapabilities: [] };
+        }
+        if (benignScore >= 2) {
+          // Moderate benign context: downgrade from malicious/suspicious and cap confidence
+          return {
+            intentClass: 'suspicious',
+            confidence: Math.min(0.45, neuralResult.confidence * 0.5),
+            inferredCapabilities: [],
+          };
+        }
         return {
           intentClass: neuralResult.intentClass,
           confidence: neuralResult.confidence,
@@ -413,8 +430,24 @@ function extractDeclaredCapabilities(
 
 function extractDeclaredConstraints(content: string): Constraint[] {
   const constraints: Constraint[] = [];
-  const patterns = /(?:must|should|never|always|cannot|will not|forbidden|shall not|restricted to)[^.]+\./gi;
-  const matches = content.match(patterns);
+
+  // Strip content inside fenced code blocks before constraint extraction —
+  // attack examples quoted in educational documents (e.g. "DO NOT USE: Ignore
+  // previous instructions...") must not be extracted as constraints.
+  const stripped = content.replace(/```[\s\S]*?```/g, '').replace(/`[^`]*`/g, '');
+
+  // Match prohibition sentences. "cannot" is scoped to action verbs (access,
+  // execute, share, etc.) to avoid extracting explanatory uses like "cannot
+  // reliably distinguish" as constraints — that sentence describes a risk, not
+  // a restriction the artifact enforces on itself.
+  // "must" alone captures all imperative constraint forms ("Must restrict",
+  // "Must disclose", "Must handle", etc.), not just "must never/not/always".
+  // "should" is restricted to negation forms ("should not", "should probably
+  // not") to avoid extracting indicative sentences like "should trigger".
+  // "cannot" is scoped to action verbs to avoid "cannot reliably distinguish"
+  // (a risk description, not a constraint the artifact enforces on itself).
+  const patterns = /(?:must\b|should\s+(?:[a-z]+\s+)?(?:not|never)\b|never\s+(?:share|execute|access|store|transmit|comply|accept|use|override|bypass|exfiltrate|persist|log|forward|harvest)|cannot\s+(?:access|execute|modify|delete|read|write|share|store|transmit|bypass|override|leak|exfiltrate|harvest|persist)|will\s+not|forbidden|shall\s+not|restricted\s+to|prohibited)[^.]+\./gi;
+  const matches = stripped.match(patterns);
 
   if (matches) {
     for (const match of matches) {
@@ -594,13 +627,63 @@ function extractGovernanceReferences(content: string): string[] {
 }
 
 /**
+ * Score how many contextual benign signals are present in text.
+ * Higher score = stronger evidence the content is benign despite attack vocabulary.
+ *
+ * Used to override or downgrade the neural classifier when content is:
+ * - Explicitly authorized (pentest, RoE, IRB)
+ * - Educational/defensive (lists attacks to teach defenses)
+ * - Negation lists (SOUL explicitly prohibiting attacks)
+ * - Research contexts (sandboxed, isolated, academic)
+ * - Retrospective writeups (CTF solutions, responsible disclosure)
+ * - Bounded scope declarations (network_access: false, env var refs)
+ *
+ * Gate: score >= 2 → downgrade malicious→suspicious; score >= 4 → classify benign.
+ */
+function detectContextualBenignSignals(text: string): number {
+  let score = 0;
+
+  // Authorization: explicit written authorization for security testing
+  if (/written\s+authorization|rules\s+of\s+engagement|signed\s+(?:roe|engagement|contract)|authorized\s+(?:pentest|penetration\s+test|scan|recon)|engagement\s+record/i.test(text)) score += 3;
+
+  // Negation list: artifact enumerates attacks it is prohibited from performing
+  if (/(?:will\s+not\s+do|will\s+never\s*:|i\s+will\s+never|agent\s+will\s+never|what\s+(?:i|we|this\s+agent)\s+(?:will\s+not|won't)|things?\s+(?:i|we)\s+(?:will\s+never|won't)|prohibited\s+actions?)/i.test(text)) score += 3;
+
+  // Educational / defensive framing: content teaches defenses using attack examples
+  if (/(?:do\s+not\s+use|don't\s+use).*(?:example|attack)|(?:example|sample)\s+attack.*do\s+not|defense\s+patterns?|for\s+(?:defense|defensive\s+purposes?)|teaches?\s+(?:how\s+to\s+defend|defense|protection)|red-?team\s+exercise|practice\s+recognizing|educational\s+material|how\s+to\s+defend\s+against/i.test(text)) score += 2;
+
+  // Research context: isolated/sandboxed environment with credentialed access
+  if (/\birb\b|institutional\s+review\s+board|isolated\s+(?:research\s+)?environment|research\s+sandbox|credentialed\s+researcher|per\s+irb\s+protocol|academic\s+record-?keeping/i.test(text)) score += 3;
+
+  // Retrospective / responsible disclosure
+  if (/ctf\s+writeup|capture\s+the\s+flag.*(?:challenge|writeup|solution)|reported\s+(?:the\s+)?vulnerabilit|responsible\s+disclosure|challenge\s+organizers?/i.test(text)) score += 2;
+
+  // Negative capability declarations: explicit scope boundaries
+  if (/network[_\-\s]?access\s*[:=]\s*false|execute[_\-\s]?shell\s*[:=]\s*false|no\s+(?:network|filesystem|shell)\b|without\s+(?:network|shell|filesystem)\s+access/i.test(text)) score += 2;
+
+  // Env var references (not hardcoded secrets)
+  if (/\$\{[A-Z_]*(?:TOKEN|KEY|SECRET|PASSWORD)[A-Z_]*\}/i.test(text)) score += 2;
+
+  // Scoped path declarations (not / or root)
+  if (/workspaceFolder|\${workspaceFolder}|~\/projects|~\/workspace|workspace-scoped|scoped\s+to\s+(?:the\s+)?(?:current\s+)?workspace/i.test(text)) score += 1;
+
+  // "will never/not" + attack verb: explicit prohibition (softer than "must never" but valid constraint)
+  if (/will\s+(?:never|not)\s+(?:execute|access|exfiltrate|install|bypass|share|store|transmit|harvest|steal|exfil)/i.test(text)) score += 2;
+
+  return score;
+}
+
+/**
  * Detect governance content that talks ABOUT security constraints.
  * These documents set rules ("must never share credentials") not perform attacks.
  * Without this check, governance docs that mention attack patterns defensively
  * get flagged as malicious.
  */
 function isGovernanceContent(text: string): boolean {
-  const constraintCount = (text.match(/must never|must not|must always|should not|should never|forbidden|prohibited|restricted to|shall not/gi) || []).length;
+  // Include "will never" / "will not" as valid constraint phrases — SOULs that list
+  // prohibited actions using "will never" or "will not" are governance documents
+  // even if they don't use "must never" or "shall not" phrasing.
+  const constraintCount = (text.match(/must never|must not|must always|should not|should never|forbidden|prohibited|restricted to|shall not|will never|will not do|i will not|agent will never|this agent will never/gi) || []).length;
   const sectionHeaders = /## (?:trust|governance|constraint|oversight|data handling|behavioral|identity|error|credential|scope|permission|boundary)/i.test(text);
 
   // Credential-protection instruction patterns: files that TEACH credential
@@ -648,9 +731,12 @@ function mapRiskSurfaces(
   // SOUL.md, governance docs, and system prompts with constraint language
   const isGovernanceDoc = isGovernanceContent(text);
 
+  // Compute benign context score once for reuse across all surface checks
+  const benignContextScore = detectContextualBenignSignals(content);
+
   // External URL + data forwarding = exfiltration surface
   // Skip for governance docs (they describe rules about data handling, not perform exfiltration)
-  if (!isGovernanceDoc && /https?:\/\/[^\s]+\.(co|io|com|net|org)/.test(content) && /forward|send|transmit|export/i.test(text)) {
+  if (!isGovernanceDoc && benignContextScore < 2 && /https?:\/\/[^\s]+\.(co|io|com|net|org)/.test(content) && /forward|send|transmit|export/i.test(text)) {
     surfaces.push({
       surface: 'External data transmission',
       attackClass: 'SKILL-EXFIL',
@@ -660,11 +746,20 @@ function mapRiskSurfaces(
   }
 
   // Override/ignore instructions = injection surface
-  // Defensive constraint language is NOT an injection
+  // Guards:
+  //   isDefensiveConstraint — content explicitly prohibits override ("must never override", "will never ignore")
+  //   isProhibitionList — content has a "will NOT do" / "I will never" section listing attacks to prohibit
+  //   benignContextScore >= 2 — content has sufficient benign signals (authorized, educational, research)
+  // All three guards suppress the injection surface to avoid flagging:
+  //   - SOULs that enumerate attacks they are forbidden from performing (b05)
+  //   - Educational docs that quote attack examples with "DO NOT USE" labels (b02)
+  //   - Authorized security assessments referencing specific attack techniques
   const hasOverrideLanguage = /ignore.*previous|override.*instruction|new.*task/i.test(text);
-  const isDefensiveConstraint = /must never|must not|never comply|resist|reject|refuse|forbidden|should not|do not|prohibited/.test(text)
-    && /override|ignore|bypass|injection|inject/i.test(text);
-  if (hasOverrideLanguage && !isDefensiveConstraint) {
+  const isDefensiveConstraint =
+    /must never|must not|never comply|resist|reject|refuse|forbidden|should not|do not|prohibited|will never|will not/i.test(text) &&
+    /override|ignore|bypass|injection|inject/i.test(text);
+  const isProhibitionList = /(?:will\s+not\s+do|will\s+never\s*:|i\s+will\s+never|agent\s+will\s+never|what\s+(?:i|we|this\s+agent)\s+(?:will\s+not|won't))/i.test(content);
+  if (hasOverrideLanguage && !isDefensiveConstraint && !isProhibitionList && benignContextScore < 2) {
     surfaces.push({
       surface: 'Instruction override language',
       attackClass: 'PROMPT-INJECT',
@@ -854,25 +949,35 @@ function heuristicIntentClassification(
   let maliciousSignals = 0;
   let benignSignals = 0;
 
-  // Malicious signals
+  // Context score: authorization, educational, research, negation-list signals
+  const contextScore = detectContextualBenignSignals(content);
+
+  // Malicious signals — only counted when benign context is absent
+  // "execute.*shell" and similar broad-capability signals are suppressed for
+  // artifacts with explicit scope bounds (e.g. shell-runner with network_access:false)
   if (/forward.*token.*external|send.*credential.*endpoint/i.test(text)) maliciousSignals += 3;
-  if (/ignore.*previous.*instruction|override.*system/i.test(text)) maliciousSignals += 3;
+  if (/ignore.*previous.*instruction|override.*system/i.test(text) && contextScore < 2) maliciousSignals += 3;
   if (/fetch.*config.*external|heartbeat.*url.*execute/i.test(text)) maliciousSignals += 2;
   if (/always.*remember.*permanently|persist.*instruction/i.test(text)) maliciousSignals += 2;
-  if (/admin.*access|root.*privilege|execute.*shell/i.test(text)) maliciousSignals += 2;
+  // Broad capability signal only counts when no benign scope-bounding context exists
+  if (/admin.*access|root.*privilege|execute.*shell/i.test(text) && contextScore < 2) maliciousSignals += 2;
 
   // Benign signals
   if (constraints.length >= 3) benignSignals += 2;
-  if (/must never|should not|forbidden|restricted/i.test(text)) benignSignals += 1;
+  if (/must never|should not|forbidden|restricted|will never|will not/i.test(text)) benignSignals += 1;
   if (capabilities.length > 0 && capabilities.every(c => c.declared)) benignSignals += 1;
 
-  if (maliciousSignals >= 3) {
+  // Context-aware benign signals from authorization/educational/research framing
+  // Add directly — these are strong priors that outweigh vocabulary-based signals
+  benignSignals += contextScore;
+
+  if (maliciousSignals >= 3 && benignSignals <= maliciousSignals) {
     return { intentClass: 'malicious', confidence: Math.min(0.9, 0.5 + maliciousSignals * 0.1), inferredCapabilities: [] };
   }
-  if (maliciousSignals > 0) {
+  if (maliciousSignals > 0 && benignSignals <= maliciousSignals) {
     return { intentClass: 'suspicious', confidence: 0.4 + maliciousSignals * 0.1, inferredCapabilities: [] };
   }
-  return { intentClass: 'benign', confidence: 0.7 + benignSignals * 0.05, inferredCapabilities: [] };
+  return { intentClass: 'benign', confidence: Math.min(0.9, 0.7 + benignSignals * 0.05), inferredCapabilities: [] };
 }
 
 // ============================================================================
@@ -904,8 +1009,8 @@ function classifyConstraintDomain(text: string): ConstraintDomain {
 function assessEnforceability(text: string): number {
   const t = text.toLowerCase();
   // Strong enforcement language
-  if (/must never|shall not|forbidden|prohibited|blocked/.test(t)) return 0.8;
-  if (/must|required|mandatory/.test(t)) return 0.7;
+  if (/must never|shall not|forbidden|prohibited|blocked|will never/.test(t)) return 0.8;
+  if (/must|required|mandatory|will not/.test(t)) return 0.7;
   // Weak enforcement language
   if (/should|recommended|preferred/.test(t)) return 0.4;
   if (/may|can|might|when appropriate|use judgment/.test(t)) return 0.2;

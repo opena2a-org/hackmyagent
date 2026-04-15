@@ -43,8 +43,17 @@ export function analyzePrompt(
 
   findings.push(...checkJailbreakSusceptibility(ast));
   findings.push(...checkCapabilityCreep(ast));
-  findings.push(...checkMissingInjectionResistance(ast));
-  findings.push(...checkAuthorityConfusion(ast));
+
+  // Injection resistance and trust hierarchy are agent-level checks — they
+  // require the artifact to carry an instruction set (system prompt, SOUL).
+  // Pure capability declarations (skill/MCP files without constraint language)
+  // cannot be expected to have injection resistance built in; they rely on
+  // the agent that uses them. Flagging these files produces confusing noise
+  // and is one root cause of the 90.9% benign FPR (oracle 2026-04-15).
+  if (isBehavioralArtifact(ast)) {
+    findings.push(...checkMissingInjectionResistance(ast));
+    findings.push(...checkAuthorityConfusion(ast));
+  }
 
   return findings;
 }
@@ -66,8 +75,18 @@ export function analyzePrompt(
 function checkJailbreakSusceptibility(ast: SecurityAST): ASTFinding[] {
   const findings: ASTFinding[] = [];
 
-  // Only relevant for behavioral artifacts
+  // Jailbreak susceptibility requires an instruction hierarchy to assess.
+  // Only agent-level artifacts (souls, system prompts, or skill files with
+  // declared constraints) have an instruction hierarchy — capability declarations
+  // with no constraint language cannot be susceptible to jailbreak in the same
+  // sense, and flagging them confuses absence of governance with attack surface.
   if (!isBehavioralArtifact(ast)) {
+    return findings;
+  }
+  // Skills that explicitly declare restrictions (execute_shell: false, no network)
+  // score high on benign context signals — they have an instruction hierarchy by
+  // design (the YAML restrictions ARE the hierarchy). No jailbreak gap to flag.
+  if (hasHighBenignContext(ast)) {
     return findings;
   }
 
@@ -82,10 +101,18 @@ function checkJailbreakSusceptibility(ast: SecurityAST): ASTFinding[] {
       r.attackClass === 'ROLE-HIJACK',
   );
 
-  // Weak hierarchy + existing attack surfaces = high risk
+  // Severity depends on whether jailbreak attack surfaces already exist:
+  //   - Jailbreak surfaces present: critical (active attack path)
+  //   - Weak hierarchy, no surfaces: medium (hardening gap, not an active threat)
+  //   - Hierarchy below 0.2 with no surfaces: high (severely exposed, needs urgent fix)
+  // This avoids false-positive high findings on well-intentioned SOULs that use
+  // "will not" constraint language but lack explicit injection-resistance clauses.
   if (hierarchyScore < 0.4) {
     const hasAttackSurfaces = jailbreakSurfaces.length > 0;
-    const severity = hasAttackSurfaces ? 'critical' : 'high';
+    const severity: ASTFinding['severity'] =
+      hasAttackSurfaces ? 'critical' :
+      hierarchyScore < 0.2 ? 'high' :
+      'medium';
 
     findings.push({
       checkId: 'AST-PROMPT-001',
@@ -318,6 +345,12 @@ function checkMissingInjectionResistance(ast: SecurityAST): ASTFinding[] {
   if (!isBehavioralArtifact(ast)) {
     return findings;
   }
+  // Explicitly restricted skills (high benign context) carry their constraints
+  // in YAML capability restrictions — not as natural-language injection clauses.
+  // Their restriction model doesn't require traditional injection resistance.
+  if (hasHighBenignContext(ast)) {
+    return findings;
+  }
 
   // Check for injection resistance in constraints
   const hasInjectionResistance = ast.declaredConstraints.some(c => {
@@ -398,6 +431,13 @@ function checkAuthorityConfusion(ast: SecurityAST): ASTFinding[] {
   const findings: ASTFinding[] = [];
 
   if (!isBehavioralArtifact(ast)) {
+    return findings;
+  }
+  // Explicitly restricted skills define authority implicitly through their
+  // capability restrictions (execute_shell: false, network_access: false).
+  // Trust hierarchy checks that expect natural-language hierarchy declarations
+  // are not applicable and would produce misleading false positives.
+  if (hasHighBenignContext(ast)) {
     return findings;
   }
 
@@ -502,18 +542,38 @@ function checkAuthorityConfusion(ast: SecurityAST): ASTFinding[] {
 // ============================================================================
 
 /**
- * Determine if the artifact is behavioral (has instructions/capabilities).
- * Prompt analysis is only relevant for artifacts that define behavior.
+ * Determine if the artifact is behavioral (has an instruction set or is a
+ * typed agent artifact). Prompt analysis is only relevant for behavioral
+ * artifacts. MCP configs are API configuration files, not instruction sets.
  */
 function isBehavioralArtifact(ast: SecurityAST): boolean {
   return (
     ast.artifactType === 'system_prompt' ||
     ast.artifactType === 'soul' ||
     ast.artifactType === 'skill' ||
-    ast.artifactType === 'agent_config' ||
-    ast.declaredCapabilities.length > 0 ||
-    ast.inferredCapabilities.length > 0
+    ast.artifactType === 'agent_config'
+    // Note: mcp_config excluded — MCP configs are API wiring, not instruction
+    // hierarchies. Prompt security checks are not applicable to them.
   );
+}
+
+/**
+ * Return true when the artifact has high benign context confidence.
+ * Used to suppress high-severity findings for skills that explicitly declare
+ * capability restrictions (execute_shell:false, network_access:false, etc.).
+ * These artifacts are security-conscious but lack formal constraint language —
+ * flagging them for weak instruction hierarchy is a false positive.
+ *
+ * The compiler's benign context detector scores these signals and the
+ * heuristic classifier encodes the score in intentConfidence. A score of
+ * >= 0.88 indicates strong restriction declarations.
+ */
+function hasHighBenignContext(ast: SecurityAST): boolean {
+  // 0.85 = 3 benign signals (contextScore 2 + all-declared +1).
+  // Achievable when at least one negative capability declaration exists
+  // (execute_shell: false, network_access: false, or "no network" in scope).
+  // Malicious artifacts have contextScore=0 and confidence ≤ 0.75.
+  return ast.intentClassification === 'benign' && ast.intentConfidence >= 0.85;
 }
 
 /**

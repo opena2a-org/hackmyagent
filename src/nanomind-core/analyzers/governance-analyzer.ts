@@ -72,6 +72,59 @@ const CRITICAL_DOMAINS: ConstraintDomain[] = [
  * Analyze a SecurityAST for governance and SOUL-related issues.
  * Verifies AST integrity before processing.
  */
+/**
+ * Return true if this artifact is a behavioral agent that is expected to
+ * carry its own governance constraints (SOUL, system_prompt, agent_config).
+ *
+ * Skill files and MCP configs are capability declarations — they describe
+ * WHAT an agent can do, not HOW it governs itself. Missing governance on
+ * a skill file is a medium warning ("consider adding a SOUL.md"), not a
+ * high-severity finding. The full suite of agent-level governance checks
+ * (override resistance, trust hierarchy, injection resistance) only applies
+ * to artifacts that explicitly govern behavior.
+ */
+/**
+ * Returns true if the artifact is a skill with explicitly declared capability
+ * restrictions (e.g., execute_shell:false, network_access:false) and high
+ * benign intent confidence. These skills govern themselves via YAML restrictions
+ * rather than natural-language SOUL constraints — applying full agent-level
+ * governance severity would produce false positives.
+ *
+ * Threshold 0.85 = 3 benign signals: contextScore ≥ 2 (at least one negative
+ * capability declaration) + all-declared bonus. Achievable when the skill
+ * explicitly disables high-risk capabilities.
+ */
+function isExplicitlyRestrictedBenign(ast: SecurityAST): boolean {
+  return (
+    ast.artifactType === 'skill' &&
+    ast.intentClassification === 'benign' &&
+    ast.intentConfidence >= 0.85
+  );
+}
+
+function isAgentLevelArtifact(ast: SecurityAST): boolean {
+  // Skills with high/critical declared capabilities are genuinely dangerous:
+  // they expose shell, database, or API access. Absence of governance on
+  // these is high severity — the same as a soul or system prompt.
+  // Skills with only low/medium capabilities ([object Object] YAML objects,
+  // or read-only caps) rely on an external SOUL.md; missing governance is
+  // medium severity, not high.
+  const hasHighRiskCaps =
+    ast.declaredCapabilities.some(c => c.riskLevel === 'high' || c.riskLevel === 'critical') ||
+    ast.inferredCapabilities.some(c => c.riskLevel === 'high' || c.riskLevel === 'critical');
+  return (
+    ast.artifactType === 'soul' ||
+    ast.artifactType === 'system_prompt' ||
+    ast.artifactType === 'agent_config' ||
+    // A skill/MCP with at least some declared constraint language is acting
+    // as a behavioral artifact and should be held to agent-level standards.
+    ast.declaredConstraints.length > 0 ||
+    // Skills declaring high/critical capabilities without any constraints need
+    // the full governance suite (override resistance, trust hierarchy checks).
+    (ast.artifactType === 'skill' && hasHighRiskCaps)
+  );
+}
+
 export function analyzeGovernance(
   ast: SecurityAST,
   verifier: (ast: SecurityAST) => boolean,
@@ -91,8 +144,19 @@ export function analyzeGovernance(
   findings.push(...checkDomainCoverage(ast));
   findings.push(...checkConstraintEnforceability(ast));
   findings.push(...checkMissingGovernance(ast));
-  findings.push(...checkOverrideResistance(ast));
-  findings.push(...checkGovernanceRatio(ast));
+
+  // Override resistance and governance ratio are agent-level checks.
+  // Skip for pure capability declarations (skill/MCP files without constraint
+  // language) — the absence of override resistance in a tool declaration is
+  // a medium concern, not high, and is already covered by checkMissingGovernance.
+  // Also skip for skills with high benign context (explicit negative capability
+  // declarations like execute_shell:false / network_access:false). These skills
+  // govern themselves via YAML restrictions; requiring natural-language override
+  // resistance clauses would produce false positives on well-restricted tools.
+  if (isAgentLevelArtifact(ast) && !isExplicitlyRestrictedBenign(ast)) {
+    findings.push(...checkOverrideResistance(ast));
+    findings.push(...checkGovernanceRatio(ast));
+  }
 
   return findings;
 }
@@ -134,6 +198,15 @@ function checkDomainCoverage(ast: SecurityAST): ASTFinding[] {
 
   if (missingCritical.length > 0) {
     const labels = missingCritical.map(d => DOMAIN_LABELS[d]).join(', ');
+    // Agent-level artifacts (souls, system prompts) are expected to provide
+    // their own governance — missing critical domains is high severity.
+    // Skill files and MCP configs rely on an external SOUL.md — missing
+    // domains is a medium concern ("add a SOUL.md"), not a high-severity threat.
+    // Skills with explicit capability restrictions (execute_shell:false, etc.)
+    // are already scoped by YAML restrictions — missing natural-language
+    // governance is medium, not a high-severity threat.
+    const domainSeverity: ASTFinding['severity'] =
+      (isAgentLevelArtifact(ast) && !isExplicitlyRestrictedBenign(ast)) ? 'high' : 'medium';
     findings.push({
       checkId: 'AST-GOV-001',
       name: 'Critical Governance Domain Gap',
@@ -143,7 +216,7 @@ function checkDomainCoverage(ast: SecurityAST): ASTFinding[] {
         'Without constraints in these domains, the agent has no guardrails for ' +
         'trust decisions, oversight requirements, or data handling.',
       category: 'Governance',
-      severity: 'high',
+      severity: domainSeverity,
       passed: false,
       message: `Missing critical governance: ${labels}`,
       fixable: false,
@@ -255,6 +328,14 @@ function checkMissingGovernance(ast: SecurityAST): ASTFinding[] {
   if (ast.declaredConstraints.length === 0) {
     // Only flag if there are capabilities (avoid noise on pure docs)
     if (ast.declaredCapabilities.length > 0 || ast.inferredCapabilities.length > 0) {
+      // Severity depends on artifact type:
+      //   soul/system_prompt/agent_config: high — these explicitly govern behavior and MUST have constraints
+      //   skill/mcp_config with no constraint language: medium — capability declaration without a SOUL.md
+      //     is a gap but not inherently malicious. The owning agent should have a SOUL.md.
+      //   skill with explicit YAML restrictions (isExplicitlyRestrictedBenign): medium — already
+      //     scoped by capability declarations; missing NL governance is a gap, not a threat.
+      const govSeverity =
+        (isAgentLevelArtifact(ast) && !isExplicitlyRestrictedBenign(ast)) ? 'high' : 'medium';
       findings.push({
         checkId: 'AST-GOV-003',
         name: 'No Governance Constraints',
@@ -262,7 +343,7 @@ function checkMissingGovernance(ast: SecurityAST): ASTFinding[] {
           'This artifact declares or exercises capabilities but has zero governance constraints. ' +
           'Without constraints, capabilities are unrestricted and vulnerable to prompt injection abuse.',
         category: 'Governance',
-        severity: 'high',
+        severity: govSeverity,
         passed: false,
         message: 'Zero constraints for active capabilities',
         fixable: false,
