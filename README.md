@@ -10,7 +10,7 @@
 
 Security scanner, red-team toolkit, behavioral simulation engine, and skill builder for AI agents. Powered by the NanoMind Semantic Compiler -- a compiler-style architecture where every artifact is compiled into an Abstract Security Tree before analysis.
 
-[Seven scanners agree on only 0.12% of skills](https://theweatherreport.ai/posts/skill-scanner-disagreement/). HackMyAgent uses semantic understanding instead of regex to achieve near-zero false positives.
+[Seven scanners agree on only 0.12% of skills](https://theweatherreport.ai/posts/skill-scanner-disagreement/). HackMyAgent uses semantic understanding instead of regex to achieve low false positive rate on attack-focused inputs.
 
 ```bash
 npx hackmyagent secure

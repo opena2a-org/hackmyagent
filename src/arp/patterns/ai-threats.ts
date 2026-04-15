@@ -161,6 +161,13 @@ const mcpExploitation: ThreatPattern[] = [
     pattern: /(?:(?:https?|ftp|gopher|dict|ldap):\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3}|::1|\[::1\]|0x7f|2130706433|metadata\.google|169\.254\.169\.254))/i,
     severity: 'critical',
   },
+  {
+    id: 'MCP-004',
+    category: 'mcp-exploitation',
+    description: 'Runtime MCP tool registration or override attempt',
+    pattern: /(?:register|add|install|override).*?(?:mcp|tool).*(?:endpoint|url\b|"override"\s*:\s*true|override\s*:\s*true)/i,
+    severity: 'critical',
+  },
 ];
 
 // --- A2A Attack Patterns ---
