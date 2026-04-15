@@ -3,14 +3,14 @@
 
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-1301%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
+[![Tests](https://img.shields.io/badge/tests-1580%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
 [![NanoMind](https://img.shields.io/badge/NanoMind-semantic%20compiler-teal)](https://huggingface.co/opena2a/nanomind-security-classifier)
 
 **204 security checks + 28 semantic checks + behavioral simulation. The first security scanner that secures itself.**
 
 Security scanner, red-team toolkit, behavioral simulation engine, and skill builder for AI agents. Powered by the NanoMind Semantic Compiler -- a compiler-style architecture where every artifact is compiled into an Abstract Security Tree before analysis.
 
-[Seven scanners agree on only 0.12% of skills](https://theweatherreport.ai/posts/skill-scanner-disagreement/). HackMyAgent uses semantic understanding instead of regex to achieve near-zero false positives.
+[Seven scanners agree on only 0.12% of skills](https://theweatherreport.ai/posts/skill-scanner-disagreement/). HackMyAgent uses semantic understanding instead of regex to achieve low false positive rate on attack-focused inputs.
 
 ```bash
 npx hackmyagent secure

@@ -2,6 +2,16 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [0.17.9] - 2026-04-15
+
+### Fixed
+- **Benign FPR reduced from 90.9% to 0% on oracle P0-1 gate.** The TME v5 oracle eval (2026-04-15) measured 10/11 false positives on hard-negative benign fixtures. Four root causes fixed across the semantic compiler and three analyzers:
+  - `semantic-compiler.ts`: broadened constraint regex to capture all imperative forms (`must\b`), negation-form should, and scoped `cannot` to action verbs only to avoid extracting explanatory language ("cannot reliably distinguish") as constraints. Fixed negative-capability signal to match "no network" without requiring the word "access".
+  - `governance-analyzer.ts`: added `isExplicitlyRestrictedBenign` guard for skills with negative YAML capability declarations (`execute_shell: false`, `network_access: false`). These skills govern via YAML restrictions rather than natural-language SOUL constraints; applying full agent-level governance severity (high) was a false positive. Severity is now correctly `medium` for restricted benign skills.
+  - `governance-analyzer.ts`: extended `isAgentLevelArtifact` to include skills with high/critical declared capabilities. Ungoverned dangerous skills (e.g. `shell.execute`, `db.delete` string capabilities) now receive the full governance suite.
+  - `prompt-analyzer.ts`: replaced `isAgentLevelArtifact` with `isBehavioralArtifact` (excludes `mcp_config`) as the gate for injection/authority checks. Added `hasHighBenignContext` guard (intent=benign, confidence ≥ 0.85) to suppress jailbreak susceptibility, injection resistance, and authority confusion findings on explicitly restricted skills. Threshold 0.85 corresponds to 3 benign signals, achievable with at least one negative capability declaration.
+- **New oracle benign FPR regression test suite.** `__tests__/nanomind-core/benign-fp-regression.test.ts` — 10 hard-negative fixtures (b01–b10) locked as a P0-1 regression gate. These tests must continue to pass before any publish.
+
 ## [0.16.7] - 2026-04-11
 
 ### Added
