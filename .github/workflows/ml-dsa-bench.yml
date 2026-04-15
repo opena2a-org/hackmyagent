@@ -1,0 +1,73 @@
+name: ML-DSA-44 Benchmark
+
+# Runs the ML-DSA-44 sign/verify microbenchmark on ubuntu-latest as a
+# c6i.xlarge-class proxy. Required for AIComply AC-016: the sign path
+# budget must be re-verified after any change to ARP crypto or when
+# @noble/post-quantum is upgraded.
+
+on:
+  pull_request:
+    paths:
+      - 'src/arp/crypto/**'
+      - 'scripts/bench-ml-dsa-44.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+    inputs:
+      iters:
+        description: 'Iterations per op'
+        required: false
+        default: '1000'
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Run ML-DSA-44 benchmark
+        id: bench
+        run: |
+          node scripts/bench-ml-dsa-44.mjs --iters=${{ github.event.inputs.iters || '1000' }} | tee bench-output.txt
+          grep '^__BENCH_JSON__' bench-output.txt | sed 's/^__BENCH_JSON__//' > bench-summary.json
+          echo "summary<<EOF" >> $GITHUB_OUTPUT
+          cat bench-output.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-dsa-44-bench-${{ github.run_id }}
+          path: bench-summary.json
+          retention-days: 90
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.readFileSync('bench-output.txt', 'utf8');
+            const body = [
+              '## ML-DSA-44 benchmark (ubuntu-latest, c6i.xlarge-class)',
+              '',
+              '```',
+              output.trim(),
+              '```',
+              '',
+              'Budget (AIComply D17): sign p99 < 2.5ms, verify p99 < 1.5ms.',
+              'Runner is shared; a single over-budget run is noisy. Check for consistent regression across PR commits.',
+            ].join('\n');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
