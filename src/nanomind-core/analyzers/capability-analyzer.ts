@@ -41,6 +41,31 @@ export interface ASTFinding {
 }
 
 // ============================================================================
+// Agent-level artifact detection
+// ============================================================================
+
+/**
+ * Return true only for artifacts that explicitly govern behavior and are
+ * expected to carry full governance constraints.
+ *
+ * Skill files and MCP configs are capability declarations — they describe
+ * WHAT an agent can do but rely on an external SOUL.md for governance.
+ * Flagging them with "no constraints" at high severity confuses absence
+ * of governance with presence of attack surface. Agent-level checks
+ * (unconstrained capabilities, no governance) are high severity only for
+ * souls, system prompts, and agent configs, or for artifacts that already
+ * declare at least some constraints (showing intent to self-govern).
+ */
+function isAgentLevelArtifact(ast: SecurityAST): boolean {
+  return (
+    ast.artifactType === 'soul' ||
+    ast.artifactType === 'system_prompt' ||
+    ast.artifactType === 'agent_config' ||
+    ast.declaredConstraints.length > 0
+  );
+}
+
+// ============================================================================
 // Capability Analyzer
 // ============================================================================
 
@@ -145,12 +170,17 @@ function checkUnconstrainedCapabilities(ast: SecurityAST): ASTFinding[] {
     );
 
     if (!hasConstraint) {
+      // For agent-level artifacts (souls, system prompts), unconstrained high-risk
+      // capabilities are high severity — they are expected to self-govern.
+      // For capability declarations (skill/MCP files with no constraint language),
+      // missing constraints is a medium concern — the external SOUL.md governs.
+      const capSeverity: ASTFinding['severity'] = isAgentLevelArtifact(ast) ? 'high' : 'medium';
       findings.push({
         checkId: `AST-CAP-002`,
         name: 'Unconstrained High-Risk Capability',
         description: `High-risk capability "${cap.name}" has no governance constraint. Without constraints, this capability can be abused by prompt injection or social engineering.`,
         category: 'Capability Security',
-        severity: 'high',
+        severity: capSeverity,
         passed: false,
         message: `${cap.name} is ${cap.riskLevel}-risk with no constraint`,
         fixable: false,
@@ -346,12 +376,13 @@ function checkConstraintWeaknesses(ast: SecurityAST): ASTFinding[] {
 
   // Check: no constraints at all
   if (ast.declaredConstraints.length === 0 && ast.declaredCapabilities.length > 0) {
+    const govSeverity: ASTFinding['severity'] = isAgentLevelArtifact(ast) ? 'high' : 'medium';
     findings.push({
       checkId: `AST-GOVERN-002`,
       name: 'No Governance Constraints',
       description: 'This artifact declares capabilities but has no governance constraints. Without constraints, any capability can be abused.',
       category: 'Governance',
-      severity: 'high',
+      severity: govSeverity,
       passed: false,
       message: 'Zero constraints declared',
       fixable: false,
