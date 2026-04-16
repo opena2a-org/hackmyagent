@@ -8302,7 +8302,7 @@ dist/
                 fixable: false,
                 file: path.relative(targetDir, file),
                 line: i + 1,
-                fix: 'curl -o /tmp/install.sh URL && echo "EXPECTED_SHA256 /tmp/install.sh" | sha256sum -c && bash /tmp/install.sh',
+                fix: 'Remove the curl-pipe pattern. Download the script to a file first, verify its SHA256 checksum, then execute. Run hackmyagent secure . to reverify after fixing.',
                 guidance: 'Piping curl directly to sh executes whatever the remote server returns. A compromised or MITM-ed server can inject arbitrary code. Always download, verify, then execute.',
               });
             }

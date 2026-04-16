@@ -541,17 +541,26 @@ function cleanFixText(text: string, fileAlreadyShown?: string): string {
 
 /**
  * Format a fix string with visual prominence: bold+cyan for the command token,
- * dim for the description tail. Splits on " — " (em-dash with spaces).
+ * description tail as plain text. Splits on " — " (em-dash with spaces).
+ *
+ * Only prepends "→" when the fix text starts with an opena2a or hackmyagent
+ * command — i.e., something the user can copy and run verbatim. Prose guidance
+ * (multi-sentence, shell examples, explanations) is rendered as Fix: text
+ * without the arrow so it doesn't look like a runnable command.
  */
 function formatFixLine(text: string): string {
+  const isRunnable = /^(opena2a|hackmyagent)\s/.test(text);
   const parts = text.split(/\s+—\s+/);
-  if (parts.length >= 2) {
+  if (isRunnable && parts.length >= 2) {
     const cmd = `${colors.cyan}${colors.bold}→  ${parts[0]}${RESET()}`;
     const desc = ` — ${parts.slice(1).join(' — ')}`;
     return cmd + desc;
   }
-  // No em-dash separator: treat the whole line as the command
-  return `${colors.cyan}${colors.bold}→  ${text}${RESET()}`;
+  if (isRunnable) {
+    return `${colors.cyan}${colors.bold}→  ${text}${RESET()}`;
+  }
+  // Prose fix guidance: render without → so it doesn't look like a runnable command
+  return `${colors.cyan}Fix:${RESET()} ${text}`;
 }
 
 /** Shorten a file path for display — show filename + parent dir only */
