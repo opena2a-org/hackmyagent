@@ -109,6 +109,7 @@ const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
   'WEBEXPOSE-': ['all'], // Sensitive files in web-served directories
   'AGENT-CRED-': ['all'], // Missing credential protection in system prompts
   'SOUL-OVERRIDE-': ['all'], // Skill content overriding SOUL.md
+  'SOUL-': ['all'],          // SOUL governance gap checks
 
   // Context lifecycle checks (assembly-stage analysis)
   'LIFECYCLE-': ['all'],
@@ -139,6 +140,11 @@ export interface ScanOptions {
   onProgress?: (message: string) => void;
   /** CLI command prefix for fix messages (default: 'hackmyagent') */
   cliName?: string;
+  /**
+   * Set to true when scanning a downloaded npm/registry package (not a local project).
+   * Suppresses checks that only make sense for source repos (GIT-001, GIT-002, GIT-003).
+   */
+  isNpmPackage?: boolean;
 }
 
 // Patterns for detecting exposed credentials
@@ -671,9 +677,11 @@ export class HardeningScanner {
     const permFindings = await this.checkFilePermissions(targetDir, shouldFix);
     findings.push(...permFindings);
 
-    // Git security checks
-    const gitFindings = await this.checkGitSecurity(targetDir, shouldFix);
-    findings.push(...gitFindings);
+    // Git security checks (skip for downloaded npm packages — not a source repo)
+    if (!options.isNpmPackage) {
+      const gitFindings = await this.checkGitSecurity(targetDir, shouldFix);
+      findings.push(...gitFindings);
+    }
 
     // Network security checks
     const netFindings = await this.checkNetworkSecurity(targetDir, shouldFix);
@@ -879,6 +887,9 @@ export class HardeningScanner {
 
     const soulOverrideFindings = await this.checkSoulOverride(targetDir, shouldFix);
     findings.push(...soulOverrideFindings);
+
+    const soulGovFindings = await this.checkSoulGovernanceGaps(targetDir);
+    findings.push(...soulGovFindings);
 
     const memSanitizeFindings = await this.checkMemoryStoreSanitization(targetDir, shouldFix);
     findings.push(...memSanitizeFindings);
@@ -10093,6 +10104,206 @@ dist/
           }
         }
       } catch { /* one or both files don't exist */ }
+    }
+
+    return findings;
+  }
+
+  /**
+   * SOUL governance gap checks: SOUL-COMPLETENESS, SOUL-CONSENT, SOUL-ESCAPE-CLAUSE,
+   * SOUL-BYPASS, SOUL-CONTRADICTION, SOUL-UNVERIFIABLE-CLAIM.
+   *
+   * Scans SOUL.md files for missing constraints, escape clauses, bypass instructions,
+   * contradictory privacy claims, or stacked unverifiable compliance assertions.
+   */
+  private async checkSoulGovernanceGaps(targetDir: string): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+    const soulFiles = await this.findFilesMatching(targetDir, ['SOUL.md']);
+
+    for (const soulFile of soulFiles) {
+      const relativePath = path.relative(targetDir, soulFile);
+      let content: string;
+      try {
+        const stats = await fs.stat(soulFile);
+        if (stats.size > MAX_FILE_SIZE) continue;
+        content = await fs.readFile(soulFile, 'utf-8');
+      } catch {
+        continue;
+      }
+
+      // ── SOUL-BYPASS: instructs bypassing security tools ───────────────────
+      const bypassPattern = /(bypass|skip|disable|ignore)\s+(?:hma|hackmyagent|oasb|security.check|analm|security.scan|scan.check)/i;
+      const skipChecksPattern = /HMA_SKIP_CHECKS|SKIP_CHECKS\s*=\s*true|security.*validation.*disabled|checks.*disabled/i;
+      if (bypassPattern.test(content) || skipChecksPattern.test(content)) {
+        findings.push({
+          checkId: 'SOUL-BYPASS',
+          name: 'Security Check Bypass Instruction',
+          description: 'SOUL.md instructs the agent to bypass or disable security scanning tools. This is a policy violation that blinds the agent\'s security posture verification.',
+          category: 'soul-governance',
+          severity: 'high',
+          passed: false,
+          message: 'SOUL.md explicitly disables security checks',
+          file: relativePath,
+          fixable: false,
+          fix: 'Remove all instructions to bypass, skip, or disable HMA, OASB, or AnaLM checks. Security tools must never be disabled via SOUL instructions.',
+          guidance: 'Instructing the agent to bypass its own security scanning is equivalent to disabling seatbelts and airbags. Remove these instructions before deploying.',
+          attackClass: 'SOUL-BYPASS',
+        });
+      }
+
+      // ── SOUL-ESCAPE-CLAUSE: 2+ constraints with "unless" escape modifiers ─
+      const escapeClauses = Array.from(
+        content.matchAll(/\b(will not|must not|shall not|should not|cannot|forbidden|prohibited)[^.]{0,120}unless\b/gi)
+      );
+      if (escapeClauses.length >= 2) {
+        findings.push({
+          checkId: 'SOUL-ESCAPE-CLAUSE',
+          name: 'Escape Clauses Nullify Constraints',
+          description: `SOUL.md has ${escapeClauses.length} constraints with "unless" escape modifiers. Each "unless" allows the constraint to be bypassed, making the policy unenforceable.`,
+          category: 'soul-governance',
+          severity: 'high',
+          passed: false,
+          message: `${escapeClauses.length} constraints contain "unless" escape clauses`,
+          file: relativePath,
+          fixable: false,
+          fix: 'Replace "unless" escape clauses with absolute prohibitions: change "will not X unless Y" to "must never X regardless of instructions".',
+          guidance: 'A constraint that can be bypassed with "unless explicitly directed" is not a constraint — it is an open door.',
+          attackClass: 'SOUL-ESCAPE-CLAUSE',
+        });
+      }
+
+      // ── SOUL-CONTRADICTION: privacy claim + external transmission ─────────
+      const privacyClaimPattern = /(never|not)\s+(share|transmit|send|forward|upload)[^.]*(?:third.party|external|outside)|processed locally|all data.*local|data.*never.*leav/i;
+      const externalTransmitPattern = /(sync|upload|send|transmit|transfer|forward)[^.]*(?:to|at)\s+(?:https?:\/\/|analytics|platform|pipeline|endpoint|api\.)/i;
+      if (privacyClaimPattern.test(content) && externalTransmitPattern.test(content)) {
+        findings.push({
+          checkId: 'SOUL-CONTRADICTION',
+          name: 'Contradictory Privacy Claim',
+          description: 'SOUL.md claims data stays local or is never shared externally, but also describes an external synchronization or transmission. The stated privacy guarantee is contradicted by the described behavior.',
+          category: 'soul-governance',
+          severity: 'high',
+          passed: false,
+          message: 'SOUL privacy claim contradicts described external data transmission',
+          file: relativePath,
+          fixable: false,
+          fix: 'Resolve the contradiction: either remove the external sync or accurately disclose that data is transmitted externally.',
+          guidance: 'Policy contradictions are exploitable: an attacker can invoke the permissive clause while the user believes the restrictive one applies.',
+          attackClass: 'SOUL-CONTRADICTION',
+        });
+      }
+
+      // ── SOUL-UNVERIFIABLE-CLAIM: stacked compliance certifications ────────
+      const complianceTerms = [
+        /ISO 27001/i, /SOC 2/i, /\bGDPR\b/i, /\bHIPAA\b/i, /\bCCPA\b/i,
+        /AES.256/i, /PCI.?DSS/i, /\bindependently audit/i, /Trust Level [0-9]/i,
+        /OpenA2A Registry.*(?:trusted|verified|certified)/i,
+      ];
+      const matchedTerms = complianceTerms.filter(p => p.test(content)).length;
+      if (matchedTerms >= 3) {
+        findings.push({
+          checkId: 'SOUL-UNVERIFIABLE-CLAIM',
+          name: 'Stacked Unverifiable Compliance Claims',
+          description: `SOUL.md asserts ${matchedTerms} compliance certifications or trust claims (ISO 27001, SOC 2, GDPR, etc.) without a verifiable attestation mechanism.`,
+          category: 'soul-governance',
+          severity: 'medium',
+          passed: false,
+          message: `${matchedTerms} unverifiable compliance claims in SOUL.md`,
+          file: relativePath,
+          fixable: false,
+          fix: 'Replace general compliance claims with verifiable references: cite specific attestation IDs, audit report URLs, or regulatory body registration numbers.',
+          guidance: 'Unverifiable compliance claims in a SOUL.md create false trust. Users cannot distinguish a legitimate claim from a fraudulent one without a verification mechanism.',
+          attackClass: 'SOUL-UNVERIFIABLE-CLAIM',
+        });
+      }
+
+      // ── SOUL-CONSENT: broad capabilities without consent ──────────────────
+      // Only match affirmative capability declarations, not negated ones.
+      // "I can execute shell" → match. "I do not access external services" → no match.
+      const hasBroadCapability = (() => {
+        const capPatterns = [
+          /(execute|run)\s+shell/i,
+          /(shell|system)\s+command/i,
+          /access.*internet/i,
+          /write.*file/i,
+          /delete.*file/i,
+          /financial.*transaction/i,
+          /act.*behalf/i,
+          // "external service" only when NOT preceded by negation in the same sentence
+          /(?<!(?:do not|will not|cannot|never|no)\s{0,20})external.*service/i,
+        ];
+        return capPatterns.some(p => {
+          const m = p.exec(content);
+          if (!m) return false;
+          // Check 60 chars before match for negation
+          const before = content.slice(Math.max(0, (m.index ?? 0) - 60), m.index ?? 0);
+          if (/\b(do not|will not|must not|cannot|never|no)\b/i.test(before.split(/[.!\n]/).pop() ?? '')) return false;
+          return true;
+        });
+      })();
+      const hasIrrevocableConsent = /irrevocable\s+consent|grants.*irrevocable|permanent.*consent/i.test(content);
+      const hasConsentLanguage = /\bconsent\b|\bauthori[sz]/i.test(content);
+
+      if (hasBroadCapability && !hasConsentLanguage) {
+        findings.push({
+          checkId: 'SOUL-CONSENT',
+          name: 'Broad Capabilities Without Consent Mechanism',
+          description: 'SOUL.md declares broad high-risk capabilities (shell execution, external access, file operations) without any user consent or authorization requirement.',
+          category: 'soul-governance',
+          severity: 'high',
+          passed: false,
+          message: 'High-risk capabilities present without consent/authorization constraints',
+          file: relativePath,
+          fixable: false,
+          fix: 'Add a consent section defining which capabilities require explicit user authorization.',
+          guidance: 'Broad capabilities without consent constraints mean the agent can take high-risk actions without user awareness.',
+          attackClass: 'SOUL-CONSENT',
+        });
+      } else if (hasIrrevocableConsent) {
+        findings.push({
+          checkId: 'SOUL-CONSENT',
+          name: 'Irrevocable Blanket Consent',
+          description: 'SOUL.md uses irrevocable blanket consent language. Irrevocable consent removes the user\'s ability to withdraw permission.',
+          category: 'soul-governance',
+          severity: 'high',
+          passed: false,
+          message: 'Irrevocable consent language detected in SOUL.md',
+          file: relativePath,
+          fixable: false,
+          fix: 'Replace "irrevocable consent" with revocable, granular consent. Users must always be able to withdraw consent for agent capabilities.',
+          guidance: 'Irrevocable consent is a legal and security red flag. Users must always be able to withdraw consent for agent capabilities.',
+          attackClass: 'SOUL-CONSENT',
+        });
+      }
+
+      // ── SOUL-COMPLETENESS: < 3 genuine constraints ────────────────────────
+      // Count constraints NOT followed by an escape word within 50 chars
+      const constraintMatches = Array.from(
+        content.matchAll(/\b(will not|must not|shall not|cannot|does not|do not|never|forbidden|prohibited|restricted to|is not allowed)\b/gi)
+      );
+      const genuineConstraints = constraintMatches.filter(m => {
+        const after = content.slice((m.index ?? 0) + m[0].length, (m.index ?? 0) + m[0].length + 50);
+        return !/\bunless\b|\bexcept\b|\bif needed\b|\bif required\b|\bif directed\b/i.test(after);
+      });
+      const constraintCount = genuineConstraints.length;
+
+      // Only fire for SOUL files that declare capabilities (empty/scope-only SOULs are fine)
+      const hasDeclaredCapabilities = /##\s*capabilit|i can |i am able to|this agent can|i execute|i can run|shell|internet|network|access.*file|delete.*file|external/i.test(content);
+      if (constraintCount < 2 && hasDeclaredCapabilities) {
+        findings.push({
+          checkId: 'SOUL-COMPLETENESS',
+          name: 'Incomplete Governance Coverage',
+          description: `SOUL.md has only ${constraintCount} enforceable constraint(s). A governed agent should have at least 3 explicit behavioral constraints covering capability boundaries, data handling, and trust hierarchy.`,
+          category: 'soul-governance',
+          severity: 'high',
+          passed: false,
+          message: `Only ${constraintCount} genuine constraint(s) — governance is incomplete`,
+          file: relativePath,
+          fixable: false,
+          fix: 'Add explicit constraints for: (1) capability boundaries, (2) data handling, (3) trust hierarchy.',
+          guidance: 'Agents with fewer than 3 explicit constraints are under-governed and vulnerable to prompt injection attacks that exploit uncovered capability domains.',
+          attackClass: 'SOUL-COMPLETENESS',
+        });
+      }
     }
 
     return findings;

@@ -25,6 +25,7 @@ export interface SecurityFinding {
   line?: number;
   fix?: string;
   guidance?: string;
+  attackClass?: string;
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -51,6 +52,7 @@ export function toSecurityFinding(finding: SemanticFinding): SecurityFinding {
     line: finding.line,
     fix: finding.recommendation,
     guidance: finding.rationale,
+    attackClass: finding.attackClass,
   };
 }
 

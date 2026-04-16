@@ -2663,6 +2663,14 @@ Examples:
             !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
           ) as typeof result.findings;
         }
+        // Re-apply CLI --ignore list (reapplyIgnoreFilters only covers .hmaignore file rules)
+        if (ignoreList.length > 0) {
+          const ignoreSet = new Set(ignoreList.map((id: string) => id.toUpperCase()));
+          result.findings = (result.findings || []).filter((f: any) => !ignoreSet.has(f.checkId.toUpperCase())) as typeof result.findings;
+          if (result.allFindings) {
+            result.allFindings = result.allFindings.filter((f: any) => !ignoreSet.has(f.checkId.toUpperCase()));
+          }
+        }
         // Recalculate score from filtered findings (score was set pre-NanoMind)
         // findings already filtered by project type above, so just exclude passed/fixed
         const forScore = (result.findings || []).filter((f: any) => !f.passed && !f.fixed);
@@ -3284,6 +3292,12 @@ Examples:
       // Star prompt (interactive TTY only, text format only)
       if (process.stdout.isTTY) {
         console.log(`${colors.cyan}Helpful?${RESET()} Star the project: https://github.com/opena2a-org/opena2a\n`);
+      }
+
+      // Check --fail-below threshold (standard mode)
+      if (failBelow !== undefined && result.score < failBelow) {
+        console.error(`Score ${result.score} is below threshold ${failBelow}`);
+        process.exit(1);
       }
 
       // Exit with non-zero if critical/high issues remain (or any issues in --ci mode)
