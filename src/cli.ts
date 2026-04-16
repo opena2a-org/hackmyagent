@@ -2407,7 +2407,11 @@ async function handleContribution(
       recordScanAndMaybeShowTip,
       buildScanEvent,
       queueAndMaybeFlush,
+      migrateLegacyContributeChoice,
     } = await import('./telemetry');
+
+    // One-time migration: honor contribute=true from legacy ~/.hackmyagent/config.json
+    migrateLegacyContributeChoice();
 
     // Record scan count and maybe show the delayed consent tip
     const tip = recordScanAndMaybeShowTip();
@@ -6821,14 +6825,27 @@ Examples:
     verbose?: boolean;
     exportCsv?: string;
   }) => {
+    const targetDir = directory ?? process.cwd();
     const { detect: runDetect } = await import('./scanner/detect.js');
     const exitCode = await runDetect({
-      targetDir: directory ?? process.cwd(),
+      targetDir,
       ci:        globalCiMode,
       format:    options.json ? 'json' : 'text',
       verbose:   options.verbose,
       exportCsv: options.exportCsv,
     });
+
+    // Wire detect scans into the community contribution pipeline.
+    // Detect findings are agent/MCP/governance posture — relevant data for the registry.
+    await handleContribution(
+      undefined,      // no --contribute flag on detect; respects global config
+      targetDir,
+      [],             // detect doesn't produce SecurityFinding[]; summary goes via contribute metadata
+      0,
+      undefined,
+      options.json ? 'json' : 'text',
+    );
+
     process.exit(exitCode);
   });
 
@@ -7256,64 +7273,83 @@ function parseGitHubTarget(target: string): { org: string; repo: string; cloneUr
 const REGISTRY_URL = 'https://api.oa2a.org';
 
 // ============================================================================
-// Scan counter + contribute preference (~/.hackmyagent/config.json)
+// Scan counter + contribute preference — delegated to telemetry/opt-in (canonical ~/.opena2a/config.json)
 // ============================================================================
+// These functions wrap the canonical opt-in module so ALL scan types (check,
+// secure, scan-soul, detect) share one config and one opt-in decision.
 
-function getConfigPath(): string {
-  const { join } = require('node:path');
-  const home = process.env.HOME || process.env.USERPROFILE || '/tmp';
-  return join(home, '.hackmyagent', 'config.json');
-}
-
-function readConfig(): Record<string, unknown> {
-  const fs = require('node:fs');
+function isContributeEnabled(): boolean {
   try {
-    return JSON.parse(fs.readFileSync(getConfigPath(), 'utf-8'));
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { isContributeEnabled: enabled } = require('./telemetry/opt-in.js');
+    return enabled() === true;
   } catch {
-    return {};
+    return false;
   }
 }
 
-function writeConfig(config: Record<string, unknown>): void {
-  const fs = require('node:fs');
-  const { dirname } = require('node:path');
-  const configPath = getConfigPath();
+function saveContributeChoice(enabled: boolean): void {
   try {
-    fs.mkdirSync(dirname(configPath), { recursive: true });
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { saveContributeChoice: save } = require('./telemetry/opt-in.js');
+    save(enabled);
   } catch {
-    // Non-fatal — config is convenience, not critical
+    // Non-fatal
   }
 }
 
 function incrementScanCounter(): number {
-  const config = readConfig();
-  const count = ((config.scanCount as number) || 0) + 1;
-  writeConfig({ ...config, scanCount: count });
-  return count;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { incrementScanCount } = require('./telemetry/opt-in.js');
+    return incrementScanCount();
+  } catch {
+    return 0;
+  }
 }
 
 function hasContributeChoice(): boolean {
-  const config = readConfig();
-  return config.contribute !== undefined;
+  // If user has explicitly opted in OR out, don't re-prompt.
+  // We check by calling isContributeEnabled and also checking if the config has a value.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { shouldPromptContribute } = require('./telemetry/opt-in.js');
+    // shouldPromptContribute returns true only when no choice has been made yet
+    // (and after 3 scans, and cooldown expired). So hasContributeChoice = NOT shouldPromptContribute
+    // when scan count >= 3. But we use it to mean "has the user already decided?" which is
+    // the inverse: if shouldPromptContribute is false AND contribute is not enabled, it could be
+    // undecided-but-under-threshold. Use the canonical check directly.
+    const config = (() => {
+      const os = require('os');
+      const path = require('path');
+      const fs = require('fs');
+      const home = process.env.OPENA2A_HOME || path.join(os.homedir(), '.opena2a');
+      const p = path.join(home, 'config.json');
+      try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return {}; }
+    })();
+    return config.contribute?.enabled !== undefined;
+  } catch {
+    return false;
+  }
 }
 
-function isContributeEnabled(): boolean {
-  const config = readConfig();
-  return config.contribute === true;
-}
-
-function saveContributeChoice(enabled: boolean): void {
-  const config = readConfig();
-  writeConfig({ ...config, contribute: enabled });
+// Pending-scan queue for `check` command registry publishes (retry on failure).
+// Stored in ~/.opena2a/hma-pending-scans.json (separate from @opena2a/contribute queue).
+function getPendingScansPath(): string {
+  const os = require('os');
+  const path = require('path');
+  const home = process.env.OPENA2A_HOME || path.join(os.homedir(), '.opena2a');
+  return path.join(home, 'hma-pending-scans.json');
 }
 
 function queuePendingScan(
   name: string,
   result: { score: number; maxScore: number; projectType: string; findings: SecurityFinding[] },
 ): void {
-  const config = readConfig();
-  const queue = (config.pendingScans as Array<Record<string, unknown>>) || [];
+  const fs = require('fs');
+  const p = getPendingScansPath();
+  let queue: Array<Record<string, unknown>> = [];
+  try { queue = JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { /* empty */ }
   queue.push({
     name,
     score: result.score,
@@ -7322,27 +7358,30 @@ function queuePendingScan(
     findingCount: result.findings.filter(f => !f.passed).length,
     timestamp: new Date().toISOString(),
   });
-  // Keep max 20 pending scans
-  writeConfig({ ...config, pendingScans: queue.slice(-20) });
+  try {
+    fs.mkdirSync(require('path').dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(queue.slice(-20), null, 2));
+  } catch { /* Non-fatal */ }
 }
 
 async function flushPendingScans(): Promise<void> {
-  const config = readConfig();
-  const queue = (config.pendingScans as Array<Record<string, unknown>>) || [];
+  const fs = require('fs');
+  const p = getPendingScansPath();
+  let queue: Array<Record<string, unknown>> = [];
+  try { queue = JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return; }
   if (queue.length === 0) return;
 
-  // Try to publish each, keep failures
   const remaining: Array<Record<string, unknown>> = [];
   for (const scan of queue) {
     const ok = await publishToRegistry(scan.name as string, {
       score: scan.score as number,
       maxScore: scan.maxScore as number,
       projectType: scan.projectType as string,
-      findings: [], // Summary only for queued scans
+      findings: [],
     });
     if (!ok) remaining.push(scan);
   }
-  writeConfig({ ...config, pendingScans: remaining });
+  try { fs.writeFileSync(p, JSON.stringify(remaining, null, 2)); } catch { /* Non-fatal */ }
 }
 
 interface RegistryTrustData {

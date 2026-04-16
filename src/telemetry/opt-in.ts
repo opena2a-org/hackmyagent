@@ -249,3 +249,52 @@ export async function showContributePrompt(): Promise<boolean> {
   }
   return false;
 }
+
+/**
+ * One-time migration: if the legacy ~/.hackmyagent/config.json had
+ * contribute=true but the unified ~/.opena2a/config.json does not,
+ * migrate the opt-in so the user's YES is honored everywhere.
+ *
+ * Called once at startup (non-blocking, silently ignores errors).
+ */
+export function migrateLegacyContributeChoice(): void {
+  try {
+    const os = require('os');
+    const path = require('path');
+    const fs = require('fs');
+
+    const legacyPath = path.join(os.homedir(), '.hackmyagent', 'config.json');
+    if (!existsSync(legacyPath)) return;
+
+    const legacy = JSON.parse(readFileSync(legacyPath, 'utf-8'));
+    if (legacy.contribute !== true) return; // no opt-in to migrate
+
+    const backend = resolveBackend();
+    if (backend.isContributeEnabled()) return; // already enabled in unified config
+
+    // User opted in via legacy check command — honor it in the unified config
+    backend.setContributeEnabled(true);
+
+    // Migrate pending scans queue to unified location
+    if (Array.isArray(legacy.pendingScans) && legacy.pendingScans.length > 0) {
+      const newQueuePath = path.join(
+        process.env.OPENA2A_HOME || path.join(os.homedir(), '.opena2a'),
+        'hma-pending-scans.json',
+      );
+      try {
+        const dir = path.dirname(newQueuePath);
+        if (!existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        let existing: unknown[] = [];
+        try { existing = JSON.parse(readFileSync(newQueuePath, 'utf-8')); } catch { /* empty */ }
+        writeFileSync(newQueuePath, JSON.stringify([...existing, ...legacy.pendingScans], null, 2));
+      } catch { /* Non-fatal */ }
+    }
+
+    // Clear migrated fields from legacy config (keep scanCount for reference)
+    delete legacy.contribute;
+    delete legacy.pendingScans;
+    writeFileSync(legacyPath, JSON.stringify(legacy, null, 2) + '\n');
+  } catch {
+    // Non-fatal: migration failure must not affect the scan
+  }
+}
