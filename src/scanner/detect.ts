@@ -576,7 +576,7 @@ function generateFindings(result: Omit<DetectResult, 'findings'>): Finding[] {
       whyItMatters:
         'API keys or tokens appear to be stored directly in these configuration files. '
         + 'Anyone with repository access can see and use these credentials.',
-      remediation: 'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.',
+      remediation: 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.',
     });
   }
 
@@ -762,9 +762,11 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
     lines.push(sectionHeader(`Running AI Agents (${assistants.length + llms.length})`));
     for (const agent of [...assistants, ...llms]) {
       const nameCol = agent.name.padEnd(22);
-      const govStr = agent.governanceStatus === 'governed' ? green('governed') : yellow('ungoverned');
+      const isGoverned = agent.governanceStatus === 'governed';
+      const govStr = isGoverned ? green('governed') : yellow('ungoverned');
       const pidStr = verbose ? dim(` (PID ${agent.pid})`) : '';
-      lines.push(`  ${nameCol}${govStr}${pidStr}`);
+      const fixHint = !isGoverned ? `  ${dim('→')}  ${cyan('hackmyagent harden-soul .')}` : '';
+      lines.push(`  ${nameCol}${govStr}${pidStr}${fixHint}`);
     }
   }
 

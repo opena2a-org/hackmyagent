@@ -539,6 +539,21 @@ function cleanFixText(text: string, fileAlreadyShown?: string): string {
   return line;
 }
 
+/**
+ * Format a fix string with visual prominence: bold+cyan for the command token,
+ * dim for the description tail. Splits on " — " (em-dash with spaces).
+ */
+function formatFixLine(text: string): string {
+  const parts = text.split(/\s+—\s+/);
+  if (parts.length >= 2) {
+    const cmd = `${colors.cyan}${colors.bold}→  ${parts[0]}${RESET()}`;
+    const desc = `${colors.dim} — ${parts.slice(1).join(' — ')}${RESET()}`;
+    return cmd + desc;
+  }
+  // No em-dash separator: treat the whole line as the command
+  return `${colors.cyan}${colors.bold}→  ${text}${RESET()}`;
+}
+
 /** Shorten a file path for display — show filename + parent dir only */
 function shortenPath(filePath: string): string {
   const parts = filePath.split('/');
@@ -746,7 +761,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           console.log(`  ${borderColor}│${RESET()} ${cleanFixText(f.guidance, f.file)}`);
         }
         if (f.fix) {
-          console.log(`  ${borderColor}│${RESET()} ${colors.cyan}Fix:${RESET()} ${cleanFixText(f.fix, f.file)}`);
+          console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(f.fix, f.file))}`);
         }
       }
     } else {
@@ -771,7 +786,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           console.log(`  ${borderColor}│${RESET()} ${cleanFixText(f.guidance, f.file)}`);
         }
         if (f.fix) {
-          console.log(`  ${borderColor}│${RESET()} ${colors.cyan}Fix:${RESET()} ${cleanFixText(f.fix, f.file)}`);
+          console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(f.fix, f.file))}`);
         }
         if (verbose) {
           if (f.checkId) console.log(`  ${borderColor}│${RESET()} ${colors.dim}Check: ${f.checkId}${RESET()}`);
@@ -782,6 +797,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         // Collapse similar
         if (!verbose) {
           const dir = f.file?.split('/').slice(0, -1).join('/') || '';
+          const artifactName = f.file ? (f.file.split('/').pop() ?? '') : '';
           let similarCount = 0;
           for (let j = i + 1; j < failed.length; j++) {
             if (skipped.has(j)) continue;
@@ -793,7 +809,8 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           }
           if (similarCount > 0) {
             const sevColor = SEVERITY_DISPLAY[f.severity]?.color() ?? colors.dim;
-            console.log(`  ${borderColor}│${RESET()} ${colors.dim}+ ${similarCount} more ${RESET()}${sevColor}${f.severity}${RESET()}${dir ? `${colors.dim} in ${shortenPath(dir)}${RESET()}` : ''}${colors.dim}  (run with --verbose to see all)${RESET()}`);
+            const collapseCtx = artifactName ? ` in ${artifactName}` : (dir ? ` in ${shortenPath(dir)}` : '');
+            console.log(`  ${borderColor}│${RESET()} ${colors.dim}+ ${similarCount} more ${RESET()}${sevColor}${f.severity}${collapseCtx ? `${RESET()}${colors.dim}${collapseCtx}` : ''}${RESET()}${colors.dim}  (run with --verbose to see all)${RESET()}`);
           }
         }
       }
@@ -876,10 +893,22 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         const level = String(r.threatLevel ?? 'unknown').toUpperCase();
         const levelColor = level === 'CRITICAL' || level === 'HIGH' ? colors.red : level === 'MEDIUM' ? colors.yellow : colors.dim;
         console.log(`  ${levelColor}${colors.bold}${level}${RESET()}  ${r.attackVector ?? ''}`);
-        if (r.description) console.log(`  ${colors.dim}${r.description}${RESET()}`);
+        if (r.description) {
+          // Strip markdown headers and excess whitespace; cap at ~240 chars
+          const desc = String(r.description).replace(/^#{1,6}\s+/gm, '').replace(/\*\*/g, '').trim();
+          const capped = desc.length > 240 ? desc.slice(0, 237) + '...' : desc;
+          console.log(`  ${colors.dim}${capped}${RESET()}`);
+        }
         if (Array.isArray(r.mitigations) && r.mitigations.length > 0) {
           for (const m of r.mitigations) {
-            console.log(`  ${colors.cyan}Fix:${RESET()} ${m}`);
+            // Only render as Fix: if it looks like a command/action, not analysis prose
+            const cleaned = String(m).replace(/^#{1,6}\s+/gm, '').replace(/\*\*/g, '').trim();
+            if (!cleaned) continue;
+            const isActionable = /^(run|add|replace|set|configure|install|update|create|remove|enable|disable|use|ensure|restrict|limit)[^a-z]/i.test(cleaned) ||
+              cleaned.includes('`') || cleaned.startsWith('opena2a') || cleaned.startsWith('hackmyagent');
+            if (isActionable) {
+              console.log(`  ${colors.cyan}Fix:${RESET()} ${cleaned.length > 200 ? cleaned.slice(0, 197) + '...' : cleaned}`);
+            }
           }
         }
       } else if (af.taskType === 'credentialContextClassification') {
@@ -6550,7 +6579,7 @@ program
     // Static explanation lookup
     const checkId = findingId.toUpperCase();
     const staticExplanations: Record<string, string> = {
-      'CRED-001': 'Hardcoded credential detected. API keys, tokens, or passwords are embedded directly in source code. Run: opena2a protect .  — encrypts secrets into a secure vault (keychain, 1Password, or AIM vault) and injects them at runtime. Rotate any already-exposed credentials.',
+      'CRED-001': 'Hardcoded credential detected. API keys, tokens, or passwords are embedded directly in source code. Run: opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only. Rotate any already-exposed credentials.',
       'CRED-002': 'OpenAI API key detected (sk-proj-... or sk-...). Run: opena2a protect .  — removes the key from source and stores it in your secure vault.',
       'CRED-003': 'Anthropic API key detected (sk-ant-...). Run: opena2a protect .  — removes the key from source and stores it in your secure vault.',
       'CRED-004': 'AWS credential pattern detected (AKIA...). Run: opena2a protect .  — removes the key from source and stores it in your secure vault.',
@@ -7873,6 +7902,7 @@ function printCheckNextSteps(
       console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
     }
   }
+  console.log(`  ${colors.cyan}All commands:${RESET()}         ${CLI_PREFIX} --help`);
   console.log();
 }
 

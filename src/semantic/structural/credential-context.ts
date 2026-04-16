@@ -152,7 +152,7 @@ function detectUrlPasswords(file: AnalysisFile): SemanticFinding[] {
         file: file.path,
         line: i + 1,
         recommendation:
-          'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.',
+          'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.',
         layer: 2,
         autoFixable: false,
       });
@@ -195,7 +195,7 @@ function detectGenericTokens(file: AnalysisFile): SemanticFinding[] {
             severity: severityForFile(file.path),
             file: file.path,
             line: i + 1,
-            recommendation: 'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.',
+            recommendation: 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.',
             layer: 2,
             autoFixable: false,
           });
@@ -221,7 +221,7 @@ function detectGenericTokens(file: AnalysisFile): SemanticFinding[] {
             severity: severityForFile(file.path),
             file: file.path,
             line: i + 1,
-            recommendation: 'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.',
+            recommendation: 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.',
             layer: 2,
             autoFixable: false,
           });
@@ -361,7 +361,7 @@ function detectMcpEnvSecrets(file: AnalysisFile): SemanticFinding[] {
           severity: 'critical',
           file: file.path,
           line: lineNum,
-          recommendation: 'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.',
+          recommendation: 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.',
           layer: 2,
           autoFixable: false,
         });

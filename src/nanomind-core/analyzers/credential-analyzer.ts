@@ -342,7 +342,7 @@ function checkHardcodedSecrets(ast: SecurityAST): ASTFinding[] {
     fixable: false,
     file: ast.artifactPath,
     fix:
-      'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). ' +
+      'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only. ' +
       'Rotate any credentials that were committed to version control.',
     guidance:
       'After removing hardcoded credentials, rotate them immediately. ' +

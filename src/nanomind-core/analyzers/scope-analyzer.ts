@@ -85,11 +85,12 @@ function checkWildcardToolAccess(ast: SecurityAST): ASTFinding[] {
       fixable: false,
       file: ast.artifactPath,
       fix: isFullWildcard
-        ? `Replace wildcard "*" with an explicit allowlist of needed tools. ` +
-          `In your MCP config, change "allowedTools": ["*"] to "allowedTools": ["tool1", "tool2"]. ` +
-          'Only include tools the agent actually needs.'
+        ? `Replace the wildcard "*" with an explicit allowlist in mcp.json — ` +
+          `change "allowedTools": ["*"] to "allowedTools": ["tool1", "tool2"]. ` +
+          'Run `opena2a mcp audit` to inventory tools first, then keep only what the agent needs.'
         : `Replace partial wildcard "${cap.name}" with specific tool names. ` +
-          `List only the ${cap.name.split('.')[0]} tools the agent actually uses.`,
+          `List only the ${cap.name.split('.')[0]} tools the agent actually uses. ` +
+          'Run `opena2a mcp audit` to see available tools.',
       guidance:
         'Principle of least privilege: grant only the minimum permissions needed. ' +
         'Wildcard access means a prompt injection attack can invoke any tool.',
@@ -123,8 +124,8 @@ function checkWildcardToolAccess(ast: SecurityAST): ASTFinding[] {
           fixable: false,
           file: ast.artifactPath,
           fix:
-            `Add an "allowedTools" list to the "${cap.scope}" server configuration. ` +
-            'Specify only the tools your agent needs.',
+            `Add an explicit "allowedTools" list to the "${cap.scope}" server config in mcp.json. ` +
+            'Run `opena2a mcp audit` to inventory available tools, then restrict to the minimum needed.',
           guidance:
             'MCP servers can expose dangerous tools (file system, shell execution). ' +
             'Always restrict access to a named allowlist.',

@@ -13,7 +13,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { SemanticCompiler } from '../../src/nanomind-core/compiler/semantic-compiler';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { SemanticCompiler, extractDeclaredConstraints } from '../../src/nanomind-core/compiler/semantic-compiler';
 import { analyzeCapabilities } from '../../src/nanomind-core/analyzers/capability-analyzer';
 import { analyzeGovernance } from '../../src/nanomind-core/analyzers/governance-analyzer';
 import { analyzePrompt } from '../../src/nanomind-core/analyzers/prompt-analyzer';
@@ -379,5 +381,30 @@ describe('Benign FPR Regression (oracle P0-1 gate)', () => {
   it('b11: governance SOUL with injection examples in defense section — no high/critical findings', async () => {
     const findings = await getHighCriticalFindings(B11_GOVERNANCE_SOUL_WITH_INJECTION_EXAMPLES, 'b11');
     expect(findings, `Expected no high/critical findings for governance SOUL quoting injection phrases defensively. Got: ${findings.map(f => `${f.checkId}(${f.severity}): ${f.message}`).join(', ')}`).toHaveLength(0);
+  });
+
+  it('b12: governed-mcp — mcp.json with sibling SOUL.md must not fire AST-GOV-003 (SOUL propagation)', async () => {
+    // Regression for B1: mcp.json has zero constraints but a sibling SOUL.md covers all domains.
+    // After B1 fix, project constraints from SOUL.md are passed to analyzeGovernance so AST-GOV-003
+    // does NOT fire on the mcp.json.
+    const fixtureDir = join(__dirname, '../../test/fixtures/governed-mcp');
+    const mcpContent = readFileSync(join(fixtureDir, 'mcp.json'), 'utf-8');
+    const soulContent = readFileSync(join(fixtureDir, 'SOUL.md'), 'utf-8');
+
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(mcpContent, 'mcp.json');
+    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+    // Extract project-level constraints from the sibling SOUL.md
+    const projectConstraints = extractDeclaredConstraints(soulContent);
+    expect(projectConstraints.length, 'SOUL.md should have at least 5 constraints').toBeGreaterThanOrEqual(5);
+
+    const allFindings: ASTFinding[] = [
+      ...analyzeCapabilities(result.ast),
+      ...analyzeGovernance(result.ast, verifier, undefined, projectConstraints),
+    ];
+
+    const gov003Findings = allFindings.filter(f => f.checkId === 'AST-GOV-003');
+    expect(gov003Findings, `AST-GOV-003 must not fire when SOUL.md governs the project. Got: ${gov003Findings.map(f => f.message).join(', ')}`).toHaveLength(0);
   });
 });

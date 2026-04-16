@@ -178,7 +178,7 @@ function fixCredentialIssue(finding: ASTFinding, ast: SecurityAST): string {
   const file = finding.file ?? ast.artifactPath ?? 'the artifact';
 
   if (finding.attackClass === 'CRED-HARDCODED') {
-    parts.push('opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.');
+    parts.push('opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.');
     if (ast.artifactType === 'skill' || ast.artifactType === 'system_prompt') {
       parts.push('Skills and system prompts must never contain credential values.');
     }
@@ -191,7 +191,7 @@ function fixCredentialIssue(finding: ASTFinding, ast: SecurityAST): string {
     parts.push('  2. Use a credential broker that issues scoped, short-lived tokens.');
     parts.push('  3. Ensure credentials never appear in request bodies or logs.');
   } else if (finding.attackClass === 'CRED-EXPOSURE') {
-    parts.push('opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.');
+    parts.push('opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.');
     if (ast.declaredPurpose) {
       parts.push(`Credentials in this ${ast.artifactType} ("${truncate(ast.declaredPurpose, 60)}") are exposed in version control.`);
     }

@@ -428,7 +428,7 @@ function extractDeclaredCapabilities(
   return caps;
 }
 
-function extractDeclaredConstraints(content: string): Constraint[] {
+export function extractDeclaredConstraints(content: string): Constraint[] {
   const constraints: Constraint[] = [];
 
   // Strip content inside fenced code blocks before constraint extraction —

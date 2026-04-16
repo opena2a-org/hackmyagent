@@ -2088,7 +2088,7 @@ dist/
         ? 'Cursor rules contain exposed credentials'
         : 'No credentials found in Cursor rules',
       fixable: false,
-      fix: hasCredentialsInRules ? 'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.' : undefined,
+      fix: hasCredentialsInRules ? 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.' : undefined,
       guidance: 'Cursor rules files are often committed to git. Credentials embedded there get pushed to remotes where anyone with repo access can extract them.',
     });
 
@@ -2217,7 +2217,7 @@ dist/
         ? 'package.json contains hardcoded secrets'
         : 'No secrets found in package.json',
       fixable: false,
-      fix: hasSecretsInPackageJson ? 'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.' : undefined,
+      fix: hasSecretsInPackageJson ? 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.' : undefined,
       guidance: 'package.json is always committed to git and published to npm. Secrets there are visible to anyone who installs or forks your package.',
     });
 
@@ -2248,7 +2248,7 @@ dist/
         ? 'JWT secret hardcoded in config'
         : 'No hardcoded JWT secrets found',
       fixable: false,
-      fix: hasJwtSecret ? 'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.' : undefined,
+      fix: hasJwtSecret ? 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.' : undefined,
       guidance: 'A hardcoded JWT secret lets anyone who reads the config forge valid authentication tokens and impersonate any user.',
     });
 
@@ -3543,7 +3543,7 @@ dist/
         ? 'Hardcoded connection strings detected'
         : 'No hardcoded connection strings found',
       fixable: false,
-      fix: hasHardcodedConnStr ? 'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.' : undefined,
+      fix: hasHardcodedConnStr ? 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.' : undefined,
       guidance: 'Hardcoded connection strings contain database hostnames, ports, and credentials. Anyone with code access can connect directly to your database.',
     });
 
@@ -6593,7 +6593,7 @@ dist/
             message: `${name} found in plaintext`,
             file: relativePath,
             fixable: false,
-            fix: 'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.',
+            fix: 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.',
             guidance: 'Plaintext API keys in .env files can be accidentally committed to version control and extracted by any process that reads the file.',
           });
           break; // Only report first match per file
