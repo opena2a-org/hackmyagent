@@ -104,8 +104,7 @@ function checkCredentialsInNonEnvContext(ast: SecurityAST, projectType?: Project
       file: ast.artifactPath,
       fix: isSDK
         ? 'Expected behavior for an SDK. Credentials are read from environment variables and sent to the service API.'
-        : 'Replace inline credentials with environment variable references (e.g., $API_KEY or process.env.API_KEY). ' +
-          'Use a secret manager for production deployments.',
+        : 'Move credential references to environment variables. Auto-migrate: opena2a protect .',
       guidance: isSDK
         ? 'This is expected behavior for an API client SDK. The SDK reads API keys to authenticate requests.'
         : 'Credentials embedded in non-env artifacts can be leaked through version control, ' +
