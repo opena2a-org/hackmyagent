@@ -142,11 +142,101 @@ export function buildScanEvent(
 }
 
 // ---------------------------------------------------------------------------
+// Retry state — opportunistic backoff for failed submissions
+// ---------------------------------------------------------------------------
+//
+// Retry intervals (checked when a scan runs — no background timers):
+//   attempt 1 fail → retry after  5 minutes
+//   attempt 2 fail → retry after  1 hour
+//   attempt 3 fail → retry after  8 hours
+//   attempt 4+ fail → retry after 24 hours (once daily)
+//   after 7 days of continuous failure → drop queue (data is stale)
+//
+// Stored in ~/.opena2a/contribute-retry.json alongside the queue.
+// Completely silent — failure to retry never surfaces to the user.
+
+const RETRY_INTERVALS_MS = [
+  5 * 60 * 1000,        // 5 min
+  60 * 60 * 1000,       // 1 hour
+  8 * 60 * 60 * 1000,   // 8 hours
+  24 * 60 * 60 * 1000,  // 24 hours (daily cap)
+];
+const STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000; // 7 days → drop queue
+
+interface RetryState {
+  lastAttemptAt: string;
+  nextRetryAt: string;
+  retryCount: number;
+}
+
+function getRetryStatePath(): string {
+  const os = require('os');
+  const path = require('path');
+  const home = process.env.OPENA2A_HOME || path.join(os.homedir(), '.opena2a');
+  return path.join(home, 'contribute-retry.json');
+}
+
+function readRetryState(): RetryState | null {
+  try {
+    const { readFileSync, existsSync } = require('fs');
+    const p = getRetryStatePath();
+    if (!existsSync(p)) return null;
+    return JSON.parse(readFileSync(p, 'utf-8'));
+  } catch {
+    return null;
+  }
+}
+
+function writeRetryState(state: RetryState): void {
+  try {
+    const { writeFileSync, mkdirSync } = require('fs');
+    const path = require('path');
+    const p = getRetryStatePath();
+    mkdirSync(path.dirname(p), { recursive: true });
+    writeFileSync(p, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 });
+  } catch { /* Non-fatal */ }
+}
+
+function clearRetryState(): void {
+  try {
+    const { rmSync, existsSync } = require('fs');
+    const p = getRetryStatePath();
+    if (existsSync(p)) rmSync(p);
+  } catch { /* Non-fatal */ }
+}
+
+/** Returns true if enough time has passed to attempt a retry. */
+function shouldRetryNow(state: RetryState): boolean {
+  const now = Date.now();
+
+  // Drop stale queue — 7 days of failure means data is no longer useful
+  if (now - new Date(state.lastAttemptAt).getTime() > STALE_AFTER_MS) {
+    sharedClearQueue();
+    clearRetryState();
+    return false;
+  }
+
+  return now >= new Date(state.nextRetryAt).getTime();
+}
+
+function recordFailure(previousState: RetryState | null): void {
+  const retryCount = (previousState?.retryCount ?? 0) + 1;
+  const intervalIndex = Math.min(retryCount - 1, RETRY_INTERVALS_MS.length - 1);
+  const delayMs = RETRY_INTERVALS_MS[intervalIndex];
+
+  writeRetryState({
+    lastAttemptAt: new Date().toISOString(),
+    nextRetryAt: new Date(Date.now() + delayMs).toISOString(),
+    retryCount,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Submit: queue + flush (delegated to @opena2a/contribute)
 // ---------------------------------------------------------------------------
 
 /**
- * Queue a scan result and flush if threshold reached.
+ * Queue a scan result and flush if threshold reached or retry interval elapsed.
  * Non-blocking, best-effort. Never throws.
  */
 export async function queueAndMaybeFlush(
@@ -156,13 +246,20 @@ export async function queueAndMaybeFlush(
 ): Promise<void> {
   sharedQueueEvent(event);
 
-  if (sharedShouldFlush()) {
+  const retryState = readRetryState();
+  const hasPendingRetry = retryState !== null;
+
+  // Flush if: threshold reached, OR a scheduled retry is due
+  const shouldFlush = sharedShouldFlush() || (hasPendingRetry && shouldRetryNow(retryState!));
+  if (shouldFlush) {
     await flushQueue(registryUrl, verbose);
   }
 }
 
 /**
  * Flush queued events to the OpenA2A Registry.
+ * On success: clears queue and retry state.
+ * On failure: records retry state with backoff interval.
  * Returns true if submission succeeded (or queue was empty).
  */
 export async function flushQueue(
@@ -170,12 +267,22 @@ export async function flushQueue(
   verbose?: boolean,
 ): Promise<boolean> {
   const batch = sharedBuildBatch();
-  if (!batch) return true;
+  if (!batch) {
+    clearRetryState(); // Queue empty — no need to retry
+    return true;
+  }
 
+  const priorState = readRetryState();
   const success = await submitBatch(batch, registryUrl, verbose);
+
   if (success) {
     sharedClearQueue();
+    clearRetryState();
+  } else {
+    // Record failure silently — next scan will check the retry schedule
+    recordFailure(priorState);
   }
+
   return success;
 }
 
