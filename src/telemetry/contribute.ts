@@ -142,6 +142,156 @@ export function buildScanEvent(
 }
 
 // ---------------------------------------------------------------------------
+// Registry health cache + smart ping
+// ---------------------------------------------------------------------------
+//
+// Pre-flight health check: GET /health (3s timeout) before any flush attempt.
+// Cached for HEALTH_CACHE_TTL_MS to avoid hitting /health on every scan.
+// Result stored in ~/.opena2a/contribute-health.json.
+//
+// scan_ping heartbeat: sent once per PING_INTERVAL_MS via /api/v1/contribute.
+// Tells the registry "this tool is installed and running" — used for adoption
+// analytics. Completely separate from scan_result contribution events.
+// Last ping time stored in ~/.opena2a/contribute-ping.json.
+
+const HEALTH_CACHE_TTL_MS = 5 * 60 * 1000;   // 5 minutes
+const PING_INTERVAL_MS   = 6 * 60 * 60 * 1000; // 6 hours
+
+interface HealthCache {
+  checkedAt: string;
+  healthy: boolean;
+  status?: string;
+}
+
+interface PingState {
+  lastPingAt: string;
+}
+
+function getHealthCachePath(): string {
+  const os = require('os');
+  const path = require('path');
+  const home = process.env.OPENA2A_HOME || path.join(os.homedir(), '.opena2a');
+  return path.join(home, 'contribute-health.json');
+}
+
+function getPingStatePath(): string {
+  const os = require('os');
+  const path = require('path');
+  const home = process.env.OPENA2A_HOME || path.join(os.homedir(), '.opena2a');
+  return path.join(home, 'contribute-ping.json');
+}
+
+function readHealthCache(): HealthCache | null {
+  try {
+    const { readFileSync, existsSync } = require('fs');
+    const p = getHealthCachePath();
+    if (!existsSync(p)) return null;
+    const cache: HealthCache = JSON.parse(readFileSync(p, 'utf-8'));
+    if (Date.now() - new Date(cache.checkedAt).getTime() > HEALTH_CACHE_TTL_MS) return null;
+    return cache;
+  } catch {
+    return null;
+  }
+}
+
+function writeHealthCache(healthy: boolean, status?: string): void {
+  try {
+    const { writeFileSync, mkdirSync } = require('fs');
+    const path = require('path');
+    const p = getHealthCachePath();
+    mkdirSync(path.dirname(p), { recursive: true });
+    const cache: HealthCache = { checkedAt: new Date().toISOString(), healthy, status };
+    writeFileSync(p, JSON.stringify(cache, null, 2) + '\n', { mode: 0o600 });
+  } catch { /* Non-fatal */ }
+}
+
+/**
+ * Check registry health. Returns true if healthy.
+ * Uses a 3-second timeout and caches the result for 5 minutes.
+ * Completely silent — never throws, never surfaces to user.
+ */
+async function checkRegistryHealth(baseUrl: string): Promise<boolean> {
+  const cached = readHealthCache();
+  if (cached !== null) return cached.healthy;
+
+  try {
+    const { request } = await import('node:https');
+    const { URL } = await import('node:url');
+    const url = new URL('/health', baseUrl);
+    const healthy = await new Promise<boolean>((resolve) => {
+      const req = request(
+        { hostname: url.hostname, port: url.port || 443, path: url.pathname, method: 'GET', timeout: 3000 },
+        (res) => {
+          let body = '';
+          res.on('data', (d: Buffer) => { body += d.toString(); });
+          res.on('end', () => {
+            try {
+              const parsed = JSON.parse(body);
+              const ok = res.statusCode === 200 && parsed.status === 'healthy';
+              writeHealthCache(ok, parsed.status);
+              resolve(ok);
+            } catch {
+              writeHealthCache(false);
+              resolve(false);
+            }
+          });
+        },
+      );
+      req.on('timeout', () => { req.destroy(); writeHealthCache(false, 'timeout'); resolve(false); });
+      req.on('error',   () => { writeHealthCache(false, 'error');   resolve(false); });
+      req.end();
+    });
+    return healthy;
+  } catch {
+    writeHealthCache(false, 'error');
+    return false;
+  }
+}
+
+/**
+ * Send a scan_ping heartbeat event if more than PING_INTERVAL_MS has elapsed.
+ * Tells the registry this tool is installed and active — used for adoption stats.
+ * Non-blocking, best-effort. Never throws.
+ */
+async function maybeSendPing(registryUrl: string): Promise<void> {
+  try {
+    const { readFileSync, writeFileSync, mkdirSync, existsSync } = require('fs');
+    const path = require('path');
+    const p = getPingStatePath();
+
+    // Check whether ping is due
+    if (existsSync(p)) {
+      const state: PingState = JSON.parse(readFileSync(p, 'utf-8'));
+      if (Date.now() - new Date(state.lastPingAt).getTime() < PING_INTERVAL_MS) return;
+    }
+
+    // Build ping event (no scan data — just tool presence signal)
+    const pingEvent: ContributionEvent = {
+      type: 'scan_ping' as ContributionEvent['type'],
+      tool: 'hackmyagent',
+      toolVersion: VERSION,
+      timestamp: new Date().toISOString(),
+      package: { name: '_ping', ecosystem: 'npm' as const },
+      scanSummary: { totalChecks: 0, passed: 0, critical: 0, high: 0, medium: 0, low: 0, score: 0, verdict: 'pass', durationMs: 0 },
+    };
+
+    sharedQueueEvent(pingEvent);
+    // Flush just the ping (force flush regardless of threshold)
+    const batch = sharedBuildBatch();
+    if (batch) {
+      const ok = await submitBatch(batch, registryUrl, false);
+      if (ok) {
+        sharedClearQueue();
+        // Record ping time
+        mkdirSync(path.dirname(p), { recursive: true });
+        const state: PingState = { lastPingAt: new Date().toISOString() };
+        writeFileSync(p, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 });
+      }
+    }
+  } catch { /* Non-fatal */ }
+}
+
+// ---------------------------------------------------------------------------
 // Retry state — opportunistic backoff for failed submissions
 // ---------------------------------------------------------------------------
 //
@@ -235,8 +385,11 @@ function recordFailure(previousState: RetryState | null): void {
 // Submit: queue + flush (delegated to @opena2a/contribute)
 // ---------------------------------------------------------------------------
 
+const DEFAULT_REGISTRY_URL = 'https://api.oa2a.org';
+
 /**
  * Queue a scan result and flush if threshold reached or retry interval elapsed.
+ * Sends a ping heartbeat if 6+ hours have elapsed since last ping.
  * Non-blocking, best-effort. Never throws.
  */
 export async function queueAndMaybeFlush(
@@ -244,7 +397,12 @@ export async function queueAndMaybeFlush(
   registryUrl?: string,
   verbose?: boolean,
 ): Promise<void> {
+  const url = registryUrl || DEFAULT_REGISTRY_URL;
   sharedQueueEvent(event);
+
+  // Send ping heartbeat if due (non-blocking, uses its own queue+flush)
+  // Only attempt if registry appears healthy (uses cached result)
+  maybeSendPing(url).catch(() => { /* Non-fatal */ });
 
   const retryState = readRetryState();
   const hasPendingRetry = retryState !== null;
@@ -252,12 +410,17 @@ export async function queueAndMaybeFlush(
   // Flush if: threshold reached, OR a scheduled retry is due
   const shouldFlush = sharedShouldFlush() || (hasPendingRetry && shouldRetryNow(retryState!));
   if (shouldFlush) {
-    await flushQueue(registryUrl, verbose);
+    await flushQueue(url, verbose);
   }
 }
 
 /**
  * Flush queued events to the OpenA2A Registry.
+ *
+ * Pre-flight: checks GET /health before attempting submission.
+ * If registry is unhealthy/unreachable: records failure immediately
+ * (no wasted network attempt, backoff still advances).
+ *
  * On success: clears queue and retry state.
  * On failure: records retry state with backoff interval.
  * Returns true if submission succeeded (or queue was empty).
@@ -266,14 +429,23 @@ export async function flushQueue(
   registryUrl?: string,
   verbose?: boolean,
 ): Promise<boolean> {
+  const url = registryUrl || DEFAULT_REGISTRY_URL;
+
   const batch = sharedBuildBatch();
   if (!batch) {
     clearRetryState(); // Queue empty — no need to retry
     return true;
   }
 
+  // Pre-flight health check — skip submission if registry is down
+  const healthy = await checkRegistryHealth(url);
+  if (!healthy) {
+    recordFailure(readRetryState());
+    return false;
+  }
+
   const priorState = readRetryState();
-  const success = await submitBatch(batch, registryUrl, verbose);
+  const success = await submitBatch(batch, url, verbose);
 
   if (success) {
     sharedClearQueue();
