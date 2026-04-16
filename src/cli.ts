@@ -547,7 +547,7 @@ function formatFixLine(text: string): string {
   const parts = text.split(/\s+—\s+/);
   if (parts.length >= 2) {
     const cmd = `${colors.cyan}${colors.bold}→  ${parts[0]}${RESET()}`;
-    const desc = `${colors.dim} — ${parts.slice(1).join(' — ')}${RESET()}`;
+    const desc = ` — ${parts.slice(1).join(' — ')}`;
     return cmd + desc;
   }
   // No em-dash separator: treat the whole line as the command
@@ -891,21 +891,24 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       const r = af.result;
       if (af.taskType === 'threatAnalysis') {
         const level = String(r.threatLevel ?? 'unknown').toUpperCase();
+        const isLow = level === 'LOW' || level === 'INFO' || level === 'NONE';
         const levelColor = level === 'CRITICAL' || level === 'HIGH' ? colors.red : level === 'MEDIUM' ? colors.yellow : colors.dim;
         console.log(`  ${levelColor}${colors.bold}${level}${RESET()}  ${r.attackVector ?? ''}`);
-        if (r.description) {
-          // Strip markdown headers and excess whitespace; cap at ~240 chars
+        if (r.description && !isLow) {
+          // Strip markdown headers; cap at 160 chars to stay scannable
           const desc = String(r.description).replace(/^#{1,6}\s+/gm, '').replace(/\*\*/g, '').trim();
-          const capped = desc.length > 240 ? desc.slice(0, 237) + '...' : desc;
+          const capped = desc.length > 160 ? desc.slice(0, 157) + '...' : desc;
           console.log(`  ${colors.dim}${capped}${RESET()}`);
         }
-        if (Array.isArray(r.mitigations) && r.mitigations.length > 0) {
+        if (!isLow && Array.isArray(r.mitigations) && r.mitigations.length > 0) {
           for (const m of r.mitigations) {
-            // Only render as Fix: if it looks like a command/action, not analysis prose
+            // Only render as Fix: for imperative commands — starts with an action verb
+            // followed by a non-alpha (space, number, punctuation). Prose that starts
+            // with "Transparent naming:" or "Analysis:" is NOT actionable.
             const cleaned = String(m).replace(/^#{1,6}\s+/gm, '').replace(/\*\*/g, '').trim();
             if (!cleaned) continue;
-            const isActionable = /^(run|add|replace|set|configure|install|update|create|remove|enable|disable|use|ensure|restrict|limit)[^a-z]/i.test(cleaned) ||
-              cleaned.includes('`') || cleaned.startsWith('opena2a') || cleaned.startsWith('hackmyagent');
+            const isActionable = /^(run|add|replace|set|configure|install|update|create|remove|enable|disable|use|ensure|restrict|limit|implement|enforce)\s/i.test(cleaned) ||
+              cleaned.startsWith('opena2a ') || cleaned.startsWith('hackmyagent ');
             if (isActionable) {
               console.log(`  ${colors.cyan}Fix:${RESET()} ${cleaned.length > 200 ? cleaned.slice(0, 197) + '...' : cleaned}`);
             }
