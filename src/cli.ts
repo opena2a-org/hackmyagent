@@ -500,6 +500,8 @@ interface UnifiedCheckDisplayOptions {
     durationMs: number;
     backend: string;
   }>;
+  /** When set, this path is used in Next Steps hints instead of `name`. Use for local directory targets (e.g., `secure`). */
+  nextStepsTarget?: string;
 }
 
 function stripAnsi(s: string): string {
@@ -536,6 +538,24 @@ function shortenPath(filePath: string): string {
   const parts = filePath.split('/');
   if (parts.length <= 2) return filePath;
   return parts.slice(-2).join('/');
+}
+
+// ── Shared visual helpers (scan-soul, harden-soul, explain share this style) ─
+const UI_METER_WIDTH = 20;
+
+/** Returns a formatted section divider string (call with console.log). */
+function uiDivider(label?: string): string {
+  if (label) {
+    return `\n  ${colors.dim}──${RESET()} ${colors.bold}${label}${RESET()} ${colors.dim}${'─'.repeat(Math.max(1, 56 - label.length))}${RESET()}`;
+  }
+  return `  ${colors.dim}${'─'.repeat(62)}${RESET()}`;
+}
+
+/** Returns a colored progress-bar score string (e.g. "━━━━━━━━━━━━━━━━━━━━ 74/100"). */
+function uiScoreMeter(value: number, max: number = 100): string {
+  const pct = Math.round((value / max) * UI_METER_WIDTH);
+  const meterColor = value >= 70 ? colors.green : value >= 40 ? colors.yellow : colors.red;
+  return `${meterColor}${'━'.repeat(pct)}${RESET()}${colors.dim}${'━'.repeat(UI_METER_WIDTH - pct)}${RESET()} ${meterColor}${colors.bold}${value}${RESET()}${colors.dim}/${max}${RESET()}`;
 }
 
 function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
@@ -907,13 +927,15 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       && !f.checkId?.startsWith('AST-GOV') && !f.checkId?.startsWith('AST-GOVERN')
       && !f.checkId?.startsWith('AST-PROMPT') && !f.checkId?.startsWith('AST-HEARTBEAT');
   });
-  printCheckNextSteps(name, {
+  printCheckNextSteps(opts.nextStepsTarget ?? name, {
     hasGovernanceIssues: hasGovIssues,
     hasFindings: totalFindings > 0,
     hasCredentialFindings: hasCredIssues,
     hasCodeVulns,
     isCleanScan: totalFindings === 0 && (!!localScan || !!nanomindScan),
     usedAnalm,
+    // When nextStepsTarget is set the caller is already running a full directory scan — suppress the redundant hint
+    suppressFullScanHint: !!opts.nextStepsTarget,
   });
 }
 
@@ -2935,149 +2957,34 @@ Examples:
       const issues = result.findings.filter((f) => !f.passed && !f.fixed);
       const fixedFindings = result.findings.filter((f) => f.fixed);
 
-      // Print header - clean and simple
-      const projectTypeLabel = {
-        cli: 'CLI Tool',
-        library: 'Library',
-        sdk: 'SDK/API Client',
-        webapp: 'Web App',
-        api: 'API Server',
-        mcp: 'MCP Server',
-        openclaw: 'OpenClaw Agent',
-        all: 'Project',
-      }[result.projectType] || 'Project';
+      // Display using unified check style (matches `check` command visual language)
+      const secureDisplayName = resolvePackageName(targetDir) ?? require('path').basename(targetDir);
+      const secureDisplayVersion = resolvePackageVersion(targetDir) ?? undefined;
 
-      let scoreExtra = '';
-      if (result.semanticAnalysis) {
-        const sa = result.semanticAnalysis;
-        scoreExtra = ` | ${sa.layer2Findings} deep analysis finding${sa.layer2Findings === 1 ? '' : 's'}`;
-        if (sa.layer3Findings > 0) {
-          scoreExtra += `, ${sa.layer3Findings} AI-assisted`;
-          if (sa.llmCost !== undefined) scoreExtra += ` ($${sa.llmCost.toFixed(3)})`;
-          if (sa.cachedResults) scoreExtra += ` (${sa.cachedResults} cached)`;
+      displayUnifiedCheck({
+        name: secureDisplayName,
+        version: secureDisplayVersion ?? undefined,
+        projectType: result.projectType,
+        localScan: {
+          score: result.score,
+          maxScore: result.maxScore,
+          findings: result.findings.filter((f) => !f.fixed),
+        },
+        verbose: !!options.verbose,
+        usedAnalm: !!options.analm,
+        analystFindings: nmResult.analystFindings?.length
+          ? nmResult.analystFindings
+          : undefined,
+        nextStepsTarget: directory,
+      });
+
+      // Dry-run summary (shown after findings when --dry-run is active)
+      if (result.dryRun && issues.length > 0) {
+        const wouldFixCount = issues.filter((f: any) => f.wouldFix).length;
+        if (wouldFixCount > 0) {
+          console.log(`  ${colors.cyan}Dry run complete:${RESET()} ${wouldFixCount} issue${wouldFixCount === 1 ? '' : 's'} auto-fixable. Run without --dry-run to apply.`);
         }
-      }
-      console.log(`${projectTypeLabel} | Score: ${result.score}/${result.maxScore}${scoreExtra}`);
-      if (issues.length > 0) {
-        const recoverable = Math.min(result.maxScore - result.score, result.maxScore);
-        console.log(`  Path forward: +${recoverable} recoverable by addressing ${issues.length} issue${issues.length === 1 ? '' : 's'}`);
-      }
-      console.log('');
-
-      // No issues? Say so and exit
-      if (issues.length === 0 && fixedFindings.length === 0) {
-        console.log(`${colors.green}No issues found.${RESET()}\n`);
-      } else if (issues.length > 0) {
-        // Print issues - clean format with fixable count
-        const fixableCount = issues.filter((f: SecurityFinding) => f.fixable).length;
-        const fixableNote = fixableCount > 0
-          ? ` (${fixableCount} auto-fixable with \`${CLI_PREFIX} secure --fix\`)`
-          : '';
-        console.log(`${issues.length} issue${issues.length === 1 ? '' : 's'} found${fixableNote}:\n`);
-
-        for (const finding of issues) {
-          const display = SEVERITY_DISPLAY[finding.severity];
-          const location = finding.file
-            ? finding.line
-              ? `${finding.file}:${finding.line}`
-              : finding.file
-            : '';
-
-          // Format: SEVERITY  [DRY RUN] Would fix: file:line
-          //         Description
-          //         Fix: command
-          const dryRunPrefix = (finding as any).wouldFix ? `${colors.cyan}[DRY RUN] Would fix: ${RESET()}` : '';
-          console.log(`${display.color()}${display.symbol} ${finding.severity.toUpperCase()}${RESET()}  ${dryRunPrefix}${location}`);
-          console.log(`       ${finding.description}`);
-          if (finding.fix) {
-            console.log(`       ${colors.cyan}Fix:${RESET()} ${finding.fix}`);
-          }
-          if (options.verbose) {
-            console.log(`       ${colors.dim}Check: ${finding.checkId} | Category: ${finding.category}${RESET()}`);
-            if (finding.file) {
-              console.log(`       ${colors.dim}File: ${finding.file}${finding.line ? ` (line ${finding.line})` : ''}${RESET()}`);
-            }
-            if (finding.message && finding.message !== finding.description) {
-              console.log(`       ${colors.dim}Detail: ${finding.message}${RESET()}`);
-            }
-            if (finding.details && Object.keys(finding.details).length > 0) {
-              for (const [key, value] of Object.entries(finding.details)) {
-                console.log(`       ${colors.dim}${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}${RESET()}`);
-              }
-            }
-          }
-          console.log();
-        }
-
-        // Severity breakdown summary
-        const severityCounts = { critical: 0, high: 0, medium: 0, low: 0 };
-        for (const f of issues) {
-          severityCounts[f.severity]++;
-        }
-        const summaryParts: string[] = [];
-        if (severityCounts.critical > 0) summaryParts.push(`${colors.brightRed}Critical: ${severityCounts.critical}${RESET()}`);
-        if (severityCounts.high > 0) summaryParts.push(`${colors.red}High: ${severityCounts.high}${RESET()}`);
-        if (severityCounts.medium > 0) summaryParts.push(`${colors.yellow}Medium: ${severityCounts.medium}${RESET()}`);
-        if (severityCounts.low > 0) summaryParts.push(`${colors.green}Low: ${severityCounts.low}${RESET()}`);
-        if (summaryParts.length > 0) {
-          console.log(`${summaryParts.join(' | ')}\n`);
-        }
-
-        // Analyst findings (--analyze)
-        if (nmResult.analystFindings && nmResult.analystFindings.length > 0) {
-          console.log(`${colors.cyan}--- AnaLM Analysis ---${RESET()}\n`);
-          for (const af of nmResult.analystFindings) {
-            const r = af.result;
-            if (af.taskType === 'threatAnalysis') {
-              const level = String(r.threatLevel ?? 'unknown').toUpperCase();
-              const levelColor = level === 'CRITICAL' || level === 'HIGH' ? colors.red : level === 'MEDIUM' ? colors.yellow : colors.dim;
-              console.log(`  ${levelColor}${level}${RESET()}  ${r.attackVector ?? ''}`);
-              if (r.description) console.log(`       ${r.description}`);
-              if (Array.isArray(r.mitigations) && r.mitigations.length > 0) {
-                for (const m of r.mitigations) {
-                  console.log(`       ${colors.cyan}Fix:${RESET()} ${m}`);
-                }
-              }
-            } else if (af.taskType === 'credentialContextClassification') {
-              const cls = String(r.classification ?? 'unknown');
-              const clsColor = cls === 'real' ? colors.red : cls === 'test' || cls === 'example' ? colors.green : colors.yellow;
-              console.log(`  Credential: ${clsColor}${cls}${RESET()}`);
-              if (r.reasoning) console.log(`       ${r.reasoning}`);
-            } else if (af.taskType === 'intelReport') {
-              if (r.summary) console.log(`  ${colors.cyan}Summary:${RESET()} ${r.summary}`);
-              if (Array.isArray(r.keyFindings) && r.keyFindings.length > 0) {
-                for (const kf of r.keyFindings) {
-                  console.log(`       ${kf}`);
-                }
-              }
-              if (r.riskAssessment) console.log(`  ${colors.cyan}Risk:${RESET()}    ${r.riskAssessment}`);
-              if (Array.isArray(r.recommendations) && r.recommendations.length > 0) {
-                for (const rec of r.recommendations) {
-                  console.log(`       ${colors.dim}${rec}${RESET()}`);
-                }
-              }
-            } else {
-              // Generic display for other task types
-              if (r.description) console.log(`  ${r.description}`);
-            }
-            console.log(`       ${colors.dim}Confidence: ${Math.round(af.confidence * 100)}% | ${af.modelVersion} (${af.durationMs}ms)${RESET()}`);
-            console.log();
-          }
-        }
-
-        // Analyst hint (shown when model is available but --analyze not used)
-        if (nmResult.analystHint && issues.length > 0) {
-          console.log(`${colors.dim}Tip: ${nmResult.analystHint}${RESET()}\n`);
-        }
-
-        // Dry-run summary
-        if (result.dryRun) {
-          const wouldFixCount = issues.filter((f: any) => f.wouldFix).length;
-          if (wouldFixCount > 0) {
-            console.log(`${colors.cyan}Dry run complete:${RESET()} ${wouldFixCount} issue${wouldFixCount === 1 ? '' : 's'} auto-fixable. Run without --dry-run to apply.`);
-          }
-          console.log(`  No changes were made.\n`);
-        }
+        console.log(`  No changes were made.\n`);
       }
 
       // Print fixed findings with detailed summary
@@ -5685,100 +5592,103 @@ Examples:
         return;
       }
 
-      // Text output
-      process.stdout.write('\nOASB v2 Behavioral Governance Scan\n');
-      process.stdout.write('----------------------------------------------------\n');
-      if (options.deep) {
-        process.stdout.write(`Analysis: static + semantic (ML-enhanced deep scan)\n`);
-      }
-      process.stdout.write('\n');
+      // Text output — unified visual style (matches `check` command)
+      const soulFileName = result.file ? require('path').basename(result.file) : 'No governance file';
+      const tierMeta = result.tierForced ? `${result.agentTier} tier (forced)` : `${result.agentTier} tier`;
+      const profileMeta = result.profileForced ? `${result.agentProfile} (forced)` : `${result.agentProfile}`;
+      const soulSkippedNote = result.skippedDomains.length > 0 ? ` · skipping ${result.skippedDomains.join(', ')}` : '';
 
-      if (result.file) {
-        process.stdout.write(`File: ${result.file} (${result.fileSize.toLocaleString()} chars)\n`);
+      const missing = result.totalControls - result.totalPassed;
+      let soulVerdictText: string;
+      let soulVerdictColor: string;
+      if (!result.file) {
+        soulVerdictColor = colors.brightRed;
+        soulVerdictText = 'No governance file found';
+      } else if (missing === 0) {
+        soulVerdictColor = colors.green;
+        soulVerdictText = `All ${result.totalControls} governance controls covered`;
+      } else if (result.conformance === 'none') {
+        soulVerdictColor = colors.brightRed;
+        soulVerdictText = `${missing} control${missing > 1 ? 's' : ''} failing — no conformance`;
       } else {
-        process.stdout.write(`File: ${colors.red}No governance file found${colors.reset}\n`);
-        process.stdout.write(`  Searched: ${['SOUL.md', 'system-prompt.md', 'CLAUDE.md', '...'].join(', ')}\n`);
+        soulVerdictColor = colors.yellow;
+        soulVerdictText = `${missing} control${missing > 1 ? 's' : ''} failing`;
       }
 
-      const tierLabel = result.tierForced ? `${result.agentTier} (--tier flag)` : `${result.agentTier} (auto-detected)`;
-      const profileLabel = result.profileForced ? `${result.agentProfile} (--profile flag)` : `${result.agentProfile} (auto-detected)`;
-      process.stdout.write(`Agent Tier: ${tierLabel}\n`);
-      process.stdout.write(`Agent Profile: ${profileLabel}\n`);
-      if (result.skippedDomains.length > 0) {
-        process.stdout.write(`Skipped Domains: ${result.skippedDomains.join(', ')}\n`);
+      console.log();
+      console.log(`  ${colors.bold}${colors.white}${soulFileName}${RESET()}  ${colors.dim}soul governance · ${tierMeta} · ${profileMeta}${soulSkippedNote}${RESET()}`);
+      console.log(`  ${soulVerdictColor}${colors.bold}${soulVerdictText}${RESET()}`);
+      if (!result.file) {
+        console.log(`  ${colors.dim}Searched: SOUL.md, system-prompt.md, CLAUDE.md${RESET()}`);
       }
-      process.stdout.write('\n');
+      console.log();
+      console.log(`  Governance  ${uiScoreMeter(result.score)}`);
 
-      process.stdout.write('Domain Scores:\n');
-
+      // ── Domain Scores ──────────────────────────────────────────────
+      console.log(uiDivider('Domain Scores'));
       for (const domain of result.domains) {
         if (domain.skippedByProfile) {
           if (options.verbose) {
-            const label = (domain.domain + ':').padEnd(26);
-            process.stdout.write(`  ${label}${colors.reset}--  (skipped by profile)${colors.reset}\n`);
+            console.log(`  ${colors.dim}${domain.domain.padEnd(28)}--  (skipped by profile)${RESET()}`);
           }
           continue;
         }
         if (domain.skippedByTier) {
-          const label = (domain.domain + ':').padEnd(26);
-          process.stdout.write(`  ${label}${colors.reset}--  (not applicable at ${result.agentTier} tier)${colors.reset}\n`);
+          console.log(`  ${colors.dim}${domain.domain.padEnd(28)}--  (not applicable at ${result.agentTier} tier)${RESET()}`);
           continue;
         }
         const pctColor = domainBar(domain.percentage);
-        const label = (domain.domain + ':').padEnd(26);
-        process.stdout.write(`  ${label}${pctColor}${domain.passed}/${domain.total}  (${domain.percentage}%)${colors.reset}\n`);
+        const domainLabel = domain.domain.padEnd(28);
+        console.log(`  ${domainLabel}${pctColor}${domain.passed}/${domain.total}${RESET()}  ${colors.dim}(${domain.percentage}%)${RESET()}`);
 
-        // Verbose: show individual controls
         if (options.verbose) {
           for (const ctrl of domain.controls) {
             const status = ctrl.passed
-              ? `${colors.green}PASS${colors.reset}`
-              : `${colors.red}FAIL${colors.reset}`;
-            process.stdout.write(`    ${ctrl.id}: ${status}  ${ctrl.name}\n`);
+              ? `${colors.green}pass${RESET()}`
+              : `${colors.red}fail${RESET()}`;
+            console.log(`    ${colors.dim}${ctrl.id}:${RESET()} ${status}  ${colors.dim}${ctrl.name}${RESET()}`);
           }
         }
       }
 
-      process.stdout.write('\n');
-
-      // Score and level (progress-oriented)
-      const lc = levelColor(result.level);
-      process.stdout.write(`Governance Score: ${lc}${result.score}/100 [${levelLabel(result.level)}]${colors.reset}\n`);
-
-      // Conformance level
-      if (result.conformance === 'none') {
-        process.stdout.write(`Conformance: ${colors.red}NONE${colors.reset} -- critical control missing (${result.criticalMissing.join(', ')})\n`);
-      } else {
-        process.stdout.write(`Conformance: ${result.conformance.toUpperCase()}\n`);
+      // ── Conformance ────────────────────────────────────────────────
+      console.log(uiDivider('Conformance'));
+      const conformanceColor = result.conformance === 'none' ? colors.brightRed
+        : result.conformance === 'essential' ? colors.yellow
+        : result.conformance === 'standard' ? colors.cyan
+        : colors.green;
+      const conformanceLabel = result.conformance === 'none' ? 'NONE' : result.conformance.toUpperCase();
+      console.log(`  Level     ${conformanceColor}${colors.bold}${conformanceLabel}${RESET()}`);
+      if (result.criticalMissing.length > 0) {
+        console.log(`  Missing   ${colors.dim}${result.criticalMissing.join(', ')}${RESET()}`);
       }
-
       if (result.criticalFloor) {
-        process.stdout.write(`${colors.yellow}Critical Floor: APPLIED${colors.reset} (${result.criticalMissing.join(', ')} missing)\n`);
+        console.log(`  ${colors.yellow}Critical floor applied${RESET()} ${colors.dim}(score capped due to missing critical controls)${RESET()}`);
       }
-
-      // Deep analysis summary
       if (options.deep) {
         if (result.deepAnalysisAvailable === false) {
-          process.stdout.write(`${colors.yellow}Deep Analysis: unavailable${colors.reset} -- set ANTHROPIC_API_KEY or install the claude CLI\n`);
+          console.log(`  ${colors.yellow}Deep analysis unavailable${RESET()} — set ANTHROPIC_API_KEY or install the claude CLI`);
         } else if (result.deepAnalysisResults && result.deepAnalysisResults.length > 0) {
           const llmUpgraded = result.deepAnalysisResults.filter((e) => e.llmPassed).length;
-          process.stdout.write(`Deep Analysis: ${llmUpgraded} control${llmUpgraded === 1 ? '' : 's'} upgraded by ML semantic analysis\n`);
-        } else {
-          process.stdout.write(`Deep Analysis: all controls passed, no further analysis needed\n`);
+          console.log(`  ${colors.dim}Deep analysis: ${llmUpgraded} control${llmUpgraded === 1 ? '' : 's'} upgraded by ML semantic analysis${RESET()}`);
         }
       }
 
-      // Path forward (recovery-oriented, not punitive)
-      const missing = result.totalControls - result.totalPassed;
-      if (missing > 0) {
-        const recoverable = Math.min(100 - result.score, 100);
-        process.stdout.write(`\n  Path forward: +${recoverable} recoverable by addressing ${missing} control${missing === 1 ? '' : 's'}`);
-        process.stdout.write(`\n  Run '${colors.cyan}${prefix} harden-soul${colors.reset}' to remediate.\n`);
-      } else {
-        process.stdout.write(`\n${colors.green}All ${result.totalControls} governance controls covered.${colors.reset}\n`);
+      // ── Next Steps ─────────────────────────────────────────────────
+      if (!globalCiMode && !options.ci) {
+        console.log();
+        console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
+        if (missing > 0) {
+          console.log(`  ${colors.cyan}Auto-fix:${RESET()}   ${prefix} harden-soul ${directory}`);
+        }
+        if (!options.publish) {
+          console.log(`  ${colors.cyan}Publish:${RESET()}    ${prefix} scan-soul ${directory} --publish`);
+        }
+        if (!options.deep) {
+          console.log(`  ${colors.cyan}Deep scan:${RESET()}  ${prefix} scan-soul ${directory} --deep`);
+        }
+        console.log();
       }
-
-      process.stdout.write('\n');
 
       // Publish: push SOUL results to registry when --publish is used
       if (options.publish) {
@@ -5888,48 +5798,48 @@ Examples:
         return;
       }
 
-      // Text output
+      // Text output — unified visual style (matches `check` command)
+      const hardenFileName = result.file ? require('path').basename(result.file) : 'SOUL.md';
+      const hardenMeta = result.dryRun ? 'soul governance · dry run' : 'soul governance';
+
       if (result.sectionsAdded.length === 0) {
-        process.stdout.write(`\n${colors.green}All governance domains already have sections in ${result.file}.${colors.reset}\n`);
-        process.stdout.write(`Run '${prefix} scan-soul --verbose' to see individual control coverage.\n\n`);
+        console.log();
+        console.log(`  ${colors.bold}${colors.white}${hardenFileName}${RESET()}  ${colors.dim}${hardenMeta}${RESET()}`);
+        console.log(`  ${colors.green}${colors.bold}All governance domains covered${RESET()}`);
+        if (!globalCiMode) {
+          console.log();
+          console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
+          console.log(`  ${colors.cyan}Verify coverage:${RESET()}  ${prefix} scan-soul --verbose`);
+          console.log();
+        }
         return;
       }
 
-      if (result.dryRun) {
-        process.stdout.write('\nHarden SOUL (dry-run)\n');
-        process.stdout.write('----------------------------------------------------\n\n');
-        process.stdout.write(`Target: ${result.file}`);
-        if (result.existedBefore) {
-          process.stdout.write(' (append)\n');
-        } else {
-          process.stdout.write(' (create)\n');
+      const hardenActionLabel = result.dryRun
+        ? `${result.sectionsAdded.length} section${result.sectionsAdded.length > 1 ? 's' : ''} to add`
+        : `${result.sectionsAdded.length} section${result.sectionsAdded.length > 1 ? 's' : ''} added`;
+      const hardenFileState = result.existedBefore ? '(append)' : '(create)';
+
+      console.log();
+      console.log(`  ${colors.bold}${colors.white}${hardenFileName}${RESET()}  ${colors.dim}${hardenMeta}${RESET()}`);
+      console.log(`  ${result.dryRun ? colors.cyan : colors.green}${colors.bold}${hardenActionLabel}${RESET()}  ${colors.dim}+${result.controlsAdded} controls${RESET()}`);
+      console.log();
+      console.log(`  ${colors.dim}File  ${result.file}  ${hardenFileState}${RESET()}`);
+
+      console.log(uiDivider('Sections'));
+      for (const section of result.sectionsAdded) {
+        const addColor = result.dryRun ? colors.cyan : colors.green;
+        console.log(`  ${addColor}+${RESET()}  ${section}`);
+      }
+
+      if (!globalCiMode) {
+        console.log();
+        console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
+        if (result.dryRun) {
+          console.log(`  ${colors.cyan}Apply:${RESET()}   ${prefix} harden-soul ${directory}`);
         }
-        process.stdout.write(`Sections to add: ${result.sectionsAdded.length}\n`);
-        process.stdout.write(`Controls covered: +${result.controlsAdded}\n\n`);
-
-        process.stdout.write('Sections:\n');
-        for (const section of result.sectionsAdded) {
-          process.stdout.write(`  ${colors.cyan}+${colors.reset} ${section}\n`);
-        }
-
-        process.stdout.write(`\nRun without --dry-run to apply changes.\n\n`);
-      } else {
-        process.stdout.write('\nHarden SOUL\n');
-        process.stdout.write('----------------------------------------------------\n\n');
-
-        if (result.existedBefore) {
-          process.stdout.write(`Updated: ${result.file}\n`);
-        } else {
-          process.stdout.write(`Created: ${result.file}\n`);
-        }
-
-        process.stdout.write(`Added ${result.sectionsAdded.length} section${result.sectionsAdded.length === 1 ? '' : 's'}:\n`);
-        for (const section of result.sectionsAdded) {
-          process.stdout.write(`  ${colors.green}+${colors.reset} ${section}\n`);
-        }
-        process.stdout.write(`Controls covered: +${result.controlsAdded}\n\n`);
-
-        process.stdout.write(`Run '${colors.cyan}${prefix} scan-soul${colors.reset}' to verify coverage.\n\n`);
+        console.log(`  ${colors.cyan}Verify:${RESET()}  ${prefix} scan-soul ${directory}`);
+        console.log();
       }
     } catch (error) {
       process.stderr.write(`Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
@@ -6495,8 +6405,6 @@ program
   .argument('<findingId>', 'Finding ID to explain (e.g., SKILL-SEMANTIC-007 or CRED-001)')
   .description('Explain a security finding in plain English')
   .action(async (findingId: string) => {
-    console.log(`Explaining finding: ${findingId}\n`);
-
     // Try NanoMind daemon first for dynamic explanation
     const { isDaemonAvailable, explainFinding } = await import('./semantic/nanomind-analyzer.js');
     const available = await isDaemonAvailable();
@@ -6508,91 +6416,89 @@ program
       }
     }
 
-    // Fallback: static explanation from check metadata
+    // Static explanation lookup
     const checkId = findingId.toUpperCase();
     const staticExplanations: Record<string, string> = {
-      // Credential checks
       'CRED-001': 'Hardcoded credential detected. API keys, tokens, or passwords are embedded directly in source code. Replace with environment variable references ($VAR_NAME) and rotate the exposed credential immediately.',
       'CRED-002': 'OpenAI API key pattern detected (sk-...). Move to environment variable OPENAI_API_KEY.',
       'CRED-003': 'Anthropic API key pattern detected (sk-ant-...). Move to environment variable ANTHROPIC_API_KEY.',
       'CRED-004': 'AWS credential pattern detected. Use AWS SDK credential chain or environment variables.',
-      // MCP checks
       'MCP-001': 'MCP server running without TLS. Agent-to-server communication is unencrypted. Enable TLS on the MCP server or use a reverse proxy with TLS termination.',
-      // Skill checks
       'SKILL-005': 'External endpoint in skill capability declaration. Verify the endpoint is trusted and uses HTTPS.',
-      // Governance checks
       'GOV-001': 'No governance policy found. Agents should declare behavioral constraints in a SOUL.md or governance file. Create a SOUL.md with mission, boundaries, and allowed actions.',
       'GOV-002': 'Governance file lacks boundary definitions. Without explicit boundaries, the agent may act outside intended scope. Add "boundaries" or "constraints" sections to your governance file.',
       'GOV-003': 'Governance file missing escalation policy. Define when and how the agent should escalate to a human. Add an escalation section with trigger conditions and contact methods.',
-      // Permission checks
       'PERM-001': 'Overly broad file system permissions detected. The agent has write access to directories outside its working scope. Restrict file permissions to the minimum required paths.',
       'PERM-002': 'Network permissions not restricted. The agent can make outbound requests to any host. Define an allowlist of permitted domains in the agent configuration.',
       'PERM-003': 'Execution permissions too permissive. The agent can spawn arbitrary processes. Restrict executable permissions to specific, required binaries only.',
-      // SOUL checks
       'SOUL-001': 'No SOUL.md file found. SOUL.md defines the agent identity, mission, and behavioral constraints. Run `hackmyagent secure --fix` to generate one.',
       'SOUL-002': 'SOUL.md missing identity section. The agent lacks a declared identity, making impersonation easier. Add name, version, and publisher fields.',
       'SOUL-003': 'SOUL.md missing behavioral boundaries. Without explicit limits, the agent may perform unintended actions. Add a boundaries section listing prohibited behaviors.',
-      // Privacy checks
       'PRIV-001': 'PII handling not declared. The agent processes data but has no privacy policy or data handling declaration. Add a data handling section specifying what data is collected, stored, and shared.',
-      // Data checks
       'DATA-001': 'Sensitive data logged to console or file. Credentials, tokens, or PII appear in log output. Sanitize log statements to redact sensitive values before output.',
       'DATA-002': 'Data retention policy missing. The agent stores data without a defined retention or deletion policy. Define how long data is kept and when it is purged.',
-      // Injection checks
       'INJECT-001': 'No prompt injection defense detected. The agent does not validate or sanitize inputs against injection attacks. Add input validation and consider using a system prompt with injection resistance instructions.',
       'INJECT-002': 'Indirect prompt injection surface found. External data (URLs, files, API responses) is passed to the LLM without sanitization. Sanitize or sandbox external content before including it in prompts.',
-      // Attestation checks
       'ATTEST-001': 'No attestation mechanism found. The agent cannot prove its identity or integrity to other agents. Implement agent attestation using signed identity tokens or SOUL.md signatures.',
-      // Supply chain checks
       'SUPPLY-001': 'Dependency with known vulnerability detected. A transitive or direct dependency has a published CVE. Update the affected package to a patched version.',
     };
 
-    const explanation = staticExplanations[checkId];
-    if (explanation) {
-      console.log(`${checkId}: ${explanation}`);
-    } else {
-      // Fallback: generate explanation from taxonomy metadata
-      const { getAttackClass } = require('./hardening/taxonomy');
-      const attackClass = getAttackClass(checkId);
+    // Map check ID prefixes to human-readable category labels
+    const prefixDescriptions: Record<string, string> = {
+      'CRED': 'credential exposure',
+      'MCP': 'MCP server configuration',
+      'SKILL': 'skill package security',
+      'GOV': 'governance policy',
+      'PERM': 'permission scope',
+      'SOUL': 'behavioral governance (SOUL.md)',
+      'PRIV': 'privacy and data handling',
+      'DATA': 'data protection',
+      'INJECT': 'prompt injection defense',
+      'ATTEST': 'agent attestation',
+      'SUPPLY': 'supply chain security',
+      'NET': 'network security',
+      'GIT': 'git repository hygiene',
+      'PROMPT': 'prompt security',
+      'NEMO': 'static analysis pattern',
+      'LIFECYCLE': 'prompt assembly lifecycle',
+      'AST': 'deep code analysis',
+      'ENCRYPT': 'encryption and hashing',
+      'LOG': 'logging and audit',
+      'AUTH': 'authentication',
+      'TOOL': 'tool permission and safety',
+    };
 
-      // Map check ID prefixes to human-readable category descriptions
-      const prefixDescriptions: Record<string, string> = {
-        'CRED': 'Credential exposure',
-        'MCP': 'MCP server configuration',
-        'SKILL': 'Skill package security',
-        'GOV': 'Governance policy',
-        'PERM': 'Permission scope',
-        'SOUL': 'Behavioral governance (SOUL.md)',
-        'PRIV': 'Privacy and data handling',
-        'DATA': 'Data protection',
-        'INJECT': 'Prompt injection defense',
-        'ATTEST': 'Agent attestation',
-        'SUPPLY': 'Supply chain security',
-        'NET': 'Network security',
-        'GIT': 'Git repository hygiene',
-        'PROMPT': 'Prompt security',
-        'NEMO': 'Static analysis pattern',
-        'LIFECYCLE': 'Prompt assembly lifecycle',
-        'AST': 'Deep code analysis',
-        'ENCRYPT': 'Encryption and hashing',
-        'LOG': 'Logging and audit',
-        'AUTH': 'Authentication',
-        'TOOL': 'Tool permission and safety',
-      };
+    const { getAttackClass } = require('./hardening/taxonomy');
+    const attackClass = getAttackClass(checkId);
+    const explainPrefix = checkId.split('-')[0];
+    const categoryLabel = prefixDescriptions[explainPrefix] || 'security check';
+    const staticExplanation = staticExplanations[checkId];
 
-      const prefix = checkId.split('-')[0];
-      const categoryDesc = prefixDescriptions[prefix];
+    // ── Header ──────────────────────────────────────────────────────
+    console.log();
+    console.log(`  ${colors.bold}${colors.white}${checkId}${RESET()}  ${colors.dim}${categoryLabel}${RESET()}`);
+    console.log();
 
-      if (attackClass || categoryDesc) {
-        console.log(`${checkId}: ${categoryDesc || 'Security check'}.`);
-        if (attackClass) {
-          console.log(`  Attack class: ${attackClass}`);
-        }
-        console.log(`\n  Run 'hackmyagent secure --verbose' to see this check in context with fix guidance.`);
-        console.log(`  Run 'hackmyagent check-metadata --json' for full check details.`);
-      } else {
-        console.log(`No explanation available for ${findingId}. This may not be a valid check ID.`);
-        console.log(`\nRun 'hackmyagent check-metadata --json' to see all ${CHECK_COUNT} valid check IDs.`);
+    if (staticExplanation) {
+      console.log(`  ${staticExplanation}`);
+    } else if (attackClass || categoryLabel !== 'security check') {
+      console.log(`  ${prefixDescriptions[explainPrefix] ? prefixDescriptions[explainPrefix].charAt(0).toUpperCase() + prefixDescriptions[explainPrefix].slice(1) : 'Security check'} finding.`);
+      if (attackClass) {
+        console.log();
+        console.log(`  ${colors.dim}Attack class:${RESET()} ${attackClass}`);
       }
+    } else {
+      console.log(`  ${colors.dim}No explanation available for ${findingId}.${RESET()}`);
+      console.log(`  ${colors.dim}This may not be a valid check ID.${RESET()}`);
+    }
+
+    // ── Next Steps ─────────────────────────────────────────────────
+    if (!globalCiMode) {
+      console.log();
+      console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
+      console.log(`  ${colors.cyan}See in context:${RESET()}   ${CLI_PREFIX} secure --verbose`);
+      console.log(`  ${colors.cyan}All ${CHECK_COUNT} check IDs:${RESET()}  ${CLI_PREFIX} check-metadata --json`);
+      console.log();
     }
   });
 
@@ -7703,6 +7609,8 @@ function printCheckNextSteps(
     isCleanScan?: boolean;
     isLocalTarget?: boolean;
     usedAnalm?: boolean;
+    /** When true, suppress the "Full project audit" hint (e.g. when already running `secure`). */
+    suppressFullScanHint?: boolean;
   },
 ): void {
   if (globalCiMode) return;
@@ -7720,7 +7628,9 @@ function printCheckNextSteps(
     console.log(`  ${colors.cyan}Auto-fix all issues:${RESET()}  ${CLI_PREFIX} secure --fix`);
   }
   if (context?.hasFindings) {
-    console.log(`  ${colors.cyan}Full project audit:${RESET()}   ${getFullScanHint()}`);
+    if (!context?.suppressFullScanHint) {
+      console.log(`  ${colors.cyan}Full project audit:${RESET()}   ${getFullScanHint()}`);
+    }
     if (!context?.usedAnalm) {
       console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm`);
     }
