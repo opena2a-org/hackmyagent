@@ -387,7 +387,7 @@ function checkConstraintWeaknesses(ast: SecurityAST): ASTFinding[] {
       message: 'Zero constraints declared',
       fixable: false,
       file: ast.artifactPath,
-      fix: 'Add a SOUL.md governance file or constraints in the artifact. Minimum: data handling, capability boundaries, instruction resistance.',
+      fix: 'hackmyagent harden-soul .  — generates SOUL.md with governance sections (capability boundaries, data handling, injection resistance) for declared capabilities.',
       attackClass: 'SOUL-BYPASS',
       confidence: 0.9,
     });

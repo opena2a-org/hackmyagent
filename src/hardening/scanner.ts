@@ -2085,9 +2085,10 @@ dist/
       severity: 'critical',
       passed: !hasCredentialsInRules,
       message: hasCredentialsInRules
-        ? 'Cursor rules contain exposed credentials - remove and use environment variables'
+        ? 'Cursor rules contain exposed credentials'
         : 'No credentials found in Cursor rules',
       fixable: false,
+      fix: hasCredentialsInRules ? 'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.' : undefined,
       guidance: 'Cursor rules files are often committed to git. Credentials embedded there get pushed to remotes where anyone with repo access can extract them.',
     });
 
@@ -2213,9 +2214,10 @@ dist/
       severity: 'critical',
       passed: !hasSecretsInPackageJson,
       message: hasSecretsInPackageJson
-        ? 'package.json contains hardcoded secrets - move to environment variables'
+        ? 'package.json contains hardcoded secrets'
         : 'No secrets found in package.json',
       fixable: false,
+      fix: hasSecretsInPackageJson ? 'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.' : undefined,
       guidance: 'package.json is always committed to git and published to npm. Secrets there are visible to anyone who installs or forks your package.',
     });
 
@@ -2243,9 +2245,10 @@ dist/
       severity: 'critical',
       passed: !hasJwtSecret,
       message: hasJwtSecret
-        ? 'JWT secret hardcoded in config - use environment variable'
+        ? 'JWT secret hardcoded in config'
         : 'No hardcoded JWT secrets found',
       fixable: false,
+      fix: hasJwtSecret ? 'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.' : undefined,
       guidance: 'A hardcoded JWT secret lets anyone who reads the config forge valid authentication tokens and impersonate any user.',
     });
 
@@ -3537,9 +3540,10 @@ dist/
       severity: 'critical',
       passed: !hasHardcodedConnStr,
       message: hasHardcodedConnStr
-        ? 'Hardcoded connection strings detected - use environment variables'
+        ? 'Hardcoded connection strings detected'
         : 'No hardcoded connection strings found',
       fixable: false,
+      fix: hasHardcodedConnStr ? 'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.' : undefined,
       guidance: 'Hardcoded connection strings contain database hostnames, ports, and credentials. Anyone with code access can connect directly to your database.',
     });
 
@@ -5052,7 +5056,7 @@ dist/
         fixable: true,
         fixed: skill001Fixed,
         fixMessage: skill001Fixed ? 'Added SHA-256 signature block to skill file' : undefined,
-        fix: 'hackmyagent fix-all --with-aim',
+        fix: 'hackmyagent fix-all --with-aim  — signs skills, heartbeats, and agent DNA with AIM keys so tamper detection works on every scan.',
         guidance: 'Unsigned skills cannot be verified for authenticity or integrity. Sign with a cryptographic identity to enable tamper detection.',
       });
 
@@ -5803,7 +5807,7 @@ dist/
           : 'Heartbeat lacks hash pinning - content integrity cannot be verified',
         file: relativePath,
         fixable: false,
-        fix: 'hackmyagent fix-all --with-aim',
+        fix: 'hackmyagent fix-all --with-aim  — signs skills, heartbeats, and agent DNA with AIM keys so tamper detection works on every scan.',
         guidance: 'Without hash pinning, heartbeat content can be modified without detection. Pinning creates a cryptographic fingerprint to verify integrity on each execution.',
       });
 
@@ -5825,7 +5829,7 @@ dist/
           : 'Heartbeat is unsigned - cannot verify authenticity or integrity',
         file: relativePath,
         fixable: false,
-        fix: 'hackmyagent fix-all --with-aim',
+        fix: 'hackmyagent fix-all --with-aim  — signs skills, heartbeats, and agent DNA with AIM keys so tamper detection works on every scan.',
         guidance: 'Unsigned heartbeats cannot prove who created them or whether they have been modified. Cryptographic signatures enable authenticity and integrity verification.',
       });
 
@@ -6589,8 +6593,8 @@ dist/
             message: `${name} found in plaintext`,
             file: relativePath,
             fixable: false,
-            fix: 'Use a secrets manager or ensure .env is in .gitignore',
-            guidance: 'Plaintext API keys in .env files can be accidentally committed. Use a secrets manager for production, and always ensure .env is in .gitignore.',
+            fix: 'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.',
+            guidance: 'Plaintext API keys in .env files can be accidentally committed to version control and extracted by any process that reads the file.',
           });
           break; // Only report first match per file
         }
@@ -6940,7 +6944,7 @@ dist/
           : 'Skill lacks installed_hash - cannot detect version drift or tampering',
         file: relativePath,
         fixable: false,
-        fix: 'hackmyagent fix-all --with-aim',
+        fix: 'hackmyagent fix-all --with-aim  — signs skills, heartbeats, and agent DNA with AIM keys so tamper detection works on every scan.',
         guidance: 'Without an installed_hash, modifications to the skill cannot be detected. The hash enables tamper detection on every scan.',
       });
 
@@ -7627,7 +7631,7 @@ dist/
               message: `${idFile} declares identity without cryptographic key binding`,
               fixable: false,
               file: idFile,
-              fix: 'hackmyagent fix-all --with-aim',
+              fix: 'hackmyagent fix-all --with-aim  — signs skills, heartbeats, and agent DNA with AIM keys so tamper detection works on every scan.',
               guidance: 'Without cryptographic binding, any agent can impersonate this identity. Ed25519 key pairs provide proof of identity through digital signatures.',
             });
           }
@@ -7671,7 +7675,7 @@ dist/
             message: 'Agent project has no identity declaration file (agent-card.json, agent.json, aim.json)',
             fixable: false,
             file: 'package.json',
-            fix: 'hackmyagent fix-all --with-aim',
+            fix: 'hackmyagent fix-all --with-aim  — signs skills, heartbeats, and agent DNA with AIM keys so tamper detection works on every scan.',
             guidance: 'Without a formal identity declaration, the agent cannot be verified by other agents, registries, or trust frameworks. Creates an Ed25519 key pair with audit logging.',
           });
         }
@@ -7715,7 +7719,7 @@ dist/
             message: `${dnaFile} has no signature or content hash`,
             fixable: false,
             file: dnaFile,
-            fix: 'hackmyagent fix-all --with-aim',
+            fix: 'hackmyagent fix-all --with-aim  — signs skills, heartbeats, and agent DNA with AIM keys so tamper detection works on every scan.',
             guidance: 'Unsigned behavioral profiles can be silently modified to change agent behavior. Cryptographic signatures enable tamper detection on every load.',
           });
         }

@@ -134,6 +134,31 @@ function riskLabel(level: RiskLevel): string {
   return riskColor(level)(level.toUpperCase());
 }
 
+// ── Unified UI helpers (match secure/check visual pattern) ───────────────
+
+const METER_WIDTH = 20;
+
+/** Progress-bar score string matching `displayUnifiedCheck` in cli.ts. */
+function scoreMeter(value: number, max: number = 100): string {
+  const pct = Math.max(0, Math.min(METER_WIDTH, Math.round((value / max) * METER_WIDTH)));
+  const meterColor = value >= 70 ? c.green : value >= 40 ? c.yellow : c.red;
+  const filled = '━'.repeat(pct);
+  const empty = '━'.repeat(METER_WIDTH - pct);
+  return `${meterColor}${filled}${R}${c.dim}${empty}${R} ${meterColor}${c.bold}${value}${R}${c.dim}/${max}${R}`;
+}
+
+/** Bolded severity label colored by risk level. */
+function sevBadge(level: RiskLevel): string {
+  const color = level === 'critical' ? c.brightRed : level === 'high' ? c.red : level === 'medium' ? c.yellow : c.green;
+  return `${color}${c.bold}${level.toUpperCase()}${R}`;
+}
+
+/** `── Label ────` section divider matching cli.ts. */
+function sectionHeader(label: string): string {
+  const fill = Math.max(1, 56 - label.length);
+  return `  ${c.dim}──${R} ${c.bold}${label}${R} ${c.dim}${'─'.repeat(fill)}${R}`;
+}
+
 // ---------------------------------------------------------------------------
 // Agent patterns
 // ---------------------------------------------------------------------------
@@ -525,11 +550,14 @@ function generateFindings(result: Omit<DetectResult, 'findings'>): Finding[] {
     (s) => !s.verified && s.source.includes('(project)') && s.risk !== 'critical'
   );
   if (projectUnverified.length > 0) {
+    const names = projectUnverified.map((s) => s.name);
+    const preview = names.slice(0, 5).join(', ');
+    const detailTail = names.length > 5 ? `${preview}, +${names.length - 5} more` : preview;
     findings.push({
       severity: 'medium',
       category: 'mcp',
       title: `${projectUnverified.length} project MCP server${projectUnverified.length !== 1 ? 's' : ''} without a security scan`,
-      detail: projectUnverified.map((s) => s.name).join(', '),
+      detail: detailTail,
       whyItMatters:
         'These servers are configured in your project but have not been scanned for security issues. '
         + 'Running hackmyagent secure surfaces any vulnerabilities in their configuration.',
@@ -547,9 +575,8 @@ function generateFindings(result: Omit<DetectResult, 'findings'>): Finding[] {
       detail: criticalConfigs.map((cc) => cc.file).join(', '),
       whyItMatters:
         'API keys or tokens appear to be stored directly in these configuration files. '
-        + 'Anyone with repository access can see and use these credentials. '
-        + 'Moving them to environment variables limits exposure.',
-      remediation: 'opena2a protect .',
+        + 'Anyone with repository access can see and use these credentials.',
+      remediation: 'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.',
     });
   }
 
@@ -636,135 +663,130 @@ function generateAssetCsv(result: DetectResult): string {
 // Text formatting
 // ---------------------------------------------------------------------------
 
-function buildGovernanceSummary(result: DetectResult): string {
-  const { summary } = result;
-  const score = summary.governanceScore;
-
-  if (score === 100) return green('Governance: 100/100 — fully governed');
-
-  const scoreColor = score >= 70 ? green : score >= 40 ? yellow : red;
-  const projected = Math.min(100, score + summary.recoverablePoints);
-
-  let line = `Governance: ${scoreColor(`${c.bold}${score}${R}`)}/100`;
-  if (result.findings.length > 0 && projected > score) {
-    line += ` -> ${green(`${c.bold}${projected}${R}`)}/100 by addressing ${result.findings.length} finding${result.findings.length !== 1 ? 's' : ''}`;
-  }
-  return line;
-}
-
-function buildSummaryLine(result: DetectResult): string {
-  const { summary } = result;
-  const parts: string[] = [];
-
-  if (summary.totalAgents === 0 && summary.mcpServers === 0 && summary.aiConfigs === 0) {
-    return dim('No AI agents, MCP servers, or AI configs detected.');
-  }
-
-  if (summary.totalAgents > 0) parts.push(`${bold(String(summary.totalAgents))} AI agent${summary.totalAgents !== 1 ? 's' : ''}`);
-  if (summary.mcpServers > 0)  parts.push(`${bold(String(summary.mcpServers))} MCP server${summary.mcpServers !== 1 ? 's' : ''}`);
-  if (summary.aiConfigs > 0)   parts.push(`${bold(String(summary.aiConfigs))} AI config${summary.aiConfigs !== 1 ? 's' : ''}`);
-  if (summary.localLlms > 0)   parts.push(`${bold(String(summary.localLlms))} local LLM${summary.localLlms !== 1 ? 's' : ''}`);
-
-  return parts.join(' | ');
-}
-
-function buildWhatThisMeans(result: DetectResult): string[] {
-  const lines: string[] = [];
-  const { summary } = result;
-
-  if (summary.totalAgents === 0 && summary.mcpServers === 0) return lines;
-
-  lines.push(bold('What This Means'));
-
-  if (summary.totalAgents > 0) {
-    const governed = summary.totalAgents - summary.ungoverned;
-    if (summary.ungoverned === 0) {
-      lines.push(`  Your ${summary.totalAgents === 1 ? 'AI agent has' : 'AI agents have'} `
-        + `governance in place. Actions are bounded by the rules you defined.`);
-    } else if (governed > 0) {
-      lines.push(`  ${summary.totalAgents} AI tool${summary.totalAgents !== 1 ? 's are' : ' is'} running on this machine. `
-        + `${governed} ${governed === 1 ? 'has' : 'have'} governance rules, `
-        + `${summary.ungoverned} ${summary.ungoverned === 1 ? 'does' : 'do'} not.`);
-    } else {
-      lines.push(`  ${summary.totalAgents} AI tool${summary.totalAgents !== 1 ? 's are' : ' is'} running `
-        + `without governance. No documented rules limit what `
-        + `${summary.totalAgents === 1 ? 'it' : 'they'} can do in this project.`);
-    }
-  }
-
-  if (summary.mcpServers > 0) {
-    lines.push(`  ${summary.mcpServers} MCP server${summary.mcpServers !== 1 ? 's give' : ' gives'} your AI agents `
-      + `additional capabilities (file access, database queries, API calls, etc.).`);
-  }
-
-  lines.push('');
-  return lines;
-}
-
 function formatText(result: DetectResult, verbose: boolean, targetDir: string): string {
   const lines: string[] = [];
+  const { summary } = result;
+  const score = summary.governanceScore;
+  const projected = Math.min(100, score + summary.recoverablePoints);
 
-  lines.push(bold('Shadow AI Audit'));
-  lines.push(dim(`${os.hostname()} | ${os.userInfo().username} | ${targetDir}`));
-  lines.push(dim(result.scanTimestamp.replace('T', ' ').replace(/\.\d+Z$/, ' UTC')));
+  // Severity counts
+  const critical = result.findings.filter((f) => f.severity === 'critical').length;
+  const high = result.findings.filter((f) => f.severity === 'high').length;
+  const medium = result.findings.filter((f) => f.severity === 'medium').length;
+  const low = result.findings.filter((f) => f.severity === 'low').length;
+  const total = critical + high + medium + low;
+
+  // ── Header ────────────────────────────────────────────────────────
+  const dirBase = path.basename(targetDir) || targetDir;
+  const metaParts = [
+    'shadow ai audit',
+    `${os.hostname()}`,
+    summary.totalAgents > 0 ? `${summary.totalAgents} agent${summary.totalAgents === 1 ? '' : 's'}` : null,
+    summary.mcpServers > 0 ? `${summary.mcpServers} mcp server${summary.mcpServers === 1 ? '' : 's'}` : null,
+  ].filter(Boolean);
+
   lines.push('');
+  lines.push(`  ${c.bold}${c.white}${dirBase}${R}  ${c.dim}${metaParts.join(' · ')}${R}`);
 
-  lines.push(buildGovernanceSummary(result));
-  lines.push(buildSummaryLine(result));
-  lines.push('');
-
-  lines.push(...buildWhatThisMeans(result));
-
-  // Findings
-  if (result.findings.length > 0) {
-    lines.push(bold(`Findings (${result.findings.length})`));
-    for (const finding of result.findings) {
-      lines.push('');
-      lines.push(`  ${riskLabel(finding.severity)}  ${finding.title}`);
-      if (finding.detail) {
-        lines.push(`  ${dim(finding.detail)}`);
-      }
-      lines.push(`  ${finding.whyItMatters}`);
-      lines.push(`  ${dim('Fix:')} ${cyan(finding.remediation)}`);
-    }
-    lines.push('');
+  // ── Verdict + Score ───────────────────────────────────────────────
+  let verdictColor: string;
+  let verdictText: string;
+  if (critical > 0) {
+    verdictColor = c.brightRed;
+    verdictText = `${critical} critical issue${critical > 1 ? 's' : ''} found`;
+  } else if (high > 0) {
+    verdictColor = c.red;
+    verdictText = `${high} high-severity issue${high > 1 ? 's' : ''} found`;
+  } else if (total > 0) {
+    verdictColor = c.yellow;
+    verdictText = `${total} issue${total > 1 ? 's' : ''} found`;
+  } else if (summary.totalAgents === 0 && summary.mcpServers === 0 && summary.aiConfigs === 0) {
+    verdictColor = c.dim;
+    verdictText = 'No AI agents, MCP servers, or AI configs detected';
   } else {
-    lines.push(green('All detected AI tools have governance in place. No findings.'));
+    verdictColor = c.green;
+    verdictText = 'All detected AI tools have governance in place';
+  }
+  lines.push(`  ${verdictColor}${c.bold}${verdictText}${R}`);
+  lines.push('');
+  lines.push(`  Governance  ${scoreMeter(score)}`);
+
+  // ── Findings ──────────────────────────────────────────────────────
+  if (result.findings.length > 0) {
+    const summaryParts: string[] = [];
+    if (critical > 0) summaryParts.push(`${c.brightRed}${c.bold}${critical} critical${R}`);
+    if (high > 0) summaryParts.push(`${c.red}${c.bold}${high} high${R}`);
+    if (medium > 0) summaryParts.push(`${c.yellow}${medium} medium${R}`);
+    if (low > 0) summaryParts.push(`${c.dim}${low} low${R}`);
+
     lines.push('');
+    lines.push(sectionHeader('Findings'));
+    lines.push(`  ${summaryParts.join('  ')}`);
+
+    const limit = verbose ? result.findings.length : 10;
+    const shown = Math.min(limit, result.findings.length);
+    for (let i = 0; i < shown; i++) {
+      const f = result.findings[i];
+      const pipe = riskColor(f.severity)('│');
+      lines.push('');
+      lines.push(`  ${pipe} ${sevBadge(f.severity)}  ${c.bold}${c.white}${f.title}${R}`);
+      if (f.detail) lines.push(`  ${pipe} ${c.dim}${f.detail}${R}`);
+      if (f.whyItMatters) lines.push(`  ${pipe} ${f.whyItMatters}`);
+      if (f.remediation) lines.push(`  ${pipe} ${c.cyan}Fix:${R} ${cyan(f.remediation)}`);
+    }
+    const remaining = result.findings.length - shown;
+    if (remaining > 0) {
+      lines.push('');
+      lines.push(`  ${c.dim}+ ${remaining} more (run with --verbose to see all)${R}`);
+    }
+
+    // Path forward
+    if (projected > score) {
+      lines.push('');
+      const recoveryParts: string[] = [];
+      if (critical > 0) recoveryParts.push(`${critical} critical`);
+      if (high > 0) recoveryParts.push(`${high} high`);
+      if (medium > 0 && recoveryParts.length === 0) recoveryParts.push(`${medium} medium`);
+      const desc = recoveryParts.length > 0
+        ? `by fixing ${recoveryParts.join(' + ')}`
+        : `by addressing ${result.findings.length} finding${result.findings.length !== 1 ? 's' : ''}`;
+      lines.push(`  ${c.cyan}${c.bold}Path forward:${R} ${c.cyan}${score} ${c.dim}->${R} ${c.green}${c.bold}${projected}${R} ${c.cyan}${desc}${R}`);
+    }
   }
 
-  // Running AI Agents
+  // ── Running AI Agents ─────────────────────────────────────────────
   const assistants = result.agents.filter((a) => a.category === 'ai-assistant');
-  const llms       = result.agents.filter((a) => a.category === 'local-llm');
-
-  lines.push(bold('Running AI Agents'));
-  if (assistants.length === 0 && llms.length === 0) {
-    lines.push(dim('  No AI agents detected'));
-  } else {
+  const llms = result.agents.filter((a) => a.category === 'local-llm');
+  if (assistants.length + llms.length > 0) {
+    lines.push('');
+    lines.push(sectionHeader(`Running AI Agents (${assistants.length + llms.length})`));
     for (const agent of [...assistants, ...llms]) {
-      const nameCol  = agent.name.padEnd(22);
-      const govStr   = agent.governanceStatus === 'governed' ? green('governed') : yellow('ungoverned');
-      const pidStr   = verbose ? dim(` (PID ${agent.pid})`) : '';
+      const nameCol = agent.name.padEnd(22);
+      const govStr = agent.governanceStatus === 'governed' ? green('governed') : yellow('ungoverned');
+      const pidStr = verbose ? dim(` (PID ${agent.pid})`) : '';
       lines.push(`  ${nameCol}${govStr}${pidStr}`);
     }
   }
-  lines.push('');
 
-  // MCP Servers
+  // ── MCP Servers ───────────────────────────────────────────────────
   const projectMcp = result.mcpServers.filter((s) => s.source.includes('(project)'));
-  const globalMcp  = result.mcpServers.filter((s) => !s.source.includes('(project)'));
-  const mcpCount   = result.mcpServers.length;
+  const globalMcp = result.mcpServers.filter((s) => !s.source.includes('(project)'));
 
-  lines.push(bold(`MCP Servers (${mcpCount} found)`));
-  if (mcpCount === 0) {
-    lines.push(dim('  No MCP server configurations found'));
-  } else {
+  if (result.mcpServers.length > 0) {
+    lines.push('');
+    lines.push(sectionHeader(`MCP Servers (${result.mcpServers.length})`));
+
     if (projectMcp.length > 0) {
-      lines.push(`  ${bold('Project-local')} (${projectMcp.length})`);
       const riskOrder: Record<RiskLevel, number> = { critical: 0, high: 1, medium: 2, low: 3 };
       projectMcp.sort((a, b) => riskOrder[a.risk] - riskOrder[b.risk]);
-      for (const server of projectMcp) {
-        const nameCol = server.name.padEnd(20);
+
+      lines.push(`  ${c.bold}Project-local${R} ${c.dim}(${projectMcp.length})${R}`);
+      const mcpLimit = verbose ? projectMcp.length : 10;
+      const mcpShown = Math.min(mcpLimit, projectMcp.length);
+      const maxName = Math.min(28, Math.max(...projectMcp.slice(0, mcpShown).map((s) => s.name.length)));
+      for (let i = 0; i < mcpShown; i++) {
+        const server = projectMcp[i];
+        const nameCol = server.name.padEnd(maxName + 2);
         const riskStr = riskColor(server.risk)(server.risk.toUpperCase());
         const realCaps = server.capabilities.filter((cap) => cap !== 'unknown');
         const capsStr = realCaps.length > 0
@@ -772,69 +794,89 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
           : '';
         lines.push(`    ${nameCol}${riskStr}${capsStr}`);
       }
+      const mcpRemaining = projectMcp.length - mcpShown;
+      if (mcpRemaining > 0) {
+        lines.push(`    ${c.dim}+ ${mcpRemaining} more (run with --verbose to see all)${R}`);
+      }
     }
 
     if (globalMcp.length > 0) {
       if (verbose) {
-        lines.push(`  ${bold('Machine-wide')} (${globalMcp.length})`);
+        lines.push(`  ${c.bold}Machine-wide${R} ${c.dim}(${globalMcp.length})${R}`);
+        const maxName = Math.min(28, Math.max(...globalMcp.map((s) => s.name.length)));
         for (const server of globalMcp) {
-          const nameCol  = server.name.padEnd(20);
+          const nameCol = server.name.padEnd(maxName + 2);
           const realCaps = server.capabilities.filter((cap) => cap !== 'unknown');
-          const capsStr  = realCaps.length > 0
+          const capsStr = realCaps.length > 0
             ? dim(` — ${realCaps.map((cap) => capabilityDescription(cap).toLowerCase()).join(', ')}`)
             : '';
           lines.push(`    ${nameCol}${capsStr}`);
         }
       } else {
-        const sensitiveCaps = globalMcp.filter(
-          (s) => s.capabilities.some((cap) => ['shell-access', 'database', 'payments', 'cloud-services'].includes(cap))
+        const sensitiveCaps = globalMcp.filter((s) =>
+          s.capabilities.some((cap) => ['shell-access', 'database', 'payments', 'cloud-services'].includes(cap))
         );
-        let globalLine = `  ${dim(`Machine-wide (${globalMcp.length})`)}`;
+        let globalLine = `  ${c.dim}Machine-wide (${globalMcp.length})${R}`;
         if (sensitiveCaps.length > 0) {
           const names = sensitiveCaps.map((s) => s.name).join(', ');
           globalLine += dim(` — ${sensitiveCaps.length} with sensitive access: ${names}`);
         }
         lines.push(globalLine);
-        lines.push(dim('    Run with --verbose to see full list'));
+        lines.push(`    ${c.dim}(run with --verbose to see full list)${R}`);
       }
     }
   }
-  lines.push('');
 
-  // AI Config Files (only noteworthy by default)
+  // ── AI Config Files ───────────────────────────────────────────────
   const noteworthyConfigs = result.aiConfigs.filter((cc) => cc.risk !== 'low');
   if (result.aiConfigs.length > 0 && (noteworthyConfigs.length > 0 || verbose)) {
-    lines.push(bold(`AI Config Files (${result.aiConfigs.length} found)`));
+    lines.push('');
+    lines.push(sectionHeader(`AI Config Files (${result.aiConfigs.length})`));
     const configsToShow = verbose ? result.aiConfigs : noteworthyConfigs;
+    const maxName = Math.min(35, Math.max(...configsToShow.map((cc) => cc.file.length)));
     for (const config of configsToShow) {
-      const fileCol = config.file.padEnd(35);
+      const fileCol = config.file.padEnd(maxName + 2);
       lines.push(`  ${fileCol}${config.tool}`);
       if (config.risk === 'critical') {
-        lines.push(`    ${yellow('Contains hardcoded credentials — run: opena2a protect .  to encrypt into secure vault')}`);
+        lines.push(`    ${yellow('Contains hardcoded credentials')} ${dim('—')} ${cyan('opena2a protect .')}`);
       } else if (config.risk === 'high') {
         lines.push(`    ${yellow('Grants broad permissions to AI agents in this project')}`);
       }
     }
     if (!verbose && result.aiConfigs.length > noteworthyConfigs.length) {
-      lines.push(dim(`  + ${result.aiConfigs.length - noteworthyConfigs.length} low-risk config(s) — run with --verbose to see all`));
+      lines.push(`  ${c.dim}+ ${result.aiConfigs.length - noteworthyConfigs.length} low-risk config(s) (run with --verbose to see all)${R}`);
     }
-    lines.push('');
   }
 
-  // Next Steps
+  // ── Next Steps ────────────────────────────────────────────────────
+  type Step = { label: string; cmd: string; desc: string };
+  const steps: Step[] = [];
   if (result.findings.length > 0) {
-    lines.push(bold('Next Steps'));
-    lines.push(`  ${cyan('hackmyagent secure .')}             Full project security scan`);
-    lines.push(`  ${cyan('hackmyagent harden-soul .')}        Add SOUL.md behavioral governance`);
+    steps.push({ label: 'Full scan:',       cmd: `hackmyagent secure ${targetDir}`, desc: 'deep security scan with findings' });
+    if (result.identity.soulFiles === 0 || result.agents.some((a) => a.governanceStatus === 'no governance')) {
+      steps.push({ label: 'Add governance:',  cmd: `hackmyagent harden-soul ${targetDir}`, desc: 'generate SOUL.md behavioral boundaries' });
+    }
     if (result.aiConfigs.some((cc) => cc.risk === 'critical')) {
-      lines.push(`  ${cyan('opena2a protect .')}               Migrate credentials to environment variables`);
+      steps.push({ label: 'Protect credentials:', cmd: `opena2a protect ${targetDir}`, desc: 'encrypt hardcoded secrets into secure vault' });
     }
-    if (result.mcpServers.some((s) => s.source.includes('(project)'))) {
-      lines.push(`  ${cyan('opena2a mcp audit')}               Audit and sign project MCP servers`);
+    if (projectMcp.length > 0) {
+      steps.push({ label: 'Audit MCP servers:', cmd: 'opena2a mcp audit', desc: 'list servers and verify capability risk' });
     }
-    lines.push('');
   }
 
+  if (steps.length > 0) {
+    lines.push('');
+    lines.push(sectionHeader('Next Steps'));
+    const maxLabel = Math.max(...steps.map((s) => s.label.length));
+    const maxCmd = Math.max(...steps.map((s) => s.cmd.length));
+    for (const s of steps) {
+      const labelCol = s.label.padEnd(maxLabel + 2);
+      const cmdCol = cyan(s.cmd).padEnd(maxCmd + cyan('').length + 2);
+      lines.push(`  ${labelCol} ${cmdCol}  ${dim(s.desc)}`);
+    }
+  }
+
+  lines.push('');
   return lines.join('\n');
 }
 
