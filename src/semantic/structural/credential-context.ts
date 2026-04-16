@@ -150,7 +150,7 @@ function detectGenericTokens(file: AnalysisFile): SemanticFinding[] {
             severity: severityForFile(file.path),
             file: file.path,
             line: i + 1,
-            recommendation: `Move "${key}" value to an environment variable and reference it with \${${key.toUpperCase().replace(/[^A-Z0-9]/g, '_')}}`,
+            recommendation: `Move "${key}" value to an environment variable and reference it with \${${key.toUpperCase().replace(/[^A-Z0-9]/g, '_')}}. Auto-migrate: opena2a protect .`,
             layer: 2,
             autoFixable: false,
           });
@@ -175,7 +175,7 @@ function detectGenericTokens(file: AnalysisFile): SemanticFinding[] {
             severity: severityForFile(file.path),
             file: file.path,
             line: i + 1,
-            recommendation: `Move "${key}" value to an environment variable.`,
+            recommendation: `Move "${key}" value to an environment variable. Auto-migrate: opena2a protect .`,
             layer: 2,
             autoFixable: false,
           });
@@ -314,7 +314,7 @@ function detectMcpEnvSecrets(file: AnalysisFile): SemanticFinding[] {
           severity: 'critical',
           file: file.path,
           line: lineNum,
-          recommendation: `Replace the hardcoded value with an env var reference: "${key}": "\${${key}}"`,
+          recommendation: `Replace the hardcoded value with an env var reference: "${key}": "\${${key}}". Auto-migrate: opena2a protect .`,
           layer: 2,
           autoFixable: false,
         });

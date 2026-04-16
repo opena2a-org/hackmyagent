@@ -786,7 +786,8 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
             }
           }
           if (similarCount > 0) {
-            console.log(`  ${borderColor}│${RESET()} ${colors.dim}+ ${similarCount} similar${dir ? ` in ${shortenPath(dir)}` : ''}${RESET()}`);
+            const sevColor = SEVERITY_DISPLAY[f.severity]?.color() ?? colors.dim;
+            console.log(`  ${borderColor}│${RESET()} ${colors.dim}+ ${similarCount} more ${RESET()}${sevColor}${f.severity}${RESET()}${dir ? `${colors.dim} in ${shortenPath(dir)}${RESET()}` : ''}`);
           }
         }
       }
@@ -861,6 +862,8 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   // ── AnaLM Analysis ──────────────────────────────────────────────────
   if (opts.analystFindings && opts.analystFindings.length > 0) {
     divider('AnaLM Analysis');
+    console.log(`  ${colors.dim}Generative AI layer — identifies attack vectors and produces targeted remediation${RESET()}`);
+    console.log();
     for (const af of opts.analystFindings) {
       const r = af.result;
       if (af.taskType === 'threatAnalysis') {
@@ -920,7 +923,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
 
   // ── Next steps ──────────────────────────────────────────────────────
   const hasGovIssues = failed.some(f => f.category === 'governance' || f.category === 'Governance' || f.checkId?.startsWith('AST-GOV') || f.checkId?.startsWith('AST-PROMPT'));
-  const hasCredIssues = failed.some(f => f.checkId?.startsWith('CRED-') || f.name?.toLowerCase().includes('credential') || f.name?.toLowerCase().includes('api key') || f.name?.toLowerCase().includes('hardcoded'));
+  const hasCredIssues = failed.some(f => f.checkId?.startsWith('CRED-') || f.name?.toLowerCase().includes('credential') || f.name?.toLowerCase().includes('api key') || f.name?.toLowerCase().includes('hardcoded') || f.category === 'credential');
+  const hasMcpIssues = failed.some(f =>
+    f.category === 'mcp-config' ||
+    f.checkId?.startsWith('SEM-MCP') ||
+    f.name?.toLowerCase().includes('mcp') ||
+    f.file?.toLowerCase().includes('mcp') ||
+    f.checkId?.startsWith('AST-MCP')
+  );
   const hasCodeVulns = failed.some(f => {
     const cat = (f.category || '').toLowerCase();
     return cat !== 'governance' && cat !== 'injection-hardening' && cat !== 'trust-hierarchy'
@@ -931,6 +941,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     hasGovernanceIssues: hasGovIssues,
     hasFindings: totalFindings > 0,
     hasCredentialFindings: hasCredIssues,
+    hasMcpFindings: hasMcpIssues,
     hasCodeVulns,
     isCleanScan: totalFindings === 0 && (!!localScan || !!nanomindScan),
     usedAnalm,
@@ -5625,6 +5636,17 @@ Examples:
       console.log(`  Governance  ${uiScoreMeter(result.score)}`);
 
       // ── Domain Scores ──────────────────────────────────────────────
+      const DOMAIN_DESCRIPTIONS: Record<string, string> = {
+        'Trust Hierarchy':          'who can instruct the agent and in what priority order',
+        'Capability Boundaries':    'what actions, tools, and systems the agent is allowed to access',
+        'Injection Hardening':      'defends against attackers hijacking behavior via crafted inputs',
+        'Data Handling':            'governs PII, credentials, data minimization, and retention',
+        'Hardcoded Behaviors':      'absolute rules the agent must follow regardless of instructions',
+        'Honesty and Transparency': 'agent must identify itself and not deceive users',
+        'Harm Avoidance':           'defines categories of harm the agent must refuse',
+        'Human Oversight':          'when and how a human must be consulted or can intervene',
+        'Agentic Safety':           'safety controls for autonomous multi-step action',
+      };
       console.log(uiDivider('Domain Scores'));
       for (const domain of result.domains) {
         if (domain.skippedByProfile) {
@@ -5639,7 +5661,11 @@ Examples:
         }
         const pctColor = domainBar(domain.percentage);
         const domainLabel = domain.domain.padEnd(28);
+        const domainDesc = DOMAIN_DESCRIPTIONS[domain.domain];
         console.log(`  ${domainLabel}${pctColor}${domain.passed}/${domain.total}${RESET()}  ${colors.dim}(${domain.percentage}%)${RESET()}`);
+        if (domainDesc && domain.percentage < 100) {
+          console.log(`  ${colors.dim}${''.padEnd(28)}${domainDesc}${RESET()}`);
+        }
 
         if (options.verbose) {
           for (const ctrl of domain.controls) {
@@ -7605,6 +7631,7 @@ function printCheckNextSteps(
     hasGovernanceIssues?: boolean;
     hasFindings?: boolean;
     hasCredentialFindings?: boolean;
+    hasMcpFindings?: boolean;
     hasCodeVulns?: boolean;
     isCleanScan?: boolean;
     isLocalTarget?: boolean;
@@ -7615,14 +7642,21 @@ function printCheckNextSteps(
 ): void {
   if (globalCiMode) return;
   const isLocal = context?.isLocalTarget ?? (target.startsWith('.') || target.startsWith('/') || target.startsWith('~'));
+  // For commands that take a directory (harden-soul, opena2a protect), use the parent dir when target is a file
+  const dirTarget = isLocal && target.includes('.') && !target.endsWith('/')
+    ? require('path').dirname(target)
+    : target;
   console.log();
   console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
 
   if (context?.hasGovernanceIssues && isLocal) {
-    console.log(`  ${colors.cyan}Auto-fix governance:${RESET()}  ${CLI_PREFIX} harden-soul ${target}`);
+    console.log(`  ${colors.cyan}Auto-fix governance:${RESET()}  ${CLI_PREFIX} harden-soul ${dirTarget}`);
   }
   if (context?.hasCredentialFindings) {
-    console.log(`  ${colors.cyan}Protect credentials:${RESET()}  npx secretless-ai scan`);
+    console.log(`  ${colors.cyan}Protect credentials:${RESET()}  opena2a protect ${isLocal ? dirTarget : '.'}`);
+  }
+  if (context?.hasMcpFindings) {
+    console.log(`  ${colors.cyan}Audit MCP servers:${RESET()}    opena2a mcp audit  ${colors.dim}(run from project dir)${RESET()}`);
   }
   if (context?.hasCodeVulns && isLocal) {
     console.log(`  ${colors.cyan}Auto-fix all issues:${RESET()}  ${CLI_PREFIX} secure --fix`);
@@ -7632,21 +7666,21 @@ function printCheckNextSteps(
       console.log(`  ${colors.cyan}Full project audit:${RESET()}   ${getFullScanHint()}`);
     }
     if (!context?.usedAnalm) {
-      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm`);
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
     }
   } else if (context?.isCleanScan && isLocal) {
     console.log(`  ${colors.cyan}Governance scan:${RESET()}      ${CLI_PREFIX} scan-soul ${target}`);
     console.log(`  ${colors.cyan}Red-team test:${RESET()}        ${CLI_PREFIX} attack --local`);
     if (!context?.usedAnalm) {
-      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm`);
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
     }
   } else if (context?.isCleanScan) {
     if (!context?.usedAnalm) {
-      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm`);
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
     }
   } else {
     if (!context?.usedAnalm) {
-      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm`);
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
     }
   }
   console.log();

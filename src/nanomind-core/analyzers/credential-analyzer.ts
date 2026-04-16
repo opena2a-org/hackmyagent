@@ -405,6 +405,23 @@ function isDocumentationOrTestContext(ast: SecurityAST): boolean {
     return true;
   }
 
+  // Semantic routing / command catalog / manifest files — these describe CLI commands
+  // and tool operations using security terminology (credentials, secrets, API keys)
+  // in their description and tag fields. They are not storing or accessing credentials.
+  const basename = path.split('/').pop() ?? '';
+  if (
+    basename.endsWith('-index.json') ||
+    basename === 'command-index.json' ||
+    basename === 'command-catalog.json' ||
+    basename === 'manifest.json' ||
+    basename === 'commands.json' ||
+    path.includes('/semantic/') ||
+    path.includes('/catalog/') ||
+    path.includes('/registry/')
+  ) {
+    return true;
+  }
+
   // Check declared purpose for test/doc language
   const purpose = ast.declaredPurpose.toLowerCase();
   if (

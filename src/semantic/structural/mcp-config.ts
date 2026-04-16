@@ -140,7 +140,7 @@ export class McpConfigAnalyzer {
           category: 'mcp-config',
           severity: 'info',
           file: file.path,
-          recommendation: 'Review each MCP server and remove any that are not actively needed.',
+          recommendation: 'Review each MCP server and remove any that are not actively needed. Audit with identity scores: opena2a mcp audit',
           layer: 2,
           autoFixable: false,
           attackClass: 'MCP-SCOPE-EXPAND',

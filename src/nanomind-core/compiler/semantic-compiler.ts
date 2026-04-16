@@ -749,9 +749,15 @@ function mapRiskSurfaces(
   // Guards:
   //   isDefensiveConstraint — content explicitly prohibits override ("must never override", "will never ignore")
   //   isProhibitionList — content has a "will NOT do" / "I will never" section listing attacks to prohibit
+  //   isGovernanceDoc — content is a governance document (SOUL, system prompt) — these cite injection
+  //     examples in defensive sections like "## Injection Hardening" to teach the agent what to reject.
+  //     A governance document is the definition of injection resistance, not an injection vector.
+  //   isExampleContext — injection phrases appear inside a "phrases such as '...'" quotation, indicating
+  //     they are examples the agent must reject, not directives being issued.
   //   benignContextScore >= 2 — content has sufficient benign signals (authorized, educational, research)
-  // All three guards suppress the injection surface to avoid flagging:
+  // All guards suppress the injection surface to avoid flagging:
   //   - SOULs that enumerate attacks they are forbidden from performing (b05)
+  //   - Governance docs with "## Injection Hardening" sections (b11)
   //   - Educational docs that quote attack examples with "DO NOT USE" labels (b02)
   //   - Authorized security assessments referencing specific attack techniques
   const hasOverrideLanguage = /ignore.*previous|override.*instruction|new.*task/i.test(text);
@@ -759,7 +765,9 @@ function mapRiskSurfaces(
     /must never|must not|never comply|resist|reject|refuse|forbidden|should not|do not|prohibited|will never|will not/i.test(text) &&
     /override|ignore|bypass|injection|inject/i.test(text);
   const isProhibitionList = /(?:will\s+not\s+do|will\s+never\s*:|i\s+will\s+never|agent\s+will\s+never|what\s+(?:i|we|this\s+agent)\s+(?:will\s+not|won't))/i.test(content);
-  if (hasOverrideLanguage && !isDefensiveConstraint && !isProhibitionList && benignContextScore < 2) {
+  // "phrases such as 'ignore previous instructions'" — injection example in an educational/rejection context
+  const isExampleContext = /phrases?\s+(?:such\s+as|like|including)\s+["']?(?:ignore|override|new\s+task)/i.test(content);
+  if (hasOverrideLanguage && !isDefensiveConstraint && !isProhibitionList && !isGovernanceDoc && !isExampleContext && benignContextScore < 2) {
     surfaces.push({
       surface: 'Instruction override language',
       attackClass: 'PROMPT-INJECT',
@@ -769,7 +777,10 @@ function mapRiskSurfaces(
   }
 
   // Structural injection patterns (JSON configs, code blocks, hidden directives)
-  if (/systemprompt.*override|systemprompt.*ignore|systemprompt.*bypass/i.test(text.replace(/[_\-\s]/g, ''))) {
+  // Skipped for governance documents — a SOUL.md trust hierarchy section names "System prompt"
+  // as the highest-authority source and separately discusses "override" in a defensive context.
+  // The regex pattern would match across paragraphs, producing a critical FP on well-governed SOULs.
+  if (!isGovernanceDoc && /systemprompt.*override|systemprompt.*ignore|systemprompt.*bypass/i.test(text.replace(/[_\-\s]/g, ''))) {
     surfaces.push({
       surface: 'Hidden system prompt override in config',
       attackClass: 'PROMPT-INJECT',
