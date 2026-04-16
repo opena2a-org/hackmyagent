@@ -1442,7 +1442,7 @@ export class HardeningScanner {
           line: credentialLine,
           fixable: false,
           fix: 'npx secretless-ai init',
-          guidance: 'CLAUDE.md is often committed to git and exposed publicly. Move credentials to a .env file and reference as ${ENV_VAR}. Secretless AI blocks credential access from AI tool context.',
+          guidance: 'CLAUDE.md is sent to your AI provider on every request. Credentials here are exposed to the model and extractable via prompt injection. Run opena2a protect . to encrypt them into a secure vault.',
         });
       }
     } catch {
@@ -1657,7 +1657,7 @@ dist/
         name: 'Missing .gitignore',
         description: 'No .gitignore file to prevent accidental commits',
         category: 'git',
-        severity: 'medium',
+        severity: 'low',
         passed: git001Fixed,
         message: 'Create .gitignore to protect sensitive files',
         file: '.gitignore',
@@ -1905,7 +1905,7 @@ dist/
         fixable: true,
         fixed: mcp003Fixed,
         fix: `${this.cliName} secure --fix`,
-        guidance: 'Hardcoded API keys in mcp.json are exposed to anyone with repo access. Use ${ENV_VAR} references and store actual values in .env (which should be in .gitignore).',
+        guidance: 'Hardcoded API keys in mcp.json are exposed to anyone with repo access. Run opena2a protect . to encrypt them into a secure vault — keys are injected at runtime, never stored as plaintext.',
       });
     }
 
@@ -9379,7 +9379,7 @@ dist/
                   line: i + 1,
                   fixable: true,
                   fixed,
-                  fix: `Move credentials to server-side environment variables. Never include API keys in client-side code or static assets. Use a backend proxy for API calls.`,
+                  fix: `opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault. Never include API keys in client-side code — use a backend proxy for API calls.`,
                   guidance: 'Credentials in web-served files (HTML, JS, CSS) are visible to anyone who views the page source. API keys in client-side code can be extracted and abused for unauthorized access.',
                 });
                 break;

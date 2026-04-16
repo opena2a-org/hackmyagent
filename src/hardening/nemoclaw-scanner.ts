@@ -311,7 +311,7 @@ export class NemoClawScanner {
                   file,
                   line: i + 1,
                   fixable: true,
-                  fix: 'Move the API key to an environment variable and reference it as $NVIDIA_API_KEY',
+                  fix: 'opena2a protect .  — encrypts the API key into a secure vault and injects it at runtime',
                   attackClass: 'CRED-HARVEST',
                 },
               ),

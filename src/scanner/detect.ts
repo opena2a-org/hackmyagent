@@ -810,7 +810,7 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
       const fileCol = config.file.padEnd(35);
       lines.push(`  ${fileCol}${config.tool}`);
       if (config.risk === 'critical') {
-        lines.push(`    ${yellow('Contains credential references — move these to environment variables')}`);
+        lines.push(`    ${yellow('Contains hardcoded credentials — run: opena2a protect .  to encrypt into secure vault')}`);
       } else if (config.risk === 'high') {
         lines.push(`    ${yellow('Grants broad permissions to AI agents in this project')}`);
       }

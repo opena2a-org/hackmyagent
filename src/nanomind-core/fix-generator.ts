@@ -178,23 +178,11 @@ function fixCredentialIssue(finding: ASTFinding, ast: SecurityAST): string {
   const file = finding.file ?? ast.artifactPath ?? 'the artifact';
 
   if (finding.attackClass === 'CRED-HARDCODED') {
-    parts.push(`In ${file}, replace hardcoded credentials with environment variable references.`);
-    if (ast.artifactType === 'source_code') {
-      parts.push('```');
-      parts.push('// Before: const apiKey = "sk-live-abc123..."');
-      parts.push('// After:  const apiKey = process.env.API_KEY');
-      parts.push('```');
-      parts.push('Add the variable name to .env.example (without the value).');
-    } else if (ast.artifactType === 'mcp_config') {
-      parts.push('In your MCP config, use environment variable syntax:');
-      parts.push('```json');
-      parts.push('"env": { "API_KEY": "${API_KEY}" }');
-      parts.push('```');
-    } else if (ast.artifactType === 'skill' || ast.artifactType === 'system_prompt') {
+    parts.push('opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.');
+    if (ast.artifactType === 'skill' || ast.artifactType === 'system_prompt') {
       parts.push('Skills and system prompts must never contain credential values.');
-      parts.push('Reference credentials as: "Use the API key from $API_KEY environment variable."');
     }
-    parts.push('After removing: rotate the credential immediately (the old value may be in git history).');
+    parts.push('After encrypting: rotate the credential immediately (the old value may be in git history).');
   } else if (finding.attackClass === 'CRED-EXFIL') {
     const destination = finding.evidence?.match(/to\s+(\S+)/)?.[1] ?? 'an external endpoint';
     parts.push(`Remove credential transmission to ${destination} in ${file}.`);
@@ -203,11 +191,11 @@ function fixCredentialIssue(finding: ASTFinding, ast: SecurityAST): string {
     parts.push('  2. Use a credential broker that issues scoped, short-lived tokens.');
     parts.push('  3. Ensure credentials never appear in request bodies or logs.');
   } else if (finding.attackClass === 'CRED-EXPOSURE') {
-    parts.push(`In ${file}, move credential references to environment variables.`);
+    parts.push('opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). Keys are injected at runtime, never stored as plaintext.');
     if (ast.declaredPurpose) {
-      parts.push(`This ${ast.artifactType} ("${truncate(ast.declaredPurpose, 60)}") should not contain credential values.`);
+      parts.push(`Credentials in this ${ast.artifactType} ("${truncate(ast.declaredPurpose, 60)}") are exposed in version control.`);
     }
-    parts.push('Use $ENV_VAR syntax in configs or process.env.VAR in code.');
+    parts.push('After encrypting: rotate any credentials that were previously exposed.');
   } else {
     // CRED-HARVEST
     parts.push(`In ${file}, remove patterns that request or collect credentials from users.`);

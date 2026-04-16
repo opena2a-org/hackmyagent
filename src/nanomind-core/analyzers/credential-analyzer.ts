@@ -104,7 +104,7 @@ function checkCredentialsInNonEnvContext(ast: SecurityAST, projectType?: Project
       file: ast.artifactPath,
       fix: isSDK
         ? 'Expected behavior for an SDK. Credentials are read from environment variables and sent to the service API.'
-        : 'Move credential references to environment variables. Auto-migrate: opena2a protect .',
+        : 'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault. Keys are injected at runtime, never stored as plaintext.',
       guidance: isSDK
         ? 'This is expected behavior for an API client SDK. The SDK reads API keys to authenticate requests.'
         : 'Credentials embedded in non-env artifacts can be leaked through version control, ' +
@@ -342,8 +342,7 @@ function checkHardcodedSecrets(ast: SecurityAST): ASTFinding[] {
     fixable: false,
     file: ast.artifactPath,
     fix:
-      'Move all secrets to environment variables or a secret manager. ' +
-      'Replace hardcoded values with references: $SECRET_NAME or process.env.SECRET_NAME. ' +
+      'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault (keychain, 1Password, or AIM vault). ' +
       'Rotate any credentials that were committed to version control.',
     guidance:
       'After removing hardcoded credentials, rotate them immediately. ' +

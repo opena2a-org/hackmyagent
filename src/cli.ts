@@ -527,9 +527,14 @@ function cleanFixText(text: string, fileAlreadyShown?: string): string {
   // Strip "In <file>," prefix when file is already shown in the finding header
   if (fileAlreadyShown) {
     const escapedFile = fileAlreadyShown.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    line = line.replace(new RegExp(`^In ${escapedFile},?\\s*`, 'i'), '');
-    // Capitalize first letter after stripping
-    if (line.length > 0) line = line[0].toUpperCase() + line.slice(1);
+    const stripped = line.replace(new RegExp(`^In ${escapedFile},?\\s*`, 'i'), '');
+    // Only capitalize if the prefix was actually stripped (text changed)
+    if (stripped !== line) {
+      line = stripped;
+      if (line.length > 0) line = line[0].toUpperCase() + line.slice(1);
+    } else {
+      line = stripped;
+    }
   }
   return line;
 }
@@ -788,7 +793,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           }
           if (similarCount > 0) {
             const sevColor = SEVERITY_DISPLAY[f.severity]?.color() ?? colors.dim;
-            console.log(`  ${borderColor}│${RESET()} ${colors.dim}+ ${similarCount} more ${RESET()}${sevColor}${f.severity}${RESET()}${dir ? `${colors.dim} in ${shortenPath(dir)}${RESET()}` : ''}`);
+            console.log(`  ${borderColor}│${RESET()} ${colors.dim}+ ${similarCount} more ${RESET()}${sevColor}${f.severity}${RESET()}${dir ? `${colors.dim} in ${shortenPath(dir)}${RESET()}` : ''}${colors.dim}  (run with --verbose to see all)${RESET()}`);
           }
         }
       }
@@ -2171,7 +2176,7 @@ function generateAspOutput(benchmarkResult: BenchmarkResult, scanResult: { findi
     capabilities,
     credentials: {
       hardcodedSecrets: hardcodedCreds,
-      recommendation: hardcodedCreds > 0 ? 'Move secrets to environment variables or secrets manager' : 'No hardcoded credentials detected',
+      recommendation: hardcodedCreds > 0 ? 'opena2a protect .  — encrypts secrets into a secure vault, injects at runtime' : 'No hardcoded credentials detected',
     },
     supplyChain: {
       signedComponents: signedSkills,
@@ -2713,6 +2718,32 @@ Examples:
         // findings already filtered by project type above, so just exclude passed/fixed
         const forScore = (result.findings || []).filter((f: any) => !f.passed && !f.fixed);
         result.score = scanner.calculateScore(forScore).score;
+      }
+
+      // AI Infrastructure auto-detection — scan NemoClaw, OpenClaw, etc. if present
+      // Infrastructure scans run transparently alongside the primary scan.
+      // No separate vendor-specific commands needed.
+      {
+        const infraDirs = detectAIInfrastructure(targetDir);
+        for (const infra of infraDirs) {
+          try {
+            const infraScanner = new HardeningScanner();
+            const infraResult = await infraScanner.scan({ targetDir: infra.dir, autoFix: false });
+            const infraFailed = (infraResult.findings || []).filter((f: SecurityFinding) => !f.passed);
+            if (infraFailed.length > 0 && result.findings) {
+              // Tag findings with infrastructure source and merge
+              const tagged = infraFailed.map((f: SecurityFinding) => ({
+                ...f,
+                name: `[${infra.name}] ${f.name}`,
+                file: f.file ? `${infra.dir.replace(require('os').homedir(), '~')}/${f.file}` : infra.dir,
+              }));
+              result.findings = [...(result.findings as SecurityFinding[]), ...tagged] as typeof result.findings;
+              // Recalculate score with infrastructure findings included
+              const allForScore = (result.findings || []).filter((f: any) => !f.passed && !f.fixed);
+              result.score = scanner.calculateScore(allForScore).score;
+            }
+          } catch { /* Infrastructure scan failures are non-fatal */ }
+        }
       }
 
       // Behavioral simulation: auto-runs on --deep, or when NanoMind detects ambiguity
@@ -3379,8 +3410,40 @@ function assessRiskLevel(findings: SecurityFinding[]): { level: string; color: s
   };
 }
 
+// ---------------------------------------------------------------------------
+// AI Infrastructure auto-detection (used by `secure` to scan all environments)
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect AI infrastructure directories present on this machine.
+ * Returns paths for environments that exist and are different from the primary scan target.
+ */
+function detectAIInfrastructure(primaryTarget: string): Array<{ name: string; dir: string }> {
+  const os = require('os');
+  const path = require('path');
+  const fs = require('fs');
+  const home = os.homedir();
+  const primary = path.resolve(primaryTarget);
+
+  const candidates: Array<{ name: string; dir: string }> = [
+    { name: 'NemoClaw', dir: path.join(home, '.nemoclaw') },
+    { name: 'OpenClaw', dir: path.join(home, '.openclaw') },
+    { name: 'OpenShell', dir: path.join(home, '.openshell') },
+    { name: 'Moltbot', dir: path.join(home, '.moltbot') },
+    { name: 'ClawdBot', dir: path.join(home, '.clawdbot') },
+  ];
+
+  return candidates.filter(c => {
+    try {
+      return path.resolve(c.dir) !== primary && fs.existsSync(c.dir) && fs.statSync(c.dir).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+}
+
 program
-  .command('secure-openclaw')
+  .command('secure-openclaw', { hidden: true } as any) // Deprecated — `hackmyagent secure` auto-detects all AI infrastructure
   .description(`Security scan specifically for OpenClaw/Moltbot installations
 
 Performs focused security checks for OpenClaw agent deployments:
@@ -3619,7 +3682,7 @@ function assessNemoClawRiskLevel(findings: SecurityFinding[]): { level: string; 
 }
 
 program
-  .command('secure-nemoclaw')
+  .command('secure-nemoclaw', { hidden: true } as any) // Deprecated — `hackmyagent secure` auto-detects all AI infrastructure
   .description(`Security scan for NVIDIA NemoClaw installations
 
 Performs focused security checks for NemoClaw sandbox deployments:
@@ -6487,10 +6550,10 @@ program
     // Static explanation lookup
     const checkId = findingId.toUpperCase();
     const staticExplanations: Record<string, string> = {
-      'CRED-001': 'Hardcoded credential detected. API keys, tokens, or passwords are embedded directly in source code. Replace with environment variable references ($VAR_NAME) and rotate the exposed credential immediately.',
-      'CRED-002': 'OpenAI API key pattern detected (sk-...). Move to environment variable OPENAI_API_KEY.',
-      'CRED-003': 'Anthropic API key pattern detected (sk-ant-...). Move to environment variable ANTHROPIC_API_KEY.',
-      'CRED-004': 'AWS credential pattern detected. Use AWS SDK credential chain or environment variables.',
+      'CRED-001': 'Hardcoded credential detected. API keys, tokens, or passwords are embedded directly in source code. Run: opena2a protect .  — encrypts secrets into a secure vault (keychain, 1Password, or AIM vault) and injects them at runtime. Rotate any already-exposed credentials.',
+      'CRED-002': 'OpenAI API key detected (sk-proj-... or sk-...). Run: opena2a protect .  — removes the key from source and stores it in your secure vault.',
+      'CRED-003': 'Anthropic API key detected (sk-ant-...). Run: opena2a protect .  — removes the key from source and stores it in your secure vault.',
+      'CRED-004': 'AWS credential pattern detected (AKIA...). Run: opena2a protect .  — removes the key from source and stores it in your secure vault.',
       'MCP-001': 'MCP server running without TLS. Agent-to-server communication is unencrypted. Enable TLS on the MCP server or use a reverse proxy with TLS termination.',
       'SKILL-005': 'External endpoint in skill capability declaration. Verify the endpoint is trusted and uses HTTPS.',
       'GOV-001': 'No governance policy found. Agents should declare behavioral constraints in a SOUL.md or governance file. Create a SOUL.md with mission, boundaries, and allowed actions.',
@@ -6514,9 +6577,9 @@ program
       'AST-INJECT-001': 'Active prompt injection surface. The artifact contains language that enables instruction override — "ignore previous instructions", "you are now", or conditional compliance patterns. This is a high-confidence attack vector, not a theoretical risk. Fix: remove instruction override language. Add explicit rejection clause. Run: hackmyagent harden-soul <dir> to generate injection-resistant governance.',
       'AST-GOV-001': 'Governance domain gap. The artifact has capabilities but missing constraint coverage across governance domains (data handling, trust hierarchy, scope, human oversight, safety). Without coverage, the agent has no guardrails for uncovered areas. Fix: run hackmyagent harden-soul <dir> to auto-generate missing governance sections.',
       'AST-GOV-002': 'Weak constraint enforceability. Declared constraints use advisory language ("should", "try to", "when appropriate") that an adversary can argue against. Constraints using "should" have bypass risk above 50%. Fix: replace advisory language with mandatory: "must never", "shall not", "is forbidden". Run: hackmyagent scan-soul --verbose to see enforceability scores.',
-      'AST-CRED-001': 'Credentials in non-environment context. The artifact reads, transmits, or references credential data from a context where it can be extracted via prompt injection, leaked in git history, or exposed in build artifacts. Fix: move to environment variables. Auto-migrate: opena2a protect .',
+      'AST-CRED-001': 'Credentials in non-environment context. The artifact reads, transmits, or references credential data from a context where it can be extracted via prompt injection, leaked in git history, or exposed in build artifacts. Fix: opena2a protect .  — encrypts secrets into a secure vault, injects at runtime.',
       'AST-CRED-002': 'Credential forwarding. The artifact transmits credential data to an external destination — even to "trusted" endpoints this is dangerous because the destination can be compromised or spoofed. Fix: remove credential forwarding. Use OAuth token exchange or a credential broker instead of passing raw credentials.',
-      'AST-CRED-003': 'Hardcoded secret. The artifact contains patterns consistent with hardcoded API keys, tokens, or passwords. These are exposed in version control history and to anyone who can read the file. Fix: move to environment variables and rotate any already-exposed credentials. Auto-migrate: opena2a protect .',
+      'AST-CRED-003': 'Hardcoded secret. The artifact contains patterns consistent with hardcoded API keys, tokens, or passwords. These are exposed in version control history and to anyone who can read the file. Fix: opena2a protect .  — encrypts secrets into a secure vault and rotates any already-exposed credentials.',
     };
 
     // Map check ID prefixes to human-readable category labels

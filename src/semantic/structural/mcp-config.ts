@@ -129,18 +129,20 @@ export class McpConfigAnalyzer {
       findings.push(...this.checkAttackChains(allCapabilities, file));
 
       // Check server count
-      const serverCount = Object.keys(servers).length;
+      const serverNames = Object.keys(servers);
+      const serverCount = serverNames.length;
       if (serverCount > 5) {
+        const serverList = serverNames.join(', ');
         findings.push({
           id: 'SEM-MCP-006',
           title: 'Large MCP attack surface',
-          description: `${serverCount} MCP servers configured in ${file.path}. Each server expands the agent's capabilities and attack surface.`,
+          description: `${serverCount} MCP servers configured in ${file.path}: ${serverList}. Each server expands the agent's capabilities and attack surface.`,
           rationale:
-            'More servers mean more capabilities the agent can be manipulated into using. Review whether all servers are necessary.',
+            'More servers mean more capabilities the agent can be manipulated into using via prompt injection. Review whether all servers are necessary for normal operation.',
           category: 'mcp-config',
           severity: 'info',
           file: file.path,
-          recommendation: 'Review each MCP server and remove any that are not actively needed. Audit with identity scores: opena2a mcp audit',
+          recommendation: 'opena2a mcp audit  — lists all configured MCP servers, scans each for security issues, and shows capability risk scores. Remove servers not actively needed.',
           layer: 2,
           autoFixable: false,
           attackClass: 'MCP-SCOPE-EXPAND',
@@ -243,7 +245,7 @@ export class McpConfigAnalyzer {
             severity: 'critical',
             file: file.path,
             line: lineNum,
-            recommendation: `Move the secret from args to the env block: "env": { "API_KEY": "..." } — or better, reference an environment variable.`,
+            recommendation: `opena2a protect .  — scans MCP configs for hardcoded secrets and encrypts them into a secure vault. Keys are injected at runtime via the env block.`,
             layer: 2,
             autoFixable: false,
             attackClass: 'MCP-CRED',
