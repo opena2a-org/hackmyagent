@@ -98,8 +98,14 @@ function generateFix(finding: ASTFinding, ast: SecurityAST): string {
     case 'SUPPLY-CHAIN':
       return fixSupplyChain(finding, ast);
 
+    case 'SCOPE-WILDCARD':
+      // Preserve the analyzer's specific fix — it already contains the actionable
+      // allowlist instruction with `opena2a mcp audit` reference.
+      return finding.fix ?? fixGeneric(finding, ast);
+
     default:
-      return fixGeneric(finding, ast);
+      // If the analyzer already set a specific fix string, trust it over the generic fallback.
+      return finding.fix ?? fixGeneric(finding, ast);
   }
 }
 
@@ -139,20 +145,12 @@ function fixCapabilityIssue(finding: ASTFinding, ast: SecurityAST): string {
       }
     }
   } else if (finding.attackClass === 'CAPABILITY-ABUSE') {
-    // Unconstrained high-risk capability
-    const highRiskCaps = ast.declaredCapabilities
-      .filter(c => c.riskLevel === 'high' || c.riskLevel === 'critical')
-      .map(c => c.name);
-
-    parts.push(`Add governance constraints for ${highRiskCaps.length > 0 ? highRiskCaps.join(', ') : 'high-risk capabilities'}.`);
+    // Unconstrained high-risk capability — the fix is always harden-soul
+    const dir = ast.artifactPath ? ast.artifactPath.split('/').slice(0, -1).join('/') || '.' : '.';
     if (ast.artifactType === 'soul' || ast.artifactType === 'system_prompt') {
-      parts.push('Add to your governance section:');
-      for (const cap of highRiskCaps.slice(0, 3)) {
-        const verb = cap.split('.')[0];
-        parts.push(`  "Must never ${verb} outside of declared scope without explicit approval."`);
-      }
+      parts.push(`hackmyagent harden-soul ${dir} — adds missing capability constraints to SOUL.md for all high-risk capabilities detected.`);
     } else {
-      parts.push(`Create a SOUL.md governance file alongside ${file} with constraints for each high-risk capability.`);
+      parts.push(`hackmyagent harden-soul ${dir} — generates a SOUL.md governance file with constraints covering all high-risk capabilities in ${file}.`);
     }
   } else if (finding.attackClass === 'CAPABILITY-CREEP') {
     // Capability creep: text grants more than manifest declares
