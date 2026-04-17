@@ -3,10 +3,10 @@
 
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://img.shields.io/badge/tests-1580%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
+[![Tests](https://img.shields.io/badge/tests-1723%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
 [![NanoMind](https://img.shields.io/badge/NanoMind-semantic%20compiler-teal)](https://huggingface.co/opena2a/nanomind-security-classifier)
 
-**204 security checks + 28 semantic checks + behavioral simulation. The first security scanner that secures itself.**
+**209 security checks + 29 semantic checks + behavioral simulation. The first security scanner that secures itself.**
 
 Security scanner, red-team toolkit, behavioral simulation engine, and skill builder for AI agents. Powered by the NanoMind Semantic Compiler -- a compiler-style architecture where every artifact is compiled into an Abstract Security Tree before analysis.
 
@@ -46,12 +46,12 @@ npx opena2a-cli review
 
 **Skills builder** -- `hackmyagent create-skill "describe what you need"` generates a complete, secured skill with SOUL.md governance, capability manifest, and security metadata.
 
-**Attack testing** -- 115 adversarial payloads across 11 categories (prompt injection, data exfiltration, jailbreak, MCP exploitation, supply chain, memory weaponization, A2A protocol attacks, context window attacks).
+**Attack testing** -- 164 adversarial payloads across 16 categories (prompt injection, jailbreak, data exfiltration, capability abuse, context manipulation, MCP exploitation, A2A protocol attacks, memory weaponization, context window, supply chain, tool shadow, parser differential, persistent agent, fake tool, context lifecycle, policy enforcement integrity).
 
-**Static analysis** -- 204 security checks across 60 categories covering credentials, MCP configs, OpenClaw/NemoClaw, Unicode steganography, CVE detection, governance, supply chain, memory poisoning, agent identity, and sandbox escape patterns.
+**Static analysis** -- 209 security checks across 44 categories covering credentials, MCP configs, OpenClaw/NemoClaw, Unicode steganography, CVE detection, governance, supply chain, memory poisoning, agent identity, and sandbox escape patterns.
 
 <details>
-<summary>Attack testing details (115 payloads)</summary>
+<summary>Attack testing details (164 payloads)</summary>
 
 - **Prompt injection** -- tests whether agents follow injected instructions from untrusted input
 - **Data exfiltration** -- checks if agents can be tricked into leaking sensitive data to external endpoints
@@ -66,7 +66,7 @@ npx opena2a-cli review
 </details>
 
 <details>
-<summary>Static analysis details (204 checks)</summary>
+<summary>Static analysis details (209 checks)</summary>
 
 - **Unicode steganography** -- invisible codepoints, zero-width chars, bidi attacks, homoglyph confusables, GlassWorm decoders ([real-world: os-info-checker-es6 npm attack, May 2025](https://thehackernews.com/2025/05/malicious-npm-package-leverages-unicode.html))
 - **Hardcoded credentials** -- API keys, tokens, and passwords in source or config files
@@ -82,7 +82,7 @@ npx opena2a-cli review
 
 </details>
 
-204 checks across 60 categories. 115 attack payloads. No flags needed.
+209 checks across 44 categories. 164 attack payloads. No flags needed.
 
 ---
 
@@ -104,7 +104,7 @@ npm install --save-dev hackmyagent
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  HackMyAgent v0.12.6 -- Security Scanner             │
+│  HackMyAgent v0.17.10 -- Security Scanner            │
 │  Found: 3 critical · 5 high · 12 medium             │
 │                                                     │
 │  CRED-001  critical  Hardcoded API key in .env      │
@@ -123,7 +123,7 @@ npm install --save-dev hackmyagent
 
 Step-by-step guides for common workflows:
 
-- **[Scan my agent](docs/use-cases/scan-my-agent.md)** -- Run all 204 checks and auto-fix findings (5 min)
+- **[Scan my agent](docs/use-cases/scan-my-agent.md)** -- Run all 209 checks and auto-fix findings (5 min)
 - **[Red-team MCP servers](docs/use-cases/red-team-mcp.md)** -- Test MCP servers with adversarial payloads (10 min)
 - **[Secure OpenClaw](docs/use-cases/openclaw-security.md)** -- Auto-detected when OpenClaw files are present. Includes CVE detection and ClawHavoc IOC scanning (10 min)
 - **[CI/CD pipeline](docs/use-cases/ci-pipeline.md)** -- GitHub Actions with JSON/SARIF output (5 min)
@@ -165,7 +165,7 @@ NanoMind runs automatically on every `secure` scan. No flags, no config. On firs
 
 **What it detects (9 attack classes):** exfiltration, injection, privilege_escalation, persistence, credential_abuse, lateral_movement, social_engineering, policy_violation, benign.
 
-**6 AST analyzers** compile every artifact into an Abstract Security Tree before querying:
+**7 AST analyzers** compile every artifact into an Abstract Security Tree before querying:
 
 | Analyzer | What it checks |
 |----------|---------------|
@@ -175,11 +175,13 @@ NanoMind runs automatically on every `secure` scan. No flags, no config. On firs
 | `scope` | Access boundary violations, resource overreach |
 | `prompt` | Injection vectors, instruction leakage |
 | `code` | Unsafe patterns, exec injection, deserialization |
+| `stego` | Unicode steganography, GlassWorm decoders, invisible codepoints |
 
 **Flags that affect NanoMind:**
 
 - `--deep` -- adds behavioral simulation (20 probes) on top of NanoMind static analysis
 - `--static-only` -- disables NanoMind semantic analysis entirely for CI/deterministic mode
+- `--nanomind` -- enables the NanoMind generative-analysis layer (Tier 2). Opt-in: adds 15-30s per finding for AI-powered threat narratives. Static analyzers above run regardless.
 
 ---
 
@@ -268,7 +270,7 @@ Use `--dry-run` to preview changes. Backups are created in `.hackmyagent-backup/
 
 ### `hackmyagent attack` -- Red Team
 
-Test your AI agent with 115 adversarial payloads across 11 attack categories.
+Test your AI agent with 164 adversarial payloads across 16 attack categories.
 
 ```bash
 hackmyagent attack --local                                    # local simulation
@@ -288,12 +290,17 @@ hackmyagent attack https://api.example.com --fail-on-vulnerable medium  # CI gat
 | `data-exfiltration` | 11 | Extract sensitive data, system prompts, credentials |
 | `capability-abuse` | 10 | Misuse agent tools for unintended actions |
 | `context-manipulation` | 10 | Poison agent context or memory |
+| `mcp-exploitation` | 10 | MCP protocol abuse, tool injection |
+| `a2a-attack` | 10 | Agent-to-agent identity spoofing |
+| `memory-weaponization` | 10 | Persistent memory poisoning attacks |
+| `context-window` | 10 | Token flooding, attention manipulation |
 | `supply-chain` | 10 | Dependency confusion, package impersonation |
 | `tool-shadow` | 10 | Tool shadowing, capability escalation |
-| `mcp-exploitation` | 10 | MCP protocol abuse, tool injection |
-| `memory-weaponization` | 10 | Persistent memory poisoning attacks |
-| `a2a-attacks` | 10 | Agent-to-agent identity spoofing |
-| `context-window` | 10 | Token flooding, attention manipulation |
+| `parser-differential` | 10 | Parser-mismatch attacks across runtimes |
+| `persistent-agent` | 10 | Long-lived agent persistence + escalation |
+| `fake-tool` | 10 | Fake / lookalike tool registration |
+| `context-lifecycle` | 10 | Context-handoff and lifecycle abuse |
+| `policy-enforcement-integrity` | 9 | Policy-bypass and enforcement integrity |
 
 > Only test systems you own or have written authorization to test.
 
@@ -340,10 +347,24 @@ hackmyagent harden-soul --dry-run         # preview without writing
 
 ### OpenClaw and NemoClaw Detection
 
-`hackmyagent secure` auto-detects OpenClaw and NemoClaw installations by looking for `.openclaw/`, `.moltbot/`, `.nemoclaw/`, `openclaw.json`, and `openclaw.plugin.json`. When detected, it automatically runs platform-specific checks (28 NemoClaw checks, 34 OpenClaw checks) alongside the standard 204 security checks. No separate commands needed.
+`hackmyagent secure` auto-detects OpenClaw and NemoClaw installations by looking for `.openclaw/`, `.moltbot/`, `.nemoclaw/`, `openclaw.json`, and `openclaw.plugin.json`. When detected, it automatically runs platform-specific checks (28 NemoClaw checks, 34 OpenClaw checks) alongside the standard 209 security checks. No separate commands needed.
 
 
 ---
+
+### `hackmyagent detect` -- Shadow AI Audit
+
+Discover AI tools, MCP servers, and governance gaps across your machine and project. Built for CISOs and security engineers who need an inventory of what's actually running.
+
+```bash
+hackmyagent detect                              # audit current directory
+hackmyagent detect /path/to/project             # audit a specific project
+hackmyagent detect --json                       # machine-readable output
+hackmyagent detect --verbose                    # show full MCP server list
+hackmyagent detect --export-csv inventory.csv   # asset inventory for CMDB
+```
+
+Reports a governance score and actionable findings. Detects running AI coding assistants and local LLMs (Claude Code, Cursor, Copilot, etc.), MCP server configurations across all tools (project-local and machine-wide), AI config files with credential references or broad permission grants, and SOUL.md governance files.
 
 ### `hackmyagent trust` -- Package Trust Verification
 
@@ -358,6 +379,15 @@ hackmyagent trust express --json             # JSON output
 
 
 Uses [ai-trust](https://github.com/opena2a-org/ai-trust) under the hood.
+
+### `hackmyagent nanomind` -- Generative Model Setup
+
+Manage the optional NanoMind generative model. Used by the `--nanomind` opt-in flag on `secure`/`check` for AI-powered threat narratives.
+
+```bash
+hackmyagent nanomind setup    # download the generative model
+hackmyagent nanomind status   # check model + runtime status
+```
 
 ### More Commands
 
