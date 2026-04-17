@@ -330,7 +330,7 @@ function runAllAnalyzers(
   const findings: ASTFinding[] = [];
 
   // Capability analyzer does not require verifier (checks internally)
-  findings.push(...analyzeCapabilities(ast, projectType));
+  findings.push(...analyzeCapabilities(ast, projectType, projectConstraints));
 
   // Credential, governance, and scope analyzers require AST integrity verification
   findings.push(...analyzeCredentials(ast, verifier, projectType));
