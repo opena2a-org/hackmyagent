@@ -10,6 +10,7 @@ import type { ScanResult, SecurityFinding, Severity, ProjectType } from './secur
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
 import { enrichWithTaxonomy } from './taxonomy';
 import { classifySkillSection, isLikelyFalsePositive } from './skill-context';
+import { isCorpusPath, isTestPath, isExamplePath } from './path-context';
 import { scanAssembly } from '../lifecycle/assembly-scanner';
 import {
   parseDeclaredCapabilities as parseSkillDeclaredCaps,
@@ -7646,14 +7647,26 @@ dist/
         const hasExplicitNoAuth = config.authentication?.type === 'none';
         if ((config.agentId || config.name || config.identity) && !hasExplicitNoAuth) {
           if (!config.publicKey && !config.keyId && !config.jwk && !config.x509) {
+            // Soften to MEDIUM inside examples/templates/docs/samples —
+            // these are schema demonstrations, not production identities.
+            // An insecure example still teaches insecure practice, so we
+            // report (not skip) but lower the alarm. [CSR-002].
+            // Check both the relative file path AND targetDir, because
+            // the scanner only looks for agent-card.json at the scan
+            // root — when the user scans `.../examples/my-agent/`,
+            // idFile is just `agent-card.json` with no example marker,
+            // but targetDir itself carries it.
+            const isExample = isExamplePath(idFile) || isExamplePath(targetDir);
             findings.push({
               checkId: 'AIM-002',
               name: 'Identity without cryptographic binding',
               description: 'Agent declares an identity but has no cryptographic key binding. Any agent could claim this identity without proof.',
               category: 'identity-spoofing',
-              severity: 'high',
+              severity: isExample ? 'medium' : 'high',
               passed: false,
-              message: `${idFile} declares identity without cryptographic key binding`,
+              message: isExample
+                ? `${idFile} is an example/template — identity schema shown without cryptographic key binding`
+                : `${idFile} declares identity without cryptographic key binding`,
               fixable: false,
               file: idFile,
               fix: 'hackmyagent fix-all --with-aim  — signs skills, heartbeats, and agent DNA with AIM keys so tamper detection works on every scan.',
@@ -7940,6 +7953,14 @@ dist/
       //   - Zero-width chars: U+200B (E2 80 8B), U+200C (E2 80 8C), U+200D (E2 80 8D)
       //   - Mid-file BOM: U+FEFF (EF BB BF) -- skip offset 0
       //   - Bidi overrides: U+202A-202E (E2 80 AA-AE), U+2066-2069 (E2 81 A6-A9)
+
+      // Skip ML training corpora and datasets entirely. These directories
+      // intentionally contain adversarial Unicode (the model learns to
+      // detect it); firing stego findings on training data teaches the
+      // wrong signal and blocks legitimate ML repos. [CSR-003]+[CDS-023].
+      if (isCorpusPath(relativePath)) {
+        continue;
+      }
 
       // Skip variation selector checks for documentation files where emoji are
       // decorative, not steganographic. The isEmojiVariationSelector heuristic
@@ -8663,6 +8684,11 @@ dist/
     // ---------- NEMO-007: Full process.env passthrough to subprocess ----------
     let nemo007Found = false;
     for (const file of cappedTsJs) {
+      const relForTest = path.relative(targetDir, file);
+      // Test files deliberately spread process.env into subprocess setup to
+      // mirror a real execution environment. This is fixture behavior, not
+      // a leak. [CSR-004].
+      if (isTestPath(relForTest)) continue;
       try {
         const content = await fs.readFile(file, 'utf-8');
         const lines = content.split('\n');
@@ -9756,6 +9782,12 @@ dist/
         if (stat.size > MAX_FILE_SIZE) continue;
         const content = await fs.readFile(file, 'utf-8');
         const relativePath = path.relative(targetDir, file);
+
+        // Test files deliberately exercise check-then-use shapes (including
+        // intentional TOCTOU demonstrations and file-IO exercisers). Skip
+        // them — shape-based TOCTOU detection cannot distinguish fixture
+        // from production. [CSR-004].
+        if (isTestPath(relativePath)) continue;
 
         // Two-tier TOCTOU detection, 40-line proximity window (same function scope):
         //

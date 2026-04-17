@@ -1,0 +1,132 @@
+{
+  "_comment": "Baseline ledger for RELEASE_PLAYBOOK.md scenarios. Updated on PASS only. Drift >10 points triggers review; >20 with fewer CRITICALs = score-jump red flag (§5). See RELEASE_PLAYBOOK.md §Self-learning loop §1 for enforcement.",
+  "_schema": {
+    "scenarioId": {
+      "score": "int 0-100",
+      "critical": "int count",
+      "high": "int count",
+      "commit": "short sha of HMA build",
+      "updatedAt": "YYYY-MM-DD",
+      "status": "HEALTHY | BROKEN | CANDIDATE",
+      "note": "optional"
+    }
+  },
+  "B1": {
+    "score": 0,
+    "critical": 34,
+    "high": 55,
+    "commit": "PRE_SEED",
+    "updatedAt": "2026-04-17",
+    "status": "HEALTHY",
+    "note": "Canonical vulnerable fixture; regression = any score >20 or critical <30"
+  },
+  "B2": {
+    "score": 100,
+    "critical": 0,
+    "high": 0,
+    "commit": "PRE_SEED",
+    "updatedAt": "2026-04-17",
+    "status": "HEALTHY",
+    "note": "Hardened SOUL.md via scan-soul"
+  },
+  "B3": {
+    "score": 98,
+    "critical": 0,
+    "high": 0,
+    "commit": "PRE_SEED",
+    "updatedAt": "2026-04-17",
+    "status": "HEALTHY",
+    "note": "Empty directory; only LOW for missing .gitignore"
+  },
+  "R1": {
+    "score": null,
+    "critical": null,
+    "high": null,
+    "commit": null,
+    "updatedAt": null,
+    "status": "CANDIDATE",
+    "note": "ai-trust baseline not yet measured"
+  },
+  "R2": {
+    "score": 55,
+    "critical": 1,
+    "high": 11,
+    "commit": "POST_PATH_CONTEXT_FIX",
+    "updatedAt": "2026-04-17",
+    "status": "HEALTHY",
+    "note": "Was 42/100 before path-context fix (bugs #6 REFUTED / #7 SHIPPED). Remaining 1 CRITICAL is NEMO-009 eval() in src/env.ts — legitimate. 11 HIGH are TOCTOU-001 on production src/ — legitimate. Below the 60-90 expected band but findings are real."
+  },
+  "R3": {
+    "score": 37,
+    "critical": 6,
+    "high": 2,
+    "commit": "POST_PATH_CONTEXT_FIX",
+    "updatedAt": "2026-04-17",
+    "status": "HEALTHY",
+    "note": "Was 6/100 before path-context fix (bug #5 SHIPPED). Remaining 6 CRITICAL are NEMO-deserialization on training/*.py (pickle.load) — legitimate. Below 60-90 expected band but findings are real."
+  },
+  "SK1": {
+    "score": null,
+    "critical": null,
+    "high": null,
+    "commit": null,
+    "updatedAt": null,
+    "status": "CANDIDATE",
+    "note": "anthropic-skill not yet measured"
+  },
+  "SK2": {
+    "score": 51,
+    "critical": 0,
+    "high": 6,
+    "commit": "POST_PATH_CONTEXT_FIX",
+    "updatedAt": "2026-04-17",
+    "status": "HEALTHY",
+    "note": "Bug #4 REFUTED — no SKILL-010 FP. Score 51 reflects legit governance findings on pre-push-review SKILL.md frontmatter (missing version/publisher/installed_hash). Below 70-95 expected band but findings are real."
+  },
+  "SK3": {
+    "score": null,
+    "critical": null,
+    "high": null,
+    "commit": null,
+    "updatedAt": null,
+    "status": "CANDIDATE",
+    "note": "composio-skill not yet measured"
+  },
+  "M1": {
+    "score": 82,
+    "critical": null,
+    "high": null,
+    "commit": "PRE_SEED",
+    "updatedAt": "2026-04-17",
+    "status": "HEALTHY",
+    "note": "ibm-mcp; detection of WATSONX_API_KEY JSON-quoted key must not regress"
+  },
+  "M2": {
+    "score": null,
+    "critical": null,
+    "high": null,
+    "commit": null,
+    "updatedAt": null,
+    "status": "CANDIDATE",
+    "note": "mega-mcp DEFERRED — fixture pre-polluted"
+  },
+  "M3": {
+    "score": null,
+    "critical": 0,
+    "high": 0,
+    "commit": null,
+    "updatedAt": null,
+    "status": "CANDIDATE",
+    "note": "ssh-mcp negative case — MUST have critical=0 and high=0 on the SSH_KEY_PATH finding"
+  },
+  "A2A_secure_agent_card": {
+    "score": 93,
+    "critical": 0,
+    "high": 0,
+    "medium": 1,
+    "commit": "POST_PATH_CONTEXT_FIX",
+    "updatedAt": "2026-04-17",
+    "status": "HEALTHY",
+    "note": "NOT in v1 scope but measured post-fix #3. Was 89/100 with 1 HIGH AIM-002; now 93/100 with 1 MEDIUM. Scenario to be formalized in v2 A2A surface."
+  }
+}
