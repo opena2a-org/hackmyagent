@@ -866,16 +866,17 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
     }
   }
 
-  if (steps.length > 0) {
-    lines.push('');
-    lines.push(sectionHeader('Next Steps'));
-    const maxLabel = Math.max(...steps.map((s) => s.label.length));
-    const maxCmd = Math.max(...steps.map((s) => s.cmd.length));
-    for (const s of steps) {
-      const labelCol = s.label.padEnd(maxLabel + 2);
-      const cmdCol = cyan(s.cmd).padEnd(maxCmd + cyan('').length + 2);
-      lines.push(`  ${labelCol} ${cmdCol}  ${dim(s.desc)}`);
-    }
+  // Always show --help for discoverability
+  steps.push({ label: 'All commands:', cmd: 'hackmyagent --help', desc: 'full command reference' });
+
+  lines.push('');
+  lines.push(sectionHeader('Next Steps'));
+  const maxLabel = Math.max(...steps.map((s) => s.label.length));
+  const maxCmd = Math.max(...steps.map((s) => s.cmd.length));
+  for (const s of steps) {
+    const labelCol = s.label.padEnd(maxLabel + 2);
+    const cmdCol = cyan(s.cmd).padEnd(maxCmd + cyan('').length + 2);
+    lines.push(`  ${labelCol} ${cmdCol}  ${dim(s.desc)}`);
   }
 
   lines.push('');

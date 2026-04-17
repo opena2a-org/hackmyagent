@@ -563,6 +563,44 @@ function formatFixLine(text: string): string {
   return `${colors.cyan}Fix:${RESET()} ${text}`;
 }
 
+/**
+ * Generate a "Verify:" shell command for a finding — lets the user confirm
+ * the issue exists before acting. Returns undefined when no practical verify
+ * command applies (e.g., abstract governance gaps with no file reference).
+ */
+function generateVerifyCommand(f: { file?: string; line?: number; checkId?: string; category?: string; attackClass?: string }): string | undefined {
+  const checkId = f.checkId ?? '';
+  const cat = (f.category ?? '').toLowerCase();
+  const attackClass = f.attackClass ?? '';
+
+  // File + line: most direct verification — show the exact offending line
+  if (f.file && f.line) {
+    return `sed -n '${f.line}p' ${f.file}`;
+  }
+
+  // Governance / injection / jailbreak findings: re-run governance scan
+  if (
+    checkId.startsWith('AST-GOV') || checkId.startsWith('AST-PROMPT') ||
+    checkId.startsWith('AST-INJECT') || attackClass === 'SOUL-BYPASS' ||
+    attackClass === 'SOUL-GAP' || attackClass === 'SOUL-MISSING' ||
+    attackClass === 'JAILBREAK' || attackClass === 'AUTHORITY-CONFUSION'
+  ) {
+    return 'hackmyagent scan-soul . --verbose';
+  }
+
+  // MCP / scope findings: list MCP servers
+  if (checkId.startsWith('AST-SCOPE') || cat.includes('mcp')) {
+    return 'opena2a mcp audit';
+  }
+
+  // Credential / secret findings in a known file: grep the file
+  if (f.file && (cat.includes('credential') || attackClass?.startsWith('CRED'))) {
+    return `grep -in "key\\|token\\|secret\\|password" ${f.file}`;
+  }
+
+  return undefined;
+}
+
 /** Shorten a file path for display — show filename + parent dir only */
 function shortenPath(filePath: string): string {
   const parts = filePath.split('/');
@@ -769,6 +807,10 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         if (f.guidance) {
           console.log(`  ${borderColor}│${RESET()} ${cleanFixText(f.guidance, f.file)}`);
         }
+        const verifyCmd = generateVerifyCommand(f);
+        if (verifyCmd) {
+          console.log(`  ${borderColor}│${RESET()} ${colors.dim}Verify: ${verifyCmd}${RESET()}`);
+        }
         if (f.fix) {
           console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(f.fix, f.file))}`);
         }
@@ -793,6 +835,10 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         if (loc) console.log(`  ${borderColor}│${RESET()} ${colors.dim}${loc}${RESET()}`);
         if (f.guidance) {
           console.log(`  ${borderColor}│${RESET()} ${cleanFixText(f.guidance, f.file)}`);
+        }
+        const verifyLine = generateVerifyCommand(f);
+        if (verifyLine) {
+          console.log(`  ${borderColor}│${RESET()} ${colors.dim}Verify: ${verifyLine}${RESET()}`);
         }
         if (f.fix) {
           console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(f.fix, f.file))}`);
@@ -825,7 +871,11 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       }
       const remaining = failed.length - shown - skipped.size;
       if (remaining > 0) {
-        console.log(`\n  ${colors.dim}+ ${remaining} more findings (use --verbose to see all)${RESET()}`);
+        // Name what's hidden so the user knows whether to --verbose
+        const hiddenFindings = failed.filter((_, idx) => idx >= shown && !skipped.has(idx));
+        const hiddenNames = hiddenFindings.slice(0, 2).map(f => f.name || f.category || f.severity).join(', ');
+        const hiddenCtx = hiddenNames ? ` (${hiddenNames})` : '';
+        console.log(`\n  ${colors.dim}+ ${remaining} more finding${remaining > 1 ? 's' : ''}${hiddenCtx}  (run with --verbose to see all)${RESET()}`);
       }
     }
 
@@ -897,6 +947,8 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     console.log(`  ${colors.dim}Generative AI layer — identifies attack vectors and produces targeted remediation${RESET()}`);
     console.log();
     for (const af of opts.analystFindings) {
+      // Skip low-confidence analyst results — below 50% is not actionable for a CISO
+      if (af.confidence < 0.50) continue;
       const r = af.result;
       if (af.taskType === 'threatAnalysis') {
         const level = String(r.threatLevel ?? 'unknown').toUpperCase();
@@ -963,7 +1015,10 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         // Generic display
         if (r.description) console.log(`  ${r.description}`);
       }
-      console.log(`  ${colors.dim}Confidence: ${Math.round(af.confidence * 100)}% | ${af.modelVersion} (${af.durationMs}ms)${RESET()}`);
+      // Only show confidence footer when high enough to be meaningful (>= 75%)
+      if (af.confidence >= 0.75 || verbose) {
+        console.log(`  ${colors.dim}Confidence: ${Math.round(af.confidence * 100)}% | ${af.modelVersion} (${af.durationMs}ms)${RESET()}`);
+      }
       console.log();
     }
   }
@@ -5859,6 +5914,7 @@ Examples:
         if (!options.deep) {
           console.log(`  ${colors.cyan}Deep scan:${RESET()}  ${prefix} scan-soul ${directory} --deep`);
         }
+        console.log(`  ${colors.cyan}All commands:${RESET()} ${prefix} --help`);
         console.log();
       }
 
@@ -5982,6 +6038,7 @@ Examples:
           console.log();
           console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
           console.log(`  ${colors.cyan}Verify coverage:${RESET()}  ${prefix} scan-soul --verbose`);
+          console.log(`  ${colors.cyan}All commands:${RESET()}     ${prefix} --help`);
           console.log();
         }
         return;
@@ -6678,6 +6735,7 @@ program
       console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
       console.log(`  ${colors.cyan}See in context:${RESET()}   ${CLI_PREFIX} secure --verbose`);
       console.log(`  ${colors.cyan}All ${CHECK_COUNT} check IDs:${RESET()}  ${CLI_PREFIX} check-metadata --json`);
+      console.log(`  ${colors.cyan}All commands:${RESET()}         ${CLI_PREFIX} --help`);
       console.log();
     }
   });

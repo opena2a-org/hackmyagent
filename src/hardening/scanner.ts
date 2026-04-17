@@ -2694,6 +2694,9 @@ dist/
         ? 'Dangerous patterns in npm scripts (curl|sh, eval) - review carefully'
         : 'npm scripts appear safe',
       fixable: false,
+      fix: hasDangerousScripts
+        ? 'Remove the curl|sh or wget|sh pattern from package.json scripts. Replace with a pinned package install: npm install --save-exact <package>  or vendor the script with a pinned checksum.'
+        : undefined,
       guidance: 'Scripts that pipe curl/wget to sh execute arbitrary remote code during npm install. An attacker who compromises the URL controls your build environment.',
     });
 
