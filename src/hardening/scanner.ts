@@ -8829,7 +8829,7 @@ dist/
               guidance: 'yaml.load() without SafeLoader can construct arbitrary Python objects, including those that execute code. SafeLoader restricts to basic data types.',
             });
           }
-          if (/\beval\s*\(/.test(line) || /\bexec\s*\(/.test(line)) {
+          if (/(?<!\.)\beval\s*\(/.test(line) || /(?<!\.)\bexec\s*\(/.test(line)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',
@@ -8856,7 +8856,7 @@ dist/
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
-          if (/\beval\s*\(/.test(line)) {
+          if (/(?<!\.)\beval\s*\(/.test(line)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',
