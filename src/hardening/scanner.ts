@@ -9413,10 +9413,12 @@ dist/
       if (pkg && (pkg.browser !== undefined || pkg.unpkg !== undefined || pkg.jsdelivr !== undefined)) {
         pkgDeclaresBrowser = true;
         // Collect directories referenced by browser/unpkg/jsdelivr.
+        // Skip leading ./ and ../ segments — idiomatic package.json entries
+        // like "./dist/bundle.js" should record `dist`, not `.`.
         const collect = (v: unknown) => {
           if (typeof v === 'string') {
-            const seg = v.split('/').filter(Boolean)[0];
-            if (seg) pkgBrowserDirs.add(seg);
+            const segs = v.split('/').filter(s => s && s !== '.' && s !== '..');
+            if (segs[0]) pkgBrowserDirs.add(segs[0]);
           } else if (v && typeof v === 'object') {
             for (const inner of Object.values(v as Record<string, unknown>)) collect(inner);
           }
