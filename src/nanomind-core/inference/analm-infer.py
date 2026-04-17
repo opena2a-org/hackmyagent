@@ -91,7 +91,9 @@ def main():
     ]
 
     prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    response = generate(model, tokenizer, prompt=prompt, max_tokens=512, verbose=False)
+    # max_tokens=2048 allows complete responses without mid-sentence truncation.
+    # The previous 512-token cap was producing descriptions truncated at ~300 chars.
+    response = generate(model, tokenizer, prompt=prompt, max_tokens=2048, verbose=False)
 
     parsed = extract_json(response, task_type)
     if parsed:

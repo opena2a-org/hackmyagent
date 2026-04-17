@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   isRenderableAnalystFinding,
   formatAnalystDescription,
+  capAnalystThreatLevel,
+  formatAnalystConfidence,
+  LOW_CONFIDENCE_CAP,
 } from '../../src/output/analyst-render';
 
 describe('isRenderableAnalystFinding', () => {
@@ -129,5 +132,86 @@ describe('formatAnalystDescription', () => {
   it('returns empty string when input is only headers', () => {
     const { text } = formatAnalystDescription('## Header\n### Another\n', { verbose: false });
     expect(text).toBe('');
+  });
+});
+
+describe('capAnalystThreatLevel', () => {
+  it('caps CRITICAL to HIGH when confidence is below the calibration threshold', () => {
+    // Real-world reproducer: NanoMind emits CRITICAL with hardcoded 60% confidence.
+    const { level, capped } = capAnalystThreatLevel('CRITICAL', 0.60);
+    expect(level).toBe('HIGH');
+    expect(capped).toBe(true);
+  });
+
+  it('preserves CRITICAL when confidence meets the threshold', () => {
+    const { level, capped } = capAnalystThreatLevel('CRITICAL', LOW_CONFIDENCE_CAP);
+    expect(level).toBe('CRITICAL');
+    expect(capped).toBe(false);
+  });
+
+  it('preserves CRITICAL when confidence is above the threshold', () => {
+    const { level, capped } = capAnalystThreatLevel('CRITICAL', 0.95);
+    expect(level).toBe('CRITICAL');
+    expect(capped).toBe(false);
+  });
+
+  it('does not cap HIGH at any confidence (only CRITICAL is capped)', () => {
+    for (const conf of [0.30, 0.60, 0.79, 0.85]) {
+      const { level, capped } = capAnalystThreatLevel('HIGH', conf);
+      expect(level).toBe('HIGH');
+      expect(capped).toBe(false);
+    }
+  });
+
+  it('does not cap MEDIUM or LOW at low confidence', () => {
+    for (const lvl of ['MEDIUM', 'LOW', 'INFO']) {
+      const { level, capped } = capAnalystThreatLevel(lvl, 0.40);
+      expect(level).toBe(lvl);
+      expect(capped).toBe(false);
+    }
+  });
+
+  it('normalizes case and treats lowercase critical the same as uppercase', () => {
+    const { level, capped } = capAnalystThreatLevel('critical', 0.60);
+    expect(level).toBe('HIGH');
+    expect(capped).toBe(true);
+  });
+
+  it('returns unknown when threatLevel is missing', () => {
+    const { level, capped } = capAnalystThreatLevel(undefined, 0.95);
+    expect(level).toBe('UNKNOWN');
+    expect(capped).toBe(false);
+  });
+});
+
+describe('formatAnalystConfidence', () => {
+  it('shows numeric % when confidence meets the threshold', () => {
+    const { label, numeric } = formatAnalystConfidence(0.85);
+    expect(label).toBe('85%');
+    expect(numeric).toBe(true);
+  });
+
+  it('shows numeric % at the threshold boundary (>= cap is numeric)', () => {
+    const { label, numeric } = formatAnalystConfidence(LOW_CONFIDENCE_CAP);
+    expect(label).toBe('80%');
+    expect(numeric).toBe(true);
+  });
+
+  it('shows qualitative label when confidence is below the threshold', () => {
+    // 60% is the hardcoded value the audit found on 14/14 findings.
+    const { label, numeric } = formatAnalystConfidence(0.60);
+    expect(label).toBe('low confidence');
+    expect(numeric).toBe(false);
+  });
+
+  it('shows qualitative label just below the threshold', () => {
+    const { label, numeric } = formatAnalystConfidence(0.79);
+    expect(label).toBe('low confidence');
+    expect(numeric).toBe(false);
+  });
+
+  it('rounds the numeric % rather than truncating', () => {
+    const { label } = formatAnalystConfidence(0.876);
+    expect(label).toBe('88%');
   });
 });

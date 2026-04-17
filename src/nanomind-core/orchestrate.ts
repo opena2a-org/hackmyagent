@@ -118,7 +118,7 @@ export async function orchestrateNanoMind(
       if (ready) {
         const failed = nmResult.mergedFindings.filter(f => !f.passed && !f.fixed);
         if (failed.length > 0) {
-          if (!silent) process.stderr.write('Running NanoMind analysis...\n');
+          if (!silent) process.stderr.write('Running NanoMind generative analysis (typically adds 15-30s per artifact)...\n');
           result.analystFindings = await runAnalystOnFindings(
             nmResult.mergedFindings,
             runAnalystInference,

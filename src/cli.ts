@@ -52,7 +52,7 @@ import {
 } from './index';
 import { resolveAndLogMcpShorthand } from './resolve-mcp';
 import { WildScanner, type WildScanReport } from './wild';
-import { isRenderableAnalystFinding, formatAnalystDescription } from './output/analyst-render';
+import { isRenderableAnalystFinding, formatAnalystDescription, capAnalystThreatLevel, formatAnalystConfidence } from './output/analyst-render';
 const program = new Command();
 program.showHelpAfterError('(run with --help for usage)');
 
@@ -990,12 +990,13 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     for (const af of renderableAnalystFindings) {
       const r = af.result;
       if (af.taskType === 'threatAnalysis') {
-        const level = String(r.threatLevel ?? 'unknown').toUpperCase();
+        const { level, capped } = capAnalystThreatLevel(r.threatLevel as string | undefined, af.confidence);
         const levelColor = level === 'CRITICAL' || level === 'HIGH' ? colors.red : level === 'MEDIUM' ? colors.yellow : colors.dim;
         // Only show attackVector separator when the field is populated — avoids
         // a naked "CRITICAL  " line with trailing whitespace.
         const vectorText = r.attackVector ? `  ${colors.white}${r.attackVector}${RESET()}` : '';
-        console.log(`  ${levelColor}${colors.bold}${level}${RESET()}${vectorText}`);
+        const cappedSuffix = capped ? `  ${colors.dim}(low confidence — capped from CRITICAL)${RESET()}` : '';
+        console.log(`  ${levelColor}${colors.bold}${level}${RESET()}${vectorText}${cappedSuffix}`);
         if (r.description) {
           const { text, truncated } = formatAnalystDescription(String(r.description), { verbose: !!verbose });
           if (text) console.log(`  ${colors.dim}${text}${RESET()}`);
@@ -1057,10 +1058,15 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         // Generic display
         if (r.description) console.log(`  ${r.description}`);
       }
-      // Only show confidence footer when high enough to be meaningful (>= 75%)
-      if (af.confidence >= 0.75 || verbose) {
-        console.log(`  ${colors.dim}Confidence: ${Math.round(af.confidence * 100)}% | ${af.modelVersion} (${af.durationMs}ms)${RESET()}`);
-      }
+      // Confidence display: numeric only when calibrated (>= LOW_CONFIDENCE_CAP).
+      // Below the threshold show a qualitative label so a hardcoded value doesn't
+      // pose as a measurement. Verbose mode reveals the raw number with an
+      // (uncalibrated) suffix so it can't be mistaken for ground truth.
+      const { label: confLabel, numeric: confNumeric } = formatAnalystConfidence(af.confidence);
+      const display = verbose && !confNumeric
+        ? `${Math.round(af.confidence * 100)}% (uncalibrated)`
+        : confLabel;
+      console.log(`  ${colors.dim}Confidence: ${display} | ${af.modelVersion} (${af.durationMs}ms)${RESET()}`);
       console.log();
     }
   }
@@ -2748,11 +2754,11 @@ Examples:
       }
 
       // Analysis mode: smart defaults, minimal flags
-      // Default: static + NanoMind (if daemon available)
-      // --deep: everything (static + NanoMind + simulation + adaptive attacks)
-      // --static-only: just static checks (CI/deterministic)
-      // NanoMind runs by default on every scan (including CI)
-      // --static-only is the only way to disable it
+      // Default: static checks + NanoMind AST semantic compiler
+      // --nanomind: also runs the generative analyst layer (opt-in; adds latency)
+      // --deep: everything (static + AST + simulation + adaptive attacks)
+      // --static-only: skip the AST semantic compiler too (CI/deterministic baseline)
+      // The AST semantic compiler runs by default; the generative analyst is opt-in.
       const isStaticOnly = (options as Record<string, unknown>).staticOnly as boolean ?? false;
       const isDeep = options.deep ?? (scanDepth === 'deep');
 
