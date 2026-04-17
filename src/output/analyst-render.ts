@@ -1,5 +1,5 @@
 /**
- * Pure helpers for rendering AnaLM analyst findings in the check command.
+ * Pure helpers for rendering NanoMind generative findings in the check command.
  *
  * Kept separate from cli.ts so the transformations can be unit-tested without
  * spinning up the full check pipeline.

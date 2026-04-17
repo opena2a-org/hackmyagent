@@ -10350,7 +10350,7 @@ dist/
           message: 'SOUL.md explicitly disables security checks',
           file: relativePath,
           fixable: false,
-          fix: 'Remove all instructions to bypass, skip, or disable HMA, OASB, or AnaLM checks. Security tools must never be disabled via SOUL instructions.',
+          fix: 'Remove all instructions to bypass, skip, or disable HMA, OASB, or NanoMind checks. Security tools must never be disabled via SOUL instructions.',
           guidance: 'Instructing the agent to bypass its own security scanning is equivalent to disabling seatbelts and airbags. Remove these instructions before deploying.',
           attackClass: 'SOUL-BYPASS',
         });

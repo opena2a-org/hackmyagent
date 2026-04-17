@@ -105,6 +105,24 @@ function resolveCliPrefix(): string {
 }
 const CLI_PREFIX = resolveCliPrefix();
 
+let nanomindDeprecationWarned = false;
+/**
+ * Resolve the NanoMind generative-analysis flag from either the canonical
+ * `--nanomind` or the deprecated `--analm` alias. Emits a one-shot stderr
+ * deprecation hint when only the legacy flag is set.
+ */
+function resolveNanomindFlag(options: { nanomind?: boolean; analm?: boolean }): boolean {
+  if (options.nanomind) return true;
+  if (options.analm) {
+    if (!nanomindDeprecationWarned && !globalCiMode) {
+      process.stderr.write('Note: --analm is deprecated. Use --nanomind instead.\n');
+      nanomindDeprecationWarned = true;
+    }
+    return true;
+  }
+  return false;
+}
+
 /**
  * Validate that a registry URL uses HTTPS.
  * Allows http://localhost for local development.
@@ -225,9 +243,10 @@ Examples:
   .option('--no-scan', 'Registry only, skip local scan (fast mode for CI)')
   .option('--no-registry', 'Local scan only, skip registry lookup (offline mode)')
   .option('--offline', 'Alias for --no-registry')
-  .option('--analm', 'AI-powered threat analysis using AnaLM (requires analm setup)')
+  .option('--nanomind', 'AI-powered threat analysis using NanoMind (requires nanomind setup)')
+  .option('--analm', '[deprecated alias for --nanomind] AI-powered threat analysis')
   .option('--rescan', 'Deprecated: local scan is now the default')
-  .action(async (skill: string, options: { verbose?: boolean; json?: boolean; scan?: boolean; registry?: boolean; offline?: boolean; analm?: boolean; rescan?: boolean }) => {
+  .action(async (skill: string, options: { verbose?: boolean; json?: boolean; scan?: boolean; registry?: boolean; offline?: boolean; nanomind?: boolean; analm?: boolean; rescan?: boolean }) => {
     // Commander parses --no-scan as scan:false, --no-registry as registry:false
     // Normalize: --offline is alias for --no-registry
     if (options.offline) options.registry = false;
@@ -249,7 +268,7 @@ Examples:
         const targetDir = resolvedStat.isFile() ? dirname(resolved) : resolved;
 
         const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-        const nmResult = await orchestrateNanoMind(targetDir, [], { silent: !!options.json, analm: options.analm });
+        const nmResult = await orchestrateNanoMind(targetDir, [], { silent: !!options.json, nanomind: resolveNanomindFlag(options) });
 
         // Apply .hmaignore filtering (paths + check IDs)
         const { loadHmaIgnore: loadIgnore, isPathIgnored: pathIgnored, isCheckIgnored: checkIgnored } = await import('./hardening/scanner.js');
@@ -288,7 +307,7 @@ Examples:
             findings: issues as any[],
           },
           verbose: !!options.verbose,
-          usedAnalm: !!options.analm,
+          usedAnalm: resolveNanomindFlag(options),
           analystFindings: nmResult.analystFindings,
         });
 
@@ -959,13 +978,13 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     }
   }
 
-  // ── AnaLM Analysis ──────────────────────────────────────────────────
+  // ── NanoMind Analysis ───────────────────────────────────────────────
   // Pre-filter: drop low-confidence and low-severity threat analyses so we
   // don't print a section header with zero renderable content.
   const renderableAnalystFindings = (opts.analystFindings ?? []).filter(isRenderableAnalystFinding);
 
   if (renderableAnalystFindings.length > 0) {
-    divider('AnaLM Analysis');
+    divider('NanoMind Analysis');
     console.log(`  ${colors.dim}Generative AI layer — identifies attack vectors and produces targeted remediation${RESET()}`);
     console.log();
     for (const af of renderableAnalystFindings) {
@@ -2645,7 +2664,8 @@ Examples:
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
   .option('-c, --category <name>', 'Filter to specific benchmark category')
   .option('--deep', 'Maximum analysis: static + semantic + behavioral simulation + adaptive attacks (~30s per file)')
-  .option('--analm', 'AI-powered threat analysis using AnaLM (requires analm setup)')
+  .option('--nanomind', 'AI-powered threat analysis using NanoMind (requires nanomind setup)')
+  .option('--analm', '[deprecated alias for --nanomind] AI-powered threat analysis')
   .option('--static-only', 'Disable semantic analysis and simulation (static checks only, fast, deterministic)')
   .option('--scan-depth <depth>', 'CAAT scan depth: quick (config+creds only), standard (default), deep (+ simulation)', 'standard')
   .option('--ci-publish', 'Submit scan results to registry CI endpoint (requires CI_SCAN_HMAC_SECRET env)')
@@ -2658,7 +2678,7 @@ Examples:
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
   .option('--ci', 'CI mode: suppress interactive prompts, exit non-zero on findings')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; analm?: boolean; scanDepth?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean }) => {
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; nanomind?: boolean; analm?: boolean; scanDepth?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean }) => {
     try {
       const targetDir = require("path").resolve(directory);
 
@@ -2789,7 +2809,7 @@ Examples:
         staticOnly: isStaticOnly,
         ci: options.ci,
         deep: isDeep,
-        analm: options.analm,
+        nanomind: resolveNanomindFlag(options),
         silent: format !== 'text',
         projectType: result.projectType,
       });
@@ -3156,7 +3176,7 @@ Examples:
           findings: result.findings.filter((f) => !f.fixed),
         },
         verbose: !!options.verbose,
-        usedAnalm: !!options.analm,
+        usedAnalm: resolveNanomindFlag(options),
         analystFindings: nmResult.analystFindings?.length
           ? nmResult.analystFindings
           : undefined,
@@ -7211,19 +7231,21 @@ program
     for (const file of result.filesWritten) { console.log(`  ${file.split('/').pop()}`); }
     console.log(`\nYour skill is ready. Verify security with: hackmyagent secure ${outputDir}/`);
   });
-// analm: manage the AnaLM generative model
-const analmCmd = program
-  .command('analm')
-  .description('Manage the AnaLM model for AI-powered security analysis');
+// nanomind: manage the NanoMind generative model
+// `analm` is preserved as a deprecated alias for backward compatibility.
+const nanomindCmd = program
+  .command('nanomind')
+  .alias('analm')
+  .description('Manage the NanoMind generative model for AI-powered security analysis');
 
-analmCmd
+nanomindCmd
   .command('setup')
-  .description('Download the AnaLM model')
+  .description('Download the NanoMind generative model')
   .action(async () => {
     const { getAnalystStatus, setupAnalystModel } = await import('./nanomind-core/inference/security-analyst.js');
     const status = await getAnalystStatus();
 
-    console.log('AnaLM (NanoMind Security Analyst)');
+    console.log('NanoMind (generative security analyst)');
     console.log(`  Platform: ${status.platform}`);
     console.log(`  Backend:  ${status.backend === 'none' ? 'not available' : status.backend}`);
     console.log(`  Model:    ${status.modelCached ? 'cached' : 'not downloaded'}`);
@@ -7241,7 +7263,7 @@ analmCmd
     }
 
     if (status.modelCached) {
-      console.log('Model already downloaded. Use --analm with any scan command.');
+      console.log('Model already downloaded. Use --nanomind with any scan command.');
       return;
     }
 
@@ -7249,14 +7271,14 @@ analmCmd
     if (!ok) process.exit(1);
   });
 
-analmCmd
+nanomindCmd
   .command('status')
-  .description('Check the status of AnaLM model and runtime')
+  .description('Check the status of the NanoMind generative model and runtime')
   .action(async () => {
     const { getAnalystStatus } = await import('./nanomind-core/inference/security-analyst.js');
     const status = await getAnalystStatus();
 
-    console.log('AnaLM (NanoMind Security Analyst)');
+    console.log('NanoMind (generative security analyst)');
     console.log(`  Platform:  ${status.platform}`);
     console.log(`  Backend:   ${status.backend === 'none' ? `${colors.red}not available${RESET()}` : `${colors.green}${status.backend}${RESET()}`}`);
     console.log(`  Model:     ${status.modelCached ? `${colors.green}cached${RESET()}` : `${colors.yellow}not downloaded${RESET()}`}`);
@@ -7264,10 +7286,10 @@ analmCmd
     console.log('');
 
     if (status.available) {
-      console.log('Use --analm with any scan command for AI-powered analysis.');
-      console.log(`  Example: hackmyagent secure ./my-agent --analm`);
+      console.log('Use --nanomind with any scan command for AI-powered analysis.');
+      console.log(`  Example: hackmyagent secure ./my-agent --nanomind`);
     } else if (status.backend !== 'none') {
-      console.log(`Run: hackmyagent analm setup`);
+      console.log(`Run: hackmyagent nanomind setup`);
     } else if (process.platform !== 'darwin') {
       console.log('Cross-platform support (llama.cpp/GGUF) coming soon.');
     }
@@ -7967,21 +7989,21 @@ function printCheckNextSteps(
       console.log(`  ${colors.cyan}Full project audit:${RESET()}   ${getFullScanHint()}`);
     }
     if (!context?.usedAnalm) {
-      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
     }
   } else if (context?.isCleanScan && isLocal) {
     console.log(`  ${colors.cyan}Governance scan:${RESET()}      ${CLI_PREFIX} scan-soul ${target}`);
     console.log(`  ${colors.cyan}Red-team test:${RESET()}        ${CLI_PREFIX} attack --local`);
     if (!context?.usedAnalm) {
-      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
     }
   } else if (context?.isCleanScan) {
     if (!context?.usedAnalm) {
-      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
     }
   } else {
     if (!context?.usedAnalm) {
-      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --analm  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
     }
   }
   console.log(`  ${colors.cyan}All commands:${RESET()}         ${CLI_PREFIX} --help`);
@@ -8057,7 +8079,7 @@ async function suggestSimilarPackages(name: string): Promise<string[]> {
  */
 async function checkGitHubRepo(
   target: string,
-  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean; scan?: boolean; registry?: boolean; analm?: boolean },
+  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean; scan?: boolean; registry?: boolean; nanomind?: boolean; analm?: boolean },
 ): Promise<void> {
   const { org, repo, cloneUrl } = parseGitHubTarget(target);
   const displayName = `${org}/${repo}`;
@@ -8073,7 +8095,7 @@ async function checkGitHubRepo(
         writeJsonStdout({ ...registryData, source: 'registry' });
         return;
       }
-      displayUnifiedCheck({ name: displayName, sourceLabel: 'GitHub', registry: registryData, verbose: !!options.verbose, usedAnalm: !!options.analm });
+      displayUnifiedCheck({ name: displayName, sourceLabel: 'GitHub', registry: registryData, verbose: !!options.verbose, usedAnalm: resolveNanomindFlag(options) });
       return;
     }
     if (!options.json && !globalCiMode) {
@@ -8112,7 +8134,7 @@ async function checkGitHubRepo(
     let analystFindings: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-      const nmResult = await orchestrateNanoMind(repoDir, result.findings, { silent: true, analm: options.analm });
+      const nmResult = await orchestrateNanoMind(repoDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options) });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, repoDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
@@ -8159,7 +8181,7 @@ async function checkGitHubRepo(
       localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
       registry: registryData,
       verbose: !!options.verbose,
-      usedAnalm: !!options.analm,
+      usedAnalm: resolveNanomindFlag(options),
       analystFindings,
     });
 
@@ -8226,7 +8248,7 @@ async function checkGitHubRepo(
  */
 async function checkPyPiPackage(
   target: string,
-  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean; scan?: boolean; registry?: boolean; analm?: boolean },
+  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean; scan?: boolean; registry?: boolean; nanomind?: boolean; analm?: boolean },
 ): Promise<void> {
   // Strip prefix to get the bare package name
   const name = target.replace(/^(pip|pypi):/, '');
@@ -8300,7 +8322,7 @@ async function checkPyPiPackage(
     let analystFindings: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-      const nmResult = await orchestrateNanoMind(extractDir, result.findings, { silent: true, analm: options.analm });
+      const nmResult = await orchestrateNanoMind(extractDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options) });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, extractDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
@@ -8349,7 +8371,7 @@ async function checkPyPiPackage(
       localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
       registry: registryData,
       verbose: !!options.verbose,
-      usedAnalm: !!options.analm,
+      usedAnalm: resolveNanomindFlag(options),
       analystFindings,
     });
 
@@ -8373,7 +8395,7 @@ async function checkPyPiPackage(
  */
 async function checkRawUrl(
   url: string,
-  options: { verbose?: boolean; json?: boolean; offline?: boolean; analm?: boolean },
+  options: { verbose?: boolean; json?: boolean; offline?: boolean; nanomind?: boolean; analm?: boolean },
 ): Promise<void> {
   const { mkdtemp, rm, writeFile, readdir } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
@@ -8480,7 +8502,7 @@ async function checkRawUrl(
     let analystFindings: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-      const nmResult = await orchestrateNanoMind(scanDir, result.findings, { silent: true, analm: options.analm });
+      const nmResult = await orchestrateNanoMind(scanDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options) });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, scanDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
@@ -8524,7 +8546,7 @@ async function checkRawUrl(
       projectType: result.projectType,
       localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
       verbose: !!options.verbose,
-      usedAnalm: !!options.analm,
+      usedAnalm: resolveNanomindFlag(options),
       analystFindings,
     });
 
@@ -8558,7 +8580,7 @@ async function checkRawUrl(
 
 async function checkNpmPackage(
   name: string,
-  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean; scan?: boolean; registry?: boolean; analm?: boolean },
+  options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean; scan?: boolean; registry?: boolean; nanomind?: boolean; analm?: boolean },
 ): Promise<void> {
   // Fetch registry data in parallel with download+scan (unless --no-registry)
   const registryPromise = options.registry === false ? Promise.resolve(null) : queryRegistry(name);
@@ -8571,7 +8593,7 @@ async function checkNpmPackage(
         writeJsonStdout({ ...registryData, source: 'registry' });
         return;
       }
-      displayUnifiedCheck({ name, registry: registryData, verbose: !!options.verbose, usedAnalm: !!options.analm });
+      displayUnifiedCheck({ name, registry: registryData, verbose: !!options.verbose, usedAnalm: resolveNanomindFlag(options) });
       return;
     }
     if (!options.json && !globalCiMode) {
@@ -8635,7 +8657,7 @@ async function checkNpmPackage(
     let analystFindings: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-      const nmResult = await orchestrateNanoMind(packageDir, result.findings, { silent: true, analm: options.analm });
+      const nmResult = await orchestrateNanoMind(packageDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options) });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, packageDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
@@ -8679,7 +8701,7 @@ async function checkNpmPackage(
       localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
       registry: registryData,
       verbose: !!options.verbose,
-      usedAnalm: !!options.analm,
+      usedAnalm: resolveNanomindFlag(options),
       analystFindings,
     });
 

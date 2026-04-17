@@ -23,8 +23,8 @@ export interface OrchestrationOptions {
   ci?: boolean;
   deep?: boolean;
   silent?: boolean;
-  /** Run AnaLM generative analysis (--analm flag). */
-  analm?: boolean;
+  /** Run NanoMind generative analysis (--nanomind flag). */
+  nanomind?: boolean;
   projectType?: ProjectType;
 }
 
@@ -34,9 +34,9 @@ export interface OrchestrationResult {
   compiledArtifacts: number;
   newSemanticFindings: number;
   integrityStatus: string;
-  /** AnaLM results (present when --analm is used and model is available). */
+  /** NanoMind generative results (present when --nanomind is used and model is available). */
   analystFindings?: AnalystResponse[];
-  /** Hint shown to user when analyst is available but not used. */
+  /** Hint shown to user when NanoMind is available but not used. */
   analystHint?: string;
 }
 
@@ -50,7 +50,7 @@ export async function orchestrateNanoMind(
   existingFindings: SecurityFinding[],
   options: OrchestrationOptions = {},
 ): Promise<OrchestrationResult> {
-  const { staticOnly = false, ci = false, silent = false, analm = false } = options;
+  const { staticOnly = false, ci = false, silent = false, nanomind = false } = options;
 
   // Skip NanoMind only when explicitly opted out
   // CI mode still runs NanoMind (deterministic, no cost, better results)
@@ -113,24 +113,24 @@ export async function orchestrateNanoMind(
     // --- Security Analyst (generative model, --analyze flag) ---
     const { isAnalystReady, runAnalystInference } = await import('./inference/security-analyst.js');
 
-    if (analm) {
+    if (nanomind) {
       const ready = await isAnalystReady();
       if (ready) {
         const failed = nmResult.mergedFindings.filter(f => !f.passed && !f.fixed);
         if (failed.length > 0) {
-          if (!silent) process.stderr.write('Running AnaLM analysis...\n');
+          if (!silent) process.stderr.write('Running NanoMind analysis...\n');
           result.analystFindings = await runAnalystOnFindings(
             nmResult.mergedFindings,
             runAnalystInference,
           );
           if (!silent && result.analystFindings.length > 0) {
             process.stderr.write(
-              `AnaLM: ${result.analystFindings.length} finding(s) analyzed\n`,
+              `NanoMind: ${result.analystFindings.length} finding(s) analyzed\n`,
             );
           }
         } else {
           // Clean scan -- generate an intel report summary instead
-          if (!silent) process.stderr.write('Running AnaLM intel report...\n');
+          if (!silent) process.stderr.write('Running NanoMind intel report...\n');
           const allFindings = nmResult.mergedFindings;
           const summary = `Clean scan: ${allFindings.length} checks passed, ${nmResult.compiledArtifacts} artifacts compiled. No security findings.`;
           const intelResponse = await runAnalystInference({
@@ -144,17 +144,17 @@ export async function orchestrateNanoMind(
       } else {
         if (!silent) {
           process.stderr.write(
-            'AnaLM not set up. Run: hackmyagent analm setup\n',
+            'NanoMind generative model not set up. Run: hackmyagent nanomind setup\n',
           );
         }
       }
     } else if (!silent && !ci) {
-      // Show hint only if analyst is available and there are findings to analyze
+      // Show hint only if NanoMind is available and there are findings to analyze
       const failed = nmResult.mergedFindings.filter(f => !f.passed && !f.fixed);
       if (failed.length > 0) {
         const ready = await isAnalystReady();
         if (ready) {
-          result.analystHint = 'Add --analm for AI-powered threat analysis';
+          result.analystHint = 'Add --nanomind for AI-powered threat analysis';
         }
       }
     }
