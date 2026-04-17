@@ -53,12 +53,23 @@ import {
 import { resolveAndLogMcpShorthand } from './resolve-mcp';
 import { WildScanner, type WildScanReport } from './wild';
 import { isRenderableAnalystFinding, formatAnalystDescription, capAnalystThreatLevel, formatAnalystConfidence } from './output/analyst-render';
+import { getTaxonomyMap } from './hardening/taxonomy';
 const program = new Command();
 program.showHelpAfterError('(run with --help for usage)');
 
-// Total security check count across all scanner modules.
-// Update when adding new checks (verify with: grep -r "checkId:" src/hardening/ | grep -o "checkId: '[^']*'" | sort -u | wc -l)
-const CHECK_COUNT = 209;
+// Total security check count + distinct category count, derived from the
+// taxonomy map (the same source check-metadata reads). Previously CHECK_COUNT
+// was hardcoded (209) and the category count was hardcoded in help text as
+// "60 categories" — both drifted. Deriving from the taxonomy keeps --help,
+// command descriptions, and check-metadata consistent without manual bumps.
+const CHECK_IDS = Object.keys(getTaxonomyMap());
+const CHECK_COUNT = CHECK_IDS.length;
+const CATEGORY_COUNT = new Set(
+  CHECK_IDS.map(id => {
+    const parts = id.split('-');
+    return (parts.length > 1 ? parts.slice(0, -1).join('-') : parts[0]).toLowerCase();
+  }),
+).size;
 
 // How long registry-cached scan data is considered fresh before `check` re-scans.
 const STALE_SCAN_DAYS = 3;
@@ -2621,13 +2632,13 @@ program
   .command('secure')
   .description(`Scan and harden your agent setup
 
-Performs ${CHECK_COUNT} security checks across 60 categories:
+Performs ${CHECK_COUNT} security checks across ${CATEGORY_COUNT} categories:
   • Credentials: API key exposure, secrets in configs
   • MCP: Server configs, tool permissions, secrets
   • Network: TLS, interface bindings, CORS
   • Prompt: Injection defenses, role protection
   • Encryption: At-rest encryption, secure hashing
-  • And 54 more categories...
+  • And ${CATEGORY_COUNT - 5} more categories...
 
 Benchmark mode (--benchmark):
   oasb-1   OASB-1 infrastructure compliance (L1/L2/L3 levels)
