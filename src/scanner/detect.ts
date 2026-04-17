@@ -396,9 +396,9 @@ export function scanAiConfigs(targetDir: string): AiConfigFile[] {
   for (const pattern of AI_CONFIG_PATTERNS) {
     for (const file of pattern.files) {
       const fullPath = path.join(targetDir, file);
-      if (!fs.existsSync(fullPath)) continue;
-
-      const stats = fs.statSync(fullPath);
+      let stats: ReturnType<typeof fs.statSync> | undefined;
+      try { stats = fs.statSync(fullPath); } catch { continue; }
+      if (!stats) continue;
       if (stats.size > 1024 * 1024) continue; // skip files > 1MB
 
       let details = `${pattern.tool} configuration`;

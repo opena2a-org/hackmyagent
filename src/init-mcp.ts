@@ -93,13 +93,9 @@ export function initMcp(targetDir: string, forceTool?: string): InitResult {
 
   // Read existing config or create new
   let config: McpConfig = {};
-  if (fs.existsSync(configFile)) {
-    try {
-      config = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
-    } catch {
-      config = {};
-    }
-  }
+  try {
+    config = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+  } catch { /* file may not exist yet */ }
 
   // Check if already configured
   if (config.mcpServers?.hackmyagent) {

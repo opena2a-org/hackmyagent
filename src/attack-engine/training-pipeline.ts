@@ -168,15 +168,13 @@ export function getTrainingStats(): {
   corpusPath: string;
   exists: boolean;
 } {
-  const exists = existsSync(CORPUS_FILE);
-  if (!exists) {
+  // Count lines (each line = one training pair)
+  try {
+    const { readFileSync } = require('node:fs');
+    const content = readFileSync(CORPUS_FILE, 'utf-8');
+    const lines = content.split('\n').filter((l: string) => l.trim().length > 0);
+    return { totalPairs: lines.length, corpusPath: CORPUS_FILE, exists: true };
+  } catch {
     return { totalPairs: 0, corpusPath: CORPUS_FILE, exists: false };
   }
-
-  // Count lines (each line = one training pair)
-  const { readFileSync } = require('node:fs');
-  const content = readFileSync(CORPUS_FILE, 'utf-8');
-  const lines = content.split('\n').filter((l: string) => l.trim().length > 0);
-
-  return { totalPairs: lines.length, corpusPath: CORPUS_FILE, exists: true };
 }

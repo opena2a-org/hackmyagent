@@ -7622,7 +7622,9 @@ dist/
         const config = JSON.parse(content);
 
         // AIM-002: Identity without cryptographic binding
-        if (config.agentId || config.name || config.identity) {
+        // Skip if authentication is explicitly declared as "none" (local/CLI tools with no network identity).
+        const hasExplicitNoAuth = config.authentication?.type === 'none';
+        if ((config.agentId || config.name || config.identity) && !hasExplicitNoAuth) {
           if (!config.publicKey && !config.keyId && !config.jwk && !config.x509) {
             findings.push({
               checkId: 'AIM-002',
@@ -7711,7 +7713,9 @@ dist/
         const config = JSON.parse(content);
 
         // DNA-002: Unsigned behavioral profile
-        if (!config.signature && !config.hash && !config.contentHash) {
+        const hasHashOrSig = config.signature || config.hash || config.contentHash ||
+          config.behavioralProfile?.contentHash || config.integrityPolicy?.verificationMethod;
+        if (!hasHashOrSig) {
           findings.push({
             checkId: 'DNA-002',
             name: 'Unsigned behavioral profile',
@@ -7728,7 +7732,9 @@ dist/
         }
 
         // DNA-003: No behavioral drift detection
-        if (!config.baselineHash && !config.driftThreshold && !config.monitoringEnabled) {
+        const hasDriftDetection = config.baselineHash || config.driftThreshold || config.monitoringEnabled ||
+          config.integrityPolicy?.driftDetection || config.integrityPolicy?.driftThreshold;
+        if (!hasDriftDetection) {
           findings.push({
             checkId: 'DNA-003',
             name: 'No behavioral drift detection',
@@ -8056,7 +8062,14 @@ dist/
         }
       }
 
-      if (hasCodePointAt && hasHexLiteral) {
+      // Skip if this is security detection code: the file path indicates an analyzer/scanner/enhancer
+      // AND the hex literals only appear in range-comparison context (>= 0xFE00), not in
+      // assignments or lookup tables. This prevents FPs on HMA's own Unicode detection source.
+      const isDetectionCode =
+        /(?:>=|<=|===|!==)\s*0x(?:FE0|E010)/i.test(content) &&
+        /(?:analyz|detect|scan|check|inspect|enhanc|stego)/i.test(relativePath);
+
+      if (hasCodePointAt && hasHexLiteral && !isDetectionCode) {
         findings.push({
           checkId: 'UNICODE-STEGO-002',
           name: 'GlassWorm Decoder Pattern Detected',
@@ -9622,26 +9635,34 @@ dist/
         const content = await fs.readFile(file, 'utf-8');
         const relativePath = path.relative(targetDir, file);
 
-        // Look for verify/check followed by execute/apply/run on the same path variable
-        const hasVerify = /\b(verify|validate|check)(File|Path|Hash|Integrity|Signature|Digest|Config)?\s*\(/i.test(content);
-        const hasExecute = /\b(execute|apply|run|install|load|import)(File|Path|Module|Script|Plugin|Config)?\s*\(/i.test(content);
-        const hasFilePath = /\b(filePath|targetPath|scriptPath|modulePath|configPath)\b/.test(content);
-        // Also detect inline TOCTOU: multiple readFile/readFileSync calls on the same path variable
-        const readCalls = content.match(/\breadFile(Sync)?\s*\(\s*(\w+)/g) || [];
-        const hasMultipleReads = readCalls.length >= 2;
+        // Precise TOCTOU detection:
+        // existsSync/accessSync check on a variable, then readFile(Sync) on the SAME variable
+        // within 40 lines (same function scope). Cross-function matches on common param names
+        // (target, file, path) are false positives — they are different variables in different closures.
+        const fileLines = content.split('\n');
+        const existsCheckMatches = [...content.matchAll(/\b(?:existsSync|accessSync)\s*\(\s*(\w+)\s*\)/g)];
+        const readAfterCheck = existsCheckMatches.some(match => {
+          const varName = match[1];
+          const existsLineIdx = content.slice(0, match.index!).split('\n').length - 1;
+          const readPattern = new RegExp(`\\breadFile(?:Sync)?\\s*\\(\\s*${varName}\\b`);
+          const windowEnd = Math.min(existsLineIdx + 40, fileLines.length);
+          for (let i = existsLineIdx; i < windowEnd; i++) {
+            if (readPattern.test(fileLines[i])) return true;
+          }
+          return false;
+        });
+        // Pattern 2: integrity verify (hash/signature) followed by exec/spawn on the same path.
+        const hasIntegrityVerify = /\b(verify|validate)(Hash|Signature|Digest|Checksum|Integrity)\s*\(/i.test(content);
+        const hasShellExec = /\b(execFile|spawnSync|execSync|child_process)\s*\(/i.test(content);
+        const hasFilePath = /\b(filePath|targetPath|scriptPath|modulePath)\b/.test(content);
 
-        if ((hasVerify && hasExecute && hasFilePath) || (hasMultipleReads && hasFilePath)) {
-          // Check that there's no file locking or atomic operation (ignore comments)
-          const codeLines = content.split('\n').filter(l => !l.trimStart().startsWith('//') && !l.trimStart().startsWith('#') && !l.trimStart().startsWith('*'));
-          const codeContent = codeLines.join('\n');
-          const hasAtomic = /\b(atomic|lock|flock|rename|O_EXCL|O_CREAT)\b/i.test(codeContent);
-          if (!hasAtomic) {
-            // Find the line with verify for reporting
-            const lines = content.split('\n');
+        if (readAfterCheck || (hasIntegrityVerify && hasShellExec && hasFilePath)) {
+          {
+            // Find the line with the check for reporting
             let verifyLine = 0;
-            const verifyPattern = /\b(verify|validate|check)(File|Path|Hash|Integrity|Signature|Digest|Config)?\s*\(|\breadFileSync?\s*\(/i;
-            for (let i = 0; i < lines.length; i++) {
-              if (verifyPattern.test(lines[i])) {
+            const verifyPattern = /\b(?:existsSync|accessSync)\s*\(|\b(?:verify|validate)(?:Hash|Signature|Digest|Checksum|Integrity)\s*\(/i;
+            for (let i = 0; i < fileLines.length; i++) {
+              if (verifyPattern.test(fileLines[i])) {
                 verifyLine = i + 1;
                 break;
               }

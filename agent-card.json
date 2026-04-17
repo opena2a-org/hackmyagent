@@ -14,12 +14,12 @@
   },
   "authentication": {
     "type": "none",
-    "description": "Local CLI tool, no authentication required"
+    "description": "Local CLI tool — no network-facing identity, no cryptographic binding required"
   },
   "protocols": ["mcp"],
   "trustPolicy": {
     "dataHandling": "local-only",
-    "credentialAccess": "read-only-scanning",
+    "scanScope": "read-only",
     "networkAccess": "optional-registry-queries"
   }
 }

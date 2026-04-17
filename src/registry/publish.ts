@@ -123,15 +123,10 @@ export function readAgentKeypair(): AgentKeypair | null {
     const privKeyPath = path.join(keysDir, 'agent.key');
     const agentIdPath = path.join(keysDir, 'agent-id');
 
-    if (!fs.existsSync(pubKeyPath) || !fs.existsSync(privKeyPath)) {
-      return null;
-    }
-
     const publicKey = fs.readFileSync(pubKeyPath, 'utf-8').trim();
     const privateKey = fs.readFileSync(privKeyPath, 'utf-8').trim();
-    const agentId = fs.existsSync(agentIdPath)
-      ? fs.readFileSync(agentIdPath, 'utf-8').trim()
-      : undefined;
+    let agentId: string | undefined;
+    try { agentId = fs.readFileSync(agentIdPath, 'utf-8').trim(); } catch { /* optional */ }
 
     return { publicKey, privateKey, agentId };
   } catch {

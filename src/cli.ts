@@ -236,14 +236,16 @@ Examples:
     }
     try {
       // Detect local file/directory paths - run NanoMind scan instead of registry lookup
-      const { existsSync, statSync } = await import('node:fs');
+      const { statSync } = await import('node:fs');
       const { resolve, dirname } = await import('node:path');
       const resolved = resolve(skill);
-      const isLocalPath = existsSync(resolved) && (statSync(resolved).isFile() || statSync(resolved).isDirectory());
+      let resolvedStat: ReturnType<typeof statSync> | undefined;
+      try { resolvedStat = statSync(resolved); } catch { /* not a local path */ }
+      const isLocalPath = resolvedStat?.isFile() || resolvedStat?.isDirectory();
 
-      if (isLocalPath) {
+      if (isLocalPath && resolvedStat) {
         // Local path: run NanoMind semantic analysis directly
-        const targetDir = statSync(resolved).isFile() ? dirname(resolved) : resolved;
+        const targetDir = resolvedStat.isFile() ? dirname(resolved) : resolved;
 
         const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
         const nmResult = await orchestrateNanoMind(targetDir, [], { silent: !!options.json, analm: options.analm });
@@ -575,7 +577,8 @@ function generateVerifyCommand(f: { file?: string; line?: number; checkId?: stri
 
   // File + line: most direct verification — show the exact offending line
   if (f.file && f.line) {
-    return `sed -n '${f.line}p' ${f.file}`;
+    const quoted = f.file.replace(/'/g, "'\\''");
+    return `sed -n '${f.line}p' '${quoted}'`;
   }
 
   // Governance / injection / jailbreak findings: re-run governance scan
@@ -595,7 +598,8 @@ function generateVerifyCommand(f: { file?: string; line?: number; checkId?: stri
 
   // Credential / secret findings in a known file: grep the file
   if (f.file && (cat.includes('credential') || attackClass?.startsWith('CRED'))) {
-    return `grep -in "key\\|token\\|secret\\|password" ${f.file}`;
+    const quoted = f.file.replace(/'/g, "'\\''");
+    return `grep -in "key\\|token\\|secret\\|password" '${quoted}'`;
   }
 
   return undefined;
@@ -2217,12 +2221,10 @@ function generateAspOutput(benchmarkResult: BenchmarkResult, scanResult: { findi
   let agentVersion = '0.0.0';
   try {
     const pkgPath = path.join(targetDir, 'package.json');
-    if (fs.existsSync(pkgPath)) {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-      agentName = pkg.name || agentName;
-      agentVersion = pkg.version || agentVersion;
-    }
-  } catch { /* ignore */ }
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+    agentName = pkg.name || agentName;
+    agentVersion = pkg.version || agentVersion;
+  } catch { /* ignore — package.json may not exist */ }
 
   // Analyze capabilities from findings
   const capabilities: Record<string, string> = {};
@@ -2396,13 +2398,8 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean): void {
 // Package name resolution for community registry reporting
 function resolvePackageName(targetDir: string): string | null {
   try {
-    const fs = require('fs');
-    const path = require('path');
-    const pkgJsonPath = path.join(targetDir, 'package.json');
-    if (fs.existsSync(pkgJsonPath)) {
-      const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8'));
-      if (pkg.name) return pkg.name;
-    }
+    const pkg = JSON.parse(require('fs').readFileSync(require('path').join(targetDir, 'package.json'), 'utf-8'));
+    if (pkg.name) return pkg.name;
   } catch { /* ignore */ }
   // Fallback: use directory name, resolving "." to the actual directory name
   const path = require('path');
@@ -2414,13 +2411,8 @@ function resolvePackageName(targetDir: string): string | null {
 
 function resolvePackageVersion(targetDir: string): string | null {
   try {
-    const fs = require('fs');
-    const path = require('path');
-    const pkgJsonPath = path.join(targetDir, 'package.json');
-    if (fs.existsSync(pkgJsonPath)) {
-      const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf-8'));
-      if (pkg.version) return pkg.version;
-    }
+    const pkg = JSON.parse(require('fs').readFileSync(require('path').join(targetDir, 'package.json'), 'utf-8'));
+    if (pkg.version) return pkg.version;
   } catch { /* ignore */ }
   return null;
 }
@@ -2430,18 +2422,11 @@ function resolvePackageVersion(targetDir: string): string | null {
  */
 function resolvePackageNamePyproject(targetDir: string): string | null {
   try {
-    const fs = require('fs');
-    const path = require('path');
-    const pyprojectPath = path.join(targetDir, 'pyproject.toml');
-    if (fs.existsSync(pyprojectPath)) {
-      const content = fs.readFileSync(pyprojectPath, 'utf-8');
-      // Match [project] section's name field
-      const nameMatch = content.match(/\[project\][\s\S]*?name\s*=\s*"([^"]+)"/);
-      if (nameMatch) return nameMatch[1];
-      // Also try [tool.poetry] section
-      const poetryMatch = content.match(/\[tool\.poetry\][\s\S]*?name\s*=\s*"([^"]+)"/);
-      if (poetryMatch) return poetryMatch[1];
-    }
+    const content = require('fs').readFileSync(require('path').join(targetDir, 'pyproject.toml'), 'utf-8');
+    const nameMatch = content.match(/\[project\][\s\S]*?name\s*=\s*"([^"]+)"/);
+    if (nameMatch) return nameMatch[1];
+    const poetryMatch = content.match(/\[tool\.poetry\][\s\S]*?name\s*=\s*"([^"]+)"/);
+    if (poetryMatch) return poetryMatch[1];
   } catch { /* ignore */ }
   return null;
 }
@@ -2451,16 +2436,11 @@ function resolvePackageNamePyproject(targetDir: string): string | null {
  */
 function resolvePackageVersionPyproject(targetDir: string): string | null {
   try {
-    const fs = require('fs');
-    const path = require('path');
-    const pyprojectPath = path.join(targetDir, 'pyproject.toml');
-    if (fs.existsSync(pyprojectPath)) {
-      const content = fs.readFileSync(pyprojectPath, 'utf-8');
-      const versionMatch = content.match(/\[project\][\s\S]*?version\s*=\s*"([^"]+)"/);
-      if (versionMatch) return versionMatch[1];
-      const poetryMatch = content.match(/\[tool\.poetry\][\s\S]*?version\s*=\s*"([^"]+)"/);
-      if (poetryMatch) return poetryMatch[1];
-    }
+    const content = require('fs').readFileSync(require('path').join(targetDir, 'pyproject.toml'), 'utf-8');
+    const versionMatch = content.match(/\[project\][\s\S]*?version\s*=\s*"([^"]+)"/);
+    if (versionMatch) return versionMatch[1];
+    const poetryMatch = content.match(/\[tool\.poetry\][\s\S]*?version\s*=\s*"([^"]+)"/);
+    if (poetryMatch) return poetryMatch[1];
   } catch { /* ignore */ }
   return null;
 }
@@ -3109,11 +3089,10 @@ Examples:
         try {
           const { SoulScanner } = await import('./soul/scanner.js');
           const { createHash } = await import('node:crypto');
-          const { existsSync, readFileSync } = await import('node:fs');
+          const { readFileSync } = await import('node:fs');
           const soulPath = require('path').join(targetDir, 'SOUL.md');
-          const soulHashBefore = existsSync(soulPath)
-            ? createHash('sha256').update(readFileSync(soulPath)).digest('hex')
-            : null;
+          let soulHashBefore: string | null = null;
+          try { soulHashBefore = createHash('sha256').update(readFileSync(soulPath)).digest('hex'); } catch { /* SOUL.md may not exist yet */ }
           const soulScanner = new SoulScanner();
           const hardenResult = await soulScanner.hardenSoul(targetDir, { dryRun: false });
           if (hardenResult.sectionsAdded && hardenResult.sectionsAdded.length > 0) {
@@ -4255,11 +4234,13 @@ Examples:
       let customPayloads: AttackPayload[] | undefined;
       if (options.payloadFile) {
         const filePath = require('path').resolve(options.payloadFile);
-        if (!require('fs').existsSync(filePath)) {
+        let fileContent: string;
+        try {
+          fileContent = require('fs').readFileSync(filePath, 'utf-8');
+        } catch {
           console.error(`Error: Payload file not found: ${filePath}`);
           process.exit(1);
         }
-        const fileContent = require('fs').readFileSync(filePath, 'utf-8');
         customPayloads = parseCustomPayloads(fileContent);
       }
 

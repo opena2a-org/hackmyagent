@@ -1,0 +1,7 @@
+# NemoClaw runtime data — keep secrets and baselines out of version control
+*.env
+secrets.json
+*.pem
+*.key
+*.db
+baseline-*.json

@@ -2353,4 +2353,52 @@ describe('OpenClaw gateway auto-fix', () => {
       expect(cfg009).toBeUndefined();
     });
   });
+
+  describe('UNICODE-STEGO-002: GlassWorm Decoder — detection code exemption', () => {
+    it('does not flag analysis code that uses .codePointAt() only for counting (no fromCodePoint)', async () => {
+      // Regression for FP on src/semantic/nanomind-enhancer.ts:
+      // Detection code uses .codePointAt() to CHECK ranges and COUNT occurrences.
+      // A GlassWorm decoder needs fromCodePoint/fromCharCode to reconstitute the hidden payload.
+      // Without that output step, codePointAt + hex literals is just analysis, not decoding.
+      const detectionCode = [
+        'function analyzeUnicodeContext(content: string) {',
+        '  const codepoints = [...content].map(c => c.codePointAt(0)!);',
+        '  let variationSelectors = 0;',
+        '  for (const cp of codepoints) {',
+        '    if (cp >= 0xFE00 && cp <= 0xFE0F) {',
+        '      variationSelectors++;',
+        '    }',
+        '  }',
+        '  return variationSelectors;',
+        '}',
+      ].join('\n');
+
+      await fs.writeFile(path.join(tempDir, 'SKILL.md'), '# Test Skill');
+      await fs.writeFile(path.join(tempDir, 'unicode-analyzer.ts'), detectionCode);
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const stego002 = result.findings.find(f => f.checkId === 'UNICODE-STEGO-002');
+      expect(stego002, 'Analysis code without fromCodePoint must not be flagged as GlassWorm decoder').toBeUndefined();
+    });
+
+    it('still flags actual GlassWorm decoder that uses fromCodePoint to reconstitute payload', async () => {
+      const decoderCode = [
+        'function decode(s: string): string {',
+        '  const chars = [...s];',
+        '  return chars',
+        '    .filter(c => c.codePointAt(0)! >= 0xFE00)',
+        '    .map(c => String.fromCodePoint(c.codePointAt(0)! - 0xFE00 + 0x61))',
+        '    .join(\'\');',
+        '}',
+        'eval(decode(payload));',
+      ].join('\n');
+
+      await fs.writeFile(path.join(tempDir, 'SKILL.md'), '# Test Skill');
+      await fs.writeFile(path.join(tempDir, 'payload.js'), decoderCode);
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const stego002 = result.findings.find(f => f.checkId === 'UNICODE-STEGO-002');
+      expect(stego002, 'GlassWorm decoder with fromCodePoint must be flagged').toBeDefined();
+    });
+  });
 });

@@ -308,22 +308,21 @@ export async function runOracleEval(oracleDir: string): Promise<OracleEvalReport
       if (!entry.isDirectory()) continue;
       const fullPath = path.join(dir, entry.name);
       const labelPath = path.join(fullPath, 'label.json');
-      if (fs.existsSync(labelPath)) {
-        try {
-          const raw = fs.readFileSync(labelPath, 'utf8');
-          const label = JSON.parse(raw) as OracleFixtureLabel;
-          if (label.retired) {
-            retiredCount.count++;
-          } else {
-            allFixtureLabels.push({ dir: fullPath, label });
-          }
-        } catch (e) {
-          // Skip malformed label.json but log
+      try {
+        const raw = fs.readFileSync(labelPath, 'utf8');
+        const label = JSON.parse(raw) as OracleFixtureLabel;
+        if (label.retired) {
+          retiredCount.count++;
+        } else {
+          allFixtureLabels.push({ dir: fullPath, label });
+        }
+      } catch (e: unknown) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+          // No label.json — recurse for nested fixture structures
+          walkDir(fullPath);
+        } else {
           process.stderr.write(`warn: could not parse ${labelPath}: ${e}\n`);
         }
-      } else {
-        // Recurse for nested structures (e.g. soul08-skill-conflict has sub-skill)
-        walkDir(fullPath);
       }
     }
   }
@@ -337,12 +336,12 @@ export async function runOracleEval(oracleDir: string): Promise<OracleEvalReport
 
     if (label.surface === 'arp-input') {
       const inputPath = path.join(dir, 'input.txt');
-      if (fs.existsSync(inputPath)) {
+      try {
         const text = fs.readFileSync(inputPath, 'utf8');
         const r = await runArpScanner(text);
         findings = r.findings;
         scanError = r.error;
-      } else {
+      } catch {
         scanError = 'input.txt not found';
       }
     } else {
