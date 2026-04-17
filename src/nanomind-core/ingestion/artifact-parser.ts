@@ -57,11 +57,34 @@ const TYPE_SIGNATURES: Array<{ test: (content: string, path?: string) => boolean
       /^---\n[\s\S]*?capabilities:\s*\n/m.test(content),
     type: 'skill',
   },
-  // MCP config: mcp.json, contains mcpServers
+  // MCP config: known basenames (mcp.json, .mcp.json, mcpServers.json)
+  // or content containing an mcpServers object.
+  //
+  // IMPORTANT: match known basenames exactly, not any path ending in
+  // a matching suffix. A bug-bounty target descriptor named
+  // `salesforce-mcp.json` or a vendor target list like `github-mcp.json`
+  // is NOT an agent config — it is metadata about another agent. Running
+  // the agent analyzers on such files produces six-finding pileups
+  // (governance + capability + scope all misfiring). The allowlist mirrors
+  // the canonical MCP filenames referenced across the scanner codebase:
+  // Claude Code project config (`.mcp.json`), client installs (`mcp.json`
+  // in `.cursor/`, `.vscode/`, `.well-known/`), and assembly-scanner's
+  // TOOL_DESC_FILES (`mcpServers.json`).
   {
-    test: (content, path) =>
-      (path?.endsWith('mcp.json') || false) ||
-      (content.startsWith('{') && /"mcpServers"/.test(content)),
+    test: (content, path) => {
+      const basename = path ? path.split(/[/\\]/).pop() : undefined;
+      const isKnownMcpName =
+        basename === 'mcp.json' ||
+        basename === '.mcp.json' ||
+        basename === 'mcpServers.json';
+      if (isKnownMcpName) return true;
+      // Content fallback: strip BOM and leading whitespace so JSONC /
+      // pretty-printed files aren't missed. Require both an opening brace
+      // and an mcpServers key — a loose substring check would false-match
+      // target descriptors that merely discuss mcpServers in prose.
+      const stripped = content.replace(/^\uFEFF/, '').trimStart();
+      return stripped.startsWith('{') && /"mcpServers"\s*:/.test(stripped);
+    },
     type: 'mcp_config',
   },
   // SOUL governance: SOUL.md

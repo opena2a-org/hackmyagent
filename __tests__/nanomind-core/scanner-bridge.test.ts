@@ -328,6 +328,77 @@ describe('runNanoMindScan', () => {
     expect(result.integrityStatus).toBe('CLEAN');
     expect(typeof result.nanomindAvailable).toBe('boolean');
   });
+
+  it('does not run agent analyzers on bug-bounty target descriptors named *-mcp.json', async () => {
+    // Reproducer for the audit P0-4 case: hma-hunter/data/targets/salesforce-mcp.json
+    // is a bug-bounty target descriptor — NOT an MCP server config. The previous
+    // classifier matched any path ending in `mcp.json`, routing this file through
+    // the agent analyzers and producing six overlapping findings (governance +
+    // capability + scope all misfiring on the descriptor's prose). After the fix
+    // the file classifies as `unknown` and only credential/code/stego analyzers
+    // run on it, eliminating the pileup.
+    const targetDescriptor = JSON.stringify({
+      id: 'salesforce-mcp',
+      name: 'Salesforce MCP Server',
+      category: 'mcp-server',
+      program: { platform: 'bugcrowd' },
+      scope: { inScope: ['@salesforce/mcp npm package'] },
+      attackSurface: [{
+        surface: 'SOQL/SOSL Injection via MCP Tools',
+        modules: ['query', 'search'],
+        notes: 'Test SOQL injection to access records beyond intended scope.',
+      }],
+      tips: ['Check if the MCP server can execute anonymous Apex code'],
+    });
+    await mkdir(join(tempDir, 'data', 'targets'), { recursive: true });
+    await writeFile(join(tempDir, 'data', 'targets', 'salesforce-mcp.json'), targetDescriptor);
+
+    const result = await runNanoMindScan(tempDir, []);
+    const findingsOnTarget = result.astFindings.filter(
+      f => !f.passed && f.file?.includes('salesforce-mcp.json'),
+    );
+    // Agent-specific analyzers (governance, capability, scope) must not fire on
+    // a bug-bounty target descriptor. Only credential/code/stego analyzers run
+    // on `unknown` artifacts; they must produce zero findings on this content.
+    const agentSpecificCategories = new Set(['Governance', 'Capability Security', 'Scope Security']);
+    const agentSpecificFindings = findingsOnTarget.filter(
+      f => agentSpecificCategories.has(f.category),
+    );
+    expect(
+      agentSpecificFindings,
+      `Bug-bounty target descriptors must not trigger agent analyzers. Got: ${agentSpecificFindings.map(f => f.checkId).join(', ')}`,
+    ).toHaveLength(0);
+  });
+
+  it('emits exactly one zero-constraints governance finding per artifact (no AST-GOVERN-002 / AST-GOV-003 duplicate)', async () => {
+    // Capability-analyzer used to emit AST-GOVERN-002 with message "Zero
+    // constraints declared" while governance-analyzer emitted AST-GOV-003 with
+    // message "Zero constraints for active capabilities" — same Governance
+    // category, same condition, on the same file. Consolidated to AST-GOV-003.
+    const skillNoConstraints = `---
+description: Admin power tool
+capabilities:
+  - db.delete
+  - file.write
+  - api.call
+  - shell.execute
+---
+A powerful tool that does anything you ask.`;
+    await writeFile(join(tempDir, 'admin.skill.md'), skillNoConstraints);
+
+    const result = await runNanoMindScan(tempDir, []);
+    const onSkill = result.astFindings.filter(
+      f => !f.passed && f.file?.includes('admin.skill.md'),
+    );
+    const govern002 = onSkill.filter(f => f.checkId === 'AST-GOVERN-002');
+    expect(
+      govern002,
+      'AST-GOVERN-002 was retired — emission moved to governance-analyzer AST-GOV-003.',
+    ).toHaveLength(0);
+    // AST-GOV-003 (the canonical emitter) still fires for this case.
+    const gov003 = onSkill.filter(f => f.checkId === 'AST-GOV-003');
+    expect(gov003.length).toBeGreaterThan(0);
+  });
 });
 
 // ============================================================================

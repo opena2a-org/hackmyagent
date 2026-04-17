@@ -92,13 +92,15 @@ It is recommended to check permissions when appropriate.
   describe('Skill with no constraints', () => {
     const skill = `A helper that does whatever you ask.`;
 
-    it('flags missing governance', async () => {
+    it('does not emit AST-GOVERN-002 (delegated to governance-analyzer AST-GOV-003)', async () => {
+      // Capability-analyzer used to emit AST-GOVERN-002 for the same condition
+      // governance-analyzer emits AST-GOV-003. Both fired on every bare skill,
+      // producing a duplicate Governance finding. The emitter was consolidated
+      // in governance-analyzer; capability-analyzer must no longer emit it.
       const { ast } = await compiler.compile(skill, 'no-rules.skill.md');
       const findings = analyzeCapabilities(ast);
       const noGov = findings.filter(f => f.checkId === 'AST-GOVERN-002');
-      // May or may not flag depending on whether capabilities are detected
-      // The key check is that it doesn't crash
-      expect(findings).toBeTruthy();
+      expect(noGov).toHaveLength(0);
     });
   });
 

@@ -111,26 +111,10 @@ export function analyzeCapabilities(ast: SecurityAST, projectType?: ProjectType,
   if (!isLibOrSDK) {
     findings.push(...checkConstraintWeaknesses(ast));
 
-    // AST-GOVERN-002: no constraints at all, accounting for project-level constraints
-    // from a sibling SOUL.md so that harden-soul → scan shows real improvement.
-    const effectiveConstraintCount = ast.declaredConstraints.length + (projectConstraints?.length ?? 0);
-    if (effectiveConstraintCount === 0 && ast.declaredCapabilities.length > 0) {
-      const govSeverity: ASTFinding['severity'] = isAgentLevelArtifact(ast) ? 'high' : 'medium';
-      findings.push({
-        checkId: 'AST-GOVERN-002',
-        name: 'No Governance Constraints',
-        description: 'This artifact declares capabilities but has no governance constraints. Without constraints, any capability can be abused.',
-        category: 'Governance',
-        severity: govSeverity,
-        passed: false,
-        message: 'Zero constraints declared',
-        fixable: false,
-        file: ast.artifactPath,
-        fix: 'hackmyagent harden-soul .  — generates SOUL.md with governance sections (capability boundaries, data handling, injection resistance) for declared capabilities.',
-        attackClass: 'SOUL-BYPASS',
-        confidence: 0.9,
-      });
-    }
+    // Zero-constraint emission intentionally delegated to governance-analyzer
+    // (AST-GOV-003). That analyzer already covers both declared and inferred
+    // capabilities; emitting AST-GOVERN-002 here produced a duplicate Governance
+    // finding on every artifact with zero constraints. One canonical emitter.
   }
 
   // Check 9: NanoMind manipulation detected
