@@ -2586,13 +2586,17 @@ describe('OpenClaw gateway auto-fix', () => {
     });
   });
 
-  describe('TOCTOU-001: widened patterns — statSync+exec and access-gate+read', () => {
-    it('flags accessSync + readFileSync on same variable within function', async () => {
+  describe('TOCTOU-001: access-gate+exec and stat+exec patterns', () => {
+    it('does NOT flag accessSync + readFileSync (config-load pattern, not TOCTOU)', async () => {
+      // Real-world reproducer (2026-04-17 audit): secretless and ai-trust
+      // surfaced 11+ FPs of TOCTOU-001 on the idiomatic config-load shape
+      // `if (existsSync(p)) return readFileSync(p)`. Reading a swapped file
+      // just produces attacker-controlled content that the application must
+      // already sanitize — no security trust is transferred from the check.
       const code = [
         'import * as fs from "fs";',
         'export function loadConfig(configPath: string) {',
         '  fs.accessSync(configPath);',
-        '  // TOCTOU window — file can be swapped here',
         '  return fs.readFileSync(configPath, "utf-8");',
         '}',
       ].join('\n');
@@ -2600,8 +2604,71 @@ describe('OpenClaw gateway auto-fix', () => {
       await fs.writeFile(path.join(tempDir, 'loader.ts'), code);
 
       const result = await scanner.scan({ targetDir: tempDir });
+      const toctou = result.findings.find(
+        f => f.checkId === 'TOCTOU-001' && f.file === 'loader.ts',
+      );
+      expect(toctou, 'accessSync+readFileSync (config load) must not fire TOCTOU-001').toBeUndefined();
+    });
+
+    it('flags accessSync + execSync on same variable (real access-gate TOCTOU)', async () => {
+      const code = [
+        'import * as fs from "fs";',
+        'import { execSync } from "child_process";',
+        'export function runScript(scriptPath: string) {',
+        '  fs.accessSync(scriptPath);',
+        '  // TOCTOU window — file can be swapped here',
+        '  execSync(scriptPath);',
+        '}',
+      ].join('\n');
+      await fs.writeFile(path.join(tempDir, 'SKILL.md'), '# Test Skill');
+      await fs.writeFile(path.join(tempDir, 'access-exec.ts'), code);
+
+      const result = await scanner.scan({ targetDir: tempDir });
       const toctou = result.findings.find(f => f.checkId === 'TOCTOU-001');
-      expect(toctou, 'accessSync+readFileSync on same var must fire TOCTOU-001').toBeDefined();
+      expect(toctou, 'accessSync+execSync on same var must fire TOCTOU-001').toBeDefined();
+    });
+
+    it('flags existsSync + dynamic import(p) on same variable (RCE-equivalent)', async () => {
+      // Adversarial review (2026-04-17) flagged dynamic import as an exec sink
+      // that was silently slipping past after the read-narrowing.
+      const code = [
+        'import * as fs from "fs";',
+        'export async function loadPlugin(pluginPath: string) {',
+        '  if (fs.existsSync(pluginPath)) {',
+        '    const mod = await import(pluginPath);',
+        '    return mod;',
+        '  }',
+        '}',
+      ].join('\n');
+      await fs.writeFile(path.join(tempDir, 'SKILL.md'), '# Test Skill');
+      await fs.writeFile(path.join(tempDir, 'plugin-loader.ts'), code);
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const toctou = result.findings.find(
+        f => f.checkId === 'TOCTOU-001' && f.file === 'plugin-loader.ts',
+      );
+      expect(toctou, 'existsSync+import(varPath) must fire TOCTOU-001').toBeDefined();
+    });
+
+    it('does NOT flag existsSync + writeFileSync (write is not a trust-transfer use)', async () => {
+      // Lock current behavior: write-after-check is not TOCTOU under this
+      // model. Documented in the analyzer comment block at scanner.ts:9851.
+      const code = [
+        'import * as fs from "fs";',
+        'export function persist(outPath: string, data: string) {',
+        '  if (fs.existsSync(outPath)) {',
+        '    fs.writeFileSync(outPath, data);',
+        '  }',
+        '}',
+      ].join('\n');
+      await fs.writeFile(path.join(tempDir, 'SKILL.md'), '# Test Skill');
+      await fs.writeFile(path.join(tempDir, 'writer.ts'), code);
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const toctou = result.findings.find(
+        f => f.checkId === 'TOCTOU-001' && f.file === 'writer.ts',
+      );
+      expect(toctou, 'existsSync+writeFileSync should not fire TOCTOU-001').toBeUndefined();
     });
 
     it('flags statSync + execSync on same variable (stat-then-exec is a real TOCTOU)', async () => {
