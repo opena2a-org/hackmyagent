@@ -1,8 +1,8 @@
 # HMA CISO-grade UX rework
 
 Date: 2026-04-16
-Branch: feat/eval-oracle-harness — commit 8d13d07 (B1/B2/B3/B4/B5/B6/B7 + U1/U2/U3/U5 landed)
-Status: ALL BUGS FIXED. 1601/1601 tests green, 12/12 benign FPR. Ready for /pre-push-review.
+Branch: feat/eval-oracle-harness — commit 8d13d07 (B1/B2/B3/B4/B5/B6/B7 + U1/U2/U3/U5 landed) + B4-followup (AnaLM render cleanup)
+Status: ALL BUGS FIXED. 1619/1619 tests green (incl. 16 new analyst-render tests), 12/12 benign FPR. Ready for /pre-push-review.
 Scope: hackmyagent CLI output, governance analyzer, fix messaging
 
 ## What prompted this
@@ -99,6 +99,35 @@ returns analysis prose in the mitigation slots when the artifact is benign.
 `remediations` under `Fix:`. Render `analysis` under a distinct `Why:` or drop entirely if
 the verdict is benign. Strip Markdown headers from terminal output. Cap analysis prose at
 ~240 chars with a "see --verbose for full analysis" tail.
+
+### B4-followup — orphan NONE badge, empty attackVector, markdown artifact, abrupt trail-off
+
+Surfaced 2026-04-16 while running `opena2a-cli check /tmp/hma-real-world/ibm-mcp/ --analm`.
+The B4 fix landed in 8d13d07 but the rendering block still had four residual bugs:
+
+1. A threatAnalysis with `threatLevel === 'NONE'` still printed the bare level badge
+   (guard on line 962 only suppressed the description, not the level line).
+2. When the model returned an empty `attackVector`, the level line rendered with trailing
+   whitespace and no context: `CRITICAL  `.
+3. Stripping only the `#` chars from `## Analysis\n\nThis artifact...` left "Analysis" on
+   its own orphan line above the real prose. Header *lines* should be dropped, not just
+   the leading `#` chars.
+4. The 160-char cap ended with `...` and no escape hatch — users hit the trail-off and
+   assumed the tool was broken.
+
+**Root cause (same file, same block).** `src/cli.ts` AnaLM render only suppressed the
+description body when `isLow`, never the whole entry. The header-strip regex was
+`^#{1,6}\s+` which removes the hashes but keeps the header text on the next line.
+
+**Fix.** Extracted the two transformations into `src/output/analyst-render.ts` as pure
+helpers (`isRenderableAnalystFinding`, `formatAnalystDescription`) so the cleanup is
+unit-testable. Pre-filter now drops isLow/low-confidence entries before the divider even
+prints — no empty sections. Description pipeline drops whole header lines, collapses
+blank lines to an em-dash separator, collapses single newlines to spaces, bumps the cap
+to 240 chars, and appends `(run with --verbose for full analysis)` when truncated.
+`--verbose` emits the full untruncated prose. 16 regression tests in
+`__tests__/output/analyst-render.test.ts` covering every case including the real-world
+reproducer.
 
 ### B5 — `opena2a mcp audit` dead-ends with no Next Steps
 

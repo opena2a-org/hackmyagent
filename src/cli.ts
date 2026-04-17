@@ -52,6 +52,7 @@ import {
 } from './index';
 import { resolveAndLogMcpShorthand } from './resolve-mcp';
 import { WildScanner, type WildScanReport } from './wild';
+import { isRenderableAnalystFinding, formatAnalystDescription } from './output/analyst-render';
 const program = new Command();
 program.showHelpAfterError('(run with --help for usage)');
 
@@ -566,6 +567,17 @@ function formatFixLine(text: string): string {
 }
 
 /**
+ * POSIX shell-escape a path for interpolation into a single-quoted command.
+ * Returns undefined when the path contains characters that cannot be safely
+ * rendered (control chars, newlines, null bytes) — the caller must skip
+ * emitting the verify command rather than display a dangerous copy-paste.
+ */
+function shellEscapePath(p: string): string | undefined {
+  if (/[\x00-\x1f\x7f]/.test(p)) return undefined;
+  return "'" + p.replace(/'/g, "'\\''") + "'";
+}
+
+/**
  * Generate a "Verify:" shell command for a finding — lets the user confirm
  * the issue exists before acting. Returns undefined when no practical verify
  * command applies (e.g., abstract governance gaps with no file reference).
@@ -577,8 +589,9 @@ function generateVerifyCommand(f: { file?: string; line?: number; checkId?: stri
 
   // File + line: most direct verification — show the exact offending line
   if (f.file && f.line) {
-    const quoted = f.file.replace(/'/g, "'\\''");
-    return `sed -n '${f.line}p' '${quoted}'`;
+    const quoted = shellEscapePath(f.file);
+    if (!quoted) return undefined;
+    return `sed -n '${f.line}p' ${quoted}`;
   }
 
   // Governance / injection / jailbreak findings: re-run governance scan
@@ -598,8 +611,9 @@ function generateVerifyCommand(f: { file?: string; line?: number; checkId?: stri
 
   // Credential / secret findings in a known file: grep the file
   if (f.file && (cat.includes('credential') || attackClass?.startsWith('CRED'))) {
-    const quoted = f.file.replace(/'/g, "'\\''");
-    return `grep -in "key\\|token\\|secret\\|password" '${quoted}'`;
+    const quoted = shellEscapePath(f.file);
+    if (!quoted) return undefined;
+    return `grep -in "key\\|token\\|secret\\|password" ${quoted}`;
   }
 
   return undefined;
@@ -946,26 +960,31 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   }
 
   // ── AnaLM Analysis ──────────────────────────────────────────────────
-  if (opts.analystFindings && opts.analystFindings.length > 0) {
+  // Pre-filter: drop low-confidence and low-severity threat analyses so we
+  // don't print a section header with zero renderable content.
+  const renderableAnalystFindings = (opts.analystFindings ?? []).filter(isRenderableAnalystFinding);
+
+  if (renderableAnalystFindings.length > 0) {
     divider('AnaLM Analysis');
     console.log(`  ${colors.dim}Generative AI layer — identifies attack vectors and produces targeted remediation${RESET()}`);
     console.log();
-    for (const af of opts.analystFindings) {
-      // Skip low-confidence analyst results — below 50% is not actionable for a CISO
-      if (af.confidence < 0.50) continue;
+    for (const af of renderableAnalystFindings) {
       const r = af.result;
       if (af.taskType === 'threatAnalysis') {
         const level = String(r.threatLevel ?? 'unknown').toUpperCase();
-        const isLow = level === 'LOW' || level === 'INFO' || level === 'NONE';
         const levelColor = level === 'CRITICAL' || level === 'HIGH' ? colors.red : level === 'MEDIUM' ? colors.yellow : colors.dim;
-        console.log(`  ${levelColor}${colors.bold}${level}${RESET()}  ${r.attackVector ?? ''}`);
-        if (r.description && !isLow) {
-          // Strip markdown headers; cap at 160 chars to stay scannable
-          const desc = String(r.description).replace(/^#{1,6}\s+/gm, '').replace(/\*\*/g, '').trim();
-          const capped = desc.length > 160 ? desc.slice(0, 157) + '...' : desc;
-          console.log(`  ${colors.dim}${capped}${RESET()}`);
+        // Only show attackVector separator when the field is populated — avoids
+        // a naked "CRITICAL  " line with trailing whitespace.
+        const vectorText = r.attackVector ? `  ${colors.white}${r.attackVector}${RESET()}` : '';
+        console.log(`  ${levelColor}${colors.bold}${level}${RESET()}${vectorText}`);
+        if (r.description) {
+          const { text, truncated } = formatAnalystDescription(String(r.description), { verbose: !!verbose });
+          if (text) console.log(`  ${colors.dim}${text}${RESET()}`);
+          if (truncated) {
+            console.log(`  ${colors.dim}(run with --verbose for full analysis)${RESET()}`);
+          }
         }
-        if (!isLow && Array.isArray(r.mitigations) && r.mitigations.length > 0) {
+        if (Array.isArray(r.mitigations) && r.mitigations.length > 0) {
           for (const m of r.mitigations) {
             // Only render as Fix: for imperative commands — starts with an action verb
             // followed by a non-alpha (space, number, punctuation). Prose that starts
@@ -2224,7 +2243,14 @@ function generateAspOutput(benchmarkResult: BenchmarkResult, scanResult: { findi
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
     agentName = pkg.name || agentName;
     agentVersion = pkg.version || agentVersion;
-  } catch { /* ignore — package.json may not exist */ }
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    // Only ENOENT is expected (no package.json). Permission errors (EACCES)
+    // should warn so the benchmark report doesn't silently misreport the agent.
+    if (code && code !== 'ENOENT') {
+      process.stderr.write(`warn: could not read package.json (${code}); using directory name\n`);
+    }
+  }
 
   // Analyze capabilities from findings
   const capabilities: Record<string, string> = {};
@@ -4237,8 +4263,13 @@ Examples:
         let fileContent: string;
         try {
           fileContent = require('fs').readFileSync(filePath, 'utf-8');
-        } catch {
-          console.error(`Error: Payload file not found: ${filePath}`);
+        } catch (e) {
+          const code = (e as NodeJS.ErrnoException).code;
+          if (code === 'ENOENT') {
+            console.error(`Error: Payload file not found: ${filePath}`);
+          } else {
+            console.error(`Error reading payload file ${filePath}: ${(e as Error).message}`);
+          }
           process.exit(1);
         }
         customPayloads = parseCustomPayloads(fileContent);
