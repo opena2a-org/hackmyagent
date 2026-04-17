@@ -1,7 +1,8 @@
 # HMA CISO-grade UX rework
 
 Date: 2026-04-16
-Branch: feat/eval-oracle-harness (commits ae7cbb2 + earlier unpushed — do NOT push until this work lands)
+Branch: feat/eval-oracle-harness — commit 8d13d07 (B1/B2/B3/B4/B5/B6/B7 + U1/U2/U3/U5 landed)
+Status: ALL BUGS FIXED. 1601/1601 tests green, 12/12 benign FPR. Ready for /pre-push-review.
 Scope: hackmyagent CLI output, governance analyzer, fix messaging
 
 ## What prompted this

@@ -345,9 +345,7 @@ function runAllAnalyzers(
   findings.push(...analyzeSteganography(ast));
 
   // Enrich all findings with context-aware fix suggestions
-  // Uses TME classification + AST context to produce specific, actionable fixes
-  // instead of generic template strings
-  return enrichFindings(findings, ast);
+  return enrichFindings(findings, ast, projectConstraints);
 }
 
 /**

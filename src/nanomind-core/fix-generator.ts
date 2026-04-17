@@ -33,12 +33,13 @@ import type { ASTFinding } from './analyzers/capability-analyzer.js';
 export function enrichFindings(
   findings: ASTFinding[],
   ast: SecurityAST,
+  projectConstraints?: Constraint[],
 ): ASTFinding[] {
   return findings.map(f => {
     if (f.passed) return f;
 
-    const contextualFix = generateFix(f, ast);
-    const contextualGuidance = generateGuidance(f, ast);
+    const contextualFix = generateFix(f, ast, projectConstraints);
+    const contextualGuidance = generateGuidance(f, ast, projectConstraints);
 
     return {
       ...f,
@@ -52,15 +53,13 @@ export function enrichFindings(
 // Fix Generation (attack class dispatch)
 // ============================================================================
 
-function generateFix(finding: ASTFinding, ast: SecurityAST): string {
+function generateFix(finding: ASTFinding, ast: SecurityAST, projectConstraints?: Constraint[]): string {
   const attackClass = finding.attackClass ?? finding.checkId;
 
   // Dispatch by attack class for domain-specific fixes
   switch (attackClass) {
     case 'PRIV-ESCALATION':
-    case 'CAPABILITY-ABUSE':
-    case 'CAPABILITY-CREEP':
-      return fixCapabilityIssue(finding, ast);
+      return fixCapabilityIssue(finding, ast, projectConstraints);
 
     case 'CRED-EXPOSURE':
     case 'CRED-EXFIL':
@@ -85,9 +84,18 @@ function generateFix(finding: ASTFinding, ast: SecurityAST): string {
       return fixPersistenceIssue(finding, ast);
 
     case 'SOUL-BYPASS':
+      return fixGovernanceIssue(finding, ast);
+
     case 'SOUL-GAP':
     case 'SOUL-MISSING':
-      return fixGovernanceIssue(finding, ast);
+      // The governance analyzer sets a specific `hackmyagent harden-soul .` fix with
+      // the exact missing domains listed. Preserve it; only fall back to the generic
+      // prose generator if the analyzer didn't produce a fix.
+      return finding.fix ?? fixGovernanceIssue(finding, ast);
+
+    case 'CAPABILITY-ABUSE':
+    case 'CAPABILITY-CREEP':
+      return fixCapabilityIssue(finding, ast, projectConstraints);
 
     case 'SEMANTIC-MISMATCH':
       return fixScopeMismatch(finding, ast);
@@ -99,12 +107,9 @@ function generateFix(finding: ASTFinding, ast: SecurityAST): string {
       return fixSupplyChain(finding, ast);
 
     case 'SCOPE-WILDCARD':
-      // Preserve the analyzer's specific fix — it already contains the actionable
-      // allowlist instruction with `opena2a mcp audit` reference.
       return finding.fix ?? fixGeneric(finding, ast);
 
     default:
-      // If the analyzer already set a specific fix string, trust it over the generic fallback.
       return finding.fix ?? fixGeneric(finding, ast);
   }
 }
@@ -113,7 +118,7 @@ function generateFix(finding: ASTFinding, ast: SecurityAST): string {
 // Capability Fixes
 // ============================================================================
 
-function fixCapabilityIssue(finding: ASTFinding, ast: SecurityAST): string {
+function fixCapabilityIssue(finding: ASTFinding, ast: SecurityAST, projectConstraints?: Constraint[]): string {
   const parts: string[] = [];
   const file = finding.file ?? ast.artifactPath ?? 'the artifact';
 
@@ -145,9 +150,13 @@ function fixCapabilityIssue(finding: ASTFinding, ast: SecurityAST): string {
       }
     }
   } else if (finding.attackClass === 'CAPABILITY-ABUSE') {
-    // Unconstrained high-risk capability — the fix is always harden-soul
     const dir = ast.artifactPath ? ast.artifactPath.split('/').slice(0, -1).join('/') || '.' : '.';
-    if (ast.artifactType === 'soul' || ast.artifactType === 'system_prompt') {
+    const hasSoulCoverage = (projectConstraints?.length ?? 0) > 0 || ast.artifactType === 'soul';
+    if (hasSoulCoverage) {
+      // SOUL.md exists — governance is in place but specific tool capabilities still need
+      // explicit restrictions in the config itself.
+      parts.push(`opena2a mcp audit — inventory each server's available tools, then restrict "allowedTools" in ${file} to only what's needed. Removing wildcard access eliminates the capability-abuse surface.`);
+    } else if (ast.artifactType === 'soul' || ast.artifactType === 'system_prompt') {
       parts.push(`hackmyagent harden-soul ${dir} — adds missing capability constraints to SOUL.md for all high-risk capabilities detected.`);
     } else {
       parts.push(`hackmyagent harden-soul ${dir} — generates a SOUL.md governance file with constraints covering all high-risk capabilities in ${file}.`);
@@ -570,7 +579,7 @@ function fixGeneric(finding: ASTFinding, ast: SecurityAST): string {
 // Guidance Generation
 // ============================================================================
 
-function generateGuidance(finding: ASTFinding, ast: SecurityAST): string {
+function generateGuidance(finding: ASTFinding, ast: SecurityAST, projectConstraints?: Constraint[]): string {
   const parts: string[] = [];
 
   // Context-aware severity explanation
@@ -584,9 +593,11 @@ function generateGuidance(finding: ASTFinding, ast: SecurityAST): string {
     parts.push(explanation);
   }
 
-  // If the artifact has few constraints, note the compounding risk
-  if (ast.declaredConstraints.length < 2 && finding.attackClass !== 'SOUL-MISSING') {
-    parts.push(`This artifact has only ${ast.declaredConstraints.length} governance constraint(s), amplifying the risk of this finding.`);
+  // If the artifact has few effective constraints (artifact-level + project-level), note the
+  // compounding risk. Use effective count so that adding a SOUL.md clears this message.
+  const effectiveConstraintCount = ast.declaredConstraints.length + (projectConstraints?.length ?? 0);
+  if (effectiveConstraintCount < 2 && finding.attackClass !== 'SOUL-MISSING') {
+    parts.push(`This artifact has only ${ast.declaredConstraints.length} inline governance constraint(s), amplifying the risk of this finding.`);
   }
 
   return parts.join(' ');
