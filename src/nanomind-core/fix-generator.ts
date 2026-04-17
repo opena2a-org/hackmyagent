@@ -98,7 +98,10 @@ function generateFix(finding: ASTFinding, ast: SecurityAST, projectConstraints?:
       return fixCapabilityIssue(finding, ast, projectConstraints);
 
     case 'SEMANTIC-MISMATCH':
-      return fixScopeMismatch(finding, ast);
+      // Prefer the analyzer's specific fix when set — it includes cap.name
+      // and renders well in single-line CLI output. Fall back to the prose
+      // generator only when the analyzer didn't supply one.
+      return finding.fix ?? fixScopeMismatch(finding, ast);
 
     case 'SCAN-EVASION':
       return fixScannerEvasion(finding, ast);

@@ -126,11 +126,21 @@ export function readAgentKeypair(): AgentKeypair | null {
     const publicKey = fs.readFileSync(pubKeyPath, 'utf-8').trim();
     const privateKey = fs.readFileSync(privKeyPath, 'utf-8').trim();
     let agentId: string | undefined;
-    try { agentId = fs.readFileSync(agentIdPath, 'utf-8').trim(); } catch { /* optional */ }
+    try {
+      agentId = fs.readFileSync(agentIdPath, 'utf-8').trim();
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code && code !== 'ENOENT') throw e;
+    }
 
     return { publicKey, privateKey, agentId };
-  } catch {
-    return null;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    // ENOENT = no keys yet (normal — user hasn't run init). Other errors
+    // (EACCES, EISDIR) surface as "unable to read" so the user gets a
+    // real error instead of a misleading "run init" prompt.
+    if (code === 'ENOENT' || !code) return null;
+    throw e;
   }
 }
 

@@ -317,11 +317,18 @@ export async function runOracleEval(oracleDir: string): Promise<OracleEvalReport
           allFixtureLabels.push({ dir: fullPath, label });
         }
       } catch (e: unknown) {
-        if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') {
           // No label.json — recurse for nested fixture structures
           walkDir(fullPath);
         } else {
-          process.stderr.write(`warn: could not parse ${labelPath}: ${e}\n`);
+          // EACCES / EISDIR / JSON parse / other: throw. Oracle accuracy is
+          // computed as correct/total; silently dropping fixtures reduces the
+          // denominator and produces a misleading score. Fail loudly so the
+          // CDS gate decision is made on complete data.
+          throw new Error(
+            `oracle eval: could not read ${labelPath} (${code ?? 'parse-error'}): ${(e as Error).message}`
+          );
         }
       }
     }
@@ -341,8 +348,15 @@ export async function runOracleEval(oracleDir: string): Promise<OracleEvalReport
         const r = await runArpScanner(text);
         findings = r.findings;
         scanError = r.error;
-      } catch {
-        scanError = 'input.txt not found';
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') {
+          scanError = 'input.txt not found';
+        } else {
+          // EACCES etc. — fail the fixture loudly rather than silently report
+          // "not found" (which would count as a scan failure of unknown cause).
+          throw new Error(`oracle eval: could not read ${inputPath} (${code}): ${(e as Error).message}`);
+        }
       }
     } else {
       // skill, soul, mcp — run static scanner

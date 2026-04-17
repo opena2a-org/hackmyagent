@@ -174,7 +174,12 @@ export function getTrainingStats(): {
     const content = readFileSync(CORPUS_FILE, 'utf-8');
     const lines = content.split('\n').filter((l: string) => l.trim().length > 0);
     return { totalPairs: lines.length, corpusPath: CORPUS_FILE, exists: true };
-  } catch {
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    // ENOENT = corpus doesn't exist yet (normal on first run).
+    // Other errors (EACCES on ~/.opena2a) surface so the caller knows
+    // stats can't be computed, instead of reporting 0 pairs.
+    if (code && code !== 'ENOENT') throw e;
     return { totalPairs: 0, corpusPath: CORPUS_FILE, exists: false };
   }
 }

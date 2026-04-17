@@ -5070,6 +5070,10 @@ dist/
           // Reset regex lastIndex for global patterns
           pattern.lastIndex = 0;
           if (pattern.test(line)) {
+            const section = classifySkillSection(content, i);
+            if (isLikelyFalsePositive('SKILL-002', line, section, content)) {
+              continue;
+            }
             findings.push({
               checkId: 'SKILL-002',
               name: 'Remote Fetch Pattern',
@@ -5228,6 +5232,10 @@ dist/
         for (const pattern of SKILL_CLICKFIX_PATTERNS) {
           pattern.lastIndex = 0;
           if (pattern.test(line)) {
+            const section = classifySkillSection(content, i);
+            if (isLikelyFalsePositive('SKILL-007', line, section, content)) {
+              continue;
+            }
             findings.push({
               checkId: 'SKILL-007',
               name: 'ClickFix Social Engineering',
@@ -5306,7 +5314,19 @@ dist/
       }
 
       // SKILL-010: Env File Exfiltration (context-aware)
-      const envFilePattern = /\.env|dotenv|process\.env|environ|getenv/gi;
+      //
+      // Must match an ACTUAL env-access action, not just the substring ".env"
+      // or "environment". A documentation section that lists patterns like
+      // ".env, .pem, .key" is not env exfiltration. Real signals:
+      //   - Direct env-var access syntax (process.env, os.environ[, getenv())
+      //   - Destructuring from process.env (covers `const {KEY} = process.env`)
+      //   - Runtime-specific env APIs (Deno.env.get, Bun.env.KEY)
+      //   - dotenv loaders (dotenv.config(), load_dotenv())
+      //   - Shell dumps of the whole env (`env | curl ...`, `printenv | nc`)
+      //   - Shell exfil over an .env file (cat/curl/scp/... .env)
+      //   - File-read API with an .env argument (readFile('.env'), Read('.env'))
+      //   - curl --data-binary @.env (send .env contents as POST body)
+      const envFilePattern = /process\.env\b|\bos\.environb?\b|\bgetenv\s*\(|\bDeno\.env\b|\bBun\.env\b|\bdotenv(?:\.config|_values|\.parse)\s*\(|\bload_dotenv\s*\(|\brequire\s*\(\s*['"`]dotenv['"`]\s*\)|\bimport\s+[^;]*['"`]dotenv['"`]|\b(?:cat|head|tail|curl|wget|scp|rsync|tar|zip|xxd|base64)\s+[^|\n]*\.env\b|\b(?:env|printenv)\s*[|>]|(?:read|readFile|readFileSync|open)\s*\(\s*['"`][^'"`]*\.env|\bRead\s*\(\s*['"`][^'"`]*\.env|@\.env\b|\bsource\s+\.?env\b/gi;
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         envFilePattern.lastIndex = 0;
@@ -7713,8 +7733,29 @@ dist/
         const config = JSON.parse(content);
 
         // DNA-002: Unsigned behavioral profile
-        const hasHashOrSig = config.signature || config.hash || config.contentHash ||
-          config.behavioralProfile?.contentHash || config.integrityPolicy?.verificationMethod;
+        // Require an actual VALUE (hash bytes or signature), not a method descriptor.
+        // A string like `verificationMethod: "sha256"` describes HOW to hash but
+        // contains no hash value an auditor could verify — it does not count.
+        const looksLikeHashValue = (v: unknown): boolean => {
+          if (typeof v === 'string') {
+            // SHA-256 hex = 64 chars, base64 = 43, "sha256:<hex>" = 71. Require ≥ 32.
+            return v.length >= 32;
+          }
+          if (typeof v === 'object' && v !== null) {
+            const obj = v as Record<string, unknown>;
+            return looksLikeHashValue(obj.value) || looksLikeHashValue(obj.hash) ||
+              looksLikeHashValue(obj.signature) || looksLikeHashValue(obj.digest);
+          }
+          return false;
+        };
+        const hasHashOrSig =
+          looksLikeHashValue(config.signature) ||
+          looksLikeHashValue(config.hash) ||
+          looksLikeHashValue(config.contentHash) ||
+          looksLikeHashValue(config.behavioralProfile?.contentHash) ||
+          looksLikeHashValue(config.behavioralProfile?.signature) ||
+          looksLikeHashValue(config.integrityPolicy?.contentHash) ||
+          looksLikeHashValue(config.integrityPolicy?.signature);
         if (!hasHashOrSig) {
           findings.push({
             checkId: 'DNA-002',
@@ -7732,8 +7773,18 @@ dist/
         }
 
         // DNA-003: No behavioral drift detection
-        const hasDriftDetection = config.baselineHash || config.driftThreshold || config.monitoringEnabled ||
-          config.integrityPolicy?.driftDetection || config.integrityPolicy?.driftThreshold;
+        // Require a real policy value, not just `driftDetection: true`. A boolean
+        // toggle without a threshold or baseline cannot actually detect drift —
+        // it asserts an intention without configuring the mechanism.
+        const isPolicyObject = (v: unknown): boolean =>
+          typeof v === 'object' && v !== null && Object.keys(v as object).length > 0;
+        const hasDriftDetection =
+          (typeof config.baselineHash === 'string' && config.baselineHash.length >= 32) ||
+          typeof config.driftThreshold === 'number' ||
+          typeof config.integrityPolicy?.driftThreshold === 'number' ||
+          isPolicyObject(config.integrityPolicy?.driftDetection) ||
+          isPolicyObject(config.monitoringPolicy) ||
+          (config.monitoringEnabled === true && (config.monitoringEndpoint || config.monitoringWebhook));
         if (!hasDriftDetection) {
           findings.push({
             checkId: 'DNA-003',
@@ -8062,10 +8113,15 @@ dist/
         }
       }
 
-      // Skip if this is security detection code: the file path indicates an analyzer/scanner/enhancer
-      // AND the hex literals only appear in range-comparison context (>= 0xFE00), not in
-      // assignments or lookup tables. This prevents FPs on HMA's own Unicode detection source.
+      // Skip only if this is security detection code. Three conditions, ALL required:
+      //   1. File path indicates analyzer/scanner (attacker-controllable, weak signal)
+      //   2. Hex literals appear in range-comparison context, not assignments (weak signal)
+      //   3. No String.fromCodePoint/fromCharCode CALL — the decoder half of GlassWorm
+      //      reconstitutes a string from codepoints; detection code only inspects them.
+      //      This is the strong signal that prevents filename-based bypass.
+      const hasStringReconstitution = /String\.from(?:CodePoint|CharCode)\s*\(/.test(content);
       const isDetectionCode =
+        !hasStringReconstitution &&
         /(?:>=|<=|===|!==)\s*0x(?:FE0|E010)/i.test(content) &&
         /(?:analyz|detect|scan|check|inspect|enhanc|stego)/i.test(relativePath);
 
@@ -9331,11 +9387,75 @@ dist/
   ): Promise<SecurityFinding[]> {
     const findings: SecurityFinding[] = [];
 
-    // Directories that are typically web-served
-    const webDirs = ['public', 'static', 'dist', 'build', 'out', 'www', '_site'];
+    // Unambiguous web-served directories — static assets published to a
+    // public web server.
+    const unambiguousWebDirs = ['public', 'static', 'www', '_site'];
+    // Ambiguous directories — commonly Node.js / TypeScript compile output
+    // (tsc, rollup, esbuild server bundles), but also frequently browser
+    // bundles from frontend frameworks. Treat as web-served only when at
+    // least one of these signals holds:
+    //   - The directory contains ANY `.html` file (not just `index.html` —
+    //     browser apps may ship only `home.html` or per-route pages).
+    //   - The project's `package.json` declares a `browser` field or
+    //     `main`/`module`/`exports` that points into this directory while
+    //     also declaring a `browser` entry (npm browser-library convention).
+    // Otherwise this is Node.js compile output — skip to avoid flagging the
+    // package's own credential-detection regex source as exposed creds.
+    const ambiguousWebDirs = ['dist', 'build', 'out', '.next', '.nuxt', 'target'];
     const webFileExts = ['.html', '.htm', '.js', '.jsx', '.tsx', '.css', '.svg'];
 
-    for (const webDir of webDirs) {
+    // Load package.json browser-signal once.
+    let pkgDeclaresBrowser = false;
+    let pkgBrowserDirs: Set<string> = new Set();
+    try {
+      const pkgRaw = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+      const pkg = JSON.parse(pkgRaw);
+      if (pkg && (pkg.browser !== undefined || pkg.unpkg !== undefined || pkg.jsdelivr !== undefined)) {
+        pkgDeclaresBrowser = true;
+        // Collect directories referenced by browser/unpkg/jsdelivr.
+        const collect = (v: unknown) => {
+          if (typeof v === 'string') {
+            const seg = v.split('/').filter(Boolean)[0];
+            if (seg) pkgBrowserDirs.add(seg);
+          } else if (v && typeof v === 'object') {
+            for (const inner of Object.values(v as Record<string, unknown>)) collect(inner);
+          }
+        };
+        collect(pkg.browser);
+        collect(pkg.unpkg);
+        collect(pkg.jsdelivr);
+      }
+    } catch {
+      // No package.json or unparseable — fall back to .html signal only.
+    }
+
+    const allWebDirs: string[] = [...unambiguousWebDirs];
+    for (const dir of ambiguousWebDirs) {
+      const dirPath = path.join(targetDir, dir);
+      try {
+        await fs.access(dirPath);
+      } catch {
+        continue;
+      }
+      // Signal 1: any .html file anywhere in the dir tree. A browser bundle
+      // ships at least one .html shell; a tsc compile output does not.
+      const htmlFiles = await this.findWebFiles(dirPath, ['.html', '.htm'], 0, dirPath);
+      if (htmlFiles.length > 0) {
+        allWebDirs.push(dir);
+        continue;
+      }
+      // Signal 2: package.json declares browser/unpkg/jsdelivr entries that
+      // reference this directory (npm browser-library convention). This
+      // covers libraries like `@foo/widget` that ship `dist/widget.umd.js`
+      // without an HTML shell — the package.json tells consumers (and us)
+      // that the bundle is meant for the browser.
+      if (pkgDeclaresBrowser && pkgBrowserDirs.has(dir)) {
+        allWebDirs.push(dir);
+        continue;
+      }
+    }
+
+    for (const webDir of allWebDirs) {
       const dirPath = path.join(targetDir, webDir);
       try {
         await fs.access(dirPath);
@@ -9635,22 +9755,45 @@ dist/
         const content = await fs.readFile(file, 'utf-8');
         const relativePath = path.relative(targetDir, file);
 
-        // Precise TOCTOU detection:
-        // existsSync/accessSync check on a variable, then readFile(Sync) on the SAME variable
-        // within 40 lines (same function scope). Cross-function matches on common param names
-        // (target, file, path) are false positives — they are different variables in different closures.
+        // Two-tier TOCTOU detection, 40-line proximity window (same function scope):
+        //
+        //  Tier A — Access-gate TOCTOU: existsSync/accessSync/access() on a variable,
+        //    then any READ or EXEC use of the same variable. The access gate is the
+        //    classic TOCTOU pattern — the check blesses the path, the use trusts it.
+        //
+        //  Tier B — Stat-then-exec TOCTOU: statSync/lstatSync/fs.stat/fs.lstat on a
+        //    variable, then EXEC use (execFile/spawn/execSync) of the same variable.
+        //    Stat-then-read alone is tolerated: content scanners legitimately stat
+        //    for size filtering then read for analysis with no trust transfer.
         const fileLines = content.split('\n');
-        const existsCheckMatches = [...content.matchAll(/\b(?:existsSync|accessSync)\s*\(\s*(\w+)\s*\)/g)];
-        const readAfterCheck = existsCheckMatches.some(match => {
-          const varName = match[1];
-          const existsLineIdx = content.slice(0, match.index!).split('\n').length - 1;
-          const readPattern = new RegExp(`\\breadFile(?:Sync)?\\s*\\(\\s*${varName}\\b`);
-          const windowEnd = Math.min(existsLineIdx + 40, fileLines.length);
-          for (let i = existsLineIdx; i < windowEnd; i++) {
-            if (readPattern.test(fileLines[i])) return true;
+
+        const accessGatePattern = /\b(?:existsSync|accessSync|fs\.access)\s*\(\s*(\w+)\s*[,)]/g;
+        const statPattern = /\b(?:statSync|lstatSync|fs\.stat|fs\.lstat)\s*\(\s*(\w+)\s*[,)]/g;
+        const readUseRe = (v: string) => new RegExp(
+          `\\b(?:readFile(?:Sync)?|createReadStream|open(?:Sync)?|execFile(?:Sync)?|spawn(?:Sync)?|execSync)\\s*\\(\\s*${v}\\b`
+        );
+        const execUseRe = (v: string) => new RegExp(
+          `\\b(?:execFile(?:Sync)?|spawn(?:Sync)?|execSync|child_process\\.exec)\\s*\\(\\s*${v}\\b`
+        );
+        const windowHasUse = (checkLineIdx: number, re: RegExp): boolean => {
+          const windowEnd = Math.min(checkLineIdx + 40, fileLines.length);
+          for (let i = checkLineIdx; i < windowEnd; i++) {
+            if (re.test(fileLines[i])) return true;
           }
           return false;
+        };
+
+        const accessGateHit = [...content.matchAll(accessGatePattern)].some(m => {
+          const varName = m[1];
+          const lineIdx = content.slice(0, m.index!).split('\n').length - 1;
+          return windowHasUse(lineIdx, readUseRe(varName));
         });
+        const statExecHit = [...content.matchAll(statPattern)].some(m => {
+          const varName = m[1];
+          const lineIdx = content.slice(0, m.index!).split('\n').length - 1;
+          return windowHasUse(lineIdx, execUseRe(varName));
+        });
+        const readAfterCheck = accessGateHit || statExecHit;
         // Pattern 2: integrity verify (hash/signature) followed by exec/spawn on the same path.
         const hasIntegrityVerify = /\b(verify|validate)(Hash|Signature|Digest|Checksum|Integrity)\s*\(/i.test(content);
         const hasShellExec = /\b(execFile|spawnSync|execSync|child_process)\s*\(/i.test(content);
