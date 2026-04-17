@@ -5327,7 +5327,7 @@ dist/
       //   - Shell exfil over an .env file (cat/curl/scp/... .env)
       //   - File-read API with an .env argument (readFile('.env'), Read('.env'))
       //   - curl --data-binary @.env (send .env contents as POST body)
-      const envFilePattern = /process\.env\b|\bos\.environb?\b|\bgetenv\s*\(|\bDeno\.env\b|\bBun\.env\b|\bdotenv(?:\.config|_values|\.parse)\s*\(|\bload_dotenv\s*\(|\brequire\s*\(\s*['"`]dotenv['"`]\s*\)|\bimport\s+[^;]*['"`]dotenv['"`]|\b(?:cat|head|tail|curl|wget|scp|rsync|tar|zip|xxd|base64)\s+[^|\n]*\.env\b|\b(?:env|printenv)\s*[|>]|(?:read|readFile|readFileSync|open)\s*\(\s*['"`][^'"`]*\.env|\bRead\s*\(\s*['"`][^'"`]*\.env|@\.env\b|\bsource\s+\.?env\b/gi;
+      const envFilePattern = /process\.env\b|\bos\.environb?\b|\bgetenv\s*\(|\bDeno\.env\b|\bBun\.env\b|\bdotenv(?:\.config|_values|\.parse)\s*\(|\bload_dotenv\s*\(|\brequire\s*\(\s*['"`]dotenv(?:\/config)?['"`]\s*\)|\bimport\s+[^;]*['"`]dotenv(?:\/config)?['"`]|\b(?:cat|head|tail|curl|wget|scp|rsync|tar|zip|xxd|base64)\s+[^|\n]*\.env\b|\b(?:env|printenv)\s*[|>]|(?:read|readFile|readFileSync|open)\s*\(\s*['"`][^'"`]*\.env|\bRead\s*\(\s*['"`][^'"`]*\.env|@\.env\b|\bsource\s+\.?env\b/gi;
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         envFilePattern.lastIndex = 0;
@@ -8873,6 +8873,30 @@ dist/
               guidance: 'eval() executes arbitrary JavaScript. If the string comes from user input, network data, or files, an attacker can inject any code.',
             });
           }
+          // Indirect eval: globalThis.eval(x), window.eval(x), self.eval(x), (0,eval)(x).
+          // These all invoke the global eval (not a user-defined `eval` method)
+          // and bypass the negative-lookbehind guard above. Detected separately
+          // so the bare-eval finding above can stay narrow against method-call FPs.
+          if (
+            /\b(?:globalThis|window|self|frames|top|parent)\s*\.\s*eval\s*\(/.test(line) ||
+            /\(\s*0\s*,\s*eval\s*\)\s*\(/.test(line)
+          ) {
+            nemo009Found = true;
+            findings.push({
+              checkId: 'NEMO-009',
+              name: 'Unsafe deserialization: indirect eval()',
+              description: 'Indirect eval invocations (globalThis.eval, (0,eval)(...), window.eval) call the global eval and execute arbitrary JavaScript.',
+              category: 'nemo-deserialization',
+              severity: 'critical',
+              passed: false,
+              message: `indirect eval() at line ${i + 1}`,
+              fixable: false,
+              file: path.relative(targetDir, file),
+              line: i + 1,
+              fix: 'Use JSON.parse() for data, or a sandboxed evaluator for expressions.',
+              guidance: 'Indirect eval forms (globalThis.eval, (0,eval)) are commonly used to access the global scope; they execute arbitrary code with the same risks as bare eval().',
+            });
+          }
           if (/new\s+Function\s*\(/.test(line)) {
             nemo009Found = true;
             findings.push({
@@ -9457,6 +9481,31 @@ dist/
       // No package.json or unparseable — fall back to .html signal only.
     }
 
+    // Project-level web-framework signal: many SPAs ship JS bundles in dist/
+    // while serving index.html from a separate origin (nginx/Express). Such
+    // projects do NOT declare `browser` in package.json and have no .html
+    // inside dist/, but the bundle is still client-visible. Detect frontend
+    // build-tool config files at the project root as a third signal.
+    let isFrontendProject = false;
+    try {
+      const rootEntries = await fs.readdir(targetDir);
+      const frontendConfigs = [
+        'vite.config.js', 'vite.config.ts', 'vite.config.mjs',
+        'webpack.config.js', 'webpack.config.ts',
+        'rollup.config.js', 'rollup.config.ts', 'rollup.config.mjs',
+        'next.config.js', 'next.config.ts', 'next.config.mjs',
+        'nuxt.config.js', 'nuxt.config.ts',
+        'svelte.config.js', 'svelte.config.ts',
+        'astro.config.mjs', 'astro.config.ts', 'astro.config.js',
+        'remix.config.js', 'gatsby-config.js', 'gatsby-config.ts',
+        'parcel.config.js', 'esbuild.config.js',
+        'index.html',
+      ];
+      isFrontendProject = rootEntries.some(e => frontendConfigs.includes(e));
+    } catch {
+      // No targetDir read — skip the signal.
+    }
+
     const allWebDirs: string[] = [...unambiguousWebDirs];
     for (const dir of ambiguousWebDirs) {
       const dirPath = path.join(targetDir, dir);
@@ -9478,6 +9527,15 @@ dist/
       // without an HTML shell — the package.json tells consumers (and us)
       // that the bundle is meant for the browser.
       if (pkgDeclaresBrowser && pkgBrowserDirs.has(dir)) {
+        allWebDirs.push(dir);
+        continue;
+      }
+      // Signal 3: project root carries a frontend-build config (vite,
+      // webpack, next, rollup, nuxt, svelte, astro, etc.) or a top-level
+      // index.html. SPAs that serve index.html externally still ship
+      // client-visible bundles from dist/ — the signature is the build
+      // tool, not the bundle layout.
+      if (isFrontendProject) {
         allWebDirs.push(dir);
         continue;
       }
