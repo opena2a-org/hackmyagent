@@ -9499,6 +9499,7 @@ dist/
         'astro.config.mjs', 'astro.config.ts', 'astro.config.js',
         'remix.config.js', 'gatsby-config.js', 'gatsby-config.ts',
         'parcel.config.js', 'esbuild.config.js',
+        'angular.json', 'vue.config.js', 'vue.config.ts',
         'index.html',
       ];
       isFrontendProject = rootEntries.some(e => frontendConfigs.includes(e));
