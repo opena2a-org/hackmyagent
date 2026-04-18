@@ -7631,7 +7631,7 @@ dist/
     const findings: SecurityFinding[] = [];
 
     // AIM-001: No agent identity declaration
-    const identityFiles = ['agent-card.json', 'agent.json', '.well-known/agent.json', 'aim.json'];
+    const identityFiles = ['agent-card.json', '.well-known/agent-card.json', 'agent.json', '.well-known/agent.json', 'aim.json', '.well-known/aim.json'];
     let hasIdentity = false;
     for (const idFile of identityFiles) {
       const filePath = path.join(targetDir, idFile);
@@ -7731,7 +7731,7 @@ dist/
     const findings: SecurityFinding[] = [];
 
     // DNA-001: No behavioral fingerprint
-    const dnaFiles = ['agent-dna.json', '.agent-dna', 'behavioral-profile.json'];
+    const dnaFiles = ['agent-dna.json', '.well-known/agent-dna.json', '.agent-dna', 'behavioral-profile.json'];
     const soulFileNames = ['SOUL.md', 'system-prompt.md', '.cursorrules', 'CLAUDE.md'];
     let hasDna = false;
     let hasSoul = false;
