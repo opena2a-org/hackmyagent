@@ -2,6 +2,19 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Scanner finds agent identity + DNA files in `.well-known/`.** `AIM-001` (no agent identity) and `DNA-001` (no behavioral fingerprint) now also recognize `.well-known/agent-card.json`, `.well-known/agent-dna.json`, and `.well-known/aim.json` alongside the existing root-level lookups. Additive — repos that keep their identity files at the project root continue to pass unchanged. Aligns with RFC 8615 well-known URI conventions and the A2A protocol spec.
+
+### Changed
+- **HMA's own agent identity files moved to `.well-known/`.** `agent-card.json` and `agent-dna.json` now live at `.well-known/agent-card.json` and `.well-known/agent-dna.json` to model the convention.
+- **Release playbook moved to `docs/release-playbook.md`.** Self-references and `.release/baselines.json` updated to match.
+
+## [0.17.11] - 2026-04-17
+
+Republish of 0.17.10. The 0.17.10 tarball had been pre-published to npm 3 days early without the audit-driven fixes (PR 1, 2, 3, A, B). 0.17.11 ships the same code that the 0.17.10 changelog describes. No new functional changes between 0.17.10 and 0.17.11.
+
 ## [0.17.10] - 2026-04-17
 
 ### Added
