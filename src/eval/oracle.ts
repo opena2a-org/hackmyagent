@@ -308,22 +308,28 @@ export async function runOracleEval(oracleDir: string): Promise<OracleEvalReport
       if (!entry.isDirectory()) continue;
       const fullPath = path.join(dir, entry.name);
       const labelPath = path.join(fullPath, 'label.json');
-      if (fs.existsSync(labelPath)) {
-        try {
-          const raw = fs.readFileSync(labelPath, 'utf8');
-          const label = JSON.parse(raw) as OracleFixtureLabel;
-          if (label.retired) {
-            retiredCount.count++;
-          } else {
-            allFixtureLabels.push({ dir: fullPath, label });
-          }
-        } catch (e) {
-          // Skip malformed label.json but log
-          process.stderr.write(`warn: could not parse ${labelPath}: ${e}\n`);
+      try {
+        const raw = fs.readFileSync(labelPath, 'utf8');
+        const label = JSON.parse(raw) as OracleFixtureLabel;
+        if (label.retired) {
+          retiredCount.count++;
+        } else {
+          allFixtureLabels.push({ dir: fullPath, label });
         }
-      } else {
-        // Recurse for nested structures (e.g. soul08-skill-conflict has sub-skill)
-        walkDir(fullPath);
+      } catch (e: unknown) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') {
+          // No label.json — recurse for nested fixture structures
+          walkDir(fullPath);
+        } else {
+          // EACCES / EISDIR / JSON parse / other: throw. Oracle accuracy is
+          // computed as correct/total; silently dropping fixtures reduces the
+          // denominator and produces a misleading score. Fail loudly so the
+          // CDS gate decision is made on complete data.
+          throw new Error(
+            `oracle eval: could not read ${labelPath} (${code ?? 'parse-error'}): ${(e as Error).message}`
+          );
+        }
       }
     }
   }
@@ -337,13 +343,20 @@ export async function runOracleEval(oracleDir: string): Promise<OracleEvalReport
 
     if (label.surface === 'arp-input') {
       const inputPath = path.join(dir, 'input.txt');
-      if (fs.existsSync(inputPath)) {
+      try {
         const text = fs.readFileSync(inputPath, 'utf8');
         const r = await runArpScanner(text);
         findings = r.findings;
         scanError = r.error;
-      } else {
-        scanError = 'input.txt not found';
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT') {
+          scanError = 'input.txt not found';
+        } else {
+          // EACCES etc. — fail the fixture loudly rather than silently report
+          // "not found" (which would count as a scan failure of unknown cause).
+          throw new Error(`oracle eval: could not read ${inputPath} (${code}): ${(e as Error).message}`);
+        }
       }
     } else {
       // skill, soul, mcp — run static scanner

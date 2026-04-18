@@ -104,8 +104,7 @@ function checkCredentialsInNonEnvContext(ast: SecurityAST, projectType?: Project
       file: ast.artifactPath,
       fix: isSDK
         ? 'Expected behavior for an SDK. Credentials are read from environment variables and sent to the service API.'
-        : 'Replace inline credentials with environment variable references (e.g., $API_KEY or process.env.API_KEY). ' +
-          'Use a secret manager for production deployments.',
+        : 'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault. Keys are injected at runtime, never stored as plaintext.',
       guidance: isSDK
         ? 'This is expected behavior for an API client SDK. The SDK reads API keys to authenticate requests.'
         : 'Credentials embedded in non-env artifacts can be leaked through version control, ' +
@@ -343,8 +342,7 @@ function checkHardcodedSecrets(ast: SecurityAST): ASTFinding[] {
     fixable: false,
     file: ast.artifactPath,
     fix:
-      'Move all secrets to environment variables or a secret manager. ' +
-      'Replace hardcoded values with references: $SECRET_NAME or process.env.SECRET_NAME. ' +
+      'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only. ' +
       'Rotate any credentials that were committed to version control.',
     guidance:
       'After removing hardcoded credentials, rotate them immediately. ' +
@@ -401,6 +399,23 @@ function isDocumentationOrTestContext(ast: SecurityAST): boolean {
     path.endsWith('.env.example') ||
     path.endsWith('.env.sample') ||
     path.endsWith('.env.template')
+  ) {
+    return true;
+  }
+
+  // Semantic routing / command catalog / manifest files — these describe CLI commands
+  // and tool operations using security terminology (credentials, secrets, API keys)
+  // in their description and tag fields. They are not storing or accessing credentials.
+  const basename = path.split('/').pop() ?? '';
+  if (
+    basename.endsWith('-index.json') ||
+    basename === 'command-index.json' ||
+    basename === 'command-catalog.json' ||
+    basename === 'manifest.json' ||
+    basename === 'commands.json' ||
+    path.includes('/semantic/') ||
+    path.includes('/catalog/') ||
+    path.includes('/registry/')
   ) {
     return true;
   }

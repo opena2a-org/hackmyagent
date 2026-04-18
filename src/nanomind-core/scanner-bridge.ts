@@ -23,7 +23,8 @@ import type { SecurityAST, CompilationResult } from './types.js';
 import type { ASTFinding } from './analyzers/capability-analyzer.js';
 import type { IntegrityStatus } from './security/integrity-verifier.js';
 
-import { SemanticCompiler } from './compiler/semantic-compiler.js';
+import { SemanticCompiler, extractDeclaredConstraints } from './compiler/semantic-compiler.js';
+import type { Constraint } from './types.js';
 import { analyzeCapabilities } from './analyzers/capability-analyzer.js';
 import { analyzeCredentials } from './analyzers/credential-analyzer.js';
 import { analyzeGovernance } from './analyzers/governance-analyzer.js';
@@ -111,6 +112,28 @@ export async function runNanoMindScan(
   // Step 3: Discover security-relevant files
   const files = await discoverFiles(targetDir);
 
+  // Step 3b: Load project-level constraints from SOUL.md / CLAUDE.md / .opena2a/policy.*
+  // When a governance file exists in the project root, its constraints cover every sibling
+  // artifact (mcp.json, skills, etc.). We extract them once and pass them to the governance
+  // analyzer so that a harden-soul → scan round-trip shows measurable improvement.
+  const governanceFileCandidates = [
+    join(targetDir, 'SOUL.md'),
+    join(targetDir, 'CLAUDE.md'),
+    join(targetDir, '.opena2a', 'policy.yml'),
+    join(targetDir, '.opena2a', 'policy.yaml'),
+    join(targetDir, '.opena2a', 'policy.json'),
+  ];
+  let projectConstraints: Constraint[] = [];
+  for (const candidate of governanceFileCandidates) {
+    try {
+      const govContent = await readFile(candidate, 'utf-8');
+      projectConstraints = extractDeclaredConstraints(govContent);
+      break; // Use the first governance file found
+    } catch {
+      // File not found — try next candidate
+    }
+  }
+
   // Step 4: Compile each file and run analyzers
   const allASTFindings: ASTFinding[] = [];
   let compiledCount = 0;
@@ -164,8 +187,14 @@ export async function runNanoMindScan(
       const isAgent = agentTypes.has(result.ast.artifactType) ||
         (result.ast.artifactType === 'system_prompt' && !isDevInstructionFile);
       const isSourceCode = result.ast.artifactType === 'source_code';
+      // Pass project constraints to agent analyzers — but not for soul artifacts themselves
+      // (they carry their own constraints) and not when the artifact IS the governance file.
+      const isSoulArtifact = result.ast.artifactType === 'soul';
+      const extraConstraints = (isAgent && !isSoulArtifact && projectConstraints.length > 0)
+        ? projectConstraints
+        : undefined;
       const findings = isAgent
-        ? runAllAnalyzers(result.ast, verifier, projectType)
+        ? runAllAnalyzers(result.ast, verifier, projectType, extraConstraints)
         : isSourceCode
           ? runCodeAnalyzers(result.ast, verifier)
           : runNonAgentAnalyzers(result.ast, verifier);
@@ -296,15 +325,16 @@ function runAllAnalyzers(
   ast: SecurityAST,
   verifier: (ast: SecurityAST) => boolean,
   projectType?: ProjectType,
+  projectConstraints?: Constraint[],
 ): ASTFinding[] {
   const findings: ASTFinding[] = [];
 
   // Capability analyzer does not require verifier (checks internally)
-  findings.push(...analyzeCapabilities(ast, projectType));
+  findings.push(...analyzeCapabilities(ast, projectType, projectConstraints));
 
   // Credential, governance, and scope analyzers require AST integrity verification
   findings.push(...analyzeCredentials(ast, verifier, projectType));
-  findings.push(...analyzeGovernance(ast, verifier, projectType));
+  findings.push(...analyzeGovernance(ast, verifier, projectType, projectConstraints));
   findings.push(...analyzeScope(ast, verifier, projectType));
 
   // Prompt and code analyzers: jailbreak susceptibility, injection patterns, etc.
@@ -315,9 +345,7 @@ function runAllAnalyzers(
   findings.push(...analyzeSteganography(ast));
 
   // Enrich all findings with context-aware fix suggestions
-  // Uses TME classification + AST context to produce specific, actionable fixes
-  // instead of generic template strings
-  return enrichFindings(findings, ast);
+  return enrichFindings(findings, ast, projectConstraints);
 }
 
 /**

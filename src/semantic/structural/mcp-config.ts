@@ -47,6 +47,13 @@ const SECRET_ARG_PATTERNS = [
 /** Key-name pattern for secret args */
 const SECRET_KEY_ARG = /^--(token|key|secret|password|api[-_]?key|auth|credential)$/i;
 
+/** Known legitimate @modelcontextprotocol package suffixes */
+const KNOWN_MCP_PACKAGES = new Set([
+  'server-filesystem', 'server-memory', 'server-github',
+  'server-google-drive', 'server-postgres', 'server-sqlite',
+  'server-puppeteer', 'server-brave-search', 'inspector', 'sdk',
+]);
+
 /** Server capabilities for attack chain detection */
 type Capability = 'filesystem' | 'shell' | 'network' | 'database' | 'browser';
 
@@ -110,26 +117,35 @@ export class McpConfigAnalyzer {
 
         // Check wildcard permissions
         findings.push(...this.checkWildcardPermissions(serverName, serverConfig, file));
+
+        // Check typosquatted packages
+        findings.push(...this.checkTyposquatPackages(serverName, serverConfig, file));
+
+        // Check bootstrap/remote-code execution in args
+        findings.push(...this.checkBootstrapScript(serverName, serverConfig, file));
       }
 
       // Check attack chains across servers
       findings.push(...this.checkAttackChains(allCapabilities, file));
 
       // Check server count
-      const serverCount = Object.keys(servers).length;
+      const serverNames = Object.keys(servers);
+      const serverCount = serverNames.length;
       if (serverCount > 5) {
+        const serverList = serverNames.join(', ');
         findings.push({
           id: 'SEM-MCP-006',
           title: 'Large MCP attack surface',
-          description: `${serverCount} MCP servers configured in ${file.path}. Each server expands the agent's capabilities and attack surface.`,
+          description: `${serverCount} MCP servers configured in ${file.path}: ${serverList}. Each server expands the agent's capabilities and attack surface.`,
           rationale:
-            'More servers mean more capabilities the agent can be manipulated into using. Review whether all servers are necessary.',
+            'More servers mean more capabilities the agent can be manipulated into using via prompt injection. Review whether all servers are necessary for normal operation.',
           category: 'mcp-config',
           severity: 'info',
           file: file.path,
-          recommendation: 'Review each MCP server and remove any that are not actively needed.',
+          recommendation: 'opena2a mcp audit  — lists all configured MCP servers, scans each for security issues, and shows capability risk scores. Remove servers not actively needed.',
           layer: 2,
           autoFixable: false,
+          attackClass: 'MCP-SCOPE-EXPAND',
         });
       }
     }
@@ -162,6 +178,7 @@ export class McpConfigAnalyzer {
             recommendation: `Scope "${serverName}" to the project directory: replace "${arg}" with "./" or a specific subdirectory.`,
             layer: 2,
             autoFixable: false,
+            attackClass: 'MCP-PRIV-ESC',
           });
           break;
         }
@@ -195,6 +212,7 @@ export class McpConfigAnalyzer {
           recommendation: `Remove the "${arg}" flag from "${serverName}" or document why sandbox bypass is required.`,
           layer: 2,
           autoFixable: false,
+          attackClass: 'MCP-PRIV-ESC',
         });
       }
     }
@@ -227,9 +245,10 @@ export class McpConfigAnalyzer {
             severity: 'critical',
             file: file.path,
             line: lineNum,
-            recommendation: `Move the secret from args to the env block: "env": { "API_KEY": "..." } — or better, reference an environment variable.`,
+            recommendation: `opena2a protect .  — scans MCP configs for hardcoded secrets and encrypts them into a secure vault. Keys are injected at runtime via the env block.`,
             layer: 2,
             autoFixable: false,
+            attackClass: 'MCP-CRED',
           });
           break;
         }
@@ -253,6 +272,7 @@ export class McpConfigAnalyzer {
             recommendation: `Move "${arg}" value to the env block of the MCP server config.`,
             layer: 2,
             autoFixable: false,
+            attackClass: 'MCP-CRED',
           });
         }
       }
@@ -286,6 +306,7 @@ export class McpConfigAnalyzer {
           recommendation: `Replace wildcard with specific allowed ${fieldName}: ["tool1", "tool2"].`,
           layer: 2,
           autoFixable: false,
+          attackClass: 'MCP-SCOPE-WILDCARD',
         });
       }
     };
@@ -328,6 +349,7 @@ export class McpConfigAnalyzer {
           'Remove at least one capability from the chain. If all three are needed, add strict scope limits to each server.',
         layer: 2,
         autoFixable: false,
+        attackClass: 'MCP-CHAIN-EXFIL',
       });
     }
 
@@ -346,9 +368,100 @@ export class McpConfigAnalyzer {
           'Scope filesystem access to the project directory and restrict network access to specific domains.',
         layer: 2,
         autoFixable: false,
+        attackClass: 'MCP-SCOPE-LEAK',
       });
     }
 
+    return findings;
+  }
+
+  private editDistance(a: string, b: string): number {
+    if (Math.abs(a.length - b.length) > 3) return 99;
+    const dp: number[][] = [];
+    for (let i = 0; i <= a.length; i++) {
+      dp[i] = [];
+      for (let j = 0; j <= b.length; j++) {
+        dp[i][j] = i === 0 ? j : j === 0 ? i : 0;
+      }
+    }
+    for (let i = 1; i <= a.length; i++) {
+      for (let j = 1; j <= b.length; j++) {
+        dp[i][j] = a[i - 1] === b[j - 1]
+          ? dp[i - 1][j - 1]
+          : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+      }
+    }
+    return dp[a.length][b.length];
+  }
+
+  private checkTyposquatPackages(
+    serverName: string,
+    config: McpServerConfig,
+    file: AnalysisFile
+  ): SemanticFinding[] {
+    const findings: SemanticFinding[] = [];
+    const args = config.args || [];
+
+    for (const arg of args) {
+      if (!arg.startsWith('@modelcontextprotocol/')) continue;
+      const suffix = arg.slice('@modelcontextprotocol/'.length);
+      // Exact match is legitimate
+      if (KNOWN_MCP_PACKAGES.has(suffix)) continue;
+      // Check edit distance from any known package (1–2 edits = likely typosquat)
+      const isTypo = [...KNOWN_MCP_PACKAGES].some(
+        known => {
+          const d = this.editDistance(suffix, known);
+          return d > 0 && d <= 2;
+        }
+      );
+      if (!isTypo) continue;
+
+      findings.push({
+        id: 'SEM-MCP-007',
+        title: 'Typosquatted MCP package',
+        description: `MCP server "${serverName}" uses package "${arg}" which closely resembles a legitimate @modelcontextprotocol package. This may be a typosquatting attack.`,
+        rationale:
+          'Typosquatted packages execute arbitrary code during npm install and on every server start. A package name 1-2 characters off from an official package is a supply chain attack vector.',
+        category: 'mcp-config',
+        severity: 'critical',
+        file: file.path,
+        recommendation: `Replace "${arg}" with the correct package name. Verify: npm view ${arg} to see if it exists and who publishes it.`,
+        layer: 2,
+        autoFixable: false,
+        attackClass: 'MCP-TYPOSQUAT',
+      });
+      break; // one finding per server is sufficient
+    }
+    return findings;
+  }
+
+  private checkBootstrapScript(
+    serverName: string,
+    config: McpServerConfig,
+    file: AnalysisFile
+  ): SemanticFinding[] {
+    const findings: SemanticFinding[] = [];
+    const allArgs = [config.command, ...(config.args || [])].join(' ');
+
+    // Detect curl|sh, wget|sh, bash <(curl ...) patterns — unconditional remote code execution
+    const bootstrapPattern = /\bcurl\b[^|]*\|\s*(?:sh|bash)|\bwget\b[^|]*\|\s*(?:sh|bash)|bash\s+<\s*\(curl/i;
+    if (bootstrapPattern.test(allArgs)) {
+      findings.push({
+        id: 'SEM-MCP-008',
+        title: 'Remote code execution via bootstrap script',
+        description: `MCP server "${serverName}" executes a remote install script via curl|sh or similar. Any code served at that URL runs with the user's privileges on every agent startup.`,
+        rationale:
+          'curl|sh is an unconditional remote code execution vector. The remote server can serve different content at any time, turning every agent restart into a potential compromise.',
+        category: 'mcp-config',
+        severity: 'critical',
+        file: file.path,
+        recommendation:
+          `Remove the bootstrap script. Install the MCP package via a verified package manager with a pinned version and hash. Never use curl|sh in an MCP server command.`,
+        layer: 2,
+        autoFixable: false,
+        attackClass: 'MCP-SUPPLY-CHAIN',
+      });
+    }
     return findings;
   }
 

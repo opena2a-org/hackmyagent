@@ -428,7 +428,7 @@ function extractDeclaredCapabilities(
   return caps;
 }
 
-function extractDeclaredConstraints(content: string): Constraint[] {
+export function extractDeclaredConstraints(content: string): Constraint[] {
   const constraints: Constraint[] = [];
 
   // Strip content inside fenced code blocks before constraint extraction —
@@ -490,8 +490,18 @@ function extractDataAccessPatterns(
 
   const dataTypes = ['user', 'customer', 'payment', 'session', 'credential', 'email', 'profile', 'medical', 'financial'];
 
+  // Structured credential-like keys (JSON/YAML) declared with null/empty/placeholder
+  // values are schema declarations of NO credentials, not credential access. An A2A
+  // agent card with `"credentials": null` is claiming it holds none inline — the
+  // opposite of a credential-access pattern. Only skip the credential data type if
+  // every structured credential key has a null/empty/placeholder value.
+  const credentialKeywordContext = analyzeCredentialKeywordContext(content);
+
   for (const dt of dataTypes) {
     if (content.toLowerCase().includes(dt)) {
+      if ((dt === 'credential' || dt === 'session') && credentialKeywordContext === 'schema-only') {
+        continue;
+      }
       const hasCap = capabilities.some(c => c.name.includes('read') || c.name.includes('access'));
       patterns.push({
         dataType: dt === 'credential' || dt === 'session' ? 'credentials' :
@@ -514,6 +524,87 @@ function extractDataAccessPatterns(
   }
 
   return patterns;
+}
+
+/**
+ * Classify how credential-like keys appear in structured content (JSON/YAML).
+ *
+ * Returns:
+ *   - 'value-present' — at least one structured credential key has a non-null,
+ *     non-empty, non-placeholder value (e.g. `"credentials": "sk-..."`).
+ *   - 'schema-only'   — one or more structured credential keys exist, and every
+ *     one has a null/empty/placeholder value (e.g. `"credentials": null`, which
+ *     declares the opposite of credential access — "no inline credentials").
+ *   - 'no-structured' — credential-like keywords appear in the content but never
+ *     as a JSON/YAML key (e.g. only in prose). Fall back to existing behavior.
+ *
+ * The A2A spec's `authentication.credentials: null` pattern is the motivating
+ * case: a clean agent card declaring it holds no inline credentials was
+ * triggering AST-CRED-001/003 and the CRED-HARVEST risk surface because the
+ * keyword "credential" appeared in the content.
+ */
+export function analyzeCredentialKeywordContext(
+  content: string,
+): 'value-present' | 'schema-only' | 'no-structured' {
+  // A canonical credential format anywhere in the content overrides the
+  // schema-only classification. An agent card that declares
+  // `"credentials": null` but embeds a real `sk-ant-api03-...` value in a
+  // sibling field is NOT schema-only — it's an attacker trying to hide a
+  // real credential behind an apparent null declaration.
+  if (hasCanonicalCredentialFormat(content)) {
+    return 'value-present';
+  }
+
+  // JSON/YAML-style credential-like key followed by `:` and a value.
+  // Expanded from just `credentials?/passwords?/secrets?/tokens?/apiKey` to
+  // include common adjacent credential-carrying keys (bearerToken,
+  // access_key, client_secret, privateKey, jwt, authorization, authToken).
+  // This prevents a malicious card with `"credentials": null, "bearerToken":
+  // "sk-ant-real"` from being classified as schema-only.
+  const keyRe = /(?:^|[{,\s])["']?(credentials?|passwords?|secrets?|tokens?|api[_-]?keys?|bearer[_-]?tokens?|access[_-]?keys?|client[_-]?secrets?|private[_-]?keys?|auth[_-]?tokens?|authorization|jwt|session[_-]?keys?|refresh[_-]?tokens?)(?:_?(?:file|id|hash|type|scheme|ref|store))?["']?\s*:\s*(\[\s*\]|\{\s*\}|"[^"\n]*"|'[^'\n]*'|null|undefined|none|true|false|[^,\n}\]]+)/gim;
+  let sawStructured = false;
+  let match: RegExpExecArray | null;
+  while ((match = keyRe.exec(content)) !== null) {
+    sawStructured = true;
+    const value = match[2].trim();
+    // Null / undefined / none / empty array / empty object / empty quoted string
+    if (
+      /^(null|undefined|none)$/i.test(value) ||
+      /^\[\s*\]$/.test(value) ||
+      /^\{\s*\}$/.test(value) ||
+      /^("\s*"|'\s*')$/.test(value)
+    ) {
+      continue;
+    }
+    // Non-null, non-empty value present
+    return 'value-present';
+  }
+  return sawStructured ? 'schema-only' : 'no-structured';
+}
+
+/**
+ * True when the content contains at least one canonical credential format
+ * (real API key / PEM block / etc.) outside obvious test-fixture markers.
+ */
+function hasCanonicalCredentialFormat(content: string): boolean {
+  for (const { regex } of CANONICAL_CREDENTIAL_PATTERNS) {
+    regex.lastIndex = 0;
+    const match = regex.exec(content);
+    if (match) {
+      // Skip obvious test fixtures (FAKE, EXAMPLE, PLACEHOLDER, YOUR_)
+      const ctxStart = Math.max(0, match.index - 40);
+      const ctxEnd = Math.min(content.length, match.index + match[0].length + 40);
+      const window = content.slice(ctxStart, ctxEnd).toUpperCase();
+      if (/FAKE|EXAMPLE|PLACEHOLDER|YOUR_|<YOUR|DUMMY/.test(window)) {
+        regex.lastIndex = 0;
+        continue;
+      }
+      regex.lastIndex = 0;
+      return true;
+    }
+    regex.lastIndex = 0;
+  }
+  return false;
 }
 
 // ============================================================================
@@ -749,9 +840,15 @@ function mapRiskSurfaces(
   // Guards:
   //   isDefensiveConstraint — content explicitly prohibits override ("must never override", "will never ignore")
   //   isProhibitionList — content has a "will NOT do" / "I will never" section listing attacks to prohibit
+  //   isGovernanceDoc — content is a governance document (SOUL, system prompt) — these cite injection
+  //     examples in defensive sections like "## Injection Hardening" to teach the agent what to reject.
+  //     A governance document is the definition of injection resistance, not an injection vector.
+  //   isExampleContext — injection phrases appear inside a "phrases such as '...'" quotation, indicating
+  //     they are examples the agent must reject, not directives being issued.
   //   benignContextScore >= 2 — content has sufficient benign signals (authorized, educational, research)
-  // All three guards suppress the injection surface to avoid flagging:
+  // All guards suppress the injection surface to avoid flagging:
   //   - SOULs that enumerate attacks they are forbidden from performing (b05)
+  //   - Governance docs with "## Injection Hardening" sections (b11)
   //   - Educational docs that quote attack examples with "DO NOT USE" labels (b02)
   //   - Authorized security assessments referencing specific attack techniques
   const hasOverrideLanguage = /ignore.*previous|override.*instruction|new.*task/i.test(text);
@@ -759,7 +856,9 @@ function mapRiskSurfaces(
     /must never|must not|never comply|resist|reject|refuse|forbidden|should not|do not|prohibited|will never|will not/i.test(text) &&
     /override|ignore|bypass|injection|inject/i.test(text);
   const isProhibitionList = /(?:will\s+not\s+do|will\s+never\s*:|i\s+will\s+never|agent\s+will\s+never|what\s+(?:i|we|this\s+agent)\s+(?:will\s+not|won't))/i.test(content);
-  if (hasOverrideLanguage && !isDefensiveConstraint && !isProhibitionList && benignContextScore < 2) {
+  // "phrases such as 'ignore previous instructions'" — injection example in an educational/rejection context
+  const isExampleContext = /phrases?\s+(?:such\s+as|like|including)\s+["']?(?:ignore|override|new\s+task)/i.test(content);
+  if (hasOverrideLanguage && !isDefensiveConstraint && !isProhibitionList && !isGovernanceDoc && !isExampleContext && benignContextScore < 2) {
     surfaces.push({
       surface: 'Instruction override language',
       attackClass: 'PROMPT-INJECT',
@@ -769,7 +868,10 @@ function mapRiskSurfaces(
   }
 
   // Structural injection patterns (JSON configs, code blocks, hidden directives)
-  if (/systemprompt.*override|systemprompt.*ignore|systemprompt.*bypass/i.test(text.replace(/[_\-\s]/g, ''))) {
+  // Skipped for governance documents — a SOUL.md trust hierarchy section names "System prompt"
+  // as the highest-authority source and separately discusses "override" in a defensive context.
+  // The regex pattern would match across paragraphs, producing a critical FP on well-governed SOULs.
+  if (!isGovernanceDoc && /systemprompt.*override|systemprompt.*ignore|systemprompt.*bypass/i.test(text.replace(/[_\-\s]/g, ''))) {
     surfaces.push({
       surface: 'Hidden system prompt override in config',
       attackClass: 'PROMPT-INJECT',
@@ -819,14 +921,20 @@ function mapRiskSurfaces(
   }
 
   // Credential access patterns
-  // Skip for governance docs (they set rules about credentials, not harvest them)
+  // Skip for governance docs (they set rules about credentials, not harvest them).
+  // Also skip when every structured credential key has a null/empty/placeholder
+  // value — an A2A agent card declaring `"credentials": null` plus a "provider"
+  // field is not credential harvesting; it's schema metadata.
   if (!isGovernanceDoc && /password|credential|api[_-]?key|secret|token/i.test(text) && /ask|request|share|provide/i.test(text)) {
-    surfaces.push({
-      surface: 'Credential harvesting',
-      attackClass: 'CRED-HARVEST',
-      confidence: 0.7,
-      evidence: 'Requests credentials from users or systems',
-    });
+    const credentialCtx = analyzeCredentialKeywordContext(content);
+    if (credentialCtx !== 'schema-only') {
+      surfaces.push({
+        surface: 'Credential harvesting',
+        attackClass: 'CRED-HARVEST',
+        confidence: 0.7,
+        evidence: 'Requests credentials from users or systems',
+      });
+    }
   }
 
   // Remote instruction fetch

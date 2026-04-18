@@ -91,14 +91,16 @@ export function initMcp(targetDir: string, forceTool?: string): InitResult {
     fs.mkdirSync(configDir, { recursive: true });
   }
 
-  // Read existing config or create new
+  // Read existing config or create new. Only suppress ENOENT — a read failure
+  // from EACCES/EISDIR must not silently fall through to a write that would
+  // clobber unreadable content.
   let config: McpConfig = {};
-  if (fs.existsSync(configFile)) {
-    try {
-      config = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
-    } catch {
-      config = {};
-    }
+  try {
+    config = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code && code !== 'ENOENT') throw e;
+    // ENOENT or parse error on missing/empty file: start with empty config
   }
 
   // Check if already configured

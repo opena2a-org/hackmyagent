@@ -10,6 +10,7 @@ import type { ScanResult, SecurityFinding, Severity, ProjectType } from './secur
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
 import { enrichWithTaxonomy } from './taxonomy';
 import { classifySkillSection, isLikelyFalsePositive } from './skill-context';
+import { isCorpusPath, isTestPath, isExamplePath } from './path-context';
 import { scanAssembly } from '../lifecycle/assembly-scanner';
 import {
   parseDeclaredCapabilities as parseSkillDeclaredCaps,
@@ -109,6 +110,7 @@ const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
   'WEBEXPOSE-': ['all'], // Sensitive files in web-served directories
   'AGENT-CRED-': ['all'], // Missing credential protection in system prompts
   'SOUL-OVERRIDE-': ['all'], // Skill content overriding SOUL.md
+  'SOUL-': ['all'],          // SOUL governance gap checks
 
   // Context lifecycle checks (assembly-stage analysis)
   'LIFECYCLE-': ['all'],
@@ -139,6 +141,11 @@ export interface ScanOptions {
   onProgress?: (message: string) => void;
   /** CLI command prefix for fix messages (default: 'hackmyagent') */
   cliName?: string;
+  /**
+   * Set to true when scanning a downloaded npm/registry package (not a local project).
+   * Suppresses checks that only make sense for source repos (GIT-001, GIT-002, GIT-003).
+   */
+  isNpmPackage?: boolean;
 }
 
 // Patterns for detecting exposed credentials
@@ -671,9 +678,11 @@ export class HardeningScanner {
     const permFindings = await this.checkFilePermissions(targetDir, shouldFix);
     findings.push(...permFindings);
 
-    // Git security checks
-    const gitFindings = await this.checkGitSecurity(targetDir, shouldFix);
-    findings.push(...gitFindings);
+    // Git security checks (skip for downloaded npm packages — not a source repo)
+    if (!options.isNpmPackage) {
+      const gitFindings = await this.checkGitSecurity(targetDir, shouldFix);
+      findings.push(...gitFindings);
+    }
 
     // Network security checks
     const netFindings = await this.checkNetworkSecurity(targetDir, shouldFix);
@@ -879,6 +888,9 @@ export class HardeningScanner {
 
     const soulOverrideFindings = await this.checkSoulOverride(targetDir, shouldFix);
     findings.push(...soulOverrideFindings);
+
+    const soulGovFindings = await this.checkSoulGovernanceGaps(targetDir);
+    findings.push(...soulGovFindings);
 
     const memSanitizeFindings = await this.checkMemoryStoreSanitization(targetDir, shouldFix);
     findings.push(...memSanitizeFindings);
@@ -1431,7 +1443,7 @@ export class HardeningScanner {
           line: credentialLine,
           fixable: false,
           fix: 'npx secretless-ai init',
-          guidance: 'CLAUDE.md is often committed to git and exposed publicly. Move credentials to a .env file and reference as ${ENV_VAR}. Secretless AI blocks credential access from AI tool context.',
+          guidance: 'CLAUDE.md is sent to your AI provider on every request. Credentials here are exposed to the model and extractable via prompt injection. Run opena2a protect . to encrypt them into a secure vault.',
         });
       }
     } catch {
@@ -1646,7 +1658,7 @@ dist/
         name: 'Missing .gitignore',
         description: 'No .gitignore file to prevent accidental commits',
         category: 'git',
-        severity: 'medium',
+        severity: 'low',
         passed: git001Fixed,
         message: 'Create .gitignore to protect sensitive files',
         file: '.gitignore',
@@ -1894,7 +1906,7 @@ dist/
         fixable: true,
         fixed: mcp003Fixed,
         fix: `${this.cliName} secure --fix`,
-        guidance: 'Hardcoded API keys in mcp.json are exposed to anyone with repo access. Use ${ENV_VAR} references and store actual values in .env (which should be in .gitignore).',
+        guidance: 'Hardcoded API keys in mcp.json are exposed to anyone with repo access. Run opena2a protect . to encrypt them into a secure vault — keys are injected at runtime, never stored as plaintext.',
       });
     }
 
@@ -2074,9 +2086,10 @@ dist/
       severity: 'critical',
       passed: !hasCredentialsInRules,
       message: hasCredentialsInRules
-        ? 'Cursor rules contain exposed credentials - remove and use environment variables'
+        ? 'Cursor rules contain exposed credentials'
         : 'No credentials found in Cursor rules',
       fixable: false,
+      fix: hasCredentialsInRules ? 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.' : undefined,
       guidance: 'Cursor rules files are often committed to git. Credentials embedded there get pushed to remotes where anyone with repo access can extract them.',
     });
 
@@ -2202,9 +2215,10 @@ dist/
       severity: 'critical',
       passed: !hasSecretsInPackageJson,
       message: hasSecretsInPackageJson
-        ? 'package.json contains hardcoded secrets - move to environment variables'
+        ? 'package.json contains hardcoded secrets'
         : 'No secrets found in package.json',
       fixable: false,
+      fix: hasSecretsInPackageJson ? 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.' : undefined,
       guidance: 'package.json is always committed to git and published to npm. Secrets there are visible to anyone who installs or forks your package.',
     });
 
@@ -2232,9 +2246,10 @@ dist/
       severity: 'critical',
       passed: !hasJwtSecret,
       message: hasJwtSecret
-        ? 'JWT secret hardcoded in config - use environment variable'
+        ? 'JWT secret hardcoded in config'
         : 'No hardcoded JWT secrets found',
       fixable: false,
+      fix: hasJwtSecret ? 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.' : undefined,
       guidance: 'A hardcoded JWT secret lets anyone who reads the config forge valid authentication tokens and impersonate any user.',
     });
 
@@ -2680,6 +2695,9 @@ dist/
         ? 'Dangerous patterns in npm scripts (curl|sh, eval) - review carefully'
         : 'npm scripts appear safe',
       fixable: false,
+      fix: hasDangerousScripts
+        ? 'Remove the curl|sh or wget|sh pattern from package.json scripts. Replace with a pinned package install: npm install --save-exact <package>  or vendor the script with a pinned checksum.'
+        : undefined,
       guidance: 'Scripts that pipe curl/wget to sh execute arbitrary remote code during npm install. An attacker who compromises the URL controls your build environment.',
     });
 
@@ -3526,9 +3544,10 @@ dist/
       severity: 'critical',
       passed: !hasHardcodedConnStr,
       message: hasHardcodedConnStr
-        ? 'Hardcoded connection strings detected - use environment variables'
+        ? 'Hardcoded connection strings detected'
         : 'No hardcoded connection strings found',
       fixable: false,
+      fix: hasHardcodedConnStr ? 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.' : undefined,
       guidance: 'Hardcoded connection strings contain database hostnames, ports, and credentials. Anyone with code access can connect directly to your database.',
     });
 
@@ -5041,7 +5060,7 @@ dist/
         fixable: true,
         fixed: skill001Fixed,
         fixMessage: skill001Fixed ? 'Added SHA-256 signature block to skill file' : undefined,
-        fix: 'hackmyagent fix-all --with-aim',
+        fix: 'hackmyagent fix-all --with-aim  — signs skills, heartbeats, and agent DNA with AIM keys so tamper detection works on every scan.',
         guidance: 'Unsigned skills cannot be verified for authenticity or integrity. Sign with a cryptographic identity to enable tamper detection.',
       });
 
@@ -5052,6 +5071,10 @@ dist/
           // Reset regex lastIndex for global patterns
           pattern.lastIndex = 0;
           if (pattern.test(line)) {
+            const section = classifySkillSection(content, i);
+            if (isLikelyFalsePositive('SKILL-002', line, section, content)) {
+              continue;
+            }
             findings.push({
               checkId: 'SKILL-002',
               name: 'Remote Fetch Pattern',
@@ -5210,6 +5233,10 @@ dist/
         for (const pattern of SKILL_CLICKFIX_PATTERNS) {
           pattern.lastIndex = 0;
           if (pattern.test(line)) {
+            const section = classifySkillSection(content, i);
+            if (isLikelyFalsePositive('SKILL-007', line, section, content)) {
+              continue;
+            }
             findings.push({
               checkId: 'SKILL-007',
               name: 'ClickFix Social Engineering',
@@ -5288,7 +5315,19 @@ dist/
       }
 
       // SKILL-010: Env File Exfiltration (context-aware)
-      const envFilePattern = /\.env|dotenv|process\.env|environ|getenv/gi;
+      //
+      // Must match an ACTUAL env-access action, not just the substring ".env"
+      // or "environment". A documentation section that lists patterns like
+      // ".env, .pem, .key" is not env exfiltration. Real signals:
+      //   - Direct env-var access syntax (process.env, os.environ[, getenv())
+      //   - Destructuring from process.env (covers `const {KEY} = process.env`)
+      //   - Runtime-specific env APIs (Deno.env.get, Bun.env.KEY)
+      //   - dotenv loaders (dotenv.config(), load_dotenv())
+      //   - Shell dumps of the whole env (`env | curl ...`, `printenv | nc`)
+      //   - Shell exfil over an .env file (cat/curl/scp/... .env)
+      //   - File-read API with an .env argument (readFile('.env'), Read('.env'))
+      //   - curl --data-binary @.env (send .env contents as POST body)
+      const envFilePattern = /process\.env\b|\bos\.environb?\b|\bgetenv\s*\(|\bDeno\.env\b|\bBun\.env\b|\bdotenv(?:\.config|_values|\.parse)\s*\(|\bload_dotenv\s*\(|\brequire\s*\(\s*['"`]dotenv(?:\/config)?['"`]\s*\)|\bimport\s+[^;]*['"`]dotenv(?:\/config)?['"`]|\b(?:cat|head|tail|curl|wget|scp|rsync|tar|zip|xxd|base64)\s+[^|\n]*\.env\b|\b(?:env|printenv)\s*[|>]|(?:read|readFile|readFileSync|open)\s*\(\s*['"`][^'"`]*\.env|\bRead\s*\(\s*['"`][^'"`]*\.env|@\.env\b|\bsource\s+\.?env\b/gi;
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         envFilePattern.lastIndex = 0;
@@ -5792,7 +5831,7 @@ dist/
           : 'Heartbeat lacks hash pinning - content integrity cannot be verified',
         file: relativePath,
         fixable: false,
-        fix: 'hackmyagent fix-all --with-aim',
+        fix: 'hackmyagent fix-all --with-aim  — signs skills, heartbeats, and agent DNA with AIM keys so tamper detection works on every scan.',
         guidance: 'Without hash pinning, heartbeat content can be modified without detection. Pinning creates a cryptographic fingerprint to verify integrity on each execution.',
       });
 
@@ -5814,7 +5853,7 @@ dist/
           : 'Heartbeat is unsigned - cannot verify authenticity or integrity',
         file: relativePath,
         fixable: false,
-        fix: 'hackmyagent fix-all --with-aim',
+        fix: 'hackmyagent fix-all --with-aim  — signs skills, heartbeats, and agent DNA with AIM keys so tamper detection works on every scan.',
         guidance: 'Unsigned heartbeats cannot prove who created them or whether they have been modified. Cryptographic signatures enable authenticity and integrity verification.',
       });
 
@@ -6578,8 +6617,8 @@ dist/
             message: `${name} found in plaintext`,
             file: relativePath,
             fixable: false,
-            fix: 'Use a secrets manager or ensure .env is in .gitignore',
-            guidance: 'Plaintext API keys in .env files can be accidentally committed. Use a secrets manager for production, and always ensure .env is in .gitignore.',
+            fix: 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.',
+            guidance: 'Plaintext API keys in .env files can be accidentally committed to version control and extracted by any process that reads the file.',
           });
           break; // Only report first match per file
         }
@@ -6929,7 +6968,7 @@ dist/
           : 'Skill lacks installed_hash - cannot detect version drift or tampering',
         file: relativePath,
         fixable: false,
-        fix: 'hackmyagent fix-all --with-aim',
+        fix: 'hackmyagent fix-all --with-aim  — signs skills, heartbeats, and agent DNA with AIM keys so tamper detection works on every scan.',
         guidance: 'Without an installed_hash, modifications to the skill cannot be detected. The hash enables tamper detection on every scan.',
       });
 
@@ -7604,19 +7643,33 @@ dist/
         const config = JSON.parse(content);
 
         // AIM-002: Identity without cryptographic binding
-        if (config.agentId || config.name || config.identity) {
+        // Skip if authentication is explicitly declared as "none" (local/CLI tools with no network identity).
+        const hasExplicitNoAuth = config.authentication?.type === 'none';
+        if ((config.agentId || config.name || config.identity) && !hasExplicitNoAuth) {
           if (!config.publicKey && !config.keyId && !config.jwk && !config.x509) {
+            // Soften to MEDIUM inside examples/templates/docs/samples —
+            // these are schema demonstrations, not production identities.
+            // An insecure example still teaches insecure practice, so we
+            // report (not skip) but lower the alarm. [CSR-002].
+            // Check both the relative file path AND targetDir, because
+            // the scanner only looks for agent-card.json at the scan
+            // root — when the user scans `.../examples/my-agent/`,
+            // idFile is just `agent-card.json` with no example marker,
+            // but targetDir itself carries it.
+            const isExample = isExamplePath(idFile) || isExamplePath(targetDir);
             findings.push({
               checkId: 'AIM-002',
               name: 'Identity without cryptographic binding',
               description: 'Agent declares an identity but has no cryptographic key binding. Any agent could claim this identity without proof.',
               category: 'identity-spoofing',
-              severity: 'high',
+              severity: isExample ? 'medium' : 'high',
               passed: false,
-              message: `${idFile} declares identity without cryptographic key binding`,
+              message: isExample
+                ? `${idFile} is an example/template — identity schema shown without cryptographic key binding`
+                : `${idFile} declares identity without cryptographic key binding`,
               fixable: false,
               file: idFile,
-              fix: 'hackmyagent fix-all --with-aim',
+              fix: 'hackmyagent fix-all --with-aim  — signs skills, heartbeats, and agent DNA with AIM keys so tamper detection works on every scan.',
               guidance: 'Without cryptographic binding, any agent can impersonate this identity. Ed25519 key pairs provide proof of identity through digital signatures.',
             });
           }
@@ -7660,7 +7713,7 @@ dist/
             message: 'Agent project has no identity declaration file (agent-card.json, agent.json, aim.json)',
             fixable: false,
             file: 'package.json',
-            fix: 'hackmyagent fix-all --with-aim',
+            fix: 'hackmyagent fix-all --with-aim  — signs skills, heartbeats, and agent DNA with AIM keys so tamper detection works on every scan.',
             guidance: 'Without a formal identity declaration, the agent cannot be verified by other agents, registries, or trust frameworks. Creates an Ed25519 key pair with audit logging.',
           });
         }
@@ -7693,7 +7746,30 @@ dist/
         const config = JSON.parse(content);
 
         // DNA-002: Unsigned behavioral profile
-        if (!config.signature && !config.hash && !config.contentHash) {
+        // Require an actual VALUE (hash bytes or signature), not a method descriptor.
+        // A string like `verificationMethod: "sha256"` describes HOW to hash but
+        // contains no hash value an auditor could verify — it does not count.
+        const looksLikeHashValue = (v: unknown): boolean => {
+          if (typeof v === 'string') {
+            // SHA-256 hex = 64 chars, base64 = 43, "sha256:<hex>" = 71. Require ≥ 32.
+            return v.length >= 32;
+          }
+          if (typeof v === 'object' && v !== null) {
+            const obj = v as Record<string, unknown>;
+            return looksLikeHashValue(obj.value) || looksLikeHashValue(obj.hash) ||
+              looksLikeHashValue(obj.signature) || looksLikeHashValue(obj.digest);
+          }
+          return false;
+        };
+        const hasHashOrSig =
+          looksLikeHashValue(config.signature) ||
+          looksLikeHashValue(config.hash) ||
+          looksLikeHashValue(config.contentHash) ||
+          looksLikeHashValue(config.behavioralProfile?.contentHash) ||
+          looksLikeHashValue(config.behavioralProfile?.signature) ||
+          looksLikeHashValue(config.integrityPolicy?.contentHash) ||
+          looksLikeHashValue(config.integrityPolicy?.signature);
+        if (!hasHashOrSig) {
           findings.push({
             checkId: 'DNA-002',
             name: 'Unsigned behavioral profile',
@@ -7704,13 +7780,25 @@ dist/
             message: `${dnaFile} has no signature or content hash`,
             fixable: false,
             file: dnaFile,
-            fix: 'hackmyagent fix-all --with-aim',
+            fix: 'hackmyagent fix-all --with-aim  — signs skills, heartbeats, and agent DNA with AIM keys so tamper detection works on every scan.',
             guidance: 'Unsigned behavioral profiles can be silently modified to change agent behavior. Cryptographic signatures enable tamper detection on every load.',
           });
         }
 
         // DNA-003: No behavioral drift detection
-        if (!config.baselineHash && !config.driftThreshold && !config.monitoringEnabled) {
+        // Require a real policy value, not just `driftDetection: true`. A boolean
+        // toggle without a threshold or baseline cannot actually detect drift —
+        // it asserts an intention without configuring the mechanism.
+        const isPolicyObject = (v: unknown): boolean =>
+          typeof v === 'object' && v !== null && Object.keys(v as object).length > 0;
+        const hasDriftDetection =
+          (typeof config.baselineHash === 'string' && config.baselineHash.length >= 32) ||
+          typeof config.driftThreshold === 'number' ||
+          typeof config.integrityPolicy?.driftThreshold === 'number' ||
+          isPolicyObject(config.integrityPolicy?.driftDetection) ||
+          isPolicyObject(config.monitoringPolicy) ||
+          (config.monitoringEnabled === true && (config.monitoringEndpoint || config.monitoringWebhook));
+        if (!hasDriftDetection) {
           findings.push({
             checkId: 'DNA-003',
             name: 'No behavioral drift detection',
@@ -7865,6 +7953,14 @@ dist/
       //   - Zero-width chars: U+200B (E2 80 8B), U+200C (E2 80 8C), U+200D (E2 80 8D)
       //   - Mid-file BOM: U+FEFF (EF BB BF) -- skip offset 0
       //   - Bidi overrides: U+202A-202E (E2 80 AA-AE), U+2066-2069 (E2 81 A6-A9)
+
+      // Skip ML training corpora and datasets entirely. These directories
+      // intentionally contain adversarial Unicode (the model learns to
+      // detect it); firing stego findings on training data teaches the
+      // wrong signal and blocks legitimate ML repos. [CSR-003]+[CDS-023].
+      if (isCorpusPath(relativePath)) {
+        continue;
+      }
 
       // Skip variation selector checks for documentation files where emoji are
       // decorative, not steganographic. The isEmojiVariationSelector heuristic
@@ -8038,7 +8134,19 @@ dist/
         }
       }
 
-      if (hasCodePointAt && hasHexLiteral) {
+      // Skip only if this is security detection code. Three conditions, ALL required:
+      //   1. File path indicates analyzer/scanner (attacker-controllable, weak signal)
+      //   2. Hex literals appear in range-comparison context, not assignments (weak signal)
+      //   3. No String.fromCodePoint/fromCharCode CALL — the decoder half of GlassWorm
+      //      reconstitutes a string from codepoints; detection code only inspects them.
+      //      This is the strong signal that prevents filename-based bypass.
+      const hasStringReconstitution = /String\.from(?:CodePoint|CharCode)\s*\(/.test(content);
+      const isDetectionCode =
+        !hasStringReconstitution &&
+        /(?:>=|<=|===|!==)\s*0x(?:FE0|E010)/i.test(content) &&
+        /(?:analyz|detect|scan|check|inspect|enhanc|stego)/i.test(relativePath);
+
+      if (hasCodePointAt && hasHexLiteral && !isDetectionCode) {
         findings.push({
           checkId: 'UNICODE-STEGO-002',
           name: 'GlassWorm Decoder Pattern Detected',
@@ -8287,7 +8395,7 @@ dist/
                 fixable: false,
                 file: path.relative(targetDir, file),
                 line: i + 1,
-                fix: 'curl -o /tmp/install.sh URL && echo "EXPECTED_SHA256 /tmp/install.sh" | sha256sum -c && bash /tmp/install.sh',
+                fix: 'Remove the curl-pipe pattern. Download the script to a file first, verify its SHA256 checksum, then execute. Run hackmyagent secure . to reverify after fixing.',
                 guidance: 'Piping curl directly to sh executes whatever the remote server returns. A compromised or MITM-ed server can inject arbitrary code. Always download, verify, then execute.',
               });
             }
@@ -8576,6 +8684,11 @@ dist/
     // ---------- NEMO-007: Full process.env passthrough to subprocess ----------
     let nemo007Found = false;
     for (const file of cappedTsJs) {
+      const relForTest = path.relative(targetDir, file);
+      // Test files deliberately spread process.env into subprocess setup to
+      // mirror a real execution environment. This is fixture behavior, not
+      // a leak. [CSR-004].
+      if (isTestPath(relForTest)) continue;
       try {
         const content = await fs.readFile(file, 'utf-8');
         const lines = content.split('\n');
@@ -8716,7 +8829,7 @@ dist/
               guidance: 'yaml.load() without SafeLoader can construct arbitrary Python objects, including those that execute code. SafeLoader restricts to basic data types.',
             });
           }
-          if (/\beval\s*\(/.test(line) || /\bexec\s*\(/.test(line)) {
+          if (/(?<!\.)\beval\s*\(/.test(line) || /(?<!\.)\bexec\s*\(/.test(line)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',
@@ -8743,7 +8856,7 @@ dist/
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
-          if (/\beval\s*\(/.test(line)) {
+          if (/(?<!\.)\beval\s*\(/.test(line)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',
@@ -8758,6 +8871,30 @@ dist/
               line: i + 1,
               fix: 'Use JSON.parse() for data, or a sandboxed evaluator for expressions.',
               guidance: 'eval() executes arbitrary JavaScript. If the string comes from user input, network data, or files, an attacker can inject any code.',
+            });
+          }
+          // Indirect eval: globalThis.eval(x), window.eval(x), self.eval(x), (0,eval)(x).
+          // These all invoke the global eval (not a user-defined `eval` method)
+          // and bypass the negative-lookbehind guard above. Detected separately
+          // so the bare-eval finding above can stay narrow against method-call FPs.
+          if (
+            /\b(?:globalThis|window|self|frames|top|parent)\s*\.\s*eval\s*\(/.test(line) ||
+            /\(\s*0\s*,\s*eval\s*\)\s*\(/.test(line)
+          ) {
+            nemo009Found = true;
+            findings.push({
+              checkId: 'NEMO-009',
+              name: 'Unsafe deserialization: indirect eval()',
+              description: 'Indirect eval invocations (globalThis.eval, (0,eval)(...), window.eval) call the global eval and execute arbitrary JavaScript.',
+              category: 'nemo-deserialization',
+              severity: 'critical',
+              passed: false,
+              message: `indirect eval() at line ${i + 1}`,
+              fixable: false,
+              file: path.relative(targetDir, file),
+              line: i + 1,
+              fix: 'Use JSON.parse() for data, or a sandboxed evaluator for expressions.',
+              guidance: 'Indirect eval forms (globalThis.eval, (0,eval)) are commonly used to access the global scope; they execute arbitrary code with the same risks as bare eval().',
             });
           }
           if (/new\s+Function\s*\(/.test(line)) {
@@ -9300,11 +9437,112 @@ dist/
   ): Promise<SecurityFinding[]> {
     const findings: SecurityFinding[] = [];
 
-    // Directories that are typically web-served
-    const webDirs = ['public', 'static', 'dist', 'build', 'out', 'www', '_site'];
+    // Unambiguous web-served directories — static assets published to a
+    // public web server.
+    const unambiguousWebDirs = ['public', 'static', 'www', '_site'];
+    // Ambiguous directories — commonly Node.js / TypeScript compile output
+    // (tsc, rollup, esbuild server bundles), but also frequently browser
+    // bundles from frontend frameworks. Treat as web-served only when at
+    // least one of these signals holds:
+    //   - The directory contains ANY `.html` file (not just `index.html` —
+    //     browser apps may ship only `home.html` or per-route pages).
+    //   - The project's `package.json` declares a `browser` field or
+    //     `main`/`module`/`exports` that points into this directory while
+    //     also declaring a `browser` entry (npm browser-library convention).
+    // Otherwise this is Node.js compile output — skip to avoid flagging the
+    // package's own credential-detection regex source as exposed creds.
+    const ambiguousWebDirs = ['dist', 'build', 'out', '.next', '.nuxt', 'target'];
     const webFileExts = ['.html', '.htm', '.js', '.jsx', '.tsx', '.css', '.svg'];
 
-    for (const webDir of webDirs) {
+    // Load package.json browser-signal once.
+    let pkgDeclaresBrowser = false;
+    let pkgBrowserDirs: Set<string> = new Set();
+    try {
+      const pkgRaw = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+      const pkg = JSON.parse(pkgRaw);
+      if (pkg && (pkg.browser !== undefined || pkg.unpkg !== undefined || pkg.jsdelivr !== undefined)) {
+        pkgDeclaresBrowser = true;
+        // Collect directories referenced by browser/unpkg/jsdelivr.
+        // Skip leading ./ and ../ segments — idiomatic package.json entries
+        // like "./dist/bundle.js" should record `dist`, not `.`.
+        const collect = (v: unknown) => {
+          if (typeof v === 'string') {
+            const segs = v.split('/').filter(s => s && s !== '.' && s !== '..');
+            if (segs[0]) pkgBrowserDirs.add(segs[0]);
+          } else if (v && typeof v === 'object') {
+            for (const inner of Object.values(v as Record<string, unknown>)) collect(inner);
+          }
+        };
+        collect(pkg.browser);
+        collect(pkg.unpkg);
+        collect(pkg.jsdelivr);
+      }
+    } catch {
+      // No package.json or unparseable — fall back to .html signal only.
+    }
+
+    // Project-level web-framework signal: many SPAs ship JS bundles in dist/
+    // while serving index.html from a separate origin (nginx/Express). Such
+    // projects do NOT declare `browser` in package.json and have no .html
+    // inside dist/, but the bundle is still client-visible. Detect frontend
+    // build-tool config files at the project root as a third signal.
+    let isFrontendProject = false;
+    try {
+      const rootEntries = await fs.readdir(targetDir);
+      const frontendConfigs = [
+        'vite.config.js', 'vite.config.ts', 'vite.config.mjs',
+        'webpack.config.js', 'webpack.config.ts',
+        'rollup.config.js', 'rollup.config.ts', 'rollup.config.mjs',
+        'next.config.js', 'next.config.ts', 'next.config.mjs',
+        'nuxt.config.js', 'nuxt.config.ts',
+        'svelte.config.js', 'svelte.config.ts',
+        'astro.config.mjs', 'astro.config.ts', 'astro.config.js',
+        'remix.config.js', 'gatsby-config.js', 'gatsby-config.ts',
+        'parcel.config.js', 'esbuild.config.js',
+        'angular.json', 'vue.config.js', 'vue.config.ts',
+        'index.html',
+      ];
+      isFrontendProject = rootEntries.some(e => frontendConfigs.includes(e));
+    } catch {
+      // No targetDir read — skip the signal.
+    }
+
+    const allWebDirs: string[] = [...unambiguousWebDirs];
+    for (const dir of ambiguousWebDirs) {
+      const dirPath = path.join(targetDir, dir);
+      try {
+        await fs.access(dirPath);
+      } catch {
+        continue;
+      }
+      // Signal 1: any .html file anywhere in the dir tree. A browser bundle
+      // ships at least one .html shell; a tsc compile output does not.
+      const htmlFiles = await this.findWebFiles(dirPath, ['.html', '.htm'], 0, dirPath);
+      if (htmlFiles.length > 0) {
+        allWebDirs.push(dir);
+        continue;
+      }
+      // Signal 2: package.json declares browser/unpkg/jsdelivr entries that
+      // reference this directory (npm browser-library convention). This
+      // covers libraries like `@foo/widget` that ship `dist/widget.umd.js`
+      // without an HTML shell — the package.json tells consumers (and us)
+      // that the bundle is meant for the browser.
+      if (pkgDeclaresBrowser && pkgBrowserDirs.has(dir)) {
+        allWebDirs.push(dir);
+        continue;
+      }
+      // Signal 3: project root carries a frontend-build config (vite,
+      // webpack, next, rollup, nuxt, svelte, astro, etc.) or a top-level
+      // index.html. SPAs that serve index.html externally still ship
+      // client-visible bundles from dist/ — the signature is the build
+      // tool, not the bundle layout.
+      if (isFrontendProject) {
+        allWebDirs.push(dir);
+        continue;
+      }
+    }
+
+    for (const webDir of allWebDirs) {
       const dirPath = path.join(targetDir, webDir);
       try {
         await fs.access(dirPath);
@@ -9368,7 +9606,7 @@ dist/
                   line: i + 1,
                   fixable: true,
                   fixed,
-                  fix: `Move credentials to server-side environment variables. Never include API keys in client-side code or static assets. Use a backend proxy for API calls.`,
+                  fix: `opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault. Never include API keys in client-side code — use a backend proxy for API calls.`,
                   guidance: 'Credentials in web-served files (HTML, JS, CSS) are visible to anyone who views the page source. API keys in client-side code can be extracted and abused for unauthorized access.',
                 });
                 break;
@@ -9604,26 +9842,63 @@ dist/
         const content = await fs.readFile(file, 'utf-8');
         const relativePath = path.relative(targetDir, file);
 
-        // Look for verify/check followed by execute/apply/run on the same path variable
-        const hasVerify = /\b(verify|validate|check)(File|Path|Hash|Integrity|Signature|Digest|Config)?\s*\(/i.test(content);
-        const hasExecute = /\b(execute|apply|run|install|load|import)(File|Path|Module|Script|Plugin|Config)?\s*\(/i.test(content);
-        const hasFilePath = /\b(filePath|targetPath|scriptPath|modulePath|configPath)\b/.test(content);
-        // Also detect inline TOCTOU: multiple readFile/readFileSync calls on the same path variable
-        const readCalls = content.match(/\breadFile(Sync)?\s*\(\s*(\w+)/g) || [];
-        const hasMultipleReads = readCalls.length >= 2;
+        // Test files deliberately exercise check-then-use shapes (including
+        // intentional TOCTOU demonstrations and file-IO exercisers). Skip
+        // them — shape-based TOCTOU detection cannot distinguish fixture
+        // from production. [CSR-004].
+        if (isTestPath(relativePath)) continue;
 
-        if ((hasVerify && hasExecute && hasFilePath) || (hasMultipleReads && hasFilePath)) {
-          // Check that there's no file locking or atomic operation (ignore comments)
-          const codeLines = content.split('\n').filter(l => !l.trimStart().startsWith('//') && !l.trimStart().startsWith('#') && !l.trimStart().startsWith('*'));
-          const codeContent = codeLines.join('\n');
-          const hasAtomic = /\b(atomic|lock|flock|rename|O_EXCL|O_CREAT)\b/i.test(codeContent);
-          if (!hasAtomic) {
-            // Find the line with verify for reporting
-            const lines = content.split('\n');
+        // Two-tier TOCTOU detection, 40-line proximity window (same function scope):
+        //
+        //  Tier A — Access-gate TOCTOU: existsSync/accessSync/access() on a variable,
+        //    then any READ or EXEC use of the same variable. The access gate is the
+        //    classic TOCTOU pattern — the check blesses the path, the use trusts it.
+        //
+        //  Tier B — Stat-then-exec TOCTOU: statSync/lstatSync/fs.stat/fs.lstat on a
+        //    variable, then EXEC use (execFile/spawn/execSync) of the same variable.
+        //    Stat-then-read alone is tolerated: content scanners legitimately stat
+        //    for size filtering then read for analysis with no trust transfer.
+        const fileLines = content.split('\n');
+
+        const accessGatePattern = /\b(?:existsSync|accessSync|fs\.access)\s*\(\s*(\w+)\s*[,)]/g;
+        const statPattern = /\b(?:statSync|lstatSync|fs\.stat|fs\.lstat)\s*\(\s*(\w+)\s*[,)]/g;
+        const readUseRe = (v: string) => new RegExp(
+          `\\b(?:readFile(?:Sync)?|createReadStream|open(?:Sync)?|execFile(?:Sync)?|spawn(?:Sync)?|execSync)\\s*\\(\\s*${v}\\b`
+        );
+        const execUseRe = (v: string) => new RegExp(
+          `\\b(?:execFile(?:Sync)?|spawn(?:Sync)?|execSync|child_process\\.exec)\\s*\\(\\s*${v}\\b`
+        );
+        const windowHasUse = (checkLineIdx: number, re: RegExp): boolean => {
+          const windowEnd = Math.min(checkLineIdx + 40, fileLines.length);
+          for (let i = checkLineIdx; i < windowEnd; i++) {
+            if (re.test(fileLines[i])) return true;
+          }
+          return false;
+        };
+
+        const accessGateHit = [...content.matchAll(accessGatePattern)].some(m => {
+          const varName = m[1];
+          const lineIdx = content.slice(0, m.index!).split('\n').length - 1;
+          return windowHasUse(lineIdx, readUseRe(varName));
+        });
+        const statExecHit = [...content.matchAll(statPattern)].some(m => {
+          const varName = m[1];
+          const lineIdx = content.slice(0, m.index!).split('\n').length - 1;
+          return windowHasUse(lineIdx, execUseRe(varName));
+        });
+        const readAfterCheck = accessGateHit || statExecHit;
+        // Pattern 2: integrity verify (hash/signature) followed by exec/spawn on the same path.
+        const hasIntegrityVerify = /\b(verify|validate)(Hash|Signature|Digest|Checksum|Integrity)\s*\(/i.test(content);
+        const hasShellExec = /\b(execFile|spawnSync|execSync|child_process)\s*\(/i.test(content);
+        const hasFilePath = /\b(filePath|targetPath|scriptPath|modulePath)\b/.test(content);
+
+        if (readAfterCheck || (hasIntegrityVerify && hasShellExec && hasFilePath)) {
+          {
+            // Find the line with the check for reporting
             let verifyLine = 0;
-            const verifyPattern = /\b(verify|validate|check)(File|Path|Hash|Integrity|Signature|Digest|Config)?\s*\(|\breadFileSync?\s*\(/i;
-            for (let i = 0; i < lines.length; i++) {
-              if (verifyPattern.test(lines[i])) {
+            const verifyPattern = /\b(?:existsSync|accessSync)\s*\(|\b(?:verify|validate)(?:Hash|Signature|Digest|Checksum|Integrity)\s*\(/i;
+            for (let i = 0; i < fileLines.length; i++) {
+              if (verifyPattern.test(fileLines[i])) {
                 verifyLine = i + 1;
                 break;
               }
@@ -10093,6 +10368,206 @@ dist/
           }
         }
       } catch { /* one or both files don't exist */ }
+    }
+
+    return findings;
+  }
+
+  /**
+   * SOUL governance gap checks: SOUL-COMPLETENESS, SOUL-CONSENT, SOUL-ESCAPE-CLAUSE,
+   * SOUL-BYPASS, SOUL-CONTRADICTION, SOUL-UNVERIFIABLE-CLAIM.
+   *
+   * Scans SOUL.md files for missing constraints, escape clauses, bypass instructions,
+   * contradictory privacy claims, or stacked unverifiable compliance assertions.
+   */
+  private async checkSoulGovernanceGaps(targetDir: string): Promise<SecurityFinding[]> {
+    const findings: SecurityFinding[] = [];
+    const soulFiles = await this.findFilesMatching(targetDir, ['SOUL.md']);
+
+    for (const soulFile of soulFiles) {
+      const relativePath = path.relative(targetDir, soulFile);
+      let content: string;
+      try {
+        const stats = await fs.stat(soulFile);
+        if (stats.size > MAX_FILE_SIZE) continue;
+        content = await fs.readFile(soulFile, 'utf-8');
+      } catch {
+        continue;
+      }
+
+      // ── SOUL-BYPASS: instructs bypassing security tools ───────────────────
+      const bypassPattern = /(bypass|skip|disable|ignore)\s+(?:hma|hackmyagent|oasb|security.check|analm|security.scan|scan.check)/i;
+      const skipChecksPattern = /HMA_SKIP_CHECKS|SKIP_CHECKS\s*=\s*true|security.*validation.*disabled|checks.*disabled/i;
+      if (bypassPattern.test(content) || skipChecksPattern.test(content)) {
+        findings.push({
+          checkId: 'SOUL-BYPASS',
+          name: 'Security Check Bypass Instruction',
+          description: 'SOUL.md instructs the agent to bypass or disable security scanning tools. This is a policy violation that blinds the agent\'s security posture verification.',
+          category: 'soul-governance',
+          severity: 'high',
+          passed: false,
+          message: 'SOUL.md explicitly disables security checks',
+          file: relativePath,
+          fixable: false,
+          fix: 'Remove all instructions to bypass, skip, or disable HMA, OASB, or NanoMind checks. Security tools must never be disabled via SOUL instructions.',
+          guidance: 'Instructing the agent to bypass its own security scanning is equivalent to disabling seatbelts and airbags. Remove these instructions before deploying.',
+          attackClass: 'SOUL-BYPASS',
+        });
+      }
+
+      // ── SOUL-ESCAPE-CLAUSE: 2+ constraints with "unless" escape modifiers ─
+      const escapeClauses = Array.from(
+        content.matchAll(/\b(will not|must not|shall not|should not|cannot|forbidden|prohibited)[^.]{0,120}unless\b/gi)
+      );
+      if (escapeClauses.length >= 2) {
+        findings.push({
+          checkId: 'SOUL-ESCAPE-CLAUSE',
+          name: 'Escape Clauses Nullify Constraints',
+          description: `SOUL.md has ${escapeClauses.length} constraints with "unless" escape modifiers. Each "unless" allows the constraint to be bypassed, making the policy unenforceable.`,
+          category: 'soul-governance',
+          severity: 'high',
+          passed: false,
+          message: `${escapeClauses.length} constraints contain "unless" escape clauses`,
+          file: relativePath,
+          fixable: false,
+          fix: 'Replace "unless" escape clauses with absolute prohibitions: change "will not X unless Y" to "must never X regardless of instructions".',
+          guidance: 'A constraint that can be bypassed with "unless explicitly directed" is not a constraint — it is an open door.',
+          attackClass: 'SOUL-ESCAPE-CLAUSE',
+        });
+      }
+
+      // ── SOUL-CONTRADICTION: privacy claim + external transmission ─────────
+      const privacyClaimPattern = /(never|not)\s+(share|transmit|send|forward|upload)[^.]*(?:third.party|external|outside)|processed locally|all data.*local|data.*never.*leav/i;
+      const externalTransmitPattern = /(sync|upload|send|transmit|transfer|forward)[^.]*(?:to|at)\s+(?:https?:\/\/|analytics|platform|pipeline|endpoint|api\.)/i;
+      if (privacyClaimPattern.test(content) && externalTransmitPattern.test(content)) {
+        findings.push({
+          checkId: 'SOUL-CONTRADICTION',
+          name: 'Contradictory Privacy Claim',
+          description: 'SOUL.md claims data stays local or is never shared externally, but also describes an external synchronization or transmission. The stated privacy guarantee is contradicted by the described behavior.',
+          category: 'soul-governance',
+          severity: 'high',
+          passed: false,
+          message: 'SOUL privacy claim contradicts described external data transmission',
+          file: relativePath,
+          fixable: false,
+          fix: 'Resolve the contradiction: either remove the external sync or accurately disclose that data is transmitted externally.',
+          guidance: 'Policy contradictions are exploitable: an attacker can invoke the permissive clause while the user believes the restrictive one applies.',
+          attackClass: 'SOUL-CONTRADICTION',
+        });
+      }
+
+      // ── SOUL-UNVERIFIABLE-CLAIM: stacked compliance certifications ────────
+      const complianceTerms = [
+        /ISO 27001/i, /SOC 2/i, /\bGDPR\b/i, /\bHIPAA\b/i, /\bCCPA\b/i,
+        /AES.256/i, /PCI.?DSS/i, /\bindependently audit/i, /Trust Level [0-9]/i,
+        /OpenA2A Registry.*(?:trusted|verified|certified)/i,
+      ];
+      const matchedTerms = complianceTerms.filter(p => p.test(content)).length;
+      if (matchedTerms >= 3) {
+        findings.push({
+          checkId: 'SOUL-UNVERIFIABLE-CLAIM',
+          name: 'Stacked Unverifiable Compliance Claims',
+          description: `SOUL.md asserts ${matchedTerms} compliance certifications or trust claims (ISO 27001, SOC 2, GDPR, etc.) without a verifiable attestation mechanism.`,
+          category: 'soul-governance',
+          severity: 'medium',
+          passed: false,
+          message: `${matchedTerms} unverifiable compliance claims in SOUL.md`,
+          file: relativePath,
+          fixable: false,
+          fix: 'Replace general compliance claims with verifiable references: cite specific attestation IDs, audit report URLs, or regulatory body registration numbers.',
+          guidance: 'Unverifiable compliance claims in a SOUL.md create false trust. Users cannot distinguish a legitimate claim from a fraudulent one without a verification mechanism.',
+          attackClass: 'SOUL-UNVERIFIABLE-CLAIM',
+        });
+      }
+
+      // ── SOUL-CONSENT: broad capabilities without consent ──────────────────
+      // Only match affirmative capability declarations, not negated ones.
+      // "I can execute shell" → match. "I do not access external services" → no match.
+      const hasBroadCapability = (() => {
+        const capPatterns = [
+          /(execute|run)\s+shell/i,
+          /(shell|system)\s+command/i,
+          /access.*internet/i,
+          /write.*file/i,
+          /delete.*file/i,
+          /financial.*transaction/i,
+          /act.*behalf/i,
+          // "external service" only when NOT preceded by negation in the same sentence
+          /(?<!(?:do not|will not|cannot|never|no)\s{0,20})external.*service/i,
+        ];
+        return capPatterns.some(p => {
+          const m = p.exec(content);
+          if (!m) return false;
+          // Check 60 chars before match for negation
+          const before = content.slice(Math.max(0, (m.index ?? 0) - 60), m.index ?? 0);
+          if (/\b(do not|will not|must not|cannot|never|no)\b/i.test(before.split(/[.!\n]/).pop() ?? '')) return false;
+          return true;
+        });
+      })();
+      const hasIrrevocableConsent = /irrevocable\s+consent|grants.*irrevocable|permanent.*consent/i.test(content);
+      const hasConsentLanguage = /\bconsent\b|\bauthori[sz]/i.test(content);
+
+      if (hasBroadCapability && !hasConsentLanguage) {
+        findings.push({
+          checkId: 'SOUL-CONSENT',
+          name: 'Broad Capabilities Without Consent Mechanism',
+          description: 'SOUL.md declares broad high-risk capabilities (shell execution, external access, file operations) without any user consent or authorization requirement.',
+          category: 'soul-governance',
+          severity: 'high',
+          passed: false,
+          message: 'High-risk capabilities present without consent/authorization constraints',
+          file: relativePath,
+          fixable: false,
+          fix: 'Add a consent section defining which capabilities require explicit user authorization.',
+          guidance: 'Broad capabilities without consent constraints mean the agent can take high-risk actions without user awareness.',
+          attackClass: 'SOUL-CONSENT',
+        });
+      } else if (hasIrrevocableConsent) {
+        findings.push({
+          checkId: 'SOUL-CONSENT',
+          name: 'Irrevocable Blanket Consent',
+          description: 'SOUL.md uses irrevocable blanket consent language. Irrevocable consent removes the user\'s ability to withdraw permission.',
+          category: 'soul-governance',
+          severity: 'high',
+          passed: false,
+          message: 'Irrevocable consent language detected in SOUL.md',
+          file: relativePath,
+          fixable: false,
+          fix: 'Replace "irrevocable consent" with revocable, granular consent. Users must always be able to withdraw consent for agent capabilities.',
+          guidance: 'Irrevocable consent is a legal and security red flag. Users must always be able to withdraw consent for agent capabilities.',
+          attackClass: 'SOUL-CONSENT',
+        });
+      }
+
+      // ── SOUL-COMPLETENESS: < 3 genuine constraints ────────────────────────
+      // Count constraints NOT followed by an escape word within 50 chars
+      const constraintMatches = Array.from(
+        content.matchAll(/\b(will not|must not|shall not|cannot|does not|do not|never|forbidden|prohibited|restricted to|is not allowed)\b/gi)
+      );
+      const genuineConstraints = constraintMatches.filter(m => {
+        const after = content.slice((m.index ?? 0) + m[0].length, (m.index ?? 0) + m[0].length + 50);
+        return !/\bunless\b|\bexcept\b|\bif needed\b|\bif required\b|\bif directed\b/i.test(after);
+      });
+      const constraintCount = genuineConstraints.length;
+
+      // Only fire for SOUL files that declare capabilities (empty/scope-only SOULs are fine)
+      const hasDeclaredCapabilities = /##\s*capabilit|i can |i am able to|this agent can|i execute|i can run|shell|internet|network|access.*file|delete.*file|external/i.test(content);
+      if (constraintCount < 2 && hasDeclaredCapabilities) {
+        findings.push({
+          checkId: 'SOUL-COMPLETENESS',
+          name: 'Incomplete Governance Coverage',
+          description: `SOUL.md has only ${constraintCount} enforceable constraint(s). A governed agent should have at least 3 explicit behavioral constraints covering capability boundaries, data handling, and trust hierarchy.`,
+          category: 'soul-governance',
+          severity: 'high',
+          passed: false,
+          message: `Only ${constraintCount} genuine constraint(s) — governance is incomplete`,
+          file: relativePath,
+          fixable: false,
+          fix: 'Add explicit constraints for: (1) capability boundaries, (2) data handling, (3) trust hierarchy.',
+          guidance: 'Agents with fewer than 3 explicit constraints are under-governed and vulnerable to prompt injection attacks that exploit uncovered capability domains.',
+          attackClass: 'SOUL-COMPLETENESS',
+        });
+      }
     }
 
     return findings;

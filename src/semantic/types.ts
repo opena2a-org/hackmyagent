@@ -36,6 +36,8 @@ export interface SemanticFinding {
   layer: 2 | 3;
   /** Whether this can be auto-fixed */
   autoFixable: boolean;
+  /** Attack class for oracle label mapping (e.g. 'MCP-PRIV-ESC', 'SOUL-CONSENT') */
+  attackClass?: string;
 }
 
 export interface AnalysisContext {

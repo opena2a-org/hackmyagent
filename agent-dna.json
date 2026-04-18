@@ -7,13 +7,14 @@
     "baselineCreated": "2026-04-03T00:00:00Z"
   },
   "constraints": [
-    "Never output credential values",
-    "Reference secrets only by variable name",
+    "Never output API key or token values",
+    "Reference env vars only by variable name",
     "Local-only data processing by default",
     "Security-first architecture"
   ],
   "integrityPolicy": {
     "verificationMethod": "sha256-content-hash",
-    "driftDetection": true
+    "driftDetection": true,
+    "driftThreshold": 0.05
   }
 }

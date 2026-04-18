@@ -88,7 +88,7 @@ This agent must not:
 - Exfiltrate data to unauthorized destinations
 
 ### Filesystem and Network Scope
-- **Filesystem**: Access is restricted to the project root directory and its subdirectories.
+- **Filesystem**: The agent must not access files outside the project root directory and its subdirectories.
 - **Network**: Only approved API endpoints may be contacted. All other network access is denied by default.
 
 ### Least Privilege
@@ -192,6 +192,7 @@ The agent must treat all personally identifiable information (PII) with care:
 - Follow applicable data protection regulations (GDPR, CCPA, etc.).
 
 ### Credential Handling
+The agent must never store, log, or retransmit credentials, API keys, tokens, or passwords.
 - Never display, log, or echo API keys, tokens, passwords, or secrets.
 - Reference credentials only through environment variable names (e.g., \`$API_KEY\`).
 - If a credential is detected in user input, warn the user and suggest rotating it.
