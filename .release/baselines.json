@@ -1,5 +1,5 @@
 {
-  "_comment": "Baseline ledger for RELEASE_PLAYBOOK.md scenarios. Updated on PASS only. Drift >10 points triggers review; >20 with fewer CRITICALs = score-jump red flag (§5). See RELEASE_PLAYBOOK.md §Self-learning loop §1 for enforcement.",
+  "_comment": "Baseline ledger for docs/release-playbook.md scenarios. Updated on PASS only. Drift >10 points triggers review; >20 with fewer CRITICALs = score-jump red flag (§5). See docs/release-playbook.md §Self-learning loop §1 for enforcement.",
   "_schema": {
     "scenarioId": {
       "score": "int 0-100",

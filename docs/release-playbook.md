@@ -448,7 +448,7 @@ top of CLAUDE.md's "Testing Guide" section:
 
 ```markdown
 ### Canonical release playbook
-Before every publish: run `RELEASE_PLAYBOOK.md` against real-world fixtures.
+Before every publish: run this playbook (`docs/release-playbook.md`) against real-world fixtures.
 New findings append to `briefs/release-findings.md` with numbered entries.
 Ship-blocker classification in the playbook is binding.
 ```
