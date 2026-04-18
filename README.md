@@ -6,7 +6,7 @@
 [![Tests](https://img.shields.io/badge/tests-1723%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
 [![NanoMind](https://img.shields.io/badge/NanoMind-semantic%20compiler-teal)](https://huggingface.co/opena2a/nanomind-security-classifier)
 
-**209 security checks + 29 semantic checks + behavioral simulation. The first security scanner that secures itself.**
+**209 security checks + 29 semantic checks + behavioral simulation.**
 
 Security scanner, red-team toolkit, behavioral simulation engine, and skill builder for AI agents. Powered by the NanoMind Semantic Compiler -- a compiler-style architecture where every artifact is compiled into an Abstract Security Tree before analysis.
 
