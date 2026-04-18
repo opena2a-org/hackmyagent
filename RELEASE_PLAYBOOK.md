@@ -9,11 +9,12 @@ and standalone `soul.md` surfaces. Bugs already known on those surfaces live
 in `briefs/release-findings.md` with a `Status: DEFERRED (awaiting v2
 scenario)` tag.
 
-This playbook exists because 2026-04-17 per-finding-review surfaced 7 real
-bugs that the generic surface walkthrough missed. The user had to push back
-twice before the per-finding protocol was run. Making the playbook
-non-skippable is how we stop re-discovering the same class of FP every
-publish.
+This playbook exists because per-finding review surfaces bugs that
+generic surface walkthroughs miss. A 2026-04-17 review of release
+candidate `6b788c4` (self-scan score 100/100, all surfaces "no crashes")
+produced 7 real bugs once we walked every finding against the 5-question
+rubric. Making the playbook non-skippable is how we stop re-discovering
+the same class of FP every publish.
 
 Background philosophy (test pyramid, per-finding rubric, adversarial review)
 lives in `CLAUDE.md`. This file only captures the scenario catalog and the
@@ -468,13 +469,15 @@ Ship-blocker classification in the playbook is binding.
 
 ## Why this playbook exists
 
-On 2026-04-17, after shipping commit 6b788c4 with 1627 passing tests, an HMA
-self-scan scored 100/100 and a surface walkthrough reported "score sane, no
-crashes." The user pushed back twice, forcing a per-finding review. That
-review surfaced 7 real bugs (1 fixed, 6 open) and a detection-narrowing
-pattern (TOCTOU, DNA-002, DNA-003) that a generic fresh-user subagent would
-never have caught because it does not know the difference between "compiled
-bundle contains scanner patterns" and "source code leaks credentials."
+On 2026-04-17, commit 6b788c4 shipped with 1627 passing tests and a
+self-scan score of 100/100. A surface walkthrough reported "score sane,
+no crashes." A subsequent per-finding review against the 5-question
+rubric surfaced 7 real bugs (1 fixed, 6 open) and a detection-narrowing
+pattern (TOCTOU, DNA-002, DNA-003) that a generic fresh-user subagent
+would never have caught — it does not know the difference between
+"compiled bundle contains scanner patterns" and "source code leaks
+credentials." The lesson: surface coverage and per-finding review are
+distinct gates. Both run, neither substitutes for the other.
 
 The playbook is the human eye; the benign FPR regression suite is the
 long-term memory; unit tests certify code shape. All three are required.
