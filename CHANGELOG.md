@@ -2,6 +2,41 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [0.17.10] - 2026-04-17
+
+### Added
+- **`hackmyagent detect` — Shadow AI audit command.** New top-level command that scans the local machine and current project for AI tools, MCP server configurations, AI config files, and SOUL.md governance files. Reports a governance score and actionable findings designed for CISOs and security engineers who need an inventory of what's actually running. Supports `--json`, `--verbose`, and `--export-csv` for CMDB integration.
+- **`--nanomind` opt-in flag for generative analysis.** The NanoMind generative layer (Tier 2) is now opt-in instead of always-on. Users who want AI-powered threat narratives on findings invoke `secure --nanomind` or `check --nanomind`; default `secure`/`check` runs the static analyzer suite only. Adds 15-30s per finding when enabled, surfaced via a one-line latency disclosure. Static AST analyzers (Tier 0/1) run regardless.
+- **`hackmyagent nanomind` subcommand.** Renamed from `analm`. `nanomind setup` downloads the generative model; `nanomind status` reports model + runtime state.
+- **Smart registry ping with health preflight.** `secure --publish` and equivalent flows now run a one-line health check against the registry before attempting a publish, and emit a `scan_ping` heartbeat for observability. Fails fast on unreachable / degraded registry instead of timing out the whole publish.
+- **Opportunistic retry backoff for failed contributions.** Anonymous scan summaries that fail to upload are retried in the background with exponential backoff. No new user-visible UI; previously failures were silently dropped.
+- **Unified contribution config.** All scan types (`secure`, `check`, `scan-soul`, `detect`) now share `~/.opena2a/config.json`. Set `--no-contribute` once and it applies everywhere.
+
+### Changed
+- **Unified output formatter across `secure` / `scan-soul` / `harden-soul` / `explain` / `detect`.** All repo-style commands now route through the `secure` formatter: same badges, same severity grouping, same Verify/Fix per finding. `check` (package-style) keeps its registry-oriented format. Eliminates the cross-command UX divergence that made the tool look like four separate scanners stitched together.
+- **CISO-grade UX rework.** Every finding now ships with a one-line `Verify:` command and a one-line `Fix:` command. Credential findings no longer shame the user for env-var usage; capability-abuse findings replace wall-of-names listings with a single runnable `harden-soul` command. The dim/highlight conventions were standardized so the eye can scan a 200-finding report without losing its place.
+- **NanoMind generative findings are capped at HIGH when confidence < 0.80.** Previously low-confidence generative findings rendered as CRITICAL with a hardcoded 60% confidence stamp. Now CRITICAL only emits when the model is genuinely confident; below threshold the severity is capped and the finding shows a qualitative confidence label instead of a measurement.
+- **NanoMind `max_tokens` raised 512 → 2048.** Generative descriptions previously truncated mid-word (300-char ceiling) because the inference budget was too tight. Now full descriptions render reliably.
+- **`--analm` flag and `analm` subcommand renamed to `--nanomind`.** The internal model is NanoMind; the legacy `analm` name was a research-era artifact. Both old names are aliased for one release; the alias will be removed in 0.18.
+- **Check + category counts derived dynamically from the taxonomy map.** Previously hardcoded as `CHECK_COUNT = 209` and `60 categories` in CLI help text — both drifted (categories were actually 44, not 60). Now both numbers are computed at module load from the same source of truth `check-metadata` reads, so help text, command descriptions, and metadata JSON cannot disagree.
+- **`--ignore` re-applied after the NanoMind merge step.** Previously the `--ignore` filter ran before NanoMind merged its findings in, so ignored check IDs reappeared if NanoMind also surfaced them. `--fail-below` is now wired to standard scan mode in addition to `--ci`.
+- **`AnaLM` → `NanoMind` rendering in `check` output.** `check` no longer shows a separate AnaLM analyst block; the generative output is integrated into the standard finding format when `--nanomind` is enabled.
+
+### Fixed
+- **Self-scan score: 100/100.** All CRITICAL and HIGH findings on the HMA codebase itself are resolved, and the `secure` self-scan returns clean.
+- **TOCTOU-001 stops flagging legitimate `existsSync → readFileSync` config-load patterns.** Previously fired on any access-check followed by a read; now requires a write or exec between the check and the read. Adds `import(varPath)` to the exec sinks so dynamic-import abuse is still caught. Eliminated 11 FPs across `secretless`. The `import(varPath)` exec sink was added after an adversarial review surfaced that the first fix accidentally created a dynamic-import bypass.
+- **Analyzer pileup on bug-bounty target descriptors collapsed.** Files named `salesforce-mcp.json` (etc.) — bug-bounty target metadata, not MCP server configs — were misclassified as `mcp_config` and routed through every agent analyzer, producing 6 overlapping findings on a single descriptor. Fixed two ways: (1) MCP classifier now matches a known-basename allowlist (`mcp.json`, `.mcp.json`, `mcpServers.json`) plus a content-fallback that requires an actual `"mcpServers":` key with BOM/whitespace tolerance; (2) capability-analyzer no longer emits `AST-GOVERN-002` — `AST-GOV-003` in governance-analyzer is the canonical zero-constraints emitter.
+- **Three detection-narrowing gaps closed (adversarial review).** Surfaced by an adversarial subagent: the previous fix-pass had narrowed three patterns just enough to miss a real attack vector. Fixes restored detection without reintroducing the FPs.
+- **NEMO-009 false positive on `model.eval()`, `tensor.eval()`, etc.** PyTorch's `.eval()` method is not Python's `eval()` builtin. Pattern now requires the bare `eval(` form, not method dispatch.
+- **Path-context exemptions for corpus/, test/, example/ paths.** Findings inside known fixture/corpus directories no longer escalate to CRITICAL. Test fixtures are intentionally vulnerable.
+- **Frontend-project signal includes Angular and Vue CLI configs.** Previously only React/Next/Vite were recognized.
+- **3 FPs suppressed + TOCTOU/env-exfil hardened + AST-SCOPE dispatch corrected.**
+- **webcred handles `./dist/` leading segment in package.json browser field.**
+- **Project constraints propagate from sibling SOUL.md to capability-analyzer.** Fix routing for ungoverned-capability findings now references the project's actual SOUL.md when one exists, instead of suggesting the user add governance that already exists elsewhere in the repo.
+- **Governance SOUL FPs eliminated.** Multiple paths where governance findings fired against well-governed agents have been suppressed.
+- **`GIT-001` skipped for npm package scans.** A missing `.gitignore` is meaningful in a project repo, irrelevant in a published npm tarball.
+- **SOUL/MCP oracle label accuracy.** Oracle eval labels for SOUL and MCP fixtures corrected.
+
 ## [0.17.9] - 2026-04-15
 
 ### Fixed

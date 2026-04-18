@@ -331,9 +331,12 @@ function checkConstraintEnforceability(ast: SecurityAST, effectiveConstraints: C
 function checkMissingGovernance(ast: SecurityAST, effectiveConstraints: Constraint[]): ASTFinding[] {
   const findings: ASTFinding[] = [];
 
-  // No constraints at all -- already covered by capability-analyzer AST-GOVERN-002
-  // Here we check the more nuanced case: some constraints exist but don't cover
-  // specific high-risk capabilities.
+  // Zero-constraint case. Canonical emitter for "no governance at all" —
+  // capability-analyzer used to emit AST-GOVERN-002 for the same condition,
+  // which produced a duplicate Governance finding on every bare skill / MCP
+  // config. That emission was removed in favor of this one because
+  // AST-GOV-003 covers both declared and inferred capabilities, whereas
+  // AST-GOVERN-002 only covered declared capabilities.
   if (effectiveConstraints.length === 0) {
     // Only flag if there are capabilities (avoid noise on pure docs)
     if (ast.declaredCapabilities.length > 0 || ast.inferredCapabilities.length > 0) {

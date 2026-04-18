@@ -9851,22 +9851,26 @@ dist/
         // Two-tier TOCTOU detection, 40-line proximity window (same function scope):
         //
         //  Tier A — Access-gate TOCTOU: existsSync/accessSync/access() on a variable,
-        //    then any READ or EXEC use of the same variable. The access gate is the
-        //    classic TOCTOU pattern — the check blesses the path, the use trusts it.
+        //    then EXEC use (execFile/spawn/execSync) of the same variable. The check
+        //    blesses the path and the use executes it — an attacker can swap the file
+        //    in the race window. Access-gate + READ is NOT TOCTOU: reading a swapped
+        //    file just produces attacker-controlled content the application must
+        //    sanitize anyway, and idiomatic config loading (`if (existsSync(p))
+        //    return readFileSync(p)`) was producing dominant FPs in real-world repos.
         //
         //  Tier B — Stat-then-exec TOCTOU: statSync/lstatSync/fs.stat/fs.lstat on a
-        //    variable, then EXEC use (execFile/spawn/execSync) of the same variable.
-        //    Stat-then-read alone is tolerated: content scanners legitimately stat
-        //    for size filtering then read for analysis with no trust transfer.
+        //    variable, then EXEC use of the same variable. Stat-then-read alone is
+        //    tolerated for the same reason as access-then-read above.
         const fileLines = content.split('\n');
 
         const accessGatePattern = /\b(?:existsSync|accessSync|fs\.access)\s*\(\s*(\w+)\s*[,)]/g;
         const statPattern = /\b(?:statSync|lstatSync|fs\.stat|fs\.lstat)\s*\(\s*(\w+)\s*[,)]/g;
-        const readUseRe = (v: string) => new RegExp(
-          `\\b(?:readFile(?:Sync)?|createReadStream|open(?:Sync)?|execFile(?:Sync)?|spawn(?:Sync)?|execSync)\\s*\\(\\s*${v}\\b`
-        );
+        // Dynamic `import(varPath)` always evaluates module code — same RCE
+        // surface as exec, low FP risk. `require(varPath)` is intentionally
+        // omitted: JSON loading via `require()` is legitimate config-load and
+        // would re-introduce the dominant FP class this fix targets.
         const execUseRe = (v: string) => new RegExp(
-          `\\b(?:execFile(?:Sync)?|spawn(?:Sync)?|execSync|child_process\\.exec)\\s*\\(\\s*${v}\\b`
+          `\\b(?:execFile(?:Sync)?|spawn(?:Sync)?|execSync|child_process\\.exec|import)\\s*\\(\\s*${v}\\b`
         );
         const windowHasUse = (checkLineIdx: number, re: RegExp): boolean => {
           const windowEnd = Math.min(checkLineIdx + 40, fileLines.length);
@@ -9879,7 +9883,7 @@ dist/
         const accessGateHit = [...content.matchAll(accessGatePattern)].some(m => {
           const varName = m[1];
           const lineIdx = content.slice(0, m.index!).split('\n').length - 1;
-          return windowHasUse(lineIdx, readUseRe(varName));
+          return windowHasUse(lineIdx, execUseRe(varName));
         });
         const statExecHit = [...content.matchAll(statPattern)].some(m => {
           const varName = m[1];

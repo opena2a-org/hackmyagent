@@ -52,13 +52,24 @@ import {
 } from './index';
 import { resolveAndLogMcpShorthand } from './resolve-mcp';
 import { WildScanner, type WildScanReport } from './wild';
-import { isRenderableAnalystFinding, formatAnalystDescription } from './output/analyst-render';
+import { isRenderableAnalystFinding, formatAnalystDescription, capAnalystThreatLevel, formatAnalystConfidence } from './output/analyst-render';
+import { getTaxonomyMap } from './hardening/taxonomy';
 const program = new Command();
 program.showHelpAfterError('(run with --help for usage)');
 
-// Total security check count across all scanner modules.
-// Update when adding new checks (verify with: grep -r "checkId:" src/hardening/ | grep -o "checkId: '[^']*'" | sort -u | wc -l)
-const CHECK_COUNT = 209;
+// Total security check count + distinct category count, derived from the
+// taxonomy map (the same source check-metadata reads). Previously CHECK_COUNT
+// was hardcoded (209) and the category count was hardcoded in help text as
+// "60 categories" — both drifted. Deriving from the taxonomy keeps --help,
+// command descriptions, and check-metadata consistent without manual bumps.
+const CHECK_IDS = Object.keys(getTaxonomyMap());
+const CHECK_COUNT = CHECK_IDS.length;
+const CATEGORY_COUNT = new Set(
+  CHECK_IDS.map(id => {
+    const parts = id.split('-');
+    return (parts.length > 1 ? parts.slice(0, -1).join('-') : parts[0]).toLowerCase();
+  }),
+).size;
 
 // How long registry-cached scan data is considered fresh before `check` re-scans.
 const STALE_SCAN_DAYS = 3;
@@ -990,12 +1001,13 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     for (const af of renderableAnalystFindings) {
       const r = af.result;
       if (af.taskType === 'threatAnalysis') {
-        const level = String(r.threatLevel ?? 'unknown').toUpperCase();
+        const { level, capped } = capAnalystThreatLevel(r.threatLevel as string | undefined, af.confidence);
         const levelColor = level === 'CRITICAL' || level === 'HIGH' ? colors.red : level === 'MEDIUM' ? colors.yellow : colors.dim;
         // Only show attackVector separator when the field is populated — avoids
         // a naked "CRITICAL  " line with trailing whitespace.
         const vectorText = r.attackVector ? `  ${colors.white}${r.attackVector}${RESET()}` : '';
-        console.log(`  ${levelColor}${colors.bold}${level}${RESET()}${vectorText}`);
+        const cappedSuffix = capped ? `  ${colors.dim}(low confidence — capped from CRITICAL)${RESET()}` : '';
+        console.log(`  ${levelColor}${colors.bold}${level}${RESET()}${vectorText}${cappedSuffix}`);
         if (r.description) {
           const { text, truncated } = formatAnalystDescription(String(r.description), { verbose: !!verbose });
           if (text) console.log(`  ${colors.dim}${text}${RESET()}`);
@@ -1057,10 +1069,15 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         // Generic display
         if (r.description) console.log(`  ${r.description}`);
       }
-      // Only show confidence footer when high enough to be meaningful (>= 75%)
-      if (af.confidence >= 0.75 || verbose) {
-        console.log(`  ${colors.dim}Confidence: ${Math.round(af.confidence * 100)}% | ${af.modelVersion} (${af.durationMs}ms)${RESET()}`);
-      }
+      // Confidence display: numeric only when calibrated (>= LOW_CONFIDENCE_CAP).
+      // Below the threshold show a qualitative label so a hardcoded value doesn't
+      // pose as a measurement. Verbose mode reveals the raw number with an
+      // (uncalibrated) suffix so it can't be mistaken for ground truth.
+      const { label: confLabel, numeric: confNumeric } = formatAnalystConfidence(af.confidence);
+      const display = verbose && !confNumeric
+        ? `${Math.round(af.confidence * 100)}% (uncalibrated)`
+        : confLabel;
+      console.log(`  ${colors.dim}Confidence: ${display} | ${af.modelVersion} (${af.durationMs}ms)${RESET()}`);
       console.log();
     }
   }
@@ -2615,13 +2632,13 @@ program
   .command('secure')
   .description(`Scan and harden your agent setup
 
-Performs ${CHECK_COUNT} security checks across 60 categories:
+Performs ${CHECK_COUNT} security checks across ${CATEGORY_COUNT} categories:
   • Credentials: API key exposure, secrets in configs
   • MCP: Server configs, tool permissions, secrets
   • Network: TLS, interface bindings, CORS
   • Prompt: Injection defenses, role protection
   • Encryption: At-rest encryption, secure hashing
-  • And 54 more categories...
+  • And ${CATEGORY_COUNT - 5} more categories...
 
 Benchmark mode (--benchmark):
   oasb-1   OASB-1 infrastructure compliance (L1/L2/L3 levels)
@@ -2748,11 +2765,11 @@ Examples:
       }
 
       // Analysis mode: smart defaults, minimal flags
-      // Default: static + NanoMind (if daemon available)
-      // --deep: everything (static + NanoMind + simulation + adaptive attacks)
-      // --static-only: just static checks (CI/deterministic)
-      // NanoMind runs by default on every scan (including CI)
-      // --static-only is the only way to disable it
+      // Default: static checks + NanoMind AST semantic compiler
+      // --nanomind: also runs the generative analyst layer (opt-in; adds latency)
+      // --deep: everything (static + AST + simulation + adaptive attacks)
+      // --static-only: skip the AST semantic compiler too (CI/deterministic baseline)
+      // The AST semantic compiler runs by default; the generative analyst is opt-in.
       const isStaticOnly = (options as Record<string, unknown>).staticOnly as boolean ?? false;
       const isDeep = options.deep ?? (scanDepth === 'deep');
 

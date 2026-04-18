@@ -28,6 +28,39 @@ export function isRenderableAnalystFinding(af: AnalystFindingLike): boolean {
   return true;
 }
 
+/** Confidence threshold below which a CRITICAL claim is downgraded to HIGH. */
+export const LOW_CONFIDENCE_CAP = 0.80;
+
+/**
+ * Cap CRITICAL severity to HIGH when confidence is below the calibration
+ * threshold. The model emits CRITICAL on findings with hardcoded ~60%
+ * confidence, which is not enough evidence to scream the loudest severity.
+ */
+export function capAnalystThreatLevel(
+  rawLevel: string | undefined,
+  confidence: number,
+): { level: string; capped: boolean } {
+  const upper = String(rawLevel ?? 'unknown').toUpperCase();
+  if (confidence < LOW_CONFIDENCE_CAP && upper === 'CRITICAL') {
+    return { level: 'HIGH', capped: true };
+  }
+  return { level: upper, capped: false };
+}
+
+/**
+ * Render confidence as a number when it crosses the calibration threshold,
+ * and as a qualitative label otherwise. Avoids displaying a hardcoded value
+ * (e.g. exactly 60% on every finding) as if it were a real measurement.
+ */
+export function formatAnalystConfidence(
+  confidence: number,
+): { label: string; numeric: boolean } {
+  if (confidence >= LOW_CONFIDENCE_CAP) {
+    return { label: `${Math.round(confidence * 100)}%`, numeric: true };
+  }
+  return { label: 'low confidence', numeric: false };
+}
+
 export interface FormattedDescription {
   text: string;
   truncated: boolean;

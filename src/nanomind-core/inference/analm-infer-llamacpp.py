@@ -86,7 +86,9 @@ def main():
 
     llm = Llama(
         model_path=gguf_path,
-        n_ctx=2048,
+        # n_ctx covers prompt + max_tokens; bumped to 4096 to fit a 2048-token
+        # response on top of typical system+user prompts (~500 tokens).
+        n_ctx=4096,
         n_threads=4,
         verbose=False,
     )
@@ -96,7 +98,8 @@ def main():
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
         ],
-        max_tokens=512,
+        # max_tokens=2048 allows complete responses without mid-sentence truncation.
+        max_tokens=2048,
         temperature=0.1,
     )
 

@@ -117,6 +117,46 @@ describe('Artifact Parser', () => {
     expect(classifyArtifactType('{"mcpServers":{}}', 'mcp.json')).toBe('mcp_config');
   });
 
+  it('matches mcp.json by basename, not by suffix', () => {
+    // Bug-bounty target descriptors named *-mcp.json describe an MCP server,
+    // they are NOT themselves MCP configs. Misclassification routed them
+    // through the agent analyzers and produced six-finding pileups.
+    const targetDescriptor = JSON.stringify({
+      id: 'salesforce-mcp',
+      category: 'mcp-server',
+      attackSurface: [{ surface: 'SOQL injection' }],
+    });
+    expect(classifyArtifactType(targetDescriptor, 'data/targets/salesforce-mcp.json'))
+      .not.toBe('mcp_config');
+    expect(classifyArtifactType(targetDescriptor, 'github-mcp.json'))
+      .not.toBe('mcp_config');
+    // Real MCP configs in subdirectories still match by basename.
+    expect(classifyArtifactType('{"mcpServers":{}}', '.cursor/mcp.json'))
+      .toBe('mcp_config');
+    expect(classifyArtifactType('{"mcpServers":{}}', '.well-known/mcp.json'))
+      .toBe('mcp_config');
+    // Claude Code project config and assembly-scanner variants must still match.
+    expect(classifyArtifactType('{"mcpServers":{}}', '.mcp.json'))
+      .toBe('mcp_config');
+    expect(classifyArtifactType('{"mcpServers":{}}', '/repo/.mcp.json'))
+      .toBe('mcp_config');
+    expect(classifyArtifactType('{"mcpServers":{}}', 'mcpServers.json'))
+      .toBe('mcp_config');
+    // Content-based fallback still catches mcp configs with non-standard names.
+    expect(classifyArtifactType('{"mcpServers":{"x":{}}}', 'config/custom.json'))
+      .toBe('mcp_config');
+    // Content fallback tolerates a leading BOM and pretty-printed whitespace
+    // (JSONC-style files were previously missed when basename mismatched).
+    expect(classifyArtifactType('\uFEFF\n  {\n  "mcpServers": {}\n}', 'evil/config.json'))
+      .toBe('mcp_config');
+    // Content fallback must NOT match prose mentioning "mcpServers" as a string;
+    // only the key syntax `"mcpServers":` qualifies.
+    expect(classifyArtifactType(
+      '{"description": "talks about \\"mcpServers\\" as a topic"}',
+      'docs/notes.json',
+    )).not.toBe('mcp_config');
+  });
+
   it('classifies SOUL files', () => {
     expect(classifyArtifactType('', 'SOUL.md')).toBe('soul');
   });
