@@ -23,10 +23,8 @@ jobs:
       - run: npm run build
       - run: npm test
 
-      - name: Publish to npm with provenance
+      - name: Publish to npm with provenance (OIDC trusted publishing)
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Verify provenance attached
         run: |
