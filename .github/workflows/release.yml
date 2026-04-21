@@ -30,15 +30,21 @@ jobs:
 
       - name: Verify provenance attached
         run: |
-          sleep 15
           pkg_version=$(node -p "require('./package.json').version")
           pkg_name=$(node -p "require('./package.json').name")
-          attestations=$(npm view "${pkg_name}@${pkg_version}" dist.attestations --json 2>/dev/null || echo "")
-          if [ -z "$attestations" ] || [ "$attestations" = "null" ]; then
-            echo "::error::Provenance attestations missing from npm for ${pkg_name}@${pkg_version}"
-            exit 1
-          fi
-          echo "Provenance verified for ${pkg_name}@${pkg_version}"
+          deadline=$((SECONDS + 300))
+          attestations=""
+          while [ $SECONDS -lt $deadline ]; do
+            attestations=$(npm view "${pkg_name}@${pkg_version}" dist.attestations --json 2>&1 || true)
+            if [ -n "$attestations" ] && [ "$attestations" != "null" ] && [ "$attestations" != "{}" ]; then
+              echo "Provenance verified for ${pkg_name}@${pkg_version}"
+              exit 0
+            fi
+            echo "Attestations not yet visible, retrying in 15s... (elapsed ${SECONDS}s)"
+            sleep 15
+          done
+          echo "::error::Provenance attestations missing from npm for ${pkg_name}@${pkg_version} after 5 minutes"
+          exit 1
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
