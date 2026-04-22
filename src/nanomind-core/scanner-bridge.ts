@@ -69,11 +69,25 @@ const MAX_FILES_PER_SCAN = 200;
 // Public API
 // ============================================================================
 
+/** Compact summary of one compiled artifact, suitable for CLI rendering.
+ *  Populated during the scanner-bridge compile loop so the display layer
+ *  can describe what the project ACTUALLY CONTAINS (not just how many
+ *  findings fired). Avoids shipping full ASTs through the public API. */
+export interface ArtifactSummary {
+  path: string;                      // relative path from scan root
+  type: string;                      // artifactType (skill, mcp_config, soul, ...)
+  intent: 'benign' | 'suspicious' | 'malicious' | 'unknown';
+  capabilityLabels: string[];        // human-readable, up to 4 (e.g. "fs-write", "shell-exec")
+  constraintCount: number;           // # of declared constraints (0 = no governance)
+  weakConstraintCount: number;       // # of constraints with bypassRisk > 0.5
+}
+
 export interface NanoMindScanResult {
   mergedFindings: SecurityFinding[];
   astFindings: ASTFinding[];
   integrityStatus: IntegrityStatus;
   compiledArtifacts: number;
+  artifactSummaries: ArtifactSummary[];
   nanomindAvailable: boolean;
 }
 
@@ -101,6 +115,7 @@ export async function runNanoMindScan(
       astFindings: [],
       integrityStatus: 'QUARANTINE',
       compiledArtifacts: 0,
+      artifactSummaries: [],
       nanomindAvailable: false,
     };
   }
@@ -136,6 +151,7 @@ export async function runNanoMindScan(
 
   // Step 4: Compile each file and run analyzers
   const allASTFindings: ASTFinding[] = [];
+  const artifactSummaries: ArtifactSummary[] = [];
   let compiledCount = 0;
   let nanomindUsedAtLeastOnce = false;
 
@@ -159,6 +175,15 @@ export async function runNanoMindScan(
         result.ast.intentConfidence,
         result.ast.modelVersion,
       );
+
+      // Capture a compact summary for the CLI Observations block. Only
+      // security-relevant artifact types — skipping source_code / unknown /
+      // env_file avoids pollution from ordinary files that the compiler
+      // fingerprints but the user doesn't want enumerated.
+      const isAgentArtifact = ['skill', 'mcp_config', 'soul', 'system_prompt', 'agent_config', 'a2a_card'].includes(result.ast.artifactType);
+      if (isAgentArtifact) {
+        artifactSummaries.push(buildArtifactSummary(result.ast, relativePath));
+      }
 
       // Skip documentation and metadata files — these are not security artifacts.
       // URLs in package.json are not exfiltration, "should" in README is not governance.
@@ -216,8 +241,74 @@ export async function runNanoMindScan(
     astFindings: allASTFindings,
     integrityStatus: integrity.status,
     compiledArtifacts: compiledCount,
+    artifactSummaries,
     nanomindAvailable: nanomindUsedAtLeastOnce || useNanoMind,
   };
+}
+
+// ============================================================================
+// Artifact Summary Builder
+// ============================================================================
+
+/**
+ * Distill a SecurityAST into a compact summary suitable for CLI rendering.
+ *
+ * Capability names in the AST come from analyzer-internal taxonomy (e.g.
+ * `filesystem.write`, `network.http`, `shell.exec`). Those don't read well
+ * to a CISO — so we collapse them to short, readable phrases: "fs-write",
+ * "net-http", "shell-exec". The mapping is deterministic; no model inference.
+ */
+function buildArtifactSummary(ast: SecurityAST, relativePath: string): ArtifactSummary {
+  // Prefer inferred over declared — inferred reflects what the artifact
+  // ACTUALLY does, declared reflects what it claims to do. Divergence is a
+  // separate finding; here we describe behaviour.
+  const inferredLabels = ast.inferredCapabilities.map(c => humanizeCapability(c.name));
+  // Deduplicate (same capability can be inferred multiple times with different scopes)
+  const uniqueLabels = Array.from(new Set(inferredLabels)).filter(Boolean);
+
+  const weakConstraintCount = ast.declaredConstraints.filter(c => c.bypassRisk > 0.5).length;
+
+  return {
+    path: relativePath,
+    type: ast.artifactType,
+    intent: (ast.intentClassification ?? 'unknown') as ArtifactSummary['intent'],
+    capabilityLabels: uniqueLabels.slice(0, 4), // cap at 4 to keep the CLI line short
+    constraintCount: ast.declaredConstraints.length,
+    weakConstraintCount,
+  };
+}
+
+/**
+ * Collapse analyzer-internal capability names (dot-delimited,
+ * domain-first) into short display labels. Unknown names pass through
+ * as-is (better to show a raw name than a generic placeholder).
+ */
+function humanizeCapability(name: string): string {
+  const map: Record<string, string> = {
+    'filesystem.read': 'fs-read',
+    'filesystem.write': 'fs-write',
+    'filesystem.delete': 'fs-delete',
+    'network.http': 'net-http',
+    'network.egress': 'net-egress',
+    'shell.exec': 'shell-exec',
+    'shell.spawn': 'shell-spawn',
+    'process.kill': 'proc-kill',
+    'credential.read': 'creds-read',
+    'credential.write': 'creds-write',
+    'memory.read': 'mem-read',
+    'memory.write': 'mem-write',
+    'api.call': 'api-call',
+    'database.read': 'db-read',
+    'database.write': 'db-write',
+    'cron.schedule': 'cron',
+    'persistence.session': 'persistence',
+    'exfiltration.external': 'data-egress',
+    'injection.prompt': 'prompt-injection',
+  };
+  if (map[name]) return map[name];
+  // Fallback: take the last segment, e.g. "custom.foo.bar" -> "bar"
+  const segs = name.split('.');
+  return segs[segs.length - 1] || name;
 }
 
 // ============================================================================

@@ -318,6 +318,7 @@ Examples:
             compiledArtifacts: nmResult.compiledArtifacts,
             findings: issues as any[],
           },
+          artifactSummaries: nmResult.artifactSummaries,
           verbose: !!options.verbose,
           usedAnalm: resolveNanomindFlag(options),
           analystFindings: nmResult.analystFindings,
@@ -527,6 +528,19 @@ interface UnifiedCheckDisplayOptions {
     compiledArtifacts: number;
     findings: Array<{ severity: string; checkId?: string; description?: string; name?: string; message?: string; fix?: string; guidance?: string; file?: string; line?: number; passed?: boolean; attackClass?: string; category?: string }>;
   };
+  /** Per-artifact summaries for the Observations block. Skill/MCP/SOUL/A2A
+   *  detected and compiled by the semantic compiler. Shape mirrors
+   *  `ArtifactSummary` from nanomind-core/scanner-bridge. Top-level field
+   *  (not nested under nanomindScan) so both `check` and `secure` paths
+   *  populate it uniformly. */
+  artifactSummaries?: Array<{
+    path: string;
+    type: string;
+    intent: 'benign' | 'suspicious' | 'malicious' | 'unknown';
+    capabilityLabels: string[];
+    constraintCount: number;
+    weakConstraintCount: number;
+  }>;
   usedAnalm?: boolean;
   analystFindings?: Array<{
     taskType: string;
@@ -824,13 +838,24 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     const kind = rawKind && rawKind !== 'unknown' ? rawKind : 'local project';
 
     const categorySummaries = buildCategorySummaries(failed);
-    const verdictLine = buildVerdict({ critical, high, medium, low }, { kind, filesScanned });
+    const verdictLine = buildVerdict(
+      { critical, high, medium, low },
+      { kind, filesScanned },
+      failed.map(f => ({
+        severity: f.severity as 'critical' | 'high' | 'medium' | 'low',
+        name: f.name,
+        checkId: f.checkId,
+        file: f.file,
+        line: f.line,
+      })),
+    );
 
-    const { lines } = renderObservationsBlock({
+    const { lines, artifactLines } = renderObservationsBlock({
       surfaces: { kind, filesScanned, artifactsCompiled: semanticCount },
       checks: { staticCount, semanticCount },
       categories: categorySummaries,
       verdict: verdictLine,
+      artifacts: opts.artifactSummaries,
       verbose: !!verbose,
     });
 
@@ -843,11 +868,37 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     };
     // 11-char label width fits "Categories" + 1 space separator.
     const LABEL_WIDTH = 12;
-    for (const { label, value, tone } of lines) {
-      const labelPad = label.padEnd(LABEL_WIDTH, ' ');
-      const color = toneColor(tone);
-      const accent = label === 'Verdict' ? colors.bold : '';
-      console.log(`  ${colors.dim}${labelPad}${RESET()}${color}${accent}${value}${RESET()}`);
+
+    // Emit Surfaces + Checks, then Artifacts block (if any), then
+    // Categories + Verdict. Artifacts go between Checks and Categories
+    // because they answer "what's here" before Categories answers "where
+    // are the problems."
+    const surfacesLine = lines.find(l => l.label === 'Surfaces')!;
+    const checksLine = lines.find(l => l.label === 'Checks')!;
+    const categoriesLine = lines.find(l => l.label === 'Categories')!;
+    const verdictDisplay = lines.find(l => l.label === 'Verdict')!;
+
+    for (const line of [surfacesLine, checksLine]) {
+      const labelPad = line.label.padEnd(LABEL_WIDTH, ' ');
+      console.log(`  ${colors.dim}${labelPad}${RESET()}${toneColor(line.tone)}${line.value}${RESET()}`);
+    }
+
+    if (artifactLines.length > 0) {
+      // First artifact line gets the "Artifacts" label; subsequent lines
+      // are indented to align under the first artifact path.
+      const firstLabel = 'Artifacts'.padEnd(LABEL_WIDTH, ' ');
+      const contIndent = ' '.repeat(LABEL_WIDTH);
+      console.log(`  ${colors.dim}${firstLabel}${RESET()}${artifactLines[0]}`);
+      for (const extraLine of artifactLines.slice(1)) {
+        console.log(`  ${colors.dim}${contIndent}${RESET()}${extraLine}`);
+      }
+    }
+
+    for (const line of [categoriesLine, verdictDisplay]) {
+      const labelPad = line.label.padEnd(LABEL_WIDTH, ' ');
+      const color = toneColor(line.tone);
+      const accent = line.label === 'Verdict' ? colors.bold : '';
+      console.log(`  ${colors.dim}${labelPad}${RESET()}${color}${accent}${line.value}${RESET()}`);
     }
     console.log();
   }
@@ -3279,6 +3330,7 @@ Examples:
           ? nmResult.analystFindings
           : undefined,
         analystZeroState: nmResult.analystZeroState,
+        artifactSummaries: nmResult.artifactSummaries,
         nextStepsTarget: directory,
       });
 
@@ -8232,6 +8284,7 @@ async function checkGitHubRepo(
     // Run NanoMind semantic analysis and re-filter
     let analystFindings: any[] | undefined;
     let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable'; modelLabel: string } | undefined;
+    let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(repoDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options) });
@@ -8243,6 +8296,7 @@ async function checkGitHubRepo(
       result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
+      artifactSummaries = nmResult.artifactSummaries;
     } catch {
       // NanoMind unavailable — surface this in the CLI output instead of going
       // silent when --nanomind was requested. Keeps the render path honest.
@@ -8289,6 +8343,7 @@ async function checkGitHubRepo(
       usedAnalm: resolveNanomindFlag(options),
       analystFindings,
       analystZeroState,
+      artifactSummaries,
     });
 
     // Community contribution
@@ -8427,6 +8482,7 @@ async function checkPyPiPackage(
     // Run NanoMind semantic analysis and re-filter
     let analystFindings: any[] | undefined;
     let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable'; modelLabel: string } | undefined;
+    let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(extractDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options) });
@@ -8438,6 +8494,7 @@ async function checkPyPiPackage(
       result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
+      artifactSummaries = nmResult.artifactSummaries;
     } catch {
       // NanoMind unavailable -- use base scan results
     }
@@ -8482,6 +8539,7 @@ async function checkPyPiPackage(
       usedAnalm: resolveNanomindFlag(options),
       analystFindings,
       analystZeroState,
+      artifactSummaries,
     });
 
     if (critical.length > 0 || high.length > 0) process.exit(1);
@@ -8610,6 +8668,7 @@ async function checkRawUrl(
 
     let analystFindings: any[] | undefined;
     let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable'; modelLabel: string } | undefined;
+    let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(scanDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options) });
@@ -8621,6 +8680,7 @@ async function checkRawUrl(
       result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
+      artifactSummaries = nmResult.artifactSummaries;
     } catch {
       // NanoMind unavailable — surface this in the CLI output instead of going
       // silent when --nanomind was requested. Keeps the render path honest.
@@ -8664,6 +8724,7 @@ async function checkRawUrl(
       usedAnalm: resolveNanomindFlag(options),
       analystFindings,
       analystZeroState,
+      artifactSummaries,
     });
 
     // Community contribution (auto-share if opted in, no first-time prompt for URLs)
@@ -8772,6 +8833,7 @@ async function checkNpmPackage(
     // Run NanoMind semantic analysis and re-filter (matches secure command pipeline)
     let analystFindings: any[] | undefined;
     let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable'; modelLabel: string } | undefined;
+    let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(packageDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options) });
@@ -8783,6 +8845,7 @@ async function checkNpmPackage(
       result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
+      artifactSummaries = nmResult.artifactSummaries;
     } catch {
       // NanoMind unavailable — surface this in the CLI output instead of going
       // silent when --nanomind was requested. Keeps the render path honest.
@@ -8826,6 +8889,7 @@ async function checkNpmPackage(
       usedAnalm: resolveNanomindFlag(options),
       analystFindings,
       analystZeroState,
+      artifactSummaries,
     });
 
     // Community contribution (after 3 scans, interactive only)
