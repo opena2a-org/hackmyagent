@@ -38,6 +38,17 @@ export interface OrchestrationResult {
   analystFindings?: AnalystResponse[];
   /** Hint shown to user when NanoMind is available but not used. */
   analystHint?: string;
+  /**
+   * When --nanomind was requested but produced no per-finding output (e.g., clean scan),
+   * carries the model metadata so the CLI can render an honest zero-state block instead
+   * of staying silent. Per v0.5.0 validation (2026-04-22), the model is a per-artifact
+   * attack-classification specialist; clean-scan intel reports are not a supported task
+   * until a dedicated NLM-SUM is trained.
+   */
+  analystZeroState?: {
+    reason: 'clean-scan' | 'not-ready' | 'backend-unavailable';
+    modelLabel: string;
+  };
 }
 
 /**
@@ -117,10 +128,27 @@ export async function orchestrateNanoMind(
       const ready = await isAnalystReady();
       if (ready) {
         const failed = nmResult.mergedFindings.filter(f => !f.passed && !f.fixed);
-        if (failed.length > 0) {
+        // Gate the analyst on HIGH/CRITICAL findings that are tied to a real
+        // file. Two reasons to exclude both LOW/MEDIUM and file-less findings:
+        // (1) LOW/MEDIUM are typically filesystem-hygiene checks (GIT-001
+        //     "Missing .gitignore", PERM-001, etc.) that are not per-artifact
+        //     attack classifications.
+        // (2) HIGH/CRITICAL findings without a file (AUTH-002 "no auth
+        //     configured", PROC-003, NET-005) are synthesized "nothing
+        //     configured" checks — they don't feed a per-artifact classifier
+        //     any content to reason about.
+        // Asking SmolLM2 v0.5.0 to analyze either produces hallucinated attack
+        // classes (verified 2026-04-22: empty dir + GIT-001 LOW produced 4
+        // confabulated HIGH narratives because file-less passed=false findings
+        // like AUTH-002 were being passed in). See memory
+        // project_nanomind_v05_intelreport_task_mismatch.
+        const significant = failed.filter(f =>
+          (f.severity === 'critical' || f.severity === 'high') && !!f.file,
+        );
+        if (significant.length > 0) {
           if (!silent) process.stderr.write('Running NanoMind generative analysis (typically adds 15-30s per artifact)...\n');
           result.analystFindings = await runAnalystOnFindings(
-            nmResult.mergedFindings,
+            significant,
             runAnalystInference,
           );
           if (!silent && result.analystFindings.length > 0) {
@@ -129,17 +157,13 @@ export async function orchestrateNanoMind(
             );
           }
         } else {
-          // Clean scan -- generate an intel report summary instead
-          if (!silent) process.stderr.write('Running NanoMind intel report...\n');
-          const allFindings = nmResult.mergedFindings;
-          const summary = `Clean scan: ${allFindings.length} checks passed, ${nmResult.compiledArtifacts} artifacts compiled. No security findings.`;
-          const intelResponse = await runAnalystInference({
-            taskType: 'intelReport',
-            content: summary,
-          });
-          if (intelResponse) {
-            result.analystFindings = [intelResponse];
-          }
+          // No HIGH/CRITICAL findings — skip the analyst call. LOW/MEDIUM-only
+          // scans are effectively "clean" from an AI-threat perspective; the
+          // deterministic Observations block carries the verdict.
+          result.analystZeroState = {
+            reason: 'clean-scan',
+            modelLabel: 'SmolLM2 v0.5.0 inline',
+          };
         }
       } else {
         if (!silent) {
@@ -147,6 +171,10 @@ export async function orchestrateNanoMind(
             'NanoMind generative model not set up. Run: hackmyagent nanomind setup\n',
           );
         }
+        result.analystZeroState = {
+          reason: 'not-ready',
+          modelLabel: 'SmolLM2 v0.5.0 inline',
+        };
       }
     } else if (!silent && !ci) {
       // Show hint only if NanoMind is available and there are findings to analyze

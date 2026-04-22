@@ -53,6 +53,7 @@ import {
 import { resolveAndLogMcpShorthand } from './resolve-mcp';
 import { WildScanner, type WildScanReport } from './wild';
 import { isRenderableAnalystFinding, formatAnalystDescription, capAnalystThreatLevel, formatAnalystConfidence } from './output/analyst-render';
+import { renderObservationsBlock, buildCategorySummaries, buildVerdict } from './output/observations';
 import { getTaxonomyMap } from './hardening/taxonomy';
 const program = new Command();
 program.showHelpAfterError('(run with --help for usage)');
@@ -254,7 +255,7 @@ Examples:
   .option('--no-scan', 'Registry only, skip local scan (fast mode for CI)')
   .option('--no-registry', 'Local scan only, skip registry lookup (offline mode)')
   .option('--offline', 'Alias for --no-registry')
-  .option('--nanomind', 'AI-powered threat analysis using NanoMind (requires nanomind setup)')
+  .option('--nanomind', 'Per-finding AI threat analysis on HIGH/CRITICAL findings only (~15-30s per finding; specialist model, no effect on clean or LOW/MEDIUM-only scans; requires nanomind setup)')
   .option('--analm', '[deprecated alias for --nanomind] AI-powered threat analysis')
   .option('--rescan', 'Deprecated: local scan is now the default')
   .action(async (skill: string, options: { verbose?: boolean; json?: boolean; scan?: boolean; registry?: boolean; offline?: boolean; nanomind?: boolean; analm?: boolean; rescan?: boolean }) => {
@@ -320,6 +321,7 @@ Examples:
           verbose: !!options.verbose,
           usedAnalm: resolveNanomindFlag(options),
           analystFindings: nmResult.analystFindings,
+          analystZeroState: nmResult.analystZeroState,
         });
 
         const risk = critical.length > 0 ? 'critical' : high.length > 0 ? 'high' : issues.length > 0 ? 'medium' : 'low';
@@ -534,6 +536,15 @@ interface UnifiedCheckDisplayOptions {
     durationMs: number;
     backend: string;
   }>;
+  /**
+   * When --nanomind is set but the analyst produced no per-finding output
+   * (e.g., clean scan), render an honest zero-state NanoMind section instead
+   * of leaving the flag silent. Shape from orchestrate.ts.
+   */
+  analystZeroState?: {
+    reason: 'clean-scan' | 'not-ready' | 'backend-unavailable';
+    modelLabel: string;
+  };
   /** When set, this path is used in Next Steps hints instead of `name`. Use for local directory targets (e.g., `secure`). */
   nextStepsTarget?: string;
 }
@@ -796,6 +807,51 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     console.log(`  Trust     ${scoreMeter(score, maxScore)}`);
   }
 
+  // ── Observations + Verdict ──────────────────────────────────────────
+  // Fill the zero-state gap: every scan now shows surfaces / checks /
+  // categories / verdict so `100/100` never stands alone. Per brief
+  // briefs/cli-observation-verdict-ux.md [CPO-019]; intended home is
+  // `@opena2a/cli-ui` per [CA-030] — inlined here pending step-0d.
+  if (localScan || nanomindScan) {
+    // HMA advertises 209 static checks across 44 categories. Display
+    // the advertised count (not the findings count); a count of 0
+    // would be misleading.
+    const HMA_STATIC_CHECK_COUNT = 209;
+    const staticCount = HMA_STATIC_CHECK_COUNT;
+    const semanticCount = nanomindScan?.compiledArtifacts ?? 0;
+    const filesScanned = localScan?.filesScanned;
+    const rawKind = (projectType || '').toString().trim();
+    const kind = rawKind && rawKind !== 'unknown' ? rawKind : 'local project';
+
+    const categorySummaries = buildCategorySummaries(failed);
+    const verdictLine = buildVerdict({ critical, high, medium, low }, { kind, filesScanned });
+
+    const { lines } = renderObservationsBlock({
+      surfaces: { kind, filesScanned, artifactsCompiled: semanticCount },
+      checks: { staticCount, semanticCount },
+      categories: categorySummaries,
+      verdict: verdictLine,
+      verbose: !!verbose,
+    });
+
+    divider('Observations');
+    const toneColor = (tone: 'default' | 'good' | 'warning' | 'critical'): string => {
+      if (tone === 'good') return colors.green;
+      if (tone === 'warning') return colors.yellow;
+      if (tone === 'critical') return colors.red;
+      return '';
+    };
+    // 11-char label width fits "Categories" + 1 space separator.
+    const LABEL_WIDTH = 12;
+    for (const { label, value, tone } of lines) {
+      const labelPad = label.padEnd(LABEL_WIDTH, ' ');
+      const color = toneColor(tone);
+      const accent = label === 'Verdict' ? colors.bold : '';
+      console.log(`  ${colors.dim}${labelPad}${RESET()}${color}${accent}${value}${RESET()}`);
+    }
+    console.log();
+  }
+
   // ── Findings ────────────────────────────────────────────────────────
   if (failed.length > 0) {
     // Severity summary as colored pills
@@ -993,6 +1049,31 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   // Pre-filter: drop low-confidence and low-severity threat analyses so we
   // don't print a section header with zero renderable content.
   const renderableAnalystFindings = (opts.analystFindings ?? []).filter(isRenderableAnalystFinding);
+
+  // Zero-state branch: --nanomind was requested but produced no per-finding
+  // output. Render an honest section instead of staying silent. Per v0.5.0
+  // validation (2026-04-22), the inline model is a per-artifact attack-class
+  // specialist; scan-wide summarization is OOD and produces hallucinations,
+  // so clean scans skip the call entirely (see orchestrate.ts:131-143 rev).
+  if (renderableAnalystFindings.length === 0 && opts.analystZeroState) {
+    const { reason, modelLabel } = opts.analystZeroState;
+    divider('NanoMind Analysis');
+    console.log(`  ${colors.dim}Generative AI layer — per-finding attack classification${RESET()}`);
+    console.log();
+    if (reason === 'clean-scan') {
+      console.log(`  ${colors.green}No findings on this scan, so no per-finding analysis was produced.${RESET()}`);
+      console.log();
+      console.log(`  ${colors.dim}Model${RESET()}   ${modelLabel} (ready)`);
+      console.log(`  ${colors.dim}Scope${RESET()}   Specialist on attack classification for individual`);
+      console.log(`          artifacts. Does not produce scan-wide summaries in this`);
+      console.log(`          release.`);
+    } else if (reason === 'not-ready') {
+      console.log(`  ${colors.yellow}Model not set up.${RESET()} Run: ${colors.cyan}hackmyagent nanomind setup${RESET()}`);
+    } else {
+      console.log(`  ${colors.yellow}Backend unavailable on this platform.${RESET()}`);
+    }
+    console.log();
+  }
 
   if (renderableAnalystFindings.length > 0) {
     divider('NanoMind Analysis');
@@ -2681,7 +2762,7 @@ Examples:
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
   .option('-c, --category <name>', 'Filter to specific benchmark category')
   .option('--deep', 'Maximum analysis: static + semantic + behavioral simulation + adaptive attacks (~30s per file)')
-  .option('--nanomind', 'AI-powered threat analysis using NanoMind (requires nanomind setup)')
+  .option('--nanomind', 'Per-finding AI threat analysis on HIGH/CRITICAL findings only (~15-30s per finding; specialist model, no effect on clean or LOW/MEDIUM-only scans; requires nanomind setup)')
   .option('--analm', '[deprecated alias for --nanomind] AI-powered threat analysis')
   .option('--static-only', 'Disable semantic analysis and simulation (static checks only, fast, deterministic)')
   .option('--scan-depth <depth>', 'CAAT scan depth: quick (config+creds only), standard (default), deep (+ simulation)', 'standard')
@@ -3197,6 +3278,7 @@ Examples:
         analystFindings: nmResult.analystFindings?.length
           ? nmResult.analystFindings
           : undefined,
+        analystZeroState: nmResult.analystZeroState,
         nextStepsTarget: directory,
       });
 
@@ -8149,6 +8231,7 @@ async function checkGitHubRepo(
 
     // Run NanoMind semantic analysis and re-filter
     let analystFindings: any[] | undefined;
+    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable'; modelLabel: string } | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(repoDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options) });
@@ -8159,8 +8242,13 @@ async function checkGitHubRepo(
       ) as typeof result.findings;
       result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
       analystFindings = nmResult.analystFindings;
+      analystZeroState = nmResult.analystZeroState;
     } catch {
-      // NanoMind unavailable — use base scan results
+      // NanoMind unavailable — surface this in the CLI output instead of going
+      // silent when --nanomind was requested. Keeps the render path honest.
+      if (resolveNanomindFlag(options)) {
+        analystZeroState = { reason: 'backend-unavailable', modelLabel: 'SmolLM2 v0.5.0 inline' };
+      }
     }
 
     // Filter local-dev-only findings irrelevant to cloned repos
@@ -8200,6 +8288,7 @@ async function checkGitHubRepo(
       verbose: !!options.verbose,
       usedAnalm: resolveNanomindFlag(options),
       analystFindings,
+      analystZeroState,
     });
 
     // Community contribution
@@ -8337,6 +8426,7 @@ async function checkPyPiPackage(
 
     // Run NanoMind semantic analysis and re-filter
     let analystFindings: any[] | undefined;
+    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable'; modelLabel: string } | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(extractDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options) });
@@ -8347,6 +8437,7 @@ async function checkPyPiPackage(
       ) as typeof result.findings;
       result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
       analystFindings = nmResult.analystFindings;
+      analystZeroState = nmResult.analystZeroState;
     } catch {
       // NanoMind unavailable -- use base scan results
     }
@@ -8390,6 +8481,7 @@ async function checkPyPiPackage(
       verbose: !!options.verbose,
       usedAnalm: resolveNanomindFlag(options),
       analystFindings,
+      analystZeroState,
     });
 
     if (critical.length > 0 || high.length > 0) process.exit(1);
@@ -8517,6 +8609,7 @@ async function checkRawUrl(
     const result = await scanner.scan({ targetDir: scanDir, autoFix: false });
 
     let analystFindings: any[] | undefined;
+    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable'; modelLabel: string } | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(scanDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options) });
@@ -8527,8 +8620,13 @@ async function checkRawUrl(
       ) as typeof result.findings;
       result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
       analystFindings = nmResult.analystFindings;
+      analystZeroState = nmResult.analystZeroState;
     } catch {
-      // NanoMind unavailable — use base scan results
+      // NanoMind unavailable — surface this in the CLI output instead of going
+      // silent when --nanomind was requested. Keeps the render path honest.
+      if (resolveNanomindFlag(options)) {
+        analystZeroState = { reason: 'backend-unavailable', modelLabel: 'SmolLM2 v0.5.0 inline' };
+      }
     }
 
     // Filter local-dev-only findings irrelevant to downloaded URLs
@@ -8565,6 +8663,7 @@ async function checkRawUrl(
       verbose: !!options.verbose,
       usedAnalm: resolveNanomindFlag(options),
       analystFindings,
+      analystZeroState,
     });
 
     // Community contribution (auto-share if opted in, no first-time prompt for URLs)
@@ -8672,6 +8771,7 @@ async function checkNpmPackage(
 
     // Run NanoMind semantic analysis and re-filter (matches secure command pipeline)
     let analystFindings: any[] | undefined;
+    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable'; modelLabel: string } | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(packageDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options) });
@@ -8682,8 +8782,13 @@ async function checkNpmPackage(
       ) as typeof result.findings;
       result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
       analystFindings = nmResult.analystFindings;
+      analystZeroState = nmResult.analystZeroState;
     } catch {
-      // NanoMind unavailable — use base scan results
+      // NanoMind unavailable — surface this in the CLI output instead of going
+      // silent when --nanomind was requested. Keeps the render path honest.
+      if (resolveNanomindFlag(options)) {
+        analystZeroState = { reason: 'backend-unavailable', modelLabel: 'SmolLM2 v0.5.0 inline' };
+      }
     }
 
     // Filter local-dev-only findings irrelevant to downloaded packages
@@ -8720,6 +8825,7 @@ async function checkNpmPackage(
       verbose: !!options.verbose,
       usedAnalm: resolveNanomindFlag(options),
       analystFindings,
+      analystZeroState,
     });
 
     // Community contribution (after 3 scans, interactive only)
