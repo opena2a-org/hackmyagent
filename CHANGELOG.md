@@ -4,6 +4,11 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-04-22
+
+### Fixed
+- **E2E-003 live network detection skipped on CI (#119).** GHA ubuntu-latest runners don't reliably surface localhost TCP connections to `ss` polling within the 15s event window. Local dev on macOS and Linux continues to exercise the full detection path. Blocks the 0.18.1 publish workflow; 0.18.2 is the shippable bundle.
+
 ## [0.18.1] - 2026-04-22
 
 ### Fixed
