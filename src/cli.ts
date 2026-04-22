@@ -52,8 +52,15 @@ import {
 } from './index';
 import { resolveAndLogMcpShorthand } from './resolve-mcp';
 import { WildScanner, type WildScanReport } from './wild';
-import { isRenderableAnalystFinding, formatAnalystDescription, capAnalystThreatLevel, formatAnalystConfidence } from './output/analyst-render';
-import { renderObservationsBlock, buildCategorySummaries, buildVerdict } from './output/observations';
+import {
+  isRenderableAnalystFinding,
+  formatAnalystDescription,
+  capAnalystThreatLevel,
+  formatAnalystConfidence,
+  renderObservationsBlock,
+  buildCategorySummaries,
+  buildVerdict,
+} from '@opena2a/cli-ui';
 import { getTaxonomyMap } from './hardening/taxonomy';
 const program = new Command();
 program.showHelpAfterError('(run with --help for usage)');
@@ -3324,6 +3331,15 @@ Examples:
           maxScore: result.maxScore,
           findings: result.findings.filter((f) => !f.fixed),
         },
+        // Without this, the Observations "Checks" line renders "0 semantic"
+        // even though the pre-scan status reports N artifacts compiled.
+        // findings: [] because the semantic findings are already merged into
+        // result.findings — we only pass compiledArtifacts here so the
+        // Observations block can count semantic checks separately.
+        nanomindScan: nmResult.compiledArtifacts > 0 ? {
+          compiledArtifacts: nmResult.compiledArtifacts,
+          findings: [],
+        } : undefined,
         verbose: !!options.verbose,
         usedAnalm: resolveNanomindFlag(options),
         analystFindings: nmResult.analystFindings?.length
