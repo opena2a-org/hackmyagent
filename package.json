@@ -39,6 +39,7 @@
     "@noble/ed25519": "^2.3.0",
     "@noble/post-quantum": "^0.2.1",
     "@opena2a/aim-core": "^0.1.2",
+    "@opena2a/cli-ui": "0.2.0",
     "@opena2a/contribute": "^0.1.0",
     "@opena2a/shared": "^0.1.0",
     "ai-trust": "^0.2.6",
