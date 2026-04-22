@@ -7529,6 +7529,37 @@ dist/
     }
 
     // RAG-002: No content sanitization in retrieval pipeline
+    //
+    // Context gate (hma#108, CSR-011): the original check matched keyword
+    // substrings anywhere on a line, which fires on data-catalog string
+    // literals like `description: "...store and retrieve context..."`. Real
+    // retrieval code is shaped like a CallExpression — a retriever method
+    // call or a prompt-assembly template concat. Require that shape before
+    // firing. Classification: (a) preserved-detection FP-suppress.
+    //
+    // POSITIVE shapes (still fire):
+    //   - `vectorStore.similaritySearch(q)` / `.retrieve(q)` / `.vectorSearch(q)`
+    //   - `query_engine.query(...)` / `retriever.get(...)`
+    //   - ``prompt = `...${retrievedDoc}` `` / `systemPrompt += context`
+    //
+    // NEGATIVE shapes (suppress):
+    //   - `description: "store and retrieve context across conversations"`
+    //   - Markdown/doc strings mentioning retrieval concepts
+    const RETRIEVAL_CALL_RE = /(?:\.(?:retrieve|vectorSearch|vector_search|similaritySearch|similarity_search|get|query|invoke|ainvoke|get_relevant_documents|aget_relevant_documents)\s*\()|(?:\bquery_engine\s*\.\s*\w+\s*\()|(?:\bretriever\s*\.\s*\w+\s*\()/;
+    // Accept any non-whitespace RHS: covers Python f-strings (`prompt = f"..."`),
+    // bare concat (`context += retrieved`), template literals, and string
+    // concat. The outer filter already requires a retrieval keyword on the
+    // same line, so plain-constant assignments like `const prompt = 'hi';`
+    // never reach this gate.
+    const PROMPT_ASSIGN_RE = /\b(?:prompt|systemPrompt|userPrompt|context|augmented|ragContext|retrievedContext)\s*[+]?=\s*\S/;
+    // Data-string shape: `identifier: "..."` or `"identifier": "..."` as the
+    // entire line (trimmed). Only quoted scalars count as data — template
+    // literals (backticks) are code, not data. Each quote alternative allows
+    // the OPPOSITE quote character inside the value, so catalog lines like
+    // `longDescription: "Use 'retrieve' to get context (see docs)."` are
+    // recognized as pure data (adversarial-review lock against the #108
+    // bypass where an internal single-quote broke the generic `[^"']*`).
+    const DATA_STRING_LINE_RE = /^\s*["']?\w+["']?\s*:\s*(?:"[^"]*"|'[^']*'),?\s*$/;
     try {
       const srcDir = path.join(targetDir, 'src');
       const srcExists = await fs.access(srcDir).then(() => true).catch(() => false);
@@ -7543,6 +7574,17 @@ dist/
               if ((line.includes('retrieve') || line.includes('vectorSearch') || line.includes('similarity_search') ||
                    line.includes('query_engine')) &&
                   (line.includes('context') || line.includes('prompt') || line.includes('augment'))) {
+                // Context gate: suppress pure data-string property lines
+                // (catalog entries, docstrings). Any line with a function call
+                // or a prompt-like assignment falls through to the original
+                // sanitization check — preserves detection on embedded
+                // retrieval calls like `{ prompt: \`${retrieve(x)}\` }`.
+                const isRetrievalCall = RETRIEVAL_CALL_RE.test(line);
+                const isPromptAssembly = PROMPT_ASSIGN_RE.test(line);
+                const isDataString = DATA_STRING_LINE_RE.test(line);
+                const hasFunctionCall = line.includes('(');
+                if (isDataString) continue;
+                if (!isRetrievalCall && !isPromptAssembly && !hasFunctionCall) continue;
                 // Check surrounding lines for sanitization
                 const surroundingLines = lines.slice(Math.max(0, i - 3), Math.min(lines.length, i + 4)).join(' ');
                 if (!surroundingLines.includes('sanitize') && !surroundingLines.includes('validate') &&
@@ -10580,6 +10622,14 @@ dist/
   /**
    * MEM-006: Memory store without input sanitization
    * Detects memory/persistence plugins that store user-provided text without sanitization.
+   *
+   * Path gate (hma#109, CSR-011): skip files that are deliberately
+   * unsanitized by design — test harnesses, DVAA-style adversarial fixtures,
+   * honeypots, trap pages. Flagging these as HIGH produces nonsensical fix
+   * text ("sanitize this thing whose job is to stay unsanitized") and
+   * destroys CISO trust in other findings. Classification:
+   * (a) preserved-detection FP-suppress. Real production memory stores in
+   * non-test, non-adversarial paths still fire.
    */
   private async checkMemoryStoreSanitization(
     targetDir: string,
@@ -10591,6 +10641,18 @@ dist/
     // Look for store/save/persist calls with text/content parameter (method or function)
     const storePattern = /(?:\.|^|\s|\()(store|save|persist|insert|upsert|push)\s*\(\s*\{[^}]*(text|content|message|input)\b/g;
 
+    // Path gate: industry-standard test-suffix matchers + adversarial-fixture
+    // directory names. The adversarial-directory set is intentionally narrow
+    // and requires an EXACT directory component match (not a hyphen-prefix)
+    // so that real production names like `trap-router/`, `trap-focus/`, or
+    // `adversarial-reports/` do not silently evade detection.
+    //
+    // A content-level marker (e.g. `// DVAA`) would be attacker-controlled —
+    // scanned code is untrusted per trust hierarchy, so it must not be able
+    // to turn off its own scanner. No content-marker gate is applied.
+    const TEST_SUFFIX_RE = /(?:\.(?:test|spec)\.(?:m?js|ts)|-test\.(?:m?js|ts)|-spec\.(?:m?js|ts))$/;
+    const ADVERSARIAL_DIR_RE = /(?:^|[\\/])(?:dvaa|honeypot|trap-fixtures|adversarial-fixtures|vulnerable-by-design)(?:[\\/]|$)/;
+
     for (const file of files.slice(0, 100)) {
       try {
         const stat = await fs.stat(file);
@@ -10601,6 +10663,12 @@ dist/
 
         // Skip if file has sanitization functions
         if (/\b(sanitize|sanitise|escapeHtml|htmlEncode|stripTags|DOMPurify|xss)\b/.test(content)) continue;
+
+        // Path gate: skip test harnesses and adversarial-fixture directories.
+        const basename = path.basename(file).toLowerCase();
+        const relLower = relativePath.toLowerCase();
+        if (TEST_SUFFIX_RE.test(basename)) continue;
+        if (ADVERSARIAL_DIR_RE.test(relLower)) continue;
 
         for (let i = 0; i < lines.length; i++) {
           if (lines[i].length > MAX_LINE_LENGTH) continue;

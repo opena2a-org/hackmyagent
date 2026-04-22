@@ -11,6 +11,10 @@ All notable changes to HackMyAgent are documented in this file.
 - **HMA's own agent identity files moved to `.well-known/`.** `agent-card.json` and `agent-dna.json` now live at `.well-known/agent-card.json` and `.well-known/agent-dna.json` to model the convention.
 - **Release playbook moved to `docs/release-playbook.md`.** Self-references and `.release/baselines.json` updated to match.
 
+### Fixed
+- **`RAG-002` no longer fires on TypeScript data-catalog string literals (#108).** Property-value lines like `description: "...store and retrieve context..."` are now recognized as pure data rather than a retrieval call. The rule still fires on runtime retriever calls (`.retrieve(`, `retriever.invoke(`, `vectorStore.similaritySearch(`), Python f-string prompt assembly, template literals that embed retrieval calls, and any line containing a function call.
+- **`MEM-006` no longer fires on DVAA-style adversarial test harnesses (#109).** Files whose basename matches `*-test.{m?js,ts}` / `*.test.{m?js,ts}` / `*.spec.{m?js,ts}` or whose path contains an exact `dvaa|honeypot|trap-fixtures|adversarial-fixtures|vulnerable-by-design` directory component are skipped. Hyphen-prefix directory names (`trap-router/`, `adversarial-reports/`) do NOT skip — exact directory-component match required. No content-marker gate is applied (scanned code cannot turn off its own scanner).
+
 ## [0.17.11] - 2026-04-17
 
 Republish of 0.17.10. The 0.17.10 tarball had been pre-published to npm 3 days early without the audit-driven fixes (PR 1, 2, 3, A, B). 0.17.11 ships the same code that the 0.17.10 changelog describes. No new functional changes between 0.17.10 and 0.17.11.
