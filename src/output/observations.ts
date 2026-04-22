@@ -76,15 +76,16 @@ export interface RenderedLine {
  * readable without the user knowing HMA's internal check-ID schema.
  */
 const CATEGORY_MAP: Array<{ label: string; prefixes: string[]; keywords?: string[] }> = [
-  { label: 'credentials', prefixes: ['CRED', 'AST-CRED', 'WEBCRED'], keywords: ['credential', 'api key', 'token', 'password', 'secret'] },
+  { label: 'credentials', prefixes: ['CRED', 'AST-CRED', 'WEBCRED', 'SEM-CRED'], keywords: ['credential', 'api key', 'token', 'password', 'secret'] },
   { label: 'MCP', prefixes: ['MCP', 'AST-MCP', 'SEM-MCP'], keywords: ['mcp'] },
   { label: 'network', prefixes: ['NET', 'GATEWAY'] },
   { label: 'injection', prefixes: ['INJ', 'IO'] },
-  { label: 'prompt', prefixes: ['PROMPT', 'AST-PROMPT'] },
+  { label: 'prompt', prefixes: ['PROMPT', 'AST-PROMPT', 'SEM-INST'] },
   { label: 'encryption', prefixes: ['ENCRYPT'] },
   { label: 'session', prefixes: ['SESSION'] },
-  { label: 'sandbox', prefixes: ['SANDBOX', 'PROC', 'PERM'] },
-  { label: 'supply-chain', prefixes: ['SUPPLY', 'DEP', 'CVE'] },
+  { label: 'sandbox', prefixes: ['SANDBOX', 'PROC', 'PERM', 'SEM-PERM'] },
+  { label: 'capabilities', prefixes: ['AST-CAP', 'AST-SCOPE'] },
+  { label: 'supply-chain', prefixes: ['SUPPLY', 'DEP'] },
   { label: 'governance', prefixes: ['AST-GOV', 'AST-GOVERN', 'SOUL', 'GOV'] },
   { label: 'skill', prefixes: ['SKILL'] },
   { label: 'unicode-stego', prefixes: ['UNICODE-STEGO', 'STEGO'] },
@@ -92,9 +93,13 @@ const CATEGORY_MAP: Array<{ label: string; prefixes: string[]; keywords?: string
   { label: 'identity', prefixes: ['AIM', 'AST-AIM'] },
   { label: 'sandbox-escape', prefixes: ['NEMO'] },
   { label: 'CVE', prefixes: ['CVE'] },
+  { label: 'A2A', prefixes: ['A2A'] },
+  { label: 'lifecycle', prefixes: ['LIFECYCLE'] },
+  { label: 'LLM risk', prefixes: ['LLM'] },
+  { label: 'heartbeat', prefixes: ['HEARTBEAT', 'AST-HEARTBEAT'] },
   { label: 'config', prefixes: ['CONFIG', 'ENV', 'VSCODE', 'CURSOR', 'CLAUDE'] },
   { label: 'audit', prefixes: ['AUDIT', 'LOG', 'RATE'] },
-  { label: 'auth', prefixes: ['AUTH', 'TOOL', 'API'] },
+  { label: 'auth', prefixes: ['AUTH', 'TOOL', 'API', 'AITOOL'] },
   { label: 'git hygiene', prefixes: ['GIT'] },
 ];
 
