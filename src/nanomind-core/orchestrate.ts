@@ -128,10 +128,27 @@ export async function orchestrateNanoMind(
       const ready = await isAnalystReady();
       if (ready) {
         const failed = nmResult.mergedFindings.filter(f => !f.passed && !f.fixed);
-        if (failed.length > 0) {
+        // Gate the analyst on HIGH/CRITICAL findings that are tied to a real
+        // file. Two reasons to exclude both LOW/MEDIUM and file-less findings:
+        // (1) LOW/MEDIUM are typically filesystem-hygiene checks (GIT-001
+        //     "Missing .gitignore", PERM-001, etc.) that are not per-artifact
+        //     attack classifications.
+        // (2) HIGH/CRITICAL findings without a file (AUTH-002 "no auth
+        //     configured", PROC-003, NET-005) are synthesized "nothing
+        //     configured" checks — they don't feed a per-artifact classifier
+        //     any content to reason about.
+        // Asking SmolLM2 v0.5.0 to analyze either produces hallucinated attack
+        // classes (verified 2026-04-22: empty dir + GIT-001 LOW produced 4
+        // confabulated HIGH narratives because file-less passed=false findings
+        // like AUTH-002 were being passed in). See memory
+        // project_nanomind_v05_intelreport_task_mismatch.
+        const significant = failed.filter(f =>
+          (f.severity === 'critical' || f.severity === 'high') && !!f.file,
+        );
+        if (significant.length > 0) {
           if (!silent) process.stderr.write('Running NanoMind generative analysis (typically adds 15-30s per artifact)...\n');
           result.analystFindings = await runAnalystOnFindings(
-            nmResult.mergedFindings,
+            significant,
             runAnalystInference,
           );
           if (!silent && result.analystFindings.length > 0) {
@@ -140,10 +157,9 @@ export async function orchestrateNanoMind(
             );
           }
         } else {
-          // Clean scan -- the inline analyst is a per-artifact attack-classification
-          // specialist; scan-wide summarization is OOD and produces hallucinations
-          // (verified 2026-04-22 — see memory project_nanomind_v05_intelreport_task_mismatch).
-          // Skip the call and let the CLI render an honest zero-state block instead.
+          // No HIGH/CRITICAL findings — skip the analyst call. LOW/MEDIUM-only
+          // scans are effectively "clean" from an AI-threat perspective; the
+          // deterministic Observations block carries the verdict.
           result.analystZeroState = {
             reason: 'clean-scan',
             modelLabel: 'SmolLM2 v0.5.0 inline',

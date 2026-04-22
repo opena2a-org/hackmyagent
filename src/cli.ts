@@ -255,7 +255,7 @@ Examples:
   .option('--no-scan', 'Registry only, skip local scan (fast mode for CI)')
   .option('--no-registry', 'Local scan only, skip registry lookup (offline mode)')
   .option('--offline', 'Alias for --no-registry')
-  .option('--nanomind', 'Per-finding AI threat analysis (~15-30s per finding; specialist model, no effect on clean scans; requires nanomind setup)')
+  .option('--nanomind', 'Per-finding AI threat analysis on HIGH/CRITICAL findings only (~15-30s per finding; specialist model, no effect on clean or LOW/MEDIUM-only scans; requires nanomind setup)')
   .option('--analm', '[deprecated alias for --nanomind] AI-powered threat analysis')
   .option('--rescan', 'Deprecated: local scan is now the default')
   .action(async (skill: string, options: { verbose?: boolean; json?: boolean; scan?: boolean; registry?: boolean; offline?: boolean; nanomind?: boolean; analm?: boolean; rescan?: boolean }) => {
@@ -2762,7 +2762,7 @@ Examples:
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
   .option('-c, --category <name>', 'Filter to specific benchmark category')
   .option('--deep', 'Maximum analysis: static + semantic + behavioral simulation + adaptive attacks (~30s per file)')
-  .option('--nanomind', 'Per-finding AI threat analysis (~15-30s per finding; specialist model, no effect on clean scans; requires nanomind setup)')
+  .option('--nanomind', 'Per-finding AI threat analysis on HIGH/CRITICAL findings only (~15-30s per finding; specialist model, no effect on clean or LOW/MEDIUM-only scans; requires nanomind setup)')
   .option('--analm', '[deprecated alias for --nanomind] AI-powered threat analysis')
   .option('--static-only', 'Disable semantic analysis and simulation (static checks only, fast, deterministic)')
   .option('--scan-depth <depth>', 'CAAT scan depth: quick (config+creds only), standard (default), deep (+ simulation)', 'standard')
@@ -8244,7 +8244,11 @@ async function checkGitHubRepo(
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
     } catch {
-      // NanoMind unavailable — use base scan results
+      // NanoMind unavailable — surface this in the CLI output instead of going
+      // silent when --nanomind was requested. Keeps the render path honest.
+      if (resolveNanomindFlag(options)) {
+        analystZeroState = { reason: 'backend-unavailable', modelLabel: 'SmolLM2 v0.5.0 inline' };
+      }
     }
 
     // Filter local-dev-only findings irrelevant to cloned repos
@@ -8618,7 +8622,11 @@ async function checkRawUrl(
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
     } catch {
-      // NanoMind unavailable — use base scan results
+      // NanoMind unavailable — surface this in the CLI output instead of going
+      // silent when --nanomind was requested. Keeps the render path honest.
+      if (resolveNanomindFlag(options)) {
+        analystZeroState = { reason: 'backend-unavailable', modelLabel: 'SmolLM2 v0.5.0 inline' };
+      }
     }
 
     // Filter local-dev-only findings irrelevant to downloaded URLs
@@ -8776,7 +8784,11 @@ async function checkNpmPackage(
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
     } catch {
-      // NanoMind unavailable — use base scan results
+      // NanoMind unavailable — surface this in the CLI output instead of going
+      // silent when --nanomind was requested. Keeps the render path honest.
+      if (resolveNanomindFlag(options)) {
+        analystZeroState = { reason: 'backend-unavailable', modelLabel: 'SmolLM2 v0.5.0 inline' };
+      }
     }
 
     // Filter local-dev-only findings irrelevant to downloaded packages

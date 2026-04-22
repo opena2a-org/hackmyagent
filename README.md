@@ -93,8 +93,8 @@ npm install --save-dev hackmyagent
 | A GitHub repo            | `hackmyagent check getsentry/sentry-mcp`             | clones, scans, reports                            |
 | A published skill        | `hackmyagent check @publisher/skill`                 | signature verification + 29 semantic checks       |
 | A local skill directory  | `hackmyagent check ./my-skill/`                      | skill files + SOUL.md + manifest                  |
-| An MCP server config     | `hackmyagent check ./mcp-config.json`                | MCP scope + declared tools + dependencies         |
-| An A2A agent card        | `hackmyagent check ./agent-card/`                    | agent-card capabilities + identity                |
+| An MCP server config     | `hackmyagent check ./my-mcp-server/`                 | MCP config + declared tools + scope + dependencies (point at the directory, not the single JSON file) |
+| An A2A agent card        | `hackmyagent check ./my-agent/`                      | agent-card capabilities + identity (point at the directory containing the card) |
 | A URL tarball            | `hackmyagent check https://ex.com/pkg.tar.gz`        | downloads, scans                                  |
 | External infrastructure  | `hackmyagent scan example.com`                       | external AI-endpoint inventory                    |
 | Governance (SOUL.md)     | `hackmyagent scan-soul`                              | SOUL.md against OASB v2 behavioural controls      |
@@ -120,6 +120,7 @@ hackmyagent secure --deep                     # full behavioural simulation (20 
 hackmyagent secure --static-only              # static checks only (fast, CI mode)
 hackmyagent secure --ignore CRED-001,GIT-002  # skip specific checks
 hackmyagent secure --json                     # JSON output for CI/CD
+hackmyagent secure --publish                  # push anonymised results to OpenA2A Registry
 hackmyagent secure -b oasb-1                  # OASB-1 benchmark (46 controls, L1/L2/L3 levels)
 hackmyagent secure -b oasb-1 --fail-below 70  # CI gate
 ```
