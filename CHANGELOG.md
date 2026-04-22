@@ -4,12 +4,23 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-04-22
+
+First release of HackMyAgent published via npm Trusted Publishing — ships with SLSA v1 provenance attestations. Verify with `npm view hackmyagent dist.attestations --json`.
+
 ### Added
+- **Observations block in `secure` output (#110).** Scanner now emits a dedicated Observations section that groups per-finding context (file, severity, fix command, Verify line) separately from the verdict and artifact summary. Renders through `@opena2a/cli-ui@0.2.0` for cross-CLI parity with `opena2a review` and `ai-trust` output. Replaces the inlined `observations.ts` + `analyst-render.ts` implementations which have been removed from this repo and centralized in `@opena2a/cli-ui`.
+- **Artifacts block + Verdict names the lead finding (#111).** Verdict line now quotes the single highest-severity finding by name and check ID, followed by an Artifacts block enumerating what was scanned (files, paths, line counts). CISOs reading a one-screen verdict can identify the specific blocking issue without scrolling.
+- **`--nanomind` specialist gate.** NanoMind generative analysis is now invoked only on artifact types where the input-classifier v3.1 gate passes — reduces off-topic hallucinations on clean scans. Gate thresholds and model path live in `nanomind-core/orchestrate.ts`.
+- **Cross-CLI parity gate CI (#113).** New workflow in `.github/workflows/parity.yml` asserts that `hackmyagent secure`, `opena2a review`, and `ai-trust` produce identical Observations/Verdict blocks on a shared fixture set. Prevents rendering divergence between the three CLIs that all consume `@opena2a/cli-ui`.
 - **Scanner finds agent identity + DNA files in `.well-known/`.** `AIM-001` (no agent identity) and `DNA-001` (no behavioral fingerprint) now also recognize `.well-known/agent-card.json`, `.well-known/agent-dna.json`, and `.well-known/aim.json` alongside the existing root-level lookups. Additive — repos that keep their identity files at the project root continue to pass unchanged. Aligns with RFC 8615 well-known URI conventions and the A2A protocol spec.
 
 ### Changed
+- **Consumes `@opena2a/cli-ui@0.2.0` for Observations rendering (#112).** Inlined rendering code removed; all three CLIs now render through the shared package. Fixes a stale `semanticCount` on the `secure` path where the analyst-render output counted pre-dedupe findings.
 - **HMA's own agent identity files moved to `.well-known/`.** `agent-card.json` and `agent-dna.json` now live at `.well-known/agent-card.json` and `.well-known/agent-dna.json` to model the convention.
 - **Release playbook moved to `docs/release-playbook.md`.** Self-references and `.release/baselines.json` updated to match.
+- **Tag-triggered release workflow with npm provenance (#106).** Publishes now run via GitHub Actions OIDC exchange — no `NPM_TOKEN`, no long-lived credentials. Triggered by pushing a `v*` tag to `main`.
+- **Release workflow pinned to Node 24 (#107).** Required for npm Trusted Publishing OIDC flow. Legacy Node 20 workflows failed to exchange the OIDC token.
 
 ### Fixed
 - **`RAG-002` no longer fires on TypeScript data-catalog string literals (#108).** Property-value lines like `description: "...store and retrieve context..."` are now recognized as pure data rather than a retrieval call. The rule still fires on runtime retriever calls (`.retrieve(`, `retriever.invoke(`, `vectorStore.similaritySearch(`), Python f-string prompt assembly, template literals that embed retrieval calls, and any line containing a function call.
