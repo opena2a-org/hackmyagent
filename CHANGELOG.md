@@ -4,6 +4,13 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-04-22
+
+### Fixed
+- **E2E-003 live network detection no longer times out in CI (#117).** The test's internal `waitForEvent` uses a 15s polling budget, but vitest's default 10s test timeout was firing first on GHA ubuntu-latest runners (slower lsof/ss polling than local macOS). Bumped the test timeout to 30s. No product change; blocks previously-red 0.18.0 publish.
+
+Everything from the superseded 0.18.0 tag ships in 0.18.1. The v0.18.0 tag was force-published against a pre-fix commit and the workflow failed in CI; 0.18.1 is the shippable version.
+
 ## [0.18.0] - 2026-04-22
 
 First release of HackMyAgent published via npm Trusted Publishing — ships with SLSA v1 provenance attestations. Verify with `npm view hackmyagent dist.attestations --json`.
