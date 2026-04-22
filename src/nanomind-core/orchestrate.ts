@@ -38,6 +38,17 @@ export interface OrchestrationResult {
   analystFindings?: AnalystResponse[];
   /** Hint shown to user when NanoMind is available but not used. */
   analystHint?: string;
+  /**
+   * When --nanomind was requested but produced no per-finding output (e.g., clean scan),
+   * carries the model metadata so the CLI can render an honest zero-state block instead
+   * of staying silent. Per v0.5.0 validation (2026-04-22), the model is a per-artifact
+   * attack-classification specialist; clean-scan intel reports are not a supported task
+   * until a dedicated NLM-SUM is trained.
+   */
+  analystZeroState?: {
+    reason: 'clean-scan' | 'not-ready' | 'backend-unavailable';
+    modelLabel: string;
+  };
 }
 
 /**
@@ -129,17 +140,14 @@ export async function orchestrateNanoMind(
             );
           }
         } else {
-          // Clean scan -- generate an intel report summary instead
-          if (!silent) process.stderr.write('Running NanoMind intel report...\n');
-          const allFindings = nmResult.mergedFindings;
-          const summary = `Clean scan: ${allFindings.length} checks passed, ${nmResult.compiledArtifacts} artifacts compiled. No security findings.`;
-          const intelResponse = await runAnalystInference({
-            taskType: 'intelReport',
-            content: summary,
-          });
-          if (intelResponse) {
-            result.analystFindings = [intelResponse];
-          }
+          // Clean scan -- the inline analyst is a per-artifact attack-classification
+          // specialist; scan-wide summarization is OOD and produces hallucinations
+          // (verified 2026-04-22 — see memory project_nanomind_v05_intelreport_task_mismatch).
+          // Skip the call and let the CLI render an honest zero-state block instead.
+          result.analystZeroState = {
+            reason: 'clean-scan',
+            modelLabel: 'SmolLM2 v0.5.0 inline',
+          };
         }
       } else {
         if (!silent) {
@@ -147,6 +155,10 @@ export async function orchestrateNanoMind(
             'NanoMind generative model not set up. Run: hackmyagent nanomind setup\n',
           );
         }
+        result.analystZeroState = {
+          reason: 'not-ready',
+          modelLabel: 'SmolLM2 v0.5.0 inline',
+        };
       }
     } else if (!silent && !ci) {
       // Show hint only if NanoMind is available and there are findings to analyze
