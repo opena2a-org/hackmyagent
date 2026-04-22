@@ -15,8 +15,10 @@
  */
 
 import type { SecurityFinding, ProjectType } from '../hardening/security-check.js';
-import type { NanoMindScanResult } from './scanner-bridge.js';
+import type { NanoMindScanResult, ArtifactSummary } from './scanner-bridge.js';
 import type { AnalystResponse } from './inference/security-analyst.js';
+
+export type { ArtifactSummary } from './scanner-bridge.js';
 
 export interface OrchestrationOptions {
   staticOnly?: boolean;
@@ -32,6 +34,9 @@ export interface OrchestrationResult {
   mergedFindings: SecurityFinding[];
   nanomindUsed: boolean;
   compiledArtifacts: number;
+  /** Compact per-artifact summaries (skills / MCPs / SOULs / A2A cards).
+   *  Empty when NanoMind is unavailable or only source code was scanned. */
+  artifactSummaries: ArtifactSummary[];
   newSemanticFindings: number;
   integrityStatus: string;
   /** NanoMind generative results (present when --nanomind is used and model is available). */
@@ -70,6 +75,7 @@ export async function orchestrateNanoMind(
       mergedFindings: [...existingFindings],
       nanomindUsed: false,
       compiledArtifacts: 0,
+      artifactSummaries: [],
       newSemanticFindings: 0,
       integrityStatus: 'SKIPPED',
     };
@@ -117,6 +123,7 @@ export async function orchestrateNanoMind(
       mergedFindings: nmResult.mergedFindings,
       nanomindUsed: nmResult.nanomindAvailable,
       compiledArtifacts: nmResult.compiledArtifacts,
+      artifactSummaries: nmResult.artifactSummaries,
       newSemanticFindings: newFindings,
       integrityStatus: nmResult.integrityStatus,
     };
@@ -194,6 +201,7 @@ export async function orchestrateNanoMind(
       mergedFindings: [...existingFindings],
       nanomindUsed: false,
       compiledArtifacts: 0,
+      artifactSummaries: [],
       newSemanticFindings: 0,
       integrityStatus: 'UNAVAILABLE',
     };

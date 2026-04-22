@@ -28,6 +28,19 @@ export interface SurfaceSummary {
   detected?: string[];
 }
 
+/** Per-artifact summary displayed in the Artifacts block.
+ *  Shape matches the one produced by the NanoMind scanner-bridge
+ *  `ArtifactSummary` — kept structurally compatible but defined here
+ *  so observations.ts has no import dependency on nanomind-core. */
+export interface ArtifactLine {
+  path: string;
+  type: string;
+  intent: 'benign' | 'suspicious' | 'malicious' | 'unknown';
+  capabilityLabels: string[];
+  constraintCount: number;
+  weakConstraintCount: number;
+}
+
 export interface ChecksSummary {
   /** Total static checks executed. */
   staticCount: number;
@@ -56,6 +69,10 @@ export interface ObservationsInput {
   checks: ChecksSummary;
   categories: CategorySummary[];
   verdict: { status: VerdictStatus; message: string };
+  /** Per-artifact summaries from NanoMind AST compiler. Empty array and
+   *  the Artifacts block is skipped — scans without agent artifacts
+   *  don't need a dedicated "what did we compile" block. */
+  artifacts?: ArtifactLine[];
   verbose?: boolean;
   /** Terminal width for wrapping (default 65). */
   width?: number;
@@ -155,45 +172,86 @@ export function buildCategorySummaries(findings: SecurityFinding[]): CategorySum
   return Array.from(byLabel.values());
 }
 
+/** Minimal finding shape the verdict builder consumes — a subset of SecurityFinding
+ *  so callers don't have to pass the whole object. Must include the fields
+ *  buildVerdict uses to name the lead finding. */
+export interface VerdictFinding {
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  name?: string;
+  checkId?: string;
+  file?: string;
+  line?: number;
+}
+
 /**
- * Build a plain-English verdict from severity counts + surface context.
+ * Build a plain-English verdict from the actual failed findings.
  *
- * Never uses letter grades. Anchors to an action ("Safe to use",
- * "Fix X and rescan", "Not safe to ship") per CISO philosophy rule #10
- * (feedback_cli_ciso_philosophy.md).
+ * Old version counted severities and produced grammar like "1 low finding to
+ * address" — which told the reader nothing they couldn't count themselves.
+ * This version names the lead finding (worst severity, first by check-ID)
+ * so the Verdict line is action-oriented: the user learns WHAT to fix, not
+ * just HOW MANY exist.
+ *
+ * Never uses letter grades. Anchors to an action per CISO philosophy rule
+ * #10 (feedback_cli_ciso_philosophy.md).
  */
 export function buildVerdict(
   severity: { critical: number; high: number; medium: number; low: number },
   surface: SurfaceSummary,
+  findings?: VerdictFinding[],
 ): { status: VerdictStatus; message: string } {
   const { critical, high, medium, low } = severity;
   const total = critical + high + medium + low;
 
+  if (total === 0) {
+    const surfaceLabel = surface.kind && surface.kind !== 'unknown' ? surface.kind : 'project';
+    return {
+      status: 'safe',
+      message: `No security issues detected. This ${surfaceLabel} looks safe to use.`,
+    };
+  }
+
+  // Pick the leading finding to name in the verdict: worst severity first.
+  // If multiple findings at the top severity, the verdict describes the first
+  // one (stable ordering from the scanner) and says "+ N more" for the rest.
+  const leadSeverity: VerdictFinding['severity'] | null =
+    critical > 0 ? 'critical' : high > 0 ? 'high' : medium > 0 ? 'medium' : low > 0 ? 'low' : null;
+
+  const leaders = (findings ?? []).filter(f => f.severity === leadSeverity);
+  const lead = leaders[0];
+
+  /** Format a finding as "NAME in file:line" — falls back to checkId or name. */
+  const formatLead = (f: VerdictFinding): string => {
+    const label = f.name?.trim() || f.checkId?.trim() || 'finding';
+    if (f.file) {
+      const loc = f.line ? `${f.file}:${f.line}` : f.file;
+      return `${label} in ${loc}`;
+    }
+    return label;
+  };
+
+  const extraCount = Math.max(0, total - 1);
+  const extraSuffix = extraCount > 0 ? ` + ${extraCount} more` : '';
+
   if (critical > 0) {
+    const leadText = lead ? formatLead(lead) : `${critical} critical issue${critical > 1 ? 's' : ''}`;
     return {
       status: 'unsafe',
-      message: `Not safe to ship. Fix ${critical} critical issue${critical > 1 ? 's' : ''} before using this in production.`,
+      message: `Not safe to ship. ${leadText}${extraSuffix}. Fix before using in production.`,
     };
   }
   if (high > 0) {
+    const leadText = lead ? formatLead(lead) : `${high} high-severity issue${high > 1 ? 's' : ''}`;
     return {
       status: 'unsafe',
-      message: `Not safe as-is. Fix ${high} high-severity issue${high > 1 ? 's' : ''}, then rescan.`,
+      message: `Not safe as-is. ${leadText}${extraSuffix}. Fix, then rescan.`,
     };
   }
-  if (medium > 0 || low > 0) {
-    const parts: string[] = [];
-    if (medium > 0) parts.push(`${medium} medium`);
-    if (low > 0) parts.push(`${low} low`);
-    return {
-      status: 'needs-fix',
-      message: `Usable with caveats. ${parts.join(' + ')} finding${total > 1 ? 's' : ''} to address. Run \`secure --fix\` to auto-remediate where possible.`,
-    };
-  }
-  const surfaceLabel = surface.kind && surface.kind !== 'unknown' ? surface.kind : 'project';
+  // medium or low only
+  const leadText = lead ? formatLead(lead) : `${total} finding${total > 1 ? 's' : ''}`;
   return {
-    status: 'safe',
-    message: `No security issues detected. This ${surfaceLabel} looks safe to use.`,
+    status: 'needs-fix',
+    message: `Usable with caveats. ${leadText}${extraSuffix}. Run \`secure --fix\` to auto-remediate where possible.`,
   };
 }
 
@@ -248,6 +306,57 @@ function formatChecksLine(checks: ChecksSummary): string {
 }
 
 /**
+ * Format one artifact as a single compact line.
+ *
+ * Shape: `<path>  <type> · <intent> · <capabilities>  [<constraints>]`
+ *
+ * Example:
+ *   `deploy.skill.md  skill · benign · cron + fs-write + net-egress  (2 constraints, 1 weak)`
+ *   `mcp.json         mcp_config · suspicious · shell-exec + fs-write`
+ */
+function formatArtifactLine(a: ArtifactLine): string {
+  const capText = a.capabilityLabels.length > 0
+    ? a.capabilityLabels.join(' + ')
+    : 'no inferred capabilities';
+  const parts = [a.type, a.intent, capText];
+  const head = `${a.path}  ${parts.join(' · ')}`;
+
+  if (a.constraintCount > 0) {
+    const weakSuffix = a.weakConstraintCount > 0 ? `, ${a.weakConstraintCount} weak` : '';
+    return `${head}  (${a.constraintCount} constraint${a.constraintCount === 1 ? '' : 's'}${weakSuffix})`;
+  }
+  if (a.type === 'skill' || a.type === 'mcp_config' || a.type === 'a2a_card' || a.type === 'agent_config') {
+    // Agent artifacts without any declared constraints — this is itself a signal worth flagging
+    return `${head}  (no declared constraints)`;
+  }
+  return head;
+}
+
+/**
+ * Select + format artifact lines for the Observations block.
+ * Defaults to up to 6 lines; verbose mode shows all. Ordering: risky
+ * first (malicious > suspicious > benign), then by capability count
+ * (more capabilities = more surface = more worth naming first).
+ */
+function formatArtifactsBlock(artifacts: ArtifactLine[], verbose: boolean): string[] {
+  const intentRank: Record<ArtifactLine['intent'], number> = {
+    malicious: 0, suspicious: 1, benign: 2, unknown: 3,
+  };
+  const sorted = [...artifacts].sort((a, b) => {
+    const r = intentRank[a.intent] - intentRank[b.intent];
+    if (r !== 0) return r;
+    return b.capabilityLabels.length - a.capabilityLabels.length;
+  });
+  const cap = verbose ? Infinity : 6;
+  const shown = sorted.slice(0, cap).map(formatArtifactLine);
+  const extra = sorted.length - shown.length;
+  if (extra > 0) {
+    shown.push(`+ ${extra} more (run with --verbose to see all)`);
+  }
+  return shown;
+}
+
+/**
  * Format the Surfaces line. Always names the project kind; adds file
  * count + detected artifacts when present.
  */
@@ -274,11 +383,15 @@ function formatSurfacesLine(surface: SurfaceSummary): string {
  */
 export interface RenderedObservations {
   lines: Array<{ label: string; value: string; tone: 'default' | 'good' | 'warning' | 'critical' }>;
+  /** Multi-line Artifacts block. Each entry is rendered on its own line
+   *  (first entry gets the "Artifacts" label, rest are continuations).
+   *  Empty when no agent artifacts were compiled. */
+  artifactLines: string[];
   verdict: { status: VerdictStatus; message: string };
 }
 
 export function renderObservationsBlock(input: ObservationsInput): RenderedObservations {
-  const { surfaces, checks, categories, verdict, verbose } = input;
+  const { surfaces, checks, categories, verdict, artifacts, verbose } = input;
 
   const lines: RenderedObservations['lines'] = [
     { label: 'Surfaces', value: formatSurfacesLine(surfaces), tone: 'default' },
@@ -298,5 +411,9 @@ export function renderObservationsBlock(input: ObservationsInput): RenderedObser
     },
   ];
 
-  return { lines, verdict };
+  const artifactLines = artifacts && artifacts.length > 0
+    ? formatArtifactsBlock(artifacts, !!verbose)
+    : [];
+
+  return { lines, artifactLines, verdict };
 }
