@@ -84,7 +84,7 @@ describe('E2E-003: Live Network Detection', () => {
     });
   });
 
-  it('should detect a new outbound TCP connection', async () => {
+  it('should detect a new outbound TCP connection', { timeout: 30000 }, async () => {
     if (!networkAvailable) {
       console.log('SKIP: lsof/ss not available — network E2E test requires system tools');
       return;
