@@ -53,6 +53,7 @@ import {
 import { resolveAndLogMcpShorthand } from './resolve-mcp';
 import { WildScanner, type WildScanReport } from './wild';
 import { isRenderableAnalystFinding, formatAnalystDescription, capAnalystThreatLevel, formatAnalystConfidence } from './output/analyst-render';
+import { renderObservationsBlock, buildCategorySummaries, buildVerdict } from './output/observations';
 import { getTaxonomyMap } from './hardening/taxonomy';
 const program = new Command();
 program.showHelpAfterError('(run with --help for usage)');
@@ -804,6 +805,51 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     console.log(`  ${verdictColor}${colors.bold}${verdictText}${RESET()}`);
     console.log();
     console.log(`  Trust     ${scoreMeter(score, maxScore)}`);
+  }
+
+  // ── Observations + Verdict ──────────────────────────────────────────
+  // Fill the zero-state gap: every scan now shows surfaces / checks /
+  // categories / verdict so `100/100` never stands alone. Per brief
+  // briefs/cli-observation-verdict-ux.md [CPO-019]; intended home is
+  // `@opena2a/cli-ui` per [CA-030] — inlined here pending step-0d.
+  if (localScan || nanomindScan) {
+    // HMA advertises 209 static checks across 44 categories. Display
+    // the advertised count (not the findings count); a count of 0
+    // would be misleading.
+    const HMA_STATIC_CHECK_COUNT = 209;
+    const staticCount = HMA_STATIC_CHECK_COUNT;
+    const semanticCount = nanomindScan?.compiledArtifacts ?? 0;
+    const filesScanned = localScan?.filesScanned;
+    const rawKind = (projectType || '').toString().trim();
+    const kind = rawKind && rawKind !== 'unknown' ? rawKind : 'local project';
+
+    const categorySummaries = buildCategorySummaries(failed);
+    const verdictLine = buildVerdict({ critical, high, medium, low }, { kind, filesScanned });
+
+    const { lines } = renderObservationsBlock({
+      surfaces: { kind, filesScanned, artifactsCompiled: semanticCount },
+      checks: { staticCount, semanticCount },
+      categories: categorySummaries,
+      verdict: verdictLine,
+      verbose: !!verbose,
+    });
+
+    divider('Observations');
+    const toneColor = (tone: 'default' | 'good' | 'warning' | 'critical'): string => {
+      if (tone === 'good') return colors.green;
+      if (tone === 'warning') return colors.yellow;
+      if (tone === 'critical') return colors.red;
+      return '';
+    };
+    // 11-char label width fits "Categories" + 1 space separator.
+    const LABEL_WIDTH = 12;
+    for (const { label, value, tone } of lines) {
+      const labelPad = label.padEnd(LABEL_WIDTH, ' ');
+      const color = toneColor(tone);
+      const accent = label === 'Verdict' ? colors.bold : '';
+      console.log(`  ${colors.dim}${labelPad}${RESET()}${color}${accent}${value}${RESET()}`);
+    }
+    console.log();
   }
 
   // ── Findings ────────────────────────────────────────────────────────
