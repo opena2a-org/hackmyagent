@@ -6315,60 +6315,35 @@ interface TrustBatchResponse {
 }
 
 async function trustCheck(name: string, registryUrl: string, type?: string): Promise<TrustAnswer> {
-  const params = new URLSearchParams({ name, includeProfile: 'true', includeDeps: 'true' });
-  if (type) params.set('type', type);
-
-  const url = `${registryUrl}/api/v1/trust/query?${params.toString()}`;
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: { 'Accept': 'application/json', 'User-Agent': `hackmyagent/${VERSION}` },
+  const { RegistryClient, PackageNotFoundError } = await import('@opena2a/registry-client');
+  const client = new RegistryClient({
+    baseUrl: registryUrl,
+    userAgent: `hackmyagent/${VERSION}`,
   });
-
-  if (!res.ok) {
-    if (res.status === 404) {
+  try {
+    const data = await client.checkTrust(name, type);
+    return data as unknown as TrustAnswer;
+  } catch (err) {
+    if (err instanceof PackageNotFoundError) {
       throw new Error(`Package "${name}" not found in the OpenA2A Registry.`);
     }
-    const body = await res.text();
-    throw new Error(`Registry API returned ${res.status}: ${body}`);
+    throw err;
   }
-
-  const data = (await res.json()) as TrustAnswer;
-  data.found = !!data.packageId;
-  return data;
 }
 
 async function trustBatch(
   packages: Array<{ name: string; type?: string }>,
   registryUrl: string
 ): Promise<{ results: TrustAnswer[]; meta: { total: number; found: number; notFound: number } }> {
-  const url = `${registryUrl}/api/v1/trust/batch`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'User-Agent': `hackmyagent/${VERSION}`,
-    },
-    body: JSON.stringify({ packages }),
+  const { RegistryClient } = await import('@opena2a/registry-client');
+  const client = new RegistryClient({
+    baseUrl: registryUrl,
+    userAgent: `hackmyagent/${VERSION}`,
   });
-
-  if (!res.ok) {
-    if (res.status === 404) {
-      throw new Error('Registry batch endpoint not found. The registry may be unavailable.');
-    }
-    const body = await res.text();
-    throw new Error(`Registry API returned ${res.status}: ${body}`);
-  }
-
-  const raw = (await res.json()) as TrustBatchResponse;
-  const NULL_UUID = '00000000-0000-0000-0000-000000000000';
-  for (const r of raw.results) {
-    r.found = !!r.packageId && r.packageId !== NULL_UUID;
-  }
-  const found = raw.results.filter((r) => r.found).length;
+  const response = await client.batchQuery(packages);
   return {
-    results: raw.results,
-    meta: { total: raw.total, found, notFound: raw.total - found },
+    results: response.results as unknown as TrustAnswer[],
+    meta: response.meta,
   };
 }
 
@@ -7773,28 +7748,27 @@ interface RegistryTrustData {
  */
 async function queryRegistry(name: string): Promise<RegistryTrustData | null> {
   try {
-    const params = new URLSearchParams({ name, includeProfile: 'true' });
-    const response = await fetch(`${REGISTRY_URL}/api/v1/trust/query?${params}`, {
-      method: 'GET',
-      headers: { 'Accept': 'application/json', 'User-Agent': `hackmyagent/${VERSION}` },
-      signal: AbortSignal.timeout(5000),
+    const { RegistryClient } = await import('@opena2a/registry-client');
+    const client = new RegistryClient({
+      baseUrl: REGISTRY_URL,
+      userAgent: `hackmyagent/${VERSION}`,
+      timeoutMs: 5000,
     });
-    if (!response.ok) return null;
-    const data = await response.json() as Record<string, unknown>;
+    const data = await client.checkTrust(name);
     if (!data.packageId) return null;
-    const deps = data.dependencies as Record<string, unknown> | undefined;
+    const deps = data.dependencies;
     return {
       found: true,
-      name: (data.name as string) ?? name,
-      trustScore: (data.trustScore as number) ?? 0,
-      trustLevel: (data.trustLevel as number) ?? 0,
-      verdict: (data.verdict as string) ?? 'unknown',
-      scanStatus: data.scanStatus as string | undefined,
-      lastScannedAt: data.lastScannedAt as string | undefined,
-      packageType: data.packageType as string | undefined,
-      recommendation: data.recommendation as string | undefined,
-      cveCount: typeof data.cveCount === 'number' ? data.cveCount : undefined,
-      communityScans: typeof data.communityScans === 'number' ? data.communityScans : undefined,
+      name: data.name ?? name,
+      trustScore: data.trustScore ?? 0,
+      trustLevel: data.trustLevel ?? 0,
+      verdict: data.verdict ?? 'unknown',
+      scanStatus: data.scanStatus,
+      lastScannedAt: data.lastScannedAt,
+      packageType: data.packageType,
+      recommendation: data.recommendation,
+      cveCount: data.cveCount,
+      communityScans: data.communityScans,
       dependencies: deps ? {
         totalDeps: typeof deps.totalDeps === 'number' ? deps.totalDeps : undefined,
         vulnerableDeps: typeof deps.vulnerableDeps === 'number' ? deps.vulnerableDeps : undefined,
@@ -7826,32 +7800,32 @@ async function publishToRegistry(
   result: { score: number; maxScore: number; projectType: string; findings: SecurityFinding[] },
 ): Promise<boolean> {
   try {
-    const response = await fetch(`${REGISTRY_URL}/api/v1/trust/publish`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': `hackmyagent/${VERSION}`,
-      },
-      body: JSON.stringify({
-        name,
-        score: result.score,
-        maxScore: result.maxScore,
-        projectType: result.projectType,
-        findings: result.findings
-          .filter(f => !PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES.has(f.category))
-          .map(f => ({
-            checkId: f.checkId,
-            name: f.name,
-            severity: f.severity,
-            passed: f.passed,
-            message: f.message,
-            category: f.category,
-          })),
-        scanTimestamp: new Date().toISOString(),
-      }),
-      signal: AbortSignal.timeout(10000),
+    const { RegistryClient } = await import('@opena2a/registry-client');
+    const client = new RegistryClient({
+      baseUrl: REGISTRY_URL,
+      userAgent: `hackmyagent/${VERSION}`,
+      cache: false,
     });
-    return response.ok;
+    await client.publishScan({
+      name,
+      score: result.score,
+      maxScore: result.maxScore,
+      projectType: result.projectType,
+      tool: 'hackmyagent',
+      toolVersion: VERSION,
+      findings: result.findings
+        .filter(f => !PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES.has(f.category))
+        .map(f => ({
+          checkId: f.checkId,
+          name: f.name,
+          severity: f.severity,
+          passed: f.passed,
+          message: f.message,
+          category: f.category,
+        })),
+      scanTimestamp: new Date().toISOString(),
+    });
+    return true;
   } catch {
     return false;
   }
