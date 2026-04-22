@@ -1,0 +1,23 @@
+name: parity
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/parity.yml"
+  push:
+    branches: [main]
+
+concurrency:
+  group: parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  parity:
+    uses: opena2a-org/opena2a-parity/.github/workflows/parity.yml@main
+    with:
+      hma_ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      opena2a_ref: main
+      ai_trust_ref: main
