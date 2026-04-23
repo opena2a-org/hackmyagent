@@ -4,6 +4,19 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.18.3] - 2026-04-23
+
+### Added
+- **`check --json` now emits registry fields on registered packages (F1).** When the registry has trust data for the target, `hackmyagent check @pkg --json` (default local-scan path) emits `trustLevel`, `trustScore`, `verdict`, `scanStatus`, `packageType`, `lastScannedAt`, `communityScans`, and `cveCount` at the top level alongside the scan findings. Previously these fields only appeared on the `--no-scan` path. Closes the F1 parity gap from `briefs/check-command-divergence.md`; `opena2a check --json` (which spawn-delegates to hackmyagent) inherits the fix.
+
+### Changed
+- **`check` output consumes `@opena2a/cli-ui@0.3.0` primitives.** Exact-pinned the dependency. The registry-only render path (`check @pkg --no-scan`) now delegates to `renderCheckBlock` + `renderNextSteps` so the output structure matches `ai-trust@0.4.0` and the forthcoming parity fixtures in opena2a-parity. Trust-meter gating (`scanStatus === 'completed' | 'warnings'`) moves into the shared renderer — packages with `scanStatus: undefined` no longer render a score meter ("a number implies measurement", per F6).
+- **PyPI and GitHub not-found paths render via `renderNotFoundBlock`.** Replaces the raw `console.error` one-liners. Same shape as ai-trust's not-found block.
+- **`npm pack` `code 128` on git-style names translated to a did-you-mean hint.** `hackmyagent check user/repo` (no `@`) that slips past the GitHub classifier and fails at `npm pack`'s git fallback now renders `Looks like a git-style name. npm packages use "@scope/name" — did you mean "@user/repo"?` instead of leaking the raw exit code (F3).
+
+### Engineering
+- New `src/check-render.ts` extracts the pure helpers (`buildCheckJsonOutput`, `mapScanStatusForMeter`, `translateNpmPackError`) for unit testability. 18 new tests in `__tests__/check-render.test.ts` lock the F1 parity contract and F6 meter gate.
+
 ## [0.18.2] - 2026-04-22
 
 ### Fixed
