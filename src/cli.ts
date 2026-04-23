@@ -52,6 +52,7 @@ import {
 } from './index';
 import { resolveAndLogMcpShorthand } from './resolve-mcp';
 import { WildScanner, type WildScanReport } from './wild';
+import { buildCheckJsonOutput, mapScanStatusForMeter, translateNpmPackError } from './check-render';
 import {
   isRenderableAnalystFinding,
   formatAnalystDescription,
@@ -60,6 +61,12 @@ import {
   renderObservationsBlock,
   buildCategorySummaries,
   buildVerdict,
+  renderCheckBlock,
+  renderNotFoundBlock,
+  renderNextSteps,
+  type CheckTone,
+  type NotFoundTone,
+  type NextStepsCta,
 } from '@opena2a/cli-ui';
 import { getTaxonomyMap } from './hardening/taxonomy';
 const program = new Command();
@@ -706,8 +713,148 @@ function uiScoreMeter(value: number, max: number = 100): string {
   return `${meterColor}${'━'.repeat(pct)}${RESET()}${colors.dim}${'━'.repeat(UI_METER_WIDTH - pct)}${RESET()} ${meterColor}${colors.bold}${value}${RESET()}${colors.dim}/${max}${RESET()}`;
 }
 
+// ── cli-ui 0.3.0 tone painters ────────────────────────────────────────
+// The cli-ui renderers return structured { value, tone } pairs; each
+// CLI owns its own chalk palette per the contract.
+function paintCheckTone(tone: CheckTone, s: string): string {
+  if (tone === 'good') return `${colors.green}${s}${RESET()}`;
+  if (tone === 'warning') return `${colors.yellow}${s}${RESET()}`;
+  if (tone === 'critical') return `${colors.red}${s}${RESET()}`;
+  if (tone === 'dim') return `${colors.dim}${s}${RESET()}`;
+  return s;
+}
+
+function paintNotFoundTone(tone: NotFoundTone, s: string): string {
+  if (tone === 'good') return `${colors.green}${s}${RESET()}`;
+  if (tone === 'warning') return `${colors.yellow}${s}${RESET()}`;
+  if (tone === 'critical') return `${colors.red}${s}${RESET()}`;
+  if (tone === 'dim') return `${colors.dim}${s}${RESET()}`;
+  return s;
+}
+
+/** Next-steps CTAs for the registry-only render path. */
+function buildRegistryCheckCtas(registry: RegistryTrustData): NextStepsCta[] {
+  const ctas: NextStepsCta[] = [];
+  const normalized = normalizeTrustVerdict(registry.verdict);
+  const meterGate = mapScanStatusForMeter(registry.scanStatus);
+  const isUnscanned = meterGate === undefined;
+
+  if (isUnscanned || registry.trustLevel <= 2 || normalized === 'blocked' || normalized === 'warning') {
+    ctas.push({
+      label: 'Fresh scan',
+      command: `${CLI_PREFIX} check ${registry.name}`,
+      primary: true,
+    });
+  } else {
+    ctas.push({
+      label: 'Fresh scan',
+      command: `${CLI_PREFIX} check ${registry.name}`,
+      primary: true,
+    });
+  }
+  ctas.push({
+    label: 'All commands',
+    command: `${CLI_PREFIX} --help`,
+  });
+  return ctas;
+}
+
+/**
+ * Render the registry-only "check" path via cli-ui renderCheckBlock +
+ * renderNextSteps. Returns nothing; prints directly.
+ *
+ * Used when the CLI has a registry answer but no local scan or NanoMind
+ * output (i.e. --no-scan hits, skill-adjacent targets with trust metadata).
+ * Local-scan and NanoMind paths continue to use renderObservationsBlock +
+ * printCheckNextSteps (shipped in cli-ui 0.2.0, stable in 0.3.0).
+ */
+function renderRegistryOnlyCheck(
+  name: string,
+  registry: RegistryTrustData,
+  sourceLabel?: string,
+  version?: string,
+): void {
+  const CHECK_LABEL_WIDTH = 10;
+  const scanStatusForMeter = mapScanStatusForMeter(registry.scanStatus);
+  const block = renderCheckBlock({
+    name,
+    packageType: registry.packageType,
+    version,
+    trustLevel: registry.trustLevel,
+    trustScore: registry.trustScore,
+    verdict: registry.verdict,
+    scanStatus: scanStatusForMeter,
+    communityScans: registry.communityScans,
+    lastScannedAt: registry.lastScannedAt,
+  });
+
+  // Header
+  console.log();
+  const meta = [...block.header.meta];
+  if (sourceLabel) meta.push(sourceLabel);
+  const metaSuffix = meta.length > 0 ? `  ${colors.dim}${meta.join(' · ')}${RESET()}` : '';
+  console.log(`  ${colors.bold}${colors.white}${block.header.name}${RESET()}${metaSuffix}`);
+
+  // Verdict
+  const verdictColor =
+    block.verdict.tone === 'good' ? colors.green
+    : block.verdict.tone === 'warning' ? colors.yellow
+    : block.verdict.tone === 'critical' ? colors.brightRed
+    : colors.dim;
+  console.log(`  ${verdictColor}${colors.bold}${block.verdict.text}${RESET()}`);
+
+  // Body lines
+  console.log();
+  for (const line of block.lines) {
+    const label = line.label.padEnd(CHECK_LABEL_WIDTH);
+    console.log(`  ${colors.dim}${label}${RESET()}${paintCheckTone(line.tone, line.value)}`);
+  }
+
+  // Dependencies (registry-sourced — adjacent to the Trust block)
+  if (registry.dependencies && (registry.dependencies.totalDeps ?? 0) > 0) {
+    const d = registry.dependencies;
+    const depParts: string[] = [];
+    if (d.totalDeps !== undefined) depParts.push(`${d.totalDeps} total`);
+    if (d.vulnerableDeps !== undefined && d.vulnerableDeps > 0) {
+      depParts.push(`${colors.red}${d.vulnerableDeps} vulnerable${RESET()}`);
+    }
+    if (d.minTrustLevel !== undefined) depParts.push(`min trust ${d.minTrustLevel}/4`);
+    if (depParts.length > 0) {
+      console.log(`  ${colors.dim}${'Deps'.padEnd(CHECK_LABEL_WIDTH)}${RESET()}${depParts.join(`${colors.dim} · ${RESET()}`)}`);
+    }
+  }
+
+  // CVEs
+  if (registry.cveCount !== undefined && registry.cveCount > 0) {
+    console.log(`  ${colors.dim}${'CVEs'.padEnd(CHECK_LABEL_WIDTH)}${RESET()}${colors.brightRed}${colors.bold}${registry.cveCount}${RESET()}`);
+  }
+
+  // Next steps
+  if (!globalCiMode) {
+    console.log(`\n  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
+    const { lines } = renderNextSteps({ ctas: buildRegistryCheckCtas(registry) });
+    for (const l of lines) {
+      const bullet = l.tone === 'good' ? `${colors.green}${l.bullet}${RESET()}` : `${colors.cyan}${l.bullet}${RESET()}`;
+      const label = l.tone === 'good' ? `${colors.bold}${l.label}${RESET()}` : `${colors.cyan}${l.label}${RESET()}`;
+      console.log(`  ${bullet} ${label}  ${colors.dim}${l.command}${RESET()}`);
+    }
+    console.log();
+  }
+}
+
 function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   const { name, sourceLabel, projectType, localScan, registry, verbose, version, nanomindScan, usedAnalm } = opts;
+
+  // ── Registry-only render path (cli-ui 0.3.0 renderCheckBlock) ────────
+  // When we have registry trust data and nothing scanned locally, delegate
+  // to the shared renderer so `hackmyagent check --no-scan @pkg` shows the
+  // same structure as `ai-trust check --no-scan @pkg` and `opena2a check`
+  // (which spawns HMA). Closes F5 for this path; the Trust meter gating
+  // (F6) lives inside renderCheckBlock itself.
+  if (registry?.found && !localScan && !nanomindScan) {
+    renderRegistryOnlyCheck(name, registry, sourceLabel, version);
+    return;
+  }
 
   // ── Visual helpers ──────────────────────────────────────────────────
   const METER_WIDTH = 20;
@@ -8304,23 +8451,23 @@ async function checkGitHubRepo(
     const medium = failed.filter(f => f.severity === 'medium');
     const low = failed.filter(f => f.severity === 'low');
 
+    // Await registry data (started in parallel with clone) before emitting
+    // any output so --json can include registry fields (F1).
+    const registryData = await registryPromise;
+
     if (options.json) {
-      const jsonOut: Record<string, any> = {
+      writeJsonStdout(buildCheckJsonOutput({
         name: displayName,
         type: 'github-repo',
-        source: 'local-scan',
         projectType: result.projectType,
         score: result.score,
         maxScore: result.maxScore,
         findings: result.findings,
-      };
-      if (analystFindings?.length) jsonOut.analystFindings = analystFindings;
-      writeJsonStdout(jsonOut);
+        registry: registryData,
+        analystFindings,
+      }));
       return;
     }
-
-    // Await registry data (started in parallel with clone)
-    const registryData = await registryPromise;
 
     // Display results using unified display
     displayUnifiedCheck({
@@ -8373,8 +8520,15 @@ async function checkGitHubRepo(
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
-      console.error(`Error: Repository "${displayName}" not found on GitHub.`);
-      console.error(`\nVerify the URL: https://github.com/${displayName}`);
+      if (options.json) {
+        writeJsonStdout({ name: displayName, ecosystem: 'github', found: false, error: `Repository "${displayName}" not found on GitHub.` });
+      } else {
+        printNotFoundBlock({
+          pkg: displayName,
+          ecosystem: 'github',
+          errorHint: `Verify the URL: https://github.com/${displayName}`,
+        });
+      }
     } else if (message.includes('timeout') || message.includes('Timeout')) {
       console.error(`Error: Cloning "${displayName}" timed out (120s). The repo may be too large.`);
       console.error(`\nTry cloning manually and scanning the local path:`);
@@ -8387,6 +8541,35 @@ async function checkGitHubRepo(
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Print a renderNotFoundBlock using the hackmyagent chalk palette. Used by
+ * the PyPI / GitHub / npm-code-128 paths so they share the cli-ui shape
+ * instead of emitting raw console.error lines.
+ */
+function printNotFoundBlock(input: {
+  pkg: string;
+  ecosystem?: string;
+  suggestions?: string[];
+  skillFallback?: { available: boolean; command: string };
+  errorHint?: string;
+}): void {
+  const { header, lines } = renderNotFoundBlock(input);
+  const LABEL_WIDTH = 10;
+  console.error();
+  console.error(`  ${colors.yellow}${colors.bold}${header.text}${RESET()}`);
+  if (lines.length > 0) {
+    console.error();
+    for (const l of lines) {
+      if (l.label) {
+        console.error(`  ${colors.dim}${l.label.padEnd(LABEL_WIDTH)}${RESET()}${paintNotFoundTone(l.tone, l.value)}`);
+      } else {
+        console.error(`  ${paintNotFoundTone(l.tone, l.value)}`);
+      }
+    }
+  }
+  console.error();
 }
 
 /**
@@ -8420,7 +8603,11 @@ async function checkPyPiPackage(
     const metaRes = await fetch(`https://pypi.org/pypi/${encodeURIComponent(name)}/json`);
     if (!metaRes.ok) {
       if (metaRes.status === 404) {
-        console.error(`Error: Package "${name}" not found on PyPI.`);
+        if (options.json) {
+          writeJsonStdout({ name, ecosystem: 'pypi', found: false, error: `Package "${name}" not found on PyPI.` });
+        } else {
+          printNotFoundBlock({ pkg: name, ecosystem: 'pypi' });
+        }
       } else {
         console.error(`Error: PyPI API returned ${metaRes.status} for "${name}".`);
       }
@@ -8498,25 +8685,24 @@ async function checkPyPiPackage(
     const medium = failed.filter(f => f.severity === 'medium');
     const low = failed.filter(f => f.severity === 'low');
 
+    // Query registry for trust context (PyPI packages have pip: prefix in registry).
+    // Moved above the --json branch so JSON output can include registry fields (F1).
+    const registryData = options.registry === false ? null : await queryRegistry(`pip:${name}`);
+
     if (options.json) {
-      const jsonOut: Record<string, any> = {
+      writeJsonStdout(buildCheckJsonOutput({
         name,
         type: 'pypi-package',
-        source: 'local-scan',
-        version: meta.info.version,
         projectType: result.projectType,
         score: result.score,
         maxScore: result.maxScore,
         findings: result.findings,
-      };
-      if (analystFindings?.length) jsonOut.analystFindings = analystFindings;
-      writeJsonStdout(jsonOut);
+        registry: registryData,
+        analystFindings,
+        version: meta.info.version,
+      }));
       return;
     }
-
-    // Display results using unified display
-    // Query registry for trust context (PyPI packages have pip: prefix in registry)
-    const registryData = options.registry === false ? null : await queryRegistry(`pip:${name}`);
 
     displayUnifiedCheck({
       name,
@@ -8851,23 +9037,23 @@ async function checkNpmPackage(
     const critical = failed.filter(f => f.severity === 'critical');
     const high = failed.filter(f => f.severity === 'high');
 
+    // Await registry data (started in parallel with download) before emitting
+    // any output so --json can include registry fields (F1).
+    const registryData = await registryPromise;
+
     if (options.json) {
-      const jsonOut: Record<string, any> = {
+      writeJsonStdout(buildCheckJsonOutput({
         name,
         type: 'npm-package',
-        source: 'local-scan',
         projectType: result.projectType,
         score: result.score,
         maxScore: result.maxScore,
         findings: result.findings,
-      };
-      if (analystFindings?.length) jsonOut.analystFindings = analystFindings;
-      writeJsonStdout(jsonOut);
+        registry: registryData,
+        analystFindings,
+      }));
       return;
     }
-
-    // Await registry data (started in parallel with download)
-    const registryData = await registryPromise;
 
     // Display results using unified display
     displayUnifiedCheck({
@@ -8926,7 +9112,24 @@ async function checkNpmPackage(
       notFound.name = 'NpmNotFoundError';
       throw notFound;
     } else {
-      console.error(`Error: ${message}`);
+      // Git-style shorthand (user/repo) slipping past the npm classifier
+      // and failing with `code 128` from npm pack's git fallback — render
+      // a did-you-mean block instead of leaking the raw exit code.
+      const translated = translateNpmPackError(name, message);
+      if (translated && (translated.errorHint || translated.suggestions)) {
+        if (options.json) {
+          writeJsonStdout({ name, ecosystem: 'npm', found: false, error: translated.errorHint, suggestions: translated.suggestions });
+        } else {
+          printNotFoundBlock({
+            pkg: name,
+            ecosystem: 'npm',
+            errorHint: translated.errorHint,
+            suggestions: translated.suggestions,
+          });
+        }
+      } else {
+        console.error(`Error: ${message}`);
+      }
     }
     process.exit(1);
   } finally {
