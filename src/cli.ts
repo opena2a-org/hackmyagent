@@ -52,7 +52,7 @@ import {
 } from './index';
 import { resolveAndLogMcpShorthand } from './resolve-mcp';
 import { WildScanner, type WildScanReport } from './wild';
-import { buildCheckJsonOutput, mapScanStatusForMeter, translateNpmPackError } from './check-render';
+import { buildCheckOutput, mapScanStatusForMeter, translateDownloadError } from '@opena2a/check-core';
 import {
   isRenderableAnalystFinding,
   formatAnalystDescription,
@@ -8456,15 +8456,17 @@ async function checkGitHubRepo(
     const registryData = await registryPromise;
 
     if (options.json) {
-      writeJsonStdout(buildCheckJsonOutput({
+      writeJsonStdout(buildCheckOutput({
         name: displayName,
         type: 'github-repo',
-        projectType: result.projectType,
-        score: result.score,
-        maxScore: result.maxScore,
-        findings: result.findings,
+        scan: {
+          projectType: result.projectType,
+          score: result.score,
+          maxScore: result.maxScore,
+          findings: result.findings,
+          analystFindings,
+        },
         registry: registryData,
-        analystFindings,
       }));
       return;
     }
@@ -8690,16 +8692,18 @@ async function checkPyPiPackage(
     const registryData = options.registry === false ? null : await queryRegistry(`pip:${name}`);
 
     if (options.json) {
-      writeJsonStdout(buildCheckJsonOutput({
+      writeJsonStdout(buildCheckOutput({
         name,
         type: 'pypi-package',
-        projectType: result.projectType,
-        score: result.score,
-        maxScore: result.maxScore,
-        findings: result.findings,
+        scan: {
+          projectType: result.projectType,
+          score: result.score,
+          maxScore: result.maxScore,
+          findings: result.findings,
+          analystFindings,
+          version: meta.info.version,
+        },
         registry: registryData,
-        analystFindings,
-        version: meta.info.version,
       }));
       return;
     }
@@ -9042,15 +9046,17 @@ async function checkNpmPackage(
     const registryData = await registryPromise;
 
     if (options.json) {
-      writeJsonStdout(buildCheckJsonOutput({
+      writeJsonStdout(buildCheckOutput({
         name,
         type: 'npm-package',
-        projectType: result.projectType,
-        score: result.score,
-        maxScore: result.maxScore,
-        findings: result.findings,
+        scan: {
+          projectType: result.projectType,
+          score: result.score,
+          maxScore: result.maxScore,
+          findings: result.findings,
+          analystFindings,
+        },
         registry: registryData,
-        analystFindings,
       }));
       return;
     }
@@ -9115,7 +9121,7 @@ async function checkNpmPackage(
       // Git-style shorthand (user/repo) slipping past the npm classifier
       // and failing with `code 128` from npm pack's git fallback — render
       // a did-you-mean block instead of leaking the raw exit code.
-      const translated = translateNpmPackError(name, message);
+      const translated = translateDownloadError(name, message);
       if (translated && (translated.errorHint || translated.suggestions)) {
         if (options.json) {
           writeJsonStdout({ name, ecosystem: 'npm', found: false, error: translated.errorHint, suggestions: translated.suggestions });
