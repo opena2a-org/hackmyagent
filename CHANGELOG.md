@@ -4,6 +4,20 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-04-22
+
+### Changed
+- **`check --json` not-found paths now emit the canonical `NotFoundOutput` shape from `@opena2a/check-core`.** The npm-miss (git-style translated), PyPI 404, and GitHub 404 paths all go through `buildNotFoundOutput({ name, ecosystem, error, errorHint?, suggestions? })`. Closes the data-layer half of the F2/F3/F4 parity fixtures in opena2a-parity.
+- **Bare names on npm 404 no longer fall through to the skill resolver.** `hackmyagent check <bare-name>` where the package does not exist on npm used to emit `Invalid skill identifier` on stderr with no JSON. It now emits the same `NotFoundOutput` shape as scoped/git-style misses and exits 1. Scoped names (`@scope/name`) still fall through to skill-identifier fallback on npm 404 — that path is unchanged.
+
+### Engineering
+- Adds `__tests__/checker/check-not-found-json.test.ts` as a regression test for the bare-name → npm `NotFoundOutput` emission. CI-skipped (needs network + built `dist/cli.js`); local dev exercises the real shape.
+
+## [0.19.0] - 2026-04-22
+
+### Changed
+- **`check` happy-path consumes `@opena2a/check-core@0.1.0` primitives.** `buildCheckOutput` + `translateDownloadError` + `mapScanStatusForMeter` move to the shared package; local `src/check-render.ts` deleted (CA-034 M3). HMA, opena2a-cli (via spawn delegation), and ai-trust now share one implementation for the registered-package `--json` shape — the F1 parity fixture in opena2a-parity is byte-identical across all three.
+
 ## [0.18.3] - 2026-04-23
 
 ### Added
