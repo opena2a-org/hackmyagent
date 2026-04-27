@@ -318,10 +318,14 @@ Examples:
             cyan: (s: string) => `${colors.cyan}${s}${RESET()}`,
           },
           version: options.at,
+          silent: !!options.json,
         });
         if (result.rendered) {
           if (options.json && result.input) {
-            writeJsonStdout({ target: skill, richBlockInput: result.input });
+            // Emit the bare CheckRichBlockInput shape so opena2a-parity
+            // can compare must_match fields byte-identical against
+            // ai-trust + opena2a (F12 / F13). No wrapper envelope.
+            writeJsonStdout(result.input);
           }
           return;
         }

@@ -94,6 +94,13 @@ export interface CheckSkillOrMcpOptions {
   version?: string;
   /** Local-scan findings to display under "What we observed". */
   localFindings?: Parameters<typeof buildRichBlockInput>[0]["localFindings"];
+  /**
+   * Suppress the human-readable rich-block render. The orchestrator
+   * still builds the input and reports `rendered: true` so the caller
+   * can emit `result.input` as JSON. Used by `--json` callers and the
+   * opena2a-parity harness so output is parseable.
+   */
+  silent?: boolean;
 }
 
 export interface CheckSkillOrMcpResult {
@@ -168,6 +175,11 @@ export async function checkSkillOrMcp(
 
   if (!input) {
     return { rendered: false };
+  }
+
+  if (options.silent) {
+    // Caller will serialize `input` to JSON. No text output.
+    return { rendered: true, input };
   }
 
   const rendered = renderCheckRichBlock(input);
