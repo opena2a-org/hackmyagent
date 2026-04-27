@@ -2937,10 +2937,10 @@ async function handleContribution(
 
     const event = buildScanEvent(packageName, targetDir, findings, durationMs);
     await queueAndMaybeFlush(event, registryUrl, format === 'text');
-
-    if (format === 'text') {
-      process.stdout.write('Queued anonymized scan summary for OpenA2A Registry (--no-contribute to opt out)\n');
-    }
+    // Silent-post-consent rule (briefs/scan-result-telemetry-policy.md §5):
+    // once the user has opted in (--contribute or persisted choice),
+    // contribution is invisible. No per-scan banner, no "queued for
+    // OpenA2A Registry" line. Failures are swallowed by the catch.
   } catch {
     // Non-fatal: contribution failure must never crash the scan
   }
