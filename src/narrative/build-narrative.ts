@@ -119,16 +119,18 @@ export async function buildPackageNarrative(
   const ruleEngineOutput: RuleEngineOutput = runRuleEngine(ruleEngineInput);
 
   const hardcodedSecretsBlock: HardcodedSecretsBlock = ruleEngineOutput.hardcodedSecretsBlock;
+  const artifactTypeForSummary: "skill" | "mcp" =
+    ast.artifactType === "skill" ? "skill" : "mcp";
 
   const narrative: PackageNarrative = {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
     generatedFrom: {
-      artifactType: ast.artifactType === "skill" ? "skill" : "mcp",
+      artifactType: artifactTypeForSummary,
       artifactVersion: input.packageVersion,
       scanRunId: input.scanRunId ?? randomUUID(),
     },
-    summary: nanomind.summary,
+    summary: synthesizeSummary(nanomind.summary, input, artifactTypeForSummary),
     hardcodedSecrets: hardcodedSecretsBlock,
     verdictReasoning: ruleEngineOutput.verdictReasoning,
     nextSteps: ruleEngineOutput.nextSteps,
@@ -156,6 +158,45 @@ export async function buildPackageNarrative(
   }
 
   return narrative;
+}
+
+/**
+ * Pick a non-empty `summary` for the registry POST. The registry
+ * rejects empty summaries with HTTP 400 `invalid_summary`; until
+ * NanoMind v3 wires real comprehension generation, fall back to the
+ * artifact author's own description, then a deterministic last-resort
+ * line so `secure --publish` never fails on summary alone.
+ *
+ * Order:
+ *   1. NanoMind summary (when non-empty).
+ *   2. SKILL.md frontmatter `description` (skill) or
+ *      package.json `description` (mcp).
+ *   3. Generic `Skill: <name>` / `MCP: <name>`.
+ *
+ * Single-line, whitespace-collapsed, capped at the registry's 4096
+ * `narrativeMaxSummaryBytes` limit (handler:80).
+ */
+export function synthesizeSummary(
+  nanomindSummary: string,
+  input: BuildPackageNarrativeInput,
+  artifactType: "skill" | "mcp",
+): string {
+  const trim = (s: unknown): string =>
+    typeof s === "string" ? s.replace(/\s+/g, " ").trim() : "";
+  const cap = (s: string): string => (s.length > 4096 ? s.slice(0, 4096) : s);
+
+  const fromNanomind = trim(nanomindSummary);
+  if (fromNanomind) return cap(fromNanomind);
+
+  const fromAuthor =
+    artifactType === "skill"
+      ? trim(input.skillFrontmatter?.description)
+      : trim(input.mcpConfig?.description);
+  if (fromAuthor) return cap(fromAuthor);
+
+  return artifactType === "skill"
+    ? `Skill: ${input.packageName}`
+    : `MCP: ${input.packageName}`;
 }
 
 /**
