@@ -4,6 +4,23 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-04-27
+
+### Added
+- **PackageNarrative emission on `secure --publish` for skill / mcp artifacts.** When a `secure --publish` target contains `SKILL.md` at the scan root, or HMA's project-type detector classifies the project as `mcp`, HMA now POSTs a `PackageNarrative` payload to the registry's `POST /api/v1/trust/narrative` endpoint after the existing scan-result publish completes. The narrative carries the wire-shape that drives the rich-context `check` view (skill+mcp v1) — declared-vs-observed permission delta, MCP tool list, hardcoded-secret group with rotation guidance, deterministic verdict reasoning, and a verdict-aware action gradient. Failure is non-fatal — the parent publish always succeeds first; narrative emission is best-effort and reported under `publish.narrative` in JSON output.
+- **`src/narrative/` module.** Six files, ~900 LOC. `skill-narrative.ts` + `mcp-narrative.ts` reshape the existing SecurityAST + scan findings into the `@opena2a/check-core@0.2.0` wire types. `narrative-summary.ts` is a NanoMind v3 graceful-degrade gate (per `project_nanomind_v05_intelreport_task_mismatch.md` — v3 is OOD on comprehension tasks; v1 returns empty strings). `build-narrative.ts` is the orchestrator. `publish-narrative.ts` is the registry HTTP client. `wire-publish.ts` is the single-call helper consumed by `cli.ts`.
+- **35 new unit tests** across the four narrative module files (skill builders, mcp builders, summary degrade gate, publish-client shape). Suite: 1746 passed.
+
+### Changed
+- **`@opena2a/check-core` exact-pinned at `0.2.0`** (was `0.1.0`). New version exports the rule engine, secret-rotation table, and `PackageNarrative` wire types this release consumes.
+- **Static threat-model questions** (skills + MCPs) ship with each emitted narrative per the brief's [CHIEF-CSR] decision, so the registry stores the complete render payload and cli-ui's renderer stays dumb.
+
+### Engineering
+- New `src/narrative/wire-publish.ts` keeps the cli.ts integration to a single dynamic-import + best-effort call. Detection is intentionally simple (SKILL.md presence at scan root, or `projectType === "mcp"`) so the v1 wiring is auditable; richer detection lands when [CHIEF-CA] decides on the multi-artifact-per-scan convention.
+
+### Brief
+- opena2a-org/briefs/check-rich-context-skills-mcp-v1.md (§4-§7, §8 task 2c-2e, session 2)
+
 ## [0.18.3] - 2026-04-23
 
 ### Added
