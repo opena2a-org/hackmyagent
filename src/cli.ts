@@ -3353,6 +3353,25 @@ Examples:
               };
               const publishResult = await publishScanResults(publishData, registryUrl);
               publishStatus = { ...publishResult, registryUrl };
+
+              // Best-effort: if this scan looks like a skill or MCP artifact, also
+              // POST a PackageNarrative so the rich-context `check` view has
+              // something to render. Failure is non-fatal — never blocks publish.
+              try {
+                const { wireNarrativePublish } = await import('./narrative/wire-publish');
+                const narrativeStatus = await wireNarrativePublish({
+                  targetDir,
+                  packageName,
+                  packageVersion: publishData.packageVersion ?? '0.0.0',
+                  findings: result.findings,
+                  projectType: result.projectType,
+                  registryUrl,
+                });
+                publishStatus = { ...publishStatus, narrative: narrativeStatus };
+              } catch (nErr: unknown) {
+                const nMsg = nErr instanceof Error ? nErr.message : 'unknown error';
+                publishStatus = { ...publishStatus, narrative: { attempted: true, result: { ok: false, cached: false, error: nMsg } } };
+              }
             } else {
               publishStatus = { success: false, error: 'Could not determine package name' };
             }
@@ -3613,6 +3632,28 @@ Examples:
             } else if (format === 'json') {
               // Append publish result to JSON output in a separate log
               console.error(JSON.stringify({ publish: publishResult }, null, 2));
+            }
+
+            // Best-effort: emit PackageNarrative for skill / mcp artifacts.
+            // Failure is non-fatal — only logged in verbose mode.
+            try {
+              const { wireNarrativePublish } = await import('./narrative/wire-publish');
+              const narrativeStatus = await wireNarrativePublish({
+                targetDir,
+                packageName,
+                packageVersion: publishData.packageVersion ?? '0.0.0',
+                findings: result.findings,
+                projectType: result.projectType,
+                registryUrl,
+              });
+              if (options.verbose && narrativeStatus.attempted) {
+                console.error(`Narrative: ${narrativeStatus.artifactType} → ${narrativeStatus.result?.ok ? (narrativeStatus.result.cached ? 'cached' : 'published') : 'failed'}`);
+              }
+            } catch (nErr: unknown) {
+              if (options.verbose) {
+                const nMsg = nErr instanceof Error ? nErr.message : 'unknown error';
+                console.error(`Narrative emission skipped: ${nMsg}`);
+              }
             }
           }
         } catch (publishErr: unknown) {
