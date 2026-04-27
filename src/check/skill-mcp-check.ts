@@ -113,18 +113,11 @@ export async function checkSkillOrMcp(
 ): Promise<CheckSkillOrMcpResult> {
   const { parsed, trust } = options;
 
-  // No trust record → caller renders the not-found block; rich-block
-  // path requires at least a Listed entry so the header has data.
-  if (!trust || !trust.found) {
-    return { rendered: false };
-  }
-
-  // The narrative endpoint requires an explicit version. Fall through
-  // when the caller doesn't have one.
-  const version = options.version ?? "latest";
-  if (version === "latest") {
-    return { rendered: false };
-  }
+  // Default to the registry's latest-version sentinel when the caller
+  // didn't pin a version. Registry resolves via FindLatestFresh.
+  const version = options.version && options.version.length > 0
+    ? options.version
+    : "latest";
 
   const narrative = await fetchNarrative({
     registryUrl: options.registryUrl,
@@ -133,28 +126,42 @@ export async function checkSkillOrMcp(
     version,
     userAgent: options.userAgent,
   });
+  // No narrative → rich-block path can't render. Caller falls back to
+  // legacy block + v1 footer.
   if (!narrative) {
     return { rendered: false };
   }
+
+  // Trust record may be sparse or missing for newly-seeded narratives.
+  // Use the trust data when available, otherwise fall back to a
+  // LISTED_UNSCANNED header — the narrative carries the bulk of the
+  // information, the trust block is just the score + scan-age line.
+  const trustInput = trust && trust.found
+    ? {
+        trustVerdict: deriveTrustVerdict(
+          trust.verdict,
+          trust.trustLevel,
+          trust.scanStatus,
+        ),
+        trustScore:
+          trust.scanStatus === "completed"
+            ? Math.round(trust.trustScore * 100)
+            : undefined,
+        scanStatus: trust.scanStatus,
+        lastScanAge: formatScanAge(trust.lastScannedAt),
+        latestVersionLabel: narrative.packageVersion,
+        communityScans: trust.communityScans,
+      }
+    : {
+        trustVerdict: "LISTED_UNSCANNED" as const,
+        latestVersionLabel: narrative.packageVersion,
+      };
 
   const input = buildRichBlockInput({
     name: parsed.name,
     artifactType: parsed.artifactType,
     narrative,
-    trust: {
-      trustVerdict: deriveTrustVerdict(
-        trust.verdict,
-        trust.trustLevel,
-        trust.scanStatus,
-      ),
-      trustScore: trust.scanStatus === "completed"
-        ? Math.round(trust.trustScore * 100)
-        : undefined,
-      scanStatus: trust.scanStatus,
-      lastScanAge: formatScanAge(trust.lastScannedAt),
-      latestVersionLabel: narrative.packageVersion,
-      communityScans: trust.communityScans,
-    },
+    trust: trustInput,
     reportTool: options.reportTool,
     localFindings: options.localFindings,
   });

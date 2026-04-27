@@ -122,8 +122,11 @@ function validateWireShape(
     generatedAt: body.generatedAt,
     summary: body.summary,
     hardcodedSecrets: body.hardcodedSecrets,
-    skillNarrative: body.skillNarrative,
-    mcpNarrative: body.mcpNarrative,
+    // Wire shape uses `skill` / `mcp` (matches the registry handler's
+    // `json:"skill,omitempty"` tag); the typed value carries the same
+    // payload as the internal `SkillNarrative` / `McpNarrative` fields.
+    skillNarrative: body.skill,
+    mcpNarrative: body.mcp,
     verdictReasoning: body.verdictReasoning,
     nextSteps: body.nextSteps,
   };

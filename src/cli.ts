@@ -282,8 +282,8 @@ Examples:
   .option('--nanomind', 'Per-finding AI threat analysis on HIGH/CRITICAL findings only (~15-30s per finding; specialist model, no effect on clean or LOW/MEDIUM-only scans; requires nanomind setup)')
   .option('--analm', '[deprecated alias for --nanomind] AI-powered threat analysis')
   .option('--rescan', 'Deprecated: local scan is now the default')
-  .option('--version <version>', 'Pin to a specific package version (skill: / mcp: rich block requires this until the Registry latest-version lookup ships)')
-  .action(async (skill: string, options: { verbose?: boolean; json?: boolean; scan?: boolean; registry?: boolean; offline?: boolean; nanomind?: boolean; analm?: boolean; rescan?: boolean; version?: string }) => {
+  .option('--at <version>', 'Pin to a specific package version (skill: / mcp: rich block defaults to the latest published narrative when omitted)')
+  .action(async (skill: string, options: { verbose?: boolean; json?: boolean; scan?: boolean; registry?: boolean; offline?: boolean; nanomind?: boolean; analm?: boolean; rescan?: boolean; at?: string }) => {
     // Commander parses --no-scan as scan:false, --no-registry as registry:false
     // Normalize: --offline is alias for --no-registry
     if (options.offline) options.registry = false;
@@ -317,21 +317,13 @@ Examples:
             brightRed: (s: string) => `${colors.brightRed}${s}${RESET()}`,
             cyan: (s: string) => `${colors.cyan}${s}${RESET()}`,
           },
-          version: options.version,
+          version: options.at,
         });
         if (result.rendered) {
           if (options.json && result.input) {
             writeJsonStdout({ target: skill, richBlockInput: result.input });
           }
           return;
-        }
-        // Fell through — emit a one-line hint when stdout is a TTY so
-        // power users know the rich block is opt-in until the registry
-        // version-resolution lands.
-        if (!options.version && !options.json && !globalCiMode) {
-          console.error(
-            `${colors.dim}Hint: pass --version <X.Y.Z> to render the skill / mcp rich block (default-version lookup pending Registry update).${RESET()}`,
-          );
         }
         // Continue into the existing dispatch using the un-prefixed name.
         skill = richTarget.name;

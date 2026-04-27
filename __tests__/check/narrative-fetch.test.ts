@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { fetchNarrative } from "../../src/check/narrative-fetch.js";
 
+// Wire shape uses `skill` / `mcp` keys (matches registry handler's
+// json:"skill,omitempty" tag). The fetch helper renames them to
+// skillNarrative / mcpNarrative on the typed result.
 const validBody = {
   artifactType: "skill",
   packageName: "opena2a/code-review",
@@ -9,8 +12,8 @@ const validBody = {
   generatedAt: "2026-04-27T00:00:00Z",
   summary: "summary",
   hardcodedSecrets: { detected: [], scanCovered: true },
-  skillNarrative: { skillName: "opena2a/code-review" },
-  mcpNarrative: null,
+  skill: { skillName: "opena2a/code-review" },
+  mcp: null,
   verdictReasoning: [],
   nextSteps: [],
 };

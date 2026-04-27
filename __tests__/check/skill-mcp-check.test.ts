@@ -76,7 +76,33 @@ describe("deriveTrustVerdict", () => {
 describe("checkSkillOrMcp", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("returns rendered=false when trust is null", async () => {
+  it("renders rich block from narrative alone when trust is null (LISTED_UNSCANNED header)", async () => {
+    const narrativeBody = {
+      artifactType: "skill",
+      packageName: "x",
+      packageVersion: "0.1.0",
+      schemaVersion: 1,
+      generatedAt: "2026-04-27T00:00:00Z",
+      summary: "",
+      hardcodedSecrets: { detected: [], scanCovered: true },
+      skill: {
+        skillName: "x",
+        activationPhrases: [],
+        permissions: [],
+        externalServices: [],
+        persistence: "",
+        toolCallsObserved: [],
+        misuseNarrative: "",
+      },
+      mcp: null,
+      verdictReasoning: [],
+      nextSteps: [],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => narrativeBody }),
+    );
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const result = await checkSkillOrMcp({
       parsed: { artifactType: "skill", name: "x" },
       registryUrl: "https://api.example.com",
@@ -86,10 +112,39 @@ describe("checkSkillOrMcp", () => {
       palette,
       version: "0.1.0",
     });
-    expect(result.rendered).toBe(false);
+    logSpy.mockRestore();
+    expect(result.rendered).toBe(true);
+    expect(result.input?.header.trustVerdict).toBe("LISTED_UNSCANNED");
+    expect(result.input?.header.trustScore).toBeUndefined();
   });
 
-  it("returns rendered=false when version is omitted (latest sentinel TBD)", async () => {
+  it("defaults to version=latest when caller omits version", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        artifactType: "skill",
+        packageName: "x",
+        packageVersion: "0.9.9",
+        schemaVersion: 1,
+        generatedAt: "2026-04-27T00:00:00Z",
+        summary: "",
+        hardcodedSecrets: { detected: [], scanCovered: true },
+        skill: {
+          skillName: "x",
+          activationPhrases: [],
+          permissions: [],
+          externalServices: [],
+          persistence: "",
+          toolCallsObserved: [],
+          misuseNarrative: "",
+        },
+        mcp: null,
+        verdictReasoning: [],
+        nextSteps: [],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const result = await checkSkillOrMcp({
       parsed: { artifactType: "skill", name: "x" },
       registryUrl: "https://api.example.com",
@@ -105,7 +160,9 @@ describe("checkSkillOrMcp", () => {
       },
       palette,
     });
-    expect(result.rendered).toBe(false);
+    logSpy.mockRestore();
+    expect(result.rendered).toBe(true);
+    expect(String(fetchMock.mock.calls[0][0])).toContain("version=latest");
   });
 
   it("returns rendered=false when narrative fetch returns null", async () => {
@@ -141,7 +198,7 @@ describe("checkSkillOrMcp", () => {
       generatedAt: "2026-04-27T00:00:00Z",
       summary: "summary",
       hardcodedSecrets: { detected: [], scanCovered: true },
-      skillNarrative: {
+      skill: {
         skillName: "x",
         activationPhrases: ["go"],
         permissions: [],
@@ -150,7 +207,7 @@ describe("checkSkillOrMcp", () => {
         toolCallsObserved: [],
         misuseNarrative: "",
       },
-      mcpNarrative: null,
+      mcp: null,
       verdictReasoning: [],
       nextSteps: [],
     };
@@ -193,7 +250,7 @@ describe("checkSkillOrMcp", () => {
       generatedAt: "2026-04-27T00:00:00Z",
       summary: "",
       hardcodedSecrets: { detected: [], scanCovered: false },
-      skillNarrative: {
+      skill: {
         skillName: "x",
         activationPhrases: [],
         permissions: [],
@@ -202,7 +259,7 @@ describe("checkSkillOrMcp", () => {
         toolCallsObserved: [],
         misuseNarrative: "",
       },
-      mcpNarrative: null,
+      mcp: null,
       verdictReasoning: [],
       nextSteps: [],
     };
