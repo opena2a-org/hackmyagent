@@ -141,9 +141,12 @@ function detectUrlPasswords(file: AnalysisFile): SemanticFinding[] {
       if (password.length < 3) continue;
 
       const urlPwMasked = password.length > 5 ? password.slice(0, 5) + '****' : '****';
-      // Redact the password before putting the line into structured evidence so the
-      // raw secret never reaches JSON output or terminal rendering.
-      const safeContent = line.split(`:${password}@`).join(`:${urlPwMasked}@`);
+      // Redact every occurrence of the raw password from the line before placing it
+      // into structured evidence. Split-on-`:pw@` only catches the URL slot, but
+      // the same secret can appear in comments, sibling assignments, or doc strings
+      // on the same line. split/join catches all occurrences without partial-leak
+      // and stays ES2020-safe (replaceAll is ES2021).
+      const safeContent = line.split(password).join('[REDACTED]');
       findings.push({
         id: 'SEM-CRED-001',
         title: 'Password embedded in URL',

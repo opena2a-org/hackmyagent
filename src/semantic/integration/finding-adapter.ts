@@ -62,6 +62,7 @@ export function toSecurityFinding(finding: SemanticFinding): SecurityFinding {
     guidance: finding.rationale,
     attackClass: finding.attackClass,
     evidence: finding.evidence,
+    rationale: { plainEnglish: finding.rationale },
     concept: finding.concept,
   };
 }
