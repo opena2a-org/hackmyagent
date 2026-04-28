@@ -4,6 +4,9 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Pathless noise-floor findings no longer pollute `result.allFindings`** (issue #131 / #130). Failed findings without a `file` whose check prefix doesn't apply to the detected project type are now dropped from `allFindings` (e.g., `NET-003` HTTPS Configuration on an `mcp` project, `INJ-003` SQL Injection on a `library`). User-facing `result.findings` and `result.score` were already gated correctly and are unchanged. Consumers of `allFindings` — corpus release-smoke harness (`scripts/release-smoke-corpus.ts`), benchmark report, and OASB-2 governance composite — now see a clean signal. Pathless findings whose check DOES apply (e.g., `CRED-002` finding a private key without setting `file`) are preserved as legitimate detections; the underlying check-emission bug is tracked separately. Self-scan score: 89 → 89 (no change). Public symbol added: `dropPathlessNoiseFloor(findings, projectType)`.
+
 ## [0.21.1] - 2026-04-28
 
 ### Changed
