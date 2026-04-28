@@ -68,6 +68,15 @@ import {
   type NotFoundTone,
   type NextStepsCta,
 } from '@opena2a/cli-ui';
+import type { TelemetryAction } from '@opena2a/cli-ui' with { 'resolution-mode': 'import' };
+
+// Wire-format tool name (analytics key). Matches the npm package name so
+// download counts and event counts can be correlated.
+const TELEMETRY_TOOL = 'hackmyagent';
+// Subcommands not tracked: pure config / self-referential commands.
+const NON_TRACKED_TELEMETRY_COMMANDS = new Set<string>(['telemetry', 'help']);
+// Per-invocation start times keyed by subcommand name (preAction → postAction).
+const telemetryStartedAt = new Map<string, number>();
 import { getTaxonomyMap } from './hardening/taxonomy';
 const program = new Command();
 program.showHelpAfterError('(run with --help for usage)');
@@ -211,8 +220,9 @@ Examples:
   $ hackmyagent detect                         Shadow AI audit (agents, MCPs, governance)
   $ hackmyagent scan-soul                      Governance compliance scan
   $ hackmyagent scan example.com               External infrastructure scan`)
-  .version(`hackmyagent ${VERSION} — security scanner for AI agents`, '-v, --version', 'Output the version number')
   .option('--no-color', 'Disable colored output (also respects NO_COLOR env)');
+// Version line is set inside main() so it can include the live telemetry status.
+// Tracking hooks (preAction / postAction) are also wired there.
 
 program.addHelpText('beforeAll', `
 Quick start:
@@ -272,7 +282,8 @@ Examples:
   .option('--nanomind', 'Per-finding AI threat analysis on HIGH/CRITICAL findings only (~15-30s per finding; specialist model, no effect on clean or LOW/MEDIUM-only scans; requires nanomind setup)')
   .option('--analm', '[deprecated alias for --nanomind] AI-powered threat analysis')
   .option('--rescan', 'Deprecated: local scan is now the default')
-  .action(async (skill: string, options: { verbose?: boolean; json?: boolean; scan?: boolean; registry?: boolean; offline?: boolean; nanomind?: boolean; analm?: boolean; rescan?: boolean }) => {
+  .option('--at <version>', 'Pin to a specific package version (skill: / mcp: rich block defaults to the latest published narrative when omitted)')
+  .action(async (skill: string, options: { verbose?: boolean; json?: boolean; scan?: boolean; registry?: boolean; offline?: boolean; nanomind?: boolean; analm?: boolean; rescan?: boolean; at?: string }) => {
     // Commander parses --no-scan as scan:false, --no-registry as registry:false
     // Normalize: --offline is alias for --no-registry
     if (options.offline) options.registry = false;
@@ -281,6 +292,47 @@ Examples:
       console.error(`${colors.yellow}Note: --rescan is deprecated. Local scan is now the default.${RESET()}`);
     }
     try {
+      // skill: / mcp: prefix dispatch — rich-context block (brief §3).
+      // Falls through to legacy block when narrative is unavailable or
+      // --version is omitted (Registry GET endpoint requires explicit
+      // version until the latest-version sentinel ships).
+      const { parseRichTarget, checkSkillOrMcp } = await import('./check/skill-mcp-check.js');
+      const richTarget = parseRichTarget(skill);
+      if (richTarget) {
+        const trust = await queryRegistry(richTarget.name);
+        const result = await checkSkillOrMcp({
+          parsed: richTarget,
+          registryUrl: REGISTRY_URL,
+          userAgent: `hackmyagent/${VERSION}`,
+          reportTool: 'hackmyagent',
+          trust: trust ?? null,
+          palette: {
+            reset: colors.reset,
+            dim: (s: string) => `${colors.dim}${s}${RESET()}`,
+            bold: (s: string) => `${colors.bold}${s}${RESET()}`,
+            white: (s: string) => `${colors.white}${s}${RESET()}`,
+            green: (s: string) => `${colors.green}${s}${RESET()}`,
+            yellow: (s: string) => `${colors.yellow}${s}${RESET()}`,
+            red: (s: string) => `${colors.red}${s}${RESET()}`,
+            brightRed: (s: string) => `${colors.brightRed}${s}${RESET()}`,
+            cyan: (s: string) => `${colors.cyan}${s}${RESET()}`,
+          },
+          version: options.at,
+          silent: !!options.json,
+        });
+        if (result.rendered) {
+          if (options.json && result.input) {
+            // Emit the bare CheckRichBlockInput shape so opena2a-parity
+            // can compare must_match fields byte-identical against
+            // ai-trust + opena2a (F12 / F13). No wrapper envelope.
+            writeJsonStdout(result.input);
+          }
+          return;
+        }
+        // Continue into the existing dispatch using the un-prefixed name.
+        skill = richTarget.name;
+      }
+
       // Detect local file/directory paths - run NanoMind scan instead of registry lookup
       const { statSync } = await import('node:fs');
       const { resolve, dirname } = await import('node:path');
@@ -988,7 +1040,11 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     const staticCount = HMA_STATIC_CHECK_COUNT;
     const semanticCount = nanomindScan?.compiledArtifacts ?? 0;
     const filesScanned = localScan?.filesScanned;
-    const rawKind = (projectType || '').toString().trim();
+    // HMA-2: prefer registry.packageType (authoritative) over the local
+    // project-type heuristic. Fixes "Surfaces: cli" (HMA local heuristic)
+    // disagreeing with "library" (ai-trust → registry packageType) on
+    // the same package.
+    const rawKind = (registry?.packageType || projectType || '').toString().trim();
     const kind = rawKind && rawKind !== 'unknown' ? rawKind : 'local project';
 
     const categorySummaries = buildCategorySummaries(failed);
@@ -1213,10 +1269,25 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   // ── Registry ────────────────────────────────────────────────────────
   if (registry?.found) {
     const trustScore = Math.round(registry.trustScore * 100);
+    // HMA-1: gate the Trust meter on a usable scanStatus. When the
+    // registry's most recent scan errored / pending / never ran, a
+    // numeric meter on the same line as the local Security meter is
+    // misleading (Security 100/100 + Trust 35/100 → user sees a
+    // contradiction). Render a "[—] not yet measured" qualifier
+    // instead so the registry section still anchors the user but
+    // doesn't claim a measurement that did not succeed.
+    const scanStatusUsable = registry.scanStatus === 'completed';
 
     if (localScan || nanomindScan) {
       divider('Registry');
-      console.log(`  Trust     ${scoreMeter(trustScore)}`);
+      if (scanStatusUsable) {
+        console.log(`  Trust     ${scoreMeter(trustScore)}`);
+      } else {
+        const reason = registry.scanStatus
+          ? `registry scan ${registry.scanStatus}`
+          : 'no successful registry scan yet';
+        console.log(`  Trust     ${colors.dim}[—] ${reason}${RESET()}`);
+      }
     }
     const tlColor = trustLevelColor(registry.trustLevel);
     const tlLabel = trustLevelLabel(registry.trustLevel);
@@ -2870,10 +2941,10 @@ async function handleContribution(
 
     const event = buildScanEvent(packageName, targetDir, findings, durationMs);
     await queueAndMaybeFlush(event, registryUrl, format === 'text');
-
-    if (format === 'text') {
-      process.stdout.write('Queued anonymized scan summary for OpenA2A Registry (--no-contribute to opt out)\n');
-    }
+    // Silent-post-consent rule (briefs/scan-result-telemetry-policy.md §5):
+    // once the user has opted in (--contribute or persisted choice),
+    // contribution is invisible. No per-scan banner, no "queued for
+    // OpenA2A Registry" line. Failures are swallowed by the catch.
   } catch {
     // Non-fatal: contribution failure must never crash the scan
   }
@@ -9225,10 +9296,71 @@ async function checkNpmPackage(
     process.argv = process.argv.filter(a => a !== '--ci');
   }
 
+  // Tier-1 anonymous usage telemetry — default ON; opt-out via
+  // OPENA2A_TELEMETRY=off or `hackmyagent telemetry off`. See README §Telemetry.
+  // Disclosure surfaces: README, --version line, telemetry subcommand,
+  // opena2a.org/telemetry. CommonJS / ESM bridge: dynamic import inside async
+  // main, type-only `TelemetryAction` import with resolution-mode: 'import'.
+  const tele = await import('@opena2a/telemetry');
+  const { versionLine, runTelemetryCommand } = await import('@opena2a/cli-ui');
+  await tele.init({ tool: TELEMETRY_TOOL, version: VERSION });
+
+  // Set the --version line now that we have live telemetry status.
+  program.version(
+    versionLine({ tool: 'hackmyagent', version: VERSION, telemetry: tele.status() }),
+    '-v, --version',
+    'Output the version number',
+  );
+
+  // Telemetry tracking — records command start time, fires on postAction.
+  // The 'telemetry' subcommand itself is excluded to avoid self-referential
+  // events.
+  program
+    .hook('preAction', (_thisCommand, actionCommand) => {
+      const name = actionCommand.name();
+      if (NON_TRACKED_TELEMETRY_COMMANDS.has(name)) return;
+      telemetryStartedAt.set(name, Date.now());
+    })
+    .hook('postAction', (_thisCommand, actionCommand) => {
+      const name = actionCommand.name();
+      const startedAt = telemetryStartedAt.get(name);
+      if (startedAt === undefined) return;
+      telemetryStartedAt.delete(name);
+      void tele.track(name, {
+        success: (process.exitCode ?? 0) === 0,
+        durationMs: Date.now() - startedAt,
+      });
+    });
+
+  // Telemetry subcommand: inspect or toggle anonymous usage telemetry.
+  program
+    .command('telemetry [action]')
+    .description('Inspect or toggle anonymous usage telemetry: on | off | status')
+    .action((action: TelemetryAction | undefined) => {
+      console.log(runTelemetryCommand(action, {
+        tool: 'hackmyagent',
+        getStatus: tele.status,
+        setOptOut: tele.setOptOut,
+      }));
+    });
+
   if (process.argv.length <= 2) {
     program.outputHelp();
     process.exit(0);
   }
 
-  program.parse();
+  try {
+    await program.parseAsync(process.argv);
+  } catch (err) {
+    // Fire an error event for the in-flight subcommand, then re-throw so
+    // commander's existing exit-code propagation runs.
+    const inFlight = telemetryStartedAt.keys().next().value;
+    if (inFlight) {
+      const code = err instanceof Error ? err.name : 'unknown';
+      tele.error(inFlight, code);
+    }
+    throw err;
+  } finally {
+    await tele.flush();
+  }
 })();

@@ -4,6 +4,28 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-04-27
+
+### Added
+- **`check skill:<name>` and `check mcp:<name>` render the rich-context block by default.** When the registry has a fresh `PackageNarrative` (POSTed by `secure --publish` in 0.20.0), `check` renders the v1 mockups from `briefs/check-rich-context-skills-mcp-v1.md` §3: hardcoded-secrets group with rotation guidance, declared-vs-observed permission delta (skill) or tool list + scope rows (MCP), severity-sorted findings, deterministic verdict reasoning, threat-model questions, action gradient with primary CTA. Rendering is byte-identical with `ai-trust check` and `opena2a check` against the same fixture (parity F12 / F13). Falls back to the legacy block + v1 footer only when the registry returns no narrative.
+- **`--at <version>` flag** to pin a specific package version. Default is the latest published narrative (registry GET resolves via `version=latest`). Renamed from the original `--version` to avoid commander collision with the program-level `-v, --version` flag.
+- **Anonymous usage telemetry** (`@opena2a/telemetry@0.1.2`, default ON, opt-out via `OPENA2A_TELEMETRY=off` or `hackmyagent telemetry off`). Tier-1 wire shape — tool, version, install_id, event name, success, durationMs, platform, node major. The `--version` line discloses the state and the policy URL; `hackmyagent telemetry [on|off|status]` lets users inspect or toggle. Disclosure surfaces: README, `--version`, `telemetry` subcommand, opena2a.org/telemetry. Wire-format key in `tool_usage_events` is `hackmyagent`; the `telemetry` and `help` subcommands are not tracked (self-referential).
+- **`src/check/` module.** Four files, ~700 LOC. `narrative-fetch.ts` GETs `/api/v1/trust/narrative`, returns null on any error. `rich-block-adapter.ts` validates the inner JSON shapes and produces `CheckRichBlockInput`. `render-rich-block.ts` paints the cli-ui structured output with HMA's chalk palette. `skill-mcp-check.ts` is the orchestrator. 29 new unit tests cover URL composition, fallback paths, type-mismatch rejection, malformed-entry filtering, and the trust-verdict derivation matrix.
+
+### Fixed
+- **HMA-1: Trust meter no longer claims a measurement when no successful registry scan exists.** Previously `check <pkg>` could render `Security 100/100` (clean local scan) on the same line as `Trust 35/100` for a registry record whose `scanStatus` was `error` / `pending` / `never`. The meter now renders `Trust [—] registry scan <status>` until a successful scan lands. Mirrors the rich-block path where `LISTED_UNSCANNED` suppresses the score line entirely.
+- **HMA-2: `Surfaces` row now uses `registry.packageType` as the authoritative source.** Previously HMA's local project-type heuristic could disagree with the registry — the same package showed `Surfaces: cli` in `hackmyagent check` and `Surfaces: library` in `ai-trust check`. The registry record is canonical; the local heuristic is the fallback when no registry record exists.
+
+### Changed
+- **`@opena2a/cli-ui` exact-pinned at `0.5.0`** (was `0.3.0`). New version exports `versionLine`, `runTelemetryCommand`, and the rich-block primitive set (`renderCheckRichBlock`, `renderHardcodedSecretsBlock`, `renderSkillNarrativeBlock`, `renderMcpNarrativeBlock`, `renderVerdictReasoningBlock`, `renderActionGradientBlock`, `threatModelQuestionsFor`, `sanitizeForTerminal`).
+
+### Investigated, deferred
+- **HMA-3: 100/100 score on real MCPs with no MCP-specific signal.** Filed as `briefs/hma-3-mcp-scoring-shallowness.md`. Root cause is upstream of render — HMA's 209 static checks have no MCP-specific category and the v0.5.0 NanoMind specialist is OOD on scan-wide MCP grading. A render fix in 0.21.0 would have masked the gap. Recommended next steps in the brief: (1) suppress `100/100` when `coverage_density` is zero; (2) add an MCP tool-list extractor; (3) ship MCP attack-class checks. Lands in 0.22.0+.
+
+### Brief
+- opena2a-org/briefs/check-rich-context-skills-mcp-v1.md (§3, §8 task 3a-3d, session 3)
+- opena2a-org/briefs/hma-3-mcp-scoring-shallowness.md (HMA-3 follow-up)
+
 ## [0.20.0] - 2026-04-27
 
 ### Added
