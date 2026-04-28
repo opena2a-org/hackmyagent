@@ -352,7 +352,12 @@ Examples:
       const isLocalPath = resolvedStat?.isFile() || resolvedStat?.isDirectory();
 
       if (isLocalPath && resolvedStat) {
-        // Local path: run NanoMind semantic analysis directly
+        // Local path: run NanoMind semantic analysis directly. This is a
+        // *narrowed* matrix (semantic only, no static-check suite) — we
+        // relabel the score "Quick scan" and direct the user to `secure`
+        // for a full audit. Applies to both `check skill:<path>` /
+        // `check mcp:<path>` (post-prefix-strip) and bare `check <path>`,
+        // which share this same orchestrator. Closes #136.
         const targetDir = resolvedStat.isFile() ? dirname(resolved) : resolved;
 
         const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
@@ -399,6 +404,7 @@ Examples:
           usedAnalm: resolveNanomindFlag(options),
           analystFindings: nmResult.analystFindings,
           analystZeroState: nmResult.analystZeroState,
+          quickScan: { fullAuditTarget: skill },
         });
 
         const risk = critical.length > 0 ? 'critical' : high.length > 0 ? 'high' : issues.length > 0 ? 'medium' : 'low';
@@ -653,6 +659,19 @@ interface UnifiedCheckDisplayOptions {
   };
   /** When set, this path is used in Next Steps hints instead of `name`. Use for local directory targets (e.g., `secure`). */
   nextStepsTarget?: string;
+  /**
+   * When set, the score line is labeled "Quick scan" instead of "Security",
+   * a follow-up "Run `secure <target>` for the full audit" line is appended,
+   * and the "Path forward: N -> M" recovery-math line is suppressed. Used by
+   * `check skill:<path>` / `check mcp:<path>` where the orchestrator runs only
+   * the NanoMind semantic matrix, not the full 209-static-check suite — so
+   * presenting the score on the same 0-100 meter as `secure` would suggest
+   * equivalence the matrix doesn't support. Closes #136.
+   */
+  quickScan?: {
+    /** Target string emitted in the follow-up line (path or name as typed). */
+    fullAuditTarget: string;
+  };
 }
 
 function stripAnsi(s: string): string {
@@ -1033,7 +1052,11 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     }
     console.log(`  ${verdictColor}${colors.bold}${verdictText}${RESET()}`);
     console.log();
-    console.log(`  Security  ${scoreMeter(score, maxScore)}`);
+    const scoreLabel = opts.quickScan ? 'Quick scan' : 'Security';
+    console.log(`  ${scoreLabel}  ${scoreMeter(score, maxScore)}`);
+    if (opts.quickScan) {
+      console.log(`  ${colors.dim}Run \`secure ${opts.quickScan.fullAuditTarget}\` for the full audit (adds supply-chain + skill-hygiene checks).${RESET()}`);
+    }
   } else if (registry?.found) {
     const normalized = normalizeTrustVerdict(registry.verdict);
     let verdictText: string;
@@ -1269,8 +1292,13 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       }
     }
 
-    // Path forward with recovery math
-    if (critical > 0 || high > 0) {
+    // Path forward with recovery math. Suppressed under quickScan because
+    // the narrowed matrix can't predict the post-fix score against the
+    // full-audit (`secure`) matrix — showing "78 -> 100 by fixing 1 critical"
+    // implies the user can reach 100 by addressing only the quick-scan
+    // findings, when the full audit will surface additional supply-chain
+    // and hygiene findings the quick-scan never ran. Closes #136.
+    if (!opts.quickScan && (critical > 0 || high > 0)) {
       const recoveryParts: string[] = [];
       if (critical > 0) recoveryParts.push(`${critical} critical`);
       if (high > 0) recoveryParts.push(`${high} high`);
