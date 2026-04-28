@@ -78,6 +78,7 @@ const NON_TRACKED_TELEMETRY_COMMANDS = new Set<string>(['telemetry', 'help']);
 // Per-invocation start times keyed by subcommand name (preAction → postAction).
 const telemetryStartedAt = new Map<string, number>();
 import { getTaxonomyMap } from './hardening/taxonomy';
+import { compareFindingsByTier } from './ui/finding-tier';
 const program = new Command();
 program.showHelpAfterError('(run with --help for usage)');
 
@@ -1181,12 +1182,10 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
 
       // Top 3 issues with full detail
       divider('Top Issues');
-      const topFindings = [...failed]
-        .sort((a, b) => {
-          const sw: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
-          return (sw[b.severity] || 0) - (sw[a.severity] || 0);
-        })
-        .slice(0, 3);
+      // Sort by attack-class tier first, then severity. Stops benign hygiene
+      // HIGHs from masking active-malice / governance HIGHs at the top of
+      // the list (issue #134).
+      const topFindings = [...failed].sort(compareFindingsByTier).slice(0, 3);
       for (const f of topFindings) {
         const shortFile = f.file ? shortenPath(f.file) : '';
         const loc = shortFile + (f.line ? `:${f.line}` : '');
@@ -1206,9 +1205,10 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         }
       }
     } else {
-      // Normal mode: individual findings sorted by severity, with collapse
-      const sevWeight: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
-      failed.sort((a, b) => (sevWeight[b.severity] || 0) - (sevWeight[a.severity] || 0));
+      // Normal mode: individual findings sorted by attack-class tier first
+      // (active malice > capability/governance > missing-defense > hygiene >
+      // project), then severity inside each tier. Issue #134.
+      failed.sort(compareFindingsByTier);
       const skipped = new Set<number>();
       let shown = 0;
       const limit = verbose ? failed.length : 10;
