@@ -231,6 +231,15 @@ Quick start:
   $ hackmyagent secure --fix        Auto-fix with rollback
 `);
 
+// Two-bucket telemetry disclosure (briefs/scan-result-telemetry-policy.md §7,
+// [CHIEF-CSR-014] + [CHIEF-CPO-021]). Surfaces both consent rails on --help so
+// users see the boundary without reading the privacy policy.
+program.addHelpText('after', `
+Telemetry:
+  Anonymous usage telemetry is on. Disable: OPENA2A_TELEMETRY=off
+  Local scans may contribute to the OpenA2A Registry. Disable: --no-contribute or hackmyagent telemetry off
+`);
+
 program.hook('preAction', (thisCommand) => {
     const opts = thisCommand.opts();
     if (opts.color === false) {
