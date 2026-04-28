@@ -4,6 +4,19 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-04-28
+
+### Changed
+- **`check --json` not-found paths now emit the canonical `NotFoundOutput` shape from `@opena2a/check-core`.** The npm-miss (translated git-style + alternative-name path), PyPI 404, and GitHub 404 paths all go through `buildNotFoundOutput({ name, ecosystem, error, errorHint?, suggestions? })`. Closes the data-layer half of the F2/F3/F4 parity fixtures in opena2a-parity (PR #3 + PR #4).
+- **Bare names on npm 404 no longer fall through to the skill resolver.** `hackmyagent check <bare-name> --json` (where the package does not exist on npm) used to emit `Invalid skill identifier` on stderr with no JSON, breaking the `--json` contract. It now emits the same `NotFoundOutput` shape as scoped/git-style misses and exits 1. Scoped names (`@scope/name`) still fall through to skill-identifier fallback on npm 404 — that path is unchanged.
+- **GitHub 404 `--json` path now populates `errorHint`** (`Verify the URL: https://github.com/<displayName>`) instead of leaving it undefined. The human-rendered path was already populating it; the JSON branch is now in parity. Closes F4 in opena2a-parity.
+
+### Engineering
+- Adds `__tests__/checker/check-not-found-json.test.ts` as a regression test covering the bare-name → npm `NotFoundOutput` emission (F3) and the git-style → `errorHint` population (F4). CI-skipped by default since the test spawns a built `dist/cli.js` and exercises the live npm + GitHub 404 paths; local dev runs verify the real shape.
+
+### Brief
+- opena2a-org/briefs/check-core-adoption-round2-not-found.md (PR A)
+
 ## [0.21.0] - 2026-04-27
 
 ### Added

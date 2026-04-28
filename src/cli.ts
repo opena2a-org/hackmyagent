@@ -52,7 +52,7 @@ import {
 } from './index';
 import { resolveAndLogMcpShorthand } from './resolve-mcp';
 import { WildScanner, type WildScanReport } from './wild';
-import { buildCheckOutput, mapScanStatusForMeter, translateDownloadError } from '@opena2a/check-core';
+import { buildCheckOutput, buildNotFoundOutput, mapScanStatusForMeter, translateDownloadError } from '@opena2a/check-core';
 import {
   isRenderableAnalystFinding,
   formatAnalystDescription,
@@ -415,14 +415,30 @@ Examples:
       }
 
       // npm package name: download, run full HMA scan, clean up
-      // On npm 404, fall through to skill check (skill identifiers look like @scope/name)
+      // On npm 404 for scoped names (@scope/name), fall through to skill check.
+      // Bare names are not valid skill identifiers — emit canonical npm
+      // not-found via buildNotFoundOutput so the `--json` shape matches the
+      // scoped/git-style miss path. Closes F3 in opena2a-parity.
       if (looksLikeNpmPackage(skill)) {
         try {
           await checkNpmPackage(skill, options);
           return;
         } catch (npmErr: unknown) {
           if (npmErr instanceof Error && npmErr.name === 'NpmNotFoundError') {
-            // Not on npm — fall through to skill check
+            const isScoped = skill.startsWith('@');
+            if (!isScoped) {
+              if (options.json) {
+                writeJsonStdout(buildNotFoundOutput({
+                  name: skill,
+                  ecosystem: 'npm',
+                  error: `Package "${skill}" not found on npm.`,
+                }));
+              } else {
+                printNotFoundBlock({ pkg: skill, ecosystem: 'npm' });
+              }
+              process.exit(1);
+            }
+            // Scoped name — fall through to skill check
             if (!options.json && !globalCiMode) {
               console.error(`Package "${skill}" not found on npm. Trying as skill identifier...`);
             }
@@ -8634,13 +8650,19 @@ async function checkGitHubRepo(
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
+      const errorHint = `Verify the URL: https://github.com/${displayName}`;
       if (options.json) {
-        writeJsonStdout({ name: displayName, ecosystem: 'github', found: false, error: `Repository "${displayName}" not found on GitHub.` });
+        writeJsonStdout(buildNotFoundOutput({
+          name: displayName,
+          ecosystem: 'github',
+          error: `Repository "${displayName}" not found on GitHub.`,
+          errorHint,
+        }));
       } else {
         printNotFoundBlock({
           pkg: displayName,
           ecosystem: 'github',
-          errorHint: `Verify the URL: https://github.com/${displayName}`,
+          errorHint,
         });
       }
     } else if (message.includes('timeout') || message.includes('Timeout')) {
@@ -8718,7 +8740,11 @@ async function checkPyPiPackage(
     if (!metaRes.ok) {
       if (metaRes.status === 404) {
         if (options.json) {
-          writeJsonStdout({ name, ecosystem: 'pypi', found: false, error: `Package "${name}" not found on PyPI.` });
+          writeJsonStdout(buildNotFoundOutput({
+            name,
+            ecosystem: 'pypi',
+            error: `Package "${name}" not found on PyPI.`,
+          }));
         } else {
           printNotFoundBlock({ pkg: name, ecosystem: 'pypi' });
         }
@@ -9236,7 +9262,13 @@ async function checkNpmPackage(
       const translated = translateDownloadError(name, message);
       if (translated && (translated.errorHint || translated.suggestions)) {
         if (options.json) {
-          writeJsonStdout({ name, ecosystem: 'npm', found: false, error: translated.errorHint, suggestions: translated.suggestions });
+          writeJsonStdout(buildNotFoundOutput({
+            name,
+            ecosystem: 'npm',
+            error: translated.errorHint,
+            errorHint: translated.errorHint,
+            suggestions: translated.suggestions,
+          }));
         } else {
           printNotFoundBlock({
             pkg: name,
