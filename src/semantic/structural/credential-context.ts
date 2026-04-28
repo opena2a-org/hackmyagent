@@ -141,6 +141,12 @@ function detectUrlPasswords(file: AnalysisFile): SemanticFinding[] {
       if (password.length < 3) continue;
 
       const urlPwMasked = password.length > 5 ? password.slice(0, 5) + '****' : '****';
+      // Redact every occurrence of the raw password from the line before placing it
+      // into structured evidence. Split-on-`:pw@` only catches the URL slot, but
+      // the same secret can appear in comments, sibling assignments, or doc strings
+      // on the same line. split/join catches all occurrences without partial-leak
+      // and stays ES2020-safe (replaceAll is ES2021).
+      const safeContent = line.split(password).join('[REDACTED]');
       findings.push({
         id: 'SEM-CRED-001',
         title: 'Password embedded in URL',
@@ -155,6 +161,17 @@ function detectUrlPasswords(file: AnalysisFile): SemanticFinding[] {
           'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.',
         layer: 2,
         autoFixable: false,
+        evidence: {
+          kind: 'positive',
+          lines: [
+            {
+              n: i + 1,
+              content: safeContent.trim(),
+              why: `URL contains inline password (${urlPwMasked}). Connection strings with embedded passwords are logged by proxies, shell history, and process listings, and bypass .env file protections.`,
+            },
+          ],
+        },
+        concept: 'secretless-vault',
       });
     }
   }

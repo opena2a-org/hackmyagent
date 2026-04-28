@@ -6,6 +6,8 @@
  * converts SemanticFinding → SecurityFinding for the core scanner.
  */
 
+import type { Evidence, ConceptId } from '../types/finding-evidence';
+
 export type SemanticSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
 export type SemanticCategory =
@@ -38,6 +40,17 @@ export interface SemanticFinding {
   autoFixable: boolean;
   /** Attack class for oracle label mapping (e.g. 'MCP-PRIV-ESC', 'SOUL-CONSENT') */
   attackClass?: string;
+  /**
+   * Structured evidence (positive | absence | mixed). Optional in v0.21.x;
+   * mandatory in v0.22+. See `src/types/finding-evidence.ts`.
+   *
+   * Note: SemanticFinding's existing `rationale: string` field is kept as-is
+   * for back-compat. The integration layer wraps it into the new
+   * `Rationale` shape when converting to `SecurityFinding`.
+   */
+  evidence?: Evidence;
+  /** Tag for an unfamiliar primitive the recommendation references. */
+  concept?: ConceptId;
 }
 
 export interface AnalysisContext {

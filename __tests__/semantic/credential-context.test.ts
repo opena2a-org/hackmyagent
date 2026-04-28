@@ -46,6 +46,25 @@ describe('CredentialContextAnalyzer', () => {
       const findings = analyzer.analyze([file]);
       expect(findings.filter((f) => f.id === 'SEM-CRED-001')).toHaveLength(0);
     });
+
+    it('redacts every occurrence of the password from evidence content (regression: H1)', () => {
+      // Adversarial reviewer found that an earlier split-on-`:pw@` redaction
+      // missed bare-password substrings appearing on the same line as the URL
+      // (e.g., a comment or sibling assignment). Verify the password is
+      // redacted EVERYWHERE in evidence.lines[].content, not just the URL slot.
+      const file = makeFile(
+        'config.yaml',
+        'DATABASE_URL=postgres://admin:supersecret123@host  # password is supersecret123',
+        'config_file'
+      );
+      const findings = analyzer.analyze([file]);
+      const sem = findings.find((f) => f.id === 'SEM-CRED-001');
+      expect(sem).toBeDefined();
+      const content = sem?.evidence?.kind === 'positive' ? sem.evidence.lines[0]?.content : undefined;
+      expect(content).toBeDefined();
+      expect(content).not.toContain('supersecret123');
+      expect(content).toContain('[REDACTED]');
+    });
   });
 
   describe('generic tokens via key-name heuristics', () => {

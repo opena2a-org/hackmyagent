@@ -2,6 +2,8 @@
  * Security check types and interfaces
  */
 
+import type { Evidence, Rationale, ConceptId } from '../types/finding-evidence';
+
 export type Severity = 'critical' | 'high' | 'medium' | 'low';
 
 /**
@@ -67,6 +69,15 @@ export interface SecurityFinding {
   /** Attack taxonomy class this finding maps to (e.g., "CRED-HARVEST") */
   attackClass?: string;
   details?: Record<string, unknown>;
+  /**
+   * Structured evidence (positive | absence | mixed). Optional in v0.21.x;
+   * mandatory in v0.22+. See `src/types/finding-evidence.ts`.
+   */
+  evidence?: Evidence;
+  /** Plain-English rationale grounded in the evidence. Optional in v0.21.x. */
+  rationale?: Rationale;
+  /** Tag for an unfamiliar primitive the fix recommends (renderer dedupes per scan). */
+  concept?: ConceptId;
 }
 
 export interface ScanResult {
