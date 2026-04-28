@@ -141,6 +141,9 @@ function detectUrlPasswords(file: AnalysisFile): SemanticFinding[] {
       if (password.length < 3) continue;
 
       const urlPwMasked = password.length > 5 ? password.slice(0, 5) + '****' : '****';
+      // Redact the password before putting the line into structured evidence so the
+      // raw secret never reaches JSON output or terminal rendering.
+      const safeContent = line.split(`:${password}@`).join(`:${urlPwMasked}@`);
       findings.push({
         id: 'SEM-CRED-001',
         title: 'Password embedded in URL',
@@ -155,6 +158,17 @@ function detectUrlPasswords(file: AnalysisFile): SemanticFinding[] {
           'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.',
         layer: 2,
         autoFixable: false,
+        evidence: {
+          kind: 'positive',
+          lines: [
+            {
+              n: i + 1,
+              content: safeContent.trim(),
+              why: `URL contains inline password (${urlPwMasked}). Connection strings with embedded passwords are logged by proxies, shell history, and process listings, and bypass .env file protections.`,
+            },
+          ],
+        },
+        concept: 'secretless-vault',
       });
     }
   }

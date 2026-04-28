@@ -6,10 +6,15 @@
  */
 
 import type { SemanticFinding } from '../types';
+import type { Evidence, Rationale, ConceptId } from '../../types/finding-evidence';
 
 /**
  * SecurityFinding shape duplicated here to avoid a circular dependency —
  * the semantic engine has zero runtime dependencies.
+ *
+ * Keep this interface in sync with the canonical `SecurityFinding` in
+ * `src/hardening/security-check.ts`. Drift here causes silently-stripped
+ * fields when SemanticFinding → SecurityFinding conversion happens.
  */
 export interface SecurityFinding {
   checkId: string;
@@ -26,6 +31,9 @@ export interface SecurityFinding {
   fix?: string;
   guidance?: string;
   attackClass?: string;
+  evidence?: Evidence;
+  rationale?: Rationale;
+  concept?: ConceptId;
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -53,6 +61,8 @@ export function toSecurityFinding(finding: SemanticFinding): SecurityFinding {
     fix: finding.recommendation,
     guidance: finding.rationale,
     attackClass: finding.attackClass,
+    evidence: finding.evidence,
+    concept: finding.concept,
   };
 }
 
