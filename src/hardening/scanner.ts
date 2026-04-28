@@ -337,6 +337,32 @@ export function findingAppliesTo(finding: SecurityFinding, projectType: ProjectT
 }
 
 /**
+ * Drop failed findings that are pathless AND do not apply to the current
+ * project type (issue #131 / #130). A check that fires `passed: false`
+ * without `file` evidence on a project type the check is not meant for
+ * is a true noise-floor finding: e.g., `NET-003` HTTPS Configuration
+ * firing on an `mcp` project that doesn't expose HTTP at all.
+ *
+ * Pathless findings whose check DOES apply to this project type are
+ * preserved — they represent real project-level detections that lack
+ * file attribution due to a separate emission bug, not noise. Passed
+ * findings are always retained.
+ *
+ * Consumers of allFindings (corpus release-smoke, benchmark, OASB-2
+ * composite) get a clean signal without dropping legitimate findings.
+ */
+export function dropPathlessNoiseFloor(
+  findings: SecurityFinding[],
+  projectType: ProjectType,
+): SecurityFinding[] {
+  return findings.filter((f) => {
+    if (f.passed || f.fixed) return true;
+    if (f.file) return true;
+    return findingAppliesTo(f, projectType);
+  });
+}
+
+/**
  * Parsed .hmaignore rules split into path patterns and check ID patterns.
  * Check ID patterns start with `!` and support trailing `*` wildcards.
  * Example: `!SANDBOX-*` suppresses all SANDBOX checks.
@@ -1028,7 +1054,13 @@ export class HardeningScanner {
       platform,
       projectType,
       findings: filteredFindings,
-      allFindings: findings, // Include unfiltered findings for benchmark evaluation
+      // allFindings is consumed by benchmark, OASB-2 composite, and the
+      // corpus release-smoke harness. Drop true noise-floor findings —
+      // pathless failed findings whose check doesn't apply to this
+      // project type (issue #131 / #130). Pathless findings whose check
+      // DOES apply (e.g., CRED-002 finding a private key file but
+      // forgetting to set `file`) are preserved as legitimate detections.
+      allFindings: dropPathlessNoiseFloor(findings, projectType),
       score,
       maxScore,
       backupPath,
