@@ -79,6 +79,11 @@ const NON_TRACKED_TELEMETRY_COMMANDS = new Set<string>(['telemetry', 'help']);
 const telemetryStartedAt = new Map<string, number>();
 import { getTaxonomyMap } from './hardening/taxonomy';
 import { compareFindingsByTier } from './ui/finding-tier';
+import {
+  scoreLineLabel,
+  shouldRenderPathForward,
+  quickScanFollowupText,
+} from './ui/quick-scan-labels';
 const program = new Command();
 program.showHelpAfterError('(run with --help for usage)');
 
@@ -1052,10 +1057,13 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     }
     console.log(`  ${verdictColor}${colors.bold}${verdictText}${RESET()}`);
     console.log();
-    const scoreLabel = opts.quickScan ? 'Quick scan' : 'Security';
-    console.log(`  ${scoreLabel}  ${scoreMeter(score, maxScore)}`);
+    console.log(`  ${scoreLineLabel(opts.quickScan)}  ${scoreMeter(score, maxScore)}`);
     if (opts.quickScan) {
-      console.log(`  ${colors.dim}Run \`secure ${opts.quickScan.fullAuditTarget}\` for the full audit (adds supply-chain + skill-hygiene checks).${RESET()}`);
+      // Cyan + bold, same visual weight as the suppressed Path-forward
+      // line so the disclaimer cannot be skimmed past. (#136 adversarial
+      // review: a dim follow-up was easy to miss, leaving the user
+      // anchored on the narrow-matrix numeric score.)
+      console.log(`  ${colors.cyan}${colors.bold}${quickScanFollowupText(opts.quickScan)}${RESET()}`);
     }
   } else if (registry?.found) {
     const normalized = normalizeTrustVerdict(registry.verdict);
@@ -1298,7 +1306,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // implies the user can reach 100 by addressing only the quick-scan
     // findings, when the full audit will surface additional supply-chain
     // and hygiene findings the quick-scan never ran. Closes #136.
-    if (!opts.quickScan && (critical > 0 || high > 0)) {
+    if (shouldRenderPathForward({ quickScan: opts.quickScan, critical, high })) {
       const recoveryParts: string[] = [];
       if (critical > 0) recoveryParts.push(`${critical} critical`);
       if (high > 0) recoveryParts.push(`${high} high`);
