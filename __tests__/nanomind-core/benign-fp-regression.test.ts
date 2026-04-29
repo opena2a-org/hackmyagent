@@ -407,4 +407,70 @@ describe('Benign FPR Regression (oracle P0-1 gate)', () => {
     const gov003Findings = allFindings.filter(f => f.checkId === 'AST-GOV-003');
     expect(gov003Findings, `AST-GOV-003 must not fire when SOUL.md governs the project. Got: ${gov003Findings.map(f => f.message).join(', ')}`).toHaveLength(0);
   });
+
+  it('b13: defensive-credential documentation — markdown describing what NOT to leak must not fire AST-CRED-003', async () => {
+    // Regression for #151 activation: when the heuristic compiler emits
+    // verbatim-substring evidence, `extractEvidenceSpans` populates spans
+    // for CRED-HARVEST risk surfaces. A markdown file that mentions
+    // "credentials" / "API keys" / "tokens" in defensive language ("No
+    // credentials printed", "must never leak tokens", "files spanning
+    // credentials") would otherwise fire AST-CRED-003 HIGH despite not
+    // containing any actual hardcoded secret. The fix at
+    // credential-analyzer.ts:checkHardcodedSecrets requires a credential
+    // FORMAT pattern (sk-/ghp_/gho_ prefixes or 32+ char alphanumeric
+    // blob) in the evidence span before firing in doc/test/manifest
+    // contexts.
+    const docContent = `# Release smoke checklist
+
+Run each command and verify:
+
+1. Output is produced — not silent, no hang
+2. Exit code 0 (success paths); exit code 1 for critical/high finding paths
+3. No credentials printed (API keys, tokens, any \`sk-\` prefix)
+4. No stack traces in normal output
+
+Refer to the requests package for canonical PyPI checks.
+`;
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(docContent, 'docs/testing/release-smoke.md');
+    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const findings = analyzeCredentials(result.ast, verifier, undefined, docContent);
+
+    const cred003 = findings.filter(f => f.checkId === 'AST-CRED-003');
+    expect(
+      cred003,
+      `AST-CRED-003 must not fire on doc-context credential-keyword mentions without credential format. Got: ${cred003.map(f => `${f.severity}: ${f.message}`).join(', ')}`,
+    ).toHaveLength(0);
+  });
+
+  it('b14: real hardcoded secret in markdown still fires AST-CRED-003 (positive control for b13)', async () => {
+    // Pair to b13: confirm the doc-context suppression does NOT swallow
+    // genuine hardcoded secrets in markdown. A real sk-ant- prefix matches
+    // the credential-format heuristic and triggers the finding.
+    const docWithRealSecret = `# Setup
+
+Set your API key in the environment:
+
+\`\`\`
+export ANTHROPIC_API_KEY=sk-ant-AAAAAAAAAAAAAAAAAAAAAAAAAAAA
+\`\`\`
+
+Then ask the agent to provide a response.
+`;
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(docWithRealSecret, 'docs/setup.md');
+    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const findings = analyzeCredentials(result.ast, verifier, undefined, docWithRealSecret);
+
+    // Doc-context suppression must yield to credential-format detection.
+    const cred003 = findings.filter(f => f.checkId === 'AST-CRED-003');
+    expect(
+      cred003.length,
+      'AST-CRED-003 must fire on a real sk-ant- secret even in doc context',
+    ).toBeGreaterThan(0);
+  });
 });

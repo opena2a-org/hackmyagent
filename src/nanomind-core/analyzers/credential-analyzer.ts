@@ -345,12 +345,33 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
     return findings;
   }
 
-  // Filter out test fixtures and documentation
-  const isTestOrDoc = isDocumentationOrTestContext(ast);
+  // Filter out test fixtures and documentation. Manifest YAML files are
+  // metadata describing fixtures and don't represent agent behaviour; treat
+  // them as doc context so descriptive language about credentials in their
+  // body doesn't fire AST-CRED-003.
+  const path = (ast.artifactPath ?? '').toLowerCase();
+  const isManifestYaml = path.endsWith('manifest.yaml') || path.endsWith('manifest.yml');
+  const isTestOrDoc = isDocumentationOrTestContext(ast) || isManifestYaml;
   const evidenceTexts = credentialEvidence.map(e => e.text);
   const allTestFixtures = evidenceTexts.every(t => isTestFixtureCredential(t));
 
   if (isTestOrDoc && allTestFixtures) {
+    return findings;
+  }
+
+  // In doc/test/manifest contexts where the CRED-HARVEST trigger fired on
+  // descriptive language ("No credentials printed", "files spanning
+  // credentials", "must never store credentials"), require an actual
+  // credential-format pattern (sk-/ghp_/gho_ prefixes or 32+ char alpha-
+  // numeric blob) in the evidence span before emitting HIGH. The previous
+  // implicit gate was `credentialEvidence.length === 0`: pre-#151 the
+  // evidence-span lookup silently failed for description-style risk evidence
+  // and kept doc-context findings suppressed. Post-#151 the compiler emits
+  // verbatim keyword spans (an activation effect of the heuristic-evidence
+  // fix) and the implicit gate disengaged — re-engage it explicitly here.
+  // Skill/agent files (`.skill.md`, `.soul.md`, etc.) bypass this gate and
+  // continue to fire on bare-keyword harvesting language as designed.
+  if (isTestOrDoc && !evidenceShowsCredentialFormat(evidenceTexts)) {
     return findings;
   }
 
@@ -484,6 +505,20 @@ function isDocumentationOrTestContext(ast: SecurityAST): boolean {
   }
 
   return false;
+}
+
+/**
+ * Detect whether any evidence span text contains an actual credential-format
+ * substring — API key prefixes, GitHub PAT prefixes, or 32+ character base64-
+ * style blobs. Bare-keyword mentions ("credentials", "API key", "token") in
+ * descriptive text do NOT count: those words appear in well-governed agent
+ * docs, fixture manifests, and release-smoke walkthroughs without being
+ * actual hardcoded secrets.
+ */
+function evidenceShowsCredentialFormat(evidenceTexts: string[]): boolean {
+  return evidenceTexts.some(t =>
+    /sk-[a-zA-Z0-9_-]{20,}|ghp_[a-zA-Z0-9]{20,}|gho_[a-zA-Z0-9]{20,}|[A-Za-z0-9_+/=-]{32,}/.test(t),
+  );
 }
 
 /**
