@@ -85,6 +85,8 @@ import {
   quickScanFollowupText,
 } from './ui/quick-scan-labels';
 import { generateVerifyCommand } from './ui/verify-command';
+import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
+import type { ConceptId } from './types/finding-evidence';
 const program = new Command();
 program.showHelpAfterError('(run with --help for usage)');
 
@@ -738,6 +740,39 @@ function formatFixLine(text: string): string {
   return `${colors.cyan}Fix:${RESET()} ${text}`;
 }
 
+/**
+ * Issue #142: render the concept explainer attached to a finding's fix.
+ *
+ * First occurrence per scan: print the curated `body` block (multi-line
+ * educational paragraph + diagram). Subsequent occurrences: print the
+ * one-line back-reference (`(Why SOUL: see above)`). Findings whose fix
+ * text doesn't map to any registered concept render no attachment — the
+ * fix line stands alone.
+ *
+ * Mutates `seen` so later findings collapse to the back-reference.
+ */
+function renderConceptForFinding(
+  finding: { fix?: string; checkId?: string },
+  seen: Set<ConceptId>,
+  borderColor: string,
+): void {
+  const concept = inferConceptFromFix(finding.fix, finding.checkId);
+  if (!concept) return;
+  const explainer = CONCEPT_EXPLAINERS[concept];
+  if (!explainer) return;
+  if (seen.has(concept)) {
+    console.log(`  ${borderColor}│${RESET()} ${colors.dim}${explainer.oneLineRef}${RESET()}`);
+    return;
+  }
+  seen.add(concept);
+  console.log(`  ${borderColor}│${RESET()}`);
+  console.log(`  ${borderColor}│${RESET()} ${colors.cyan}${colors.bold}━━ ${explainer.title} ━━${RESET()} ${colors.dim}(shown once per scan)${RESET()}`);
+  console.log(`  ${borderColor}│${RESET()}`);
+  for (const bodyLine of explainer.body.split('\n')) {
+    console.log(`  ${borderColor}│${RESET()} ${colors.dim}${bodyLine}${RESET()}`);
+  }
+}
+
 /** Shorten a file path for display — show filename + parent dir only */
 function shortenPath(filePath: string): string {
   const parts = filePath.split('/');
@@ -1130,6 +1165,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     divider('Findings');
     console.log(`  ${summaryParts.join('  ')}`);
 
+    // Issue #142: per-scan concept-explainer dedupe. First occurrence of a
+    // concept (e.g. SOUL governance, Secretless vault, MCP tool isolation)
+    // shows the curated explainer block. Subsequent occurrences in the same
+    // scan collapse to a one-line back-reference. Shared across both the
+    // top-3 and normal-mode loops so the explainer always appears at first
+    // mention regardless of which loop renders the finding.
+    const conceptsSeen = new Set<ConceptId>();
+
     // High-count mode: group by category when > 20 findings
     if (totalFindings > 20 && !verbose) {
       const groups = new Map<string, { critical: number; high: number; medium: number; low: number; files: Set<string> }>();
@@ -1181,6 +1224,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         }
         if (f.fix) {
           console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(f.fix, f.file))}`);
+          renderConceptForFinding(f, conceptsSeen, borderColor);
         }
       }
     } else {
@@ -1211,6 +1255,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         }
         if (f.fix) {
           console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(f.fix, f.file))}`);
+          renderConceptForFinding(f, conceptsSeen, borderColor);
         }
         if (verbose) {
           if (f.checkId) console.log(`  ${borderColor}│${RESET()} ${colors.dim}Check: ${f.checkId}${RESET()}`);
