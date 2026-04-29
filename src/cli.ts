@@ -6250,6 +6250,7 @@ Examples:
   $ hackmyagent scan-soul --verbose          Show all controls
   $ hackmyagent scan-soul --profile conversational  Override profile
   $ hackmyagent scan-soul --deep             Enable LLM semantic analysis
+  $ hackmyagent scan-soul --explain          Print the 9-domain governance model
   $ hackmyagent scan-soul ./my-agent --publish  Scan and publish results to registry`)
   .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
   .option('--json', 'Output as JSON')
@@ -6264,8 +6265,15 @@ Examples:
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
   .option('--ci', 'CI mode: suppress interactive prompts, exit non-zero on findings')
-  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean; publish?: boolean; registryUrl?: string; contribute?: boolean; ci?: boolean }) => {
+  .option('--explain', 'Print the 9-domain governance model and exit (no scan)')
+  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean; publish?: boolean; registryUrl?: string; contribute?: boolean; ci?: boolean; explain?: boolean }) => {
     try {
+      if (options.explain) {
+        const { printGovernanceModel } = await import('./soul/governance-model');
+        printGovernanceModel();
+        return;
+      }
+
       const targetDir = require("path").resolve(directory);
 
       // CI mode: force non-interactive defaults
