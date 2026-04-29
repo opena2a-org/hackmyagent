@@ -345,13 +345,8 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
     return findings;
   }
 
-  // Filter out test fixtures and documentation. Manifest YAML files are
-  // metadata describing fixtures and don't represent agent behaviour; treat
-  // them as doc context so descriptive language about credentials in their
-  // body doesn't fire AST-CRED-003.
-  const path = (ast.artifactPath ?? '').toLowerCase();
-  const isManifestYaml = path.endsWith('manifest.yaml') || path.endsWith('manifest.yml');
-  const isTestOrDoc = isDocumentationOrTestContext(ast) || isManifestYaml;
+  // Filter out test fixtures and documentation
+  const isTestOrDoc = isDocumentationOrTestContext(ast);
   const evidenceTexts = credentialEvidence.map(e => e.text);
   const allTestFixtures = evidenceTexts.every(t => isTestFixtureCredential(t));
 
@@ -509,15 +504,34 @@ function isDocumentationOrTestContext(ast: SecurityAST): boolean {
 
 /**
  * Detect whether any evidence span text contains an actual credential-format
- * substring — API key prefixes, GitHub PAT prefixes, or 32+ character base64-
- * style blobs. Bare-keyword mentions ("credentials", "API key", "token") in
+ * substring. Curated multi-vendor prefixes — Anthropic / OpenAI (`sk-`),
+ * Stripe (`sk_live_`/`sk_test_`), GitHub PAT (`ghp_`/`gho_`/`github_pat_`),
+ * AWS access key IDs (`AKIA…`), Google API keys (`AIza…`), Slack
+ * (`xox[abprs]-…`), and JWTs (`eyJ…header.payload.sig`) — plus a high-
+ * entropy fallback (40+ word-character run, anchored on word boundaries,
+ * excluding `-` and `/` so URL slugs and slug-style identifiers don't
+ * match). Bare-keyword mentions ("credentials", "API key", "token") in
  * descriptive text do NOT count: those words appear in well-governed agent
  * docs, fixture manifests, and release-smoke walkthroughs without being
  * actual hardcoded secrets.
  */
 function evidenceShowsCredentialFormat(evidenceTexts: string[]): boolean {
   return evidenceTexts.some(t =>
-    /sk-[a-zA-Z0-9_-]{20,}|ghp_[a-zA-Z0-9]{20,}|gho_[a-zA-Z0-9]{20,}|[A-Za-z0-9_+/=-]{32,}/.test(t),
+    new RegExp(
+      [
+        'sk-[a-zA-Z0-9_-]{20,}',
+        'sk_live_[a-zA-Z0-9]{20,}',
+        'sk_test_[a-zA-Z0-9]{20,}',
+        'ghp_[a-zA-Z0-9]{20,}',
+        'gho_[a-zA-Z0-9]{20,}',
+        'github_pat_[a-zA-Z0-9_]{20,}',
+        'AKIA[0-9A-Z]{16}',
+        'AIza[0-9A-Za-z_-]{35}',
+        'xox[abprs]-[0-9A-Za-z-]{10,}',
+        'eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+',
+        '\\b[A-Za-z0-9+=_]{40,}\\b',
+      ].join('|'),
+    ).test(t),
   );
 }
 
