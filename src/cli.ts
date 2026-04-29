@@ -1332,8 +1332,20 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
 
   // ── NanoMind Analysis ───────────────────────────────────────────────
   // Pre-filter: drop low-confidence and low-severity threat analyses so we
-  // don't print a section header with zero renderable content.
-  const renderableAnalystFindings = (opts.analystFindings ?? []).filter(isRenderableAnalystFinding);
+  // don't print a section header with zero renderable content. Issue #137
+  // adds a second filter step: drop threatAnalysis findings whose severity
+  // was confidence-capped from CRITICAL — those carry no actionable signal
+  // beyond what the static finding already reports, and the
+  // "(low confidence — capped from CRITICAL)" stamp + English summary
+  // breaks user trust ("model said critical, then HMA capped it").
+  const renderableAnalystFindings = (opts.analystFindings ?? [])
+    .filter(isRenderableAnalystFinding)
+    .filter(af => {
+      if (af.taskType !== 'threatAnalysis') return true;
+      const r = af.result;
+      const { capped } = capAnalystThreatLevel(r.threatLevel as string | undefined, af.confidence);
+      return !capped;
+    });
 
   // Zero-state branch: --nanomind was requested but produced no per-finding
   // output. Render an honest section instead of staying silent. Per v0.5.0
@@ -1367,13 +1379,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     for (const af of renderableAnalystFindings) {
       const r = af.result;
       if (af.taskType === 'threatAnalysis') {
-        const { level, capped } = capAnalystThreatLevel(r.threatLevel as string | undefined, af.confidence);
+        // Confidence-capped findings are filtered upstream (#137). At this
+        // point `level` is the model's reported threatLevel without any cap.
+        const { level } = capAnalystThreatLevel(r.threatLevel as string | undefined, af.confidence);
         const levelColor = level === 'CRITICAL' || level === 'HIGH' ? colors.red : level === 'MEDIUM' ? colors.yellow : colors.dim;
         // Only show attackVector separator when the field is populated — avoids
         // a naked "CRITICAL  " line with trailing whitespace.
         const vectorText = r.attackVector ? `  ${colors.white}${r.attackVector}${RESET()}` : '';
-        const cappedSuffix = capped ? `  ${colors.dim}(low confidence — capped from CRITICAL)${RESET()}` : '';
-        console.log(`  ${levelColor}${colors.bold}${level}${RESET()}${vectorText}${cappedSuffix}`);
+        console.log(`  ${levelColor}${colors.bold}${level}${RESET()}${vectorText}`);
         if (r.description) {
           const { text, truncated } = formatAnalystDescription(String(r.description), { verbose: !!verbose });
           if (text) console.log(`  ${colors.dim}${text}${RESET()}`);
