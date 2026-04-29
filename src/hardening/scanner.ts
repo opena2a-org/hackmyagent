@@ -929,9 +929,6 @@ export class HardeningScanner {
     findings.push(...lifecycleFindings);
     } // end of standard/deep checks
 
-    // Enrich findings with attack taxonomy mapping
-    enrichWithTaxonomy(findings);
-
     // Layer 2: Structural analysis (standard and deep only)
     let layer2Count = 0;
     let layer3Count = 0;
@@ -968,6 +965,14 @@ export class HardeningScanner {
         // LLM analysis failure is non-fatal — fall back to Layer 2 only
       }
     }
+
+    // Enrich findings with attack taxonomy mapping. Runs after Layer 2/3 so
+    // semantic findings whose upstream `SemanticFinding.attackClass` is
+    // unset get a default mapping from `TAXONOMY_MAP`. Inline `attackClass:`
+    // values on the SemanticFinding take precedence — the helper only sets
+    // the field when `getAttackClass()` returns a non-empty value AND the
+    // finding does not already carry one.
+    enrichWithTaxonomy(findings);
 
     // Verify fixes: re-scan fixed files to confirm issues are actually resolved
     if (shouldFix) {

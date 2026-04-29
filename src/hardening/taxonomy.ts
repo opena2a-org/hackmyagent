@@ -265,7 +265,179 @@ const TAXONOMY_MAP: Record<string, string> = {
   'LIFECYCLE-008': 'ASSEMBLY-INJECT',
   'LIFECYCLE-009': 'ASSEMBLY-INJECT',
   'LIFECYCLE-010': 'ASSEMBLY-INJECT',
+
+  // Skill governance and exfiltration (SKILL-020+)
+  'SKILL-020': 'SKILL-FRONTMATTER',
+  'SKILL-021': 'SKILL-EXFIL',
+  'SKILL-022': 'SKILL-EXFIL',
+  'SKILL-023': 'SKILL-FRONTMATTER',
+  'SKILL-024': 'SKILL-EXFIL',
+
+  // Authentication, session, and access control
+  'AUTH-001': 'RETROACTIVE-PRIV',
+  'AUTH-002': 'RETROACTIVE-PRIV',
+  'AUTH-003': 'RETROACTIVE-PRIV',
+  'AUTH-004': 'RETROACTIVE-PRIV',
+  'SESSION-001': 'RETROACTIVE-PRIV',
+  'SESSION-002': 'RETROACTIVE-PRIV',
+  'SESSION-003': 'RETROACTIVE-PRIV',
+  'SESSION-004': 'RETROACTIVE-PRIV',
+
+  // Credential / secret protection (env vars, IDE configs, git history)
+  'ENV-001': 'RETROACTIVE-PRIV',
+  'ENV-002': 'RETROACTIVE-PRIV',
+  'ENV-003': 'RETROACTIVE-PRIV',
+  'ENV-004': 'RETROACTIVE-PRIV',
+  'ENVLEAK-001': 'RETROACTIVE-PRIV',
+  'ENCRYPT-001': 'RETROACTIVE-PRIV',
+  'ENCRYPT-002': 'RETROACTIVE-PRIV',
+  'ENCRYPT-003': 'RETROACTIVE-PRIV',
+  'ENCRYPT-004': 'RETROACTIVE-PRIV',
+  'GIT-001': 'RETROACTIVE-PRIV',
+  'GIT-002': 'RETROACTIVE-PRIV',
+  'GIT-003': 'RETROACTIVE-PRIV',
+  'CURSOR-001': 'RETROACTIVE-PRIV',
+  'VSCODE-001': 'RETROACTIVE-PRIV',
+  'VSCODE-002': 'RETROACTIVE-PRIV',
+  'API-KEY-EXPOSED': 'RETROACTIVE-PRIV',
+  'CONFIG-EXPOSED': 'RETROACTIVE-PRIV',
+  'CLAUDE-MD-EXPOSED': 'RETROACTIVE-PRIV',
+
+  // Defense-in-depth: secrets management, encryption library, key rotation
+  'SEC-001': 'RETROACTIVE-PRIV',
+  'SEC-002': 'RETROACTIVE-PRIV',
+  'SEC-003': 'RETROACTIVE-PRIV',
+  'SEC-004': 'RETROACTIVE-PRIV',
+
+  // CLAUDE.md governance (Claude Code agent config)
+  'CLAUDE-001': 'RETROACTIVE-PRIV',
+  'CLAUDE-002': 'SOUL-INJECT',
+  'CLAUDE-003': 'SOUL-INJECT',
+  'CLAUDE-004': 'SOUL-INJECT',
+  'CLAUDE-005': 'MEM-POISON',
+  'CLAUDE-006': 'SOUL-INJECT',
+  'CLAUDE-007': 'SOUL-INJECT',
+
+  // Agent-runtime configuration (CONFIG-* family — session files, daemons, sandbox, gateway)
+  'CONFIG-001': 'RETROACTIVE-PRIV',
+  'CONFIG-002': 'SOUL-INJECT',
+  'CONFIG-003': 'NEMO-SANDBOX-ESCAPE',
+  'CONFIG-004': 'RETROACTIVE-PRIV',
+  'CONFIG-005': 'MEM-POISON',
+  'CONFIG-006': 'SOUL-FORK',
+  'CONFIG-007': 'SOUL-INJECT',
+  'CONFIG-008': 'NEMO-SANDBOX-ESCAPE',
+  'CONFIG-009': 'RETROACTIVE-PRIV',
+
+  // Tool-boundary governance
+  'TOOL-001': 'SOUL-INJECT',
+  'TOOL-002': 'SOUL-INJECT',
+  'TOOL-003': 'SOUL-INJECT',
+  'TOOL-004': 'SOUL-INJECT',
+
+  // Code injection / input validation defense gaps
+  'CODEINJ-001': 'CODE-INJECTION',
+  'INJ-001': 'CODE-INJECTION',
+  'INJ-002': 'CODE-INJECTION',
+  'INJ-003': 'CODE-INJECTION',
+  'INJ-004': 'CODE-INJECTION',
+
+  // Filesystem / process / sandbox / temp-path. IO-002 is "Query Parameterization"
+  // (SQL-injection defense gap), distinct from the rest of the IO family.
+  'IO-001': 'NEMO-SANDBOX-ESCAPE',
+  'IO-002': 'CODE-INJECTION',
+  'IO-003': 'NEMO-SANDBOX-ESCAPE',
+  'IO-004': 'NEMO-SANDBOX-ESCAPE',
+  'PERM-001': 'NEMO-SANDBOX-ESCAPE',
+  'PERM-002': 'NEMO-SANDBOX-ESCAPE',
+  'PERM-003': 'NEMO-SANDBOX-ESCAPE',
+  'PROC-001': 'NEMO-SANDBOX-ESCAPE',
+  'PROC-002': 'NEMO-SANDBOX-ESCAPE',
+  'PROC-003': 'NEMO-SANDBOX-ESCAPE',
+  'PROC-004': 'NEMO-SANDBOX-ESCAPE',
+  'SANDBOX-001': 'SANDBOX-ESCAPE',
+  'SANDBOX-002': 'SANDBOX-ESCAPE',
+  'SANDBOX-003': 'SANDBOX-ESCAPE',
+  'SANDBOX-004': 'SANDBOX-ESCAPE',
+  'TMPPATH-001': 'SANDBOX-ESCAPE',
+
+  // Network exposure / exfiltration channels
+  'NET-004': 'SKILL-EXFIL',
+  'NET-005': 'SKILL-EXFIL',
+  'NET-006': 'SKILL-EXFIL',
+
+  // API surface (gateway-class issues, headers, versioning, key-in-URL)
+  'API-001': 'GATEWAY-EXPLOIT',
+  'API-002': 'GATEWAY-EXPLOIT',
+  'API-003': 'RETROACTIVE-PRIV',
+  'API-004': 'GATEWAY-EXPLOIT',
+
+  // External MCP scanner (port-level findings)
+  'MCP-SSE': 'MCP-EXPLOIT',
+  'MCP-TOOLS': 'MCP-EXPLOIT',
+
+  // CVE / supply-chain advisories
+  'CVE-001': 'ORG-SKILL-SPREAD',
+  'CVE-002': 'ORG-SKILL-SPREAD',
+  'CVE-003': 'ORG-SKILL-SPREAD',
+  'CVE-004': 'ORG-SKILL-SPREAD',
+
+  // Audit / logging integrity gaps
+  'AUDIT-001': 'INTEGRITY-BYPASS',
+  'AUDIT-002': 'INTEGRITY-BYPASS',
+  'AUDIT-003': 'INTEGRITY-BYPASS',
+  'AUDIT-004': 'INTEGRITY-BYPASS',
+  'LOG-001': 'INTEGRITY-BYPASS',
+  'LOG-002': 'INTEGRITY-BYPASS',
+  'LOG-003': 'INTEGRITY-BYPASS',
+  'LOG-004': 'INTEGRITY-BYPASS',
+  'RATE-001': 'INTEGRITY-BYPASS',
+  'RATE-002': 'INTEGRITY-BYPASS',
+  'RATE-003': 'INTEGRITY-BYPASS',
+  'RATE-004': 'INTEGRITY-BYPASS',
+
+  // Semantic engine — Layer 2 structural analyzers (credential, instruction,
+  // permission). SEM-MCP-* set `attackClass` inline at the emission site and
+  // are not listed here. SemanticFinding uses `id:` (not `checkId:`); the
+  // adapter at `src/semantic/integration/finding-adapter.ts` copies it into
+  // `SecurityFinding.checkId` before `enrichWithTaxonomy` runs.
+  'SEM-CRED-001': 'RETROACTIVE-PRIV',
+  'SEM-CRED-002': 'RETROACTIVE-PRIV',
+  'SEM-CRED-003': 'RETROACTIVE-PRIV',
+  'SEM-CRED-004': 'RETROACTIVE-PRIV',
+  'SEM-INST-001': 'SOUL-INJECT',
+  'SEM-INST-002': 'SOUL-INJECT',
+  'SEM-INST-003': 'SOUL-INJECT',
+  'SEM-INST-004': 'SOUL-INJECT',
+  'SEM-PERM-001': 'SOUL-INJECT',
+  'SEM-PERM-002': 'SOUL-INJECT',
+  'SEM-PERM-003': 'SANDBOX-ESCAPE',
+
+  // AST capability-analyzer: AST-EXFIL-001 sets `attackClass: surface.attackClass`
+  // dynamically at the emission site (capability-analyzer.ts:232). This entry
+  // is a defensive fallback for the rare case where `surface.attackClass` is
+  // undefined; the inline assignment takes precedence per
+  // `enrichWithTaxonomy`'s precedence rule.
+  'AST-EXFIL-001': 'SKILL-EXFIL',
 };
+
+/**
+ * CheckIds intentionally excluded from `attackClass` enforcement. These are
+ * operational / meta findings emitted by the scanner that report status
+ * (oversized file, fix-application result, scan target unreachable in some
+ * paths) rather than a security threat. They should not carry an attack
+ * class because they are not threats themselves. The deterministic
+ * coverage test (`__tests__/hardening/taxonomy-coverage.test.ts`) skips
+ * these IDs.
+ */
+export const TAXONOMY_EXEMPT_CHECKIDS: ReadonlySet<string> = new Set([
+  'FIX-ERROR',
+  'FIX-SUMMARY',
+  'SCAN-001',
+  // External port-scanner status — `Score is not applicable — nothing was tested`.
+  // A scan-status indicator, not a security threat.
+  'SCAN-UNREACHABLE',
+]);
 
 /**
  * Default severity by check ID prefix. Based on the security impact
@@ -348,10 +520,14 @@ export function getTaxonomyMap(): Record<string, string> {
 
 /**
  * Enrich an array of SecurityFindings with their attack class mappings.
- * Modifies findings in place.
+ * Modifies findings in place. Findings that already carry an `attackClass`
+ * (set inline at the emission site, e.g. `AST-CRED-001` →
+ * `CRED-EXPOSURE`) are left untouched — inline values take precedence
+ * over the table lookup.
  */
 export function enrichWithTaxonomy(findings: SecurityFinding[]): void {
   for (const finding of findings) {
+    if (finding.attackClass) continue;
     const attackClass = getAttackClass(finding.checkId);
     if (attackClass) {
       finding.attackClass = attackClass;
