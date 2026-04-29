@@ -9368,8 +9368,18 @@ async function checkNpmPackage(
         'Continuing with baseline analysis (reduced accuracy).\n\n'
       );
     }
-  } catch {
-    // Integrity check itself failed -- continue (don't block on missing manifest in dev)
+  } catch (err) {
+    // The integrity check itself threw. Don't block CLI usage in dev mode
+    // where the verifier may be unavailable (no manifest, missing module),
+    // but DO surface the error to stderr so a real failure (EACCES on
+    // dist/, malformed manifest JSON, ESM import failure of the verifier
+    // itself) is visible rather than silently swallowed. Set HMA_INTEGRITY_DEBUG=1
+    // to see the full stack.
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`hackmyagent: integrity check skipped (${msg})\n`);
+    if (process.env.HMA_INTEGRITY_DEBUG && err instanceof Error && err.stack) {
+      process.stderr.write(err.stack + '\n');
+    }
   }
 
   // Global --ci flag: strip from argv so individual commands don't reject it.

@@ -114,4 +114,31 @@ describe('integrity-verifier manifest path resolution', () => {
     expect(Object.keys(manifest.files).length).toBeGreaterThan(0);
     expect('.integrity-manifest.json' in manifest.files).toBe(false);
   });
+
+  // The 9 tests above pass `packageRoot` explicitly. The production caller in
+  // src/cli.ts:9346 calls `verifyAll()` with NO options, hitting the
+  // `resolvePackageRoot()` walker that climbs from this module's __dirname
+  // looking for package.json. A regression where `resolvePackageRoot` finds
+  // the wrong root (e.g. process.cwd() of the user, not the install dir) would
+  // silently no-op the gate again. This test exercises that codepath against
+  // the real shipped layout — `dist/nanomind-core/security/integrity-verifier.js`
+  // climbs to the repo's own package.json and finds the real
+  // `dist/.integrity-manifest.json`.
+  it('verifyAll() with no options resolves the real package root and loads the shipped manifest', async () => {
+    // Dynamically import the BUILT module (matches how cli.ts imports it).
+    const builtModule = await import(
+      '../../dist/nanomind-core/security/integrity-verifier.js'
+    );
+    const result = builtModule.verifyAll();
+    // Either CLEAN (manifest loaded, all hashes match) or QUARANTINE
+    // (manifest loaded, something tampered) is acceptable — both prove
+    // resolvePackageRoot found the manifest. What MUST NOT happen is the
+    // dev-mode CLEAN-with-no-checks-attempted state that the bug fix is
+    // here to prevent.
+    expect(result.checks.length).toBeGreaterThan(0);
+    const manifestLoadCheck = result.checks.find(
+      (c: { name: string; reason?: string }) => c.name === 'manifest_load',
+    );
+    expect(manifestLoadCheck?.reason).not.toBe('No manifest found (dev mode)');
+  });
 });
