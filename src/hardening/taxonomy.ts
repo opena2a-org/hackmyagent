@@ -342,9 +342,10 @@ const TAXONOMY_MAP: Record<string, string> = {
   'INJ-003': 'CODE-INJECTION',
   'INJ-004': 'CODE-INJECTION',
 
-  // Filesystem / process / sandbox / temp-path
+  // Filesystem / process / sandbox / temp-path. IO-002 is "Query Parameterization"
+  // (SQL-injection defense gap), distinct from the rest of the IO family.
   'IO-001': 'NEMO-SANDBOX-ESCAPE',
-  'IO-002': 'NEMO-SANDBOX-ESCAPE',
+  'IO-002': 'CODE-INJECTION',
   'IO-003': 'NEMO-SANDBOX-ESCAPE',
   'IO-004': 'NEMO-SANDBOX-ESCAPE',
   'PERM-001': 'NEMO-SANDBOX-ESCAPE',
@@ -395,9 +396,6 @@ const TAXONOMY_MAP: Record<string, string> = {
   'RATE-003': 'INTEGRITY-BYPASS',
   'RATE-004': 'INTEGRITY-BYPASS',
 
-  // External port scanner status
-  'SCAN-UNREACHABLE': 'INTEGRITY-BYPASS',
-
   // Semantic engine — Layer 2 structural analyzers (credential, instruction,
   // permission). SEM-MCP-* set `attackClass` inline at the emission site and
   // are not listed here. SemanticFinding uses `id:` (not `checkId:`); the
@@ -436,6 +434,9 @@ export const TAXONOMY_EXEMPT_CHECKIDS: ReadonlySet<string> = new Set([
   'FIX-ERROR',
   'FIX-SUMMARY',
   'SCAN-001',
+  // External port-scanner status — `Score is not applicable — nothing was tested`.
+  // A scan-status indicator, not a security threat.
+  'SCAN-UNREACHABLE',
 ]);
 
 /**

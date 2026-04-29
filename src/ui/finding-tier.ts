@@ -52,6 +52,84 @@ const TIER_3_CHECK_IDS = new Set<string>([
   'SOUL-COMPLETENESS',
   'SOUL-CONSENT',
   'SOUL-UNVERIFIABLE-CLAIM',
+  // Defense-in-depth absence findings introduced via #138 taxonomy
+  // population. These check families flag MISSING controls, not OBSERVED
+  // attacks. Their attackClass mappings (e.g. RETROACTIVE-PRIV,
+  // CODE-INJECTION, SOUL-INJECT) are semantically correct as the threat
+  // each control defends against, but the finding itself is absence-of-
+  // defense → tier 3 per #134's design.
+  // CLAUDE.md governance gaps (CLAUDE-001 = real cred finding, stays tier 1).
+  'CLAUDE-002', // Unrestricted Tool Access
+  'CLAUDE-003', // Destructive Shell Permissions
+  'CLAUDE-004', // No Deny Rules
+  'CLAUDE-005', // Memory Persistence (defense gap)
+  'CLAUDE-006', // Sensitive Instructions Extractable
+  'CLAUDE-007', // No Tool Timeout
+  // Tool-boundary governance gaps
+  'TOOL-001',
+  'TOOL-002',
+  'TOOL-003',
+  'TOOL-004',
+  // Encryption / key-management defense gaps
+  'ENCRYPT-001',
+  'ENCRYPT-002',
+  'ENCRYPT-003',
+  'ENCRYPT-004',
+  // Logging / audit / rate-limiting gaps
+  'LOG-001',
+  'LOG-002',
+  'LOG-003',
+  'LOG-004',
+  'AUDIT-001',
+  'AUDIT-002',
+  'AUDIT-003',
+  'AUDIT-004',
+  'RATE-001',
+  'RATE-002',
+  'RATE-003',
+  'RATE-004',
+  // Input-validation / file-IO / SQL-injection defense gaps
+  'INJ-001',
+  'INJ-002',
+  'INJ-003',
+  'INJ-004',
+  'IO-001',
+  'IO-002',
+  'IO-003',
+  'IO-004',
+  // Secret-management / encryption-library defense gaps. SEC-004 is
+  // "hardcoded connection strings" (real exposure) and stays tier 1.
+  'SEC-001',
+  'SEC-002',
+  'SEC-003',
+  // API-surface gaps. API-003 (key in URL) is real exposure → stays tier 1.
+  'API-001',
+  'API-002',
+  'API-004',
+  // Auth / session control gaps
+  'AUTH-001',
+  'AUTH-002',
+  'AUTH-003',
+  'AUTH-004',
+  'SESSION-001',
+  'SESSION-002',
+  'SESSION-003',
+  'SESSION-004',
+  // Sandbox configuration gaps. CONFIG-008 ("sandbox disabled") and SANDBOX-*
+  // ("container isolation missing") are defense gaps even though they emit
+  // SANDBOX-ESCAPE / NEMO-SANDBOX-ESCAPE.
+  'SANDBOX-001',
+  'SANDBOX-002',
+  'SANDBOX-003',
+  'SANDBOX-004',
+  'CONFIG-007', // Elevated access bypass (defense gap)
+  'CONFIG-008', // Sandbox disabled (defense gap)
+  'CONFIG-009', // Short gateway token (defense gap)
+  // Container / process privilege gaps
+  'PROC-001',
+  'PROC-002',
+  'PROC-003',
+  'PROC-004',
 ]);
 
 /**
