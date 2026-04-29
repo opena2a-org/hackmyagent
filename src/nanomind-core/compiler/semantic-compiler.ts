@@ -538,14 +538,23 @@ function extractDataAccessPatterns(
     }
   }
 
-  // Check for external transmission. Capture the first URL so downstream
-  // analyzers (AST-CRED-002 in particular) can re-locate the trigger line
-  // in the artifact for `generateVerifyCommand()` (issue #141). Trailing
-  // sentence punctuation is trimmed so the destination matches the URL
-  // as it appears in prose, not the URL plus terminal "."/")".
-  const urlMatch = /https?:\/\/[^\s]+/.exec(content);
-  if (urlMatch && /send|forward|transmit|post|upload/i.test(content)) {
-    const destination = urlMatch[0].replace(/[.,;:!?)\]]+$/, '');
+  // Check for external transmission. Pair a URL with a send-verb only when
+  // the two are co-located in the same paragraph; otherwise the destination
+  // falls back to the literal placeholder `'external'`. Without this
+  // proximity gate, a non-doc artifact (`.clinerules`, `.cursorrules`, etc.)
+  // that mentions a URL in one paragraph and a send-verb in an unrelated
+  // paragraph would attribute the URL as the credential-exfil endpoint and
+  // the AST-CRED-002 Verify hint would falsely point at the URL line
+  // (issue #148). Trailing sentence punctuation is trimmed so the
+  // destination matches the URL as it appears in prose. The outer verb
+  // gate uses substring matching (matches "Resend", "reupload", etc. — the
+  // adversarial real-world phrasings) and relies on the proximity check
+  // inside `findCoLocatedTransmissionUrl` to suppress misattribution.
+  if (/send|forward|transmit|post|upload/i.test(content) && /https?:\/\//.test(content)) {
+    const coLocated = findCoLocatedTransmissionUrl(content);
+    const destination = coLocated
+      ? coLocated.replace(/[.,;:!?)\]]+$/, '')
+      : 'external';
     patterns.push({
       dataType: 'general',
       accessMode: 'transmit',
@@ -555,6 +564,50 @@ function extractDataAccessPatterns(
   }
 
   return patterns;
+}
+
+/**
+ * Returns the first URL in `content` that appears in the same paragraph as
+ * a send/forward/transmit/post/upload verb. Two regions are considered
+ * "co-located" when no blank-line break (`\n\s*\n`) separates them — i.e.
+ * they share a paragraph in the conventional markdown sense. When no URL
+ * is co-located with any verb, returns `undefined` so the caller can fall
+ * back to a placeholder destination instead of misattributing an unrelated
+ * URL as a credential-exfil endpoint (issue #148).
+ *
+ * Iterates all URL matches, not only the first, so that a documentation
+ * URL in an opening paragraph does not block a real exfil URL in a later
+ * paragraph from being captured.
+ */
+export function findCoLocatedTransmissionUrl(content: string): string | undefined {
+  const URL = /https?:\/\/[^\s]+/g;
+  // Substring match (no word-boundary anchor) so re-prefixed verbs like
+  // "Resend"/"Reupload"/"Reposting" — common real-world malicious phrasings
+  // — still pair with their URL. Mid-word matches like "compost" → "post"
+  // are tolerated because the paragraph-level proximity gate is the real
+  // anti-misattribution check.
+  const VERB = /send|forward|transmit|post|upload/gi;
+
+  const verbs: Array<{ start: number; end: number }> = [];
+  let vm: RegExpExecArray | null;
+  while ((vm = VERB.exec(content)) !== null) {
+    verbs.push({ start: vm.index, end: vm.index + vm[0].length });
+  }
+  if (verbs.length === 0) return undefined;
+
+  let um: RegExpExecArray | null;
+  while ((um = URL.exec(content)) !== null) {
+    const u0 = um.index;
+    const u1 = u0 + um[0].length;
+    for (const v of verbs) {
+      const lo = Math.min(u0, v.start);
+      const hi = Math.max(u1, v.end);
+      if (!/\n\s*\n/.test(content.slice(lo, hi))) {
+        return um[0];
+      }
+    }
+  }
+  return undefined;
 }
 
 /**
