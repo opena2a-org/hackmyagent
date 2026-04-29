@@ -15,6 +15,7 @@ import type { SecurityAST, Capability } from '../types.js';
 import type { ASTFinding } from './capability-analyzer.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
+import { findLineFromString } from '../../types/text-position.js';
 
 // ============================================================================
 // Public API
@@ -23,11 +24,19 @@ import { assertASTIntegrity } from '../security/defense-in-depth.js';
 /**
  * Analyze a SecurityAST for scope and permission issues.
  * Verifies AST integrity before processing.
+ *
+ * `artifactContent` is the raw source text the AST was compiled from. It
+ * is unsigned and not part of the AST contract — callers pass it through
+ * so emit sites can derive 1-based line numbers from substring offsets
+ * (issue #147, extending #141). When omitted, findings still emit but
+ * without a `line` field; `generateVerifyCommand()` will then return
+ * undefined for them.
  */
 export function analyzeScope(
   ast: SecurityAST,
   verifier: (ast: SecurityAST) => boolean,
   projectType?: ProjectType,
+  artifactContent?: string,
 ): ASTFinding[] {
   assertASTIntegrity(ast, verifier);
 
@@ -39,9 +48,9 @@ export function analyzeScope(
 
   const findings: ASTFinding[] = [];
 
-  findings.push(...checkWildcardToolAccess(ast));
-  findings.push(...checkUndeclaredPermissions(ast));
-  findings.push(...checkScopePurposeMismatch(ast));
+  findings.push(...checkWildcardToolAccess(ast, artifactContent));
+  findings.push(...checkUndeclaredPermissions(ast, artifactContent));
+  findings.push(...checkScopePurposeMismatch(ast, artifactContent));
 
   return findings;
 }
@@ -58,7 +67,7 @@ export function analyzeScope(
  * Also detects partial wildcards (e.g., "db.*") that grant broad access
  * within a domain.
  */
-function checkWildcardToolAccess(ast: SecurityAST): ASTFinding[] {
+function checkWildcardToolAccess(ast: SecurityAST, artifactContent?: string): ASTFinding[] {
   const findings: ASTFinding[] = [];
 
   // Full wildcards: capabilities with "*" in the name
@@ -84,6 +93,10 @@ function checkWildcardToolAccess(ast: SecurityAST): ASTFinding[] {
       message: `Wildcard access: ${cap.name} (scope: ${scope})`,
       fixable: false,
       file: ast.artifactPath,
+      // Prefer the rich evidence span (e.g. JSON value with quotes) over the
+      // bare capability name "*" — the latter is too short and could match
+      // an unrelated occurrence in surrounding text.
+      line: findLineFromString(artifactContent, cap.evidence),
       fix: isFullWildcard
         ? `Replace the wildcard "*" with an explicit allowlist in mcp.json — ` +
           `change "allowedTools": ["*"] to "allowedTools": ["tool1", "tool2"]. ` +
@@ -123,6 +136,7 @@ function checkWildcardToolAccess(ast: SecurityAST): ASTFinding[] {
           message: `Implicit wildcard: MCP server ${cap.scope}`,
           fixable: false,
           file: ast.artifactPath,
+          line: findLineFromString(artifactContent, cap.evidence),
           fix:
             `Add an explicit "allowedTools" list to the "${cap.scope}" server config in mcp.json. ` +
             'Run `opena2a mcp audit` to inventory available tools, then restrict to the minimum needed.',
@@ -152,7 +166,7 @@ function checkWildcardToolAccess(ast: SecurityAST): ASTFinding[] {
  * While CAP-001 flags any undeclared capability, SCOPE-002 focuses on
  * tool permissions and access patterns.
  */
-function checkUndeclaredPermissions(ast: SecurityAST): ASTFinding[] {
+function checkUndeclaredPermissions(ast: SecurityAST, artifactContent?: string): ASTFinding[] {
   const findings: ASTFinding[] = [];
 
   // Build list of declared capability names (normalized)
@@ -192,6 +206,7 @@ function checkUndeclaredPermissions(ast: SecurityAST): ASTFinding[] {
       message: `Undeclared permission: ${cap.name} (${cap.riskLevel}-risk)`,
       fixable: false,
       file: ast.artifactPath,
+      line: findLineFromString(artifactContent, cap.evidence),
       fix:
         `Either declare "${cap.name}" in your capability manifest (if intended) ` +
         'or remove the code/instructions that exercise this permission. ' +
@@ -220,7 +235,7 @@ function checkUndeclaredPermissions(ast: SecurityAST): ASTFinding[] {
  * Uses semantic comparison between the declared purpose and each capability,
  * considering both declared and inferred capabilities.
  */
-function checkScopePurposeMismatch(ast: SecurityAST): ASTFinding[] {
+function checkScopePurposeMismatch(ast: SecurityAST, artifactContent?: string): ASTFinding[] {
   const findings: ASTFinding[] = [];
 
   const purpose = ast.declaredPurpose.toLowerCase();
@@ -279,6 +294,7 @@ function checkScopePurposeMismatch(ast: SecurityAST): ASTFinding[] {
         message: `"${cap.name}" does not match purpose "${truncate(ast.declaredPurpose, 50)}"`,
         fixable: false,
         file: ast.artifactPath,
+        line: findLineFromString(artifactContent, cap.evidence),
         fix:
           `Either update the purpose description to explain why "${cap.name}" is needed, ` +
           `or remove this capability if it is not required. ` +

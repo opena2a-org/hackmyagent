@@ -426,11 +426,11 @@ function runAllAnalyzers(
 
   // Credential, governance, and scope analyzers require AST integrity verification
   findings.push(...analyzeCredentials(ast, verifier, projectType, artifactContent));
-  findings.push(...analyzeGovernance(ast, verifier, projectType, projectConstraints));
-  findings.push(...analyzeScope(ast, verifier, projectType));
+  findings.push(...analyzeGovernance(ast, verifier, projectType, projectConstraints, artifactContent));
+  findings.push(...analyzeScope(ast, verifier, projectType, artifactContent));
 
   // Prompt and code analyzers: jailbreak susceptibility, injection patterns, etc.
-  findings.push(...analyzePrompt(ast, verifier, projectType));
+  findings.push(...analyzePrompt(ast, verifier, projectType, artifactContent));
   findings.push(...analyzeCode(ast, verifier));
 
   // Steganography analyzer: semantic Unicode analysis (emoji, i18n, homoglyphs)

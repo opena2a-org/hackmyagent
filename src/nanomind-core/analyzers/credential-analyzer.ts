@@ -15,31 +15,7 @@ import type { SecurityAST, DataAccessPattern, EvidenceSpan } from '../types.js';
 import type { ASTFinding } from './capability-analyzer.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
-import { lineFromOffset } from '../../types/text-position.js';
-
-/**
- * When `artifactContent` is provided, locate `needle` inside it and return
- * the 1-based line number of the first occurrence. Returns undefined when
- * either argument is missing or the needle isn't found — callers must
- * tolerate the `line` field being absent on emitted findings.
- *
- * Used to recover line citations for AST-level findings whose evidence is
- * a verbatim substring of the artifact (Capability.evidence,
- * RiskSurface.evidence). The AST itself is signed and doesn't carry
- * line numbers, so we re-derive them at emit time from the unsigned
- * source content the caller passes in.
- */
-function findLineFromString(
-  artifactContent: string | undefined,
-  needle: string | undefined,
-): number | undefined {
-  if (!artifactContent || !needle) return undefined;
-  const trimmed = needle.trim();
-  if (!trimmed) return undefined;
-  const idx = artifactContent.indexOf(trimmed);
-  if (idx < 0) return undefined;
-  return lineFromOffset(artifactContent, idx);
-}
+import { lineFromOffset, findLineFromString } from '../../types/text-position.js';
 
 // ============================================================================
 // Public API

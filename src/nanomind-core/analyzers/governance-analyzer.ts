@@ -17,6 +17,7 @@ import type { SecurityAST, Constraint, ConstraintDomain, Capability } from '../t
 import type { ASTFinding } from './capability-analyzer.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
+import { findLineFromString } from '../../types/text-position.js';
 
 // ============================================================================
 // Constants
@@ -131,6 +132,7 @@ export function analyzeGovernance(
   verifier: (ast: SecurityAST) => boolean,
   projectType?: ProjectType,
   projectConstraints?: Constraint[],
+  artifactContent?: string,
 ): ASTFinding[] {
   assertASTIntegrity(ast, verifier);
 
@@ -152,7 +154,7 @@ export function analyzeGovernance(
   const findings: ASTFinding[] = [];
 
   findings.push(...checkDomainCoverage(ast, effectiveConstraints));
-  findings.push(...checkConstraintEnforceability(ast, effectiveConstraints));
+  findings.push(...checkConstraintEnforceability(ast, effectiveConstraints, artifactContent));
   findings.push(...checkMissingGovernance(ast, effectiveConstraints));
 
   // Override resistance and governance ratio are agent-level checks.
@@ -279,7 +281,11 @@ function checkDomainCoverage(ast: SecurityAST, effectiveConstraints: Constraint[
  * Constraints with high bypass risk (> 0.5) use advisory language that
  * an attacker can exploit ("should", "recommended", "when appropriate").
  */
-function checkConstraintEnforceability(ast: SecurityAST, effectiveConstraints: Constraint[]): ASTFinding[] {
+function checkConstraintEnforceability(
+  ast: SecurityAST,
+  effectiveConstraints: Constraint[],
+  artifactContent?: string,
+): ASTFinding[] {
   const findings: ASTFinding[] = [];
 
   for (const constraint of effectiveConstraints) {
@@ -306,6 +312,11 @@ function checkConstraintEnforceability(ast: SecurityAST, effectiveConstraints: C
       message: `Weak constraint (${(constraint.enforceability * 100).toFixed(0)}% enforceable): ${truncate(constraint.text, 60)}`,
       fixable: false,
       file: ast.artifactPath,
+      // constraint.text is extracted verbatim from the artifact; indexOf
+      // recovers the source line. Project-level constraints (loaded from
+      // a sibling SOUL.md) won't be findable in the current artifact's
+      // content — line stays undefined for those, which is correct.
+      line: findLineFromString(artifactContent, constraint.text),
       fix:
         `Replace advisory language with mandatory language. ` +
         'Change "should" to "must never", "recommended" to "required", ' +

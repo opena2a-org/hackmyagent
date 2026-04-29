@@ -24,3 +24,26 @@ export function lineFromOffset(content: string, offset: number): number {
   }
   return line;
 }
+
+/**
+ * Locate `needle` inside `artifactContent` and return the 1-based line
+ * number of its first occurrence. Returns undefined when either argument
+ * is missing/empty or the needle isn't found.
+ *
+ * AST-level findings carry their evidence as a verbatim substring of the
+ * artifact (Capability.evidence, Constraint.text, RiskSurface.evidence).
+ * The AST itself is signed and doesn't carry line numbers, so analyzers
+ * re-derive them at emit time from the unsigned source content the caller
+ * passes in (issue #141, extended to prompt/scope/governance in #147).
+ */
+export function findLineFromString(
+  artifactContent: string | undefined,
+  needle: string | undefined,
+): number | undefined {
+  if (!artifactContent || !needle) return undefined;
+  const trimmed = needle.trim();
+  if (!trimmed) return undefined;
+  const idx = artifactContent.indexOf(trimmed);
+  if (idx < 0) return undefined;
+  return lineFromOffset(artifactContent, idx);
+}
