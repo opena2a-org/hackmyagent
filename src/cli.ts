@@ -6334,6 +6334,15 @@ Examples:
       const tierMeta = result.tierForced ? `${result.agentTier} tier (forced)` : `${result.agentTier} tier`;
       const profileMeta = result.profileForced ? `${result.agentProfile} (forced)` : `${result.agentProfile}`;
       const soulSkippedNote = result.skippedDomains.length > 0 ? ` · skipping ${result.skippedDomains.join(', ')}` : '';
+      // Scope disclosure when the scan evaluated fewer than the full 9 domains
+      // (#162). The label "HARDENED" must not appear without scope context —
+      // otherwise a malicious `<!-- soul:profile=conversational -->` marker
+      // can produce 100/100 HARDENED while skipping 5 of 9 domains.
+      const totalDomains = 9;
+      const evaluatedDomains = totalDomains - result.skippedDomains.length;
+      const scopeDisclosure = result.skippedDomains.length > 0
+        ? ` · (${evaluatedDomains} of ${totalDomains} domains evaluated)`
+        : '';
 
       const missing = result.totalControls - result.totalPassed;
       let soulVerdictText: string;
@@ -6341,6 +6350,12 @@ Examples:
       if (!result.file) {
         soulVerdictColor = colors.brightRed;
         soulVerdictText = 'No governance file found';
+      } else if (result.profileMismatch) {
+        // Mismatch is HIGH-severity — eclipse the "all controls covered"
+        // verdict text. The full block (declared vs. inferred + signals)
+        // renders below.
+        soulVerdictColor = colors.brightRed;
+        soulVerdictText = `Profile mismatch: declared=${result.profileMismatch.declaredProfile} skips ${result.profileMismatch.skippedDomains.length} domains the body content suggests should be evaluated`;
       } else if (missing === 0) {
         soulVerdictColor = colors.green;
         soulVerdictText = `All ${result.totalControls} governance controls covered`;
@@ -6353,13 +6368,33 @@ Examples:
       }
 
       console.log();
-      console.log(`  ${colors.bold}${colors.white}${soulFileName}${RESET()}  ${colors.dim}soul governance · ${tierMeta} · ${profileMeta}${soulSkippedNote}${RESET()}`);
+      console.log(`  ${colors.bold}${colors.white}${soulFileName}${RESET()}  ${colors.dim}soul governance · ${tierMeta} · ${profileMeta}${soulSkippedNote}${scopeDisclosure}${RESET()}`);
       console.log(`  ${soulVerdictColor}${colors.bold}${soulVerdictText}${RESET()}`);
       if (!result.file) {
         console.log(`  ${colors.dim}Searched: SOUL.md, system-prompt.md, CLAUDE.md${RESET()}`);
       }
+
+      // Profile-mismatch finding block (#162). Render before domain scores
+      // so the user sees the gating context before the per-domain verdicts.
+      if (result.profileMismatch) {
+        const pm = result.profileMismatch;
+        console.log();
+        console.log(`  ${colors.brightRed}${colors.bold}HIGH${RESET()}  ${colors.bold}SOUL-PROFILE-MISMATCH${RESET()}  ${colors.dim}Profile narrows scope past body content${RESET()}`);
+        console.log(`  ${colors.dim}Declared profile=${RESET()}${colors.bold}${pm.declaredProfile}${RESET()}${colors.dim} via marker or --profile flag.${RESET()}`);
+        console.log(`  ${colors.dim}Body content suggests profile=${RESET()}${colors.bold}${pm.inferredProfile}${RESET()}${colors.dim} based on:${RESET()}`);
+        for (const sig of pm.signals.slice(0, 6)) {
+          console.log(`    ${colors.dim}• ${sig}${RESET()}`);
+        }
+        if (pm.signals.length > 6) {
+          console.log(`    ${colors.dim}• ...and ${pm.signals.length - 6} more${RESET()}`);
+        }
+        console.log(`  ${colors.dim}Skipped domains:${RESET()} ${pm.skippedDomains.join(', ')}`);
+        console.log(`  ${colors.cyan}Fix:${RESET()} remove the ${colors.bold}<!-- soul:profile=${pm.declaredProfile} -->${RESET()} marker (let the scanner detect),`);
+        console.log(`       or revise the body to match the declared profile.`);
+      }
+
       console.log();
-      console.log(`  Governance  ${uiScoreMeter(result.score)}`);
+      console.log(`  Governance  ${uiScoreMeter(result.score)}${result.skippedDomains.length > 0 ? `  ${colors.dim}(scope: ${evaluatedDomains}/${totalDomains} domains)${RESET()}` : ''}`);
 
       // ── Domain Scores ──────────────────────────────────────────────
       const DOMAIN_DESCRIPTIONS: Record<string, string> = {
@@ -6409,8 +6444,19 @@ Examples:
         : result.conformance === 'essential' ? colors.yellow
         : result.conformance === 'standard' ? colors.cyan
         : colors.green;
-      const conformanceLabel = result.conformance === 'none' ? 'NONE' : result.conformance.toUpperCase();
+      // The absolute "HARDENED" / "STANDARD" / "ESSENTIAL" label is only
+      // meaningful when all 9 domains were evaluated (#162). When the
+      // profile filter skipped any domains, prefix with "PARTIAL " so a
+      // malicious `<!-- soul:profile=conversational -->` marker can't
+      // claim a clean conformance verdict on partial scope.
+      const baseLabel = result.conformance === 'none' ? 'NONE' : result.conformance.toUpperCase();
+      const conformanceLabel = result.skippedDomains.length > 0 && result.conformance !== 'none'
+        ? `PARTIAL ${baseLabel}`
+        : baseLabel;
       console.log(`  Level     ${conformanceColor}${colors.bold}${conformanceLabel}${RESET()}`);
+      if (result.skippedDomains.length > 0) {
+        console.log(`  ${colors.dim}Scope     ${evaluatedDomains}/${totalDomains} domains evaluated (skipped: ${result.skippedDomains.join(', ')})${RESET()}`);
+      }
       if (result.criticalMissing.length > 0) {
         console.log(`  Missing   ${colors.dim}${result.criticalMissing.join(', ')}${RESET()}`);
       }
@@ -6495,6 +6541,18 @@ Examples:
           process.stderr.write(`Score ${result.score} is below threshold ${threshold}\n`);
           process.exit(1);
         }
+      }
+
+      // SOUL-PROFILE-MISMATCH is a HIGH-severity finding (#162). Under
+      // --ci, exit non-zero so CI pipelines reject any SOUL.md that
+      // narrows scope past its body content. Both the global --ci flag
+      // (stripped from argv early) and the per-command --ci option are
+      // honored.
+      if ((globalCiMode || options.ci) && result.profileMismatch) {
+        process.stderr.write(
+          `SOUL-PROFILE-MISMATCH HIGH: declared profile=${result.profileMismatch.declaredProfile} skips ${result.profileMismatch.skippedDomains.length} of 9 domains; body suggests profile=${result.profileMismatch.inferredProfile}.\n`,
+        );
+        process.exit(1);
       }
     } catch (error) {
       process.stderr.write(`Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
