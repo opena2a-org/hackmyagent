@@ -89,12 +89,18 @@ function collectEmissions(): Emission[] {
     const inSemantic = file.startsWith(semanticDir);
     for (let i = 0; i < lines.length; i++) {
       let id: string | undefined;
-      const m1 = lines[i].match(/checkId:\s*['"]([A-Z][A-Z0-9-]+)['"]/);
+      // `checkId: 'X'`, `checkId: "X"`, `checkId: \`X\`` — template literals
+      // with no interpolation (e.g. assembly-scanner.ts:227) are caught.
+      const m1 = lines[i].match(
+        /checkId:\s*(?:['"]([A-Z][A-Z0-9-]+)['"]|`([A-Z][A-Z0-9-]+)`)/,
+      );
       if (m1) {
-        id = m1[1];
+        id = m1[1] ?? m1[2];
       } else if (inSemantic) {
-        const m2 = lines[i].match(/\bid:\s*['"](SEM-[A-Z0-9-]+)['"]/);
-        if (m2) id = m2[1];
+        const m2 = lines[i].match(
+          /\bid:\s*(?:['"](SEM-[A-Z0-9-]+)['"]|`(SEM-[A-Z0-9-]+)`)/,
+        );
+        if (m2) id = m2[1] ?? m2[2];
       }
       if (!id) continue;
       emissions.push({

@@ -414,6 +414,13 @@ const TAXONOMY_MAP: Record<string, string> = {
   'SEM-PERM-001': 'SOUL-INJECT',
   'SEM-PERM-002': 'SOUL-INJECT',
   'SEM-PERM-003': 'SANDBOX-ESCAPE',
+
+  // AST capability-analyzer: AST-EXFIL-001 sets `attackClass: surface.attackClass`
+  // dynamically at the emission site (capability-analyzer.ts:232). This entry
+  // is a defensive fallback for the rare case where `surface.attackClass` is
+  // undefined; the inline assignment takes precedence per
+  // `enrichWithTaxonomy`'s precedence rule.
+  'AST-EXFIL-001': 'SKILL-EXFIL',
 };
 
 /**
