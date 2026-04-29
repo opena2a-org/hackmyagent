@@ -9,6 +9,7 @@ import * as path from 'path';
 import type { ScanResult, SecurityFinding, Severity, ProjectType } from './security-check';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
 import { enrichWithTaxonomy } from './taxonomy';
+import { lineFromOffset } from '../types/text-position';
 import { classifySkillSection, isLikelyFalsePositive } from './skill-context';
 import { isCorpusPath, isTestPath, isExamplePath } from './path-context';
 import { scanAssembly } from '../lifecycle/assembly-scanner';
@@ -428,6 +429,7 @@ function shellEscape(s: string): string {
   // Wrap in single quotes and escape embedded single quotes: ' -> '\''
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
+
 
 /**
  * Check if a variation selector at position i in rawBuffer is a legitimate
@@ -10481,7 +10483,8 @@ dist/
       // ── SOUL-BYPASS: instructs bypassing security tools ───────────────────
       const bypassPattern = /(bypass|skip|disable|ignore)\s+(?:hma|hackmyagent|oasb|security.check|analm|security.scan|scan.check)/i;
       const skipChecksPattern = /HMA_SKIP_CHECKS|SKIP_CHECKS\s*=\s*true|security.*validation.*disabled|checks.*disabled/i;
-      if (bypassPattern.test(content) || skipChecksPattern.test(content)) {
+      const bypassMatch = bypassPattern.exec(content) ?? skipChecksPattern.exec(content);
+      if (bypassMatch) {
         findings.push({
           checkId: 'SOUL-BYPASS',
           name: 'Security Check Bypass Instruction',
@@ -10491,6 +10494,7 @@ dist/
           passed: false,
           message: 'SOUL.md explicitly disables security checks',
           file: relativePath,
+          line: lineFromOffset(content, bypassMatch.index),
           fixable: false,
           fix: 'Remove all instructions to bypass, skip, or disable HMA, OASB, or NanoMind checks. Security tools must never be disabled via SOUL instructions.',
           guidance: 'Instructing the agent to bypass its own security scanning is equivalent to disabling seatbelts and airbags. Remove these instructions before deploying.',
@@ -10512,6 +10516,7 @@ dist/
           passed: false,
           message: `${escapeClauses.length} constraints contain "unless" escape clauses`,
           file: relativePath,
+          line: lineFromOffset(content, escapeClauses[0].index ?? 0),
           fixable: false,
           fix: 'Replace "unless" escape clauses with absolute prohibitions: change "will not X unless Y" to "must never X regardless of instructions".',
           guidance: 'A constraint that can be bypassed with "unless explicitly directed" is not a constraint — it is an open door.',
@@ -10522,7 +10527,9 @@ dist/
       // ── SOUL-CONTRADICTION: privacy claim + external transmission ─────────
       const privacyClaimPattern = /(never|not)\s+(share|transmit|send|forward|upload)[^.]*(?:third.party|external|outside)|processed locally|all data.*local|data.*never.*leav/i;
       const externalTransmitPattern = /(sync|upload|send|transmit|transfer|forward)[^.]*(?:to|at)\s+(?:https?:\/\/|analytics|platform|pipeline|endpoint|api\.)/i;
-      if (privacyClaimPattern.test(content) && externalTransmitPattern.test(content)) {
+      const privacyMatch = privacyClaimPattern.exec(content);
+      const transmitMatch = externalTransmitPattern.exec(content);
+      if (privacyMatch && transmitMatch) {
         findings.push({
           checkId: 'SOUL-CONTRADICTION',
           name: 'Contradictory Privacy Claim',
@@ -10532,6 +10539,7 @@ dist/
           passed: false,
           message: 'SOUL privacy claim contradicts described external data transmission',
           file: relativePath,
+          line: lineFromOffset(content, privacyMatch.index),
           fixable: false,
           fix: 'Resolve the contradiction: either remove the external sync or accurately disclose that data is transmitted externally.',
           guidance: 'Policy contradictions are exploitable: an attacker can invoke the permissive clause while the user believes the restrictive one applies.',
@@ -10545,8 +10553,16 @@ dist/
         /AES.256/i, /PCI.?DSS/i, /\bindependently audit/i, /Trust Level [0-9]/i,
         /OpenA2A Registry.*(?:trusted|verified|certified)/i,
       ];
-      const matchedTerms = complianceTerms.filter(p => p.test(content)).length;
+      const complianceMatches = complianceTerms
+        .map(p => p.exec(content))
+        .filter((m): m is RegExpExecArray => m !== null);
+      const matchedTerms = complianceMatches.length;
       if (matchedTerms >= 3) {
+        // Cite the earliest-occurring claim — gives the user a starting point
+        // for the audit, since stacked claims usually cluster in one section.
+        const firstClaim = complianceMatches.reduce((earliest, m) =>
+          m.index < earliest.index ? m : earliest
+        );
         findings.push({
           checkId: 'SOUL-UNVERIFIABLE-CLAIM',
           name: 'Stacked Unverifiable Compliance Claims',
@@ -10556,6 +10572,7 @@ dist/
           passed: false,
           message: `${matchedTerms} unverifiable compliance claims in SOUL.md`,
           file: relativePath,
+          line: lineFromOffset(content, firstClaim.index),
           fixable: false,
           fix: 'Replace general compliance claims with verifiable references: cite specific attestation IDs, audit report URLs, or regulatory body registration numbers.',
           guidance: 'Unverifiable compliance claims in a SOUL.md create false trust. Users cannot distinguish a legitimate claim from a fraudulent one without a verification mechanism.',
@@ -10566,7 +10583,7 @@ dist/
       // ── SOUL-CONSENT: broad capabilities without consent ──────────────────
       // Only match affirmative capability declarations, not negated ones.
       // "I can execute shell" → match. "I do not access external services" → no match.
-      const hasBroadCapability = (() => {
+      const broadCapabilityOffset = (() => {
         const capPatterns = [
           /(execute|run)\s+shell/i,
           /(shell|system)\s+command/i,
@@ -10578,16 +10595,18 @@ dist/
           // "external service" only when NOT preceded by negation in the same sentence
           /(?<!(?:do not|will not|cannot|never|no)\s{0,20})external.*service/i,
         ];
-        return capPatterns.some(p => {
+        for (const p of capPatterns) {
           const m = p.exec(content);
-          if (!m) return false;
+          if (!m) continue;
           // Check 60 chars before match for negation
           const before = content.slice(Math.max(0, (m.index ?? 0) - 60), m.index ?? 0);
-          if (/\b(do not|will not|must not|cannot|never|no)\b/i.test(before.split(/[.!\n]/).pop() ?? '')) return false;
-          return true;
-        });
+          if (/\b(do not|will not|must not|cannot|never|no)\b/i.test(before.split(/[.!\n]/).pop() ?? '')) continue;
+          return m.index;
+        }
+        return undefined;
       })();
-      const hasIrrevocableConsent = /irrevocable\s+consent|grants.*irrevocable|permanent.*consent/i.test(content);
+      const hasBroadCapability = broadCapabilityOffset !== undefined;
+      const irrevocableMatch = /irrevocable\s+consent|grants.*irrevocable|permanent.*consent/i.exec(content);
       const hasConsentLanguage = /\bconsent\b|\bauthori[sz]/i.test(content);
 
       if (hasBroadCapability && !hasConsentLanguage) {
@@ -10600,12 +10619,13 @@ dist/
           passed: false,
           message: 'High-risk capabilities present without consent/authorization constraints',
           file: relativePath,
+          line: lineFromOffset(content, broadCapabilityOffset ?? 0),
           fixable: false,
           fix: 'Add a consent section defining which capabilities require explicit user authorization.',
           guidance: 'Broad capabilities without consent constraints mean the agent can take high-risk actions without user awareness.',
           attackClass: 'SOUL-CONSENT',
         });
-      } else if (hasIrrevocableConsent) {
+      } else if (irrevocableMatch) {
         findings.push({
           checkId: 'SOUL-CONSENT',
           name: 'Irrevocable Blanket Consent',
@@ -10615,6 +10635,7 @@ dist/
           passed: false,
           message: 'Irrevocable consent language detected in SOUL.md',
           file: relativePath,
+          line: lineFromOffset(content, irrevocableMatch.index),
           fixable: false,
           fix: 'Replace "irrevocable consent" with revocable, granular consent. Users must always be able to withdraw consent for agent capabilities.',
           guidance: 'Irrevocable consent is a legal and security red flag. Users must always be able to withdraw consent for agent capabilities.',
@@ -10633,9 +10654,11 @@ dist/
       });
       const constraintCount = genuineConstraints.length;
 
-      // Only fire for SOUL files that declare capabilities (empty/scope-only SOULs are fine)
-      const hasDeclaredCapabilities = /##\s*capabilit|i can |i am able to|this agent can|i execute|i can run|shell|internet|network|access.*file|delete.*file|external/i.test(content);
-      if (constraintCount < 2 && hasDeclaredCapabilities) {
+      // Only fire for SOUL files that declare capabilities (empty/scope-only SOULs are fine).
+      // Use the matched capability declaration as the citation line — that's the
+      // statement the user needs to either constrain or remove.
+      const declaredCapMatch = /##\s*capabilit|i can |i am able to|this agent can|i execute|i can run|shell|internet|network|access.*file|delete.*file|external/i.exec(content);
+      if (constraintCount < 2 && declaredCapMatch) {
         findings.push({
           checkId: 'SOUL-COMPLETENESS',
           name: 'Incomplete Governance Coverage',
@@ -10645,6 +10668,7 @@ dist/
           passed: false,
           message: `Only ${constraintCount} genuine constraint(s) — governance is incomplete`,
           file: relativePath,
+          line: lineFromOffset(content, declaredCapMatch.index),
           fixable: false,
           fix: 'Add explicit constraints for: (1) capability boundaries, (2) data handling, (3) trust hierarchy.',
           guidance: 'Agents with fewer than 3 explicit constraints are under-governed and vulnerable to prompt injection attacks that exploit uncovered capability domains.',

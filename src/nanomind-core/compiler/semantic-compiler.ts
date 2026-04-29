@@ -513,12 +513,18 @@ function extractDataAccessPatterns(
     }
   }
 
-  // Check for external transmission
-  if (/https?:\/\/[^\s]+/.test(content) && /send|forward|transmit|post|upload/i.test(content)) {
+  // Check for external transmission. Capture the first URL so downstream
+  // analyzers (AST-CRED-002 in particular) can re-locate the trigger line
+  // in the artifact for `generateVerifyCommand()` (issue #141). Trailing
+  // sentence punctuation is trimmed so the destination matches the URL
+  // as it appears in prose, not the URL plus terminal "."/")".
+  const urlMatch = /https?:\/\/[^\s]+/.exec(content);
+  if (urlMatch && /send|forward|transmit|post|upload/i.test(content)) {
+    const destination = urlMatch[0].replace(/[.,;:!?)\]]+$/, '');
     patterns.push({
       dataType: 'general',
       accessMode: 'transmit',
-      destination: 'external',
+      destination,
       coveredByCapability: capabilities.some(c => c.name.includes('api.call') || c.name.includes('send')),
     });
   }

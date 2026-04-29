@@ -90,10 +90,25 @@ function fixtureScanTarget(fixtureDir: string): string {
   return fixtureDir;
 }
 
+interface RawFinding {
+  checkId: string;
+  severity: string;
+  passed?: boolean;
+  file?: string;
+  line?: number;
+  evidence?: {
+    kind?: string;
+    lines?: Array<{ n: number; content: string }>;
+    observed?: { lines?: Array<{ n: number; content: string }> };
+    positive?: { lines?: Array<{ n: number; content: string }> };
+  };
+}
+
 interface HmaResult {
   score: number;
   findings: string[];
   severities: Record<string, number>;
+  rawFindings: RawFinding[];
 }
 
 function runHma(target: string): HmaResult {
@@ -108,12 +123,13 @@ function runHma(target: string): HmaResult {
       score: -1,
       findings: [`__hma_exit_${r.status}__`],
       severities: {},
+      rawFindings: [],
     };
   }
   const data = JSON.parse(r.stdout);
-  const fails = (data.allFindings ?? data.findings ?? []).filter(
-    (f: { passed?: boolean }) => f.passed === false,
-  ) as { checkId: string; severity: string }[];
+  const fails = ((data.allFindings ?? data.findings ?? []) as RawFinding[]).filter(
+    (f) => f.passed === false,
+  );
   const findings = [...new Set(fails.map((f) => f.checkId))].sort();
   const severities = fails.reduce<Record<string, number>>((acc, f) => {
     acc[f.severity] = (acc[f.severity] ?? 0) + 1;
@@ -123,7 +139,93 @@ function runHma(target: string): HmaResult {
     score: typeof data.score === 'number' ? data.score : -1,
     findings,
     severities,
+    rawFindings: fails,
   };
+}
+
+/**
+ * Issue #141 — every finding HMA emits with file+line must produce a
+ * working Verify command. The Verify generator pulls `sed -n '<line>p'
+ * <file>` so the test here is straightforward: read the cited line and
+ * assert it's non-empty. When the finding also carries
+ * `evidence.lines[0].content`, assert the line at that position matches
+ * the cited content (substring) — that's what catches "wrong line"
+ * regressions where the detector populated `line` with something the
+ * file doesn't actually contain at that location.
+ *
+ * Findings without `file+line` are not checked — `generateVerifyCommand`
+ * returns undefined for them (no Verify line is shown to the user) so
+ * there's nothing to validate.
+ */
+function firstEvidenceLine(f: RawFinding): { n: number; content: string } | undefined {
+  const e = f.evidence;
+  if (!e) return undefined;
+  if (e.kind === 'positive') return e.lines?.[0];
+  if (e.kind === 'absence') return e.observed?.lines?.[0];
+  if (e.kind === 'mixed') return e.positive?.lines?.[0];
+  return undefined;
+}
+
+function verifyAssertions(fixtureDir: string, findings: RawFinding[]): string[] {
+  const reasons: string[] = [];
+  for (const f of findings) {
+    if (!f.file || !f.line || f.line < 1) continue;
+    const filePath = resolve(fixtureDir, f.file);
+    let lineContent: string;
+    try {
+      const content = readFileSync(filePath, 'utf8');
+      const lines = content.split('\n');
+      lineContent = lines[f.line - 1] ?? '';
+    } catch (err) {
+      reasons.push(
+        `verify: ${f.checkId} cites ${f.file}:${f.line} — file unreadable (${(err as Error).message})`,
+      );
+      continue;
+    }
+    if (lineContent.trim() === '') {
+      reasons.push(
+        `verify: ${f.checkId} cites ${f.file}:${f.line} — line is empty (sed -n would return nothing)`,
+      );
+      continue;
+    }
+    const evLine = firstEvidenceLine(f);
+    if (evLine && evLine.content) {
+      const ev = evLine.content.trim();
+      // Some detectors (SEM-CRED-001) redact secret values in evidence
+      // text so credentials don't leak into logs / diffs. Compare on the
+      // pre-redaction prefix and post-redaction suffix instead of the
+      // full string. The line-existence check above already gates that
+      // the cited position is real; this just relaxes the substring
+      // match for redacted evidence.
+      if (ev.includes('[REDACTED]')) {
+        // Split on every redaction marker and require that *every*
+        // non-empty segment appears in lineContent. A pure-`[REDACTED]`
+        // evidence string yields all-empty segments and fails — that's a
+        // bug at the emit site, not a tolerable redaction. Verifying
+        // every segment also defends against multi-redaction strings
+        // where only the first segment was previously checked.
+        const segments = ev.split('[REDACTED]');
+        const nonEmpty = segments.filter(s => s !== '');
+        if (nonEmpty.length === 0) {
+          reasons.push(
+            `verify: ${f.checkId} cites ${f.file}:${f.line} — evidence is pure '[REDACTED]' marker with no surrounding content; emit site must include literal context around the redaction`,
+          );
+        } else {
+          const missing = nonEmpty.find(s => !lineContent.includes(s));
+          if (missing !== undefined) {
+            reasons.push(
+              `verify: ${f.checkId} cites ${f.file}:${f.line} — line content doesn't include redacted-evidence segment (line=${JSON.stringify(lineContent.slice(0, 60))}, missing=${JSON.stringify(missing.slice(0, 60))})`,
+            );
+          }
+        }
+      } else if (!lineContent.includes(ev)) {
+        reasons.push(
+          `verify: ${f.checkId} cites ${f.file}:${f.line} — line content doesn't include evidence (line=${JSON.stringify(lineContent.slice(0, 60))}, evidence=${JSON.stringify(ev.slice(0, 60))})`,
+        );
+      }
+    }
+  }
+  return reasons;
 }
 
 function renderGolden(r: HmaResult): string {
@@ -175,6 +277,9 @@ function diffFixture(
       reasons.push(`unexpected finding ${f.checkId} (mustNotFind)`);
     }
   }
+  // Issue #141: every finding with file+line must produce a Verify command
+  // that resolves to a non-empty line, with optional evidence-content match.
+  reasons.push(...verifyAssertions(fixtureDir, result.rawFindings));
   // Golden snapshot diff (lock the full output shape, not just expected
   // findings — catches drift in the noise-floor checks too).
   const goldenPath = join(GOLDEN_ROOT, fixtureRel, 'output.txt');
