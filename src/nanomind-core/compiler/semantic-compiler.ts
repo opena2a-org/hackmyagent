@@ -399,13 +399,29 @@ function extractDeclaredCapabilities(
       for (const [name, server] of Object.entries(servers)) {
         const s = server as Record<string, unknown>;
         const tools = (s.allowedTools as string[]) ?? ['*'];
+        // Locate the server's JSON declaration in original content for a
+        // verbatim evidence span. JSON.parse loses position info, so emit
+        // sites can't derive a line number without re-scanning content.
+        // findLineFromString (issue #141) requires a verbatim substring.
+        const serverDeclRe = new RegExp(`"${escapeRegex(name)}"\\s*:`);
+        const serverMatch = content.match(serverDeclRe);
+        const serverEvidence = serverMatch?.[0];
         for (const tool of tools) {
+          // Prefer the specific tool's quoted span when present (e.g. `"shell"`
+          // inside an allowedTools array). Fall back to the server declaration
+          // span for wildcards or when the literal isn't found.
+          let evidence = serverEvidence;
+          if (tool !== '*') {
+            const toolMatch = content.match(new RegExp(`"${escapeRegex(tool)}"`));
+            if (toolMatch) evidence = toolMatch[0];
+          }
           caps.push({
             name: `mcp.${name}.${tool}`,
             scope: name,
             declared: true,
             inferred: false,
             riskLevel: tool === '*' ? 'high' : 'medium',
+            evidence,
           });
         }
       }
@@ -422,10 +438,19 @@ function extractDeclaredCapabilities(
       declared: true,
       inferred: false,
       riskLevel: assessCapabilityRisk(match[1]),
+      evidence: match[0].trim(),
     });
   }
 
   return caps;
+}
+
+/**
+ * Escape regex metacharacters in a string literal so it can be embedded
+ * in a `new RegExp(...)` call as a fixed substring matcher.
+ */
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export function extractDeclaredConstraints(content: string): Constraint[] {
@@ -833,13 +858,18 @@ function mapRiskSurfaces(
 
   // External URL + data forwarding = exfiltration surface
   // Skip for governance docs (they describe rules about data handling, not perform exfiltration)
-  if (!isGovernanceDoc && benignContextScore < 2 && /https?:\/\/[^\s]+\.(co|io|com|net|org)/.test(content) && /forward|send|transmit|export/i.test(text)) {
-    surfaces.push({
-      surface: 'External data transmission',
-      attackClass: 'SKILL-EXFIL',
-      confidence: intent === 'malicious' ? 0.9 : intent === 'suspicious' ? 0.6 : 0.3,
-      evidence: 'External URL combined with data forwarding language',
-    });
+  // Evidence: prefer the URL span (more specific anchor than the verb).
+  if (!isGovernanceDoc && benignContextScore < 2) {
+    const urlMatch = /https?:\/\/[^\s]+\.(co|io|com|net|org)/.exec(content);
+    const verbMatch = /forward|send|transmit|export/i.exec(content);
+    if (urlMatch && verbMatch) {
+      surfaces.push({
+        surface: 'External data transmission',
+        attackClass: 'SKILL-EXFIL',
+        confidence: intent === 'malicious' ? 0.9 : intent === 'suspicious' ? 0.6 : 0.3,
+        evidence: urlMatch[0],
+      });
+    }
   }
 
   // Override/ignore instructions = injection surface
@@ -857,19 +887,19 @@ function mapRiskSurfaces(
   //   - Governance docs with "## Injection Hardening" sections (b11)
   //   - Educational docs that quote attack examples with "DO NOT USE" labels (b02)
   //   - Authorized security assessments referencing specific attack techniques
-  const hasOverrideLanguage = /ignore.*previous|override.*instruction|new.*task/i.test(text);
+  const overrideMatch = /ignore.*previous|override.*instruction|new.*task/i.exec(content);
   const isDefensiveConstraint =
     /must never|must not|never comply|resist|reject|refuse|forbidden|should not|do not|prohibited|will never|will not/i.test(text) &&
     /override|ignore|bypass|injection|inject/i.test(text);
   const isProhibitionList = /(?:will\s+not\s+do|will\s+never\s*:|i\s+will\s+never|agent\s+will\s+never|what\s+(?:i|we|this\s+agent)\s+(?:will\s+not|won't))/i.test(content);
   // "phrases such as 'ignore previous instructions'" — injection example in an educational/rejection context
   const isExampleContext = /phrases?\s+(?:such\s+as|like|including)\s+["']?(?:ignore|override|new\s+task)/i.test(content);
-  if (hasOverrideLanguage && !isDefensiveConstraint && !isProhibitionList && !isGovernanceDoc && !isExampleContext && benignContextScore < 2) {
+  if (overrideMatch && !isDefensiveConstraint && !isProhibitionList && !isGovernanceDoc && !isExampleContext && benignContextScore < 2) {
     surfaces.push({
       surface: 'Instruction override language',
       attackClass: 'PROMPT-INJECT',
       confidence: 0.8,
-      evidence: 'Contains language that overrides prior instructions',
+      evidence: overrideMatch[0],
     });
   }
 
@@ -877,6 +907,9 @@ function mapRiskSurfaces(
   // Skipped for governance documents — a SOUL.md trust hierarchy section names "System prompt"
   // as the highest-authority source and separately discusses "override" in a defensive context.
   // The regex pattern would match across paragraphs, producing a critical FP on well-governed SOULs.
+  // Evidence is a description rather than a verbatim span because the trigger normalizes content
+  // (strips _, -, whitespace) and so no `match[0]` corresponds to a contiguous source substring.
+  // Line lookup falls through to undefined cleanly for this rare structural rule.
   if (!isGovernanceDoc && /systemprompt.*override|systemprompt.*ignore|systemprompt.*bypass/i.test(text.replace(/[_\-\s]/g, ''))) {
     surfaces.push({
       surface: 'Hidden system prompt override in config',
@@ -885,44 +918,52 @@ function mapRiskSurfaces(
       evidence: 'systemPrompt field contains override directives',
     });
   }
-  if (/\[inst\]|\[\/inst\]|<<sys>>|<\|im_start\|>/i.test(text)) {
+  const controlTokenMatch = /\[inst\]|\[\/inst\]|<<sys>>|<\|im_start\|>/i.exec(content);
+  if (controlTokenMatch) {
     surfaces.push({
       surface: 'LLM control tokens in content',
       attackClass: 'PROMPT-INJECT',
       confidence: 0.85,
-      evidence: 'Contains LLM instruction tokens ([INST], <<SYS>>, etc.)',
+      evidence: controlTokenMatch[0],
     });
   }
-  if (/new\s+function\s*\(|eval\s*\(|node\s+-e\s+['"]/i.test(text)) {
+  const codeExecMatch = /new\s+function\s*\(|eval\s*\(|node\s+-e\s+['"]/i.exec(content);
+  if (codeExecMatch) {
     surfaces.push({
       surface: 'Dynamic code execution in config',
       attackClass: 'HEARTBEAT-RCE',
       confidence: 0.9,
-      evidence: 'Config contains eval/Function constructor for remote code execution',
+      evidence: codeExecMatch[0],
     });
   }
-  if (/curl\s+.*\|\s*(ba)?sh|wget\s+.*\|\s*(ba)?sh/i.test(content)) {
+  const shellPipeMatch = /curl\s+.*\|\s*(ba)?sh|wget\s+.*\|\s*(ba)?sh/i.exec(content);
+  if (shellPipeMatch) {
     surfaces.push({
       surface: 'Shell pipe execution',
       attackClass: 'HEARTBEAT-RCE',
       confidence: 0.95,
-      evidence: 'curl/wget piped to shell for remote command execution',
+      evidence: shellPipeMatch[0],
     });
   }
-  if (/setinterval|settimeout|while\s+true|cron|every\s+\d+\s*(min|sec|hour)/i.test(text) && /https?:\/\//i.test(content)) {
+  // Compound: timer + remote URL. Use the timer span as anchor — it's the
+  // heartbeat signal that distinguishes this from a one-shot fetch.
+  const timerMatch = /setinterval|settimeout|while\s+true|cron|every\s+\d+\s*(min|sec|hour)/i.exec(content);
+  if (timerMatch && /https?:\/\//i.test(content)) {
     surfaces.push({
       surface: 'Periodic remote callback',
       attackClass: 'HEARTBEAT-RCE',
       confidence: 0.85,
-      evidence: 'Periodic timer with remote URL (heartbeat/beacon pattern)',
+      evidence: timerMatch[0],
     });
   }
-  if (/"command"\s*:\s*"(bash|sh|node|python)"/i.test(content) && /"args"\s*:\s*\[.*(-e|-c|eval|exec)/i.test(content)) {
+  // Compound: command field + risky args. Use the command span as anchor.
+  const mcpCmdMatch = /"command"\s*:\s*"(bash|sh|node|python)"/i.exec(content);
+  if (mcpCmdMatch && /"args"\s*:\s*\[.*(-e|-c|eval|exec)/i.test(content)) {
     surfaces.push({
       surface: 'Inline code execution in MCP config',
       attackClass: 'HEARTBEAT-RCE',
       confidence: 0.9,
-      evidence: 'MCP server uses inline script execution via -e/-c flag',
+      evidence: mcpCmdMatch[0],
     });
   }
 
@@ -934,40 +975,50 @@ function mapRiskSurfaces(
   if (!isGovernanceDoc && /password|credential|api[_-]?key|secret|token/i.test(text) && /ask|request|share|provide/i.test(text)) {
     const credentialCtx = analyzeCredentialKeywordContext(content);
     if (credentialCtx !== 'schema-only') {
+      // Capture the credential keyword span verbatim from content so the
+      // analyzer line lookup hits the right line.
+      const credKeywordMatch = /password|credential|api[_-]?key|secret|token/i.exec(content);
       surfaces.push({
         surface: 'Credential harvesting',
         attackClass: 'CRED-HARVEST',
         confidence: 0.7,
-        evidence: 'Requests credentials from users or systems',
+        evidence: credKeywordMatch?.[0] ?? 'Requests credentials from users or systems',
       });
     }
   }
 
   // Remote instruction fetch
-  if (/fetch.*config|check.*update.*from|load.*instruction/i.test(text)) {
+  const remoteFetchMatch = /fetch.*config|check.*update.*from|load.*instruction/i.exec(content);
+  if (remoteFetchMatch) {
     surfaces.push({
       surface: 'Remote instruction fetch',
       attackClass: 'HEARTBEAT-RCE',
       confidence: 0.8,
-      evidence: 'Fetches instructions from remote URLs',
+      evidence: remoteFetchMatch[0],
     });
   }
 
   // Bulk data export = data exfiltration surface (skip governance docs)
-  if (!isGovernanceDoc && /select\s+\*\s+from/i.test(text) && /https?:\/\/[^\s]+/i.test(content)) {
-    surfaces.push({
-      surface: 'Bulk database export to external endpoint',
-      attackClass: 'DATA-EXFIL',
-      confidence: 0.85,
-      evidence: 'SELECT * queries combined with external URL transmission',
-    });
-  } else if (!isGovernanceDoc && /include.*pii|transmit.*pii|forward.*record|export.*data.*external/i.test(text)) {
-    surfaces.push({
-      surface: 'PII/data export to external endpoint',
-      attackClass: 'DATA-EXFIL',
-      confidence: 0.8,
-      evidence: 'PII or bulk data export to external service',
-    });
+  if (!isGovernanceDoc) {
+    const selectMatch = /select\s+\*\s+from/i.exec(content);
+    if (selectMatch && /https?:\/\/[^\s]+/i.test(content)) {
+      surfaces.push({
+        surface: 'Bulk database export to external endpoint',
+        attackClass: 'DATA-EXFIL',
+        confidence: 0.85,
+        evidence: selectMatch[0],
+      });
+    } else {
+      const piiMatch = /include.*pii|transmit.*pii|forward.*record|export.*data.*external/i.exec(content);
+      if (piiMatch) {
+        surfaces.push({
+          surface: 'PII/data export to external endpoint',
+          attackClass: 'DATA-EXFIL',
+          confidence: 0.8,
+          evidence: piiMatch[0],
+        });
+      }
+    }
   }
 
   // Supply chain: typosquatted package names
@@ -981,7 +1032,8 @@ function mapRiskSurfaces(
           surface: `Typosquatted package: ${ref}`,
           attackClass: 'SUPPLY-CHAIN',
           confidence: 0.95,
-          evidence: `Package "${ref}" looks like a typosquat of @${known}`,
+          // ref is the verbatim package reference captured from content.match above.
+          evidence: ref,
         });
         break;
       }
@@ -989,12 +1041,13 @@ function mapRiskSurfaces(
   }
 
   // Supply chain: postinstall/exec in MCP config
-  if (/postinstall|pre-?install|curl.*\|.*sh|wget.*\|.*bash/i.test(text)) {
+  const supplyChainMatch = /postinstall|pre-?install|curl.*\|.*sh|wget.*\|.*bash/i.exec(content);
+  if (supplyChainMatch) {
     surfaces.push({
       surface: 'Shell execution in package/config',
       attackClass: 'SUPPLY-CHAIN',
       confidence: 0.9,
-      evidence: 'Shell command execution pattern in configuration',
+      evidence: supplyChainMatch[0],
     });
   }
 
@@ -1005,7 +1058,10 @@ function mapRiskSurfaces(
         surface: `Undeclared capability: ${cap.name}`,
         attackClass: 'PRIV-ESCALATION',
         confidence: 0.6,
-        evidence: `Capability ${cap.name} is inferred from content but not declared`,
+        // Prefer the inferred cap's own verbatim evidence (when the upstream
+        // inference recorded a span) over a description that won't substring-
+        // match the artifact for line lookup.
+        evidence: cap.evidence ?? `Capability ${cap.name} is inferred from content but not declared`,
       });
     }
   }

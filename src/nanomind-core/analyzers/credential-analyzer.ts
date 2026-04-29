@@ -354,6 +354,22 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
     return findings;
   }
 
+  // In doc/test/manifest contexts where the CRED-HARVEST trigger fired on
+  // descriptive language ("No credentials printed", "files spanning
+  // credentials", "must never store credentials"), require an actual
+  // credential-format pattern (sk-/ghp_/gho_ prefixes or 32+ char alpha-
+  // numeric blob) in the evidence span before emitting HIGH. The previous
+  // implicit gate was `credentialEvidence.length === 0`: pre-#151 the
+  // evidence-span lookup silently failed for description-style risk evidence
+  // and kept doc-context findings suppressed. Post-#151 the compiler emits
+  // verbatim keyword spans (an activation effect of the heuristic-evidence
+  // fix) and the implicit gate disengaged — re-engage it explicitly here.
+  // Skill/agent files (`.skill.md`, `.soul.md`, etc.) bypass this gate and
+  // continue to fire on bare-keyword harvesting language as designed.
+  if (isTestOrDoc && !evidenceShowsCredentialFormat(evidenceTexts)) {
+    return findings;
+  }
+
   // Determine severity based on artifact type and evidence strength
   const maxConfidence = Math.max(
     ...credentialEvidence.map(e => e.confidence),
@@ -484,6 +500,39 @@ function isDocumentationOrTestContext(ast: SecurityAST): boolean {
   }
 
   return false;
+}
+
+/**
+ * Detect whether any evidence span text contains an actual credential-format
+ * substring. Curated multi-vendor prefixes — Anthropic / OpenAI (`sk-`),
+ * Stripe (`sk_live_`/`sk_test_`), GitHub PAT (`ghp_`/`gho_`/`github_pat_`),
+ * AWS access key IDs (`AKIA…`), Google API keys (`AIza…`), Slack
+ * (`xox[abprs]-…`), and JWTs (`eyJ…header.payload.sig`) — plus a high-
+ * entropy fallback (40+ word-character run, anchored on word boundaries,
+ * excluding `-` and `/` so URL slugs and slug-style identifiers don't
+ * match). Bare-keyword mentions ("credentials", "API key", "token") in
+ * descriptive text do NOT count: those words appear in well-governed agent
+ * docs, fixture manifests, and release-smoke walkthroughs without being
+ * actual hardcoded secrets.
+ */
+function evidenceShowsCredentialFormat(evidenceTexts: string[]): boolean {
+  return evidenceTexts.some(t =>
+    new RegExp(
+      [
+        'sk-[a-zA-Z0-9_-]{20,}',
+        'sk_live_[a-zA-Z0-9]{20,}',
+        'sk_test_[a-zA-Z0-9]{20,}',
+        'ghp_[a-zA-Z0-9]{20,}',
+        'gho_[a-zA-Z0-9]{20,}',
+        'github_pat_[a-zA-Z0-9_]{20,}',
+        'AKIA[0-9A-Z]{16}',
+        'AIza[0-9A-Za-z_-]{35}',
+        'xox[abprs]-[0-9A-Za-z-]{10,}',
+        'eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+',
+        '\\b[A-Za-z0-9+=_]{40,}\\b',
+      ].join('|'),
+    ).test(t),
+  );
 }
 
 /**
