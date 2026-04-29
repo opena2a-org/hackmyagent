@@ -41,7 +41,7 @@ export function analyzeCredentials(
 
   const findings: ASTFinding[] = [];
 
-  findings.push(...checkCredentialsInNonEnvContext(ast, projectType));
+  findings.push(...checkCredentialsInNonEnvContext(ast, projectType, artifactContent));
   findings.push(...checkCredentialForwarding(ast, projectType, artifactContent));
   findings.push(...checkHardcodedSecrets(ast, artifactContent));
 
@@ -60,7 +60,11 @@ export function analyzeCredentials(
  * Uses AST.declaredDataAccess to find credential-type data patterns
  * and checks whether the artifact type is an appropriate context.
  */
-function checkCredentialsInNonEnvContext(ast: SecurityAST, projectType?: ProjectType): ASTFinding[] {
+function checkCredentialsInNonEnvContext(
+  ast: SecurityAST,
+  projectType?: ProjectType,
+  artifactContent?: string,
+): ASTFinding[] {
   const findings: ASTFinding[] = [];
   const isSDK = projectType === 'sdk';
 
@@ -80,6 +84,26 @@ function checkCredentialsInNonEnvContext(ast: SecurityAST, projectType?: Project
 
   // Check if evidence spans suggest these are documentation examples or test fixtures
   const isDocOrTest = isDocumentationOrTestContext(ast);
+
+  // Content-format gate (#164): the upstream compiler tags any artifact
+  // whose lowercased content includes the substring "credential" or
+  // "session" with a `dataType: 'credentials'` data-access pattern. That
+  // is too noisy on host-tool config files like `.claude/settings.json`,
+  // which mention credentials in *defensive* deny-rules ("Read(.aws/
+  // credentials)") without containing any credential value. Require an
+  // actual credential-format substring in the artifact content before
+  // emitting AST-CRED-001 — vendor prefixes (`sk-`, `sk_live_`, `ghp_`,
+  // `gho_`, `github_pat_`, `xox[abprs]-`, `eyJ` JWT, `AKIA…`, `AIza…`)
+  // OR a high-entropy 40+ word-character run. Placeholder/reference
+  // values (`$OPENAI_API_KEY`, `${OPENAI_API_KEY}`) deliberately do NOT
+  // match. SDKs are also gated — flagging an SDK source file that only
+  // mentions the word "credential" was the same false-positive shape.
+  const credLocation = artifactContent !== undefined
+    ? findFirstCredentialFormat(artifactContent)
+    : undefined;
+  if (!credLocation) {
+    return findings;
+  }
 
   for (const access of credentialAccess) {
     // Credential reads in skills/configs/source code are suspicious
@@ -110,6 +134,7 @@ function checkCredentialsInNonEnvContext(ast: SecurityAST, projectType?: Project
       message: `Credential ${access.accessMode} in ${ast.artifactType} context`,
       fixable: false,
       file: ast.artifactPath,
+      line: credLocation.line,
       fix: isSDK
         ? 'Expected behavior for an SDK. Credentials are read from environment variables and sent to the service API.'
         : 'opena2a protect .  — scans for hardcoded secrets and encrypts them into a secure vault. Keys are injected at runtime, never stored as plaintext.',
@@ -119,6 +144,7 @@ function checkCredentialsInNonEnvContext(ast: SecurityAST, projectType?: Project
           'logs, or prompt injection attacks that extract artifact content.',
       attackClass: 'CRED-EXPOSURE',
       confidence: isSDK ? 0.3 : isDocOrTest ? 0.3 : 0.8,
+      evidence: credLocation.match,
     });
   }
 
@@ -516,23 +542,111 @@ function isDocumentationOrTestContext(ast: SecurityAST): boolean {
  * actual hardcoded secrets.
  */
 function evidenceShowsCredentialFormat(evidenceTexts: string[]): boolean {
-  return evidenceTexts.some(t =>
-    new RegExp(
-      [
-        'sk-[a-zA-Z0-9_-]{20,}',
-        'sk_live_[a-zA-Z0-9]{20,}',
-        'sk_test_[a-zA-Z0-9]{20,}',
-        'ghp_[a-zA-Z0-9]{20,}',
-        'gho_[a-zA-Z0-9]{20,}',
-        'github_pat_[a-zA-Z0-9_]{20,}',
-        'AKIA[0-9A-Z]{16}',
-        'AIza[0-9A-Za-z_-]{35}',
-        'xox[abprs]-[0-9A-Za-z-]{10,}',
-        'eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+',
-        '\\b[A-Za-z0-9+=_]{40,}\\b',
-      ].join('|'),
-    ).test(t),
+  const re = buildCredentialFormatRegex();
+  return evidenceTexts.some(t => re.test(t));
+}
+
+/**
+ * Build the credential-format detector. The regex is shared between the
+ * AST-CRED-003 evidence-text gate and the AST-CRED-001 content-scanning
+ * gate (#164) so both code paths agree on what counts as a credential.
+ *
+ * Curated multi-vendor prefixes — Anthropic / OpenAI (`sk-`), Stripe
+ * (`sk_live_` / `sk_test_`), GitHub PAT (`ghp_` / `gho_` / `github_pat_`),
+ * AWS access key IDs (`AKIA…`), Google API keys (`AIza…`), Slack
+ * (`xox[abprs]-…`), and JWTs (`eyJ…header.payload.sig`) — plus a
+ * high-entropy 40+ word-character fallback (anchored on word boundaries,
+ * excluding `-` and `/` so URL slugs and slug-style identifiers do not
+ * match). Bare-keyword mentions ("credentials", "API key", "token") in
+ * descriptive text do NOT count.
+ *
+ * Placeholder / env-var reference values (`$OPENAI_API_KEY`,
+ * `${OPENAI_API_KEY}`, `<YOUR_KEY>`) deliberately fail the entropy gate
+ * because the leading `$`/`<` characters are not in the word-character
+ * class, and the all-uppercase env-var convention rarely produces 40+
+ * consecutive characters anyway.
+ */
+function buildCredentialFormatRegex(): RegExp {
+  return new RegExp(
+    [
+      'sk-[a-zA-Z0-9_-]{20,}',
+      'sk_live_[a-zA-Z0-9]{20,}',
+      'sk_test_[a-zA-Z0-9]{20,}',
+      'ghp_[a-zA-Z0-9]{20,}',
+      'gho_[a-zA-Z0-9]{20,}',
+      'github_pat_[a-zA-Z0-9_]{20,}',
+      'AKIA[0-9A-Z]{16}',
+      'AIza[0-9A-Za-z_-]{35}',
+      'xox[abprs]-[0-9A-Za-z-]{10,}',
+      'eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+',
+      '\\b[A-Za-z0-9+=_]{40,}\\b',
+    ].join('|'),
   );
+}
+
+/**
+ * Scan `content` for the first credential-format substring (per
+ * `buildCredentialFormatRegex`). Returns the 1-based line number of the
+ * match and the masked matched substring, or undefined when no match
+ * exists. The match is masked at this layer so callers cannot
+ * accidentally leak the raw credential value into a finding's
+ * `evidence` field — HMA must never echo a real credential back to the
+ * user, JSON output, telemetry, or Registry sync.
+ */
+function findFirstCredentialFormat(content: string): { line: number; match: string } | undefined {
+  const re = buildCredentialFormatRegex();
+  const m = re.exec(content);
+  if (!m) return undefined;
+  // Count newlines before the match index — 1-based line number.
+  let line = 1;
+  for (let i = 0; i < m.index; i++) {
+    if (content.charCodeAt(i) === 10 /* \n */) line++;
+  }
+  return { line, match: maskCredentialValue(m[0]) };
+}
+
+/**
+ * Mask a matched credential value for safe inclusion in finding
+ * `evidence`, JSON output, and telemetry. Mirrors the prefix-preserving
+ * scheme used by `src/narrative/build-narrative.ts:maskCredential`.
+ *
+ * - For curated vendor prefixes, preserve the prefix and replace the
+ *   remaining body with up to 16 asterisks. The user can still
+ *   recognize the credential format and the match line, but the value
+ *   itself never appears in scanner output.
+ * - For unknown shapes, expose the first 8 characters and mask up to 16
+ *   more.
+ */
+function maskCredentialValue(value: string): string {
+  if (value.length === 0) return '';
+  const knownPrefixes = [
+    'sk-ant-api03-',
+    'sk-ant-api02-',
+    'sk-proj-',
+    'sk_live_',
+    'sk_test_',
+    'github_pat_',
+    'ghp_',
+    'gho_',
+    'ghs_',
+    'AKIA',
+    'AIza',
+    'xoxb-',
+    'xoxa-',
+    'xoxp-',
+    'xoxr-',
+    'xoxs-',
+    'eyJ',
+  ];
+  for (const prefix of knownPrefixes) {
+    if (value.startsWith(prefix)) {
+      const remaining = Math.max(0, value.length - prefix.length);
+      return `${prefix}${'*'.repeat(Math.min(remaining, 16))}`;
+    }
+  }
+  // Unknown shape — show first 8 chars then asterisks. Cap so the
+  // masked output never exceeds 24 chars regardless of input length.
+  return `${value.slice(0, 8)}${'*'.repeat(Math.min(Math.max(value.length - 8, 0), 16))}`;
 }
 
 /**

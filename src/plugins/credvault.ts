@@ -15,13 +15,15 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 
 // --- Credential patterns (aligned with hackmyagent-core CRED-001) ---
+// Catalog is exported for introspection by the lockstep test against
+// `@opena2a/credential-patterns` — no runtime consumer outside this file.
 
-interface CredentialPattern {
+export interface CredentialPattern {
   name: string;
   regex: RegExp;
 }
 
-const CREDENTIAL_PATTERNS: CredentialPattern[] = [
+export const CREDENTIAL_PATTERNS: CredentialPattern[] = [
   { name: 'Anthropic API Key', regex: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/ },
   { name: 'OpenAI API Key (project)', regex: /sk-proj-[a-zA-Z0-9]{20,}/ },
   { name: 'OpenAI API Key (legacy)', regex: /sk-[a-zA-Z0-9]{48,}/ },
