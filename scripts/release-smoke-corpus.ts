@@ -198,14 +198,25 @@ function verifyAssertions(fixtureDir: string, findings: RawFinding[]): string[] 
       // the cited position is real; this just relaxes the substring
       // match for redacted evidence.
       if (ev.includes('[REDACTED]')) {
-        const [prefix, suffix] = ev.split('[REDACTED]');
-        const tolerable =
-          (prefix === undefined || prefix === '' || lineContent.includes(prefix)) &&
-          (suffix === undefined || suffix === '' || lineContent.includes(suffix));
-        if (!tolerable) {
+        // Split on every redaction marker and require that *every*
+        // non-empty segment appears in lineContent. A pure-`[REDACTED]`
+        // evidence string yields all-empty segments and fails — that's a
+        // bug at the emit site, not a tolerable redaction. Verifying
+        // every segment also defends against multi-redaction strings
+        // where only the first segment was previously checked.
+        const segments = ev.split('[REDACTED]');
+        const nonEmpty = segments.filter(s => s !== '');
+        if (nonEmpty.length === 0) {
           reasons.push(
-            `verify: ${f.checkId} cites ${f.file}:${f.line} — line content doesn't include redacted-evidence prefix/suffix (line=${JSON.stringify(lineContent.slice(0, 60))}, evidence=${JSON.stringify(ev.slice(0, 60))})`,
+            `verify: ${f.checkId} cites ${f.file}:${f.line} — evidence is pure '[REDACTED]' marker with no surrounding content; emit site must include literal context around the redaction`,
           );
+        } else {
+          const missing = nonEmpty.find(s => !lineContent.includes(s));
+          if (missing !== undefined) {
+            reasons.push(
+              `verify: ${f.checkId} cites ${f.file}:${f.line} — line content doesn't include redacted-evidence segment (line=${JSON.stringify(lineContent.slice(0, 60))}, missing=${JSON.stringify(missing.slice(0, 60))})`,
+            );
+          }
         }
       } else if (!lineContent.includes(ev)) {
         reasons.push(
