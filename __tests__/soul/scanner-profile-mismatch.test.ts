@@ -212,6 +212,85 @@ Autonomous multi-step plans.
   });
 });
 
+describe('Phase 4.5 adversarial bypass / FP regression (#162)', () => {
+  it('H1: heading-shape bypass with #### caught — bypass blocked', async () => {
+    const soul = `# bot
+<!-- soul:profile=conversational -->
+
+#### Capability Boundaries
+Execute approved tool calls.
+`;
+    const dir = tmpDirWithSoul(soul);
+    const result = await scanner.scanSoul(dir);
+    expect(result.profileMismatch, 'H1: #### heading must still trigger mismatch').toBeDefined();
+  });
+
+  it('H1: heading-shape bypass with **bold** as section header caught', async () => {
+    const soul = `# bot
+<!-- soul:profile=conversational -->
+
+**Capability Boundaries**
+Execute approved tool calls.
+`;
+    const dir = tmpDirWithSoul(soul);
+    const result = await scanner.scanSoul(dir);
+    expect(result.profileMismatch, 'H1: **bold** heading must still trigger mismatch').toBeDefined();
+  });
+
+  it('H2: MCP prose without verb-noun pair fires via tier-cross-check', async () => {
+    const soul = `# bot
+<!-- soul:profile=conversational -->
+
+This agent uses MCP servers and function calls.
+`;
+    const dir = tmpDirWithSoul(soul);
+    const result = await scanner.scanSoul(dir);
+    expect(result.profileMismatch, 'H2: MCP / function-call prose must trigger mismatch').toBeDefined();
+  });
+
+  it('H3: code-fence-FP — `## Capability Boundaries` inside markdown code block does NOT fire', async () => {
+    const soul = `# Tutorial about SOUL
+<!-- soul:profile=conversational -->
+
+When writing a SOUL.md, you may add sections like:
+
+\`\`\`markdown
+## Capability Boundaries
+Execute approved tool calls.
+\`\`\`
+
+This document is a tutorial, not an actual agent definition.
+`;
+    const dir = tmpDirWithSoul(soul);
+    const result = await scanner.scanSoul(dir);
+    expect(result.profileMismatch, 'H3: code-fenced heading must NOT trigger mismatch').toBeUndefined();
+  });
+
+  it('H4: legitimate code-assistant marker + scope-only Capability Boundaries does NOT fire', async () => {
+    const soul = `# Code reviewer
+<!-- soul:profile=code-assistant -->
+
+## Capability Boundaries
+The agent reads files within the project directory. Limited to repo scope. No external network access.
+`;
+    const dir = tmpDirWithSoul(soul);
+    const result = await scanner.scanSoul(dir);
+    expect(result.profileMismatch, 'H4: code-assistant + scope-only Capability Boundaries must NOT fire').toBeUndefined();
+  });
+
+  it('H5: defensive Trust Hierarchy heading ("does not have one") does NOT fire', async () => {
+    const soul = `# Chatbot
+<!-- soul:profile=conversational -->
+
+## Trust Hierarchy
+This bot does not have a trust hierarchy — it is a single conversational role.
+`;
+    const dir = tmpDirWithSoul(soul);
+    const result = await scanner.scanSoul(dir);
+    expect(result.profileMismatch, 'H5: defensive prose must NOT trigger mismatch').toBeUndefined();
+  });
+});
+
 describe('inferProfileFromContent heuristic (#162)', () => {
   it('returns conversational when body is just safety/honesty prose', () => {
     const { profile, signals } = scanner.inferProfileFromContent(
