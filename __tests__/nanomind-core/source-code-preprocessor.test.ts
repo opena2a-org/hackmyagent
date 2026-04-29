@@ -269,7 +269,10 @@ func LeakCreds() {
     expect(result.ast.inferredRiskSurface.length).toBeGreaterThan(0);
     expect(result.ast.inferredRiskSurface[0].attackClass).toBe('CRED-HARVEST');
 
-    const findings = analyzeCredentials(result.ast, (a) => compiler.verifyAST(a));
+    // Pass artifact content so AST-CRED-001's content-format gate (#164)
+    // can verify a credential-format substring exists. Production callers
+    // (scanner-bridge.ts) always pass content; only earlier tests omitted it.
+    const findings = analyzeCredentials(result.ast, (a) => compiler.verifyAST(a), undefined, src);
     // AST-CRED-001 (context) and AST-CRED-003 (hardcoded secret) must fire
     expect(findings.length).toBeGreaterThanOrEqual(2);
     expect(findings.some(f => f.checkId === 'AST-CRED-003')).toBe(true);

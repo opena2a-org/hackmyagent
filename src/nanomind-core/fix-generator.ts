@@ -612,8 +612,13 @@ function generateGuidance(finding: ASTFinding, ast: SecurityAST, projectConstrai
 
   // If the artifact has few effective constraints (artifact-level + project-level), note the
   // compounding risk. Use effective count so that adding a SOUL.md clears this message.
+  // Skip on host-tool config files (.json / .yaml / .yml) where inline
+  // governance constraints are not a meaningful concept (#164): a Claude
+  // Code or Cursor settings file is a tool-host config, not an agent
+  // definition, and the prose "this artifact has no inline governance
+  // constraints" is unactionable on those paths.
   const effectiveConstraintCount = ast.declaredConstraints.length + (projectConstraints?.length ?? 0);
-  if (effectiveConstraintCount < 2 && finding.attackClass !== 'SOUL-MISSING') {
+  if (effectiveConstraintCount < 2 && finding.attackClass !== 'SOUL-MISSING' && !isStructuredConfigPath(ast.artifactPath)) {
     const constraintWord = ast.declaredConstraints.length === 0 ? 'no' : `only ${ast.declaredConstraints.length}`;
     parts.push(`This artifact has ${constraintWord} inline governance constraints, amplifying the risk of this finding.`);
   }
@@ -628,6 +633,52 @@ function generateGuidance(finding: ASTFinding, ast: SecurityAST, projectConstrai
 function verifyCommand(ast: SecurityAST): string {
   const dir = ast.artifactPath ? ast.artifactPath.split('/').slice(0, -1).join('/') || '.' : '.';
   return `Verify: hackmyagent secure ${dir}`;
+}
+
+/**
+ * True when the artifact is a host-tool config file where the
+ * governance-amplifier prose ("This artifact has no inline governance
+ * constraints, amplifying the risk of this finding") is unactionable
+ * because the file does not define agent behavior — it configures the
+ * host application (Claude Code, Cursor, VS Code, package manager).
+ *
+ * Curated allowlist of basenames + path patterns. Deliberately does NOT
+ * match `.cursor/mcp.json` / `agent.json` / `agent-card.json` /
+ * `agent-config.yaml` etc. — those ARE agent-definition surfaces and
+ * the amplifier text is meaningful on them. See #164.
+ */
+function isStructuredConfigPath(artifactPath?: string): boolean {
+  if (!artifactPath) return false;
+  const lower = artifactPath.toLowerCase();
+  // Path-suffix matches: host-tool settings + standard repo configs that
+  // are not agent-definition surfaces.
+  const hostToolPaths = [
+    '.claude/settings.json',
+    '.claude/settings.local.json',
+    '.vscode/settings.json',
+    '.cursor/settings.json',
+    '.idea/workspace.xml',
+  ];
+  if (hostToolPaths.some((p) => lower.endsWith(p))) return true;
+
+  // Exact basename matches.
+  const basename = lower.split('/').pop() ?? '';
+  const repoConfigBasenames = new Set([
+    'package.json',
+    'package-lock.json',
+    'tsconfig.json',
+    'tsconfig.build.json',
+    'jest.config.json',
+    'vitest.config.json',
+    '.eslintrc.json',
+    '.prettierrc.json',
+    '.babelrc.json',
+    'renovate.json',
+    'commitlint.config.json',
+    '.npmrc.json',
+    '.nvmrc.json',
+  ]);
+  return repoConfigBasenames.has(basename);
 }
 
 function truncate(text: string, maxLen: number): string {
