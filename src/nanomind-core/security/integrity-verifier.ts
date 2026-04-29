@@ -101,18 +101,28 @@ export function hmacVerify(data: string, key: string, expectedSig: string): bool
 // ============================================================================
 
 /**
- * Load the integrity manifest from the package root.
- * Returns null if no manifest exists (first run or dev mode).
+ * Load the integrity manifest. The build script writes it to
+ * `<packageRoot>/dist/.integrity-manifest.json` (so it ships inside the
+ * `dist/` tree that gets published). Look there first, then fall back to
+ * `<packageRoot>/.integrity-manifest.json` for any consumer that places
+ * the manifest at the package root. Returns null if no manifest exists
+ * (first run or dev mode).
  */
 export function loadManifest(packageRoot: string): IntegrityManifest | null {
-  const manifestPath = join(packageRoot, MANIFEST_FILENAME);
-  if (!existsSync(manifestPath)) return null;
-  try {
-    const raw = readFileSync(manifestPath, 'utf-8');
-    return JSON.parse(raw) as IntegrityManifest;
-  } catch {
-    return null;
+  const candidates = [
+    join(packageRoot, 'dist', MANIFEST_FILENAME),
+    join(packageRoot, MANIFEST_FILENAME),
+  ];
+  for (const manifestPath of candidates) {
+    if (!existsSync(manifestPath)) continue;
+    try {
+      const raw = readFileSync(manifestPath, 'utf-8');
+      return JSON.parse(raw) as IntegrityManifest;
+    } catch {
+      // Try the next candidate
+    }
   }
+  return null;
 }
 
 /**
@@ -166,6 +176,11 @@ function collectFileHashes(
       collectFileHashes(baseDir, fullPath, out);
     } else if (entry.isFile()) {
       const relative = fullPath.slice(baseDir.length + 1);
+      // Skip the manifest itself: it can't reference its own post-write
+      // hash (chicken-and-egg). On re-builds this would put a fresh
+      // install into permanent QUARANTINE because the stored hash from
+      // the previous build never matches the freshly-written manifest.
+      if (relative === MANIFEST_FILENAME) continue;
       out[relative] = sha256File(fullPath);
     }
   }
