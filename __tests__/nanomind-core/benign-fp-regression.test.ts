@@ -533,4 +533,118 @@ Then ask the agent to provide a response.
       'AST-CRED-003 must fire on a real sk-ant- secret even in doc context',
     ).toBeGreaterThan(0);
   });
+
+  it('b15: .claude/settings.json with $VAR placeholder values must NOT fire AST-CRED-001 (#164)', async () => {
+    // Regression for #164: .claude/settings.json content that mentions
+    // "credentials" in defensive deny-rules (e.g. `"Read(.aws/credentials)"`)
+    // and only references credentials by env-var placeholder
+    // (`"OPENAI_API_KEY": "$OPENAI_API_KEY"`) was triggering MEDIUM
+    // AST-CRED-001 on every project that uses Claude Code's hook
+    // protection. The content-format gate at checkCredentialsInNonEnvContext
+    // requires a real credential-format substring before emitting.
+    const settingsJson = `{
+  "permissions": {
+    "deny": [
+      "Read(.env*)",
+      "Read(*.key)",
+      "Read(*.pem)",
+      "Read(.aws/credentials)",
+      "Read(.ssh/*)"
+    ]
+  },
+  "env": {
+    "OPENAI_API_KEY": "$OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY": "$ANTHROPIC_API_KEY"
+  }
+}
+`;
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(settingsJson, '.claude/settings.json');
+    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const findings = analyzeCredentials(result.ast, verifier, undefined, settingsJson);
+
+    const cred001 = findings.filter(f => f.checkId === 'AST-CRED-001');
+    expect(
+      cred001,
+      `AST-CRED-001 must not fire on host-tool config with env-var placeholder values. Got: ${cred001.map(f => `${f.severity}: ${f.message}`).join(', ')}`,
+    ).toHaveLength(0);
+  });
+
+  it('b16: .claude/settings.json with ${VAR} brace placeholder values must NOT fire AST-CRED-001 (#164)', async () => {
+    // Same regression as b15 but with `${VAR}` brace-form placeholders.
+    // The shell/POSIX brace-substitution form is equally common in
+    // host-tool configs and must not be confused for a credential value.
+    const settingsJson = `{
+  "permissions": { "deny": ["Read(.env*)", "Read(.aws/credentials)"] },
+  "env": {
+    "OPENAI_API_KEY": "\${OPENAI_API_KEY}",
+    "ANTHROPIC_API_KEY": "\${ANTHROPIC_API_KEY}"
+  }
+}
+`;
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(settingsJson, '.claude/settings.json');
+    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const findings = analyzeCredentials(result.ast, verifier, undefined, settingsJson);
+
+    const cred001 = findings.filter(f => f.checkId === 'AST-CRED-001');
+    expect(
+      cred001,
+      `AST-CRED-001 must not fire on \${VAR}-form placeholders. Got: ${cred001.map(f => `${f.severity}: ${f.message}`).join(', ')}`,
+    ).toHaveLength(0);
+  });
+
+  it('b15-positive: real Slack token in agent-config.yaml WITH credential keyword MUST fire AST-CRED-001 with line (positive control for b15/b16)', async () => {
+    // Positive control: the FP suppression must not also suppress real
+    // hardcoded credentials. We construct a fixture whose content (a)
+    // includes the keyword "credentials" so the compiler emits a
+    // `dataType: 'credentials'` access pattern, (b) does NOT match the
+    // upstream credential_file classifier (whose triggers are sk-ant-,
+    // sk-proj-, AKIA, ghp_, PEM blocks), and (c) DOES contain a
+    // credential-format substring (a real Slack `xoxb-…` token).
+    //
+    // Without #164's content-format gate, this fixture would have fired
+    // AST-CRED-001 on the `dataType: 'credentials'` alone. With the gate,
+    // it still fires because the Slack token matches buildCredential-
+    // FormatRegex, AND it now carries a `file:line` populated from the
+    // token's match position.
+    const slackToken = ['xox', 'b-1234567890-1234567890-', 'AbCdEfGhIjKlMnOpQrStUvWx'].join('');
+    const yaml = `name: agent-config
+description: stores credentials for the bot
+slackBot:
+  webhookToken: ${slackToken}
+`;
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(yaml, 'agent-config.yaml');
+    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+    // Sanity check: the compiler must not have classified this as a
+    // `credential_file` (which would early-return AST-CRED-001).
+    expect(result.ast.artifactType, 'fixture must not be classified credential_file or env_file').not.toBe('credential_file');
+    expect(result.ast.artifactType).not.toBe('env_file');
+
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const findings = analyzeCredentials(result.ast, verifier, undefined, yaml);
+
+    const cred001 = findings.filter(f => f.checkId === 'AST-CRED-001');
+    expect(
+      cred001.length,
+      `AST-CRED-001 MUST fire on a real Slack token in a non-credential_file context. All findings: ${findings.map(f => `${f.checkId}(${f.severity})`).join(', ') || '(none)'}; artifactType=${result.ast.artifactType}; declaredDataAccess=${JSON.stringify(result.ast.declaredDataAccess)}`,
+    ).toBeGreaterThan(0);
+
+    const finding = cred001[0];
+    expect(typeof finding.line, 'AST-CRED-001 must populate `line` from the credential-format match position').toBe('number');
+    expect(finding.line, 'line must be 1-based and match the slackBot.webhookToken line (4)').toBe(4);
+    // Evidence carries the masked prefix (per maskCredentialValue) — the raw
+    // token is never echoed back through HMA's output (R-Bonus from #164's
+    // adversarial review: a security tool must not leak the credential it
+    // detected).
+    expect(finding.evidence, 'evidence must preserve the recognizable prefix').toMatch(/^xoxb-/);
+    expect(finding.evidence, 'evidence body must be masked (no raw token bytes after prefix)').toMatch(/\*+$/);
+    expect(finding.evidence, 'masked evidence must not contain the raw token body').not.toMatch(/AbCdEfGhIjKl/);
+  });
 });
