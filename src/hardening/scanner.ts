@@ -430,6 +430,73 @@ function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
+/**
+ * Detect whether a SKILL.md content has any of the malice signals listed in
+ * issue #135. A skill that's just missing hygiene metadata (no version, no
+ * publisher, no installed_hash) is a hygiene gap — MEDIUM. The same gap on
+ * a skill that ALSO has wildcard tools, a credential-shaped env block, an
+ * outbound postRunHook, or persistence patterns is a real attack surface
+ * that the missing metadata makes harder to govern — HIGH.
+ *
+ * Used by SKILL-020 (frontmatter hygiene), SUPPLY-001 (publisher), and
+ * SUPPLY-004 (installed_hash) to choose default severity. Reserved HIGH
+ * means HIGH actually means something.
+ */
+export function hasSkillMaliceSignals(content: string): boolean {
+  // Wildcard allowedTools: '*' or [-"*"] or ["*"]
+  if (/^allowedTools:\s*['"]?\*['"]?\s*$/m.test(content)) return true;
+  if (/^allowedTools:\s*\n(?:\s*-\s*['"]?\*['"]?\s*\n)/m.test(content)) return true;
+  // Wildcard allowedPaths
+  if (/^allowedPaths:\s*\n(?:\s*-\s*['"]?\*\*['"]?\s*\n)/m.test(content)) return true;
+
+  // env: block with credential-shaped keys AND credential-shaped values.
+  // Key-substring alone (`CACHE_KEY: foo`, `CSRF_TOKEN_HEADER: x-csrf-token`,
+  // `JWT_SIGNING_KEY_NAME: prod`) is too noisy — many benign config keys
+  // contain `_KEY` / `_TOKEN` / `_SECRET` substrings without storing actual
+  // credentials. Mirroring `evidenceShowsCredentialFormat` from #152: require
+  // the value to either match a known vendor prefix OR be a high-entropy
+  // 20+ char run of credential-shaped chars. Real vendor secrets are
+  // 20+ chars; FAKE-shaped corpus credentials are too (e.g. AKIAFAKE0...).
+  const envBlockMatch = /^env:\s*\n((?:[ \t]+[A-Z_][A-Z0-9_]*:\s*\S.*\n?)+)/m.exec(content);
+  if (envBlockMatch) {
+    const envBody = envBlockMatch[1];
+    const lines = envBody.split(/\n/);
+    for (const line of lines) {
+      const m = /^[ \t]+([A-Z_][A-Z0-9_]*):\s*(\S.*?)\s*$/.exec(line);
+      if (!m) continue;
+      const key = m[1];
+      const value = m[2].replace(/^["']|["']$/g, '');
+      const keyMatchesCredentialShape =
+        /(?:_KEY|_TOKEN|_SECRET|^AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY)$|^GITHUB_TOKEN$|^GH_TOKEN$|^OPENAI_API_KEY$|^ANTHROPIC_API_KEY$|^GOOGLE_API_KEY$|^SLACK_(?:BOT_)?TOKEN$|^STRIPE_(?:LIVE_|TEST_)?KEY$)/i.test(
+          key,
+        );
+      if (!keyMatchesCredentialShape) continue;
+      const valueLooksCredential =
+        /^(?:sk-|sk_live_|sk_test_|ghp_|gho_|github_pat_|xox[abprs]-|eyJ)/.test(value) ||
+        /^AKIA[0-9A-Z]{16}/.test(value) ||
+        /^AIza[0-9A-Za-z_-]{35}/.test(value) ||
+        /^[A-Za-z0-9+=/_]{20,}$/.test(value);
+      if (valueLooksCredential) return true;
+    }
+  }
+
+  // postRunHook: with outbound network primitive (curl/wget/sh/bash piped or invoked with URL)
+  if (/^postRunHook:/m.test(content)) {
+    const hookSection = content.slice(content.indexOf('postRunHook:'));
+    if (/(?:curl|wget|fetch|http|sh|bash|node|python)\s/i.test(hookSection.slice(0, 500)) &&
+        /https?:\/\//i.test(hookSection.slice(0, 500))) {
+      return true;
+    }
+  }
+
+  // Persistence patterns in body
+  if (/~\/\.(?:bashrc|zshrc|profile|bash_profile)|crontab\s+-|setInterval\s*\(|while\s+true|every\s+\d+\s*(?:min|sec|hour)/i.test(content)) {
+    return true;
+  }
+
+  return false;
+}
+
 
 /**
  * Check if a variation selector at position i in rawBuffer is a legitimate
@@ -5535,6 +5602,11 @@ dist/
       }
 
       // SKILL-020: Missing/invalid frontmatter
+      // Issue #135: hygiene gaps default MEDIUM; HIGH only when paired with
+      // a malice signal (wildcard tools, credential env, outbound postRunHook,
+      // persistence patterns). Reserved HIGH means HIGH actually means something.
+      const skill020MaliceUpgrade = hasSkillMaliceSignals(content);
+      const skill020Severity: 'high' | 'medium' = skill020MaliceUpgrade ? 'high' : 'medium';
       const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
       if (!fmMatch) {
         findings.push({
@@ -5542,7 +5614,7 @@ dist/
           name: 'Missing YAML Frontmatter',
           description: 'Skill file lacks required YAML frontmatter for capability declaration',
           category: 'skill',
-          severity: 'high',
+          severity: skill020Severity,
           passed: false,
           message: `${relativePath}: Skill file lacks required YAML frontmatter (---). Add frontmatter with name, version, and capabilities fields.`,
           file: relativePath,
@@ -5560,7 +5632,7 @@ dist/
             name: 'Incomplete Frontmatter',
             description: 'Skill frontmatter is missing required fields',
             category: 'skill',
-            severity: 'high',
+            severity: skill020Severity,
             passed: false,
             message: `${relativePath}: Missing required frontmatter fields: ${missingFields.join(', ')}. These are needed for capability declaration and version tracking.`,
             file: relativePath,
@@ -5574,7 +5646,7 @@ dist/
             name: 'Valid Frontmatter',
             description: 'Skill file has valid YAML frontmatter with required fields',
             category: 'skill',
-            severity: 'high',
+            severity: skill020Severity,
             passed: true,
             message: 'Skill has valid frontmatter with name, version, and capabilities',
             file: relativePath,
@@ -6915,6 +6987,9 @@ dist/
         : path.basename(path.dirname(skillFile)).toLowerCase();
 
       // SUPPLY-001: Unverified Publisher
+      // Issue #135: hygiene default MEDIUM; HIGH on malice co-occurrence.
+      const supplyMaliceUpgrade = hasSkillMaliceSignals(content);
+      const supplySeverity: 'high' | 'medium' = supplyMaliceUpgrade ? 'high' : 'medium';
       const hasPublisher = /^publisher:\s*.+$/m.test(frontmatter);
       const hasPublisherVerified = /^publisher_verified:\s*true$/m.test(frontmatter);
 
@@ -6923,7 +6998,7 @@ dist/
         name: 'Unverified Publisher',
         description: 'Skill publisher identity has not been verified',
         category: 'supply',
-        severity: 'high',
+        severity: supplySeverity,
         passed: hasPublisher && hasPublisherVerified,
         message: hasPublisher && hasPublisherVerified
           ? 'Skill publisher is verified'
@@ -6993,6 +7068,7 @@ dist/
       }
 
       // SUPPLY-004: Version Drift Detection
+      // Issue #135: shares the same malice-upgrade gate as SUPPLY-001.
       const hasInstalledHash = /^installed_hash:\s*.+$/m.test(frontmatter);
 
       findings.push({
@@ -7000,7 +7076,7 @@ dist/
         name: 'Version Drift Detection',
         description: 'Skill lacks installed_hash for detecting unauthorized modifications',
         category: 'supply',
-        severity: 'high',
+        severity: supplySeverity,
         passed: hasInstalledHash,
         message: hasInstalledHash
           ? 'Skill has installed_hash for integrity verification'

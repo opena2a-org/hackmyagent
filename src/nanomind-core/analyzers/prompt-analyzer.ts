@@ -389,7 +389,19 @@ function checkMissingInjectionResistance(ast: SecurityAST, artifactContent?: str
       r => r.attackClass === 'PROMPT-INJECT',
     );
 
-    const severity = injectionSurfaces.length > 0 ? 'critical' : 'high';
+    // Issue #135: when the artifact body itself ships an injection-resistance
+    // section (## Override Resistance, ## Injection Hardening, ## Forbidden
+    // actions, etc.) the constraint extractor missed it, but the user has
+    // demonstrably thought about the attack class. Downgrade pure-absence
+    // severity from HIGH → MEDIUM. A corroborating injection surface still
+    // elevates to CRITICAL — that's an active attack path, not absence.
+    const hasBodyInjectionResistance = artifactContentHasInjectionResistanceSection(artifactContent);
+    const severity =
+      injectionSurfaces.length > 0
+        ? 'critical'
+        : hasBodyInjectionResistance
+          ? 'medium'
+          : 'high';
 
     findings.push({
       checkId: 'AST-PROMPT-003',
@@ -466,6 +478,12 @@ function checkAuthorityConfusion(ast: SecurityAST, artifactContent?: string): AS
 
   // No trust hierarchy at all
   if (trustConstraints.length === 0) {
+    // Issue #135: a body-level "## Trust hierarchy" or "## Authority" section
+    // is a real declaration even when the constraint extractor doesn't bind
+    // it to `domain === 'trust_hierarchy'`. Downgrade pure-absence severity
+    // HIGH → MEDIUM when the body shows a clear hierarchy section.
+    const hasBodyTrustHierarchy = artifactContentHasTrustHierarchySection(artifactContent);
+    const severity = hasBodyTrustHierarchy ? 'medium' : 'high';
     findings.push({
       checkId: 'AST-PROMPT-004',
       name: 'No Trust Hierarchy',
@@ -474,7 +492,7 @@ function checkAuthorityConfusion(ast: SecurityAST, artifactContent?: string): AS
         'the agent treats all input sources equally. An attacker can impersonate a ' +
         'higher-authority source (developer, admin) via prompt injection.',
       category: 'Prompt Security',
-      severity: 'high',
+      severity,
       passed: false,
       message: 'No trust hierarchy defined',
       fixable: false,
@@ -678,6 +696,42 @@ function hasConditionalLoophole(constraint: Constraint): boolean {
   ];
 
   return loopholePhrases.some(phrase => t.includes(phrase));
+}
+
+/**
+ * Issue #135: detect a body-level injection-resistance section in the raw
+ * artifact content. The constraint extractor in the compiler binds explicit
+ * "must never override" clauses to `declaredConstraints`, but skill bodies
+ * routinely use markdown section headings ("## Override Resistance",
+ * "## Forbidden actions", "## Injection Hardening") that the extractor
+ * doesn't pick up as constraints. Treating those skills as having no
+ * injection defense at all is the AST-PROMPT-003 false-positive root cause
+ * documented in #135. When a heading like this exists, downgrade the
+ * pure-absence severity from HIGH → MEDIUM. Corroborating injection
+ * surfaces still elevate to CRITICAL upstream.
+ */
+function artifactContentHasInjectionResistanceSection(content: string | undefined): boolean {
+  if (!content) return false;
+  // Look for markdown headings (any level) whose title contains an
+  // injection-resistance / forbidden-action concept. Anchored to start-of-line
+  // so the match has to be a heading, not just a paragraph mention.
+  return /^#{1,6}\s+.*(?:override\s+resist(?:ance)?|injection\s+hardening|injection\s+resist(?:ance)?|prompt[\s-]injection|forbidden\s+actions?|what\s+(?:i|we|this\s+\w+)\s+(?:will\s+not|won't)\s+do)/im.test(
+    content,
+  );
+}
+
+/**
+ * Issue #135: detect a body-level trust-hierarchy section. Same idea as
+ * `artifactContentHasInjectionResistanceSection` — a "## Trust hierarchy"
+ * heading is a real declaration even when the constraint extractor doesn't
+ * bind it to `domain === 'trust_hierarchy'`. Downgrade AST-PROMPT-004
+ * severity HIGH → MEDIUM when the heading is present.
+ */
+function artifactContentHasTrustHierarchySection(content: string | undefined): boolean {
+  if (!content) return false;
+  return /^#{1,6}\s+.*(?:trust\s+hierarchy|authority\s+(?:hierarchy|model|levels?)|instruction\s+priority|trust\s+(?:model|levels?))/im.test(
+    content,
+  );
 }
 
 function truncate(text: string, maxLen: number): string {
