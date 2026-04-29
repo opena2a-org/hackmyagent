@@ -15,6 +15,31 @@ import type { SecurityAST, DataAccessPattern, EvidenceSpan } from '../types.js';
 import type { ASTFinding } from './capability-analyzer.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
+import { lineFromOffset } from '../../types/text-position.js';
+
+/**
+ * When `artifactContent` is provided, locate `needle` inside it and return
+ * the 1-based line number of the first occurrence. Returns undefined when
+ * either argument is missing or the needle isn't found — callers must
+ * tolerate the `line` field being absent on emitted findings.
+ *
+ * Used to recover line citations for AST-level findings whose evidence is
+ * a verbatim substring of the artifact (Capability.evidence,
+ * RiskSurface.evidence). The AST itself is signed and doesn't carry
+ * line numbers, so we re-derive them at emit time from the unsigned
+ * source content the caller passes in.
+ */
+function findLineFromString(
+  artifactContent: string | undefined,
+  needle: string | undefined,
+): number | undefined {
+  if (!artifactContent || !needle) return undefined;
+  const trimmed = needle.trim();
+  if (!trimmed) return undefined;
+  const idx = artifactContent.indexOf(trimmed);
+  if (idx < 0) return undefined;
+  return lineFromOffset(artifactContent, idx);
+}
 
 // ============================================================================
 // Public API
@@ -23,19 +48,26 @@ import { assertASTIntegrity } from '../security/defense-in-depth.js';
 /**
  * Analyze a SecurityAST for credential-related security issues.
  * Verifies AST integrity before processing.
+ *
+ * `artifactContent` is the raw source text the AST was compiled from. It
+ * is unsigned and not part of the AST contract — callers pass it through
+ * so emit sites can derive 1-based line numbers from substring offsets
+ * (issue #141). When omitted, findings still emit but without a `line`
+ * field; `generateVerifyCommand()` will then return undefined for them.
  */
 export function analyzeCredentials(
   ast: SecurityAST,
   verifier: (ast: SecurityAST) => boolean,
   projectType?: ProjectType,
+  artifactContent?: string,
 ): ASTFinding[] {
   assertASTIntegrity(ast, verifier);
 
   const findings: ASTFinding[] = [];
 
   findings.push(...checkCredentialsInNonEnvContext(ast, projectType));
-  findings.push(...checkCredentialForwarding(ast, projectType));
-  findings.push(...checkHardcodedSecrets(ast));
+  findings.push(...checkCredentialForwarding(ast, projectType, artifactContent));
+  findings.push(...checkHardcodedSecrets(ast, artifactContent));
 
   return findings;
 }
@@ -126,7 +158,11 @@ function checkCredentialsInNonEnvContext(ast: SecurityAST, projectType?: Project
  * Cross-references AST.declaredDataAccess (transmit mode) with
  * credential data types to find forwarding patterns.
  */
-function checkCredentialForwarding(ast: SecurityAST, projectType?: ProjectType): ASTFinding[] {
+function checkCredentialForwarding(
+  ast: SecurityAST,
+  projectType?: ProjectType,
+  artifactContent?: string,
+): ASTFinding[] {
   const findings: ASTFinding[] = [];
   const isSDK = projectType === 'sdk';
 
@@ -153,14 +189,30 @@ function checkCredentialForwarding(ast: SecurityAST, projectType?: ProjectType):
     r => r.attackClass === 'SKILL-EXFIL' || r.attackClass === 'DATA-EXFIL',
   );
 
-  // Combine direct transmissions with indirect patterns
-  const credentialTransmissions: Array<{ destination: string }> = [];
+  // Combine direct transmissions with indirect patterns. `evidence` is a
+  // verbatim substring of the artifact when available — used downstream
+  // to derive the finding's `line` (issue #141). Falls back to the
+  // hardcoded summary when the compiler couldn't capture a real
+  // destination URL or risk-surface evidence span.
+  const credentialTransmissions: Array<{ destination: string; evidence?: string }> = [];
   for (const d of directCredTransmit) {
-    credentialTransmissions.push({ destination: d.destination ?? 'unknown endpoint' });
+    credentialTransmissions.push({
+      destination: d.destination ?? 'unknown endpoint',
+      evidence: d.destination,
+    });
   }
-  // If credentials are accessed AND there's external transmission, flag it
+  // If credentials are accessed AND there's external transmission, flag it.
+  // Prefer the transmit pattern's actual destination URL — the compiler
+  // captures it in `extractDataAccessPatterns`. Display destination stays
+  // human-readable; the URL rides along as `evidence` for line-lookup.
   if (directCredTransmit.length === 0 && hasCredentialAccess && hasExternalTransmit) {
-    credentialTransmissions.push({ destination: 'external endpoint' });
+    const transmitPattern = ast.declaredDataAccess.find(
+      d => d.accessMode === 'transmit' && d.destination && /^https?:\/\//i.test(d.destination),
+    );
+    credentialTransmissions.push({
+      destination: 'external endpoint',
+      evidence: transmitPattern?.destination,
+    });
   }
   // If credentials are accessed AND there's an exfiltration risk surface
   if (directCredTransmit.length === 0 && credentialTransmissions.length === 0 && hasCredentialAccess && hasExfilRisk) {
@@ -169,6 +221,7 @@ function checkCredentialForwarding(ast: SecurityAST, projectType?: ProjectType):
 
   for (const transmission of credentialTransmissions) {
     const destination = transmission.destination;
+    const transmissionEvidence = transmission.evidence;
 
     // Cross-check with risk surfaces for corroboration
     const corroboratingRisk = ast.inferredRiskSurface.find(
@@ -198,6 +251,17 @@ function checkCredentialForwarding(ast: SecurityAST, projectType?: ProjectType):
       message: `Credential forwarding to ${destination}`,
       fixable: false,
       file: ast.artifactPath,
+      // Line-lookup precedence: corroborating risk evidence (most specific
+      // — usually the matched substring), then the transmission's
+      // captured evidence (a verbatim URL when the compiler extracted
+      // one), then the transmission destination (verbatim URL on
+      // direct-transmit cases). Each is a verbatim substring of the
+      // artifact when present, so indexOf finds the line. Falls through
+      // to undefined if none match — renderer then omits Verify entirely.
+      line:
+        findLineFromString(artifactContent, corroboratingRisk?.evidence) ??
+        findLineFromString(artifactContent, transmissionEvidence) ??
+        findLineFromString(artifactContent, destination),
       fix: sdkExpected
         ? 'Expected behavior for an SDK. Credentials are sent to the service API over HTTPS for authentication.'
         : `Remove credential transmission to ${destination}. ` +
@@ -242,6 +306,7 @@ function checkCredentialForwarding(ast: SecurityAST, projectType?: ProjectType):
           message: `Inferred credential forwarding via ${cap.name}`,
           fixable: false,
           file: ast.artifactPath,
+          line: findLineFromString(artifactContent, cap.evidence),
           fix: isSDK
             ? 'Expected behavior for an SDK. Credentials are forwarded to the service API.'
             : 'Remove or restrict the capability that forwards credential data. ' +
@@ -267,7 +332,7 @@ function checkCredentialForwarding(ast: SecurityAST, projectType?: ProjectType):
  * Distinguishes real secrets from test fixtures (containing "FAKE",
  * "EXAMPLE", "test", "placeholder") and documentation examples.
  */
-function checkHardcodedSecrets(ast: SecurityAST): ASTFinding[] {
+function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTFinding[] {
   const findings: ASTFinding[] = [];
 
   // Look for evidence spans that support credential exposure
@@ -328,6 +393,15 @@ function checkHardcodedSecrets(ast: SecurityAST): ASTFinding[] {
       ? credentialEvidence[0].text.slice(0, 120)
       : credentialRisks[0]?.evidence ?? 'Credential pattern detected';
 
+  // Prefer the EvidenceSpan's character offset (signed AST data) — it's
+  // exact and local. Fall back to substring search on the unsigned content
+  // when only a RiskSurface evidence string is available.
+  const spanStart = credentialEvidence[0]?.start;
+  const lineFromSpan = artifactContent !== undefined && spanStart !== undefined
+    ? lineFromOffset(artifactContent, spanStart)
+    : undefined;
+  const fallbackLine = lineFromSpan ?? findLineFromString(artifactContent, evidenceSummary);
+
   findings.push({
     checkId: 'AST-CRED-003',
     name: 'Hardcoded Secret Detected',
@@ -341,6 +415,7 @@ function checkHardcodedSecrets(ast: SecurityAST): ASTFinding[] {
     message: `Hardcoded secret: ${evidenceSummary.slice(0, 80)}`,
     fixable: false,
     file: ast.artifactPath,
+    line: fallbackLine,
     fix:
       'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only. ' +
       'Rotate any credentials that were committed to version control.',

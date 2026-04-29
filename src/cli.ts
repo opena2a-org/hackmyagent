@@ -84,6 +84,7 @@ import {
   shouldRenderPathForward,
   quickScanFollowupText,
 } from './ui/quick-scan-labels';
+import { generateVerifyCommand } from './ui/verify-command';
 const program = new Command();
 program.showHelpAfterError('(run with --help for usage)');
 
@@ -735,59 +736,6 @@ function formatFixLine(text: string): string {
   }
   // Prose fix guidance: render without → so it doesn't look like a runnable command
   return `${colors.cyan}Fix:${RESET()} ${text}`;
-}
-
-/**
- * POSIX shell-escape a path for interpolation into a single-quoted command.
- * Returns undefined when the path contains characters that cannot be safely
- * rendered (control chars, newlines, null bytes) — the caller must skip
- * emitting the verify command rather than display a dangerous copy-paste.
- */
-function shellEscapePath(p: string): string | undefined {
-  if (/[\x00-\x1f\x7f]/.test(p)) return undefined;
-  return "'" + p.replace(/'/g, "'\\''") + "'";
-}
-
-/**
- * Generate a "Verify:" shell command for a finding — lets the user confirm
- * the issue exists before acting. Returns undefined when no practical verify
- * command applies (e.g., abstract governance gaps with no file reference).
- */
-function generateVerifyCommand(f: { file?: string; line?: number; checkId?: string; category?: string; attackClass?: string }): string | undefined {
-  const checkId = f.checkId ?? '';
-  const cat = (f.category ?? '').toLowerCase();
-  const attackClass = f.attackClass ?? '';
-
-  // File + line: most direct verification — show the exact offending line
-  if (f.file && f.line) {
-    const quoted = shellEscapePath(f.file);
-    if (!quoted) return undefined;
-    return `sed -n '${f.line}p' ${quoted}`;
-  }
-
-  // Governance / injection / jailbreak findings: re-run governance scan
-  if (
-    checkId.startsWith('AST-GOV') || checkId.startsWith('AST-PROMPT') ||
-    checkId.startsWith('AST-INJECT') || attackClass === 'SOUL-BYPASS' ||
-    attackClass === 'SOUL-GAP' || attackClass === 'SOUL-MISSING' ||
-    attackClass === 'JAILBREAK' || attackClass === 'AUTHORITY-CONFUSION'
-  ) {
-    return 'hackmyagent scan-soul . --verbose';
-  }
-
-  // MCP / scope findings: list MCP servers
-  if (checkId.startsWith('AST-SCOPE') || cat.includes('mcp')) {
-    return 'opena2a mcp audit';
-  }
-
-  // Credential / secret findings in a known file: grep the file
-  if (f.file && (cat.includes('credential') || attackClass?.startsWith('CRED'))) {
-    const quoted = shellEscapePath(f.file);
-    if (!quoted) return undefined;
-    return `grep -in "key\\|token\\|secret\\|password" ${quoted}`;
-  }
-
-  return undefined;
 }
 
 /** Shorten a file path for display — show filename + parent dir only */

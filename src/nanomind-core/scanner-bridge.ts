@@ -219,10 +219,10 @@ export async function runNanoMindScan(
         ? projectConstraints
         : undefined;
       const findings = isAgent
-        ? runAllAnalyzers(result.ast, verifier, projectType, extraConstraints)
+        ? runAllAnalyzers(result.ast, verifier, projectType, extraConstraints, content)
         : isSourceCode
-          ? runCodeAnalyzers(result.ast, verifier)
-          : runNonAgentAnalyzers(result.ast, verifier);
+          ? runCodeAnalyzers(result.ast, verifier, content)
+          : runNonAgentAnalyzers(result.ast, verifier, content);
       allASTFindings.push(...findings);
     } catch {
       // Skip files that fail to read or compile -- do not block the scan
@@ -417,6 +417,7 @@ function runAllAnalyzers(
   verifier: (ast: SecurityAST) => boolean,
   projectType?: ProjectType,
   projectConstraints?: Constraint[],
+  artifactContent?: string,
 ): ASTFinding[] {
   const findings: ASTFinding[] = [];
 
@@ -424,7 +425,7 @@ function runAllAnalyzers(
   findings.push(...analyzeCapabilities(ast, projectType, projectConstraints));
 
   // Credential, governance, and scope analyzers require AST integrity verification
-  findings.push(...analyzeCredentials(ast, verifier, projectType));
+  findings.push(...analyzeCredentials(ast, verifier, projectType, artifactContent));
   findings.push(...analyzeGovernance(ast, verifier, projectType, projectConstraints));
   findings.push(...analyzeScope(ast, verifier, projectType));
 
@@ -449,9 +450,10 @@ function runAllAnalyzers(
 function runNonAgentAnalyzers(
   ast: SecurityAST,
   verifier: (ast: SecurityAST) => boolean,
+  artifactContent?: string,
 ): ASTFinding[] {
   const findings: ASTFinding[] = [];
-  findings.push(...analyzeCredentials(ast, verifier));
+  findings.push(...analyzeCredentials(ast, verifier, undefined, artifactContent));
   findings.push(...analyzeCode(ast, verifier));
   findings.push(...analyzeSteganography(ast));
   return enrichFindings(findings, ast);
@@ -466,9 +468,10 @@ function runNonAgentAnalyzers(
 function runCodeAnalyzers(
   ast: SecurityAST,
   verifier: (ast: SecurityAST) => boolean,
+  artifactContent?: string,
 ): ASTFinding[] {
   const findings: ASTFinding[] = [];
-  findings.push(...analyzeCredentials(ast, verifier));
+  findings.push(...analyzeCredentials(ast, verifier, undefined, artifactContent));
   findings.push(...analyzeCode(ast, verifier));
   return enrichFindings(findings, ast);
 }
