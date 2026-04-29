@@ -82,6 +82,27 @@ export interface SoulScanResult {
   totalPassed: number;
   deepAnalysisResults?: DeepAnalysisEntry[];
   deepAnalysisAvailable?: boolean;
+  /**
+   * Set when an explicit `<!-- soul:profile=... -->` marker (or a CLI
+   * `--profile` override) declares a narrower profile than the body
+   * content suggests. The mismatch is scored HIGH because the marker
+   * may be hiding governance gaps from the scanner — see #162.
+   *
+   * Undefined when there is no mismatch (declared profile matches the
+   * body, or no marker/override is in play).
+   */
+  profileMismatch?: SoulProfileMismatch;
+}
+
+export interface SoulProfileMismatch {
+  /** Profile declared by the marker or `--profile` flag. */
+  declaredProfile: AgentProfile;
+  /** Profile inferred from body content. Always broader than declared. */
+  inferredProfile: AgentProfile;
+  /** Domain names that the declared profile skips but the inferred profile would have evaluated. */
+  skippedDomains: string[];
+  /** Body signals that triggered the inference (heading names, tool-verb mentions). */
+  signals: string[];
 }
 
 export interface HardenResult {
@@ -520,6 +541,176 @@ export class SoulScanner {
   }
 
   /**
+   * Infer the agent profile that the BODY content suggests, ignoring any
+   * `<!-- soul:profile=... -->` marker or CLI `--profile` override. This
+   * is the structural counterpart to `detectProfile` and is used by the
+   * profile-mismatch detector (#162) to compare what the marker says
+   * against what the content actually does.
+   *
+   * Inference is layered by domain heading + verb signal:
+   *   - `## Agentic Safety` heading or autonomous-action language → autonomous
+   *   - `## Capability Boundaries` heading, `## Human Oversight`, or tool /
+   *     shell / execute language → tool-agent
+   *   - `## Trust Hierarchy` or `## Data Handling` heading → code-assistant
+   *   - otherwise → conversational
+   *
+   * `signals` collects the human-readable reasons that drove the
+   * inference; the mismatch finding renders them so users can see why
+   * the scanner disagreed with their declared profile.
+   */
+  inferProfileFromContent(content: string): { profile: AgentProfile; signals: string[] } {
+    const signals: string[] = [];
+
+    // Phase 4.5 H3 fix: strip code fences (``` and ~~~ blocks) and HTML
+    // comments before parsing headings. A tutorial SOUL.md that
+    // documents how to write SOUL.md (with `## Capability Boundaries`
+    // inside a code fence) must NOT trigger a mismatch.
+    const stripped = content
+      // Triple-backtick code fences
+      .replace(/```[\s\S]*?```/g, '')
+      // Tilde code fences
+      .replace(/~~~[\s\S]*?~~~/g, '')
+      // HTML comments — but PRESERVE the soul:profile / soul:tier
+      // markers since downstream `detectProfile` parses them. We only
+      // need to strip narrative comments that contain pseudo-headings.
+      .replace(/<!--(?!\s*soul:)[\s\S]*?-->/g, '');
+
+    // Phase 4.5 H1 fix: extend the heading regex to all 6 markdown
+    // levels (H1-H6) AND a bold-as-heading branch so `# Capability
+    // Boundaries`, `#### Capability Boundaries`, and `**Capability
+    // Boundaries**` (when on their own line) are all detected.
+    const headings: string[] = [];
+    const atxRe = /^#{1,6}\s+(.+?)\s*$/gm;
+    let m: RegExpExecArray | null;
+    while ((m = atxRe.exec(stripped)) !== null) {
+      headings.push(m[1].trim().toLowerCase());
+    }
+    const boldRe = /^\*\*([^*\n]+)\*\*\s*:?\s*$/gm;
+    while ((m = boldRe.exec(stripped)) !== null) {
+      headings.push(m[1].trim().toLowerCase());
+    }
+    const setextRe = /^(.+)\r?\n=+\s*$/gm;
+    while ((m = setextRe.exec(stripped)) !== null) {
+      headings.push(m[1].trim().toLowerCase());
+    }
+
+    // Phase 4.5 H5 fix: a heading whose section body is dominated by
+    // negation/disclaim language ("does not have one", "no inline
+    // governance constraints", "this is a chatbot — does not apply")
+    // should NOT count as evidence of the profile that the heading
+    // names. We slice the section body (heading → next heading or EOF)
+    // and check for negation density.
+    const sectionsByHeading = new Map<string, string>();
+    const headingPositions: Array<{ name: string; index: number; length: number }> = [];
+    {
+      const allHeadingMatches = [
+        ...stripped.matchAll(/^#{1,6}\s+(.+?)\s*$/gm),
+        ...stripped.matchAll(/^\*\*([^*\n]+)\*\*\s*:?\s*$/gm),
+      ].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+      for (let i = 0; i < allHeadingMatches.length; i++) {
+        const h = allHeadingMatches[i];
+        const name = h[1].trim().toLowerCase();
+        const start = (h.index ?? 0) + h[0].length;
+        const end = i + 1 < allHeadingMatches.length
+          ? (allHeadingMatches[i + 1].index ?? stripped.length)
+          : stripped.length;
+        headingPositions.push({ name, index: h.index ?? 0, length: h[0].length });
+        sectionsByHeading.set(name, stripped.slice(start, end));
+      }
+    }
+
+    const isDefensiveSection = (sectionBody: string | undefined): boolean => {
+      if (!sectionBody) return false;
+      // Trim to first ~200 chars — author-disclaim language tends to
+      // appear at the section start.
+      const head = sectionBody.slice(0, 240).toLowerCase();
+      return /\b(?:does\s+not|do\s+not|no\s+(?:inline|specific|defined|formal|hierarchy)|this\s+(?:agent\s+)?(?:does|has)\s+not|n\/a\b|not\s+applicable)\b/.test(head);
+    };
+
+    const hasGoverningHeading = (name: string): boolean => {
+      const key = name.toLowerCase();
+      // Look up the section. We must match either an exact-equal
+      // heading or a heading that starts with the canonical name.
+      let body: string | undefined;
+      for (const [h, b] of sectionsByHeading) {
+        if (h === key || h.startsWith(key + ' ')) {
+          body = b;
+          break;
+        }
+      }
+      if (body === undefined) {
+        // Heading not present at all — fall back to substring scan.
+        return headings.some((h) => h === key || h.startsWith(key + ' '));
+      }
+      return !isDefensiveSection(body);
+    };
+
+    const lower = stripped.toLowerCase();
+
+    // Heading-based signals (now defensive-section aware)
+    if (hasGoverningHeading('Agentic Safety')) signals.push('"Agentic Safety" heading');
+    if (hasGoverningHeading('Capability Boundaries')) signals.push('"Capability Boundaries" heading');
+    if (hasGoverningHeading('Human Oversight')) signals.push('"Human Oversight" heading');
+    if (hasGoverningHeading('Trust Hierarchy')) signals.push('"Trust Hierarchy" heading');
+    if (hasGoverningHeading('Data Handling')) signals.push('"Data Handling" heading');
+
+    // Verb / phrase signals — indicates active tool / shell / autonomous behavior
+    // (not just mentions of those words in defensive prose).
+    const toolVerbs = /\b(?:execute|run|invoke|spawn|fork|exec)\s+(?:approved\s+)?(?:tool|shell|command|process|script|binary)\b/i;
+    const toolManifest = /\btool\s+(?:manifest|calls?|integration|allowlist|denylist|boundary|scope|limit|access\s+control)\b/i;
+    const shellAction = /\b(?:execute|run|invoke)\s+shell\s+command/i;
+    // Phase 4.5 H2: prose-only tool-using language ("MCP integration",
+    // "function calls", "tool use") that doesn't quite hit the verb-noun
+    // pair. These indicate a TOOL-USING agent regardless of heading
+    // shape.
+    const proseSignal = /\b(?:mcp\s+(?:server|integration|protocol)|function\s+calls?|tool\s+use|sub[-\s]agent\s+delegation|orchestrat\w+)\b/i;
+    if (toolVerbs.test(stripped) || shellAction.test(stripped)) signals.push('tool / shell execution verb');
+    if (toolManifest.test(stripped)) signals.push('tool-manifest / tool-allowlist language');
+    if (proseSignal.test(lower)) signals.push('MCP / function-call / orchestration prose');
+
+    // Autonomous / multi-step / self-directed
+    const autonomousPhrase = /\b(?:autonomous|agentic|self[-\s]directed|long[-\s]running|multi[-\s]step\s+plan)\b/i;
+    if (autonomousPhrase.test(lower)) signals.push('autonomous / agentic / multi-step language');
+
+    // Determine the profile based on collected signals.
+    //
+    // Phase 4.5 H4 fix: a `## Capability Boundaries` heading alone is
+    // NOT enough to upgrade to tool-agent — code-assistants legitimately
+    // document file-scope boundaries. Tool-agent inference requires the
+    // heading PLUS at least one tool/manifest/MCP/orchestrator verb
+    // signal, OR a Human Oversight heading (which never applies to
+    // code-assistants), OR an autonomous signal.
+    let profile: AgentProfile = 'conversational';
+    const hasAutonomousSignal = signals.some((s) => s.includes('Agentic Safety') || s.includes('autonomous') || s.includes('AGENTIC') || s.includes('MULTI-AGENT'));
+    const hasToolBehaviorSignal = signals.some((s) =>
+      s.includes('tool / shell') ||
+      s.includes('tool-manifest') ||
+      s.includes('MCP / function-call') ||
+      s.includes('TOOL-USING'),
+    );
+    const hasHumanOversightHeading = signals.some((s) => s.includes('Human Oversight'));
+    const hasCapabilityBoundariesHeading = signals.some((s) => s.includes('Capability Boundaries'));
+    const hasTrustOrData = signals.some((s) => s.includes('Trust Hierarchy') || s.includes('Data Handling'));
+
+    if (hasAutonomousSignal) {
+      profile = 'autonomous';
+    } else if (
+      hasHumanOversightHeading ||
+      hasToolBehaviorSignal ||
+      // Capability Boundaries heading is only tool-agent-defining when
+      // paired with active tool behavior. Otherwise treat it as
+      // code-assistant scope.
+      (hasCapabilityBoundariesHeading && hasToolBehaviorSignal)
+    ) {
+      profile = 'tool-agent';
+    } else if (hasTrustOrData || hasCapabilityBoundariesHeading) {
+      profile = 'code-assistant';
+    }
+
+    return { profile, signals };
+  }
+
+  /**
    * Check if content matches any keyword for a control.
    * Case-insensitive substring match.
    */
@@ -696,6 +887,14 @@ export class SoulScanner {
     const tier = (tierForced ? options!.tier!.toUpperCase() as AgentTier : null) || this.detectTier(targetDir, contentForTier);
 
     const profileForced = !!options?.profile;
+    // `profileFromMarker` distinguishes the `<!-- soul:profile=... -->` path
+    // from the keyword-detection fallback. The marker path is what
+    // attackers (or unaware authors) use to narrow the scanner's scope —
+    // the mismatch detector below cares about marker-driven narrowing
+    // even when `--profile` is not set.
+    const markerMatchForMismatch = contentForTier.match(/<!--\s*soul:profile=(\S+)\s*-->/i);
+    const profileFromMarker = markerMatchForMismatch
+      && Object.keys(PROFILE_DOMAINS).includes(markerMatchForMismatch[1].toLowerCase());
     const profile = (profileForced ? options!.profile!.toLowerCase() as AgentProfile : null) || this.detectProfile(contentForTier);
 
     const applicable = this.applicableControls(tier, profile);
@@ -706,6 +905,63 @@ export class SoulScanner {
       const domainId = CONTROL_DEFS.find((c) => c.domain === d)?.domainId;
       return domainId !== undefined && !profileDomainIds.includes(domainId);
     });
+
+    // Profile-mismatch detection (#162). Compare the declared profile
+    // (marker or --profile override) against the profile inferred from
+    // body content. If the declared profile is strictly narrower than
+    // the inferred one, fire SOUL-PROFILE-MISMATCH HIGH so the user
+    // knows the marker is hiding governance scope.
+    let profileMismatch: SoulProfileMismatch | undefined;
+    const declarationCameFromMarkerOrFlag = profileForced || profileFromMarker;
+    if (declarationCameFromMarkerOrFlag && contentForTier.length > 0) {
+      const { profile: bodyInferredProfile, signals } = this.inferProfileFromContent(contentForTier);
+
+      // Phase 4.5 H2: cross-check with the detected tier. AGENTIC /
+      // MULTI-AGENT tiers (which require explicit autonomous /
+      // orchestrator language to fire) are strong signals — they
+      // override even a zero-signal body. TOOL-USING is weaker (any
+      // mention of "tool" / "MCP" / "function call" can trigger it,
+      // including inside a code fence), so it only escalates when
+      // body inference also returned at least one signal — that way a
+      // documentation/tutorial SOUL.md that quotes tool examples
+      // inside a code fence does NOT fire a false-positive mismatch
+      // (#162 H3 protection). Body-stripping in
+      // `inferProfileFromContent` removes the code fence; the tier
+      // detector sees the raw content but is only consulted as a
+      // confirming signal here.
+      const tierImpliesAutonomous = tier === 'AGENTIC' || tier === 'MULTI-AGENT';
+      const tierImpliesToolAgent = tier === 'TOOL-USING';
+
+      let inferredProfile: AgentProfile = bodyInferredProfile;
+      if (tierImpliesAutonomous && bodyInferredProfile !== 'autonomous') {
+        inferredProfile = 'autonomous';
+        signals.unshift(`detected tier=${tier} implies autonomous profile`);
+      } else if (
+        tierImpliesToolAgent &&
+        bodyInferredProfile === 'conversational' &&
+        signals.length > 0
+      ) {
+        inferredProfile = 'tool-agent';
+        signals.unshift(`detected tier=${tier} implies tool-agent profile`);
+      }
+
+      const declaredDomainIds = new Set(PROFILE_DOMAINS[profile]);
+      const inferredDomainIds = PROFILE_DOMAINS[inferredProfile];
+      const skippedByDeclaration = inferredDomainIds.filter((id) => !declaredDomainIds.has(id));
+      if (skippedByDeclaration.length > 0 && profile !== inferredProfile) {
+        const skippedDomainNames = skippedByDeclaration
+          .map((id) => CONTROL_DEFS.find((c) => c.domainId === id)?.domain)
+          .filter((n): n is string => Boolean(n));
+        // De-duplicate (controls map many-to-one to domains).
+        const uniqueSkippedDomains = Array.from(new Set(skippedDomainNames));
+        profileMismatch = {
+          declaredProfile: profile,
+          inferredProfile,
+          skippedDomains: uniqueSkippedDomains,
+          signals,
+        };
+      }
+    }
 
     // No governance file found
     if (!govFile) {
@@ -770,6 +1026,7 @@ export class SoulScanner {
         criticalMissing,
         totalControls: applicable.length,
         totalPassed: 0,
+        profileMismatch,
       };
     }
 
@@ -890,6 +1147,7 @@ export class SoulScanner {
       criticalMissing,
       totalControls: applicable.length,
       totalPassed,
+      profileMismatch,
     };
 
     if (options?.deepAnalysis) {
