@@ -160,7 +160,10 @@ describe('Integrity Verifier', () => {
       expect(result.status).toBe('QUARANTINE');
       const pkgCheck = result.checks.find(c => c.name === 'package_integrity');
       expect(pkgCheck?.passed).toBe(false);
-      expect(pkgCheck?.reason).toContain('Tampered file');
+      // 0.22.2: reason format changed to "<count> files tampered: <paths>" so
+      // multi-file tamper is fully reported instead of first-failure short-circuit.
+      expect(pkgCheck?.reason).toContain('1 files tampered');
+      expect(pkgCheck?.reason).toContain('cli.js');
     });
 
     it('returns QUARANTINE when dist/ file is missing', () => {

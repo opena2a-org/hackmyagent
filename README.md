@@ -37,7 +37,7 @@ npx opena2a-cli review
 - **Adaptive red team** -- `hackmyagent red-team <file>` generates target-specific payloads, observes responses, adapts after failures, and maps every defence.
 - **164 adversarial payloads across 16 categories** -- prompt injection, jailbreak, data exfiltration, capability abuse, context manipulation, MCP / A2A exploitation, memory weaponisation, context window, supply chain, tool shadow, parser differential, persistent agent, fake tool, context lifecycle, policy enforcement.
 - **Behavioural simulation** -- 20-probe battery that observes what skills actually do (run with `--deep`).
-- **Self-securing** -- verifies its own binary on startup. Tampered binaries enter QUARANTINE mode (exit code 3).
+- **Self-securing** -- verifies its own binary on startup against an embedded SHA-256 manifest. Post-install tampered binaries enter QUARANTINE mode (exit code 3) with a per-file forensics report. Symlink-redirected manifests are rejected. For end-to-end supply-chain verification against rebuild attacks, every release ships SLSA v1 provenance via npm Trusted Publishing -- verify with `npm view hackmyagent@<version> dist.attestations --json`.
 
 Full catalogue in [`docs/SECURITY_CHECKS.md`](docs/SECURITY_CHECKS.md).
 
