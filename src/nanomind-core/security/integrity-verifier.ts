@@ -17,7 +17,7 @@
  */
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { readFileSync, existsSync, appendFileSync, mkdirSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, lstatSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -105,25 +105,81 @@ export function hmacVerify(data: string, key: string, expectedSig: string): bool
  * `<packageRoot>/dist/.integrity-manifest.json` (so it ships inside the
  * `dist/` tree that gets published). Look there first, then fall back to
  * `<packageRoot>/.integrity-manifest.json` for any consumer that places
- * the manifest at the package root. Returns null if no manifest exists
- * (first run or dev mode).
+ * the manifest at the package root.
+ *
+ * Returns null when:
+ *   - no manifest exists (first run or dev mode), or
+ *   - a manifest path resolves to a symlink (rejected as a supply-chain
+ *     attack vector — an attacker with write access to the install dir
+ *     could redirect manifest resolution to an attacker-controlled file).
+ *
+ * Symlink rejection writes a stderr warning at every probed location so
+ * the rejection is visible to operators, even though the verifier falls
+ * through to dev-mode CLEAN. (Hard QUARANTINE on symlink would brick
+ * legitimate dev workflows that symlink the manifest.)
+ *
+ * Internal exports (`__symlinkRejectedAtPath`) propagate the rejection
+ * reason to verifyAll so the manifest_load check can record it.
  */
 export function loadManifest(packageRoot: string): IntegrityManifest | null {
   const candidates = [
     join(packageRoot, 'dist', MANIFEST_FILENAME),
     join(packageRoot, MANIFEST_FILENAME),
   ];
+  manifestSymlinkRejection = null;
   for (const manifestPath of candidates) {
-    if (!existsSync(manifestPath)) continue;
+    // lstat (NOT stat) so we see the link itself, not its target. A broken
+    // symlink (target missing) still trips this branch — existsSync follows
+    // links and returns false on broken links, so we must lstat first.
+    let stat: ReturnType<typeof lstatSync> | null = null;
+    try {
+      stat = lstatSync(manifestPath);
+    } catch (err) {
+      // ENOENT and friends: nothing at this path. Try the next candidate.
+      // Any other error (EACCES, etc.) we also skip — manifest unavailable
+      // here, but we don't want to crash the verifier on permission errors;
+      // the next candidate or the null return will surface dev-mode.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') continue;
+      // Surface non-ENOENT errors to stderr so they're not silently swallowed
+      // (per feedback_iife_after_parseasync_timing_trap.md — bare catch{} is
+      // the silent-no-op mechanism we explicitly avoid).
+      process.stderr.write(
+        `INTEGRITY MANIFEST READ ERROR at ${manifestPath}: ${(err as Error).message}\n`,
+      );
+      continue;
+    }
+    if (stat.isSymbolicLink()) {
+      process.stderr.write(
+        `INTEGRITY MANIFEST REJECTED: symlink at ${manifestPath} (manifests must be regular files)\n`,
+      );
+      manifestSymlinkRejection = manifestPath;
+      continue;
+    }
+    if (!stat.isFile()) {
+      // Not a regular file (could be a directory, socket, fifo, etc.)
+      process.stderr.write(
+        `INTEGRITY MANIFEST REJECTED: not a regular file at ${manifestPath}\n`,
+      );
+      continue;
+    }
     try {
       const raw = readFileSync(manifestPath, 'utf-8');
       return JSON.parse(raw) as IntegrityManifest;
-    } catch {
-      // Try the next candidate
+    } catch (err) {
+      // Surface the parse / read failure so a malformed manifest doesn't
+      // silently downgrade to dev-mode.
+      process.stderr.write(
+        `INTEGRITY MANIFEST PARSE ERROR at ${manifestPath}: ${(err as Error).message}\n`,
+      );
+      continue;
     }
   }
   return null;
 }
+
+/** Module-scoped flag so verifyAll can report manifest-rejected-by-symlink. */
+let manifestSymlinkRejection: string | null = null;
 
 /**
  * Generate a manifest from the current state of dist/ files.
@@ -328,7 +384,10 @@ export function checkPackageIntegrity(
     }
   }
 
-  // Verify file hashes
+  // Verify file hashes. Missing files short-circuit (a missing file can
+  // hide further tamper — operators need to know about it first), but
+  // hash mismatches accumulate so multi-file tamper is fully reported.
+  const tamperedFiles: string[] = [];
   for (const [relativePath, expectedHash] of Object.entries(manifest.files)) {
     const fullPath = join(distDir, relativePath);
     if (!existsSync(fullPath)) {
@@ -340,15 +399,56 @@ export function checkPackageIntegrity(
     }
     const actualHash = sha256File(fullPath);
     if (actualHash !== expectedHash) {
-      return {
-        name: 'package_integrity',
-        passed: false,
-        reason: `Tampered file: dist/${relativePath}`,
-      };
+      tamperedFiles.push(relativePath);
     }
   }
 
+  if (tamperedFiles.length > 0) {
+    return {
+      name: 'package_integrity',
+      passed: false,
+      reason: formatTamperedFilesReason(tamperedFiles),
+    };
+  }
+
   return { name: 'package_integrity', passed: true };
+}
+
+/**
+ * Format the multi-file tamper reason. Reports total count + first 5 paths
+ * in lexicographic order. Caps total output at 200 chars to defeat attacker
+ * log-flooding (an attacker who tampers thousands of files cannot blow up
+ * downstream log pipelines by producing megabyte-scale stderr).
+ *
+ * Default Array.prototype.sort() comparator is locale-independent on
+ * strings — compares 16-bit code units — so the displayed order is stable
+ * across Node versions and locales.
+ */
+function formatTamperedFilesReason(tamperedFiles: string[]): string {
+  const sorted = [...tamperedFiles].sort();
+  const count = sorted.length;
+  const first5 = sorted.slice(0, 5);
+  const moreSuffix = count > 5 ? `, ...and ${count - 5} more` : '';
+  let reason = `${count} files tampered: ${first5.join(', ')}${moreSuffix}`;
+  // Hard cap at 200 chars. If we exceed, truncate the file list and append
+  // a count-only suffix so the operator still sees the total.
+  const HARD_CAP = 200;
+  if (reason.length > HARD_CAP) {
+    // Drop paths from the end until we fit. Keep at least the count + 1
+    // path so the reason remains informative.
+    const minPrefix = `${count} files tampered: `;
+    const minSuffix = `, ...and ${count - 1} more`;
+    const budget = HARD_CAP - minPrefix.length - minSuffix.length;
+    if (budget <= 0) {
+      reason = `${minPrefix.slice(0, HARD_CAP - 3)}...`.slice(0, HARD_CAP);
+    } else {
+      const oneTruncated = first5[0].length > budget
+        ? first5[0].slice(0, budget - 3) + '...'
+        : first5[0];
+      reason = `${minPrefix}${oneTruncated}${minSuffix}`.slice(0, HARD_CAP);
+    }
+  }
+  return reason;
 }
 
 /**
@@ -483,9 +583,21 @@ export function verifyAll(options: VerifyOptions = {}): IntegrityResult {
 
   if (!manifest) {
     // No manifest = development mode or first install. Pass all checks.
+    // If loadManifest rejected a symlink, surface the explicit reason so
+    // ops/forensics can distinguish "no manifest" from "manifest tampered".
+    // The synchronous call ordering (loadManifest → flag read → flag clear)
+    // ensures no race even if another caller is running in the same worker.
     const duration = performance.now() - start;
-    checks.push({ name: 'manifest_load', passed: true, reason: 'No manifest found (dev mode)' });
-    eventChain.append('startup', `Integrity check: no manifest, dev mode (${duration.toFixed(2)}ms)`);
+    const rejectedSymlink = manifestSymlinkRejection;
+    manifestSymlinkRejection = null; // capture-and-clear: no stale state
+    const reason = rejectedSymlink
+      ? 'Manifest rejected (symlink) — dev mode'
+      : 'No manifest found (dev mode)';
+    checks.push({ name: 'manifest_load', passed: true, reason });
+    const detail = rejectedSymlink
+      ? `Integrity check: manifest rejected (symlink at ${rejectedSymlink}) (${duration.toFixed(2)}ms)`
+      : `Integrity check: no manifest, dev mode (${duration.toFixed(2)}ms)`;
+    eventChain.append('startup', detail);
     return { status: 'CLEAN', checks, durationMs: duration };
   }
 
