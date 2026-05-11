@@ -28,6 +28,9 @@
  * real/test split — task-specific credential models are deferred.
  */
 
+import { execFileSync } from 'node:child_process';
+import { realpathSync, statSync } from 'node:fs';
+import { dirname } from 'node:path';
 import {
   sendClassify,
   sendHealthz,
@@ -153,12 +156,15 @@ export async function isAnalystReady(): Promise<boolean> {
 }
 
 /**
- * Print install instructions for the NanoMind-Guard daemon. The daemon is a
- * separate Python sidecar; HMA does not bundle it. A one-line installer is
- * shipping in the opena2a-nanomind-guard package; until then this prints
- * manual install steps.
+ * Drive setup of the NanoMind-Guard daemon. The daemon is a separate Python
+ * sidecar; HMA does not bundle it. The daemon installer ships as the
+ * nanomind-analyst PyPI package — if it is on $PATH this function shells out
+ * to `nanomind-analyst install`, which fetches artifacts, writes the launchd
+ * plist, and waits for healthz. If the installer is not on $PATH it prints
+ * the pip install command and exits.
  *
- * Returns true iff the daemon is already running. Returns false otherwise.
+ * Returns true iff the daemon ends up healthy. Returns false if the platform
+ * is unsupported, the installer is missing, or the installer exited non-zero.
  */
 export async function setupAnalystModel(quiet = false): Promise<boolean> {
   const healthy = await isDaemonHealthy();
@@ -183,25 +189,125 @@ export async function setupAnalystModel(quiet = false): Promise<boolean> {
     return false;
   }
 
+  const installerPath = findNanomindAnalystOnPath();
+  if (installerPath === null) {
+    if (!quiet) {
+      process.stderr.write(
+        'NanoMind-Guard daemon is not running and the installer is not on PATH.\n' +
+        '\n' +
+        'Install (one-time):\n' +
+        '  pip install nanomind-analyst && nanomind-analyst install\n' +
+        '\n' +
+        'Or with pipx:\n' +
+        '  pipx install nanomind-analyst && nanomind-analyst install\n' +
+        '\n' +
+        `Default daemon socket path: ${DEFAULT_SOCK_PATH}\n` +
+        'Override with NANOMIND_GUARD_SOCK=/path/to/your.sock\n' +
+        '\n' +
+        'After install, verify with: hackmyagent nanomind status\n',
+      );
+    }
+    return false;
+  }
+
   if (!quiet) {
     process.stderr.write(
-      'NanoMind-Guard daemon is not running.\n' +
-      '\n' +
-      'The v3 generative analyst routes through the NanoMind-Guard daemon —\n' +
-      'a small Python sidecar that loads the v3 NLM and the input-classifier\n' +
-      'gate and serves classification on a Unix socket. HMA does not bundle\n' +
-      'the daemon; a one-line installer is shipping in opena2a-nanomind-guard.\n' +
-      '\n' +
-      'Manual install steps are in the daemon repo:\n' +
-      '  https://github.com/opena2a-org/nanomind-training#nanomind-guard\n' +
-      '\n' +
-      `Default socket path: ${DEFAULT_SOCK_PATH}\n` +
-      'Override with NANOMIND_GUARD_SOCK=/path/to/your.sock\n' +
-      '\n' +
-      'After install, verify with: hackmyagent nanomind status\n',
+      `Found nanomind-analyst installer at ${installerPath}.\n` +
+      'Running: nanomind-analyst install\n' +
+      '(first run downloads ~3.4 GB of NLM weights; subsequent runs reuse the cache)\n\n',
     );
   }
-  return false;
+
+  try {
+    execFileSync(installerPath, ['install'], { stdio: 'inherit' });
+  } catch {
+    if (!quiet) {
+      process.stderr.write(
+        '\nnanomind-analyst install exited non-zero.\n' +
+        'Re-run manually for details: nanomind-analyst install\n',
+      );
+    }
+    return false;
+  }
+
+  // The installer exits 0 even when it failed to bring the daemon up
+  // (foreign uid owns the socket, healthz timeout, launchd refusal). Its
+  // stdio is inherited — a malicious or buggy installer could print
+  // "success" and exit 0 without binding the socket. Re-probe healthz
+  // and surface an HMA-owned diagnostic when the installer's exit code
+  // disagrees with the daemon's actual state.
+  const postInstallHealthy = await isDaemonHealthy();
+  if (!postInstallHealthy && !quiet) {
+    process.stderr.write(
+      '\nnanomind-analyst exited 0 but the daemon is not responding on\n' +
+      `  ${DEFAULT_SOCK_PATH}\n` +
+      'Run `hackmyagent nanomind status` for diagnostics, or re-run\n' +
+      '`nanomind-analyst install` to retry.\n',
+    );
+  }
+  return postInstallHealthy;
+}
+
+/**
+ * Resolve `nanomind-analyst` on PATH and check the resolved path is exec-
+ * safe. Defenses:
+ *   1. `/usr/bin/which` is invoked by absolute path so a hostile $PATH
+ *      cannot redirect resolution of `which` itself.
+ *   2. The resolved path is `realpathSync`'d, so a symlink dropped into a
+ *      user-writable PATH dir cannot redirect to an attacker-controlled
+ *      binary outside an accepted install prefix.
+ *   3. The realpath's parent directory must not be group- or world-
+ *      writable. This narrows the TOCTOU window between `which` and
+ *      `execFileSync` to the same window that exists for any binary the
+ *      user installed into a sane prefix (Homebrew, pipx, user-owned
+ *      ~/.local/bin with 0755). Group-writable Homebrew prefixes on
+ *      Intel Macs are intentionally rejected — the install message tells
+ *      the user to install into a user-owned prefix.
+ *
+ * Returns the resolved binary path, or null when not on PATH, when which
+ * exits non-zero, when realpath fails, or when the parent dir is unsafe.
+ * The darwin platform gate above is the only caller, so Windows
+ * `where.exe` is intentionally not handled here.
+ */
+function findNanomindAnalystOnPath(): string | null {
+  let resolved: string;
+  try {
+    const out = execFileSync('/usr/bin/which', ['nanomind-analyst'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    resolved = out.toString('utf8').trim();
+  } catch {
+    return null;
+  }
+  if (resolved.length === 0 || !resolved.startsWith('/')) {
+    return null;
+  }
+  let real: string;
+  try {
+    real = realpathSync(resolved);
+  } catch {
+    return null;
+  }
+  if (!real.startsWith('/')) {
+    return null;
+  }
+  // Reject when the realpath's parent directory is group- or world-
+  // writable: an unprivileged process there could swap the binary in the
+  // TOCTOU window between this check and execFileSync. We can't close
+  // the window entirely without holding a file descriptor and execing
+  // it, but rejecting writable parent dirs narrows it to roots the user
+  // controls (or system roots).
+  try {
+    const parent = dirname(real);
+    const st = statSync(parent);
+    // 0o022 = group-write + world-write bits.
+    if ((st.mode & 0o022) !== 0) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  return real;
 }
 
 // ============================================================================

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createServer, Server, Socket } from 'node:net';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -10,6 +10,7 @@ import {
   analyzeThreat,
   assessCredentialContext,
   assessFalsePositive,
+  setupAnalystModel,
 } from '../../src/nanomind-core/inference/security-analyst';
 
 // ============================================================================
@@ -178,6 +179,116 @@ describe('security-analyst — getAnalystStatus', () => {
     process.env.NANOMIND_GUARD_SOCK = '/tmp/nanomind-guard-absent-' + Date.now() + '.sock';
     const ready = await isAnalystReady();
     expect(ready).toBe(false);
+  });
+});
+
+describe('security-analyst — setupAnalystModel', () => {
+  it('returns true and does not shell out when the daemon is already healthy', async () => {
+    const daemon = await startMockDaemon((_line, conn) => {
+      conn.write(JSON.stringify(healthzOk) + '\n');
+      conn.end();
+    });
+    process.env.NANOMIND_GUARD_SOCK = daemon.socketPath;
+
+    const result = await setupAnalystModel(/* quiet */ true);
+    expect(result).toBe(true);
+  });
+
+  it('returns false without throwing when daemon is absent on non-darwin platforms', async () => {
+    if (process.platform === 'darwin') {
+      // On darwin we'd reach the installer probe; that path is covered by
+      // the manual new-user walkthrough. CI runs on ubuntu, so the
+      // platform-unsupported branch is the one we lock down here.
+      return;
+    }
+    process.env.NANOMIND_GUARD_SOCK = '/tmp/nanomind-guard-absent-' + Date.now() + '.sock';
+    const result = await setupAnalystModel(/* quiet */ true);
+    expect(result).toBe(false);
+  });
+
+  it('returns false without throwing when daemon is absent and PATH has no nanomind-analyst (darwin)', async () => {
+    if (process.platform !== 'darwin') {
+      return; // installer probe runs only on darwin
+    }
+    process.env.NANOMIND_GUARD_SOCK = '/tmp/nanomind-guard-absent-' + Date.now() + '.sock';
+    const originalPath = process.env.PATH;
+    // Empty PATH means /usr/bin/which returns no result for nanomind-analyst.
+    // /usr/bin/which is invoked by absolute path so PATH=empty is safe.
+    process.env.PATH = '';
+    try {
+      const result = await setupAnalystModel(/* quiet */ true);
+      expect(result).toBe(false);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it('shells out to the resolved nanomind-analyst on PATH with `install` (darwin shim test)', async () => {
+    if (process.platform !== 'darwin') {
+      return; // shell-out branch runs only on darwin
+    }
+    // Daemon absent so we reach the shell-out branch.
+    process.env.NANOMIND_GUARD_SOCK = '/tmp/nanomind-guard-absent-' + Date.now() + '.sock';
+
+    // Stage a shim binary in a user-owned (mode 0700) tmp dir and prepend
+    // to PATH. The shim writes a sentinel file so the test can assert
+    // execFileSync actually ran the resolved binary.
+    const shimDir = mkdtempSync(join(tmpdir(), 'hma-setup-shim-'));
+    tmpDirs.push(shimDir);
+    const sentinelPath = join(shimDir, 'shim-fired');
+    const shimPath = join(shimDir, 'nanomind-analyst');
+    writeFileSync(
+      shimPath,
+      `#!/bin/sh\necho "$@" > "${sentinelPath}"\nexit 0\n`,
+    );
+    chmodSync(shimPath, 0o755);
+    chmodSync(shimDir, 0o755); // realpath parent-dir guard requires non-group-writable
+
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${shimDir}:${originalPath}`;
+    try {
+      const result = await setupAnalystModel(/* quiet */ true);
+      // The shim writes a sentinel; if findNanomindAnalystOnPath ever
+      // silently no-op'd (e.g. a future refactor that broke `which`),
+      // the sentinel won't appear.
+      expect(existsSync(sentinelPath)).toBe(true);
+      // Daemon socket is still absent post-shim, so the function must
+      // return false (the post-install isDaemonHealthy() guard).
+      expect(result).toBe(false);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it('rejects a nanomind-analyst symlink whose parent dir is group/world-writable (darwin)', async () => {
+    if (process.platform !== 'darwin') {
+      return;
+    }
+    process.env.NANOMIND_GUARD_SOCK = '/tmp/nanomind-guard-absent-' + Date.now() + '.sock';
+
+    // Stage shim in a group-writable dir — the parent-dir guard must
+    // refuse to exec a binary that an unprivileged process could swap.
+    const unsafeDir = mkdtempSync(join(tmpdir(), 'hma-setup-unsafe-'));
+    tmpDirs.push(unsafeDir);
+    const sentinelPath = join(unsafeDir, 'shim-fired');
+    const shimPath = join(unsafeDir, 'nanomind-analyst');
+    writeFileSync(
+      shimPath,
+      `#!/bin/sh\necho "$@" > "${sentinelPath}"\nexit 0\n`,
+    );
+    chmodSync(shimPath, 0o755);
+    chmodSync(unsafeDir, 0o775); // group-writable → must be rejected
+
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${unsafeDir}:${originalPath}`;
+    try {
+      const result = await setupAnalystModel(/* quiet */ true);
+      // The guard must reject and the shim must NOT fire.
+      expect(existsSync(sentinelPath)).toBe(false);
+      expect(result).toBe(false);
+    } finally {
+      process.env.PATH = originalPath;
+    }
   });
 });
 

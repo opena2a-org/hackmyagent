@@ -7782,14 +7782,14 @@ const nanomindCmd = program
 
 nanomindCmd
   .command('setup')
-  .description('Print install instructions for the NanoMind-Guard daemon (the daemon is a separate Python process; HMA does not bundle it yet)')
+  .description('Install or update the NanoMind-Guard daemon via nanomind-analyst (shells out when the installer is on PATH; otherwise prints the pip install command)')
   .action(async () => {
     const { setupAnalystModel } = await import('./nanomind-core/inference/security-analyst.js');
-    // Returns true iff the daemon is already running; returns false when it
-    // printed install instructions. Either case is a successful execution of
-    // the setup command — printing instructions is not an error. Failure
-    // signals (non-zero exit) are reserved for true tool errors (missing
-    // dependencies, broken paths) which today this command does not surface.
+    // setupAnalystModel returns true when the daemon ends up healthy, false
+    // when the platform is unsupported / installer is absent / install
+    // exited non-zero. Printing the pip install command is a successful
+    // setup invocation — we keep exit code 0 there. The caller can still
+    // distinguish via `hackmyagent nanomind status`.
     await setupAnalystModel(false);
   });
 
