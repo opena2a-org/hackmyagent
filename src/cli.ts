@@ -662,7 +662,7 @@ interface UnifiedCheckDisplayOptions {
    * of leaving the flag silent. Shape from orchestrate.ts.
    */
   analystZeroState?: {
-    reason: 'clean-scan' | 'not-ready' | 'backend-unavailable';
+    reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported';
     modelLabel: string;
   };
   /** When set, this path is used in Next Steps hints instead of `name`. Use for local directory targets (e.g., `secure`). */
@@ -1411,6 +1411,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       console.log(`          release.`);
     } else if (reason === 'not-ready') {
       console.log(`  ${colors.yellow}Model not set up.${RESET()} Run: ${colors.cyan}hackmyagent nanomind setup${RESET()}`);
+    } else if (reason === 'daemon-error') {
+      console.log(`  ${colors.yellow}Analyst layer reached the NanoMind-Guard daemon but produced no verdicts.${RESET()}`);
+      console.log(`  The daemon may be reachable but unable to classify (model load failure,`);
+      console.log(`  gate probe failed, or per-request errors). Check daemon logs.`);
+      console.log(`  Verify: ${colors.cyan}hackmyagent nanomind status${RESET()}`);
+    } else if (reason === 'platform-not-supported') {
+      console.log(`  ${colors.yellow}NanoMind-Guard daemon is not available on this platform.${RESET()}`);
+      console.log(`  Currently Apple Silicon Mac only. Rerun without ${colors.cyan}--nanomind${RESET()}.`);
     } else {
       console.log(`  ${colors.yellow}Backend unavailable on this platform.${RESET()}`);
     }
@@ -7774,60 +7782,58 @@ const nanomindCmd = program
 
 nanomindCmd
   .command('setup')
-  .description('Download the NanoMind generative model')
+  .description('Print install instructions for the NanoMind-Guard daemon (the daemon is a separate Python process; HMA does not bundle it yet)')
   .action(async () => {
-    const { getAnalystStatus, setupAnalystModel } = await import('./nanomind-core/inference/security-analyst.js');
-    const status = await getAnalystStatus();
-
-    console.log('NanoMind (generative security analyst)');
-    console.log(`  Platform: ${status.platform}`);
-    console.log(`  Backend:  ${status.backend === 'none' ? 'not available' : status.backend}`);
-    console.log(`  Model:    ${status.modelCached ? 'cached' : 'not downloaded'}`);
-    console.log('');
-
-    if (status.backend === 'none') {
-      console.log('No supported inference backend found.');
-      if (process.platform !== 'darwin') {
-        console.log('Currently requires Apple Silicon Mac with MLX.');
-        console.log('Cross-platform support (llama.cpp/GGUF) coming soon.');
-      } else {
-        console.log('Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh');
-      }
-      process.exit(1);
-    }
-
-    if (status.modelCached) {
-      console.log('Model already downloaded. Use --nanomind with any scan command.');
-      return;
-    }
-
-    const ok = await setupAnalystModel(false);
-    if (!ok) process.exit(1);
+    const { setupAnalystModel } = await import('./nanomind-core/inference/security-analyst.js');
+    // Returns true iff the daemon is already running; returns false when it
+    // printed install instructions. Either case is a successful execution of
+    // the setup command — printing instructions is not an error. Failure
+    // signals (non-zero exit) are reserved for true tool errors (missing
+    // dependencies, broken paths) which today this command does not surface.
+    await setupAnalystModel(false);
   });
 
 nanomindCmd
   .command('status')
-  .description('Check the status of the NanoMind generative model and runtime')
+  .description('Check the status of the NanoMind-Guard daemon')
   .action(async () => {
     const { getAnalystStatus } = await import('./nanomind-core/inference/security-analyst.js');
     const status = await getAnalystStatus();
 
     console.log('NanoMind (generative security analyst)');
     console.log(`  Platform:  ${status.platform}`);
-    console.log(`  Backend:   ${status.backend === 'none' ? `${colors.red}not available${RESET()}` : `${colors.green}${status.backend}${RESET()}`}`);
-    console.log(`  Model:     ${status.modelCached ? `${colors.green}cached${RESET()}` : `${colors.yellow}not downloaded${RESET()}`}`);
-    console.log(`  Ready:     ${status.available ? `${colors.green}yes${RESET()}` : `${colors.yellow}no${RESET()}`}`);
-    console.log('');
 
-    if (status.available) {
+    if (status.available && status.daemon) {
+      const d = status.daemon;
+      const probeState = d.gateProbe.passed ? `${colors.green}pass${RESET()}` : `${colors.red}FAIL${RESET()}`;
+      console.log(`  Daemon:    ${colors.green}running${RESET()} (${d.daemonState})`);
+      console.log(`  Socket:    ${process.env.NANOMIND_GUARD_SOCK ?? '/tmp/nanomind-guard.sock'}`);
+      console.log(`  Embedder:  ${d.embedder}`);
+      console.log(`  Threshold: ${d.classifierThreshold.toFixed(3)}`);
+      console.log(`  Uptime:    ${formatUptime(d.uptimeSec)}`);
+      console.log(`  Requests:  ${d.requestsServed}`);
+      console.log(`  Gate:      ${probeState} (probe label ${d.gateProbe.label ?? 'null'}, expected ${d.gateProbe.expected})`);
+      console.log('');
       console.log('Use --nanomind with any scan command for AI-powered analysis.');
       console.log(`  Example: hackmyagent secure ./my-agent --nanomind`);
-    } else if (status.backend !== 'none') {
-      console.log(`Run: hackmyagent nanomind setup`);
-    } else if (process.platform !== 'darwin') {
-      console.log('Cross-platform support (llama.cpp/GGUF) coming soon.');
+    } else if (status.daemon && !status.daemon.ok) {
+      console.log(`  Daemon:    ${colors.yellow}degraded${RESET()} (${status.daemon.daemonState})`);
+      console.log(`  Gate:      ${colors.red}FAIL${RESET()} (probe label ${status.daemon.gateProbe.label ?? 'null'}, expected ${status.daemon.gateProbe.expected})`);
+      console.log('');
+      console.log('Daemon is up but the gate probe failed. Check daemon logs and');
+      console.log('verify the input-classifier artifacts are present and unmodified.');
+    } else {
+      console.log(`  Daemon:    ${colors.yellow}not running${RESET()}`);
+      console.log('');
+      console.log(`Run: ${colors.cyan}hackmyagent nanomind setup${RESET()}`);
     }
   });
+
+function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
 
 // ============================================================================
 // eval oracle -- red-team accuracy harness
@@ -8665,7 +8671,7 @@ async function checkGitHubRepo(
 
     // Run NanoMind semantic analysis and re-filter
     let analystFindings: any[] | undefined;
-    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable'; modelLabel: string } | undefined;
+    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
@@ -8915,7 +8921,7 @@ async function checkPyPiPackage(
 
     // Run NanoMind semantic analysis and re-filter
     let analystFindings: any[] | undefined;
-    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable'; modelLabel: string } | undefined;
+    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
@@ -9102,7 +9108,7 @@ async function checkRawUrl(
     const result = await scanner.scan({ targetDir: scanDir, autoFix: false });
 
     let analystFindings: any[] | undefined;
-    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable'; modelLabel: string } | undefined;
+    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
@@ -9267,7 +9273,7 @@ async function checkNpmPackage(
 
     // Run NanoMind semantic analysis and re-filter (matches secure command pipeline)
     let analystFindings: any[] | undefined;
-    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable'; modelLabel: string } | undefined;
+    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
