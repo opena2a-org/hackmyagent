@@ -9486,7 +9486,10 @@ async function checkNpmPackage(
       if (startedAt === undefined) return;
       telemetryStartedAt.delete(name);
       void tele.track(name, {
-        success: (process.exitCode ?? 0) === 0,
+        // Exit 1 = findings detected (security-tool convention — see
+        // line ~3535 where critHigh.length > 0 sets exitCode=1). The
+        // command did its job. Only exit >=2 is a real crash.
+        success: ((process.exitCode ?? 0) as number) <= 1,
         durationMs: Date.now() - startedAt,
       });
     });
