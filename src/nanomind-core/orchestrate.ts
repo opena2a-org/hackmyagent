@@ -51,7 +51,7 @@ export interface OrchestrationResult {
    * until a dedicated NLM-SUM is trained.
    */
   analystZeroState?: {
-    reason: 'clean-scan' | 'not-ready' | 'backend-unavailable';
+    reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported';
     modelLabel: string;
   };
 }
@@ -164,6 +164,25 @@ export async function orchestrateNanoMind(
               `NanoMind: ${result.analystFindings.length} finding(s) analyzed\n`,
             );
           }
+          // Daemon was healthy at the gate check but produced zero analyst
+          // responses for one or more high-severity findings. Surface this
+          // as a visible zero-state (not silence) so the user knows the
+          // analyst layer ran but did not contribute. Without this, a
+          // wedged-but-listening daemon prints nothing under "NanoMind
+          // Analysis" and the user is gaslit into thinking analysis ran.
+          if (result.analystFindings.length === 0) {
+            result.analystZeroState = {
+              reason: 'daemon-error',
+              modelLabel: 'Qwen3 v3.0.0 inline',
+            };
+            if (!silent) {
+              process.stderr.write(
+                'NanoMind: analyst did not return verdicts for any finding. ' +
+                'The daemon may be reachable but unable to classify. ' +
+                'Check daemon logs.\n',
+              );
+            }
+          }
         } else {
           // No HIGH/CRITICAL findings — skip the analyst call. LOW/MEDIUM-only
           // scans are effectively "clean" from an AI-threat perspective; the
@@ -229,7 +248,20 @@ async function runAnalystOnFindings(
     })
     .slice(0, 10);
 
+  // Scan-wide deadline. The per-call IPC timeout is 30s; with 10 findings
+  // a wedged-but-connecting daemon could stall the scan for 5 minutes. Cap
+  // the whole loop at 90s so a single bad scan does not hold up CI.
+  const SCAN_DEADLINE_MS = 90_000;
+  const deadlineAt = Date.now() + SCAN_DEADLINE_MS;
+
   for (const finding of prioritized) {
+    if (Date.now() >= deadlineAt) {
+      process.stderr.write(
+        `NanoMind: analyst budget exhausted after ${results.length}/${prioritized.length} findings. ` +
+        'Remaining findings skipped.\n',
+      );
+      break;
+    }
     // Choose task type based on finding category
     const checkId = finding.checkId || '';
     const category = (finding.category || '').toLowerCase();

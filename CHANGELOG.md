@@ -4,6 +4,53 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-05-11
+
+### Changed
+- **NanoMind security analyst now routes through the NanoMind-Guard daemon over a Unix domain socket** instead of downloading model artifacts and shelling out to `mlx_lm` / `llama_cpp_python` per request. `src/nanomind-core/inference/security-analyst.ts` is rewritten as an IPC client; a new module `src/nanomind-core/inference/nanomind-guard-client.ts` carries the JSON-Lines transport. Default socket path is `/tmp/nanomind-guard.sock`, overridable via `NANOMIND_GUARD_SOCK`. The previous Python inference shims `src/nanomind-core/inference/analm-infer.py` and `analm-infer-llamacpp.py` are deleted.
+- **Input-classifier gate now sits in front of the analyst.** The daemon loads a sentence-transformers MiniLM-L6 embedder plus a logistic-regression head trained on 200 gate-eval samples (threshold 0.65). Inputs the gate classifies as `off-topic` skip the NLM entirely and emit a constant `predictedAttackClass: 'none'`, `source: 'input-classifier-gate'`, `confidence: null` (binary gate decision, not a measured probability). Off-topic refusal on benign inputs moves from the documented 34% NLM-standalone rate to the 92% gated rate published in the v3.0.0 model card.
+- **`hackmyagent nanomind status` reports daemon state, not local cache state.** The new output includes daemon `daemonState` (`ready` / `degraded`), socket path, embedder id, classifier threshold, uptime, requests served, and the gate probe verdict. `modelCached` is preserved on `AnalystStatus` as a backward-compat alias for `daemon.ok`. A new `AnalystStatus.daemon` field carries the full `/healthz` body when the daemon is reachable; it is `null` otherwise.
+- **`hackmyagent nanomind setup` now prints install instructions for the NanoMind-Guard daemon instead of downloading model files.** HMA does not bundle the daemon — it is a separate Python process. A one-line installer is shipping in a companion package `opena2a-nanomind-guard`; until that lands, the setup command points users at the manual install procedure documented in the daemon repo.
+- **`AnalystBackend` type narrowed from `'mlx' | 'llamacpp' | 'none'` to `'daemon' | 'none'`.** External consumers narrowing on the prior literal values will need to update; internal callers branch only on the `'none'` case and are unaffected.
+
+### Behavior trade-offs
+- **Daemon-absent at scan time → analyst gracefully unavailable.** All analyst entry points (`runAnalystInference`, `analyzeThreat`, `assessCredentialContext`, `assessFalsePositive`, `generateIntelReport`) return `null` when the daemon socket is missing, refuses, times out, or returns a malformed response. Callers already treat `null` as "skip the analyst section"; this preserves that contract. **Fail-CLOSED on classifier error inside the daemon hands off to the NLM, not to a benign default**, and direct HuggingFace download is no longer used as a fallback — that path would bypass the input-classifier gate and silently emit `none` during a transient outage, exactly the failure mode the gate exists to prevent.
+- **Credential context detection narrows to a binary real/test split.** The v3 NLM is a unified security-artifact classifier and does not accept per-task prompts; HMA's `assessCredentialContext` now derives `'real'` or `'test'` from the daemon's `classification` / `predictedAttackClass` fields. The legacy `'placeholder'` / `'example'` / `'unknown'` discriminations from the prior task-specific prompt path are not reproducible against the universal classifier. A task-specific credential model is a future workstream.
+- **Apple Silicon only for this release.** The NanoMind-Guard daemon is bf16 on MPS today; `fp16` produces 0% accuracy on M-series silicon. Linux and cloud builds are a separate workstream. On non-Darwin platforms `hackmyagent nanomind setup` prints an explicit refusal with guidance to run scans without `--nanomind`.
+- **NLM latency floor is approximately 6 seconds per finding on Apple Silicon.** The v3 NLM emits ~400 tokens of structured output (`analysis` / `verdict` / `evidence` / `remediation`) at ~64 ms/token on bf16 MPS regardless of input size. A 50-finding scan with `--nanomind` will pay roughly 5 minutes of NLM time. The gate-bypass path (off-topic noise inputs) responds in under 15 ms.
+
+### Universal classifier output shape (callers)
+The daemon's NLM emits one schema for every input: `predictedAttackClass`, `classification`, `severity`, `analysis`, `verdict`, `evidence`, `remediation`. `security-analyst.ts` now contains a `shapeResultForTask` adapter that maps this universal shape into the task-specific result fields the CLI renderer reads:
+- `threatAnalysis` → `{ threatLevel, attackVector, description, mitigations[], confidence }`
+- `credentialContextClassification` → `{ classification: 'real' | 'test', reasoning, confidence }`
+- `falsePositiveDetection` → `{ isFalsePositive, reasoning, confidence }`
+- `checkExplanation` → `{ explanation, impact, recommendation, confidence }`
+- `governanceReasoning` → `{ gaps[], strengths[], recommendations[], confidence }`
+- `intelReport` → `{ summary, keyFindings[], riskAssessment, recommendations[], confidence }`
+- `artifactClassification` → `{ artifactType, reasoning, confidence }`
+
+### Security
+- **No more `joblib.load` / `pickle.load` in the HMA process.** The daemon owns artifact integrity verification (SHA256 of `classifier.joblib` and `meta.json` against env-supplied expected hashes, mode 0444 root-owned artifact dir). HMA never deserializes a pickle. The `INPUT_CLASSIFIER_THRESHOLD` is set once at daemon init; HMA cannot override it per-request — closes a parameter-pollution vector.
+- **No more `uv run --with <pkg>` subprocess invocations.** The HMA process no longer spawns Python interpreters for inference. The IPC client uses `node:net` only.
+- **Bounded response size (256 KB) and configurable timeout on the IPC client.** A malicious or wedged daemon cannot drive HMA to an OOM via an unbounded response.
+- **Symlink rejection at the socket path.** `nanomind-guard-client.ts:isSocketPathSafe` `lstatSync`s the resolved socket path before connecting; if the path is a symbolic link, the request returns `null` without sending data. Closes a local-attacker scenario where an unprivileged user creates a symlink at `/tmp/nanomind-guard.sock` (or at a `NANOMIND_GUARD_SOCK`-pointed path) to redirect HMA's analyst prompts to a socket they control.
+- **Daemon-response validation hardened.** `validateClassifyResponse` now rejects out-of-range `confidence` (must be `null` or a finite number in [0, 1]), caps short fields (`predictedAttackClass`, `source`, `severity`, `classification`, `gateLabel`, error code) at 256 chars, truncates rich NLM fields (`analysis`, `verdict`, `evidence`, `remediation`) at 64 KB each, and forward-compat-scrubs unrecognized `severity` / `gateLabel` values to `""` instead of forwarding them to the renderer. Closes a hostile-daemon vector that could otherwise poison HMA's CLI output with arbitrary content via downstream string concatenation.
+- **Control-sequence sanitization at the IPC boundary.** `security-analyst.ts:sanitizeAnalystString` strips ANSI CSI / OSC / DCS escape sequences, BEL, C0 controls (except `\n` and `\t`), and C1 controls from every daemon-supplied string before it reaches the renderer. Defends against terminal-title rewrites (`OSC 2`), screen clears (`CSI 2J`), and OSC 8 hyperlink injection — concrete attacks that would otherwise let a hostile or misconfigured daemon overlay misleading content over HMA's verdict.
+- **Scan-wide analyst deadline (90 s).** `orchestrate.ts:runAnalystOnFindings` short-circuits the per-finding loop if the cumulative time crosses 90 s, even if the per-call IPC timeout has not fired. Prevents a wedged-but-connecting daemon from stalling a `--nanomind` scan for the full N × 30 s worst case.
+- **Daemon-error visibility (no silent fail-CLOSED-to-null).** When the daemon is reachable but returns zero verdicts for one or more HIGH/CRITICAL findings, `orchestrate.ts` now sets a new `analystZeroState.reason = 'daemon-error'` and the renderer prints a visible section explaining that the analyst layer ran but did not contribute. Closes a regression where a healthy-`/healthz`-but-erroring daemon produced no "NanoMind Analysis" output, leaving the operator unable to tell the analyst ran at all.
+
+### Engineering
+- 31 new tests in `__tests__/nanomind-core/nanomind-guard-client.test.ts` (15 cases — happy path bypass, happy path NLM, healthz, all `ERR_*` codes, malformed JSON, timeout, mid-stream close, oversized response, empty input client guard, socket absent, isDaemonHealthy variants) and `__tests__/nanomind-core/security-analyst.test.ts` (16 cases — `getAnalystStatus` daemon up / down, all task-specific shape adapters, daemon-error → null contract, input truncation, context prefix). Both files use an in-process AF_UNIX mock daemon harness.
+- Existing tests preserved; the public surface of `security-analyst.ts` (function names, type names, return signatures) is unchanged, so `orchestrate.ts` and the CLI renderer require no edits beyond the `nanomind status` / `nanomind setup` command bodies in `cli.ts`.
+
+### Deferred (not in this release)
+- The companion `opena2a-nanomind-guard` PyPI package (one-line daemon installer + launchd / systemd plist) is a parallel workstream. Until it ships, daemon installation is manual.
+- Linux and cloud daemon builds are a separate workstream; the bf16-MPS inference path does not currently have a validated cross-platform equivalent.
+- The `--analm` flag remains a deprecated alias for `--nanomind` for one more release cycle.
+- Default socket path remains `/tmp/nanomind-guard.sock`. Migration to `$XDG_RUNTIME_DIR/nanomind-guard.sock` (Linux) and `~/Library/Application Support/nanomind-guard/<uid>.sock` (macOS) is a follow-up so the default does not depend on `/tmp` (world-writable on most platforms) for security.
+- Per-finding daemon calls run serially today. Parallel dispatch (bounded concurrency 3 – 4) is a perf follow-up; the daemon already accepts concurrent connections.
+- A `source: 'input-classifier-gate'` field is now exposed on `AnalystResponse`, but the CLI renderer does not yet specialize its confidence label for bypass-path responses. A follow-up will render binary gate decisions as `"binary gate"` rather than a numeric confidence so the bypass and NLM-measured cases are visually distinguishable.
+
 ## [0.22.4] - 2026-05-11
 
 ### Changed
