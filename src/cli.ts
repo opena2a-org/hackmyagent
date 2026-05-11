@@ -8683,7 +8683,7 @@ async function checkGitHubRepo(
       // NanoMind unavailable — surface this in the CLI output instead of going
       // silent when --nanomind was requested. Keeps the render path honest.
       if (resolveNanomindFlag(options)) {
-        analystZeroState = { reason: 'backend-unavailable', modelLabel: 'SmolLM2 v0.5.0 inline' };
+        analystZeroState = { reason: 'backend-unavailable', modelLabel: 'Qwen3 v3.0.0 inline' };
       }
     }
 
@@ -9120,7 +9120,7 @@ async function checkRawUrl(
       // NanoMind unavailable — surface this in the CLI output instead of going
       // silent when --nanomind was requested. Keeps the render path honest.
       if (resolveNanomindFlag(options)) {
-        analystZeroState = { reason: 'backend-unavailable', modelLabel: 'SmolLM2 v0.5.0 inline' };
+        analystZeroState = { reason: 'backend-unavailable', modelLabel: 'Qwen3 v3.0.0 inline' };
       }
     }
 
@@ -9285,7 +9285,7 @@ async function checkNpmPackage(
       // NanoMind unavailable — surface this in the CLI output instead of going
       // silent when --nanomind was requested. Keeps the render path honest.
       if (resolveNanomindFlag(options)) {
-        analystZeroState = { reason: 'backend-unavailable', modelLabel: 'SmolLM2 v0.5.0 inline' };
+        analystZeroState = { reason: 'backend-unavailable', modelLabel: 'Qwen3 v3.0.0 inline' };
       }
     }
 

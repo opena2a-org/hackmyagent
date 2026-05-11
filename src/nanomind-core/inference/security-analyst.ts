@@ -1,13 +1,13 @@
 /**
  * NanoMind Security Analyst -- Generative model inference
  *
- * Runs the nanomind-security-analyst model (SmolLM2-1.7B 12L SFT)
+ * Runs the nanomind-security-analyst model (Qwen3-1.7B SFT, LoRA r64)
  * for structured security analysis. This is a GENERATIVE model that
  * produces JSON output, NOT a replacement for the TME classifier.
  *
  * Two inference backends (auto-detected):
- *   1. MLX (mlx_lm)     -- Apple Silicon only, safetensors (1.8GB)
- *   2. llama.cpp         -- Cross-platform, GGUF Q4_K_M (544MB)
+ *   1. MLX (mlx_lm)     -- Apple Silicon only, safetensors (3.44GB)
+ *   2. llama.cpp         -- Cross-platform, GGUF Q4_K_M (1.05GB)
  *
  * Task types:
  *   - threatAnalysis, credentialContextClassification, falsePositiveDetection,
@@ -83,7 +83,16 @@ export interface AnalystStatus {
 // ============================================================================
 
 const HF_REPO = 'opena2a/nanomind-security-analyst';
-const MODEL_VERSION = '0.1.0';
+const MODEL_VERSION = '3.0.0';
+/**
+ * HuggingFace commit SHA pinned for MODEL_VERSION. The HF cache key is
+ * `(repo, filename, revision)`, so pinning here is what forces existing
+ * users with the prior v0.1.0 GGUF cached to download v3.0.0 instead of
+ * short-circuiting in `isModelCached`. Bump this whenever `MODEL_VERSION`
+ * changes, and keep the short SHA in the CHANGELOG entry so the version
+ * pin is auditable.
+ */
+const MODEL_REVISION = '13bc3112ec9666a37f301b83d3e8bce53da4e3c5';
 
 /** Maximum input length sent to the analyst (tokens are ~4 chars avg) */
 const MAX_INPUT_CHARS = 2048;
@@ -151,7 +160,7 @@ async function isModelCached(): Promise<boolean> {
     const checkScript = `
 from huggingface_hub import try_to_load_from_cache
 import json
-path = try_to_load_from_cache("${HF_REPO}", "${fileToCheck}")
+path = try_to_load_from_cache("${HF_REPO}", "${fileToCheck}", revision="${MODEL_REVISION}")
 print(json.dumps({"cached": path is not None and path is not False}))
 `;
     const result = await execAsync('uv', [
@@ -175,7 +184,7 @@ async function resolveGgufPath(): Promise<string | null> {
     const resolveScript = `
 from huggingface_hub import hf_hub_download
 import json
-path = hf_hub_download("${HF_REPO}", "${GGUF_FILENAME}", local_files_only=True)
+path = hf_hub_download("${HF_REPO}", "${GGUF_FILENAME}", revision="${MODEL_REVISION}", local_files_only=True)
 print(json.dumps({"path": path}))
 `;
     const result = await execAsync('uv', [
@@ -251,7 +260,7 @@ export async function setupAnalystModel(quiet = false): Promise<boolean> {
   }
 
   const isGguf = backend === 'llamacpp';
-  const sizeLabel = isGguf ? '544MB GGUF Q4_K_M' : '1.8GB safetensors';
+  const sizeLabel = isGguf ? '1.05GB GGUF Q4_K_M' : '3.44GB safetensors';
 
   if (!quiet) {
     process.stderr.write(
@@ -266,13 +275,13 @@ export async function setupAnalystModel(quiet = false): Promise<boolean> {
       ? `
 from huggingface_hub import hf_hub_download
 import json
-path = hf_hub_download("${HF_REPO}", "${GGUF_FILENAME}")
+path = hf_hub_download("${HF_REPO}", "${GGUF_FILENAME}", revision="${MODEL_REVISION}")
 print(json.dumps({"status": "ok", "path": path}))
 `
       : `
 from huggingface_hub import snapshot_download
 import json
-path = snapshot_download("${HF_REPO}")
+path = snapshot_download("${HF_REPO}", revision="${MODEL_REVISION}")
 print(json.dumps({"status": "ok", "path": path}))
 `;
     const result = await execAsync('uv', [
