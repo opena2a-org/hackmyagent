@@ -199,7 +199,7 @@ Inventory of AI tools, MCP servers, and governance gaps across your machine. Det
 hackmyagent trust server-filesystem      # MCP shorthand trust lookup against the Registry
 hackmyagent trust --audit package.json   # audit every dependency
 hackmyagent explain CRED-001             # explain a check finding
-hackmyagent nanomind setup               # download the optional generative model
+hackmyagent nanomind setup               # install the optional generative analyst daemon
 hackmyagent nanomind status              # check model and runtime status
 ```
 
