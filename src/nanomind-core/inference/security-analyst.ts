@@ -1,27 +1,45 @@
 /**
- * NanoMind Security Analyst -- Generative model inference
+ * NanoMind Security Analyst — IPC client into the NanoMind-Guard daemon.
  *
- * Runs the nanomind-security-analyst model (Qwen3-1.7B SFT, LoRA r64)
- * for structured security analysis. This is a GENERATIVE model that
- * produces JSON output, NOT a replacement for the TME classifier.
+ * The v3 generative analyst (Qwen3-1.7B SFT) and its input-classifier gate
+ * run inside the NanoMind-Guard daemon — a Python process that loads the
+ * model once, verifies artifact integrity (joblib is pickle; SHA256 is
+ * mandatory), and serves classification over a Unix socket.
  *
- * Two inference backends (auto-detected):
- *   1. MLX (mlx_lm)     -- Apple Silicon only, safetensors (3.44GB)
- *   2. llama.cpp         -- Cross-platform, GGUF Q4_K_M (1.05GB)
+ * HMA used to download the GGUF/safetensors directly from HuggingFace and
+ * shell out to mlx_lm or llama_cpp_python per request. That path bypassed
+ * the input-classifier gate and produced a 34% off-topic refusal rate on
+ * benign inputs. Routing through the daemon brings the model card's 92%
+ * gated rate to real users.
  *
- * Task types:
- *   - threatAnalysis, credentialContextClassification, falsePositiveDetection,
- *     artifactClassification, checkExplanation, governanceReasoning, intelReport
+ * On daemon-absent or unhealthy: returns null. Callers treat null as
+ * "analyst unavailable" — the analyst is opt-in behind --nanomind, so
+ * null is not a benign verdict. Never fall back to direct HF download:
+ * the input-classifier gate is the whole point.
  *
- * Gated behind --analm flag. Model downloaded on-demand via `analm setup`.
+ * The v3 NLM emits a single universal classifier response shape
+ * (predictedAttackClass, severity, analysis, verdict, evidence,
+ * remediation). The shapeResultForTask adapter below maps the universal
+ * shape into the task-specific result fields that orchestrate.ts and the
+ * CLI renderer expect (threatLevel/attackVector/description/mitigations
+ * for threatAnalysis, classification/reasoning for credential context,
+ * isFalsePositive/reasoning for FP detection, etc.). Nuanced credential
+ * detection (placeholder vs example vs test) collapses to a binary
+ * real/test split — task-specific credential models are deferred.
  */
 
-import { join } from 'node:path';
-import { homedir } from 'node:os';
-import { execFile } from 'node:child_process';
+import {
+  sendClassify,
+  sendHealthz,
+  isDaemonHealthy,
+  isClassifyOk,
+  DEFAULT_SOCK_PATH,
+  type ClassifyOkResponse,
+  type HealthzResponse,
+} from './nanomind-guard-client.js';
 
 // ============================================================================
-// Types
+// Public types (preserved across the 0.22 → 0.23 rewrite)
 // ============================================================================
 
 export type AnalystTaskType =
@@ -46,6 +64,13 @@ export interface AnalystResponse {
   modelVersion: string;
   durationMs: number;
   backend: AnalystBackend;
+  /**
+   * Whether the verdict came from the input-classifier gate (binary
+   * off-topic bypass) or the NLM (per-artifact attack classification).
+   * Renderer can use this to distinguish "binary gate decision"
+   * (confidence is not a probability) from "NLM measured confidence."
+   */
+  source?: 'input-classifier-gate' | 'nlm';
 }
 
 export interface ThreatAnalysis {
@@ -68,244 +93,114 @@ export interface FalsePositiveAssessment {
   confidence: number;
 }
 
-export type AnalystBackend = 'mlx' | 'llamacpp' | 'none';
+export type AnalystBackend = 'daemon' | 'none';
 
 export interface AnalystStatus {
   available: boolean;
   backend: AnalystBackend;
+  /** Kept for backward compatibility; true iff the daemon answers /healthz. */
   modelCached: boolean;
   platform: string;
   setupCommand: string;
+  /** Full /healthz body when reachable; null otherwise. */
+  daemon: HealthzResponse | null;
 }
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-const HF_REPO = 'opena2a/nanomind-security-analyst';
 const MODEL_VERSION = '3.0.0';
+
 /**
- * HuggingFace commit SHA pinned for MODEL_VERSION. The HF cache key is
- * `(repo, filename, revision)`, so pinning here is what forces existing
- * users with the prior v0.1.0 GGUF cached to download v3.0.0 instead of
- * short-circuiting in `isModelCached`. Bump this whenever `MODEL_VERSION`
- * changes, and keep the short SHA in the CHANGELOG entry so the version
- * pin is auditable.
+ * Client-side input cap. The daemon enforces 1 MB on its side and truncates
+ * the encoder context to 256 tokens silently; 4 KB is generous for per-finding
+ * security artifact analysis and avoids shipping noise to the model.
  */
-const MODEL_REVISION = '13bc3112ec9666a37f301b83d3e8bce53da4e3c5';
-
-/** Maximum input length sent to the analyst (tokens are ~4 chars avg) */
-const MAX_INPUT_CHARS = 2048;
-
-/** Inference timeout. The 1.7B model runs ~2-5s per request on M-series. */
-const INFERENCE_TIMEOUT_MS = 30_000;
+const MAX_INPUT_CHARS = 4096;
 
 // ============================================================================
-// Backend Detection
+// Status & setup
 // ============================================================================
 
-let _detectedBackend: AnalystBackend | undefined;
-let _modelCached: boolean | undefined;
-
-/**
- * Detect the best available inference backend.
- * MLX is preferred (Apple Silicon), llama.cpp is cross-platform fallback.
- */
-async function detectBackend(): Promise<AnalystBackend> {
-  if (_detectedBackend !== undefined) return _detectedBackend;
-
-  // Try MLX (Apple Silicon only)
-  if (process.platform === 'darwin') {
-    try {
-      await execAsync('uv', [
-        'run', '--with', 'mlx-lm', 'python3', '-c',
-        'import mlx_lm; print("ok")',
-      ], { timeout: 15_000 });
-      _detectedBackend = 'mlx';
-      return _detectedBackend;
-    } catch {
-      // MLX not available, try llama.cpp
-    }
-  }
-
-  // Try llama.cpp (cross-platform)
-  try {
-    await execAsync('uv', [
-      'run', '--with', 'llama-cpp-python', 'python3', '-c',
-      'from llama_cpp import Llama; print("ok")',
-    ], { timeout: 30_000 });
-    _detectedBackend = 'llamacpp';
-    return _detectedBackend;
-  } catch { /* llama-cpp-python not available */ }
-
-  _detectedBackend = 'none';
-  return _detectedBackend;
-}
-
-/** GGUF filename on HuggingFace */
-const GGUF_FILENAME = 'nanomind-security-analyst.Q4_K_M.gguf';
-
-/**
- * Check if the model is already cached locally.
- * For MLX: checks for config.json (safetensors model).
- * For llama.cpp: checks for the GGUF file.
- */
-async function isModelCached(): Promise<boolean> {
-  if (_modelCached !== undefined) return _modelCached;
-
-  const backend = _detectedBackend ?? 'mlx';
-  const fileToCheck = backend === 'llamacpp' ? GGUF_FILENAME : 'config.json';
-
-  try {
-    const checkScript = `
-from huggingface_hub import try_to_load_from_cache
-import json
-path = try_to_load_from_cache("${HF_REPO}", "${fileToCheck}", revision="${MODEL_REVISION}")
-print(json.dumps({"cached": path is not None and path is not False}))
-`;
-    const result = await execAsync('uv', [
-      'run', '--with', 'huggingface-hub', 'python3', '-c', checkScript,
-    ], { timeout: 10_000 });
-    const parsed = JSON.parse(result.stdout.trim());
-    _modelCached = Boolean(parsed.cached);
-  } catch {
-    _modelCached = false;
-  }
-
-  return _modelCached;
-}
-
-/**
- * Resolve the local path to the cached GGUF file.
- * Returns null if not cached.
- */
-async function resolveGgufPath(): Promise<string | null> {
-  try {
-    const resolveScript = `
-from huggingface_hub import hf_hub_download
-import json
-path = hf_hub_download("${HF_REPO}", "${GGUF_FILENAME}", revision="${MODEL_REVISION}", local_files_only=True)
-print(json.dumps({"path": path}))
-`;
-    const result = await execAsync('uv', [
-      'run', '--with', 'huggingface-hub', 'python3', '-c', resolveScript,
-    ], { timeout: 10_000 });
-    const parsed = JSON.parse(result.stdout.trim());
-    return parsed.path ?? null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Get the full status of the analyst subsystem.
- * Used by `analyst status` and scan hints.
- */
 export async function getAnalystStatus(): Promise<AnalystStatus> {
-  const backend = await detectBackend();
-  const cached = backend !== 'none' ? await isModelCached() : false;
-
+  const daemon = await sendHealthz();
+  const platform = process.platform === 'darwin'
+    ? 'Apple Silicon (NanoMind-Guard daemon)'
+    : `${process.platform} (daemon not supported)`;
+  if (daemon === null) {
+    return {
+      available: false,
+      backend: 'none',
+      modelCached: false,
+      platform,
+      setupCommand: 'hackmyagent nanomind setup',
+      daemon: null,
+    };
+  }
   return {
-    available: backend !== 'none' && cached,
-    backend,
-    modelCached: cached,
-    platform: backend === 'mlx'
-      ? 'Apple Silicon (MLX)'
-      : backend === 'llamacpp'
-        ? `${process.platform} (llama.cpp)`
-        : process.platform,
-    setupCommand: 'hackmyagent analm setup',
+    available: daemon.ok,
+    backend: 'daemon',
+    modelCached: daemon.ok,
+    platform,
+    setupCommand: 'hackmyagent nanomind setup',
+    daemon,
   };
 }
 
-/**
- * Quick check: is the analyst ready to run right now?
- * Does NOT trigger downloads. Used by orchestrator to decide whether
- * to show the "run analyst setup" hint.
- */
 export async function isAnalystReady(): Promise<boolean> {
-  const backend = await detectBackend();
-  if (backend === 'none') return false;
-  return isModelCached();
+  return isDaemonHealthy();
 }
 
-// ============================================================================
-// Model Setup
-// ============================================================================
-
 /**
- * Download the AnaLM model. Called by `analm setup` command.
- * Returns true on success.
+ * Print install instructions for the NanoMind-Guard daemon. The daemon is a
+ * separate Python sidecar; HMA does not bundle it. A one-line installer is
+ * shipping in the opena2a-nanomind-guard package; until then this prints
+ * manual install steps.
+ *
+ * Returns true iff the daemon is already running. Returns false otherwise.
  */
 export async function setupAnalystModel(quiet = false): Promise<boolean> {
-  const backend = await detectBackend();
-
-  if (backend === 'none') {
+  const healthy = await isDaemonHealthy();
+  if (healthy) {
     if (!quiet) {
       process.stderr.write(
-        'No supported inference backend found.\n' +
-        'Install uv (https://docs.astral.sh/uv/) and run:\n' +
-        '  uv pip install llama-cpp-python   # any platform\n' +
-        (process.platform === 'darwin'
-          ? '  uv pip install mlx-lm             # Apple Silicon (faster)\n'
-          : ''),
+        'NanoMind-Guard daemon is already running.\n' +
+        'Use --nanomind with any scan command for AI-powered analysis.\n',
+      );
+    }
+    return true;
+  }
+
+  if (process.platform !== 'darwin') {
+    if (!quiet) {
+      process.stderr.write(
+        'NanoMind v3 currently requires Apple Silicon Mac.\n' +
+        'Linux and cloud daemon builds are tracked as a separate workstream.\n' +
+        'Run scans without --nanomind on this platform.\n',
       );
     }
     return false;
   }
 
-  if (await isModelCached()) {
-    if (!quiet) process.stderr.write('AnaLM model already downloaded.\n');
-    return true;
-  }
-
-  const isGguf = backend === 'llamacpp';
-  const sizeLabel = isGguf ? '1.05GB GGUF Q4_K_M' : '3.44GB safetensors';
-
   if (!quiet) {
     process.stderr.write(
-      `Downloading AnaLM v${MODEL_VERSION} (${sizeLabel})...\n`,
+      'NanoMind-Guard daemon is not running.\n' +
+      '\n' +
+      'The v3 generative analyst routes through the NanoMind-Guard daemon —\n' +
+      'a small Python sidecar that loads the v3 NLM and the input-classifier\n' +
+      'gate and serves classification on a Unix socket. HMA does not bundle\n' +
+      'the daemon; a one-line installer is shipping in opena2a-nanomind-guard.\n' +
+      '\n' +
+      'Manual install steps are in the daemon repo:\n' +
+      '  https://github.com/opena2a-org/nanomind-training#nanomind-guard\n' +
+      '\n' +
+      `Default socket path: ${DEFAULT_SOCK_PATH}\n` +
+      'Override with NANOMIND_GUARD_SOCK=/path/to/your.sock\n' +
+      '\n' +
+      'After install, verify with: hackmyagent nanomind status\n',
     );
   }
-
-  try {
-    // For llama.cpp: download only the GGUF file
-    // For MLX: download the full snapshot (safetensors + tokenizer)
-    const downloadScript = isGguf
-      ? `
-from huggingface_hub import hf_hub_download
-import json
-path = hf_hub_download("${HF_REPO}", "${GGUF_FILENAME}", revision="${MODEL_REVISION}")
-print(json.dumps({"status": "ok", "path": path}))
-`
-      : `
-from huggingface_hub import snapshot_download
-import json
-path = snapshot_download("${HF_REPO}", revision="${MODEL_REVISION}")
-print(json.dumps({"status": "ok", "path": path}))
-`;
-    const result = await execAsync('uv', [
-      'run', '--with', 'huggingface-hub', 'python3', '-c', downloadScript,
-    ], { timeout: 600_000 }); // 10 min for large model
-
-    const parsed = JSON.parse(result.stdout.trim());
-    if (parsed.status === 'ok') {
-      _modelCached = true;
-      if (!quiet) {
-        process.stderr.write('AnaLM model ready.\n');
-        process.stderr.write('Use --analm with any scan command for AI-powered analysis.\n');
-      }
-      return true;
-    }
-  } catch (err: any) {
-    if (!quiet) {
-      process.stderr.write(
-        `Download failed: ${err?.message ?? 'unknown error'}\n` +
-        'Check your network connection and try again.\n',
-      );
-    }
-  }
-
   return false;
 }
 
@@ -314,132 +209,169 @@ print(json.dumps({"status": "ok", "path": path}))
 // ============================================================================
 
 /**
- * Run analyst inference on the given request.
- * Returns null if the analyst is unavailable or inference fails.
- * Caller must gate behind --analyze flag.
+ * Run analyst inference via the daemon. Returns null when:
+ *   - daemon is absent / unreachable / unresponsive
+ *   - daemon returns an ERR_* error response
+ *   - daemon response cannot be parsed
+ *
+ * On success, returns an AnalystResponse with the result field shaped to the
+ * task-specific contract that the CLI renderer and orchestrator expect.
  */
 export async function runAnalystInference(
   request: AnalystRequest,
 ): Promise<AnalystResponse | null> {
-  const backend = await detectBackend();
-  if (backend === 'none') return null;
-
-  const cached = await isModelCached();
-  if (!cached) return null;
-
-  if (backend === 'mlx') {
-    return runMlxInference(request);
-  }
-
-  if (backend === 'llamacpp') {
-    return runLlamaCppInference(request);
-  }
-
-  return null;
-}
-
-async function runMlxInference(request: AnalystRequest): Promise<AnalystResponse | null> {
   const startMs = Date.now();
-
   const truncatedContent = request.content.slice(0, MAX_INPUT_CHARS);
-  const systemPrompt = getSystemPrompt(request.taskType);
-  const userMessage = request.context
-    ? `Context: ${request.context}\n\nContent:\n${truncatedContent}`
+  const inputText = request.context
+    ? `${request.context}\n\n${truncatedContent}`
     : truncatedContent;
 
-  // Use external Python script to avoid template literal escaping issues
-  const scriptPath = join(__dirname, 'analm-infer.py');
-
-  try {
-    const result = await execAsync('uv', [
-      'run', '--with', 'mlx-lm', 'python3', scriptPath,
-      HF_REPO,
-      request.taskType,
-      JSON.stringify(systemPrompt),
-      JSON.stringify(userMessage),
-    ], { timeout: INFERENCE_TIMEOUT_MS });
-
-    // stdout may contain HuggingFace progress bars before the JSON line
-    const jsonLine = result.stdout.trim().split('\n')
-      .reverse()
-      .find(line => line.trim().startsWith('{'));
-    if (!jsonLine) return null;
-
-    const parsed = JSON.parse(jsonLine.trim());
-    const durationMs = Date.now() - startMs;
-
-    if (parsed.ok && parsed.result) {
-      return {
-        taskType: request.taskType,
-        result: parsed.result,
-        confidence: typeof parsed.result.confidence === 'number' ? parsed.result.confidence : 0.5,
-        modelVersion: `nanomind-analyst-v${MODEL_VERSION}`,
-        durationMs,
-        backend: 'mlx',
-      };
-    }
-
-    return null;
-  } catch {
+  const response = await sendClassify(inputText);
+  if (response === null || !isClassifyOk(response)) {
     return null;
   }
+
+  const result = shapeResultForTask(response, request.taskType);
+  const confidence = typeof response.confidence === 'number'
+    ? response.confidence
+    : (typeof result.confidence === 'number' ? result.confidence : 0.5);
+
+  return {
+    taskType: request.taskType,
+    result,
+    confidence,
+    modelVersion: `nanomind-analyst-v${MODEL_VERSION}`,
+    durationMs: Date.now() - startMs,
+    backend: 'daemon',
+    source: response.source === 'input-classifier-gate' ? 'input-classifier-gate' : 'nlm',
+  };
 }
-
-async function runLlamaCppInference(request: AnalystRequest): Promise<AnalystResponse | null> {
-  const startMs = Date.now();
-
-  const ggufPath = await resolveGgufPath();
-  if (!ggufPath) return null;
-
-  const truncatedContent = request.content.slice(0, MAX_INPUT_CHARS);
-  const systemPrompt = getSystemPrompt(request.taskType);
-  const userMessage = request.context
-    ? `Context: ${request.context}\n\nContent:\n${truncatedContent}`
-    : truncatedContent;
-
-  const scriptPath = join(__dirname, 'analm-infer-llamacpp.py');
-
-  try {
-    const result = await execAsync('uv', [
-      'run', '--with', 'llama-cpp-python', 'python3', scriptPath,
-      ggufPath,
-      request.taskType,
-      JSON.stringify(systemPrompt),
-      JSON.stringify(userMessage),
-    ], { timeout: INFERENCE_TIMEOUT_MS });
-
-    const jsonLine = result.stdout.trim().split('\n')
-      .reverse()
-      .find(line => line.trim().startsWith('{'));
-    if (!jsonLine) return null;
-
-    const parsed = JSON.parse(jsonLine.trim());
-    const durationMs = Date.now() - startMs;
-
-    if (parsed.ok && parsed.result) {
-      return {
-        taskType: request.taskType,
-        result: parsed.result,
-        confidence: typeof parsed.result.confidence === 'number' ? parsed.result.confidence : 0.5,
-        modelVersion: `nanomind-analyst-v${MODEL_VERSION}`,
-        durationMs,
-        backend: 'llamacpp',
-      };
-    }
-
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-// ============================================================================
-// Task-Specific Runners
-// ============================================================================
 
 /**
- * Run threat analysis on content flagged as suspicious/malicious.
+ * Adapt the daemon's universal classifier response to the task-specific
+ * fields each renderer in cli.ts reads. The v3 NLM is a unified
+ * security-artifact classifier and does not accept per-task system prompts;
+ * the task shape is constructed here on the client side from the universal
+ * verdict.
  */
+function shapeResultForTask(
+  response: ClassifyOkResponse,
+  taskType: AnalystTaskType,
+): Record<string, unknown> {
+  // Sanitize every daemon-controlled string at the boundary. The CLI
+  // renderer prints these to a terminal, so ANSI / OSC / C0-C1 control
+  // sequences in a hostile daemon response could rewrite the terminal
+  // title, clear the screen, inject hyperlinks, or mask the displayed
+  // verdict. Sanitization is applied once here instead of at every
+  // render site so a future render addition can't accidentally skip it.
+  const analysis = sanitizeAnalystString(response.analysis);
+  const verdict = sanitizeAnalystString(response.verdict);
+  const evidence = sanitizeAnalystString(response.evidence);
+  const remediation = sanitizeAnalystString(response.remediation);
+  const severity = sanitizeAnalystString(response.severity).toLowerCase();
+  const attackClass = sanitizeAnalystString(response.predictedAttackClass);
+  const classification = sanitizeAnalystString(response.classification);
+  const isBenign = classification === 'benign' || attackClass === 'none';
+
+  const splitLines = (s: string): string[] =>
+    s.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+
+  const remediationItems = splitLines(remediation);
+  const evidenceItems = splitLines(evidence);
+  const confidence = typeof response.confidence === 'number'
+    ? response.confidence
+    : 0.5;
+
+  switch (taskType) {
+    case 'threatAnalysis':
+      return {
+        threatLevel: severity || (isBenign ? 'none' : 'unknown'),
+        attackVector: attackClass !== 'none' ? attackClass : '',
+        description: analysis,
+        mitigations: remediationItems,
+        confidence,
+      };
+    case 'credentialContextClassification':
+      // Universal classifier collapses placeholder/example/test detection
+      // into the general benign/malicious split. 'real' vs 'test' is the
+      // best signal we can derive without a task-specific credential model.
+      return {
+        classification: isBenign ? 'test' : 'real',
+        reasoning: analysis,
+        confidence,
+      };
+    case 'falsePositiveDetection':
+      return {
+        isFalsePositive: isBenign,
+        reasoning: analysis,
+        confidence,
+      };
+    case 'artifactClassification':
+      return {
+        artifactType: attackClass !== 'none' ? attackClass : 'benign',
+        reasoning: analysis,
+        confidence,
+      };
+    case 'checkExplanation':
+      return {
+        explanation: analysis,
+        impact: verdict,
+        recommendation: remediation,
+        confidence,
+      };
+    case 'governanceReasoning':
+      return {
+        gaps: evidenceItems,
+        strengths: [],
+        recommendations: remediationItems,
+        confidence,
+      };
+    case 'intelReport':
+      return {
+        summary: analysis,
+        keyFindings: evidenceItems,
+        riskAssessment: verdict,
+        recommendations: remediationItems,
+        confidence,
+      };
+    default:
+      return { confidence, ...(response as unknown as Record<string, unknown>) };
+  }
+}
+
+function stringOrEmpty(v: unknown): string {
+  return typeof v === 'string' ? v : '';
+}
+
+/**
+ * Strip control characters and ANSI escape sequences from a daemon-supplied
+ * string before it flows to the renderer. The daemon is a separate process
+ * reachable over a Unix socket whose path can be overridden via
+ * NANOMIND_GUARD_SOCK; defense-in-depth treats every string field as
+ * untrusted at the IPC boundary.
+ *
+ * Removes: CSI / OSC / DCS escape sequences, BEL, C0 controls except \n
+ * and \t, all C1 controls. Preserves the visible UTF-8 content unchanged.
+ */
+function sanitizeAnalystString(v: unknown): string {
+  if (typeof v !== 'string') return '';
+  return v
+    // CSI sequences:  ESC [ ... letter  (color codes, cursor moves, clear screen)
+    .replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, '')
+    // OSC sequences:  ESC ] ... BEL  (terminal title, hyperlinks)
+    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '')
+    // DCS / SOS / PM / APC sequences
+    .replace(/\x1b[PX^_][\s\S]*?(?:\x07|\x1b\\)/g, '')
+    // Bare ESC, BEL, and other C0 controls except \n, \t
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+    // C1 controls (8-bit)
+    .replace(/[\x80-\x9f]/g, '');
+}
+
+// ============================================================================
+// Task-specific wrappers
+// ============================================================================
+
 export async function analyzeThreat(
   content: string,
   attackClass: string,
@@ -450,20 +382,16 @@ export async function analyzeThreat(
     context: `Detected attack class: ${attackClass}`,
   });
   if (!response) return null;
-
   const r = response.result;
   return {
     threatLevel: String(r.threatLevel ?? 'unknown'),
-    attackVector: String(r.attackVector ?? attackClass),
+    attackVector: String(r.attackVector || attackClass),
     description: String(r.description ?? ''),
     mitigations: Array.isArray(r.mitigations) ? r.mitigations.map(String) : [],
     confidence: response.confidence,
   };
 }
 
-/**
- * Assess whether a credential finding is a real credential or test/example.
- */
 export async function assessCredentialContext(
   content: string,
 ): Promise<CredentialContext | null> {
@@ -472,13 +400,11 @@ export async function assessCredentialContext(
     content,
   });
   if (!response) return null;
-
   const r = response.result;
   const validClasses = ['real', 'test', 'example', 'placeholder', 'unknown'] as const;
-  const classification = validClasses.includes(r.classification as any)
+  const classification = validClasses.includes(r.classification as typeof validClasses[number])
     ? (r.classification as CredentialContext['classification'])
     : 'unknown';
-
   return {
     classification,
     reasoning: String(r.reasoning ?? ''),
@@ -486,9 +412,6 @@ export async function assessCredentialContext(
   };
 }
 
-/**
- * Assess whether a finding is a false positive.
- */
 export async function assessFalsePositive(
   content: string,
   findingDescription: string,
@@ -499,7 +422,6 @@ export async function assessFalsePositive(
     context: `Finding: ${findingDescription}`,
   });
   if (!response) return null;
-
   const r = response.result;
   return {
     isFalsePositive: Boolean(r.isFalsePositive),
@@ -508,83 +430,11 @@ export async function assessFalsePositive(
   };
 }
 
-/**
- * Generate an intelligence report summarizing scan findings.
- */
 export async function generateIntelReport(
   findingsSummary: string,
 ): Promise<AnalystResponse | null> {
   return runAnalystInference({
     taskType: 'intelReport',
     content: findingsSummary,
-  });
-}
-
-// ============================================================================
-// System Prompts
-// ============================================================================
-
-function getSystemPrompt(taskType: AnalystTaskType): string {
-  const prompts: Record<AnalystTaskType, string> = {
-    threatAnalysis:
-      'You are a security analyst. Analyze the given content for threats. ' +
-      'Respond with JSON: {"threatLevel": "critical|high|medium|low|none", ' +
-      '"attackVector": "string", "description": "string", "mitigations": ["string"], ' +
-      '"confidence": 0.0-1.0}',
-    credentialContextClassification:
-      'You are a credential context classifier. Determine if the credential in the content ' +
-      'is real, test, example, or placeholder. ' +
-      'Respond with JSON: {"classification": "real|test|example|placeholder|unknown", ' +
-      '"reasoning": "string", "confidence": 0.0-1.0}',
-    falsePositiveDetection:
-      'You are a false positive detector for security findings. ' +
-      'Determine if the described finding is a false positive based on the content. ' +
-      'Respond with JSON: {"isFalsePositive": true|false, "reasoning": "string", ' +
-      '"confidence": 0.0-1.0}',
-    artifactClassification:
-      'You are a security artifact classifier. Classify the type of the given artifact. ' +
-      'Respond with JSON: {"artifactType": "string", "reasoning": "string", ' +
-      '"confidence": 0.0-1.0}',
-    checkExplanation:
-      'You are a security check explainer. Explain what the security check found and why it matters. ' +
-      'Respond with JSON: {"explanation": "string", "impact": "string", ' +
-      '"recommendation": "string", "confidence": 0.0-1.0}',
-    governanceReasoning:
-      'You are a governance analyst. Analyze the governance posture of the given artifact. ' +
-      'Respond with JSON: {"gaps": ["string"], "strengths": ["string"], ' +
-      '"recommendations": ["string"], "confidence": 0.0-1.0}',
-    intelReport:
-      'You are a security intelligence analyst. Generate an intelligence report for the scan results. ' +
-      'Respond with JSON: {"summary": "string", "keyFindings": ["string"], ' +
-      '"riskAssessment": "string", "recommendations": ["string"], "confidence": 0.0-1.0}',
-  };
-
-  return prompts[taskType];
-}
-
-// ============================================================================
-// Subprocess Helper
-// ============================================================================
-
-function execAsync(
-  cmd: string,
-  args: string[],
-  options: { timeout?: number } = {},
-): Promise<{ stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    execFile(cmd, args, {
-      timeout: options.timeout ?? 30_000,
-      maxBuffer: 10 * 1024 * 1024, // 10MB
-      env: {
-        ...process.env,
-        HF_HOME: join(homedir(), '.cache', 'huggingface'),
-      },
-    }, (error, stdout, stderr) => {
-      if (error) {
-        reject(error);
-      } else {
-        resolve({ stdout: String(stdout), stderr: String(stderr) });
-      }
-    });
   });
 }

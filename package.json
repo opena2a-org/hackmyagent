@@ -1,6 +1,6 @@
 {
   "name": "hackmyagent",
-  "version": "0.22.4",
+  "version": "0.23.0",
   "description": "Find it. Break it. Fix it. The hacker's toolkit for AI agents.",
   "bin": {
     "hackmyagent": "dist/cli.js"
@@ -28,7 +28,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc && cp src/nanomind-core/inference/analm-infer.py src/nanomind-core/inference/analm-infer-llamacpp.py dist/nanomind-core/inference/ && node -e \"const{generateManifest}=require('./dist/nanomind-core/security/integrity-verifier.js');const m=generateManifest(__dirname);if(m)require('fs').writeFileSync('dist/.integrity-manifest.json',JSON.stringify(m))\"",
+    "build": "tsc && node -e \"const{generateManifest}=require('./dist/nanomind-core/security/integrity-verifier.js');const m=generateManifest(__dirname);if(m)require('fs').writeFileSync('dist/.integrity-manifest.json',JSON.stringify(m))\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src --ext .ts",
