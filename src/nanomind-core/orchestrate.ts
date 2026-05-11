@@ -144,10 +144,11 @@ export async function orchestrateNanoMind(
         //     configured", PROC-003, NET-005) are synthesized "nothing
         //     configured" checks — they don't feed a per-artifact classifier
         //     any content to reason about.
-        // Asking SmolLM2 v0.5.0 to analyze either produces hallucinated attack
-        // classes (verified 2026-04-22: empty dir + GIT-001 LOW produced 4
-        // confabulated HIGH narratives because file-less passed=false findings
-        // like AUTH-002 were being passed in). See memory
+        // Asking the analyst (Qwen3 v3.0.0) to analyze either produces
+        // hallucinated attack classes (verified 2026-04-22 on the prior
+        // SmolLM2-based v0.1.0: empty dir + GIT-001 LOW produced 4 confabulated
+        // HIGH narratives because file-less passed=false findings like AUTH-002
+        // were being passed in). See memory
         // project_nanomind_v05_intelreport_task_mismatch.
         const significant = failed.filter(f =>
           (f.severity === 'critical' || f.severity === 'high') && !!f.file,
@@ -169,7 +170,7 @@ export async function orchestrateNanoMind(
           // deterministic Observations block carries the verdict.
           result.analystZeroState = {
             reason: 'clean-scan',
-            modelLabel: 'SmolLM2 v0.5.0 inline',
+            modelLabel: 'Qwen3 v3.0.0 inline',
           };
         }
       } else {
@@ -180,7 +181,7 @@ export async function orchestrateNanoMind(
         }
         result.analystZeroState = {
           reason: 'not-ready',
-          modelLabel: 'SmolLM2 v0.5.0 inline',
+          modelLabel: 'Qwen3 v3.0.0 inline',
         };
       }
     } else if (!silent && !ci) {
