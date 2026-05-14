@@ -8769,7 +8769,14 @@ async function checkGitHubRepo(
       }
     }
 
-    if (critical.length > 0 || high.length > 0) process.exit(1);
+    if (critical.length > 0 || high.length > 0) {
+      // Set exit code and return so the `finally` block can clean up tempDir.
+      // process.exit() is synchronous and terminates immediately, leaving
+      // /tmp/hma-check-gh-* directories orphaned and eventually ENOSPC'ing
+      // the scanner container. See `finally { await rm(tempDir, ...) }` below.
+      process.exitCode = 1;
+      return;
+    }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
@@ -8796,7 +8803,7 @@ async function checkGitHubRepo(
     } else {
       console.error(`Error: ${message}`);
     }
-    process.exit(1);
+    process.exitCode = 1;
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -8874,7 +8881,11 @@ async function checkPyPiPackage(
       } else {
         console.error(`Error: PyPI API returned ${metaRes.status} for "${name}".`);
       }
-      process.exit(1);
+      // Set exit code and return so `finally` can clean up tempDir (was already
+      // allocated above). process.exit() would skip the cleanup and orphan the
+      // /tmp/hma-check-pypi-* directory.
+      process.exitCode = 1;
+      return;
     }
 
     const meta = await metaRes.json() as {
@@ -8889,7 +8900,8 @@ async function checkPyPiPackage(
 
     if (!dist) {
       console.error(`Error: No downloadable distribution found for "${name}" on PyPI.`);
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
 
     // Download the archive
@@ -8983,7 +8995,10 @@ async function checkPyPiPackage(
       artifactSummaries,
     });
 
-    if (critical.length > 0 || high.length > 0) process.exit(1);
+    if (critical.length > 0 || high.length > 0) {
+      process.exitCode = 1;
+      return;
+    }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('not found on PyPI')) {
@@ -8991,7 +9006,7 @@ async function checkPyPiPackage(
     } else {
       console.error(`Error scanning PyPI package "${name}": ${message}`);
     }
-    process.exit(1);
+    process.exitCode = 1;
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -9043,7 +9058,11 @@ async function checkRawUrl(
       const headRes = await fetch(url, { method: 'HEAD', redirect: 'follow' });
       if (!headRes.ok) {
         console.error(`Error: HTTP ${headRes.status} fetching "${url}".`);
-        process.exit(1);
+        // Set exit code and return so `finally` can clean up tempDir (was
+        // already allocated above). process.exit() would skip the cleanup
+        // and orphan the /tmp/hma-check-url-* directory.
+        process.exitCode = 1;
+        return;
       }
 
       const contentType = headRes.headers.get('content-type') || '';
@@ -9059,7 +9078,8 @@ async function checkRawUrl(
       const bodyRes = await fetch(finalUrl, { redirect: 'follow' });
       if (!bodyRes.ok || !bodyRes.body) {
         console.error(`Error: Failed to download "${url}" (HTTP ${bodyRes.status}).`);
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
       const buffer = Buffer.from(await bodyRes.arrayBuffer());
 
@@ -9177,7 +9197,10 @@ async function checkRawUrl(
       }
     }
 
-    if (critical.length > 0 || high.length > 0) process.exit(1);
+    if (critical.length > 0 || high.length > 0) {
+      process.exitCode = 1;
+      return;
+    }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
@@ -9190,7 +9213,7 @@ async function checkRawUrl(
     } else {
       console.error(`Error scanning URL: ${message}`);
     }
-    process.exit(1);
+    process.exitCode = 1;
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -9369,7 +9392,10 @@ async function checkNpmPackage(
       }
     }
 
-    if (critical.length > 0 || high.length > 0) process.exit(1);
+    if (critical.length > 0 || high.length > 0) {
+      process.exitCode = 1;
+      return;
+    }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     // Clean npm error messages
@@ -9404,11 +9430,40 @@ async function checkNpmPackage(
         console.error(`Error: ${message}`);
       }
     }
-    process.exit(1);
+    process.exitCode = 1;
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
 }
+
+// Defense-in-depth: best-effort cleanup of stale scan workspaces from prior
+// CLI invocations that crashed or were SIGKILL'd before their `finally` could
+// run. The process.exit() leak that wedged the scanner container in May 2026
+// (ENOSPC on /tmp/hma-check-*) is fixed upstream in this commit, but a
+// fire-and-forget sweep on startup protects against future regressions or
+// non-graceful exits we can't intercept (OOM, SIGKILL, host eviction).
+//
+// Never blocks, never throws. Runs concurrently with the integrity check below.
+(async () => {
+  try {
+    const { readdir, rm, stat } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const root = tmpdir();
+    const cutoffMs = Date.now() - 24 * 60 * 60 * 1000; // 24h
+    const entries = await readdir(root);
+    for (const entry of entries) {
+      if (!entry.startsWith('hma-check-') && !entry.startsWith('arp-lab-')) continue;
+      const full = join(root, entry);
+      try {
+        const s = await stat(full);
+        if (s.mtimeMs < cutoffMs) {
+          await rm(full, { recursive: true, force: true });
+        }
+      } catch { /* swallow per-entry errors */ }
+    }
+  } catch { /* swallow root errors — cleanup is best-effort */ }
+})().catch(() => { /* never propagates */ });
 
 // Self-securing: verify own integrity before running any command
 // A security tool that doesn't verify itself is worse than no security tool
