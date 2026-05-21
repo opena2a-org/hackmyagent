@@ -134,6 +134,19 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
     expect(parsed.errorHint).toBe(`Verify the URL: https://www.npmjs.com/package/${bareName}`);
   });
 
+  it.runIf(canRunSpawn())('#161: uppercase bare-name miss renders errorHint in plain (non-JSON) output', () => {
+    const bareName = 'NONEXISTENT-XYZ-9999';
+    const res = spawnSync('node', [CLI, 'check', bareName, '--no-scan', '--ci'], {
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+
+    expect(res.status).toBe(1);
+    const stderr = res.stderr || '';
+    expect(stderr).not.toContain('Invalid skill identifier');
+    expect(stderr).toContain(`Verify the URL: https://www.npmjs.com/package/${bareName}`);
+  });
+
   it.runIf(canRunSpawn())('F4: git-style miss populates errorHint in JSON output', () => {
     const target = 'anthropic/code-review';
     const res = spawnSync('node', [CLI, 'check', target, '--no-scan', '--json', '--ci'], {
