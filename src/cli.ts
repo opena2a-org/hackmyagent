@@ -451,14 +451,16 @@ Examples:
           if (npmErr instanceof Error && npmErr.name === 'NpmNotFoundError') {
             const isScoped = skill.startsWith('@');
             if (!isScoped) {
+              const errorHint = `Verify the URL: https://www.npmjs.com/package/${skill}`;
               if (options.json) {
                 writeJsonStdout(buildNotFoundOutput({
                   name: skill,
                   ecosystem: 'npm',
                   error: `Package "${skill}" not found on npm.`,
+                  errorHint,
                 }));
               } else {
-                printNotFoundBlock({ pkg: skill, ecosystem: 'npm' });
+                printNotFoundBlock({ pkg: skill, ecosystem: 'npm', errorHint });
               }
               process.exit(1);
             }
@@ -7943,9 +7945,13 @@ function looksLikeNpmPackage(target: string): boolean {
   if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(target)) return false;
   // Hostnames have dots (example.com, sub.domain.org)
   if (target.includes('.')) return false;
-  // What's left: bare names like express, lodash, hackmyagent
-  // npm names are lowercase, may contain hyphens and digits
-  return /^[a-z0-9][a-z0-9._-]*$/.test(target);
+  // What's left: bare names like express, lodash, hackmyagent.
+  // npm publishing requires lowercase, but accept uppercase here too —
+  // npm itself returns 404 for non-existent uppercase names, which we
+  // catch as NpmNotFoundError below and surface as the canonical
+  // NotFoundOutput JSON shape (closes #161). Rejecting uppercase here
+  // would fall through to the skill-id parser's dead-end error.
+  return /^[a-z0-9][a-z0-9._-]*$/i.test(target);
 }
 
 /**
