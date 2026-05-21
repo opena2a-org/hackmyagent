@@ -59,6 +59,9 @@
     "typescript": "^5.3.3",
     "vitest": "^3.0.0"
   },
+  "overrides": {
+    "ip-address": "^10.1.1"
+  },
   "keywords": [
     "ai",
     "agent",
