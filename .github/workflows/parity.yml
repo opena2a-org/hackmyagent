@@ -16,7 +16,9 @@ concurrency:
 
 jobs:
   parity:
-    uses: opena2a-org/opena2a-parity/.github/workflows/parity.yml@main
+    # Pinned to opena2a-parity@main as of 2026-05-24. Bumping the SHA is
+    # an explicit, reviewable bump; tracking `@main` directly was flaky.
+    uses: opena2a-org/opena2a-parity/.github/workflows/parity.yml@093dbda7def691db3b2f860216a008b43f8affb0
     with:
       hma_ref: ${{ github.event.pull_request.head.sha || github.sha }}
       opena2a_ref: main
