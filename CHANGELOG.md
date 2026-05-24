@@ -4,6 +4,19 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-05-24
+
+### Changed
+- **Integrity-failure path now fires `tele.error('startup', 'INTEGRITY_FAIL')` before exit-3.** Per [CHIEF-CSR-018] + [CHIEF-CPO-022] (`briefs/cli-telemetry-success-semantics.md`), supply-chain integrity violations are a distinct dashboard event class — not a generic command failure — and warrant per-event paging (threshold = 1). Telemetry initialization moved to before the integrity check at `src/cli.ts:9476` so the error event can fire during the QUARANTINE branch; `tele.flush()` is called explicitly because `process.exit()` does not trigger Node's beforeExit drain. The duplicate `const tele = await import('@opena2a/telemetry')` later in the file is removed. No change to user-facing behavior: exit code is still 3, stderr message unchanged, telemetry remains opt-out via `OPENA2A_TELEMETRY=off`.
+
+- **Main-dispatcher `successFromExitCode` call left at the single-argument form.** Per [CHIEF-CSR-018]'s per-tool mapping, HMA does NOT pass `semanticSuccessCodes`. Exit 2 in HMA represents partial/incomplete scan or plugin errors — both genuinely degraded outcomes that the dashboard should surface as failure. Only ai-trust receives `[2]`; HMA stays POSIX-strict.
+
+### Pinned
+- `@opena2a/telemetry` bumped from `0.2.0` to `0.3.0` (exact). 0.3.0 is API-additive — HMA does not consume the new optional argument but pins ahead so the fleet stays on a single SDK major across release windows.
+
+### Brief
+- opena2a-org/briefs/cli-telemetry-success-semantics.md
+
 ## [0.23.0] - 2026-05-11
 
 ### Changed

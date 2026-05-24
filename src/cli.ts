@@ -9474,6 +9474,15 @@ async function checkNpmPackage(
 // Self-securing: verify own integrity before running any command
 // A security tool that doesn't verify itself is worse than no security tool
 (async () => {
+  // Initialize telemetry FIRST so an integrity failure can fire a distinct
+  // INTEGRITY_FAIL event before the process exits. Per [CHIEF-CSR-018] +
+  // [CHIEF-CPO-022], supply-chain integrity violations get their own
+  // dashboard event row (not a generic command failure) and a per-event
+  // pager threshold of 1. tele.init() is silent on file-I/O failures
+  // (sandboxed envs) so this never blocks startup.
+  const tele = await import('@opena2a/telemetry');
+  await tele.init({ tool: TELEMETRY_TOOL, version: VERSION });
+
   try {
     const { verifyAll } = await import('./nanomind-core/security/integrity-verifier.js');
     const integrity = await verifyAll();
@@ -9491,6 +9500,14 @@ async function checkNpmPackage(
       for (const check of integrity.checks.filter(c => !c.passed)) {
         process.stderr.write(`  Failed: ${check.name} -- ${check.reason}\n`);
       }
+      // Fire INTEGRITY_FAIL telemetry event before exit.
+      // process.exit() does NOT trigger Node's beforeExit drain, so we
+      // flush explicitly. tele.flush is bounded by the SDK's 2s per-event
+      // timeout — worst-case CLI delay is small and capped.
+      try {
+        tele.error('startup', 'INTEGRITY_FAIL');
+        await tele.flush();
+      } catch { /* never block integrity exit on a telemetry failure */ }
       process.exit(3); // Exit code 3 = integrity failure
     }
 
@@ -9525,11 +9542,11 @@ async function checkNpmPackage(
   // Tier-1 anonymous usage telemetry — default ON; opt-out via
   // OPENA2A_TELEMETRY=off or `hackmyagent telemetry off`. See README §Telemetry.
   // Disclosure surfaces: README, --version line, telemetry subcommand,
-  // opena2a.org/telemetry. CommonJS / ESM bridge: dynamic import inside async
-  // main, type-only `TelemetryAction` import with resolution-mode: 'import'.
-  const tele = await import('@opena2a/telemetry');
+  // opena2a.org/telemetry. The `tele` import + init happened above (before
+  // the integrity check) so INTEGRITY_FAIL can fire. CommonJS / ESM bridge:
+  // dynamic import inside async main, type-only `TelemetryAction` import
+  // with resolution-mode: 'import'.
   const { versionLine, runTelemetryCommand } = await import('@opena2a/cli-ui');
-  await tele.init({ tool: TELEMETRY_TOOL, version: VERSION });
 
   // Set the --version line now that we have live telemetry status.
   program.version(
