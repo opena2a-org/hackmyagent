@@ -1,4 +1,4 @@
-name: parity
+name: parity-gate
 
 on:
   pull_request:
@@ -6,9 +6,10 @@ on:
       - "src/**"
       - "package.json"
       - "package-lock.json"
-      - ".github/workflows/parity.yml"
+      - ".github/workflows/parity-gate.yml"
   push:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: parity-${{ github.ref }}
