@@ -4,6 +4,20 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.23.2] - 2026-05-25
+
+### Fixed
+
+- **`check pip:<pkg> --no-scan` now honors `--no-scan` and returns Registry-shape output instead of doing a full PyPI download + scan ([#195](https://github.com/opena2a-org/hackmyagent/issues/195)).** Prior to this release, `checkPyPiPackage` in `src/cli.ts` had no `--no-scan` branch, so the flag was silently dropped for `pip:`/`pypi:` targets. Every `check pip:<pkg> --no-scan` would still hit PyPI for metadata + tarball download (typically 5-30s) and emit scan-shape JSON (`findings`, `score`, `version`) that didn't match the Registry-shape output the npm path emits for the same flag combination. With this release, the pypi handler mirrors `checkNpmPackage`'s `--no-scan` early-return: kicks off the Registry lookup in parallel, awaits it on the no-scan branch, emits `{ ...registryData, source: 'registry' }` (or a `NotFoundOutput` with `ecosystem: 'pypi'` if the Registry has no record). Closes the contract gap that blocked the 3-way PyPI parity fixture at `opena2a-standards/opena2a-parity`. Discovered during fixture work for `scan-soul-hardened` ([opena2a-parity#9](https://github.com/opena2a-standards/opena2a-parity/pull/9)).
+
+### Tests
+
+- New spawn-smoke test in `__tests__/checker/check-not-found-json.test.ts` (`#195: pip:<missing> --no-scan honors --no-scan...`) gates the regression with a 5-second timeout. The fix completes in ~470ms; a pre-fix download + scan would have exceeded 5s on any real PyPI package.
+
+### Known follow-up
+
+- HMA queries the Registry with `pip:${name}` (prefix-preserved) while the Registry stores PyPI packages under their bare name. That mismatch means `--no-scan` against a Registry-indexed PyPI package still returns `found: false` today. Tracked separately; the fix in this release is scoped to the `--no-scan` lifecycle bug per [#195](https://github.com/opena2a-org/hackmyagent/issues/195).
+
 ## [0.23.1] - 2026-05-24
 
 ### Changed
