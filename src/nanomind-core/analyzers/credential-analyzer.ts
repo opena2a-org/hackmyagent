@@ -16,6 +16,7 @@ import type { ASTFinding } from './capability-analyzer.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
 import { lineFromOffset, findLineFromString } from '../../types/text-position.js';
+import { isCorpusPath, isIntegrityManifestPath } from '../../hardening/path-context.js';
 
 // ============================================================================
 // Public API
@@ -396,6 +397,21 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
     return findings;
   }
 
+  // Hash-shape gate (nanomind#26): SHA-256 / SHA-512 / SHA-1 / MD5 hex
+  // digests (32, 40, 64, or 128 hex chars) are checksums, not credentials.
+  // They match the 40+ alphanumeric high-entropy fallback in
+  // `buildCredentialFormatRegex`, so they slip past the format gate above
+  // even though no vendor-prefix credential is present. Inside doc/test/
+  // manifest contexts (notably `*-models.json` / `*-manifest.json`), when
+  // EVERY evidence text is hash-shape AND no evidence carries a vendor
+  // prefix, treat as checksums and suppress. A real credential alongside
+  // hashes still fires because at least one text would carry a vendor
+  // prefix (sk-, ghp_, AKIA…, AIza…, xox[abprs]-, eyJ…) and the
+  // all-hash invariant breaks.
+  if (isTestOrDoc && isAllEvidenceHashShape(evidenceTexts)) {
+    return findings;
+  }
+
   // Determine severity based on artifact type and evidence strength
   const maxConfidence = Math.max(
     ...credentialEvidence.map(e => e.confidence),
@@ -459,6 +475,20 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
  */
 function isDocumentationOrTestContext(ast: SecurityAST): boolean {
   const path = (ast.artifactPath ?? '').toLowerCase();
+
+  // Adversarial training corpora (per [CSR-003] + [CDS-023]) and
+  // model integrity manifests are non-production data files. CRED
+  // signals here are training-label content or SHA-256 checksums,
+  // never live credentials. nanomind#26: training/corpus/*.json
+  // (credential-forwarding examples for the classifier to learn) and
+  // nanomind-models.json (sha256 hash table) were both firing CRED
+  // findings before this carve-out landed.
+  if (ast.artifactPath && isCorpusPath(ast.artifactPath)) {
+    return true;
+  }
+  if (ast.artifactPath && isIntegrityManifestPath(ast.artifactPath)) {
+    return true;
+  }
 
   // Test fixtures
   if (
@@ -544,6 +574,30 @@ function isDocumentationOrTestContext(ast: SecurityAST): boolean {
 function evidenceShowsCredentialFormat(evidenceTexts: string[]): boolean {
   const re = buildCredentialFormatRegex();
   return evidenceTexts.some(t => re.test(t));
+}
+
+/**
+ * True when EVERY evidence text contains a hex-only hash shape (MD5,
+ * SHA-1, SHA-256, or SHA-512 — 32, 40, 64, or 128 hex chars) AND none
+ * carries a vendor-prefix credential pattern. Used by AST-CRED-003 to
+ * suppress findings on integrity-manifest files (`*-models.json`,
+ * `*-manifest.json`) whose 64-hex SHA-256 digests match the high-entropy
+ * fallback in `buildCredentialFormatRegex` even though they are not
+ * credentials. Length is anchored to canonical digest widths so
+ * arbitrary long hex blobs are not misclassified as hashes.
+ */
+function isAllEvidenceHashShape(evidenceTexts: string[]): boolean {
+  if (evidenceTexts.length === 0) return false;
+  const hashRe = /\b[a-fA-F0-9]{32}(?:[a-fA-F0-9]{8}|[a-fA-F0-9]{32}|[a-fA-F0-9]{96})?\b/;
+  const vendorPrefixRe = /\b(?:sk-[a-zA-Z0-9_-]{20,}|sk_(?:live|test)_[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{20,}|gho_[a-zA-Z0-9]{20,}|github_pat_[a-zA-Z0-9_]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|xox[abprs]-[0-9A-Za-z-]{10,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/;
+  return evidenceTexts.every(t => {
+    const m = hashRe.exec(t);
+    if (!m) return false;
+    const len = m[0].length;
+    if (len !== 32 && len !== 40 && len !== 64 && len !== 128) return false;
+    if (vendorPrefixRe.test(t)) return false;
+    return true;
+  });
 }
 
 /**

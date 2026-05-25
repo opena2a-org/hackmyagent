@@ -364,6 +364,61 @@ export function dropPathlessNoiseFloor(
 }
 
 /**
+ * True when `matchIndex` on `line` is inside a string literal or comment.
+ * Walks the line character by character tracking single, double, and
+ * backtick quote state plus `//` line comments and `/* ... *\/` block
+ * comments. Used by NEMO-009 so eval(...) substrings passed as test
+ * input to a prompt-injection screener (e.g. `screenInput('eval(atob(
+ * "malicious"))')`) do not fire — the eval() token is text, not a real
+ * code-execution site.
+ *
+ * Conservative semantics:
+ *  - A backslash escape inside a quote consumes the next character.
+ *  - An unclosed block comment treats the rest of the line as comment.
+ *  - A line comment (`//`) outside quotes makes the rest of the line a
+ *    comment.
+ *  - Returns false when the match is in real code.
+ */
+export function isMatchInsideStringLiteral(line: string, matchIndex: number): boolean {
+  let inSingle = false;
+  let inDouble = false;
+  let inBacktick = false;
+  let i = 0;
+  while (i < matchIndex) {
+    const c = line[i];
+    if (!inSingle && !inDouble && !inBacktick) {
+      if (c === '/' && line[i + 1] === '/') {
+        return true;
+      }
+      if (c === '/' && line[i + 1] === '*') {
+        const end = line.indexOf('*/', i + 2);
+        if (end === -1) {
+          return true;
+        }
+        if (matchIndex < end + 2) {
+          return true;
+        }
+        i = end + 2;
+        continue;
+      }
+      if (c === "'") inSingle = true;
+      else if (c === '"') inDouble = true;
+      else if (c === '`') inBacktick = true;
+    } else {
+      if (c === '\\' && i + 1 < matchIndex) {
+        i += 2;
+        continue;
+      }
+      if (inSingle && c === "'") inSingle = false;
+      else if (inDouble && c === '"') inDouble = false;
+      else if (inBacktick && c === '`') inBacktick = false;
+    }
+    i++;
+  }
+  return inSingle || inDouble || inBacktick;
+}
+
+/**
  * Parsed .hmaignore rules split into path patterns and check ID patterns.
  * Check ID patterns start with `!` and support trailing `*` wildcards.
  * Example: `!SANDBOX-*` suppresses all SANDBOX checks.
@@ -8947,6 +9002,11 @@ dist/
     let nemo009Found = false;
     // Python files: pickle.load, yaml.load without SafeLoader, eval(), exec()
     for (const file of cappedPy) {
+      // Test files deliberately exercise unsafe-deserialization patterns to
+      // verify defensive parsers and prompt-injection screeners. Skip them
+      // here per [CSR-004]'s test-path carve-out (mirrors NEMO-007 above).
+      const relForPyTest = path.relative(targetDir, file);
+      if (isTestPath(relForPyTest)) continue;
       try {
         const content = await fs.readFile(file, 'utf-8');
         const lines = content.split('\n');
@@ -9008,12 +9068,23 @@ dist/
     }
     // TS/JS files: eval(), new Function(), JSON5.parse
     for (const file of cappedTsJs) {
+      // Test files deliberately exercise unsafe-deserialization patterns
+      // and pass eval(...) substrings as input to prompt-injection
+      // screeners. Skip them per [CSR-004]'s test-path carve-out (mirrors
+      // NEMO-007 above).
+      const relForJsTest = path.relative(targetDir, file);
+      if (isTestPath(relForJsTest)) continue;
       try {
         const content = await fs.readFile(file, 'utf-8');
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
-          if (/(?<!\.)\beval\s*\(/.test(line)) {
+          // For each pattern, locate the match index and require that the
+          // match site is real code — not a string literal or comment.
+          // `screenInput('eval(atob("malicious"))', 'piped')` puts the
+          // eval( token inside a string passed to a screener; suppress.
+          const bareEval = /(?<!\.)\beval\s*\(/.exec(line);
+          if (bareEval && !isMatchInsideStringLiteral(line, bareEval.index)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',
@@ -9034,10 +9105,10 @@ dist/
           // These all invoke the global eval (not a user-defined `eval` method)
           // and bypass the negative-lookbehind guard above. Detected separately
           // so the bare-eval finding above can stay narrow against method-call FPs.
-          if (
-            /\b(?:globalThis|window|self|frames|top|parent)\s*\.\s*eval\s*\(/.test(line) ||
-            /\(\s*0\s*,\s*eval\s*\)\s*\(/.test(line)
-          ) {
+          const indirectEval =
+            /\b(?:globalThis|window|self|frames|top|parent)\s*\.\s*eval\s*\(/.exec(line) ??
+            /\(\s*0\s*,\s*eval\s*\)\s*\(/.exec(line);
+          if (indirectEval && !isMatchInsideStringLiteral(line, indirectEval.index)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',
@@ -9054,7 +9125,8 @@ dist/
               guidance: 'Indirect eval forms (globalThis.eval, (0,eval)) are commonly used to access the global scope; they execute arbitrary code with the same risks as bare eval().',
             });
           }
-          if (/new\s+Function\s*\(/.test(line)) {
+          const newFunction = /new\s+Function\s*\(/.exec(line);
+          if (newFunction && !isMatchInsideStringLiteral(line, newFunction.index)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',
@@ -9071,7 +9143,8 @@ dist/
               guidance: 'new Function() is equivalent to eval() -- it creates executable code from strings. If the string source is untrusted, this enables arbitrary code execution.',
             });
           }
-          if (/JSON5\.parse/.test(line)) {
+          const json5Parse = /JSON5\.parse/.exec(line);
+          if (json5Parse && !isMatchInsideStringLiteral(line, json5Parse.index)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',

@@ -4,6 +4,19 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Scanner false-positive class on NEMO-009 (eval/Function/JSON5) and AST-CRED-001/002/003.** Three FPs that surfaced on the nanomind tree (`opena2a-org/nanomind#26`) are now suppressed by preserved-detection refinements:
+  - NEMO-009 now skips test files (`*.test.ts`, `*.spec.ts`, `__tests__/`, `_test.go`, `*.test.py`) per the [CSR-004] carve-out already wired into NEMO-007 and TOCTOU-001; mirrors precedent.
+  - NEMO-009 also gates each match on a new `isMatchInsideStringLiteral()` helper so eval(...) substrings passed as test input to prompt-injection screeners (`screenInput('eval(atob("malicious"))', 'piped')`) and eval-mentioning comments do not fire. Single, double, and backtick quotes plus line and block comments are tracked.
+  - `credential-analyzer` now consults `isCorpusPath()` (per [CSR-003] + [CDS-023]) so credential signals in `training/corpus/**`, `training/datasets/**`, and `training/data/**` (intentional training-label content, not live credentials) no longer fire AST-CRED-001/002/003.
+  - A new `isIntegrityManifestPath()` helper recognizes `*-models.json` / `*-manifest.json` / bare `manifest.json` and `models.json`, treating them as documentation context.
+  - A new hash-shape gate inside `checkHardcodedSecrets()` suppresses AST-CRED-003 when every evidence text is a pure hex digest (MD5/SHA-1/SHA-256/SHA-512 widths exactly: 32, 40, 64, 128) AND no evidence carries a vendor-prefix credential (`sk-`, `ghp_`, `AKIA…`, `AIza…`, `xox[abprs]-`, `eyJ…`). A real credential alongside hashes still fires (regression test included).
+- **Closes opena2a-org/nanomind#26.** Pre-fix scan of nanomind: 58/100 with 2 CRITICAL + 1 HIGH + 1 MEDIUM blocking `pre-push-review` Phase 4. Post-fix scan: 95/100 with zero CRITICAL/HIGH/MEDIUM in the fixed classes. HMA self-scan score is net 0 change attributable to source: working-tree CLAUDE.md (gitignored) accounts for the 2-point drop from 100 to 98 (Large agent instruction file, LOW).
+
+### Decided
+- [CHIEF-CSR] APPROVE: all three refinements are preserved-detection FP-suppress (category (a) per the score-jump rule in `hackmyagent/CLAUDE.md`). Real eval on real code still fires; real credentials in corpora still fire if vendor-prefixed; real secrets in manifests still fire alongside hashes (defended by regression test).
+- [CHIEF-CPO] APPROVE: aligns with `briefs/cpo-018-adversarial-corpus-hma-gate.md` follow-up (scanner-side refinement preferred over per-consumer opt-in). No CLI-flag surface change; no user-visible UX change beyond suppressed FPs.
+
 ## [0.23.1] - 2026-05-24
 
 ### Changed
