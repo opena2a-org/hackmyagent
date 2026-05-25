@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { isCorpusPath, isTestPath, isExamplePath } from '../../src/hardening/path-context';
+import {
+  isCorpusPath,
+  isTestPath,
+  isExamplePath,
+  isIntegrityManifestPath,
+} from '../../src/hardening/path-context';
 
 describe('path-context', () => {
   describe('isCorpusPath', () => {
@@ -128,6 +133,33 @@ describe('path-context', () => {
     it('does not match production paths', () => {
       expect(isExamplePath('src/scanner.ts')).toBe(false);
       expect(isExamplePath('config/agent.json')).toBe(false);
+    });
+  });
+
+  describe('isIntegrityManifestPath', () => {
+    it('matches *-models.json and *-manifest.json by basename', () => {
+      expect(isIntegrityManifestPath('nanomind-models.json')).toBe(true);
+      expect(isIntegrityManifestPath('release-manifest.json')).toBe(true);
+      expect(isIntegrityManifestPath('packages/foo/integrity-manifest.json')).toBe(true);
+    });
+    it('matches bare manifest.json and models.json', () => {
+      expect(isIntegrityManifestPath('manifest.json')).toBe(true);
+      expect(isIntegrityManifestPath('models.json')).toBe(true);
+      expect(isIntegrityManifestPath('src/dist/manifest.json')).toBe(true);
+    });
+    it('does NOT match unrelated *.json files', () => {
+      expect(isIntegrityManifestPath('package.json')).toBe(false);
+      expect(isIntegrityManifestPath('tsconfig.json')).toBe(false);
+      expect(isIntegrityManifestPath('config/database.json')).toBe(false);
+      expect(isIntegrityManifestPath('package-lock.json')).toBe(false);
+    });
+    it('does NOT match inside node_modules', () => {
+      expect(isIntegrityManifestPath('node_modules/evil/nanomind-models.json')).toBe(false);
+      expect(isIntegrityManifestPath('vendor/evil/manifest.json')).toBe(false);
+    });
+    it('is case-insensitive', () => {
+      expect(isIntegrityManifestPath('Nanomind-Models.JSON')).toBe(true);
+      expect(isIntegrityManifestPath('MANIFEST.json')).toBe(true);
     });
   });
 });

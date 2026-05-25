@@ -364,6 +364,126 @@ export function dropPathlessNoiseFloor(
 }
 
 /**
+ * True when `matchIndex` on `line` is inside a string literal or comment.
+ * Walks the line character by character tracking single, double, and
+ * backtick quote state plus `//` line comments and `/* ... *\/` block
+ * comments. Used by NEMO-009 so eval(...) substrings passed as test
+ * input to a prompt-injection screener (e.g. `screenInput('eval(atob(
+ * "malicious"))')`) do not fire — the eval() token is text, not a real
+ * code-execution site.
+ *
+ * Conservative semantics:
+ *  - A backslash escape inside a quote consumes the next character if
+ *    one exists. A trailing backslash at end of line consumes only the
+ *    backslash itself (no phantom next-char skip).
+ *  - An unclosed block comment treats the rest of the line as comment.
+ *  - A line comment (`//`) outside quotes makes the rest of the line a
+ *    comment.
+ *  - Template-literal interpolation (`${...}` inside a backtick) is a
+ *    re-entry into code state. When the helper hits `${` inside a
+ *    backtick it scans forward with a brace-depth counter to find the
+ *    matching `}`. If `matchIndex` lies inside that span the match is
+ *    real code and the helper returns false; otherwise the helper
+ *    skips past the entire `${...}` region (still inside the backtick)
+ *    and keeps walking, so a `//` comment after the closing backtick
+ *    is still recognized.
+ *  - The helper does NOT attempt to detect regex literals. A real
+ *    `/don't/; eval(payload)` line will be mis-suppressed only if the
+ *    apostrophe inside the regex toggles open-quote state and the
+ *    eval token comes before the regex closes; in practice eval
+ *    appearing on the same line as a regex literal containing an
+ *    apostrophe is rare enough to leave unhandled rather than ship a
+ *    regex-context heuristic that FPs on multi-line strings.
+ *  - Returns false when the match is in real code.
+ *
+ * Complexity: O(line.length) per call. The outer walker advances `i`
+ * monotonically (every branch either does `i++` or `i = j` past a
+ * matched region); the inner template-interpolation brace loop is
+ * bounded by `j < line.length` and is entered at most once per `${...}`
+ * region that the outer walker steps into. MAX_WALK_ITERATIONS is a
+ * belt-and-suspenders cap that fires only on inputs already pathological
+ * enough to be a different problem.
+ */
+const MAX_WALK_ITERATIONS = 100000;
+
+export function isMatchInsideStringLiteral(line: string, matchIndex: number): boolean {
+  let inSingle = false;
+  let inDouble = false;
+  let inBacktick = false;
+  let i = 0;
+  let outerIters = 0;
+  while (i < matchIndex) {
+    if (++outerIters > MAX_WALK_ITERATIONS) {
+      // Pathological input. Conservative default: treat the match as
+      // inside-string so the suppression path fires; over-suppression
+      // is a smaller harm than walker hang on a CI pipeline.
+      return true;
+    }
+    const c = line[i];
+    if (!inSingle && !inDouble && !inBacktick) {
+      if (c === '/' && line[i + 1] === '/') {
+        return true;
+      }
+      if (c === '/' && line[i + 1] === '*') {
+        const end = line.indexOf('*/', i + 2);
+        if (end === -1) {
+          return true;
+        }
+        if (matchIndex < end + 2) {
+          return true;
+        }
+        i = end + 2;
+        continue;
+      }
+      if (c === "'") inSingle = true;
+      else if (c === '"') inDouble = true;
+      else if (c === '`') inBacktick = true;
+    } else {
+      if (inBacktick && c === '$' && line[i + 1] === '{') {
+        let depth = 1;
+        let j = i + 2;
+        let innerIters = 0;
+        while (j < line.length && depth > 0) {
+          if (++innerIters > MAX_WALK_ITERATIONS) {
+            // Same defensive default as the outer cap. Outer walker
+            // continues past the `${...}` region by setting i.
+            break;
+          }
+          const cj = line[j];
+          if (cj === '{') depth++;
+          else if (cj === '}') depth--;
+          j++;
+        }
+        const exprStart = i + 2;
+        const exprEnd = depth === 0 ? j - 1 : line.length;
+        if (matchIndex >= exprStart && matchIndex < exprEnd) {
+          return false;
+        }
+        i = depth === 0 ? j : line.length;
+        continue;
+      }
+      if (c === '\\') {
+        // Backslash escape inside a quote. Skip the next character only
+        // if one exists in the line. A trailing backslash at EOL falls
+        // through to the unchanged `i++` and the outer loop exits
+        // naturally on the next iteration. Bound against `line.length`
+        // (not `matchIndex`) so the helper stays correct if a caller
+        // ever passes `matchIndex >= line.length`.
+        if (i + 1 < line.length) {
+          i += 2;
+          continue;
+        }
+      }
+      if (inSingle && c === "'") inSingle = false;
+      else if (inDouble && c === '"') inDouble = false;
+      else if (inBacktick && c === '`') inBacktick = false;
+    }
+    i++;
+  }
+  return inSingle || inDouble || inBacktick;
+}
+
+/**
  * Parsed .hmaignore rules split into path patterns and check ID patterns.
  * Check ID patterns start with `!` and support trailing `*` wildcards.
  * Example: `!SANDBOX-*` suppresses all SANDBOX checks.
@@ -9006,14 +9126,24 @@ dist/
         }
       } catch { /* skip */ }
     }
-    // TS/JS files: eval(), new Function(), JSON5.parse
+    // TS/JS files: eval(), new Function(), JSON5.parse.
+    // Per-match string-literal/comment gating below is the FP guard.
+    // We do NOT wholesale-skip `.test.ts` files: an attacker-planted
+    // `evil.test.ts` would otherwise silence NEMO-009 across the whole
+    // file. Real eval() inside test code (not inside a string literal)
+    // still fires and is treated as the security smell it is.
     for (const file of cappedTsJs) {
       try {
         const content = await fs.readFile(file, 'utf-8');
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
-          if (/(?<!\.)\beval\s*\(/.test(line)) {
+          // For each pattern, locate the match index and require that the
+          // match site is real code — not a string literal or comment.
+          // `screenInput('eval(atob("malicious"))', 'piped')` puts the
+          // eval( token inside a string passed to a screener; suppress.
+          const bareEval = /(?<!\.)\beval\s*\(/.exec(line);
+          if (bareEval && !isMatchInsideStringLiteral(line, bareEval.index)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',
@@ -9034,10 +9164,10 @@ dist/
           // These all invoke the global eval (not a user-defined `eval` method)
           // and bypass the negative-lookbehind guard above. Detected separately
           // so the bare-eval finding above can stay narrow against method-call FPs.
-          if (
-            /\b(?:globalThis|window|self|frames|top|parent)\s*\.\s*eval\s*\(/.test(line) ||
-            /\(\s*0\s*,\s*eval\s*\)\s*\(/.test(line)
-          ) {
+          const indirectEval =
+            /\b(?:globalThis|window|self|frames|top|parent)\s*\.\s*eval\s*\(/.exec(line) ??
+            /\(\s*0\s*,\s*eval\s*\)\s*\(/.exec(line);
+          if (indirectEval && !isMatchInsideStringLiteral(line, indirectEval.index)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',
@@ -9054,7 +9184,8 @@ dist/
               guidance: 'Indirect eval forms (globalThis.eval, (0,eval)) are commonly used to access the global scope; they execute arbitrary code with the same risks as bare eval().',
             });
           }
-          if (/new\s+Function\s*\(/.test(line)) {
+          const newFunction = /new\s+Function\s*\(/.exec(line);
+          if (newFunction && !isMatchInsideStringLiteral(line, newFunction.index)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',
@@ -9071,7 +9202,8 @@ dist/
               guidance: 'new Function() is equivalent to eval() -- it creates executable code from strings. If the string source is untrusted, this enables arbitrary code execution.',
             });
           }
-          if (/JSON5\.parse/.test(line)) {
+          const json5Parse = /JSON5\.parse/.exec(line);
+          if (json5Parse && !isMatchInsideStringLiteral(line, json5Parse.index)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',

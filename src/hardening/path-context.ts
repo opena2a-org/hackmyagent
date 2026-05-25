@@ -90,6 +90,36 @@ export function isTestPath(relativePath: string): boolean {
 }
 
 /**
+ * True when the path points to an integrity / model manifest file. These
+ * JSON files describe artifact layouts and ship SHA-256 / SHA-512 hex
+ * digests under `sha256`, `sha512`, `integrity`, or `checksum` keys; the
+ * 64-hex digest shape matches the credential-format high-entropy fallback
+ * regex (40+ word-character run), which would otherwise fire AST-CRED-001
+ * and AST-CRED-003 on every manifest entry. Recognize the file by name
+ * so the credential analyzer can treat these contents as documentation
+ * rather than a credential surface.
+ *
+ * Names:
+ *  - `manifest.json` / `models.json` at any depth.
+ *  - Any basename ending in `-manifest.json` or `-models.json` (e.g.
+ *    `nanomind-models.json`, `release-manifest.json`).
+ *
+ * Pure-hex hash shape detection (32/40/64/128 hex) is the second gate
+ * inside the credential analyzer; this helper covers the file-naming
+ * convention.
+ */
+export function isIntegrityManifestPath(relativePath: string): boolean {
+  const p = normalize(relativePath);
+  if (isInstalledDep(p)) return false;
+  const basename = p.split('/').pop() ?? '';
+  if (basename === 'manifest.json' || basename === 'models.json') return true;
+  if (/-manifest\.json$/.test(basename) || /-models\.json$/.test(basename)) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * True when the path points into an examples/templates/samples directory.
  * Files in these directories are schema documentation — agent-card.json
  * under `examples/` is a demonstration of the shape, not a production

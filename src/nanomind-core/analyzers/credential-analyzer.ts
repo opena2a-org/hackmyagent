@@ -16,6 +16,7 @@ import type { ASTFinding } from './capability-analyzer.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
 import { lineFromOffset, findLineFromString } from '../../types/text-position.js';
+import { isCorpusPath, isIntegrityManifestPath } from '../../hardening/path-context.js';
 
 // ============================================================================
 // Public API
@@ -71,6 +72,13 @@ function checkCredentialsInNonEnvContext(
   // Env files and credential files are expected to contain credentials
   const safeContextTypes = new Set(['env_file', 'credential_file']);
   if (safeContextTypes.has(ast.artifactType)) {
+    return findings;
+  }
+
+  // Unified carve-out: verified integrity manifest OR adversarial
+  // training corpus, in both cases with no vendor-prefix credential
+  // present. A planted real credential still fires.
+  if (shouldSuppressCredentialChecks(ast.artifactPath, artifactContent)) {
     return findings;
   }
 
@@ -172,6 +180,23 @@ function checkCredentialForwarding(
   // are teaching credential management, not performing credential exfiltration.
   // e.g., secretless docs/use-cases/team-setup.md references STRIPE_KEY + 1Password + CI/CD
   if (isDocumentationOrTestContext(ast)) {
+    return findings;
+  }
+
+  // Corpus-only carve-out for transmission semantics (per [CSR-003] +
+  // [CDS-023]). Labeled credential-forwarding examples in training
+  // data are intentional content for the classifier to learn. The
+  // manifest path is NOT exempted here — a model integrity manifest
+  // has no business declaring credential-transmit patterns; if it
+  // appears to, treat as a finding regardless of file name. The
+  // "no vendor-prefix credential in content" gate ensures a planted
+  // real credential inside corpus paths still surfaces.
+  if (
+    ast.artifactPath &&
+    artifactContent &&
+    isCorpusPath(ast.artifactPath) &&
+    !hasVendorPrefixCredential(artifactContent)
+  ) {
     return findings;
   }
 
@@ -396,6 +421,20 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
     return findings;
   }
 
+  // Unified carve-out: verified integrity manifest (path + content
+  // shape) OR adversarial training corpus, in both cases requiring
+  // NO vendor-prefix credential anywhere in the content. This
+  // suppresses the SHA-256 / SHA-512 / SHA-1 / MD5 hex digests that
+  // match the 40+ alphanumeric high-entropy fallback in
+  // `buildCredentialFormatRegex` without requiring every evidence
+  // text to be hash-shaped (real evidence often includes descriptive
+  // context alongside the hash). A planted real credential alongside
+  // hashes still fires because `hasVendorPrefixCredential` short-
+  // circuits the carve-out.
+  if (shouldSuppressCredentialChecks(ast.artifactPath, artifactContent)) {
+    return findings;
+  }
+
   // Determine severity based on artifact type and evidence strength
   const maxConfidence = Math.max(
     ...credentialEvidence.map(e => e.confidence),
@@ -545,6 +584,97 @@ function evidenceShowsCredentialFormat(evidenceTexts: string[]): boolean {
   const re = buildCredentialFormatRegex();
   return evidenceTexts.some(t => re.test(t));
 }
+
+/**
+ * True when the artifact is a real integrity manifest — both the file
+ * name (`*-models.json`, `*-manifest.json`, bare `manifest.json` or
+ * `models.json`) AND the file content carry both recognizable
+ * manifest structure (a `"sha256":` / `"sha512":` / `"sha1":` /
+ * `"md5":` / `"integrity":` / `"checksum":` JSON key) AND at least
+ * one hash-shaped value (32, 40, 64, or 128 hex chars in a quoted
+ * JSON string).
+ *
+ * The path-only `isIntegrityManifestPath` is attacker-plantable: an
+ * adversary scanning a hostile tree could place `evil-models.json` at
+ * scan root with planted credentials and bypass AST-CRED-* by name
+ * alone. The content gate requires both an integrity KEY and a
+ * canonical-width hex VALUE so a planted file with `{"models": {},
+ * "leaked": "<secret>"}` no longer qualifies — the `"models"` key
+ * was dropped from the regex (it carries no integrity semantics) and
+ * a hash-shape value must also be present. The regex requires the
+ * key in JSON form (`"sha256":` with a quote on both sides of the
+ * colon-separated key) so a body that merely mentions the word
+ * `sha256` doesn't qualify.
+ */
+function isVerifiedIntegrityManifest(
+  artifactPath: string | undefined,
+  artifactContent: string | undefined,
+): boolean {
+  if (!artifactPath || !artifactContent) return false;
+  if (!isIntegrityManifestPath(artifactPath)) return false;
+  // Single regex requiring the hash key and a canonical-width hex
+  // value to be CO-LOCATED. The key is followed by `:` and either a
+  // direct quoted hex string OR a JSON object whose FIRST key/value
+  // pair is a quoted hex string (legit nanomind-style shape:
+  //   "sha256": { "tokenizer.json": "5ace..." }
+  // qualifies; both of the attacker-plant shapes
+  //   {"sha256":"","leaked":"<hex>"}
+  //   {"sha256":{"x":"y","leaked":"<hex>"}}
+  // do NOT qualify because the hex value is not the first inner
+  // value of the hash-keyed object). Third-round adversarial-review
+  // remediation (2026-05-25): dropped the prior `[\s\S]{0,2000}?`
+  // lazy quantifier between `{` and the inner hex string. That
+  // gap allowed an attacker to satisfy the carve-out by placing
+  // any legit-looking hash within 2KB of `{`. The tighter form
+  // requires the first inner key to map directly to a hex string.
+  return /"(?:sha(?:256|512|1)|md5|integrity|checksum)"\s*:\s*(?:"[a-fA-F0-9]{32}(?:[a-fA-F0-9]{8}|[a-fA-F0-9]{32}|[a-fA-F0-9]{96})?"|\{\s*"[^"]+"\s*:\s*"[a-fA-F0-9]{32}(?:[a-fA-F0-9]{8}|[a-fA-F0-9]{32}|[a-fA-F0-9]{96})?")/i.test(artifactContent);
+}
+
+/**
+ * True if `content` contains any vendor-prefix credential value. Used
+ * by the unified `shouldSuppressCredentialChecks` gate to prevent
+ * over-broad suppression: a verified integrity manifest or training
+ * corpus that happens to also carry a real planted vendor-prefix
+ * credential (sk-, ghp_, AKIA…, etc.) bypasses the carve-out and the
+ * normal credential checks fire on the real value.
+ *
+ * The prefix list covers OpenAI / Anthropic / Stripe (`sk-`,
+ * `sk_live_`, `sk_test_`), GitHub PATs (`ghp_`, `gho_`, `ghs_`,
+ * `ghu_`, `github_pat_`), Hugging Face (`hf_`), GitLab (`glpat-`),
+ * npm (`npm_`), AWS access key IDs (`AKIA…`), Google API keys
+ * (`AIza…`), Slack (`xox[abprs]-`), and JWTs
+ * (`eyJ…header.payload.sig`). Raw HMAC or other hex-only credentials
+ * outside this list are hash-indistinguishable; the verified-manifest
+ * content gate is the load-bearing defense in that case.
+ */
+function hasVendorPrefixCredential(content: string): boolean {
+  return /\b(?:sk-[a-zA-Z0-9_-]{20,}|sk_(?:live|test)_[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{20,}|gho_[a-zA-Z0-9]{20,}|ghs_[a-zA-Z0-9]{20,}|ghu_[a-zA-Z0-9]{20,}|github_pat_[a-zA-Z0-9_]{20,}|hf_[a-zA-Z0-9]{20,}|glpat-[a-zA-Z0-9_-]{20,}|npm_[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|xox[abprs]-[0-9A-Za-z-]{10,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/.test(content);
+}
+
+/**
+ * Unified credential-check suppression gate. Returns true when the
+ * artifact is one of:
+ *   (a) A verified integrity manifest (path + content shape) AND
+ *       the content has NO vendor-prefix credential.
+ *   (b) An adversarial training corpus (per [CSR-003] + [CDS-023])
+ *       AND the content has NO vendor-prefix credential.
+ *
+ * The "no vendor prefix" requirement closes the attacker-plant bypass
+ * the original path-only carve-out shipped with: a planted
+ * `evil-models.json` with `{"models":{}, "leaked": "sk-…"}` no longer
+ * silences AST-CRED-* by name; the credential still surfaces.
+ */
+function shouldSuppressCredentialChecks(
+  artifactPath: string | undefined,
+  artifactContent: string | undefined,
+): boolean {
+  if (!artifactPath || !artifactContent) return false;
+  if (hasVendorPrefixCredential(artifactContent)) return false;
+  if (isVerifiedIntegrityManifest(artifactPath, artifactContent)) return true;
+  if (isCorpusPath(artifactPath)) return true;
+  return false;
+}
+
 
 /**
  * Build the credential-format detector. The regex is shared between the
