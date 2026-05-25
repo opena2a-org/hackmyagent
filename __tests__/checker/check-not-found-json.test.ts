@@ -164,4 +164,33 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
     expect(parsed.ecosystem).toBe('github');
     expect(parsed.errorHint).toBe(`Verify the URL: https://github.com/${target}`);
   });
+
+  it.runIf(canRunSpawn())('#195: pip:<missing> --no-scan honors --no-scan (no PyPI download), emits ecosystem:pypi not-found', () => {
+    // Closes hackmyagent#195: prior to the fix, `--no-scan` was silently
+    // dropped for pip:/pypi: targets — every check pip:<pkg> --no-scan
+    // would still hit PyPI for the metadata + tarball download. The
+    // 5-second timeout below is the regression gate: a real PyPI
+    // download + scan on a typical package easily exceeds it. A bare
+    // not-found early-return completes in <500ms.
+    const bareName = 'opena2a-fixture-pypi-nonexistent-xyz-do-not-publish-20260525';
+    const start = Date.now();
+    const res = spawnSync('node', [CLI, 'check', `pip:${bareName}`, '--no-scan', '--json', '--ci'], {
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
+    const elapsedMs = Date.now() - start;
+
+    expect(res.status).toBe(2);
+    expect(elapsedMs).toBeLessThan(5_000);
+
+    const stdout = (res.stdout || '').trim();
+    expect(stdout.length).toBeGreaterThan(0);
+
+    const parsed = JSON.parse(stdout);
+    expect(parsed.name).toBe(bareName);
+    expect(parsed.found).toBe(false);
+    expect(parsed.ecosystem).toBe('pypi');
+    expect(typeof parsed.error).toBe('string');
+    expect(parsed.error.length).toBeGreaterThan(0);
+  });
 });

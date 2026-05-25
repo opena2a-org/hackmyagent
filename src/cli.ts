@@ -8859,6 +8859,43 @@ async function checkPyPiPackage(
   // Strip prefix to get the bare package name
   const name = target.replace(/^(pip|pypi):/, '');
 
+  // Fetch registry data in parallel with download+scan (unless --no-registry).
+  // Mirrors the checkNpmPackage pattern (line ~9233) so both ecosystems share
+  // the same lifecycle for registry lookups.
+  const registryPromise = options.registry === false ? Promise.resolve(null) : queryRegistry(`pip:${name}`);
+
+  // Registry-only mode (--no-scan): skip the PyPI download + local scan,
+  // emit Registry-shape output instead. Mirrors checkNpmPackage's
+  // (line ~9236) behavior so `--no-scan` is honored consistently across
+  // ecosystems. Closes #195: prior to this, --no-scan was silently dropped
+  // for pip:/pypi: targets and the user got a full scan they didn't ask
+  // for, with scan-shape JSON (findings/score/etc.) that didn't match the
+  // Registry-shape output emitted by the npm path.
+  if (options.scan === false) {
+    const registryData = await registryPromise;
+    if (registryData?.found) {
+      if (options.json) {
+        writeJsonStdout({ ...registryData, source: 'registry' });
+        return;
+      }
+      displayUnifiedCheck({ name, registry: registryData, verbose: !!options.verbose, usedAnalm: resolveNanomindFlag(options) });
+      return;
+    }
+    // --no-scan with no Registry hit: emit a not-found block in the same
+    // shape as the PyPI 404 path below, then return without scanning.
+    if (options.json) {
+      writeJsonStdout(buildNotFoundOutput({
+        name,
+        ecosystem: 'pypi',
+        error: `Package "${name}" not found in the OpenA2A Registry.`,
+      }));
+    } else {
+      printNotFoundBlock({ pkg: name, ecosystem: 'pypi' });
+    }
+    process.exitCode = 2;
+    return;
+  }
+
   const { mkdtemp, rm, readdir } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
@@ -8966,9 +9003,10 @@ async function checkPyPiPackage(
     const medium = failed.filter(f => f.severity === 'medium');
     const low = failed.filter(f => f.severity === 'low');
 
-    // Query registry for trust context (PyPI packages have pip: prefix in registry).
-    // Moved above the --json branch so JSON output can include registry fields (F1).
-    const registryData = options.registry === false ? null : await queryRegistry(`pip:${name}`);
+    // Await the registry lookup we kicked off in parallel above (line ~8866).
+    // Same query key (pip:${name}) to keep semantics identical to the prior
+    // sequential call.
+    const registryData = await registryPromise;
 
     if (options.json) {
       writeJsonStdout(buildCheckOutput({
