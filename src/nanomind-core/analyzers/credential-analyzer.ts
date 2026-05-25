@@ -183,12 +183,20 @@ function checkCredentialForwarding(
     return findings;
   }
 
-  // Unified carve-out: verified integrity manifest OR adversarial
-  // training corpus, in both cases with no vendor-prefix credential
-  // present. Labeled credential-forwarding examples in training data
-  // (per [CSR-003] + [CDS-023]) and hash-bearing manifest files are
-  // intentional content; a planted real credential still fires.
-  if (shouldSuppressCredentialChecks(ast.artifactPath, artifactContent)) {
+  // Corpus-only carve-out for transmission semantics (per [CSR-003] +
+  // [CDS-023]). Labeled credential-forwarding examples in training
+  // data are intentional content for the classifier to learn. The
+  // manifest path is NOT exempted here — a model integrity manifest
+  // has no business declaring credential-transmit patterns; if it
+  // appears to, treat as a finding regardless of file name. The
+  // "no vendor-prefix credential in content" gate ensures a planted
+  // real credential inside corpus paths still surfaces.
+  if (
+    ast.artifactPath &&
+    artifactContent &&
+    isCorpusPath(ast.artifactPath) &&
+    !hasVendorPrefixCredential(artifactContent)
+  ) {
     return findings;
   }
 
@@ -580,16 +588,21 @@ function evidenceShowsCredentialFormat(evidenceTexts: string[]): boolean {
 /**
  * True when the artifact is a real integrity manifest — both the file
  * name (`*-models.json`, `*-manifest.json`, bare `manifest.json` or
- * `models.json`) AND the file content carry recognizable manifest
- * structure (a top-level `"sha256":` / `"sha512":` / `"sha1":` /
- * `"integrity":` / `"checksum":` / `"models":` JSON key).
+ * `models.json`) AND the file content carry both recognizable
+ * manifest structure (a `"sha256":` / `"sha512":` / `"sha1":` /
+ * `"md5":` / `"integrity":` / `"checksum":` JSON key) AND at least
+ * one hash-shaped value (32, 40, 64, or 128 hex chars in a quoted
+ * JSON string).
  *
  * The path-only `isIntegrityManifestPath` is attacker-plantable: an
  * adversary scanning a hostile tree could place `evil-models.json` at
  * scan root with planted credentials and bypass AST-CRED-* by name
- * alone. The content gate forces the file to look like a manifest
- * before any credential-check suppression applies. The regex requires
- * the key in JSON form (`"sha256":` with a quote on both sides of the
+ * alone. The content gate requires both an integrity KEY and a
+ * canonical-width hex VALUE so a planted file with `{"models": {},
+ * "leaked": "<secret>"}` no longer qualifies — the `"models"` key
+ * was dropped from the regex (it carries no integrity semantics) and
+ * a hash-shape value must also be present. The regex requires the
+ * key in JSON form (`"sha256":` with a quote on both sides of the
  * colon-separated key) so a body that merely mentions the word
  * `sha256` doesn't qualify.
  */
@@ -599,7 +612,19 @@ function isVerifiedIntegrityManifest(
 ): boolean {
   if (!artifactPath || !artifactContent) return false;
   if (!isIntegrityManifestPath(artifactPath)) return false;
-  return /"(?:sha(?:256|512|1)|md5|integrity|checksum|models)"\s*:/i.test(artifactContent);
+  // Single regex requiring the hash key and a canonical-width hex
+  // value to be CO-LOCATED. The key is followed by `:` and either a
+  // direct quoted hex string OR a JSON object whose nested value is
+  // a quoted hex string (legit nanomind-style shape:
+  //   "sha256": { "tokenizer.json": "5ace..." }
+  // both qualify; the planted-elsewhere attack
+  //   {"sha256":"","leaked":"<hex>"}
+  // does NOT qualify because the planted hex value is not adjacent
+  // to a hash key). Residual risk: an attacker who plants BOTH a
+  // real-looking `"sha256":"<hex>"` co-location AND a separate
+  // hex-only secret still slips past — the unified gate's
+  // `hasVendorPrefixCredential` is the second defense layer there.
+  return /"(?:sha(?:256|512|1)|md5|integrity|checksum)"\s*:\s*(?:"[a-fA-F0-9]{32}(?:[a-fA-F0-9]{8}|[a-fA-F0-9]{32}|[a-fA-F0-9]{96})?"|\{[\s\S]{0,2000}?"[a-fA-F0-9]{32}(?:[a-fA-F0-9]{8}|[a-fA-F0-9]{32}|[a-fA-F0-9]{96})?")/i.test(artifactContent);
 }
 
 /**

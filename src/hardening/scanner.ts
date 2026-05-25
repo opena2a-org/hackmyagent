@@ -377,15 +377,21 @@ export function dropPathlessNoiseFloor(
  *  - An unclosed block comment treats the rest of the line as comment.
  *  - A line comment (`//`) outside quotes makes the rest of the line a
  *    comment.
- *  - Template-literal interpolation (`${...}` inside a backtick) re-enters
- *    code state: returns false on `${eval(x)}` because the eval call IS
- *    real code, not string content.
- *  - Apostrophes or double quotes inside regex literals (`/don't/`)
- *    would otherwise toggle into "string" state without a matching
- *    close. After the walk, if we end inside `'` or `"` but no closing
- *    quote of the same kind exists later on the line, treat as regex /
- *    contraction context (return false). Backticks legitimately span
- *    lines so they remain "in-string" without a same-line close.
+ *  - Template-literal interpolation (`${...}` inside a backtick) is a
+ *    re-entry into code state. When the helper hits `${` inside a
+ *    backtick it scans forward with a brace-depth counter to find the
+ *    matching `}`. If `matchIndex` lies inside that span the match is
+ *    real code and the helper returns false; otherwise the helper
+ *    skips past the entire `${...}` region (still inside the backtick)
+ *    and keeps walking, so a `//` comment after the closing backtick
+ *    is still recognized.
+ *  - The helper does NOT attempt to detect regex literals. A real
+ *    `/don't/; eval(payload)` line will be mis-suppressed only if the
+ *    apostrophe inside the regex toggles open-quote state and the
+ *    eval token comes before the regex closes; in practice eval
+ *    appearing on the same line as a regex literal containing an
+ *    apostrophe is rare enough to leave unhandled rather than ship a
+ *    regex-context heuristic that FPs on multi-line strings.
  *  - Returns false when the match is in real code.
  */
 export function isMatchInsideStringLiteral(line: string, matchIndex: number): boolean {
@@ -414,13 +420,22 @@ export function isMatchInsideStringLiteral(line: string, matchIndex: number): bo
       else if (c === '"') inDouble = true;
       else if (c === '`') inBacktick = true;
     } else {
-      // Template-literal interpolation: `${ ... }` inside a backtick
-      // re-enters code state. Anything past the `${` could be real
-      // code (e.g. `${eval(userInput)}`). Conservative: return false
-      // immediately so the match site is treated as real code. May
-      // FP on `\`safe ${'inert'}\`` but closes the bypass class.
       if (inBacktick && c === '$' && line[i + 1] === '{') {
-        return false;
+        let depth = 1;
+        let j = i + 2;
+        while (j < line.length && depth > 0) {
+          const cj = line[j];
+          if (cj === '{') depth++;
+          else if (cj === '}') depth--;
+          j++;
+        }
+        const exprStart = i + 2;
+        const exprEnd = depth === 0 ? j - 1 : line.length;
+        if (matchIndex >= exprStart && matchIndex < exprEnd) {
+          return false;
+        }
+        i = depth === 0 ? j : line.length;
+        continue;
       }
       if (c === '\\' && i + 1 < matchIndex) {
         i += 2;
@@ -431,12 +446,6 @@ export function isMatchInsideStringLiteral(line: string, matchIndex: number): bo
       else if (inBacktick && c === '`') inBacktick = false;
     }
     i++;
-  }
-  if (inSingle && line.indexOf("'", matchIndex) === -1) {
-    return false;
-  }
-  if (inDouble && line.indexOf('"', matchIndex) === -1) {
-    return false;
   }
   return inSingle || inDouble || inBacktick;
 }
