@@ -623,7 +623,7 @@ function isVerifiedIntegrityManifest(
   // do NOT qualify because the hex value is not the first inner
   // value of the hash-keyed object). Third-round adversarial-review
   // remediation (2026-05-25): dropped the prior `[\s\S]{0,2000}?`
-  // lazy quantifier between `{` and the inner hex string — that
+  // lazy quantifier between `{` and the inner hex string. That
   // gap allowed an attacker to satisfy the carve-out by placing
   // any legit-looking hash within 2KB of `{`. The tighter form
   // requires the first inner key to map directly to a hex string.

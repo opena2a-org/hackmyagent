@@ -187,7 +187,7 @@ describe('NEMO-009 FP regression (nanomind#26 finding 1)', () => {
     const line = `const x = 'foo\\`;
     // matchIndex points just past the line end (no match exists, but
     // the helper should not crash). Use line.length as a defensive
-    // probe — earlier code path `i + 1 < matchIndex` would happily
+    // probe; the earlier code path `i + 1 < matchIndex` would happily
     // step past `line.length` here.
     expect(() => isMatchInsideStringLiteral(line, line.length)).not.toThrow();
   });
@@ -681,7 +681,7 @@ describe('AST-CRED-001/003 FP regression (nanomind#26 finding 3)', () => {
   // `shouldSuppressCredentialChecks` gate short-circuits AST-CRED-002.
   // Code reading shows the gate is called inside
   // `checkCredentialsInNonEnvContext` and `checkHardcodedSecrets`,
-  // not inside `analyzeCredentials` itself — AST-CRED-002 has its
+  // not inside `analyzeCredentials` itself. AST-CRED-002 has its
   // OWN corpus-only carve-out at the top of `checkCredentialForwarding`
   // (intentional per [CSR-003] + [CDS-023]). The tests below pin that
   // behavior so a future refactor can't accidentally regress it.

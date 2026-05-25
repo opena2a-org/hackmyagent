@@ -464,7 +464,7 @@ export function isMatchInsideStringLiteral(line: string, matchIndex: number): bo
       }
       if (c === '\\') {
         // Backslash escape inside a quote. Skip the next character only
-        // if one exists in the line — a trailing backslash at EOL falls
+        // if one exists in the line. A trailing backslash at EOL falls
         // through to the unchanged `i++` and the outer loop exits
         // naturally on the next iteration. Bound against `line.length`
         // (not `matchIndex`) so the helper stays correct if a caller
