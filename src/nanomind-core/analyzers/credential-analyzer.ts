@@ -614,17 +614,20 @@ function isVerifiedIntegrityManifest(
   if (!isIntegrityManifestPath(artifactPath)) return false;
   // Single regex requiring the hash key and a canonical-width hex
   // value to be CO-LOCATED. The key is followed by `:` and either a
-  // direct quoted hex string OR a JSON object whose nested value is
-  // a quoted hex string (legit nanomind-style shape:
+  // direct quoted hex string OR a JSON object whose FIRST key/value
+  // pair is a quoted hex string (legit nanomind-style shape:
   //   "sha256": { "tokenizer.json": "5ace..." }
-  // both qualify; the planted-elsewhere attack
+  // qualifies; both of the attacker-plant shapes
   //   {"sha256":"","leaked":"<hex>"}
-  // does NOT qualify because the planted hex value is not adjacent
-  // to a hash key). Residual risk: an attacker who plants BOTH a
-  // real-looking `"sha256":"<hex>"` co-location AND a separate
-  // hex-only secret still slips past — the unified gate's
-  // `hasVendorPrefixCredential` is the second defense layer there.
-  return /"(?:sha(?:256|512|1)|md5|integrity|checksum)"\s*:\s*(?:"[a-fA-F0-9]{32}(?:[a-fA-F0-9]{8}|[a-fA-F0-9]{32}|[a-fA-F0-9]{96})?"|\{[\s\S]{0,2000}?"[a-fA-F0-9]{32}(?:[a-fA-F0-9]{8}|[a-fA-F0-9]{32}|[a-fA-F0-9]{96})?")/i.test(artifactContent);
+  //   {"sha256":{"x":"y","leaked":"<hex>"}}
+  // do NOT qualify because the hex value is not the first inner
+  // value of the hash-keyed object). Third-round adversarial-review
+  // remediation (2026-05-25): dropped the prior `[\s\S]{0,2000}?`
+  // lazy quantifier between `{` and the inner hex string — that
+  // gap allowed an attacker to satisfy the carve-out by placing
+  // any legit-looking hash within 2KB of `{`. The tighter form
+  // requires the first inner key to map directly to a hex string.
+  return /"(?:sha(?:256|512|1)|md5|integrity|checksum)"\s*:\s*(?:"[a-fA-F0-9]{32}(?:[a-fA-F0-9]{8}|[a-fA-F0-9]{32}|[a-fA-F0-9]{96})?"|\{\s*"[^"]+"\s*:\s*"[a-fA-F0-9]{32}(?:[a-fA-F0-9]{8}|[a-fA-F0-9]{32}|[a-fA-F0-9]{96})?")/i.test(artifactContent);
 }
 
 /**

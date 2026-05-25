@@ -373,7 +373,9 @@ export function dropPathlessNoiseFloor(
  * code-execution site.
  *
  * Conservative semantics:
- *  - A backslash escape inside a quote consumes the next character.
+ *  - A backslash escape inside a quote consumes the next character if
+ *    one exists. A trailing backslash at end of line consumes only the
+ *    backslash itself (no phantom next-char skip).
  *  - An unclosed block comment treats the rest of the line as comment.
  *  - A line comment (`//`) outside quotes makes the rest of the line a
  *    comment.
@@ -393,13 +395,30 @@ export function dropPathlessNoiseFloor(
  *    apostrophe is rare enough to leave unhandled rather than ship a
  *    regex-context heuristic that FPs on multi-line strings.
  *  - Returns false when the match is in real code.
+ *
+ * Complexity: O(line.length) per call. The outer walker advances `i`
+ * monotonically (every branch either does `i++` or `i = j` past a
+ * matched region); the inner template-interpolation brace loop is
+ * bounded by `j < line.length` and is entered at most once per `${...}`
+ * region that the outer walker steps into. MAX_WALK_ITERATIONS is a
+ * belt-and-suspenders cap that fires only on inputs already pathological
+ * enough to be a different problem.
  */
+const MAX_WALK_ITERATIONS = 100000;
+
 export function isMatchInsideStringLiteral(line: string, matchIndex: number): boolean {
   let inSingle = false;
   let inDouble = false;
   let inBacktick = false;
   let i = 0;
+  let outerIters = 0;
   while (i < matchIndex) {
+    if (++outerIters > MAX_WALK_ITERATIONS) {
+      // Pathological input. Conservative default: treat the match as
+      // inside-string so the suppression path fires; over-suppression
+      // is a smaller harm than walker hang on a CI pipeline.
+      return true;
+    }
     const c = line[i];
     if (!inSingle && !inDouble && !inBacktick) {
       if (c === '/' && line[i + 1] === '/') {
@@ -423,7 +442,13 @@ export function isMatchInsideStringLiteral(line: string, matchIndex: number): bo
       if (inBacktick && c === '$' && line[i + 1] === '{') {
         let depth = 1;
         let j = i + 2;
+        let innerIters = 0;
         while (j < line.length && depth > 0) {
+          if (++innerIters > MAX_WALK_ITERATIONS) {
+            // Same defensive default as the outer cap. Outer walker
+            // continues past the `${...}` region by setting i.
+            break;
+          }
           const cj = line[j];
           if (cj === '{') depth++;
           else if (cj === '}') depth--;
@@ -437,9 +462,17 @@ export function isMatchInsideStringLiteral(line: string, matchIndex: number): bo
         i = depth === 0 ? j : line.length;
         continue;
       }
-      if (c === '\\' && i + 1 < matchIndex) {
-        i += 2;
-        continue;
+      if (c === '\\') {
+        // Backslash escape inside a quote. Skip the next character only
+        // if one exists in the line — a trailing backslash at EOL falls
+        // through to the unchanged `i++` and the outer loop exits
+        // naturally on the next iteration. Bound against `line.length`
+        // (not `matchIndex`) so the helper stays correct if a caller
+        // ever passes `matchIndex >= line.length`.
+        if (i + 1 < line.length) {
+          i += 2;
+          continue;
+        }
       }
       if (inSingle && c === "'") inSingle = false;
       else if (inDouble && c === '"') inDouble = false;
