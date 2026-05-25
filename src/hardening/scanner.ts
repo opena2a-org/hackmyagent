@@ -377,6 +377,15 @@ export function dropPathlessNoiseFloor(
  *  - An unclosed block comment treats the rest of the line as comment.
  *  - A line comment (`//`) outside quotes makes the rest of the line a
  *    comment.
+ *  - Template-literal interpolation (`${...}` inside a backtick) re-enters
+ *    code state: returns false on `${eval(x)}` because the eval call IS
+ *    real code, not string content.
+ *  - Apostrophes or double quotes inside regex literals (`/don't/`)
+ *    would otherwise toggle into "string" state without a matching
+ *    close. After the walk, if we end inside `'` or `"` but no closing
+ *    quote of the same kind exists later on the line, treat as regex /
+ *    contraction context (return false). Backticks legitimately span
+ *    lines so they remain "in-string" without a same-line close.
  *  - Returns false when the match is in real code.
  */
 export function isMatchInsideStringLiteral(line: string, matchIndex: number): boolean {
@@ -405,6 +414,14 @@ export function isMatchInsideStringLiteral(line: string, matchIndex: number): bo
       else if (c === '"') inDouble = true;
       else if (c === '`') inBacktick = true;
     } else {
+      // Template-literal interpolation: `${ ... }` inside a backtick
+      // re-enters code state. Anything past the `${` could be real
+      // code (e.g. `${eval(userInput)}`). Conservative: return false
+      // immediately so the match site is treated as real code. May
+      // FP on `\`safe ${'inert'}\`` but closes the bypass class.
+      if (inBacktick && c === '$' && line[i + 1] === '{') {
+        return false;
+      }
       if (c === '\\' && i + 1 < matchIndex) {
         i += 2;
         continue;
@@ -414,6 +431,12 @@ export function isMatchInsideStringLiteral(line: string, matchIndex: number): bo
       else if (inBacktick && c === '`') inBacktick = false;
     }
     i++;
+  }
+  if (inSingle && line.indexOf("'", matchIndex) === -1) {
+    return false;
+  }
+  if (inDouble && line.indexOf('"', matchIndex) === -1) {
+    return false;
   }
   return inSingle || inDouble || inBacktick;
 }
@@ -9002,11 +9025,6 @@ dist/
     let nemo009Found = false;
     // Python files: pickle.load, yaml.load without SafeLoader, eval(), exec()
     for (const file of cappedPy) {
-      // Test files deliberately exercise unsafe-deserialization patterns to
-      // verify defensive parsers and prompt-injection screeners. Skip them
-      // here per [CSR-004]'s test-path carve-out (mirrors NEMO-007 above).
-      const relForPyTest = path.relative(targetDir, file);
-      if (isTestPath(relForPyTest)) continue;
       try {
         const content = await fs.readFile(file, 'utf-8');
         const lines = content.split('\n');
@@ -9066,14 +9084,13 @@ dist/
         }
       } catch { /* skip */ }
     }
-    // TS/JS files: eval(), new Function(), JSON5.parse
+    // TS/JS files: eval(), new Function(), JSON5.parse.
+    // Per-match string-literal/comment gating below is the FP guard.
+    // We do NOT wholesale-skip `.test.ts` files: an attacker-planted
+    // `evil.test.ts` would otherwise silence NEMO-009 across the whole
+    // file. Real eval() inside test code (not inside a string literal)
+    // still fires and is treated as the security smell it is.
     for (const file of cappedTsJs) {
-      // Test files deliberately exercise unsafe-deserialization patterns
-      // and pass eval(...) substrings as input to prompt-injection
-      // screeners. Skip them per [CSR-004]'s test-path carve-out (mirrors
-      // NEMO-007 above).
-      const relForJsTest = path.relative(targetDir, file);
-      if (isTestPath(relForJsTest)) continue;
       try {
         const content = await fs.readFile(file, 'utf-8');
         const lines = content.split('\n');

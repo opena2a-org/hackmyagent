@@ -75,6 +75,13 @@ function checkCredentialsInNonEnvContext(
     return findings;
   }
 
+  // Unified carve-out: verified integrity manifest OR adversarial
+  // training corpus, in both cases with no vendor-prefix credential
+  // present. A planted real credential still fires.
+  if (shouldSuppressCredentialChecks(ast.artifactPath, artifactContent)) {
+    return findings;
+  }
+
   const credentialAccess = ast.declaredDataAccess.filter(
     d => d.dataType === 'credentials',
   );
@@ -173,6 +180,15 @@ function checkCredentialForwarding(
   // are teaching credential management, not performing credential exfiltration.
   // e.g., secretless docs/use-cases/team-setup.md references STRIPE_KEY + 1Password + CI/CD
   if (isDocumentationOrTestContext(ast)) {
+    return findings;
+  }
+
+  // Unified carve-out: verified integrity manifest OR adversarial
+  // training corpus, in both cases with no vendor-prefix credential
+  // present. Labeled credential-forwarding examples in training data
+  // (per [CSR-003] + [CDS-023]) and hash-bearing manifest files are
+  // intentional content; a planted real credential still fires.
+  if (shouldSuppressCredentialChecks(ast.artifactPath, artifactContent)) {
     return findings;
   }
 
@@ -397,18 +413,17 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
     return findings;
   }
 
-  // Hash-shape gate (nanomind#26): SHA-256 / SHA-512 / SHA-1 / MD5 hex
-  // digests (32, 40, 64, or 128 hex chars) are checksums, not credentials.
-  // They match the 40+ alphanumeric high-entropy fallback in
-  // `buildCredentialFormatRegex`, so they slip past the format gate above
-  // even though no vendor-prefix credential is present. Inside doc/test/
-  // manifest contexts (notably `*-models.json` / `*-manifest.json`), when
-  // EVERY evidence text is hash-shape AND no evidence carries a vendor
-  // prefix, treat as checksums and suppress. A real credential alongside
-  // hashes still fires because at least one text would carry a vendor
-  // prefix (sk-, ghp_, AKIA…, AIza…, xox[abprs]-, eyJ…) and the
-  // all-hash invariant breaks.
-  if (isTestOrDoc && isAllEvidenceHashShape(evidenceTexts)) {
+  // Unified carve-out: verified integrity manifest (path + content
+  // shape) OR adversarial training corpus, in both cases requiring
+  // NO vendor-prefix credential anywhere in the content. This
+  // suppresses the SHA-256 / SHA-512 / SHA-1 / MD5 hex digests that
+  // match the 40+ alphanumeric high-entropy fallback in
+  // `buildCredentialFormatRegex` without requiring every evidence
+  // text to be hash-shaped (real evidence often includes descriptive
+  // context alongside the hash). A planted real credential alongside
+  // hashes still fires because `hasVendorPrefixCredential` short-
+  // circuits the carve-out.
+  if (shouldSuppressCredentialChecks(ast.artifactPath, artifactContent)) {
     return findings;
   }
 
@@ -475,20 +490,6 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
  */
 function isDocumentationOrTestContext(ast: SecurityAST): boolean {
   const path = (ast.artifactPath ?? '').toLowerCase();
-
-  // Adversarial training corpora (per [CSR-003] + [CDS-023]) and
-  // model integrity manifests are non-production data files. CRED
-  // signals here are training-label content or SHA-256 checksums,
-  // never live credentials. nanomind#26: training/corpus/*.json
-  // (credential-forwarding examples for the classifier to learn) and
-  // nanomind-models.json (sha256 hash table) were both firing CRED
-  // findings before this carve-out landed.
-  if (ast.artifactPath && isCorpusPath(ast.artifactPath)) {
-    return true;
-  }
-  if (ast.artifactPath && isIntegrityManifestPath(ast.artifactPath)) {
-    return true;
-  }
 
   // Test fixtures
   if (
@@ -577,28 +578,75 @@ function evidenceShowsCredentialFormat(evidenceTexts: string[]): boolean {
 }
 
 /**
- * True when EVERY evidence text contains a hex-only hash shape (MD5,
- * SHA-1, SHA-256, or SHA-512 — 32, 40, 64, or 128 hex chars) AND none
- * carries a vendor-prefix credential pattern. Used by AST-CRED-003 to
- * suppress findings on integrity-manifest files (`*-models.json`,
- * `*-manifest.json`) whose 64-hex SHA-256 digests match the high-entropy
- * fallback in `buildCredentialFormatRegex` even though they are not
- * credentials. Length is anchored to canonical digest widths so
- * arbitrary long hex blobs are not misclassified as hashes.
+ * True when the artifact is a real integrity manifest — both the file
+ * name (`*-models.json`, `*-manifest.json`, bare `manifest.json` or
+ * `models.json`) AND the file content carry recognizable manifest
+ * structure (a top-level `"sha256":` / `"sha512":` / `"sha1":` /
+ * `"integrity":` / `"checksum":` / `"models":` JSON key).
+ *
+ * The path-only `isIntegrityManifestPath` is attacker-plantable: an
+ * adversary scanning a hostile tree could place `evil-models.json` at
+ * scan root with planted credentials and bypass AST-CRED-* by name
+ * alone. The content gate forces the file to look like a manifest
+ * before any credential-check suppression applies. The regex requires
+ * the key in JSON form (`"sha256":` with a quote on both sides of the
+ * colon-separated key) so a body that merely mentions the word
+ * `sha256` doesn't qualify.
  */
-function isAllEvidenceHashShape(evidenceTexts: string[]): boolean {
-  if (evidenceTexts.length === 0) return false;
-  const hashRe = /\b[a-fA-F0-9]{32}(?:[a-fA-F0-9]{8}|[a-fA-F0-9]{32}|[a-fA-F0-9]{96})?\b/;
-  const vendorPrefixRe = /\b(?:sk-[a-zA-Z0-9_-]{20,}|sk_(?:live|test)_[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{20,}|gho_[a-zA-Z0-9]{20,}|github_pat_[a-zA-Z0-9_]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|xox[abprs]-[0-9A-Za-z-]{10,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/;
-  return evidenceTexts.every(t => {
-    const m = hashRe.exec(t);
-    if (!m) return false;
-    const len = m[0].length;
-    if (len !== 32 && len !== 40 && len !== 64 && len !== 128) return false;
-    if (vendorPrefixRe.test(t)) return false;
-    return true;
-  });
+function isVerifiedIntegrityManifest(
+  artifactPath: string | undefined,
+  artifactContent: string | undefined,
+): boolean {
+  if (!artifactPath || !artifactContent) return false;
+  if (!isIntegrityManifestPath(artifactPath)) return false;
+  return /"(?:sha(?:256|512|1)|md5|integrity|checksum|models)"\s*:/i.test(artifactContent);
 }
+
+/**
+ * True if `content` contains any vendor-prefix credential value. Used
+ * by the unified `shouldSuppressCredentialChecks` gate to prevent
+ * over-broad suppression: a verified integrity manifest or training
+ * corpus that happens to also carry a real planted vendor-prefix
+ * credential (sk-, ghp_, AKIA…, etc.) bypasses the carve-out and the
+ * normal credential checks fire on the real value.
+ *
+ * The prefix list covers OpenAI / Anthropic / Stripe (`sk-`,
+ * `sk_live_`, `sk_test_`), GitHub PATs (`ghp_`, `gho_`, `ghs_`,
+ * `ghu_`, `github_pat_`), Hugging Face (`hf_`), GitLab (`glpat-`),
+ * npm (`npm_`), AWS access key IDs (`AKIA…`), Google API keys
+ * (`AIza…`), Slack (`xox[abprs]-`), and JWTs
+ * (`eyJ…header.payload.sig`). Raw HMAC or other hex-only credentials
+ * outside this list are hash-indistinguishable; the verified-manifest
+ * content gate is the load-bearing defense in that case.
+ */
+function hasVendorPrefixCredential(content: string): boolean {
+  return /\b(?:sk-[a-zA-Z0-9_-]{20,}|sk_(?:live|test)_[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{20,}|gho_[a-zA-Z0-9]{20,}|ghs_[a-zA-Z0-9]{20,}|ghu_[a-zA-Z0-9]{20,}|github_pat_[a-zA-Z0-9_]{20,}|hf_[a-zA-Z0-9]{20,}|glpat-[a-zA-Z0-9_-]{20,}|npm_[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|xox[abprs]-[0-9A-Za-z-]{10,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/.test(content);
+}
+
+/**
+ * Unified credential-check suppression gate. Returns true when the
+ * artifact is one of:
+ *   (a) A verified integrity manifest (path + content shape) AND
+ *       the content has NO vendor-prefix credential.
+ *   (b) An adversarial training corpus (per [CSR-003] + [CDS-023])
+ *       AND the content has NO vendor-prefix credential.
+ *
+ * The "no vendor prefix" requirement closes the attacker-plant bypass
+ * the original path-only carve-out shipped with: a planted
+ * `evil-models.json` with `{"models":{}, "leaked": "sk-…"}` no longer
+ * silences AST-CRED-* by name; the credential still surfaces.
+ */
+function shouldSuppressCredentialChecks(
+  artifactPath: string | undefined,
+  artifactContent: string | undefined,
+): boolean {
+  if (!artifactPath || !artifactContent) return false;
+  if (hasVendorPrefixCredential(artifactContent)) return false;
+  if (isVerifiedIntegrityManifest(artifactPath, artifactContent)) return true;
+  if (isCorpusPath(artifactPath)) return true;
+  return false;
+}
+
 
 /**
  * Build the credential-format detector. The regex is shared between the
