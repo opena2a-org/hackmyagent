@@ -8860,9 +8860,11 @@ async function checkPyPiPackage(
   const name = target.replace(/^(pip|pypi):/, '');
 
   // Fetch registry data in parallel with download+scan (unless --no-registry).
-  // Mirrors the checkNpmPackage pattern (line ~9233) so both ecosystems share
-  // the same lifecycle for registry lookups.
-  const registryPromise = options.registry === false ? Promise.resolve(null) : queryRegistry(`pip:${name}`);
+  // Mirrors the checkNpmPackage pattern (line ~9271) so both ecosystems share
+  // the same lifecycle for registry lookups. The Registry stores PyPI
+  // packages under their bare names (not `pip:` / `pypi:` prefixed), so the
+  // query key is the stripped `name`, matching the npm path.
+  const registryPromise = options.registry === false ? Promise.resolve(null) : queryRegistry(name);
 
   // Registry-only mode (--no-scan): skip the PyPI download + local scan,
   // emit Registry-shape output instead. Mirrors checkNpmPackage's
@@ -9003,9 +9005,8 @@ async function checkPyPiPackage(
     const medium = failed.filter(f => f.severity === 'medium');
     const low = failed.filter(f => f.severity === 'low');
 
-    // Await the registry lookup we kicked off in parallel above (line ~8866).
-    // Same query key (pip:${name}) to keep semantics identical to the prior
-    // sequential call.
+    // Await the registry lookup we kicked off in parallel above (line ~8867).
+    // Bare-name query key, matching the Registry's PyPI storage convention.
     const registryData = await registryPromise;
 
     if (options.json) {

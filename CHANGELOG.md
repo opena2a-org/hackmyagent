@@ -4,6 +4,16 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.23.4] - 2026-05-27
+
+### Fixed
+
+- **`check pip:<pkg>` Registry lookups now use the bare package name instead of a `pip:` prefix.** The OpenA2A Registry stores PyPI packages under their bare names (e.g. `anthropic`), not under a `pip:` / `pypi:` prefix. Until this release, `checkPyPiPackage` in `src/cli.ts` queried `queryRegistry(\`pip:${name}\`)`, which always missed for Registry-indexed PyPI packages and returned `found: false` even for stably-registered records. Combined with the `--no-scan` fix in 0.23.2 ([#195](https://github.com/opena2a-org/hackmyagent/issues/195)), the CLI returned a not-found block for `pip:anthropic --no-scan --json` despite the canonical record being live in the Registry. With this release the PyPI path mirrors `checkNpmPackage`'s bare-name query, so `--no-scan` against any Registry-indexed PyPI package now returns the canonical record (`found: true`, `packageType`, `trustLevel`, `trustScore`, `dependencies`). Closes the "known follow-up" called out in the 0.23.2 entry and unblocks the 3-way PyPI parity fixture at `opena2a-standards/opena2a-parity`.
+
+### Tests
+
+- New test file `__tests__/checker/check-pip-prefix-registry-query.test.ts` with two layers (matching the `check-not-found-json.test.ts` pattern): a deterministic source-level lock-in that asserts `checkPyPiPackage` does not call `queryRegistry` with a `pip:` / `pypi:` prefix (CI-safe; catches the exact regression class), plus a local-only spawn smoke test that invokes the built `dist/cli.js` against a Registry-known PyPI package and asserts `found: true` + `packageType: "ai_tool"`.
+
 ## [0.23.3] - 2026-05-27
 
 ### Fixed
