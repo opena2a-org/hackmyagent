@@ -4,7 +4,7 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
-## [0.23.3] - 2026-05-26
+## [0.23.3] - 2026-05-27
 
 ### Fixed
 - **Scanner false-positive class on NEMO-009 (eval/Function/JSON5) and AST-CRED-001/002/003.** Three FPs that surfaced on the nanomind tree (`opena2a-org/nanomind#26`) are now suppressed by preserved-detection refinements:
