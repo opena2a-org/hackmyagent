@@ -4,6 +4,8 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.23.3] - 2026-05-27
+
 ### Fixed
 - **Scanner false-positive class on NEMO-009 (eval/Function/JSON5) and AST-CRED-001/002/003.** Three FPs that surfaced on the nanomind tree (`opena2a-org/nanomind#26`) are now suppressed by preserved-detection refinements:
   - **NEMO-009 string-literal gating.** New exported `isMatchInsideStringLiteral(line, matchIndex)` walker tracks single, double, and backtick quote state plus `//` line comments and `/* ... */` block comments. Template-literal interpolation (`${...}` inside a backtick) is brace-counted: a match inside the interpolation expression returns false (real code); a match outside the interpolation but still inside the backtick keeps in-string state. NEMO-009 calls this helper on every TS/JS match (bareEval, indirectEval, newFunction, JSON5.parse) so `screenInput('eval(atob("malicious"))', 'piped')` no longer fires.
