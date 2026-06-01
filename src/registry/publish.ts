@@ -251,6 +251,13 @@ export function buildPublishPayload(data: PublishScanData, toolVersion: string):
   if (data.soulResult) {
     subReports.soul = {
       score: data.soulResult.score,
+      // #206 R2.4: publish rawScore + scoreClamped so the Registry can
+      // distinguish "scoring rule changed across HMA versions" from
+      // "the agent's governance got worse." Without both fields, a
+      // dashboard plotting historical score sees a phantom regression
+      // the moment HMA 0.23.5 clamps a previously-100 verdict to 74.
+      rawScore: data.soulResult.rawScore,
+      scoreClamped: data.soulResult.scoreClamped,
       conformance: data.soulResult.conformance,
       agentTier: data.soulResult.agentTier,
       totalControls: data.soulResult.totalControls,

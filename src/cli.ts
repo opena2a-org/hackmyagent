@@ -6374,6 +6374,12 @@ Examples:
         // renders below.
         soulVerdictColor = colors.brightRed;
         soulVerdictText = `Profile mismatch: declared=${result.profileMismatch.declaredProfile} skips ${result.profileMismatch.skippedDomains.length} domains the body content suggests should be evaluated`;
+      } else if (result.markerInvalid) {
+        // #206 adversarial round 1: an invalid marker is HIGH-severity
+        // too. Eclipse the "all controls covered" verdict so the user
+        // sees the marker problem before reading per-domain scores.
+        soulVerdictColor = colors.brightRed;
+        soulVerdictText = `Profile marker invalid: '${result.markerInvalid.attemptedValue}' is not a recognized profile`;
       } else if (missing === 0) {
         soulVerdictColor = colors.green;
         soulVerdictText = `All ${result.totalControls} governance controls covered`;
@@ -6411,8 +6417,46 @@ Examples:
         console.log(`       or revise the body to match the declared profile.`);
       }
 
+      // Marker-invalid finding block (#206 adversarial rounds 1+2). An
+      // invalid declaration -- a marker that names an unrecognized
+      // profile, an empty marker, a leading-space marker, OR a
+      // `--profile X` flag with X unrecognized -- silently fell
+      // through to keyword detection in earlier versions and
+      // DEFEATED the mismatch clamp. Surface as HIGH so the operator
+      // sees the gap and the clamp fires.
+      if (result.markerInvalid) {
+        const mi = result.markerInvalid;
+        const sourceLabel = mi.source === 'flag' ? '--profile flag' : 'marker';
+        const displayedValue = mi.attemptedValue.length === 0 ? '(empty)' : mi.attemptedValue;
+        console.log();
+        console.log(`  ${colors.brightRed}${colors.bold}HIGH${RESET()}  ${colors.bold}SOUL-PROFILE-MARKER-INVALID${RESET()}  ${colors.dim}${sourceLabel} declares an unrecognized profile${RESET()}`);
+        console.log(`  ${colors.dim}Attempted ${sourceLabel} value=${RESET()}${colors.bold}${displayedValue}${RESET()}${colors.dim} is not a recognized profile name.${RESET()}`);
+        console.log(`  ${colors.dim}Evaluated using detected profile=${RESET()}${colors.bold}${mi.resolvedProfile}${RESET()}${colors.dim} (from body keywords).${RESET()}`);
+        console.log(`  ${colors.dim}Recognized profiles:${RESET()} conversational, code-assistant, tool-agent, autonomous, orchestrator, custom`);
+        if (mi.source === 'flag') {
+          console.log(`  ${colors.cyan}Fix:${RESET()} re-run with ${colors.bold}--profile ${mi.resolvedProfile}${RESET()} (recognized), or drop --profile and let the scanner detect from body content.`);
+        } else {
+          console.log(`  ${colors.cyan}Fix:${RESET()} replace the marker with a recognized value (e.g. ${colors.bold}<!-- soul:profile=${mi.resolvedProfile} -->${RESET()}),`);
+          console.log(`       or remove it and let the scanner detect from body content.`);
+        }
+      }
+
       console.log();
-      console.log(`  Governance  ${uiScoreMeter(result.score)}${result.skippedDomains.length > 0 ? `  ${colors.dim}(scope: ${evaluatedDomains}/${totalDomains} domains)${RESET()}` : ''}`);
+      const scopeNote = result.skippedDomains.length > 0
+        ? `  ${colors.dim}(scope: ${evaluatedDomains}/${totalDomains} domains)${RESET()}`
+        : '';
+      // #206: when the score was clamped because a HIGH finding is
+      // present, show the raw vs clamped value so the operator can
+      // audit the verdict instead of seeing the number drop silently.
+      // The HIGH count must match the number of HIGH blocks rendered
+      // above (#206 R2.3): profileMismatch and markerInvalid can both
+      // fire on the same scan; the note must not lie about how many.
+      const highCount = (result.profileMismatch ? 1 : 0) + (result.markerInvalid ? 1 : 0);
+      const highPlural = highCount === 1 ? 'HIGH unaddressed' : 'HIGHs unaddressed';
+      const clampNote = result.scoreClamped
+        ? `  ${colors.yellow}(score clamped from ${result.rawScore} to ${result.score} -- ${highCount} ${highPlural})${RESET()}`
+        : '';
+      console.log(`  Governance  ${uiScoreMeter(result.score)}${scopeNote}${clampNote}`);
 
       // ── Domain Scores ──────────────────────────────────────────────
       const DOMAIN_DESCRIPTIONS: Record<string, string> = {
@@ -6561,14 +6605,26 @@ Examples:
         }
       }
 
-      // SOUL-PROFILE-MISMATCH is a HIGH-severity finding (#162). Under
-      // --ci, exit non-zero so CI pipelines reject any SOUL.md that
-      // narrows scope past its body content. Both the global --ci flag
-      // (stripped from argv early) and the per-command --ci option are
-      // honored.
-      if ((globalCiMode || options.ci) && result.profileMismatch) {
+      // HIGH-severity SOUL findings exit non-zero under --ci so CI
+      // pipelines reject any SOUL.md whose verdict is misleading.
+      // #162 introduced SOUL-PROFILE-MISMATCH; #206 R4 surface
+      // SOUL-PROFILE-MARKER-INVALID. Both must gate the CI exit code
+      // or the new marker-invalid HIGH renders red in the output
+      // while still passing CI. Both the global --ci flag (stripped
+      // from argv early) and the per-command --ci option are honored.
+      const ciMode = globalCiMode || options.ci;
+      if (ciMode && result.profileMismatch) {
         process.stderr.write(
           `SOUL-PROFILE-MISMATCH HIGH: declared profile=${result.profileMismatch.declaredProfile} skips ${result.profileMismatch.skippedDomains.length} of 9 domains; body suggests profile=${result.profileMismatch.inferredProfile}.\n`,
+        );
+        process.exit(1);
+      }
+      if (ciMode && result.markerInvalid) {
+        const mi = result.markerInvalid;
+        const sourceLabel = mi.source === 'flag' ? '--profile flag' : 'marker';
+        const displayedValue = mi.attemptedValue.length === 0 ? '(empty)' : mi.attemptedValue;
+        process.stderr.write(
+          `SOUL-PROFILE-MARKER-INVALID HIGH: ${sourceLabel} value='${displayedValue}' is not a recognized profile; resolved to ${mi.resolvedProfile} from body keywords.\n`,
         );
         process.exit(1);
       }

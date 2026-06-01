@@ -70,7 +70,30 @@ export interface SoulScanResult {
   /** Domain IDs skipped due to profile filtering. */
   skippedDomains: string[];
   domains: DomainResult[];
+  /**
+   * Effective score after applying the #206 HIGH-finding clamp. Drives
+   * grade, level, conformance, and the rendered "Governance N/100" line.
+   * When `scoreClamped` is true, `score` is less than `rawScore`.
+   */
   score: number;
+  /**
+   * Pre-clamp average of applicable-domain percentages. Always present
+   * on a result produced by `scanSoul()` so consumers can tell
+   * domain-coverage failures apart from severity-clamp failures.
+   * Optional in the type so external SDK consumers constructing the
+   * result literal (rare, but supported) do not break across HMA
+   * versions when the field is absent. The internal scanner always
+   * populates it.
+   */
+  rawScore?: number;
+  /**
+   * True when `score < rawScore` because a HIGH finding (e.g.
+   * profileMismatch or markerInvalid) pulled the rendered score below
+   * the HARDENED band per #206. A clean clamp-free scan has
+   * `scoreClamped: false` and `score === rawScore`. Optional for the
+   * same back-compat reason as rawScore.
+   */
+  scoreClamped?: boolean;
   /** @deprecated Use `level` instead. Kept for backward compatibility. */
   grade: SoulGrade;
   /** Progress-oriented maturity level. */
@@ -92,6 +115,19 @@ export interface SoulScanResult {
    * body, or no marker/override is in play).
    */
   profileMismatch?: SoulProfileMismatch;
+  /**
+   * Set when a `<!-- soul:profile=X -->` marker is present but the
+   * value `X` is not a recognized profile name. The marker silently
+   * fell through to keyword detection in earlier versions; per #206
+   * adversarial round 1 this is now surfaced as a HIGH finding so an
+   * attacker cannot defeat the mismatch clamp with a typo or unknown
+   * value. The clamp predicate consults this in addition to
+   * `profileMismatch`.
+   *
+   * Undefined when the marker is absent, well-formed, or names a
+   * recognized profile.
+   */
+  markerInvalid?: SoulMarkerInvalid;
 }
 
 export interface SoulProfileMismatch {
@@ -103,6 +139,15 @@ export interface SoulProfileMismatch {
   skippedDomains: string[];
   /** Body signals that triggered the inference (heading names, tool-verb mentions). */
   signals: string[];
+}
+
+export interface SoulMarkerInvalid {
+  /** The literal value the marker (or --profile flag) attempted to declare, e.g. "conversaional" (typo), "xyz", or "" (empty marker). */
+  attemptedValue: string;
+  /** Where the invalid declaration came from: a `<!-- soul:profile=X -->` marker or the `--profile X` CLI flag. */
+  source: 'marker' | 'flag';
+  /** The profile the scanner actually evaluated (keyword-fallback or detected). */
+  resolvedProfile: AgentProfile;
 }
 
 export interface HardenResult {
@@ -886,16 +931,72 @@ export class SoulScanner {
     const tierForced = !!options?.tier;
     const tier = (tierForced ? options!.tier!.toUpperCase() as AgentTier : null) || this.detectTier(targetDir, contentForTier);
 
-    const profileForced = !!options?.profile;
+    // #206 R3.8: distinguish "flag absent" from "flag passed with
+    // empty string". `--profile=''` is a user error -- previously
+    // `!!options.profile` swallowed it silently and ran with the
+    // detected profile. Now profileForced is true on any explicit
+    // pass-through, and `flagInvalid` (below) catches the empty
+    // value.
+    const profileForced = options?.profile !== undefined;
     // `profileFromMarker` distinguishes the `<!-- soul:profile=... -->` path
     // from the keyword-detection fallback. The marker path is what
     // attackers (or unaware authors) use to narrow the scanner's scope —
     // the mismatch detector below cares about marker-driven narrowing
     // even when `--profile` is not set.
-    const markerMatchForMismatch = contentForTier.match(/<!--\s*soul:profile=(\S+)\s*-->/i);
-    const profileFromMarker = markerMatchForMismatch
-      && Object.keys(PROFILE_DOMAINS).includes(markerMatchForMismatch[1].toLowerCase());
-    const profile = (profileForced ? options!.profile!.toLowerCase() as AgentProfile : null) || this.detectProfile(contentForTier);
+    //
+    // Two regexes:
+    //   STRICT_MARKER  -- the canonical form `<!-- soul:profile=NAME -->`.
+    //                     If this matches AND the value is in PROFILE_DOMAINS,
+    //                     the marker is honored.
+    //   PERMISSIVE_MARKER -- catches "any attempt at the marker". An
+    //                        empty value, leading-space-before-value,
+    //                        or other malformed shapes that fail the
+    //                        strict match are still surfaced via
+    //                        markerInvalid so the round-2 bypass class
+    //                        (empty / leading-space markers returning
+    //                        HARDENED 100/100) cannot defeat the clamp.
+    const STRICT_MARKER = /<!--\s*soul:profile=(\S+)\s*-->/i;
+    const PERMISSIVE_MARKER = /<!--[\s\S]*?soul:profile=([^>]*?)\s*-->/i;
+    // #206 R3.1: strip fenced code blocks before running the marker
+    // regexes so a SOUL.md that DOCUMENTS marker syntax (e.g.
+    // ``` <!-- soul:profile=xyz --> ```) does not fire
+    // markerInvalid HIGH on its own examples. This mirrors the same
+    // protection `inferProfileFromContent` applies for headings.
+    const contentForMarkerCheck = contentForTier
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/~~~[\s\S]*?~~~/g, '');
+    const strictMarkerMatch = contentForMarkerCheck.match(STRICT_MARKER);
+    const permissiveMarkerMatch = contentForMarkerCheck.match(PERMISSIVE_MARKER);
+    const strictMarkerValue = strictMarkerMatch ? strictMarkerMatch[1].toLowerCase() : undefined;
+    const profileFromMarker = strictMarkerValue !== undefined
+      && Object.keys(PROFILE_DOMAINS).includes(strictMarkerValue);
+    // Anything that LOOKED like an attempted marker but did not produce
+    // a recognized profile is `markerInvalidFromMarker`. The
+    // attemptedValue prefers the permissive capture (trimmed) so the
+    // user sees what they actually wrote, including empty strings.
+    const markerInvalidFromMarker = !!(permissiveMarkerMatch && !profileFromMarker);
+    const markerInvalidAttemptedValue = markerInvalidFromMarker
+      ? (permissiveMarkerMatch![1] ?? '').trim().toLowerCase()
+      : undefined;
+
+    // #206 adversarial round 2: the CLI `--profile X` flag had no value
+    // validation. Passing `--profile xyz` (typo or unknown name)
+    // produced an undefined `PROFILE_DOMAINS[X]` lookup downstream and
+    // crashed the scanner with a TypeError. Validate the flag value
+    // here, fall back to the detected profile when invalid, and fire
+    // the same markerInvalid HIGH so the clamp still engages.
+    const rawFlagValue = options?.profile?.toLowerCase();
+    const flagValid = rawFlagValue !== undefined
+      && Object.keys(PROFILE_DOMAINS).includes(rawFlagValue);
+    const flagInvalid = profileForced && !flagValid;
+
+    const honoredFlagProfile = (profileForced && flagValid)
+      ? (rawFlagValue as AgentProfile)
+      : null;
+    // `detectProfile` itself honors a valid marker and falls back to
+    // keyword detection if absent or invalid, so we only need to
+    // short-circuit when the (validated) flag is in play.
+    const profile = honoredFlagProfile || this.detectProfile(contentForTier);
 
     const applicable = this.applicableControls(tier, profile);
 
@@ -1009,6 +1110,19 @@ export class SoulScanner {
       const level = this.calculateLevel(0);
       const conformance = this.calculateConformance(0, criticalMissing);
 
+      // #206 R2.1: even on the no-governance-file early-return path,
+      // surface an invalid --profile flag so the user gets the HIGH
+      // marker block (and the clamp would fire if there were a score
+      // to clamp). The marker case is impossible here (no file means
+      // no marker), so source is always 'flag' on this path.
+      const earlyMarkerInvalid: SoulMarkerInvalid | undefined = flagInvalid
+        ? {
+            attemptedValue: (options?.profile ?? '').toLowerCase(),
+            source: 'flag',
+            resolvedProfile: profile,
+          }
+        : undefined;
+
       return {
         file: null,
         fileSize: 0,
@@ -1019,6 +1133,8 @@ export class SoulScanner {
         skippedDomains,
         domains: emptyDomains,
         score: 0,
+        rawScore: 0,
+        scoreClamped: false,
         grade,
         level,
         conformance,
@@ -1027,6 +1143,7 @@ export class SoulScanner {
         totalControls: applicable.length,
         totalPassed: 0,
         profileMismatch,
+        markerInvalid: earlyMarkerInvalid,
       };
     }
 
@@ -1113,11 +1230,53 @@ export class SoulScanner {
       };
     }).filter((d): d is DomainResult => d !== null);
 
-    // Calculate overall score as average of applicable (non-skipped) domain percentages
+    // Calculate raw score as average of applicable (non-skipped) domain percentages.
     const scoredDomains = domains.filter((d) => !d.skippedByProfile && d.total > 0);
-    const score = scoredDomains.length > 0
+    const rawScore = scoredDomains.length > 0
       ? Math.round(scoredDomains.reduce((sum, d) => sum + d.percentage, 0) / scoredDomains.length)
       : 0;
+
+    // #206 adversarial rounds 1+2: an invalid declaration (marker
+    // value OR --profile flag value) does not produce a
+    // profileMismatch because the keyword-fallback resolved to
+    // whatever the body suggested, but the declaration WAS an attempt
+    // to narrow the scanner's scope. Surface it here so the clamp
+    // fires regardless of which fallback profile got assigned. When
+    // BOTH sources are invalid, the flag wins (it was passed
+    // explicitly), but either alone still triggers the clamp.
+    let markerInvalidFinding: SoulMarkerInvalid | undefined;
+    if (flagInvalid) {
+      markerInvalidFinding = {
+        attemptedValue: (options?.profile ?? '').toLowerCase(),
+        source: 'flag',
+        resolvedProfile: profile,
+      };
+    } else if (markerInvalidFromMarker) {
+      markerInvalidFinding = {
+        attemptedValue: markerInvalidAttemptedValue ?? '',
+        source: 'marker',
+        resolvedProfile: profile,
+      };
+    }
+
+    // #206: Any HIGH finding clamps the rendered score to 74 so neither
+    // the numeric verdict nor the conformance label can present
+    // "HARDENED" when a HIGH is unaddressed. A CISO reads "100" or
+    // "HARDENED" first; the existing PARTIAL label (#162) was an
+    // insufficient guard because the number and the label can both still
+    // read clean if either threshold is held. 74 is one below the
+    // conformance HARDENED band (>=75) AND below the level/grade
+    // HARDENED band (>=80), so calculateLevel, calculateConformance,
+    // calculateGrade ALL drop into the next-lower band together. It is
+    // also the information-preserving minimum: raw 95 + HIGH -> 74, raw
+    // 50 + HIGH stays at 50, raw 100 (no HIGH) stays at 100. The set of
+    // HIGH sources today is profileMismatch + markerInvalid; future
+    // HIGH-class scan-soul findings should plug into this predicate so
+    // the clamp generalizes.
+    const hasHighFinding = profileMismatch !== undefined || markerInvalidFinding !== undefined;
+    const HIGH_CLAMP_SCORE = 74;
+    const score = hasHighFinding ? Math.min(rawScore, HIGH_CLAMP_SCORE) : rawScore;
+    const scoreClamped = score < rawScore;
 
     // Find missing critical controls (only applicable ones)
     const criticalMissing = applicable
@@ -1125,6 +1284,9 @@ export class SoulScanner {
       .filter((d) => !controlResults.find((c) => c.id === d.id)?.passed)
       .map((d) => d.id);
 
+    // Grade / level / conformance derive from the CLAMPED score so the
+    // label band (hardened / standard / essential / none) stays consistent
+    // with the rendered number.
     const { grade, floored } = this.calculateGrade(score, criticalMissing);
     const level = this.calculateLevel(score);
     const conformance = this.calculateConformance(score, criticalMissing);
@@ -1140,6 +1302,8 @@ export class SoulScanner {
       skippedDomains,
       domains,
       score,
+      rawScore,
+      scoreClamped,
       grade,
       level,
       conformance,
@@ -1148,6 +1312,7 @@ export class SoulScanner {
       totalControls: applicable.length,
       totalPassed,
       profileMismatch,
+      markerInvalid: markerInvalidFinding,
     };
 
     if (options?.deepAnalysis) {
