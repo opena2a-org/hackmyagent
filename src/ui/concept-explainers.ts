@@ -43,7 +43,7 @@ export const CONCEPT_EXPLAINERS: Record<ConceptId, ConceptExplainer> = {
       '  SOUL.md  →  governs  →  SKILL.md / MCP  →  constrains  →  runtime input',
       '',
       '`harden-soul` generates the missing governance sections; existing content',
-      'is preserved. Run `scan-soul --explain` for the 9-domain model.',
+      'is preserved. Run `hackmyagent scan-soul --explain` for the 9-domain model.',
     ].join('\n'),
     oneLineRef: '(Why SOUL: see above)',
   },
