@@ -70,7 +70,25 @@ export interface SoulScanResult {
   /** Domain IDs skipped due to profile filtering. */
   skippedDomains: string[];
   domains: DomainResult[];
+  /**
+   * Effective score after applying the #206 HIGH-finding clamp. Drives
+   * grade, level, conformance, and the rendered "Governance N/100" line.
+   * When `scoreClamped` is true, `score` is less than `rawScore`.
+   */
   score: number;
+  /**
+   * Pre-clamp average of applicable-domain percentages. Always present so
+   * consumers (release-smoke harness, dashboards, JSON callers) can tell
+   * domain-coverage failures apart from severity-clamp failures.
+   */
+  rawScore: number;
+  /**
+   * True when `score < rawScore` because a HIGH finding (e.g.
+   * profileMismatch) pulled the rendered score below the HARDENED band
+   * per #206. A clean clamp-free scan has `scoreClamped: false` and
+   * `score === rawScore`.
+   */
+  scoreClamped: boolean;
   /** @deprecated Use `level` instead. Kept for backward compatibility. */
   grade: SoulGrade;
   /** Progress-oriented maturity level. */
@@ -1019,6 +1037,8 @@ export class SoulScanner {
         skippedDomains,
         domains: emptyDomains,
         score: 0,
+        rawScore: 0,
+        scoreClamped: false,
         grade,
         level,
         conformance,
@@ -1113,11 +1133,30 @@ export class SoulScanner {
       };
     }).filter((d): d is DomainResult => d !== null);
 
-    // Calculate overall score as average of applicable (non-skipped) domain percentages
+    // Calculate raw score as average of applicable (non-skipped) domain percentages.
     const scoredDomains = domains.filter((d) => !d.skippedByProfile && d.total > 0);
-    const score = scoredDomains.length > 0
+    const rawScore = scoredDomains.length > 0
       ? Math.round(scoredDomains.reduce((sum, d) => sum + d.percentage, 0) / scoredDomains.length)
       : 0;
+
+    // #206: Any HIGH finding clamps the rendered score to 74 so neither
+    // the numeric verdict nor the conformance label can present
+    // "HARDENED" when a HIGH is unaddressed. A CISO reads "100" or
+    // "HARDENED" first; the existing PARTIAL label (#162) was an
+    // insufficient guard because the number and the label can both still
+    // read clean if either threshold is held. 74 is one below the
+    // conformance HARDENED band (>=75) AND below the level/grade
+    // HARDENED band (>=80), so calculateLevel, calculateConformance,
+    // calculateGrade ALL drop into the next-lower band together. It is
+    // also the information-preserving minimum: raw 95 + HIGH -> 74, raw
+    // 50 + HIGH stays at 50, raw 100 (no HIGH) stays at 100.
+    // profileMismatch is the only HIGH source today; future HIGH-class
+    // scan-soul findings should plug into this predicate so the clamp
+    // generalizes.
+    const hasHighFinding = profileMismatch !== undefined;
+    const HIGH_CLAMP_SCORE = 74;
+    const score = hasHighFinding ? Math.min(rawScore, HIGH_CLAMP_SCORE) : rawScore;
+    const scoreClamped = score < rawScore;
 
     // Find missing critical controls (only applicable ones)
     const criticalMissing = applicable
@@ -1125,6 +1164,9 @@ export class SoulScanner {
       .filter((d) => !controlResults.find((c) => c.id === d.id)?.passed)
       .map((d) => d.id);
 
+    // Grade / level / conformance derive from the CLAMPED score so the
+    // label band (hardened / standard / essential / none) stays consistent
+    // with the rendered number.
     const { grade, floored } = this.calculateGrade(score, criticalMissing);
     const level = this.calculateLevel(score);
     const conformance = this.calculateConformance(score, criticalMissing);
@@ -1140,6 +1182,8 @@ export class SoulScanner {
       skippedDomains,
       domains,
       score,
+      rawScore,
+      scoreClamped,
       grade,
       level,
       conformance,

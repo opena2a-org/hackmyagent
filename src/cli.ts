@@ -6412,7 +6412,16 @@ Examples:
       }
 
       console.log();
-      console.log(`  Governance  ${uiScoreMeter(result.score)}${result.skippedDomains.length > 0 ? `  ${colors.dim}(scope: ${evaluatedDomains}/${totalDomains} domains)${RESET()}` : ''}`);
+      const scopeNote = result.skippedDomains.length > 0
+        ? `  ${colors.dim}(scope: ${evaluatedDomains}/${totalDomains} domains)${RESET()}`
+        : '';
+      // #206: when the score was clamped because a HIGH finding is
+      // present, show the raw vs clamped value so the operator can
+      // audit the verdict instead of seeing the number drop silently.
+      const clampNote = result.scoreClamped
+        ? `  ${colors.yellow}(score clamped from ${result.rawScore} to ${result.score} -- 1 HIGH unaddressed)${RESET()}`
+        : '';
+      console.log(`  Governance  ${uiScoreMeter(result.score)}${scopeNote}${clampNote}`);
 
       // ── Domain Scores ──────────────────────────────────────────────
       const DOMAIN_DESCRIPTIONS: Record<string, string> = {
