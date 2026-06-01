@@ -6374,6 +6374,12 @@ Examples:
         // renders below.
         soulVerdictColor = colors.brightRed;
         soulVerdictText = `Profile mismatch: declared=${result.profileMismatch.declaredProfile} skips ${result.profileMismatch.skippedDomains.length} domains the body content suggests should be evaluated`;
+      } else if (result.markerInvalid) {
+        // #206 adversarial round 1: an invalid marker is HIGH-severity
+        // too. Eclipse the "all controls covered" verdict so the user
+        // sees the marker problem before reading per-domain scores.
+        soulVerdictColor = colors.brightRed;
+        soulVerdictText = `Profile marker invalid: '${result.markerInvalid.attemptedValue}' is not a recognized profile`;
       } else if (missing === 0) {
         soulVerdictColor = colors.green;
         soulVerdictText = `All ${result.totalControls} governance controls covered`;
@@ -6409,6 +6415,22 @@ Examples:
         console.log(`  ${colors.dim}Skipped domains:${RESET()} ${pm.skippedDomains.join(', ')}`);
         console.log(`  ${colors.cyan}Fix:${RESET()} remove the ${colors.bold}<!-- soul:profile=${pm.declaredProfile} -->${RESET()} marker (let the scanner detect),`);
         console.log(`       or revise the body to match the declared profile.`);
+      }
+
+      // Marker-invalid finding block (#206 adversarial round 1). A
+      // marker that names an unrecognized profile (typo, unknown
+      // value) silently fell through to keyword detection in earlier
+      // versions and DEFEATED the mismatch clamp. Surface as HIGH so
+      // the operator sees the gap and the clamp fires.
+      if (result.markerInvalid) {
+        const mi = result.markerInvalid;
+        console.log();
+        console.log(`  ${colors.brightRed}${colors.bold}HIGH${RESET()}  ${colors.bold}SOUL-PROFILE-MARKER-INVALID${RESET()}  ${colors.dim}Marker declares an unrecognized profile${RESET()}`);
+        console.log(`  ${colors.dim}Attempted marker value=${RESET()}${colors.bold}${mi.attemptedValue}${RESET()}${colors.dim} is not a recognized profile name.${RESET()}`);
+        console.log(`  ${colors.dim}Evaluated using detected profile=${RESET()}${colors.bold}${mi.resolvedProfile}${RESET()}${colors.dim} (from body keywords).${RESET()}`);
+        console.log(`  ${colors.dim}Recognized profiles:${RESET()} conversational, code-assistant, tool-agent, autonomous, orchestrator, custom`);
+        console.log(`  ${colors.cyan}Fix:${RESET()} replace the marker with a recognized value (e.g. ${colors.bold}<!-- soul:profile=${mi.resolvedProfile} -->${RESET()}),`);
+        console.log(`       or remove it and let the scanner detect from body content.`);
       }
 
       console.log();

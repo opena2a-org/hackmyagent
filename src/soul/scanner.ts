@@ -110,6 +110,19 @@ export interface SoulScanResult {
    * body, or no marker/override is in play).
    */
   profileMismatch?: SoulProfileMismatch;
+  /**
+   * Set when a `<!-- soul:profile=X -->` marker is present but the
+   * value `X` is not a recognized profile name. The marker silently
+   * fell through to keyword detection in earlier versions; per #206
+   * adversarial round 1 this is now surfaced as a HIGH finding so an
+   * attacker cannot defeat the mismatch clamp with a typo or unknown
+   * value. The clamp predicate consults this in addition to
+   * `profileMismatch`.
+   *
+   * Undefined when the marker is absent, well-formed, or names a
+   * recognized profile.
+   */
+  markerInvalid?: SoulMarkerInvalid;
 }
 
 export interface SoulProfileMismatch {
@@ -121,6 +134,13 @@ export interface SoulProfileMismatch {
   skippedDomains: string[];
   /** Body signals that triggered the inference (heading names, tool-verb mentions). */
   signals: string[];
+}
+
+export interface SoulMarkerInvalid {
+  /** The literal value the marker attempted to declare, e.g. "conversaional" (typo) or "xyz". */
+  attemptedValue: string;
+  /** The profile the scanner actually evaluated (keyword-fallback or detected). */
+  resolvedProfile: AgentProfile;
 }
 
 export interface HardenResult {
@@ -911,8 +931,19 @@ export class SoulScanner {
     // the mismatch detector below cares about marker-driven narrowing
     // even when `--profile` is not set.
     const markerMatchForMismatch = contentForTier.match(/<!--\s*soul:profile=(\S+)\s*-->/i);
-    const profileFromMarker = markerMatchForMismatch
-      && Object.keys(PROFILE_DOMAINS).includes(markerMatchForMismatch[1].toLowerCase());
+    const markerAttemptedValue = markerMatchForMismatch ? markerMatchForMismatch[1].toLowerCase() : undefined;
+    const profileFromMarker = markerAttemptedValue !== undefined
+      && Object.keys(PROFILE_DOMAINS).includes(markerAttemptedValue);
+    // #206 adversarial round 1: an invalid marker value (typo, trailing
+    // `-`, unknown profile name) USED to fall through silently and
+    // disable mismatch detection. An attacker writing
+    // `<!-- soul:profile=conversaional -->` (typo) would defeat the
+    // clamp AND the HIGH finding because `profileFromMarker` was false.
+    // Detect "marker attempted but value is not a recognized profile"
+    // as a separate signal -- `markerInvalid` -- so the scanner can
+    // surface and clamp on it regardless of which profile the
+    // keyword-fallback resolved to.
+    const markerInvalid = markerAttemptedValue !== undefined && !profileFromMarker;
     const profile = (profileForced ? options!.profile!.toLowerCase() as AgentProfile : null) || this.detectProfile(contentForTier);
 
     const applicable = this.applicableControls(tier, profile);
@@ -1139,6 +1170,15 @@ export class SoulScanner {
       ? Math.round(scoredDomains.reduce((sum, d) => sum + d.percentage, 0) / scoredDomains.length)
       : 0;
 
+    // #206 adversarial round 1: an invalid marker value (typo or
+    // unrecognized profile name) does not produce a profileMismatch
+    // because the keyword-fallback resolved to whatever the body
+    // suggested, but the marker WAS an attempt to narrow the scanner's
+    // scope. Surface it here so the clamp fires regardless of which
+    // fallback profile got assigned.
+    const markerInvalidFinding: SoulMarkerInvalid | undefined =
+      markerInvalid ? { attemptedValue: markerAttemptedValue!, resolvedProfile: profile } : undefined;
+
     // #206: Any HIGH finding clamps the rendered score to 74 so neither
     // the numeric verdict nor the conformance label can present
     // "HARDENED" when a HIGH is unaddressed. A CISO reads "100" or
@@ -1149,11 +1189,11 @@ export class SoulScanner {
     // HARDENED band (>=80), so calculateLevel, calculateConformance,
     // calculateGrade ALL drop into the next-lower band together. It is
     // also the information-preserving minimum: raw 95 + HIGH -> 74, raw
-    // 50 + HIGH stays at 50, raw 100 (no HIGH) stays at 100.
-    // profileMismatch is the only HIGH source today; future HIGH-class
-    // scan-soul findings should plug into this predicate so the clamp
-    // generalizes.
-    const hasHighFinding = profileMismatch !== undefined;
+    // 50 + HIGH stays at 50, raw 100 (no HIGH) stays at 100. The set of
+    // HIGH sources today is profileMismatch + markerInvalid; future
+    // HIGH-class scan-soul findings should plug into this predicate so
+    // the clamp generalizes.
+    const hasHighFinding = profileMismatch !== undefined || markerInvalidFinding !== undefined;
     const HIGH_CLAMP_SCORE = 74;
     const score = hasHighFinding ? Math.min(rawScore, HIGH_CLAMP_SCORE) : rawScore;
     const scoreClamped = score < rawScore;
@@ -1192,6 +1232,7 @@ export class SoulScanner {
       totalControls: applicable.length,
       totalPassed,
       profileMismatch,
+      markerInvalid: markerInvalidFinding,
     };
 
     if (options?.deepAnalysis) {
