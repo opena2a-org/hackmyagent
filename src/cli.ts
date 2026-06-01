@@ -6417,20 +6417,28 @@ Examples:
         console.log(`       or revise the body to match the declared profile.`);
       }
 
-      // Marker-invalid finding block (#206 adversarial round 1). A
-      // marker that names an unrecognized profile (typo, unknown
-      // value) silently fell through to keyword detection in earlier
-      // versions and DEFEATED the mismatch clamp. Surface as HIGH so
-      // the operator sees the gap and the clamp fires.
+      // Marker-invalid finding block (#206 adversarial rounds 1+2). An
+      // invalid declaration -- a marker that names an unrecognized
+      // profile, an empty marker, a leading-space marker, OR a
+      // `--profile X` flag with X unrecognized -- silently fell
+      // through to keyword detection in earlier versions and
+      // DEFEATED the mismatch clamp. Surface as HIGH so the operator
+      // sees the gap and the clamp fires.
       if (result.markerInvalid) {
         const mi = result.markerInvalid;
+        const sourceLabel = mi.source === 'flag' ? '--profile flag' : 'marker';
+        const displayedValue = mi.attemptedValue.length === 0 ? '(empty)' : mi.attemptedValue;
         console.log();
-        console.log(`  ${colors.brightRed}${colors.bold}HIGH${RESET()}  ${colors.bold}SOUL-PROFILE-MARKER-INVALID${RESET()}  ${colors.dim}Marker declares an unrecognized profile${RESET()}`);
-        console.log(`  ${colors.dim}Attempted marker value=${RESET()}${colors.bold}${mi.attemptedValue}${RESET()}${colors.dim} is not a recognized profile name.${RESET()}`);
+        console.log(`  ${colors.brightRed}${colors.bold}HIGH${RESET()}  ${colors.bold}SOUL-PROFILE-MARKER-INVALID${RESET()}  ${colors.dim}${sourceLabel} declares an unrecognized profile${RESET()}`);
+        console.log(`  ${colors.dim}Attempted ${sourceLabel} value=${RESET()}${colors.bold}${displayedValue}${RESET()}${colors.dim} is not a recognized profile name.${RESET()}`);
         console.log(`  ${colors.dim}Evaluated using detected profile=${RESET()}${colors.bold}${mi.resolvedProfile}${RESET()}${colors.dim} (from body keywords).${RESET()}`);
         console.log(`  ${colors.dim}Recognized profiles:${RESET()} conversational, code-assistant, tool-agent, autonomous, orchestrator, custom`);
-        console.log(`  ${colors.cyan}Fix:${RESET()} replace the marker with a recognized value (e.g. ${colors.bold}<!-- soul:profile=${mi.resolvedProfile} -->${RESET()}),`);
-        console.log(`       or remove it and let the scanner detect from body content.`);
+        if (mi.source === 'flag') {
+          console.log(`  ${colors.cyan}Fix:${RESET()} re-run with ${colors.bold}--profile ${mi.resolvedProfile}${RESET()} (recognized), or drop --profile and let the scanner detect from body content.`);
+        } else {
+          console.log(`  ${colors.cyan}Fix:${RESET()} replace the marker with a recognized value (e.g. ${colors.bold}<!-- soul:profile=${mi.resolvedProfile} -->${RESET()}),`);
+          console.log(`       or remove it and let the scanner detect from body content.`);
+        }
       }
 
       console.log();
@@ -6440,8 +6448,13 @@ Examples:
       // #206: when the score was clamped because a HIGH finding is
       // present, show the raw vs clamped value so the operator can
       // audit the verdict instead of seeing the number drop silently.
+      // The HIGH count must match the number of HIGH blocks rendered
+      // above (#206 R2.3): profileMismatch and markerInvalid can both
+      // fire on the same scan; the note must not lie about how many.
+      const highCount = (result.profileMismatch ? 1 : 0) + (result.markerInvalid ? 1 : 0);
+      const highPlural = highCount === 1 ? 'HIGH unaddressed' : 'HIGHs unaddressed';
       const clampNote = result.scoreClamped
-        ? `  ${colors.yellow}(score clamped from ${result.rawScore} to ${result.score} -- 1 HIGH unaddressed)${RESET()}`
+        ? `  ${colors.yellow}(score clamped from ${result.rawScore} to ${result.score} -- ${highCount} ${highPlural})${RESET()}`
         : '';
       console.log(`  Governance  ${uiScoreMeter(result.score)}${scopeNote}${clampNote}`);
 
