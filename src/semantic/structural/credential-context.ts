@@ -9,6 +9,7 @@
  */
 
 import type { SemanticFinding, AnalysisFile } from '../types';
+import type { GitContext } from './git-context';
 
 /** Key names that indicate a secret value */
 const SECRET_KEY_PATTERN =
@@ -122,6 +123,107 @@ function severityForFile(filePath: string): 'critical' | 'high' {
 }
 
 /**
+ * #208 .env-specific severity that consults git tracking state.
+ *
+ * Only downgrades when the file is .env-like AND the gitContext can prove
+ * the credential is not in version control (not tracked, not in
+ * history reachable from --all + --reflog). All other paths keep HIGH so
+ * we do not weaken detection on credentials that ARE leaked.
+ *
+ * Order MUST be: index, then history, then ignored. A tracked file can
+ * match a gitignore pattern; downgrading on `isGitignored` alone would
+ * miss real leaks.
+ *
+ * Symlink defense: if the .env candidate is a symlink, the resolved
+ * target is checked too. A symlink to a tracked file stays HIGH.
+ *
+ * Returns the unchanged base severity for non-.env files (e.g. CLAUDE.md
+ * stays CRITICAL; MCP configs stay CRITICAL; generic config.json stays
+ * HIGH).
+ */
+function effectiveSeverityForEnvCredential(
+  filePath: string,
+  gitContext?: GitContext,
+): 'critical' | 'high' | 'medium' {
+  const base = severityForFile(filePath);
+  if (base === 'critical') return 'critical';
+
+  const lower = filePath.toLowerCase();
+  if (!lower.includes('.env')) return base;
+
+  // No git context (or not a git repo) -> can't verify -> keep HIGH.
+  if (!gitContext || !gitContext.isGitRepo) return 'high';
+
+  // Walk the symlink chain. If ANY resolved candidate is tracked or has
+  // history, keep HIGH. A symlinked .env pointing at a tracked file leaks
+  // the same bytes as if .env itself were tracked.
+  const resolved = gitContext.resolveCandidates(filePath);
+
+  // Out-of-tree symlink target OR hardlink: we can't verify tracking
+  // state of the other path holding the same bytes. Default HIGH.
+  if (resolved.outOfTree || resolved.hardlinked) return 'high';
+
+  for (const c of resolved.candidates) {
+    if (gitContext.hasFileInIndex(c)) return 'high';
+    if (gitContext.hasFileInHistory(c)) return 'high';
+  }
+
+  // Untracked AND not in history (any candidate). Local-only exposure.
+  return 'medium';
+}
+
+/**
+ * Build the rationale + recommendation strings for a downgraded .env
+ * SEM-CRED-002 finding. Branches on whether the file is actually
+ * gitignored vs just-untracked so the wording matches reality.
+ */
+function envDowngradeWording(
+  filePath: string,
+  gitContext?: GitContext,
+): { rationale: string; recommendation: string } {
+  const gitignored = gitContext?.isGitignored(filePath) ?? false;
+  if (gitignored) {
+    return {
+      rationale: `${filePath} is gitignored and not present in version control history. The credential is local-only on disk. Treat as MEDIUM until confirmed; the secret may still have been shared via other channels (logs, screen-share, copy-paste, backups).`,
+      recommendation: `Rotate this credential and migrate to opena2a protect (the Secretless vault keeps the value out of process memory and out of AI context, even on local disk).`,
+    };
+  }
+  return {
+    rationale: `${filePath} is not tracked in git and not in any add-history, but it is also NOT gitignored. The next \`git add .\` will commit this credential into version control. Treat as MEDIUM until \`.gitignore\` is updated; rotate the credential regardless.`,
+    recommendation: `Add ${filePath} to .gitignore, rotate this credential, and migrate to opena2a protect (the Secretless vault keeps the value out of process memory and out of AI context).`,
+  };
+}
+
+/**
+ * For .env findings that stayed HIGH because the file is hardlinked or
+ * points outside the repo (the bytes may be tracked under a path we can't
+ * verify), return tailored wording so the user gets an actionable
+ * verification step instead of the stock "Ensure .env is in .gitignore"
+ * which may already be satisfied. Returns undefined when neither flag
+ * applies; the caller should fall through to the standard wording.
+ */
+function envHighOverrideWording(
+  filePath: string,
+  gitContext?: GitContext,
+): { rationale: string; recommendation: string } | undefined {
+  if (!gitContext || !gitContext.isGitRepo) return undefined;
+  const resolved = gitContext.resolveCandidates(filePath);
+  if (resolved.hardlinked) {
+    return {
+      rationale: `${filePath} shares its inode with another path on disk (hardlinked). The other link may be tracked elsewhere in this repo, so the credential could be in version control under a different filename.`,
+      recommendation: `Find the other hardlinked path with: find . -inum $(stat -f '%i' ${filePath} 2>/dev/null || stat -c '%i' ${filePath}). Verify whether any of those paths are tracked, rotate the credential, and migrate to opena2a protect.`,
+    };
+  }
+  if (resolved.outOfTree) {
+    return {
+      rationale: `${filePath} is a symlink pointing outside this repo. The credential bytes live in a file this repo's git cannot inspect; treat as exposed until verified by checking the target's own repo (if any).`,
+      recommendation: `Inspect the link target with: readlink ${filePath}. Verify whether the target is tracked in its own repository, rotate the credential, and migrate to opena2a protect.`,
+    };
+  }
+  return undefined;
+}
+
+/**
  * Detect URL-embedded passwords
  */
 function detectUrlPasswords(file: AnalysisFile): SemanticFinding[] {
@@ -184,7 +286,7 @@ function detectUrlPasswords(file: AnalysisFile): SemanticFinding[] {
  * Skips MCP config and Claude settings files — detectMcpEnvSecrets handles those
  * with richer context (server name, env block path) to avoid duplicate findings.
  */
-function detectGenericTokens(file: AnalysisFile): SemanticFinding[] {
+function detectGenericTokens(file: AnalysisFile, gitContext?: GitContext): SemanticFinding[] {
   if (file.type === 'mcp_config' || file.type === 'claude_settings') {
     return [];
   }
@@ -202,17 +304,23 @@ function detectGenericTokens(file: AnalysisFile): SemanticFinding[] {
         // Ensure value looks like it could be a secret (min length, some entropy)
         if (value.length >= 8 && !/^[a-z]+$/i.test(value)) {
           const { type, masked } = classifySecret(key, value);
+          const sev = effectiveSeverityForEnvCredential(file.path, gitContext);
+          const downgraded = sev === 'medium';
+          const wording = downgraded
+            ? envDowngradeWording(file.path, gitContext)
+            : envHighOverrideWording(file.path, gitContext);
           findings.push({
             id: 'SEM-CRED-002',
             title: `${type} hardcoded in config`,
-            description: `"${key}": ${masked}  — ${type} hardcoded in ${file.path}. Visible to anyone with repo access or who can read the file.`,
-            rationale:
+            description: `"${key}": ${masked}  -- ${type} hardcoded in ${file.path}. Visible to anyone with repo access or who can read the file.`,
+            rationale: wording?.rationale ??
               'Config files with hardcoded secrets are commonly committed to version control. The key name and value prefix identify this as a real credential.',
             category: 'credential',
-            severity: severityForFile(file.path),
+            severity: sev,
             file: file.path,
             line: i + 1,
-            recommendation: 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.',
+            recommendation: wording?.recommendation ??
+              'opena2a protect .  -- migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.',
             layer: 2,
             autoFixable: false,
           });
@@ -228,17 +336,23 @@ function detectGenericTokens(file: AnalysisFile): SemanticFinding[] {
       if (SECRET_KEY_PATTERN.test(key) && !isNonSecretValue(value)) {
         if (value.length >= 8 && !/^[a-z]+$/i.test(value)) {
           const { type, masked } = classifySecret(key, value);
+          const sev = effectiveSeverityForEnvCredential(file.path, gitContext);
+          const downgraded = sev === 'medium';
+          const wording = downgraded
+            ? envDowngradeWording(file.path, gitContext)
+            : envHighOverrideWording(file.path, gitContext);
           findings.push({
             id: 'SEM-CRED-002',
             title: `${type} hardcoded in config`,
-            description: `"${key}": ${masked}  — ${type} hardcoded in ${file.path}. Visible to anyone with repo access or who can read the file.`,
-            rationale:
+            description: `"${key}": ${masked}  -- ${type} hardcoded in ${file.path}. Visible to anyone with repo access or who can read the file.`,
+            rationale: wording?.rationale ??
               'Config files with hardcoded secrets are commonly committed to version control. The key name and value prefix identify this as a real credential.',
             category: 'credential',
-            severity: severityForFile(file.path),
+            severity: sev,
             file: file.path,
             line: i + 1,
-            recommendation: 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.',
+            recommendation: wording?.recommendation ??
+              'opena2a protect .  -- migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.',
             layer: 2,
             autoFixable: false,
           });
@@ -253,17 +367,23 @@ function detectGenericTokens(file: AnalysisFile): SemanticFinding[] {
       const value = rawValue.trim().replace(/^["']|["']$/g, '');
       if (SECRET_KEY_PATTERN.test(key) && !isNonSecretValue(value)) {
         if (value.length >= 8 && !/^[a-z]+$/i.test(value)) {
+          const sev = effectiveSeverityForEnvCredential(file.path, gitContext);
+          const downgraded = sev === 'medium';
+          const wording = downgraded
+            ? envDowngradeWording(file.path, gitContext)
+            : envHighOverrideWording(file.path, gitContext);
           findings.push({
             id: 'SEM-CRED-002',
             title: 'Hardcoded secret in config',
             description: `Environment variable "${key}" contains a hardcoded secret value in ${file.path}.`,
-            rationale:
+            rationale: wording?.rationale ??
               '.env files with hardcoded secrets should be gitignored. If this file is committed, the secret is exposed in version control history.',
             category: 'credential',
-            severity: severityForFile(file.path),
+            severity: sev,
             file: file.path,
             line: i + 1,
-            recommendation: `Ensure ${file.path} is in .gitignore and rotate this credential.`,
+            recommendation: wording?.recommendation ??
+              `Ensure ${file.path} is in .gitignore and rotate this credential.`,
             layer: 2,
             autoFixable: false,
           });
@@ -390,12 +510,12 @@ function detectMcpEnvSecrets(file: AnalysisFile): SemanticFinding[] {
 }
 
 export class CredentialContextAnalyzer {
-  analyze(files: AnalysisFile[]): SemanticFinding[] {
+  analyze(files: AnalysisFile[], gitContext?: GitContext): SemanticFinding[] {
     const findings: SemanticFinding[] = [];
 
     for (const file of files) {
       findings.push(...detectUrlPasswords(file));
-      findings.push(...detectGenericTokens(file));
+      findings.push(...detectGenericTokens(file, gitContext));
       findings.push(...detectCredentialsInInstructions(file));
       findings.push(...detectMcpEnvSecrets(file));
     }

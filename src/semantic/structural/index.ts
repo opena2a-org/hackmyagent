@@ -13,6 +13,7 @@ import { CredentialContextAnalyzer } from './credential-context';
 import { McpConfigAnalyzer } from './mcp-config';
 import { InstructionAnalyzer } from './instruction';
 import { PermissionModelAnalyzer } from './permission-model';
+import { getGitContext } from './git-context';
 
 /** Max file size to read (prevents OOM on huge files) */
 const MAX_FILE_SIZE = 512 * 1024; // 512KB
@@ -60,9 +61,11 @@ export class StructuralAnalyzer {
     const files = await this.discoverFiles(targetDir);
     if (files.length === 0) return [];
 
+    const gitContext = getGitContext(targetDir);
+
     const findings: SemanticFinding[] = [];
 
-    findings.push(...this.credentialAnalyzer.analyze(files));
+    findings.push(...this.credentialAnalyzer.analyze(files, gitContext));
     findings.push(...this.mcpAnalyzer.analyze(files));
     findings.push(...this.instructionAnalyzer.analyze(files));
     findings.push(...this.permissionAnalyzer.analyze(files));
