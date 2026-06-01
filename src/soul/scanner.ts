@@ -77,18 +77,23 @@ export interface SoulScanResult {
    */
   score: number;
   /**
-   * Pre-clamp average of applicable-domain percentages. Always present so
-   * consumers (release-smoke harness, dashboards, JSON callers) can tell
+   * Pre-clamp average of applicable-domain percentages. Always present
+   * on a result produced by `scanSoul()` so consumers can tell
    * domain-coverage failures apart from severity-clamp failures.
+   * Optional in the type so external SDK consumers constructing the
+   * result literal (rare, but supported) do not break across HMA
+   * versions when the field is absent. The internal scanner always
+   * populates it.
    */
-  rawScore: number;
+  rawScore?: number;
   /**
    * True when `score < rawScore` because a HIGH finding (e.g.
-   * profileMismatch) pulled the rendered score below the HARDENED band
-   * per #206. A clean clamp-free scan has `scoreClamped: false` and
-   * `score === rawScore`.
+   * profileMismatch or markerInvalid) pulled the rendered score below
+   * the HARDENED band per #206. A clean clamp-free scan has
+   * `scoreClamped: false` and `score === rawScore`. Optional for the
+   * same back-compat reason as rawScore.
    */
-  scoreClamped: boolean;
+  scoreClamped?: boolean;
   /** @deprecated Use `level` instead. Kept for backward compatibility. */
   grade: SoulGrade;
   /** Progress-oriented maturity level. */

@@ -6605,14 +6605,26 @@ Examples:
         }
       }
 
-      // SOUL-PROFILE-MISMATCH is a HIGH-severity finding (#162). Under
-      // --ci, exit non-zero so CI pipelines reject any SOUL.md that
-      // narrows scope past its body content. Both the global --ci flag
-      // (stripped from argv early) and the per-command --ci option are
-      // honored.
-      if ((globalCiMode || options.ci) && result.profileMismatch) {
+      // HIGH-severity SOUL findings exit non-zero under --ci so CI
+      // pipelines reject any SOUL.md whose verdict is misleading.
+      // #162 introduced SOUL-PROFILE-MISMATCH; #206 R4 surface
+      // SOUL-PROFILE-MARKER-INVALID. Both must gate the CI exit code
+      // or the new marker-invalid HIGH renders red in the output
+      // while still passing CI. Both the global --ci flag (stripped
+      // from argv early) and the per-command --ci option are honored.
+      const ciMode = globalCiMode || options.ci;
+      if (ciMode && result.profileMismatch) {
         process.stderr.write(
           `SOUL-PROFILE-MISMATCH HIGH: declared profile=${result.profileMismatch.declaredProfile} skips ${result.profileMismatch.skippedDomains.length} of 9 domains; body suggests profile=${result.profileMismatch.inferredProfile}.\n`,
+        );
+        process.exit(1);
+      }
+      if (ciMode && result.markerInvalid) {
+        const mi = result.markerInvalid;
+        const sourceLabel = mi.source === 'flag' ? '--profile flag' : 'marker';
+        const displayedValue = mi.attemptedValue.length === 0 ? '(empty)' : mi.attemptedValue;
+        process.stderr.write(
+          `SOUL-PROFILE-MARKER-INVALID HIGH: ${sourceLabel} value='${displayedValue}' is not a recognized profile; resolved to ${mi.resolvedProfile} from body keywords.\n`,
         );
         process.exit(1);
       }
