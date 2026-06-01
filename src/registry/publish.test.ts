@@ -142,6 +142,8 @@ function makeSoulResult(): SoulScanResult {
     skippedDomains: [],
     domains: [],
     score: 72,
+    rawScore: 72,
+    scoreClamped: false,
     grade: 'B' as any,
     level: 'Standard' as any,
     conformance: 'standard',

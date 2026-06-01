@@ -354,6 +354,49 @@ Refuse harmful requests including self-harm, violence, and weapons.
       expect(result.markerInvalid).toBeUndefined();
     });
 
+    it('--profile= (empty string explicitly passed) fires markerInvalid source=flag', async () => {
+      // #206 R3.8: pre-fix, `!!options.profile` was false on empty
+      // string so `profileForced` was false and the invalid flag
+      // silently fell through. Post-fix, `options.profile !==
+      // undefined` differentiates "flag absent" from "flag passed
+      // with empty value".
+      const scanner = new SoulScanner();
+      const result = await scanner.scanSoul(tmpDirWithSoul(HARDENED_BODY), { profile: '' });
+      expect(result.markerInvalid).toBeDefined();
+      expect(result.markerInvalid?.source).toBe('flag');
+      expect(result.markerInvalid?.attemptedValue).toBe('');
+    });
+
+    it('--profile NOT passed (options.profile undefined) does NOT fire markerInvalid', async () => {
+      // The flip side: flag absence must remain a no-op so callers
+      // who omit `profile` from options keep the existing behavior.
+      const scanner = new SoulScanner();
+      const result = await scanner.scanSoul(tmpDirWithSoul(HARDENED_BODY));
+      expect(result.markerInvalid).toBeUndefined();
+    });
+
+    it('R3.1: marker inside fenced code block does NOT fire markerInvalid', async () => {
+      // A SOUL.md that documents its own marker syntax in a code
+      // fence must not score-clamp on the documentation. Both
+      // ``` and ~~~ fences must be respected.
+      const tripleBacktick = `${HARDENED_BODY}\n\n## Documentation\n\n\`\`\`html\n<!-- soul:profile=xyz -->\n\`\`\`\n`;
+      const tilde = `${HARDENED_BODY}\n\n## Documentation\n\n~~~html\n<!-- soul:profile=xyz -->\n~~~\n`;
+      const scanner = new SoulScanner();
+      const a = await scanner.scanSoul(tmpDirWithSoul(tripleBacktick));
+      const b = await scanner.scanSoul(tmpDirWithSoul(tilde));
+      expect(a.markerInvalid, 'triple-backtick fence: markerInvalid should be undefined').toBeUndefined();
+      expect(b.markerInvalid, 'tilde fence: markerInvalid should be undefined').toBeUndefined();
+    });
+
+    it('R3.1 negative case: marker OUTSIDE a fence still fires markerInvalid', async () => {
+      // The fence-stripping must not over-reach: a real malformed
+      // marker outside any fence must still be caught.
+      const scanner = new SoulScanner();
+      const result = await scanner.scanSoul(tmpDirWithSoul(`<!-- soul:profile=xyz -->\n\n${HARDENED_BODY}`));
+      expect(result.markerInvalid).toBeDefined();
+      expect(result.markerInvalid?.source).toBe('marker');
+    });
+
     it('publish payload (R2.4): rawScore + scoreClamped fields are reachable through SoulScanResult', () => {
       // Lock-in for the publish payload extension at
       // src/registry/publish.ts:253-260. Adding rawScore/scoreClamped

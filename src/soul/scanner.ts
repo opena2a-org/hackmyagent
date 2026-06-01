@@ -926,7 +926,13 @@ export class SoulScanner {
     const tierForced = !!options?.tier;
     const tier = (tierForced ? options!.tier!.toUpperCase() as AgentTier : null) || this.detectTier(targetDir, contentForTier);
 
-    const profileForced = !!options?.profile;
+    // #206 R3.8: distinguish "flag absent" from "flag passed with
+    // empty string". `--profile=''` is a user error -- previously
+    // `!!options.profile` swallowed it silently and ran with the
+    // detected profile. Now profileForced is true on any explicit
+    // pass-through, and `flagInvalid` (below) catches the empty
+    // value.
+    const profileForced = options?.profile !== undefined;
     // `profileFromMarker` distinguishes the `<!-- soul:profile=... -->` path
     // from the keyword-detection fallback. The marker path is what
     // attackers (or unaware authors) use to narrow the scanner's scope —
@@ -946,8 +952,16 @@ export class SoulScanner {
     //                        HARDENED 100/100) cannot defeat the clamp.
     const STRICT_MARKER = /<!--\s*soul:profile=(\S+)\s*-->/i;
     const PERMISSIVE_MARKER = /<!--[\s\S]*?soul:profile=([^>]*?)\s*-->/i;
-    const strictMarkerMatch = contentForTier.match(STRICT_MARKER);
-    const permissiveMarkerMatch = contentForTier.match(PERMISSIVE_MARKER);
+    // #206 R3.1: strip fenced code blocks before running the marker
+    // regexes so a SOUL.md that DOCUMENTS marker syntax (e.g.
+    // ``` <!-- soul:profile=xyz --> ```) does not fire
+    // markerInvalid HIGH on its own examples. This mirrors the same
+    // protection `inferProfileFromContent` applies for headings.
+    const contentForMarkerCheck = contentForTier
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/~~~[\s\S]*?~~~/g, '');
+    const strictMarkerMatch = contentForMarkerCheck.match(STRICT_MARKER);
+    const permissiveMarkerMatch = contentForMarkerCheck.match(PERMISSIVE_MARKER);
     const strictMarkerValue = strictMarkerMatch ? strictMarkerMatch[1].toLowerCase() : undefined;
     const profileFromMarker = strictMarkerValue !== undefined
       && Object.keys(PROFILE_DOMAINS).includes(strictMarkerValue);
