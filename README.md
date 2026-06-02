@@ -217,6 +217,26 @@ hackmyagent nanomind setup               # install the optional generative analy
 hackmyagent nanomind status              # check model and runtime status
 ```
 
+#### Optional AAP gate on `trust`
+
+`hackmyagent trust` can be gated by the [Agent Authorization Protocol](https://github.com/opena2a-standards/agent-authorization-protocol). When `--grant` is set, the CLI presents an ATX and a grant reference to the local Secretless broker before any Registry lookup. The broker is the policy decision point; the CLI proceeds only if the broker authorizes.
+
+```bash
+hackmyagent trust express \
+  --grant grant://hackmyagent-trust \
+  --atx ~/.opena2a/atx.json
+```
+
+Outcomes:
+
+- **Broker authorizes** -> trust proceeds.
+- **Broker denies (HTTP 403)** -> exit 3 with a pointer to `~/.secretless-ai/policies/`. AAP §6.6: the denial is opaque; reasons live only in the broker's signed audit log.
+- **Broker unreachable** -> exit 4 with a `secretless broker start` hint.
+- **Broker returns an unexpected status** -> exit 6. The response body is never echoed to the user.
+- **No `--grant` flag** -> trust runs exactly as before; the gate is opt-in.
+
+This is the second TypeScript AAP consumer (after `opena2a protect --grant`, opena2a-org/opena2a#179). Defends T-3002 (cross-tenant grant leakage), T-3003 (over-broad credential scope), T-3006 (credential leaking into agent context), T-8002 (audit attribution gap) at the CLI surface.
+
 ### OpenClaw and NemoClaw auto-detection
 
 `hackmyagent secure` auto-detects OpenClaw and NemoClaw installations (`.openclaw/`, `.moltbot/`, `.nemoclaw/`, `openclaw.json`, `openclaw.plugin.json`). When detected, 28 NemoClaw plus 34 OpenClaw checks run alongside the standard suite. No separate command needed.

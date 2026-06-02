@@ -4,6 +4,13 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`hackmyagent trust --grant <ref> --atx <path>`**: opt-in Agent Authorization Protocol gate. Before any Registry lookup, `trust` presents an ATX to the local Secretless broker and proceeds only if the broker authorizes the grant. Second TypeScript AAP consumer (after `opena2a protect --grant` in opena2a-org/opena2a#179). Defends T-3002, T-3003, T-3006, T-8002 at the CLI surface.
+  - Exit codes: 0 (broker authorized), 2 (--grant without --atx or invalid ATX), 3 (403 opaque denial, AAP §6.6), 4 (broker socket unreachable or wrong-uid), 5 (unexpected error), 6 (broker returned non-200/non-403 status — body never echoed).
+  - Hardening (mirror of #179): default-socket-path uid check, 256 KiB ATX size cap, 1 MiB response body cap, ANSI / C0 strip on user-supplied grant references before stderr writes.
+  - New `src/aap/` module mirrors `opena2a-cli/packages/cli/src/aap/`. A shared `@opena2a/aap-client` package will fold these together in a follow-up.
+
 ### Security
 
 - **Bumped `vitest` from 3.x to `^4.1.8`** to remediate GHSA-5xrq-8626-4rwp (Dependabot #37, critical): "When the Vitest UI server is listening, an arbitrary file can be read and executed." `vitest` is a dev dependency (test runner) and is not part of the published npm package, so users installing `hackmyagent` were never exposed; the advisory only affects `vitest --ui` during local development. The full suite (2223 tests) passes unchanged on vitest 4, and `npm audit` reports zero vulnerabilities. No runtime behavior change; no version bump (devDependency only).
