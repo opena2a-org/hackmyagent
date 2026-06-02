@@ -87,6 +87,8 @@ import {
 import { generateVerifyCommand } from './ui/verify-command';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
 import type { ConceptId } from './types/finding-evidence';
+import { trustAapGate } from './aap';
+
 const program = new Command();
 program.showHelpAfterError('(run with --help for usage)');
 
@@ -3357,9 +3359,13 @@ Examples:
               const icon = simResult.verdict === 'CLEAN' ? 'PASS' : simResult.verdict === 'SUSPICIOUS' ? 'WARN' : 'FAIL';
               process.stderr.write(`  [${icon}] ${file.split('/').pop()} — ${simResult.verdict} (${(simResult.confidence * 100).toFixed(0)}% confidence, ${simResult.failedProbes.length}/${simResult.probeCount} probes failed)\n`);
 
-              // Auto-export training data
-              const { exportSimulationTraining } = await import('./attack-engine/training-pipeline.js');
-              exportSimulationTraining(content, simResult);
+              // Training export is opt-in only (HMA_EXPORT_TRAINING=1). Self-labeled
+              // simulation verdicts bypass the training sanitizer, so the default
+              // path must not write to the corpus (audit 2026-06-01).
+              if (process.env.HMA_EXPORT_TRAINING === '1') {
+                const { exportSimulationTraining } = await import('./attack-engine/training-pipeline.js');
+                exportSimulationTraining(content, simResult);
+              }
             }
             process.stderr.write(`[Simulation] Complete.\n\n`);
           } // end skillFiles.length > 0
@@ -7098,6 +7104,11 @@ Examples:
   .option('--min-trust <level>', 'Minimum trust level threshold (0-4)', '2')
   .option('--registry-url <url>', 'Registry base URL', validateRegistryUrl(REGISTRY_DEFAULT_URL))
   .option('--json', 'Output as JSON')
+  .option('--grant <grant-ref>', 'Gate the trust lookup through an AAP grant (e.g. grant://hackmyagent-trust)')
+  .option('--atx <path>', 'Path to a JSON ATX file (required with --grant)')
+  .option('--broker-socket <path>', 'Override the Secretless broker socket path')
+  .option('--broker-token <path>', 'Override the Secretless broker token file path')
+  .option('--grant-agent-id <id>', 'Agent ID sent to the broker (default: hackmyagent_trust_cli)')
   .action(async (
     packageName: string | undefined,
     opts: {
@@ -7107,6 +7118,11 @@ Examples:
       minTrust: string;
       registryUrl: string;
       json?: boolean;
+      grant?: string;
+      atx?: string;
+      brokerSocket?: string;
+      brokerToken?: string;
+      grantAgentId?: string;
     }
   ) => {
     const registryUrl = validateRegistryUrl(opts.registryUrl).replace(/\/+$/, '');
@@ -7114,6 +7130,45 @@ Examples:
     if (isNaN(minTrust) || minTrust < 0 || minTrust > 4) {
       process.stderr.write('Error: --min-trust must be a number between 0 and 4\n');
       process.exit(1);
+    }
+
+    // AAP gate (opt-in). Before any Registry lookup, ask the local Secretless
+    // broker to authorize the trust query. The broker is the policy decision
+    // point + signed audit point; HMA carries no policy state.
+    if (opts.grant) {
+      // --grant authorizes a single trust query bound to a specific package. Using
+      // it with --audit (N packages from a dep file) or --batch (N packages from
+      // argv) would let one broker round-trip silently authorize up to 100
+      // Registry lookups. The broker's signed audit log would not match the
+      // queries HMA actually issued -- breaking the AAP §6.6 audit-attribution
+      // claim. Reject the combination explicitly; per-package gating is a
+      // follow-up that requires a different broker operation shape.
+      if (opts.audit || (opts.batch && opts.batch.length > 0)) {
+        process.stderr.write('--grant cannot be combined with --audit or --batch.\n');
+        process.stderr.write('  A single grant authorizes a single trust query. Per-package gating for\n');
+        process.stderr.write('  multi-package operations is a planned follow-up.\n');
+        process.exitCode = 2;
+        return;
+      }
+      if (!packageName) {
+        process.stderr.write('Error: --grant requires a package name (single-package mode only).\n');
+        process.stderr.write(`Usage: ${CLI_PREFIX} trust <package> --grant <grant> --atx <path>\n`);
+        process.exitCode = 2;
+        return;
+      }
+      const gateResult = await trustAapGate({
+        grant: opts.grant,
+        atxPath: opts.atx,
+        brokerSocket: opts.brokerSocket,
+        brokerTokenPath: opts.brokerToken,
+        grantAgentId: opts.grantAgentId,
+        packageName: packageName,
+        json: opts.json,
+      });
+      if (gateResult !== 0) {
+        process.exitCode = gateResult;
+        return;
+      }
     }
 
     try {
@@ -7376,10 +7431,11 @@ program
 program
   .command('red-team')
   .argument('<target>', 'Path to artifact to red-team (skill, SOUL.md, MCP config, system prompt)')
-  .description('Run adaptive attack session against an artifact. NanoMind generates target-specific attacks, observes responses, adapts, and maps defenses.')
+  .description('Run an adaptive attack session against an artifact. Generates target-specific payloads from the artifact, evaluates resistance, and maps defenses. (NanoMind-judged evaluation is in progress — see docs/design/redteam-nanomind-judge.md; the current engine uses a constraint heuristic.)')
   .option('--iterations <n>', 'Max attack iterations per category', '5')
   .option('--json', 'Output results as JSON')
-  .action(async (target: string, options: { iterations?: string; json?: boolean }) => {
+  .option('--export-training', 'Append results to the local training corpus (~/.opena2a/training-data). Off by default; exported pairs are UNSANITIZED and must pass the training sanitizer before any NanoMind training use.')
+  .action(async (target: string, options: { iterations?: string; json?: boolean; exportTraining?: boolean }) => {
     const { readFileSync } = await import('node:fs');
     const { runAttackSession, exportTrainingData } = await import('./attack-engine/feedback-loop.js');
     const { exportAttackTraining } = await import('./attack-engine/training-pipeline.js');
@@ -7436,10 +7492,19 @@ program
       }
     }
 
-    // Auto-export training data
-    const trainingCount = exportAttackTraining(result);
-    if (!options.json && trainingCount > 0) {
-      console.log(`\n${trainingCount} training samples exported to NanoMind corpus.`);
+    // Training export is opt-in only. The default path NEVER writes to the
+    // training corpus: the heuristic engine's "observedBehavior" strings are
+    // synthetic (no agent is executed) and self-labeled, so auto-exporting them
+    // would poison the NanoMind corpus and bypass the training sanitizer
+    // (see audit 2026-06-01 + docs/design/redteam-nanomind-judge.md). Until the
+    // NanoMind-judge wiring + sanitizer land, export is gated behind
+    // --export-training and clearly marked unsanitized.
+    if (options.exportTraining) {
+      const trainingCount = exportAttackTraining(result);
+      if (!options.json && trainingCount > 0) {
+        console.log(`\n${trainingCount} UNSANITIZED training pairs appended to ${require('node:os').homedir()}/.opena2a/training-data.`);
+        console.log(`Warning: these are heuristic, self-labeled pairs. Run the training sanitizer before any NanoMind training use.`);
+      }
     }
   });
 
