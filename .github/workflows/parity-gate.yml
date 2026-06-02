@@ -18,9 +18,12 @@ concurrency:
 jobs:
   parity:
     # opena2a-parity moved from opena2a-org to opena2a-standards on 2026-05-24.
-    # Pinned to the current main SHA (untouched since 2026-05-12); bumps require
-    # an explicit, reviewable PR.
-    uses: opena2a-standards/opena2a-parity/.github/workflows/parity.yml@5684cc3b0abfbf6eb1f1d66b637b095647f91830
+    # Pinned to the current main SHA; bumps require an explicit, reviewable PR.
+    # 2026-06-01: c861cf8 picks up scan-soul-hardened re-baseline for HMA 0.23.6
+    # scope-aware clamp (expected score 74/B/standard, was 100/A/hardened) and
+    # the parity workflow self-checkout owner-check fix (opena2a-standards
+    # owner now recognised on self-runs).
+    uses: opena2a-standards/opena2a-parity/.github/workflows/parity.yml@c861cf8bfe46522f30c048cb03f6303641e26301
     with:
       hma_ref: ${{ github.event.pull_request.head.sha || github.sha }}
       opena2a_ref: main
