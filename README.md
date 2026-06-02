@@ -171,6 +171,18 @@ hackmyagent attack https://api.example.com --fail-on-vulnerable medium # CI gate
 
 Only test systems you own or have written authorisation to test.
 
+Need a target to practice on? [DVAA](https://github.com/opena2a-org/damn-vulnerable-ai-agent) is an intentionally vulnerable agent fleet. Break an agent there, then red-team it here:
+
+```bash
+# Start the DVAA fleet (separate terminal)
+docker run -p 7001-7008:7001-7008 -p 7010-7016:7010-7016 -p 7020-7021:7020-7021 -p 9000:9000 opena2a/dvaa:0.9.1
+
+# Red-team LegacyBot, the most vulnerable agent
+hackmyagent attack http://localhost:7003/v1/chat/completions --api-format openai --intensity passive
+```
+
+![hackmyagent attack red-teaming a live DVAA agent: 100/100 CRITICAL, 28 of 28 attacks successful across 14 categories](docs/vhs/attack-dvaa.gif)
+
 ### `scan-soul` and `harden-soul` (governance)
 
 ```bash
