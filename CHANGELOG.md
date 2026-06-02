@@ -4,6 +4,10 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- **Bumped `vitest` from 3.x to `^4.1.8`** to remediate GHSA-5xrq-8626-4rwp (Dependabot #37, critical): "When the Vitest UI server is listening, an arbitrary file can be read and executed." `vitest` is a dev dependency (test runner) and is not part of the published npm package, so users installing `hackmyagent` were never exposed; the advisory only affects `vitest --ui` during local development. The full suite (2223 tests) passes unchanged on vitest 4, and `npm audit` reports zero vulnerabilities. No runtime behavior change; no version bump (devDependency only).
+
 ## [0.23.6] - 2026-06-01
 
 ### Fixed

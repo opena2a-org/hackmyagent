@@ -57,7 +57,7 @@
     "@types/node": "^20.0.0",
     "tsx": "^4.21.0",
     "typescript": "^5.3.3",
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.8"
   },
   "overrides": {
     "ip-address": "^10.1.1"
