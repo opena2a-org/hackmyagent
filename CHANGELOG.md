@@ -4,6 +4,10 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`hackmyagent check <org>/<repo> --no-scan` no longer attempts a `git clone` when the Registry has no record of the target.** USER_VISIBLE_IMPACT: previously, `hackmyagent check anthropic/code-review --no-scan --json` (a private repo) fell through to `git clone` and surfaced an opaque `Authentication failed` to stderr with empty stdout instead of the intended not-found JSON. The fix mirrors the PyPI #195 / PR #197 pattern for the GitHub path: emit a `buildNotFoundOutput`-shaped block with `ecosystem: "github"` and a `Verify the URL: …` hint, then return with exit 1 before any clone. This was masquerading as a flaky-test cluster — the hung `git clone` subprocess held resources during parallel vitest execution and caused collateral timing failures in `__tests__/semantic/credential-context-git-state.test.ts` and `__tests__/cli/check-skill-quick-scan-label.test.ts`. With the fix in place the full suite is 2251/2251 green across 5 consecutive runs.
+
 ### Added
 
 - **`hackmyagent trust --grant <ref> --atx <path>`**: opt-in Agent Authorization Protocol gate. Before any Registry lookup, `trust` presents an ATX to the local Secretless broker and proceeds only if the broker authorizes the grant. Second TypeScript AAP consumer (after `opena2a protect --grant` in opena2a-org/opena2a#179). Defends T-3002, T-3003, T-3006, T-8002 at the CLI surface.

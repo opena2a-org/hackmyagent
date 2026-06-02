@@ -8765,9 +8765,26 @@ async function checkGitHubRepo(
       displayUnifiedCheck({ name: displayName, sourceLabel: 'GitHub', registry: registryData, verbose: !!options.verbose, usedAnalm: resolveNanomindFlag(options) });
       return;
     }
-    if (!options.json && !globalCiMode) {
-      console.error(`No registry data found for ${displayName}. Running local scan...`);
+    // --no-scan with no Registry hit: emit a not-found block in the same
+    // shape as the GitHub 404 path below, then return without cloning.
+    // Mirrors checkPyPiPackage's #195 fix so --no-scan is honored
+    // consistently across ecosystems. Previously this fell through to
+    // `git clone` -- which on a private repo (e.g. anthropic/code-review)
+    // surfaces an opaque "Authentication failed" instead of the
+    // intended not-found JSON, leaving stdout empty.
+    const errorHint = `Verify the URL: https://github.com/${displayName}`;
+    if (options.json) {
+      writeJsonStdout(buildNotFoundOutput({
+        name: displayName,
+        ecosystem: 'github',
+        error: `Repository "${displayName}" not found in the OpenA2A Registry.`,
+        errorHint,
+      }));
+    } else {
+      printNotFoundBlock({ pkg: displayName, ecosystem: 'github', errorHint });
     }
+    process.exitCode = 1;
+    return;
   }
 
   // Step 2: Clone and scan
