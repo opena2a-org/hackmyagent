@@ -3321,61 +3321,6 @@ Examples:
         }
       }
 
-      // ── Governance cross-check (cross-analyzer consistency) ──────────────
-      // `secure` is an infrastructure scanner. On a single-FILE target the
-      // NanoMind AST/semantic analyzers (AST-GOV / AST-PROMPT) do not run, so
-      // pointing `secure` directly at a SOUL.md returns a high infra-only score
-      // that contradicts `scan-soul` / `check --nanomind` on the same file (a
-      // cross-analyzer direction disagreement — see audit 2026-06-01). When the
-      // target IS a governance file and its governance is critically weak, run
-      // the SoulScanner read-only and inject a finding so the headline
-      // score/verdict agree in direction. Healthy governance files inject
-      // nothing (FPR-safe); directory scans already exercise AST-GOV.
-      if (!isOasb2 && !isStaticOnly) {
-        try {
-          const { statSync } = await import('node:fs');
-          const nodePath = require('path');
-          const targetIsFile = statSync(targetDir).isFile();
-          const GOV_BASENAMES = new Set([
-            'soul.md', 'system-prompt.md', 'system_prompt.md', '.cursorrules',
-            'copilot-instructions.md', 'claude.md', '.clinerules',
-            'instructions.md', 'constitution.md', 'agent-config.yaml',
-          ]);
-          const targetIsGovernanceFile = targetIsFile && GOV_BASENAMES.has(nodePath.basename(targetDir).toLowerCase());
-          if (targetIsGovernanceFile) {
-            const { SoulScanner } = await import('./soul/index.js');
-            const govResult = await new SoulScanner().scanSoul(targetDir);
-            const govWeak = govResult.file !== null && (govResult.criticalFloor || govResult.score < 50);
-            if (govWeak) {
-              const missing = govResult.criticalMissing.length
-                ? ` Missing critical controls: ${govResult.criticalMissing.join(', ')}.`
-                : '';
-              const govFinding: SecurityFinding = {
-                checkId: 'GOV-SOUL-001',
-                name: 'Governance file fails behavioral hardening',
-                description: `${nodePath.basename(govResult.file ?? targetDir)} scored ${govResult.score}/100 (${govResult.conformance}) across the behavioral governance domains.${missing} secure assesses infrastructure only; this governance gap is what scan-soul and check --nanomind detect on the same file.`,
-                category: 'governance',
-                severity: govResult.criticalFloor ? 'critical' : 'high',
-                passed: false,
-                message: `Governance score ${govResult.score}/100 (${govResult.conformance})`,
-                fixable: false,
-                file: nodePath.basename(govResult.file ?? targetDir),
-                fix: `hackmyagent scan-soul ${directory}   (then: hackmyagent harden-soul ${directory})`,
-                attackClass: 'GOV-WEAK',
-              };
-              if (result.findings) {
-                result.findings = [...(result.findings as SecurityFinding[]), govFinding] as typeof result.findings;
-              }
-              if (result.allFindings) {
-                result.allFindings = [...(result.allFindings as SecurityFinding[]), govFinding] as typeof result.allFindings;
-              }
-              const forScore = (result.findings || []).filter((f: SecurityFinding) => !f.passed && !f.fixed);
-              result.score = scanner.calculateScore(forScore).score;
-            }
-          }
-        } catch { /* governance cross-check is non-fatal */ }
-      }
-
       // Behavioral simulation: auto-runs on --deep, or when NanoMind detects ambiguity
       if (isDeep && format === 'text') {
         try {
@@ -7191,6 +7136,26 @@ Examples:
     // broker to authorize the trust query. The broker is the policy decision
     // point + signed audit point; HMA carries no policy state.
     if (opts.grant) {
+      // --grant authorizes a single trust query bound to a specific package. Using
+      // it with --audit (N packages from a dep file) or --batch (N packages from
+      // argv) would let one broker round-trip silently authorize up to 100
+      // Registry lookups. The broker's signed audit log would not match the
+      // queries HMA actually issued -- breaking the AAP §6.6 audit-attribution
+      // claim. Reject the combination explicitly; per-package gating is a
+      // follow-up that requires a different broker operation shape.
+      if (opts.audit || (opts.batch && opts.batch.length > 0)) {
+        process.stderr.write('--grant cannot be combined with --audit or --batch.\n');
+        process.stderr.write('  A single grant authorizes a single trust query. Per-package gating for\n');
+        process.stderr.write('  multi-package operations is a planned follow-up.\n');
+        process.exitCode = 2;
+        return;
+      }
+      if (!packageName) {
+        process.stderr.write('Error: --grant requires a package name (single-package mode only).\n');
+        process.stderr.write(`Usage: ${CLI_PREFIX} trust <package> --grant <grant> --atx <path>\n`);
+        process.exitCode = 2;
+        return;
+      }
       const gateResult = await trustAapGate({
         grant: opts.grant,
         atxPath: opts.atx,
@@ -7201,7 +7166,8 @@ Examples:
         json: opts.json,
       });
       if (gateResult !== 0) {
-        process.exit(gateResult);
+        process.exitCode = gateResult;
+        return;
       }
     }
 

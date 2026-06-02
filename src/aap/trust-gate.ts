@@ -99,6 +99,12 @@ export async function trustAapGate(options: TrustAapGateOptions): Promise<number
   });
 
   try {
+    // Sanitized `grant` is used ONLY for stderr writes (sanitizeForTty strips
+    // ANSI / C0 escapes so a malicious --grant cannot inject terminal control
+    // sequences). The broker receives `options.grant` unmodified because the
+    // signed audit-log entry must preserve byte-identical input for AAP §6.6
+    // attribution. If the broker ever begins echoing the audit log to a TTY,
+    // it -- not this consumer -- owns the sanitization decision.
     await client.grant({
       agentId: options.grantAgentId ?? 'hackmyagent_trust_cli',
       atx,

@@ -13,12 +13,15 @@
  *   6. Sanitizes ANSI escapes in user-supplied grant references.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import * as http from 'node:http';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { trustAapGate } from '../../src/aap';
+
+const CLI_BIN = path.join(__dirname, '..', '..', 'dist', 'cli.js');
 
 interface FakeBroker {
   socketPath: string;
@@ -262,6 +265,47 @@ describe('hackmyagent trust --grant (AAP gate)', () => {
     expect(parsed.grant).toBe('grant://hackmyagent-trust');
     expect(parsed.packageName).toBe('express');
     expect(parsed.remediation).toMatch(/grant:\/\/hackmyagent-trust/);
+  });
+
+  // Mode-interaction guard. The gate authorizes ONE trust query. Letting
+  // --grant combine with --audit or --batch would have the broker authorize
+  // one query while HMA silently fans out to up to 100 Registry lookups
+  // (breaks AAP §6.6 audit-attribution). The CLI rejects the combination
+  // explicitly at exit 2 before any broker round-trip.
+  describe('--grant mode-interaction guards (CLI exit codes)', () => {
+    const skipIfNoBuild = fs.existsSync(CLI_BIN) ? it : it.skip;
+
+    skipIfNoBuild('rejects --grant with --audit (exit 2, broker never contacted)', () => {
+      const result = spawnSync('node', [
+        CLI_BIN, 'trust',
+        '--grant', 'grant://hackmyagent-trust',
+        '--atx', '/tmp/atx.json',
+        '--audit', '/tmp/package.json',
+      ], { encoding: 'utf-8' });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toMatch(/--grant cannot be combined with --audit or --batch/);
+    });
+
+    skipIfNoBuild('rejects --grant with --batch (exit 2)', () => {
+      const result = spawnSync('node', [
+        CLI_BIN, 'trust',
+        '--grant', 'grant://hackmyagent-trust',
+        '--atx', '/tmp/atx.json',
+        '--batch', 'a', 'b', 'c',
+      ], { encoding: 'utf-8' });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toMatch(/--grant cannot be combined with --audit or --batch/);
+    });
+
+    skipIfNoBuild('rejects --grant with no positional package (exit 2)', () => {
+      const result = spawnSync('node', [
+        CLI_BIN, 'trust',
+        '--grant', 'grant://hackmyagent-trust',
+        '--atx', '/tmp/atx.json',
+      ], { encoding: 'utf-8' });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toMatch(/--grant requires a package name/);
+    });
   });
 
   it('sanitizes ANSI control characters in the grant reference for stderr output', async () => {
