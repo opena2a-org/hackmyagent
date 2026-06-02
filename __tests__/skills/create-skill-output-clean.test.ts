@@ -96,6 +96,28 @@ describe('create-skill output passes its own secure scan (P1-4 / P1-2 regression
       high,
       `Post-harden-soul rescan must keep zero HIGH/CRITICAL. Got: ${high.map(f => `${f.checkId}(${f.severity})@${f.file}: ${f.message}`).join('; ')}`,
     ).toHaveLength(0);
+
+    // Lock in the specific baseline checkIds that 0.23.5 used to fire HIGH
+    // on this same scaffold. A future regression that downgrades the same
+    // bug to MEDIUM would silently pass the "zero HIGH" assertion above —
+    // this assertion is the lock that catches that. Per adversarial review
+    // category 5 (test depth).
+    const baselineHighCheckIds = [
+      'SOUL-OVERRIDE-001',
+      'AST-GOV-001',
+      'AST-GOV-002',
+      'AST-PROMPT-004',
+      'AST-GOVERN-001',
+      'LIFECYCLE-001',
+    ];
+    const allCheckIds = result.findings.map(f => f.checkId);
+    for (const checkId of baselineHighCheckIds) {
+      const matches = result.findings.filter(f => f.checkId === checkId && (f.severity === 'high' || f.severity === 'critical'));
+      expect(
+        matches.length,
+        `${checkId} must not fire HIGH/CRITICAL after harden-soul on the scaffold (0.23.5 baseline). Got: ${matches.map(m => m.message).join('; ')}. All checkIds: ${[...new Set(allCheckIds)].join(', ')}`,
+      ).toBe(0);
+    }
   });
 
   it('generated SOUL.md covers all 5 critical governance domains', async () => {

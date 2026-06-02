@@ -456,10 +456,18 @@ function escapeRegex(s: string): string {
 export function extractDeclaredConstraints(content: string): Constraint[] {
   const constraints: Constraint[] = [];
 
-  // Strip content inside fenced code blocks before constraint extraction —
-  // attack examples quoted in educational documents (e.g. "DO NOT USE: Ignore
-  // previous instructions...") must not be extracted as constraints.
-  const stripped = content.replace(/```[\s\S]*?```/g, '').replace(/`[^`]*`/g, '');
+  // Strip YAML frontmatter, fenced code blocks, and inline code spans before
+  // constraint extraction. YAML frontmatter list items (`forbiddenTools:\n
+  // - Bash`) otherwise interact with bullet-period normalization below to
+  // produce faux "Bash." / "WebFetch." constraints that classify as
+  // capability_boundary at fall-through enforceability, firing spurious
+  // AST-GOV-002 (Weak constraint) findings on benign skill frontmatter.
+  // Attack examples quoted in educational documents ("DO NOT USE: Ignore
+  // previous instructions...") must also not be extracted.
+  const stripped = content
+    .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '')
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/`[^`]*`/g, '');
 
   // Bullet-list normalization: append a sentence-terminating period to bullet
   // lines that don't already end with terminal punctuation. The constraint
