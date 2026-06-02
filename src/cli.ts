@@ -3133,7 +3133,11 @@ Examples:
   .option('--ci', 'CI mode: suppress interactive prompts, exit non-zero on findings')
   .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; nanomind?: boolean; analm?: boolean; scanDepth?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean }) => {
     try {
-      const targetDir = require("path").resolve(directory);
+      const originalTarget = require("path").resolve(directory);
+      let targetDir = originalTarget;
+      // Shown to the user (Scanning header, display name). Stays the original
+      // path even when we scan a normalized temp dir below.
+      const displayDir = originalTarget;
 
       // CI mode: force non-interactive defaults
       if (options.ci) {
@@ -3142,10 +3146,49 @@ Examples:
         if (options.contribute === undefined) options.contribute = false;
       }
 
-      // Check if directory exists
-      if (!require('fs').existsSync(targetDir)) {
-        console.error(`Error: Directory '${targetDir}' does not exist.`);
+      // Check if the target exists
+      if (!require('fs').existsSync(originalTarget)) {
+        console.error(`Error: Directory '${originalTarget}' does not exist.`);
         process.exit(1);
+      }
+
+      // Single-FILE target handling.
+      const _fs = require('node:fs');
+      const _fileStat = _fs.statSync(originalTarget, { throwIfNoEntry: false });
+      const _isFileTarget = !!(_fileStat && _fileStat.isFile());
+
+      // --fix / --dry-run operate on a project directory (backup dir creation,
+      // harden-soul rewrites). On a lone file they crash (ENOTDIR creating a
+      // backup dir inside the file path) and could not safely write fixes back.
+      // Refuse with actionable guidance rather than crash or silently no-op.
+      if (_isFileTarget && (options.fix || options.dryRun)) {
+        const _path = require('node:path');
+        const mode = options.dryRun ? '--dry-run' : '--fix';
+        console.error(`secure ${mode} needs a project directory, not a single file.`);
+        console.error(`  Scan this file:        hackmyagent secure ${directory}`);
+        console.error(`  Remediate (directory): hackmyagent secure --fix ${_path.dirname(originalTarget)}`);
+        console.error(`  Harden governance:     hackmyagent harden-soul ${_path.dirname(originalTarget)}`);
+        process.exit(2);
+      }
+
+      // Read-only single-file normalization. Every directory-discovery analyzer
+      // (governance / lifecycle / credential / mcp / skill) enumerates via
+      // readdir / path.join(targetDir, x), which no-ops on a file path — so
+      // `secure SOUL.md` (or any lone artifact) under-scanned and returned a
+      // false-clean verdict (audit follow-up to #220). Copy the lone file into
+      // an isolated temp dir and scan THAT, so it is analyzed as if it were the
+      // sole file in a project. Findings carry the basename, so paths stay
+      // correct; displayDir shows the user's original path. The temp dir is
+      // removed on process exit (covers the command's process.exit() paths).
+      if (_isFileTarget) {
+        const _os = require('node:os');
+        const _path = require('node:path');
+        const _tmp = _fs.mkdtempSync(_path.join(_os.tmpdir(), 'hma-secure-file-'));
+        _fs.copyFileSync(originalTarget, _path.join(_tmp, _path.basename(originalTarget)));
+        process.on('exit', () => {
+          try { _fs.rmSync(_tmp, { recursive: true, force: true }); } catch { /* best effort */ }
+        });
+        targetDir = _tmp;
       }
 
       // Parse ignore list
@@ -3186,9 +3229,9 @@ Examples:
       // Only show progress for text output — write to stderr so stdout stays clean for pipes
       if (format === 'text') {
         if (options.dryRun) {
-          process.stderr.write(`\nScanning ${targetDir} (dry-run)...\n\n`);
+          process.stderr.write(`\nScanning ${displayDir} (dry-run)...\n\n`);
         } else {
-          process.stderr.write(`\nScanning ${targetDir}...\n\n`);
+          process.stderr.write(`\nScanning ${displayDir}...\n\n`);
         }
       }
 
@@ -3497,12 +3540,12 @@ Examples:
           try {
             const { publishScanResults } = await import('./registry/publish');
             const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
-            const packageName = resolvePackageName(targetDir);
+            const packageName = resolvePackageName(displayDir);
             if (packageName) {
               const publishData = {
                 packageName,
-                packageVersion: resolvePackageVersion(targetDir) ?? undefined,
-                directory: targetDir,
+                packageVersion: resolvePackageVersion(displayDir) ?? undefined,
+                directory: displayDir,
                 hardeningFindings: result.findings,
               };
               const publishResult = await publishScanResults(publishData, registryUrl);
@@ -3639,8 +3682,8 @@ Examples:
       }
 
       // Display using unified check style (matches `check` command visual language)
-      const secureDisplayName = resolvePackageName(targetDir) ?? require('path').basename(targetDir);
-      const secureDisplayVersion = resolvePackageVersion(targetDir) ?? undefined;
+      const secureDisplayName = resolvePackageName(displayDir) ?? require('path').basename(displayDir);
+      const secureDisplayVersion = resolvePackageVersion(displayDir) ?? undefined;
 
       displayUnifiedCheck({
         name: secureDisplayName,
@@ -3732,9 +3775,9 @@ Examples:
           } else if (typeof core.buildCommunityReport === 'function') {
             // Community path: request scan token, then submit results
             const client = new core.RegistryClient({ registryUrl, apiKey: '' });
-            const packageName = resolvePackageName(targetDir);
+            const packageName = resolvePackageName(displayDir);
             if (packageName) {
-              const packageVersion = resolvePackageVersion(targetDir);
+              const packageVersion = resolvePackageVersion(displayDir);
               const tokenResp = typeof client.requestScanToken === 'function'
                 ? await client.requestScanToken(packageName, { version: packageVersion ?? undefined })
                 : null;
@@ -3763,7 +3806,7 @@ Examples:
         try {
           const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
           const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
-          const packageName = resolvePackageName(targetDir);
+          const packageName = resolvePackageName(displayDir);
 
           if (!packageName) {
             console.error('\nCould not determine package name. Publish requires a package.json with a name field.');
@@ -3774,8 +3817,8 @@ Examples:
 
             const publishData = {
               packageName,
-              packageVersion: resolvePackageVersion(targetDir) ?? undefined,
-              directory: targetDir,
+              packageVersion: resolvePackageVersion(displayDir) ?? undefined,
+              directory: displayDir,
               hardeningFindings: result.findings,
             };
 
@@ -3829,8 +3872,8 @@ Examples:
           const { RegistryClient } = await import('./registry/client');
           const { computeTreeHash } = await import('./registry/publish');
           const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
-          const packageName = resolvePackageName(targetDir) || resolvePackageNamePyproject(targetDir);
-          const packageVersion = resolvePackageVersion(targetDir) || resolvePackageVersionPyproject(targetDir);
+          const packageName = resolvePackageName(displayDir) || resolvePackageNamePyproject(displayDir);
+          const packageVersion = resolvePackageVersion(displayDir) || resolvePackageVersionPyproject(displayDir);
           const repoUrl = resolveRepoUrl(targetDir);
 
           if (!packageName) {
