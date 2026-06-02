@@ -80,6 +80,40 @@ export class StructuralAnalyzer {
   async discoverFiles(targetDir: string): Promise<AnalysisFile[]> {
     const files: AnalysisFile[] = [];
 
+    // Single-FILE target (e.g. `secure mcp.json`, `secure CLAUDE.md`): every
+    // path.join(file, glob) below resolves to a non-existent child path, so the
+    // structural analyzers (credential / mcp / instruction / permission) never
+    // ran and a lone malicious mcp.json / CLAUDE.md scored a false-clean
+    // ~98/100, contradicting the directory scan (audit 2026-06-01). When the
+    // caller points us straight at a recognized artifact file, analyze it.
+    try {
+      const targetStat = await fs.stat(targetDir);
+      if (targetStat.isFile()) {
+        const base = path.basename(targetDir);
+        // Prefer a top-level glob (no separator) over a nested one so a lone
+        // `settings.json` types as config_file, not `.claude/settings.json`.
+        const match = FILE_DISCOVERY.find(d => d.glob === base)
+          ?? FILE_DISCOVERY.find(d => path.basename(d.glob) === base);
+        if (match) {
+          // Mirror directory-mode reading exactly (below): no upper size reject,
+          // truncate the content string at MAX_FILE_SIZE. A tighter cap here
+          // would let an attacker evade single-file scanning by padding the
+          // artifact past the cap while the directory scan still caught it.
+          const truncated = targetStat.size > MAX_FILE_SIZE;
+          const content = await fs.readFile(targetDir, 'utf-8');
+          files.push({
+            path: base,
+            type: match.type,
+            content: truncated ? content.substring(0, MAX_FILE_SIZE) : content,
+            truncated,
+          });
+        }
+        return files;
+      }
+    } catch {
+      return files; // path vanished or unreadable
+    }
+
     for (const { glob, type } of FILE_DISCOVERY) {
       const filePath = path.join(targetDir, glob);
 
