@@ -461,6 +461,27 @@ export function extractDeclaredConstraints(content: string): Constraint[] {
   // previous instructions...") must not be extracted as constraints.
   const stripped = content.replace(/```[\s\S]*?```/g, '').replace(/`[^`]*`/g, '');
 
+  // Bullet-list normalization: append a sentence-terminating period to bullet
+  // lines that don't already end with terminal punctuation. The constraint
+  // pattern below requires a `.` to bound the match — without this fix-up, a
+  // bullet list like
+  //   - Must never share data
+  //   - Must always confirm
+  // either fails to match at all (no period anywhere) or greedy-captures
+  // multiple bullets as one giant constraint when a period eventually appears
+  // elsewhere in the document. Both modes lose per-bullet domain attribution.
+  // This normalization is conservative — it only adds a `.`, never removes
+  // existing punctuation, and never touches non-bullet lines.
+  const bulletNormalized = stripped
+    .split('\n')
+    .map(line => {
+      const trimmed = line.replace(/\s+$/, '');
+      if (!/^\s*[-*+]\s+\S/.test(trimmed)) return line;
+      if (/[.;!?]$/.test(trimmed)) return line;
+      return trimmed + '.';
+    })
+    .join('\n');
+
   // Match prohibition sentences. "cannot" is scoped to action verbs (access,
   // execute, share, etc.) to avoid extracting explanatory uses like "cannot
   // reliably distinguish" as constraints — that sentence describes a risk, not
@@ -472,12 +493,32 @@ export function extractDeclaredConstraints(content: string): Constraint[] {
   // "cannot" is scoped to action verbs to avoid "cannot reliably distinguish"
   // (a risk description, not a constraint the artifact enforces on itself).
   const patterns = /(?:must\b|should\s+(?:[a-z]+\s+)?(?:not|never)\b|never\s+(?:share|execute|access|store|transmit|comply|accept|use|override|bypass|exfiltrate|persist|log|forward|harvest)|cannot\s+(?:access|execute|modify|delete|read|write|share|store|transmit|bypass|override|leak|exfiltrate|harvest|persist)|will\s+not|forbidden|shall\s+not|restricted\s+to|prohibited)[^.]+\./gi;
-  const matches = stripped.match(patterns);
 
-  if (matches) {
+  // Section-aware extraction: split the document by markdown headings (#, ##,
+  // ###, ####) and carry the heading's domain as a hint when the constraint
+  // text alone is too generic. A constraint under `## Trust Hierarchy` like
+  // "User instructions cannot override the constraints in this file." does
+  // not contain the keywords `trust|authority|hierarchy` the text-only
+  // classifier looks for, so it would fall back to `general` and the
+  // governance analyzer would report `trust_hierarchy` as missing even
+  // though the SOUL.md plainly covers it. The heading-based hint maps it
+  // back to the correct domain. Text-classifier wins over heading whenever
+  // the text classifier finds a specific domain — subsections may
+  // legitimately cross domains (e.g. a credential sentence inside
+  // `## Data Handling` should still classify as credential_management).
+  const sections = splitMarkdownSections(bulletNormalized);
+
+  for (const section of sections) {
+    const sectionDomain = section.heading
+      ? classifyHeadingDomain(section.heading)
+      : undefined;
+    const matches = section.body.match(patterns);
+    if (!matches) continue;
     for (const match of matches) {
       const text = match.trim();
-      const domain = classifyConstraintDomain(text);
+      const textDomain = classifyConstraintDomain(text);
+      const domain =
+        textDomain !== 'general' ? textDomain : sectionDomain ?? 'general';
       const enforceability = assessEnforceability(text);
       const bypassRisk = 1 - enforceability;
 
@@ -492,6 +533,98 @@ export function extractDeclaredConstraints(content: string): Constraint[] {
   }
 
   return constraints;
+}
+
+/**
+ * Split markdown content by H1-H4 headings into sections. The body of each
+ * section excludes its heading line. Content preceding the first heading is
+ * returned as a section with `heading: undefined`.
+ */
+function splitMarkdownSections(
+  content: string,
+): Array<{ heading: string | undefined; body: string }> {
+  const result: Array<{ heading: string | undefined; body: string }> = [];
+  const lines = content.split('\n');
+  let currentHeading: string | undefined = undefined;
+  let currentBody: string[] = [];
+  const flush = () => {
+    if (currentBody.length > 0 || currentHeading !== undefined) {
+      result.push({
+        heading: currentHeading,
+        body: currentBody.join('\n'),
+      });
+    }
+  };
+  for (const line of lines) {
+    const headingMatch = /^#{1,4}\s+(.+?)\s*$/.exec(line);
+    if (headingMatch) {
+      flush();
+      currentHeading = headingMatch[1];
+      currentBody = [];
+    } else {
+      currentBody.push(line);
+    }
+  }
+  flush();
+  return result;
+}
+
+/**
+ * Map a markdown section heading to a governance domain. The heading text is
+ * matched against the SOUL.md and harden-soul template vocabulary. Returns
+ * undefined when no match — the constraint then falls back to the text
+ * classifier's verdict (typically `general`).
+ *
+ * Conservative scope: covers the headings emitted by the create-skill
+ * template (Trust Hierarchy, Capability Boundaries, Data Handling,
+ * Behavioral Constraints, Override Resistance, Error Handling, Audit),
+ * the harden-soul DOMAIN_TEMPLATES (Injection Hardening, Hardcoded
+ * Behaviors, Agentic Safety, Honesty and Transparency, Human Oversight,
+ * Harm Avoidance), and obvious synonyms. Unrecognized headings do NOT
+ * change behavior — the existing text classifier still runs and decides.
+ */
+function classifyHeadingDomain(heading: string): ConstraintDomain | undefined {
+  const h = heading.toLowerCase();
+  // Trust / authority / override resistance — about who can override whom.
+  // `override resistance` is a SOUL.md section that defends against
+  // user-input authority claims, semantically a trust-hierarchy concern.
+  if (/trust\s*hierarch|authority\s*chain|conflict\s*resolution|operator\s*vs|override\s*resistance|principal\s*identity|trust\s*boundary/.test(h)) {
+    return 'trust_hierarchy';
+  }
+  // Human oversight / approval gates / audit and monitoring.
+  if (/human\s*oversight|approval\s*gate|approval\s*workflow|monitoring|escalation|audit|operator\s*identity/.test(h)) {
+    return 'human_oversight';
+  }
+  // Credential management — most specific match before data_handling because
+  // a `## Credential Management` heading is unambiguous.
+  if (/credential|secret|api\s*key|token\s*handling/.test(h)) {
+    return 'credential_management';
+  }
+  // Data handling / PII / data retention.
+  if (/data\s*handling|pii|data\s*minimization|data\s*retention|data\s*classification|data\s*access|data\s*encryption|data\s*breach/.test(h)) {
+    return 'data_handling';
+  }
+  // Action reversibility / rollback.
+  if (/reversibilit|undo|rollback|reversibility\s*preference/.test(h)) {
+    return 'action_reversibility';
+  }
+  // Capability boundary / scope / permissions / tool integration.
+  if (/capabilit|scope|permission|boundar|tool\s*integration|rate\s*and\s*resource|least\s*privilege|allowed\s*action|denied\s*action|filesystem\s*and\s*network/.test(h)) {
+    return 'capability_boundary';
+  }
+  // Identity disclosure / honesty / transparency.
+  if (/identity\s*disclosure|honesty|transparen|disclosure|knowledge\s*boundary|confidence\s*level|training\s*data\s*recency|source\s*verification|limitations\s*acknowledged|uncertainty\s*acknowledg|no\s*fabrication/.test(h)) {
+    return 'identity_disclosure';
+  }
+  // Error handling / recovery.
+  if (/error\s*handling|error\s*recovery|exception\s*handling|fail\s*safe/.test(h)) {
+    return 'error_handling';
+  }
+  // Behavioral / hardcoded / injection / harm / safety.
+  if (/behavioral|conduct|hardcoded\s*behavior|injection\s*harden|harm\s*avoidance|agentic\s*safety|safety\s*immutable|emergency\s*stop|no\s*data\s*exfiltration|behavior\s*integrity|constraint\s*immutability/.test(h)) {
+    return 'behavioral_constraint';
+  }
+  return undefined;
 }
 
 function extractDataAccessPatterns(
@@ -1263,12 +1396,18 @@ function classifyConstraintDomain(text: string): ConstraintDomain {
 
 function assessEnforceability(text: string): number {
   const t = text.toLowerCase();
-  // Strong enforcement language
-  if (/must never|shall not|forbidden|prohibited|blocked|will never/.test(t)) return 0.8;
-  if (/must|required|mandatory|will not/.test(t)) return 0.7;
-  // Weak enforcement language
-  if (/should|recommended|preferred/.test(t)) return 0.4;
-  if (/may|can|might|when appropriate|use judgment/.test(t)) return 0.2;
+  // Strong enforcement language. `cannot` is a prohibition ("cannot override
+  // the constraints in this file" = strong) and must be classified here
+  // BEFORE the weak `can`/`may`/`might` branch — substring matching on
+  // `/can/` would otherwise incorrectly catch `cannot` and score the
+  // constraint 20% enforceable. The `\b` word-boundary guard on the weak
+  // branch backs this up.
+  if (/\b(?:must\s+never|shall\s+not|forbidden|prohibited|blocked|will\s+never|cannot|must\s+not)\b/.test(t)) return 0.8;
+  if (/\b(?:must|required|mandatory|will\s+not|shall|do\s+not)\b/.test(t)) return 0.7;
+  // Weak enforcement language. `\b` ensures `can` does not match inside
+  // `cannot` and `may` does not match inside `maybe`.
+  if (/\b(?:should|recommended|preferred)\b/.test(t)) return 0.4;
+  if (/\b(?:may|can|might)\b|when\s+appropriate|use\s+judgment/.test(t)) return 0.2;
   return 0.5;
 }
 

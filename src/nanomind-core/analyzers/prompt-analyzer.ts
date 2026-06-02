@@ -39,6 +39,7 @@ export function analyzePrompt(
   verifier: (ast: SecurityAST) => boolean,
   projectType?: ProjectType,
   artifactContent?: string,
+  projectConstraints?: Constraint[],
 ): ASTFinding[] {
   assertASTIntegrity(ast, verifier);
 
@@ -47,6 +48,20 @@ export function analyzePrompt(
   if (projectType === 'sdk' || projectType === 'library') {
     return [];
   }
+
+  // Effective constraints for the trust-hierarchy presence check (AST-PROMPT-
+  // 004 only). The other prompt-level checks deliberately use the artifact's
+  // OWN constraints — they're score- and strength-based, and crediting a
+  // sibling SOUL.md toward a SKILL.md's instruction-hierarchy strength lets a
+  // malicious SKILL.md hide behind a decorative SOUL.md ("kitchen-sink"
+  // pattern). AST-PROMPT-004's check is presence/absence of a trust hierarchy
+  // domain anywhere in the agent's effective governance — that's the
+  // benign-create-skill case where the SKILL.md and SOUL.md siblings should
+  // jointly satisfy "has trust hierarchy."
+  const effectiveConstraints: Constraint[] = [
+    ...ast.declaredConstraints,
+    ...(projectConstraints ?? []),
+  ];
 
   const findings: ASTFinding[] = [];
 
@@ -61,7 +76,7 @@ export function analyzePrompt(
   // and is one root cause of the 90.9% benign FPR (oracle 2026-04-15).
   if (isBehavioralArtifact(ast)) {
     findings.push(...checkMissingInjectionResistance(ast, artifactContent));
-    findings.push(...checkAuthorityConfusion(ast, artifactContent));
+    findings.push(...checkAuthorityConfusion(ast, artifactContent, effectiveConstraints));
   }
 
   return findings;
@@ -99,7 +114,10 @@ function checkJailbreakSusceptibility(ast: SecurityAST, artifactContent?: string
     return findings;
   }
 
-  // Score the instruction hierarchy strength
+  // Score the instruction hierarchy strength. Deliberately uses the artifact's
+  // OWN declared constraints, not project-level constraints — a malicious
+  // SKILL.md hiding behind a decorative sibling SOUL.md must still be flagged
+  // (corpus repo/malicious/kitchen-sink).
   const hierarchyScore = scoreInstructionHierarchy(ast);
 
   // Check for jailbreak-related risk surfaces identified by the compiler
@@ -365,6 +383,11 @@ function checkMissingInjectionResistance(ast: SecurityAST, artifactContent?: str
     return findings;
   }
 
+  // Deliberately uses the artifact's own declared constraints, not project-
+  // level constraints, so a SKILL.md without any injection-resistance language
+  // is flagged even when a sibling SOUL.md carries the resistance. The
+  // injection resistance clause has to live next to the prompt-influencing
+  // content, not one file over.
   // Check for injection resistance in constraints
   const hasInjectionResistance = ast.declaredConstraints.some(c => {
     const t = c.text.toLowerCase();
@@ -457,7 +480,11 @@ function checkMissingInjectionResistance(ast: SecurityAST, artifactContent?: str
  * Checks AST.declaredConstraints for trust_hierarchy constraints and
  * evaluates whether the hierarchy is clear and consistent.
  */
-function checkAuthorityConfusion(ast: SecurityAST, artifactContent?: string): ASTFinding[] {
+function checkAuthorityConfusion(
+  ast: SecurityAST,
+  artifactContent?: string,
+  effectiveConstraints?: Constraint[],
+): ASTFinding[] {
   const findings: ASTFinding[] = [];
 
   if (!isBehavioralArtifact(ast)) {
@@ -471,8 +498,14 @@ function checkAuthorityConfusion(ast: SecurityAST, artifactContent?: string): AS
     return findings;
   }
 
-  // Check for trust hierarchy constraints
-  const trustConstraints = ast.declaredConstraints.filter(
+  const constraints = effectiveConstraints ?? ast.declaredConstraints;
+
+  // Check for trust hierarchy constraints across artifact's own declared
+  // constraints PLUS project-level constraints from a sibling SOUL.md /
+  // CLAUDE.md / .opena2a/policy.*. Without this, a SKILL.md scanned next to
+  // a properly-hardened SOUL.md still gets the No-Trust-Hierarchy HIGH
+  // attributed to itself even though the trust hierarchy is one file over.
+  const trustConstraints = constraints.filter(
     c => c.domain === 'trust_hierarchy',
   );
 
