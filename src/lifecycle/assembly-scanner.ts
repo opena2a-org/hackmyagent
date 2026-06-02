@@ -74,6 +74,27 @@ interface AssemblyScanOptions {
  */
 async function discoverComponents(targetDir: string): Promise<AssemblyComponent[]> {
   const components: AssemblyComponent[] = [];
+  // Deduplicate by real (canonical) path so case-insensitive filesystems
+  // (macOS APFS, Windows NTFS by default) don't load the same SOUL.md twice
+  // — once as 'SOUL.md' and once as 'soul.md'. Without this guard the
+  // assembly contains two copies of identical content, which lets the
+  // HTML-comment-injection regex span from a `<!--` in the first copy to a
+  // `-->` in the second copy and fire LIFECYCLE-001 every time, even on a
+  // freshly hardened skill.
+  const seenRealPaths = new Set<string>();
+  const pushUnique = async (
+    filePath: string,
+    source: string,
+    role: AssemblyComponent['role'],
+  ) => {
+    try {
+      const realPath = await fs.realpath(filePath);
+      if (seenRealPaths.has(realPath)) return;
+      seenRealPaths.add(realPath);
+      const content = await fs.readFile(filePath, 'utf-8');
+      components.push({ source, role, content });
+    } catch { /* file missing or unreadable -- skip */ }
+  };
 
   const tryReadFiles = async (
     filenames: string[],
@@ -90,12 +111,7 @@ async function discoverComponents(targetDir: string): Promise<AssemblyComponent[
             try {
               const stat = await fs.stat(filePath);
               if (stat.isFile()) {
-                const content = await fs.readFile(filePath, 'utf-8');
-                components.push({
-                  source: path.relative(targetDir, filePath),
-                  role,
-                  content,
-                });
+                await pushUnique(filePath, path.relative(targetDir, filePath), role);
               }
             } catch { /* skip */ }
           }
@@ -104,14 +120,7 @@ async function discoverComponents(targetDir: string): Promise<AssemblyComponent[
       }
 
       const filePath = path.join(targetDir, filename);
-      try {
-        const content = await fs.readFile(filePath, 'utf-8');
-        components.push({
-          source: filename,
-          role,
-          content,
-        });
-      } catch { /* file doesn't exist - skip */ }
+      await pushUnique(filePath, filename, role);
     }
   };
 

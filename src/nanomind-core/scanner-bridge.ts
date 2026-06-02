@@ -430,7 +430,10 @@ function runAllAnalyzers(
   findings.push(...analyzeScope(ast, verifier, projectType, artifactContent));
 
   // Prompt and code analyzers: jailbreak susceptibility, injection patterns, etc.
-  findings.push(...analyzePrompt(ast, verifier, projectType, artifactContent));
+  // Pass projectConstraints so a SKILL.md scanned next to a hardened SOUL.md
+  // sees the SOUL.md's Trust Hierarchy section toward AST-PROMPT-004 / 001 /
+  // 003 lookups, mirroring the governance-analyzer contract.
+  findings.push(...analyzePrompt(ast, verifier, projectType, artifactContent, projectConstraints));
   findings.push(...analyzeCode(ast, verifier));
 
   // Steganography analyzer: semantic Unicode analysis (emoji, i18n, homoglyphs)
