@@ -5170,6 +5170,23 @@ dist/
       return [];
     }
 
+    // Single-FILE target: the readdir() below throws on a file path and
+    // silently returns nothing, so `secure SKILL.md` skipped every SKILL-*
+    // check and reported a false-clean verdict on a malicious lone skill
+    // (e.g. a reverse-shell SKILL.md scored ~98/100 "Usable"; audit 2026-06-01).
+    // When the caller points us straight at a skill file, scan it.
+    if (depth === 0 && !rootDir) {
+      try {
+        const st = await fs.stat(dir);
+        if (st.isFile()) {
+          const base = path.basename(dir);
+          return base === 'SKILL.md' || base.endsWith('.skill.md') ? [dir] : [];
+        }
+      } catch {
+        return [];
+      }
+    }
+
     const baseDir = rootDir || dir;
     const skillFiles: string[] = [];
 
@@ -5224,7 +5241,10 @@ dist/
     const skillFiles = await this.findSkillFiles(targetDir);
 
     for (const skillFile of skillFiles) {
-      const relativePath = path.relative(targetDir, skillFile);
+      // When secure targets the skill file directly, path.relative is '' —
+      // fall back to the basename so findings keep a file path (the CLI filters
+      // out file-less findings) and remain CISO-actionable.
+      const relativePath = path.relative(targetDir, skillFile) || path.basename(skillFile);
 
       let content: string;
       try {
@@ -7070,7 +7090,10 @@ dist/
     ];
 
     for (const skillFile of skillFiles) {
-      const relativePath = path.relative(targetDir, skillFile);
+      // When secure targets the skill file directly, path.relative is '' —
+      // fall back to the basename so findings keep a file path (the CLI filters
+      // out file-less findings) and remain CISO-actionable.
+      const relativePath = path.relative(targetDir, skillFile) || path.basename(skillFile);
 
       let content: string;
       try {

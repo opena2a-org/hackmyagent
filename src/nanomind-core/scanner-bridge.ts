@@ -321,6 +321,23 @@ function humanizeCapability(name: string): string {
  */
 async function discoverFiles(dir: string): Promise<string[]> {
   const results: string[] = [];
+  // Single-FILE target (e.g. `secure SOUL.md`): walkDir's readdir() throws
+  // ENOTDIR and silently returns nothing, so the semantic/AST analyzers never
+  // run — pointing `secure` at a lone SOUL.md / SKILL.md returned a high
+  // infra-only score that contradicted `check --nanomind` on the same file
+  // (cross-analyzer direction disagreement, audit 2026-06-01). Scan the file
+  // the user explicitly named directly.
+  try {
+    const st = await stat(dir);
+    if (st.isFile()) {
+      // Apply the same size/empty guard directory mode uses (isWithinSizeLimit)
+      // so a multi-GB lone file can't OOM the reader and a 0-byte file is
+      // skipped exactly as in a directory scan.
+      return (await isWithinSizeLimit(dir)) ? [dir] : [];
+    }
+  } catch {
+    return results; // path vanished between resolve and scan
+  }
   await walkDir(dir, results, 0);
   return results.slice(0, MAX_FILES_PER_SCAN);
 }

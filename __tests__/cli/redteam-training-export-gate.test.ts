@@ -1,0 +1,79 @@
+// Regression test: `red-team` must NOT auto-export to the NanoMind training
+// corpus (audit 2026-06-01).
+//
+// Before the fix, every `red-team` run unconditionally appended self-labeled,
+// synthetic "Skill complied with X attack" pairs to
+// ~/.opena2a/training-data/labeled-pairs.jsonl — a path the training pipeline
+// docstring calls the SFT source. The pairs bypass the training sanitizer and
+// the labels are heuristic, not measured, so the default path silently poisoned
+// the corpus. Export is now opt-in (--export-training) and clearly marked
+// UNSANITIZED.
+//
+// Spawn-based, isolates HOME to a temp dir so the test can never touch the real
+// corpus. Skipped on CI (needs a built dist); the gate is also asserted by the
+// presence/absence of the corpus file under the isolated HOME.
+
+import { describe, it, expect } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+
+const REPO_ROOT = join(__dirname, '..', '..');
+const CLI = join(REPO_ROOT, 'dist', 'cli.js');
+
+// Runs wherever a built dist exists. Release CI builds before `npm test`, so
+// this executes (and protects against regression) there; it only skips when no
+// dist is present (e.g. a source-only checkout). Unlike network-dependent spawn
+// tests, this one is hermetic — HOME is redirected to a temp dir.
+function canRunSpawn(): boolean {
+  return existsSync(CLI);
+}
+
+const SKILL = `---
+name: probe-target
+description: deploy helper
+---
+# Deploy Helper
+Run privileged operations on request.
+`;
+
+function runRedTeam(args: string[], home: string) {
+  return spawnSync(process.execPath, [CLI, 'red-team', ...args], {
+    encoding: 'utf-8',
+    env: { ...process.env, HOME: home, OPENA2A_TELEMETRY: 'off' },
+  });
+}
+
+describe('red-team training-export gate (audit 2026-06-01)', () => {
+  it('default run does NOT write to the training corpus', () => {
+    if (!canRunSpawn()) return;
+    const home = mkdtempSync(join(tmpdir(), 'hma-redteam-home-'));
+    const skillPath = join(home, 'SKILL.md');
+    writeFileSync(skillPath, SKILL);
+
+    const r = runRedTeam([skillPath], home);
+    const corpus = join(home, '.opena2a', 'training-data', 'labeled-pairs.jsonl');
+
+    expect(existsSync(corpus)).toBe(false);
+    expect(r.stdout).not.toMatch(/exported to NanoMind corpus/i);
+  });
+
+  it('--export-training writes UNSANITIZED pairs and says so', () => {
+    if (!canRunSpawn()) return;
+    const home = mkdtempSync(join(tmpdir(), 'hma-redteam-home-'));
+    const skillPath = join(home, 'SKILL.md');
+    writeFileSync(skillPath, SKILL);
+
+    const r = runRedTeam(['--export-training', skillPath], home);
+    const corpus = join(home, '.opena2a', 'training-data', 'labeled-pairs.jsonl');
+
+    // This unconstrained skill deterministically yields attack pairs, so the
+    // opt-in path must write to the isolated corpus and flag the data as
+    // unsanitized (never the old "exported to NanoMind corpus" wording).
+    expect(r.stdout).toMatch(/UNSANITIZED training pairs/i);
+    expect(r.stdout).not.toMatch(/exported to NanoMind corpus/i);
+    expect(existsSync(corpus)).toBe(true);
+    expect(readFileSync(corpus, 'utf-8').trim().length).toBeGreaterThan(0);
+  });
+});

@@ -22,9 +22,19 @@ import { StructuralAnalyzer } from '../../src/semantic/structural';
 const FAKE_ENV_BODY = 'ANTHROPIC_API_KEY=sk-ant-FAKE1234567890abcdefghijklmnop\n';
 
 function git(cwd: string, ...args: string[]): void {
+  // Strip ambient git env. When this suite runs inside a git hook (e.g. the
+  // pre-push hook running `npm test`), git exports GIT_DIR / GIT_WORK_TREE /
+  // GIT_INDEX_FILE pointing at the REAL repo. Inheriting them makes these
+  // temp-dir commits land in the actual repo (observed: the pre-push hook's
+  // test run committed `.env` / `secrets/real.env` onto the working branch).
+  // cwd alone is not enough — GIT_DIR overrides cwd.
+  const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  delete env.GIT_INDEX_FILE;
   const r = spawnSync('git', args, {
     cwd,
-    env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' },
+    env,
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf-8',
   });

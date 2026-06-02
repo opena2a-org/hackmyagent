@@ -63,8 +63,18 @@ interface GitResult {
 
 function runGit(rootDir: string, args: string[]): GitResult {
   try {
+    // Strip ambient git env so the query honors `cwd: rootDir`. When HMA runs
+    // inside a git hook (e.g. a pre-commit hook invoking `hackmyagent secure`),
+    // git exports GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE pointing at the
+    // hook's repo; inheriting them makes runGit report the wrong repo's tracking
+    // state for rootDir, mis-scoring .env credential severity (audit 2026-06-01).
+    const env = { ...process.env };
+    delete env.GIT_DIR;
+    delete env.GIT_WORK_TREE;
+    delete env.GIT_INDEX_FILE;
     const result = spawnSync('git', args, {
       cwd: rootDir,
+      env,
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf-8',
       timeout: 5000,

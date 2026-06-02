@@ -7427,7 +7427,8 @@ program
     }
   });
 
-// red-team command: NanoMind-powered adaptive attack engine
+// red-team command: adaptive attack engine (constraint heuristic today;
+// NanoMind-judged evaluation tracked in docs/design/redteam-nanomind-judge.md)
 program
   .command('red-team')
   .argument('<target>', 'Path to artifact to red-team (skill, SOUL.md, MCP config, system prompt)')
@@ -7437,7 +7438,7 @@ program
   .option('--export-training', 'Append results to the local training corpus (~/.opena2a/training-data). Off by default; exported pairs are UNSANITIZED and must pass the training sanitizer before any NanoMind training use.')
   .action(async (target: string, options: { iterations?: string; json?: boolean; exportTraining?: boolean }) => {
     const { readFileSync } = await import('node:fs');
-    const { runAttackSession, exportTrainingData } = await import('./attack-engine/feedback-loop.js');
+    const { runAttackSession } = await import('./attack-engine/feedback-loop.js');
     const { exportAttackTraining } = await import('./attack-engine/training-pipeline.js');
 
     let content: string;
@@ -7499,7 +7500,7 @@ program
     // (see audit 2026-06-01 + docs/design/redteam-nanomind-judge.md). Until the
     // NanoMind-judge wiring + sanitizer land, export is gated behind
     // --export-training and clearly marked unsanitized.
-    if (options.exportTraining) {
+    if (options.exportTraining || process.env.HMA_EXPORT_TRAINING === '1') {
       const trainingCount = exportAttackTraining(result);
       if (!options.json && trainingCount > 0) {
         console.log(`\n${trainingCount} UNSANITIZED training pairs appended to ${require('node:os').homedir()}/.opena2a/training-data.`);
