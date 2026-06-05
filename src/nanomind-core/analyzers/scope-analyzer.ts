@@ -51,6 +51,7 @@ export function analyzeScope(
   findings.push(...checkWildcardToolAccess(ast, artifactContent));
   findings.push(...checkUndeclaredPermissions(ast, artifactContent));
   findings.push(...checkScopePurposeMismatch(ast, artifactContent));
+  findings.push(...checkAdversarialConfigDirectives(ast, artifactContent));
 
   return findings;
 }
@@ -314,8 +315,251 @@ function checkScopePurposeMismatch(ast: SecurityAST, artifactContent?: string): 
 }
 
 // ============================================================================
+// AST-SCOPE-004: Adversarial configuration directives
+// ============================================================================
+
+/**
+ * Detects explicit adversarial directives in agent_config / mcp_config
+ * artifacts: configuration flags that disable a security control, escalate
+ * privilege, evade audit/detection, or harvest credentials.
+ *
+ * Unlike AST-SCOPE-001 (which keys on a "*" wildcard) and AST-SCOPE-003
+ * (which compares capability names against the declared purpose), this check
+ * inspects the raw config structure for key/value pairs whose meaning is the
+ * attack itself. A key named `allowEscalation`, `bypassRBAC`, `disableLogging`,
+ * `HIDDEN_FROM_AUDIT`, or `COLLECT_PASSWORDS` set to a truthy value expresses
+ * intent to defeat a control — these are not dual-use. The directive families
+ * below were validated against the OASB benign corpus (190 samples incl. 40
+ * hard-negative edge cases) with zero matches, so they do not raise benign FPR.
+ *
+ * Self-escalation and access-control bypass were previously invisible to the
+ * structural analyzers: the compiler emitted no capabilities for a JSON
+ * agent_config whose escalation lived in nested booleans (e.g. MAL-PRIV-007's
+ * `permissions.allowEscalation: true`) rather than in a "*" capability.
+ *
+ * Only runs for agent_config and mcp_config — skill / soul / system_prompt are
+ * natural-language artifacts where these patterns belong to the prompt analyzer
+ * and the NanoMind semantic layer, not a structural key scan.
+ *
+ * Coverage limitation: the key scan requires JSON. A YAML agent config (rare in
+ * practice — agent configs and MCP configs are JSON) is classified by path but
+ * fails JSON.parse and returns no AST-SCOPE-004 findings. This is an additive
+ * check; the limitation narrows coverage, it does not weaken any existing check.
+ * Extending to YAML is a follow-up.
+ */
+
+interface DirectiveFamily {
+  /** Match against a separator-stripped, lowercased config key. */
+  keyPattern: RegExp;
+  name: string;
+  severity: 'critical' | 'high';
+  attackClass: string;
+  guidance: string;
+}
+
+// Families are ordered most-specific-attack first; the first family a key
+// matches wins, so a key is attributed to a single attack class.
+// IMPORTANT: every pattern here must be UNAMBIGUOUS — a key that has no
+// legitimate meaning in a benign configuration. Dual-use IAM / cloud / perf
+// keys are deliberately EXCLUDED to avoid false positives on real agent
+// configs: `assumeRole` (AWS STS), `impersonate*` (GCP domain-wide delegation),
+// `crossTenant*` / `crossAccountAccess` (multi-tenant SaaS, AWS cross-account),
+// `grantAll*`, `bypassValidation` (CDN / schema toggles), `disableLogging`
+// (a routine perf/debug flag), and `includeSecrets` / `includeCredentials`
+// (build-artifact bundling) are NOT matched. The malicious corpus samples that
+// carry those keys also carry an unambiguous directive below, so coverage is
+// preserved without the FP surface. Do not re-add a dual-use key here.
+const DIRECTIVE_FAMILIES: DirectiveFamily[] = [
+  {
+    // Self-escalation: an agent asking to raise its own privilege.
+    keyPattern:
+      /(allow|auto).*escalat|privilegeescalation|escalationtarget|allowscopeexpansion/,
+    name: 'Self-Escalation Directive',
+    severity: 'critical',
+    attackClass: 'PRIV-ESCALATION',
+    guidance:
+      'An agent that can escalate its own privilege defeats the principle of least privilege. ' +
+      'Escalation must be externally granted and audited, never self-asserted by configuration.',
+  },
+  {
+    // Explicit bypass of a named access-control gate.
+    keyPattern:
+      /bypass(auth|rbac|rls|rowlevelsecurity|approval|tenantisolation|columnencryption|datamasking|scopevalidation|changemanagement|securitychecks|immutability)|authenticationbypass|allowsecurityoverrides|allowsystemoverrides|disablequeryrestrictions/,
+    name: 'Security-Control Bypass Directive',
+    severity: 'critical',
+    attackClass: 'PRIV-ESCALATION',
+    guidance:
+      'Disabling authentication, RBAC, row-level security, tenant isolation, or approval gates removes the ' +
+      'controls that contain a compromised agent. These flags should not exist in a production configuration.',
+  },
+  {
+    // Audit / detection evasion and covert persistence.
+    keyPattern:
+      /hiddenfromaudit|hidefromdiff|modifyauditlogs|deleteauditentries|disableaudit|survivereset|surviveclear|persistacrossclones|injectintoallsessions|maintainpersistence/,
+    name: 'Audit-Evasion / Covert-Persistence Directive',
+    severity: 'high',
+    attackClass: 'PERSIST',
+    guidance:
+      'Hiding from audit logs, surviving session resets, or re-injecting across clones lets an agent persist ' +
+      'and operate without oversight. Persistence and logging must be controlled by the platform, not the agent config.',
+  },
+  {
+    // Credential / secret harvesting switches.
+    keyPattern:
+      /collectpasswords|collectcredentials|collectprivatekeys|collectmfa|readproductionsecrets|copydatabasewithcredentials|harvestcredentials/,
+    name: 'Credential-Harvesting Directive',
+    severity: 'high',
+    attackClass: 'CRED-HARVEST',
+    guidance:
+      'A configuration that collects passwords, MFA codes, private keys, or production secrets is exfiltrating ' +
+      'credentials regardless of the pretext. No legitimate agent needs to gather user or production secrets.',
+  },
+];
+
+// Privileged role/scope literals that escalate even when assigned as a value
+// rather than toggled by a boolean (e.g. "defaultRole": "superuser").
+const PRIVILEGED_ROLE_KEY = /^(default)?role$|defaultclaims/;
+const PRIVILEGED_ROLE_VALUE = /\b(superuser|root|postgres|sysadmin)\b/i;
+
+function checkAdversarialConfigDirectives(ast: SecurityAST, artifactContent?: string): ASTFinding[] {
+  if (ast.artifactType !== 'agent_config' && ast.artifactType !== 'mcp_config') {
+    return [];
+  }
+  if (!artifactContent) return [];
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(artifactContent);
+  } catch {
+    return []; // Not JSON — structural key scan does not apply.
+  }
+
+  // Flatten every key to { key, value }, INCLUDING object/array values. MCP env
+  // blocks carry directives as string values ("true", "*"); agent configs carry
+  // them as booleans; and a directive can be wrapped in a nested object
+  // ("allowEscalation": { "enabled": true }) — recording the container key lets
+  // isActiveDirectiveValue inspect the subtree so the wrapper does not evade.
+  const leaves: Array<{ key: string; value: unknown }> = [];
+  const walk = (node: unknown): void => {
+    if (node === null || typeof node !== 'object') return;
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      leaves.push({ key, value });
+      if (value !== null && typeof value === 'object') walk(value);
+    }
+  };
+  walk(parsed);
+
+  // Group matched directives by family so the artifact emits at most one
+  // finding per attack family (a single config can trip several keys).
+  const byFamily = new Map<string, { family: DirectiveFamily; keys: string[] }>();
+  const addMatch = (family: DirectiveFamily, key: string) => {
+    const entry = byFamily.get(family.name) ?? { family, keys: [] };
+    if (!entry.keys.includes(key)) entry.keys.push(key);
+    byFamily.set(family.name, entry);
+  };
+
+  for (const { key, value } of leaves) {
+    const normKey = key.toLowerCase().replace(/[._\-\s]/g, '');
+    if (isActiveDirectiveValue(value)) {
+      for (const family of DIRECTIVE_FAMILIES) {
+        if (family.keyPattern.test(normKey)) {
+          addMatch(family, key);
+          break;
+        }
+      }
+    }
+    // Privileged role assignment by value (string), independent of booleans.
+    if (PRIVILEGED_ROLE_KEY.test(normKey) && typeof value === 'string' && PRIVILEGED_ROLE_VALUE.test(value)) {
+      addMatch(DIRECTIVE_FAMILIES[0], key); // escalation family
+    }
+    // DEFAULT_CLAIMS / claims string carrying an embedded sudo/admin grant.
+    if (/claims/.test(normKey) && typeof value === 'string' && /"sudo"\s*:\s*true|"scope"\s*:\s*"\*"|"role"\s*:\s*"(admin|root|superuser)"/i.test(value)) {
+      addMatch(DIRECTIVE_FAMILIES[0], key);
+    }
+  }
+
+  const findings: ASTFinding[] = [];
+  for (const { family, keys } of byFamily.values()) {
+    const evidenceKey = keys[0];
+    const evidence = artifactContent.match(new RegExp(`"${escapeRegex(evidenceKey)}"`))?.[0];
+    findings.push({
+      checkId: 'AST-SCOPE-004',
+      name: family.name,
+      description:
+        `The configuration sets ${keys.length === 1 ? 'directive' : 'directives'} ` +
+        `${keys.map(k => `"${k}"`).join(', ')} that ${familyVerb(family.attackClass)}. ` +
+        'This is an explicit adversarial directive, not a missing defense — the configuration ' +
+        'is asking the agent to defeat a security control.',
+      category: 'Scope Security',
+      severity: family.severity,
+      passed: false,
+      message: `${family.name}: ${keys.join(', ')}`,
+      fixable: false,
+      file: ast.artifactPath,
+      line: findLineFromString(artifactContent, evidence),
+      fix:
+        `Remove ${keys.length === 1 ? 'the' : 'every'} ${keys.map(k => `"${k}"`).join(', ')} ` +
+        `${keys.length === 1 ? 'directive' : 'directives'} from the configuration. ` +
+        'If a legitimate workflow appears to need it, route the action through an externally-granted, ' +
+        'audited capability instead of a self-asserted config flag.',
+      guidance: family.guidance,
+      attackClass: family.attackClass,
+      confidence: 0.95,
+      evidence,
+    });
+  }
+
+  return findings;
+}
+
+/**
+ * A directive is "active" when its value turns the behavior on. Covers boolean
+ * true, the numeric/string truthy forms an attacker might pick to dodge a
+ * naive boolean check (1, "on", "y", ...), a non-empty array (e.g.
+ * "authenticationBypass": ["/admin/*"]), and a nested object/array whose
+ * subtree contains any active value (so wrapping a flag in { enabled: true }
+ * does not evade detection).
+ */
+function isActiveDirectiveValue(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value === 'number') return value === 1;
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase();
+    return v === 'true' || v === '*' || v === 'yes' || v === 'y' ||
+      v === '1' || v === 'on' || v === 'enabled' || v === 'always';
+  }
+  if (Array.isArray(value)) {
+    return value.length > 0 && (value.every(v => typeof v !== 'object') || value.some(isActiveDirectiveValue));
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some(isActiveDirectiveValue);
+  }
+  return false;
+}
+
+function familyVerb(attackClass: string): string {
+  switch (attackClass) {
+    case 'PRIV-ESCALATION':
+      return 'escalate the agent\'s privilege or disable an access-control gate';
+    case 'PERSIST':
+      return 'evade audit logging or covertly persist across resets';
+    case 'CRED-HARVEST':
+      return 'collect credentials, secrets, or private keys';
+    default:
+      return 'defeat a security control';
+  }
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
+
+/**
+ * Escape regex metacharacters so a literal key can be embedded in a RegExp.
+ */
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 /**
  * Normalize a capability name for comparison.
