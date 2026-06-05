@@ -107,7 +107,7 @@ npm view hackmyagent dist.attestations --json
 | An A2A agent card | `hackmyagent check ./my-agent/` | agent-card capabilities + identity |
 | A URL tarball | `hackmyagent check https://ex.com/pkg.tar.gz` | downloads, scans |
 | External infrastructure | `hackmyagent scan example.com` | external AI-endpoint inventory |
-| Governance (SOUL.md) | `hackmyagent scan-soul` | SOUL.md against OASB v2 behavioural controls |
+| Governance (SOUL.md) | `hackmyagent scan-soul` | SOUL.md against OASB-2 behavioural controls |
 
 ### secure vs check vs red-team vs attack
 

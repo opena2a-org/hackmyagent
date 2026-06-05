@@ -670,7 +670,7 @@ governance:
     it('conversational profile skips non-essential domains', async () => {
       fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), 'A simple chatbot.');
       const result = await scanner.scanSoul(tmpDir, { profile: 'conversational' });
-      // Conversational only evaluates domains 9 (Injection), 11 (Hardcoded), 13 (Honesty), 15 (Harm Avoidance)
+      // Conversational only evaluates domains 13 (Injection), 15 (Hardcoded), 17 (Honesty), 19 (Harm Avoidance)
       expect(result.skippedDomains.length).toBeGreaterThan(0);
       expect(result.skippedDomains).toContain('Capability Boundaries');
       expect(result.skippedDomains).toContain('Agentic Safety');
@@ -746,10 +746,10 @@ governance:
   });
 
   // ---------------------------------------------------------------
-  // Domain 15: Harm Avoidance
+  // Domain 19: Harm Avoidance
   // ---------------------------------------------------------------
 
-  describe('Domain 15: Harm Avoidance', () => {
+  describe('Domain 19: Harm Avoidance', () => {
     it('detects all 4 Harm Avoidance controls when present', async () => {
       fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), `
 ## Harm Avoidance
@@ -792,7 +792,7 @@ If a request is ambiguous, ask for clarification and default to the safer interp
     });
 
     it('reports 0% when no Harm Avoidance content exists', async () => {
-      // Use only domains 7-14 content (no Harm Avoidance)
+      // Use only domains 11-18 content (no Harm Avoidance)
       fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), `
 ## Trust Hierarchy
 Trust hierarchy authority precedence.
@@ -853,7 +853,7 @@ Ambiguous: safer interpretation. Clarification. Disambiguate uncertain instructi
     });
 
     it('scoring uses 9 domains (100% on 8 domains + 0% on Harm Avoidance = ~89%)', async () => {
-      // Write content covering domains 7-14 fully but no Harm Avoidance
+      // Write content covering domains 11-18 fully but no Harm Avoidance
       const fullContentNoDomain15 = `
 ## Trust Hierarchy
 Trust hierarchy authority precedence. Conflict override escalate.
