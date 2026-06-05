@@ -16,7 +16,7 @@ export interface DomainTemplate {
 
 export const DOMAIN_TEMPLATES: Record<string, DomainTemplate> = {
   'Trust Hierarchy': {
-    domainId: 7,
+    domainId: 11,
     domainName: 'Trust Hierarchy',
     heading: '## Trust Hierarchy',
     content: `## Trust Hierarchy
@@ -68,7 +68,7 @@ or trust modification requires formal change management approval.
 `,
   },
   'Capability Boundaries': {
-    domainId: 8,
+    domainId: 12,
     domainName: 'Capability Boundaries',
     heading: '## Capability Boundaries',
     content: `## Capability Boundaries
@@ -128,7 +128,7 @@ and action record are retained for compliance review.
 `,
   },
   'Injection Hardening': {
-    domainId: 9,
+    domainId: 13,
     domainName: 'Injection Hardening',
     heading: '## Injection Hardening',
     content: `## Injection Hardening
@@ -180,7 +180,7 @@ are used to verify hardening effectiveness.
 `,
   },
   'Data Handling': {
-    domainId: 10,
+    domainId: 14,
     domainName: 'Data Handling',
     heading: '## Data Handling',
     content: `## Data Handling
@@ -229,7 +229,7 @@ reaches affected parties within the required timeframe.
 `,
   },
   'Hardcoded Behaviors': {
-    domainId: 11,
+    domainId: 15,
     domainName: 'Hardcoded Behaviors',
     heading: '## Hardcoded Behaviors',
     content: `## Hardcoded Behaviors
@@ -281,7 +281,7 @@ design. The enforcement guarantee relies on a proven enforcement mechanism.
 `,
   },
   'Agentic Safety': {
-    domainId: 12,
+    domainId: 16,
     domainName: 'Agentic Safety',
     heading: '## Agentic Safety',
     content: `## Agentic Safety
@@ -337,7 +337,7 @@ Synchronize state and apply a parallel limit to prevent contention.
 `,
   },
   'Honesty and Transparency': {
-    domainId: 13,
+    domainId: 17,
     domainName: 'Honesty and Transparency',
     heading: '## Honesty and Transparency',
     content: `## Honesty and Transparency
@@ -384,7 +384,7 @@ source accuracy for all referenced material.
 `,
   },
   'Human Oversight': {
-    domainId: 14,
+    domainId: 18,
     domainName: 'Human Oversight',
     heading: '## Human Oversight',
     content: `## Human Oversight
@@ -431,7 +431,7 @@ detection evaluates each escalation condition against operational baselines.
 `,
   },
   'Harm Avoidance': {
-    domainId: 15,
+    domainId: 19,
     domainName: 'Harm Avoidance',
     heading: '## Harm Avoidance',
     content: `## Harm Avoidance

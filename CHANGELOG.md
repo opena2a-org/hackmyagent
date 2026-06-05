@@ -4,6 +4,10 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **SOUL behavioral governance domains renumbered from 7-15 to 11-19** to align with the OASB-2 specification. OASB-2 numbers the 9 behavioral domains 11-19 so they extend the OASB-1 technical security domains (1-10) into a unified 1-19 domain set. Domain IDs are internal (`domainId` in the scanner registry and profile maps) and are not surfaced in scan output -- control IDs (`SOUL-XX-NNN`), severities, per-profile applicability, and governance scores are unchanged. The lone `OASB v2` label in composite-benchmark output is normalized to `OASB-2`.
+
 ### Fixed
 
 - **`hackmyagent check <org>/<repo> --no-scan` no longer attempts a `git clone` when the Registry has no record of the target.** USER_VISIBLE_IMPACT: previously, `hackmyagent check anthropic/code-review --no-scan --json` (a private repo) fell through to `git clone` and surfaced an opaque `Authentication failed` to stderr with empty stdout instead of the intended not-found JSON. The fix mirrors the PyPI #195 / PR #197 pattern for the GitHub path: emit a `buildNotFoundOutput`-shaped block with `ecosystem: "github"` and a `Verify the URL: …` hint, then return with exit 1 before any clone. This was masquerading as a flaky-test cluster — the hung `git clone` subprocess held resources during parallel vitest execution and caused collateral timing failures in `__tests__/semantic/credential-context-git-state.test.ts` and `__tests__/cli/check-skill-quick-scan-label.test.ts`. With the fix in place the full suite is 2251/2251 green across 5 consecutive runs.

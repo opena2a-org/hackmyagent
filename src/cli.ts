@@ -3451,7 +3451,7 @@ Examples:
             fs.writeFileSync(1, jsonOutput + '\n');
           }
         } else {
-          process.stdout.write('\nOASB v2 Composite Security Assessment\n');
+          process.stdout.write('\nOASB-2 Composite Security Assessment\n');
           process.stdout.write('----------------------------------------------------\n');
           process.stdout.write(`Infrastructure Score (OASB-1): ${infraScore}%\n`);
           process.stdout.write(`Governance Score (OASB-2):     ${govScore}/100\n`);
