@@ -4,6 +4,8 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.23.8] - 2026-06-05
+
 ### Changed
 
 - **`secure -b oasb-2` composite output is relabeled "OASB Composite Security Assessment"** (was "OASB-2 Composite"). The composite spans both layers, so labeling it "OASB-2" collided with the "Governance Score (OASB-2)" leg now that OASB-2 denotes behavioral governance specifically. The unified composite is now named OASB; the two legs remain "Infrastructure Score (OASB-1)" and "Governance Score (OASB-2)". The `--json` `benchmark` field changes from `"OASB-2"` to `"OASB"` accordingly. The `-b oasb-2` flag value is unchanged.
