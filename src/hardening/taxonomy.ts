@@ -419,6 +419,12 @@ const TAXONOMY_MAP: Record<string, string> = {
   // undefined; the inline assignment takes precedence per
   // `enrichWithTaxonomy`'s precedence rule.
   'AST-EXFIL-001': 'SKILL-EXFIL',
+
+  // AST scope-analyzer: AST-SCOPE-004 sets `attackClass: family.attackClass`
+  // dynamically at the emission site (scope-analyzer.ts), varying by directive
+  // family (PRIV-ESCALATION / PERSIST / CRED-HARVEST). This entry is the
+  // defensive fallback; the inline assignment takes precedence.
+  'AST-SCOPE-004': 'PRIV-ESCALATION',
 };
 
 /**

@@ -4,6 +4,10 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`AST-SCOPE-004` — adversarial configuration directives.** The scope analyzer now detects agent_config and mcp_config artifacts whose configuration flags are themselves the attack: self-escalation (`allowEscalation`, `autoEscalateOnDenied`, privileged `defaultRole`), security-control bypass (`bypassRBAC`, `bypassValidation`, `authenticationBypass`), audit/detection evasion and covert persistence (`HIDDEN_FROM_AUDIT`, `SURVIVE_RESET`, `disableLogging`), and credential harvesting (`COLLECT_PASSWORDS`, `COLLECT_PRIVATE_KEYS`, `includeSecrets`). These directives were previously invisible to the structural analyzers — a JSON agent_config whose escalation lived in nested booleans rather than a `"*"` capability surfaced no findings at all. The check is value-guarded (a directive turned `false` does not fire), artifact-gated (agent_config / mcp_config only — natural-language prose is left to the prompt analyzer and semantic layer), and was validated against the OASB benign corpus (190 samples incl. 40 hard-negative edge cases) with zero matches, so it does not raise benign FPR.
+
 ## [0.23.8] - 2026-06-05
 
 ### Changed
