@@ -4,6 +4,8 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.23.7] - 2026-06-04
+
 ### Changed
 
 - **SOUL behavioral governance domains renumbered from 7-15 to 11-19** to align with the OASB-2 specification. OASB-2 numbers the 9 behavioral domains 11-19 so they extend the OASB-1 technical security domains (1-10) into a unified 1-19 domain set. Domain IDs are internal (`domainId` in the scanner registry and profile maps) and are not surfaced in scan output -- control IDs (`SOUL-XX-NNN`), severities, per-profile applicability, and governance scores are unchanged. The lone `OASB v2` label in composite-benchmark output is normalized to `OASB-2`.
