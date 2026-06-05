@@ -3079,7 +3079,7 @@ Performs ${CHECK_COUNT} security checks across ${CATEGORY_COUNT} categories:
 Benchmark mode (--benchmark):
   oasb-1   OASB-1 infrastructure compliance (L1/L2/L3 levels)
            L1 = Essential (baseline), L2 = Standard, L3 = Hardened
-  oasb-2   OASB-2 composite: infrastructure (50%) + governance (50%)
+  oasb-2   OASB composite: infrastructure (50%) + governance (50%)
            Combines OASB-1 scan with scan-soul for a unified score
 
 Output formats (--format):
@@ -3100,7 +3100,7 @@ Examples:
   $ hackmyagent secure -b oasb-1 -f sarif        SARIF for GitHub
   $ hackmyagent secure -b oasb-1 -f html -o report.html
   $ hackmyagent secure -b oasb-1 --fail-below 80 CI threshold
-  $ hackmyagent secure -b oasb-2               OASB-2 composite (infra + governance)
+  $ hackmyagent secure -b oasb-2               OASB composite (infra + governance)
   $ hackmyagent secure ./my-agent --publish    Scan and publish results to registry`)
   .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
   .option('--fix', 'Automatically fix issues where possible')
@@ -3417,7 +3417,7 @@ Examples:
         }
       }
 
-      // OASB-2 composite mode: infrastructure (50%) + governance (50%)
+      // OASB composite mode: infrastructure (50%) + governance (50%)
       if (isOasb2) {
         const infraResult = generateBenchmarkReport(
           result.allFindings || result.findings,
@@ -3435,7 +3435,7 @@ Examples:
 
         if (format === 'json') {
           const jsonOutput = JSON.stringify({
-            benchmark: 'OASB-2',
+            benchmark: 'OASB',
             infraScore,
             govScore,
             compositeScore,
@@ -3451,7 +3451,7 @@ Examples:
             fs.writeFileSync(1, jsonOutput + '\n');
           }
         } else {
-          process.stdout.write('\nOASB-2 Composite Security Assessment\n');
+          process.stdout.write('\nOASB Composite Security Assessment\n');
           process.stdout.write('----------------------------------------------------\n');
           process.stdout.write(`Infrastructure Score (OASB-1): ${infraScore}%\n`);
           process.stdout.write(`Governance Score (OASB-2):     ${govScore}/100\n`);
