@@ -76,6 +76,26 @@ export type {
   FalsePositiveAssessment,
 } from './inference/security-analyst.js';
 
+// Analyst coverage routing (Phase A P1, CDS-023): posture-vs-attack + abstention
+// layer that lets the analyst inform/escalate without auto-flipping the verdict.
+// Measurement-path only in P1 — NOT wired into orchestrateNanoMind.
+export {
+  routeAnalystVerdict,
+  combineVerdict,
+  namesAttackClass,
+  isKnownAttackClass,
+  NON_ATTACK_CLASSES,
+  HIGH_SEVERITIES,
+  MID_SEVERITIES,
+  KNOWN_ATTACK_CLASSES,
+} from './analyst-coverage.js';
+export type {
+  RoutedAnalystVerdict,
+  CombinePolicy,
+  AnalystVerdict,
+  CombinedVerdict,
+} from './analyst-coverage.js';
+
 // Ingestion
 export { parseArtifact, classifyArtifactType, computeHash } from './ingestion/artifact-parser.js';
 export { sanitizeForNanoMind, detectManipulation } from './ingestion/input-sanitizer.js';
