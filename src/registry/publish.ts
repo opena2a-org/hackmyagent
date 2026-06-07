@@ -18,6 +18,7 @@ import type { SoulScanResult } from '../soul';
 import type { BenchmarkResult } from '../benchmarks';
 import { RegistryClient, type UnifiedPublishPayload, type UnifiedFinding } from './client';
 import { reportFindings, reportRemediation } from './remediation';
+import { firstPartySignerFromEnv } from '@opena2a/registry-client';
 
 /**
  * Compute a deterministic tree hash of a directory's contents.
@@ -324,7 +325,18 @@ export async function publishScanResults(
   registryUrl: string,
 ): Promise<PublishResult> {
   const keypair = readAgentKeypair();
-  const isCommunity = !keypair;
+
+  // First-party scanner provenance: our official batch scanner signs the strong canonical
+  // with a DEDICATED Ed25519 key supplied via env (HMA_SCANNER_SIGNING_KEY, Secretless —
+  // never the per-user ~/.opena2a identity). This is the only path that unlocks
+  // source=first_party_scanner at the registry. End-user `--publish` runs (no env key)
+  // keep the existing claimed-agent / community behavior.
+  const firstPartySigner = firstPartySignerFromEnv({
+    keyEnv: 'HMA_SCANNER_SIGNING_KEY',
+    source: 'first_party_scanner',
+  });
+
+  const isCommunity = !keypair && !firstPartySigner;
 
   if (isCommunity) {
     console.log("No signing keys found at ~/.opena2a/keys/. Run 'opena2a claim <package>' to create keys for full-weight publishing. Submitting as community contribution (0.5x weight).");
@@ -350,8 +362,29 @@ export async function publishScanResults(
 
   const payload = buildPublishPayload(data, toolVersion);
 
-  // Sign and include identity in body (not headers)
-  if (keypair) {
+  // Sign and include identity in body (not headers).
+  if (firstPartySigner) {
+    // First-party scanner: sign the registry's STRONG canonical
+    // (name|version|score|maxScore|source|nonce|signedAt) with the raw scanner key.
+    // These override any claimed-agent PEM signature — the registry allowlist matches a
+    // raw 32-byte key over this canonical, not a full-JSON PEM signature.
+    const prov = firstPartySigner.sign({
+      name: payload.name,
+      version: payload.version,
+      score: payload.score,
+      maxScore: payload.maxScore,
+    });
+    payload.source = prov.source;
+    payload.nonce = prov.nonce;
+    payload.signedAt = prov.signedAt;
+    payload.signature = prov.signature;
+    payload.publicKey = prov.publicKey;
+    if (keypair?.agentId) {
+      payload.agentId = keypair.agentId;
+    }
+  } else if (keypair) {
+    // Legacy claimed-agent path: full-JSON PEM signature, surfaced as X-Agent-Signature
+    // on the legacy endpoint. Does not unlock privileged provenance (publishes as community).
     const payloadString = JSON.stringify(payload);
     const signature = signPayload(payloadString, keypair.privateKey);
     if (signature) {
