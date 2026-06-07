@@ -363,26 +363,35 @@ export async function publishScanResults(
   const payload = buildPublishPayload(data, toolVersion);
 
   // Sign and include identity in body (not headers).
+  let signedFirstParty = false;
   if (firstPartySigner) {
     // First-party scanner: sign the registry's STRONG canonical
     // (name|version|score|maxScore|source|nonce|signedAt) with the raw scanner key.
     // These override any claimed-agent PEM signature — the registry allowlist matches a
-    // raw 32-byte key over this canonical, not a full-JSON PEM signature.
-    const prov = firstPartySigner.sign({
-      name: payload.name,
-      version: payload.version,
-      score: payload.score,
-      maxScore: payload.maxScore,
-    });
-    payload.source = prov.source;
-    payload.nonce = prov.nonce;
-    payload.signedAt = prov.signedAt;
-    payload.signature = prov.signature;
-    payload.publicKey = prov.publicKey;
-    if (keypair?.agentId) {
-      payload.agentId = keypair.agentId;
+    // raw 32-byte key over this canonical, not a full-JSON PEM signature. Signing must
+    // never crash a publish: on any signer error, fall through to the claimed-agent /
+    // community path below (the registry records that as community — fail-closed).
+    try {
+      const prov = firstPartySigner.sign({
+        name: payload.name,
+        version: payload.version,
+        score: payload.score,
+        maxScore: payload.maxScore,
+      });
+      payload.source = prov.source;
+      payload.nonce = prov.nonce;
+      payload.signedAt = prov.signedAt;
+      payload.signature = prov.signature;
+      payload.publicKey = prov.publicKey;
+      if (keypair?.agentId) {
+        payload.agentId = keypair.agentId;
+      }
+      signedFirstParty = true;
+    } catch {
+      // Degrade to community (or claimed-agent below).
     }
-  } else if (keypair) {
+  }
+  if (!signedFirstParty && keypair) {
     // Legacy claimed-agent path: full-JSON PEM signature, surfaced as X-Agent-Signature
     // on the legacy endpoint. Does not unlock privileged provenance (publishes as community).
     const payloadString = JSON.stringify(payload);
