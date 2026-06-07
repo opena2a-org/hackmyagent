@@ -4,9 +4,12 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.23.9] - 2026-06-07
+
 ### Added
 
 - **`AST-SCOPE-004` — adversarial configuration directives.** The scope analyzer now detects agent_config and mcp_config artifacts whose configuration flags are themselves the attack: self-escalation (`allowEscalation`, `autoEscalateOnDenied`, privileged `defaultRole`), security-control bypass (`bypassRBAC`, `bypassValidation`, `authenticationBypass`), audit/detection evasion and covert persistence (`HIDDEN_FROM_AUDIT`, `SURVIVE_RESET`, `disableLogging`), and credential harvesting (`COLLECT_PASSWORDS`, `COLLECT_PRIVATE_KEYS`, `includeSecrets`). These directives were previously invisible to the structural analyzers — a JSON agent_config whose escalation lived in nested booleans rather than a `"*"` capability surfaced no findings at all. The check is value-guarded (a directive turned `false` does not fire), artifact-gated (agent_config / mcp_config only — natural-language prose is left to the prompt analyzer and semantic layer), and was validated against the OASB benign corpus (190 samples incl. 40 hard-negative edge cases) with zero matches, so it does not raise benign FPR.
+- **First-party scanner provenance on `--publish`.** When `HMA_SCANNER_SIGNING_KEY` (a dedicated Ed25519 seed, supplied via the runtime environment only) is set, a published scan self-tags `source=first_party_scanner` and signs the registry's strong canonical (`name|version|score|maxScore|source|nonce|signedAt`) with the raw key, so the registry can authenticate the provenance claim. End-user `--publish` runs (no key) continue to publish as `community` — the safe default; an unsigned or unverifiable claim is never honored. Signing can never crash a publish (it fails closed to community). Uses the shared `@opena2a/registry-client` `FirstPartySigner` (0.2.0).
 
 ## [0.23.8] - 2026-06-05
 
