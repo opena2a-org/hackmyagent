@@ -103,10 +103,21 @@ export interface UnifiedPublishPayload {
   version?: string;
   /** Ed25519 signature (base64) — moved from headers to body */
   signature?: string;
-  /** Public key (PEM) of the signer */
+  /** Public key of the signer. PEM for the legacy claimed-agent path; raw base64 for
+   *  the first-party scanner path (the registry allowlist expects a raw 32-byte key). */
   publicKey?: string;
   /** Agent identity ID */
   agentId?: string;
+  /**
+   * Provenance class. Privileged values (first_party_scanner|ci|partner) are honored by
+   * the registry ONLY when signature/publicKey/nonce/signedAt prove an allowlisted
+   * first-party key signed the strong canonical. Unset → community (fail-closed).
+   */
+  source?: string;
+  /** Single-use anti-replay nonce (first-party scanner path). */
+  nonce?: string;
+  /** Unix time in seconds at signing (first-party scanner path). */
+  signedAt?: number;
   /** Sub-reports from different scan types (hardening, attack, soul, oasb) */
   subReports?: Record<string, unknown>;
   /** CAAT tree hash for deduplication */

@@ -44,7 +44,7 @@
     "@opena2a/cli-ui": "0.5.1",
     "@opena2a/contribute": "^0.1.0",
     "@opena2a/credential-patterns": "0.1.1",
-    "@opena2a/registry-client": "0.1.0",
+    "@opena2a/registry-client": "0.2.0",
     "@opena2a/shared": "^0.1.0",
     "@opena2a/telemetry": "0.3.0",
     "ai-trust": "^0.2.6",

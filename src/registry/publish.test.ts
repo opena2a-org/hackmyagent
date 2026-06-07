@@ -415,11 +415,17 @@ describe('buildPublishPayload', () => {
 describe('publishScanResults', () => {
   let tmpHome: string;
   let originalEnv: string | undefined;
+  let originalScannerKey: string | undefined;
 
   beforeEach(() => {
     tmpHome = createTempDir();
     originalEnv = process.env.OPENA2A_HOME;
     process.env.OPENA2A_HOME = tmpHome;
+    // Default every test to "no scanner key" so a leaked env value can never
+    // silently mis-tag a community scan as first_party. The one first-party
+    // test sets it explicitly; afterEach restores the original.
+    originalScannerKey = process.env.HMA_SCANNER_SIGNING_KEY;
+    delete process.env.HMA_SCANNER_SIGNING_KEY;
   });
 
   afterEach(() => {
@@ -427,6 +433,11 @@ describe('publishScanResults', () => {
       delete process.env.OPENA2A_HOME;
     } else {
       process.env.OPENA2A_HOME = originalEnv;
+    }
+    if (originalScannerKey === undefined) {
+      delete process.env.HMA_SCANNER_SIGNING_KEY;
+    } else {
+      process.env.HMA_SCANNER_SIGNING_KEY = originalScannerKey;
     }
     vi.unstubAllGlobals();
     cleanupDir(tmpHome);
@@ -465,6 +476,9 @@ describe('publishScanResults', () => {
     expect(body.name).toBe('@test/agent');
     expect(body.tool).toBe('hackmyagent');
     expect(body.findings).toBeDefined();
+    // No scanner key → never claim privileged provenance. This is the one
+    // invariant the feature must guarantee: a community scan is never mis-tagged.
+    expect(body.source).toBeUndefined();
   });
 
   it('publishes as claimed agent when keypair exists', async () => {
@@ -504,6 +518,63 @@ describe('publishScanResults', () => {
     expect(body.publicKey).toBeDefined();
     expect(body.agentId).toBe('test-agent-123');
     expect(fetchCalls[1][1].headers['X-Scan-Token']).toBe('tok-123');
+    // The per-user claimed-agent identity is NOT our first-party scanner.
+    expect(body.source).toBeUndefined();
+  });
+
+  it('self-tags first_party_scanner with a strong-canonical signature when HMA_SCANNER_SIGNING_KEY is set', async () => {
+    // beforeEach already captured + cleared the original; set the scanner key for this test only.
+    // A fixed 32-byte seed (base64), the way our batch orchestration would supply it.
+    const seed = Buffer.alloc(32, 9);
+    process.env.HMA_SCANNER_SIGNING_KEY = seed.toString('base64');
+
+    const tokenResponse = {
+      ok: true,
+      status: 200,
+      json: async () => ({ scanToken: 'tok-fp', tokenId: 'tid-fp', expiresIn: '300s' }),
+    };
+    const publishResponse = {
+      ok: true,
+      json: async () => ({ accepted: true, publishId: 'pub-fp', consensusStatus: 'pending', weight: 1.0 }),
+    };
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(tokenResponse)
+      .mockResolvedValueOnce(publishResponse));
+
+    const data: PublishScanData = {
+      packageName: '@test/first-party',
+      packageVersion: '2.1.0',
+      directory: '/tmp/test',
+      hardeningFindings: makeHardeningFindings(),
+    };
+
+    const result = await publishScanResults(data, 'https://api.oa2a.org');
+    expect(result.success).toBe(true);
+    expect(result.isCommunity).toBe(false);
+
+    const fetchCalls = (fetch as any).mock.calls;
+    const body = JSON.parse(fetchCalls[1][1].body);
+
+    // Provenance fields present and well-formed.
+    expect(body.source).toBe('first_party_scanner');
+    expect(typeof body.nonce).toBe('string');
+    expect(body.nonce.length).toBeGreaterThan(0);
+    expect(String(body.signedAt).length).toBe(10); // Unix seconds, not ms
+    // Raw 32-byte Ed25519 public key (base64), NOT a PEM block.
+    expect(body.publicKey).not.toContain('BEGIN');
+    expect(Buffer.from(body.publicKey, 'base64').length).toBe(32);
+
+    // The signature verifies over the registry's STRONG canonical
+    // name|version|score|maxScore|source|nonce|signedAt — proving it would unlock
+    // privileged provenance at the server.
+    const nacl = require('tweetnacl');
+    const canonical = `${body.name}|${body.version}|${body.score}|${body.maxScore}|${body.source}|${body.nonce}|${body.signedAt}`;
+    const ok = nacl.sign.detached.verify(
+      Buffer.from(canonical, 'utf-8'),
+      Buffer.from(body.signature, 'base64'),
+      Buffer.from(body.publicKey, 'base64'),
+    );
+    expect(ok).toBe(true);
   });
 
   it('falls back to legacy endpoint on 404', async () => {
