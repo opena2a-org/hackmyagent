@@ -415,14 +415,18 @@ describe('buildPublishPayload', () => {
 describe('publishScanResults', () => {
   let tmpHome: string;
   let originalEnv: string | undefined;
+  let originalScannerKey: string | undefined;
 
   beforeEach(() => {
     tmpHome = createTempDir();
     originalEnv = process.env.OPENA2A_HOME;
     process.env.OPENA2A_HOME = tmpHome;
+    // Default every test to "no scanner key" so a leaked env value can never
+    // silently mis-tag a community scan as first_party. The one first-party
+    // test sets it explicitly; afterEach restores the original.
+    originalScannerKey = process.env.HMA_SCANNER_SIGNING_KEY;
+    delete process.env.HMA_SCANNER_SIGNING_KEY;
   });
-
-  let originalScannerKey: string | undefined;
 
   afterEach(() => {
     if (originalEnv === undefined) {
@@ -472,6 +476,9 @@ describe('publishScanResults', () => {
     expect(body.name).toBe('@test/agent');
     expect(body.tool).toBe('hackmyagent');
     expect(body.findings).toBeDefined();
+    // No scanner key → never claim privileged provenance. This is the one
+    // invariant the feature must guarantee: a community scan is never mis-tagged.
+    expect(body.source).toBeUndefined();
   });
 
   it('publishes as claimed agent when keypair exists', async () => {
@@ -511,10 +518,12 @@ describe('publishScanResults', () => {
     expect(body.publicKey).toBeDefined();
     expect(body.agentId).toBe('test-agent-123');
     expect(fetchCalls[1][1].headers['X-Scan-Token']).toBe('tok-123');
+    // The per-user claimed-agent identity is NOT our first-party scanner.
+    expect(body.source).toBeUndefined();
   });
 
   it('self-tags first_party_scanner with a strong-canonical signature when HMA_SCANNER_SIGNING_KEY is set', async () => {
-    originalScannerKey = process.env.HMA_SCANNER_SIGNING_KEY;
+    // beforeEach already captured + cleared the original; set the scanner key for this test only.
     // A fixed 32-byte seed (base64), the way our batch orchestration would supply it.
     const seed = Buffer.alloc(32, 9);
     process.env.HMA_SCANNER_SIGNING_KEY = seed.toString('base64');
