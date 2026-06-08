@@ -106,16 +106,13 @@ export function analyzeCapabilities(ast: SecurityAST, projectType?: ProjectType,
   // Check 7: Memory/persistence attack patterns
   findings.push(...checkPersistencePatterns(ast));
 
-  // Check 8: Constraint weakness analysis
-  // Skip for SDK/library -- no constraints expected
-  if (!isLibOrSDK) {
-    findings.push(...checkConstraintWeaknesses(ast));
-
-    // Zero-constraint emission intentionally delegated to governance-analyzer
-    // (AST-GOV-003). That analyzer already covers both declared and inferred
-    // capabilities; emitting AST-GOVERN-002 here produced a duplicate Governance
-    // finding on every artifact with zero constraints. One canonical emitter.
-  }
+  // Check 8: Constraint weakness analysis is delegated to governance-analyzer.
+  // Both AST-GOVERN-001 (weak constraint language) and AST-GOVERN-002 (zero-constraint
+  // emission) used to fire here, duplicating governance-analyzer's AST-GOV-002 and
+  // AST-GOV-003 on every governed artifact. governance-analyzer is the canonical emitter:
+  // it evaluates the *effective* constraint set (declared ∪ project-level SOUL.md), with
+  // line numbers, enforceability tiers, and the SDK/library noise gate -- a strict superset
+  // of what this analyzer saw. capability-analyzer no longer emits either.
 
   // Check 9: NanoMind manipulation detected
   findings.push(...checkManipulationAttempts(ast));
@@ -351,32 +348,6 @@ function checkPersistencePatterns(ast: SecurityAST): ASTFinding[] {
       attackClass: 'PERSISTENCE',
       confidence: 0.7,
     });
-  }
-
-  return findings;
-}
-
-function checkConstraintWeaknesses(ast: SecurityAST): ASTFinding[] {
-  const findings: ASTFinding[] = [];
-
-  for (const constraint of ast.declaredConstraints) {
-    if (constraint.bypassRisk > 0.5) {
-      findings.push({
-        checkId: `AST-GOVERN-001`,
-        name: 'Weak Governance Constraint',
-        description: `Constraint "${constraint.text.slice(0, 80)}..." has high bypass risk (${(constraint.bypassRisk * 100).toFixed(0)}%).`,
-        category: 'Governance',
-        severity: constraint.bypassRisk > 0.7 ? 'high' : 'medium',
-        passed: false,
-        message: `Weak constraint: ${constraint.weakness ?? 'enforcement gap'}`,
-        fixable: false,
-        file: ast.artifactPath,
-        fix: `Strengthen this constraint. Replace advisory language ("should", "recommended") with mandatory language ("must never", "forbidden", "shall not").`,
-        guidance: constraint.weakness,
-        attackClass: 'SOUL-BYPASS',
-        confidence: constraint.bypassRisk,
-      });
-    }
   }
 
   return findings;
