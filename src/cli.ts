@@ -686,6 +686,14 @@ interface UnifiedCheckDisplayOptions {
     /** Target string emitted in the follow-up line (path or name as typed). */
     fullAuditTarget: string;
   };
+  /**
+   * True when the scanned artifact is a downloaded third-party package
+   * (`check pip:`, `check npm:`, a GitHub repo, a raw URL) rather than the
+   * user's own working tree. Threaded into the cli-ui SurfaceSummary so the
+   * verdict guidance is review / choose-a-vetted-version instead of
+   * `secure --fix` on code the user does not own. Defaults to local (false).
+   */
+  remote?: boolean;
 }
 
 function stripAnsi(s: string): string {
@@ -1096,7 +1104,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     const categorySummaries = buildCategorySummaries(failed);
     const verdictLine = buildVerdict(
       { critical, high, medium, low },
-      { kind, filesScanned },
+      { kind, filesScanned, remote: opts.remote === true },
       failed.map(f => ({
         severity: f.severity as 'critical' | 'high' | 'medium' | 'low',
         name: f.name,
@@ -1107,7 +1115,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     );
 
     const { lines, artifactLines } = renderObservationsBlock({
-      surfaces: { kind, filesScanned, artifactsCompiled: semanticCount },
+      surfaces: { kind, filesScanned, artifactsCompiled: semanticCount, remote: opts.remote === true },
       checks: { staticCount, semanticCount },
       categories: categorySummaries,
       verdict: verdictLine,
@@ -8956,6 +8964,7 @@ async function checkGitHubRepo(
     displayUnifiedCheck({
       name: displayName,
       sourceLabel: 'GitHub',
+      remote: true,
       projectType: result.projectType,
       localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
       registry: registryData,
@@ -9253,6 +9262,7 @@ async function checkPyPiPackage(
     displayUnifiedCheck({
       name,
       sourceLabel: 'PyPI',
+      remote: true,
       projectType: result.projectType,
       version: meta.info.version,
       localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
@@ -9448,6 +9458,7 @@ async function checkRawUrl(
     displayUnifiedCheck({
       name: displayName,
       sourceLabel: 'URL',
+      remote: true,
       projectType: result.projectType,
       localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
       verbose: !!options.verbose,
@@ -9618,6 +9629,7 @@ async function checkNpmPackage(
     displayUnifiedCheck({
       name,
       projectType: result.projectType,
+      remote: true,
       localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
       registry: registryData,
       verbose: !!options.verbose,
@@ -9809,14 +9821,20 @@ async function checkNpmPackage(
   // the integrity check) so INTEGRITY_FAIL can fire. CommonJS / ESM bridge:
   // dynamic import inside async main, type-only `TelemetryAction` import
   // with resolution-mode: 'import'.
-  const { versionLine, runTelemetryCommand } = await import('@opena2a/cli-ui');
+  const { versionLineParts, runTelemetryCommand } = await import('@opena2a/cli-ui');
 
-  // Set the --version line now that we have live telemetry status.
-  program.version(
-    versionLine({ tool: 'hackmyagent', version: VERSION, telemetry: tele.status() }),
-    '-v, --version',
-    'Output the version number',
-  );
+  // Set the --version line now that we have live telemetry status. Use a
+  // manual `option:version` handler (not Commander's `.version()`, which
+  // writes everything to stdout) so the bare version goes to stdout and the
+  // telemetry disclosure goes to stderr — `hackmyagent --version` stays a
+  // clean, single, parseable line while the privacy disclosure still prints.
+  const vparts = versionLineParts({ tool: 'hackmyagent', version: VERSION, telemetry: tele.status() });
+  program.option('-v, --version', 'Output the version number');
+  program.on('option:version', () => {
+    process.stdout.write(vparts.stdout + '\n');
+    if (vparts.stderr) process.stderr.write(vparts.stderr + '\n');
+    process.exit(0);
+  });
 
   // Telemetry tracking — records command start time, fires on postAction.
   // The 'telemetry' subcommand itself is excluded to avoid self-referential

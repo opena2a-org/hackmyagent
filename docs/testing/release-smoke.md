@@ -38,9 +38,15 @@ Fail the release if:
 ## 1. Help and version (1 min)
 
 ```bash
-node dist/cli.js --help     # prints command list; no stack traces
-node dist/cli.js -v         # prints: hackmyagent 0.x.x
+node dist/cli.js --help              # prints command list; no stack traces
+node dist/cli.js -v                   # prints: hackmyagent 0.x.x + telemetry line
+node dist/cli.js -v 2>/dev/null       # stdout ONLY: single clean line `hackmyagent 0.x.x`
+node dist/cli.js -v 2>&1 1>/dev/null  # stderr ONLY: `Telemetry: on (opt-out: ...)`
 ```
+
+As of cli-ui 0.5.2 the version output is stream-split: the bare `tool x.y.z`
+goes to **stdout** (a single parseable line) and the telemetry disclosure goes
+to **stderr**. A script doing `hackmyagent --version` must get exactly one line.
 
 The `--help` output must list: `check`, `secure`, `scan-soul`, `harden-soul`,
 `red-team`, `wild`, `detect`, `explain`, `check-metadata`, `analm`, `eval`,
@@ -162,7 +168,7 @@ unset OPENA2A_TELEMETRY
 
 | # | Command | Expected |
 |---|---|---|
-| 5.1 | `node dist/cli.js -v` | Version line + `Telemetry: on (opt-out: ...)` |
+| 5.1 | `node dist/cli.js -v` | Version line on **stdout** (`hackmyagent 0.x.x`, single line) + `Telemetry: on (opt-out: ...)` on **stderr**. `-v 2>/dev/null` shows only the version; `-v 2>&1 1>/dev/null` shows only the telemetry line. |
 | 5.2 | `node dist/cli.js telemetry status` | Prints `state: on`, install_id, config path, toggle hint |
 | 5.3 | `node dist/cli.js telemetry off` | Prints `Telemetry disabled for hackmyagent.` |
 | 5.4 | `node dist/cli.js telemetry on` | Re-enables persistently |
