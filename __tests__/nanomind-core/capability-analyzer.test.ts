@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { SemanticCompiler } from '../../src/nanomind-core/compiler/semantic-compiler';
 import { analyzeCapabilities } from '../../src/nanomind-core/analyzers/capability-analyzer';
+import { analyzeGovernance } from '../../src/nanomind-core/analyzers/governance-analyzer';
 
 describe('Capability Analyzer (AST-based)', () => {
   const compiler = new SemanticCompiler({ useNanoMind: false });
+  const verifier = (ast: any) => compiler.verifyAST(ast);
 
   describe('Benign skill', () => {
     const skill = `---
@@ -80,12 +82,25 @@ It is recommended to check permissions when appropriate.
       expect(unconstrained.length).toBeGreaterThan(0);
     });
 
-    it('detects weak constraint language', async () => {
+    it('does not emit AST-GOVERN-001 (delegated to governance-analyzer AST-GOV-002)', async () => {
+      // Capability-analyzer used to emit AST-GOVERN-001 for weak constraint language,
+      // duplicating governance-analyzer's AST-GOV-002. AST-GOV-002 iterates the effective
+      // constraint set (declared ∪ project-level) -- a superset of the declaredConstraints
+      // this analyzer saw -- with line numbers and enforceability tiers. The emitter was
+      // consolidated into governance-analyzer; capability-analyzer must no longer emit it.
       const { ast } = await compiler.compile(skill, 'admin.skill.md');
       const findings = analyzeCapabilities(ast);
       const weak = findings.filter(f => f.checkId === 'AST-GOVERN-001');
-      expect(weak.length).toBeGreaterThan(0);
-      expect(weak[0].guidance?.toLowerCase()).toContain('advisory');
+      expect(weak).toHaveLength(0);
+    });
+
+    it('weak constraint language is still caught by governance-analyzer (AST-GOV-002)', async () => {
+      // Coverage-preservation guard for the AST-GOVERN-001 consolidation: the same advisory
+      // fixture must still produce a weak-constraint finding via the canonical emitter.
+      const { ast } = await compiler.compile(skill, 'admin.skill.md');
+      const findings = analyzeGovernance(ast, verifier, undefined, undefined, skill);
+      const gov002 = findings.filter(f => f.checkId === 'AST-GOV-002');
+      expect(gov002.length).toBeGreaterThan(0);
     });
   });
 

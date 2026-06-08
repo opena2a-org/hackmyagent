@@ -107,7 +107,8 @@ describe('create-skill output passes its own secure scan (P1-4 / P1-2 regression
       'AST-GOV-001',
       'AST-GOV-002',
       'AST-PROMPT-004',
-      'AST-GOVERN-001',
+      // AST-GOVERN-001 removed: consolidated into governance-analyzer AST-GOV-002.
+      // Non-emission is guarded directly in capability-analyzer.test.ts.
       'LIFECYCLE-001',
     ];
     const allCheckIds = result.findings.map(f => f.checkId);
