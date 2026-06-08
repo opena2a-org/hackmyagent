@@ -131,6 +131,21 @@ export interface AlertCondition {
 export interface IntelligenceConfig {
   /** Enable LLM-assisted analysis (default: true) */
   enabled?: boolean;
+  /**
+   * Trusted NanoMind-Guard hybrid public key (Ed25519+ML-DSA-44), JSON-encoded
+   * (an `EncodedHybridPublicKey`; optionally base64-wrapped for env-var
+   * ergonomics). When set, the CLI proxy constructs the classification
+   * annotator at start() and verifies every Guard result against this key
+   * before writing `event.data.classification` for DETECTION.
+   *
+   * Resolution order (see `config/loader.ts`):
+   * `intelligence.guardPublicKey ?? process.env.ARP_GUARD_PUBLIC_KEY ?? undefined`.
+   * There is no fabricated default — an absent key means the annotator is not
+   * built and classification stays null. A populated classification only ever
+   * feeds detection; it never enables a deny (that stays gated on signed
+   * `comply.enforce === true`).
+   */
+  guardPublicKey?: string;
   /** LLM adapter to use */
   adapter?: LLMAdapterType;
   /** Custom adapter config (API key, model, etc.) */

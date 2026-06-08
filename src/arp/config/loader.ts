@@ -7,6 +7,12 @@ import type { ARPConfig } from '../types';
  * Falls back to sensible defaults if no config found.
  */
 export function loadConfig(configPath?: string): ARPConfig {
+  const config = loadConfigFromDisk(configPath);
+  resolveGuardPublicKey(config);
+  return config;
+}
+
+function loadConfigFromDisk(configPath?: string): ARPConfig {
   if (configPath) {
     return parseConfigFile(configPath);
   }
@@ -25,6 +31,27 @@ export function loadConfig(configPath?: string): ARPConfig {
   }
 
   return defaultConfig();
+}
+
+/**
+ * Resolve the NanoMind-Guard public key for classification annotation, in
+ * precedence order: an explicit config value wins, then the
+ * `ARP_GUARD_PUBLIC_KEY` environment variable, otherwise `undefined`.
+ *
+ * Applied to the final merged config (regardless of source) because
+ * `parseConfigFile` shallow-merges the `intelligence` block — a file that
+ * declares `intelligence` would otherwise wipe the env fallback. There is no
+ * fabricated default: an absent key leaves `guardPublicKey` undefined and the
+ * proxy simply does not build the annotator (classification stays null).
+ */
+function resolveGuardPublicKey(config: ARPConfig): void {
+  if (!config.intelligence) {
+    config.intelligence = {};
+  }
+  config.intelligence.guardPublicKey =
+    config.intelligence.guardPublicKey ??
+    process.env.ARP_GUARD_PUBLIC_KEY ??
+    undefined;
 }
 
 function parseConfigFile(filePath: string): ARPConfig {
