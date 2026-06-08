@@ -73,6 +73,13 @@ export function renderGovernanceModel(): string {
   lines.push('');
   lines.push('Domains are evaluated in the order shown. The agent profile (--profile)');
   lines.push('selects which domains apply; tiers narrow the controls within each domain.');
+  // The domain numbers are 11-19 by design: OASB-2 numbers the 9 behavioral
+  // governance domains 11-19 so they extend the OASB-1 technical security
+  // domains (1-10) into a unified 1-19 set. They are not a 1-9 index — see
+  // CHANGELOG 0.23.7. This note keeps a fresh reader from reading the gap at
+  // 1-10 as missing domains (release-test P3).
+  lines.push('Domains are numbered 11-19 (OASB-2 behavioral domains, extending the');
+  lines.push('OASB-1 technical domains 1-10) — this is the canonical spec numbering.');
   lines.push('');
 
   for (const d of domains) {

@@ -46,6 +46,8 @@ import {
   type FailPolicy,
   // Soul scanner imports
   SoulScanner,
+  GOVERNANCE_CATALOG_SIZE,
+  CONTROL_DEFS,
   type SoulScanResult,
   type DomainResult,
   type SoulLevel,
@@ -6284,7 +6286,7 @@ program
   .description(`Scan behavioral governance coverage
 
 Analyzes SOUL.md (or equivalent governance file) for coverage
-across 9 behavioral governance domains with 72 security controls.
+across 9 behavioral governance domains with ${GOVERNANCE_CATALOG_SIZE} security controls.
 
 Searches for governance files in priority order:
   SOUL.md > system-prompt.md > SYSTEM_PROMPT.md > .cursorrules
@@ -6431,7 +6433,15 @@ Examples:
         soulVerdictText = `Profile marker invalid: '${result.markerInvalid.attemptedValue}' is not a recognized profile`;
       } else if (missing === 0) {
         soulVerdictColor = colors.green;
-        soulVerdictText = `All ${result.totalControls} governance controls covered`;
+        // `result.totalControls` is the count *applicable* to this agent's
+        // detected tier + profile — a subset of the GOVERNANCE_CATALOG_SIZE
+        // (72) catalog that `--explain` and `harden-soul --dry-run` report.
+        // When the scan evaluated fewer than the full catalog, say "applicable"
+        // and tie the number back to the catalog so 29-of-72 doesn't read as a
+        // contradiction of the 72-control model (release-test P2).
+        soulVerdictText = result.totalControls < GOVERNANCE_CATALOG_SIZE
+          ? `All ${result.totalControls} applicable controls covered (of ${GOVERNANCE_CATALOG_SIZE} in catalog · ${result.agentTier} tier)`
+          : `All ${result.totalControls} governance controls covered`;
       } else if (result.conformance === 'none') {
         soulVerdictColor = colors.brightRed;
         soulVerdictText = `${missing} control${missing > 1 ? 's' : ''} failing — no conformance`;
@@ -7441,6 +7451,15 @@ program
     const categoryLabel = prefixDescriptions[explainPrefix] || 'security check';
     const staticExplanation = staticExplanations[checkId];
 
+    // Per-control lookup for governance catalog IDs (SOUL-TH-001, SOUL-IH-003,
+    // …). Without this, `explain SOUL-IH-003` falls through to the generic
+    // "behavioral governance finding" line (release-test P3). The catalog
+    // carries the control name + remediation, so render those instead.
+    const soulControl = CONTROL_DEFS.find((c) => c.id === checkId);
+    const soulControlExplanation = soulControl
+      ? `${soulControl.name} — ${soulControl.domain} domain (scan-soul control ${soulControl.id}).${soulControl.remediation ? ` ${soulControl.remediation}` : ''} Run: hackmyagent harden-soul <dir> to add governance that satisfies this control.`
+      : undefined;
+
     // ── Header ──────────────────────────────────────────────────────
     console.log();
     console.log(`  ${colors.bold}${colors.white}${checkId}${RESET()}  ${colors.dim}${categoryLabel}${RESET()}`);
@@ -7448,6 +7467,12 @@ program
 
     if (staticExplanation) {
       console.log(`  ${staticExplanation}`);
+    } else if (soulControlExplanation) {
+      console.log(`  ${soulControlExplanation}`);
+      if (attackClass) {
+        console.log();
+        console.log(`  ${colors.dim}Attack class:${RESET()} ${attackClass}`);
+      }
     } else if (attackClass || categoryLabel !== 'security check') {
       console.log(`  ${prefixDescriptions[explainPrefix] ? prefixDescriptions[explainPrefix].charAt(0).toUpperCase() + prefixDescriptions[explainPrefix].slice(1) : 'Security check'} finding.`);
       if (attackClass) {
@@ -7723,12 +7748,18 @@ Examples:
   .option('--json', 'Output as JSON')
   .option('--verbose', 'Show full MCP server list and identity details')
   .option('--export-csv <file>', 'Export asset inventory as CSV (for ServiceNow, CMDB, etc.)')
+  .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
+  .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
   .action(async (directory: string | undefined, options: {
     json?: boolean;
     verbose?: boolean;
     exportCsv?: string;
+    contribute?: boolean;
   }) => {
     const targetDir = directory ?? process.cwd();
+    // In CI, never auto-contribute unless the user explicitly opts in (parity
+    // with secure/scan-soul). Outside CI the flag falls through to config.
+    if (globalCiMode && options.contribute === undefined) options.contribute = false;
     const { detect: runDetect } = await import('./scanner/detect.js');
     const exitCode = await runDetect({
       targetDir,
@@ -7740,8 +7771,9 @@ Examples:
 
     // Wire detect scans into the community contribution pipeline.
     // Detect findings are agent/MCP/governance posture — relevant data for the registry.
+    // Honors --contribute / --no-contribute (release-test P2); otherwise respects global config.
     await handleContribution(
-      undefined,      // no --contribute flag on detect; respects global config
+      options.contribute,
       targetDir,
       [],             // detect doesn't produce SecurityFinding[]; summary goes via contribute metadata
       0,
@@ -8682,14 +8714,21 @@ function printCheckNextSteps(
   console.log();
   console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
 
+  // Tracks whether any next-step cites the separate `opena2a` CLI so we can
+  // print a one-time install hint — a fresh user who only `npm i hackmyagent`
+  // does not have `opena2a` on PATH, otherwise the step reads as a dead-end
+  // (release-test P2 / CISO Rule 11).
+  let citedOpena2a = false;
   if (context?.hasGovernanceIssues && isLocal) {
     console.log(`  ${colors.cyan}Auto-fix governance:${RESET()}  ${CLI_PREFIX} harden-soul ${dirTarget}`);
   }
   if (context?.hasCredentialFindings) {
     console.log(`  ${colors.cyan}Protect credentials:${RESET()}  opena2a protect ${isLocal ? dirTarget : '.'}`);
+    citedOpena2a = true;
   }
   if (context?.hasMcpFindings) {
     console.log(`  ${colors.cyan}Audit MCP servers:${RESET()}    opena2a mcp audit  ${colors.dim}(run from project dir)${RESET()}`);
+    citedOpena2a = true;
   }
   if (context?.hasCodeVulns && isLocal) {
     console.log(`  ${colors.cyan}Auto-fix all issues:${RESET()}  ${CLI_PREFIX} secure --fix`);
@@ -8717,6 +8756,9 @@ function printCheckNextSteps(
     }
   }
   console.log(`  ${colors.cyan}All commands:${RESET()}         ${CLI_PREFIX} --help`);
+  if (citedOpena2a) {
+    console.log(`  ${colors.dim}opena2a is a separate CLI — install with: npm i -g opena2a${RESET()}`);
+  }
   console.log();
 }
 

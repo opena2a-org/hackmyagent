@@ -434,6 +434,16 @@ const CONTROL_DEFS: ControlDef[] = [
     remediation: 'When instructions are ambiguous, default to the safer interpretation or ask for clarification. Disambiguate uncertain instructions.' },
 ];
 
+/**
+ * Total number of controls in the governance catalog across all 9 domains
+ * and all tiers. This is the "72" that `scan-soul --explain` and
+ * `harden-soul --dry-run` report. A specific scan only evaluates the subset
+ * of these that is *applicable* to the detected tier + profile (see
+ * `applicableControls`), so a scan verdict count (e.g. 29 at BASIC tier) is a
+ * subset of this catalog — not a contradiction of it.
+ */
+export const GOVERNANCE_CATALOG_SIZE = CONTROL_DEFS.length;
+
 // Unique domain names in order
 const DOMAIN_ORDER = [
   'Trust Hierarchy',
