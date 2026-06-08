@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 
+import * as os from 'os';
+import * as path from 'path';
 import { AgentRuntimeProtection, VERSION, loadConfig } from '../index';
 import { ARPProxy } from '../proxy/server';
 import { PromptInterceptor } from '../interceptors/prompt';
 import { MCPProtocolInterceptor } from '../interceptors/mcp-protocol';
 import { A2AProtocolInterceptor } from '../interceptors/a2a-protocol';
 import { EventEngine } from '../engine/event-engine';
+import { IntelligenceCoordinator } from '../intelligence/coordinator';
+import { SequenceLogWriter } from '../intelligence/sequence-log-writer';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -161,11 +165,30 @@ async function startProxy(): Promise<void> {
   await mcpInterceptor.start();
   await a2aInterceptor.start();
 
+  // Detection-mode wiring: a coordinator that classifies and
+  // runs the comply gate (which stays inert unless the signed manifest opts in
+  // with comply.enforce=true), plus a sequence-log tee that records the ordered
+  // in-scope action corpus for the offline consistency signal. Neither touches
+  // the deny path.
+  const dataDir = config.dataDir ?? path.join(os.homedir(), '.opena2a', 'arp');
+  // Constructed with no behavioral-risk and no guard-anomaly source (the 4th
+  // and 5th args default to null). That is deliberate: the only consumer of
+  // event.data.classification on this coordinator is the comply gate, which is
+  // itself gated by comply.enforce (default off). So a classification reaching
+  // this detection coordinator can never raise severity or deny by default.
+  const coordinator = new IntelligenceCoordinator(config, dataDir, null);
+  const sequenceLog = new SequenceLogWriter(
+    path.join(dataDir, 'sequence-events.jsonl'),
+    config.agentName ?? 'arp-proxy',
+  );
+
   const proxy = new ARPProxy(config.proxy, {
     engine,
     promptInterceptor,
     mcpInterceptor,
     a2aInterceptor,
+    coordinator,
+    onInScopeEvent: (event) => sequenceLog.append(event),
   });
 
   // Log detections to console

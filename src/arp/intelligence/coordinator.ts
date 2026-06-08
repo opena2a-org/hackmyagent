@@ -207,8 +207,17 @@ export class IntelligenceCoordinator {
     // event that violates the comply envelope short-circuits the stack and
     // does not pollute the anomaly baseline or burn L2 budget. Inert when no
     // manifest is installed, or when the event carries no classification.
-    if (this.manifest && applyComplyGate(event, this.manifest)) {
-      return null;
+    //
+    // ENFORCEMENT IS OPT-IN. The gate only acts when the signed manifest sets
+    // `comply.enforce === true`. With the default (absent/false) the gate is a
+    // no-op even when `event.data.classification` is populated: classification
+    // is written for DETECTION only (the sequence projector + telemetry tee)
+    // and never enters the deny path. This is what keeps populating a
+    // classification from silently becoming a hot-path deny control.
+    if (this.manifest && this.manifest.comply.enforce === true) {
+      if (applyComplyGate(event, this.manifest)) {
+        return null;
+      }
     }
 
     // Behavioral risk fusion. Runs AFTER the comply gate (a denied event

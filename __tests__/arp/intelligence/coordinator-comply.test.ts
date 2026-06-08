@@ -55,6 +55,10 @@ function makeManifest(
       permitted_classes: ['code-generation', 'documentation'],
       prohibited_classes: ['credential-access'],
       on_violation,
+      // These cases assert active enforcement, so they opt into it explicitly.
+      // The default (enforce omitted/false) is detection-only and is covered
+      // by coordinator-detection-mode.test.ts.
+      enforce: true,
       ...overrides,
     },
     issuedAt: '2026-04-13T00:00:00.000Z',

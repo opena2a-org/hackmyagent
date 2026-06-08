@@ -62,6 +62,9 @@ function makeManifest(
       permitted_classes: permitted,
       prohibited_classes: prohibited,
       on_violation: 'deny',
+      // These cases assert active comply enforcement; opt in explicitly (the
+      // default is detection-only, covered by coordinator-detection-mode.test.ts).
+      enforce: true,
     },
     issuedAt: '2026-04-14T00:00:00.000Z',
     ed25519PublicKey: 'unused-in-unit-test',

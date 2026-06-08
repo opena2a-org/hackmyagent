@@ -668,8 +668,9 @@ describe('arp/intelligence/verify-classification', () => {
 
     it('verified + manifest-permitted classification passes the coordinator gate', async () => {
       // Manifest at 'execute' tier permits 'code-generation' in both the
-      // rejection matrix and the per-manifest envelope.
-      const manifest = makeManifest('execute');
+      // rejection matrix and the per-manifest envelope. enforce=true so the
+      // active comply gate is exercised (the default is detection-only).
+      const manifest = makeManifest('execute', { enforce: true });
       const coord = new IntelligenceCoordinator(arpConfig(), tmpDir, manifest);
 
       const result = await signResult(basePayload());
@@ -694,7 +695,8 @@ describe('arp/intelligence/verify-classification', () => {
       // The tier ceiling permits 'network-egress' at execute tier, but the
       // per-manifest envelope only lists code-generation and documentation.
       // The second layer (coordinator) is where the envelope is enforced.
-      const manifest = makeManifest('execute'); // permitted: code-gen, docs
+      // permitted: code-gen, docs; enforce=true to exercise the active gate.
+      const manifest = makeManifest('execute', { enforce: true });
       const coord = new IntelligenceCoordinator(arpConfig(), tmpDir, manifest);
 
       const result = await signResult(

@@ -30,6 +30,29 @@ export type {
 export { EventEngine } from './engine/event-engine';
 export { CorrelationEngine } from './engine/correlation';
 export { IntelligenceCoordinator } from './intelligence/coordinator';
+export {
+  SequenceProjector,
+  projectSequences,
+  projectSequencesFromFile,
+  type LoggedActionEvent,
+  type ProjectedAction,
+  type InScopeActionSequence,
+  type SequenceProjectorOptions,
+} from './intelligence/sequence-projector';
+export {
+  ClassificationAnnotator,
+  NanoMindGuardClassificationProvider,
+  eventToClassifyText,
+  classifyTextHash,
+  toSignedResult,
+  type ClassificationProvider,
+  type ClassificationAnnotatorOptions,
+} from './intelligence/classification-annotator';
+export {
+  SequenceLogWriter,
+  arpEventToLoggedAction,
+  type SequenceLogContext,
+} from './intelligence/sequence-log-writer';
 export { BudgetController } from './intelligence/budget';
 export { AnomalyDetector } from './intelligence/anomaly';
 export { RuntimeTwin } from './intelligence/runtime-twin';

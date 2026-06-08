@@ -10,6 +10,8 @@ import type { EventEngine } from '../engine/event-engine';
 import type { PromptInterceptor } from '../interceptors/prompt';
 import type { MCPProtocolInterceptor } from '../interceptors/mcp-protocol';
 import type { A2AProtocolInterceptor } from '../interceptors/a2a-protocol';
+import type { IntelligenceCoordinator } from '../intelligence/coordinator';
+import type { ClassificationAnnotator } from '../intelligence/classification-annotator';
 import {
   CapabilityManifestError,
   loadCapabilityManifest,
@@ -32,6 +34,35 @@ export interface ARPProxyDeps {
    * a generic 403 deny reason.
    */
   onManifestRejection?: (entry: ManifestRejectionLog) => void;
+  /**
+   * Optional intelligence coordinator run in DETECTION mode. When provided,
+   * the proxy hands its verified capability manifest to the coordinator at
+   * `start()` and subscribes the coordinator to the event engine, so every
+   * event the inspectors emit flows through the classify + comply path.
+   *
+   * Detection mode is the default: the comply gate only enforces when the
+   * signed manifest sets `comply.enforce === true`. With the default the
+   * coordinator classifies and records but never denies — the deny path stays
+   * detection-free. The proxy owns the coordinator's manifest lifecycle here
+   * so the comply context always matches the manifest the proxy verified.
+   */
+  coordinator?: IntelligenceCoordinator;
+  /**
+   * Optional buffered classification annotator. When provided, every event is
+   * enqueued for off-hot-path annotation: the annotator classifies it via its
+   * injected `ClassificationProvider`, verifies the signed result, and writes
+   * the cleared label to `event.data.classification` for DETECTION. A failed /
+   * unavailable classification leaves the field untouched.
+   */
+  annotator?: ClassificationAnnotator;
+  /**
+   * Optional sink invoked once per event AFTER annotation completes (or
+   * immediately when no annotator is wired). This is the sequence-projector
+   * tee: the CLI points it at the append-only sequence log; a test points it
+   * at a spy. The event passed in carries the cleared classification if one
+   * was written.
+   */
+  onInScopeEvent?: (event: ARPEvent) => void;
 }
 
 /**
@@ -55,10 +86,13 @@ export class ARPProxy {
   private server: http.Server | null = null;
   /**
    * Loaded capability manifest once verification succeeds at start(). Kept on
-   * the instance so downstream wiring (e.g. IntelligenceCoordinator comply
-   * checks) can read it without re-loading the YAML.
+   * the instance so downstream wiring (the detection-mode IntelligenceCoordinator
+   * in `deps.coordinator`) can read it without re-loading the YAML. Wired in
+   * `start()` once the manifest verifies — see `wireDetectionCoordinator`.
    */
   private manifest: CapabilityManifest | null = null;
+  /** Guards against double-subscribing the detection coordinator to the engine. */
+  private detectionWired = false;
   /**
    * Set to true when manifest loading failed at start(). In this state the
    * HTTP server still accepts connections (so the deploy does not crash) but
@@ -96,6 +130,13 @@ export class ARPProxy {
         this.manifest = null;
         this.reportManifestRejection(err);
       }
+    }
+
+    // Wire the detection-mode coordinator once the manifest state is settled.
+    // Skipped when the manifest was rejected (the proxy is deny-all and no
+    // detection should run against a rejected agent).
+    if (!this.manifestRejected) {
+      this.wireDetectionCoordinator();
     }
 
     return new Promise((resolve) => {
@@ -157,6 +198,49 @@ export class ARPProxy {
     console.error(
       `[arp/proxy] capability manifest rejected ${JSON.stringify(entry)}`,
     );
+  }
+
+  /**
+   * Hand the verified manifest to the detection coordinator and subscribe it
+   * to the event engine. Idempotent: the engine subscription is installed at
+   * most once. Detection mode is guaranteed by the comply gate's default —
+   * the coordinator never denies unless the signed manifest opts in with
+   * `comply.enforce === true`, so this wiring makes the classify + sequence
+   * path live without touching the deny path.
+   *
+   * Ordering matters: the annotator runs FIRST and `analyze()` runs in its
+   * completion callback, never the other way around. If `analyze()` ran before
+   * annotation, the comply gate would read a still-null classification — and an
+   * operator who set `comply.enforce: true` would silently fail open (a
+   * prohibited-class event passing the gate because the label had not landed
+   * yet). Annotate-then-analyze closes that window: the gate always sees the
+   * cleared classification. Both run off the request path (the annotator is
+   * buffered; `analyze` is detached), so request handling is never delayed.
+   */
+  private wireDetectionCoordinator(): void {
+    const { coordinator, annotator, onInScopeEvent } = this.deps;
+    if (!coordinator && !annotator && !onInScopeEvent) return;
+
+    // Keep the coordinator's comply context in lockstep with the manifest the
+    // proxy verified (null when none is configured — detection still runs).
+    if (coordinator) coordinator.setCapabilityManifest(this.manifest);
+
+    if (this.detectionWired) return;
+    this.detectionWired = true;
+    this.deps.engine.onEvent((event: ARPEvent) => {
+      // After classification lands (or fails — degrade to null), run the
+      // coordinator stack and tee to the sequence sink. Errors are swallowed so
+      // a detection failure never surfaces to a client or crashes the proxy.
+      const afterAnnotate = (): void => {
+        if (coordinator) void coordinator.analyze(event).catch(() => {});
+        onInScopeEvent?.(event);
+      };
+      if (annotator) {
+        annotator.enqueue(event, afterAnnotate);
+      } else {
+        afterAnnotate();
+      }
+    });
   }
 
   async stop(): Promise<void> {
