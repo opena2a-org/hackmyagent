@@ -18,7 +18,7 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join, relative, extname, basename } from 'node:path';
 
-import type { SecurityFinding, Severity, ProjectType } from '../hardening/security-check.js';
+import type { SecurityFinding, Severity, ProjectType, NanoMindIntentSignal } from '../hardening/security-check.js';
 import type { SecurityAST, CompilationResult } from './types.js';
 import type { ASTFinding } from './analyzers/capability-analyzer.js';
 import type { IntegrityStatus } from './security/integrity-verifier.js';
@@ -152,6 +152,10 @@ export async function runNanoMindScan(
   // Step 4: Compile each file and run analyzers
   const allASTFindings: ASTFinding[] = [];
   const artifactSummaries: ArtifactSummary[] = [];
+  // Advisory per-artifact NanoMind intent, keyed by relative path. Populated
+  // only when the non-generative classifier (not the heuristic fallback)
+  // classified the artifact, so the signal honestly means "the model said X".
+  const intentByPath = new Map<string, NanoMindIntentSignal>();
   let compiledCount = 0;
   let nanomindUsedAtLeastOnce = false;
 
@@ -183,6 +187,13 @@ export async function runNanoMindScan(
       const isAgentArtifact = ['skill', 'mcp_config', 'soul', 'system_prompt', 'agent_config', 'a2a_card'].includes(result.ast.artifactType);
       if (isAgentArtifact) {
         artifactSummaries.push(buildArtifactSummary(result.ast, relativePath));
+        // Capture the advisory NanoMind intent for this artifact so every
+        // finding on it carries the classifier's read (trust score / ARIA /
+        // ATM signal). The gate lives in intentSignalFromCompilation: a
+        // heuristic-fallback label is not a model verdict and must not
+        // masquerade as one.
+        const intent = intentSignalFromCompilation(result);
+        if (intent) intentByPath.set(relativePath, intent);
       }
 
       // Skip documentation and metadata files — these are not security artifacts.
@@ -236,14 +247,55 @@ export async function runNanoMindScan(
   // Step 6: Merge using defense-in-depth rules
   const mergedFindings = mergeFindings(existingFindings, dedupedASTFindings);
 
+  // Step 7: Attach the advisory NanoMind intent to every finding whose artifact
+  // the classifier read.
+  const annotatedFindings = annotateFindingsWithIntent(mergedFindings, intentByPath);
+
   return {
-    mergedFindings,
+    mergedFindings: annotatedFindings,
     astFindings: allASTFindings,
     integrityStatus: integrity.status,
     compiledArtifacts: compiledCount,
     artifactSummaries,
     nanomindAvailable: nanomindUsedAtLeastOnce || useNanoMind,
   };
+}
+
+/**
+ * Derive the advisory intent signal from a compilation result — or null when
+ * the non-generative classifier did NOT run (heuristic fallback). This is the
+ * honesty gate for the signal: a heuristic label is not a model verdict and
+ * must never be surfaced as one, so `nanomindUsed === false` yields no signal.
+ */
+export function intentSignalFromCompilation(
+  result: CompilationResult,
+): NanoMindIntentSignal | null {
+  if (!result.nanomindUsed) return null;
+  return {
+    classification: result.ast.intentClassification,
+    confidence: result.ast.intentConfidence,
+    modelVersion: result.ast.modelVersion,
+  };
+}
+
+/**
+ * Attach the advisory NanoMind intent to every finding whose artifact the
+ * classifier read (keyed by relative file path). Additive metadata ONLY: this
+ * never reorders, suppresses, re-severities, or rescores any finding — it
+ * satisfies the editorial signal-only constraint (the intent feeds the trust
+ * score / ARIA / Agent Threat Matrix, never the deny path or HMA's score).
+ * Findings are shallow-copied so shared static-finding objects are not mutated;
+ * an empty map returns the input array unchanged.
+ */
+export function annotateFindingsWithIntent(
+  findings: SecurityFinding[],
+  intentByPath: Map<string, NanoMindIntentSignal>,
+): SecurityFinding[] {
+  if (intentByPath.size === 0) return findings;
+  return findings.map(f => {
+    const intent = f.file ? intentByPath.get(f.file) : undefined;
+    return intent ? { ...f, nanomindIntent: intent } : f;
+  });
 }
 
 // ============================================================================
