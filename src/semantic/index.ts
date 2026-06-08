@@ -24,10 +24,6 @@ export { toSecurityFinding, toSecurityFindings } from './integration/finding-ada
 export { SEMANTIC_OASB_MAPPINGS, getSemanticCheckIds, getUpgradedControlIds } from './integration/oasb-upgrader';
 export { CostEstimator } from './integration/cost-estimator';
 
-// NanoMind Scanner Enhancer (default-on for ALL scanners)
-export { enhanceScanFindings, getEnhancementStats } from './nanomind-enhancer';
-export type { EnhancedFinding } from './nanomind-enhancer';
-
 // Layer 4: NanoMind Local Semantic Analysis
 export {
   isDaemonAvailable,

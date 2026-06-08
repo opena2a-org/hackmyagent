@@ -78,6 +78,35 @@ export interface SecurityFinding {
   rationale?: Rationale;
   /** Tag for an unfamiliar primitive the fix recommends (renderer dedupes per scan). */
   concept?: ConceptId;
+  /**
+   * Advisory NanoMind read of the artifact this finding sits in. Signal-only —
+   * it is consumed by the trust score, ARIA, and the Agent Threat Matrix and
+   * NEVER affects this finding's severity, pass/fail, or the computed score.
+   * Present only when the non-generative classifier actually ran on the artifact
+   * (not the heuristic fallback). See `NanoMindIntentSignal`.
+   */
+  nanomindIntent?: NanoMindIntentSignal;
+}
+
+/**
+ * Per-artifact advisory classification from the NanoMind non-generative
+ * classifier (Mamba-TME ONNX — run in-process or via the local daemon), as the
+ * compiler determined it for the whole artifact. This is the model's inference
+ * with deterministic safety adjustments applied (e.g. a regex manipulation guard
+ * may elevate a benign model label to `suspicious`); it is NOT the raw,
+ * uninterpreted ONNX argmax. Attached to every finding on that artifact as a
+ * signal for downstream consumers (trust score / ARIA / Agent Threat Matrix).
+ * Purely informational: it does not enter HMA's severity, scoring, or any deny
+ * path. Because the judgment is a classification (not a generation), an artifact
+ * cannot hijack the judge by embedding instructions in its own text.
+ */
+export interface NanoMindIntentSignal {
+  /** Classifier verdict for the whole artifact (with deterministic safety adjustments). */
+  classification: 'benign' | 'suspicious' | 'malicious';
+  /** Classifier confidence in [0, 1]. */
+  confidence: number;
+  /** NanoMind model version that produced the classification (e.g. nanomind-tme-v0.5.0). */
+  modelVersion: string;
 }
 
 export interface ScanResult {
