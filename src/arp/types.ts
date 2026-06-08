@@ -367,6 +367,33 @@ export interface ComplyEnvelope {
   prohibited_classes: string[];
   /** Action on violation (allow/prohibited class, or unknown class under parse-to-deny) */
   on_violation: ComplyOnViolation;
+  /**
+   * Whether the coordinator's comply gate actively enforces this envelope.
+   *
+   * Default (absent or `false`): DETECTION ONLY. A populated
+   * `event.data.classification` is recorded for offline consumers (the
+   * sequence projector and the telemetry tee) and the comply gate is a no-op
+   * — it does not run `applyComplyGate`, write a `comply` decision, raise
+   * severity via `on_violation`, or short-circuit the stack. This is the
+   * load-bearing default: populating a classification (e.g. from a model) must
+   * not silently become a hot-path DENY control.
+   *
+   * Scope note: this guarantee is about the comply / deny path specifically.
+   * The guard-anomaly drift detector — when an operator attaches a baseline —
+   * is a separate, opt-in DETECTION signal that also reads the classification
+   * label and may raise severity to `anomaly`/`medium` on distribution drift;
+   * it never denies or kills. The detection-mode wiring in the ARP proxy
+   * deliberately constructs its coordinator WITHOUT a guard-anomaly or
+   * behavioral-risk source, so a classification reaching that coordinator only
+   * ever meets the `enforce`-gated comply gate.
+   *
+   * `true`: the operator has explicitly opted this agent into AIComply
+   * enforcement. The comply gate evaluates the permitted/prohibited lists and
+   * routes `on_violation` as a deterministic class→action policy. This is an
+   * operator choice that lives in the signed manifest payload, never a
+   * runtime side effect of wiring classification.
+   */
+  enforce?: boolean;
 }
 
 // --- NanoMind-Guard Classification (AIComply P1, producer side) ---

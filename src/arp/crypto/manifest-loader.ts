@@ -18,6 +18,7 @@
  *     permitted_classes: ["class-a", "class-b"]
  *     prohibited_classes: ["class-c"]
  *     on_violation: "deny"
+ *     enforce: true            # optional; default false = detection-only
  *   issuedAt: "2026-04-13T00:00:00.000Z"
  *   expiresAt: "2027-04-13T00:00:00.000Z"
  *   ed25519PublicKey: "<base64>"
@@ -429,6 +430,9 @@ export async function parseCapabilityManifest(
         .prohibited_classes as string[]).slice(),
       on_violation: (obj.comply as Record<string, unknown>)
         .on_violation as ComplyOnViolation,
+      ...(typeof (obj.comply as Record<string, unknown>).enforce === 'boolean'
+        ? { enforce: (obj.comply as Record<string, unknown>).enforce as boolean }
+        : {}),
     },
     issuedAt: obj.issuedAt as string,
     ...(typeof obj.expiresAt === 'string'
@@ -492,6 +496,9 @@ function validateManifestSchema(obj: Record<string, unknown>): string | null {
     !ALLOWED_ON_VIOLATION.has(c.on_violation as ComplyOnViolation)
   ) {
     return `comply.on_violation must be one of ${Array.from(ALLOWED_ON_VIOLATION).join(', ')}`;
+  }
+  if (c.enforce !== undefined && typeof c.enforce !== 'boolean') {
+    return 'comply.enforce must be a boolean or omitted';
   }
 
   return null;
