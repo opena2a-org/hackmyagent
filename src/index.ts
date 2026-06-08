@@ -205,7 +205,7 @@ export { SkillCapabilityMonitor, createCapabilityMonitor, parseDeclaredCapabilit
 export type { DeclaredCapabilities, ObservedBehavior, CapabilityViolation } from './arp';
 
 // Soul module (Behavioral Governance Scanner)
-export { SoulScanner, CONTROL_DEFS, DOMAIN_ORDER, GOVERNANCE_FILES, PROFILE_DOMAINS } from './soul';
+export { SoulScanner, CONTROL_DEFS, DOMAIN_ORDER, GOVERNANCE_FILES, GOVERNANCE_CATALOG_SIZE, PROFILE_DOMAINS } from './soul';
 export type {
   AgentTier,
   AgentProfile,

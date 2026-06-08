@@ -2,7 +2,7 @@
  * Soul module - Behavioral Governance Scanner
  */
 
-export { SoulScanner, CONTROL_DEFS, DOMAIN_ORDER, GOVERNANCE_FILES, PROFILE_DOMAINS } from './scanner';
+export { SoulScanner, CONTROL_DEFS, DOMAIN_ORDER, GOVERNANCE_FILES, GOVERNANCE_CATALOG_SIZE, PROFILE_DOMAINS } from './scanner';
 export type {
   AgentTier,
   AgentProfile,

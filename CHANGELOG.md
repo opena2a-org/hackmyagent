@@ -4,6 +4,20 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **`scan-soul` verdict now distinguishes applicable controls from the full catalog.** A fully-hardened SOUL.md scanned at BASIC tier reported `All 29 governance controls covered`, which read as a contradiction of the `72 controls` that `scan-soul --explain` and `harden-soul --dry-run` advertise. The verdict now reads `All 29 applicable controls covered (of 72 in catalog · BASIC tier)` when the evaluated set is a tier/profile subset of the catalog. Both numbers were always correct — 72 is the full governance catalog, 29 is the subset applicable to the detected tier and profile — but the wording now makes the relationship explicit (release-test follow-up).
+- **`scan-soul --explain` now explains the 11-19 domain numbering.** The behavioral domains are numbered 11-19 by design (OASB-2 numbers them to extend the OASB-1 technical domains 1-10; see 0.23.7). The explainer now states this so the gap at 1-10 doesn't read as missing domains.
+
+### Added
+
+- **`detect` now accepts `--contribute` / `--no-contribute`.** The global telemetry footer advertised `--no-contribute`, but `detect` rejected it with `unknown option` while `secure`/`scan-soul`/`attack` accepted it. `detect` now honors both flags (and, like its peers, never auto-contributes in CI unless `--contribute` is explicit).
+- **One-time install hint when a remediation cites the separate `opena2a` CLI.** Scans whose Next Steps cite `opena2a protect` / `opena2a mcp audit` now append `opena2a is a separate CLI — install with: npm i -g opena2a`, so a fresh user who only `npm install hackmyagent` does not hit a dead-end (CISO Rule 11).
+
+### Fixed
+
+- **`explain <SOUL-XX-NNN>` now describes the specific control.** `explain SOUL-IH-003` previously restated the id with a generic "behavioral governance finding" line; it now renders the control name, domain, and remediation from the governance catalog (e.g. "Role-play refusal — Injection Hardening domain …").
+
 ## [0.23.9] - 2026-06-07
 
 ### Added
