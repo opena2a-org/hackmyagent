@@ -182,12 +182,24 @@ async function startProxy(): Promise<void> {
     config.agentName ?? 'arp-proxy',
   );
 
+  // Resolve the Guard public key for classification annotation. Gated on the
+  // intelligence layer being enabled (default on); the loader already merged
+  // config + ARP_GUARD_PUBLIC_KEY. When present AND a manifest is configured,
+  // the proxy builds the annotator at start() so events carry a cleared
+  // classification for DETECTION (the sequence corpus). Absent key → no
+  // annotator, classification stays null.
+  const guardPublicKey =
+    config.intelligence?.enabled === false
+      ? undefined
+      : config.intelligence?.guardPublicKey;
+
   const proxy = new ARPProxy(config.proxy, {
     engine,
     promptInterceptor,
     mcpInterceptor,
     a2aInterceptor,
     coordinator,
+    guardPublicKey,
     onInScopeEvent: (event) => sequenceLog.append(event),
   });
 

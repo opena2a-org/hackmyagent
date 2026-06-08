@@ -11,7 +11,11 @@ import type { PromptInterceptor } from '../interceptors/prompt';
 import type { MCPProtocolInterceptor } from '../interceptors/mcp-protocol';
 import type { A2AProtocolInterceptor } from '../interceptors/a2a-protocol';
 import type { IntelligenceCoordinator } from '../intelligence/coordinator';
-import type { ClassificationAnnotator } from '../intelligence/classification-annotator';
+import {
+  ClassificationAnnotator,
+  NanoMindGuardClassificationProvider,
+} from '../intelligence/classification-annotator';
+import type { EncodedHybridPublicKey } from '../crypto/types';
 import {
   CapabilityManifestError,
   loadCapabilityManifest,
@@ -56,6 +60,22 @@ export interface ARPProxyDeps {
    */
   annotator?: ClassificationAnnotator;
   /**
+   * Optional JSON-encoded NanoMind-Guard hybrid public key
+   * (`EncodedHybridPublicKey`; optionally base64-wrapped). When set AND a
+   * capability manifest is loaded AND no `annotator` was already injected,
+   * `start()` constructs a `NanoMindGuardClassificationProvider` +
+   * `ClassificationAnnotator` keyed on this key and the verified manifest, and
+   * wires it as the `annotator` above.
+   *
+   * Fail-closed for the LABEL, safe for AVAILABILITY: a malformed key logs once
+   * and leaves the annotator unset (classification stays null) rather than
+   * crashing startup. The annotator only ever feeds DETECTION; a populated
+   * classification never enables a deny (that stays gated on signed
+   * `comply.enforce === true`). When an `annotator` is supplied directly (tests,
+   * or a future AIM-SDK provider), this field is ignored.
+   */
+  guardPublicKey?: string;
+  /**
    * Optional sink invoked once per event AFTER annotation completes (or
    * immediately when no annotator is wired). This is the sequence-projector
    * tee: the CLI points it at the append-only sequence log; a test points it
@@ -80,6 +100,43 @@ export interface ARPProxyDeps {
 const MANIFEST_DENY_CLIENT_REASON =
   'Request blocked by ARP: agent registration denied';
 
+/**
+ * Decode a configured Guard public key into an `EncodedHybridPublicKey`.
+ *
+ * The key is the JSON-encoded `EncodedHybridPublicKey` (an object whose key
+ * bytes are themselves base64 strings). For env-var ergonomics a base64 wrapper
+ * around that JSON is also accepted: JSON is tried first, then base64→JSON.
+ *
+ * Any parse failure — or a value that is not a JSON object — yields `null`, and
+ * the caller disables annotation. This only guards the *parse*: the byte-level
+ * key decode and the Ed25519+ML-DSA-44 algorithm checks happen later in
+ * `verifyClassification`, which is total and returns a typed `{valid:false}`
+ * rather than throwing. So a structurally-parseable but cryptographically wrong
+ * key still fails closed (every verification rejects, classification stays
+ * null) — it is never fail-open.
+ */
+function decodeGuardPublicKey(raw: string): EncodedHybridPublicKey | null {
+  const asObject = (s: string): EncodedHybridPublicKey | null => {
+    try {
+      const parsed: unknown = JSON.parse(s);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as EncodedHybridPublicKey;
+      }
+    } catch {
+      // not JSON
+    }
+    return null;
+  };
+
+  const direct = asObject(raw);
+  if (direct !== null) return direct;
+
+  // Fall back to base64-wrapped JSON. Buffer.from is permissive (never throws),
+  // so a non-base64 input simply produces bytes that fail the JSON parse below.
+  const unwrapped = Buffer.from(raw, 'base64').toString('utf-8');
+  return asObject(unwrapped);
+}
+
 export class ARPProxy {
   private readonly config: ProxyConfig;
   private readonly deps: ARPProxyDeps;
@@ -100,6 +157,11 @@ export class ARPProxy {
    * per CR-001.
    */
   private manifestRejected = false;
+  /**
+   * Set to true once a malformed Guard public key has been logged, so the
+   * single-shot warning in `maybeBuildAnnotator` is not repeated on retries.
+   */
+  private annotatorBuildFailed = false;
 
   constructor(config: ProxyConfig, deps: ARPProxyDeps) {
     this.config = config;
@@ -134,8 +196,11 @@ export class ARPProxy {
 
     // Wire the detection-mode coordinator once the manifest state is settled.
     // Skipped when the manifest was rejected (the proxy is deny-all and no
-    // detection should run against a rejected agent).
+    // detection should run against a rejected agent). The annotator is built
+    // FIRST (it needs the verified manifest), then the coordinator wiring picks
+    // it up via deps.
     if (!this.manifestRejected) {
+      this.maybeBuildAnnotator();
       this.wireDetectionCoordinator();
     }
 
@@ -198,6 +263,58 @@ export class ARPProxy {
     console.error(
       `[arp/proxy] capability manifest rejected ${JSON.stringify(entry)}`,
     );
+  }
+
+  /**
+   * Construct the classification annotator from a configured Guard public key,
+   * IF detection annotation is both wanted and possible:
+   *   - a Guard key was resolved (`deps.guardPublicKey`, from config/env),
+   *   - a verified capability manifest is loaded (the verify options need
+   *     `manifest.tier` to key the rejection matrix),
+   *   - no `annotator` was already injected (tests / a future AIM-SDK provider
+   *     supply their own; never clobber it).
+   *
+   * Fail-closed for the LABEL and safe for AVAILABILITY: a malformed key logs
+   * once and leaves the annotator unset (classification stays null); it never
+   * throws out of startup. The byte-level decode and algorithm/tier checks all
+   * happen later inside `verifyClassification`, which is total (never throws) —
+   * so a parseable-but-wrong key degrades to "every verify returns invalid →
+   * classification stays null", still fail-closed and never fail-open.
+   *
+   * The annotator only feeds DETECTION. A populated classification never
+   * enables enforcement: that remains gated on the signed manifest setting
+   * `comply.enforce === true` (see `coordinator.ts` and
+   * `wireDetectionCoordinator`). Building the annotator here therefore cannot,
+   * by itself, turn classification into a hot-path deny control.
+   */
+  private maybeBuildAnnotator(): void {
+    // An explicitly supplied annotator wins; do not override it.
+    if (this.deps.annotator) return;
+
+    const keyStr = this.deps.guardPublicKey;
+    // No key, or no manifest to clear classifications against → no annotation.
+    if (!keyStr || !this.manifest) return;
+
+    const guardPublicKey = decodeGuardPublicKey(keyStr);
+    if (guardPublicKey === null) {
+      if (!this.annotatorBuildFailed) {
+        this.annotatorBuildFailed = true;
+        // Log once. Disabling annotation (vs. crashing) keeps a bad
+        // ARP_GUARD_PUBLIC_KEY from being a startup-time DoS. No key material
+        // is logged.
+        // eslint-disable-next-line no-console
+        console.error(
+          '[arp/proxy] guard public key is malformed; classification annotation disabled',
+        );
+      }
+      return;
+    }
+
+    const provider = new NanoMindGuardClassificationProvider();
+    this.deps.annotator = new ClassificationAnnotator(provider, {
+      guardPublicKey,
+      manifest: this.manifest,
+    });
   }
 
   /**
