@@ -57,13 +57,29 @@ function deriveL0Decision(event: ARPEvent): 'allow' | 'block' | 'alert' {
   return 'allow';
 }
 
+/**
+ * Case-fold an egress host to its canonical identity before hashing. DNS host
+ * names are case-insensitive and surrounding whitespace is never part of a
+ * host, so `EVIL.COM`, `evil.com`, and `  evil.com  ` are the same target.
+ * Folding here (and identically in the consumer's `hash_host`) is what stops an
+ * attacker from evading egress-target grounding by varying host case. ASCII
+ * trim + lowercase only; IDNA/punycode normalization is intentionally out of
+ * scope for this bare-host token channel.
+ */
+function normalizeEgressHost(host: string): string {
+  return host.trim().toLowerCase();
+}
+
 /** Hash an egress host (host only — never a path or query) for the egress tell. */
 function deriveEgressTargetHash(event: ARPEvent): string | null {
   if (deriveEventType(event) !== 'EXTERNAL_CALL') return null;
   for (const key of HOST_KEYS) {
     const v = event.data?.[key];
     if (typeof v === 'string' && v.length > 0) {
-      return crypto.createHash('sha256').update(v).digest('hex');
+      return crypto
+        .createHash('sha256')
+        .update(normalizeEgressHost(v))
+        .digest('hex');
     }
   }
   return null;

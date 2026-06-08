@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+import { createHash } from 'crypto';
 import {
   SequenceLogWriter,
   arpEventToLoggedAction,
@@ -50,6 +51,30 @@ describe('arpEventToLoggedAction', () => {
     // host is hashed (64 hex), not stored in the clear
     expect(rec.egressTargetHash).toMatch(/^[0-9a-f]{64}$/);
     expect(JSON.stringify(rec)).not.toContain('evil.example.com');
+  });
+
+  it('case-folds the egress host so host-case variants hash identically', () => {
+    // DNS hosts are case-insensitive and never carry surrounding whitespace;
+    // an attacker must not be able to evade egress-target grounding by varying
+    // case. EVIL.COM, evil.com, and "  evil.com  " must all hash to the same
+    // egressTargetHash.
+    const mk = (host: string) =>
+      arpEventToLoggedAction(
+        event({ data: { source: 'network', host, responseSize: 1, capability: 'data:export' } }),
+        ctx(),
+      ).egressTargetHash;
+
+    const lower = mk('evil.com');
+    expect(mk('EVIL.COM')).toBe(lower);
+    expect(mk('Evil.Com')).toBe(lower);
+    expect(mk('  evil.com  ')).toBe(lower);
+
+    // Contract lock (cross-repo): the hash is sha256 of the NORMALIZED host
+    // (trim + lowercase). The consumer's hash_host in nanomind-training
+    // (evaluation/consistency-v0/contract.py) MUST stay byte-identical to this
+    // or the structured egress tell mis-grounds.
+    const expected = createHash('sha256').update('evil.com').digest('hex');
+    expect(lower).toBe(expected);
   });
 
   it('carries a cleared classification through when present on the event', () => {
