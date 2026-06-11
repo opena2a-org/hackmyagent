@@ -95,6 +95,10 @@ describe('runCoverageSweep — selection', () => {
     expect(out.stats.swept).toBe(1);
     expect(seen).toHaveLength(1);
     expect(seen[0]).toContain('export const x');
+    // Location-borne signal: the analyst input carries the artifact path
+    // (DVAA mcp-discovery-exposed regression — content-only input missed
+    // .well-known exposure).
+    expect(seen[0].startsWith('Artifact path: util.ts\n\n')).toBe(true);
   });
 
   it('posture/hardening checks do NOT count as structural attack (file stays eligible)', async () => {
@@ -118,6 +122,29 @@ describe('runCoverageSweep — selection', () => {
     ];
     const out = await runCoverageSweep(dir, candidates, inactive, classifyAs(benignVerdict), true);
     expect(out.stats.candidates).toBe(2);
+  });
+
+  it('a finding the product filter drops does NOT exclude its file (findingVisible)', async () => {
+    // DVAA mcp-discovery-exposed regression: MCP-011 high on
+    // .well-known/mcp.json exists in allFindings but findingAppliesTo drops
+    // it for projectType=library — the user never sees it, so it must not
+    // suppress the sweep. With the visibility predicate saying "filtered
+    // out", the file stays eligible.
+    const flagged = [finding({ checkId: 'MCP-011', file: 'SKILL.md', severity: 'high' })];
+    const invisible = () => false;
+    const out = await runCoverageSweep(
+      dir, candidates, flagged, classifyAs(benignVerdict), true, invisible,
+    );
+    expect(out.stats.candidates).toBe(2);
+  });
+
+  it('a product-visible finding still excludes its file (findingVisible true)', async () => {
+    const flagged = [finding({ checkId: 'MCP-011', file: 'SKILL.md', severity: 'high' })];
+    const visible = () => true;
+    const out = await runCoverageSweep(
+      dir, candidates, flagged, classifyAs(benignVerdict), true, visible,
+    );
+    expect(out.stats.candidates).toBe(1);
   });
 });
 
@@ -296,12 +323,12 @@ describe('runCoverageSweep — caps and failure behavior', () => {
     candidates.push({ path: 'SKILL.md', artifactType: 'skill' });
     const seen: string[] = [];
     const classify = async (content: string) => {
-      seen.push(content.slice(0, 20));
+      seen.push(content.slice(0, 40));
       return benignVerdict;
     };
     const out = await runCoverageSweep(dir, candidates, [], classify, true);
     expect(out.stats.swept).toBe(10);
     // The skill (agent artifact) must be in the swept set despite arriving last.
-    expect(seen.some(s => s.includes('Helper skill'))).toBe(true);
+    expect(seen.some(s => s.includes('Artifact path: SKILL.md'))).toBe(true);
   });
 });

@@ -3388,6 +3388,10 @@ Examples:
         nanomind: resolveNanomindFlag(options),
         silent: format !== 'text',
         projectType: result.projectType,
+        // Sweep eligibility must match what the product reports: a finding
+        // dropped by the projectType filter does not structurally cover its
+        // file (it never reaches the user), so the sweep still reads it.
+        findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType),
       });
 
       {
@@ -9002,7 +9006,7 @@ async function checkGitHubRepo(
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-      const nmResult = await orchestrateNanoMind(repoDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options) });
+      const nmResult = await orchestrateNanoMind(repoDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, repoDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
@@ -9307,7 +9311,7 @@ async function checkPyPiPackage(
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-      const nmResult = await orchestrateNanoMind(extractDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options) });
+      const nmResult = await orchestrateNanoMind(extractDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, extractDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
@@ -9506,7 +9510,7 @@ async function checkRawUrl(
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-      const nmResult = await orchestrateNanoMind(scanDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options) });
+      const nmResult = await orchestrateNanoMind(scanDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, scanDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
@@ -9679,7 +9683,7 @@ async function checkNpmPackage(
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-      const nmResult = await orchestrateNanoMind(packageDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options) });
+      const nmResult = await orchestrateNanoMind(packageDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, packageDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
