@@ -3391,7 +3391,10 @@ Examples:
         // Sweep eligibility must match what the product reports: a finding
         // dropped by the projectType filter does not structurally cover its
         // file (it never reaches the user), so the sweep still reads it.
-        findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType),
+        // `|| 'library'` mirrors the display-filter + check-path call sites
+        // (detectProjectType always returns a concrete value today; the
+        // fallback keeps this robust if the type ever loosens).
+        findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library'),
       });
 
       {
