@@ -512,3 +512,87 @@ describe('sweep-only discovery (.html/.txt)', () => {
     expect(result.coverageCandidates[0].artifactType).not.toBe(SWEEP_ONLY_ARTIFACT_TYPE);
   });
 });
+
+// ============================================================================
+// Sweep-only dot-directories (.github/.well-known) — Phase A P1 follow-up
+// ============================================================================
+
+describe('sweep-only dot-directories (.github/.well-known)', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), 'hma-sweep-dirs-'));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('collects .github/workflows and .well-known files as sweep candidates without compiling them', async () => {
+    await mkdir(join(tempDir, '.github', 'workflows'), { recursive: true });
+    await writeFile(
+      join(tempDir, '.github', 'workflows', 'docker.yml'),
+      'name: build\non: push\njobs:\n  build:\n    steps:\n      - run: docker build --provenance=false .\n',
+    );
+    await mkdir(join(tempDir, '.well-known'), { recursive: true });
+    await writeFile(
+      join(tempDir, '.well-known', 'mcp.json'),
+      '{"servers": [{"name": "internal-tools", "endpoint": "http://10.0.0.5:8080"}]}',
+    );
+    await writeFile(join(tempDir, 'SKILL.md'), BENIGN_SKILL);
+
+    const result = await runNanoMindScan(tempDir, []);
+
+    const workflowPath = join('.github', 'workflows', 'docker.yml');
+    const mcpPath = join('.well-known', 'mcp.json');
+
+    // Only SKILL.md is compiled — the structural pipeline never enters the dot-dirs.
+    expect(result.compiledArtifacts).toBe(1);
+    expect(result.astFindings.every(f => f.file !== workflowPath && f.file !== mcpPath)).toBe(true);
+    expect(result.artifactSummaries.every(s => s.path !== workflowPath && s.path !== mcpPath)).toBe(true);
+
+    // But both files are sweep candidates, labeled as sweep-only documents.
+    const byPath = new Map(result.coverageCandidates.map(c => [c.path, c.artifactType]));
+    expect(byPath.get(workflowPath)).toBe(SWEEP_ONLY_ARTIFACT_TYPE);
+    expect(byPath.get(mcpPath)).toBe(SWEEP_ONLY_ARTIFACT_TYPE);
+  });
+
+  it('keeps a benign repo with ordinary .github/workflows out of the structural set', async () => {
+    await mkdir(join(tempDir, '.github', 'workflows'), { recursive: true });
+    await writeFile(
+      join(tempDir, '.github', 'workflows', 'ci.yml'),
+      'name: ci\non: push\njobs:\n  test:\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm test\n',
+    );
+    await writeFile(join(tempDir, 'SKILL.md'), BENIGN_SKILL);
+
+    const result = await runNanoMindScan(tempDir, []);
+
+    // The workflow never reaches the compiler; structural counts are
+    // identical to a repo without .github.
+    expect(result.compiledArtifacts).toBe(1);
+    const ciPath = join('.github', 'workflows', 'ci.yml');
+    expect(result.artifactSummaries.every(s => s.path !== ciPath)).toBe(true);
+    const candidate = result.coverageCandidates.find(c => c.path === ciPath);
+    expect(candidate?.artifactType).toBe(SWEEP_ONLY_ARTIFACT_TYPE);
+  });
+
+  it('does not enter other dot-directories (allowlist, not all dot-dirs)', async () => {
+    await mkdir(join(tempDir, '.circleci'), { recursive: true });
+    await writeFile(join(tempDir, '.circleci', 'config.yml'), 'version: 2.1\n');
+    const result = await runNanoMindScan(tempDir, []);
+    expect(result.coverageCandidates).toHaveLength(0);
+  });
+
+  it('stays in sweep-only mode for nested directories under a sweep-only root', async () => {
+    await mkdir(join(tempDir, '.well-known', 'nested', 'deeper'), { recursive: true });
+    await writeFile(
+      join(tempDir, '.well-known', 'nested', 'deeper', 'agent.json'),
+      '{"name": "discovery-agent"}',
+    );
+    const result = await runNanoMindScan(tempDir, []);
+    expect(result.compiledArtifacts).toBe(0);
+    const nestedPath = join('.well-known', 'nested', 'deeper', 'agent.json');
+    const candidate = result.coverageCandidates.find(c => c.path === nestedPath);
+    expect(candidate?.artifactType).toBe(SWEEP_ONLY_ARTIFACT_TYPE);
+  });
+});

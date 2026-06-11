@@ -71,6 +71,17 @@ const SECURITY_RELEVANT_NAMES = new Set([
  */
 const SWEEP_ONLY_EXTENSIONS = new Set(['.html', '.txt']);
 
+/**
+ * Dot-directories the walk enters in SWEEP-ONLY mode. The walk skips dot
+ * directories (except .claude), which made two whole attack surfaces
+ * invisible to every layer: .github/workflows (supply-chain/provenance CI
+ * config — DVAA docker-provenance-disabled) and .well-known (MCP discovery
+ * manifests — DVAA mcp-discovery-exposed). Files under these trees become
+ * coverage-sweep candidates only; the structural pipeline still never
+ * compiles them, so its FP/perf surface stays untouched.
+ */
+const SWEEP_ONLY_DIRS = new Set(['.github', '.well-known']);
+
 /** Artifact-type label for sweep-only candidates. Not a compiler-assigned
  *  type: these files are never compiled, so no classifier verdict exists for
  *  them at discovery time. Not in AGENT_ARTIFACT_TYPES, so they sort after
@@ -474,6 +485,7 @@ async function walkDir(
   results: string[],
   sweepOnly: string[],
   depth: number,
+  sweepOnlyMode = false,
 ): Promise<void> {
   // The compile-set cap bounds the whole walk (existing behavior); sweep-only
   // collection is best-effort within that bound and has its own cap below.
@@ -493,22 +505,32 @@ async function walkDir(
 
     if (entry.isDirectory()) {
       if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith('.')) {
-        await walkDir(fullPath, results, sweepOnly, depth + 1);
+        await walkDir(fullPath, results, sweepOnly, depth + 1, sweepOnlyMode);
       }
       // Also check dotfiles that are security-relevant (e.g., .cursorrules)
       if (entry.name === '.claude') {
-        await walkDir(fullPath, results, sweepOnly, depth + 1);
+        await walkDir(fullPath, results, sweepOnly, depth + 1, sweepOnlyMode);
+      }
+      // Sweep-only dot-directories (.github, .well-known): whole subtree is
+      // analyst-sweep territory, never structural. Once inside, stay in
+      // sweep-only mode for nested dirs (e.g. .github/workflows/).
+      if (SWEEP_ONLY_DIRS.has(entry.name)) {
+        await walkDir(fullPath, results, sweepOnly, depth + 1, true);
       }
       continue;
     }
 
     if (!entry.isFile()) continue;
 
+    const pushTo = async (target: string[]) => {
+      if (target.length < MAX_FILES_PER_SCAN && await isWithinSizeLimit(fullPath)) {
+        target.push(fullPath);
+      }
+    };
+
     // Check by exact name first
     if (SECURITY_RELEVANT_NAMES.has(entry.name)) {
-      if (await isWithinSizeLimit(fullPath)) {
-        results.push(fullPath);
-      }
+      await pushTo(sweepOnlyMode ? sweepOnly : results);
       continue;
     }
 
@@ -520,27 +542,21 @@ async function walkDir(
     // Check by extension
     const ext = extname(entry.name).toLowerCase();
     if (SECURITY_RELEVANT_EXTENSIONS.has(ext)) {
-      if (await isWithinSizeLimit(fullPath)) {
-        results.push(fullPath);
-      }
+      await pushTo(sweepOnlyMode ? sweepOnly : results);
       continue;
     }
 
     // Dotfiles without extension (e.g., .env.local)
     if (entry.name.startsWith('.env')) {
-      if (await isWithinSizeLimit(fullPath)) {
-        results.push(fullPath);
-      }
+      await pushTo(sweepOnlyMode ? sweepOnly : results);
       continue;
     }
 
     // Sweep-only documents (.html/.txt): analyst coverage sweep candidates,
     // never compiled or structurally analyzed. Mutually exclusive with the
     // compile checks above (the `continue`s), so a file lands in exactly one set.
-    if (SWEEP_ONLY_EXTENSIONS.has(ext) && sweepOnly.length < MAX_FILES_PER_SCAN) {
-      if (await isWithinSizeLimit(fullPath)) {
-        sweepOnly.push(fullPath);
-      }
+    if (SWEEP_ONLY_EXTENSIONS.has(ext)) {
+      await pushTo(sweepOnly);
     }
   }
 }
