@@ -1544,10 +1544,19 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   // the analyst's raw verdict is not auto-applied (it carries a measured
   // ~22% false-positive rate on dual-use security code), so these never
   // change the score or exit code — they queue files for human review.
-  const escalations = opts.analystEscalations ?? [];
-  if (escalations.length > 0) {
+  const allEscalations = opts.analystEscalations ?? [];
+  // Default render shows ATTACK-routed escalations (named canonical attack
+  // class at high severity — worth a row). Abstain-routed ones are usually
+  // model hedges or parser noise ("confidence: 0.15") on benign-but-security-
+  // shaped content (measured 2026-06-10 on the benign corpus fixtures); they
+  // collapse to a count line so clean repos don't drown in UNCERTAIN rows.
+  // --verbose and --json always carry every escalation, so the abstention
+  // channel stays fully visible to humans who ask and to automation.
+  const escalations = verbose ? allEscalations : allEscalations.filter(e => e.routed === 'attack');
+  const hiddenAbstains = allEscalations.length - escalations.length;
+  if (allEscalations.length > 0) {
     divider('NanoMind Coverage Escalations');
-    console.log(`  ${colors.dim}Advisory — the AI analyst flagged ${escalations.length} file${escalations.length === 1 ? '' : 's'} the deterministic checks did not.${RESET()}`);
+    console.log(`  ${colors.dim}Advisory — the AI analyst flagged ${allEscalations.length} file${allEscalations.length === 1 ? '' : 's'} the deterministic checks did not.${RESET()}`);
     console.log(`  ${colors.dim}Score and exit code are unchanged. Review each file to confirm or dismiss.${RESET()}`);
     console.log();
     // Model-derived fields are single-lined at the source (orchestrate.ts) AND
@@ -1576,6 +1585,11 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       }
       console.log(`  ${colors.cyan}Verify:${RESET()} review ${esc.file} for the behavior described above`);
       console.log(`  ${colors.dim}${esc.modelVersion} | ${esc.routed === 'attack' ? 'named attack class at high severity' : 'uncertain verdict — needs a human call'}${RESET()}`);
+      console.log();
+    }
+    if (hiddenAbstains > 0) {
+      console.log(`  ${colors.dim}${hiddenAbstains} uncertain analyst verdict${hiddenAbstains === 1 ? '' : 's'} (model hedged or gave no usable class) not shown.${RESET()}`);
+      console.log(`  ${colors.dim}Inspect with --verbose, or programmatically via --json analystEscalations.${RESET()}`);
       console.log();
     }
   }
