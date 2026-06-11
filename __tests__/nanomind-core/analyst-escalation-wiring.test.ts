@@ -95,10 +95,6 @@ describe('runCoverageSweep — selection', () => {
     expect(out.stats.swept).toBe(1);
     expect(seen).toHaveLength(1);
     expect(seen[0]).toContain('export const x');
-    // Location-borne signal: the analyst input carries the artifact path
-    // (DVAA mcp-discovery-exposed regression — content-only input missed
-    // .well-known exposure).
-    expect(seen[0].startsWith('Artifact path: util.ts\n\n')).toBe(true);
   });
 
   it('posture/hardening checks do NOT count as structural attack (file stays eligible)', async () => {
@@ -323,12 +319,12 @@ describe('runCoverageSweep — caps and failure behavior', () => {
     candidates.push({ path: 'SKILL.md', artifactType: 'skill' });
     const seen: string[] = [];
     const classify = async (content: string) => {
-      seen.push(content.slice(0, 40));
+      seen.push(content.slice(0, 20));
       return benignVerdict;
     };
     const out = await runCoverageSweep(dir, candidates, [], classify, true);
     expect(out.stats.swept).toBe(10);
     // The skill (agent artifact) must be in the swept set despite arriving last.
-    expect(seen.some(s => s.includes('Artifact path: SKILL.md'))).toBe(true);
+    expect(seen.some(s => s.includes('Helper skill'))).toBe(true);
   });
 });

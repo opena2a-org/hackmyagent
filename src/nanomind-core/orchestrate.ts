@@ -525,16 +525,7 @@ export async function runCoverageSweep(
       continue; // file vanished between scan and sweep — skip, never block
     }
 
-    // Location is part of the behavioral signal: the same bytes are benign
-    // in docs/ and an exposure at .well-known/ (public discovery) or
-    // .github/workflows/ (CI supply chain). Content-only input measurably
-    // missed location-borne attacks (DVAA mcp-discovery-exposed: bare
-    // content -> benign, content + bare path line -> malicious, A/B on the
-    // live daemon 2026-06-11). The path is attacker-controlled text like
-    // the content itself — rendered one-line, no editorializing.
-    const verdict = await classify(
-      `Artifact path: ${oneLine(candidate.path)}\n\n${content}`,
-    );
+    const verdict = await classify(content);
     swept++;
     if (verdict === null) {
       // Daemon unavailable/errored — not a benign verdict, never fabricate.
