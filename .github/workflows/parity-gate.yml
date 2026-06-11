@@ -23,7 +23,10 @@ jobs:
     # scope-aware clamp (expected score 74/B/standard, was 100/A/hardened) and
     # the parity workflow self-checkout owner-check fix (opena2a-standards
     # owner now recognised on self-runs).
-    uses: opena2a-standards/opena2a-parity/.github/workflows/parity.yml@c861cf8bfe46522f30c048cb03f6303641e26301
+    # 2026-06-10: 9636e7a re-baselines ai-trust goldens to the curated --json
+    # shape (ai-trust#61 intentionally omits scan-only fields like scanStatus
+    # from registry-source output) — unbreaks the red main runs since 06-08.
+    uses: opena2a-standards/opena2a-parity/.github/workflows/parity.yml@9636e7a673fb1ad6d5c761beee065405a50b3eca
     with:
       hma_ref: ${{ github.event.pull_request.head.sha || github.sha }}
       opena2a_ref: main
