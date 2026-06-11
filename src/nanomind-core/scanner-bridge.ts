@@ -59,6 +59,24 @@ const SECURITY_RELEVANT_NAMES = new Set([
   'mcp.json', 'agent.json', 'SOUL.md', 'SKILL.md', 'CLAUDE.md',
 ]);
 
+/**
+ * Extensions the structural pipeline ignores but the analyst coverage sweep
+ * should still read. Behavioral attack content ships in plain documents:
+ * 3/86 DVAA scenarios (clipboard-prompt-injection, docker-provenance-disabled,
+ * mcp-discovery-exposed) were silent misses solely because their content is
+ * .html/.txt — coverageSweep.candidates was 0. These files are NEVER compiled
+ * or structurally analyzed (widening the compile set would change the
+ * structural FP/perf surface); they only become sweep candidates, so the
+ * analyst decides what they mean.
+ */
+const SWEEP_ONLY_EXTENSIONS = new Set(['.html', '.txt']);
+
+/** Artifact-type label for sweep-only candidates. Not a compiler-assigned
+ *  type: these files are never compiled, so no classifier verdict exists for
+ *  them at discovery time. Not in AGENT_ARTIFACT_TYPES, so they sort after
+ *  agent artifacts in the sweep's priority order. */
+export const SWEEP_ONLY_ARTIFACT_TYPE = 'document';
+
 /** Maximum file size to compile (1 MB). Larger files are skipped. */
 const MAX_FILE_SIZE = 1_048_576;
 
@@ -82,14 +100,16 @@ export interface ArtifactSummary {
   weakConstraintCount: number;       // # of constraints with bypassRisk > 0.5
 }
 
-/** One compiled artifact eligible for the analyst coverage sweep (Phase A P1).
+/** One artifact eligible for the analyst coverage sweep (Phase A P1).
  *  Collected for EVERY compiled file (agent artifacts, source code, docs) —
  *  behavioral attacks hide in all three — so the sweep layer, not discovery,
- *  decides what the analyst reads. */
+ *  decides what the analyst reads. Also collected for sweep-only files
+ *  (SWEEP_ONLY_EXTENSIONS) that the structural pipeline never compiles. */
 export interface CoverageCandidate {
   /** Relative path from scan root (matches SecurityFinding.file). */
   path: string;
-  /** Compiler-assigned artifact type (skill, mcp_config, soul, source_code, ...). */
+  /** Compiler-assigned artifact type (skill, mcp_config, soul, source_code,
+   *  ...), or SWEEP_ONLY_ARTIFACT_TYPE for uncompiled sweep-only files. */
   artifactType: string;
 }
 
@@ -138,8 +158,10 @@ export async function runNanoMindScan(
   const useNanoMind = integrity.status === 'CLEAN';
   const compiler = new SemanticCompiler({ useNanoMind });
 
-  // Step 3: Discover security-relevant files
-  const files = await discoverFiles(targetDir);
+  // Step 3: Discover security-relevant files. Sweep-only documents (.html/.txt)
+  // come back separately: they skip the structural pipeline entirely and are
+  // appended to coverageCandidates after the compile loop (Step 4b).
+  const { compileFiles: files, sweepOnlyFiles } = await discoverFiles(targetDir);
 
   // Step 3b: Load project-level constraints from SOUL.md / CLAUDE.md / .opena2a/policy.*
   // When a governance file exists in the project root, its constraints cover every sibling
@@ -255,6 +277,17 @@ export async function runNanoMindScan(
       // Skip files that fail to read or compile -- do not block the scan
       continue;
     }
+  }
+
+  // Step 4b: Sweep-only documents become coverage candidates without ever
+  // touching the compiler or analyzers — compiledArtifacts, artifactSummaries,
+  // findings, and telemetry are all unaffected by their presence. The sweep
+  // itself reads their content at sweep time and the analyst judges it.
+  for (const filePath of sweepOnlyFiles) {
+    coverageCandidates.push({
+      path: relative(targetDir, filePath),
+      artifactType: SWEEP_ONLY_ARTIFACT_TYPE,
+    });
   }
 
   // Step 5: Deduplicate AST findings (group by checkId, keep representative)
@@ -388,27 +421,41 @@ function humanizeCapability(name: string): string {
  * Recursively discover security-relevant files in the target directory.
  * Skips node_modules, .git, dist, and other non-security directories.
  */
-async function discoverFiles(dir: string): Promise<string[]> {
+interface DiscoveredFiles {
+  /** Files for the structural pipeline: compiled into SecurityASTs + analyzed. */
+  compileFiles: string[];
+  /** Sweep-only files (SWEEP_ONLY_EXTENSIONS): coverage-sweep candidates the
+   *  structural pipeline never touches. */
+  sweepOnlyFiles: string[];
+}
+
+async function discoverFiles(dir: string): Promise<DiscoveredFiles> {
   const results: string[] = [];
+  const sweepOnly: string[] = [];
   // Single-FILE target (e.g. `secure SOUL.md`): walkDir's readdir() throws
   // ENOTDIR and silently returns nothing, so the semantic/AST analyzers never
   // run — pointing `secure` at a lone SOUL.md / SKILL.md returned a high
   // infra-only score that contradicted `check --nanomind` on the same file
   // (cross-analyzer direction disagreement, audit 2026-06-01). Scan the file
-  // the user explicitly named directly.
+  // the user explicitly named directly — including a sweep-only extension:
+  // an explicitly named file keeps today's behavior (compiled + analyzed).
   try {
     const st = await stat(dir);
     if (st.isFile()) {
       // Apply the same size/empty guard directory mode uses (isWithinSizeLimit)
       // so a multi-GB lone file can't OOM the reader and a 0-byte file is
       // skipped exactly as in a directory scan.
-      return (await isWithinSizeLimit(dir)) ? [dir] : [];
+      const ok = await isWithinSizeLimit(dir);
+      return { compileFiles: ok ? [dir] : [], sweepOnlyFiles: [] };
     }
   } catch {
-    return results; // path vanished between resolve and scan
+    return { compileFiles: results, sweepOnlyFiles: sweepOnly }; // path vanished between resolve and scan
   }
-  await walkDir(dir, results, 0);
-  return results.slice(0, MAX_FILES_PER_SCAN);
+  await walkDir(dir, results, sweepOnly, 0);
+  return {
+    compileFiles: results.slice(0, MAX_FILES_PER_SCAN),
+    sweepOnlyFiles: sweepOnly.slice(0, MAX_FILES_PER_SCAN),
+  };
 }
 
 const SKIP_DIRS = new Set([
@@ -422,7 +469,14 @@ const SKIP_DIRS = new Set([
 /** Test file patterns -- these contain test assertions, not governance constraints */
 const TEST_FILE_PATTERN = /\.(test|spec|e2e|integration)\.(ts|js|mjs|py|go)$/;
 
-async function walkDir(dir: string, results: string[], depth: number): Promise<void> {
+async function walkDir(
+  dir: string,
+  results: string[],
+  sweepOnly: string[],
+  depth: number,
+): Promise<void> {
+  // The compile-set cap bounds the whole walk (existing behavior); sweep-only
+  // collection is best-effort within that bound and has its own cap below.
   if (depth > 10 || results.length >= MAX_FILES_PER_SCAN) return;
 
   let entries;
@@ -439,11 +493,11 @@ async function walkDir(dir: string, results: string[], depth: number): Promise<v
 
     if (entry.isDirectory()) {
       if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith('.')) {
-        await walkDir(fullPath, results, depth + 1);
+        await walkDir(fullPath, results, sweepOnly, depth + 1);
       }
       // Also check dotfiles that are security-relevant (e.g., .cursorrules)
       if (entry.name === '.claude') {
-        await walkDir(fullPath, results, depth + 1);
+        await walkDir(fullPath, results, sweepOnly, depth + 1);
       }
       continue;
     }
@@ -469,12 +523,23 @@ async function walkDir(dir: string, results: string[], depth: number): Promise<v
       if (await isWithinSizeLimit(fullPath)) {
         results.push(fullPath);
       }
+      continue;
     }
 
     // Dotfiles without extension (e.g., .env.local)
     if (entry.name.startsWith('.env')) {
       if (await isWithinSizeLimit(fullPath)) {
         results.push(fullPath);
+      }
+      continue;
+    }
+
+    // Sweep-only documents (.html/.txt): analyst coverage sweep candidates,
+    // never compiled or structurally analyzed. Mutually exclusive with the
+    // compile checks above (the `continue`s), so a file lands in exactly one set.
+    if (SWEEP_ONLY_EXTENSIONS.has(ext) && sweepOnly.length < MAX_FILES_PER_SCAN) {
+      if (await isWithinSizeLimit(fullPath)) {
+        sweepOnly.push(fullPath);
       }
     }
   }
