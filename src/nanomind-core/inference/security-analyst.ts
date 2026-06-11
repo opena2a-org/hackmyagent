@@ -354,6 +354,59 @@ export async function runAnalystInference(
 }
 
 /**
+ * Raw (but boundary-sanitized) per-artifact classification for the coverage
+ * sweep (Phase A P1, CDS-023). Unlike runAnalystInference, this preserves the
+ * daemon's universal verdict fields verbatim so the routing layer
+ * (analyst-coverage.ts routeAnalystVerdict) can apply the posture-vs-attack +
+ * abstention mapping itself. The shape is assignable to AnalystVerdict.
+ */
+export interface ArtifactCoverageVerdict {
+  /** "none" | "benign" | <attack class>; "none" on the gate-bypass path. */
+  attackClass: string;
+  /** "benign" | "suspicious" | "malicious" | "" when absent. */
+  classification: string;
+  /** "critical" | "high" | "medium" | "low" | "none" | null. */
+  severity: string | null;
+  /** null on the gate-bypass path; the NLM's reported number otherwise. */
+  confidence: number | null;
+  source: 'input-classifier-gate' | 'nlm';
+  /** Sanitized analysis narrative (may be empty on the gate path). */
+  analysis: string;
+  /** Sanitized evidence section (may be empty). */
+  evidence: string;
+  modelVersion: string;
+  durationMs: number;
+}
+
+/**
+ * Classify one artifact's content through the daemon (gate + NLM) and return
+ * the universal verdict without task shaping. Returns null when the daemon is
+ * absent, unhealthy, or errors — callers treat null as "analyst unavailable",
+ * never as a benign verdict.
+ */
+export async function classifyArtifactForCoverage(
+  content: string,
+): Promise<ArtifactCoverageVerdict | null> {
+  const startMs = Date.now();
+  const response = await sendClassify(content.slice(0, MAX_INPUT_CHARS));
+  if (response === null || !isClassifyOk(response)) {
+    return null;
+  }
+  const severity = sanitizeAnalystString(response.severity).toLowerCase();
+  return {
+    attackClass: sanitizeAnalystString(response.predictedAttackClass),
+    classification: sanitizeAnalystString(response.classification).toLowerCase(),
+    severity: severity.length > 0 ? severity : null,
+    confidence: typeof response.confidence === 'number' ? response.confidence : null,
+    source: response.source === 'input-classifier-gate' ? 'input-classifier-gate' : 'nlm',
+    analysis: sanitizeAnalystString(response.analysis),
+    evidence: sanitizeAnalystString(response.evidence),
+    modelVersion: `nanomind-analyst-v${MODEL_VERSION}`,
+    durationMs: Date.now() - startMs,
+  };
+}
+
+/**
  * Adapt the daemon's universal classifier response to the task-specific
  * fields each renderer in cli.ts reads. The v3 NLM is a unified
  * security-artifact classifier and does not accept per-task system prompts;

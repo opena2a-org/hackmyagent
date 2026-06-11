@@ -76,6 +76,47 @@ export type {
   FalsePositiveAssessment,
 } from './inference/security-analyst.js';
 
+// Analyst coverage routing (Phase A P1, CDS-023): posture-vs-attack + abstention
+// layer that lets the analyst inform/escalate without auto-flipping the verdict.
+// Wired into orchestrateNanoMind's coverage sweep under the abstention-gated
+// policy (the only product-safe policy per the P3 corpus join, 2026-06-06):
+// the analyst escalates structural misses for human review; raw analyst
+// auto-verdict remains NO-GO (CDS-024).
+export {
+  routeAnalystVerdict,
+  combineVerdict,
+  namesAttackClass,
+  isKnownAttackClass,
+  NON_ATTACK_CLASSES,
+  HIGH_SEVERITIES,
+  MID_SEVERITIES,
+  KNOWN_ATTACK_CLASSES,
+} from './analyst-coverage.js';
+export type {
+  RoutedAnalystVerdict,
+  CombinePolicy,
+  AnalystVerdict,
+  CombinedVerdict,
+} from './analyst-coverage.js';
+
+// Orchestration (scan-path entry: scanner-bridge + analyst stages + coverage sweep)
+export {
+  orchestrateNanoMind,
+  runCoverageSweep,
+  sweepIndicatesDaemonError,
+  POSTURE_HARDENING_CHECKS,
+} from './orchestrate.js';
+export type {
+  OrchestrationOptions,
+  OrchestrationResult,
+  AnalystEscalation,
+  CoverageSweepStats,
+  CoverageSweepOutcome,
+} from './orchestrate.js';
+export type { CoverageCandidate, NanoMindScanResult } from './scanner-bridge.js';
+export { classifyArtifactForCoverage } from './inference/security-analyst.js';
+export type { ArtifactCoverageVerdict } from './inference/security-analyst.js';
+
 // Ingestion
 export { parseArtifact, classifyArtifactType, computeHash } from './ingestion/artifact-parser.js';
 export { sanitizeForNanoMind, detectManipulation } from './ingestion/input-sanitizer.js';
