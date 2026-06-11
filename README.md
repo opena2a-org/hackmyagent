@@ -132,7 +132,7 @@ hackmyagent secure --ci                       # non-interactive, exit non-zero o
 hackmyagent secure --publish                  # push anonymised results to the OpenA2A Registry
 hackmyagent secure -b oasb-1                  # OASB-1 benchmark (L1, L2, L3)
 hackmyagent secure -b oasb-1 --fail-below 70  # CI gate
-hackmyagent secure --nanomind                 # per-finding AI threat narratives on HIGH or CRITICAL
+hackmyagent secure --nanomind                 # AI analyst: per-finding narratives + coverage escalations
 ```
 
 Output shows an Observations block (surfaces, checks, categories, verdict) and a per-finding list. Every HIGH or CRITICAL finding has a `file:line` location and a runnable `Fix:` command.
@@ -145,7 +145,7 @@ Runs automatically on every `secure` scan. On first use, HMA downloads a 5.5 MB 
 - 9 attack classes: `exfiltration`, `injection`, `privilege_escalation`, `persistence`, `credential_abuse`, `lateral_movement`, `social_engineering`, `policy_violation`, `benign`.
 - `--deep` adds the 20-probe behavioural simulation.
 - `--static-only` disables the semantic layer.
-- `--nanomind` opts into per-finding AI threat narratives. This is the specialist analyst, not the classifier, and runs only on HIGH or CRITICAL findings.
+- `--nanomind` opts into the generative analyst (specialist model, not the classifier). It produces per-finding threat narratives on HIGH or CRITICAL findings, and a coverage sweep over artifacts the deterministic checks did not flag — analyst verdicts there surface as advisory escalations for human review (never changing the score, findings, or exit code).
 
 ### `red-team` (adaptive attack engine)
 

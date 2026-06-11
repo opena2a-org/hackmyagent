@@ -1556,8 +1556,12 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   const hiddenAbstains = allEscalations.length - escalations.length;
   if (allEscalations.length > 0) {
     divider('NanoMind Coverage Escalations');
-    console.log(`  ${colors.dim}Advisory — the AI analyst flagged ${allEscalations.length} file${allEscalations.length === 1 ? '' : 's'} the deterministic checks did not.${RESET()}`);
-    console.log(`  ${colors.dim}Score and exit code are unchanged. Review each file to confirm or dismiss.${RESET()}`);
+    const flaggedCount = allEscalations.filter(e => e.routed === 'attack').length;
+    const headline = flaggedCount > 0
+      ? `Advisory — the AI analyst flagged ${flaggedCount} file${flaggedCount === 1 ? '' : 's'} the deterministic checks did not.`
+      : `Advisory — the AI analyst was uncertain about ${allEscalations.length} file${allEscalations.length === 1 ? '' : 's'} the deterministic checks did not flag.`;
+    console.log(`  ${colors.dim}${headline}${RESET()}`);
+    console.log(`  ${colors.dim}Score and exit code are unchanged.${RESET()}`);
     console.log();
     // Model-derived fields are single-lined at the source (orchestrate.ts) AND
     // here: the analyst reads attacker-controlled artifacts, so an embedded
