@@ -119,6 +119,29 @@ describe('runCoverageSweep — selection', () => {
     const out = await runCoverageSweep(dir, candidates, inactive, classifyAs(benignVerdict), true);
     expect(out.stats.candidates).toBe(2);
   });
+
+  it('a finding the product filter drops does NOT exclude its file (findingVisible)', async () => {
+    // DVAA mcp-discovery-exposed regression: MCP-011 high on
+    // .well-known/mcp.json exists in allFindings but findingAppliesTo drops
+    // it for projectType=library — the user never sees it, so it must not
+    // suppress the sweep. With the visibility predicate saying "filtered
+    // out", the file stays eligible.
+    const flagged = [finding({ checkId: 'MCP-011', file: 'SKILL.md', severity: 'high' })];
+    const invisible = () => false;
+    const out = await runCoverageSweep(
+      dir, candidates, flagged, classifyAs(benignVerdict), true, invisible,
+    );
+    expect(out.stats.candidates).toBe(2);
+  });
+
+  it('a product-visible finding still excludes its file (findingVisible true)', async () => {
+    const flagged = [finding({ checkId: 'MCP-011', file: 'SKILL.md', severity: 'high' })];
+    const visible = () => true;
+    const out = await runCoverageSweep(
+      dir, candidates, flagged, classifyAs(benignVerdict), true, visible,
+    );
+    expect(out.stats.candidates).toBe(1);
+  });
 });
 
 describe('runCoverageSweep — escalation emission', () => {

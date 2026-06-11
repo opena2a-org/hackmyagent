@@ -29,6 +29,18 @@ export interface OrchestrationOptions {
   /** Run NanoMind generative analysis (--nanomind flag). */
   nanomind?: boolean;
   projectType?: ProjectType;
+  /**
+   * Predicate: does this finding survive the product's display filters
+   * (projectType applicability, ignore rules)? The coverage sweep uses it
+   * when deciding which files are already structurally covered — a finding
+   * the product filters OUT does not cover its file (the user never sees
+   * it), so the sweep must still read that file. Without this, a file whose
+   * only high/critical finding is dropped by the filter is invisible to
+   * every channel (DVAA mcp-discovery-exposed: MCP-011 on
+   * .well-known/mcp.json filtered for projectType=library while still
+   * suppressing the sweep). Absent = all findings count (legacy behavior).
+   */
+  findingVisible?: (finding: SecurityFinding) => boolean;
 }
 
 export interface OrchestrationResult {
@@ -262,6 +274,7 @@ export async function orchestrateNanoMind(
           nmResult.mergedFindings,
           classifyArtifactForCoverage,
           silent,
+          options.findingVisible,
         );
         result.coverageSweep = sweep.stats;
         if (sweep.escalations.length > 0) {
@@ -453,14 +466,19 @@ export async function runCoverageSweep(
   mergedFindings: SecurityFinding[],
   classify: (content: string) => Promise<ArtifactCoverageVerdict | null>,
   silent = false,
+  findingVisible?: (finding: SecurityFinding) => boolean,
 ): Promise<CoverageSweepOutcome> {
   // Files already carrying a high/critical structural ATTACK finding are
   // covered by the per-finding analyst stage; the sweep targets the misses.
+  // "Carrying" means carrying IN THE PRODUCT OUTPUT: a finding the display
+  // filter drops (findingVisible returns false) does not cover its file —
+  // the user never sees it, so the sweep must still read the file.
   const structurallyFlagged = new Set<string>();
   for (const f of mergedFindings) {
     if (f.passed || f.fixed || !f.file) continue;
     if (f.severity !== 'critical' && f.severity !== 'high') continue;
     if (POSTURE_HARDENING_CHECKS.has(f.checkId)) continue;
+    if (findingVisible && !findingVisible(f)) continue;
     structurallyFlagged.add(f.file);
   }
 
