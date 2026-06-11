@@ -8999,6 +8999,7 @@ async function checkGitHubRepo(
     let analystFindings: any[] | undefined;
     let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
     let analystEscalations: any[] | undefined;
+    let coverageSweep: Record<string, unknown> | undefined;
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
@@ -9012,6 +9013,7 @@ async function checkGitHubRepo(
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
       analystEscalations = nmResult.analystEscalations;
+      coverageSweep = nmResult.coverageSweep as Record<string, unknown> | undefined;
       artifactSummaries = nmResult.artifactSummaries;
     } catch {
       // NanoMind unavailable — surface this in the CLI output instead of going
@@ -9044,6 +9046,8 @@ async function checkGitHubRepo(
           maxScore: result.maxScore,
           findings: result.findings,
           analystFindings,
+          analystEscalations,
+          coverageSweep,
         },
         registry: registryData,
       }));
@@ -9304,6 +9308,7 @@ async function checkPyPiPackage(
     let analystFindings: any[] | undefined;
     let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
     let analystEscalations: any[] | undefined;
+    let coverageSweep: Record<string, unknown> | undefined;
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
@@ -9317,6 +9322,7 @@ async function checkPyPiPackage(
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
       analystEscalations = nmResult.analystEscalations;
+      coverageSweep = nmResult.coverageSweep as Record<string, unknown> | undefined;
       artifactSummaries = nmResult.artifactSummaries;
     } catch {
       // NanoMind unavailable -- use base scan results
@@ -9345,6 +9351,8 @@ async function checkPyPiPackage(
           maxScore: result.maxScore,
           findings: result.findings,
           analystFindings,
+          analystEscalations,
+          coverageSweep,
           version: meta.info.version,
         },
         registry: registryData,
@@ -9503,6 +9511,7 @@ async function checkRawUrl(
     let analystFindings: any[] | undefined;
     let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
     let analystEscalations: any[] | undefined;
+    let coverageSweep: Record<string, unknown> | undefined;
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
@@ -9516,6 +9525,7 @@ async function checkRawUrl(
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
       analystEscalations = nmResult.analystEscalations;
+      coverageSweep = nmResult.coverageSweep as Record<string, unknown> | undefined;
       artifactSummaries = nmResult.artifactSummaries;
     } catch {
       // NanoMind unavailable — surface this in the CLI output instead of going
@@ -9547,6 +9557,7 @@ async function checkRawUrl(
       };
       if (analystFindings?.length) jsonOut.analystFindings = analystFindings;
       if (analystEscalations?.length) jsonOut.analystEscalations = analystEscalations;
+      if (coverageSweep !== undefined) jsonOut.coverageSweep = coverageSweep;
       writeJsonStdout(jsonOut);
       return;
     }
@@ -9676,6 +9687,7 @@ async function checkNpmPackage(
     let analystFindings: any[] | undefined;
     let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
     let analystEscalations: any[] | undefined;
+    let coverageSweep: Record<string, unknown> | undefined;
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
@@ -9689,6 +9701,7 @@ async function checkNpmPackage(
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
       analystEscalations = nmResult.analystEscalations;
+      coverageSweep = nmResult.coverageSweep as Record<string, unknown> | undefined;
       artifactSummaries = nmResult.artifactSummaries;
     } catch {
       // NanoMind unavailable — surface this in the CLI output instead of going
@@ -9719,6 +9732,8 @@ async function checkNpmPackage(
           maxScore: result.maxScore,
           findings: result.findings,
           analystFindings,
+          analystEscalations,
+          coverageSweep,
         },
         registry: registryData,
       }));
