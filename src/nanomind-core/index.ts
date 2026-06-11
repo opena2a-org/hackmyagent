@@ -100,7 +100,12 @@ export type {
 } from './analyst-coverage.js';
 
 // Orchestration (scan-path entry: scanner-bridge + analyst stages + coverage sweep)
-export { orchestrateNanoMind, runCoverageSweep } from './orchestrate.js';
+export {
+  orchestrateNanoMind,
+  runCoverageSweep,
+  sweepIndicatesDaemonError,
+  POSTURE_HARDENING_CHECKS,
+} from './orchestrate.js';
 export type {
   OrchestrationOptions,
   OrchestrationResult,

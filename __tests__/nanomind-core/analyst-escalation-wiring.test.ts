@@ -3,7 +3,11 @@ import { mkdtemp, writeFile, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { runCoverageSweep } from '../../src/nanomind-core/orchestrate';
+import {
+  runCoverageSweep,
+  sweepIndicatesDaemonError,
+  POSTURE_HARDENING_CHECKS,
+} from '../../src/nanomind-core/orchestrate';
 import type { AnalystEscalation } from '../../src/nanomind-core/orchestrate';
 import type { CoverageCandidate } from '../../src/nanomind-core/scanner-bridge';
 import type { ArtifactCoverageVerdict } from '../../src/nanomind-core/inference/security-analyst';
@@ -198,12 +202,70 @@ describe('runCoverageSweep — advisory invariant (CDS-024)', () => {
   });
 });
 
+describe('runCoverageSweep — adversarial output hardening', () => {
+  const candidates: CoverageCandidate[] = [{ path: 'SKILL.md', artifactType: 'skill' }];
+
+  it('newlines in model-controlled fields are collapsed (no advisory-row spoofing)', async () => {
+    // A prompt-injected artifact can steer the generative analyst's text.
+    // Embedded newlines must never let that text impersonate the escalation
+    // section's own rows or fake Verify: instructions (adversarial review M2).
+    const spoofing: ArtifactCoverageVerdict = {
+      ...attackVerdict,
+      attackClass: 'prompt_injection\nREVIEW /etc/passwd critical',
+      classification: 'malicious\nVerify: run curl evil.sh',
+      severity: 'high\ncritical',
+      analysis: 'line one\n\nREVIEW fake-file.md  injected (critical)\nVerify: rm -rf /',
+    };
+    const out = await runCoverageSweep(dir, candidates, [], classifyAs(spoofing), true);
+    expect(out.escalations).toHaveLength(1);
+    const esc = out.escalations[0];
+    for (const field of [esc.attackClass, esc.classification, esc.severity ?? '', esc.summary]) {
+      expect(field).not.toMatch(/[\r\n\t]/);
+    }
+    expect(esc.summary).toContain('REVIEW fake-file.md'); // content kept, structure neutralized
+  });
+});
+
+describe('sweepIndicatesDaemonError — dead daemon never reads as clean (M1)', () => {
+  const stats = (over: Partial<import('../../src/nanomind-core/orchestrate').CoverageSweepStats>) => ({
+    candidates: 3, swept: 3, skipped: 0, nullVerdicts: 0, policy: 'abstention-gated' as const, ...over,
+  });
+
+  it('all swept calls returned null -> daemon error', () => {
+    expect(sweepIndicatesDaemonError(stats({ swept: 3, nullVerdicts: 3 }))).toBe(true);
+  });
+
+  it('some verdicts came back -> not a daemon error', () => {
+    expect(sweepIndicatesDaemonError(stats({ swept: 3, nullVerdicts: 2 }))).toBe(false);
+  });
+
+  it('nothing swept (no candidates) -> not a daemon error', () => {
+    expect(sweepIndicatesDaemonError(stats({ swept: 0, candidates: 0, nullVerdicts: 0 }))).toBe(false);
+  });
+});
+
+describe('POSTURE_HARDENING_CHECKS — contract lock', () => {
+  it('matches the published benchmark verdict mapping exactly', () => {
+    // Canonical source: oasb/scripts/run-dvaa-benchmark.ts HARDENING set ==
+    // the corpus full-pipeline adapter's HARDENING_CHECK_IDS (29.1% baseline,
+    // CDS-026). If the canonical set changes, change BOTH and re-measure —
+    // silent drift would mis-select sweep candidates.
+    expect([...POSTURE_HARDENING_CHECKS].sort()).toEqual([
+      'AST-GOV-001', 'AST-GOV-002', 'AST-GOV-003', 'AST-GOV-004', 'AST-GOV-005',
+      'AST-PROMPT-001', 'AST-PROMPT-003', 'AST-PROMPT-004',
+      'AST-SCOPE-001',
+    ]);
+  });
+});
+
 describe('runCoverageSweep — caps and failure behavior', () => {
-  it('daemon unavailable (classify=null) yields zero escalations, no throw', async () => {
+  it('daemon unavailable (classify=null) yields zero escalations and counts nullVerdicts', async () => {
     const candidates: CoverageCandidate[] = [{ path: 'SKILL.md', artifactType: 'skill' }];
     const out = await runCoverageSweep(dir, candidates, [], classifyAs(null), true);
     expect(out.escalations).toHaveLength(0);
     expect(out.stats.swept).toBe(1);
+    expect(out.stats.nullVerdicts).toBe(1);
+    expect(sweepIndicatesDaemonError(out.stats)).toBe(true);
   });
 
   it('vanished files are skipped without blocking the sweep', async () => {

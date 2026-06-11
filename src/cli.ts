@@ -1550,20 +1550,27 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     console.log(`  ${colors.dim}Advisory — the AI analyst flagged ${escalations.length} file${escalations.length === 1 ? '' : 's'} the deterministic checks did not.${RESET()}`);
     console.log(`  ${colors.dim}Score and exit code are unchanged. Review each file to confirm or dismiss.${RESET()}`);
     console.log();
+    // Model-derived fields are single-lined at the source (orchestrate.ts) AND
+    // here: the analyst reads attacker-controlled artifacts, so an embedded
+    // newline must never let injected text impersonate this section's own rows.
+    const singleLine = (s: string | null | undefined) => String(s ?? '').replace(/\s+/g, ' ').trim();
     for (const esc of escalations) {
       const isAttack = esc.routed === 'attack';
       const tag = isAttack ? `${colors.red}${colors.bold}REVIEW${RESET()}` : `${colors.yellow}${colors.bold}UNCERTAIN${RESET()}`;
-      const sev = esc.severity ? ` (${esc.severity})` : '';
-      const cls = esc.attackClass && esc.attackClass !== 'none'
-        ? `${esc.attackClass}${sev}`
-        : (esc.classification || 'unclassified');
+      const sevText = singleLine(esc.severity);
+      const sev = sevText ? ` (${sevText})` : '';
+      const attackClass = singleLine(esc.attackClass);
+      const cls = attackClass && attackClass !== 'none'
+        ? `${attackClass}${sev}`
+        : (singleLine(esc.classification) || 'unclassified');
       console.log(`  ${tag}  ${colors.white}${esc.file}${RESET()}  ${colors.dim}${cls}${RESET()}`);
-      if (esc.summary) {
-        const summaryText = esc.summary.length > 220 && !verbose
-          ? `${esc.summary.slice(0, 217)}...`
-          : esc.summary;
+      const summary = singleLine(esc.summary);
+      if (summary) {
+        const summaryText = summary.length > 220 && !verbose
+          ? `${summary.slice(0, 217)}...`
+          : summary;
         console.log(`  ${colors.dim}${summaryText}${RESET()}`);
-        if (esc.summary.length > 220 && !verbose) {
+        if (summary.length > 220 && !verbose) {
           console.log(`  ${colors.dim}(run with --verbose for the full analysis)${RESET()}`);
         }
       }

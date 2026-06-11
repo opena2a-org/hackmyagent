@@ -97,7 +97,23 @@ export interface CoverageSweepStats {
   swept: number;
   /** Candidates dropped by the per-scan cap or the time budget. */
   skipped: number;
+  /**
+   * Sweep calls that returned null (daemon absent/errored mid-sweep). Null is
+   * "analyst unavailable", never a benign verdict — when every swept call was
+   * null the scan must surface daemon-error, not a clean zero-state.
+   */
+  nullVerdicts: number;
   policy: 'abstention-gated';
+}
+
+/**
+ * True when the sweep ran but got NO verdict back for anything it swept — the
+ * daemon answered healthz at the gate check and then failed every classify
+ * (wedged, OOM mid-scan). Distinguishes "swept N, all benign" from "swept N,
+ * all unavailable" so a dead daemon is never rendered as a clean scan.
+ */
+export function sweepIndicatesDaemonError(stats: CoverageSweepStats): boolean {
+  return stats.swept > 0 && stats.nullVerdicts === stats.swept;
 }
 
 /**
@@ -259,9 +275,13 @@ export async function orchestrateNanoMind(
 
         if (significant.length === 0 && sweep.escalations.length === 0) {
           // No HIGH/CRITICAL findings and the coverage sweep raised nothing.
-          // The deterministic Observations block carries the verdict.
+          // Distinguish a genuinely clean sweep from a daemon that answered
+          // healthz and then failed every classify call — reporting the
+          // latter as clean-scan would gaslight the user into thinking
+          // analysis ran (same failure mode the per-finding stage guards
+          // against above).
           result.analystZeroState = {
-            reason: 'clean-scan',
+            reason: sweepIndicatesDaemonError(sweep.stats) ? 'daemon-error' : 'clean-scan',
             modelLabel: 'Qwen3 v3.0.0 inline',
           };
         }
@@ -392,7 +412,7 @@ async function runAnalystOnFindings(
  * (HARDENING_CHECK_IDS incl. the AST-SCOPE-001 wildcard; AST-SCOPE-003 stays
  * a verdict driver).
  */
-const POSTURE_HARDENING_CHECKS: ReadonlySet<string> = new Set([
+export const POSTURE_HARDENING_CHECKS: ReadonlySet<string> = new Set([
   'AST-PROMPT-001', 'AST-PROMPT-003', 'AST-PROMPT-004',
   'AST-GOV-001', 'AST-GOV-002', 'AST-GOV-003', 'AST-GOV-004', 'AST-GOV-005',
   'AST-SCOPE-001',
@@ -456,9 +476,18 @@ export async function runCoverageSweep(
 
   const escalations: AnalystEscalation[] = [];
   let swept = 0;
+  let nullVerdicts = 0;
   const deadlineAt = Date.now() + SWEEP_DEADLINE_MS;
   const { readFile } = await import('node:fs/promises');
   const { join } = await import('node:path');
+
+  // The analyst is a generative model reading attacker-controlled artifact
+  // content, so every model-derived string is rendered/serialized as a single
+  // line: embedded newlines could otherwise spoof extra advisory rows or fake
+  // Verify: instructions inside HMA's trusted output (adversarial review M2).
+  // Control/ANSI sequences are already stripped at the IPC boundary.
+  const oneLine = (s: string | null): string =>
+    (s ?? '').replace(/\s+/g, ' ').trim();
 
   for (const candidate of selected) {
     if (Date.now() >= deadlineAt) {
@@ -480,21 +509,26 @@ export async function runCoverageSweep(
 
     const verdict = await classify(content);
     swept++;
-    if (verdict === null) continue; // daemon unavailable/errored — not a benign verdict, but never fabricate
+    if (verdict === null) {
+      // Daemon unavailable/errored — not a benign verdict, never fabricate.
+      nullVerdicts++;
+      continue;
+    }
 
     const routed = routeAnalystVerdict(verdict);
     // structuralAttack=false by selection; under abstention-gated the analyst
     // can only escalate, so `attack` from combineVerdict is always false here.
     const combined = combineVerdict(false, routed, 'abstention-gated');
     if (combined.escalate && (routed === 'attack' || routed === 'abstain')) {
+      const severity = oneLine(verdict.severity);
       escalations.push({
         file: candidate.path,
         artifactType: candidate.artifactType,
         routed,
-        attackClass: verdict.attackClass,
-        severity: verdict.severity,
-        classification: verdict.classification,
-        summary: verdict.analysis.slice(0, 600),
+        attackClass: oneLine(verdict.attackClass),
+        severity: severity.length > 0 ? severity : null,
+        classification: oneLine(verdict.classification),
+        summary: oneLine(verdict.analysis).slice(0, 600),
         modelVersion: verdict.modelVersion,
         policy: 'abstention-gated',
       });
@@ -515,6 +549,7 @@ export async function runCoverageSweep(
       candidates: eligible.length,
       swept,
       skipped: Math.max(0, skipped),
+      nullVerdicts,
       policy: 'abstention-gated',
     },
   };
