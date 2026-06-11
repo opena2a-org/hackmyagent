@@ -662,6 +662,23 @@ interface UnifiedCheckDisplayOptions {
     reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported';
     modelLabel: string;
   };
+  /**
+   * Analyst coverage escalations (--nanomind, abstention-gated policy).
+   * Advisory channel: rendered in their own section, never merged into
+   * findings, never counted toward score or exit code. Shape from
+   * orchestrate.ts AnalystEscalation.
+   */
+  analystEscalations?: Array<{
+    file: string;
+    artifactType: string;
+    routed: 'attack' | 'abstain';
+    attackClass: string;
+    severity: string | null;
+    classification: string;
+    summary: string;
+    modelVersion: string;
+    policy: 'abstention-gated';
+  }>;
   /** When set, this path is used in Next Steps hints instead of `name`. Use for local directory targets (e.g., `secure`). */
   nextStepsTarget?: string;
   /**
@@ -1517,6 +1534,41 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         ? `${Math.round(af.confidence * 100)}% (uncalibrated)`
         : confLabel;
       console.log(`  ${colors.dim}Confidence: ${display} | ${af.modelVersion} (${af.durationMs}ms)${RESET()}`);
+      console.log();
+    }
+  }
+
+  // ── NanoMind Coverage Escalations (advisory) ────────────────────────
+  // Files the deterministic scan did NOT flag but the analyst routed to
+  // attack/abstain under the abstention-gated policy. Advisory by design:
+  // the analyst's raw verdict is not auto-applied (it carries a measured
+  // ~22% false-positive rate on dual-use security code), so these never
+  // change the score or exit code — they queue files for human review.
+  const escalations = opts.analystEscalations ?? [];
+  if (escalations.length > 0) {
+    divider('NanoMind Coverage Escalations');
+    console.log(`  ${colors.dim}Advisory — the AI analyst flagged ${escalations.length} file${escalations.length === 1 ? '' : 's'} the deterministic checks did not.${RESET()}`);
+    console.log(`  ${colors.dim}Score and exit code are unchanged. Review each file to confirm or dismiss.${RESET()}`);
+    console.log();
+    for (const esc of escalations) {
+      const isAttack = esc.routed === 'attack';
+      const tag = isAttack ? `${colors.red}${colors.bold}REVIEW${RESET()}` : `${colors.yellow}${colors.bold}UNCERTAIN${RESET()}`;
+      const sev = esc.severity ? ` (${esc.severity})` : '';
+      const cls = esc.attackClass && esc.attackClass !== 'none'
+        ? `${esc.attackClass}${sev}`
+        : (esc.classification || 'unclassified');
+      console.log(`  ${tag}  ${colors.white}${esc.file}${RESET()}  ${colors.dim}${cls}${RESET()}`);
+      if (esc.summary) {
+        const summaryText = esc.summary.length > 220 && !verbose
+          ? `${esc.summary.slice(0, 217)}...`
+          : esc.summary;
+        console.log(`  ${colors.dim}${summaryText}${RESET()}`);
+        if (esc.summary.length > 220 && !verbose) {
+          console.log(`  ${colors.dim}(run with --verbose for the full analysis)${RESET()}`);
+        }
+      }
+      console.log(`  ${colors.cyan}Verify:${RESET()} review ${esc.file} for the behavior described above`);
+      console.log(`  ${colors.dim}${esc.modelVersion} | ${esc.routed === 'attack' ? 'named attack class at high severity' : 'uncertain verdict — needs a human call'}${RESET()}`);
       console.log();
     }
   }
@@ -3581,9 +3633,12 @@ Examples:
           }
         }
 
-        const jsonBase = nmResult.analystFindings?.length
-          ? { ...result, analystFindings: nmResult.analystFindings }
-          : result;
+        const jsonBase = {
+          ...result,
+          ...(nmResult.analystFindings?.length ? { analystFindings: nmResult.analystFindings } : {}),
+          ...(nmResult.analystEscalations?.length ? { analystEscalations: nmResult.analystEscalations } : {}),
+          ...(nmResult.coverageSweep ? { coverageSweep: nmResult.coverageSweep } : {}),
+        };
         const jsonOutput = publishStatus ? { ...jsonBase, publish: publishStatus } : jsonBase;
         if (options.output) {
           require('fs').writeFileSync(options.output, JSON.stringify(jsonOutput, null, 2) + '\n');
@@ -3712,6 +3767,9 @@ Examples:
           ? nmResult.analystFindings
           : undefined,
         analystZeroState: nmResult.analystZeroState,
+        analystEscalations: nmResult.analystEscalations?.length
+          ? nmResult.analystEscalations
+          : undefined,
         artifactSummaries: nmResult.artifactSummaries,
         nextStepsTarget: directory,
       });
@@ -8915,6 +8973,7 @@ async function checkGitHubRepo(
     // Run NanoMind semantic analysis and re-filter
     let analystFindings: any[] | undefined;
     let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
+    let analystEscalations: any[] | undefined;
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
@@ -8927,6 +8986,7 @@ async function checkGitHubRepo(
       result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
+      analystEscalations = nmResult.analystEscalations;
       artifactSummaries = nmResult.artifactSummaries;
     } catch {
       // NanoMind unavailable — surface this in the CLI output instead of going
@@ -8977,6 +9037,7 @@ async function checkGitHubRepo(
       usedAnalm: resolveNanomindFlag(options),
       analystFindings,
       analystZeroState,
+      analystEscalations,
       artifactSummaries,
     });
 
@@ -9217,6 +9278,7 @@ async function checkPyPiPackage(
     // Run NanoMind semantic analysis and re-filter
     let analystFindings: any[] | undefined;
     let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
+    let analystEscalations: any[] | undefined;
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
@@ -9229,6 +9291,7 @@ async function checkPyPiPackage(
       result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
+      analystEscalations = nmResult.analystEscalations;
       artifactSummaries = nmResult.artifactSummaries;
     } catch {
       // NanoMind unavailable -- use base scan results
@@ -9276,6 +9339,7 @@ async function checkPyPiPackage(
       usedAnalm: resolveNanomindFlag(options),
       analystFindings,
       analystZeroState,
+      analystEscalations,
       artifactSummaries,
     });
 
@@ -9413,6 +9477,7 @@ async function checkRawUrl(
 
     let analystFindings: any[] | undefined;
     let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
+    let analystEscalations: any[] | undefined;
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
@@ -9425,6 +9490,7 @@ async function checkRawUrl(
       result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
+      analystEscalations = nmResult.analystEscalations;
       artifactSummaries = nmResult.artifactSummaries;
     } catch {
       // NanoMind unavailable — surface this in the CLI output instead of going
@@ -9455,6 +9521,7 @@ async function checkRawUrl(
         findings: result.findings,
       };
       if (analystFindings?.length) jsonOut.analystFindings = analystFindings;
+      if (analystEscalations?.length) jsonOut.analystEscalations = analystEscalations;
       writeJsonStdout(jsonOut);
       return;
     }
@@ -9470,6 +9537,7 @@ async function checkRawUrl(
       usedAnalm: resolveNanomindFlag(options),
       analystFindings,
       analystZeroState,
+      analystEscalations,
       artifactSummaries,
     });
 
@@ -9582,6 +9650,7 @@ async function checkNpmPackage(
     // Run NanoMind semantic analysis and re-filter (matches secure command pipeline)
     let analystFindings: any[] | undefined;
     let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
+    let analystEscalations: any[] | undefined;
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
@@ -9594,6 +9663,7 @@ async function checkNpmPackage(
       result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
+      analystEscalations = nmResult.analystEscalations;
       artifactSummaries = nmResult.artifactSummaries;
     } catch {
       // NanoMind unavailable — surface this in the CLI output instead of going
@@ -9641,6 +9711,7 @@ async function checkNpmPackage(
       usedAnalm: resolveNanomindFlag(options),
       analystFindings,
       analystZeroState,
+      analystEscalations,
       artifactSummaries,
     });
 

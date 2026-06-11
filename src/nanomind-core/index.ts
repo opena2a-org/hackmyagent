@@ -78,7 +78,10 @@ export type {
 
 // Analyst coverage routing (Phase A P1, CDS-023): posture-vs-attack + abstention
 // layer that lets the analyst inform/escalate without auto-flipping the verdict.
-// Measurement-path only in P1 — NOT wired into orchestrateNanoMind.
+// Wired into orchestrateNanoMind's coverage sweep under the abstention-gated
+// policy (the only product-safe policy per the P3 corpus join, 2026-06-06):
+// the analyst escalates structural misses for human review; raw analyst
+// auto-verdict remains NO-GO (CDS-024).
 export {
   routeAnalystVerdict,
   combineVerdict,
@@ -95,6 +98,19 @@ export type {
   AnalystVerdict,
   CombinedVerdict,
 } from './analyst-coverage.js';
+
+// Orchestration (scan-path entry: scanner-bridge + analyst stages + coverage sweep)
+export { orchestrateNanoMind, runCoverageSweep } from './orchestrate.js';
+export type {
+  OrchestrationOptions,
+  OrchestrationResult,
+  AnalystEscalation,
+  CoverageSweepStats,
+  CoverageSweepOutcome,
+} from './orchestrate.js';
+export type { CoverageCandidate, NanoMindScanResult } from './scanner-bridge.js';
+export { classifyArtifactForCoverage } from './inference/security-analyst.js';
+export type { ArtifactCoverageVerdict } from './inference/security-analyst.js';
 
 // Ingestion
 export { parseArtifact, classifyArtifactType, computeHash } from './ingestion/artifact-parser.js';

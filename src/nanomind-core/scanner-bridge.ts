@@ -82,6 +82,17 @@ export interface ArtifactSummary {
   weakConstraintCount: number;       // # of constraints with bypassRisk > 0.5
 }
 
+/** One compiled artifact eligible for the analyst coverage sweep (Phase A P1).
+ *  Collected for EVERY compiled file (agent artifacts, source code, docs) —
+ *  behavioral attacks hide in all three — so the sweep layer, not discovery,
+ *  decides what the analyst reads. */
+export interface CoverageCandidate {
+  /** Relative path from scan root (matches SecurityFinding.file). */
+  path: string;
+  /** Compiler-assigned artifact type (skill, mcp_config, soul, source_code, ...). */
+  artifactType: string;
+}
+
 export interface NanoMindScanResult {
   mergedFindings: SecurityFinding[];
   astFindings: ASTFinding[];
@@ -89,6 +100,8 @@ export interface NanoMindScanResult {
   compiledArtifacts: number;
   artifactSummaries: ArtifactSummary[];
   nanomindAvailable: boolean;
+  /** Every compiled artifact, for the --nanomind analyst coverage sweep. */
+  coverageCandidates: CoverageCandidate[];
 }
 
 /**
@@ -117,6 +130,7 @@ export async function runNanoMindScan(
       compiledArtifacts: 0,
       artifactSummaries: [],
       nanomindAvailable: false,
+      coverageCandidates: [],
     };
   }
 
@@ -152,6 +166,7 @@ export async function runNanoMindScan(
   // Step 4: Compile each file and run analyzers
   const allASTFindings: ASTFinding[] = [];
   const artifactSummaries: ArtifactSummary[] = [];
+  const coverageCandidates: CoverageCandidate[] = [];
   // Advisory per-artifact NanoMind intent, keyed by relative path. Populated
   // only when the non-generative classifier (not the heuristic fallback)
   // classified the artifact, so the signal honestly means "the model said X".
@@ -166,6 +181,7 @@ export async function runNanoMindScan(
 
       const result = await compiler.compile(content, relativePath);
       compiledCount++;
+      coverageCandidates.push({ path: relativePath, artifactType: result.ast.artifactType });
 
       if (result.nanomindUsed) {
         nanomindUsedAtLeastOnce = true;
@@ -258,6 +274,7 @@ export async function runNanoMindScan(
     compiledArtifacts: compiledCount,
     artifactSummaries,
     nanomindAvailable: nanomindUsedAtLeastOnce || useNanoMind,
+    coverageCandidates,
   };
 }
 
