@@ -384,6 +384,7 @@ Security issues: `security@opena2a.org` (coordinated disclosure, response within
 - [Website](https://hackmyagent.com)
 - [Security Checks Reference](docs/SECURITY_CHECKS.md)
 - [OpenA2A CLI](https://github.com/opena2a-org/opena2a)
+- [aicomply](https://github.com/opena2a-org/aicomply) — inline PII, credential, and regulated-data classification for agent I/O at runtime (HMA scans the code; aicomply guards the live stream)
 - [Demos](https://opena2a.org/demos)
 - [Documentation](https://opena2a.org/docs)
 - [Research](https://research.opena2a.org)
