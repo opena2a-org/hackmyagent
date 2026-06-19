@@ -175,6 +175,26 @@ const CREDENTIAL_PATTERNS = [
   { name: 'SENDGRID_KEY', pattern: /SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/ },
 ];
 
+// MEM-006 receiver gate: persistence-semantic identifier parts. A `.push(...)`
+// only counts as a memory/persistence sink when its receiver chain contains one
+// of these word-parts (matched after splitting on dots, brackets, snake_case,
+// and camelCase humps) — so `userMemory`/`vectorStore`/`chatHistory` fire while
+// local render arrays (`lines`/`out`/`parts`) do not. See checkMemoryStoreSanitization.
+const PERSISTENT_RECEIVER_PARTS = new Set([
+  'mem', 'memo', 'memos', 'memory', 'memories',
+  'history', 'histories',
+  'conversation', 'conversations', 'convo', 'convos',
+  'context', 'contexts',
+  'session', 'sessions',
+  'message', 'messages',
+  'chat', 'chats',
+  'transcript', 'transcripts',
+  'store', 'stores',
+  'cache', 'caches',
+  'persist', 'persistence',
+  'db', 'database', 'databases',
+]);
+
 // OpenClaw skill security patterns
 const SKILL_REMOTE_FETCH_PATTERNS: RegExp[] = [
   /curl\s+(-[a-zA-Z]+\s+)*https?:\/\//gi,
@@ -11134,7 +11154,41 @@ dist/
         for (let i = 0; i < lines.length; i++) {
           if (lines[i].length > MAX_LINE_LENGTH) continue;
           storePattern.lastIndex = 0;
-          if (storePattern.test(lines[i])) {
+          const storeMatch = storePattern.exec(lines[i]);
+          if (storeMatch) {
+            // `push` is array-generic: store/save/persist/insert/upsert name a
+            // persistence sink by themselves, but `.push` is just as often a
+            // local render/result array (lines.push, out.push, parts.push,
+            // rows.push) that never reaches memory. Only a persistence-semantic
+            // receiver (conversation/session/history/memory arrays) is a
+            // poisoning sink, so gate `push` on the receiver name. Real
+            // conversation-memory poisoning still fires; local accumulator
+            // pushes are suppressed. Classification: (a) preserved-detection
+            // FP-suppress (opena2a cli-ui render builders MEM-006 FP).
+            if (storeMatch[1] === 'push') {
+              // Extract the receiver chain immediately before `.push(` and split
+              // it into lowercased word-parts across dots, brackets, snake_case,
+              // and camelCase humps. A persistence-semantic part anywhere in the
+              // chain (`userMemory`, `vectorStore`, `chatHistory`,
+              // `session.messages`, `mem`) keeps the finding; a local render /
+              // result array (`lines`, `out`, `parts`, `rows`) is suppressed.
+              // Anchoring keywords as token-parts (not a prefix regex) is what
+              // catches camelCase *suffixes* like `agentMemory` that a
+              // start-anchored pattern would miss. If the receiver can't be
+              // parsed (e.g. a chained call result), suppress — the explicit
+              // store/save/persist/insert/upsert verbs remain ungated.
+              const recvMatch = /([A-Za-z_$][\w$.[\]'"]*)\.push\s*\(/.exec(lines[i]);
+              const parts = (recvMatch ? recvMatch[1] : '')
+                .replace(/\[[^\]]*\]/g, '.')
+                // Standard identifier tokenizer: split on dots/quotes/whitespace,
+                // snake_case underscores, camelCase humps, acronym→word humps
+                // (DBStore→DB,Store), and digit boundaries (memory2→memory,2).
+                .split(/[._\s'"]+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|(?<=[a-zA-Z])(?=[0-9])/)
+                .map((p) => p.toLowerCase())
+                .filter(Boolean);
+              const isPersistent = parts.some((p) => PERSISTENT_RECEIVER_PARTS.has(p));
+              if (!isPersistent) continue;
+            }
             // Check surrounding context for validation
             const contextStart = Math.max(0, i - 5);
             const context = lines.slice(contextStart, i).join('\n');

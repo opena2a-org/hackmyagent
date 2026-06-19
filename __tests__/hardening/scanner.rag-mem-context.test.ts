@@ -344,5 +344,87 @@ export function storeUserInput(mem, evt) {
         'MEM-006 must fire on non-test, non-adversarial-dir files even if filename has a trap-ish prefix',
       ).toBeGreaterThan(0);
     });
+
+    it('does NOT fire on a local render/result array push (opena2a cli-ui FP)', async () => {
+      // Regression: `lines.push({ text, tone })` / `out.push({ text })` build a
+      // local terminal-render array — not a memory/persistence sink. The store
+      // pattern's `push` verb FP'd these as MEM-006 HIGH in opena2a cli-ui
+      // (action-gradient-block.ts, check-rich-block.ts). `push` now requires a
+      // persistence-semantic receiver; a local accumulator must stay silent.
+      const uiDir = path.join(tempDir, 'src');
+      await fs.mkdir(uiDir, { recursive: true });
+      const renderBuilder = `
+export function buildBlock(steps) {
+  const lines = [];
+  for (const step of steps) {
+    const row = step.label + ": " + step.value;
+    lines.push({ text: row, tone: "default" });
+  }
+  const out = [];
+  out.push({ text: lines.map((l) => l.text).join("  "), tone: "default" });
+  return { lines, out };
+}
+`;
+      await fs.writeFile(path.join(uiDir, 'render-block.ts'), renderBuilder);
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const mem006 = result.findings.filter((f) => f.checkId === 'MEM-006' && !f.passed);
+      expect(
+        mem006,
+        `MEM-006 must not fire on local render-array pushes. Got: ${mem006.map((f) => `${f.file}:${f.line}`).join(', ')}`,
+      ).toHaveLength(0);
+    });
+
+    it('STILL fires on a conversation-memory array push (preserved detection)', async () => {
+      // The receiver gate must not weaken real detection: pushing unsanitized
+      // user text onto a conversation/memory array is the exact poisoning sink.
+      const libDir = path.join(tempDir, 'lib');
+      await fs.mkdir(libDir, { recursive: true });
+      const prodCode = `
+export function remember(conversationMemory, userInput) {
+  conversationMemory.push({ text: userInput.text, content: userInput.content });
+}
+`;
+      await fs.writeFile(path.join(libDir, 'history.js'), prodCode);
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const mem006 = result.findings.filter((f) => f.checkId === 'MEM-006' && !f.passed);
+      expect(
+        mem006.length,
+        'MEM-006 must still fire on unsanitized conversation-memory pushes',
+      ).toBeGreaterThan(0);
+    });
+
+    it.each([
+      ['userMemory'],
+      ['agentMemory'],
+      ['vectorStore'],
+      ['userHistory'],
+      ['userMessages'],
+      ['session.messages'],
+      ['user_memory'],
+      ['chat_history'],
+      ['vectorDBStore'],
+    ])('STILL fires on a camelCase / dotted / snake_case persistence receiver: %s.push (adversarial-review lock)', async (receiver) => {
+      // Phase 4.5 lock: a start-anchored receiver regex missed camelCase
+      // *suffix* names (agentMemory, vectorStore). The token-split gate must
+      // catch the keyword as a camelCase hump or a dotted segment, not just a
+      // prefix — these are realistic agent-memory sinks, not fringe.
+      const libDir = path.join(tempDir, 'lib');
+      await fs.mkdir(libDir, { recursive: true });
+      const prodCode = `
+export function remember(${receiver.split('.')[0]}, userInput) {
+  ${receiver}.push({ text: userInput.text, content: userInput.content });
+}
+`;
+      await fs.writeFile(path.join(libDir, 'mem-sink.js'), prodCode);
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const mem006 = result.findings.filter((f) => f.checkId === 'MEM-006' && !f.passed);
+      expect(
+        mem006.length,
+        `MEM-006 must fire on ${receiver}.push (camelCase/dotted persistence receiver)`,
+      ).toBeGreaterThan(0);
+    });
   });
 });
