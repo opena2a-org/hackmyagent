@@ -4,6 +4,10 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **`detect` help now states that machine-wide discovery always runs.** A fresh user passing `detect /path/to/project` could expect directory-scoped results, but `detect` always audits the whole machine (running assistants, MCP servers, machine-level configs) and uses the directory only for the project-local scan. The command description, examples, and the directory-argument help now say so explicitly (release-test P3).
+
 ## [0.23.11] - 2026-06-18
 
 ### Changed

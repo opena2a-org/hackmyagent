@@ -7841,13 +7841,17 @@ Scans your machine and the current project directory for:
 
 Reports a governance score and actionable findings for CISOs and security engineers.
 
+The machine-wide discovery (running assistants, MCP servers, machine-level
+configs) ALWAYS runs; the directory argument only sets which project tree is
+scanned for project-local configs and governance files.
+
 Examples:
-  $ ${CLI_PREFIX} detect                  Audit current directory
-  $ ${CLI_PREFIX} detect /path/to/project Audit a specific project
+  $ ${CLI_PREFIX} detect                  Machine-wide audit + current project dir
+  $ ${CLI_PREFIX} detect /path/to/project Machine-wide audit + a specific project dir
   $ ${CLI_PREFIX} detect --json           Machine-readable output
   $ ${CLI_PREFIX} detect --verbose        Show full MCP server list
   $ ${CLI_PREFIX} detect --export-csv inventory.csv  Asset inventory for CMDB`)
-  .argument('[directory]', 'Project directory to audit (defaults to current directory)')
+  .argument('[directory]', 'Project tree for the project-local scan (defaults to current directory; machine-wide discovery always runs)')
   .option('--json', 'Output as JSON')
   .option('--verbose', 'Show full MCP server list and identity details')
   .option('--export-csv <file>', 'Export asset inventory as CSV (for ServiceNow, CMDB, etc.)')
