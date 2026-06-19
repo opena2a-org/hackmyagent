@@ -619,6 +619,114 @@ export function hasSkillMaliceSignals(content: string): boolean {
 
 
 /**
+ * Heuristic: does a `.env` file body actually contain secret-like values?
+ *
+ * GIT-003 severity is calibrated by content, not presence (#242). A real
+ * exposed secret floors the downstream opena2a composite (CRITICAL); a
+ * secret-less `.env` (e.g. `PORT=3000` / `LOG_LEVEL=info`) is only preventive
+ * hygiene (HIGH). This is calibration-by-content, NOT detection narrowing — a
+ * single real secret still returns true.
+ *
+ * Calibrated to err toward CRITICAL: a false downgrade (missing a real secret)
+ * is worse than a false upgrade, so the value bar is deliberately low for
+ * credential-shaped keys. Only values that are clearly non-secret (booleans,
+ * numbers, short config strings, template placeholders) are treated as benign.
+ */
+export function envBodyContainsSecrets(content: string): boolean {
+  // 1. Any known vendor credential pattern anywhere in the body → real secret.
+  //    CREDENTIAL_PATTERNS are non-global, so `.test` carries no lastIndex state.
+  for (const { pattern } of CREDENTIAL_PATTERNS) {
+    if (pattern.test(content)) return true;
+  }
+
+  // 2. Per-line KEY=VALUE inspection. Two-tier on purpose (#242 adversarial
+  //    review): a "strong" value signal is unambiguous and runs regardless of
+  //    the key name (so a secret stashed under an innocuous key — `SESSION=eyJ…`,
+  //    `X=sk_test_…`, a `user:pass@host` URL — can't evade CRITICAL). A "weak"
+  //    opaque-value signal is gated by a credential-shaped key, because an
+  //    opaque 8+ char value alone is ambiguous (build hash, cache-buster, DSN
+  //    without creds) and counting it everywhere would re-introduce the very
+  //    over-rating this issue fixes.
+  const lines = content.split(/\r?\n/);
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+
+    const key = line.slice(0, eq).trim().replace(/^export\s+/i, '');
+    let value = line.slice(eq + 1).trim();
+    // Strip an inline trailing comment only when the value is unquoted.
+    if (!/^["']/.test(value)) value = value.replace(/\s+#.*$/, '').trim();
+    // Strip surrounding quotes.
+    value = value.replace(/^(["'])(.*)\1$/, '$2').trim();
+    if (!value) continue; // empty value = nothing exposed
+
+    // --- Strong, key-independent signals (high precision) ---
+    // Recognized vendor key formats and JWTs are unambiguous secrets. Lengths
+    // are kept no looser than CREDENTIAL_PATTERNS so a benign identifier that
+    // merely starts with `AIza`/`sk-` can't false-match (#242 review F3).
+    if (
+      /(?:^|[^a-zA-Z0-9])(?:sk-ant-api\d|sk-proj-[a-zA-Z0-9]{16,}|sk-[a-zA-Z0-9]{40,}|sk_live_[a-zA-Z0-9]{16,}|sk_test_[a-zA-Z0-9]{16,}|ghp_[a-zA-Z0-9]{20,}|gh[osru]_[a-zA-Z0-9]{20,}|github_pat_[a-zA-Z0-9_]{20,}|xox[abprs]-[0-9a-zA-Z-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|SG\.[a-zA-Z0-9_-]{16,})/.test(
+        value,
+      ) ||
+      /^eyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]+$/.test(value) // JWT (header.payload.signature)
+    ) {
+      return true;
+    }
+
+    // URL carrying embedded credentials (`scheme://user:pass@host`) — but only
+    // when the password is a real literal, not an interpolated `${VAR}` /
+    // doc-grade placeholder. A templated DSN provably holds no secret, and
+    // flagging it CRITICAL would re-introduce the #242 over-rating (review F1).
+    const urlCred = /:\/\/([^/\s:@]+):([^/\s:@]+)@/.exec(value);
+    if (urlCred) {
+      const userinfo = urlCred[1] + urlCred[2];
+      const passLower = urlCred[2].toLowerCase();
+      const interpolated = /[${}<>]/.test(userinfo) || /%[a-zA-Z_]+%/.test(userinfo);
+      const passIsPlaceholder =
+        /(?:^|[-_])your[-_]/.test(passLower) ||
+        /^(?:pass|passwd|password|secret|changeme|change_me|placeholder|example|dummy|todo|tbd)$/.test(passLower);
+      if (!interpolated && !passIsPlaceholder) return true;
+    }
+
+    // --- Weak opaque-value signal, gated by a credential-shaped key ---
+    const keyMatchesCredentialShape =
+      /(?:_KEY$|_KEY_|_TOKEN|_SECRET|_PASSWORD|_PASSWD|^PASSWORD$|^PASSWD$|^SECRET$|^TOKEN$|^API_?KEY$|PRIVATE_KEY|CLIENT_SECRET|ACCESS_KEY|AUTH_TOKEN|_CREDENTIALS?$)/i.test(
+        key,
+      );
+    if (!keyMatchesCredentialShape) continue;
+
+    // Reject obvious placeholders / template markers (these are .env.example-grade).
+    const lower = value.toLowerCase();
+    const isPlaceholder =
+      /^\$\{/.test(value) || // ${VAR} interpolation reference
+      /^<.*>$/.test(value) || // <your-key>
+      /\.\.\./.test(value) ||
+      /^x{3,}$/i.test(value) ||
+      /(?:^|[-_])your[-_]/.test(lower) ||
+      /\b(?:changeme|change_me|placeholder|example|dummy|replace[-_ ]?me|todo|tbd|none|null|undefined)\b/.test(
+        lower,
+      );
+    if (isPlaceholder) continue;
+
+    // Reject clearly non-secret value shapes: booleans, env names, log levels,
+    // numbers, and credential-less URLs (a URL *with* creds was already caught).
+    if (/^(?:true|false|yes|no|on|off|debug|info|warn|error|trace|development|production|staging|test)$/i.test(value)) {
+      continue;
+    }
+    if (/^-?\d+(?:\.\d+)?$/.test(value)) continue; // pure number
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) continue; // bare scheme://host with no creds
+
+    // A substantial opaque value under a credential-shaped key → real secret.
+    if (/^[A-Za-z0-9+/=_.\-$]{8,}$/.test(value)) return true;
+  }
+
+  return false;
+}
+
+
+/**
  * Check if a variation selector at position i in rawBuffer is a legitimate
  * emoji presentation selector (U+FE0F following an emoji base character).
  *
@@ -1958,19 +2066,35 @@ dist/
 
     // Only report if .env is at risk
     if (envAtRisk) {
+      // GIT-003 severity is calibrated by content, not mere presence (#242).
+      // An un-ignored `.env` that actually holds a secret is real exposure
+      // (CRITICAL — floors the downstream opena2a composite); a secret-less
+      // `.env` (config-only, e.g. PORT=3000) is preventive hygiene (HIGH).
+      // The guidance is conditional too — we don't claim "contains API keys"
+      // when the file demonstrably does not.
+      let envContent = '';
+      try {
+        envContent = await fs.readFile(path.join(targetDir, '.env'), 'utf-8');
+      } catch {}
+      const hasSecrets = envBodyContainsSecrets(envContent);
+
       findings.push({
         checkId: 'GIT-003',
         name: '.env Not Ignored',
-        description: '.env exists but not in .gitignore - secrets may be committed',
+        description: hasSecrets
+          ? '.env contains secret-like values but is not in .gitignore - credentials may be committed'
+          : '.env exists but not in .gitignore - secrets added later may be committed',
         category: 'git',
-        severity: 'critical',
+        severity: hasSecrets ? 'critical' : 'high',
         passed: git003Fixed,
         message: 'Add .env to .gitignore',
         file: '.env',
         fixable: true,
         fixed: git003Fixed,
         fix: `${this.cliName} secure --fix`,
-        guidance: '.env files contain API keys and secrets. Without .gitignore protection, a single git add . can expose all credentials in your repository history.',
+        guidance: hasSecrets
+          ? '.env contains API keys or secrets. Without .gitignore protection, a single git add . can expose all credentials in your repository history.'
+          : 'No secrets detected in this .env yet, but .env files are where credentials accumulate. Add .env to .gitignore now so a future key is never committed by accident.',
       });
     }
 
