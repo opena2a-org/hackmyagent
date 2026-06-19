@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { HardeningScanner, ScanOptions } from '../../src/hardening/scanner';
+import { HardeningScanner, ScanOptions, envBodyContainsSecrets } from '../../src/hardening/scanner';
 import type { SecurityFinding, ScanResult, ProjectType } from '../../src/hardening/security-check';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -401,9 +401,12 @@ describe('Git security checks', () => {
     expect(finding).toBeUndefined();
   });
 
-  it('detects .env file when .gitignore missing .env pattern', async () => {
+  it('GIT-003 is CRITICAL when un-ignored .env holds a real vendor secret (#242)', async () => {
     await fs.writeFile(path.join(tempDir, '.gitignore'), 'node_modules/\n');
-    await fs.writeFile(path.join(tempDir, '.env'), 'SECRET=value\n');
+    await fs.writeFile(
+      path.join(tempDir, '.env'),
+      'PORT=3000\nANTHROPIC_API_KEY=sk-ant-api03-AbCdEf0123456789AbCdEf0123456789\n'
+    );
 
     const result = await scanner.scan({ targetDir: tempDir });
     const finding = result.findings.find((f) => f.checkId === 'GIT-003');
@@ -411,6 +414,149 @@ describe('Git security checks', () => {
     expect(finding).toBeDefined();
     expect(finding?.file).toBe('.env');
     expect(finding?.severity).toBe('critical');
+    expect(finding?.guidance).toMatch(/API keys or secrets/);
+  });
+
+  it('GIT-003 is CRITICAL when un-ignored .env holds a generic secret-shaped value (#242)', async () => {
+    await fs.writeFile(path.join(tempDir, '.gitignore'), 'node_modules/\n');
+    await fs.writeFile(
+      path.join(tempDir, '.env'),
+      'DB_PASSWORD=hunter2-prod-supersecret\n'
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'GIT-003');
+
+    expect(finding).toBeDefined();
+    expect(finding?.severity).toBe('critical');
+  });
+
+  it('GIT-003 is HIGH (not CRITICAL) when un-ignored .env has no secrets (#242)', async () => {
+    await fs.writeFile(path.join(tempDir, '.gitignore'), 'node_modules/\n');
+    await fs.writeFile(path.join(tempDir, '.env'), 'PORT=3000\nLOG_LEVEL=info\n');
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'GIT-003');
+
+    expect(finding).toBeDefined();
+    expect(finding?.file).toBe('.env');
+    expect(finding?.severity).toBe('high');
+    // Must not falsely claim the file contains API keys.
+    expect(finding?.guidance).not.toMatch(/contains API keys/);
+    expect(finding?.guidance).toMatch(/No secrets detected/);
+  });
+
+  it('GIT-003 treats a placeholder-only .env as secret-less → HIGH (#242)', async () => {
+    await fs.writeFile(path.join(tempDir, '.gitignore'), 'node_modules/\n');
+    await fs.writeFile(
+      path.join(tempDir, '.env'),
+      'API_KEY=your-api-key-here\nDATABASE_URL=postgres://localhost:5432/app\n'
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'GIT-003');
+
+    expect(finding).toBeDefined();
+    expect(finding?.severity).toBe('high');
+  });
+
+  it('GIT-003 does not fire when .env is gitignored (#242)', async () => {
+    await fs.writeFile(path.join(tempDir, '.gitignore'), '.env\nnode_modules/\n');
+    await fs.writeFile(
+      path.join(tempDir, '.env'),
+      'ANTHROPIC_API_KEY=sk-ant-api03-AbCdEf0123456789AbCdEf0123456789\n'
+    );
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'GIT-003');
+
+    expect(finding).toBeUndefined();
+  });
+
+  it('GIT-003 does not fire when no .env is present (#242)', async () => {
+    await fs.writeFile(path.join(tempDir, '.gitignore'), 'node_modules/\n');
+
+    const result = await scanner.scan({ targetDir: tempDir });
+    const finding = result.findings.find((f) => f.checkId === 'GIT-003');
+
+    expect(finding).toBeUndefined();
+  });
+});
+
+describe('envBodyContainsSecrets (GIT-003 content calibration, #242)', () => {
+  it('returns false for config-only .env', () => {
+    expect(envBodyContainsSecrets('PORT=3000\nLOG_LEVEL=info\nNODE_ENV=production\n')).toBe(false);
+  });
+
+  it('returns false for an empty / comment-only .env', () => {
+    expect(envBodyContainsSecrets('')).toBe(false);
+    expect(envBodyContainsSecrets('# config\n# DATABASE_URL=...\n')).toBe(false);
+  });
+
+  it('returns false for secret-shaped keys holding booleans/numbers', () => {
+    expect(envBodyContainsSecrets('SECRET_SCANNING_ENABLED=true\nTOKEN_TTL=3600\n')).toBe(false);
+  });
+
+  it('returns false for placeholder values', () => {
+    expect(envBodyContainsSecrets('API_KEY=your-api-key-here\nAUTH_TOKEN=<replace-me>\n')).toBe(false);
+    expect(envBodyContainsSecrets('OPENAI_API_KEY=changeme\n')).toBe(false);
+  });
+
+  it('returns false for a DB URL without embedded credentials', () => {
+    expect(envBodyContainsSecrets('DATABASE_URL=postgres://localhost:5432/app\n')).toBe(false);
+  });
+
+  it('returns true for real vendor keys', () => {
+    expect(envBodyContainsSecrets('ANTHROPIC_API_KEY=sk-ant-api03-AbCdEf0123456789AbCdEf0123456789\n')).toBe(true);
+    expect(envBodyContainsSecrets('AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n')).toBe(true);
+  });
+
+  it('returns true for generic secret-shaped key with a substantial value', () => {
+    expect(envBodyContainsSecrets('DB_PASSWORD=hunter2-prod-supersecret\n')).toBe(true);
+    expect(envBodyContainsSecrets('CLIENT_SECRET=a1b2c3d4e5f6g7h8\n')).toBe(true);
+  });
+
+  it('returns true for a DB URL carrying user:password', () => {
+    expect(envBodyContainsSecrets('DATABASE_URL=postgres://admin:s3cr3tpass@db.internal/app\n')).toBe(true);
+  });
+
+  it('ignores leading export and surrounding quotes', () => {
+    expect(envBodyContainsSecrets('export DB_PASSWORD="hunter2-prod-supersecret"\n')).toBe(true);
+    expect(envBodyContainsSecrets('export PORT=3000\n')).toBe(false);
+  });
+
+  // --- #242 adversarial-review F1/F2: strong signals must NOT be gated by key name ---
+  it('catches a real secret stashed under an innocuous key name (no key-gate evasion)', () => {
+    expect(envBodyContainsSecrets('SESSION=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.abcDEF123456\n')).toBe(true); // JWT
+    expect(envBodyContainsSecrets('PAYMENT=sk_test_abcdef1234567890abcdef\n')).toBe(true); // Stripe test key
+    expect(envBodyContainsSecrets('WIDGET=gho_abcdefghijklmnopqrstuvwxyz0123456789\n')).toBe(true); // GitHub OAuth
+  });
+
+  it('catches user:password embedded in a URL under any key', () => {
+    expect(envBodyContainsSecrets('MY_DB=postgres://admin:supersecret@db.example.com:5432/app\n')).toBe(true);
+    expect(envBodyContainsSecrets('CACHE=redis://default:s3cretpassword@redis.host:6379\n')).toBe(true);
+  });
+
+  it('does NOT false-CRITICAL on benign opaque config under non-credential keys', () => {
+    // Build hashes / cache busters are opaque 8+ char values but not secrets.
+    expect(envBodyContainsSecrets('BUILD_HASH=a1b2c3d4e5f6g7h8\nCACHE_BUST=20260618abcdef\nCOMMIT_SHA=deadbeefcafebabe\n')).toBe(false);
+  });
+
+  // --- #242 second-pass review F1: templated / placeholder DSNs must NOT be CRITICAL ---
+  it('does NOT flag an interpolated or placeholder DSN as a secret', () => {
+    expect(envBodyContainsSecrets('DATABASE_URL=postgres://${DB_USER}:${DB_PASS}@db\n')).toBe(false);
+    expect(envBodyContainsSecrets('DATABASE_URL=postgres://user:password@localhost:5432/mydb\n')).toBe(false);
+    expect(envBodyContainsSecrets('MONGO=mongodb://YOUR_USER:YOUR_PASS@broker\n')).toBe(false);
+    expect(envBodyContainsSecrets('DB=mysql://<user>:<pass>@host\n')).toBe(false);
+  });
+
+  it('still flags a DSN with a real literal password even when the user is generic', () => {
+    expect(envBodyContainsSecrets('DATABASE_URL=postgres://user:Tr0ub4dor3xKw9@host\n')).toBe(true);
+    expect(envBodyContainsSecrets('DATABASE_URL=postgres://admin:supersecret@db.example.com:5432/app\n')).toBe(true);
+  });
+
+  it('does NOT false-match a benign identifier that merely starts with a vendor prefix', () => {
+    expect(envBodyContainsSecrets('WIDGET_ID=AIzakaya_restaurant_booking_id_001\n')).toBe(false);
   });
 });
 
