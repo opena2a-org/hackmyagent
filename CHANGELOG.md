@@ -4,6 +4,8 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.23.11] - 2026-06-18
+
 ### Changed
 
 - **`scan-soul` verdict now distinguishes applicable controls from the full catalog.** A fully-hardened SOUL.md scanned at BASIC tier reported `All 29 governance controls covered`, which read as a contradiction of the `72 controls` that `scan-soul --explain` and `harden-soul --dry-run` advertise. The verdict now reads `All 29 applicable controls covered (of 72 in catalog · BASIC tier)` when the evaluated set is a tier/profile subset of the catalog. Both numbers were always correct — 72 is the full governance catalog, 29 is the subset applicable to the detected tier and profile — but the wording now makes the relationship explicit (release-test follow-up).
