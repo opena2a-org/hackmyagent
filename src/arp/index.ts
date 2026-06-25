@@ -97,6 +97,48 @@ export {
   GTINSubmitResult,
 } from './telemetry';
 
+// Re-export the structural signature producer (G2/G4/G5/G7).
+export {
+  SignatureEmitter,
+  deriveOutcome,
+  redactEvent,
+  behavioralHash,
+  canonicalShape,
+  currentOrgPseudonym,
+  computeOrgPseudonym,
+  buildSignedSubmission,
+  buildCanonical,
+  generateNonce,
+  readAuditRecords,
+  auditLogPath,
+  appendAuditRecord,
+  isOptedOut as isTelemetryOptedOut,
+  signatureTelemetryEnabled,
+  resolveRegistryUrl as resolveTelemetryRegistryUrl,
+  writeOptOutMarker,
+  clearOptOutMarker,
+  disclosureText,
+  maybeShowDisclosure,
+  hasShownDisclosure,
+  SCHEMA_VERSION as TELEMETRY_SCHEMA_VERSION,
+  SIGNATURE_INGEST_PATH,
+  ACTION_CLASSES,
+  TARGET_CLASSES,
+  TACTIC_IDS,
+  OUTCOME_CLASSES,
+} from './telemetry/signature';
+export type {
+  RedactedSignal,
+  ActionClass,
+  TargetClass,
+  TacticId,
+  OutcomeClass,
+  TelemetrySignatureRequest,
+  AuditRecord,
+  SignatureEmitterConfig,
+} from './telemetry/signature';
+export type { SignatureTelemetryConfig } from './types';
+
 import * as path from 'path';
 import type { ARPConfig, ARPEvent, Monitor } from './types';
 import { EventEngine } from './engine/event-engine';
@@ -124,6 +166,13 @@ import { A2AProtocolInterceptor } from './interceptors/a2a-protocol';
 import { loadConfig } from './config/loader';
 import { GTINForwarder } from './telemetry/forwarder';
 import { generateSensorToken } from './telemetry/gtin';
+import { SignatureEmitter } from './telemetry/signature/emitter';
+import {
+  signatureTelemetryEnabled,
+  isOptedOut,
+  resolveRegistryUrl,
+} from './telemetry/signature/config';
+import { maybeShowDisclosure } from './telemetry/signature/disclosure';
 
 /**
  * Agent Runtime Protection — the main entry point.
@@ -147,6 +196,12 @@ export class AgentRuntimeProtection {
   private readonly logger: LocalLogger;
   private readonly monitors: Monitor[] = [];
   private gtinForwarder: GTINForwarder | null = null;
+  /**
+   * Structural signature producer (G2/G4/G5/G7). DEFAULT-ON, opt-out — distinct
+   * from the legacy opt-in GTIN runtime channel. Null only when the customer has
+   * opted out (the single master opt-out, which also gates GTIN below).
+   */
+  private signatureEmitter: SignatureEmitter | null = null;
   private running = false;
   /**
    * In-process runtime twin (behavioral anomaly scorer). Held for the
@@ -254,8 +309,14 @@ export class AgentRuntimeProtection {
       this.monitors.push(new A2AProtocolInterceptor(this.engine, al.a2a.trustedAgents));
     }
 
-    // Create GTIN forwarder if opted in
-    if (this.config.gtin?.enabled) {
+    // The single master opt-out (env / marker file / config) disables ALL
+    // OpenA2A telemetry, so a customer who opts out is never surprised by a
+    // second channel. Resolved once here and applied to both channels below.
+    const optedOut = isOptedOut(this.config.signatureTelemetry);
+
+    // Create GTIN forwarder if opted in AND not globally opted out. GTIN remains
+    // a separate, opt-in/default-off legacy runtime channel.
+    if (this.config.gtin?.enabled && !optedOut) {
       const sensorToken = this.config.gtin.sensorToken || generateSensorToken();
       this.gtinForwarder = new GTINForwarder({
         enabled: true,
@@ -267,6 +328,18 @@ export class AgentRuntimeProtection {
       // Subscribe forwarder to all events (it filters internally)
       this.engine.onEvent((event) => {
         this.gtinForwarder?.onEvent(event);
+      });
+    }
+
+    // Create the structural signature emitter unless opted out (DEFAULT-ON).
+    if (signatureTelemetryEnabled(this.config.signatureTelemetry)) {
+      this.signatureEmitter = new SignatureEmitter({
+        registryUrl: resolveRegistryUrl(this.config.signatureTelemetry),
+      });
+      // Subscribe to all events; the emitter redacts fail-closed and filters
+      // non-anomalous events internally.
+      this.engine.onEvent((event) => {
+        this.signatureEmitter?.onEvent(event);
       });
     }
   }
@@ -292,6 +365,14 @@ export class AgentRuntimeProtection {
       this.gtinForwarder.start();
     }
 
+    // Start the structural signature emitter and, on first run only, print the
+    // plain install-time disclosure (G7) so a default-on customer knows exactly
+    // what is shared and how to opt out.
+    if (this.signatureEmitter) {
+      maybeShowDisclosure(undefined, this.config.signatureTelemetry);
+      this.signatureEmitter.start();
+    }
+
     this.running = true;
   }
 
@@ -306,6 +387,11 @@ export class AgentRuntimeProtection {
     // Flush and shutdown GTIN forwarder
     if (this.gtinForwarder) {
       await this.gtinForwarder.shutdown();
+    }
+
+    // Flush and shutdown the signature emitter (sends any buffered signals).
+    if (this.signatureEmitter) {
+      await this.signatureEmitter.shutdown();
     }
 
     await this.intelligence.stop();
