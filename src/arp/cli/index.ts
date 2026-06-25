@@ -10,6 +10,18 @@ import { A2AProtocolInterceptor } from '../interceptors/a2a-protocol';
 import { EventEngine } from '../engine/event-engine';
 import { IntelligenceCoordinator } from '../intelligence/coordinator';
 import { SequenceLogWriter } from '../intelligence/sequence-log-writer';
+import {
+  readAuditRecords,
+  auditLogPath,
+  isOptedOut,
+  signatureTelemetryEnabled,
+  resolveRegistryUrl,
+  writeOptOutMarker,
+  clearOptOutMarker,
+  disclosureText,
+  loadSensorId,
+  currentOrgPseudonym,
+} from '../telemetry/signature';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -33,6 +45,9 @@ async function main(): Promise<void> {
       break;
     case 'proxy':
       await startProxy();
+      break;
+    case 'telemetry':
+      await telemetryCommand();
       break;
     case '--version':
     case '-v':
@@ -243,6 +258,119 @@ async function startProxy(): Promise<void> {
   keepAlive.unref();
 }
 
+async function telemetryCommand(): Promise<void> {
+  const sub = args[1];
+  const config = loadConfig();
+  const tcfg = config.signatureTelemetry;
+
+  switch (sub) {
+    case 'log':
+      await telemetryLog();
+      break;
+    case 'status':
+      await telemetryStatus(tcfg);
+      break;
+    case 'disclosure':
+      console.log('\n' + disclosureText(tcfg) + '\n');
+      break;
+    case 'opt-out': {
+      const p = writeOptOutMarker();
+      console.log('\n  OpenA2A telemetry DISABLED (both signature and GTIN channels).');
+      console.log(`  Marker: ${p}`);
+      console.log('  Re-enable with: arp telemetry opt-in\n');
+      break;
+    }
+    case 'opt-in': {
+      clearOptOutMarker();
+      const stillOff = isOptedOut(tcfg);
+      console.log('\n  Opt-out marker removed.');
+      if (stillOff) {
+        console.log('  NOTE: telemetry is still disabled by an env var or config');
+        console.log('  (OPENA2A_TELEMETRY_OPTOUT / ARP_TELEMETRY_DISABLED, or');
+        console.log('  signatureTelemetry.enabled: false). Clear those to re-enable.\n');
+      } else {
+        console.log('  Structural signature telemetry is ON (default).\n');
+      }
+      break;
+    }
+    case undefined:
+    case '--help':
+    case '-h':
+      console.log(`
+  arp telemetry <subcommand>
+
+    status        Show telemetry state, sensor identity, and send counts
+    log [N]       Show the last N audited payloads sent (default 20)
+    disclosure    Print the full install-time disclosure
+    opt-out       Disable ALL OpenA2A telemetry on this machine
+    opt-in        Remove the local opt-out marker
+
+  Structural signatures are DEFAULT-ON. Only the SHAPE of an anomalous
+  behavior is shared, never payloads. Every byte sent is recorded locally
+  first — review it with: arp telemetry log
+`);
+      break;
+    default:
+      console.error(`  Unknown telemetry subcommand: ${sub}`);
+      console.error('  Run: arp telemetry --help');
+      process.exit(1);
+  }
+}
+
+async function telemetryLog(): Promise<void> {
+  const n = parseInt(args[2], 10) || 20;
+  const records = await readAuditRecords(n);
+  console.log(`\n  Telemetry audit log: ${auditLogPath()}`);
+  if (records.length === 0) {
+    console.log('  No telemetry has been sent yet (or the log is empty).\n');
+    return;
+  }
+  console.log(`  Last ${records.length} record(s) — every byte that left this machine:\n`);
+  for (const r of records) {
+    const phase = r.phase.toUpperCase().padEnd(9);
+    console.log(`  ${r.ts}  ${phase}  ${r.techniqueId.padEnd(10)} ${r.severity}/${r.outcome}`);
+    if (r.body) console.log(`      payload: ${r.body}`);
+    if (r.detail) console.log(`      detail:  ${r.detail}`);
+  }
+  console.log('\n  This is exactly what was transmitted. No payloads, prompts, args,');
+  console.log('  paths, secrets, or identities are present by design.\n');
+}
+
+async function telemetryStatus(tcfg?: import('../types').SignatureTelemetryConfig): Promise<void> {
+  const enabled = signatureTelemetryEnabled(tcfg);
+  const records = await readAuditRecords(100000);
+  const counts: Record<string, number> = {};
+  for (const r of records) counts[r.phase] = (counts[r.phase] ?? 0) + 1;
+
+  console.log('\n  OpenA2A structural signature telemetry');
+  console.log('  ─────────────────────────────────────');
+  console.log(`  State:        ${enabled ? 'ON (default-on)' : 'OFF (opted out)'}`);
+  if (!enabled) {
+    console.log(`  Opted out by: ${optOutReason(tcfg)}`);
+  }
+  console.log(`  Registry:     ${resolveRegistryUrl(tcfg)}`);
+  try {
+    console.log(`  Sensor id:    ${loadSensorId()}`);
+    console.log(`  Org pseudonym:${' '}${currentOrgPseudonym()} (rotates monthly)`);
+  } catch {
+    // identity files may not exist until first send; do not fail status
+  }
+  console.log(`  Audit log:    ${auditLogPath()}`);
+  console.log('  Sent:         ' + (counts['sent'] ?? 0));
+  console.log('  Buffered:     ' + (counts['buffered'] ?? 0));
+  console.log('  Failed:       ' + (counts['failed'] ?? 0));
+  console.log('  Dropped:      ' + (counts['dropped'] ?? 0));
+  console.log('\n  Review payloads: arp telemetry log');
+  console.log('  Disclosure:      arp telemetry disclosure');
+  console.log(`  ${enabled ? 'Opt out:         arp telemetry opt-out' : 'Opt back in:     arp telemetry opt-in'}\n`);
+}
+
+function optOutReason(tcfg?: import('../types').SignatureTelemetryConfig): string {
+  if (tcfg?.enabled === false) return 'config (signatureTelemetry.enabled: false)';
+  if (process.env.OPENA2A_TELEMETRY_OPTOUT || process.env.ARP_TELEMETRY_DISABLED) return 'environment variable';
+  return 'local opt-out marker (arp telemetry opt-in to clear)';
+}
+
 function showHelp(): void {
   console.log(`
   ARP Guard v${VERSION} — Agent Runtime Protection
@@ -257,6 +385,7 @@ function showHelp(): void {
     status                    Show current protection status
     tail [N]                  Show last N events (default: 20)
     budget                    Show LLM intelligence budget usage
+    telemetry <sub>           Community signature telemetry (status|log|opt-out)
 
   INTELLIGENCE
     ARP uses a 3-layer intelligence stack:
