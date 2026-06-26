@@ -54,6 +54,21 @@ export function loadSensorId(): string {
   return id;
 }
 
+/**
+ * Persist the sensor id locally (the canonical SENSOR_ID_FILE). Used after a
+ * successful enrollment to ADOPT the registry-assigned service-account id as this
+ * sensor's id, so future reports carry the id the registry binds to the registered
+ * key — the exact-match resolveIdentity requires for verified status. Note an
+ * OPENA2A_SENSOR_ID env override still takes precedence in loadSensorId, so an
+ * operator pin is never silently overwritten in effect.
+ */
+export function persistSensorId(id: string): void {
+  const trimmed = id.trim();
+  if (!trimmed) return;
+  ensureHome();
+  writeFileSync(homePath(SENSOR_ID_FILE), trimmed, { mode: 0o600 });
+}
+
 /** Lowercase-hex Ed25519 public key (64 hex chars) for the given private key. */
 export async function publicKeyHex(priv: Uint8Array): Promise<string> {
   const pub = await ed25519.getPublicKeyAsync(priv);

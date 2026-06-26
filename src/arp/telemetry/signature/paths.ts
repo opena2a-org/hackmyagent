@@ -28,6 +28,8 @@ export const AUDIT_LOG_FILE = 'telemetry-audit.log';
 export const DISCLOSURE_MARKER_FILE = 'telemetry-disclosure-shown';
 /** Opt-out marker file (presence = opted out, in addition to env/config). */
 export const OPTOUT_MARKER_FILE = 'telemetry-optout';
+/** Local record of the sensor's enrollment state (JSON: sensorId, state, updatedAt). */
+export const SENSOR_ENROLLMENT_FILE = 'telemetry-enrollment';
 
 export function homePath(file: string): string {
   return join(opena2aHome(), file);
