@@ -21,7 +21,10 @@ import {
   disclosureText,
   loadSensorId,
   currentOrgPseudonym,
+  purgeRemoteSignatures,
+  manualPurgeCurl,
 } from '../telemetry/signature';
+import type { SignatureTelemetryConfig } from '../types';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -274,10 +277,27 @@ async function telemetryCommand(): Promise<void> {
       console.log('\n' + disclosureText(tcfg) + '\n');
       break;
     case 'opt-out': {
+      // Write the local marker FIRST — it is what actually stops transmission. The
+      // remote purge below is best-effort cleanup of already-sent data and must
+      // never block or undo the opt-out (fail OPEN).
       const p = writeOptOutMarker();
       console.log('\n  OpenA2A telemetry DISABLED (both signature and GTIN channels).');
       console.log(`  Marker: ${p}`);
+
+      if (args.includes('--no-purge')) {
+        console.log('  Skipped deleting already-sent signatures (--no-purge).');
+        console.log('  Delete them later with: arp telemetry purge');
+      } else {
+        await runRemotePurge(tcfg);
+      }
       console.log('  Re-enable with: arp telemetry opt-in\n');
+      break;
+    }
+    case 'purge': {
+      // Standalone right-to-delete: request the registry delete already-sent
+      // signatures without changing the opt-out state.
+      await runRemotePurge(tcfg);
+      console.log('');
       break;
     }
     case 'opt-in': {
@@ -302,8 +322,10 @@ async function telemetryCommand(): Promise<void> {
     status        Show telemetry state, sensor identity, and send counts
     log [N]       Show the last N audited payloads sent (default 20)
     disclosure    Print the full install-time disclosure
-    opt-out       Disable ALL OpenA2A telemetry on this machine
+    opt-out       Disable ALL OpenA2A telemetry (also deletes already-sent
+                  signatures from the registry; use --no-purge to skip that)
     opt-in        Remove the local opt-out marker
+    purge         Ask the registry to delete already-sent signatures (right-to-delete)
 
   Structural signatures are DEFAULT-ON. Only the SHAPE of an anomalous
   behavior is shared, never payloads. Every byte sent is recorded locally
@@ -315,6 +337,26 @@ async function telemetryCommand(): Promise<void> {
       console.error('  Run: arp telemetry --help');
       process.exit(1);
   }
+}
+
+// runRemotePurge requests the registry delete this sensor's already-sent
+// signatures (G6 right-to-delete). Fails OPEN: any network/registry failure is
+// reported with a manual retry command but never throws — the caller's opt-out
+// (or standalone purge intent) completes regardless.
+async function runRemotePurge(tcfg?: SignatureTelemetryConfig): Promise<void> {
+  console.log('  Requesting deletion of already-sent signatures from the registry...');
+  const result = await purgeRemoteSignatures(tcfg);
+  if (result.ok) {
+    const n = typeof result.deleted === 'number' ? result.deleted : 'unknown';
+    console.log(`  Registry purge complete (deleted: ${n}).`);
+    return;
+  }
+  // Fail open: the local opt-out still stands; tell the user how to retry the purge.
+  console.log(`  Could not reach the registry to delete sent signatures (${result.error ?? 'unknown error'}).`);
+  console.log('  Your opt-out still took effect locally; no new data will be sent.');
+  console.log('  Retry the deletion later with: arp telemetry purge');
+  console.log('  Or run it directly:');
+  console.log(`    ${manualPurgeCurl(result)}`);
 }
 
 async function telemetryLog(): Promise<void> {

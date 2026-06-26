@@ -79,3 +79,13 @@ export {
   markDisclosureShown,
   maybeShowDisclosure,
 } from './disclosure';
+
+export {
+  PURGE_SCHEMA_VERSION,
+  SIGNATURE_PURGE_PATH,
+  buildPurgeCanonical,
+  buildPurgeProof,
+  purgeRemoteSignatures,
+  manualPurgeCurl,
+} from './purge';
+export type { PurgeProofBody, PurgeResult } from './purge';
