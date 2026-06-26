@@ -89,3 +89,15 @@ export {
   manualPurgeCurl,
 } from './purge';
 export type { PurgeProofBody, PurgeResult } from './purge';
+
+export {
+  ENROLL_SCHEMA_VERSION,
+  SENSOR_ENROLL_PATH,
+  buildEnrollCanonical,
+  buildEnrollProof,
+  enrollSensor,
+  manualEnrollCurl,
+  readEnrollmentRecord,
+  writeEnrollmentRecord,
+} from './enroll';
+export type { EnrollRequestBody, EnrollResult, EnrollmentRecord, EnrollmentState } from './enroll';

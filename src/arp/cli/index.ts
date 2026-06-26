@@ -23,6 +23,9 @@ import {
   currentOrgPseudonym,
   purgeRemoteSignatures,
   manualPurgeCurl,
+  enrollSensor,
+  manualEnrollCurl,
+  readEnrollmentRecord,
 } from '../telemetry/signature';
 import type { SignatureTelemetryConfig } from '../types';
 
@@ -273,6 +276,9 @@ async function telemetryCommand(): Promise<void> {
     case 'status':
       await telemetryStatus(tcfg);
       break;
+    case 'register':
+      await telemetryRegister(tcfg);
+      break;
     case 'disclosure':
       console.log('\n' + disclosureText(tcfg) + '\n');
       break;
@@ -320,6 +326,7 @@ async function telemetryCommand(): Promise<void> {
   arp telemetry <subcommand>
 
     status        Show telemetry state, sensor identity, and send counts
+    register      Enroll this sensor with the registry (pending admin approval)
     log [N]       Show the last N audited payloads sent (default 20)
     disclosure    Print the full install-time disclosure
     opt-out       Disable ALL OpenA2A telemetry (also deletes already-sent
@@ -359,6 +366,41 @@ async function runRemotePurge(tcfg?: SignatureTelemetryConfig): Promise<void> {
   console.log(`    ${manualPurgeCurl(result)}`);
 }
 
+// telemetryRegister enrolls this sensor with the registry (the producer half of the
+// verified-sensor flow). Enrollment creates a PENDING enrollment that an admin must
+// approve before reports count as verified; until then reports still send at the
+// unverified weight. Fails OPEN: a network/registry failure is reported with a manual
+// retry command but never throws.
+async function telemetryRegister(tcfg?: SignatureTelemetryConfig): Promise<void> {
+  console.log('\n  Enrolling this sensor with the OpenA2A registry...');
+  if (isOptedOut(tcfg)) {
+    console.log('  NOTE: telemetry is currently opted out, so no reports will be sent');
+    console.log('  even after approval. Re-enable with: arp telemetry opt-in');
+  }
+
+  const result = await enrollSensor(tcfg);
+  if (result.ok) {
+    const state = result.state ?? 'pending';
+    console.log(`  Enrollment ${state === 'verified' ? 'VERIFIED' : 'PENDING'}.`);
+    if (result.sensorId) console.log(`  Sensor id: ${result.sensorId}`);
+    if (state === 'verified') {
+      console.log('  This sensor is approved; its reports are weighted as verified.');
+    } else {
+      console.log('  Next step: an OpenA2A admin must approve this enrollment.');
+      console.log('  Until then, reports still send at the unverified weight.');
+    }
+    console.log('  Check state anytime with: arp telemetry status\n');
+    return;
+  }
+
+  // Fail open: enrollment is best-effort; tell the user how to retry by hand.
+  console.log(`  Could not reach the registry to enroll (${result.error ?? 'unknown error'}).`);
+  console.log('  No verified status was granted; reports (if enabled) still send unverified.');
+  console.log('  Retry later with: arp telemetry register');
+  console.log('  Or run it directly:');
+  console.log(`    ${manualEnrollCurl(result)}\n`);
+}
+
 async function telemetryLog(): Promise<void> {
   const n = parseInt(args[2], 10) || 20;
   const records = await readAuditRecords(n);
@@ -396,6 +438,13 @@ async function telemetryStatus(tcfg?: import('../types').SignatureTelemetryConfi
     console.log(`  Org pseudonym:${' '}${currentOrgPseudonym()} (rotates monthly)`);
   } catch {
     // identity files may not exist until first send; do not fail status
+  }
+  const enrollment = readEnrollmentRecord();
+  if (enrollment) {
+    const label = enrollment.state === 'verified' ? 'verified' : 'pending admin approval';
+    console.log(`  Enrollment:   ${label}`);
+  } else {
+    console.log('  Enrollment:   not enrolled (run: arp telemetry register)');
   }
   console.log(`  Audit log:    ${auditLogPath()}`);
   console.log('  Sent:         ' + (counts['sent'] ?? 0));
