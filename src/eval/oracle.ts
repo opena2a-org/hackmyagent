@@ -248,7 +248,7 @@ function runHmaScanner(fixtureDir: string): { findings: HmaFinding[]; error?: st
  */
 async function runArpScanner(inputText: string): Promise<{ findings: HmaFinding[]; error?: string }> {
   try {
-    const { scanText, ALL_PATTERNS } = await import('../arp/patterns/ai-threats.js');
+    const { scanText, ALL_PATTERNS } = await import('../arp/index.js');
     const result = scanText(inputText, ALL_PATTERNS);
     const findings: HmaFinding[] = result.matches.map(m => ({
       checkId: `ARP-${m.pattern.id ?? m.pattern.category}`,
