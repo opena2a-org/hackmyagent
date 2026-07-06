@@ -3152,13 +3152,17 @@ describe('#250 existence-aware git severity + surfaced file findings', () => {
       expect(finding?.file).toBe(path.join('certs', 'server.key'));
     });
 
-    it('skips node_modules and .git directories', async () => {
+    it('skips node_modules (when gitignored) and .git directories', async () => {
+      await fs.writeFile(path.join(tempDir, '.gitignore'), 'node_modules/\n.env\nsecrets.json\n*.pem\n*.key\n');
       await fs.mkdir(path.join(tempDir, 'node_modules', 'pkg'), { recursive: true });
       await fs.writeFile(path.join(tempDir, 'node_modules', 'pkg', 'test.key'), FAKE_PRIVATE_KEY);
       await fs.mkdir(path.join(tempDir, '.git'), { recursive: true });
       await fs.writeFile(path.join(tempDir, '.git', 'stray.pem'), FAKE_PRIVATE_KEY);
 
       const result = await scanner.scan({ targetDir: tempDir });
+      // node_modules is gitignored (cleanly excluded) and .git is never
+      // committable → no failing CRED-002 (passed findings are filtered
+      // out of result.findings).
       const finding = result.findings.find((f) => f.checkId === 'CRED-002');
 
       expect(finding).toBeUndefined();
@@ -3212,10 +3216,10 @@ describe('#250 existence-aware git severity + surfaced file findings', () => {
       expect(finding?.file).toBe(path.join('a', 'b', 'c', 'd', 'e', 'f', 'g', 'deep.key'));
     });
 
-    it('does not flag a certificate-only .pem even when a private block sits beyond the cert (whole-file scan)', async () => {
+    it('flags a .pem whose PRIVATE KEY block sits beyond a large cert bundle (whole-file scan)', async () => {
       // Sanity that the content gate reads past the first block: a cert
-      // followed by a private key must still flag (opposite direction of
-      // the "cert only" case, guards the whole-file read).
+      // followed by a private key must still flag (guards the whole-file
+      // read that replaced the old 1 MB head-only cap).
       await fs.writeFile(
         path.join(tempDir, 'chainthenkey.pem'),
         FAKE_CERT_ONLY.repeat(50) + FAKE_PRIVATE_KEY
@@ -3301,21 +3305,157 @@ describe('#250 existence-aware git severity + surfaced file findings', () => {
       expect(finding?.severity).toBe('high');
     });
 
-    it('accepts /-anchored and **/-prefixed equivalents as covering', async () => {
+    it('accepts **/-prefixed globstar as covering *.pem (match-anywhere equivalent)', async () => {
       await fs.writeFile(
         path.join(tempDir, '.gitignore'),
-        '/.env\n**/*.pem\n*.key\nsecrets.json\n'
+        '.env\n**/*.pem\n*.key\nsecrets.json\n'
       );
       await fs.writeFile(path.join(tempDir, 'server.pem'), FAKE_PRIVATE_KEY);
 
       const result = await scanner.scan({ targetDir: tempDir });
       const git002 = result.findings.find((f) => f.checkId === 'GIT-002');
 
-      // All four patterns covered → GIT-002 does not fire at all.
+      // All four hygiene patterns covered → GIT-002 does not fire.
       expect(git002).toBeUndefined();
       // CRED-002 still independently flags the present key (defense in depth).
       const cred002 = result.findings.find((f) => f.checkId === 'CRED-002');
       expect(cred002?.severity).toBe('critical');
+    });
+
+    it('a root-anchored /secrets.json does NOT count as covering the match-anywhere secrets.json pattern', async () => {
+      // git: /secrets.json ignores only root secrets.json, so a nested
+      // config/secrets.json would still be committable. The hygiene
+      // pattern is therefore not fully covered.
+      await fs.writeFile(
+        path.join(tempDir, '.gitignore'),
+        '.env\n*.pem\n*.key\n/secrets.json\n'
+      );
+      await fs.mkdir(path.join(tempDir, 'config'), { recursive: true });
+      await fs.writeFile(
+        path.join(tempDir, 'config', 'secrets.json'),
+        '{"note":"nested, not covered by /secrets.json"}\n'
+      );
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const git002 = result.findings.find((f) => f.checkId === 'GIT-002');
+
+      expect(git002).toBeDefined();
+      // The nested secrets.json is genuinely un-ignored and present → HIGH.
+      expect(git002?.severity).toBe('high');
+      expect(`${git002?.description} ${git002?.message}`).toContain('secrets.json');
+    });
+
+    it('does NOT false-fire when a glob rule (secrets.*) genuinely covers secrets.json', async () => {
+      await fs.writeFile(
+        path.join(tempDir, '.gitignore'),
+        '.env\n*.pem\n*.key\nsecrets.*\n'
+      );
+      await fs.writeFile(path.join(tempDir, 'secrets.json'), '{"note":"covered by secrets.*"}\n');
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const git002 = result.findings.find((f) => f.checkId === 'GIT-002');
+
+      // secrets.* covers secrets.json → the file is not exposed. GIT-002
+      // may still note the bare `secrets.json` pattern is absent, but must
+      // not claim the file is committable → stays LOW, not HIGH.
+      if (git002) expect(git002.severity).toBe('low');
+    });
+  });
+
+  describe('GIT-003 line-aware .env ignore check (substring bug fix)', () => {
+    it('a comment mentioning .env does NOT count as ignoring it (CRITICAL still fires)', async () => {
+      await fs.writeFile(
+        path.join(tempDir, '.gitignore'),
+        '# remember to add .env here\nnode_modules/\n'
+      );
+      await fs.writeFile(
+        path.join(tempDir, '.env'),
+        'DB_PASSWORD=hunter2-prod-supersecret\n'
+      );
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const git003 = result.findings.find((f) => f.checkId === 'GIT-003');
+
+      expect(git003).toBeDefined();
+      expect(git003?.severity).toBe('critical');
+    });
+
+    it('a .env.* rule does NOT ignore the bare .env file (GIT-003 still fires)', async () => {
+      // git: .env.* matches .env.local but NOT .env itself.
+      await fs.writeFile(path.join(tempDir, '.gitignore'), '.env.*\nnode_modules/\n');
+      await fs.writeFile(path.join(tempDir, '.env'), 'DB_PASSWORD=hunter2-prod-supersecret\n');
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const git003 = result.findings.find((f) => f.checkId === 'GIT-003');
+
+      expect(git003).toBeDefined();
+      expect(git003?.severity).toBe('critical');
+    });
+
+    it('a .env* rule DOES ignore .env (GIT-003 does not fire)', async () => {
+      await fs.writeFile(path.join(tempDir, '.gitignore'), '.env*\nnode_modules/\n');
+      await fs.writeFile(path.join(tempDir, '.env'), 'DB_PASSWORD=hunter2-prod-supersecret\n');
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const git003 = result.findings.find((f) => f.checkId === 'GIT-003');
+
+      expect(git003).toBeUndefined();
+    });
+  });
+
+  describe('CRED-002 completeness fail-safe (adversarial-review HIGH-1)', () => {
+    it('does not award a clean bill when a key hides below the depth bound and .gitignore is complete', async () => {
+      // The exact HIGH-1 exploit: complete .gitignore (so GIT-002 stays
+      // silent) + a real key deeper than the walk bound. CRED-002 must
+      // refuse to report clean.
+      await fs.writeFile(
+        path.join(tempDir, '.gitignore'),
+        '.env\nsecrets.json\n*.pem\n*.key\n'
+      );
+      let cur = tempDir;
+      for (let i = 0; i < 30; i++) cur = path.join(cur, `d${i}`);
+      await fs.mkdir(cur, { recursive: true });
+      await fs.writeFile(path.join(cur, 'deep.key'), FAKE_PRIVATE_KEY);
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const cred002 = result.findings.find((f) => f.checkId === 'CRED-002');
+
+      expect(cred002).toBeDefined();
+      expect(cred002?.passed).toBe(false);
+      // Either it found the key (critical) or it flagged the scan as
+      // incomplete (high) — never a silent pass.
+      expect(['critical', 'high']).toContain(cred002?.severity);
+    });
+
+    it('marks the scan incomplete when node_modules is present but not gitignored', async () => {
+      // A committable key inside an un-ignored node_modules must not be
+      // silently excluded from the completeness guarantee.
+      await fs.writeFile(path.join(tempDir, '.gitignore'), '.env\nsecrets.json\n*.pem\n*.key\n');
+      await fs.mkdir(path.join(tempDir, 'node_modules'), { recursive: true });
+      await fs.writeFile(path.join(tempDir, 'node_modules', 'placeholder.txt'), 'x');
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const cred002 = result.findings.find((f) => f.checkId === 'CRED-002');
+
+      expect(cred002?.passed).toBe(false);
+      expect(cred002?.severity).toBe('high');
+      expect(cred002?.message).toMatch(/incomplete/i);
+    });
+
+    it('reports clean (passed) when node_modules IS gitignored and the tree is shallow', async () => {
+      await fs.writeFile(path.join(tempDir, '.gitignore'), 'node_modules/\n.env\nsecrets.json\n*.pem\n*.key\n');
+      await fs.mkdir(path.join(tempDir, 'node_modules'), { recursive: true });
+      await fs.writeFile(path.join(tempDir, 'node_modules', 'placeholder.txt'), 'x');
+      await fs.writeFile(path.join(tempDir, 'index.js'), 'console.log(1)\n');
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      // Clean: passed CRED-002 findings are filtered out of the
+      // user-facing findings list, so no failing CRED-002 should appear.
+      const failing = result.findings.find((f) => f.checkId === 'CRED-002');
+      expect(failing).toBeUndefined();
+      // And in allFindings it is present and passed.
+      const cred002 = result.allFindings?.find((f) => f.checkId === 'CRED-002');
+      expect(cred002?.passed).toBe(true);
     });
   });
 

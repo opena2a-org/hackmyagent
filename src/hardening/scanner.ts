@@ -2089,30 +2089,8 @@ dist/
       // .env exposure stays owned by GIT-003 (content-calibrated), so
       // the .env pattern never escalates GIT-002.
       if (missingPatterns.length > 0) {
-        // Conservative gitignore matcher for "is this concrete file
-        // already covered by some other rule": exact path, basename,
-        // *.ext glob, and directory-prefix rules. Negation rules (!) are
-        // not modeled — when in doubt we treat the file as ignored and
-        // stay LOW, because CRED-002/CRED-001/PERM-001 independently
-        // surface the file itself, so under-escalation here never
-        // silences the exposure.
-        const otherRules = gitignoreContent
-          .split('\n')
-          .map((l) => l.trim())
-          .filter((l) => l && !l.startsWith('#') && !l.startsWith('!'));
-        const ignoredByOtherRule = (rel: string): boolean => {
-          const posix = rel.split(path.sep).join('/');
-          const base = path.posix.basename(posix);
-          return otherRules.some((rawRule) => {
-            const rule = rawRule.replace(/^\//, '').replace(/\/$/, '');
-            if (!rule) return false;
-            if (rule === posix || rule === base) return true;
-            if (rule.startsWith('*.') && base.endsWith(rule.slice(1))) return true;
-            if (posix.startsWith(rule + '/')) return true;
-            return false;
-          });
-        };
-
+        // A present file only counts as "exposed" if no other rule already
+        // ignores it (root-aware, glob-aware — see gitignoreFileIgnored).
         const exposedFiles: string[] = [];
         for (const pattern of missingPatterns) {
           if (pattern === '.env') continue; // GIT-003 owns un-ignored .env
@@ -2125,7 +2103,7 @@ dist/
                   ? keyFiles.filter((f) => f.endsWith('.key'))
                   : [];
           for (const candidate of candidates) {
-            if (!ignoredByOtherRule(candidate)) exposedFiles.push(candidate);
+            if (!this.gitignoreFileIgnored(candidate, gitignoreContent)) exposedFiles.push(candidate);
           }
         }
         // Escalate to HIGH when a matching file is actually present, OR
@@ -2175,7 +2153,11 @@ dist/
       gitignoreContent = await fs.readFile(gitignorePath, 'utf-8');
     } catch {}
 
-    const envIgnored = gitignoreContent.includes('.env');
+    // Line-aware (#250 adversarial review): a comment or substring mention
+    // of `.env` no longer counts as ignoring it. `.env` is ignored by a
+    // bare `.env`, a `.env*` glob, or a catch-all `*` / `**` rule — but NOT
+    // by `.env.*` (which matches `.env.local`, not `.env`).
+    const envIgnored = this.gitignoreFileIgnored('.env', gitignoreContent);
     const envAtRisk = envExists && !envIgnored;
 
     let git003Fixed = false;
@@ -2664,7 +2646,6 @@ dist/
   }> {
     const keyFiles: string[] = [];
     const namedSensitive: string[] = [];
-    const SKIP_DIRS = new Set(['node_modules', '.git']);
     const SENSITIVE_NAMES = new Set(['secrets.json', 'credentials.json']);
     const MAX_DEPTH = 25;
     const MAX_ENTRIES = 50000;
@@ -2681,6 +2662,20 @@ dist/
     } catch {
       return { keyFiles, namedSensitive, complete: true };
     }
+
+    // node_modules is skipped for cost, but only counts as "safely
+    // excluded" (no completeness impact) when it is actually git-ignored.
+    // If it is NOT ignored, a key committed inside it is reachable, so the
+    // walk cannot claim completeness (adversarial-review finding, #250).
+    // `.git` is never committable, so skipping it never affects
+    // completeness.
+    let rootGitignore = '';
+    try {
+      rootGitignore = await fs.readFile(path.join(targetDir, '.gitignore'), 'utf-8');
+    } catch {}
+    const nodeModulesIgnored =
+      this.gitignoreFileIgnored('node_modules', rootGitignore) ||
+      this.gitignoreFileIgnored('node_modules/x', rootGitignore);
 
     const walk = async (dir: string, depth: number): Promise<void> => {
       if (entries >= MAX_ENTRIES) {
@@ -2704,7 +2699,11 @@ dist/
         if (dirent.isSymbolicLink()) continue;
         const abs = path.join(dir, dirent.name);
         if (dirent.isDirectory()) {
-          if (SKIP_DIRS.has(dirent.name)) continue;
+          if (dirent.name === '.git') continue;
+          if (dirent.name === 'node_modules') {
+            if (!nodeModulesIgnored) complete = false;
+            continue;
+          }
           if (depth + 1 > MAX_DEPTH) {
             // A real subtree exists below the depth bound — we did not
             // look inside it, so absence is no longer provable.
@@ -2754,25 +2753,73 @@ dist/
   }
 
   /**
-   * True when the given `.gitignore` pattern is genuinely covered by a
-   * rule, not merely mentioned as a substring (e.g. inside a comment or
-   * a longer token). Fixes the pre-existing substring bug where
-   * `# rotate secrets.json quarterly` suppressed the secrets.json
-   * missing-pattern finding (adversarial-review finding, #250).
-   *
-   * Rules are compared after trimming, dropping comments/blanks/negations,
-   * and stripping a leading slash or globstar prefix. `.env` also accepts
-   * the common `.env*` / `.env.*` broadening forms.
+   * Effective (non-comment, non-blank, non-negation) `.gitignore` rules,
+   * each trimmed and CR-stripped. Leading `**​/` is stripped (globstar
+   * prefix is match-anywhere, same as the bare form). A leading `/` is
+   * NOT stripped: a root-anchored rule is narrower than the bare form and
+   * must not be treated as equivalent (adversarial-review finding, #250).
+   */
+  private gitignoreRules(gitignoreContent: string): string[] {
+    return gitignoreContent
+      .split('\n')
+      .map((l) => l.replace(/\r$/, '').trim())
+      .filter((l) => l && !l.startsWith('#') && !l.startsWith('!'))
+      .map((l) => l.replace(/^\*\*\//, ''));
+  }
+
+  /**
+   * True when the hygiene pattern (`.env` / `secrets.json` / `*.pem` /
+   * `*.key`) is genuinely present as a match-anywhere rule, not merely
+   * mentioned as a substring or covered by a narrower root-anchored rule.
+   * Fixes the pre-existing substring bug where `# rotate secrets.json`
+   * suppressed the missing-pattern finding (adversarial-review, #250).
+   * A catch-all `*` / `**` also counts as covering.
    */
   private gitignorePatternCovered(pattern: string, gitignoreContent: string): boolean {
-    const rules = gitignoreContent
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l && !l.startsWith('#') && !l.startsWith('!'))
-      .map((l) => l.replace(/^\/+/, '').replace(/^\*\*\//, ''));
-    return rules.some((rule) => {
+    return this.gitignoreRules(gitignoreContent).some((rule) => {
+      if (rule === '*' || rule === '**') return true;
       if (rule === pattern) return true;
-      if (pattern === '.env' && (rule === '.env*' || rule === '.env.*')) return true;
+      // `.env*` (but not `.env.*`) matches the bare `.env` file too.
+      if (pattern === '.env' && rule === '.env*') return true;
+      return false;
+    });
+  }
+
+  /**
+   * True when a concrete relative file path is ignored by some rule.
+   * Conservative and git-faithful in the SAFE direction: it recognizes
+   * exact-path, basename, `*.ext`, `prefix.*`, directory-prefix, and
+   * catch-all rules, and honors root-anchoring (a leading `/` binds the
+   * rule to the repo root, so `/secrets.json` does NOT ignore
+   * `config/secrets.json`). When unsure it returns false (treat as NOT
+   * ignored → escalate), because CRED-002/CRED-001/PERM-001 independently
+   * surface the file, so a false "not ignored" over-warns rather than
+   * silences (adversarial-review findings, #250).
+   */
+  private gitignoreFileIgnored(rel: string, gitignoreContent: string): boolean {
+    const posix = rel.split(path.sep).join('/');
+    const base = path.posix.basename(posix);
+    return this.gitignoreRules(gitignoreContent).some((rule) => {
+      if (rule === '*' || rule === '**') return true;
+      const anchored = rule.startsWith('/');
+      const r = anchored ? rule.slice(1) : rule;
+      const rNoSlash = r.replace(/\/$/, '');
+      if (!rNoSlash) return false;
+      // Exact full-path match (anchored or not).
+      if (rNoSlash === posix) return true;
+      // Directory-prefix rule: `dir/` or `dir` ignores everything under it.
+      if (posix.startsWith(rNoSlash + '/')) return true;
+      // Anchored rules only match at the repo root beyond this point.
+      if (anchored) return rNoSlash === posix;
+      // Basename match (non-anchored bare name applies at any depth).
+      if (rNoSlash === base) return true;
+      // `*.ext` glob.
+      if (rNoSlash.startsWith('*.') && base.endsWith(rNoSlash.slice(1))) return true;
+      // `prefix.*` or `prefix*` glob on the basename.
+      if (rNoSlash.endsWith('*')) {
+        const prefix = rNoSlash.slice(0, -1);
+        if (prefix && !prefix.includes('/') && base.startsWith(prefix)) return true;
+      }
       return false;
     });
   }
@@ -2787,26 +2834,56 @@ dist/
     // #250 — a key at certs/server.pem is exactly as committable as one
     // at the root — and carries `file` so the finding survives the
     // user-facing concrete-findings filter.
-    const { keyFiles: foundKeys } = await this.collectSensitiveArtifacts(targetDir);
+    const { keyFiles: foundKeys, complete: keyScanComplete } =
+      await this.collectSensitiveArtifacts(targetDir);
 
-    findings.push({
-      checkId: 'CRED-002',
-      name: 'Private Key Files',
-      description: 'Private key or certificate files found in project directory',
-      category: 'credentials',
-      severity: 'critical',
-      passed: foundKeys.length === 0,
-      message: foundKeys.length === 0
-        ? 'No private key files found in project directory'
-        : `Private key files found: ${foundKeys.slice(0, 5).join(', ')}${foundKeys.length > 5 ? ` (+${foundKeys.length - 5} more)` : ''} - move to secure location`,
-      file: foundKeys.length > 0 ? foundKeys[0] : undefined,
-      fixable: false,
-      fix: foundKeys.length > 0
-        ? `Move the key outside the repository or into a secrets manager. If it was ever committed, rotate it, then run: git rm --cached ${foundKeys[0]}`
-        : undefined,
-      details: foundKeys.length > 0 ? { files: foundKeys } : undefined,
-      guidance: 'Private key files (.pem, .key) in a project directory are easily committed to git. Once pushed, the keys are compromised and must be rotated.',
-    });
+    if (foundKeys.length > 0) {
+      findings.push({
+        checkId: 'CRED-002',
+        name: 'Private Key Files',
+        description: 'Private key or certificate files found in project directory',
+        category: 'credentials',
+        severity: 'critical',
+        passed: false,
+        message: `Private key files found: ${foundKeys.slice(0, 5).join(', ')}${foundKeys.length > 5 ? ` (+${foundKeys.length - 5} more)` : ''} - move to secure location`,
+        file: foundKeys[0],
+        fixable: false,
+        fix: `Move the key outside the repository or into a secrets manager. If it was ever committed, rotate it, then run: git rm --cached ${foundKeys[0]}`,
+        details: { files: foundKeys },
+        guidance: 'Private key files (.pem, .key) in a project directory are easily committed to git. Once pushed, the keys are compromised and must be rotated.',
+      });
+    } else if (!keyScanComplete) {
+      // No key found, but the walk could not exhaustively verify absence
+      // (tree too deep/large, an unreadable directory, or an un-ignored
+      // node_modules). Do NOT report clean — a key could hide in the
+      // unscanned portion. Fail-safe HIGH so the scan does not award a
+      // false clean bill (adversarial-review finding, #250).
+      findings.push({
+        checkId: 'CRED-002',
+        name: 'Private Key Files',
+        description: 'Private-key scan could not fully cover the project tree',
+        category: 'credentials',
+        severity: 'high',
+        passed: false,
+        message: 'Private-key scan incomplete — tree too large/deep or partly unreadable to confirm no keys are present',
+        file: '.',
+        fixable: false,
+        fix: `List candidate key files yourself: find . -type f \\( -name '*.pem' -o -name '*.key' \\) -not -path '*/node_modules/*'`,
+        guidance: 'The project tree is too large or deep, has an unreadable directory, or contains an un-ignored node_modules — so the scanner could not confirm no private keys are committed. Verify manually and ensure keys are outside the repo or in a secrets manager.',
+      });
+    } else {
+      findings.push({
+        checkId: 'CRED-002',
+        name: 'Private Key Files',
+        description: 'Private key or certificate files found in project directory',
+        category: 'credentials',
+        severity: 'critical',
+        passed: true,
+        message: 'No private key files found in project directory',
+        fixable: false,
+        guidance: 'Private key files (.pem, .key) in a project directory are easily committed to git. Once pushed, the keys are compromised and must be rotated.',
+      });
+    }
 
     // CRED-003: Check package.json for hardcoded secrets
     let hasSecretsInPackageJson = false;
