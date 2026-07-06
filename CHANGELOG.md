@@ -2,6 +2,16 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **GIT-001/GIT-002 severity is now existence-aware, backed by authoritative `git check-ignore` (#250).** A missing or incomplete `.gitignore` is a LOW hardening advisory when no committable file matches the uncovered patterns, and escalates to HIGH naming the actual files when a genuinely un-ignored match exists. This removes the severity inversion where adding a sensible-but-partial `.gitignore` scored worse (HIGH, exit 1) than having no `.gitignore` at all (LOW, exit 0). Committability is decided by `git check-ignore` (honoring negations, root-anchoring, dir-only rules, nested `.gitignore`s — global excludes are disabled so the result is deterministic and reflects the repo's own committed rules); a conservative text heuristic backstops non-git targets. Un-ignored `.env` exposure is owned by the content-calibrated GIT-003, which now uses the same authoritative check (a comment or `.env.*`-only rule no longer wrongly suppresses it).
+- **CRED-002 and PERM-001 findings now reach the user (#250).** Both fired internally but never set `file`, so the concrete-findings filter dropped them from output, score, and exit code — an un-ignored private key produced no visible >=HIGH signal. CRED-002 now attributes the first key file and ships a runnable remediation; PERM-001 attributes the first offending file.
+- **CRED-002 scans recursively and never awards a false clean bill (#250).** A bounded walk (depth 25, 50k entries, skips `.git` and git-ignored `node_modules`, never follows symlinks) finds `certs/server.pem`, not just root-level keys. When the walk cannot exhaustively verify absence (too deep/large, an unreadable directory, or an un-ignored `node_modules`), CRED-002 reports a HIGH incomplete-scan finding instead of "clean". `.pem` files are content-gated: certificate-only bundles (public material, e.g. CA chains) are not flagged; PRIVATE KEY blocks, unreadable files, oversized files, and unidentifiable content (binary DER) are (fail-safe).
+- **CRED-001 now scans `secrets.json` and `credentials.json` (#250).** Files whose names promise credentials were previously not content-scanned at all.
+- **The corpus release-smoke harness is now hermetic (#250).** Under `OPENA2A_CORPUS_DETERMINISTIC=1` the machine-wide AI-infrastructure augmentation (`~/.nemoclaw`, `~/.openclaw`, …) is skipped, so a developer's real home-dir AI infra can no longer leak machine state into fixture scores.
+
 ## [0.24.0] - 2026-07-06
 
 ### Changed

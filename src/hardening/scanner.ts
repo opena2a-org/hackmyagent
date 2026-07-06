@@ -6,6 +6,7 @@
 import * as fs from 'fs/promises';
 import * as crypto from 'crypto';
 import * as path from 'path';
+import { execFile } from 'child_process';
 import type { ScanResult, SecurityFinding, Severity, ProjectType } from './security-check';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
 import { enrichWithTaxonomy } from './taxonomy';
@@ -1380,8 +1381,8 @@ export class HardeningScanner {
       // corpus release-smoke harness. Drop true noise-floor findings —
       // pathless failed findings whose check doesn't apply to this
       // project type (issue #131 / #130). Pathless findings whose check
-      // DOES apply (e.g., CRED-002 finding a private key file but
-      // forgetting to set `file`) are preserved as legitimate detections.
+      // DOES apply (a check that found real evidence but failed to
+      // attribute a file) are preserved as legitimate detections.
       allFindings: dropPathlessNoiseFloor(findings, projectType),
       score,
       maxScore,
@@ -1669,13 +1670,17 @@ export class HardeningScanner {
       { name: 'Stripe Key', pattern: /sk_live_[0-9a-zA-Z]{24,}/g, envVar: 'STRIPE_SECRET_KEY' },
     ];
 
-    // Files to check for credentials
+    // Files to check for credentials. secrets.json / credentials.json
+    // added in #250 — they were previously unscanned even though their
+    // names promise exactly this content.
     const filesToCheck = [
       'config.json',
       'config.yaml',
       'config.yml',
       'mcp.json',
       'settings.json',
+      'secrets.json',
+      'credentials.json',
       '.env',
       '.env.local',
       'CLAUDE.md',
@@ -1951,8 +1956,12 @@ export class HardeningScanner {
       message: passed
         ? 'All sensitive files have appropriate permissions'
         : `Files with overly permissive permissions: ${permissionIssues.join(', ')}`,
+      // `file` makes the failing finding survive the user-facing
+      // concrete-findings filter (#250).
+      file: passed ? undefined : permissionIssues[0],
       fixable: true,
       fixed: autoFix && !passed,
+      fix: passed ? undefined : `${this.cliName} secure --fix`,
       fixMessage: autoFix && !passed ? 'Changed permissions to 600' : undefined,
       details: passed ? undefined : { files: permissionIssues },
       guidance: 'Overly broad file permissions let any user on the system read sensitive config files that may contain credentials or API keys.',
@@ -1966,6 +1975,16 @@ export class HardeningScanner {
     autoFix: boolean
   ): Promise<SecurityFinding[]> {
     const findings: SecurityFinding[] = [];
+
+    // Existence-aware severity (#250): a missing or incomplete .gitignore
+    // is a LOW hardening advisory on its own; it becomes a HIGH exposure
+    // only when a file matching an uncovered pattern actually exists.
+    // `walkComplete=false` means the walk could not prove absence (deep
+    // or unreadable tree), so we must not downgrade to LOW on an empty
+    // result — that would recreate the silent-miss the adversarial
+    // review caught.
+    const { keyFiles, namedSensitive, complete: walkComplete } =
+      await this.collectSensitiveArtifacts(targetDir);
 
     // GIT-001: Check for missing .gitignore
     const gitignorePath = path.join(targetDir, '.gitignore');
@@ -2005,21 +2024,40 @@ dist/
       git001Fixed = true;
     }
 
-    // Only report if .gitignore is missing
+    // Only report if .gitignore is missing.
+    // Severity is existence-aware (#250): LOW as a pure hardening
+    // advisory, HIGH when sensitive files are actually present with
+    // nothing ignoring them. Un-ignored .env exposure stays owned by
+    // GIT-003 (content-calibrated), so it does not escalate GIT-001.
     if (!gitignoreExists || git001Fixed) {
+      const presentSensitive = [...keyFiles, ...namedSensitive];
+      // HIGH when a sensitive file is actually present, OR when the walk
+      // could not prove absence (fail-safe): a missing .gitignore over an
+      // unverifiable tree is treated as exposure, not hygiene advice.
+      const git001Exposed = presentSensitive.length > 0 || !walkComplete;
+      const git001Named = presentSensitive.slice(0, 3).join(', ');
       findings.push({
         checkId: 'GIT-001',
         name: 'Missing .gitignore',
-        description: 'No .gitignore file to prevent accidental commits',
+        description: presentSensitive.length > 0
+          ? `No .gitignore and sensitive files present: ${git001Named}${presentSensitive.length > 3 ? ` (+${presentSensitive.length - 3} more)` : ''}`
+          : git001Exposed
+            ? 'No .gitignore and the project tree could not be fully scanned for sensitive files'
+            : 'No .gitignore file to prevent accidental commits',
         category: 'git',
-        severity: 'low',
+        severity: git001Exposed ? 'high' : 'low',
         passed: git001Fixed,
         message: 'Create .gitignore to protect sensitive files',
         file: '.gitignore',
         fixable: true,
         fixed: git001Fixed,
         fix: `${this.cliName} secure --fix`,
-        guidance: 'Without .gitignore, sensitive files (.env, secrets.json, *.pem, *.key) can be accidentally committed to version control and exposed.',
+        details: presentSensitive.length > 0 ? { files: presentSensitive } : undefined,
+        guidance: presentSensitive.length > 0
+          ? `Sensitive files (${git001Named}) exist in this project with no .gitignore — a single git add . commits them. Create a .gitignore now; if any were already committed, rotate them and run git rm --cached on each.`
+          : git001Exposed
+            ? 'This project has no .gitignore and its tree is too large or partly unreadable to fully verify no keys or secrets files are present. Add a .gitignore covering .env, secrets.json, *.pem, *.key and confirm no such files are tracked.'
+            : 'Without .gitignore, sensitive files (.env, secrets.json, *.pem, *.key) can be accidentally committed to version control and exposed.',
       });
     }
 
@@ -2029,8 +2067,10 @@ dist/
       const sensitivePatterns = ['.env', 'secrets.json', '*.pem', '*.key'];
       const missingPatterns: string[] = [];
 
+      // Line-aware presence check (#250): a comment or substring mention
+      // of a pattern no longer counts as covering it.
       for (const pattern of sensitivePatterns) {
-        if (!gitignoreContent.includes(pattern) && !gitignoreContent.includes(pattern.replace('*', ''))) {
+        if (!this.gitignorePatternCovered(pattern, gitignoreContent)) {
           missingPatterns.push(pattern);
         }
       }
@@ -2043,21 +2083,58 @@ dist/
         git002Fixed = true;
       }
 
-      // Only report if patterns are missing
-      if (missingPatterns.length > 0) {
+      // Exposure is computed authoritatively (git check-ignore) over ALL
+      // present sensitive files — NOT gated on the textual missingPatterns
+      // list — so a file that a catch-all `*` "covers" textually but a
+      // negation re-includes is still caught (#250 adversarial reviews).
+      // Un-ignored .env exposure stays owned by GIT-003, so .env-basename
+      // files are excluded here.
+      const presentSensitive = [
+        ...keyFiles,
+        ...namedSensitive.filter((f) => {
+          const b = path.basename(f);
+          return b === 'secrets.json' || b === 'credentials.json';
+        }),
+      ];
+      const exposedFiles = await this.committableSensitiveFiles(
+        targetDir,
+        presentSensitive,
+        gitignoreContent,
+      );
+
+      // Fire when the gitignore is missing hygiene patterns OR a present
+      // sensitive file is actually committable.
+      if (missingPatterns.length > 0 || exposedFiles.length > 0) {
+        // Escalate to HIGH when a committable file is present, OR when the
+        // walk could not prove absence for a key/secrets pattern (fail-safe).
+        const nonEnvMissing = missingPatterns.some((p) => p !== '.env');
+        const git002Exposed = exposedFiles.length > 0;
+        const git002Unverifiable = !git002Exposed && !walkComplete && nonEnvMissing;
+        const git002High = git002Exposed || git002Unverifiable;
+        const missingLabel = missingPatterns.length > 0 ? missingPatterns.join(', ') : '(patterns present)';
+
         findings.push({
           checkId: 'GIT-002',
           name: 'Incomplete .gitignore',
-          description: `Missing: ${missingPatterns.join(', ')}`,
+          description: git002Exposed
+            ? `Committable sensitive files present: ${exposedFiles.slice(0, 3).join(', ')}${exposedFiles.length > 3 ? ` (+${exposedFiles.length - 3} more)` : ''}`
+            : git002Unverifiable
+              ? `Missing: ${missingLabel} (project tree could not be fully scanned to confirm no matching files exist)`
+              : `Missing: ${missingLabel} (no committable matching files found)`,
           category: 'git',
-          severity: 'high',
+          severity: git002High ? 'high' : 'low',
           passed: git002Fixed,
-          message: `Add patterns: ${missingPatterns.join(', ')}`,
+          message: missingPatterns.length > 0 ? `Add patterns: ${missingPatterns.join(', ')}` : 'Ignore or remove the committable sensitive files',
           file: '.gitignore',
           fixable: true,
           fixed: git002Fixed,
           fix: `${this.cliName} secure --fix`,
-          guidance: `Missing patterns (${missingPatterns.join(', ')}) in .gitignore mean sensitive files could be accidentally committed and pushed to remote repositories.`,
+          details: git002Exposed ? { files: exposedFiles } : undefined,
+          guidance: git002Exposed
+            ? `These sensitive files are not git-ignored and would be committed by a single git add . (${exposedFiles.slice(0, 3).join(', ')}). Ignore them; if any was already committed, rotate its contents and run git rm --cached on it.`
+            : git002Unverifiable
+              ? `The .gitignore is missing ${missingLabel} and the project tree is too large or partly unreadable to confirm no matching key or secrets files exist. Add the patterns and verify no such files are tracked.`
+              : `No committable files match the missing patterns yet, but adding them now (${missingLabel}) means a future key or secrets file is never committed by accident.`,
         });
       }
     }
@@ -2074,8 +2151,12 @@ dist/
       gitignoreContent = await fs.readFile(gitignorePath, 'utf-8');
     } catch {}
 
-    const envIgnored = gitignoreContent.includes('.env');
-    const envAtRisk = envExists && !envIgnored;
+    // Authoritative committability (#250 adversarial reviews): a comment,
+    // substring mention, root-anchored/dir-only rule, or a `.env.*`-only
+    // rule no longer wrongly counts as ignoring `.env`. git check-ignore
+    // decides in a git repo; the heuristic backstops non-git targets.
+    const envAtRisk =
+      envExists && (await this.committableSensitiveFiles(targetDir, ['.env'], gitignoreContent)).length > 0;
 
     let git003Fixed = false;
     if (envAtRisk && autoFix) {
@@ -2531,39 +2612,476 @@ dist/
     return findings;
   }
 
+  /**
+   * Bounded recursive walk collecting sensitive artifacts for the
+   * existence-aware git/credential checks (#250). Skips node_modules and
+   * .git, never follows symlinks, and is bounded by depth and entry count
+   * so a hostile tree cannot stall the scan.
+   *
+   * `complete` is false when the walk could NOT exhaustively verify the
+   * tree — a depth or entry bound was hit with directories still
+   * unvisited, or a directory was unreadable. Callers MUST NOT treat an
+   * empty result from an incomplete walk as "nothing sensitive exists":
+   * absence is only trustworthy when `complete` is true. This is the
+   * fail-safe that stops a deep or unreadable key from silently
+   * downgrading a git-hygiene finding (adversarial-review finding, #250).
+   *
+   * `.pem` files are content-gated: certificate-only PEM bundles (e.g. CA
+   * chains) are public material and are excluded; anything carrying a
+   * PRIVATE KEY block — or content we cannot positively identify as
+   * certificate-only, such as binary DER — is treated as a private key
+   * (fail-safe toward detection).
+   *
+   * Bounds are deliberately generous (depth 25, 50k entries) so that
+   * real repositories walk to completion; `complete=false` is reserved
+   * for genuinely pathological trees, where staying conservative costs a
+   * rare false HIGH rather than a silent miss.
+   */
+  private async collectSensitiveArtifacts(targetDir: string): Promise<{
+    keyFiles: string[];
+    namedSensitive: string[];
+    complete: boolean;
+  }> {
+    const keyFiles: string[] = [];
+    const namedSensitive: string[] = [];
+    const SENSITIVE_NAMES = new Set(['secrets.json', 'credentials.json']);
+    const MAX_DEPTH = 25;
+    const MAX_ENTRIES = 50000;
+    let entries = 0;
+    let complete = true;
+
+    // A non-directory target (single-file scan, e.g. `secure SKILL.md`)
+    // has no tree to walk and no place for a key to hide — that is a
+    // complete result, not an unverifiable one. Only a genuinely
+    // unreadable *directory* below counts as incomplete.
+    try {
+      const rootStat = await fs.stat(targetDir);
+      if (!rootStat.isDirectory()) return { keyFiles, namedSensitive, complete: true };
+    } catch {
+      return { keyFiles, namedSensitive, complete: true };
+    }
+
+    const targetRoot = path.resolve(targetDir);
+
+    // node_modules is skipped for cost. Each skipped node_modules dir is
+    // recorded; after the walk we ask git whether it is actually ignored.
+    // If any is committable, a key inside it is reachable, so the walk
+    // cannot claim completeness (#250 adversarial reviews). `.git` is
+    // never committable, so skipping it never affects completeness.
+    const skippedNodeModules: string[] = [];
+
+    const walk = async (dir: string, depth: number): Promise<void> => {
+      if (entries >= MAX_ENTRIES) {
+        complete = false;
+        return;
+      }
+      let dirents;
+      try {
+        dirents = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+        // An unreadable directory (EACCES, etc.) means we cannot verify
+        // its contents — a key could hide there. Do not assume clean.
+        complete = false;
+        return;
+      }
+      for (const dirent of dirents) {
+        if (entries++ >= MAX_ENTRIES) {
+          complete = false;
+          return;
+        }
+        if (dirent.isSymbolicLink()) continue;
+        const abs = path.join(dir, dirent.name);
+        // Containment assertion: readdir only yields single-component
+        // names (never `..`/`/`), so `abs` is always inside `targetRoot`;
+        // this is belt-and-suspenders so no processing (open/read/stat)
+        // ever touches a path outside the scan root even if that invariant
+        // were ever violated.
+        const absResolved = path.resolve(abs);
+        if (absResolved !== targetRoot && !absResolved.startsWith(targetRoot + path.sep)) {
+          complete = false;
+          continue;
+        }
+        if (dirent.isDirectory()) {
+          if (dirent.name === '.git') continue;
+          if (dirent.name === 'node_modules') {
+            skippedNodeModules.push(path.relative(targetDir, abs));
+            continue;
+          }
+          if (depth + 1 > MAX_DEPTH) {
+            // A real subtree exists below the depth bound — we did not
+            // look inside it, so absence is no longer provable.
+            complete = false;
+            continue;
+          }
+          // Re-lstat before descending: guards a TOCTOU where the entry is
+          // swapped for a symlink between readdir and the recursive walk,
+          // which would otherwise let the scan follow a link outside the
+          // tree. If it is no longer a real directory, skip it.
+          try {
+            const st = await fs.lstat(abs);
+            if (!st.isDirectory()) continue;
+          } catch {
+            complete = false;
+            continue;
+          }
+          await walk(abs, depth + 1);
+          continue;
+        }
+        if (!dirent.isFile()) continue;
+        const rel = path.relative(targetDir, abs);
+        if (SENSITIVE_NAMES.has(dirent.name)) namedSensitive.push(rel);
+        if (dirent.name.endsWith('.key')) {
+          keyFiles.push(rel);
+        } else if (dirent.name.endsWith('.pem')) {
+          if (await this.pemLooksPrivate(abs, targetDir)) keyFiles.push(rel);
+        }
+      }
+    };
+
+    await walk(targetDir, 0);
+
+    // A skipped node_modules only breaks completeness if git would commit
+    // a sensitive file hidden inside it. Ask git directly (ls-files over
+    // real entries, honoring the full ignore stack INCLUDING negations —
+    // so a `!node_modules/vendor/secret.key` re-include is caught, which a
+    // synthetic path probe would miss). In a non-git target committability
+    // is moot, so the skip is safe.
+    if (skippedNodeModules.length > 0) {
+      if (await this.hasCommittableSensitiveUnder(targetDir, skippedNodeModules)) {
+        complete = false;
+      }
+    }
+
+    return { keyFiles, namedSensitive, complete };
+  }
+
+  /**
+   * True when git would commit (track, or leave un-ignored) any
+   * sensitive-typed file under the given directories. Uses
+   * `git ls-files --cached --others --exclude-standard` so the answer
+   * honors the entire ignore stack and negations over the REAL tree —
+   * no synthetic paths. Tri-state error direction (#250 4th-review-of-
+   * hardening): a non-git target or missing git binary means
+   * committability is moot → `false` (safe skip); a git error on a real
+   * invocation (timeout, maxBuffer) could NOT determine committability →
+   * `true` (conservative → the caller marks the scan incomplete rather
+   * than award a false clean bill). Only used for the node_modules
+   * completeness backstop.
+   */
+  private async hasCommittableSensitiveUnder(targetDir: string, dirRels: string[]): Promise<boolean> {
+    if (dirRels.length === 0) return false;
+    const absTarget = path.resolve(targetDir);
+    const pathspecs = dirRels.map((d) => `${d.split(path.sep).join('/')}/`);
+    // null = moot (non-git / no git binary); 'UNCERTAIN' = git error we
+    // must treat conservatively; string = ls-files output.
+    const out = await new Promise<string | null | 'UNCERTAIN'>((resolve) => {
+      let child;
+      try {
+        child = execFile(
+          'git',
+          ['-c', 'core.excludesFile=/dev/null', '-C', absTarget,
+            'ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ...pathspecs],
+          { timeout: 10000, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024, encoding: 'utf8' },
+          (err, stdout) => {
+            if (!err) { resolve(String(stdout ?? '')); return; }
+            const errno = (err as NodeJS.ErrnoException | null)?.code;
+            const code = (err as (Error & { code?: number }) | null)?.code;
+            // 128 = not a git repo; ENOENT = git binary missing → moot.
+            if (code === 128 || errno === 'ENOENT') { resolve(null); return; }
+            // Anything else (timeout/SIGKILL, maxBuffer, unexpected) →
+            // could not determine → conservative.
+            resolve('UNCERTAIN');
+          },
+        );
+      } catch {
+        // Synchronous spawn failure (e.g. git binary missing) → moot.
+        resolve(null);
+        return;
+      }
+      // No stdin for ls-files; ensure the pipe is closed.
+      try { child.stdin?.end(); } catch { /* ignore */ }
+    });
+    if (out === null) return false;         // moot → safe skip
+    if (out === 'UNCERTAIN') return true;   // fail-safe → mark incomplete
+    const isSensitive = (p: string): boolean => {
+      const base = path.posix.basename(p);
+      return base.endsWith('.key') || base.endsWith('.pem') ||
+        base === 'secrets.json' || base === 'credentials.json' ||
+        base === '.env' || base.startsWith('.env.');
+    };
+    return out.split('\0').filter(Boolean).some(isSensitive);
+  }
+
+  /**
+   * Content gate for `.pem` files. Returns false only when the content
+   * is positively identified as certificate-only public material;
+   * PRIVATE KEY blocks, unreadable files, oversized files, and
+   * unidentifiable content (binary DER) all return true (fail-safe).
+   *
+   * Reads at most MAX_PEM_BYTES into a FIXED buffer (never `readFile`),
+   * so memory is bounded regardless of the real on-disk size — a huge or
+   * mid-scan-grown `.pem` cannot exhaust memory. A file that does not fit
+   * in the cap cannot be positively cleared and is flagged. `filePath` is
+   * also confined to `boundsRoot`: a resolved path escaping the scan root
+   * (only reachable via a mid-scan symlink swap) is flagged, never read.
+   */
+  private async pemLooksPrivate(filePath: string, boundsRoot: string): Promise<boolean> {
+    const MAX_PEM_BYTES = 5 * 1024 * 1024;
+    const rootResolved = path.resolve(boundsRoot);
+    const resolved = path.resolve(filePath);
+    if (resolved !== rootResolved && !resolved.startsWith(rootResolved + path.sep)) {
+      return true; // outside the scan root — do not read, treat as suspect
+    }
+    let fh;
+    try {
+      fh = await fs.open(resolved, 'r');
+      // Short-circuit oversized files without reading: a `.pem` larger
+      // than the cap cannot be positively cleared, so flag it.
+      const { size } = await fh.stat();
+      if (size > MAX_PEM_BYTES) return true;
+      const buf = Buffer.alloc(MAX_PEM_BYTES);
+      const { bytesRead } = await fh.read(buf, 0, MAX_PEM_BYTES, 0);
+      const head = buf.subarray(0, bytesRead).toString('utf-8');
+      if (/PRIVATE KEY/.test(head)) return true;
+      // Only clear as public if we saw a certificate AND read the whole
+      // file (a private block could sit beyond a cap-sized read).
+      if (/BEGIN CERTIFICATE/.test(head) && bytesRead < MAX_PEM_BYTES) return false;
+      return true;
+    } catch {
+      return true;
+    } finally {
+      try { await fh?.close(); } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * Authoritative committability check via `git check-ignore`. Given
+   * relative paths under `targetDir`, returns the subset git would
+   * actually COMMIT (i.e. NOT ignored — honoring the full .gitignore
+   * stack, nested ignores, negations, .git/info/exclude, and global
+   * excludes), or `null` when the target is not a git work tree or git
+   * is unavailable. This replaces hand-rolled gitignore matching for the
+   * exposure decision, which repeatedly diverged from real git semantics
+   * (negations, root-anchoring, dir-only rules — #250 adversarial
+   * reviews). `null` signals the caller to fall back to the conservative
+   * text heuristic.
+   */
+  private async gitCommittable(targetDir: string, relPaths: string[]): Promise<string[] | null> {
+    if (relPaths.length === 0) return [];
+    // `git` is invoked via execFile with a fixed argv array — no shell is
+    // spawned, so path contents are never shell-interpreted. targetDir is
+    // passed as the VALUE of `-C` (never as a flag) and paths are fed only
+    // on NUL-delimited stdin (never as argv), so neither can be argument-
+    // injected. As defense in depth we still (a) require an absolute
+    // targetDir and (b) partition off any path containing a control
+    // character (\0/\n/\r) — a real POSIX filename cannot contain \0, and
+    // such pathological names are treated as committable (escalate),
+    // never silently dropped.
+    const absTarget = path.resolve(targetDir);
+    const posixPaths = relPaths.map((p) => p.split(path.sep).join('/'));
+    const suspicious = posixPaths.filter((p) => /[\0\n\r]/.test(p));
+    const safePaths = posixPaths.filter((p) => !/[\0\n\r]/.test(p));
+    const ignored = await new Promise<Set<string> | null>((resolve) => {
+      let child;
+      try {
+        child = execFile(
+          'git',
+          // core.excludesFile=/dev/null drops the developer's GLOBAL git
+          // excludes so committability depends only on the repo's own
+          // committed .gitignore stack — deterministic across machines and
+          // correct for advising on a shared repo (a key "protected" only
+          // by a teammate-less global ignore is not actually protected).
+          ['-c', 'core.excludesFile=/dev/null', '-C', absTarget, 'check-ignore', '--stdin', '-z'],
+          // SIGKILL on timeout: an unkillable-by-SIGTERM git (e.g. a
+          // wedged network .git) is force-reaped rather than leaked.
+          { timeout: 10000, killSignal: 'SIGKILL', maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' },
+          (err, stdout) => {
+            // exit 0 = some ignored (stdout lists them); exit 1 = none
+            // ignored (empty stdout); exit 128 / ENOENT = not a git repo
+            // or git missing → null (caller falls back to the heuristic).
+            const e = err as (Error & { code?: number; code2?: string }) | null;
+            const errno = (err as NodeJS.ErrnoException | null)?.code;
+            if (e && e.code !== 1 && (e.code === 128 || errno === 'ENOENT' || typeof e.code !== 'number')) {
+              resolve(null);
+              return;
+            }
+            const out = String(stdout ?? '');
+            resolve(new Set(out.split('\0').filter(Boolean)));
+          },
+        );
+      } catch {
+        resolve(null);
+        return;
+      }
+      try {
+        // Only control-char-free paths are sent to git; suspicious ones
+        // are handled separately below.
+        child.stdin?.end(safePaths.join('\0'));
+      } catch {
+        resolve(null);
+      }
+    });
+    if (ignored === null) return null;
+    // Committable = safe paths git did not ignore, PLUS every suspicious
+    // (control-char) path (fail-safe: treat as exposed, never drop).
+    return [...safePaths.filter((p) => !ignored.has(p)), ...suspicious];
+  }
+
+  /**
+   * Effective (non-comment, non-blank, non-negation) `.gitignore` rules,
+   * each trimmed and CR-stripped. Leading `**​/` is stripped (globstar
+   * prefix is match-anywhere, same as the bare form). A leading `/` is
+   * NOT stripped: a root-anchored rule is narrower than the bare form and
+   * must not be treated as equivalent (adversarial-review finding, #250).
+   */
+  private gitignoreRules(gitignoreContent: string): string[] {
+    return gitignoreContent
+      .split('\n')
+      .map((l) => l.replace(/\r$/, '').trim())
+      .filter((l) => l && !l.startsWith('#') && !l.startsWith('!'))
+      .map((l) => l.replace(/^\*\*\//, ''));
+  }
+
+  /**
+   * True when the hygiene pattern (`.env` / `secrets.json` / `*.pem` /
+   * `*.key`) is genuinely present as a match-anywhere rule, not merely
+   * mentioned as a substring or covered by a narrower root-anchored rule.
+   * Fixes the pre-existing substring bug where `# rotate secrets.json`
+   * suppressed the missing-pattern finding (adversarial-review, #250).
+   * A catch-all `*` / `**` also counts as covering.
+   */
+  private gitignorePatternCovered(pattern: string, gitignoreContent: string): boolean {
+    return this.gitignoreRules(gitignoreContent).some((rule) => {
+      if (rule === '*' || rule === '**') return true;
+      if (rule === pattern) return true;
+      // `.env*` (but not `.env.*`) matches the bare `.env` file too.
+      if (pattern === '.env' && rule === '.env*') return true;
+      return false;
+    });
+  }
+
+  /**
+   * FALLBACK-only heuristic (used when `git check-ignore` is unavailable —
+   * a non-git target). True when a concrete relative file path looks
+   * ignored. Deliberately conservative in the SAFE direction:
+   *   - if the .gitignore contains ANY negation (`!`) rule, returns false
+   *     (a negation may re-include the file; do not claim ignored);
+   *   - a trailing-slash rule (`foo/`) is directory-only and never
+   *     matches a same-named FILE, only paths under it;
+   *   - a leading `/` anchors to the repo root.
+   * On uncertainty it returns false (treat as committable → escalate).
+   * Authoritative committability comes from git check-ignore; this only
+   * backstops non-git scans (adversarial-review findings, #250).
+   */
+  private gitignoreFileIgnoredHeuristic(rel: string, gitignoreContent: string): boolean {
+    // Any negation rule → cannot safely claim ignored.
+    if (gitignoreContent.split('\n').some((l) => l.trim().startsWith('!'))) return false;
+    const posix = rel.split(path.sep).join('/');
+    const base = path.posix.basename(posix);
+    return this.gitignoreRules(gitignoreContent).some((rule) => {
+      if (rule === '*' || rule === '**') return true;
+      const anchored = rule.startsWith('/');
+      const body = anchored ? rule.slice(1) : rule;
+      const dirOnly = body.endsWith('/');
+      const name = dirOnly ? body.slice(0, -1) : body;
+      if (!name) return false;
+      // Directory-prefix match (applies to dir-only and bare-dir rules).
+      if (posix.startsWith(name + '/')) return true;
+      // A trailing-slash rule is directory-only — it never matches a file.
+      if (dirOnly) return false;
+      // Exact full-path match.
+      if (name === posix) return true;
+      // Anchored non-dir rules match only at the repo root.
+      if (anchored) return name === posix;
+      // Basename match (non-anchored bare name applies at any depth).
+      if (name === base) return true;
+      // `*.ext` glob.
+      if (name.startsWith('*.') && base.endsWith(name.slice(1))) return true;
+      // `prefix*` glob on the basename (covers `prefix.*` too).
+      if (name.endsWith('*')) {
+        const prefix = name.slice(0, -1);
+        if (prefix && !prefix.includes('/') && base.startsWith(prefix)) return true;
+      }
+      return false;
+    });
+  }
+
+  /**
+   * Of the given present sensitive files, which would git actually COMMIT
+   * (are NOT ignored)? Uses `git check-ignore` when the target is a git
+   * work tree (authoritative — handles negations, nested ignores, dir
+   * rules, global excludes); falls back to the conservative text
+   * heuristic otherwise. Returns relative posix paths.
+   */
+  private async committableSensitiveFiles(targetDir: string, relPaths: string[], gitignoreContent: string): Promise<string[]> {
+    if (relPaths.length === 0) return [];
+    const viaGit = await this.gitCommittable(targetDir, relPaths);
+    if (viaGit !== null) return viaGit;
+    return relPaths
+      .map((p) => p.split(path.sep).join('/'))
+      .filter((p) => !this.gitignoreFileIgnoredHeuristic(p, gitignoreContent));
+  }
+
   private async checkCredentialsAdvanced(
     targetDir: string,
     autoFix: boolean
   ): Promise<SecurityFinding[]> {
     const findings: SecurityFinding[] = [];
 
-    // CRED-002: Check for private key files
-    const keyExtensions = ['.key', '.pem'];
-    const foundKeys: string[] = [];
+    // CRED-002: Check for private key files. Recursive (bounded) since
+    // #250 — a key at certs/server.pem is exactly as committable as one
+    // at the root — and carries `file` so the finding survives the
+    // user-facing concrete-findings filter.
+    const { keyFiles: foundKeys, complete: keyScanComplete } =
+      await this.collectSensitiveArtifacts(targetDir);
 
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
-        if (keyExtensions.some((ext) => file.endsWith(ext))) {
-          foundKeys.push(file);
-        }
-      }
-    } catch {}
-
-    findings.push({
-      checkId: 'CRED-002',
-      name: 'Private Key Files',
-      description: 'Private key or certificate files found in project directory',
-      category: 'credentials',
-      severity: 'critical',
-      passed: foundKeys.length === 0,
-      message: foundKeys.length === 0
-        ? 'No private key files found in project root'
-        : `Private key files found: ${foundKeys.join(', ')} - move to secure location`,
-      fixable: false,
-      details: foundKeys.length > 0 ? { files: foundKeys } : undefined,
-      guidance: 'Private key files (.pem, .key) in a project directory are easily committed to git. Once pushed, the keys are compromised and must be rotated.',
-    });
+    if (foundKeys.length > 0) {
+      findings.push({
+        checkId: 'CRED-002',
+        name: 'Private Key Files',
+        description: 'Private key or certificate files found in project directory',
+        category: 'credentials',
+        severity: 'critical',
+        passed: false,
+        message: `Private key files found: ${foundKeys.slice(0, 5).join(', ')}${foundKeys.length > 5 ? ` (+${foundKeys.length - 5} more)` : ''} - move to secure location`,
+        file: foundKeys[0],
+        fixable: false,
+        fix: `Move the key outside the repository or into a secrets manager. If it was ever committed, rotate it, then run: git rm --cached ${foundKeys[0]}`,
+        details: { files: foundKeys },
+        guidance: 'Private key files (.pem, .key) in a project directory are easily committed to git. Once pushed, the keys are compromised and must be rotated.',
+      });
+    } else if (!keyScanComplete) {
+      // No key found, but the walk could not exhaustively verify absence
+      // (tree too deep/large, an unreadable directory, or an un-ignored
+      // node_modules). Do NOT report clean — a key could hide in the
+      // unscanned portion. Fail-safe HIGH so the scan does not award a
+      // false clean bill (adversarial-review finding, #250).
+      findings.push({
+        checkId: 'CRED-002',
+        name: 'Private Key Files',
+        description: 'Private-key scan could not fully cover the project tree',
+        category: 'credentials',
+        severity: 'high',
+        passed: false,
+        message: 'Private-key scan incomplete — tree too large/deep or partly unreadable to confirm no keys are present',
+        file: '.',
+        fixable: false,
+        fix: `List candidate key files yourself: find . -type f \\( -name '*.pem' -o -name '*.key' \\) -not -path '*/node_modules/*'`,
+        guidance: 'The project tree is too large or deep, has an unreadable directory, or contains an un-ignored node_modules — so the scanner could not confirm no private keys are committed. Verify manually and ensure keys are outside the repo or in a secrets manager.',
+      });
+    } else {
+      findings.push({
+        checkId: 'CRED-002',
+        name: 'Private Key Files',
+        description: 'Private key or certificate files found in project directory',
+        category: 'credentials',
+        severity: 'critical',
+        passed: true,
+        message: 'No private key files found in project directory',
+        fixable: false,
+        guidance: 'Private key files (.pem, .key) in a project directory are easily committed to git. Once pushed, the keys are compromised and must be rotated.',
+      });
+    }
 
     // CRED-003: Check package.json for hardcoded secrets
     let hasSecretsInPackageJson = false;
