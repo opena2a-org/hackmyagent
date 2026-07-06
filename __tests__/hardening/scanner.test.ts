@@ -3436,16 +3436,15 @@ describe('#250 existence-aware git severity + surfaced file findings', () => {
       expect(['critical', 'high']).toContain(cred002?.severity);
     });
 
-    it('marks the scan incomplete when node_modules is present but not gitignored (git repo)', async () => {
+    it('marks the scan incomplete when an un-ignored node_modules holds a committable secret (git repo)', async () => {
       // A committable key inside an un-ignored node_modules must not be
       // silently excluded from the completeness guarantee. git decides
-      // committability, so this must be a real repo. The .gitignore must
-      // NOT carry *.key/*.pem — otherwise keys are ignored everywhere and
-      // the skip is genuinely safe.
+      // committability over the real tree, so this must be a real repo
+      // with an actual committable key (no *.key rule to ignore it).
       gitInit(tempDir);
       await fs.writeFile(path.join(tempDir, '.gitignore'), '.env\nsecrets.json\n');
-      await fs.mkdir(path.join(tempDir, 'node_modules'), { recursive: true });
-      await fs.writeFile(path.join(tempDir, 'node_modules', 'placeholder.txt'), 'x');
+      await fs.mkdir(path.join(tempDir, 'node_modules', 'somepkg'), { recursive: true });
+      await fs.writeFile(path.join(tempDir, 'node_modules', 'somepkg', 'id.key'), FAKE_PRIVATE_KEY);
 
       const result = await scanner.scan({ targetDir: tempDir });
       const cred002 = result.findings.find((f) => f.checkId === 'CRED-002');
@@ -3453,6 +3452,39 @@ describe('#250 existence-aware git severity + surfaced file findings', () => {
       expect(cred002?.passed).toBe(false);
       expect(cred002?.severity).toBe('high');
       expect(cred002?.message).toMatch(/incomplete/i);
+    });
+
+    it('an un-ignored node_modules with NO secrets does not false-flag incomplete (git repo)', async () => {
+      // The ls-files backstop checks real committable secrets, so an
+      // un-ignored node_modules that simply holds ordinary package files
+      // is genuinely safe — no false incomplete-HIGH.
+      gitInit(tempDir);
+      await fs.writeFile(path.join(tempDir, '.gitignore'), '.env\nsecrets.json\n*.pem\n*.key\n');
+      await fs.mkdir(path.join(tempDir, 'node_modules', 'somepkg'), { recursive: true });
+      await fs.writeFile(path.join(tempDir, 'node_modules', 'somepkg', 'index.js'), 'module.exports={}\n');
+      await fs.writeFile(path.join(tempDir, 'index.js'), 'console.log(1)\n');
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const failing = result.findings.find((f) => f.checkId === 'CRED-002');
+      expect(failing).toBeUndefined();
+    });
+
+    it('catches a negation-re-included key inside a broadly-ignored node_modules (git repo)', async () => {
+      // node_modules/** ignores the tree, but a `!` negation re-includes a
+      // real key — the synthetic-probe approach missed this; ls-files over
+      // the real tree catches it.
+      gitInit(tempDir);
+      await fs.writeFile(
+        path.join(tempDir, '.gitignore'),
+        'node_modules/**\n!node_modules/vendor/\n!node_modules/vendor/secret.key\n.env\nsecrets.json\n'
+      );
+      await fs.mkdir(path.join(tempDir, 'node_modules', 'vendor'), { recursive: true });
+      await fs.writeFile(path.join(tempDir, 'node_modules', 'vendor', 'secret.key'), FAKE_PRIVATE_KEY);
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const cred002 = result.findings.find((f) => f.checkId === 'CRED-002');
+      expect(cred002?.passed).toBe(false);
+      expect(['critical', 'high']).toContain(cred002?.severity);
     });
 
     it('a git-ignored node_modules (node_modules/** rule) does NOT break completeness', async () => {

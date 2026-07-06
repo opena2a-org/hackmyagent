@@ -2721,7 +2721,7 @@ dist/
         if (dirent.name.endsWith('.key')) {
           keyFiles.push(rel);
         } else if (dirent.name.endsWith('.pem')) {
-          if (await this.pemLooksPrivate(abs)) keyFiles.push(rel);
+          if (await this.pemLooksPrivate(abs, targetDir)) keyFiles.push(rel);
         }
       }
     };
@@ -2729,27 +2729,67 @@ dist/
     await walk(targetDir, 0);
 
     // A skipped node_modules only breaks completeness if git would commit
-    // a sensitive file hidden inside it. Probe ONE hypothetical deep path
-    // per sensitive TYPE under each skipped dir — not the bare dir entry
-    // (a `node_modules/**` rule ignores the contents but not the dir node)
-    // and not a single extension (a `*.key`-only rule would ignore a
-    // `.key` probe while a committable `.pem` escapes — the false-clean the
-    // 4th review caught). If git would commit ANY type there, the subtree
-    // is not fully protected → incomplete. If every type is ignored (or
-    // the dir is ignored), the skip is safe. In a non-git target
-    // (gitCommittable → null) committability is moot, so the skip is safe.
+    // a sensitive file hidden inside it. Ask git directly (ls-files over
+    // real entries, honoring the full ignore stack INCLUDING negations —
+    // so a `!node_modules/vendor/secret.key` re-include is caught, which a
+    // synthetic path probe would miss). In a non-git target committability
+    // is moot, so the skip is safe.
     if (skippedNodeModules.length > 0) {
-      const PROBE_LEAVES = ['deep.pem', 'deep.key', 'secrets.json', 'credentials.json', '.env'];
-      const probes: string[] = [];
-      for (const nm of skippedNodeModules) {
-        const base = nm.split(path.sep).join('/');
-        for (const leaf of PROBE_LEAVES) probes.push(`${base}/__hma_probe__/${leaf}`);
+      if (await this.hasCommittableSensitiveUnder(targetDir, skippedNodeModules)) {
+        complete = false;
       }
-      const committableProbes = await this.gitCommittable(targetDir, probes);
-      if (committableProbes && committableProbes.length > 0) complete = false;
     }
 
     return { keyFiles, namedSensitive, complete };
+  }
+
+  /**
+   * True when git would commit (track, or leave un-ignored) any
+   * sensitive-typed file under the given directories. Uses
+   * `git ls-files --cached --others --exclude-standard` so the answer
+   * honors the entire ignore stack and negations over the REAL tree —
+   * no synthetic paths. Returns false in a non-git target (committability
+   * is undefined there) and on any git error (the caller already treats
+   * unreadable subtrees as incomplete via the walk). Only used for the
+   * node_modules completeness backstop (#250 adversarial reviews).
+   */
+  private async hasCommittableSensitiveUnder(targetDir: string, dirRels: string[]): Promise<boolean> {
+    if (dirRels.length === 0) return false;
+    const absTarget = path.resolve(targetDir);
+    const pathspecs = dirRels.map((d) => `${d.split(path.sep).join('/')}/`);
+    const out = await new Promise<string | null>((resolve) => {
+      let child;
+      try {
+        child = execFile(
+          'git',
+          ['-c', 'core.excludesFile=/dev/null', '-C', absTarget,
+            'ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ...pathspecs],
+          { timeout: 10000, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024, encoding: 'utf8' },
+          (err, stdout) => {
+            const errno = (err as NodeJS.ErrnoException | null)?.code;
+            const code = (err as (Error & { code?: number }) | null)?.code;
+            if (err && (code === 128 || errno === 'ENOENT' || typeof code !== 'number')) {
+              resolve(null);
+              return;
+            }
+            resolve(String(stdout ?? ''));
+          },
+        );
+      } catch {
+        resolve(null);
+        return;
+      }
+      // No stdin for ls-files; ensure the pipe is closed.
+      try { child.stdin?.end(); } catch { /* ignore */ }
+    });
+    if (out === null) return false; // non-git or error → skip is treated as safe/moot
+    const isSensitive = (p: string): boolean => {
+      const base = path.posix.basename(p);
+      return base.endsWith('.key') || base.endsWith('.pem') ||
+        base === 'secrets.json' || base === 'credentials.json' ||
+        base === '.env' || base.startsWith('.env.');
+    };
+    return out.split('\0').filter(Boolean).some(isSensitive);
   }
 
   /**
@@ -2758,21 +2798,35 @@ dist/
    * PRIVATE KEY blocks, unreadable files, oversized files, and
    * unidentifiable content (binary DER) all return true (fail-safe).
    *
-   * The whole file is scanned up to a 5 MB cap so a PRIVATE KEY block
-   * placed after a large certificate bundle is not missed; a `.pem`
-   * larger than the cap cannot be positively cleared and is flagged.
+   * Reads at most MAX_PEM_BYTES into a FIXED buffer (never `readFile`),
+   * so memory is bounded regardless of the real on-disk size — a huge or
+   * mid-scan-grown `.pem` cannot exhaust memory. A file that does not fit
+   * in the cap cannot be positively cleared and is flagged. `filePath` is
+   * also confined to `boundsRoot`: a resolved path escaping the scan root
+   * (only reachable via a mid-scan symlink swap) is flagged, never read.
    */
-  private async pemLooksPrivate(filePath: string): Promise<boolean> {
+  private async pemLooksPrivate(filePath: string, boundsRoot: string): Promise<boolean> {
     const MAX_PEM_BYTES = 5 * 1024 * 1024;
+    const rootResolved = path.resolve(boundsRoot);
+    const resolved = path.resolve(filePath);
+    if (resolved !== rootResolved && !resolved.startsWith(rootResolved + path.sep)) {
+      return true; // outside the scan root — do not read, treat as suspect
+    }
+    let fh;
     try {
-      const stat = await fs.stat(filePath);
-      if (stat.size > MAX_PEM_BYTES) return true; // too big to positively clear
-      const content = await fs.readFile(filePath, 'utf-8');
-      if (/PRIVATE KEY/.test(content)) return true;
-      if (/BEGIN CERTIFICATE/.test(content)) return false;
+      fh = await fs.open(resolved, 'r');
+      const buf = Buffer.alloc(MAX_PEM_BYTES);
+      const { bytesRead } = await fh.read(buf, 0, MAX_PEM_BYTES, 0);
+      const head = buf.subarray(0, bytesRead).toString('utf-8');
+      if (/PRIVATE KEY/.test(head)) return true;
+      // Only clear as public if we saw a certificate AND read the whole
+      // file (a private block could sit beyond a cap-sized read).
+      if (/BEGIN CERTIFICATE/.test(head) && bytesRead < MAX_PEM_BYTES) return false;
       return true;
     } catch {
       return true;
+    } finally {
+      try { await fh?.close(); } catch { /* ignore */ }
     }
   }
 
