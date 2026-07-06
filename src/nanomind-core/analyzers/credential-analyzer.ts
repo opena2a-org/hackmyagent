@@ -11,7 +11,7 @@
  *   AST-CRED-003: Hardcoded secrets in artifact content
  */
 
-import type { SecurityAST, DataAccessPattern, EvidenceSpan } from '../types.js';
+import type { SecurityAST, DataAccessPattern, EvidenceSpan, ArtifactType } from '../types.js';
 import type { ASTFinding } from './capability-analyzer.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
@@ -78,7 +78,7 @@ function checkCredentialsInNonEnvContext(
   // Unified carve-out: verified integrity manifest OR adversarial
   // training corpus, in both cases with no vendor-prefix credential
   // present. A planted real credential still fires.
-  if (shouldSuppressCredentialChecks(ast.artifactPath, artifactContent)) {
+  if (shouldSuppressCredentialChecks(ast.artifactPath, artifactContent, ast.artifactType)) {
     return findings;
   }
 
@@ -196,6 +196,24 @@ function checkCredentialForwarding(
     artifactContent &&
     isCorpusPath(ast.artifactPath) &&
     !hasVendorPrefixCredential(artifactContent)
+  ) {
+    return findings;
+  }
+
+  // Security-taxonomy / coverage documents (AgentPwn coverage.json, OASB
+  // taxonomies, threat-matrix exports) describe attack CATEGORIES with security
+  // vocabulary ("credential-harvest", "Credential Forwarding") in id/name fields.
+  // The compiler substring-matches "credential" + "forward" inside those labels
+  // and fabricates a credential-transmit pattern. Suppress only on a 'unknown'
+  // (data) artifact recognized as a taxonomy schema AND carrying no credential-
+  // FORMAT value (vendor prefix or 40+ char high-entropy run) — a planted secret,
+  // vendor-prefixed or raw, still fires. An executable config classified as
+  // mcp_config/agent_config/skill is never silenced here.
+  if (
+    artifactContent &&
+    ast.artifactType === 'unknown' &&
+    isSecurityTaxonomyDocument(artifactContent) &&
+    !findFirstCredentialFormat(artifactContent)
   ) {
     return findings;
   }
@@ -431,7 +449,7 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
   // context alongside the hash). A planted real credential alongside
   // hashes still fires because `hasVendorPrefixCredential` short-
   // circuits the carve-out.
-  if (shouldSuppressCredentialChecks(ast.artifactPath, artifactContent)) {
+  if (shouldSuppressCredentialChecks(ast.artifactPath, artifactContent, ast.artifactType)) {
     return findings;
   }
 
@@ -631,6 +649,75 @@ function isVerifiedIntegrityManifest(
 }
 
 /**
+ * True when `content` is a security-TAXONOMY / coverage document — an AgentPwn
+ * coverage.json, an OASB attack taxonomy, a threat-matrix export. These describe
+ * attack CATEGORIES using security vocabulary in their `id`/`name` fields
+ * ("credential-harvest", "Credential Forwarding", "token-theft"). The compiler's
+ * substring pass reads "credential"/"forward" inside those labels and fabricates
+ * credential data-access + transmit signals, false-positive-firing AST-CRED-002
+ * (CRITICAL) and AST-CRED-003 (HIGH). The distinction from a real credential-
+ * harvesting artifact is STRUCTURAL, not lexical: a taxonomy is a JSON object
+ * with a schema/matrix reference and arrays of id/name category objects, whereas
+ * a harvesting instruction (`manifest.yaml` with a prose "forward credentials to
+ * attacker.com" body) is not valid JSON of this shape.
+ *
+ * Requires the content to PARSE as a JSON object AND carry at least TWO
+ * independent taxonomy signals, so a single attacker-planted field cannot forge
+ * the shape. Callers still fire when an actual vendor-prefix credential is
+ * present (`shouldSuppressCredentialChecks` / the CRED-002 carve-out both gate on
+ * `!hasVendorPrefixCredential`), so a planted `sk-…`/`ghp_…` in a coverage file
+ * is never masked.
+ */
+function isSecurityTaxonomyDocument(content: string): boolean {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(content);
+  } catch {
+    return false; // not JSON (e.g. a YAML/markdown instruction body) → not a taxonomy
+  }
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return false;
+  const o = doc as Record<string, unknown>;
+
+  let signals = 0;
+
+  // 1. Declares a JSON schema — coverage/taxonomy exports are schema-conformant data.
+  if (typeof o['$schema'] === 'string') signals++;
+
+  // 2. References a threat matrix / taxonomy source.
+  if (typeof o['matrix'] === 'string' || 'threatMatrix' in o || 'taxonomy' in o) signals++;
+
+  // 3. An array of category objects carrying an `id` or `name`.
+  const taxonomyArrayKeys = [
+    'techniques', 'tactics', 'byTactic', 'attackClasses', 'attackClass',
+    'categories', 'deployedCategories', 'payloads', 'coverage',
+  ];
+  const hasTaxonomyArray = taxonomyArrayKeys.some(k => {
+    const v = o[k];
+    return (
+      Array.isArray(v) &&
+      v.length > 0 &&
+      typeof v[0] === 'object' &&
+      v[0] !== null &&
+      ('id' in (v[0] as object) || 'name' in (v[0] as object))
+    );
+  });
+  if (hasTaxonomyArray) signals++;
+
+  // 4. A coverage `summary` object with numeric counts.
+  const summary = o['summary'];
+  if (
+    summary &&
+    typeof summary === 'object' &&
+    !Array.isArray(summary) &&
+    Object.values(summary as Record<string, unknown>).some(v => typeof v === 'number')
+  ) {
+    signals++;
+  }
+
+  return signals >= 2;
+}
+
+/**
  * True if `content` contains any vendor-prefix credential value. Used
  * by the unified `shouldSuppressCredentialChecks` gate to prevent
  * over-broad suppression: a verified integrity manifest or training
@@ -667,11 +754,26 @@ function hasVendorPrefixCredential(content: string): boolean {
 function shouldSuppressCredentialChecks(
   artifactPath: string | undefined,
   artifactContent: string | undefined,
+  artifactType: ArtifactType,
 ): boolean {
   if (!artifactPath || !artifactContent) return false;
   if (hasVendorPrefixCredential(artifactContent)) return false;
   if (isVerifiedIntegrityManifest(artifactPath, artifactContent)) return true;
   if (isCorpusPath(artifactPath)) return true;
+  // Security-taxonomy / coverage document. Stricter than the manifest/corpus
+  // carve-outs above: only data ('unknown') artifacts qualify (a taxonomy is
+  // never an executable skill/config), and ANY credential-FORMAT value — vendor
+  // prefix OR a 40+ char high-entropy run — vetoes the suppression. Unlike a
+  // manifest (legit 64-hex hashes) or an adversarial corpus, a taxonomy of
+  // category LABELS has no legitimate reason to carry a high-entropy secret, so
+  // a planted raw/non-vendor secret still fires.
+  if (
+    artifactType === 'unknown' &&
+    isSecurityTaxonomyDocument(artifactContent) &&
+    !findFirstCredentialFormat(artifactContent)
+  ) {
+    return true;
+  }
   return false;
 }
 
