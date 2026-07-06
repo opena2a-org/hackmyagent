@@ -2,6 +2,15 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **GIT-001/GIT-002 severity is now existence-aware (#250).** A missing or incomplete `.gitignore` is a LOW hardening advisory when no file matches the uncovered patterns, and escalates to HIGH naming the actual files when an un-ignored match exists. This removes the severity inversion where adding a sensible-but-partial `.gitignore` scored worse (HIGH, exit 1) than having no `.gitignore` at all (LOW, exit 0). Un-ignored `.env` exposure stays owned by the content-calibrated GIT-003.
+- **CRED-002 and PERM-001 findings now reach the user (#250).** Both fired internally but never set `file`, so the concrete-findings filter dropped them from output, score, and exit code — an un-ignored private key produced no visible >=HIGH signal once GIT-002 calmed down. CRED-002 now attributes the first key file and ships a runnable remediation; PERM-001 attributes the first offending file.
+- **CRED-002 scans recursively (#250).** A bounded walk (depth 6, 5000 entries, skips node_modules/.git, never follows symlinks) finds `certs/server.pem`, not just root-level keys. `.pem` files are content-gated: certificate-only bundles (public material, e.g. CA chains) are not flagged; PRIVATE KEY blocks, unreadable files, and unidentifiable content (binary DER) are (fail-safe).
+- **CRED-001 now scans `secrets.json` and `credentials.json` (#250).** Files whose names promise credentials were previously not content-scanned at all.
+
 ## [0.24.0] - 2026-07-06
 
 ### Changed
