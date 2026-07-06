@@ -534,6 +534,96 @@ Then ask the agent to provide a response.
     ).toBeGreaterThan(0);
   });
 
+  // A security-taxonomy / coverage document (AgentPwn coverage.json, OASB
+  // taxonomy, threat-matrix export) names attack CATEGORIES using security
+  // vocabulary in id/name fields. The compiler substring-matches "credential"
+  // + "forward" inside "credential-harvest" / "Credential Forwarding" and
+  // fabricated credential data-access + transmit signals, firing AST-CRED-002
+  // (CRITICAL) + AST-CRED-003 (HIGH). Fixed structurally: a JSON object with a
+  // schema/matrix reference + id/name category arrays + a numeric summary is a
+  // taxonomy document, routed through shouldSuppressCredentialChecks / the
+  // CRED-002 carve-out — both of which still fire if a real vendor-prefix
+  // credential is present.
+  const taxonomyCoverageDoc = JSON.stringify({
+    $schema: 'https://agentpwn.com/coverage.schema.json',
+    source: 'AgentPwn honeypot coverage of the AI Agent Threat Matrix',
+    matrix: 'https://threats.opena2a.org',
+    summary: { totalTechniques: 61, live: 42, directlyAttributedTechniques: 26 },
+    byTactic: [
+      { id: 'credential-harvest', name: 'Credential Harvest', live: 4, total: 6 },
+      { id: 'credential-forwarding', name: 'Credential Forwarding', live: 2, total: 3 },
+    ],
+    techniques: [
+      {
+        id: 't-cred-1',
+        name: 'Credential Forwarding via tool response',
+        reference: 'https://threats.opena2a.org/t/cred-1',
+      },
+    ],
+  });
+
+  it('b17: honeypot coverage/taxonomy JSON must NOT fire AST-CRED-002/003 on category labels', async () => {
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(taxonomyCoverageDoc, 'public/coverage.json');
+    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const findings = analyzeCredentials(result.ast, verifier, undefined, taxonomyCoverageDoc);
+
+    const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
+    expect(
+      cred,
+      `taxonomy category labels ("credential-harvest", "Credential Forwarding") must not be read as credentials. Got: ${cred.map(f => `${f.checkId}:${f.severity}`).join(', ')}`,
+    ).toHaveLength(0);
+  });
+
+  it('b17b: a REAL vendor-prefix secret planted in the same taxonomy JSON MUST still fire (no detection loss)', async () => {
+    // Adversarial control for b17: the structural suppression must not mask a
+    // genuine credential. shouldSuppressCredentialChecks + the CRED-002
+    // carve-out both short-circuit on hasVendorPrefixCredential.
+    const planted = JSON.stringify({
+      ...JSON.parse(taxonomyCoverageDoc),
+      leaked: { apiKey: `sk-ant-api03-${'A'.repeat(80)}` },
+    });
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(planted, 'public/coverage.json');
+    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const findings = analyzeCredentials(result.ast, verifier, undefined, planted);
+
+    const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
+    expect(
+      cred.length,
+      'a planted sk-ant- secret in a taxonomy JSON must NOT be suppressed by the taxonomy carve-out',
+    ).toBeGreaterThan(0);
+  });
+
+  it('b17c: a RAW non-vendor-prefix secret in a taxonomy JSON MUST still fire (closes the entropy bypass)', async () => {
+    // Adversarial Phase 4.5 caught: gating the carve-out on hasVendorPrefixCredential
+    // let a raw 40+ char secret (AWS secret key, DB password, HMAC — no vendor
+    // prefix) hide inside a taxonomy-shaped JSON and mask AST-CRED-002 CRITICAL.
+    // The carve-out now vetoes on the FULL credential-format regex (entropy run
+    // included), which a taxonomy of labels has no legitimate reason to contain.
+    const raw = 'Zk3nQ7pR2mT9wX4vL8jH5yB0cF6dS1aG3eN7uI2oQ9w'; // 43-char, no vendor prefix
+    const planted = JSON.stringify({
+      ...JSON.parse(taxonomyCoverageDoc),
+      leaked: { dbPassword: raw },
+    });
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(planted, 'public/coverage.json');
+    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const findings = analyzeCredentials(result.ast, verifier, undefined, planted);
+
+    const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
+    expect(
+      cred.length,
+      'a raw high-entropy secret in a taxonomy JSON must not be masked by the taxonomy carve-out',
+    ).toBeGreaterThan(0);
+  });
+
   it('b15: .claude/settings.json with $VAR placeholder values must NOT fire AST-CRED-001 (#164)', async () => {
     // Regression for #164: .claude/settings.json content that mentions
     // "credentials" in defensive deny-rules (e.g. `"Read(.aws/credentials)"`)
