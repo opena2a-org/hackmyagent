@@ -2701,6 +2701,17 @@ dist/
             complete = false;
             continue;
           }
+          // Re-lstat before descending: guards a TOCTOU where the entry is
+          // swapped for a symlink between readdir and the recursive walk,
+          // which would otherwise let the scan follow a link outside the
+          // tree. If it is no longer a real directory, skip it.
+          try {
+            const st = await fs.lstat(abs);
+            if (!st.isDirectory()) continue;
+          } catch {
+            complete = false;
+            continue;
+          }
           await walk(abs, depth + 1);
           continue;
         }
@@ -2779,7 +2790,19 @@ dist/
    */
   private async gitCommittable(targetDir: string, relPaths: string[]): Promise<string[] | null> {
     if (relPaths.length === 0) return [];
+    // `git` is invoked via execFile with a fixed argv array — no shell is
+    // spawned, so path contents are never shell-interpreted. targetDir is
+    // passed as the VALUE of `-C` (never as a flag) and paths are fed only
+    // on NUL-delimited stdin (never as argv), so neither can be argument-
+    // injected. As defense in depth we still (a) require an absolute
+    // targetDir and (b) partition off any path containing a control
+    // character (\0/\n/\r) — a real POSIX filename cannot contain \0, and
+    // such pathological names are treated as committable (escalate),
+    // never silently dropped.
+    const absTarget = path.resolve(targetDir);
     const posixPaths = relPaths.map((p) => p.split(path.sep).join('/'));
+    const suspicious = posixPaths.filter((p) => /[\0\n\r]/.test(p));
+    const safePaths = posixPaths.filter((p) => !/[\0\n\r]/.test(p));
     const ignored = await new Promise<Set<string> | null>((resolve) => {
       let child;
       try {
@@ -2790,8 +2813,10 @@ dist/
           // committed .gitignore stack — deterministic across machines and
           // correct for advising on a shared repo (a key "protected" only
           // by a teammate-less global ignore is not actually protected).
-          ['-c', 'core.excludesFile=/dev/null', '-C', targetDir, 'check-ignore', '--stdin', '-z'],
-          { timeout: 10000, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' },
+          ['-c', 'core.excludesFile=/dev/null', '-C', absTarget, 'check-ignore', '--stdin', '-z'],
+          // SIGKILL on timeout: an unkillable-by-SIGTERM git (e.g. a
+          // wedged network .git) is force-reaped rather than leaked.
+          { timeout: 10000, killSignal: 'SIGKILL', maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' },
           (err, stdout) => {
             // exit 0 = some ignored (stdout lists them); exit 1 = none
             // ignored (empty stdout); exit 128 / ENOENT = not a git repo
@@ -2811,13 +2836,17 @@ dist/
         return;
       }
       try {
-        child.stdin?.end(posixPaths.join('\0'));
+        // Only control-char-free paths are sent to git; suspicious ones
+        // are handled separately below.
+        child.stdin?.end(safePaths.join('\0'));
       } catch {
         resolve(null);
       }
     });
     if (ignored === null) return null;
-    return posixPaths.filter((p) => !ignored.has(p));
+    // Committable = safe paths git did not ignore, PLUS every suspicious
+    // (control-char) path (fail-safe: treat as exposed, never drop).
+    return [...safePaths.filter((p) => !ignored.has(p)), ...suspicious];
   }
 
   /**
