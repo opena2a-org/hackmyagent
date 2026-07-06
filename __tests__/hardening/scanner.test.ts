@@ -3553,6 +3553,41 @@ describe('#250 existence-aware git severity + surfaced file findings', () => {
       expect(git002?.severity).toBe('high');
     });
 
+    it('a *.key-only rule does NOT mask a committable .pem hidden in an un-ignored node_modules (4th-review false-clean)', async () => {
+      // The completeness probe must cover every sensitive type: a `*.key`
+      // rule ignores a `.key` probe but a committable `.pem` in node_modules
+      // still escapes the walk. The scan must flag incomplete, not clean.
+      gitInit(tempDir);
+      await fs.writeFile(path.join(tempDir, '.gitignore'), '*.key\n');
+      const nm = path.join(tempDir, 'node_modules', 'somepkg');
+      await fs.mkdir(nm, { recursive: true });
+      await fs.writeFile(path.join(nm, 'evil.pem'), FAKE_PRIVATE_KEY);
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const cred002 = result.findings.find((f) => f.checkId === 'CRED-002');
+      expect(cred002?.passed).toBe(false);
+      expect(cred002?.severity).toBe('high');
+      expect(cred002?.message).toMatch(/incomplete/i);
+    });
+
+    it('does NOT false-flag incomplete when every sensitive type is git-ignored despite an un-ignored node_modules', async () => {
+      // All secret types ignored everywhere → nothing committable can hide
+      // in node_modules → the skip is safe, no false incomplete HIGH.
+      gitInit(tempDir);
+      await fs.writeFile(
+        path.join(tempDir, '.gitignore'),
+        '*.key\n*.pem\nsecrets.json\ncredentials.json\n.env\n'
+      );
+      const nm = path.join(tempDir, 'node_modules', 'somepkg');
+      await fs.mkdir(nm, { recursive: true });
+      await fs.writeFile(path.join(nm, 'index.js'), 'x');
+      await fs.writeFile(path.join(tempDir, 'index.js'), 'console.log(1)\n');
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const failing = result.findings.find((f) => f.checkId === 'CRED-002');
+      expect(failing).toBeUndefined();
+    });
+
     it('a genuinely-ignored key (config/ dir rule) does NOT produce a false GIT-002 HIGH', async () => {
       gitInit(tempDir);
       await fs.writeFile(path.join(tempDir, '.gitignore'), 'config/\n.env\nsecrets.json\n*.pem\n*.key\n');

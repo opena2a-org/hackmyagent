@@ -2718,14 +2718,22 @@ dist/
     await walk(targetDir, 0);
 
     // A skipped node_modules only breaks completeness if git would commit
-    // a key hidden inside it. Probe a hypothetical DEEP key path under
-    // each skipped dir (not the dir entry itself — a `node_modules/**`
-    // rule ignores the contents but not the directory node, so checking
-    // the bare dir path would wrongly read as committable). In a non-git
-    // target (gitCommittable → null) committability is moot, so the skip
-    // is safe.
+    // a sensitive file hidden inside it. Probe ONE hypothetical deep path
+    // per sensitive TYPE under each skipped dir — not the bare dir entry
+    // (a `node_modules/**` rule ignores the contents but not the dir node)
+    // and not a single extension (a `*.key`-only rule would ignore a
+    // `.key` probe while a committable `.pem` escapes — the false-clean the
+    // 4th review caught). If git would commit ANY type there, the subtree
+    // is not fully protected → incomplete. If every type is ignored (or
+    // the dir is ignored), the skip is safe. In a non-git target
+    // (gitCommittable → null) committability is moot, so the skip is safe.
     if (skippedNodeModules.length > 0) {
-      const probes = skippedNodeModules.map((nm) => `${nm.split(path.sep).join('/')}/__hma_probe__/deep.key`);
+      const PROBE_LEAVES = ['deep.pem', 'deep.key', 'secrets.json', 'credentials.json', '.env'];
+      const probes: string[] = [];
+      for (const nm of skippedNodeModules) {
+        const base = nm.split(path.sep).join('/');
+        for (const leaf of PROBE_LEAVES) probes.push(`${base}/__hma_probe__/${leaf}`);
+      }
       const committableProbes = await this.gitCommittable(targetDir, probes);
       if (committableProbes && committableProbes.length > 0) complete = false;
     }
