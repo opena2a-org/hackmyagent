@@ -2,13 +2,19 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
-## [Unreleased]
+## [0.24.0] - 2026-07-06
 
 ### Changed
 
 - **The ARP runtime engine now lives in `@opena2a/aim-sdk`; `hackmyagent/arp` is a thin re-export.** The runtime-protection module (event engine, monitors and interceptors, behavioral twin, intelligence coordinator, enforcement, signature telemetry) moved to the AIM agent-side TypeScript SDK as its `@opena2a/aim-sdk/arp` module; hackmyagent keeps the scan-time surface (static scanner, hardening rules, artifact parsing, NanoMind artifact classification) and re-exports the SDK module so every existing `hackmyagent/arp` consumer — including the published `arp-guard` package and the `arp` CLI — keeps working unchanged. The OASB behavioral suite now exercises the SDK module through the re-export, keeping a behavioral drift guard on the dependency.
 
+- **Pinned `@opena2a/aim-sdk` to 1.0.1.** The `arp` re-export now ships the SDK's 1.0.1 fixes: typed `ConfigurationError` for credential-file errors, `EventEngine.emit` input validation, CJS error-class `constructor.name`, and the `./package.json` export.
+
 - **`detect` help now states that machine-wide discovery always runs.** A fresh user passing `detect /path/to/project` could expect directory-scoped results, but `detect` always audits the whole machine (running assistants, MCP servers, machine-level configs) and uses the directory only for the project-local scan. The command description, examples, and the directory-argument help now say so explicitly (release-test P3).
+
+### Security
+
+- **Bumped `hono` and `js-yaml` to clear known advisories in the production dependency tree.** hono (path-traversal on Windows via encoded backslash, CORS wildcard-with-credentials reflection, body-limit bypass, and the Set-Cookie/header-merge adapter bugs — GHSA cluster) and js-yaml (quadratic-complexity DoS in merge-key handling, GHSA-h67p-54hq-rp68), both via an in-range `npm audit fix`. Production `npm audit` is now clean.
 
 ## [0.23.11] - 2026-06-18
 
