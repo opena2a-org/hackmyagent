@@ -6,6 +6,8 @@ All notable changes to HackMyAgent are documented in this file.
 
 ### Changed
 
+- **The ARP runtime engine now lives in `@opena2a/aim-sdk`; `hackmyagent/arp` is a thin re-export.** The runtime-protection module (event engine, monitors and interceptors, behavioral twin, intelligence coordinator, enforcement, signature telemetry) moved to the AIM agent-side TypeScript SDK as its `@opena2a/aim-sdk/arp` module; hackmyagent keeps the scan-time surface (static scanner, hardening rules, artifact parsing, NanoMind artifact classification) and re-exports the SDK module so every existing `hackmyagent/arp` consumer — including the published `arp-guard` package and the `arp` CLI — keeps working unchanged. The OASB behavioral suite now exercises the SDK module through the re-export, keeping a behavioral drift guard on the dependency.
+
 - **`detect` help now states that machine-wide discovery always runs.** A fresh user passing `detect /path/to/project` could expect directory-scoped results, but `detect` always audits the whole machine (running assistants, MCP servers, machine-level configs) and uses the directory only for the project-local scan. The command description, examples, and the directory-argument help now say so explicitly (release-test P3).
 
 ## [0.23.11] - 2026-06-18

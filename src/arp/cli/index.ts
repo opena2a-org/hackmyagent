@@ -2,20 +2,22 @@
 
 import * as os from 'os';
 import * as path from 'path';
-import { AgentRuntimeProtection, VERSION, loadConfig } from '../index';
-import { ARPProxy } from '../proxy/server';
-import { PromptInterceptor } from '../interceptors/prompt';
-import { MCPProtocolInterceptor } from '../interceptors/mcp-protocol';
-import { A2AProtocolInterceptor } from '../interceptors/a2a-protocol';
-import { EventEngine } from '../engine/event-engine';
-import { IntelligenceCoordinator } from '../intelligence/coordinator';
-import { SequenceLogWriter } from '../intelligence/sequence-log-writer';
 import {
+  AgentRuntimeProtection,
+  VERSION,
+  loadConfig,
+  ARPProxy,
+  PromptInterceptor,
+  MCPProtocolInterceptor,
+  A2AProtocolInterceptor,
+  EventEngine,
+  IntelligenceCoordinator,
+  SequenceLogWriter,
   readAuditRecords,
   auditLogPath,
-  isOptedOut,
+  isTelemetryOptedOut as isOptedOut,
   signatureTelemetryEnabled,
-  resolveRegistryUrl,
+  resolveTelemetryRegistryUrl as resolveRegistryUrl,
   writeOptOutMarker,
   clearOptOutMarker,
   disclosureText,
@@ -26,8 +28,8 @@ import {
   enrollSensor,
   manualEnrollCurl,
   readEnrollmentRecord,
-} from '../telemetry/signature';
-import type { SignatureTelemetryConfig } from '../types';
+  type SignatureTelemetryConfig,
+} from '../index';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -420,7 +422,7 @@ async function telemetryLog(): Promise<void> {
   console.log('  paths, secrets, or identities are present by design.\n');
 }
 
-async function telemetryStatus(tcfg?: import('../types').SignatureTelemetryConfig): Promise<void> {
+async function telemetryStatus(tcfg?: SignatureTelemetryConfig): Promise<void> {
   const enabled = signatureTelemetryEnabled(tcfg);
   const records = await readAuditRecords(100000);
   const counts: Record<string, number> = {};
@@ -456,7 +458,7 @@ async function telemetryStatus(tcfg?: import('../types').SignatureTelemetryConfi
   console.log(`  ${enabled ? 'Opt out:         arp telemetry opt-out' : 'Opt back in:     arp telemetry opt-in'}\n`);
 }
 
-function optOutReason(tcfg?: import('../types').SignatureTelemetryConfig): string {
+function optOutReason(tcfg?: SignatureTelemetryConfig): string {
   if (tcfg?.enabled === false) return 'config (signatureTelemetry.enabled: false)';
   if (process.env.OPENA2A_TELEMETRY_OPTOUT || process.env.ARP_TELEMETRY_DISABLED) return 'environment variable';
   return 'local opt-out marker (arp telemetry opt-in to clear)';
