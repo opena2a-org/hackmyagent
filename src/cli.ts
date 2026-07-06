@@ -3428,7 +3428,12 @@ Examples:
       // AI Infrastructure auto-detection — scan NemoClaw, OpenClaw, etc. if present
       // Infrastructure scans run transparently alongside the primary scan.
       // No separate vendor-specific commands needed.
-      {
+      //
+      // Skipped under OPENA2A_CORPUS_DETERMINISTIC=1 (the corpus release-smoke
+      // harness) so a developer's real ~/.nemoclaw / ~/.openclaw cannot leak
+      // machine state into fixture scores — the flag the harness already sets
+      // is now genuinely hermetic, not just accidentally so on clean CI runners.
+      if (process.env.OPENA2A_CORPUS_DETERMINISTIC !== '1') {
         const infraDirs = detectAIInfrastructure(targetDir);
         for (const infra of infraDirs) {
           try {

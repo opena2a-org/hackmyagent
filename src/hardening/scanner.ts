@@ -1978,7 +1978,12 @@ export class HardeningScanner {
     // Existence-aware severity (#250): a missing or incomplete .gitignore
     // is a LOW hardening advisory on its own; it becomes a HIGH exposure
     // only when a file matching an uncovered pattern actually exists.
-    const { keyFiles, namedSensitive } = await this.collectSensitiveArtifacts(targetDir);
+    // `walkComplete=false` means the walk could not prove absence (deep
+    // or unreadable tree), so we must not downgrade to LOW on an empty
+    // result — that would recreate the silent-miss the adversarial
+    // review caught.
+    const { keyFiles, namedSensitive, complete: walkComplete } =
+      await this.collectSensitiveArtifacts(targetDir);
 
     // GIT-001: Check for missing .gitignore
     const gitignorePath = path.join(targetDir, '.gitignore');
@@ -2025,13 +2030,19 @@ dist/
     // GIT-003 (content-calibrated), so it does not escalate GIT-001.
     if (!gitignoreExists || git001Fixed) {
       const presentSensitive = [...keyFiles, ...namedSensitive];
-      const git001Exposed = presentSensitive.length > 0;
+      // HIGH when a sensitive file is actually present, OR when the walk
+      // could not prove absence (fail-safe): a missing .gitignore over an
+      // unverifiable tree is treated as exposure, not hygiene advice.
+      const git001Exposed = presentSensitive.length > 0 || !walkComplete;
+      const git001Named = presentSensitive.slice(0, 3).join(', ');
       findings.push({
         checkId: 'GIT-001',
         name: 'Missing .gitignore',
-        description: git001Exposed
-          ? `No .gitignore and sensitive files present: ${presentSensitive.slice(0, 3).join(', ')}${presentSensitive.length > 3 ? ` (+${presentSensitive.length - 3} more)` : ''}`
-          : 'No .gitignore file to prevent accidental commits',
+        description: presentSensitive.length > 0
+          ? `No .gitignore and sensitive files present: ${git001Named}${presentSensitive.length > 3 ? ` (+${presentSensitive.length - 3} more)` : ''}`
+          : git001Exposed
+            ? 'No .gitignore and the project tree could not be fully scanned for sensitive files'
+            : 'No .gitignore file to prevent accidental commits',
         category: 'git',
         severity: git001Exposed ? 'high' : 'low',
         passed: git001Fixed,
@@ -2040,10 +2051,12 @@ dist/
         fixable: true,
         fixed: git001Fixed,
         fix: `${this.cliName} secure --fix`,
-        details: git001Exposed ? { files: presentSensitive } : undefined,
-        guidance: git001Exposed
-          ? `Sensitive files (${presentSensitive.slice(0, 3).join(', ')}) exist in this project with no .gitignore — a single git add . commits them. Create a .gitignore now; if any were already committed, rotate them and run git rm --cached on each.`
-          : 'Without .gitignore, sensitive files (.env, secrets.json, *.pem, *.key) can be accidentally committed to version control and exposed.',
+        details: presentSensitive.length > 0 ? { files: presentSensitive } : undefined,
+        guidance: presentSensitive.length > 0
+          ? `Sensitive files (${git001Named}) exist in this project with no .gitignore — a single git add . commits them. Create a .gitignore now; if any were already committed, rotate them and run git rm --cached on each.`
+          : git001Exposed
+            ? 'This project has no .gitignore and its tree is too large or partly unreadable to fully verify no keys or secrets files are present. Add a .gitignore covering .env, secrets.json, *.pem, *.key and confirm no such files are tracked.'
+            : 'Without .gitignore, sensitive files (.env, secrets.json, *.pem, *.key) can be accidentally committed to version control and exposed.',
       });
     }
 
@@ -2053,8 +2066,10 @@ dist/
       const sensitivePatterns = ['.env', 'secrets.json', '*.pem', '*.key'];
       const missingPatterns: string[] = [];
 
+      // Line-aware presence check (#250): a comment or substring mention
+      // of a pattern no longer counts as covering it.
       for (const pattern of sensitivePatterns) {
-        if (!gitignoreContent.includes(pattern) && !gitignoreContent.includes(pattern.replace('*', ''))) {
+        if (!this.gitignorePatternCovered(pattern, gitignoreContent)) {
           missingPatterns.push(pattern);
         }
       }
@@ -2113,16 +2128,25 @@ dist/
             if (!ignoredByOtherRule(candidate)) exposedFiles.push(candidate);
           }
         }
+        // Escalate to HIGH when a matching file is actually present, OR
+        // when the walk could not prove absence for a key/secrets pattern
+        // (fail-safe). The .env pattern is excluded from the incomplete
+        // escalation because GIT-003 owns un-ignored .env exposure.
+        const nonEnvMissing = missingPatterns.some((p) => p !== '.env');
         const git002Exposed = exposedFiles.length > 0;
+        const git002Unverifiable = !git002Exposed && !walkComplete && nonEnvMissing;
+        const git002High = git002Exposed || git002Unverifiable;
 
         findings.push({
           checkId: 'GIT-002',
           name: 'Incomplete .gitignore',
           description: git002Exposed
             ? `Missing: ${missingPatterns.join(', ')} — matching files present: ${exposedFiles.slice(0, 3).join(', ')}${exposedFiles.length > 3 ? ` (+${exposedFiles.length - 3} more)` : ''}`
-            : `Missing: ${missingPatterns.join(', ')} (no matching files present)`,
+            : git002Unverifiable
+              ? `Missing: ${missingPatterns.join(', ')} (project tree could not be fully scanned to confirm no matching files exist)`
+              : `Missing: ${missingPatterns.join(', ')} (no matching files present)`,
           category: 'git',
-          severity: git002Exposed ? 'high' : 'low',
+          severity: git002High ? 'high' : 'low',
           passed: git002Fixed,
           message: `Add patterns: ${missingPatterns.join(', ')}`,
           file: '.gitignore',
@@ -2132,7 +2156,9 @@ dist/
           details: git002Exposed ? { files: exposedFiles } : undefined,
           guidance: git002Exposed
             ? `Files matching the missing patterns exist right now (${exposedFiles.slice(0, 3).join(', ')}) — a single git add . commits them. Add the patterns; if any file was already committed, rotate its contents and run git rm --cached on it.`
-            : `No files match the missing patterns yet, but adding them now (${missingPatterns.join(', ')}) means a future key or secrets file is never committed by accident.`,
+            : git002Unverifiable
+              ? `The .gitignore is missing ${missingPatterns.join(', ')} and the project tree is too large or partly unreadable to confirm no matching key or secrets files exist. Add the patterns and verify no such files are tracked.`
+              : `No files match the missing patterns yet, but adding them now (${missingPatterns.join(', ')}) means a future key or secrets file is never committed by accident.`,
         });
       }
     }
@@ -2612,38 +2638,79 @@ dist/
    * .git, never follows symlinks, and is bounded by depth and entry count
    * so a hostile tree cannot stall the scan.
    *
+   * `complete` is false when the walk could NOT exhaustively verify the
+   * tree — a depth or entry bound was hit with directories still
+   * unvisited, or a directory was unreadable. Callers MUST NOT treat an
+   * empty result from an incomplete walk as "nothing sensitive exists":
+   * absence is only trustworthy when `complete` is true. This is the
+   * fail-safe that stops a deep or unreadable key from silently
+   * downgrading a git-hygiene finding (adversarial-review finding, #250).
+   *
    * `.pem` files are content-gated: certificate-only PEM bundles (e.g. CA
    * chains) are public material and are excluded; anything carrying a
    * PRIVATE KEY block — or content we cannot positively identify as
    * certificate-only, such as binary DER — is treated as a private key
    * (fail-safe toward detection).
+   *
+   * Bounds are deliberately generous (depth 25, 50k entries) so that
+   * real repositories walk to completion; `complete=false` is reserved
+   * for genuinely pathological trees, where staying conservative costs a
+   * rare false HIGH rather than a silent miss.
    */
   private async collectSensitiveArtifacts(targetDir: string): Promise<{
     keyFiles: string[];
     namedSensitive: string[];
+    complete: boolean;
   }> {
     const keyFiles: string[] = [];
     const namedSensitive: string[] = [];
     const SKIP_DIRS = new Set(['node_modules', '.git']);
     const SENSITIVE_NAMES = new Set(['secrets.json', 'credentials.json']);
-    const MAX_DEPTH = 6;
-    const MAX_ENTRIES = 5000;
+    const MAX_DEPTH = 25;
+    const MAX_ENTRIES = 50000;
     let entries = 0;
+    let complete = true;
+
+    // A non-directory target (single-file scan, e.g. `secure SKILL.md`)
+    // has no tree to walk and no place for a key to hide — that is a
+    // complete result, not an unverifiable one. Only a genuinely
+    // unreadable *directory* below counts as incomplete.
+    try {
+      const rootStat = await fs.stat(targetDir);
+      if (!rootStat.isDirectory()) return { keyFiles, namedSensitive, complete: true };
+    } catch {
+      return { keyFiles, namedSensitive, complete: true };
+    }
 
     const walk = async (dir: string, depth: number): Promise<void> => {
-      if (depth > MAX_DEPTH || entries >= MAX_ENTRIES) return;
+      if (entries >= MAX_ENTRIES) {
+        complete = false;
+        return;
+      }
       let dirents;
       try {
         dirents = await fs.readdir(dir, { withFileTypes: true });
       } catch {
+        // An unreadable directory (EACCES, etc.) means we cannot verify
+        // its contents — a key could hide there. Do not assume clean.
+        complete = false;
         return;
       }
       for (const dirent of dirents) {
-        if (entries++ >= MAX_ENTRIES) return;
+        if (entries++ >= MAX_ENTRIES) {
+          complete = false;
+          return;
+        }
         if (dirent.isSymbolicLink()) continue;
         const abs = path.join(dir, dirent.name);
         if (dirent.isDirectory()) {
           if (SKIP_DIRS.has(dirent.name)) continue;
+          if (depth + 1 > MAX_DEPTH) {
+            // A real subtree exists below the depth bound — we did not
+            // look inside it, so absence is no longer provable.
+            complete = false;
+            continue;
+          }
           await walk(abs, depth + 1);
           continue;
         }
@@ -2659,31 +2726,55 @@ dist/
     };
 
     await walk(targetDir, 0);
-    return { keyFiles, namedSensitive };
+    return { keyFiles, namedSensitive, complete };
   }
 
   /**
-   * Content gate for `.pem` files: reads at most the first 1 MB. Returns
-   * false only when the content is positively identified as
-   * certificate-only public material; PRIVATE KEY blocks, unreadable
-   * files, and unidentifiable content (binary DER) all return true.
+   * Content gate for `.pem` files. Returns false only when the content
+   * is positively identified as certificate-only public material;
+   * PRIVATE KEY blocks, unreadable files, oversized files, and
+   * unidentifiable content (binary DER) all return true (fail-safe).
+   *
+   * The whole file is scanned up to a 5 MB cap so a PRIVATE KEY block
+   * placed after a large certificate bundle is not missed; a `.pem`
+   * larger than the cap cannot be positively cleared and is flagged.
    */
   private async pemLooksPrivate(filePath: string): Promise<boolean> {
+    const MAX_PEM_BYTES = 5 * 1024 * 1024;
     try {
-      const fh = await fs.open(filePath, 'r');
-      try {
-        const buf = Buffer.alloc(1024 * 1024);
-        const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
-        const head = buf.subarray(0, bytesRead).toString('utf-8');
-        if (/PRIVATE KEY/.test(head)) return true;
-        if (/BEGIN CERTIFICATE/.test(head)) return false;
-        return true;
-      } finally {
-        await fh.close();
-      }
+      const stat = await fs.stat(filePath);
+      if (stat.size > MAX_PEM_BYTES) return true; // too big to positively clear
+      const content = await fs.readFile(filePath, 'utf-8');
+      if (/PRIVATE KEY/.test(content)) return true;
+      if (/BEGIN CERTIFICATE/.test(content)) return false;
+      return true;
     } catch {
       return true;
     }
+  }
+
+  /**
+   * True when the given `.gitignore` pattern is genuinely covered by a
+   * rule, not merely mentioned as a substring (e.g. inside a comment or
+   * a longer token). Fixes the pre-existing substring bug where
+   * `# rotate secrets.json quarterly` suppressed the secrets.json
+   * missing-pattern finding (adversarial-review finding, #250).
+   *
+   * Rules are compared after trimming, dropping comments/blanks/negations,
+   * and stripping a leading slash or globstar prefix. `.env` also accepts
+   * the common `.env*` / `.env.*` broadening forms.
+   */
+  private gitignorePatternCovered(pattern: string, gitignoreContent: string): boolean {
+    const rules = gitignoreContent
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith('#') && !l.startsWith('!'))
+      .map((l) => l.replace(/^\/+/, '').replace(/^\*\*\//, ''));
+    return rules.some((rule) => {
+      if (rule === pattern) return true;
+      if (pattern === '.env' && (rule === '.env*' || rule === '.env.*')) return true;
+      return false;
+    });
   }
 
   private async checkCredentialsAdvanced(

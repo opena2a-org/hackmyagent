@@ -3196,6 +3196,127 @@ describe('#250 existence-aware git severity + surfaced file findings', () => {
       expect(finding).toBeDefined();
       expect(finding?.file).toBe('binary.pem');
     });
+
+    it('finds a deeply-nested key (below the old depth-6 bound)', async () => {
+      // Adversarial-review regression: a real key at depth 7 must not be
+      // missed. Old bound was 6; new bound is 25.
+      const deep = path.join(tempDir, 'a', 'b', 'c', 'd', 'e', 'f', 'g');
+      await fs.mkdir(deep, { recursive: true });
+      await fs.writeFile(path.join(deep, 'deep.key'), FAKE_PRIVATE_KEY);
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const finding = result.findings.find((f) => f.checkId === 'CRED-002');
+
+      expect(finding).toBeDefined();
+      expect(finding?.severity).toBe('critical');
+      expect(finding?.file).toBe(path.join('a', 'b', 'c', 'd', 'e', 'f', 'g', 'deep.key'));
+    });
+
+    it('does not flag a certificate-only .pem even when a private block sits beyond the cert (whole-file scan)', async () => {
+      // Sanity that the content gate reads past the first block: a cert
+      // followed by a private key must still flag (opposite direction of
+      // the "cert only" case, guards the whole-file read).
+      await fs.writeFile(
+        path.join(tempDir, 'chainthenkey.pem'),
+        FAKE_CERT_ONLY.repeat(50) + FAKE_PRIVATE_KEY
+      );
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const finding = result.findings.find((f) => f.checkId === 'CRED-002');
+
+      expect(finding).toBeDefined();
+      expect(finding?.file).toBe('chainthenkey.pem');
+    });
+  });
+
+  describe('walk completeness → fail-safe git severity (adversarial-review regression)', () => {
+    it('GIT-002 stays HIGH when the tree is too deep to fully verify and a pattern is missing', async () => {
+      // Force incompleteness: nest a directory beyond the depth bound (25).
+      await fs.writeFile(path.join(tempDir, '.gitignore'), 'node_modules/\n.env\nsecrets.json\n');
+      let cur = tempDir;
+      for (let i = 0; i < 27; i++) {
+        cur = path.join(cur, `d${i}`);
+      }
+      await fs.mkdir(cur, { recursive: true });
+      await fs.writeFile(path.join(cur, 'placeholder.txt'), 'x');
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const finding = result.findings.find((f) => f.checkId === 'GIT-002');
+
+      expect(finding).toBeDefined();
+      // *.pem / *.key are missing and absence could not be proven → HIGH.
+      expect(finding?.severity).toBe('high');
+      expect(finding?.description).toMatch(/could not be fully scanned/);
+    });
+
+    it('GIT-001 stays HIGH when there is no .gitignore and the tree could not be fully scanned', async () => {
+      let cur = tempDir;
+      for (let i = 0; i < 27; i++) {
+        cur = path.join(cur, `d${i}`);
+      }
+      await fs.mkdir(cur, { recursive: true });
+      await fs.writeFile(path.join(cur, 'placeholder.txt'), 'x');
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const finding = result.findings.find((f) => f.checkId === 'GIT-001');
+
+      expect(finding).toBeDefined();
+      expect(finding?.severity).toBe('high');
+    });
+  });
+
+  describe('GIT-002 line-aware pattern presence (substring bug fix)', () => {
+    it('a comment mentioning secrets.json does NOT count as covering it', async () => {
+      await fs.writeFile(
+        path.join(tempDir, '.gitignore'),
+        '# remember to rotate secrets.json quarterly\n.env\n*.pem\n*.key\n'
+      );
+      await fs.writeFile(
+        path.join(tempDir, 'secrets.json'),
+        '{"dbPassword": "hunter2-not-regex-matchable"}\n'
+      );
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const finding = result.findings.find((f) => f.checkId === 'GIT-002');
+
+      expect(finding).toBeDefined();
+      // secrets.json is genuinely un-ignored AND present → HIGH naming it,
+      // even though its content is not regex-matchable by CRED-001.
+      expect(finding?.severity).toBe('high');
+      expect(finding?.message).toContain('secrets.json');
+      expect(`${finding?.description}`).toContain('secrets.json');
+    });
+
+    it('a substring token (secrets.json.bak) does NOT count as covering secrets.json', async () => {
+      await fs.writeFile(
+        path.join(tempDir, '.gitignore'),
+        'secrets.json.bak\n.env\n*.pem\n*.key\n'
+      );
+      await fs.writeFile(path.join(tempDir, 'secrets.json'), '{"note":"present"}\n');
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const finding = result.findings.find((f) => f.checkId === 'GIT-002');
+
+      expect(finding).toBeDefined();
+      expect(finding?.severity).toBe('high');
+    });
+
+    it('accepts /-anchored and **/-prefixed equivalents as covering', async () => {
+      await fs.writeFile(
+        path.join(tempDir, '.gitignore'),
+        '/.env\n**/*.pem\n*.key\nsecrets.json\n'
+      );
+      await fs.writeFile(path.join(tempDir, 'server.pem'), FAKE_PRIVATE_KEY);
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const git002 = result.findings.find((f) => f.checkId === 'GIT-002');
+
+      // All four patterns covered → GIT-002 does not fire at all.
+      expect(git002).toBeUndefined();
+      // CRED-002 still independently flags the present key (defense in depth).
+      const cred002 = result.findings.find((f) => f.checkId === 'CRED-002');
+      expect(cred002?.severity).toBe('critical');
+    });
   });
 
   describe('CRED-001 secrets.json / credentials.json content scan', () => {
