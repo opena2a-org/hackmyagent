@@ -6,6 +6,7 @@
 import * as fs from 'fs/promises';
 import * as crypto from 'crypto';
 import * as path from 'path';
+import { execFile } from 'child_process';
 import type { ScanResult, SecurityFinding, Severity, ProjectType } from './security-check';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
 import { enrichWithTaxonomy } from './taxonomy';
@@ -2082,61 +2083,58 @@ dist/
         git002Fixed = true;
       }
 
-      // Only report if patterns are missing.
-      // Severity is existence-aware (#250): LOW when the missing pattern
-      // is purely preventive (no matching file exists), HIGH naming the
-      // actual files when an un-ignored match is present. Un-ignored
-      // .env exposure stays owned by GIT-003 (content-calibrated), so
-      // the .env pattern never escalates GIT-002.
-      if (missingPatterns.length > 0) {
-        // A present file only counts as "exposed" if no other rule already
-        // ignores it (root-aware, glob-aware — see gitignoreFileIgnored).
-        const exposedFiles: string[] = [];
-        for (const pattern of missingPatterns) {
-          if (pattern === '.env') continue; // GIT-003 owns un-ignored .env
-          const candidates =
-            pattern === 'secrets.json'
-              ? namedSensitive.filter((f) => path.basename(f) === 'secrets.json')
-              : pattern === '*.pem'
-                ? keyFiles.filter((f) => f.endsWith('.pem'))
-                : pattern === '*.key'
-                  ? keyFiles.filter((f) => f.endsWith('.key'))
-                  : [];
-          for (const candidate of candidates) {
-            if (!this.gitignoreFileIgnored(candidate, gitignoreContent)) exposedFiles.push(candidate);
-          }
-        }
-        // Escalate to HIGH when a matching file is actually present, OR
-        // when the walk could not prove absence for a key/secrets pattern
-        // (fail-safe). The .env pattern is excluded from the incomplete
-        // escalation because GIT-003 owns un-ignored .env exposure.
+      // Exposure is computed authoritatively (git check-ignore) over ALL
+      // present sensitive files — NOT gated on the textual missingPatterns
+      // list — so a file that a catch-all `*` "covers" textually but a
+      // negation re-includes is still caught (#250 adversarial reviews).
+      // Un-ignored .env exposure stays owned by GIT-003, so .env-basename
+      // files are excluded here.
+      const presentSensitive = [
+        ...keyFiles,
+        ...namedSensitive.filter((f) => {
+          const b = path.basename(f);
+          return b === 'secrets.json' || b === 'credentials.json';
+        }),
+      ];
+      const exposedFiles = await this.committableSensitiveFiles(
+        targetDir,
+        presentSensitive,
+        gitignoreContent,
+      );
+
+      // Fire when the gitignore is missing hygiene patterns OR a present
+      // sensitive file is actually committable.
+      if (missingPatterns.length > 0 || exposedFiles.length > 0) {
+        // Escalate to HIGH when a committable file is present, OR when the
+        // walk could not prove absence for a key/secrets pattern (fail-safe).
         const nonEnvMissing = missingPatterns.some((p) => p !== '.env');
         const git002Exposed = exposedFiles.length > 0;
         const git002Unverifiable = !git002Exposed && !walkComplete && nonEnvMissing;
         const git002High = git002Exposed || git002Unverifiable;
+        const missingLabel = missingPatterns.length > 0 ? missingPatterns.join(', ') : '(patterns present)';
 
         findings.push({
           checkId: 'GIT-002',
           name: 'Incomplete .gitignore',
           description: git002Exposed
-            ? `Missing: ${missingPatterns.join(', ')} — matching files present: ${exposedFiles.slice(0, 3).join(', ')}${exposedFiles.length > 3 ? ` (+${exposedFiles.length - 3} more)` : ''}`
+            ? `Committable sensitive files present: ${exposedFiles.slice(0, 3).join(', ')}${exposedFiles.length > 3 ? ` (+${exposedFiles.length - 3} more)` : ''}`
             : git002Unverifiable
-              ? `Missing: ${missingPatterns.join(', ')} (project tree could not be fully scanned to confirm no matching files exist)`
-              : `Missing: ${missingPatterns.join(', ')} (no matching files present)`,
+              ? `Missing: ${missingLabel} (project tree could not be fully scanned to confirm no matching files exist)`
+              : `Missing: ${missingLabel} (no committable matching files found)`,
           category: 'git',
           severity: git002High ? 'high' : 'low',
           passed: git002Fixed,
-          message: `Add patterns: ${missingPatterns.join(', ')}`,
+          message: missingPatterns.length > 0 ? `Add patterns: ${missingPatterns.join(', ')}` : 'Ignore or remove the committable sensitive files',
           file: '.gitignore',
           fixable: true,
           fixed: git002Fixed,
           fix: `${this.cliName} secure --fix`,
           details: git002Exposed ? { files: exposedFiles } : undefined,
           guidance: git002Exposed
-            ? `Files matching the missing patterns exist right now (${exposedFiles.slice(0, 3).join(', ')}) — a single git add . commits them. Add the patterns; if any file was already committed, rotate its contents and run git rm --cached on it.`
+            ? `These sensitive files are not git-ignored and would be committed by a single git add . (${exposedFiles.slice(0, 3).join(', ')}). Ignore them; if any was already committed, rotate its contents and run git rm --cached on it.`
             : git002Unverifiable
-              ? `The .gitignore is missing ${missingPatterns.join(', ')} and the project tree is too large or partly unreadable to confirm no matching key or secrets files exist. Add the patterns and verify no such files are tracked.`
-              : `No files match the missing patterns yet, but adding them now (${missingPatterns.join(', ')}) means a future key or secrets file is never committed by accident.`,
+              ? `The .gitignore is missing ${missingLabel} and the project tree is too large or partly unreadable to confirm no matching key or secrets files exist. Add the patterns and verify no such files are tracked.`
+              : `No committable files match the missing patterns yet, but adding them now (${missingLabel}) means a future key or secrets file is never committed by accident.`,
         });
       }
     }
@@ -2153,12 +2151,12 @@ dist/
       gitignoreContent = await fs.readFile(gitignorePath, 'utf-8');
     } catch {}
 
-    // Line-aware (#250 adversarial review): a comment or substring mention
-    // of `.env` no longer counts as ignoring it. `.env` is ignored by a
-    // bare `.env`, a `.env*` glob, or a catch-all `*` / `**` rule — but NOT
-    // by `.env.*` (which matches `.env.local`, not `.env`).
-    const envIgnored = this.gitignoreFileIgnored('.env', gitignoreContent);
-    const envAtRisk = envExists && !envIgnored;
+    // Authoritative committability (#250 adversarial reviews): a comment,
+    // substring mention, root-anchored/dir-only rule, or a `.env.*`-only
+    // rule no longer wrongly counts as ignoring `.env`. git check-ignore
+    // decides in a git repo; the heuristic backstops non-git targets.
+    const envAtRisk =
+      envExists && (await this.committableSensitiveFiles(targetDir, ['.env'], gitignoreContent)).length > 0;
 
     let git003Fixed = false;
     if (envAtRisk && autoFix) {
@@ -2663,19 +2661,12 @@ dist/
       return { keyFiles, namedSensitive, complete: true };
     }
 
-    // node_modules is skipped for cost, but only counts as "safely
-    // excluded" (no completeness impact) when it is actually git-ignored.
-    // If it is NOT ignored, a key committed inside it is reachable, so the
-    // walk cannot claim completeness (adversarial-review finding, #250).
-    // `.git` is never committable, so skipping it never affects
-    // completeness.
-    let rootGitignore = '';
-    try {
-      rootGitignore = await fs.readFile(path.join(targetDir, '.gitignore'), 'utf-8');
-    } catch {}
-    const nodeModulesIgnored =
-      this.gitignoreFileIgnored('node_modules', rootGitignore) ||
-      this.gitignoreFileIgnored('node_modules/x', rootGitignore);
+    // node_modules is skipped for cost. Each skipped node_modules dir is
+    // recorded; after the walk we ask git whether it is actually ignored.
+    // If any is committable, a key inside it is reachable, so the walk
+    // cannot claim completeness (#250 adversarial reviews). `.git` is
+    // never committable, so skipping it never affects completeness.
+    const skippedNodeModules: string[] = [];
 
     const walk = async (dir: string, depth: number): Promise<void> => {
       if (entries >= MAX_ENTRIES) {
@@ -2701,7 +2692,7 @@ dist/
         if (dirent.isDirectory()) {
           if (dirent.name === '.git') continue;
           if (dirent.name === 'node_modules') {
-            if (!nodeModulesIgnored) complete = false;
+            skippedNodeModules.push(path.relative(targetDir, abs));
             continue;
           }
           if (depth + 1 > MAX_DEPTH) {
@@ -2725,6 +2716,20 @@ dist/
     };
 
     await walk(targetDir, 0);
+
+    // A skipped node_modules only breaks completeness if git would commit
+    // a key hidden inside it. Probe a hypothetical DEEP key path under
+    // each skipped dir (not the dir entry itself — a `node_modules/**`
+    // rule ignores the contents but not the directory node, so checking
+    // the bare dir path would wrongly read as committable). In a non-git
+    // target (gitCommittable → null) committability is moot, so the skip
+    // is safe.
+    if (skippedNodeModules.length > 0) {
+      const probes = skippedNodeModules.map((nm) => `${nm.split(path.sep).join('/')}/__hma_probe__/deep.key`);
+      const committableProbes = await this.gitCommittable(targetDir, probes);
+      if (committableProbes && committableProbes.length > 0) complete = false;
+    }
+
     return { keyFiles, namedSensitive, complete };
   }
 
@@ -2750,6 +2755,61 @@ dist/
     } catch {
       return true;
     }
+  }
+
+  /**
+   * Authoritative committability check via `git check-ignore`. Given
+   * relative paths under `targetDir`, returns the subset git would
+   * actually COMMIT (i.e. NOT ignored — honoring the full .gitignore
+   * stack, nested ignores, negations, .git/info/exclude, and global
+   * excludes), or `null` when the target is not a git work tree or git
+   * is unavailable. This replaces hand-rolled gitignore matching for the
+   * exposure decision, which repeatedly diverged from real git semantics
+   * (negations, root-anchoring, dir-only rules — #250 adversarial
+   * reviews). `null` signals the caller to fall back to the conservative
+   * text heuristic.
+   */
+  private async gitCommittable(targetDir: string, relPaths: string[]): Promise<string[] | null> {
+    if (relPaths.length === 0) return [];
+    const posixPaths = relPaths.map((p) => p.split(path.sep).join('/'));
+    const ignored = await new Promise<Set<string> | null>((resolve) => {
+      let child;
+      try {
+        child = execFile(
+          'git',
+          // core.excludesFile=/dev/null drops the developer's GLOBAL git
+          // excludes so committability depends only on the repo's own
+          // committed .gitignore stack — deterministic across machines and
+          // correct for advising on a shared repo (a key "protected" only
+          // by a teammate-less global ignore is not actually protected).
+          ['-c', 'core.excludesFile=/dev/null', '-C', targetDir, 'check-ignore', '--stdin', '-z'],
+          { timeout: 10000, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' },
+          (err, stdout) => {
+            // exit 0 = some ignored (stdout lists them); exit 1 = none
+            // ignored (empty stdout); exit 128 / ENOENT = not a git repo
+            // or git missing → null (caller falls back to the heuristic).
+            const e = err as (Error & { code?: number; code2?: string }) | null;
+            const errno = (err as NodeJS.ErrnoException | null)?.code;
+            if (e && e.code !== 1 && (e.code === 128 || errno === 'ENOENT' || typeof e.code !== 'number')) {
+              resolve(null);
+              return;
+            }
+            const out = String(stdout ?? '');
+            resolve(new Set(out.split('\0').filter(Boolean)));
+          },
+        );
+      } catch {
+        resolve(null);
+        return;
+      }
+      try {
+        child.stdin?.end(posixPaths.join('\0'));
+      } catch {
+        resolve(null);
+      }
+    });
+    if (ignored === null) return null;
+    return posixPaths.filter((p) => !ignored.has(p));
   }
 
   /**
@@ -2786,42 +2846,65 @@ dist/
   }
 
   /**
-   * True when a concrete relative file path is ignored by some rule.
-   * Conservative and git-faithful in the SAFE direction: it recognizes
-   * exact-path, basename, `*.ext`, `prefix.*`, directory-prefix, and
-   * catch-all rules, and honors root-anchoring (a leading `/` binds the
-   * rule to the repo root, so `/secrets.json` does NOT ignore
-   * `config/secrets.json`). When unsure it returns false (treat as NOT
-   * ignored → escalate), because CRED-002/CRED-001/PERM-001 independently
-   * surface the file, so a false "not ignored" over-warns rather than
-   * silences (adversarial-review findings, #250).
+   * FALLBACK-only heuristic (used when `git check-ignore` is unavailable —
+   * a non-git target). True when a concrete relative file path looks
+   * ignored. Deliberately conservative in the SAFE direction:
+   *   - if the .gitignore contains ANY negation (`!`) rule, returns false
+   *     (a negation may re-include the file; do not claim ignored);
+   *   - a trailing-slash rule (`foo/`) is directory-only and never
+   *     matches a same-named FILE, only paths under it;
+   *   - a leading `/` anchors to the repo root.
+   * On uncertainty it returns false (treat as committable → escalate).
+   * Authoritative committability comes from git check-ignore; this only
+   * backstops non-git scans (adversarial-review findings, #250).
    */
-  private gitignoreFileIgnored(rel: string, gitignoreContent: string): boolean {
+  private gitignoreFileIgnoredHeuristic(rel: string, gitignoreContent: string): boolean {
+    // Any negation rule → cannot safely claim ignored.
+    if (gitignoreContent.split('\n').some((l) => l.trim().startsWith('!'))) return false;
     const posix = rel.split(path.sep).join('/');
     const base = path.posix.basename(posix);
     return this.gitignoreRules(gitignoreContent).some((rule) => {
       if (rule === '*' || rule === '**') return true;
       const anchored = rule.startsWith('/');
-      const r = anchored ? rule.slice(1) : rule;
-      const rNoSlash = r.replace(/\/$/, '');
-      if (!rNoSlash) return false;
-      // Exact full-path match (anchored or not).
-      if (rNoSlash === posix) return true;
-      // Directory-prefix rule: `dir/` or `dir` ignores everything under it.
-      if (posix.startsWith(rNoSlash + '/')) return true;
-      // Anchored rules only match at the repo root beyond this point.
-      if (anchored) return rNoSlash === posix;
+      const body = anchored ? rule.slice(1) : rule;
+      const dirOnly = body.endsWith('/');
+      const name = dirOnly ? body.slice(0, -1) : body;
+      if (!name) return false;
+      // Directory-prefix match (applies to dir-only and bare-dir rules).
+      if (posix.startsWith(name + '/')) return true;
+      // A trailing-slash rule is directory-only — it never matches a file.
+      if (dirOnly) return false;
+      // Exact full-path match.
+      if (name === posix) return true;
+      // Anchored non-dir rules match only at the repo root.
+      if (anchored) return name === posix;
       // Basename match (non-anchored bare name applies at any depth).
-      if (rNoSlash === base) return true;
+      if (name === base) return true;
       // `*.ext` glob.
-      if (rNoSlash.startsWith('*.') && base.endsWith(rNoSlash.slice(1))) return true;
-      // `prefix.*` or `prefix*` glob on the basename.
-      if (rNoSlash.endsWith('*')) {
-        const prefix = rNoSlash.slice(0, -1);
+      if (name.startsWith('*.') && base.endsWith(name.slice(1))) return true;
+      // `prefix*` glob on the basename (covers `prefix.*` too).
+      if (name.endsWith('*')) {
+        const prefix = name.slice(0, -1);
         if (prefix && !prefix.includes('/') && base.startsWith(prefix)) return true;
       }
       return false;
     });
+  }
+
+  /**
+   * Of the given present sensitive files, which would git actually COMMIT
+   * (are NOT ignored)? Uses `git check-ignore` when the target is a git
+   * work tree (authoritative — handles negations, nested ignores, dir
+   * rules, global excludes); falls back to the conservative text
+   * heuristic otherwise. Returns relative posix paths.
+   */
+  private async committableSensitiveFiles(targetDir: string, relPaths: string[], gitignoreContent: string): Promise<string[]> {
+    if (relPaths.length === 0) return [];
+    const viaGit = await this.gitCommittable(targetDir, relPaths);
+    if (viaGit !== null) return viaGit;
+    return relPaths
+      .map((p) => p.split(path.sep).join('/'))
+      .filter((p) => !this.gitignoreFileIgnoredHeuristic(p, gitignoreContent));
   }
 
   private async checkCredentialsAdvanced(
