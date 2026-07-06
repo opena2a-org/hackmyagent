@@ -2661,6 +2661,8 @@ dist/
       return { keyFiles, namedSensitive, complete: true };
     }
 
+    const targetRoot = path.resolve(targetDir);
+
     // node_modules is skipped for cost. Each skipped node_modules dir is
     // recorded; after the walk we ask git whether it is actually ignored.
     // If any is committable, a key inside it is reachable, so the walk
@@ -2689,6 +2691,16 @@ dist/
         }
         if (dirent.isSymbolicLink()) continue;
         const abs = path.join(dir, dirent.name);
+        // Containment assertion: readdir only yields single-component
+        // names (never `..`/`/`), so `abs` is always inside `targetRoot`;
+        // this is belt-and-suspenders so no processing (open/read/stat)
+        // ever touches a path outside the scan root even if that invariant
+        // were ever violated.
+        const absResolved = path.resolve(abs);
+        if (absResolved !== targetRoot && !absResolved.startsWith(targetRoot + path.sep)) {
+          complete = false;
+          continue;
+        }
         if (dirent.isDirectory()) {
           if (dirent.name === '.git') continue;
           if (dirent.name === 'node_modules') {
@@ -2748,16 +2760,21 @@ dist/
    * sensitive-typed file under the given directories. Uses
    * `git ls-files --cached --others --exclude-standard` so the answer
    * honors the entire ignore stack and negations over the REAL tree —
-   * no synthetic paths. Returns false in a non-git target (committability
-   * is undefined there) and on any git error (the caller already treats
-   * unreadable subtrees as incomplete via the walk). Only used for the
-   * node_modules completeness backstop (#250 adversarial reviews).
+   * no synthetic paths. Tri-state error direction (#250 4th-review-of-
+   * hardening): a non-git target or missing git binary means
+   * committability is moot → `false` (safe skip); a git error on a real
+   * invocation (timeout, maxBuffer) could NOT determine committability →
+   * `true` (conservative → the caller marks the scan incomplete rather
+   * than award a false clean bill). Only used for the node_modules
+   * completeness backstop.
    */
   private async hasCommittableSensitiveUnder(targetDir: string, dirRels: string[]): Promise<boolean> {
     if (dirRels.length === 0) return false;
     const absTarget = path.resolve(targetDir);
     const pathspecs = dirRels.map((d) => `${d.split(path.sep).join('/')}/`);
-    const out = await new Promise<string | null>((resolve) => {
+    // null = moot (non-git / no git binary); 'UNCERTAIN' = git error we
+    // must treat conservatively; string = ls-files output.
+    const out = await new Promise<string | null | 'UNCERTAIN'>((resolve) => {
       let child;
       try {
         child = execFile(
@@ -2766,23 +2783,26 @@ dist/
             'ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', ...pathspecs],
           { timeout: 10000, killSignal: 'SIGKILL', maxBuffer: 16 * 1024 * 1024, encoding: 'utf8' },
           (err, stdout) => {
+            if (!err) { resolve(String(stdout ?? '')); return; }
             const errno = (err as NodeJS.ErrnoException | null)?.code;
             const code = (err as (Error & { code?: number }) | null)?.code;
-            if (err && (code === 128 || errno === 'ENOENT' || typeof code !== 'number')) {
-              resolve(null);
-              return;
-            }
-            resolve(String(stdout ?? ''));
+            // 128 = not a git repo; ENOENT = git binary missing → moot.
+            if (code === 128 || errno === 'ENOENT') { resolve(null); return; }
+            // Anything else (timeout/SIGKILL, maxBuffer, unexpected) →
+            // could not determine → conservative.
+            resolve('UNCERTAIN');
           },
         );
       } catch {
+        // Synchronous spawn failure (e.g. git binary missing) → moot.
         resolve(null);
         return;
       }
       // No stdin for ls-files; ensure the pipe is closed.
       try { child.stdin?.end(); } catch { /* ignore */ }
     });
-    if (out === null) return false; // non-git or error → skip is treated as safe/moot
+    if (out === null) return false;         // moot → safe skip
+    if (out === 'UNCERTAIN') return true;   // fail-safe → mark incomplete
     const isSensitive = (p: string): boolean => {
       const base = path.posix.basename(p);
       return base.endsWith('.key') || base.endsWith('.pem') ||
@@ -2815,6 +2835,10 @@ dist/
     let fh;
     try {
       fh = await fs.open(resolved, 'r');
+      // Short-circuit oversized files without reading: a `.pem` larger
+      // than the cap cannot be positively cleared, so flag it.
+      const { size } = await fh.stat();
+      if (size > MAX_PEM_BYTES) return true;
       const buf = Buffer.alloc(MAX_PEM_BYTES);
       const { bytesRead } = await fh.read(buf, 0, MAX_PEM_BYTES, 0);
       const head = buf.subarray(0, bytesRead).toString('utf-8');
