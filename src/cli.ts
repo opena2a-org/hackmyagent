@@ -6495,14 +6495,27 @@ Examples:
 
         const jsonOutput = publishStatus ? { ...result, publish: publishStatus } : result;
         writeJsonStdout(jsonOutput);
-        // Check fail threshold
-        if (options.failBelow) {
-          const threshold = parseInt(options.failBelow, 10);
-          if (!isNaN(threshold) && result.score < threshold) {
-            process.exit(1);
-          }
-        }
         await handleSoulContribution(options.contribute, targetDir, result, soulScanDurationMs, options.registryUrl, 'json');
+        // #251 adversarial F3: the text path gates the --ci exit on
+        // governance violations / profile HIGHs, but the JSON path
+        // returned before reaching it — `scan-soul --json --ci` exited 0
+        // on a SOUL that actively subverts governance, and a JSON-parsing
+        // CI pipeline (the natural choice) let it through. Apply the same
+        // HIGH-severity gate here, plus the --fail-below threshold.
+        const jsonCiMode = globalCiMode || options.ci;
+        const jsonHasHigh =
+          (result.violations ?? []).length > 0 ||
+          result.profileMismatch !== undefined ||
+          result.markerInvalid !== undefined;
+        const jsonBelowThreshold = options.failBelow
+          ? (() => {
+              const threshold = parseInt(options.failBelow, 10);
+              return !isNaN(threshold) && result.score < threshold;
+            })()
+          : false;
+        if ((jsonCiMode && jsonHasHigh) || jsonBelowThreshold) {
+          process.exit(1);
+        }
         return;
       }
 
@@ -6522,11 +6535,18 @@ Examples:
         : '';
 
       const missing = result.totalControls - result.totalPassed;
+      const soulViolations = result.violations ?? [];
       let soulVerdictText: string;
       let soulVerdictColor: string;
       if (!result.file) {
         soulVerdictColor = colors.brightRed;
         soulVerdictText = 'No governance file found';
+      } else if (soulViolations.length > 0) {
+        // #251: active subversion eclipses every other verdict. A SOUL that
+        // mandates override compliance or opens an exfiltration channel is
+        // not "N controls failing" — it is working against governance.
+        soulVerdictColor = colors.brightRed;
+        soulVerdictText = `${soulViolations.length} governance violation${soulViolations.length > 1 ? 's' : ''} — this SOUL actively subverts governance`;
       } else if (result.profileMismatch) {
         // Mismatch is HIGH-severity — eclipse the "all controls covered"
         // verdict text. The full block (declared vs. inferred + signals)
@@ -6551,18 +6571,43 @@ Examples:
           ? `All ${result.totalControls} applicable controls covered (of ${GOVERNANCE_CATALOG_SIZE} in catalog · ${result.agentTier} tier)`
           : `All ${result.totalControls} governance controls covered`;
       } else if (result.conformance === 'none') {
+        // #251 honest framing: the keyword scan can only report what it
+        // DETECTS. "Failing" implied the controls were evaluated and found
+        // broken; a prose SOUL whose controls lack template vocabulary was
+        // never evaluated at that depth.
         soulVerdictColor = colors.brightRed;
-        soulVerdictText = `${missing} control${missing > 1 ? 's' : ''} failing — no conformance`;
+        soulVerdictText = `${missing} of ${result.totalControls} applicable controls not detected — no conformance`;
       } else {
         soulVerdictColor = colors.yellow;
-        soulVerdictText = `${missing} control${missing > 1 ? 's' : ''} failing`;
+        soulVerdictText = `${missing} of ${result.totalControls} applicable controls not detected`;
       }
 
       console.log();
       console.log(`  ${colors.bold}${colors.white}${soulFileName}${RESET()}  ${colors.dim}soul governance · ${tierMeta} · ${profileMeta}${soulSkippedNote}${scopeDisclosure}${RESET()}`);
       console.log(`  ${soulVerdictColor}${colors.bold}${soulVerdictText}${RESET()}`);
+      if (result.file && missing > 0 && soulViolations.length === 0) {
+        // Method-scope disclosure (#251): coverage is keyword-detected
+        // template conformance, not a semantic evaluation of prose.
+        console.log(`  ${colors.dim}Keyword conformance scan — controls implemented as prose may not be detected. Semantic pass: ${prefix} scan-soul ${directory} --deep${RESET()}`);
+      }
       if (!result.file) {
         console.log(`  ${colors.dim}Searched: SOUL.md, system-prompt.md, CLAUDE.md${RESET()}`);
+      }
+
+      // Governance violation blocks (#251). Render first — these are the
+      // strongest findings on the page.
+      if (soulViolations.length > 0) {
+        const shown = soulViolations.slice(0, 6);
+        for (const v of shown) {
+          console.log();
+          console.log(`  ${colors.brightRed}${colors.bold}HIGH${RESET()}  ${colors.bold}${v.id}${RESET()}  ${colors.dim}${v.name}${RESET()}`);
+          console.log(`  ${colors.dim}Evidence (${soulFileName}:${v.line}):${RESET()} ${v.evidence}`);
+          console.log(`  ${colors.dim}Subverts:${RESET()} ${v.controlId} ${colors.dim}(${v.domain})${RESET()}`);
+          console.log(`  ${colors.cyan}Fix:${RESET()} ${v.fix}`);
+        }
+        if (soulViolations.length > shown.length) {
+          console.log(`  ${colors.dim}...and ${soulViolations.length - shown.length} more violation${soulViolations.length - shown.length > 1 ? 's' : ''} (see --json for the full list)${RESET()}`);
+        }
       }
 
       // Profile-mismatch finding block (#162). Render before domain scores
@@ -6618,7 +6663,7 @@ Examples:
       // The HIGH count must match the number of HIGH blocks rendered
       // above (#206 R2.3): profileMismatch and markerInvalid can both
       // fire on the same scan; the note must not lie about how many.
-      const highCount = (result.profileMismatch ? 1 : 0) + (result.markerInvalid ? 1 : 0);
+      const highCount = (result.profileMismatch ? 1 : 0) + (result.markerInvalid ? 1 : 0) + soulViolations.length;
       const highPlural = highCount === 1 ? 'HIGH unaddressed' : 'HIGHs unaddressed';
       const clampNote = result.scoreClamped
         ? `  ${colors.yellow}(score clamped from ${result.rawScore} to ${result.score} -- ${highCount} ${highPlural})${RESET()}`
@@ -6780,6 +6825,13 @@ Examples:
       // while still passing CI. Both the global --ci flag (stripped
       // from argv early) and the per-command --ci option are honored.
       const ciMode = globalCiMode || options.ci;
+      if (ciMode && (result.violations ?? []).length > 0) {
+        const first = (result.violations ?? [])[0];
+        process.stderr.write(
+          `SOUL-VIOLATION HIGH: ${(result.violations ?? []).length} governance violation(s) — first: ${first.id} at ${soulFileName}:${first.line} (${first.name}).\n`,
+        );
+        process.exit(1);
+      }
       if (ciMode && result.profileMismatch) {
         process.stderr.write(
           `SOUL-PROFILE-MISMATCH HIGH: declared profile=${result.profileMismatch.declaredProfile} skips ${result.profileMismatch.skippedDomains.length} of 9 domains; body suggests profile=${result.profileMismatch.inferredProfile}.\n`,
