@@ -2,7 +2,11 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
-## [Unreleased]
+## [0.25.0] - 2026-07-07
+
+### Changed
+
+- **Pinned `@opena2a/aim-sdk` to 1.0.2.** The bump moves the SDK's `@opena2a/atx-verify` dependency from 0.2.0 to 0.3.0, closing the transitive `declaredPurpose` forgery gap that 0.24.0 shipped: under atx-verify 0.2.0 a legitimately-signed v1.1 credential whose `declaredPurpose` was tampered after signing still verified. Narrow exposure (only `src/arp` consumes the SDK), but a security tool should not pin a verifier with a known signature-coverage gap.
 
 ### Fixed
 
