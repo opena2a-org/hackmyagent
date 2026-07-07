@@ -2798,7 +2798,11 @@ dist/
         resolve(null);
         return;
       }
-      // No stdin for ls-files; ensure the pipe is closed.
+      // No stdin for ls-files; ensure the pipe is closed. Stream errors
+      // (EPIPE when git exits first) arrive as ASYNC 'error' events that
+      // the try/catch cannot see — without a listener they crash the
+      // process. The execFile callback above still settles the promise.
+      child.stdin?.on('error', () => { /* async pipe error — settled via exit code */ });
       try { child.stdin?.end(); } catch { /* ignore */ }
     });
     if (out === null) return false;         // moot → safe skip
@@ -2913,6 +2917,16 @@ dist/
         resolve(null);
         return;
       }
+      // A payload larger than the pipe buffer whose child exits early
+      // (exit 128: not a repo) errors ASYNCHRONOUSLY — an 'error' event on
+      // stdin, invisible to the try/catch below. Without a listener that
+      // event is an uncaught exception that kills the whole process (the
+      // v0.25.0 release-run failure). The execFile callback above still
+      // settles the promise from the child's exit code, and a partially
+      // delivered payload can only SHRINK the ignored set (paths git never
+      // read as committable → false-HIGH), never mark a committable file
+      // ignored — the documented safe direction.
+      child.stdin?.on('error', () => { /* async pipe error — settled via exit code */ });
       try {
         // Only control-char-free paths are sent to git; suspicious ones
         // are handled separately below.
