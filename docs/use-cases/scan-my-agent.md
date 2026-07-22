@@ -11,7 +11,7 @@
 npx hackmyagent secure
 ```
 
-This runs all 187 checks against your current directory. No config files or setup needed.
+This runs all 310 static checks against your current directory. No config files or setup needed.
 
 **Expected output:**
 
@@ -19,7 +19,7 @@ This runs all 187 checks against your current directory. No config files or setu
 HackMyAgent v0.10.1 -- Security Scanner
 
 Scanning: /home/user/my-agent
-Checks:  187 across 39 categories
+Checks:  310 across 69 categories
 Time:    2.4s
 
   CRITICAL  CRED-001  Hardcoded API key in .env
@@ -74,7 +74,7 @@ npx hackmyagent secure --fix --dry-run
 HackMyAgent v0.10.1 -- Security Scanner (dry run)
 
 Scanning: /home/user/my-agent
-Checks:  187 across 39 categories
+Checks:  310 across 69 categories
 
   CRITICAL  CRED-001  Hardcoded API key in .env
             Would fix: Replace sk-proj-abc... with ${OPENAI_API_KEY}
@@ -103,7 +103,7 @@ npx hackmyagent secure --fix
 HackMyAgent v0.10.1 -- Security Scanner
 
 Scanning: /home/user/my-agent
-Checks:  187 across 39 categories
+Checks:  310 across 69 categories
 
   FIXED     CRED-001  Replaced hardcoded key with ${OPENAI_API_KEY} in .env
             Backup: .hackmyagent-backup/.env.1710504000
@@ -141,7 +141,7 @@ A clean scan exits with code `0` and shows no critical or high findings.
 
 ## Tips
 
-- Use `--verbose` to see all 187 checks, including ones that passed.
+- Use `--verbose` to see all 310 static checks, including ones that passed.
 - Use `--ignore CRED-001,LOG-001` to skip specific checks (e.g., known false positives).
 - Use `--json` to get machine-readable output for scripting.
 - Add `--ci` for non-interactive mode (no color, no prompts).
@@ -150,4 +150,4 @@ A clean scan exits with code `0` and shows no critical or high findings.
 
 - [Red-team your MCP servers](red-team-mcp.md) with adversarial payloads
 - [Add HMA to your CI/CD pipeline](ci-pipeline.md)
-- See the full [Security Checks Reference](../SECURITY_CHECKS.md) for all 187 checks
+- See the full [Security Checks Reference](../SECURITY_CHECKS.md) for all 310 static checks

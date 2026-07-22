@@ -525,6 +525,58 @@ export function getTaxonomyMap(): Record<string, string> {
 }
 
 /**
+ * Check-ID prefixes for the NanoMind semantic (AST) layer. Everything else in
+ * the taxonomy is a static rule check.
+ */
+const SEMANTIC_CHECK_PREFIXES = ['SEM-', 'AST-'] as const;
+
+function isSemanticCheckId(checkId: string): boolean {
+  return SEMANTIC_CHECK_PREFIXES.some(p => checkId.startsWith(p));
+}
+
+/** Category slug for a check ID: everything before the trailing "-NNN" index. */
+function categoryOf(checkId: string): string {
+  const parts = checkId.split('-');
+  return (parts.length > 1 ? parts.slice(0, -1).join('-') : parts[0]).toLowerCase();
+}
+
+export interface CheckCounts {
+  /** Total distinct checks (static + semantic). */
+  total: number;
+  /** Static rule checks (non SEM-/AST-). */
+  static: number;
+  /** NanoMind semantic (AST) checks present in the taxonomy. */
+  semantic: number;
+  /** Distinct categories across all checks. */
+  totalCategories: number;
+  /** Distinct categories across static checks only. */
+  staticCategories: number;
+}
+
+/**
+ * The single source of truth for every user-facing check/category count.
+ * Derived from TAXONOMY_MAP so `--help`, command descriptions, the scan
+ * Observations block, `check-metadata`, README and docs cannot drift apart.
+ * Before this existed the scan display hardcoded "209 static / 44 categories"
+ * while --help derived 323/74 from the same map — a self-contradiction a user
+ * running the CLI could see. Keep the golden values in
+ * `__tests__/hardening/check-count-consistency.test.ts` updated when the
+ * taxonomy changes; that test fails on drift by design.
+ */
+export function getCheckCounts(): CheckCounts {
+  const ids = Object.keys(TAXONOMY_MAP);
+  const staticIds = ids.filter(id => !isSemanticCheckId(id));
+  const semanticIds = ids.filter(isSemanticCheckId);
+  return {
+    total: ids.length,
+    static: staticIds.length,
+    semantic: semanticIds.length,
+    totalCategories: new Set(ids.map(categoryOf)).size,
+    staticCategories: new Set(staticIds.map(categoryOf)).size,
+  };
+}
+
+/**
  * Enrich an array of SecurityFindings with their attack class mappings.
  * Modifies findings in place. Findings that already carry an `attackClass`
  * (set inline at the emission site, e.g. `AST-CRED-001` →

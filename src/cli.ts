@@ -79,7 +79,7 @@ const TELEMETRY_TOOL = 'hackmyagent';
 const NON_TRACKED_TELEMETRY_COMMANDS = new Set<string>(['telemetry', 'help']);
 // Per-invocation start times keyed by subcommand name (preAction → postAction).
 const telemetryStartedAt = new Map<string, number>();
-import { getTaxonomyMap } from './hardening/taxonomy';
+import { getTaxonomyMap, getCheckCounts } from './hardening/taxonomy';
 import { compareFindingsByTier } from './ui/finding-tier';
 import {
   scoreLineLabel,
@@ -94,19 +94,15 @@ import { trustAapGate } from './aap';
 const program = new Command();
 program.showHelpAfterError('(run with --help for usage)');
 
-// Total security check count + distinct category count, derived from the
-// taxonomy map (the same source check-metadata reads). Previously CHECK_COUNT
-// was hardcoded (209) and the category count was hardcoded in help text as
-// "60 categories" — both drifted. Deriving from the taxonomy keeps --help,
-// command descriptions, and check-metadata consistent without manual bumps.
-const CHECK_IDS = Object.keys(getTaxonomyMap());
-const CHECK_COUNT = CHECK_IDS.length;
-const CATEGORY_COUNT = new Set(
-  CHECK_IDS.map(id => {
-    const parts = id.split('-');
-    return (parts.length > 1 ? parts.slice(0, -1).join('-') : parts[0]).toLowerCase();
-  }),
-).size;
+// Total security check + category counts, derived from the taxonomy map via
+// getCheckCounts() — the single source of truth shared by --help, command
+// descriptions, the scan Observations block, and check-metadata. Previously
+// CHECK_COUNT was hardcoded and the scan display carried a separate hardcoded
+// "209 static" that contradicted --help; deriving both from one place keeps
+// every surface consistent without manual bumps.
+const CHECK_COUNTS = getCheckCounts();
+const CHECK_COUNT = CHECK_COUNTS.total;
+const CATEGORY_COUNT = CHECK_COUNTS.totalCategories;
 
 // How long registry-cached scan data is considered fresh before `check` re-scans.
 const STALE_SCAN_DAYS = 3;
@@ -1097,11 +1093,10 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   // briefs/cli-observation-verdict-ux.md [CPO-019]; intended home is
   // `@opena2a/cli-ui` per [CA-030] — inlined here pending step-0d.
   if (localScan || nanomindScan) {
-    // HMA advertises 209 static checks across 44 categories. Display
-    // the advertised count (not the findings count); a count of 0
-    // would be misleading.
-    const HMA_STATIC_CHECK_COUNT = 209;
-    const staticCount = HMA_STATIC_CHECK_COUNT;
+    // Static rule-check suite size, derived from the taxonomy (single source
+    // of truth, same as --help and check-metadata). This is the advertised
+    // suite size, not the findings count; a count of 0 would be misleading.
+    const staticCount = getCheckCounts().static;
     const semanticCount = nanomindScan?.compiledArtifacts ?? 0;
     const filesScanned = localScan?.filesScanned;
     // HMA-2: prefer registry.packageType (authoritative) over the local
@@ -7524,7 +7519,18 @@ program
       }
     }
 
-    writeJsonStdout({ totalChecks: Object.keys(metadata).length, checks: metadata });
+    // Summary counts come from the single source of truth (getCheckCounts,
+    // derived from the taxonomy) so this JSON, --help, and the scan display
+    // never disagree. `checks` still lists every metadata entry.
+    const counts = getCheckCounts();
+    writeJsonStdout({
+      totalChecks: counts.total,
+      staticChecks: counts.static,
+      semanticChecks: counts.semantic,
+      categories: counts.totalCategories,
+      staticCategories: counts.staticCategories,
+      checks: metadata,
+    });
   });
 
 // Show help and exit 0 when no arguments provided

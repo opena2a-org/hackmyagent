@@ -2,6 +2,12 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [0.25.1] - 2026-07-22
+
+### Fixed
+
+- **One source of truth for the check/category counts.** The `secure` scan Observations block hardcoded `209 static checks / 44 categories`, `--help` and `check-metadata` derived `323 / 74` from the taxonomy, and the docs said `187 / 39` — the same tool contradicted itself, and a user running the CLI could see it. All surfaces (scan display, `--help`, command descriptions, `check-metadata`, the MCP tool description, README and docs) now read the real counts from `getCheckCounts()` in `src/hardening/taxonomy.ts`: 323 checks / 74 categories total, of which 310 static / 69 categories plus the NanoMind semantic layer. `check-metadata --json` now also reports `staticChecks`, `semanticChecks`, `categories`, and `staticCategories`. A regression test (`__tests__/hardening/check-count-consistency.test.ts`) fails on any drift and on re-introducing a hardcoded static-count literal.
+
 ## [0.25.0] - 2026-07-07
 
 ### Changed

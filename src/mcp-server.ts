@@ -31,12 +31,15 @@ import {
   toSecurityFindings,
   buildDeepScanResult,
 } from './semantic';
+import { getCheckCounts } from './hardening/taxonomy';
+
+const MCP_CHECK_COUNTS = getCheckCounts();
 
 const TOOL_DEFINITIONS = [
   {
     name: 'hackmyagent_scan',
     description:
-      'Scan the current project for AI agent security issues. Runs 187 security checks across 39 categories: credentials, MCP configs, permissions, git security, dependencies, and more. Returns actionable findings with severity and fix recommendations.',
+      `Scan the current project for AI agent security issues. Runs ${MCP_CHECK_COUNTS.total} security checks across ${MCP_CHECK_COUNTS.totalCategories} categories: credentials, MCP configs, permissions, git security, dependencies, and more. Returns actionable findings with severity and fix recommendations.`,
     inputSchema: {
       type: 'object' as const,
       properties: {
