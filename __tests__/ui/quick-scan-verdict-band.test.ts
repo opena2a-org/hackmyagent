@@ -37,7 +37,9 @@ const CLI = join(REPO_ROOT, 'dist', 'cli.js');
 const FIXTURE = join(homedir(), '.opena2a', 'corpus', 'skill', 'buggy', 'caps-sprawl-skill');
 
 function canRunSpawn(): boolean {
-  if (process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true') return false;
+  // Gated on the private corpus fixture rather than on CI: where the corpus
+  // IS present (local, and any CI job that provisions it) these must run.
+  // A blanket CI skip meant the only gate on this fix never executed there.
   return existsSync(CLI) && existsSync(FIXTURE);
 }
 

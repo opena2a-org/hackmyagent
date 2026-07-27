@@ -28,6 +28,7 @@ import {
   GOOD_BAND_FLOOR,
   VERDICT_FAIL_CLAMP,
   clampScoreToVerdictBand,
+  countsAgainstScore,
   isFailDirection,
 } from '../../src/ui/verdict-band';
 
@@ -61,33 +62,92 @@ describe('H-6: a fixed finding is not fail-direction', () => {
     });
   });
 
-  it('agrees with the scoring filter on every passed/fixed combination', () => {
-    // `calculateSecurityScore` counts a finding iff `!passed && !fixed`.
-    // The clamp's direction test must use the identical predicate, or the
-    // number and the cap are computed off different evidence — which is the
-    // whole defect class #259 exists to close.
-    const counts = (f: { passed?: boolean; fixed?: boolean }) => !f.passed && !f.fixed;
+  it('a fix the verification pass could not confirm still counts (A2)', () => {
+    // Checks set `fixed: autoFix && !passed` BEFORE knowing the write landed.
+    // PERM-001 swallows a failed `fs.chmod` (immutable flag, EPERM, read-only
+    // mount) and still reports `fixed: true` on a file that is still
+    // world-readable; the verification pass then sets `fixVerified: false`
+    // and appends "[FIX NOT VERIFIED - issue may persist]".
+    //
+    // Excluding on `fixed` alone scored that 100/100 — a clean number for an
+    // unfixed high — which is how `mcp-server.ts` rendered
+    // "Score: 100/100 | 0 issues found | 1 fixed" for a still-exposed file.
+    const unverified = [{ severity: 'high', passed: false, fixed: true, fixVerified: false }];
+    expect(countsAgainstScore(unverified[0])).toBe(true);
+    expect(isFailDirection(unverified)).toBe(true);
+    expect(clampScoreToVerdictBand(100, unverified)).toEqual({
+      score: VERDICT_FAIL_CLAMP,
+      clamped: true,
+    });
+
+    // A confirmed fix is genuinely resolved and must not be clamped.
+    const verified = [{ severity: 'high', passed: false, fixed: true, fixVerified: true }];
+    expect(isFailDirection(verified)).toBe(false);
+    expect(clampScoreToVerdictBand(100, verified)).toEqual({ score: 100, clamped: false });
+  });
+
+  it('agrees with the scoring filter on every passed/fixed/fixVerified combination', () => {
+    // The single predicate `countsAgainstScore` now backs BOTH
+    // `calculateSecurityScore` and `isFailDirection`. If they ever diverge
+    // again the number and the cap are computed off different evidence —
+    // the whole defect class #259 exists to close.
     for (const passed of [true, false, undefined]) {
       for (const fixed of [true, false, undefined]) {
-        const f = { severity: 'critical', passed, fixed };
-        expect(isFailDirection([f]), `passed=${passed} fixed=${fixed}`).toBe(counts(f));
+        for (const fixVerified of [true, false, undefined]) {
+          const f = { severity: 'critical', passed, fixed, fixVerified };
+          const label = `passed=${passed} fixed=${fixed} fixVerified=${fixVerified}`;
+          expect(isFailDirection([f]), label).toBe(countsAgainstScore(f));
+        }
       }
     }
+  });
+
+  it('countsAgainstScore encodes exactly the intended rule', () => {
+    // Spelled out rather than mirrored from the implementation, so this
+    // fails if the rule itself is changed.
+    expect(countsAgainstScore({ passed: true })).toBe(false);
+    expect(countsAgainstScore({ passed: false })).toBe(true);
+    expect(countsAgainstScore({ passed: false, fixed: true })).toBe(false);
+    expect(countsAgainstScore({ passed: false, fixed: true, fixVerified: true })).toBe(false);
+    expect(countsAgainstScore({ passed: false, fixed: true, fixVerified: false })).toBe(true);
   });
 });
 
 describe('H-7: no published surface computes a composite without the clamp', () => {
-  it('the registry publish path applies the clamp', () => {
-    const src = readFileSync(join(SRC, 'registry', 'publish.ts'), 'utf8');
-    expect(src).toMatch(/clampScoreToVerdictBand/);
+  // Behavioral, not a source grep. An earlier draft of these two asserted
+  // `/clampScoreToVerdictBand/` against the file text and was proved
+  // toothless: replacing the clamp with `const score = rawScore` left both
+  // green, because the import line alone satisfied the regex.
+  it('publishes the clamped score, with the raw preserved', async () => {
+    const { buildPublishPayload } = await import('../../src/registry/publish');
+    const payload = buildPublishPayload({
+      packageName: 'p',
+      packageType: 'npm',
+      packageVersion: '1.0.0',
+      hardeningFindings: [
+        { checkId: 'X-1', name: 'x', severity: 'high', passed: false, category: 'other', message: '' },
+      ],
+    } as any, '0.0.0-test');
+
+    // Non-vacuity: the input must actually land in the good band pre-clamp,
+    // or "score < 70" proves nothing.
+    expect(payload.rawScore, 'raw composite is not in the good band').toBeGreaterThanOrEqual(GOOD_BAND_FLOOR);
+    expect(payload.score).toBe(VERDICT_FAIL_CLAMP);
+    expect(payload.scoreClamped).toBe(true);
+    expect(payload.verdict).toBe('fail');
   });
 
-  it('publishes rawScore and scoreClamped so a clamp is detectable downstream', () => {
-    // Without both fields a Registry dashboard plotting history cannot tell
-    // "the scoring rule changed across HMA versions" from "this agent got
-    // worse" — the same argument #206 made for subReports.soul.
-    const src = readFileSync(join(SRC, 'registry', 'publish.ts'), 'utf8');
-    expect(src).toMatch(/rawScore, scoreClamped/);
+  it('omits the raw fields entirely when nothing was clamped', async () => {
+    const { buildPublishPayload } = await import('../../src/registry/publish');
+    const payload = buildPublishPayload({
+      packageName: 'p',
+      packageType: 'npm',
+      packageVersion: '1.0.0',
+      hardeningFindings: [],
+    } as any, '0.0.0-test');
+    expect(payload.score).toBe(100);
+    expect(payload).not.toHaveProperty('scoreClamped');
+    expect(payload).not.toHaveProperty('rawScore');
   });
 
   it('leaves no bare calculateSecurityScore on a scoring surface', () => {

@@ -85,7 +85,11 @@ describe('secure output formats parse (spawn, local-only)', () => {
     return res.stdout || '';
   }
 
-  const canRun = () => existsSync(CLI) && process.env.CI !== 'true';
+  // Deliberately NOT gated on CI. These use a mktemp fixture, not the
+  // private corpus, so the only real prerequisite is a built dist/. Gating
+  // them on `CI !== 'true'` meant reverting the cli.ts wiring stayed green in
+  // CI, since the deterministic tests above only exercise the helper module.
+  const canRun = () => existsSync(CLI);
 
   it.runIf(canRun())('text output still carries the footer', () => {
     // Non-vacuity for every assertion below: if #202's footer stopped being
