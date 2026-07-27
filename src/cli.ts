@@ -89,6 +89,7 @@ import {
 } from './ui/quick-scan-labels';
 import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifact-intent';
 import { clampDisclosure } from './ui/verdict-band';
+import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { generateVerifyCommand } from './ui/verify-command';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
 import type { ConceptId } from './types/finding-evidence';
@@ -6621,12 +6622,28 @@ Examples:
       const prefix = getCommandPrefix();
       const scanner = new SoulScanner();
       const soulScanStartMs = Date.now();
+      // #260: `--deep` is one LLM round-trip per undetected control — ~55s on
+      // the canonical hardened-prose SOUL — and printed nothing until it
+      // finished, reading as a hang. TTY-only so JSON and CI logs are
+      // byte-unaffected, same gate as the `wild` counter (#253).
+      const showDeepProgress = !!options.deep && !options.json && !globalCiMode
+        && !options.ci && process.stderr.isTTY;
       const result = await scanner.scanSoul(targetDir, {
         verbose: options.verbose,
         tier: options.tier,
         profile: options.profile,
         deepAnalysis: options.deep,
+        onProgress: showDeepProgress
+          ? (analyzed, total) => {
+              process.stderr.write(`\r  Semantic pass: ${analyzed}/${total} controls analyzed`);
+            }
+          : undefined,
       });
+      if (showDeepProgress) {
+        // Clear the counter so it does not linger above the report. Padded to
+        // overwrite the longest line rendered above.
+        process.stderr.write(`\r${' '.repeat(52)}\r`);
+      }
       const soulScanDurationMs = Date.now() - soulScanStartMs;
 
       // JSON output
@@ -6751,7 +6768,25 @@ Examples:
       if (result.file && missing > 0 && soulViolations.length === 0) {
         // Method-scope disclosure (#251): coverage is keyword-detected
         // template conformance, not a semantic evaluation of prose.
-        console.log(`  ${colors.dim}Keyword conformance scan — controls implemented as prose may not be detected. Semantic pass: ${prefix} scan-soul ${directory} --deep${RESET()}`);
+        //
+        // #260: under `--deep` this line used to point at `--deep` — the
+        // escape hatch suggesting itself while already running, a
+        // self-referential dead end. When the semantic pass has run, say what
+        // it found instead. The residual is stated honestly: controls the
+        // semantic tier also failed to recognise are not the same as
+        // controls that are absent, and pointing at `--deep` again would
+        // imply a recovery path that has already been exhausted.
+        const disclosureLines = soulScopeDisclosureLines({
+          missing,
+          deep: !!options.deep,
+          deepAvailable: result.deepAnalysisAvailable !== false,
+          upgraded: (result.deepAnalysisResults ?? []).filter((e) => e.llmPassed).length,
+          prefix,
+          directory,
+        });
+        for (const line of disclosureLines) {
+          console.log(`  ${colors.dim}${line}${RESET()}`);
+        }
       }
       if (!result.file) {
         console.log(`  ${colors.dim}Searched: SOUL.md, system-prompt.md, CLAUDE.md${RESET()}`);
