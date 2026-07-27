@@ -6764,9 +6764,20 @@ Examples:
         if (pm.signals.length > 6) {
           console.log(`    ${colors.dim}• ...and ${pm.signals.length - 6} more${RESET()}`);
         }
-        console.log(`  ${colors.dim}Skipped domains:${RESET()} ${pm.skippedDomains.join(', ')}`);
-        console.log(`  ${colors.cyan}Fix:${RESET()} remove the ${colors.bold}<!-- soul:profile=${pm.declaredProfile} -->${RESET()} marker (let the scanner detect),`);
-        console.log(`       or revise the body to match the declared profile.`);
+        // Under a --profile override the listed domains WERE evaluated this
+        // run, so calling them "skipped" would be false. The finding is
+        // about what the file declares, which the flag does not change (#216).
+        if (pm.evaluatedUnderForcedProfile) {
+          console.log(`  ${colors.dim}Domains the declared profile skips:${RESET()} ${pm.skippedDomains.join(', ')}`);
+          console.log(`  ${colors.dim}--profile ${pm.evaluatedUnderForcedProfile} overrode the marker, so this run DID evaluate them.${RESET()}`);
+          console.log(`  ${colors.dim}Anyone scanning this file without the flag gets the narrowed scope instead.${RESET()}`);
+          console.log(`  ${colors.cyan}Fix:${RESET()} remove the ${colors.bold}<!-- soul:profile=${pm.declaredProfile} -->${RESET()} marker from the file so the`);
+          console.log(`       narrowed scope is not what other scanners see, or revise the body to match it.`);
+        } else {
+          console.log(`  ${colors.dim}Skipped domains:${RESET()} ${pm.skippedDomains.join(', ')}`);
+          console.log(`  ${colors.cyan}Fix:${RESET()} remove the ${colors.bold}<!-- soul:profile=${pm.declaredProfile} -->${RESET()} marker (let the scanner detect),`);
+          console.log(`       or revise the body to match the declared profile.`);
+        }
       }
 
       // Marker-invalid finding block (#206 adversarial rounds 1+2). An
@@ -6973,8 +6984,12 @@ Examples:
         process.exit(1);
       }
       if (ciMode && result.profileMismatch) {
+        const pm = result.profileMismatch;
+        const forcedNote = pm.evaluatedUnderForcedProfile
+          ? ` (--profile ${pm.evaluatedUnderForcedProfile} evaluated them this run; the file still declares the narrower scope)`
+          : '';
         process.stderr.write(
-          `SOUL-PROFILE-MISMATCH HIGH: declared profile=${result.profileMismatch.declaredProfile} skips ${result.profileMismatch.skippedDomains.length} of 9 domains; body suggests profile=${result.profileMismatch.inferredProfile}.\n`,
+          `SOUL-PROFILE-MISMATCH HIGH: declared profile=${pm.declaredProfile} skips ${pm.skippedDomains.length} of 9 domains; body suggests profile=${pm.inferredProfile}${forcedNote}.\n`,
         );
         process.exit(1);
       }
