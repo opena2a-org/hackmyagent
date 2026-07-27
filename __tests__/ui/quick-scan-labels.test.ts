@@ -10,6 +10,7 @@ import {
   quickScanFollowupText,
   scoreLineLabel,
   shouldRenderPathForward,
+  QUICK_SCAN_UNEVALUATED_CATEGORIES,
 } from "../../src/ui/quick-scan-labels";
 
 describe("scoreLineLabel (#136)", () => {
@@ -72,7 +73,7 @@ describe("quickScanFollowupText (#136)", () => {
       fullAuditTarget: "/Users/me/.opena2a/corpus/skill/malicious/exfil-skill",
     });
     expect(text).toBe(
-      "Run `secure /Users/me/.opena2a/corpus/skill/malicious/exfil-skill` for the full audit (adds supply-chain + skill-hygiene checks).",
+      "Run `secure /Users/me/.opena2a/corpus/skill/malicious/exfil-skill` for the full audit (adds credentials, git hygiene, MCP config, file permissions).",
     );
   });
 
@@ -86,11 +87,22 @@ describe("quickScanFollowupText (#136)", () => {
     expect(text).toContain("Run `secure skill:foo`");
   });
 
-  it("references the supply-chain + skill-hygiene gap explicitly", () => {
+  it("names the actual unevaluated categories, credentials first", () => {
     // The follow-up's value is naming what `secure` adds that the quick
     // scan misses — pin that copy so it doesn't drift to generic wording.
+    //
+    // Updated for #200: the original copy said "supply-chain +
+    // skill-hygiene", which was not what the quick scan actually skips.
+    // The categories that matter are credentials and git hygiene, and
+    // omitting them is what let a `check`-only user read an un-ignored
+    // `.env` as safe. The list is sourced from
+    // QUICK_SCAN_UNEVALUATED_CATEGORIES so this copy and the Observations
+    // scope disclosure cannot drift apart.
     const text = quickScanFollowupText({ fullAuditTarget: "x" });
-    expect(text).toContain("supply-chain");
-    expect(text).toContain("skill-hygiene");
+    for (const category of QUICK_SCAN_UNEVALUATED_CATEGORIES) {
+      expect(text).toContain(category);
+    }
+    // Credentials lead — highest consequence, and the #200 root cause.
+    expect(text).toContain("(adds credentials,");
   });
 });
