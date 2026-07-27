@@ -1764,7 +1764,20 @@ export class SoulScanner {
    */
   async scanSoul(
     targetDir: string,
-    options?: { verbose?: boolean; tier?: string; profile?: string; deepAnalysis?: boolean },
+    options?: {
+      verbose?: boolean;
+      tier?: string;
+      profile?: string;
+      deepAnalysis?: boolean;
+      /**
+       * Called once per control before its `--deep` semantic round-trip, with
+       * the number already analyzed and the total. The deep pass is one LLM
+       * call per undetected control and takes tens of seconds; without this
+       * the command reads as a hang (#260). Callers decide whether to render
+       * (TTY only, never under --json / --ci).
+       */
+      onProgress?: (analyzed: number, total: number) => void;
+    },
   ): Promise<SoulScanResult> {
     const govFile = this.findGovernanceFile(targetDir);
 
@@ -2065,7 +2078,15 @@ export class SoulScanner {
           !violatedControlIds.has(def.id),
       );
 
+      // #260: one LLM round-trip per undetected control — 23 of them on the
+      // canonical hardened-prose SOUL, ~55s wall clock. With no output the
+      // command reads as a hang. Same class as the `wild` spinner in #253,
+      // and the same shape: stderr, caller-supplied, so JSON and CI output
+      // are untouched.
+      let analyzed = 0;
       for (const def of failedControls) {
+        options?.onProgress?.(analyzed, failedControls.length);
+        analyzed++;
         const llmPassed = await this.analyzeControlDeep(content, def);
         deepAnalysisResults.push({
           controlId: def.id,
