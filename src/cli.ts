@@ -132,8 +132,31 @@ function writeLargeStdout(text: string): void {
 }
 
 function writeJsonStdout(data: unknown): void {
-  writeLargeStdout(JSON.stringify(data, null, 2) + '\n');
+  // Stamp the producing version on every JSON surface (#202). A finding
+  // pasted into a bug report or archived in CI otherwise carries no record
+  // of which build emitted it. Injected centrally rather than at each call
+  // site so no surface can be missed or drift.
+  //
+  // Only plain objects are stamped: arrays and scalars would change shape.
+  // An existing `hackmyagentVersion` is never overwritten, so a payload that
+  // deliberately reports a different version keeps it. Corpus goldens store a
+  // distilled projection (score / severities / checkIds), not raw JSON, so
+  // this does not churn them on a version bump.
+  const stamped =
+    data && typeof data === 'object' && !Array.isArray(data)
+      ? { hackmyagentVersion: VERSION, ...(data as Record<string, unknown>) }
+      : data;
+  writeLargeStdout(JSON.stringify(stamped, null, 2) + '\n');
 }
+
+/**
+ * Commands whose human-readable output carries a version footer (#202).
+ *
+ * Scoped to the scan-producing commands: their output is what ends up in CI
+ * logs and bug reports, where "which build said this?" is the first question.
+ * Config/among-us commands (telemetry, help) would just be noise.
+ */
+const VERSION_FOOTER_COMMANDS = new Set(['secure', 'detect', 'scan-soul']);
 
 // Binary-level command prefix + citation rebrander (single source of truth in
 // ./cli-prefix). When a parent CLI sets HMA_CLI_PREFIX, every user-facing
@@ -225,12 +248,21 @@ Examples:
 // Version line is set inside main() so it can include the live telemetry status.
 // Tracking hooks (preAction / postAction) are also wired there.
 
-program.addHelpText('beforeAll', `
+// Root-only. `beforeAll` fires for every subcommand's help too, so the
+// quick-start block was reprinted above `secure --help`, `check --help` and
+// every other subcommand — noise for a user who has already navigated to a
+// specific command (#253). Commander passes the command whose help is being
+// rendered; emit only when that is the top-level program.
+program.addHelpText('beforeAll', (ctx) => (
+  ctx.command === program
+    ? `
 Quick start:
   $ ${CLI_PREFIX} check <package>     Is this safe to install?
   $ ${CLI_PREFIX} secure              Scan current directory (${CHECK_COUNT} checks)
   $ ${CLI_PREFIX} secure --fix        Auto-fix with rollback
-`);
+`
+    : ''
+));
 
 // Two-bucket telemetry disclosure (briefs/scan-result-telemetry-policy.md §7,
 // [CHIEF-CSR-014] + [CHIEF-CPO-021]). Surfaces both consent rails on --help so
@@ -6191,8 +6223,13 @@ Examples:
               } else {
                 console.log(`  Found ${findings.length} issue(s)`);
                 if (remediations.length > 0) {
+                  // Under --dry-run nothing is written, so "Fixed 3" claimed
+                  // work that did not happen (#253). Report the preview in the
+                  // conditional the flag actually describes.
                   console.log(
-                    `  ${colors.green}[+] Fixed ${remediations.length}${RESET()}`
+                    options.dryRun
+                      ? `  ${colors.yellow}[~] Would fix ${remediations.length}${RESET()}`
+                      : `  ${colors.green}[+] Fixed ${remediations.length}${RESET()}`
                   );
                 }
               }
@@ -7721,9 +7758,32 @@ program
 
     let content: string;
     try {
+      const { statSync, existsSync } = await import('node:fs');
+      // `red-team` takes a single artifact, but `check` / `secure` / `scan-soul`
+      // all accept a directory, so pointing it at one is the natural mistake.
+      // It used to fail with a bare "Cannot read file: <dir>" (EISDIR) and no
+      // hint (#253). Resolve the conventional artifact inside instead, and when
+      // that is not there, say what to point at rather than restating the error.
+      if (statSync(target).isDirectory()) {
+        const { join } = await import('node:path');
+        const candidates = ['SKILL.md', 'SOUL.md', 'mcp.json'];
+        const resolved = candidates
+          .map(f => join(target, f))
+          .find(p => existsSync(p));
+        if (!resolved) {
+          console.error(`${target} is a directory with no SKILL.md, SOUL.md, or mcp.json.`);
+          console.error(`red-team takes a single artifact — point it at a file, e.g. red-team ${join(target, 'SKILL.md')}`);
+          process.exit(1);
+        }
+        target = resolved;
+      }
       content = readFileSync(target, 'utf-8');
-    } catch {
-      console.error(`Cannot read file: ${target}`);
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') {
+        console.error(`No such file or directory: ${target}`);
+      } else {
+        console.error(`Cannot read file: ${target}`);
+      }
       process.exit(1);
     }
 
@@ -8029,6 +8089,24 @@ Examples:
     }
 
     const apiKey = process.env.INTERNAL_API_KEY;
+    // HTTP header values are ByteStrings (Latin-1). A key carrying anything
+    // outside that range — most often U+FFFD after a bad copy-paste or a
+    // mis-decoded shell profile — made fetch() throw a raw internal
+    // "Cannot convert argument to a ByteString because the character at
+    // index N has a value of 65533" (#253). Validate up front so the user
+    // gets a cause and a next step instead of a stack-trace artifact. The
+    // key itself is never echoed — only the offending position.
+    if (apiKey) {
+      const badIndex = [...apiKey].findIndex(ch => ch.codePointAt(0)! > 0xff);
+      if (badIndex !== -1) {
+        process.stderr.write('Error: INTERNAL_API_KEY contains a non-Latin1 character and cannot be sent as an HTTP header.\n');
+        process.stderr.write(`  First offending character is at index ${badIndex}.\n`);
+        process.stderr.write('  This usually means the value was copied with a smart quote, a non-breaking space, or a replacement character.\n');
+        process.stderr.write('  Re-copy the key as plain ASCII and retry:\n');
+        process.stderr.write('    export INTERNAL_API_KEY=<your-key>\n');
+        process.exit(1);
+      }
+    }
     if (!apiKey) {
       process.stderr.write('Error: INTERNAL_API_KEY environment variable is not set.\n');
       process.stderr.write('\nThis command requires registry authentication.\n');
@@ -10100,6 +10178,25 @@ async function checkNpmPackage(
   // events.
   program
     .hook('preAction', (_thisCommand, actionCommand) => {
+      // Version footer (#202). Registered on 'exit' rather than emitted from
+      // postAction because the scan commands call process.exit(1) when they
+      // find something — the common case — and that skips postAction
+      // entirely. A footer that appeared only on clean scans would be absent
+      // from exactly the output people paste into bug reports.
+      //
+      // Suppressed under --json (the version is a field there) and in CI mode,
+      // so machine-consumed output stays byte-stable for the corpus harness.
+      const cmdName = actionCommand.name();
+      if (
+        VERSION_FOOTER_COMMANDS.has(cmdName) &&
+        !globalCiMode &&
+        !(actionCommand.opts() as { json?: boolean }).json
+      ) {
+        process.on('exit', () => {
+          console.log(`  ${colors.dim}Scanned with hackmyagent v${VERSION}${RESET()}`);
+        });
+      }
+
       const name = actionCommand.name();
       if (NON_TRACKED_TELEMETRY_COMMANDS.has(name)) return;
       telemetryStartedAt.set(name, Date.now());
