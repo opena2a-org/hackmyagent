@@ -89,6 +89,7 @@ import {
 } from './ui/quick-scan-labels';
 import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifact-intent';
 import { clampDisclosure, clampScoreToVerdictBand } from './ui/verdict-band';
+import { shouldPrintVersionFooter } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { generateVerifyCommand } from './ui/verify-command';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
@@ -158,8 +159,10 @@ function writeJsonStdout(data: unknown): void {
  * Scoped to the scan-producing commands: their output is what ends up in CI
  * logs and bug reports, where "which build said this?" is the first question.
  * Config/among-us commands (telemetry, help) would just be noise.
+ *
+ * The set and the gate both live in `ui/version-footer.ts` so the rule can be
+ * tested without spawning; see `shouldPrintVersionFooter`.
  */
-const VERSION_FOOTER_COMMANDS = new Set(['secure', 'detect', 'scan-soul']);
 
 // Binary-level command prefix + citation rebrander (single source of truth in
 // ./cli-prefix). When a parent CLI sets HMA_CLI_PREFIX, every user-facing
@@ -10341,13 +10344,18 @@ async function checkNpmPackage(
       // entirely. A footer that appeared only on clean scans would be absent
       // from exactly the output people paste into bug reports.
       //
-      // Suppressed under --json (the version is a field there) and in CI mode,
-      // so machine-consumed output stays byte-stable for the corpus harness.
-      const cmdName = actionCommand.name();
+      // Suppressed in CI mode (byte-stable output for the corpus harness) and
+      // for every machine format, not just the deprecated `--json` alias —
+      // gating on `--json` alone appended the trailer after the closing brace
+      // of `--format json` / `sarif` / `html` and broke their parse.
+      const footerOpts = actionCommand.opts() as { json?: boolean; format?: string };
       if (
-        VERSION_FOOTER_COMMANDS.has(cmdName) &&
-        !globalCiMode &&
-        !(actionCommand.opts() as { json?: boolean }).json
+        shouldPrintVersionFooter({
+          command: actionCommand.name(),
+          ciMode: globalCiMode,
+          json: footerOpts.json,
+          format: footerOpts.format,
+        })
       ) {
         process.on('exit', () => {
           console.log(`  ${colors.dim}Scanned with hackmyagent v${VERSION}${RESET()}`);
