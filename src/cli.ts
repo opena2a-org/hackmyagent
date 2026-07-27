@@ -139,7 +139,7 @@ function writeJsonStdout(data: unknown): void {
 // ./cli-prefix). When a parent CLI sets HMA_CLI_PREFIX, every user-facing
 // command citation — program name, --help examples, hints, scanner `fix:`
 // strings — reads in the parent's verb namespace (e.g. `opena2a secure …`).
-import { CLI_PREFIX, rebrandCommandCitations } from './cli-prefix';
+import { CLI_PREFIX, rebrandCommandCitations, OPENA2A_PACKAGE } from './cli-prefix';
 
 let nanomindDeprecationWarned = false;
 /**
@@ -8921,10 +8921,29 @@ function printCheckNextSteps(
 ): void {
   if (globalCiMode) return;
   const isLocal = context?.isLocalTarget ?? (target.startsWith('.') || target.startsWith('/') || target.startsWith('~'));
-  // For commands that take a directory (harden-soul, opena2a protect), use the parent dir when target is a file
-  const dirTarget = isLocal && target.includes('.') && !target.endsWith('/')
-    ? require('path').dirname(target)
-    : target;
+  // For commands that take a directory (harden-soul, opena2a protect), use
+  // the parent dir when the target is a FILE.
+  //
+  // This used to guess "is a file" from `target.includes('.')`, which broke
+  // on any relative path: `./fixture/myagent` contains a dot from its `./`
+  // prefix, so dirname() truncated it to `./fixture` — the PARENT of the
+  // directory actually scanned (#261). Following the suggestion then acted
+  // on the wrong tree, while `check` on the same block cited the right one.
+  // A directory named `my.project` hit the same bug.
+  //
+  // Ask the filesystem instead of the string. On an unresolvable path, cite
+  // the target as given: a wrong-but-honest citation beats silently
+  // retargeting the user's command at a directory they did not scan.
+  const dirTarget = ((): string => {
+    if (!isLocal) return target;
+    try {
+      return require('fs').statSync(target).isDirectory()
+        ? target
+        : require('path').dirname(target);
+    } catch {
+      return target;
+    }
+  })();
   console.log();
   console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
 
@@ -8937,11 +8956,14 @@ function printCheckNextSteps(
     console.log(`  ${colors.cyan}Auto-fix governance:${RESET()}  ${CLI_PREFIX} harden-soul ${dirTarget}`);
   }
   if (context?.hasCredentialFindings) {
-    console.log(`  ${colors.cyan}Protect credentials:${RESET()}  opena2a protect ${isLocal ? dirTarget : '.'}`);
+    // Routed through the citation rewriter for the same reason the `Fix:`
+    // lines are: standalone installs have no `opena2a` on PATH, so the bare
+    // form is a dead end (#201). Bundled runs are left as-is by the rewriter.
+    console.log(`  ${colors.cyan}Protect credentials:${RESET()}  ${rebrandCommandCitations(`opena2a protect ${isLocal ? dirTarget : '.'}`)}`);
     citedOpena2a = true;
   }
   if (context?.hasMcpFindings) {
-    console.log(`  ${colors.cyan}Audit MCP servers:${RESET()}    opena2a mcp audit  ${colors.dim}(run from project dir)${RESET()}`);
+    console.log(`  ${colors.cyan}Audit MCP servers:${RESET()}    ${rebrandCommandCitations('opena2a mcp audit')}  ${colors.dim}(run from project dir)${RESET()}`);
     citedOpena2a = true;
   }
   if (context?.hasCodeVulns && isLocal) {
@@ -8971,7 +8993,10 @@ function printCheckNextSteps(
   }
   console.log(`  ${colors.cyan}All commands:${RESET()}         ${CLI_PREFIX} --help`);
   if (citedOpena2a) {
-    console.log(`  ${colors.dim}opena2a is a separate CLI — install with: npm i -g opena2a${RESET()}`);
+    // The package name is `opena2a-cli`; the binary it installs is `opena2a`.
+    // The hint used to say `npm i -g opena2a`, which is a 404 — the dead-end
+    // fix was itself a dead end (#201).
+    console.log(`  ${colors.dim}opena2a is a separate CLI — install with: npm i -g ${OPENA2A_PACKAGE}${RESET()}`);
   }
   console.log();
 }
