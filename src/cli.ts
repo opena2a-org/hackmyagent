@@ -85,6 +85,7 @@ import {
   scoreLineLabel,
   shouldRenderPathForward,
   quickScanFollowupText,
+  quickScanScopeDisclosure,
 } from './ui/quick-scan-labels';
 import { generateVerifyCommand } from './ui/verify-command';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
@@ -1054,6 +1055,13 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     } else if (totalFindings > 0) {
       verdictColor = colors.yellow;
       verdictText = `${totalFindings} issue${totalFindings > 1 ? 's' : ''} found`;
+    } else if (opts.quickScan) {
+      // A narrowed matrix finding nothing is not a clean bill (#200).
+      // Green + "No security issues found" is exactly what let a user
+      // with an un-ignored `.env` read `check` as an all-clear, so the
+      // headline names the matrix it actually cleared and stays amber.
+      verdictColor = colors.yellow;
+      verdictText = 'No issues in the quick-scan matrix';
     } else {
       verdictColor = colors.green;
       verdictText = 'No security issues found';
@@ -1106,7 +1114,22 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     const rawKind = (registry?.packageType || projectType || '').toString().trim();
     const kind = rawKind && rawKind !== 'unknown' ? rawKind : 'local project';
 
-    const categorySummaries = buildCategorySummaries(failed);
+    // Under a quick scan the static rule suite never executes, so no
+    // category it would have covered can be reported clear (#200).
+    // Dropping the clear buckets stops the renderer emitting an
+    // "(all clear)" / "N others clear" tail over checks that never ran;
+    // the scope note applied below states what was skipped instead.
+    const allCategorySummaries = buildCategorySummaries(failed);
+    const quickScanDisclosure = opts.quickScan
+      ? quickScanScopeDisclosure({
+          staticCount,
+          semanticCount,
+          fullAuditTarget: opts.quickScan.fullAuditTarget,
+        })
+      : null;
+    const categorySummaries = quickScanDisclosure
+      ? allCategorySummaries.filter(c => !c.clear)
+      : allCategorySummaries;
     const verdictLine = buildVerdict(
       { critical, high, medium, low },
       { kind, filesScanned, remote: opts.remote === true },
@@ -1146,6 +1169,27 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     const checksLine = lines.find(l => l.label === 'Checks')!;
     const categoriesLine = lines.find(l => l.label === 'Categories')!;
     const verdictDisplay = lines.find(l => l.label === 'Verdict')!;
+
+    // Quick-scan honesty pass (#200). The renderer sizes these lines from
+    // the advertised suite, which is correct for `secure` but overstates
+    // `check`: it never ran the static suite. Rewrite the three lines that
+    // would otherwise claim coverage the run does not have.
+    if (quickScanDisclosure) {
+      checksLine.value = quickScanDisclosure.checks;
+      if (categorySummaries.length === 0) {
+        categoriesLine.value = quickScanDisclosure.categories;
+        categoriesLine.tone = 'default';
+      } else {
+        categoriesLine.value += quickScanDisclosure.categoriesSuffix;
+      }
+      if (totalFindings === 0) {
+        // Not 'good': a narrow matrix finding nothing is not a clean bill,
+        // and green here is what made the pre-fix output read as an
+        // all-clear. Warning tone matches the disclosure it now carries.
+        verdictDisplay.value = quickScanDisclosure.cleanVerdict;
+        verdictDisplay.tone = 'warning';
+      }
+    }
 
     for (const line of [surfacesLine, checksLine]) {
       const labelPad = line.label.padEnd(LABEL_WIDTH, ' ');

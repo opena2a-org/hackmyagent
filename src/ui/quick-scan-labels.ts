@@ -16,9 +16,79 @@ export interface QuickScanContext {
 }
 
 /**
+ * Categories the quick-scan matrix does not evaluate at all.
+ *
+ * `check <target>` runs only the NanoMind semantic artifact matrix; the
+ * static rule suite never executes. These are the highest-consequence
+ * categories that silence covers, ordered by consequence. `credentials`
+ * leads because it is what made #200 dangerous rather than merely
+ * imprecise: a `check`-only user with an un-ignored `.env` was told the
+ * directory looked safe.
+ */
+export const QUICK_SCAN_UNEVALUATED_CATEGORIES = [
+  'credentials',
+  'git hygiene',
+  'MCP config',
+  'file permissions',
+] as const;
+
+/** Display values for the Observations block under a narrowed quick scan. */
+export interface QuickScanScopeDisclosure {
+  /** Replacement Checks line — must not imply the static suite ran. */
+  checks: string;
+  /** Replacement Categories line for when nothing in the narrow matrix fired. */
+  categories: string;
+  /** Scope note appended to the Categories line when findings DO exist. */
+  categoriesSuffix: string;
+  /** Replacement Verdict for a quick scan that found nothing. */
+  cleanVerdict: string;
+}
+
+/**
+ * Build the honest scope disclosure for a quick scan (closes #200).
+ *
+ * Pre-fix, a `check <localdir>` that found nothing rendered:
+ *
+ *   Checks      310 static · 1 semantic (NanoMind AST) · 0 skipped
+ *   Categories  credentials, MCP, network, ... + 16 more  (all clear)
+ *   Verdict     No security issues detected. This local project looks safe to use.
+ *
+ * All three lines were false. The static suite never ran, so it could not
+ * have cleared 310 checks or 25 categories, and "safe to use" asserted a
+ * verdict over evidence the analyzer never looked at — while `secure` on
+ * the same bytes reported 1 CRITICAL + 2 HIGH.
+ *
+ * The score line is already labeled "Quick scan" and carries a follow-up
+ * pointer (#136); this closes the remaining three surfaces so no line in
+ * the block overstates coverage.
+ */
+export function quickScanScopeDisclosure(opts: {
+  /** Advertised static suite size, from getCheckCounts().static. */
+  staticCount: number;
+  /** Artifacts the semantic matrix actually compiled. */
+  semanticCount: number;
+  /** Target string as the user typed it. */
+  fullAuditTarget: string;
+}): QuickScanScopeDisclosure {
+  const { staticCount, semanticCount, fullAuditTarget } = opts;
+  const unevaluated = QUICK_SCAN_UNEVALUATED_CATEGORIES.join(', ');
+
+  return {
+    // Lead with what ran, then state plainly what did not. The suite size
+    // is still cited so the reader can size the gap.
+    checks: `${semanticCount} semantic (NanoMind AST) · ${staticCount} static not run (quick scan)`,
+    categories: `semantic artifact matrix only  (${staticCount} static checks not evaluated)`,
+    categoriesSuffix: `  · ${staticCount} static checks not evaluated`,
+    cleanVerdict:
+      `No issues in the semantic artifact matrix. This did NOT evaluate ${unevaluated} — ` +
+      `run \`secure ${fullAuditTarget}\` before trusting it.`,
+  };
+}
+
+/**
  * Score-line label. "Quick scan" under the narrowed matrix
- * (NanoMind semantic only); "Security" otherwise (full 209-static-check
- * audit via `secure`).
+ * (NanoMind semantic only); "Security" otherwise (the full static-check
+ * audit via `secure`, sized by getCheckCounts()).
  */
 export function scoreLineLabel(quickScan?: QuickScanContext): "Security" | "Quick scan" {
   return quickScan ? "Quick scan" : "Security";
@@ -47,5 +117,13 @@ export function shouldRenderPathForward(opts: {
  * palette (HMA / ai-trust use different palette objects).
  */
 export function quickScanFollowupText(quickScan: QuickScanContext): string {
-  return `Run \`secure ${quickScan.fullAuditTarget}\` for the full audit (adds supply-chain + skill-hygiene checks).`;
+  // Names the categories `secure` actually adds. The prior copy said
+  // "supply-chain + skill-hygiene", which understated the gap: the
+  // categories that matter most here are credentials and git hygiene,
+  // and omitting them is what let #200 read as a minor coverage note
+  // rather than the reason not to trust the verdict.
+  return (
+    `Run \`secure ${quickScan.fullAuditTarget}\` for the full audit ` +
+    `(adds ${QUICK_SCAN_UNEVALUATED_CATEGORIES.join(', ')}).`
+  );
 }
