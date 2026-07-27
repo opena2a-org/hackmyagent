@@ -45,12 +45,28 @@ export const VERDICT_FAIL_CLAMP = GOOD_BAND_FLOOR - 1;
  * `status: 'unsafe'` — "Not safe to ship" / "Not safe as-is" — when any
  * critical or high finding is present. Medium/low produce "Usable with
  * caveats", which is not a fail direction and is not clamped.
+ *
+ * A finding that `--fix` resolved is NOT fail-direction. It carries
+ * `passed: false, fixed: true` and is deliberately retained in
+ * `filteredFindings` so the run can report what it repaired — but
+ * `calculateSecurityScore` already excludes it (`!passed && !fixed`,
+ * `hardening/scanner.ts`). Filtering only on `passed` here put the two
+ * halves of the same decision on different evidence: a `secure --fix` run
+ * that repaired everything scored a raw 100 and was then clamped to 69 for
+ * findings that no longer existed —
+ *
+ *   Score: 69/100 | 0 issues found | 2 fixed
+ *
+ * which is #259 inverted, a capped number beside a clean verdict. `secure`
+ * escaped it by accident because its NanoMind merge re-runs `applyScore()`
+ * with `!passed && !fixed`; the MCP server's `hackmyagent_scan` did not.
+ * The two filters must agree, so the condition lives here once.
  */
 export function isFailDirection(
-  findings: readonly { severity?: string; passed?: boolean }[],
+  findings: readonly { severity?: string; passed?: boolean; fixed?: boolean }[],
 ): boolean {
   return findings.some(f => {
-    if (f.passed) return false;
+    if (f.passed || f.fixed) return false;
     const severity = (f.severity ?? '').toLowerCase();
     return severity === 'critical' || severity === 'high';
   });
@@ -70,7 +86,7 @@ export interface ClampedScore {
  */
 export function clampScoreToVerdictBand(
   rawScore: number,
-  findings: readonly { severity?: string; passed?: boolean }[],
+  findings: readonly { severity?: string; passed?: boolean; fixed?: boolean }[],
 ): ClampedScore {
   if (!isFailDirection(findings) || rawScore <= VERDICT_FAIL_CLAMP) {
     return { score: rawScore, clamped: false };

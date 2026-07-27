@@ -13,6 +13,7 @@ import { readdirSync, statSync, readFileSync } from 'fs';
 import { join, relative } from 'path';
 import type { SecurityFinding, Severity } from '../hardening';
 import { calculateSecurityScore } from '../hardening';
+import { clampScoreToVerdictBand } from '../ui/verdict-band';
 import type { AttackReport } from '../attack';
 import type { SoulScanResult } from '../soul';
 import type { BenchmarkResult } from '../benchmarks';
@@ -211,8 +212,20 @@ export function buildPublishPayload(data: PublishScanData, toolVersion: string):
     }
   }
 
-  // Use canonical scoring formula (exponential decay + 0.4x governance weight)
-  const { score } = calculateSecurityScore(findings);
+  // Use canonical scoring formula (exponential decay + 0.4x governance weight),
+  // then apply the #259 verdict-band clamp.
+  //
+  // This was the last bare `calculateSecurityScore` on a published surface.
+  // The #259 note in `hardening/scanner.ts` states the clamp is applied in the
+  // scanner "so `--json` and the Registry carry the same figure the terminal
+  // shows" — but this path builds its own composite from its own merged
+  // findings and never went through `applyScore()`, so the Registry received
+  // the pre-clamp number (76 where the CLI showed 69) with no `rawScore` to
+  // reveal the discrepancy. `score` is part of the signed strong canonical
+  // below, so the signature would have attested a figure the tool never
+  // displayed.
+  const { score: rawScore } = calculateSecurityScore(findings);
+  const { score, clamped: scoreClamped } = clampScoreToVerdictBand(rawScore, findings);
 
   // Derive verdict
   const failedCritical = findings.filter(f => !f.passed && f.severity === 'critical').length;
@@ -294,6 +307,9 @@ export function buildPublishPayload(data: PublishScanData, toolVersion: string):
     type: data.packageType,
     version: data.packageVersion,
     score,
+    // Only carried when the clamp actually fired, so an unclamped publish
+    // stays byte-identical to what the Registry received before (#259).
+    ...(scoreClamped ? { rawScore, scoreClamped } : {}),
     maxScore: 100,
     tool: 'hackmyagent',
     toolVersion,
