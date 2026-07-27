@@ -46,27 +46,55 @@ export const VERDICT_FAIL_CLAMP = GOOD_BAND_FLOOR - 1;
  * critical or high finding is present. Medium/low produce "Usable with
  * caveats", which is not a fail direction and is not clamped.
  *
- * A finding that `--fix` resolved is NOT fail-direction. It carries
- * `passed: false, fixed: true` and is deliberately retained in
- * `filteredFindings` so the run can report what it repaired — but
- * `calculateSecurityScore` already excludes it (`!passed && !fixed`,
- * `hardening/scanner.ts`). Filtering only on `passed` here put the two
- * halves of the same decision on different evidence: a `secure --fix` run
- * that repaired everything scored a raw 100 and was then clamped to 69 for
- * findings that no longer existed —
+ * A finding that `--fix` *verifiably* resolved is NOT fail-direction. It
+ * carries `passed: false, fixed: true` and is deliberately retained in
+ * `filteredFindings` so the run can report what it repaired. Filtering only
+ * on `passed` put the two halves of the same decision on different evidence:
+ * a `secure --fix` run that repaired everything scored a raw 100 and was then
+ * clamped to 69 for findings that no longer existed —
  *
  *   Score: 69/100 | 0 issues found | 2 fixed
  *
- * which is #259 inverted, a capped number beside a clean verdict. `secure`
- * escaped it by accident because its NanoMind merge re-runs `applyScore()`
- * with `!passed && !fixed`; the MCP server's `hackmyagent_scan` did not.
- * The two filters must agree, so the condition lives here once.
+ * which is #259 inverted, a capped number beside a clean verdict.
+ *
+ * But `fixed` alone is not enough either, and excluding on it was its own
+ * bug. Checks set `fixed: autoFix && !passed` *before* knowing whether the
+ * write landed — `PERM-001` swallows a failed `fs.chmod` (immutable flag,
+ * EPERM, read-only mount) and still reports `fixed: true` on a file that is
+ * still world-readable. The post-fix verification pass catches this and sets
+ * `fixVerified: false` with `[FIX NOT VERIFIED - issue may persist]`, so an
+ * unverified fix must count as not fixed: the issue is still there, and the
+ * score must still say so.
+ *
+ * Use `countsAgainstScore` for both the score and the direction so the number
+ * and the cap can never be computed off different evidence.
  */
+
+/**
+ * Whether a finding counts as an outstanding problem — the single predicate
+ * behind both `calculateSecurityScore` and `isFailDirection`.
+ */
+export function countsAgainstScore(f: {
+  passed?: boolean;
+  fixed?: boolean;
+  fixVerified?: boolean;
+}): boolean {
+  if (f.passed) return false;
+  // Fixed, but the verification pass proved the issue survived.
+  if (f.fixed && f.fixVerified === false) return true;
+  return !f.fixed;
+}
+
 export function isFailDirection(
-  findings: readonly { severity?: string; passed?: boolean; fixed?: boolean }[],
+  findings: readonly {
+    severity?: string;
+    passed?: boolean;
+    fixed?: boolean;
+    fixVerified?: boolean;
+  }[],
 ): boolean {
   return findings.some(f => {
-    if (f.passed || f.fixed) return false;
+    if (!countsAgainstScore(f)) return false;
     const severity = (f.severity ?? '').toLowerCase();
     return severity === 'critical' || severity === 'high';
   });

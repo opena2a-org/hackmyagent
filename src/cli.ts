@@ -88,7 +88,7 @@ import {
   quickScanScopeDisclosure,
 } from './ui/quick-scan-labels';
 import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifact-intent';
-import { clampDisclosure, clampScoreToVerdictBand } from './ui/verdict-band';
+import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore } from './ui/verdict-band';
 import { shouldPrintVersionFooter } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { generateVerifyCommand } from './ui/verify-command';
@@ -2758,7 +2758,7 @@ function escapeHtml(str: string): string {
 
 // SARIF output for non-benchmark secure scans
 function generateScanSarif(findings: SecurityFinding[], targetDir: string): string {
-  const issues = findings.filter(f => !f.passed && !f.fixed);
+  const issues = findings.filter(f => countsAgainstScore(f));
   const rules = issues.map(f => ({
     id: f.checkId,
     name: f.name.replace(/\s+/g, ''),
@@ -2809,7 +2809,7 @@ function generateScanSarif(findings: SecurityFinding[], targetDir: string): stri
 
 // HTML report for non-benchmark secure scans
 function generateScanHtmlReport(scanResult: { findings: SecurityFinding[]; score: number; maxScore: number; projectType: string }, targetDir: string): string {
-  const issues = scanResult.findings.filter(f => !f.passed && !f.fixed);
+  const issues = scanResult.findings.filter(f => countsAgainstScore(f));
   const fixedFindings = scanResult.findings.filter(f => f.fixed);
   const score = scanResult.score;
   const scoreColor = score >= 90 ? '#22c55e' : score >= 70 ? '#eab308' : score >= 50 ? '#f97316' : '#ef4444';
@@ -3557,7 +3557,7 @@ Examples:
         }
         // Recalculate score from filtered findings (score was set pre-NanoMind)
         // findings already filtered by project type above, so just exclude passed/fixed
-        const forScore = (result.findings || []).filter((f: any) => !f.passed && !f.fixed);
+        const forScore = (result.findings || []).filter((f: any) => countsAgainstScore(f));
         scanner.applyScore(result, forScore);
       }
 
@@ -3585,7 +3585,7 @@ Examples:
               }));
               result.findings = [...(result.findings as SecurityFinding[]), ...tagged] as typeof result.findings;
               // Recalculate score with infrastructure findings included
-              const allForScore = (result.findings || []).filter((f: any) => !f.passed && !f.fixed);
+              const allForScore = (result.findings || []).filter((f: any) => countsAgainstScore(f));
               scanner.applyScore(result, allForScore);
             }
           } catch { /* Infrastructure scan failures are non-fatal */ }
@@ -3821,7 +3821,7 @@ Examples:
         }
         // Community contribution (non-blocking, runs in JSON mode too)
         await handleContribution(options.contribute, targetDir, result.findings, scanDurationMs, options.registryUrl, format);
-        const critHigh = result.findings.filter((f: SecurityFinding) => !f.passed && !f.fixed && (f.severity === 'critical' || f.severity === 'high'));
+        const critHigh = result.findings.filter((f: SecurityFinding) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) process.exitCode = 1;
         return;
       }
@@ -3835,7 +3835,7 @@ Examples:
         } else {
           writeLargeStdout(output + '\n');
         }
-        const critHigh = result.findings.filter((f: SecurityFinding) => !f.passed && !f.fixed && (f.severity === 'critical' || f.severity === 'high'));
+        const critHigh = result.findings.filter((f: SecurityFinding) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) process.exit(1);
         return;
       }
@@ -3848,7 +3848,7 @@ Examples:
         } else {
           console.log(output);
         }
-        const critHigh = result.findings.filter((f: SecurityFinding) => !f.passed && !f.fixed && (f.severity === 'critical' || f.severity === 'high'));
+        const critHigh = result.findings.filter((f: SecurityFinding) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) process.exit(1);
         return;
       }
@@ -3867,13 +3867,13 @@ Examples:
         } else {
           console.log(output);
         }
-        const critHigh = result.findings.filter((f: SecurityFinding) => !f.passed && !f.fixed && (f.severity === 'critical' || f.severity === 'high'));
+        const critHigh = result.findings.filter((f: SecurityFinding) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) process.exit(1);
         return;
       }
 
       // Filter to only show failed findings (issues)
-      const issues = result.findings.filter((f) => !f.passed && !f.fixed);
+      const issues = result.findings.filter((f) => countsAgainstScore(f));
       const fixedFindings = result.findings.filter((f) => f.fixed);
 
       // Governance auto-fix: when --fix is active and governance findings exist, run harden-soul
@@ -4140,7 +4140,7 @@ Examples:
             }
 
             // Count severity
-            const failed = result.findings.filter((f: SecurityFinding) => !f.passed && !f.fixed);
+            const failed = result.findings.filter((f: SecurityFinding) => countsAgainstScore(f));
             const counts = { critical: 0, high: 0, medium: 0, low: 0 };
             for (const f of failed) {
               if (f.severity === 'critical') counts.critical++;
@@ -4427,13 +4427,13 @@ Examples:
         // Re-apply .hmaignore filters and recalculate score after NanoMind merge
         const hRefiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir);
         result.findings = hRefiltered as typeof result.findings;
-        const hForScore = hRefiltered.filter((f: any) => !f.passed && !f.fixed);
+        const hForScore = hRefiltered.filter((f: any) => countsAgainstScore(f));
         scanner.applyScore(result, hForScore);
       } catch { /* NanoMind unavailable */ }
 
       // Filter to OpenClaw-specific findings
       const allOpenClawFindings = filterOpenClawFindings(result.findings);
-      const issues = allOpenClawFindings.filter((f) => !f.passed && !f.fixed);
+      const issues = allOpenClawFindings.filter((f) => countsAgainstScore(f));
       const fixedFindings = allOpenClawFindings.filter((f) => f.fixed);
       const passedFindings = allOpenClawFindings.filter((f) => f.passed);
 
@@ -9128,7 +9128,7 @@ function filterLocalOnlyFindings(
     }
   }
 
-  scanner.applyScore(result, result.findings.filter((f: any) => !f.passed && !f.fixed));
+  scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
 }
 
 /**
@@ -9390,7 +9390,7 @@ async function checkGitHubRepo(
       result.findings = refiltered.filter((f: any) =>
         !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
-      scanner.applyScore(result, result.findings.filter((f: any) => !f.passed && !f.fixed));
+      scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
       analystEscalations = nmResult.analystEscalations;
@@ -9699,7 +9699,7 @@ async function checkPyPiPackage(
       result.findings = refiltered.filter((f: any) =>
         !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
-      scanner.applyScore(result, result.findings.filter((f: any) => !f.passed && !f.fixed));
+      scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
       analystEscalations = nmResult.analystEscalations;
@@ -9902,7 +9902,7 @@ async function checkRawUrl(
       result.findings = refiltered.filter((f: any) =>
         !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
-      scanner.applyScore(result, result.findings.filter((f: any) => !f.passed && !f.fixed));
+      scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
       analystEscalations = nmResult.analystEscalations;
@@ -10078,7 +10078,7 @@ async function checkNpmPackage(
       result.findings = refiltered.filter((f: any) =>
         !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
-      scanner.applyScore(result, result.findings.filter((f: any) => !f.passed && !f.fixed));
+      scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
       analystEscalations = nmResult.analystEscalations;

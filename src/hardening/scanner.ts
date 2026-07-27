@@ -19,7 +19,7 @@ import {
   inferActualCapabilities,
   validateCapabilities,
 } from './skill-capability-validator';
-import { clampScoreToVerdictBand } from '../ui/verdict-band';
+import { clampScoreToVerdictBand, countsAgainstScore } from '../ui/verdict-band';
 
 /**
  * Backup manifest format version. v1 (pre-0.25.1) wrote `createdFiles` as a
@@ -366,7 +366,12 @@ export function calculateSecurityScore(findings: Array<{ passed?: boolean; fixed
 
   let weightedSum = 0;
   for (const finding of findings) {
-    if (!finding.passed && !finding.fixed) {
+    // Shared with the #259 verdict-band clamp so the number and the cap can
+    // never disagree. A fix whose verification pass proved the issue
+    // survived (`fixVerified: false`) still counts: checks set `fixed` before
+    // knowing the write landed, and a swallowed `fs.chmod` failure must not
+    // buy a clean score on a file that is still world-readable.
+    if (countsAgainstScore(finding)) {
       const checkId = finding.checkId || '_unknown_';
       const count = (checkIdCounts.get(checkId) || 0) + 1;
       checkIdCounts.set(checkId, count);
@@ -5876,22 +5881,23 @@ dist/
     for (const file of filesToBackup) {
       const sourcePath = path.join(targetDir, file);
       try {
-        // lstat, not access: a symlinked candidate must never be followed.
-        // `copyFile` copies the TARGET's bytes, so a repo shipping
-        // `SOUL.md -> ~/.ssh/id_rsa` had that key's contents copied into
-        // `.hackmyagent-backup/` — an out-of-tree secret pulled into the
-        // scanned tree, where it may then be committed or shared. The
-        // matching write is worse: the governance auto-fix appends through
-        // the link, mutating the target. `findSkillFiles` and the web-dir
-        // walk already skip symlinks; this list did not, and adding
-        // `SOUL.md` to it (#262) is what made the governance case reachable.
+        await fs.access(sourcePath);
+        // NOTE: `access` and `copyFile` both follow symlinks, so a symlinked
+        // candidate is backed up by CONTENT. That is deliberate for now.
         //
-        // Skipped rather than recorded as absent: it is neither backed up
-        // nor a creation candidate, and listing it in `absentAtBackup` would
-        // let `recordCreatedFiles` later treat it as something HMA made.
-        const stats = await fs.lstat(sourcePath);
-        if (stats.isSymbolicLink()) continue;
-
+        // It has a real downside — a repo shipping `SOUL.md -> ~/.ssh/id_rsa`
+        // gets that key's bytes copied into `.hackmyagent-backup/`, inside
+        // the scanned tree. But simply skipping symlinked candidates is
+        // WORSE, and was tried and reverted: roughly 18 fix sites here plus
+        // `hardenSoul`'s `appendFileSync` still write through the link, so
+        // skipping the backup leaves the out-of-tree file mutated with no
+        // copy to restore from, and `rollback` reports success having
+        // reverted nothing. Following the link at least keeps the write
+        // recoverable.
+        //
+        // The root fix is to stop writing through symlinks at every fix
+        // site, not to drop the backup that compensates for it. Tracked
+        // separately; do not re-apply the skip on its own.
         const destPath = path.join(backupDir, file);
         await fs.mkdir(path.dirname(destPath), { recursive: true });
         await fs.copyFile(sourcePath, destPath);
