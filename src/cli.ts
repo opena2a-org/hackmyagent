@@ -88,6 +88,7 @@ import {
   quickScanScopeDisclosure,
 } from './ui/quick-scan-labels';
 import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifact-intent';
+import { clampDisclosure } from './ui/verdict-band';
 import { generateVerifyCommand } from './ui/verify-command';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
 import type { ConceptId } from './types/finding-evidence';
@@ -653,6 +654,10 @@ interface UnifiedCheckDisplayOptions {
     maxScore: number;
     findings: SecurityFinding[];
     filesScanned?: number;
+    /** Pre-clamp composite, when the #259 verdict-band clamp lowered `score`. */
+    rawScore?: number;
+    /** True when `score < rawScore` because the verdict is fail-direction (#259). */
+    scoreClamped?: boolean;
   };
   registry?: RegistryTrustData | null;
   verbose?: boolean;
@@ -1101,7 +1106,15 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     }
     console.log(`  ${verdictColor}${colors.bold}${verdictText}${RESET()}`);
     console.log();
-    console.log(`  ${scoreLineLabel(opts.quickScan)}  ${scoreMeter(score, maxScore)}`);
+    // #259: when the composite was floored out of the good band because the
+    // verdict is fail-direction, say so on the same line. A capped number
+    // with no explanation is its own coherence problem.
+    const bandDisclosure = clampDisclosure({
+      rawScore: localScan?.rawScore,
+      score,
+      clamped: localScan?.scoreClamped,
+    });
+    console.log(`  ${scoreLineLabel(opts.quickScan)}  ${scoreMeter(score, maxScore)}${colors.dim}${bandDisclosure}${RESET()}`);
     if (opts.quickScan) {
       // Cyan + bold, same visual weight as the suppressed Path-forward
       // line so the disclaimer cannot be skimmed past. (#136 adversarial
@@ -1425,9 +1438,17 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           || id.startsWith('AST-PROMPT') || id.startsWith('AST-HEARTBEAT');
       });
       const isGovernanceOnly = govFindings.length === failed.length;
+      // Project from the PRE-clamp composite (#259). Fixing the critical/high
+      // findings is exactly what lifts the fail-direction verdict, so the
+      // verdict-band cap comes off at the same time — projecting from the
+      // capped number would understate the payoff of the fix we are asking
+      // for, which is the opposite of recovery framing.
+      const recoveryBase = localScan?.scoreClamped && localScan.rawScore !== undefined
+        ? localScan.rawScore
+        : score;
       const estRecovery = isGovernanceOnly
-        ? Math.min(100, score + (critical * 8 + high * 5))
-        : Math.min(100, score + (critical * 15 + high * 8));
+        ? Math.min(100, recoveryBase + (critical * 8 + high * 5))
+        : Math.min(100, recoveryBase + (critical * 15 + high * 8));
       console.log();
       console.log(`  ${colors.cyan}${colors.bold}Path forward:${RESET()} ${colors.cyan}${score} ${colors.dim}->${RESET()} ${colors.green}${colors.bold}${estRecovery}${RESET()} ${colors.cyan}by fixing ${recoveryParts.join(' + ')}${RESET()}`);
     }
@@ -3511,7 +3532,7 @@ Examples:
         // Recalculate score from filtered findings (score was set pre-NanoMind)
         // findings already filtered by project type above, so just exclude passed/fixed
         const forScore = (result.findings || []).filter((f: any) => !f.passed && !f.fixed);
-        result.score = scanner.calculateScore(forScore).score;
+        scanner.applyScore(result, forScore);
       }
 
       // AI Infrastructure auto-detection — scan NemoClaw, OpenClaw, etc. if present
@@ -3539,7 +3560,7 @@ Examples:
               result.findings = [...(result.findings as SecurityFinding[]), ...tagged] as typeof result.findings;
               // Recalculate score with infrastructure findings included
               const allForScore = (result.findings || []).filter((f: any) => !f.passed && !f.fixed);
-              result.score = scanner.calculateScore(allForScore).score;
+              scanner.applyScore(result, allForScore);
             }
           } catch { /* Infrastructure scan failures are non-fatal */ }
         }
@@ -3889,6 +3910,8 @@ Examples:
         projectType: result.projectType,
         localScan: {
           score: result.score,
+          rawScore: result.rawScore,
+          scoreClamped: result.scoreClamped,
           maxScore: result.maxScore,
           findings: result.findings.filter((f) => !f.fixed),
         },
@@ -4379,7 +4402,7 @@ Examples:
         const hRefiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir);
         result.findings = hRefiltered as typeof result.findings;
         const hForScore = hRefiltered.filter((f: any) => !f.passed && !f.fixed);
-        result.score = scanner.calculateScore(hForScore).score;
+        scanner.applyScore(result, hForScore);
       } catch { /* NanoMind unavailable */ }
 
       // Filter to OpenClaw-specific findings
@@ -9045,9 +9068,7 @@ function filterLocalOnlyFindings(
     }
   }
 
-  result.score = scanner.calculateScore(
-    result.findings.filter((f: any) => !f.passed && !f.fixed),
-  ).score;
+  scanner.applyScore(result, result.findings.filter((f: any) => !f.passed && !f.fixed));
 }
 
 /**
@@ -9309,7 +9330,7 @@ async function checkGitHubRepo(
       result.findings = refiltered.filter((f: any) =>
         !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
-      result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
+      scanner.applyScore(result, result.findings.filter((f: any) => !f.passed && !f.fixed));
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
       analystEscalations = nmResult.analystEscalations;
@@ -9360,7 +9381,7 @@ async function checkGitHubRepo(
       sourceLabel: 'GitHub',
       remote: true,
       projectType: result.projectType,
-      localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
+      localScan: { score: result.score, rawScore: result.rawScore, scoreClamped: result.scoreClamped, maxScore: result.maxScore, findings: result.findings },
       registry: registryData,
       verbose: !!options.verbose,
       usedAnalm: resolveNanomindFlag(options),
@@ -9618,7 +9639,7 @@ async function checkPyPiPackage(
       result.findings = refiltered.filter((f: any) =>
         !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
-      result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
+      scanner.applyScore(result, result.findings.filter((f: any) => !f.passed && !f.fixed));
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
       analystEscalations = nmResult.analystEscalations;
@@ -9666,7 +9687,7 @@ async function checkPyPiPackage(
       remote: true,
       projectType: result.projectType,
       version: meta.info.version,
-      localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
+      localScan: { score: result.score, rawScore: result.rawScore, scoreClamped: result.scoreClamped, maxScore: result.maxScore, findings: result.findings },
       registry: registryData,
       verbose: !!options.verbose,
       usedAnalm: resolveNanomindFlag(options),
@@ -9821,7 +9842,7 @@ async function checkRawUrl(
       result.findings = refiltered.filter((f: any) =>
         !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
-      result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
+      scanner.applyScore(result, result.findings.filter((f: any) => !f.passed && !f.fixed));
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
       analystEscalations = nmResult.analystEscalations;
@@ -9868,7 +9889,7 @@ async function checkRawUrl(
       sourceLabel: 'URL',
       remote: true,
       projectType: result.projectType,
-      localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
+      localScan: { score: result.score, rawScore: result.rawScore, scoreClamped: result.scoreClamped, maxScore: result.maxScore, findings: result.findings },
       verbose: !!options.verbose,
       usedAnalm: resolveNanomindFlag(options),
       analystFindings,
@@ -9997,7 +10018,7 @@ async function checkNpmPackage(
       result.findings = refiltered.filter((f: any) =>
         !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
-      result.score = scanner.calculateScore(result.findings.filter((f: any) => !f.passed && !f.fixed)).score;
+      scanner.applyScore(result, result.findings.filter((f: any) => !f.passed && !f.fixed));
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
       analystEscalations = nmResult.analystEscalations;
@@ -10045,7 +10066,7 @@ async function checkNpmPackage(
       name,
       projectType: result.projectType,
       remote: true,
-      localScan: { score: result.score, maxScore: result.maxScore, findings: result.findings },
+      localScan: { score: result.score, rawScore: result.rawScore, scoreClamped: result.scoreClamped, maxScore: result.maxScore, findings: result.findings },
       registry: registryData,
       verbose: !!options.verbose,
       usedAnalm: resolveNanomindFlag(options),

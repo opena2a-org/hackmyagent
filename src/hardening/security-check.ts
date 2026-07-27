@@ -118,8 +118,22 @@ export interface ScanResult {
   findings: SecurityFinding[];
   /** All findings including passed checks - for benchmark evaluation */
   allFindings?: SecurityFinding[];
+  /**
+   * Composite score as rendered and published. Clamped out of the "good"
+   * band whenever the scan's own verdict is fail-direction (>=1 critical or
+   * high), so the number can never read "good" next to a "Not safe" verdict
+   * (#259). When `scoreClamped` is true this is less than `rawScore`.
+   */
   score: number;
   maxScore: number;
+  /**
+   * Pre-clamp composite, straight from `calculateSecurityScore`. Preserved
+   * so the clamp is information-adding rather than information-destroying —
+   * same shape as the scan-soul #206/#251 clamp.
+   */
+  rawScore?: number;
+  /** True when `score < rawScore` because the verdict is fail-direction (#259). */
+  scoreClamped?: boolean;
   /** Path to backup directory (only set when autoFix is true and not dryRun) */
   backupPath?: string;
   /** True if this was a dry-run (no changes made) */
