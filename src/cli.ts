@@ -3933,7 +3933,13 @@ Examples:
           rawScore: result.rawScore,
           scoreClamped: result.scoreClamped,
           maxScore: result.maxScore,
-          findings: result.findings.filter((f) => !f.fixed),
+          // A fix the verification pass could not confirm stays in the
+          // findings list, so the verdict is built from the same evidence as
+          // the score. Dropping every `fixed` finding here meant an
+          // unverified fix produced `69/100 (fail-direction)` above
+          // `Verdict  Usable with caveats.` — the #259 incoherence again,
+          // with the number and the words swapped.
+          findings: result.findings.filter((f) => !f.fixed || f.fixVerified === false),
         },
         // Without this, the Observations "Checks" line renders "0 semantic"
         // even though the pre-scan status reports N artifacts compiled.
