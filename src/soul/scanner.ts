@@ -165,7 +165,13 @@ export interface SoulViolation {
 }
 
 export interface SoulProfileMismatch {
-  /** Profile declared by the marker or `--profile` flag. */
+  /**
+   * Profile the DOCUMENT declares — the `<!-- soul:profile=X -->` marker when
+   * one is present, otherwise the `--profile` flag value. The marker wins
+   * because the mismatch is a property of the file, not of how a given run
+   * was configured: `--profile orchestrator` changes which domains this run
+   * evaluates, it does not change what the document says about itself (#216).
+   */
   declaredProfile: AgentProfile;
   /** Profile inferred from body content. Always broader than declared. */
   inferredProfile: AgentProfile;
@@ -173,6 +179,14 @@ export interface SoulProfileMismatch {
   skippedDomains: string[];
   /** Body signals that triggered the inference (heading names, tool-verb mentions). */
   signals: string[];
+  /**
+   * Set when a `--profile` flag overrode the file's own marker for this run.
+   * The domains in `skippedDomains` were evaluated here — the finding is
+   * about what the document declares, not what this invocation skipped — and
+   * the rendered copy has to say so rather than claim a skip that didn't
+   * happen.
+   */
+  evaluatedUnderForcedProfile?: AgentProfile;
 }
 
 export interface SoulMarkerInvalid {
@@ -1844,6 +1858,32 @@ export class SoulScanner {
     // knows the marker is hiding governance scope.
     let profileMismatch: SoulProfileMismatch | undefined;
     const declarationCameFromMarkerOrFlag = profileForced || profileFromMarker;
+
+    // #216: the mismatch is evaluated against what the DOCUMENT declares.
+    // Previously it compared the RESOLVED profile against the body, so
+    // `--profile orchestrator` on a file carrying
+    // `<!-- soul:profile=conversational -->` widened the declared side until
+    // nothing was skipped, the HIGH never fired, the #206 clamp never
+    // engaged, and the malicious kitchen-sink fixture returned 100/100
+    // HARDENED — against 74/100 PARTIAL STANDARD for the same bytes without
+    // the flag, and 0/100 with 34 CRITICAL from `secure`. A flag chosen by
+    // the operator (or by a registry/CI pipeline surfacing an author-declared
+    // profile, where it becomes attacker-controllable) must not be able to
+    // retire a finding the file earns on its own.
+    // Both declarations are considered, and the NARROWER one is the basis, so
+    // neither direction can hide the other: a flag that widens past the
+    // marker cannot retire the file's own finding (#216), and a flag that
+    // narrows past the body still fires as it did before (#162).
+    const markerProfile = profileFromMarker ? (strictMarkerValue as AgentProfile) : null;
+    const mismatchBasisProfile: AgentProfile = markerProfile === null
+      ? profile
+      : (PROFILE_DOMAINS[profile].length < PROFILE_DOMAINS[markerProfile].length ? profile : markerProfile);
+
+    // Domains this run actually evaluated. Used below to decide whether the
+    // finding may call the basis-skipped domains "skipped": under a widening
+    // flag they were evaluated here, and saying otherwise would be false.
+    const runDomainIds = new Set(PROFILE_DOMAINS[profile]);
+
     if (declarationCameFromMarkerOrFlag && contentForTier.length > 0) {
       const { profile: bodyInferredProfile, signals } = this.inferProfileFromContent(contentForTier);
 
@@ -1876,20 +1916,27 @@ export class SoulScanner {
         signals.unshift(`detected tier=${tier} implies tool-agent profile`);
       }
 
-      const declaredDomainIds = new Set(PROFILE_DOMAINS[profile]);
+      const declaredDomainIds = new Set(PROFILE_DOMAINS[mismatchBasisProfile]);
       const inferredDomainIds = PROFILE_DOMAINS[inferredProfile];
       const skippedByDeclaration = inferredDomainIds.filter((id) => !declaredDomainIds.has(id));
-      if (skippedByDeclaration.length > 0 && profile !== inferredProfile) {
+      if (skippedByDeclaration.length > 0 && mismatchBasisProfile !== inferredProfile) {
         const skippedDomainNames = skippedByDeclaration
           .map((id) => CONTROL_DEFS.find((c) => c.domainId === id)?.domain)
           .filter((n): n is string => Boolean(n));
         // De-duplicate (controls map many-to-one to domains).
         const uniqueSkippedDomains = Array.from(new Set(skippedDomainNames));
+        // The flag widened past the file's own declaration only if every
+        // domain the declaration hides was in fact evaluated in this run.
+        const allSkippedWereEvaluated = skippedByDeclaration.every(id => runDomainIds.has(id));
         profileMismatch = {
-          declaredProfile: profile,
+          declaredProfile: mismatchBasisProfile,
           inferredProfile,
           skippedDomains: uniqueSkippedDomains,
           signals,
+          evaluatedUnderForcedProfile:
+            honoredFlagProfile !== null && honoredFlagProfile !== mismatchBasisProfile && allSkippedWereEvaluated
+              ? honoredFlagProfile
+              : undefined,
         };
       }
     }
