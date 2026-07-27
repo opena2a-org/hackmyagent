@@ -21,6 +21,49 @@ import {
 } from './skill-capability-validator';
 
 /**
+ * Backup manifest format version. v1 (pre-0.25.1) wrote `createdFiles` as a
+ * plain string array holding every backup candidate that happened to be
+ * absent when the backup was taken, and rollback unlinked all of them — so a
+ * file the user wrote between `--fix` and `rollback` was deleted as though
+ * HMA had generated it, while SOUL.md (not a candidate at all) survived a
+ * rollback that claimed everything had been reverted (#262).
+ */
+const BACKUP_MANIFEST_VERSION = 2;
+
+/** A file a fix stage actually created, with the hash of what it wrote. */
+export interface CreatedFileRecord {
+  /** Path relative to the scan target. */
+  path: string;
+  /** sha256 of the generated content, at the moment it was recorded. */
+  sha256: string;
+}
+
+/** v2 backup manifest. v1 manifests are read defensively — see readManifest. */
+export interface BackupManifest {
+  version?: number;
+  /** Files that existed before the fix and were copied into the backup. */
+  existingFiles: string[];
+  /** Backup candidates that did not exist yet. Candidates only, not claims. */
+  absentAtBackup: string[];
+  /** Files a fix stage created, hashed so rollback can verify before deleting. */
+  createdFiles: CreatedFileRecord[];
+  /** v1 `createdFiles` entries, preserved verbatim so rollback can report them. */
+  legacyCreatedFiles?: string[];
+}
+
+/** What a rollback actually did, so the CLI never overstates it. */
+export interface RollbackReport {
+  /** Files restored from the backup copy. */
+  restored: string[];
+  /** Generated files removed (content hash still matched). */
+  removed: string[];
+  /** Generated files left in place because the user edited them since. */
+  keptModified: string[];
+  /** Files a pre-0.25.1 manifest listed with no hash to verify against. */
+  keptUnverifiable: string[];
+}
+
+/**
  * Defines which checks apply to which project types
  * Key: check ID prefix or full ID
  * Value: array of project types this check applies to
@@ -865,6 +908,11 @@ export class HardeningScanner {
     'package.json',
     'openclaw.json',
     'moltbot.json',
+    // Governance file. `secure --fix` runs harden-soul, which either creates
+    // SOUL.md or appends sections to an existing one; without it here, an
+    // existing SOUL.md was modified with no backup to restore from and a
+    // generated one was never tracked for removal (#262).
+    'SOUL.md',
     // AI infrastructure files (research gap checks)
     'docker-compose.yml',
     'docker-compose.yaml',
@@ -1371,6 +1419,20 @@ export class HardeningScanner {
     // Determine if all fixes completed successfully (atomic)
     const hasFixedFindings = filteredFindings.some((f) => f.fixed);
     const atomicFix = shouldFix ? !fixFailed && hasFixedFindings : undefined;
+
+    // Record what the static fixes actually created, hashed, so rollback can
+    // remove those files without guessing (#262). Sourced from the fixed
+    // findings' own file attribution rather than "every backup candidate that
+    // is absent", which is what made the pre-0.25.1 rollback delete files the
+    // user wrote. The governance auto-fix runs after this returns, so the CLI
+    // calls recordCreatedFiles again for SOUL.md.
+    if (shouldFix && backupPath) {
+      await this.recordCreatedFiles(
+        targetDir,
+        backupPath,
+        findings.filter(f => f.fixed && f.file).map(f => f.file as string),
+      );
+    }
 
     return {
       timestamp: new Date(),
@@ -5725,14 +5787,36 @@ dist/
     // Create backup directory
     await fs.mkdir(backupDir, { recursive: true });
 
-    // Create manifest to track what existed before
-    const manifest: { existingFiles: string[]; createdFiles: string[] } = {
+    // Create manifest to track what existed before.
+    //
+    // `absentAtBackup` is the candidate set, NOT a claim that auto-fix
+    // created any of it. Pre-0.25.1 this list was written straight into
+    // `createdFiles` and rollback unlinked every entry, so a `package.json`
+    // or `CLAUDE.md` the user wrote between `--fix` and `rollback` was
+    // deleted as if HMA had generated it (#262). `createdFiles` is now
+    // filled in after the fixes run, by recordCreatedFiles(), and carries
+    // the content hash of what was actually generated.
+    const manifest: BackupManifest = {
+      version: BACKUP_MANIFEST_VERSION,
       existingFiles: [],
+      absentAtBackup: [],
       createdFiles: [],
     };
 
-    // Backup each file that exists (static list + web directory scan)
+    // Backup each file that exists (static list + skill + web directory scan)
     const filesToBackup = [...HardeningScanner.BACKUP_FILES];
+
+    // Skill files discovered recursively. The SKILL-001 auto-fix appends an
+    // `opena2a-guard` signature block to every unsigned skill it finds, and
+    // those files were in no backup candidate list — so `rollback` could not
+    // restore them while still reporting success. Same defect class as the
+    // SOUL.md leftover in #262, found while fixing it.
+    try {
+      for (const skillFile of await this.findSkillFiles(targetDir)) {
+        const rel = path.relative(targetDir, skillFile);
+        if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) filesToBackup.push(rel);
+      }
+    } catch { /* discovery is best-effort; never block a fix run */ }
 
     // Also discover files in web-served directories that --fix may modify
     const webDirs = ['public', 'static', 'dist', 'build', 'out', 'www', '_site'];
@@ -5759,8 +5843,9 @@ dist/
         await fs.copyFile(sourcePath, destPath);
         manifest.existingFiles.push(file);
       } catch {
-        // File doesn't exist, track it for rollback (may be created)
-        manifest.createdFiles.push(file);
+        // File doesn't exist. Candidate only — a fix stage may create it,
+        // and recordCreatedFiles() decides afterwards whether it did.
+        manifest.absentAtBackup.push(file);
       }
     }
 
@@ -5774,9 +5859,137 @@ dist/
   }
 
   /**
-   * Rollback to the most recent backup
+   * Record what a fix stage actually created, with content hashes, so
+   * rollback can remove generated files without guessing (#262).
+   *
+   * Additive and idempotent: `secure --fix` calls this at the end of scan()
+   * for the static fixes, and the CLI calls it again after the governance
+   * auto-fix (harden-soul runs after scan() returns and is what generates
+   * SOUL.md). Re-recording a path already present is a no-op, so the hash
+   * always reflects the first write — the one the user was told about.
+   *
+   * A candidate is recorded only when it did NOT exist at backup time (a
+   * file that existed was copied into the backup and must be restored, never
+   * deleted) and exists now. Silent on every failure: this is bookkeeping for
+   * a convenience feature and must never break a scan that already succeeded.
    */
-  async rollback(targetDir: string): Promise<void> {
+  async recordCreatedFiles(
+    targetDir: string,
+    backupPath: string | undefined,
+    candidatePaths: readonly string[],
+  ): Promise<void> {
+    if (!backupPath || candidatePaths.length === 0) return;
+
+    const manifestPath = path.join(backupPath, '.manifest.json');
+    let manifest: BackupManifest;
+    try {
+      manifest = this.parseManifest(await fs.readFile(manifestPath, 'utf-8'));
+    } catch {
+      return;
+    }
+
+    // Only a file we affirmatively observed to be MISSING when the backup was
+    // taken can be recorded as created. A fixed finding on a file that is in
+    // neither list (not a backup candidate) proves the fix touched it, not
+    // that the fix made it — recording it would let rollback delete a file
+    // the user wrote. Fail-safe direction: never delete what we cannot prove
+    // we generated, even at the cost of leaving a file behind (which the
+    // rollback report then names).
+    const absentAtBackup = new Set(manifest.absentAtBackup);
+    const alreadyRecorded = new Set(manifest.createdFiles.map(c => c.path));
+    let changed = false;
+
+    for (const candidate of candidatePaths) {
+      const rel = this.toTargetRelativePath(candidate, targetDir);
+      if (!rel || !absentAtBackup.has(rel) || alreadyRecorded.has(rel)) continue;
+
+      const absolute = path.join(targetDir, rel);
+      // Defense in depth: a finding's `file` is data, and this path feeds an
+      // unlink at rollback time.
+      if (!this.isPathWithinDirectory(absolute, targetDir)) continue;
+
+      try {
+        const content = await fs.readFile(absolute);
+        manifest.createdFiles.push({
+          path: rel,
+          sha256: crypto.createHash('sha256').update(content).digest('hex'),
+        });
+        alreadyRecorded.add(rel);
+        changed = true;
+      } catch {
+        // Not created (or unreadable) — nothing to record.
+      }
+    }
+
+    if (!changed) return;
+    try {
+      await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+    } catch {
+      // Bookkeeping only.
+    }
+  }
+
+  /**
+   * Normalize a candidate path (absolute or target-relative, either
+   * separator) to a target-relative path. Returns null when it escapes the
+   * target directory.
+   */
+  private toTargetRelativePath(candidate: string, targetDir: string): string | null {
+    const cleaned = candidate.replace(/\\/g, '/').replace(/^\.\//, '');
+    if (!cleaned) return null;
+    const absolute = path.isAbsolute(cleaned) ? cleaned : path.join(targetDir, cleaned);
+    const rel = path.relative(targetDir, absolute);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+    return rel;
+  }
+
+  /**
+   * Parse a backup manifest, tolerating the v1 shape. In v1 `createdFiles`
+   * was a string array of every absent backup candidate — an unverifiable
+   * claim, so those entries are quarantined into `legacyCreatedFiles` and
+   * never deleted. See BACKUP_MANIFEST_VERSION.
+   */
+  private parseManifest(raw: string): BackupManifest {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const existingFiles = Array.isArray(parsed.existingFiles)
+      ? (parsed.existingFiles as unknown[]).filter((f): f is string => typeof f === 'string')
+      : [];
+    const rawCreated = Array.isArray(parsed.createdFiles) ? (parsed.createdFiles as unknown[]) : [];
+
+    const createdFiles: CreatedFileRecord[] = [];
+    const legacyCreatedFiles: string[] = [];
+    for (const entry of rawCreated) {
+      if (typeof entry === 'string') {
+        legacyCreatedFiles.push(entry);
+      } else if (
+        entry && typeof entry === 'object' &&
+        typeof (entry as CreatedFileRecord).path === 'string' &&
+        typeof (entry as CreatedFileRecord).sha256 === 'string'
+      ) {
+        createdFiles.push(entry as CreatedFileRecord);
+      }
+    }
+
+    return {
+      version: typeof parsed.version === 'number' ? parsed.version : 1,
+      existingFiles,
+      absentAtBackup: Array.isArray(parsed.absentAtBackup)
+        ? (parsed.absentAtBackup as unknown[]).filter((f): f is string => typeof f === 'string')
+        : [],
+      createdFiles,
+      legacyCreatedFiles: legacyCreatedFiles.length > 0 ? legacyCreatedFiles : undefined,
+    };
+  }
+
+  /**
+   * Rollback to the most recent backup.
+   *
+   * Returns what it actually did. A generated file is deleted only when its
+   * content hash still matches what HMA wrote, so a SOUL.md the user has
+   * since edited is kept, not silently discarded (#262). The caller is
+   * expected to report the kept files rather than claim a clean revert.
+   */
+  async rollback(targetDir: string): Promise<RollbackReport> {
     const backupBaseDir = path.join(targetDir, '.hackmyagent-backup');
 
     // Check if backup directory exists
@@ -5801,16 +6014,26 @@ dist/
     const backupDir = path.join(backupBaseDir, latestBackup);
 
     // Read manifest
-    let manifest: { existingFiles: string[]; createdFiles: string[] };
+    let manifest: BackupManifest;
     try {
       const manifestContent = await fs.readFile(
         path.join(backupDir, '.manifest.json'),
         'utf-8'
       );
-      manifest = JSON.parse(manifestContent);
+      manifest = this.parseManifest(manifestContent);
     } catch {
-      throw new Error('Backup manifest is corrupted. Delete ~/.hackmyagent/backups/ and re-run hackmyagent harden --fix.');
+      throw new Error(
+        `Backup manifest is unreadable: ${path.join(backupDir, '.manifest.json')}. ` +
+        `Restore files by hand from ${backupDir}, then delete it.`
+      );
     }
+
+    const report: RollbackReport = {
+      restored: [],
+      removed: [],
+      keptModified: [],
+      keptUnverifiable: [],
+    };
 
     // Restore existing files from backup
     for (const file of manifest.existingFiles) {
@@ -5818,23 +6041,54 @@ dist/
       const destPath = path.join(targetDir, file);
       try {
         await fs.copyFile(sourcePath, destPath);
-      } catch (err) {
+        report.restored.push(file);
+      } catch {
         // Continue with other files
       }
     }
 
-    // Remove files that were created during auto-fix
-    for (const file of manifest.createdFiles) {
-      const filePath = path.join(targetDir, file);
+    // Remove files a fix stage created — but only when the bytes on disk are
+    // still the bytes HMA wrote. Any edit since means the file is the user's
+    // now, and a rollback of our changes is not a licence to delete it.
+    for (const created of manifest.createdFiles) {
+      const filePath = path.join(targetDir, created.path);
+      if (!this.isPathWithinDirectory(filePath, targetDir)) continue;
+      let current: Buffer;
+      try {
+        current = await fs.readFile(filePath);
+      } catch {
+        continue; // Already gone — nothing to revert.
+      }
+      const currentHash = crypto.createHash('sha256').update(current).digest('hex');
+      if (currentHash !== created.sha256) {
+        report.keptModified.push(created.path);
+        continue;
+      }
       try {
         await fs.unlink(filePath);
+        report.removed.push(created.path);
       } catch {
-        // File may not exist, that's OK
+        report.keptModified.push(created.path);
+      }
+    }
+
+    // v1 manifests listed every absent backup candidate as "created" with no
+    // hash. Deleting on that basis is what could remove a user's own file, so
+    // these are reported instead of acted on.
+    for (const file of manifest.legacyCreatedFiles ?? []) {
+      const filePath = path.join(targetDir, file);
+      try {
+        await fs.access(filePath);
+        report.keptUnverifiable.push(file);
+      } catch {
+        // Never created — nothing to report.
       }
     }
 
     // Remove the used backup
     await fs.rm(backupDir, { recursive: true, force: true });
+
+    return report;
   }
 
   /**
