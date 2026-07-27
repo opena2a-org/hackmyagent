@@ -36,7 +36,7 @@
     "release-smoke:corpus": "tsx scripts/release-smoke-corpus.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@noble/ed25519": "^2.3.0",
     "@noble/post-quantum": "^0.2.1",
     "@opena2a/aim-core": "^0.1.2",
@@ -51,17 +51,21 @@
     "ai-trust": "^0.2.6",
     "commander": "^12.0.0",
     "js-yaml": "^4.1.1",
-    "onnxruntime-node": "^1.24.3"
+    "onnxruntime-node": "^1.27.0"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.0.0",
-    "tsx": "^4.21.0",
+    "tsx": "^4.23.1",
     "typescript": "^5.3.3",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.10"
   },
   "overrides": {
-    "ip-address": "^10.1.1"
+    "ip-address": "^10.1.1",
+    "fast-uri": "^3.1.4",
+    "adm-zip": "^0.6.0",
+    "@hono/node-server": "^2.0.5",
+    "body-parser": "^2.3.0"
   },
   "keywords": [
     "ai",
