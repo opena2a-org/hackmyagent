@@ -5876,8 +5876,22 @@ dist/
     for (const file of filesToBackup) {
       const sourcePath = path.join(targetDir, file);
       try {
-        await fs.access(sourcePath);
-        // File exists, back it up
+        // lstat, not access: a symlinked candidate must never be followed.
+        // `copyFile` copies the TARGET's bytes, so a repo shipping
+        // `SOUL.md -> ~/.ssh/id_rsa` had that key's contents copied into
+        // `.hackmyagent-backup/` — an out-of-tree secret pulled into the
+        // scanned tree, where it may then be committed or shared. The
+        // matching write is worse: the governance auto-fix appends through
+        // the link, mutating the target. `findSkillFiles` and the web-dir
+        // walk already skip symlinks; this list did not, and adding
+        // `SOUL.md` to it (#262) is what made the governance case reachable.
+        //
+        // Skipped rather than recorded as absent: it is neither backed up
+        // nor a creation candidate, and listing it in `absentAtBackup` would
+        // let `recordCreatedFiles` later treat it as something HMA made.
+        const stats = await fs.lstat(sourcePath);
+        if (stats.isSymbolicLink()) continue;
+
         const destPath = path.join(backupDir, file);
         await fs.mkdir(path.dirname(destPath), { recursive: true });
         await fs.copyFile(sourcePath, destPath);
