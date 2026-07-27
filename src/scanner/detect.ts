@@ -95,7 +95,12 @@ function noColorEnabled(): boolean {
   return (
     process.env.NO_COLOR !== undefined ||
     process.env.TERM === 'dumb' ||
-    process.argv.includes('--no-color')
+    process.argv.includes('--no-color') ||
+    // Auto-strip on a non-TTY stdout, matching cli.ts's noColorEnv. `detect`
+    // was the only command that respected NO_COLOR / --no-color but not the
+    // pipe: `hackmyagent detect > out.txt` wrote 24 raw escape sequences into
+    // the file while secure / scan-soul / check all came out clean (#253).
+    !process.stdout.isTTY
   );
 }
 

@@ -120,7 +120,22 @@ export class WildScanner {
       process.stderr.write(`\nScanning ${attackUrls.length} attack pages...\n`);
     }
 
+    // Progress line for the non-verbose path (#253). The walk is ~48 fetches
+    // with a courtesy delay between each, so a bare `wild` sat silent for
+    // ~45s and read as a hang to a fresh user. Written to stderr so stdout
+    // stays clean for `--json` and piping, and only on a TTY so CI logs are
+    // not filled with carriage returns.
+    const showProgress =
+      !this.options.json && !this.options.verbose && process.stderr.isTTY;
+    let scanned = 0;
+
     for (const url of attackUrls) {
+      if (showProgress) {
+        process.stderr.write(
+          `\r  Scanning attack pages: ${scanned}/${attackUrls.length}`,
+        );
+      }
+      scanned++;
       try {
         const page = await fetchPage(url, this.options.timeout);
         const content = extractContent(page);
@@ -160,6 +175,12 @@ export class WildScanner {
       }
 
       await this.sleep(this.options.delay);
+    }
+
+    if (showProgress) {
+      // Clear the progress line so it does not linger above the report.
+      // Padded to overwrite the longest counter rendered above.
+      process.stderr.write(`\r${' '.repeat(48)}\r`);
     }
 
     // 4. Compute resilience score
