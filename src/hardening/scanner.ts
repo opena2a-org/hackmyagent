@@ -19,6 +19,7 @@ import {
   inferActualCapabilities,
   validateCapabilities,
 } from './skill-capability-validator';
+import { clampScoreToVerdictBand } from '../ui/verdict-band';
 
 /**
  * Backup manifest format version. v1 (pre-0.25.1) wrote `createdFiles` as a
@@ -1405,7 +1406,21 @@ export class HardeningScanner {
     });
 
     // Calculate score (only on applicable, non-ignored findings)
-    const { score, maxScore } = this.calculateScore(filteredFindings);
+    const { score: rawScore, maxScore } = this.calculateScore(filteredFindings);
+
+    // #259 governance floor. A SOUL-only governance subversion barely dents
+    // the infra-weighted composite, so `secure` on the malicious
+    // permissive-overrides-soul fixture printed 76/100 — the green "good"
+    // band — directly above `Verdict  Not safe as-is.` The direction contract
+    // held everywhere else (exit 1, red verdict, findings listed); only the
+    // number disagreed, and the number is what a reader anchors on.
+    //
+    // The clamp is applied here rather than at render time so `--json` and
+    // the Registry carry the same figure the terminal shows; a display-only
+    // fix would leave every programmatic consumer reading 76. `rawScore` is
+    // preserved, so this adds information rather than destroying it — the
+    // same shape as the scan-soul #206/#251 clamp.
+    const { score, clamped: scoreClamped } = clampScoreToVerdictBand(rawScore, filteredFindings);
 
     // In dry-run mode, mark fixable failed findings with wouldFix
     if (dryRun && autoFix) {
@@ -1447,6 +1462,8 @@ export class HardeningScanner {
       // attribute a file) are preserved as legitimate detections.
       allFindings: dropPathlessNoiseFloor(findings, projectType),
       score,
+      rawScore,
+      scoreClamped,
       maxScore,
       backupPath,
       dryRun: dryRun && autoFix ? true : undefined,
@@ -5763,6 +5780,29 @@ dist/
     maxScore: number;
   } {
     return calculateSecurityScore(findings);
+  }
+
+  /**
+   * Settle a result's score from a findings set: recompute the composite and
+   * re-apply the #259 verdict-band clamp in one step.
+   *
+   * The CLI recalculates the score at eight points after `scan()` returns
+   * (post-NanoMind merge, post-infrastructure merge, post-.hmaignore
+   * re-filter, per command). Every one of those must go through here — a
+   * bare `calculateScore()` assignment silently drops the clamp and leaves
+   * `scoreClamped` describing a score that no longer exists. Pass the same
+   * findings array the verdict is built from, so the number and the verdict
+   * can never be computed off different evidence.
+   */
+  applyScore(
+    result: { score: number; rawScore?: number; scoreClamped?: boolean },
+    findings: SecurityFinding[],
+  ): void {
+    const { score: rawScore } = this.calculateScore(findings);
+    const { score, clamped } = clampScoreToVerdictBand(rawScore, findings);
+    result.score = score;
+    result.rawScore = rawScore;
+    result.scoreClamped = clamped;
   }
 
   /**
