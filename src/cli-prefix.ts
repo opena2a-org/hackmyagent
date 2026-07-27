@@ -61,11 +61,71 @@ const CITATION_RE = new RegExp(
 );
 
 /**
- * Rewrite `hackmyagent <verb>` command citations in a string to the active
- * `CLI_PREFIX`. No-op when the prefix is the default `hackmyagent`. Intended for
- * human-readable text only — never call it on JSON / SARIF output.
+ * npm package that ships the `opena2a` binary.
+ *
+ * The package name and the binary name differ: the package is `opena2a-cli`
+ * and it installs a bin called `opena2a`. `npm i -g opena2a` is a 404 — the
+ * name is unpublished (#201).
+ */
+export const OPENA2A_PACKAGE = 'opena2a-cli';
+
+/**
+ * True when `opena2a` is known to be on PATH.
+ *
+ * hackmyagent only knows this when it was spawned BY that CLI, which is
+ * exactly when `HMA_CLI_PREFIX` / an `opena2a*` argv0 sets a non-default
+ * prefix. A standalone `npm i hackmyagent` has no such guarantee, so any
+ * `opena2a <verb>` we cite there would be a dead end.
+ */
+function opena2aIsOnPath(): boolean {
+  return CLI_PREFIX !== 'hackmyagent';
+}
+
+/**
+ * Sibling-CLI verbs that appear inside our finding-fix and explainer text.
+ *
+ * Deliberately narrow — only verbs actually cited in remediation strings.
+ * Keeping it tight means prose like "opena2a is a separate CLI" or
+ * "opena2a or hackmyagent" cannot be caught by the verb-anchored pattern.
+ */
+const OPENA2A_VERBS = ['protect', 'mcp'] as const;
+
+// Same anchoring discipline as CITATION_RE: a left lookbehind so scoped
+// names / paths / URLs never match, and a right boundary so an unrecognized
+// hyphenated subcommand is not half-rewritten. `npx `-prefixed citations are
+// absorbed so re-running the rewrite is idempotent.
+const OPENA2A_CITATION_RE = new RegExp(
+  `(?:npx ${OPENA2A_PACKAGE} )?(?<![\\w@/.-])opena2a\\s+(${OPENA2A_VERBS.join('|')})(?![\\w-])`,
+  'g',
+);
+
+/**
+ * Rewrite command citations in a string so they are runnable for the reader.
+ *
+ * Two independent passes:
+ *
+ *  1. `hackmyagent <verb>` → the active `CLI_PREFIX`, so a bundled run cites
+ *     the parent's verb namespace. No-op standalone.
+ *  2. `opena2a <verb>` → `npx opena2a-cli <verb>`, but ONLY standalone, where
+ *     `opena2a` is not on PATH. Bundled runs leave the citation alone because
+ *     the binary is present and the shorter form is correct.
+ *
+ * Pass 2 closes #201: ~29 finding-fix and explainer strings cite
+ * `opena2a protect .`, and a user who installed hackmyagent on its own got
+ * `command not found` — a dead end under CISO Rule 11. Fixing it here rather
+ * than at the 29 call sites keeps the citation policy in one place, and
+ * matches how pass 1 already works.
+ *
+ * Human-readable text only — never call this on JSON / SARIF output.
  */
 export function rebrandCommandCitations(text: string): string {
-  if (!text || CLI_PREFIX === 'hackmyagent') return text;
-  return text.replace(CITATION_RE, `${CLI_PREFIX} $1`);
+  if (!text) return text;
+  let out = text;
+  if (CLI_PREFIX !== 'hackmyagent') {
+    out = out.replace(CITATION_RE, `${CLI_PREFIX} $1`);
+  }
+  if (!opena2aIsOnPath()) {
+    out = out.replace(OPENA2A_CITATION_RE, `npx ${OPENA2A_PACKAGE} $1`);
+  }
+  return out;
 }
