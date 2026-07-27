@@ -92,7 +92,21 @@ export interface CommunityScanPayload {
 /** Unified publish payload matching POST /api/v1/trust/publish contract */
 export interface UnifiedPublishPayload {
   name: string;
+  /**
+   * Composite as the CLI rendered it, including the #259 verdict-band clamp.
+   * This is the signed figure (see the strong canonical in `publish.ts`), so
+   * it must be the same number the terminal and `--json` show.
+   */
   score: number;
+  /**
+   * Pre-clamp composite (#259). Same rationale as `subReports.soul.rawScore`
+   * under #206: without both fields a dashboard plotting history cannot tell
+   * "the scoring rule changed across HMA versions" from "this agent got
+   * worse." Absent when nothing was clamped.
+   */
+  rawScore?: number;
+  /** True when `score < rawScore` because the verdict is fail-direction (#259). */
+  scoreClamped?: boolean;
   maxScore: number;
   tool: string;
   toolVersion: string;
