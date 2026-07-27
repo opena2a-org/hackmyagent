@@ -3854,9 +3854,23 @@ Examples:
             for (const section of hardenResult.sectionsAdded) {
               process.stderr.write(`    + ${section}\n`);
             }
-            if (soulHashBefore) {
-              process.stderr.write(`  Rollback: restore previous SOUL.md (hash: ${soulHashBefore.slice(0, 8)}...)\n`);
-            }
+            // Record the governance file in the backup manifest so
+            // `rollback` can actually undo this (#262). harden-soul runs
+            // after scanner.scan() returns, so scan()'s own recording pass
+            // has already happened and SOUL.md would otherwise survive a
+            // rollback that claimed everything was reverted. When SOUL.md
+            // already existed it was copied into the backup instead, and
+            // recordCreatedFiles correctly declines to mark it as created.
+            await scanner.recordCreatedFiles(
+              targetDir,
+              result.backupPath,
+              [hardenResult.file ?? 'SOUL.md'],
+            );
+            process.stderr.write(
+              soulHashBefore
+                ? `  Rollback: \`${CLI_PREFIX} rollback ${displayDir}\` restores the previous SOUL.md (hash: ${soulHashBefore.slice(0, 8)}...)\n`
+                : `  Rollback: \`${CLI_PREFIX} rollback ${displayDir}\` removes the generated SOUL.md (kept if you edit it first)\n`,
+            );
             process.stderr.write('\n');
           }
         } catch (govFixErr: unknown) {
@@ -4825,10 +4839,42 @@ Examples:
       console.log(`\nRolling back changes in ${targetDir}...\n`);
 
       const scanner = new HardeningScanner();
-      await scanner.rollback(targetDir);
+      const report = await scanner.rollback(targetDir);
 
-      console.log(`${colors.green}[+] Rollback successful!${RESET()}`);
-      console.log('   All auto-fix changes have been reverted.\n');
+      // Report what happened rather than asserting a clean revert (#262).
+      // The old copy said "All auto-fix changes have been reverted" even
+      // when the harden-soul-generated SOUL.md was still sitting there.
+      console.log(`${colors.green}[+] Rollback complete${RESET()}`);
+      const restoredCount = report.restored.length;
+      const removedCount = report.removed.length;
+      console.log(
+        `   Restored ${restoredCount} modified file${restoredCount === 1 ? '' : 's'}, ` +
+        `removed ${removedCount} generated file${removedCount === 1 ? '' : 's'}.`,
+      );
+      for (const file of report.restored) console.log(`   ${colors.dim}restored${RESET()}  ${file}`);
+      for (const file of report.removed) console.log(`   ${colors.dim}removed ${RESET()}  ${file}`);
+
+      // Files deliberately left alone. Each says why and what to do, so the
+      // user is never left to discover the leftover on their own.
+      if (report.keptModified.length > 0) {
+        console.log(
+          `\n   ${colors.yellow}Kept ${report.keptModified.length} generated file${report.keptModified.length === 1 ? '' : 's'} you edited after the fix${RESET()} ` +
+          `(deleting them would discard your changes):`,
+        );
+        for (const file of report.keptModified) {
+          console.log(`   ${colors.dim}kept    ${RESET()}  ${file}  ${colors.dim}— review, then \`rm ${file}\` if unwanted${RESET()}`);
+        }
+      }
+      if (report.keptUnverifiable.length > 0) {
+        console.log(
+          `\n   ${colors.yellow}Kept ${report.keptUnverifiable.length} file${report.keptUnverifiable.length === 1 ? '' : 's'} from an older backup format${RESET()} ` +
+          `(no content hash recorded, so HMA cannot confirm it generated them):`,
+        );
+        for (const file of report.keptUnverifiable) {
+          console.log(`   ${colors.dim}kept    ${RESET()}  ${file}  ${colors.dim}— review, then \`rm ${file}\` if unwanted${RESET()}`);
+        }
+      }
+      console.log();
     } catch (error) {
       console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
       process.exit(1);
