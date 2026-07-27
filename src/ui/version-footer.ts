@@ -6,11 +6,14 @@
  *
  *   if (VERSION_FOOTER_COMMANDS.has(cmd) && !ciMode && !opts().json)
  *
- * `secure` and `scan-soul` also accept `-f, --format <text|json|sarif|html|
- * asff>`, and `--json` is documented as *deprecated in favour of
- * `--format json`*. So the deprecated path was protected and every
- * recommended one was not: the footer was appended after the closing brace
- * of the document.
+ * `secure` also accepts `-f, --format <text|json|sarif|html|asp|asff>`, and
+ * documents `--json` as *deprecated in favour of `--format json`*. So the
+ * deprecated path was protected and every recommended one was not: the
+ * footer was appended after the closing brace of the document.
+ *
+ * (`scan-soul` and `detect` declare only `--json`, no `--format`. The gate
+ * below is written against the resolved format anyway, so it stays correct
+ * if either grows one.)
  *
  *   $ hackmyagent secure <dir> --format sarif
  *     ...
@@ -47,10 +50,10 @@ export interface VersionFooterContext {
 
 /**
  * Resolve the effective output format, mirroring the `--json`-is-an-alias
- * rule both `secure` and `scan-soul` apply at their action sites. Unknown
- * values are returned as given: they are rejected downstream, and treating
- * an unrecognised format as text would put the trailer back into whatever
- * a future writer emits.
+ * rule `secure` applies at its action site (`options.json ? 'json' :
+ * (options.format || 'text')`). Unknown values are returned as given: they
+ * are rejected downstream, and treating an unrecognised format as text would
+ * put the trailer back into whatever a future writer emits.
  */
 export function resolveOutputFormat(opts: { json?: boolean; format?: string }): string {
   if (opts.json) return 'json';

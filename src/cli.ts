@@ -153,16 +153,10 @@ function writeJsonStdout(data: unknown): void {
   writeLargeStdout(JSON.stringify(stamped, null, 2) + '\n');
 }
 
-/**
- * Commands whose human-readable output carries a version footer (#202).
- *
- * Scoped to the scan-producing commands: their output is what ends up in CI
- * logs and bug reports, where "which build said this?" is the first question.
- * Config/among-us commands (telemetry, help) would just be noise.
- *
- * The set and the gate both live in `ui/version-footer.ts` so the rule can be
- * tested without spawning; see `shouldPrintVersionFooter`.
- */
+// The version-footer command set and its gate moved to
+// `ui/version-footer.ts` (#202 follow-up) so the rule can be tested without
+// spawning a CLI; see `shouldPrintVersionFooter`.
+
 
 // Binary-level command prefix + citation rebrander (single source of truth in
 // ./cli-prefix). When a parent CLI sets HMA_CLI_PREFIX, every user-facing
