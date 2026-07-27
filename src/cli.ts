@@ -88,7 +88,7 @@ import {
   quickScanScopeDisclosure,
 } from './ui/quick-scan-labels';
 import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifact-intent';
-import { clampDisclosure } from './ui/verdict-band';
+import { clampDisclosure, clampScoreToVerdictBand } from './ui/verdict-band';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { generateVerifyCommand } from './ui/verify-command';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
@@ -1029,6 +1029,11 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   let score = 0;
   let maxScore = 100;
   let critical = 0, high = 0, medium = 0, low = 0;
+  // Pre-clamp composite for the quick-scan path (#259). `localScan` carries
+  // its own `rawScore` / `scoreClamped` from the scanner; the quick scan has
+  // no ScanResult to hang them off, so they are tracked here.
+  let nanomindRawScore: number | undefined;
+  let nanomindScoreClamped = false;
 
   if (localScan) {
     failed = localScan.findings.filter(f => !f.passed);
@@ -1061,8 +1066,25 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     }));
     // Use the canonical scoring formula (exponential decay + 0.4x governance weight)
     const scoreResult = calculateSecurityScore(issues);
-    score = scoreResult.score;
     maxScore = scoreResult.maxScore;
+    // #259, quick-scan path. This is the one composite the eight
+    // post-`scan()` `applyScore()` sites never reach — the quick scan never
+    // calls `scanner.scan()`, so it computes its own number here and then
+    // renders it through the same `>=70 = green` meter below. Left bare, it
+    // reproduced the exact incoherence #259 closed for `secure`:
+    //
+    //   check <corpus>/skill/buggy/caps-sprawl-skill
+    //     Quick scan  ━━━━━━━━━━━━━━━━━━━━ 85/100     <- green band
+    //     3 high-severity issues found                 <- fail direction
+    //     Verdict  Not safe as-is.
+    //
+    // Same rule, same helper: a fail-direction verdict floors the number out
+    // of the good band, never raises it, and never touches the findings or
+    // the exit code. The pre-clamp value is kept for the disclosure below.
+    const quickClamp = clampScoreToVerdictBand(scoreResult.score, issues);
+    score = quickClamp.score;
+    nanomindRawScore = scoreResult.score;
+    nanomindScoreClamped = quickClamp.clamped;
   } else if (registry?.found) {
     score = Math.round(registry.trustScore * 100);
     maxScore = 100;
@@ -1111,9 +1133,9 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // verdict is fail-direction, say so on the same line. A capped number
     // with no explanation is its own coherence problem.
     const bandDisclosure = clampDisclosure({
-      rawScore: localScan?.rawScore,
+      rawScore: localScan ? localScan.rawScore : nanomindRawScore,
       score,
-      clamped: localScan?.scoreClamped,
+      clamped: localScan ? localScan.scoreClamped : nanomindScoreClamped,
     });
     console.log(`  ${scoreLineLabel(opts.quickScan)}  ${scoreMeter(score, maxScore)}${colors.dim}${bandDisclosure}${RESET()}`);
     if (opts.quickScan) {
