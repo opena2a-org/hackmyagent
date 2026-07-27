@@ -87,6 +87,7 @@ import {
   quickScanFollowupText,
   quickScanScopeDisclosure,
 } from './ui/quick-scan-labels';
+import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifact-intent';
 import { generateVerifyCommand } from './ui/verify-command';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
 import type { ConceptId } from './types/finding-evidence';
@@ -1174,12 +1175,21 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       })),
     );
 
+    // Artifact-intent honesty pass (#252). The classifier over-flags benign
+    // and OOD input at max confidence, so its raw label is only printed when
+    // this scan corroborates it with a high/critical finding on the same
+    // artifact. Otherwise the line reads `unknown` and the raw affinity moves
+    // behind --verbose. Applied to the renderer's INPUT rather than its
+    // output so the line stays formatted by one place.
+    const { artifacts: reconciledArtifacts, suppressed: suppressedIntents } =
+      reconcileArtifactIntents(opts.artifactSummaries ?? [], failed);
+
     const { lines, artifactLines } = renderObservationsBlock({
       surfaces: { kind, filesScanned, artifactsCompiled: semanticCount, remote: opts.remote === true },
       checks: { staticCount, semanticCount },
       categories: categorySummaries,
       verdict: verdictLine,
-      artifacts: opts.artifactSummaries,
+      artifacts: opts.artifactSummaries ? reconciledArtifacts : undefined,
       verbose: !!verbose,
     });
 
@@ -1236,6 +1246,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       console.log(`  ${colors.dim}${firstLabel}${RESET()}${artifactLines[0]}`);
       for (const extraLine of artifactLines.slice(1)) {
         console.log(`  ${colors.dim}${contIndent}${RESET()}${extraLine}`);
+      }
+      // Withheld raw classifier labels, verbose only (#252). Dim, and every
+      // line carries the over-flag qualifier so the raw class cannot be
+      // mistaken for a verdict even here.
+      if (verbose) {
+        for (const disclosure of rawIntentDisclosureLines(suppressedIntents)) {
+          console.log(`  ${colors.dim}${contIndent}${disclosure}${RESET()}`);
+        }
       }
     }
 
