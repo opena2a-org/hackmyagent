@@ -12,6 +12,7 @@
  */
 
 import { VERSION } from '../index.js';
+import { countsAgainstScore } from '../ui/verdict-band';
 
 export interface SecurityFinding {
   checkId: string;
@@ -92,7 +93,7 @@ export function toASSF(
   const productArn = `arn:aws:securityhub:${region}:${accountId}:product/${accountId}/default`;
 
   // Only include failed (not passed, not fixed) findings
-  const failed = findings.filter(f => !f.passed && !f.fixed);
+  const failed = findings.filter(f => countsAgainstScore(f));
 
   const assfFindings: ASSFinding[] = failed.map(f => {
     const severity = SEVERITY_MAP[f.severity] || 'INFORMATIONAL';

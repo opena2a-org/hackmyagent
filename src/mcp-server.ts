@@ -32,6 +32,7 @@ import {
   buildDeepScanResult,
 } from './semantic';
 import { getCheckCounts } from './hardening/taxonomy';
+import { countsAgainstScore } from './ui/verdict-band';
 
 const MCP_CHECK_COUNTS = getCheckCounts();
 
@@ -147,7 +148,7 @@ export async function startMcpServer(): Promise<void> {
           const scanner = new HardeningScanner();
           const result = await scanner.scan({ targetDir: dir, autoFix: fix, ignore });
 
-          const issues = result.findings.filter((f) => !f.passed && !f.fixed);
+          const issues = result.findings.filter((f) => countsAgainstScore(f));
           const fixed = result.findings.filter((f) => f.fixed);
 
           let summary = `Score: ${result.score}/${result.maxScore} | ${issues.length} issue${issues.length !== 1 ? 's' : ''} found`;

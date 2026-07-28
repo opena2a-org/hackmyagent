@@ -18,6 +18,7 @@ import type { SecurityFinding, ProjectType } from '../hardening/security-check.j
 import type { NanoMindScanResult, ArtifactSummary, CoverageCandidate } from './scanner-bridge.js';
 import type { AnalystResponse, ArtifactCoverageVerdict } from './inference/security-analyst.js';
 import { routeAnalystVerdict, combineVerdict } from './analyst-coverage.js';
+import { countsAgainstScore } from '../ui/verdict-band';
 
 export type { ArtifactSummary } from './scanner-bridge.js';
 
@@ -206,7 +207,7 @@ export async function orchestrateNanoMind(
     if (nanomind) {
       const ready = await isAnalystReady();
       if (ready) {
-        const failed = nmResult.mergedFindings.filter(f => !f.passed && !f.fixed);
+        const failed = nmResult.mergedFindings.filter(f => countsAgainstScore(f));
         // Gate the analyst on HIGH/CRITICAL findings that are tied to a real
         // file. Two reasons to exclude both LOW/MEDIUM and file-less findings:
         // (1) LOW/MEDIUM are typically filesystem-hygiene checks (GIT-001
@@ -311,7 +312,7 @@ export async function orchestrateNanoMind(
       }
     } else if (!silent && !ci) {
       // Show hint only if NanoMind is available and there are findings to analyze
-      const failed = nmResult.mergedFindings.filter(f => !f.passed && !f.fixed);
+      const failed = nmResult.mergedFindings.filter(f => countsAgainstScore(f));
       if (failed.length > 0) {
         const ready = await isAnalystReady();
         if (ready) {
@@ -344,7 +345,7 @@ async function runAnalystOnFindings(
   runInference: typeof import('./inference/security-analyst.js').runAnalystInference,
 ): Promise<AnalystResponse[]> {
   const results: AnalystResponse[] = [];
-  const failed = findings.filter(f => !f.passed && !f.fixed);
+  const failed = findings.filter(f => countsAgainstScore(f));
 
   // Limit to top 10 most important findings to keep inference time reasonable
   const prioritized = failed

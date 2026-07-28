@@ -1,4 +1,5 @@
 import type { SecurityFinding } from '../hardening/security-check.js';
+import { countsAgainstScore } from '../ui/verdict-band';
 
 interface RemediationReport {
   findingId: string;
@@ -67,7 +68,7 @@ export async function reportFindings(
   findings: SecurityFinding[],
   score: number,
 ): Promise<void> {
-  const failedFindings = findings.filter(f => !f.passed && !f.fixed);
+  const failedFindings = findings.filter(f => countsAgainstScore(f));
 
   if (failedFindings.length === 0) {
     return;

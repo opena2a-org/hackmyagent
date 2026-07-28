@@ -24,6 +24,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { calculateSecurityScore } from '../../src/hardening';
 import {
   GOOD_BAND_FLOOR,
   VERDICT_FAIL_CLAMP,
@@ -86,17 +87,46 @@ describe('H-6: a fixed finding is not fail-direction', () => {
     expect(clampScoreToVerdictBand(100, verified)).toEqual({ score: 100, clamped: false });
   });
 
-  it('agrees with the scoring filter on every passed/fixed/fixVerified combination', () => {
-    // The single predicate `countsAgainstScore` now backs BOTH
-    // `calculateSecurityScore` and `isFailDirection`. If they ever diverge
-    // again the number and the cap are computed off different evidence —
-    // the whole defect class #259 exists to close.
+  it('the SCORE itself counts an unverified fix', () => {
+    // This asserts `calculateSecurityScore` directly. The previous version of
+    // this test compared `isFailDirection` to `countsAgainstScore` — a
+    // tautology, since the former is implemented as the latter plus a
+    // severity check. Mutation-testing proved it: reverting
+    // `calculateSecurityScore`'s filter to `!passed && !fixed` left this file
+    // 9/9 green and the whole suite green, so the half of the fix that
+    // changes the number had no coverage at all.
+    const base = { checkId: 'PERM-001', name: 'p', category: 'permissions', message: '' };
+
+    const unverified = calculateSecurityScore([
+      { ...base, severity: 'high', passed: false, fixed: true, fixVerified: false },
+    ] as any);
+    const verified = calculateSecurityScore([
+      { ...base, severity: 'high', passed: false, fixed: true, fixVerified: true },
+    ] as any);
+    const outstanding = calculateSecurityScore([
+      { ...base, severity: 'high', passed: false },
+    ] as any);
+
+    // An unverified fix must weigh the same as no fix at all — the issue is
+    // still on disk.
+    expect(unverified.score).toBe(outstanding.score);
+    expect(unverified.score).toBeLessThan(100);
+    // A confirmed fix is genuinely resolved.
+    expect(verified.score).toBe(100);
+  });
+
+  it('the score and the direction test agree across the whole matrix', () => {
+    // Cross-checks the two CONSUMERS against each other, via
+    // `calculateSecurityScore`'s observable output rather than by asserting
+    // the shared predicate against itself.
+    const base = { checkId: 'X-1', name: 'x', category: 'other', message: '', severity: 'critical' };
     for (const passed of [true, false, undefined]) {
       for (const fixed of [true, false, undefined]) {
         for (const fixVerified of [true, false, undefined]) {
-          const f = { severity: 'critical', passed, fixed, fixVerified };
+          const f = { ...base, passed, fixed, fixVerified };
           const label = `passed=${passed} fixed=${fixed} fixVerified=${fixVerified}`;
-          expect(isFailDirection([f]), label).toBe(countsAgainstScore(f));
+          const scoreCounts = calculateSecurityScore([f] as any).score < 100;
+          expect(isFailDirection([f]), label).toBe(scoreCounts);
         }
       }
     }
