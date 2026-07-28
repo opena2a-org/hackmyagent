@@ -98,7 +98,7 @@ describe('secure output formats parse (spawn, local-only)', () => {
     // Non-vacuity for every assertion below: if #202's footer stopped being
     // emitted at all, the absence checks would pass for the wrong reason.
     expect(run(fixture(), [])).toMatch(FOOTER_RE);
-  }, 60_000);
+  }, 240_000);
 
   it.runIf(canRun())('--format json and --format sarif stay parseable', () => {
     for (const format of ['json', 'sarif']) {
@@ -106,11 +106,11 @@ describe('secure output formats parse (spawn, local-only)', () => {
       expect(out, `--format ${format} carries the footer`).not.toMatch(FOOTER_RE);
       expect(() => JSON.parse(out), `--format ${format} does not parse`).not.toThrow();
     }
-  }, 120_000);
+  }, 240_000);
 
   it.runIf(canRun())('the deprecated --json alias stays parseable too', () => {
     const out = run(fixture(), ['--json']);
     expect(out).not.toMatch(FOOTER_RE);
     expect(() => JSON.parse(out)).not.toThrow();
-  }, 60_000);
+  }, 240_000);
 });

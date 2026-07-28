@@ -27,6 +27,7 @@
 // `details.files`, so a shifting head cannot lose a still-failing path.
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { execSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, statSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -60,9 +61,10 @@ const { HardeningScanner } = await import('../../src/hardening/scanner');
 
 const dirs: string[] = [];
 
-function fixture(files: Record<string, string>): string {
+function fixture(files: Record<string, string>, opts: { git?: boolean } = {}): string {
   const dir = mkdtempSync(join(tmpdir(), 'hma-fixverify-'));
   dirs.push(dir);
+  if (opts.git) execSync('git init -q .', { cwd: dir });
   writeFileSync(join(dir, 'package.json'), '{"name":"h","version":"1.0.0"}\n');
   for (const [name, body] of Object.entries(files)) {
     const p = join(dir, name);
@@ -170,6 +172,93 @@ describe('fix verification attribution (HIGH-3)', () => {
     expect(perm.fix ?? '').not.toContain('fix-all');
     // And it names the file that actually needs the manual change.
     expect(perm.fix).toBe(`chmod 600 ${UNFIXABLE}`);
+  });
+
+  it('does not confirm a fix whose survivor is hidden by .hmaignore', async () => {
+    // The verification pass compares against the re-scan. `scan()` returns
+    // findings that have ALREADY been through the report filter, which drops
+    // paths matching `.hmaignore` — and it drops on `file`, the same
+    // attribution that shifts. So one line in `.hmaignore` walked the
+    // still-failing finding out of the list it was compared against, and the
+    // union restored the exact defect it was written to remove:
+    // `2/2 fixes confirmed`, 98/100, exit 0, `.env` still 0644.
+    //
+    // `.env` is the single most natural line to put in a `.hmaignore`, and
+    // ignoring a path does not stop the fix pass writing to it — only
+    // reporting on it. Comparison is now against the unfiltered findings.
+    const dir = fixture({
+      'secrets.json': '{"token":"x"}\n',
+      '.env': 'DB_PASSWORD=x\n',
+    });
+    writeFileSync(join(dir, '.hmaignore'), '.env\n');
+
+    const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+    const perm = result.findings.find(f => f.checkId === 'PERM-001');
+
+    expect(perm, 'PERM-001 was filtered out entirely — it must still be reported').toBeDefined();
+    expect(isWorldReadable(join(dir, UNFIXABLE)), 'fixture no longer models a failed fix').toBe(true);
+    expect(perm!.fixVerified).toBe(false);
+
+    // The ignored path must not become the finding's location either: the
+    // report filter runs after re-attribution, so re-pointing onto it would
+    // delete the finding outright — a false "verified" traded for a silent
+    // disappearance. It keeps its own visible attribution instead.
+    expect(perm!.file).toBe('secrets.json');
+    expect(perm!.fix ?? '').not.toContain('secure --fix');
+  });
+
+  it('does not ship a manualFix naming files it already repaired', async () => {
+    // `manualFix` is documented as the field to cite when the auto-fix did
+    // not land, so a stale value is a wrong remedy under a trusted name. The
+    // finding's own copy was built from the PRE-fix list and named
+    // `secrets.json`, already at 0600, while `fix` correctly named `.env`.
+    const dir = fixture({
+      'secrets.json': '{"token":"x"}\n',
+      '.env': 'DB_PASSWORD=x\n',
+    });
+
+    const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+    const perm = result.findings.find(f => f.checkId === 'PERM-001')!;
+
+    expect(perm.fixVerified, 'precondition: this must be the unverified case').toBe(false);
+    expect(perm.manualFix).toBe(`chmod 600 ${UNFIXABLE}`);
+    expect(perm.manualFix).not.toContain('secrets.json');
+    expect(perm.fix).toBe(perm.manualFix);
+  });
+
+  it('does not announce a fix-verification count the report will contradict', async () => {
+    // The progress line read "Fix verification: 1/2 fixes confirmed" while
+    // the CLI summary four lines below read "Attempted 1 fix, none
+    // confirmed" — one run, two denominators, same reader.
+    //
+    // The scanner cannot count its way out of this: `cli.ts` re-filters
+    // `result.findings` with `!f.passed` afterwards, which drops a
+    // SUCCESSFULLY fixed finding that the scanner's own filter keeps. So the
+    // progress channel must not carry counts at all.
+    //
+    // The fixture manufactures the divergence: a git repo makes GIT-001 fire
+    // and auto-fix (leaving it `passed: true, fixed: true`), so more fixes
+    // are attempted than the caller will show. Without that, any denominator
+    // agrees with any other and the assertion proves nothing.
+    const dir = fixture({ '.env': 'DB_PASSWORD=x\n' }, { git: true });
+
+    const progress: string[] = [];
+    const result = await new HardeningScanner().scan({
+      targetDir: dir,
+      autoFix: true,
+      onProgress: (m: string) => progress.push(m),
+    });
+
+    const attempted = result.findings.filter(f => f.fixed);
+    const shownByCli = attempted.filter(f => !f.passed);
+    expect(
+      attempted.length,
+      'fixture no longer produces a fixed finding the CLI re-filter drops',
+    ).toBeGreaterThan(shownByCli.length);
+
+    const line = progress.find(m => m.toLowerCase().includes('verif'));
+    expect(line, 'the verification progress line disappeared entirely').toBeDefined();
+    expect(line).not.toMatch(/\d+\s*\/\s*\d+/);
   });
 
   it('confirms a fix that fully landed', async () => {

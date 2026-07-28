@@ -29,7 +29,12 @@ export async function reportRemediation(
   findings: SecurityFinding[],
   score: number,
 ): Promise<void> {
-  const fixedFindings = findings.filter(f => f.fixed || f.fixVerified);
+  // Only fixes that actually landed. `f.fixed || f.fixVerified` POSTed a
+  // disproved fix to `/remediation/remediated` while `reportFindings` POSTed
+  // the same finding to `/remediation/track` as still open — one call, two
+  // contradictory claims about the same checkId. (`|| f.fixVerified` was also
+  // dead: `fixed` is already true wherever `fixVerified` is set.)
+  const fixedFindings = findings.filter(f => f.fixed && !countsAgainstScore(f));
 
   if (fixedFindings.length === 0) {
     return;

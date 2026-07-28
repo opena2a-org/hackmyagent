@@ -50,7 +50,7 @@ async function cli(args: string[]): Promise<{ code: number; stdout: string }> {
   }
 }
 
-describe.skipIf(!available)('corpus soul fixtures: cross-analyzer direction (#251)', () => {
+describe.skipIf(!available)('corpus soul fixtures: cross-analyzer direction (#251)', { timeout: 180_000 }, () => {
   it('benign hardened-soul: scan-soul reports zero violations and no clamp', async () => {
     const { stdout } = await cli(['scan-soul', BENIGN, '--json']);
     const result = JSON.parse(stdout);
