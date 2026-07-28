@@ -1047,12 +1047,35 @@ export class HardeningScanner {
     const ignoredChecks = new Set(ignore.map((id) => id.toUpperCase()));
 
     // In dry-run mode, we detect what would be fixed but don't modify anything
-    const shouldFix = autoFix && !dryRun;
+    let shouldFix = autoFix && !dryRun;
 
-    // Create backup before auto-fix (not in dry-run mode)
+    // Create backup before auto-fix (not in dry-run mode).
+    //
+    // Guarded, and a failure degrades the run to a detect-only scan rather
+    // than aborting it. `createBackup` mkdirs `.hackmyagent-backup/` and
+    // writes a manifest; on a read-only tree — a read-only mount, a container
+    // volume, a restricted CI checkout — both throw, and because this call
+    // sat unguarded the exception escaped `scan()` before a single check had
+    // run. `secure --fix` printed a raw `EACCES` and exited 1 with an empty
+    // body under `--format json`, indistinguishable from a crash, on a tree
+    // that `secure` alone scans perfectly well.
+    //
+    // Fixing without a backup is not an option either: every fix write would
+    // be unrevertable. So the run keeps its detection and drops its fixes,
+    // and says so.
     let backupPath: string | undefined;
+    let backupFailure: { code: string; message: string } | undefined;
     if (shouldFix) {
-      backupPath = await this.createBackup(targetDir);
+      try {
+        backupPath = await this.createBackup(targetDir);
+      } catch (err) {
+        const e = err as NodeJS.ErrnoException;
+        backupFailure = {
+          code: e?.code || (err instanceof Error ? err.name : 'UnknownError'),
+          message: err instanceof Error ? err.message : String(err),
+        };
+        shouldFix = false;
+      }
     }
 
     // Track if any fix fails for atomic rollback
@@ -1358,11 +1381,31 @@ export class HardeningScanner {
     // "not attempted" from "attempted and the filesystem refused". Re-running
     // then loops with no diagnosis. One finding names every file, so the
     // signal cannot be lost among per-check noise.
+    if (backupFailure) {
+      findings.push({
+        checkId: 'FIX-BACKUP-FAILED',
+        name: 'Auto-Fix Skipped: Backup Could Not Be Created',
+        description: 'No fixes were applied because no backup could be taken',
+        category: 'hardening',
+        severity: 'medium',
+        passed: false,
+        message: `Backup failed (${backupFailure.code}); --fix was skipped and this run only detected. Findings below are unmodified.`,
+        file: path.basename(targetDir),
+        fixable: false,
+        fix: `Make the target writable, then re-run: ${this.cliName} secure --fix`,
+        guidance:
+          'Applying fixes without a backup would leave nothing to roll back to, so the run detects only. Every finding below reflects the tree as it is on disk. This usually means a read-only mount, a container volume, or a checkout owned by another user.',
+      });
+    }
+
     if (this.fixWriteFailures.length > 0) {
-      const failed = this.fixWriteFailures.map(f => ({
-        ...f,
-        rel: path.relative(targetDir, f.file) || path.basename(f.file),
-      }));
+      // De-duplicated by path: two checks can attempt a write on the same file
+      // (SKILL-001 and SKILL-004 both target one SKILL.md), which reported
+      // "2 auto-fix writes failed (EPERM): skills/x/SKILL.md, skills/x/SKILL.md".
+      const seen = new Set<string>();
+      const failed = this.fixWriteFailures
+        .map(f => ({ ...f, rel: path.relative(targetDir, f.file) || path.basename(f.file) }))
+        .filter(f => (seen.has(f.rel) ? false : (seen.add(f.rel), true)));
       const codes = [...new Set(failed.map(f => f.code))].join(', ');
       findings.push({
         checkId: 'FIX-WRITE-FAILED',
@@ -2217,7 +2260,22 @@ export class HardeningScanner {
           permissionIssues.push(filename);
 
           if (autoFix) {
-            await fs.chmod(filePath, 0o600);
+            // Routed through the failure recorder like every other mutation.
+            // A thrown chmod (immutable flag, restrictive policy) was swallowed
+            // by the enclosing `catch`, so the finding still reported
+            // `fixed: true` with "Changed permissions to 600" on a file that
+            // was still world-readable, and nothing anywhere said the write
+            // had failed.
+            try {
+              await fs.chmod(filePath, 0o600);
+            } catch (err) {
+              const e = err as NodeJS.ErrnoException;
+              this.fixWriteFailures.push({
+                file: filePath,
+                code: e?.code || (err instanceof Error ? err.name : 'UnknownError'),
+                message: err instanceof Error ? err.message : String(err),
+              });
+            }
           }
         }
       } catch {
@@ -6557,6 +6615,10 @@ dist/
       // SKILL-004: Filesystem Write Outside Sandbox
       const filesystemWildcardPattern = /filesystem:\s*\*|filesystem:\s*~\/|filesystem:\s*\//gi;
       let skill004FileModified = false;
+      // Line indices this fix rewrote. The write below re-derives its content
+      // from `content` rather than reusing `lines`, so it needs to know which
+      // lines to redo. See the write for why.
+      const skill004Indices: number[] = [];
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         filesystemWildcardPattern.lastIndex = 0;
@@ -6569,6 +6631,7 @@ dist/
             if (lines[i] !== originalLine) {
               fixApplied = true;
               skill004FileModified = true;
+              skill004Indices.push(i);
             }
           }
 
@@ -6593,7 +6656,24 @@ dist/
         }
       }
       if (skill004FileModified) {
-        const skill004Content = lines.join('\n');
+        // Rebuilt from `content`, NOT from `lines`. Two reasons, both data loss:
+        //
+        //  1. `lines` is a SCAN buffer — every line over MAX_LINE_LENGTH was
+        //     truncated for regex safety. Writing it back silently discarded
+        //     the tail: a 12072-byte SKILL.md came back 10059 bytes, 2013
+        //     bytes gone, with no finding and no warning. A safety buffer must
+        //     never be a write source.
+        //  2. `lines` was split BEFORE SKILL-001 appended its signature block,
+        //     so writing it also erased a signature this same run had just
+        //     successfully written.
+        const skill004Current = content.split('\n');
+        for (const i of skill004Indices) {
+          if (skill004Current[i] === undefined) continue;
+          skill004Current[i] = skill004Current[i]
+            .replace(/filesystem:\s*\*/gi, 'filesystem:./')
+            .replace(/filesystem:\s*~\//gi, 'filesystem:./data/');
+        }
+        const skill004Content = skill004Current.join('\n');
         skill004FileModified = await this.applyFixWrite(skillFile, skill004Content);
         if (skill004FileModified) {
           content = skill004Content;
@@ -6608,6 +6688,9 @@ dist/
               f.passed = false;
               f.fixed = false;
               f.fixMessage = undefined;
+              // Same: the message quoted the REWRITTEN line, which is not what
+              // is on disk.
+              f.message = 'Broad filesystem access requested (auto-fix could not be written)';
             }
           }
         }
@@ -7798,6 +7881,9 @@ dist/
               f.passed = false;
               f.fixed = false;
               f.fixMessage = undefined;
+              // These read "Fixed: Gateway now bound to 127.0.0.1" while the
+              // config on disk is untouched.
+              f.message = `${f.name} (auto-fix could not be written)`;
             }
           }
           findings.push({
@@ -11176,6 +11262,10 @@ dist/
                   f.passed = false;
                   f.fixed = false;
                   f.fixMessage = undefined;
+                  // `message` was written from the in-memory replacement too,
+                  // so leaving it renders an outstanding CRITICAL whose text
+                  // says the credential was already replaced.
+                  f.message = `Credential exposed in ${relativePath} (auto-fix could not be written)`;
                 }
               }
             }

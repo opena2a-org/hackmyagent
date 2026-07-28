@@ -218,7 +218,10 @@ describe.runIf(darwin)('the whole fix-write class, not just one check', { timeou
     const disclosure = after.findings.find(f => f.checkId === 'FIX-WRITE-FAILED');
     expect(disclosure, 'a failed fix write was never disclosed').toBeDefined();
     expect(disclosure!.message).toContain('config.json');
-    expect(disclosure!.fix ?? '').not.toBe('hackmyagent secure --fix');
+    // `not.toBe` passed vacuously: the real value CONTAINS `secure --fix`
+    // as a re-run step, so an exact-match assertion never tested the dead end.
+    expect(disclosure!.fix ?? '').not.toMatch(/^\S+ secure --fix$/);
+    expect(disclosure!.message).toMatch(/EPERM|EACCES|EROFS/);
   });
 });
 
@@ -248,5 +251,127 @@ describe('countsAgainstScore reaches optimistic-passed checks', () => {
     // `fixVerified` unset means the verification pass has not run, which is
     // not the same as proven-failed. Only an explicit false counts.
     expect(countsAgainstScore({ passed: false, fixed: true })).toBe(false);
+  });
+});
+
+// Mutation testing found four of this work's behaviours unprotected: reverting
+// the cli.ts re-filter, removing the WEBCRED-001 revoke, unscoping the gateway
+// revoke, or dropping `isEnvRef` each left the whole suite green — including
+// both regressions the commit message led with. These close that gap.
+describe.runIf(darwin)('revokes are scoped, and do not leave a success message', { timeout: 240_000 }, () => {
+  it('a failed write on one file does not revoke a repair that landed on another', async () => {
+    // The gateway checks share ONE write across up to four configs, and
+    // `findings` accumulates across all of them, so an unscoped revoke
+    // reported a CRITICAL on a file the tool had just correctly repaired.
+    const dir = mkdtempSync(join(tmpdir(), 'hma-scope-'));
+    dirs.push(dir);
+    execSync('git init -q .', { cwd: dir });
+    writeFileSync(join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}');
+    mkdirSync(join(dir, '.openclaw'), { recursive: true });
+    const cfg = '{"gateway":{"host":"0.0.0.0","auth":{"token":"plaintext-secret-value-123"}}}';
+    writeFileSync(join(dir, 'openclaw.json'), cfg);
+    writeFileSync(join(dir, '.openclaw', 'config.json'), cfg);
+
+    lock(join(dir, '.openclaw', 'config.json'));
+    const r = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+
+    const landed = r.findings.filter(f => f.category === 'gateway' && f.file === 'openclaw.json');
+    const failed = r.findings.filter(f => f.category === 'gateway' && f.file !== 'openclaw.json');
+
+    // Guard: both files must have produced gateway findings.
+    expect(landed.length, 'writable config produced no gateway findings').toBeGreaterThan(0);
+    expect(failed.length, 'locked config produced no gateway findings').toBeGreaterThan(0);
+
+    // The writable config was repaired on disk, so its landed fixes must
+    // survive. An unscoped revoke clears `fixed` here, which is the exact
+    // regression: a CRITICAL reported on a file the tool just repaired.
+    // (GATEWAY-002 — missing websocketOrigins — is not auto-fixable and
+    // legitimately stays failing, so this asserts on the fixed ones only.)
+    expect(readFileSync(join(dir, 'openclaw.json'), 'utf8')).toContain('127.0.0.1');
+    expect(landed.some(f => f.fixed), 'the repair that landed was revoked').toBe(true);
+    expect(landed.filter(f => f.fixed).every(f => f.passed),
+      'a landed fix was marked failing').toBe(true);
+    // The locked one must be honest, and must not read as repaired.
+    expect(failed.every(f => !f.passed)).toBe(true);
+    expect(failed.some(f => /^Fixed:/.test(f.message ?? '')),
+      'a revoked finding still claims it was fixed').toBe(false);
+  });
+
+  it('a revoked WEBCRED-001 does not claim the credential was replaced', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hma-scope-'));
+    dirs.push(dir);
+    execSync('git init -q .', { cwd: dir });
+    writeFileSync(join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}');
+    mkdirSync(join(dir, 'public'), { recursive: true });
+    const body = '<script>const k="sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";</script>';
+    writeFileSync(join(dir, 'public', 'index.html'), body);
+
+    lock(join(dir, 'public', 'index.html'));
+    const r = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+
+    const w = r.findings.filter(f => f.checkId === 'WEBCRED-001');
+    expect(w.length, 'WEBCRED-001 did not fire — fixture is inert').toBeGreaterThan(0);
+    expect(readFileSync(join(dir, 'public', 'index.html'), 'utf8')).toBe(body);
+    expect(w.every(f => !f.passed && !f.fixed)).toBe(true);
+    expect(w.some(f => /replaced with environment variable/.test(f.message ?? '')),
+      'revoked finding still says the credential was replaced').toBe(false);
+  });
+});
+
+describe('GATEWAY-003 does not flag its own remedy', () => {
+  it('treats an env-var reference as not-a-plaintext-token', async () => {
+    // The auto-fix writes `${OPENCLAW_AUTH_TOKEN}`; the check flagged any
+    // non-empty string, so a repaired config stayed CRITICAL forever and
+    // could never verify.
+    const dir = mkdtempSync(join(tmpdir(), 'hma-envref-'));
+    dirs.push(dir);
+    execSync('git init -q .', { cwd: dir });
+    writeFileSync(join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}');
+    writeFileSync(join(dir, 'openclaw.json'),
+      '{"gateway":{"host":"127.0.0.1","auth":{"token":"${OPENCLAW_AUTH_TOKEN}"}}}');
+
+    const r = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
+    expect(r.findings.some(f => f.checkId === 'GATEWAY-003' && !f.passed)).toBe(false);
+  });
+
+  it('still flags a real plaintext token', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hma-envref-'));
+    dirs.push(dir);
+    execSync('git init -q .', { cwd: dir });
+    writeFileSync(join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}');
+    writeFileSync(join(dir, 'openclaw.json'),
+      '{"gateway":{"host":"127.0.0.1","auth":{"token":"supersecrettoken123"}}}');
+
+    const r = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
+    expect(r.findings.some(f => f.checkId === 'GATEWAY-003' && !f.passed)).toBe(true);
+  });
+});
+
+describe.runIf(darwin)('a backup that cannot be taken degrades, it does not abort', { timeout: 120_000 }, () => {
+  it('still scans, still reports, and says fixes were skipped', async () => {
+    // `createBackup` mkdirs into the target. On a read-only tree it threw out
+    // of scan() before a single check ran: raw EACCES, exit 1, and an empty
+    // body under --format json.
+    const dir = mkdtempSync(join(tmpdir(), 'hma-nobackup-'));
+    dirs.push(dir);
+    writeFileSync(join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}');
+    writeFileSync(join(dir, 'config.json'),
+      '{"anthropic":"sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}');
+
+    const before = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
+    expect(before.findings.some(f => f.checkId === 'CRED-001')).toBe(true);
+
+    execSync(`chmod 555 ${JSON.stringify(dir)}`);
+    try {
+      // Pre-fix this rejected instead of resolving.
+      const after = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+      expect(after.findings.some(f => f.checkId === 'CRED-001'),
+        'detection was lost when the backup failed').toBe(true);
+      expect(after.findings.some(f => f.checkId === 'FIX-BACKUP-FAILED'),
+        'the skipped-fix disclosure is missing').toBe(true);
+      expect(after.score).toBeLessThanOrEqual(before.score);
+    } finally {
+      execSync(`chmod 755 ${JSON.stringify(dir)}`);
+    }
   });
 });

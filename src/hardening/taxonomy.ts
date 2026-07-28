@@ -438,6 +438,9 @@ const TAXONOMY_MAP: Record<string, string> = {
  */
 export const TAXONOMY_EXEMPT_CHECKIDS: ReadonlySet<string> = new Set([
   'FIX-ERROR',
+  // Reports that `--fix` was skipped because no backup could be taken, so the
+  // run detected only. A fix-application status, not a threat.
+  'FIX-BACKUP-FAILED',
   // Reports that a computed fix could not be written to disk (read-only
   // mount, immutable flag, EPERM, full volume). A fix-application status,
   // like FIX-ERROR beside it — the underlying threat is still reported by
