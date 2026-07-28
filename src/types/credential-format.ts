@@ -346,39 +346,78 @@ export function isAcceptedCredentialMatch(candidate: string): boolean {
 }
 
 /**
+ * Characters the filler rules may examine across one call, in total.
+ *
+ * The entropy-blob walk resumes one character past where a REJECTED candidate
+ * started, so consecutive candidates overlap: candidate k is very nearly
+ * candidate k-1 minus its first character. Evaluating each one costs its own
+ * length, in the filler rules AND in the regex engine's greedy run, so a file
+ * built to produce many long rejected candidates costs O(n^2).
+ *
+ * `+` and `=` are what make that reachable. Both are inside the blob class
+ * `[A-Za-z0-9+=_]` yet are NON-word characters, so each one is an interior `\b`
+ * that starts a fresh candidate running to end-of-file. Measured on
+ * `('a'x40 + '=')xN` before this budget existed: 135 ms at 16 KB, 2.0 s at
+ * 64 KB, 32 s at 256 KB, ~512 s extrapolated at the 1 MB scanner cap — worse
+ * than the JWT case, and reachable with no `eyJ` in the file at all.
+ *
+ * Charging each rejected candidate its own length against one budget bounds
+ * both costs at once, and makes total work linear in the budget rather than in
+ * the square of the file size. Exhausting it is treated as "no accepted match":
+ * the vendor pass below has already run to completion, so no real vendor key
+ * can be lost this way, and reporting a credential instead would turn a large
+ * filler file into a false-positive storm.
+ */
+const MAX_FILLER_CHARS_EXAMINED = 1_000_000;
+
+/**
  * Find the first ACCEPTED credential-format substring in `text`.
  *
- * On rejecting a candidate the scan resumes one character past where that
- * candidate STARTED, not past where it ended. The entropy fallback is greedy
- * over a class that includes `_`, so a rejected filler run can begin one or two
- * characters before a real credential and swallow its prefix
- * (`KIAAKIAAKIA…` is period-4 filler that contains `AKIA…` from offset 3);
- * resuming past the whole run would skip the credential entirely.
+ * Two passes, deliberately.
  *
- * `MAX_REJECTED_CANDIDATES` bounds that one-character walk. It is a
- * belt-and-braces companion to the JWT bound above: the JWT bound removes the
- * quadratic cost inside a single scan, and this removes any possibility of an
- * unbounded number of scans. Reaching the cap is treated as "no accepted match"
- * — the alternative, reporting a credential, would turn a large filler file
- * into a false-positive storm, and any content with 20k rejected filler runs is
- * not a credential store.
+ * Pass 1 matches VENDOR prefixes only. It never evaluates the filler rules, so
+ * it is linear and unbudgeted, and it is what makes pass 2 safe to bound: a
+ * real `sk-ant-…`/`ghp_…`/JWT is found here no matter how much filler surrounds
+ * it. This also replaces the reason the old single-pass loop had to resume one
+ * character past a rejected candidate — that walk existed to find a vendor
+ * prefix swallowed by a greedy filler run (`'_'x38 + 'sk-ant-api03-…'` matches
+ * as one 40-character candidate), and pass 1 finds it directly.
+ *
+ * Pass 2 matches the high-entropy blob, still resuming one character past a
+ * rejected candidate, but now under the budget above. That resume is what keeps
+ * filler from hiding an ANONYMOUS blob — the case pass 1 cannot cover. It is
+ * reachable because `+` and `=` are inside the blob class yet are non-word
+ * characters, so they are interior `\b` positions: in
+ * `'_'x400 + '=' + <40 random>` the whole 441-character run is one candidate and
+ * is filler (underscores are 90.7% of it), while the secret after the `=` is a
+ * second candidate that only the resume reaches. Advancing to the end of the
+ * rejected run instead would lose it.
+ *
+ * The leftmost match wins. On a tie the vendor match wins, which preserves the
+ * single-regex behaviour where vendor alternatives were listed first and so
+ * matched in preference to the blob at the same offset.
  */
-const MAX_REJECTED_CANDIDATES = 20_000;
-
 export function findCredentialFormatMatch(
   text: string,
 ): { value: string; index: number } | undefined {
-  const re = buildCredentialFormatRegex('g');
+  const vendorRe = new RegExp(anchoredVendorAlternation(), 'g');
+  const vm = vendorRe.exec(text);
+  const vendorHit = vm ? { value: vm[0], index: vm.index } : undefined;
+
+  const blobRe = new RegExp(ENTROPY_BLOB_ALTERNATIVE, 'g');
+  let budget = MAX_FILLER_CHARS_EXAMINED;
   let m: RegExpExecArray | null;
-  let rejected = 0;
-  while ((m = re.exec(text)) !== null) {
-    if (isAcceptedCredentialMatch(m[0])) {
+  while ((m = blobRe.exec(text)) !== null) {
+    // Nothing past the vendor hit can be leftmost, so stop looking.
+    if (vendorHit && m.index >= vendorHit.index) break;
+    if (isCredibleEntropyBlob(m[0])) {
       return { value: m[0], index: m.index };
     }
-    if (++rejected > MAX_REJECTED_CANDIDATES) return undefined;
-    re.lastIndex = m.index + 1;
+    budget -= m[0].length;
+    if (budget <= 0) break;
+    blobRe.lastIndex = m.index + 1;
   }
-  return undefined;
+  return vendorHit;
 }
 
 /** True when `text` contains at least one accepted credential-format value. */

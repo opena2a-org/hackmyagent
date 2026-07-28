@@ -316,6 +316,31 @@ describe('credential-format entropy floor', () => {
       expect(elapsed, `1 MB adversarial scan took ${elapsed.toFixed(0)} ms`).toBeLessThan(2000);
     });
 
+    it('scans a 1 MB file of OVERLAPPING large rejected candidates in well under a second', () => {
+      // A second, worse quadratic than the JWT one, and reachable with no `eyJ`
+      // in the file at all. `+` and `=` sit inside the blob class
+      // `[A-Za-z0-9+=_]` but are NON-word characters, so every `=` is an
+      // interior `\b` that starts a fresh candidate running to end-of-file.
+      // With the walk resuming one character past each rejected candidate, the
+      // engine re-scanned almost the whole file per `=`. Measured before the
+      // budget: 135 ms at 16 KB, 2.0 s at 64 KB, 32 s at 256 KB.
+      const payload = ('a'.repeat(40) + '=').repeat(Math.floor((1024 * 1024) / 41));
+      const started = performance.now();
+      expect(hasCredentialFormat(payload)).toBe(false);
+      const elapsed = performance.now() - started;
+      expect(elapsed, `1 MB overlapping-candidate scan took ${elapsed.toFixed(0)} ms`).toBeLessThan(2000);
+    });
+
+    it('finds a real key buried behind a megabyte of that same filler', () => {
+      // The budget must not become a detection hole. The vendor pass runs to
+      // completion before the bounded blob walk, so a real key stays findable
+      // no matter how much filler precedes it.
+      const filler = ('a'.repeat(40) + '=').repeat(Math.floor((1024 * 1024) / 41));
+      const key = 'sk-ant-api03-R3alK3yV4lu3W1thEntropy0';
+      expect(hasCredentialFormat(`${filler}\n${key}\n`), 'key after 1 MB of filler').toBe(true);
+      expect(findCredentialFormatMatch(`${filler}\n${key}\n`)?.value).toBe(key);
+    });
+
     it('scans a 1 MB file of rejected filler runs in well under a second', () => {
       const payload = ('_'.repeat(47) + '\n').repeat((1024 * 1024) / 48);
       const started = performance.now();
@@ -376,18 +401,36 @@ describe('credential-format entropy floor', () => {
     }
 
     it('returns the CREDENTIAL, not the filler run that swallowed its prefix', () => {
-      // This is the direct, non-vacuous guard on `re.lastIndex = m.index + 1`
-      // in `findCredentialFormatMatch`. Under the previous "distinct >= 2"
-      // floor the line was provably INERT — `'_'x38 + 'sk'` has three distinct
-      // characters, so the candidate was accepted and the loop never resumed —
-      // and deleting it broke nothing. The dominance rule rejects that same run
-      // (38 of 40 characters are `_`), which makes the resume load-bearing:
-      // without it the scan restarts at offset 40, past the `sk` at offset 38,
-      // and the key is lost entirely.
+      // Guards the VENDOR pre-pass: the greedy blob absorbs `'_'x38 + 'sk'` into
+      // one 40-character candidate, so a single-pass scan reports the filler run
+      // (or, once the dominance rule rejects it, nothing at all). Mutation
+      // guard: removing the vendor pre-pass turns this red.
       const key = 'sk-ant-api03-R3alK3yV4lu3W1thEntropy0';
       const hit = findCredentialFormatMatch('_'.repeat(38) + key);
       expect(hit?.value, 'the match must be the key itself').toBe(key);
       expect(hit?.index, 'and it must be reported at the key offset').toBe(38);
+    });
+
+    it('finds an ANONYMOUS blob that filler hides in the same run', () => {
+      // The direct, non-vacuous guard on `blobRe.lastIndex = m.index + 1`.
+      //
+      // The vendor pre-pass cannot cover this one: the secret has no vendor
+      // prefix. The case is reachable because `+` and `=` sit inside the blob
+      // class `[A-Za-z0-9+=_]` but are NON-word characters, so they are
+      // interior `\b` positions. Here the whole 441-character run is a single
+      // candidate and is filler — underscores are 90.7% of it, just over the
+      // dominance threshold — while the secret after the `=` is a second
+      // candidate that only the resume reaches. Advancing to the end of the
+      // rejected run instead loses it entirely.
+      //
+      // Under the earlier "distinct >= 2" floor this line was provably inert,
+      // which is what the finding recorded. It is load-bearing now.
+      const secret = drawFrom('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789', 40, 77);
+      const run = '_'.repeat(400) + '=' + secret;
+      expect(isCredibleEntropyBlob(run), 'precondition: the whole run must be filler').toBe(false);
+      const hit = findCredentialFormatMatch(run);
+      expect(hit, 'a high-entropy secret must not be hidden by the filler around it').toBeDefined();
+      expect(hit!.value, 'the reported match must carry the secret').toContain(secret);
     });
   });
 

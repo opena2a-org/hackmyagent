@@ -24,7 +24,13 @@ All notable changes to HackMyAgent are documented in this file.
 
   Anchoring is chosen by gate polarity, not applied uniformly. The suppression vetoes read `!predicate(content)`, so narrowing their predicate would widen the carve-out; they keep the unanchored, deliberately trigger-happy matcher.
 
-- **Scanning a large file no longer takes minutes.** Iterating past rejected candidates removed the previous early exit and exposed the JWT alternative's backtracking: its base64url segment class contains `-`, so on `eyJ-eyJ-…` filler it ran to end-of-file at every one of the O(n) `eyJ` offsets. Measured before the fix: 58 ms at 16 KB, 808 ms at 64 KB, 13.5 s at 256 KB, and roughly 215 s at the 1 MB scanner cap, against 0.0 ms at every size on 0.25.1. The JWT segments are now bounded and matched atomically, and the candidate walk is capped. The same 1 MB input now scans in about 106 ms, and the cost is linear in file size.
+- **Scanning a large file no longer takes minutes.** Iterating past rejected candidates removed the previous early exit and exposed two separate quadratics.
+
+  The first is the JWT alternative's backtracking: its base64url segment class contains `-`, so on `eyJ-eyJ-…` filler it ran to end-of-file at every one of the O(n) `eyJ` offsets. Measured before the fix: 58 ms at 16 KB, 808 ms at 64 KB, 13.5 s at 256 KB, and roughly 215 s at the 1 MB scanner cap, against 0.0 ms at every size on 0.25.1. The JWT segments are now bounded and matched atomically.
+
+  The second is worse and needs no `eyJ` in the file at all. `+` and `=` sit inside the high-entropy blob class `[A-Za-z0-9+=_]` but are non-word characters, so each one is an interior word boundary that starts a fresh candidate running to end-of-file; with the walk resuming one character past each rejected candidate, the engine re-scanned nearly the whole file per `=`. Measured on `('a'x40 + '=')xN`: 135 ms at 16 KB, 2.0 s at 64 KB, 32 s at 256 KB, and roughly 512 s at 1 MB.
+
+  The scan is now two passes. A vendor-prefix pass runs first and is linear and unbudgeted, so a real key is found no matter how much filler surrounds it; the high-entropy pass follows under a total work budget. The 1 MB JWT-filler case takes about 105 ms and the 1 MB `=`-filler case about 21 ms, both linear in file size, and a real key buried behind a megabyte of either is still reported.
 
 - **Newly detectable tokens are no longer partly echoed back in finding evidence.** `maskCredentialValue` kept a fourth hand-maintained copy of the vendor list, five entries behind (`SG.`, `hf_`, `glpat-`, `npm_`, `ghu_`). Those tokens fell to the unknown-shape masking branch, which exposes the first eight characters — for `hf_…` that is five characters of live secret body written into `evidence`, which the masking layer exists to prevent. The prefix set is now derived from the shared vendor list, so a prefix cannot become detectable without also becoming maskable.
 
