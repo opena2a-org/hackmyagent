@@ -1033,7 +1033,15 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   let nanomindScoreClamped = false;
 
   if (localScan) {
-    failed = localScan.findings.filter(f => !f.passed);
+    // The shared predicate, not a raw field read. `passed` alone is wrong in
+    // both directions here: an unverified fix used to report `passed: true`
+    // and vanish from this block while still clamping the score, and a
+    // VERIFIED fix keeps `passed: false` on every `PERM-001`-shaped check, so
+    // a resolved issue would render as outstanding the moment it reached this
+    // line. Today an upstream filter happens to spare us the second case —
+    // but depending on that invariant is what produced the first, so decide
+    // it here with the same function the score uses.
+    failed = localScan.findings.filter(f => countsAgainstScore(f));
     score = localScan.score;
     maxScore = localScan.maxScore;
     critical = failed.filter(f => f.severity === 'critical').length;
