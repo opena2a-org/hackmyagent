@@ -26,7 +26,7 @@
  * never written as literals, so nothing here trips a secret scanner.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, access, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
@@ -206,6 +206,216 @@ describe('#300 every fix write is covered by the backup', () => {
 
         expect(landed, 'a stale backup context authorised a write').toBe(false);
         expect(await readFile(target, 'utf-8')).toBe(before);
+      });
+    });
+  });
+});
+
+/**
+ * #304 — the #300 guard protected a normalized DESCRIPTION of the path, not
+ * the path being written.
+ *
+ * `toTargetRelativePath` folded `\` to `/` "for Windows". On POSIX `\` is an
+ * ordinary filename byte, so the derived key no longer round-tripped to the
+ * file it named, and every consumer downstream inherited that:
+ *
+ *   - `ensureBackupCovers` copied from `path.join(targetDir, rel)`, which
+ *     resolved elsewhere; `copyFile` raised ENOENT; the catch read that as
+ *     "nothing to copy, so this is a creation" and returned TRUE — authorising
+ *     the very write it exists to gate. Reproduced: `we\ird/config.json`
+ *     rewritten, absent from the backup, rollback exit 0 "Restored 2 modified
+ *     files", original bytes unrecoverable.
+ *   - two DIFFERENT files (`we\ird/…` and `we/ird/…`) collided onto one key,
+ *     so one file's backup held the other's bytes.
+ *   - the mangled key was appended to `absentAtBackup`, the list whose
+ *     membership authorises a rollback-time `unlink`.
+ *
+ * Fixed at the layer: `path.join`/`path.relative` are already platform-correct,
+ * so the manual rewriting is gone. Absence is now PROVEN with `lstat` against
+ * the real path instead of inferred from an errno, and write-time absences are
+ * recorded separately from backup-time ones.
+ *
+ * The assertion is round-trip recovery of the actual bytes, per file. A test
+ * that a backup directory exists, or that SOME file was restored, stays green
+ * through all of the above.
+ */
+describe('#304 coverage is keyed on the path being written', () => {
+  const BS = 'we\\ird/config.json';   // a literal backslash in the directory name
+  const FS_ = 'we/ird/config.json';   // collides with BS under the old folding
+
+  it('restores a config whose path contains a backslash', async () => {
+    await withTree({
+      'package.json': PKG,
+      [BS]: JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n',
+    }, async (dir) => {
+      const before = await readAll(dir, [BS]);
+
+      await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+
+      // Non-vacuity: the round trip proves nothing if --fix never wrote here.
+      expect(
+        (await readAll(dir, [BS]))[BS],
+        '--fix left the backslash path untouched; this test is measuring nothing',
+      ).not.toBe(before[BS]);
+
+      await new HardeningScanner().rollback(dir);
+
+      expect(
+        (await readAll(dir, [BS]))[BS],
+        'a path containing a backslash was rewritten with no recoverable copy, '
+        + 'and rollback reported success anyway (#304)',
+      ).toBe(before[BS]);
+    });
+  });
+
+  it('keeps two paths that differ only by separator byte apart', async () => {
+    await withTree({
+      'package.json': PKG,
+      [BS]: JSON.stringify({ token: FAKE_GH_TOKEN, which: 'backslash' }) + '\n',
+      [FS_]: JSON.stringify({ token: FAKE_GH_TOKEN, which: 'realdir' }) + '\n',
+    }, async (dir) => {
+      const before = await readAll(dir, [BS, FS_]);
+      // Guard the fixture itself: if these two ever hold identical bytes the
+      // collision below is undetectable and the test silently stops working.
+      expect(before[BS], 'fixture collision — the two files must differ')
+        .not.toBe(before[FS_]);
+
+      await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+      for (const rel of [BS, FS_]) {
+        expect(
+          (await readAll(dir, [rel]))[rel],
+          `--fix left ${rel} untouched; this test is measuring nothing`,
+        ).not.toBe(before[rel]);
+      }
+
+      await new HardeningScanner().rollback(dir);
+
+      // Each must come back as ITSELF. Sharing one manifest key restored one
+      // file's bytes over the other and lost the difference silently.
+      for (const rel of [BS, FS_]) {
+        expect(
+          (await readAll(dir, [rel]))[rel],
+          `${rel} did not round-trip to its own bytes — two distinct files `
+          + 'shared one backup key (#304)',
+        ).toBe(before[rel]);
+      }
+    });
+  });
+
+  it('classifies an existing file as existing, never as one it generated', async () => {
+    await withTree({
+      'package.json': PKG,
+      [BS]: JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n',
+    }, async (dir) => {
+      await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+      const manifest = await latestManifest(dir);
+
+      expect(
+        manifest.existingFiles,
+        'a file that was on disk before the run is missing from `existingFiles`, '
+        + 'so rollback has nothing to restore it from',
+      ).toContain(BS);
+
+      // The unlink hazard. `createdFiles` membership is what licenses rollback
+      // to DELETE a path, and it is fed from the proven-absent lists. A file
+      // the user wrote must never reach it.
+      expect(
+        manifest.createdFiles.map(c => c.path),
+        'a pre-existing user file was recorded as HMA-generated; rollback '
+        + 'would delete it outright instead of restoring it (#304)',
+      ).not.toContain(BS);
+      expect(manifest.absentAtBackup).not.toContain(BS);
+      expect(manifest.absentAtFixWrite ?? []).not.toContain(BS);
+    });
+  });
+
+  /**
+   * The guard's own seam. The three round-trip tests above pin the reported
+   * defect, but they cannot reach two of the branches the fix adds, because
+   * with the path key honest again `path.join(targetDir, rel)` and `filePath`
+   * name the same file and `copyFile` simply succeeds. These drive the branches
+   * directly — the same technique the fail-safe block above already uses — so
+   * the ENOENT classification and the write-time provenance are not left as
+   * unguarded code.
+   */
+  describe('absence is proven, not inferred', () => {
+    /** Establish a real backup context, then hand back the write seam. */
+    async function armed(dir: string) {
+      const scanner = new HardeningScanner();
+      await scanner.scan({ targetDir: dir, autoFix: true });
+      const base = path.join(dir, '.hackmyagent-backup');
+      const stamps = (await readdir(base)).sort();
+      return {
+        backupPath: path.join(base, stamps[stamps.length - 1]),
+        applyFixWrite: (f: string, c: string) => (scanner as unknown as {
+          applyFixWrite(f: string, c: string): Promise<boolean>;
+        }).applyFixWrite(f, c),
+        recordCreatedFiles: (t: string, b: string, c: string[]) =>
+          scanner.recordCreatedFiles(t, b, c),
+      };
+    }
+
+    it('treats a dangling symlink as an entry that exists, not as a creation', async () => {
+      await withTree({ 'package.json': PKG, 'config.json': '{"a":1}\n' }, async (dir) => {
+        const link = path.join(dir, 'dangling.json');
+        await symlink(path.join(dir, 'absent-target.json'), link);
+
+        const { applyFixWrite } = await armed(dir);
+
+        // `copyFile` FOLLOWS the link, so it raises ENOENT even though the
+        // link itself is right there. Reading that errno as "nothing to copy,
+        // therefore a creation" is what #304 was: the write gets authorised
+        // with nothing to restore from, and rollback would then delete a
+        // symlink the user placed.
+        const landed = await applyFixWrite(link, '{"a":2}\n');
+
+        expect(
+          landed,
+          'a write was authorised through a link whose target could not be '
+          + 'copied — the backup cannot undo it (#304)',
+        ).toBe(false);
+        await expect(
+          access(path.join(dir, 'absent-target.json')),
+          'the fix wrote THROUGH the dangling link, creating a file no backup covers',
+        ).rejects.toThrow();
+      });
+    });
+
+    it('records a created file that was never a static backup candidate', async () => {
+      await withTree({ 'package.json': PKG, 'config.json': '{"a":1}\n' }, async (dir) => {
+        // Not in `BACKUP_FILES`, so `createBackup` never observed it and it
+        // reaches `absentAtBackup` through no route at all. This is the shape
+        // every detection widening produces (#298 is queued behind it): the
+        // fix creates a path the static candidate list never predicted.
+        const generated = path.join(dir, 'deep', 'nested', 'generated.json');
+        await mkdir(path.dirname(generated), { recursive: true });
+
+        const { backupPath, applyFixWrite, recordCreatedFiles } = await armed(dir);
+
+        expect(
+          await applyFixWrite(generated, '{"generated":true}\n'),
+          'a creation below the candidate list was refused',
+        ).toBe(true);
+
+        const rel = path.relative(dir, generated);
+        const seen = JSON.parse(
+          await readFile(path.join(backupPath, '.manifest.json'), 'utf-8'),
+        ) as BackupManifest;
+        expect(
+          seen.absentAtFixWrite ?? [],
+          'a write-time absence was not recorded under its own provenance',
+        ).toContain(rel);
+
+        await recordCreatedFiles(dir, backupPath, [generated]);
+
+        const after = JSON.parse(
+          await readFile(path.join(backupPath, '.manifest.json'), 'utf-8'),
+        ) as BackupManifest;
+        expect(
+          after.createdFiles.map(c => c.path),
+          'a file the fix demonstrably generated was not recorded as created, '
+          + 'so rollback leaves it behind while reporting a clean revert',
+        ).toContain(rel);
       });
     });
   });

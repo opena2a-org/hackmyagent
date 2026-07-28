@@ -44,8 +44,21 @@ export interface BackupManifest {
   version?: number;
   /** Files that existed before the fix and were copied into the backup. */
   existingFiles: string[];
-  /** Backup candidates that did not exist yet. Candidates only, not claims. */
+  /**
+   * Backup candidates observed missing WHEN THE BACKUP WAS TAKEN. Candidates
+   * only, not claims: nothing here is known to have been written.
+   */
   absentAtBackup: string[];
+  /**
+   * Paths proven missing immediately BEFORE a fix wrote them (#300/#304).
+   *
+   * Kept apart from `absentAtBackup` because the two are different evidence
+   * and `recordCreatedFiles` turns both into a rollback-time `unlink`. Folding
+   * write-time absences into the backup-time list silently falsified the
+   * safety argument stated at that call site — that every entry was observed
+   * missing at backup time — which is the one property making the delete safe.
+   */
+  absentAtFixWrite?: string[];
   /** Files a fix stage created, hashed so rollback can verify before deleting. */
   createdFiles: CreatedFileRecord[];
   /** v1 `createdFiles` entries, preserved verbatim so rollback can report them. */
@@ -1927,9 +1940,10 @@ export class HardeningScanner {
         [
           ...findings.filter(f => f.fixed && f.file).map(f => f.file as string),
           // Plus every path a fix actually wrote. `recordCreatedFiles` still
-          // records only paths it observed MISSING at backup time and guards
-          // each with a sha256, so widening the candidate list cannot make
-          // rollback delete a file the user wrote.
+          // records only paths HMA OBSERVED missing — at backup time, or
+          // proven absent immediately before the write — and guards each with
+          // a sha256, so widening the candidate list cannot make rollback
+          // delete a file the user wrote.
           ...this.fixWritePaths,
         ],
       );
@@ -2557,13 +2571,27 @@ export class HardeningScanner {
     // `copyFile` follows symlinks, matching `createBackup`: the fix sites
     // write THROUGH a link, so the bytes at the far end are what has to be
     // recoverable. See the symlink note in `createBackup`.
+    //
+    // Copy FROM `filePath` — the path this write will actually land on — and
+    // never from a path rebuilt out of `rel`. `rel` is a normalized
+    // description of `filePath`, and re-deriving the source from it was #304:
+    // the guard protected a path that was not the one being written.
     let existed = true;
     try {
       const destPath = path.join(ctx.backupDir, rel);
       await fs.mkdir(path.dirname(destPath), { recursive: true });
-      await fs.copyFile(path.join(ctx.targetDir, rel), destPath);
+      await fs.copyFile(filePath, destPath);
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') return false;
+      // ENOENT is overloaded here and only ONE of its meanings is a creation.
+      // It is also raised for a dangling symlink (the entry exists and the fix
+      // writes THROUGH it), for a backup directory that vanished mid-run, and
+      // for any source that resolves somewhere unexpected. So absence is
+      // PROVEN against the real path rather than inferred from an errno —
+      // inferring it is what made the guard authorise the write it exists to
+      // gate. `lstat`, not `stat`: a dangling symlink is an entry that exists,
+      // so it is not a creation, and it has no recoverable copy — fail safe.
+      if (!(await this.isGenuinelyAbsent(filePath))) return false;
       existed = false;
     }
 
@@ -2573,6 +2601,27 @@ export class HardeningScanner {
     if (!(await this.appendToBackupManifest(ctx.backupDir, rel, existed))) return false;
     ctx.covered.add(rel);
     return true;
+  }
+
+  /**
+   * True only when nothing exists at `filePath` — proven, not inferred.
+   *
+   * This is the sole evidence that a fix write is a CREATION rather than an
+   * overwrite, and `recordCreatedFiles` turns that classification into a
+   * rollback-time `unlink`. So it fails safe in every unclear direction: an
+   * entry that exists is not a creation, and an `lstat` that fails for any
+   * other reason (EACCES, ELOOP, EIO) proves nothing, so it is not a creation
+   * either. `lstat` deliberately does not follow symlinks — a dangling link
+   * is an entry the user put there, and deleting it at rollback would destroy
+   * something HMA did not create.
+   */
+  private async isGenuinelyAbsent(filePath: string): Promise<boolean> {
+    try {
+      await fs.lstat(filePath);
+      return false;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException)?.code === 'ENOENT';
+    }
   }
 
   /**
@@ -2590,7 +2639,10 @@ export class HardeningScanner {
     const manifestPath = path.join(backupDir, '.manifest.json');
     try {
       const manifest = this.parseManifest(await fs.readFile(manifestPath, 'utf-8'));
-      const list = existed ? manifest.existingFiles : manifest.absentAtBackup;
+      // Write-time absences go in their OWN list. See `absentAtFixWrite`.
+      const list = existed
+        ? manifest.existingFiles
+        : (manifest.absentAtFixWrite ??= []);
       if (!list.includes(rel)) list.push(rel);
       await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
       return true;
@@ -6675,20 +6727,28 @@ dist/
       return;
     }
 
-    // Only a file we affirmatively observed to be MISSING when the backup was
-    // taken can be recorded as created. A fixed finding on a file that is in
-    // neither list (not a backup candidate) proves the fix touched it, not
-    // that the fix made it — recording it would let rollback delete a file
-    // the user wrote. Fail-safe direction: never delete what we cannot prove
-    // we generated, even at the cost of leaving a file behind (which the
-    // rollback report then names).
-    const absentAtBackup = new Set(manifest.absentAtBackup);
+    // Only a file HMA affirmatively observed to be MISSING — either when the
+    // backup was taken, or immediately before a fix wrote it — can be recorded
+    // as created. A fixed finding on a file in neither list (not a backup
+    // candidate) proves the fix touched it, not that the fix made it, and
+    // recording it would let rollback delete a file the user wrote. Fail-safe
+    // direction: never delete what we cannot prove we generated, even at the
+    // cost of leaving a file behind (which the rollback report then names).
+    //
+    // Both lists are OBSERVATIONS, never inferences. #304 was an errno being
+    // read as an observation: a failed copy meant "absent", so a file that
+    // existed could be classified as generated and unlinked at rollback. See
+    // `isGenuinelyAbsent`.
+    const provenAbsent = new Set([
+      ...manifest.absentAtBackup,
+      ...(manifest.absentAtFixWrite ?? []),
+    ]);
     const alreadyRecorded = new Set(manifest.createdFiles.map(c => c.path));
     let changed = false;
 
     for (const candidate of candidatePaths) {
       const rel = this.toTargetRelativePath(candidate, targetDir);
-      if (!rel || !absentAtBackup.has(rel) || alreadyRecorded.has(rel)) continue;
+      if (!rel || !provenAbsent.has(rel) || alreadyRecorded.has(rel)) continue;
 
       const absolute = path.join(targetDir, rel);
       // Defense in depth: a finding's `file` is data, and this path feeds an
@@ -6722,7 +6782,17 @@ dist/
    * target directory.
    */
   private toTargetRelativePath(candidate: string, targetDir: string): string | null {
-    const cleaned = candidate.replace(/\\/g, '/').replace(/^\.\//, '');
+    // No manual separator rewriting (#304). `\` was folded to `/` here to
+    // "handle Windows paths", but `path.join`/`path.relative`/`path.isAbsolute`
+    // are already platform-correct — on Windows both separators are separators,
+    // and on POSIX `\` is an ordinary filename byte. Rewriting it turned a
+    // legal name into a different path: the value became a description of
+    // itself that no longer round-trips to the file it names. Everything
+    // downstream (the backup copy, the manifest key, the rollback restore, the
+    // created-file proof) then operated on that description, so a component
+    // containing a `\` was rewritten with no recoverable copy while rollback
+    // reported success. Two distinct files could also collide onto one key.
+    const cleaned = candidate.replace(/^\.\//, '');
     if (!cleaned) return null;
     const absolute = path.isAbsolute(cleaned) ? cleaned : path.join(targetDir, cleaned);
     const rel = path.relative(targetDir, absolute);
@@ -6762,6 +6832,9 @@ dist/
       existingFiles,
       absentAtBackup: Array.isArray(parsed.absentAtBackup)
         ? (parsed.absentAtBackup as unknown[]).filter((f): f is string => typeof f === 'string')
+        : [],
+      absentAtFixWrite: Array.isArray(parsed.absentAtFixWrite)
+        ? (parsed.absentAtFixWrite as unknown[]).filter((f): f is string => typeof f === 'string')
         : [],
       createdFiles,
       legacyCreatedFiles: legacyCreatedFiles.length > 0 ? legacyCreatedFiles : undefined,
