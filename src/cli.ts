@@ -6395,11 +6395,25 @@ Examples:
           }
         }
 
+        // What still counts as outstanding after the fix pass.
+        //
+        // Hoisted above the JSON branch and shared with the text summary
+        // below, because the two used to compute it differently — text on
+        // `!fixedIds.has(id) || !autoFixable`, JSON on
+        // `!remediations.some(r => r.findingId === id)`. One decision on two
+        // bodies of evidence, so the payload's `remainingIssues` and the exit
+        // code could disagree with each other and with the text run on the
+        // same tree. A finding that was remediated but is not auto-fixable is
+        // still outstanding: the remediation recorded an attempt, not a
+        // resolution.
+        const fixedIds = new Set(allRemediations.map((r) => r.findingId));
+        const remainingFindings = allFindings.filter(
+          (f) => !fixedIds.has(f.id) || !f.autoFixable
+        );
+
         // JSON output
         if (options.json) {
-          const unfixed = allFindings.filter(
-            (f) => !allRemediations.some((r) => r.findingId === f.id)
-          );
+          const unfixed = remainingFindings;
           const jsonOutput = {
             target: targetDir,
             mode: options.dryRun ? 'dry-run' : options.scanOnly ? 'scan-only' : 'fix',
@@ -6417,6 +6431,18 @@ Examples:
           };
           writeJsonStdout(jsonOutput);
           if (pluginErrors > 0) process.exit(2);
+          // The same severity gate the text path applies below. Without it
+          // this branch returned 0 no matter what survived the fix pass, so
+          // `--json` — the mode `--help` documents FOR CI, and the one whose
+          // exit code is the only thing a pipeline reads — was the one mode
+          // that never enforced "exit 1 if critical/high issues remain".
+          if (
+            remainingFindings.some(
+              (f) => f.severity === 'critical' || f.severity === 'high'
+            )
+          ) {
+            process.exit(1);
+          }
           return;
         }
 
@@ -6425,8 +6451,8 @@ Examples:
         console.log(`\nFindings: ${allFindings.length} total | ${allRemediations.length} fixed\n`);
 
         // Show remaining issues (not auto-fixed)
-        const fixedIds = new Set(allRemediations.map((r) => r.findingId));
-        const remainingFindings = allFindings.filter((f) => !fixedIds.has(f.id) || !f.autoFixable);
+        // `remainingFindings` is computed once, above the JSON branch, so
+        // both output modes gate on the same set.
 
         if (remainingFindings.length > 0) {
           console.log(`${colors.red}Remaining Issues (require manual review):${RESET()}\n`);
