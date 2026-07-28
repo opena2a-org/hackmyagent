@@ -23,6 +23,39 @@ import { HardeningScanner } from '../../src/hardening/scanner';
 /** Synthesised at runtime — never a literal in the source tree. */
 const FAKE_GH_TOKEN = `ghp_${'a'.repeat(36)}`;
 
+/**
+ * Write a backup that is genuinely HMA's own: a timestamped directory with a
+ * manifest of the shape `createBackup` produces, holding copies of files that
+ * exist in `projectDir`. Returns the path of the first copy.
+ *
+ * #305 — the exclusion is keyed on those two properties, so a fixture that
+ * only *looks* like a backup is (correctly) scanned like any other directory.
+ */
+async function seedRealBackup(
+  projectDir: string,
+  copies: Record<string, string>,
+): Promise<string> {
+  const backupDir = path.join(projectDir, '.hackmyagent-backup', '2026-01-01-000000');
+  await mkdir(backupDir, { recursive: true });
+  await writeFile(
+    path.join(backupDir, '.manifest.json'),
+    JSON.stringify({
+      version: 2,
+      existingFiles: Object.keys(copies),
+      absentAtBackup: [],
+      createdFiles: [],
+    }, null, 2),
+  );
+  let first = '';
+  for (const [rel, body] of Object.entries(copies)) {
+    const dest = path.join(backupDir, rel);
+    await mkdir(path.dirname(dest), { recursive: true });
+    await writeFile(dest, body);
+    if (!first) first = dest;
+  }
+  return first;
+}
+
 async function scanTreeWithConfigAt(relPath: string) {
   const dir = await mkdtemp(path.join(tmpdir(), 'hma-292-'));
   try {
@@ -93,16 +126,27 @@ describe('#292 config-shaped credential detection below the scan root', () => {
     // credential INSIDE the backup, so `rollback` restored already-redacted
     // content and the original was gone — the backup silently stopped being a
     // backup. It also double-counted every finding.
+    //
+    // #305: the fixture is now a REAL backup — a valid manifest, and a live
+    // file that the copy mirrors. Those are the two things that make it HMA's
+    // own artifact rather than a directory wearing its name, and suppressing
+    // it hides nothing because the live original reports the same finding.
     const dir = await mkdtemp(path.join(tmpdir(), 'hma-292-bak-'));
     try {
-      await writeFile(path.join(dir, 'package.json'), '{"name":"c","version":"1.0.0"}\n');
-      await mkdir(path.join(dir, '.hackmyagent-backup', '2026-01-01T00-00-00'), { recursive: true });
-      const backupCopy = path.join(dir, '.hackmyagent-backup', '2026-01-01T00-00-00', 'config.json');
       const backupBody = JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n';
-      await writeFile(backupCopy, backupBody);
+      await writeFile(path.join(dir, 'package.json'), '{"name":"c","version":"1.0.0"}\n');
+      await writeFile(path.join(dir, 'config.json'), backupBody);
+      const backupCopy = await seedRealBackup(dir, { 'config.json': backupBody });
 
       const scanner = new HardeningScanner();
       const result = await scanner.scan({ targetDir: dir, autoFix: true });
+
+      // Non-vacuity: the live original must fire, or "no backup findings" is
+      // just "the walk found nothing anywhere".
+      expect(
+        result.findings.some((f) => f.checkId === 'CRED-001' && f.file === 'config.json'),
+        'the live config never fired; this test is measuring nothing',
+      ).toBe(true);
 
       const backupFindings = result.findings.filter((f) => f.file?.includes('.hackmyagent-backup'));
       expect(backupFindings, 'the backup directory must not produce findings').toEqual([]);
@@ -133,17 +177,16 @@ describe('#292 config-shaped credential detection below the scan root', () => {
     const parent = await mkdtemp(path.join(tmpdir(), 'hma-302-'));
     try {
       const child = path.join(parent, 'child');
-      const backupDir = path.join(child, '.hackmyagent-backup', '2026-01-01T00-00-00');
-      await mkdir(backupDir, { recursive: true });
+      await mkdir(child, { recursive: true });
       await writeFile(path.join(parent, 'package.json'), '{"name":"p","version":"1.0.0"}\n');
       await writeFile(path.join(child, 'package.json'), '{"name":"c","version":"1.0.0"}\n');
 
-      const backupCopy = path.join(backupDir, 'config.json');
       const backupBody = JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n';
-      await writeFile(backupCopy, backupBody);
       // A live config beside it, so the scan has real work to do here and the
-      // assertion is not just "the walk found nothing at all".
+      // assertion is not just "the walk found nothing at all". It is also the
+      // file the backup copy mirrors, which is what makes the copy redundant.
       await writeFile(path.join(child, 'config.json'), backupBody);
+      const backupCopy = await seedRealBackup(child, { 'config.json': backupBody });
 
       const result = await new HardeningScanner().scan({ targetDir: parent, autoFix: true });
 
@@ -167,6 +210,128 @@ describe('#292 config-shaped credential detection below the scan root', () => {
     } finally {
       await rm(parent, { recursive: true, force: true });
     }
+  });
+
+  describe('#305 the exclusion is keyed on the artifact, not on its name', () => {
+    // The exclusion above was `is any ancestor directory NAMED
+    // .hackmyagent-backup`, and the scanned tree is attacker-controlled. So the
+    // NAME was a one-word suppression token. Reproduced with identical bytes
+    // and only the directory name differing:
+    //
+    //   lib/.notabackup/config.json          69/100, 2 CRED-001 CRITICAL, exit 1
+    //   lib/.hackmyagent-backup/config.json  96/100, silent,              exit 0
+    //
+    // That is the same 69 -> 96 suppression as the `${...}` brace bypass this
+    // release calls unacceptable, so it gets the same answer.
+    async function scanWithCredIn(relDir: string, opts: { manifest: boolean; live: boolean }) {
+      const dir = await mkdtemp(path.join(tmpdir(), 'hma-305-'));
+      try {
+        const body = JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n';
+        await writeFile(path.join(dir, 'package.json'), '{"name":"c","version":"1.0.0"}\n');
+        await mkdir(path.join(dir, relDir), { recursive: true });
+        await writeFile(path.join(dir, relDir, 'config.json'), body);
+        if (opts.manifest) {
+          await writeFile(
+            path.join(dir, relDir, '.manifest.json'),
+            JSON.stringify({ version: 2, existingFiles: [], absentAtBackup: [], createdFiles: [] }),
+          );
+        }
+        // A benign live file at the path this copy would be a backup OF, so
+        // the counterpart half of the guard is satisfied without planting a
+        // second credential (which would fire on its own and make the
+        // assertions below pass for the wrong reason).
+        if (opts.live) {
+          await mkdir(path.join(dir, 'lib'), { recursive: true });
+          await writeFile(path.join(dir, 'lib', 'config.json'), '{"note":"not a secret"}\n');
+        }
+        const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
+        return result.findings.filter((f) => f.checkId === 'CRED-001' && !f.passed);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    }
+
+    const NAMED = 'lib/.hackmyagent-backup/2026-01-01-000000';
+    const CONTROL = 'lib/.notabackup/2026-01-01-000000';
+
+    it('detects a credential under a directory merely NAMED like a backup', async () => {
+      const cred = await scanWithCredIn(NAMED, { manifest: false, live: false });
+      expect(
+        cred.length,
+        'a directory called .hackmyagent-backup suppressed a real credential — '
+        + 'the exclusion is a token the scanned tree can type (#305)',
+      ).toBeGreaterThan(0);
+    });
+
+    it('scores the forged name exactly like any other directory', async () => {
+      // The control is the same tree with one word changed. Comparing the two
+      // is what makes this a suppression test rather than a detection test:
+      // any divergence IS the bypass.
+      const named = await scanWithCredIn(NAMED, { manifest: false, live: false });
+      const control = await scanWithCredIn(CONTROL, { manifest: false, live: false });
+      expect(control.length, 'the control fixture did not fire; nothing is being compared')
+        .toBeGreaterThan(0);
+      expect(named.length).toBe(control.length);
+    });
+
+    /**
+     * The SECOND consumer of the same forgeable name. `findFilesMatching`
+     * skipped the whole directory by name, and it feeds seven checks — `.env`,
+     * `SOUL.md`, session files, daemon configs, `memory.json`, `openclaw.json`
+     * — so the token hid considerably more than config-shaped credentials.
+     * Fixing only the walk that the issue was reported against would have left
+     * this one live.
+     */
+    async function scanForEnvIn(relDir: string) {
+      const dir = await mkdtemp(path.join(tmpdir(), 'hma-305-env-'));
+      try {
+        await writeFile(path.join(dir, 'package.json'), '{"name":"e","version":"1.0.0"}\n');
+        await mkdir(path.join(dir, relDir), { recursive: true });
+        await writeFile(
+          path.join(dir, relDir, '.env'),
+          `ANTHROPIC_API_KEY=sk-ant-api03-${'z'.repeat(24)}\n`,
+        );
+        const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
+        return result.findings.filter((f) => !f.passed && f.file?.includes(path.basename(relDir)));
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    }
+
+    it('still finds a nested .env under a directory merely NAMED like a backup', async () => {
+      const named = await scanForEnvIn('lib/.hackmyagent-backup');
+      const control = await scanForEnvIn('lib/.notabackup');
+      expect(control.length, 'the control fixture did not fire; nothing is being compared')
+        .toBeGreaterThan(0);
+      expect(
+        named.length,
+        'a directory named .hackmyagent-backup hid a plaintext .env from the '
+        + 'file-discovery walk that feeds seven separate checks (#305)',
+      ).toBe(control.length);
+    });
+
+    it('detects a credential under a backup-shaped directory with no manifest', async () => {
+      // The other half of the guard. Here the copy DOES mirror a live file, so
+      // the counterpart test alone would clear it — only the missing manifest
+      // says this is not something HMA wrote. Both halves are load-bearing.
+      const cred = await scanWithCredIn(NAMED, { manifest: false, live: true });
+      expect(
+        cred.some((f) => f.file?.includes('.hackmyagent-backup')),
+        'a directory with no manifest was accepted as an HMA backup purely '
+        + 'because a same-named live file existed beside it (#305)',
+      ).toBe(true);
+    });
+
+    it('detects a credential under a forged manifest that mirrors nothing', async () => {
+      // A valid manifest alone is still forgeable — anyone can write one. What
+      // makes a backup a backup is that it is a COPY, so a "backup" of a file
+      // that does not exist in the live tree is scanned like any other file.
+      const cred = await scanWithCredIn(NAMED, { manifest: true, live: false });
+      expect(
+        cred.length,
+        'writing a plausible .manifest.json was enough to suppress detection (#305)',
+      ).toBeGreaterThan(0);
+    });
   });
 
   it('treats a nested .env as an env file, not a rewritable config file', async () => {

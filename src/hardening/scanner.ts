@@ -369,16 +369,31 @@ const CONFIG_DIR_EXTENSIONS = new Set(['.json', '.yaml', '.yml', '.toml', '.ini'
 const BACKUP_DIR_NAME = '.hackmyagent-backup';
 
 /**
- * True when a target-relative path lies inside a backup directory at ANY
- * depth. Segment-wise, never `startsWith`: a prefix test is a statement about
- * the scan root, and the property needed here is about the file.
+ * Locate the backup-shaped part of a target-relative path.
  *
- * The final segment is the filename, so it is excluded — a FILE called
+ * Layout is `<project>/.hackmyagent-backup/<stamp>/<path within the project>`,
+ * so a hit yields the three pieces needed to decide whether this really is one
+ * of HMA's own backups and, if so, which live file it is a copy of. The final
+ * segment is the filename and is never considered — a FILE called
  * `.hackmyagent-backup` is not a backup directory.
+ *
+ * Segment-wise, never `startsWith`: a prefix test is a statement about the scan
+ * root, and the property needed here is about the file (#302).
  */
-function isInsideBackupDir(rel: string): boolean {
+function splitAtBackupDir(
+  rel: string,
+): { project: string[]; stamp: string; within: string[] } | null {
   const segments = rel.split(/[\\/]/);
-  return segments.slice(0, -1).includes(BACKUP_DIR_NAME);
+  const i = segments.slice(0, -1).indexOf(BACKUP_DIR_NAME);
+  if (i === -1) return null;
+  // `<stamp>/<file>` at minimum: a bare `.hackmyagent-backup/x` has no
+  // timestamp directory and so is not the shape HMA writes.
+  if (segments.length < i + 3) return null;
+  return {
+    project: segments.slice(0, i),
+    stamp: segments[i + 1],
+    within: segments.slice(i + 2),
+  };
 }
 
 /** True when a file is config-shaped by filename, or by sitting directly in a config directory. */
@@ -1092,6 +1107,12 @@ export class HardeningScanner {
    * candidates are not re-copied one at a time.
    */
   private lastBackupCovered: string[] = [];
+  /**
+   * Memoized `isRealBackupDir` verdicts, keyed by absolute backup directory.
+   * Reset per `scan()` so a directory that gains or loses a manifest between
+   * runs is re-judged.
+   */
+  private verifiedBackupDirs = new Map<string, boolean>();
   // Files that may be created or modified during auto-fix
   private static readonly BACKUP_FILES = [
     'config.json',
@@ -1284,6 +1305,7 @@ export class HardeningScanner {
     // exists. A reused scanner instance must not let one run's backup
     // authorise the next run's writes (#300).
     this.backupContext = undefined;
+    this.verifiedBackupDirs.clear();
 
     // Resolve effective scan depth — --deep flag implies 'deep' depth
     const scanDepth: ScanDepth = options.scanDepth || (options.deep ? 'deep' : 'standard');
@@ -2604,6 +2626,98 @@ export class HardeningScanner {
   }
 
   /**
+   * True when this path is a copy, inside one of HMA's OWN backups, of a file
+   * that is still in the live tree — so scanning it would report the same
+   * credential twice and `--fix` would churn the copy the user restores from.
+   *
+   * #305: the previous test was `is any ancestor directory NAMED
+   * .hackmyagent-backup`, and the scanned tree is attacker-controlled, so the
+   * NAME was a suppression token. Identical bytes, only the directory name
+   * differing: `lib/.notabackup` scored 69/100 with 2 CRED-001 CRITICAL, while
+   * `lib/.hackmyagent-backup` scored 96/100 with the finding silent. That is
+   * the same shape as the `${...}` brace bypass this release calls
+   * unacceptable, so it gets the same answer: key on the artifact, never on a
+   * name anyone can type.
+   *
+   * Two conditions, and BOTH are required:
+   *
+   *  1. it is really an HMA backup — a `<stamp>/.manifest.json` that parses
+   *     with the shape `createBackup` writes;
+   *  2. it is really a COPY — the live file it mirrors still exists.
+   *
+   * (2) is what makes the exclusion unforgeable in the way that matters.
+   * Suppressing a genuine copy hides nothing, because the original is in the
+   * same scan and reports the finding. Planting a directory that merely looks
+   * like a backup mirrors nothing, so it is scanned like any other directory.
+   *
+   * The write hazard the exclusion originally existed for (`--fix` rewriting
+   * its own backups, #292/#302) is now independently gated per write by
+   * #300/#304, which is why the detection exclusion can be this narrow.
+   */
+  private async isRedundantBackupCopy(rel: string, targetDir: string): Promise<boolean> {
+    const split = splitAtBackupDir(rel);
+    if (!split) return false;
+
+    const backupDir = path.join(targetDir, ...split.project, BACKUP_DIR_NAME, split.stamp);
+    if (!(await this.isRealBackupDir(backupDir))) return false;
+
+    // What this file would be a backup OF. `project` is the tree the backup
+    // belongs to, which is the scan root itself when scanning that project and
+    // a subdirectory when scanning a parent of it (#302).
+    const liveCounterpart = path.join(targetDir, ...split.project, ...split.within);
+    if (!this.isPathWithinDirectory(liveCounterpart, targetDir)) return false;
+    return !(await this.isGenuinelyAbsent(liveCounterpart));
+  }
+
+  /**
+   * True when `dir` is a `.hackmyagent-backup` ROOT that really holds HMA
+   * backups — at least one timestamped child with a valid manifest.
+   *
+   * Same #305 reasoning as `isRedundantBackupCopy`, for the walks that skip a
+   * whole directory rather than filtering file by file. A genuine backup root
+   * mirrors files those walks find in the live tree anyway, so skipping it
+   * hides nothing; a planted directory wearing the name is walked normally.
+   */
+  private async isRealBackupRoot(dir: string): Promise<boolean> {
+    let children: string[];
+    try {
+      children = await fs.readdir(dir);
+    } catch {
+      return false;
+    }
+    for (const child of children) {
+      if (child.startsWith('.')) continue;
+      if (await this.isRealBackupDir(path.join(dir, child))) return true;
+    }
+    return false;
+  }
+
+  /**
+   * True when `backupDir` holds a manifest of the shape `createBackup` writes.
+   * Cached per scan: a tree with many files under one backup would otherwise
+   * re-read and re-parse the same manifest for each of them.
+   */
+  private async isRealBackupDir(backupDir: string): Promise<boolean> {
+    const cached = this.verifiedBackupDirs.get(backupDir);
+    if (cached !== undefined) return cached;
+
+    let verdict = false;
+    try {
+      const raw = await fs.readFile(path.join(backupDir, '.manifest.json'), 'utf-8');
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      // The shape, not merely valid JSON: both lists `createBackup` always
+      // writes have to be there.
+      verdict = !!parsed
+        && Array.isArray(parsed.existingFiles)
+        && Array.isArray(parsed.createdFiles);
+    } catch {
+      verdict = false;
+    }
+    this.verifiedBackupDirs.set(backupDir, verdict);
+    return verdict;
+  }
+
+  /**
    * True only when nothing exists at `filePath` — proven, not inferred.
    *
    * This is the sole evidence that a fix write is a CREATION rather than an
@@ -3575,9 +3689,13 @@ dist/
         // reopened all three consequences one directory higher, which is not
         // an exotic invocation: `secure ~/projects` over a tree where any one
         // project has been secured before.
+        //
+        // #305 — but the test is on the ARTIFACT, not on the directory name.
+        // Matching the name alone handed the scanned tree a one-word
+        // suppression token. See `isRedundantBackupCopy`.
         if (
-          !isInsideBackupDir(rel) &&
-          isConfigShapedFile(dirent.name, path.basename(dir))
+          isConfigShapedFile(dirent.name, path.basename(dir)) &&
+          !(await this.isRedundantBackupCopy(rel, targetDir))
         ) {
           configFiles.push(rel);
         }
@@ -8540,8 +8658,13 @@ dist/
           continue;
         }
 
-        // Skip node_modules, .git, and backup directories
-        if (entryName === 'node_modules' || entryName === '.git' || entryName === BACKUP_DIR_NAME) {
+        // Skip node_modules and .git unconditionally. A backup directory is
+        // skipped only once it is verified to BE one (#305) — the name alone
+        // was a suppression token any scanned tree could type.
+        if (entryName === 'node_modules' || entryName === '.git') {
+          continue;
+        }
+        if (entryName === BACKUP_DIR_NAME && await this.isRealBackupRoot(fullPath)) {
           continue;
         }
 
