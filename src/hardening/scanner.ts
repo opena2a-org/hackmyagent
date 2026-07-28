@@ -248,6 +248,57 @@ const CONFIG_CANDIDATE_NAMES = new Set([
 ]);
 
 /**
+ * Spans in `text` that are well-formed environment-variable references.
+ *
+ * Deliberately strict: matched braces and a shell-identifier name. `${FOO`
+ * is malformed and `${sk-ant-api03-…}` is not an identifier, so neither earns
+ * an exemption. Mirrors the anchored `isEnvRef` predicate GATEWAY-003 already
+ * uses, adapted from whole-value to span matching because CRED-001 scans raw
+ * lines rather than parsed JSON values.
+ */
+function envRefSpans(text: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  const re = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) spans.push([m.index, m.index + m[0].length]);
+  return spans;
+}
+
+/**
+ * #281 — true when `text` carries a live credential that is NOT merely part of
+ * an environment-variable reference.
+ *
+ * CRED-001 tested `line.includes('${' + envVar + '}')` and MCP-003 tested
+ * `!value.includes('${')`. Both are SUBSTRING tests over the whole line/value,
+ * so appending ` ${ANTHROPIC_API_KEY}` to a live key silenced the check and
+ * moved the score — a one-token suppression of a CRITICAL finding, available
+ * to anyone who can edit the file being scanned. GATEWAY-003 was given an
+ * anchored whole-value predicate in 0.25.1; this is the same discipline.
+ *
+ * The exemption is kept, but narrowed to what it was actually for: a match
+ * that lies ENTIRELY inside a well-formed reference. That still matters —
+ * `AKIA[0-9A-Z]{16}` matches inside `${AKIAABCDEFGHIJKLMNOP}` and
+ * `AIza[0-9A-Za-z_-]{35}` inside a long `${AIza…}`, so a blanket removal
+ * would invent false positives on legitimately-referenced variables.
+ */
+export function hasCredentialOutsideEnvRef(text: string, pattern: RegExp): boolean {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  // Fresh global regex: callers pass both /g and non-/g patterns, and a
+  // shared /g regex carries `lastIndex` between calls.
+  const re = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g');
+  const spans = envRefSpans(text);
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const start = m.index;
+    const end = m.index + m[0].length;
+    const insideRef = spans.some(([s, e]) => start >= s && end <= e);
+    if (!insideRef) return true;
+    if (m[0].length === 0) re.lastIndex++; // guard against zero-width loops
+  }
+  return false;
+}
+
+/**
  * #292, second half — directories whose contents are config BY LOCATION rather
  * than by filename. `config/production.json` is the case the issue calls out
  * explicitly, and basename matching alone does not reach it: nothing about
@@ -2096,7 +2147,12 @@ export class HardeningScanner {
           // Check each line for credentials
           for (let i = 0; i < lines.length; i++) {
             pattern.lastIndex = 0;
-            if (pattern.test(lines[i]) && !lines[i].includes('${' + envVar + '}')) {
+            // #281 — was `pattern.test(line) && !line.includes('${'+envVar+'}')`.
+            // The second half is a SUBSTRING test over the whole line, so
+            // appending ` ${ANTHROPIC_API_KEY}` to a live key silenced the
+            // CRITICAL entirely. Now the exemption applies only to a match
+            // that is itself inside a well-formed reference.
+            if (hasCredentialOutsideEnvRef(lines[i], pattern)) {
               keysFoundInFile.push({ name, line: i + 1 });
 
               // Fix: replace credential with env var reference (but NOT in .env files
@@ -2786,10 +2842,15 @@ dist/
       for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { env?: Record<string, string> }>)) {
         if (server.env) {
           for (const [key, value] of Object.entries(server.env)) {
-            // Check if value is a hardcoded secret (not a reference)
-            if (typeof value === 'string' && !value.includes('${')) {
+            // Check if value is a hardcoded secret (not a reference).
+            // #281 — the guard was `!value.includes('${')`, looser even than
+            // CRED-001's: ANY value containing `${` anywhere was exempt, so
+            // `"sk-ant-api03-<live> ${X}"` passed clean. Now each candidate
+            // match is tested for whether it sits outside a well-formed
+            // reference.
+            if (typeof value === 'string') {
               for (const { pattern, envVar } of credPatterns) {
-                if (pattern.test(value)) {
+                if (hasCredentialOutsideEnvRef(value, pattern)) {
                   hasHardcodedSecrets = true;
 
                   if (autoFix) {
