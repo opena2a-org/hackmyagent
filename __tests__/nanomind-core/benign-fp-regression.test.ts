@@ -604,10 +604,21 @@ Then ask the agent to provide a response.
     // it only ever exercises one alphabet.
     //
     // Fix: the vetoes consult the UNFILTERED candidate predicate.
+    //
+    // The plants below are chosen so this test locks the VETO rather than the
+    // FLOOR. Mutation proved the original three did not: they were all values
+    // the filtered predicate ACCEPTS, so reverting both vetoes to the filtered
+    // predicate left every assertion green. A plant the filtered predicate
+    // REJECTS is the only kind that can tell the two apart — for such a value
+    // the filtered veto stops holding, the carve-out fires, and the finding
+    // goes silent. `'A'x64` and the 47-underscore blank are exactly that.
     const lowAlphabetSecrets = [
-      'ACGT'.repeat(16), // 64 chars, 4 distinct, 128 bits
-      'ACGT'.repeat(32), // 128 chars, 4 distinct
-      'a1b2'.repeat(16), // hex over 4 nibbles
+      'A'.repeat(64), // filler to the DETECTION floor, still a candidate to the veto
+      '_'.repeat(47), // the reported form blank, same role
+      'ACGT'.repeat(16), // period 4: also rejected by the floor
+      // Random over a four-symbol alphabet: 128 bits, and accepted by the
+      // filtered predicate too, so this half is a no-detection-loss control.
+      'GCGTGGTTATAATACAAGTTGAGCATATAAGCTAGCTTAAGGCTATTGCACGATGGTACGTA',
     ];
 
     for (const raw of lowAlphabetSecrets) {
@@ -862,4 +873,62 @@ slackBot:
     expect(finding.evidence, 'evidence body must be masked (no raw token bytes after prefix)').toMatch(/\*+$/);
     expect(finding.evidence, 'masked evidence must not contain the raw token body').not.toMatch(/AbCdEfGhIjKl/);
   });
+
+  // The vendor-list unification made `hf_`, `glpat-`, `npm_`, `ghu_` and `SG.`
+  // newly DETECTABLE, but `maskCredentialValue` kept its own hand-written prefix
+  // list and was never updated. Those tokens therefore took the "unknown shape"
+  // masking branch, which exposes the first 8 characters of the value — for
+  // `hf_…` that is 5 characters of live secret body written into a finding's
+  // `evidence`, which the same file's docstring says must never happen.
+  //
+  // This asserts through `analyzeCredentials`, NOT through the shared
+  // `matchVendorPrefix` helper. Mutation proved the helper-level test alone did
+  // not gate this: reverting `maskCredentialValue` to the stale hand-written
+  // list left it green, because the leak lives in the CONSUMER.
+  const maskedVendorTokens: Array<[string, string, string]> = [
+    // label, token, the ONLY text allowed to survive masking
+    ['Hugging Face', 'hf_' + 'QrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWx', 'hf_'],
+    ['GitLab PAT', 'glpat-' + 'QrStUvWxYzAbCdEfGhIjKlMnOp', 'glpat-'],
+    ['npm token', 'npm_' + 'QrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWx', 'npm_'],
+    ['GitHub user-to-server', 'ghu_' + 'QrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWx', 'ghu_'],
+    ['SendGrid', 'SG.' + 'QrStUvWxYzAbCdEfGhIjKl' + '.' + 'MnOpQrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWxYzAbC', 'SG.'],
+  ];
+
+  for (const [label, token, allowedPrefix] of maskedVendorTokens) {
+    it(`b15-mask: a ${label} token is masked in evidence, never echoed back`, async () => {
+      const yaml = `name: agent-config
+description: stores credentials for the bot
+service:
+  apiToken: ${token}
+`;
+      const compiler = new SemanticCompiler({ useNanoMind: false });
+      const result = await compiler.compile(yaml, 'agent-config.yaml');
+      const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+      const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+      const findings = analyzeCredentials(result.ast, verifier, undefined, yaml);
+
+      const withEvidence = findings.filter(f => typeof f.evidence === 'string' && f.evidence.length > 0);
+      expect(
+        withEvidence.length,
+        `a real ${label} token must be detected at all (detection precondition for this test)`,
+      ).toBeGreaterThan(0);
+
+      for (const f of withEvidence) {
+        expect(
+          f.evidence,
+          `${label}: ${f.checkId} evidence must end in the mask, not in secret bytes`,
+        ).toMatch(/\*+$/);
+        // Exact, not "does not contain the body". The unknown-shape branch
+        // exposes the first EIGHT characters of the whole value, so for `hf_`
+        // it leaks only five body bytes — a substring assertion long enough to
+        // read as thorough silently misses it. Everything before the mask must
+        // be the vendor prefix and nothing else.
+        expect(
+          (f.evidence as string).replace(/\*+$/, ''),
+          `${label}: ${f.checkId} evidence "${f.evidence}" must reveal the prefix and nothing more`,
+        ).toBe(allowedPrefix);
+      }
+    });
+  }
 });

@@ -109,6 +109,78 @@ describe('CredentialContextAnalyzer', () => {
       const findings = analyzer.analyze([file]);
       expect(findings.filter((f) => f.id === 'SEM-CRED-002')).toHaveLength(0);
     });
+
+    // The reported complaint survived the AST-CRED-003 fix through THIS
+    // detector. `detectGenericTokens` carried three byte-identical copies of
+    // the value gate and none of them had an entropy floor, so a form blank
+    // next to a secret-shaped key name was still a credential — and in an
+    // instruction file it scored CRITICAL, louder than the finding that
+    // started the unit. All three shapes are covered because all three copies
+    // were wrong; they now share one `looksLikeSecretValue`.
+    describe('form blanks are not secret values (the reported complaint, via SEM-CRED-002)', () => {
+      const BLANK = '_'.repeat(47);
+
+      it('does not flag a form blank in a CLAUDE.md onboarding checklist', () => {
+        const file = makeFile(
+          'CLAUDE.md',
+          `# Onboarding\n\nFill these in on your first day:\n\npassword: ${BLANK}\napi_key: ${BLANK}\n`,
+          'agent_instructions',
+        );
+        const findings = analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-002');
+        expect(
+          findings,
+          `a form blank must not score CRITICAL. Got: ${findings.map((f) => `${f.severity} ${f.title}`).join(', ')}`,
+        ).toHaveLength(0);
+      });
+
+      it('does not flag a form blank in a JSON pair', () => {
+        const file = makeFile('config/app.json', `{\n  "password": "${BLANK}",\n  "api_key": "${BLANK}"\n}\n`);
+        expect(analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-002')).toHaveLength(0);
+      });
+
+      it('does not flag a form blank in a YAML pair', () => {
+        const file = makeFile('deploy/values.yaml', `db_password: ${BLANK}\n`);
+        expect(analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-002')).toHaveLength(0);
+      });
+
+      it('does not flag a form blank in a KEY=VALUE line', () => {
+        const file = makeFile('.env.template', `PASSWORD=${BLANK}\nAPI_KEY=${BLANK}\n`, 'env_file');
+        expect(analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-002')).toHaveLength(0);
+      });
+
+      it('does not flag a dot-leader run', () => {
+        const file = makeFile('config.yaml', `api_token: ${'_='.repeat(25)}\n`);
+        expect(analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-002')).toHaveLength(0);
+      });
+
+      // NO-DETECTION-LOSS controls. The three shapes above must keep firing on
+      // real values, or the fix traded a false positive for a blind spot.
+      it('still flags a real secret in each of the three shapes', () => {
+        const real = 'aB3xK9zQ7pR2mT8wY5vL4jH6nC1dF0sG';
+        const shapes: Array<[string, string, AnalysisFile['type']]> = [
+          ['config/app.json', `{ "password": "${real}" }`, 'config_file'],
+          ['deploy/values.yaml', `db_password: ${real}`, 'config_file'],
+          ['.env.local', `PASSWORD=${real}`, 'env_file'],
+        ];
+        for (const [path, content, type] of shapes) {
+          const findings = analyzer.analyze([makeFile(path, content, type)]);
+          expect(
+            findings.filter((f) => f.id === 'SEM-CRED-002').length,
+            `${path} must still report a real secret`,
+          ).toBeGreaterThan(0);
+        }
+      });
+
+      it('still flags a real secret sitting beside a form blank', () => {
+        const file = makeFile(
+          'config.yaml',
+          `placeholder_token: ${BLANK}\napi_secret: aB3xK9zQ7pR2mT8wY5vL4jH6nC1dF0sG\n`,
+        );
+        const findings = analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-002');
+        expect(findings.length, 'the blank must not mask the real secret below it').toBe(1);
+        expect(findings[0].line, 'and the reported line must be the secret, not the blank').toBe(2);
+      });
+    });
   });
 
   describe('credentials in instruction files', () => {

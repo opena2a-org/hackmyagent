@@ -57,6 +57,30 @@ function classifySecret(key: string, value: string): { type: string; masked: str
   return { type: 'secret', masked: preview };
 }
 
+/**
+ * Value-level gate shared by all three SEM-CRED-002 shapes (JSON pair, YAML
+ * pair, `KEY=VALUE`).
+ *
+ * Hoisted into one function on purpose. The three call sites carried three
+ * byte-identical copies of the length/all-letters test, and the entropy floor
+ * that fixed AST-CRED-003 was added to neither — so the reported complaint kept
+ * reproducing through this detector: a `CLAUDE.md` onboarding checklist reading
+ * `password: ______…` scored SEM-CRED-002 CRITICAL, on the same 47-underscore
+ * form blank. Two of the three copies drifting is how that gap opened; one
+ * function is what keeps it closed.
+ *
+ * `isCredibleEntropyBlob` is the same filler test the AST-CRED credential-format
+ * fallback uses, so a form blank is filler to every credential surface at once.
+ */
+function looksLikeSecretValue(value: string): boolean {
+  if (value.length < 8) return false;
+  // All-letters values are words, not secrets.
+  if (/^[a-z]+$/i.test(value)) return false;
+  // Visual filler: a short repeated unit, or one character dominating the run.
+  if (!isCredibleEntropyBlob(value)) return false;
+  return true;
+}
+
 /** Values that are NOT secrets (env var refs, booleans, paths, etc.) */
 function isNonSecretValue(value: string): boolean {
   const trimmed = value.trim().replace(/^["']|["']$/g, '');
@@ -303,7 +327,7 @@ function detectGenericTokens(file: AnalysisFile, gitContext?: GitContext): Seman
       const [, key, value] = jsonMatch;
       if (SECRET_KEY_PATTERN.test(key) && !isNonSecretValue(value)) {
         // Ensure value looks like it could be a secret (min length, some entropy)
-        if (value.length >= 8 && !/^[a-z]+$/i.test(value)) {
+        if (looksLikeSecretValue(value)) {
           const { type, masked } = classifySecret(key, value);
           const sev = effectiveSeverityForEnvCredential(file.path, gitContext);
           const downgraded = sev === 'medium';
@@ -335,7 +359,7 @@ function detectGenericTokens(file: AnalysisFile, gitContext?: GitContext): Seman
       const [, , key, rawValue] = yamlMatch;
       const value = rawValue.trim().replace(/^["']|["']$/g, '');
       if (SECRET_KEY_PATTERN.test(key) && !isNonSecretValue(value)) {
-        if (value.length >= 8 && !/^[a-z]+$/i.test(value)) {
+        if (looksLikeSecretValue(value)) {
           const { type, masked } = classifySecret(key, value);
           const sev = effectiveSeverityForEnvCredential(file.path, gitContext);
           const downgraded = sev === 'medium';
@@ -367,7 +391,7 @@ function detectGenericTokens(file: AnalysisFile, gitContext?: GitContext): Seman
       const [, key, rawValue] = envMatch;
       const value = rawValue.trim().replace(/^["']|["']$/g, '');
       if (SECRET_KEY_PATTERN.test(key) && !isNonSecretValue(value)) {
-        if (value.length >= 8 && !/^[a-z]+$/i.test(value)) {
+        if (looksLikeSecretValue(value)) {
           const sev = effectiveSeverityForEnvCredential(file.path, gitContext);
           const downgraded = sev === 'medium';
           const wording = downgraded
@@ -397,6 +421,36 @@ function detectGenericTokens(file: AnalysisFile, gitContext?: GitContext): Seman
 }
 
 /**
+ * A SEM-CRED-003 pattern.
+ *
+ * `requiresEntropy: true` marks a pattern whose VALUE group is a bare
+ * character-class run. Those admit a fill-in-the-blank form rule
+ * (`Password: ________________________________`) as a credential, which is the
+ * same defect class fixed in the AST-CRED entropy fallback, so the captured
+ * value must clear the shared filler test before a finding is raised. Patterns
+ * carrying their own positive marker (a vendor prefix, `Bearer`) are accepted
+ * on shape alone and set it `false`.
+ *
+ * The discriminated union makes `valueGroup` unreachable unless
+ * `requiresEntropy` is `true`, so the two can never be written out of step.
+ * TypeScript cannot prove that a RegExp literal actually HAS that group —
+ * `broad-credential-patterns.test.ts` closes the remaining gap at CI time,
+ * which is where this belongs; the previous runtime `throw` sat in a per-line
+ * loop under a bare `catch`.
+ */
+type BroadCredentialPattern =
+  | { readonly name: string; readonly pattern: RegExp; readonly requiresEntropy: false }
+  | { readonly name: string; readonly pattern: RegExp; readonly requiresEntropy: true; readonly valueGroup: 1 };
+
+/** Patterns that look like API keys/tokens (broader than core scanner's regex). */
+export const BROAD_CREDENTIAL_PATTERNS: readonly BroadCredentialPattern[] = [
+  { name: 'API key prefix', pattern: /(?:sk-|pk-|rk-|ak-)[a-zA-Z0-9_-]{16,}/g, requiresEntropy: false },
+  { name: 'Bearer token', pattern: /Bearer\s+[a-zA-Z0-9._-]{20,}/g, requiresEntropy: false },
+  { name: 'Generic long token', pattern: /(?:token|key|secret|password)\s*[=:]\s*['"]?([a-zA-Z0-9_-]{32,})['"]?/gi, requiresEntropy: true, valueGroup: 1 },
+  { name: 'Base64 credential', pattern: /(?:password|secret|token|key)\s*[=:]\s*['"]?([A-Za-z0-9+/]{40,}={0,2})['"]?/gi, requiresEntropy: true, valueGroup: 1 },
+];
+
+/**
  * Detect credential-like strings in instruction files
  * (CLAUDE.md, .cursorrules, copilot-instructions.md)
  *
@@ -415,25 +469,9 @@ function detectCredentialsInInstructions(file: AnalysisFile): SemanticFinding[] 
   const findings: SemanticFinding[] = [];
   const lines = file.content.split('\n');
 
-  // Patterns that look like API keys/tokens (broader than core scanner's regex).
-  //
-  // `requiresEntropy` marks the two patterns whose VALUE group is a bare
-  // character-class run. Those admit a fill-in-the-blank form rule
-  // (`Password: ________________________________`) as a credential, which is
-  // the same defect class fixed in the AST-CRED entropy fallback. The captured
-  // value must clear the shared entropy floor before a finding is raised. The
-  // prefix and Bearer patterns carry their own positive marker, so they are
-  // accepted on shape alone.
-  const broadCredentialPatterns = [
-    { name: 'API key prefix', pattern: /(?:sk-|pk-|rk-|ak-)[a-zA-Z0-9_-]{16,}/g, requiresEntropy: false },
-    { name: 'Bearer token', pattern: /Bearer\s+[a-zA-Z0-9._-]{20,}/g, requiresEntropy: false },
-    { name: 'Generic long token', pattern: /(?:token|key|secret|password)\s*[=:]\s*['"]?([a-zA-Z0-9_-]{32,})['"]?/gi, requiresEntropy: true },
-    { name: 'Base64 credential', pattern: /(?:password|secret|token|key)\s*[=:]\s*['"]?([A-Za-z0-9+/]{40,}={0,2})['"]?/gi, requiresEntropy: true },
-  ];
-
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    for (const { name, pattern, requiresEntropy } of broadCredentialPatterns) {
+    for (const { name, pattern, requiresEntropy } of BROAD_CREDENTIAL_PATTERNS) {
       pattern.lastIndex = 0;
       // Walk EVERY match on the line, not just the first. A line can carry a
       // form blank and a real token together
@@ -443,16 +481,21 @@ function detectCredentialsInInstructions(file: AnalysisFile): SemanticFinding[] 
       let match: RegExpExecArray | null;
       while ((match = pattern.exec(line)) !== null) {
         if (!requiresEntropy) { matched = true; break; }
-        // Every `requiresEntropy` pattern must capture its VALUE. Falling back
-        // to the whole match would score the `password:` descriptor toward
-        // diversity and make the floor a no-op.
+        // Every `requiresEntropy` pattern must capture its VALUE; scoring the
+        // whole match would feed the `password:` descriptor into the filler
+        // test and make the floor a no-op.
+        //
+        // A missing capture group FAILS CLOSED — the match is treated as a
+        // credential. This used to `throw`, which was the wrong failure mode
+        // twice over: `scanner.ts` wraps the whole structural pass in a bare
+        // `catch` ("Structural analysis failure is non-fatal"), so the throw
+        // deleted all four Layer 2 analyzers, produced no findings, and
+        // IMPROVED the score. A silent detection loss that also looks like
+        // success is the worst available outcome; extra findings are merely
+        // noisy. `broad-credential-patterns.test.ts` asserts the table can
+        // never reach this branch, so it is a backstop, not a code path.
         const value = match[1];
-        if (value === undefined) {
-          throw new Error(
-            `credential pattern "${name}" is marked requiresEntropy but has no capture group`,
-          );
-        }
-        if (isCredibleEntropyBlob(value)) { matched = true; break; }
+        if (value === undefined || isCredibleEntropyBlob(value)) { matched = true; break; }
         if (match.index === pattern.lastIndex) pattern.lastIndex++;
       }
       if (matched) {

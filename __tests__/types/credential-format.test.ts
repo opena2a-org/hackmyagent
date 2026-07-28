@@ -20,11 +20,32 @@ import {
   findCredentialFormatMatch,
   hasCredentialFormat,
   hasAnyCredentialCandidate,
-  MIN_DISTINCT_CHARS_IN_ENTROPY_BLOB,
+  matchVendorPrefix,
 } from '../../src/types/credential-format';
 
 // The exact blank from the real-world false positive: 47 underscores.
 const FORM_BLANK = '_'.repeat(47);
+
+/**
+ * A deterministic draw from a small alphabet.
+ *
+ * The distinction the filler rules turn on is ENTROPY, not alphabet size, so
+ * "low alphabet" fixtures have to be RANDOM over that alphabet. Writing them as
+ * `'ACGT'.repeat(16)` — which an earlier version of these tests did — produces a
+ * string with period 4, i.e. filler, and then asserts filler must be detected.
+ * That fixture tested the alphabet floor it was written against and would have
+ * blocked any rule that measured structure instead. Seeded, not `Math.random`,
+ * so a failure reproduces.
+ */
+function drawFrom(alphabet: string, length: number, seed: number): string {
+  let state = seed;
+  let out = '';
+  for (let i = 0; i < length; i++) {
+    state = (state * 1103515245 + 12345) & 0x7fffffff;
+    out += alphabet[Math.floor((state / 0x7fffffff) * alphabet.length)];
+  }
+  return out;
+}
 
 describe('credential-format entropy floor', () => {
   describe('filler runs are not credentials', () => {
@@ -151,26 +172,162 @@ describe('credential-format entropy floor', () => {
     });
   });
 
-  describe('the floor rejects only zero-entropy runs, never real secrets', () => {
-    // Adversarial review killed an earlier floor of 5 distinct characters.
-    // Distinct-character count is not an entropy measure: four symbols still
-    // carry two bits per character, so a 64-char base-4 blob holds 128 bits.
-    // A floor of 5 discarded exactly that, and the two suppression vetoes turned
-    // the discard into a hiding place for a planted secret.
-    it('accepts a low-alphabet blob that still carries real entropy', () => {
-      expect(isAcceptedCredentialMatch('ACGT'.repeat(16)), '64 chars over 4 symbols = 128 bits').toBe(true);
-      expect(isAcceptedCredentialMatch('ab'.repeat(30)), '60 chars over 2 symbols').toBe(true);
-      expect(isAcceptedCredentialMatch('a1b2'.repeat(16)), 'hex over 4 nibbles').toBe(true);
+  describe('the floor rejects filler, never a secret that carries entropy', () => {
+    // Two earlier floors were tried and killed by adversarial review:
+    //
+    //   1. Five DISTINCT characters. Distinct-character count is not an entropy
+    //      measure — four symbols carry two bits each, so a 64-char base-4 blob
+    //      holds 128 bits — and the two suppression vetoes turned every
+    //      discarded value into a hiding place for a planted secret.
+    //   2. "Not a single repeated character" (distinct >= 2). One character
+    //      from failing: `'_'x46 + '1'` and `'_='x25` both still read as
+    //      credentials.
+    //
+    // What replaced them measures STRUCTURE, so it separates the classes the
+    // alphabet-size floors could not: a short repeated unit, or one character
+    // dominating the run.
+    it('accepts a low-alphabet secret that carries real entropy', () => {
+      // Random over the alphabet, which is what a low-alphabet secret is.
+      expect(isAcceptedCredentialMatch(drawFrom('ACGT', 64, 7)), '64 chars over 4 symbols = 128 bits').toBe(true);
+      expect(isAcceptedCredentialMatch(drawFrom('ACGT', 40, 99)), '40 chars over 4 symbols = 80 bits').toBe(true);
+      expect(isAcceptedCredentialMatch(drawFrom('01', 64, 5)), '64 chars over 2 symbols = 64 bits').toBe(true);
+      expect(isAcceptedCredentialMatch(drawFrom('0123456789abcdef', 40, 11)), 'hex').toBe(true);
     });
 
-    it('rejects only a run of a single repeated character', () => {
-      expect(isCredibleEntropyBlob('_'.repeat(47))).toBe(false);
-      expect(isCredibleEntropyBlob('A'.repeat(40))).toBe(false);
-      expect(isCredibleEntropyBlob('ab'.repeat(30))).toBe(true);
+    it('rejects a short repeated unit, which is what filler looks like', () => {
+      expect(isCredibleEntropyBlob('_'.repeat(47)), 'period 1: the reported blank').toBe(false);
+      expect(isCredibleEntropyBlob('A'.repeat(40)), 'period 1').toBe(false);
+      expect(isCredibleEntropyBlob('_='.repeat(25)), 'period 2: dot leader').toBe(false);
+      expect(isCredibleEntropyBlob('01'.repeat(25)), 'period 2').toBe(false);
+      expect(isCredibleEntropyBlob('de'.repeat(24)), 'period 2').toBe(false);
+      expect(isCredibleEntropyBlob('a1'.repeat(24)), 'period 2').toBe(false);
+      expect(isCredibleEntropyBlob('ACGT'.repeat(16)), 'period 4').toBe(false);
+      expect(isCredibleEntropyBlob('abcd'.repeat(12)), 'period 4').toBe(false);
     });
 
-    it('exposes the floor as a named constant set to the minimum that works', () => {
-      expect(MIN_DISTINCT_CHARS_IN_ENTROPY_BLOB).toBe(2);
+    it('rejects a run dominated by one character, which the period rule alone misses', () => {
+      // The "one character from failing" case: aperiodic, so only the
+      // dominance rule reaches it.
+      expect(isCredibleEntropyBlob('_'.repeat(46) + '1'), 'form blank + stray digit').toBe(false);
+      expect(isCredibleEntropyBlob('_'.repeat(60) + 'ab'), 'form blank + stray pair').toBe(false);
+      expect(isCredibleEntropyBlob('x'.repeat(45) + 'Q9'), '45/47 one symbol').toBe(false);
+    });
+
+    it('does not treat a short period as filler when the unit barely repeats', () => {
+      // `abcdabcd` has period 4 but only two repeats — too short to be filler,
+      // and this keeps the rule off the 8-char values SEM-CRED-002 inspects.
+      expect(isCredibleEntropyBlob('abcdabcd')).toBe(true);
+      expect(isCredibleEntropyBlob('a1b2a1b2')).toBe(true);
+    });
+
+    it('keeps a genuine secret that merely contains a repeated stretch', () => {
+      // A real secret with a run of repeats inside it is neither periodic
+      // overall nor dominated by one symbol.
+      const secret = 'K3y' + 'a'.repeat(20) + drawFrom('0123456789abcdefXYZ', 25, 42);
+      expect(isCredibleEntropyBlob(secret)).toBe(true);
+      expect(hasCredentialFormat(`apiKey = ${secret}`)).toBe(true);
+    });
+  });
+
+  describe('a vendor prefix must not be glued to an alphanumeric identifier', () => {
+    // The vendor-list unification put `SG.` into the DETECTION path, unanchored,
+    // and re-created the very false-positive class this unit exists to remove:
+    // ordinary dotted identifiers were positively identified as credentials.
+    it('does not fire on a message-bus constant whose namespace ends in SG', () => {
+      expect(hasCredentialFormat('MSG.INCIDENT_ESCALATION_QUEUE')).toBe(false);
+    });
+
+    it('does not fire on a C# using directive for an SG namespace', () => {
+      expect(hasCredentialFormat('using SG.Configuration_Providers_Internal;')).toBe(false);
+    });
+
+    it('still fires on a real SendGrid key, which carries BOTH dots', () => {
+      // `SG.<key id>.<secret>`. The second segment is what makes it a key
+      // rather than a namespace, and is what the tightened pattern requires.
+      expect(hasCredentialFormat('SG.aBcDeFgHiJkLmNoPqRsTuv.wXyZ0123456789abcdefghijklmnopqrstu')).toBe(true);
+    });
+
+    it('does not fire on a vendor prefix continuing an identifier', () => {
+      expect(hasCredentialFormat('MYghp_' + 'a'.repeat(20)), 'ghp_ glued to letters').toBe(false);
+      expect(hasCredentialFormat('xAKIAIOSFODNN7EXAMPLE'), 'AKIA glued to a letter').toBe(false);
+    });
+
+    it('STILL fires on a credential glued to underscore filler', () => {
+      // The anchor is `(?<![A-Za-z0-9])`, deliberately NOT `\b`. `\b` counts `_`
+      // as a word character, so it would drop a real key glued to a form blank —
+      // the exact document shape this unit is about. Mutation guard: swapping the
+      // anchor for `\b` turns these red.
+      expect(hasCredentialFormat('_'.repeat(38) + 'sk-ant-api03-R3alK3yV4lu3W1thEntropy0')).toBe(true);
+      expect(hasCredentialFormat('_'.repeat(47) + 'AKIAIOSFODNN7EXAMPLE')).toBe(true);
+    });
+  });
+
+  describe('masking derives its prefixes from the same vendor list', () => {
+    // A fourth hand-maintained copy of the vendor list lived in
+    // `maskCredentialValue` and was five entries behind, so every newly
+    // detectable token took the unknown-shape branch and printed the first 8
+    // characters — 2-5 characters of live secret body — into finding evidence.
+    it('recognises every vendor prefix that the detector recognises', () => {
+      const cases: Array<[string, string]> = [
+        ['sk-ant-api03-' + 'a'.repeat(30), 'sk-ant-api0'],
+        ['sk-proj-' + 'a'.repeat(30), 'sk-proj-'],
+        ['ghp_' + 'a'.repeat(30), 'ghp_'],
+        ['ghu_' + 'a'.repeat(30), 'ghu_'],
+        ['ghs_' + 'a'.repeat(30), 'ghs_'],
+        ['hf_' + 'a'.repeat(30), 'hf_'],
+        ['glpat-' + 'a'.repeat(30), 'glpat-'],
+        ['npm_' + 'a'.repeat(30), 'npm_'],
+        ['github_pat_' + 'a'.repeat(30), 'github_pat_'],
+        ['AKIAIOSFODNN7EXAMPLE', 'AKIA'],
+        ['SG.aBcDeFgHiJkLmNoPqRsTuv.wXyZ0123456789abcdefghijklmnopqrstu', 'SG.'],
+      ];
+      for (const [value, expected] of cases) {
+        expect(matchVendorPrefix(value), `prefix of ${value.slice(0, 14)}…`).toBe(expected);
+      }
+    });
+
+    it('keeps a Slack token recognisable as a bot/user token, not a bare xox', () => {
+      // `xox[abprs]-` — the single-character class is unquantified, so the
+      // letter that says WHICH kind of Slack token this is stays visible.
+      expect(matchVendorPrefix('xoxb-123456789012-abcdefghijkl')).toBe('xoxb-');
+      expect(matchVendorPrefix('xoxp-123456789012-abcdefghijkl')).toBe('xoxp-');
+    });
+
+    it('returns undefined for an anonymous high-entropy blob', () => {
+      expect(matchVendorPrefix(drawFrom('0123456789abcdef', 44, 3))).toBeUndefined();
+    });
+  });
+
+  describe('the scan is bounded against adversarial filler', () => {
+    // Continuing past a rejected candidate removed main's early exit and
+    // exposed the JWT alternative's backtracking: the greedy segment class
+    // contains `-`, so on `eyJ-eyJ-…` filler it ran to end-of-file at every one
+    // of the O(n) `eyJ` offsets. Measured before the bound: 58 ms at 16 KB,
+    // 808 ms at 64 KB, 13.5 s at 256 KB, ~215 s at the 1 MB scanner cap, while
+    // `origin/main` was 0.0 ms at every size.
+    it('scans a 1 MB dot-free JWT-filler file in well under a second', () => {
+      const payload = '_'.repeat(47) + '-' + 'eyJ-'.repeat((1024 * 1024) / 4);
+      const started = performance.now();
+      expect(hasCredentialFormat(payload)).toBe(false);
+      const elapsed = performance.now() - started;
+      // Measured ~106 ms. The bound is what makes this linear; a regression
+      // here is quadratic, so it blows past 2 s by orders of magnitude rather
+      // than drifting past it.
+      expect(elapsed, `1 MB adversarial scan took ${elapsed.toFixed(0)} ms`).toBeLessThan(2000);
+    });
+
+    it('scans a 1 MB file of rejected filler runs in well under a second', () => {
+      const payload = ('_'.repeat(47) + '\n').repeat((1024 * 1024) / 48);
+      const started = performance.now();
+      expect(hasCredentialFormat(payload)).toBe(false);
+      const elapsed = performance.now() - started;
+      expect(elapsed, `1 MB filler-run scan took ${elapsed.toFixed(0)} ms`).toBeLessThan(2000);
+    });
+
+    it('still finds a real JWT, which the bounded segments must not break', () => {
+      const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk';
+      expect(hasCredentialFormat(jwt)).toBe(true);
+      expect(findCredentialFormatMatch(`token: ${jwt}`)?.value).toBe(jwt);
     });
   });
 
@@ -183,7 +340,10 @@ describe('credential-format entropy floor', () => {
       ['GitLab PAT', 'glpat-' + 'a'.repeat(40)],
       ['GitHub server token', 'ghs_' + 'g'.repeat(40)],
       ['npm token', 'npm_' + 'm'.repeat(40)],
-      ['SendGrid', 'SG.' + 'a'.repeat(40)],
+      // Real SendGrid shape: `SG.<key id>.<secret>`. Written with one dot it
+      // also matched any dotted identifier ending in `SG`, so the pattern now
+      // requires the second segment.
+      ['SendGrid', 'SG.' + 'a'.repeat(22) + '.' + 'b'.repeat(43)],
       ['OpenAI project key', 'sk-proj-' + 'a'.repeat(40)],
     ];
 
@@ -214,6 +374,21 @@ describe('credential-format entropy floor', () => {
         ).toBe(true);
       });
     }
+
+    it('returns the CREDENTIAL, not the filler run that swallowed its prefix', () => {
+      // This is the direct, non-vacuous guard on `re.lastIndex = m.index + 1`
+      // in `findCredentialFormatMatch`. Under the previous "distinct >= 2"
+      // floor the line was provably INERT — `'_'x38 + 'sk'` has three distinct
+      // characters, so the candidate was accepted and the loop never resumed —
+      // and deleting it broke nothing. The dominance rule rejects that same run
+      // (38 of 40 characters are `_`), which makes the resume load-bearing:
+      // without it the scan restarts at offset 40, past the `sk` at offset 38,
+      // and the key is lost entirely.
+      const key = 'sk-ant-api03-R3alK3yV4lu3W1thEntropy0';
+      const hit = findCredentialFormatMatch('_'.repeat(38) + key);
+      expect(hit?.value, 'the match must be the key itself').toBe(key);
+      expect(hit?.index, 'and it must be reported at the key offset').toBe(38);
+    });
   });
 
   describe('hasAnyCredentialCandidate is deliberately unfiltered', () => {

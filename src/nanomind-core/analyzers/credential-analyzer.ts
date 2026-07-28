@@ -20,7 +20,8 @@ import {
   findCredentialFormatMatch,
   hasCredentialFormat,
   hasAnyCredentialCandidate,
-  VENDOR_PREFIX_ALTERNATIVES,
+  anchoredVendorAlternation,
+  matchVendorPrefix,
 } from '../../types/credential-format.js';
 import { isCorpusPath, isIntegrityManifestPath } from '../../hardening/path-context.js';
 
@@ -749,14 +750,17 @@ function isSecurityTaxonomyDocument(content: string): boolean {
  * outside this list are hash-indistinguishable; the verified-manifest
  * content gate is the load-bearing defense in that case.
  */
-// Built from the SHARED vendor list so this gate and the credential-format
-// matcher cannot drift apart. Two hand-maintained copies is how `hf_`, `ghs_`,
-// `ghu_`, `glpat-` and `npm_` came to be vendor-known here while the
-// credential-format matcher treated them as anonymous blobs subject to the
-// entropy fallback.
-const VENDOR_PREFIX_CONTENT_RE = new RegExp(
-  `\\b(?:${VENDOR_PREFIX_ALTERNATIVES.join('|')})`,
-);
+// Built from the SHARED vendor list, through the SHARED anchoring helper, so
+// this gate and the credential-format matcher cannot drift apart. Two
+// hand-maintained copies is how `hf_`, `ghs_`, `ghu_`, `glpat-` and `npm_` came
+// to be vendor-known here while the credential-format matcher treated them as
+// anonymous blobs subject to the entropy fallback.
+//
+// Anchored, matching `origin/main`'s behaviour exactly. This is a POSITIVE
+// gate whose result blocks suppression, so anchoring is the narrower (and here,
+// unchanged) choice; the negated vetoes deliberately use the unanchored
+// `hasAnyCredentialCandidate` instead. See `anchoredVendorAlternation`.
+const VENDOR_PREFIX_CONTENT_RE = new RegExp(anchoredVendorAlternation());
 
 function hasVendorPrefixCredential(content: string): boolean {
   return VENDOR_PREFIX_CONTENT_RE.test(content);
@@ -841,33 +845,21 @@ function findFirstCredentialFormat(content: string): { line: number; match: stri
  *   itself never appears in scanner output.
  * - For unknown shapes, expose the first 8 characters and mask up to 16
  *   more.
+ *
+ * The prefix set is DERIVED from the shared vendor alternatives
+ * (`matchVendorPrefix`), not hand-maintained here. The hand-written copy this
+ * replaces was missing `SG.`, `hf_`, `glpat-`, `npm_` and `ghu_` — every prefix
+ * the vendor-list unification newly made detectable — so those tokens fell
+ * through to the unknown-shape branch and leaked 2-5 characters of live secret
+ * body into finding `evidence`, which is exactly what this function exists to
+ * prevent.
  */
 function maskCredentialValue(value: string): string {
   if (value.length === 0) return '';
-  const knownPrefixes = [
-    'sk-ant-api03-',
-    'sk-ant-api02-',
-    'sk-proj-',
-    'sk_live_',
-    'sk_test_',
-    'github_pat_',
-    'ghp_',
-    'gho_',
-    'ghs_',
-    'AKIA',
-    'AIza',
-    'xoxb-',
-    'xoxa-',
-    'xoxp-',
-    'xoxr-',
-    'xoxs-',
-    'eyJ',
-  ];
-  for (const prefix of knownPrefixes) {
-    if (value.startsWith(prefix)) {
-      const remaining = Math.max(0, value.length - prefix.length);
-      return `${prefix}${'*'.repeat(Math.min(remaining, 16))}`;
-    }
+  const prefix = matchVendorPrefix(value);
+  if (prefix !== undefined) {
+    const remaining = Math.max(0, value.length - prefix.length);
+    return `${prefix}${'*'.repeat(Math.min(remaining, 16))}`;
   }
   // Unknown shape — show first 8 chars then asterisks. Cap so the
   // masked output never exceeds 24 chars regardless of input length.
