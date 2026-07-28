@@ -2721,7 +2721,19 @@ export class HardeningScanner {
 
     let verdict = false;
     try {
-      const raw = await fs.readFile(path.join(backupDir, '.manifest.json'), 'utf-8');
+      const manifestPath = path.join(backupDir, '.manifest.json');
+      // Size-guarded because this reads from the SCANNED tree, which is
+      // attacker-controlled — unlike `rollback`, which only ever reads a
+      // manifest HMA itself just wrote. Same `MAX_FILE_SIZE` bound the content
+      // scanners use. The bound fails in the safe direction: an oversized file
+      // is judged NOT a manifest, so the directory is scanned rather than
+      // excluded.
+      const stat = await fs.stat(manifestPath);
+      if (!stat.isFile() || stat.size > MAX_FILE_SIZE) {
+        this.verifiedBackupDirs.set(backupDir, false);
+        return false;
+      }
+      const raw = await fs.readFile(manifestPath, 'utf-8');
       const parsed = JSON.parse(raw) as Record<string, unknown>;
       // The shape, not merely valid JSON: both lists `createBackup` always
       // writes have to be there.
