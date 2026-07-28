@@ -3980,7 +3980,19 @@ Examples:
       if (fixedFindings.length > 0) {
         const verifiedCount = fixedFindings.filter((f: SecurityFinding) => (f as any).fixVerified).length;
         const unverifiedCount = fixedFindings.filter((f: SecurityFinding) => (f as any).fixVerified === false).length;
-        console.log(`${colors.green}Fixed ${fixedFindings.length} issue${fixedFindings.length === 1 ? '' : 's'}${verifiedCount > 0 ? ` (${verifiedCount} verified)` : ''}:${RESET()}`);
+        // "Fixed N issues" counted every ATTEMPT, so a run whose only fix was
+        // proven not to have landed still opened in green with "Fixed 1
+        // issue:". Lead with what was confirmed; a run with nothing confirmed
+        // does not get to claim a repair.
+        const attempted = fixedFindings.length;
+        const plural = attempted === 1 ? '' : 'es';
+        console.log(
+          unverifiedCount === 0
+            ? `${colors.green}Fixed ${attempted} issue${attempted === 1 ? '' : 's'}${verifiedCount > 0 ? ` (${verifiedCount} verified)` : ''}:${RESET()}`
+            : verifiedCount === 0
+              ? `${colors.yellow}Attempted ${attempted} fix${plural}, none confirmed:${RESET()}`
+              : `${colors.yellow}Attempted ${attempted} fix${plural} — ${verifiedCount} verified, ${unverifiedCount} not confirmed:${RESET()}`
+        );
         for (const finding of fixedFindings) {
           const location = finding.file ? (finding.line ? `${finding.file}:${finding.line}` : finding.file) : '';
           const verified = (finding as any).fixVerified;
