@@ -20,7 +20,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { BROAD_CREDENTIAL_PATTERNS } from '../../src/semantic/structural/credential-context';
+import {
+  BROAD_CREDENTIAL_PATTERNS,
+  CredentialContextAnalyzer,
+} from '../../src/semantic/structural/credential-context';
+import type { AnalysisFile } from '../../src/semantic/types';
 
 describe('SEM-CRED-003 broad credential pattern table', () => {
   it('is not empty (guards against a vacuous sweep below)', () => {
@@ -79,5 +83,44 @@ describe('SEM-CRED-003 broad credential pattern table', () => {
     for (const pattern of BROAD_CREDENTIAL_PATTERNS) {
       expect(pattern.pattern.flags, `pattern "${pattern.name}"`).toContain('g');
     }
+  });
+
+  describe('the shared table carries no state between scans', () => {
+    // Hoisting this table to module scope is a real behaviour change: it used
+    // to be a local built fresh on every call, so each scan got its own RegExp
+    // objects. Module-level `g`-flagged patterns are shared mutable state via
+    // `lastIndex`, and a stale `lastIndex` makes `exec` start mid-line and skip
+    // the credential at the front of the next file. The analyzer resets it per
+    // pattern per line; these assertions are what hold that invariant in place.
+    const analyzer = new CredentialContextAnalyzer();
+    const file = (content: string): AnalysisFile =>
+      ({ path: 'CLAUDE.md', type: 'agent_instructions', content, truncated: false } as AnalysisFile);
+
+    it('finds a credential on a later line that sits LEFT of the previous match', () => {
+      // The shape that actually bites, and the only one that does.
+      //
+      // Three obvious versions of this test were vacuous: repeating a scan,
+      // scanning after a long REJECTED line, and asserting `lastIndex === 0`
+      // after a scan. All three survive deleting the reset, because a `g`
+      // regex whose `exec` returns null resets `lastIndex` to 0 by itself, and
+      // the rejection path always ends in a null exec.
+      //
+      // The leak needs a line that MATCHES and breaks out early, leaving
+      // `lastIndex` high, followed by a line whose credential begins at a LOWER
+      // offset. Line 3 matches at roughly column 65; line 4's credential starts
+      // at column 7, so a stale `lastIndex` starts `exec` past it and the
+      // finding disappears. Verified: deleting `pattern.lastIndex = 0` drops
+      // this from 2 findings to 1.
+      const long = 'aB3xK9zQ7pR2mT8wY5vL4jH6nC1dF0sG' + 'X'.repeat(60);
+      const content =
+        '# Notes\n\n' +
+        `some padding text here to push the match rightward, token = ${long}\n` +
+        'key = aB3xK9zQ7pR2mT8wY5vL4jH6nC1dF0sG\n';
+      const found = analyzer.analyze([file(content)]).filter((f) => f.id === 'SEM-CRED-003');
+      expect(
+        found.map((f) => f.line),
+        'both credentials must be reported; a stale lastIndex silently drops the second',
+      ).toEqual([3, 4]);
+    });
   });
 });
