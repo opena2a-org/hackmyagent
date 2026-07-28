@@ -27,6 +27,14 @@ import {
 const FORM_BLANK = '_'.repeat(47);
 
 /**
+ * Split so the file never contains a contiguous `ghp_` + 36-character literal.
+ * GitHub push protection scans raw file bytes, and this repo already follows the
+ * convention for the Slack fixture in `benign-fp-regression.test.ts`. The value
+ * is a dummy: a real PAT carries a checksum in its last six characters.
+ */
+const GITHUB_PAT_FIXTURE = ['ghp', '_abcdefghijklmnopqrstuvwxyz', '0123456789'].join('');
+
+/**
  * A deterministic draw from a small alphabet.
  *
  * The distinction the filler rules turn on is ENTROPY, not alphabet size, so
@@ -97,7 +105,7 @@ describe('credential-format entropy floor', () => {
     const vendorCredentials: Array<[string, string]> = [
       ['OpenAI/Anthropic sk-', 'sk-abcdefghijklmnopqrstuvwxyz0123456789'],
       ['Stripe live', ['sk', '_live_abcdefghijklmnopqrstuvwxyz'].join('')],
-      ['GitHub PAT', ['ghp', '_abcdefghijklmnopqrstuvwxyz', '0123456789'].join('')],
+      ['GitHub PAT', GITHUB_PAT_FIXTURE],
       ['AWS access key id', 'AKIAIOSFODNN7EXAMPLE'],
       ['Google API key', ['AIza', 'SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q'].join('')],
       ['Slack bot token', 'xoxb-123456789012-abcdefghijkl'],
@@ -145,14 +153,14 @@ describe('credential-format entropy floor', () => {
       // The vendor matcher is a module-level RegExp reused across candidates.
       // If it ever gains the `g` flag it would carry `lastIndex` between
       // `.test()` calls and start skipping matches non-deterministically.
-      const key = ['ghp', '_abcdefghijklmnopqrstuvwxyz', '0123456789'].join('');
+      const key = GITHUB_PAT_FIXTURE;
       for (let i = 0; i < 5; i++) {
         expect(isAcceptedCredentialMatch(key), `call ${i + 1}`).toBe(true);
       }
     });
 
     it('does not let one candidate affect the next', () => {
-      const vendor = ['ghp', '_abcdefghijklmnopqrstuvwxyz', '0123456789'].join('');
+      const vendor = GITHUB_PAT_FIXTURE;
       const filler = '_'.repeat(47);
       expect(isAcceptedCredentialMatch(vendor)).toBe(true);
       expect(isAcceptedCredentialMatch(filler)).toBe(false);
@@ -388,7 +396,7 @@ describe('credential-format entropy floor', () => {
     const glued: Array<[string, string]> = [
       ['anthropic key', '_'.repeat(38) + 'sk-ant-api03-R3alK3yV4lu3W1thEntropy0'],
       ['slack token', '_'.repeat(38) + 'xoxb-123456789012-abcdefghijkl'],
-      ['github pat', '_'.repeat(38) + ['ghp', '_abcdefghijklmnopqrstuvwxyz', '0123456789'].join('')],
+      ['github pat', '_'.repeat(38) + GITHUB_PAT_FIXTURE],
     ];
 
     for (const [label, content] of glued) {
