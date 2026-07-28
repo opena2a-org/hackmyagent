@@ -265,6 +265,39 @@ function envRefSpans(text: string): Array<[number, number]> {
 }
 
 /**
+ * #301 — a reference wraps a NAME. A span whose name is itself
+ * credential-shaped is a VALUE wearing reference syntax, and earns nothing.
+ *
+ * #281 replaced a substring test with a span test, which was the right
+ * shape, but the span pattern is a shell identifier — `[A-Za-z_][A-Za-z0-9_]*`
+ * — and five of the ten credential patterns are built entirely from
+ * identifier-legal characters. So the credential FITS INSIDE the exemption:
+ *
+ *   {"token":"ghp_aaa…"}      score 69   CRED-001 fires
+ *   {"token":"${ghp_aaa…}"}   score 96   CRED-001 silent
+ *
+ * Two braces, and a CRITICAL is gone — the same one-token suppression #281
+ * set out to remove, relocated from "append a reference" to "become one".
+ * Affects `ghp_`, `github_pat_`, `sk_live_`, `AKIA`, and dash-free `AIza`.
+ * Anthropic/OpenAI/Slack/SendGrid keys contain `-` or `.`, which no
+ * identifier admits, which is why the suite never saw this.
+ *
+ * The legitimate exemption survives untouched, because the names it exists
+ * for are not credential-shaped: `${ANTHROPIC_API_KEY}`, `${GITHUB_TOKEN}` —
+ * including the ones CRED-001's own fix writes — match no pattern here.
+ *
+ * What this DOES give up is `${AKIAABCDEFGHIJKLMNOP}`, a variable genuinely
+ * named after the credential it holds, which now reports. That trade is
+ * deliberate and one-directional: a name indistinguishable from a live key is
+ * indistinguishable to a reader too, the finding names the file and line, and
+ * the cost of the other reading is a silently unreported secret.
+ */
+function isCredentialShapedName(inner: string, pattern: RegExp): boolean {
+  // Non-global: `test` on a /g regex advances lastIndex between calls.
+  return new RegExp(pattern.source, pattern.flags.replace(/g/g, '')).test(inner);
+}
+
+/**
  * #281 — true when `text` carries a live credential that is NOT merely part of
  * an environment-variable reference.
  *
@@ -286,7 +319,11 @@ export function hasCredentialOutsideEnvRef(text: string, pattern: RegExp): boole
   // Fresh global regex: callers pass both /g and non-/g patterns, and a
   // shared /g regex carries `lastIndex` between calls.
   const re = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g');
-  const spans = envRefSpans(text);
+  // #301 — a span only exempts if it references a NAME. `${ghp_aaa…}` is the
+  // key itself in braces, so it is not an exemption, it is the finding.
+  const spans = envRefSpans(text).filter(
+    ([s, e]) => !isCredentialShapedName(text.slice(s + 2, e - 1), pattern),
+  );
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     const start = m.index;
@@ -2242,6 +2279,13 @@ export class HardeningScanner {
               // classify it as a normal config file and REWRITE it in place.
               const isEnvFile = path.basename(filename).startsWith('.env');
               if (autoFix && !isEnvFile) {
+                // #301 — a key wrapped in braces has to lose the braces with
+                // it. Replacing only the inner match turns `"${ghp_aaa…}"`
+                // into `"${${GITHUB_TOKEN}}"`: nested, expanded by no shell,
+                // and still not the value anyone wanted. Wrapper first, so
+                // the bare pass below sees only genuinely bare occurrences.
+                const wrapped = new RegExp(`\\$\\{(?:${pattern.source})\\}`, 'g');
+                lines[i] = lines[i].replace(wrapped, '${' + envVar + '}');
                 pattern.lastIndex = 0;
                 lines[i] = lines[i].replace(pattern, '${' + envVar + '}');
                 fileModified = true;
