@@ -1414,16 +1414,22 @@ export class HardeningScanner {
           // Copying beats re-deriving: checks disagree on what `file` means
           // (GIT-001 points at the '.gitignore' it would edit, PERM-001 at an
           // offending file), and only the check knows which.
+          // `f.file` is required rather than assumed: today `scan()` returns
+          // `filteredFindings`, which already drops fileless findings, but
+          // re-pointing a finding at an undefined location would be worse
+          // than leaving the stale one, so don't depend on that invariant.
           const survivor = verifyResult.findings.find(
             f => f.checkId === finding.checkId
-              && !f.passed && !f.fixed
+              && !f.passed && !f.fixed && !!f.file
               && coveredFiles(f).some(p => covered.includes(p)),
           );
           if (survivor) {
             finding.file = survivor.file;
             finding.line = survivor.line;
             finding.message = survivor.message;
-            finding.details = survivor.details;
+            // Copied, not aliased — `verifyResult` is discarded here, and a
+            // shared reference would let a later mutation reach both.
+            finding.details = survivor.details ? { ...survivor.details } : undefined;
             // Only when the survivor actually carries evidence — copying an
             // absent one would strip a field that is mandatory from v0.22.
             if (survivor.evidence) finding.evidence = survivor.evidence;
