@@ -445,9 +445,13 @@ export async function publishScanResults(
 
     // Report remediation tracking (non-blocking)
     if (data.hardeningFindings) {
+      // `f.passed || f.fixed` counted a fix the verification pass disproved
+      // as a pass, so the score the Registry stored as `initialScore` /
+      // `rescanScore` credited repairs that never landed. Same predicate as
+      // every other consumer.
       const score = data.hardeningFindings.length > 0
         ? Math.round(
-            (data.hardeningFindings.filter(f => f.passed || f.fixed).length /
+            (data.hardeningFindings.filter(f => !countsAgainstScore(f)).length /
               data.hardeningFindings.length) *
               100,
           )

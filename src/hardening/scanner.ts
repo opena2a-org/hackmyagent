@@ -1347,6 +1347,7 @@ export class HardeningScanner {
     enrichWithTaxonomy(findings);
 
     // Verify fixes: re-scan fixed files to confirm issues are actually resolved
+    let reportFixVerification = false;
     if (shouldFix) {
       const fixedFindings = findings.filter(f => f.fixed && f.file);
       if (fixedFindings.length > 0) {
@@ -1382,9 +1383,24 @@ export class HardeningScanner {
           )];
         };
 
+        // Compare against the verify scan's UNFILTERED findings. Its
+        // `findings` has already been through the user-facing filter below,
+        // which drops paths matching `.hmaignore` — and it drops on `file`,
+        // the very attribution that shifts. So a repo with `.env` in its
+        // `.hmaignore` walked the still-failing finding straight out of the
+        // list it was being compared against, and the union above confirmed a
+        // chmod that never landed: `2/2 fixes confirmed`, 98/100, exit 0,
+        // `.env` still 0644. Comparing a raw list against a filtered one is
+        // the same asymmetry as comparing on a shifting key, one layer up.
+        //
+        // Ignoring a path suppresses reporting on it. It does not turn a fix
+        // that failed there into a fix that succeeded — HMA still attempted
+        // the write.
+        const verifyFindings = verifyResult.allFindings ?? verifyResult.findings;
+
         // checkId -> every path still failing that check after the fix pass.
         const stillFailing = new Map<string, Set<string>>();
-        for (const f of verifyResult.findings) {
+        for (const f of verifyFindings) {
           if (f.passed || f.fixed) continue;
           let bucket = stillFailing.get(f.checkId);
           if (!bucket) {
@@ -1418,35 +1434,54 @@ export class HardeningScanner {
           // `filteredFindings`, which already drops fileless findings, but
           // re-pointing a finding at an undefined location would be worse
           // than leaving the stale one, so don't depend on that invariant.
-          const survivor = verifyResult.findings.find(
+          const survivors = verifyFindings.filter(
             f => f.checkId === finding.checkId
               && !f.passed && !f.fixed && !!f.file
               && coveredFiles(f).some(p => covered.includes(p)),
+          );
+
+          // Re-point only onto a path the report can actually show. The
+          // filter below runs AFTER this block and drops ignored paths, so
+          // re-pointing onto one would delete this finding from the report
+          // outright — trading a false "verified" for a silent disappearance,
+          // which is no better. When every survivor is ignored the finding
+          // keeps its original attribution and still counts as unverified.
+          const survivor = survivors.find(
+            f => !this.isPathIgnored(f.file as string, allIgnoredPaths),
           );
           if (survivor) {
             finding.file = survivor.file;
             finding.line = survivor.line;
             finding.message = survivor.message;
             // Copied, not aliased — `verifyResult` is discarded here, and a
-            // shared reference would let a later mutation reach both.
-            finding.details = survivor.details ? { ...survivor.details } : undefined;
+            // shared reference would let a later mutation reach both. Guarded
+            // like `evidence`: an absent one must not erase real evidence.
+            if (survivor.details) finding.details = { ...survivor.details };
             // Only when the survivor actually carries evidence — copying an
             // absent one would strip a field that is mandatory from v0.22.
             if (survivor.evidence) finding.evidence = survivor.evidence;
           }
 
+          // The finding's own `manualFix` was built from the PRE-fix file
+          // list, so it names files this run already repaired. Carry the
+          // survivor's — recomputed against the post-fix tree — or drop it
+          // rather than ship a stale command under a field documented as the
+          // remedy to use.
+          finding.manualFix = survivor?.manualFix;
+
           // `fix` names the auto-fix that just failed, so following it re-runs
-          // the failure. Cite the manual equivalent the check supplies —
-          // taken from the survivor so it names the files that still fail.
-          finding.fix = (survivor ?? finding).manualFix
+          // the failure. Cite the manual equivalent the check supplies.
+          finding.fix = finding.manualFix
             ?? 'Auto-fix did not resolve this. Apply the change manually, then re-scan to confirm.';
         }
 
-        if (options.onProgress) {
-          const verified = fixedFindings.filter(f => f.fixVerified).length;
-          const total = fixedFindings.length;
-          options.onProgress(`Fix verification: ${verified}/${total} fixes confirmed`);
-        }
+        // Emitted after the report filter below, not here: this line counted
+        // every fixed finding while the CLI's summary counts only the ones
+        // that survive into `result.findings`, so a single run printed two
+        // different denominators four lines apart — "Fix verification: 1/2
+        // fixes confirmed" above "Attempted 1 fix, none confirmed". Both go
+        // to the same reader, who is left deciding which number is wrong.
+        reportFixVerification = fixedFindings.length > 0;
       }
     }
 
@@ -1477,6 +1512,22 @@ export class HardeningScanner {
 
       return true;
     });
+
+    // Deliberately carries no counts. This line used to read "Fix
+    // verification: 1/2 fixes confirmed" four lines above the CLI's
+    // "Attempted 1 fix, none confirmed" — two denominators for one run,
+    // printed to the same reader, who is left deciding which is wrong.
+    //
+    // The scanner cannot fix that by counting more carefully, because it
+    // cannot know what its caller will drop afterwards: `cli.ts` re-filters
+    // `result.findings` with `!f.passed` at five recalculation sites, which
+    // discards a SUCCESSFULLY fixed finding (`passed: true, fixed: true`)
+    // that this filter deliberately keeps. So the count belongs where the
+    // display is. The CLI's summary block already reports verified and
+    // unconfirmed accurately; this is progress, not data.
+    if (reportFixVerification && options.onProgress) {
+      options.onProgress('Verifying applied fixes...');
+    }
 
     // Calculate score (only on applicable, non-ignored findings)
     const { score: rawScore, maxScore } = this.calculateScore(filteredFindings);
