@@ -1359,19 +1359,81 @@ export class HardeningScanner {
           cliName: this.cliName,
         });
 
-        // For each fixed finding, check if the same checkId still appears as failed
-        const stillFailing = new Set(
-          verifyResult.findings
-            .filter(f => !f.passed && !f.fixed)
-            .map(f => `${f.checkId}:${f.file}`)
-        );
+        // A finding's `file` is one stand-in for what can be a multi-file
+        // issue: `PERM-001` reports `permissionIssues[0]`, the head of a
+        // fixed-order array. When a fix lands on the head and fails on a
+        // later entry, the head SHIFTS between the scan and the re-scan
+        // ('secrets.json' -> '.env'), a key built from it stops matching,
+        // and a fix that never landed is confirmed (HIGH-3).
+        //
+        // So compare on every path a finding covers, not just its
+        // representative one. The union with `file` matters as much as
+        // `details.files`: checks like GIT-001 point `file` at a constant
+        // ('.gitignore') and use `details.files` for the evidence that
+        // motivated it, so dropping either side can lose the still-failing
+        // path. Union on both sides can only make verification stricter,
+        // never looser — and under-claiming a repair is the safe direction.
+        const coveredFiles = (f: SecurityFinding): string[] => {
+          const listed = Array.isArray(f.details?.files) ? f.details.files : [];
+          return [...new Set(
+            [f.file, ...listed].filter(
+              (p): p is string => typeof p === 'string' && p.length > 0,
+            ),
+          )];
+        };
+
+        // checkId -> every path still failing that check after the fix pass.
+        const stillFailing = new Map<string, Set<string>>();
+        for (const f of verifyResult.findings) {
+          if (f.passed || f.fixed) continue;
+          let bucket = stillFailing.get(f.checkId);
+          if (!bucket) {
+            bucket = new Set<string>();
+            stillFailing.set(f.checkId, bucket);
+          }
+          for (const p of coveredFiles(f)) bucket.add(p);
+        }
 
         for (const finding of fixedFindings) {
-          const key = `${finding.checkId}:${finding.file}`;
-          finding.fixVerified = !stillFailing.has(key);
-          if (!finding.fixVerified) {
-            finding.fixMessage = (finding.fixMessage || '') + ' [FIX NOT VERIFIED - issue may persist]';
+          const failingPaths = stillFailing.get(finding.checkId);
+          const covered = coveredFiles(finding);
+          finding.fixVerified = !failingPaths || !covered.some(p => failingPaths.has(p));
+          if (finding.fixVerified) continue;
+
+          finding.fixMessage = (finding.fixMessage || '') + ' [FIX NOT VERIFIED - issue may persist]';
+
+          // An unverified finding is now reported like any other outstanding
+          // issue, so its location has to be true. The pre-fix `file` and
+          // `message` describe the pre-fix tree: `PERM-001` names
+          // 'secrets.json' — the file the run REPAIRED — while '.env', still
+          // world-readable, is named nowhere. Re-point at the survivor.
+          //
+          // The re-scan is the authority. It is a real scan of the post-fix
+          // tree, so its own finding for this check already carries the
+          // correct file, message and evidence, computed by the check itself.
+          // Copying beats re-deriving: checks disagree on what `file` means
+          // (GIT-001 points at the '.gitignore' it would edit, PERM-001 at an
+          // offending file), and only the check knows which.
+          const survivor = verifyResult.findings.find(
+            f => f.checkId === finding.checkId
+              && !f.passed && !f.fixed
+              && coveredFiles(f).some(p => covered.includes(p)),
+          );
+          if (survivor) {
+            finding.file = survivor.file;
+            finding.line = survivor.line;
+            finding.message = survivor.message;
+            finding.details = survivor.details;
+            // Only when the survivor actually carries evidence — copying an
+            // absent one would strip a field that is mandatory from v0.22.
+            if (survivor.evidence) finding.evidence = survivor.evidence;
           }
+
+          // `fix` names the auto-fix that just failed, so following it re-runs
+          // the failure. Cite the manual equivalent the check supplies —
+          // taken from the survivor so it names the files that still fail.
+          finding.fix = (survivor ?? finding).manualFix
+            ?? 'Auto-fix did not resolve this. Apply the change manually, then re-scan to confirm.';
         }
 
         if (options.onProgress) {
@@ -2046,6 +2108,11 @@ export class HardeningScanner {
       fixable: true,
       fixed: autoFix && !passed,
       fix: passed ? undefined : `${this.cliName} secure --fix`,
+      // Cited instead of `fix` when the chmod above was swallowed (immutable
+      // flag, read-only mount, restrictive MAC policy) and verification
+      // proved the file is still world-readable. Names only the files that
+      // are still failing, because the re-scan recomputes this list.
+      manualFix: passed ? undefined : `chmod 600 ${permissionIssues.join(' ')}`,
       fixMessage: autoFix && !passed ? 'Changed permissions to 600' : undefined,
       details: passed ? undefined : { files: permissionIssues },
       guidance: 'Overly broad file permissions let any user on the system read sensitive config files that may contain credentials or API keys.',

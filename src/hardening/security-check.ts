@@ -64,6 +64,13 @@ export interface SecurityFinding {
   line?: number;
   /** Runnable command or concise action to fix this issue */
   fix?: string;
+  /**
+   * Remedy to cite when the auto-fix ran but the verification pass proved it
+   * did not land. `fix` normally names the auto-fix itself, which is a dead
+   * end once that auto-fix is the thing that failed. Checks that have a
+   * runnable manual equivalent supply it here.
+   */
+  manualFix?: string;
   /** Human-readable explanation of why this matters and how to remediate */
   guidance?: string;
   /** Attack taxonomy class this finding maps to (e.g., "CRED-HARVEST") */
