@@ -438,6 +438,11 @@ const TAXONOMY_MAP: Record<string, string> = {
  */
 export const TAXONOMY_EXEMPT_CHECKIDS: ReadonlySet<string> = new Set([
   'FIX-ERROR',
+  // Reports that a computed fix could not be written to disk (read-only
+  // mount, immutable flag, EPERM, full volume). A fix-application status,
+  // like FIX-ERROR beside it — the underlying threat is still reported by
+  // whichever check found it, which carries its own attack class.
+  'FIX-WRITE-FAILED',
   'FIX-SUMMARY',
   'SCAN-001',
   // External port-scanner status — `Score is not applicable — nothing was tested`.

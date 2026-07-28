@@ -896,6 +896,8 @@ function isCyrillicInCyrillicContext(chars: string[], ci: number): boolean {
 
 export class HardeningScanner {
   private cliName = 'hackmyagent';
+  /** Fix writes that did not land this run. Reset per `scan()`. */
+  private fixWriteFailures: { file: string; code: string; message: string }[] = [];
   // Files that may be created or modified during auto-fix
   private static readonly BACKUP_FILES = [
     'config.json',
@@ -1024,6 +1026,9 @@ export class HardeningScanner {
   async scan(options: ScanOptions): Promise<ScanResult> {
     const { targetDir, autoFix = false, dryRun = false, ignore = [], cliName = 'hackmyagent' } = options;
     this.cliName = cliName;
+    // Per-run, so a reused scanner instance cannot report a previous run's
+    // failed writes.
+    this.fixWriteFailures = [];
 
     // Resolve effective scan depth — --deep flag implies 'deep' depth
     const scanDepth: ScanDepth = options.scanDepth || (options.deep ? 'deep' : 'standard');
@@ -1345,6 +1350,35 @@ export class HardeningScanner {
     // the field when `getAttackClass()` returns a non-empty value AND the
     // finding does not already carry one.
     enrichWithTaxonomy(findings);
+
+    // A fix write that did not land is now reported, not just absorbed.
+    // Revoking the flag alone made the run look like the fix was never
+    // attempted: the user saw an ordinary unfixed finding whose remedy was
+    // `secure --fix` — the command that had just failed — with no way to tell
+    // "not attempted" from "attempted and the filesystem refused". Re-running
+    // then loops with no diagnosis. One finding names every file, so the
+    // signal cannot be lost among per-check noise.
+    if (this.fixWriteFailures.length > 0) {
+      const failed = this.fixWriteFailures.map(f => ({
+        ...f,
+        rel: path.relative(targetDir, f.file) || path.basename(f.file),
+      }));
+      const codes = [...new Set(failed.map(f => f.code))].join(', ');
+      findings.push({
+        checkId: 'FIX-WRITE-FAILED',
+        name: 'Auto-Fix Could Not Be Written',
+        description: 'A fix was computed but could not be written to disk',
+        category: 'hardening',
+        severity: 'medium',
+        passed: false,
+        message: `${failed.length} auto-fix write${failed.length === 1 ? '' : 's'} failed (${codes}): ${failed.map(f => f.rel).join(', ')}`,
+        file: failed[0].rel,
+        fixable: false,
+        fix: `Make the file writable, then re-run: ${this.cliName} secure --fix`,
+        guidance:
+          'The issue these fixes address is still present on disk. A write can fail because the file is read-only or immutable, the filesystem is mounted read-only, the volume is full, or a security policy denies it. Findings for those files are reported as unfixed, so the score reflects the tree as it actually is.',
+      });
+    }
 
     // Verify fixes: re-scan fixed files to confirm issues are actually resolved
     let reportFixVerification = false;
@@ -1923,8 +1957,9 @@ export class HardeningScanner {
           const firstLine = keysFoundInFile[0].line;
 
           if (fileModified) {
-            content = lines.join('\n');
-            await fs.writeFile(filePath, content);
+            const credContent = lines.join('\n');
+            fileModified = await this.applyFixWrite(filePath, credContent);
+            if (fileModified) content = credContent;
           }
 
           const isEnvFile = filename.startsWith('.env');
@@ -1960,7 +1995,7 @@ export class HardeningScanner {
       for (const envVar of envVarsToAdd) {
         envExampleContent += `${envVar}=\n`;
       }
-      await fs.writeFile(envExamplePath, envExampleContent);
+      await this.applyFixWrite(envExamplePath, envExampleContent);
     }
 
     return findings;
@@ -2137,7 +2172,19 @@ export class HardeningScanner {
     try {
       await fs.writeFile(filePath, content);
       return true;
-    } catch {
+    } catch (err) {
+      // Recorded, not swallowed. Returning a bare `false` made these sites
+      // quieter than the gateway path they were modelled on: the user saw an
+      // ordinary unfixed finding whose remedy was `secure --fix` — the
+      // command that had just silently failed — with no way to tell "never
+      // attempted" from "attempted and the filesystem refused". `scan()`
+      // turns this list into one FIX-WRITE-FAILED finding.
+      const e = err as NodeJS.ErrnoException;
+      this.fixWriteFailures.push({
+        file: filePath,
+        code: e?.code || (err instanceof Error ? err.name : 'UnknownError'),
+        message: err instanceof Error ? err.message : String(err),
+      });
       return false;
     }
   }
@@ -6429,9 +6476,9 @@ dist/
         const hash = crypto.createHash('sha256').update(content).digest('hex');
         const signedDate = new Date().toISOString();
         const signatureBlock = `\n<!-- opena2a-guard hash="sha256:${hash}" signed="${signedDate}" -->`;
-        content = content + signatureBlock;
-        await fs.writeFile(skillFile, content);
-        skill001Fixed = true;
+        const skill001Content = content + signatureBlock;
+        skill001Fixed = await this.applyFixWrite(skillFile, skill001Content);
+        if (skill001Fixed) content = skill001Content;
       }
 
       findings.push({
@@ -6546,8 +6593,24 @@ dist/
         }
       }
       if (skill004FileModified) {
-        content = lines.join('\n');
-        await fs.writeFile(skillFile, content);
+        const skill004Content = lines.join('\n');
+        skill004FileModified = await this.applyFixWrite(skillFile, skill004Content);
+        if (skill004FileModified) {
+          content = skill004Content;
+        } else {
+          // SKILL-004 findings were pushed above with `passed: fixApplied`,
+          // set from the in-memory line rewrite, before this write. Revoking
+          // the write flag alone leaves them claiming `passed: true` for a
+          // CRITICAL still on disk — and `cli.ts` re-filters on `!f.passed`,
+          // so they vanish from the report entirely. Scoped to this file.
+          for (const f of findings) {
+            if (f.checkId === 'SKILL-004' && f.file === relativePath && f.fixed) {
+              f.passed = false;
+              f.fixed = false;
+              f.fixMessage = undefined;
+            }
+          }
+        }
       }
 
       // SKILL-005: Credential File Access
@@ -7471,8 +7534,17 @@ dist/
 
       // GATEWAY-003: Token Exposed in Config
       const gatewayAuth = gateway?.auth as Record<string, unknown> | undefined;
-      const hasPlaintextTokenInAuth = gatewayAuth && typeof gatewayAuth.token === 'string' && gatewayAuth.token.length > 0;
-      const hasPlaintextTokenAtRoot = typeof config.token === 'string' && (config.token as string).length > 0;
+      // An environment-variable reference is not a plaintext token. Without
+      // this the check re-fired on its OWN remedy — the auto-fix writes
+      // `${OPENCLAW_AUTH_TOKEN}`, a non-empty string — so a successfully
+      // fixed config stayed failing forever and `fixVerified` was
+      // permanently false. Same idiom MCP-003 already uses.
+      const isEnvRef = (v: unknown): boolean =>
+        typeof v === 'string' && /^(\$\{[^}]+\}|\$[A-Za-z_][A-Za-z0-9_]*)$/.test(v.trim());
+      const hasPlaintextTokenInAuth = gatewayAuth && typeof gatewayAuth.token === 'string'
+        && gatewayAuth.token.length > 0 && !isEnvRef(gatewayAuth.token);
+      const hasPlaintextTokenAtRoot = typeof config.token === 'string'
+        && (config.token as string).length > 0 && !isEnvRef(config.token);
       const hasPlaintextToken = hasPlaintextTokenInAuth || hasPlaintextTokenAtRoot;
       let gateway003Fixed = false;
 
@@ -7715,8 +7787,14 @@ dist/
           // has to take them back — otherwise the report shows `passed: true`
           // for a config sitting unchanged on disk. Unlike the other checks
           // these are already in the array, so revoke in place.
+          // Scoped to THIS config file. `findings` accumulates across every
+          // entry of the enclosing `for (const configFile of configFiles)`
+          // loop — up to four gateway configs — so an unscoped revoke let a
+          // failed write on a later file take back the landed fixes of an
+          // earlier one, reporting a CRITICAL on a file the tool had just
+          // correctly repaired.
           for (const f of findings) {
-            if (f.category === 'gateway' && f.fixed) {
+            if (f.category === 'gateway' && f.fixed && f.file === relativePath) {
               f.passed = false;
               f.fixed = false;
               f.fixMessage = undefined;
@@ -10555,9 +10633,9 @@ dist/
                   const original = lines[i];
                   lines[i] = lines[i].replace(check.fixPattern, check.fixReplacement);
                   if (lines[i] !== original) {
-                    fixed = true;
-                    content = lines.join('\n');
-                    await fs.writeFile(filePath, content);
+                    const llmContent = lines.join('\n');
+                    fixed = await this.applyFixWrite(filePath, llmContent);
+                    if (fixed) content = llmContent;
                   }
                 }
 
@@ -10725,8 +10803,9 @@ dist/
                       }
                     }
                     if (fixed) {
-                      content = lines.join('\n');
-                      await fs.writeFile(filePath, content);
+                      const aiToolContent = lines.join('\n');
+                      fixed = await this.applyFixWrite(filePath, aiToolContent);
+                      if (fixed) content = aiToolContent;
                     }
                   }
 
@@ -11084,8 +11163,22 @@ dist/
           }
 
           if (fileModified) {
-            content = lines.join('\n');
-            await fs.writeFile(filePath, content);
+            const webCredContent = lines.join('\n');
+            fileModified = await this.applyFixWrite(filePath, webCredContent);
+            if (fileModified) {
+              content = webCredContent;
+            } else {
+              // WEBCRED-001 was pushed BEFORE this write, so it already claims
+              // `passed: true` for a repair that never reached disk. Revoke it
+              // here, scoped to this file so one failure cannot touch another.
+              for (const f of findings) {
+                if (f.checkId === 'WEBCRED-001' && f.file === relativePath && f.fixed) {
+                  f.passed = false;
+                  f.fixed = false;
+                  f.fixMessage = undefined;
+                }
+              }
+            }
           }
         } catch { /* skip unreadable files */ }
       }

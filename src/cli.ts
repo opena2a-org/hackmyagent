@@ -3539,10 +3539,19 @@ Examples:
         }
         if (result.findings) {
           // Re-apply the same gates as the original filter:
-          // 1. Only failed checks  2. Has file path  3. Applies to project type
+          // 1. Failed OR fixed  2. Has file path  3. Applies to project type
+          //
+          // The `f.fixed` half is not optional. This filter claimed to mirror
+          // the scanner's, but the scanner keeps fixed findings
+          // (`if (!f.fixed && f.passed) return false`) while this dropped
+          // every one of them. That silently deleted any finding a check
+          // reported as `passed: <check>Fixed` — including one the
+          // verification pass had just proved did NOT land — before
+          // `countsAgainstScore` ran a few lines below, so the score was
+          // recomputed from a list the unverified fix had been removed from.
           const projectType = result.projectType || 'library';
           result.findings = refiltered.filter((f: any) =>
-            !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
+            (!f.passed || f.fixed) && f.file && scanner.findingAppliesTo(f, projectType)
           ) as typeof result.findings;
         }
         // Re-apply CLI --ignore list (reapplyIgnoreFilters only covers .hmaignore file rules)
@@ -9404,7 +9413,7 @@ async function checkGitHubRepo(
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, repoDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
-        !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
+        (!f.passed || f.fixed) && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
       scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
@@ -9713,7 +9722,7 @@ async function checkPyPiPackage(
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, extractDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
-        !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
+        (!f.passed || f.fixed) && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
       scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
@@ -9916,7 +9925,7 @@ async function checkRawUrl(
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, scanDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
-        !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
+        (!f.passed || f.fixed) && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
       scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
@@ -10092,7 +10101,7 @@ async function checkNpmPackage(
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, packageDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
-        !f.passed && f.file && scanner.findingAppliesTo(f, projectType)
+        (!f.passed || f.fixed) && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
       scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
