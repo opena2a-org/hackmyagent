@@ -533,8 +533,38 @@ function reconciledGovernanceScore(
 // Finding generation
 // ---------------------------------------------------------------------------
 
+/**
+ * How this scan should name its target inside a fix citation (#293, second
+ * pass — `detect`).
+ *
+ * `detect`'s remediation strings were hardcoded to a bare `.`, so scanning
+ * one tree from another directory printed
+ *
+ *   Fix: hackmyagent harden-soul .
+ *
+ * and pasting it generated a SOUL.md in the CURRENT directory rather than the
+ * one that was scanned — writing to the wrong tree while reporting success,
+ * which is the harm #293 was filed over. `secure` was fixed there; `detect`
+ * builds these strings itself and never reached the rewriter, which
+ * deliberately leaves an explicit `.` alone because for every other command a
+ * `.` really does mean the scanned tree.
+ *
+ * Kept pathless when the scan target IS the working directory, so the common
+ * case stays free of churn.
+ */
+function citationTarget(scanDirectory: string): string {
+  try {
+    return path.resolve(scanDirectory) === path.resolve(process.cwd())
+      ? '.'
+      : scanDirectory;
+  } catch {
+    return scanDirectory;
+  }
+}
+
 function generateFindings(result: Omit<DetectResult, 'findings'>): Finding[] {
   const findings: Finding[] = [];
+  const target = citationTarget(result.scanDirectory);
 
   // Ungoverned agents
   const ungoverned = result.agents.filter((a) => a.governanceStatus === 'no governance');
@@ -551,7 +581,7 @@ function generateFindings(result: Omit<DetectResult, 'findings'>): Finding[] {
         'These agents can take actions in your project but have no rules defining what they '
         + 'should or should not do. A SOUL.md file sets behavioral boundaries — what agents can and '
         + 'cannot do, and what requires human approval.',
-      remediation: 'hackmyagent harden-soul .',
+      remediation: `hackmyagent harden-soul ${target}`,
     });
   }
 
@@ -573,7 +603,7 @@ function generateFindings(result: Omit<DetectResult, 'findings'>): Finding[] {
         'These MCP servers are configured in your project and grant access to sensitive operations '
         + 'like running shell commands or accessing databases. '
         + 'Running a security scan confirms they match what you intended to install.',
-      remediation: 'hackmyagent secure .',
+      remediation: `hackmyagent secure ${target}`,
     });
   }
 
@@ -593,7 +623,7 @@ function generateFindings(result: Omit<DetectResult, 'findings'>): Finding[] {
       whyItMatters:
         'These servers are configured in your project but have not been scanned for security issues. '
         + 'Running hackmyagent secure surfaces any vulnerabilities in their configuration.',
-      remediation: 'hackmyagent secure .',
+      remediation: `hackmyagent secure ${target}`,
     });
   }
 
@@ -608,7 +638,7 @@ function generateFindings(result: Omit<DetectResult, 'findings'>): Finding[] {
       whyItMatters:
         'API keys or tokens appear to be stored directly in these configuration files. '
         + 'Anyone with repository access can see and use these credentials.',
-      remediation: 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.',
+      remediation: `opena2a protect ${target}  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.`,
     });
   }
 
@@ -623,7 +653,7 @@ function generateFindings(result: Omit<DetectResult, 'findings'>): Finding[] {
       whyItMatters:
         'These configs allow AI agents to perform a wide range of actions without restrictions. '
         + 'Broad permissions increase risk if an agent behaves unexpectedly.',
-      remediation: 'hackmyagent scan-soul .',
+      remediation: `hackmyagent scan-soul ${target}`,
     });
   }
 
@@ -637,7 +667,7 @@ function generateFindings(result: Omit<DetectResult, 'findings'>): Finding[] {
       whyItMatters:
         'A SOUL.md file defines what an agent should and should not do beyond capability restrictions — '
         + 'handling errors, sensitive data, and when to ask for human approval.',
-      remediation: 'hackmyagent harden-soul .',
+      remediation: `hackmyagent harden-soul ${target}`,
     });
   }
 
@@ -833,7 +863,7 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
       const isGoverned = agent.governanceStatus === 'governed';
       const govStr = isGoverned ? green('governed') : yellow('ungoverned');
       const pidStr = verbose ? dim(` (PID ${agent.pid})`) : '';
-      const fixHint = !isGoverned ? `  ${dim('→')}  ${cyan('hackmyagent harden-soul .')}` : '';
+      const fixHint = !isGoverned ? `  ${dim('→')}  ${cyan(`hackmyagent harden-soul ${citationTarget(result.scanDirectory)}`)}` : '';
       lines.push(`  ${nameCol}${govStr}${pidStr}${fixHint}`);
     }
   }
