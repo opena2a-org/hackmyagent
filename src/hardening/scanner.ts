@@ -286,7 +286,7 @@ function envRefSpans(text: string): Array<[number, number]> {
  * for are not credential-shaped: `${ANTHROPIC_API_KEY}`, `${GITHUB_TOKEN}` —
  * including the ones CRED-001's own fix writes — match no pattern here.
  *
- * What this DOES give up is `${AKIAABCDEFGHIJKLMNOP}`, a variable genuinely
+ * What this DOES give up is a braced AWS-key-shaped NAME, a variable genuinely
  * named after the credential it holds, which now reports. That trade is
  * deliberate and one-directional: a name indistinguishable from a live key is
  * indistinguishable to a reader too, the finding names the file and line, and
@@ -310,7 +310,7 @@ function isCredentialShapedName(inner: string, pattern: RegExp): boolean {
  *
  * The exemption is kept, but narrowed to what it was actually for: a match
  * that lies ENTIRELY inside a well-formed reference. That still matters —
- * `AKIA[0-9A-Z]{16}` matches inside `${AKIAABCDEFGHIJKLMNOP}` and
+ * `AKIA[0-9A-Z]{16}` matches inside a braced name of that shape, and
  * `AIza[0-9A-Za-z_-]{35}` inside a long `${AIza…}`, so a blanket removal
  * would invent false positives on legitimately-referenced variables.
  */

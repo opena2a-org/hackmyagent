@@ -23,6 +23,10 @@ const LIVE_GH = `ghp_${'a'.repeat(36)}`;
 const ANTHROPIC_RE = /sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/;
 const AKIA_RE = /AKIA[0-9A-Z]{16}/;
 const GH_RE = /ghp_[a-zA-Z0-9]{36}/;
+// Synthesised, never a literal — an AKIA-shaped literal in a committed file
+// is what GitHub push protection blocks, and this file's own header says
+// values are built at runtime.
+const FAKE_AKIA = `AKIA${'D'.repeat(16)}`;
 
 describe('#281 anchored env-ref predicate', () => {
   describe('hasCredentialOutsideEnvRef', () => {
@@ -59,7 +63,7 @@ describe('#281 anchored env-ref predicate', () => {
     it('does not exempt a credential that has BECOME the reference', () => {
       // This assertion is the inverse of the one it replaces, which read
       // "exempts a variable whose NAME happens to match a credential
-      // pattern" and pinned `${AKIAABCDEFGHIJKLMNOP}` to false. That case is
+      // pattern" and pinned a braced AWS-key-shaped name to false. That case is
       // real, but it is not distinguishable from a live key in braces — and
       // the version that shipped chose the wrong side of it:
       //
@@ -71,7 +75,7 @@ describe('#281 anchored env-ref predicate', () => {
       // wraps a NAME; a span whose name is itself credential-shaped is a
       // value wearing reference syntax, and earns no exemption.
       expect(hasCredentialOutsideEnvRef(`\${${LIVE_GH}}`, GH_RE)).toBe(true);
-      expect(hasCredentialOutsideEnvRef('${AKIAABCDEFGHIJKLMNOP}', AKIA_RE)).toBe(true);
+      expect(hasCredentialOutsideEnvRef(`\${${FAKE_AKIA}}`, AKIA_RE)).toBe(true);
     });
 
     it('covers every identifier-legal pattern, not just the reported one', () => {
@@ -85,7 +89,7 @@ describe('#281 anchored env-ref predicate', () => {
         ['github_pat_', `github_pat_${'a'.repeat(22)}_${'b'.repeat(59)}`,
           /github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}/],
         ['sk_live_', `sk_live_${'c'.repeat(24)}`, /sk_live_[0-9a-zA-Z]{24,}/],
-        ['AKIA', `AKIA${'D'.repeat(16)}`, AKIA_RE],
+        ['AKIA', FAKE_AKIA, AKIA_RE],
         ['AIza (dash-free)', `AIza${'e'.repeat(35)}`, /AIza[0-9A-Za-z_-]{35}/],
       ];
       for (const [label, value, re] of identifierLegal) {
