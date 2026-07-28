@@ -1116,9 +1116,65 @@ export class HardeningScanner {
 
     return findings.filter(f => {
       if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) return false;
-      if (f.file && this.isPathIgnored(f.file, allIgnoredPaths)) return false;
+      // #280 — keys on every covered path, not just `f.file`.
+      if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) return false;
       return true;
     });
+  }
+
+  /**
+   * Every path a finding speaks for.
+   *
+   * `details.files`: checks like GIT-001 and PERM-001 point `file` at one
+   * representative path and carry the rest of the evidence in
+   * `details.files`, so reading either side alone loses paths.
+   */
+  private coveredFilesOf(f: SecurityFinding): string[] {
+    const listed = Array.isArray(f.details?.files) ? f.details.files : [];
+    return [...new Set(
+      [f.file, ...listed].filter(
+        (p): p is string => typeof p === 'string' && p.length > 0,
+      ),
+    )];
+  }
+
+  /**
+   * #280 — decide whether `.hmaignore` should suppress a finding, keying on
+   * ALL the paths it covers rather than on `f.file` alone.
+   *
+   * The old predicate was `f.file && isPathIgnored(f.file, ignored)`. Because
+   * PERM-001's `file` is just `permissionIssues[0]`, ignoring that one path
+   * deleted the whole finding — including the still-world-readable `.env`
+   * listed in `details.files` — and RAISED the score. Measured on a fixture
+   * with `.env` and `secrets.json` both 0644: ignoring `secrets.json` moved
+   * 44 -> 49 and PERM-001 vanished while `.env` stayed `-rw-r--r--`. A
+   * suppression rule that improves the score while the hazard is untouched
+   * is the same class of defect as a failed fix raising it.
+   *
+   * Now: suppress only when EVERY covered path is ignored. Otherwise keep the
+   * finding and re-point it onto a surviving path, so the report never names
+   * a file the user asked not to hear about while still reporting the ones
+   * they did.
+   *
+   * Returns true to KEEP. May re-point `f.file` / `f.details.files` in place.
+   */
+  private retainAfterPathSuppression(f: SecurityFinding, ignoredPaths: string[]): boolean {
+    const covered = this.coveredFilesOf(f);
+    // Nothing path-shaped to judge — a finding about the tree as a whole.
+    if (covered.length === 0) return true;
+
+    const survivors = covered.filter((p) => !this.isPathIgnored(p, ignoredPaths));
+    if (survivors.length === 0) return false;
+    if (survivors.length === covered.length) return true;
+
+    // Partially ignored: keep it, but stop naming suppressed paths.
+    if (f.file && this.isPathIgnored(f.file, ignoredPaths)) {
+      f.file = survivors[0];
+    }
+    if (Array.isArray(f.details?.files)) {
+      (f.details as { files: string[] }).files = survivors;
+    }
+    return true;
   }
 
   /**
@@ -1562,14 +1618,11 @@ export class HardeningScanner {
         // motivated it, so dropping either side can lose the still-failing
         // path. Union on both sides can only make verification stricter,
         // never looser — and under-claiming a repair is the safe direction.
-        const coveredFiles = (f: SecurityFinding): string[] => {
-          const listed = Array.isArray(f.details?.files) ? f.details.files : [];
-          return [...new Set(
-            [f.file, ...listed].filter(
-              (p): p is string => typeof p === 'string' && p.length > 0,
-            ),
-          )];
-        };
+        // Hoisted to `coveredFilesOf` so `.hmaignore` suppression uses the
+        // SAME notion of "which paths does this finding speak for" that
+        // verification does (#280) — the two disagreeing is what let one
+        // ignored path delete a multi-file finding.
+        const coveredFiles = (f: SecurityFinding): string[] => this.coveredFilesOf(f);
 
         // Compare against the verify scan's UNFILTERED findings. Its
         // `findings` has already been through the user-facing filter below,
@@ -1724,8 +1777,10 @@ export class HardeningScanner {
       // Filter out check IDs suppressed via .hmaignore (supports wildcards)
       if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) return false;
 
-      // Filter out paths matching .hmaignore
-      if (f.file && this.isPathIgnored(f.file, allIgnoredPaths)) return false;
+      // Filter out paths matching .hmaignore.
+      // #280 — a multi-file finding survives while ANY covered path is
+      // un-ignored, and is re-pointed onto a survivor rather than deleted.
+      if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) return false;
 
       return true;
     });
