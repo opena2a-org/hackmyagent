@@ -1008,6 +1008,19 @@ export class HardeningScanner {
    * fall through the same gap again.
    */
   private fixWritePaths: string[] = [];
+  /**
+   * Backup context for the current `--fix` run, or undefined when no backup
+   * was taken (detect-only, dry-run, or a `createBackup` failure that already
+   * downgraded the run). `applyFixWrite` refuses to write without it — see
+   * `ensureBackupCovers`.
+   */
+  private backupContext: { backupDir: string; targetDir: string; covered: Set<string> } | undefined;
+  /**
+   * Target-relative paths the last `createBackup` already accounted for, in
+   * either manifest list. Seeds `backupContext.covered` so the static
+   * candidates are not re-copied one at a time.
+   */
+  private lastBackupCovered: string[] = [];
   // Files that may be created or modified during auto-fix
   private static readonly BACKUP_FILES = [
     'config.json',
@@ -1196,6 +1209,10 @@ export class HardeningScanner {
     // failed writes.
     this.fixWriteFailures = [];
     this.fixWritePaths = [];
+    // Cleared per run, and only ever set below once a backup actually
+    // exists. A reused scanner instance must not let one run's backup
+    // authorise the next run's writes (#300).
+    this.backupContext = undefined;
 
     // Resolve effective scan depth — --deep flag implies 'deep' depth
     const scanDepth: ScanDepth = options.scanDepth || (options.deep ? 'deep' : 'standard');
@@ -1235,6 +1252,14 @@ export class HardeningScanner {
     if (shouldFix) {
       try {
         backupPath = await this.createBackup(targetDir);
+        // Every fix write from here on is gated on this (#300). Seeded with
+        // what `createBackup` already copied so the static candidates are not
+        // re-copied one at a time.
+        this.backupContext = {
+          backupDir: backupPath,
+          targetDir,
+          covered: new Set(this.lastBackupCovered),
+        };
       } catch (err) {
         const e = err as NodeJS.ErrnoException;
         backupFailure = {
@@ -2426,6 +2451,90 @@ export class HardeningScanner {
   }
 
   /**
+   * Guarantee the backup can undo a write to `filePath` before it happens.
+   * Returns false when it cannot, and the caller must then not write (#300).
+   *
+   * The backup candidate set used to be a static, root-relative list
+   * (`BACKUP_FILES`), predicted ahead of the scan. Every widening of
+   * DETECTION therefore silently widened the set of files `--fix` rewrites
+   * WITHOUT widening the set it can restore. #292 widened CRED-001 to
+   * config-shaped files at any depth and this is what shipped:
+   *
+   *   before   config/production.json + src/config.json  = a live token
+   *   --fix    both -> ${GITHUB_TOKEN}
+   *   backup   holds only package.json
+   *   rollback "Restored 1 modified file", exit 0
+   *   after    both still redacted, original bytes unrecoverable
+   *
+   * Irreversible data loss behind an explicit success message. Extending the
+   * static list would have closed that one instance and left the next
+   * widening — #298 is already queued — to reopen it, so the coverage is
+   * derived from the WRITE instead of predicted before it: whatever a fix is
+   * about to touch is captured now, at the one choke point every fix write
+   * already goes through.
+   *
+   * Fail-safe in every direction. No backup context, a path outside the
+   * scanned tree, or a failed copy all return false, and the write is
+   * abandoned and reported as FIX-WRITE-FAILED — the user keeps their bytes
+   * and is told the fix did not land, which is the recoverable outcome. A
+   * file that does not exist yet is a creation, not an overwrite: nothing to
+   * copy, so it is recorded as an absent candidate and left to
+   * `recordCreatedFiles`, which hash-verifies before rollback removes it.
+   */
+  private async ensureBackupCovers(filePath: string): Promise<boolean> {
+    const ctx = this.backupContext;
+    if (!ctx) return false;
+
+    const rel = this.toTargetRelativePath(filePath, ctx.targetDir);
+    if (!rel) return false; // escapes the scanned tree — not ours to rewrite
+    if (ctx.covered.has(rel)) return true;
+
+    // `copyFile` follows symlinks, matching `createBackup`: the fix sites
+    // write THROUGH a link, so the bytes at the far end are what has to be
+    // recoverable. See the symlink note in `createBackup`.
+    let existed = true;
+    try {
+      const destPath = path.join(ctx.backupDir, rel);
+      await fs.mkdir(path.dirname(destPath), { recursive: true });
+      await fs.copyFile(path.join(ctx.targetDir, rel), destPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') return false;
+      existed = false;
+    }
+
+    // Persist before returning: `recordCreatedFiles` re-reads this file from
+    // disk, and `rollback` is a separate process. An in-memory-only update
+    // would restore nothing.
+    if (!(await this.appendToBackupManifest(ctx.backupDir, rel, existed))) return false;
+    ctx.covered.add(rel);
+    return true;
+  }
+
+  /**
+   * Add one path to the on-disk manifest, into `existingFiles` (rollback
+   * restores it) or `absentAtBackup` (rollback may remove it once
+   * `recordCreatedFiles` proves HMA generated it). Returns false if the
+   * manifest cannot be read or written, which makes the write unrecoverable
+   * and so must abandon it.
+   */
+  private async appendToBackupManifest(
+    backupDir: string,
+    rel: string,
+    existed: boolean,
+  ): Promise<boolean> {
+    const manifestPath = path.join(backupDir, '.manifest.json');
+    try {
+      const manifest = this.parseManifest(await fs.readFile(manifestPath, 'utf-8'));
+      const list = existed ? manifest.existingFiles : manifest.absentAtBackup;
+      if (!list.includes(rel)) list.push(rel);
+      await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Apply a fix write. Returns whether it landed; never throws.
    *
    * Every auto-fix write used to be a bare `await fs.writeFile` sitting
@@ -2444,6 +2553,18 @@ export class HardeningScanner {
    * there, and the fix did not land.
    */
   private async applyFixWrite(filePath: string, content: string): Promise<boolean> {
+    // #300 — a write the backup cannot undo is not a fix, it is data loss.
+    // Reported through the same channel as a filesystem refusal, because to
+    // the user it is the same outcome: the issue is still there and the fix
+    // did not land.
+    if (!(await this.ensureBackupCovers(filePath))) {
+      this.fixWriteFailures.push({
+        file: filePath,
+        code: 'BACKUP-UNCOVERED',
+        message: 'not written: no recoverable backup copy could be made for this path',
+      });
+      return false;
+    }
     try {
       await fs.writeFile(filePath, content);
       // Recorded regardless of whether any finding names this path, so
@@ -6441,6 +6562,13 @@ dist/
       JSON.stringify(manifest, null, 2)
     );
 
+    // Normalized so `ensureBackupCovers` compares like with like: the entries
+    // above are joined with `path.join`, and `toTargetRelativePath` is what
+    // the write path produces (#300).
+    this.lastBackupCovered = [...manifest.existingFiles, ...manifest.absentAtBackup]
+      .map((f) => this.toTargetRelativePath(f, targetDir))
+      .filter((f): f is string => f !== null);
+
     return backupDir;
   }
 
@@ -8137,8 +8265,19 @@ dist/
 
       // Write modified config back to file if any fixes were applied
       if (configModified) {
-        try {
-          await fs.writeFile(configFile, JSON.stringify(config, null, 2) + '\n');
+        // #300 — the one fix write that still bypassed `applyFixWrite`, and
+        // so the one still able to rewrite a file the backup cannot restore.
+        // Gateway configs are discovered by a recursive walk, exactly like
+        // the #292 config files: `openclaw.json` at the root is a backup
+        // candidate, the same file one directory down was not. Routed
+        // through the choke point; the failure branch is unchanged, since a
+        // refused write and a failed write have the same consequence for the
+        // findings already pushed against this file.
+        const gatewayWritten = await this.applyFixWrite(
+          configFile,
+          JSON.stringify(config, null, 2) + '\n',
+        );
+        if (gatewayWritten) {
           // Add a summary finding about what was fixed
           findings.push({
             checkId: 'FIX-SUMMARY',
@@ -8153,7 +8292,7 @@ dist/
             fix: 'hackmyagent rollback',
             guidance: 'Auto-fixes were applied to this configuration. Use rollback to revert if any fix caused unexpected behavior.',
           });
-        } catch (writeError) {
+        } else {
           // The GATEWAY-00x findings above were pushed with
           // `passed: <check>Fixed`, set from an in-memory mutation, before
           // this write ran. The write is what makes them true, so a failure
@@ -8176,19 +8315,13 @@ dist/
               f.message = `${f.name} (auto-fix could not be written)`;
             }
           }
-          findings.push({
-            checkId: 'FIX-ERROR',
-            name: 'Auto-Fix Failed',
-            description: 'Could not write configuration changes',
-            category: 'gateway',
-            severity: 'medium',
-            passed: false,
-            message: `Failed to write fixes to ${relativePath}: ${writeError instanceof Error ? writeError.message : 'Unknown error'}`,
-            file: relativePath,
-            fixable: false,
-            fix: 'Check file permissions and try again',
-            guidance: 'The auto-fix could not write changes to the configuration file. Verify the file is not read-only and that you have write permissions.',
-          });
+          // No local FIX-ERROR push. `applyFixWrite` has already recorded the
+          // path and errno, and `scan()` renders one FIX-WRITE-FAILED finding
+          // covering every failed write in the run. Pushing here as well
+          // would report a single event twice, and the local finding was the
+          // weaker of the two: `fix: 'Check file permissions and try again'`
+          // is advice, while FIX-WRITE-FAILED carries a runnable re-run
+          // command. Closes #284, which asked for exactly this unification.
         }
       }
     }
