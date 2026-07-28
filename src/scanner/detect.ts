@@ -598,6 +598,36 @@ function citationTarget(scanDirectory: string): string {
   }
 }
 
+/**
+ * The cause split every governance surface cites from (#303/#307).
+ *
+ * `harden-soul` adds control text. That fixes a document that is absent or
+ * incomplete, and it cannot touch a sentence that subverts a control or a
+ * broken profile marker — so citing it on a subverted document is a dead end:
+ * the command runs, changes nothing relevant, and the score does not move.
+ * Those go to `scan-soul`, which lists the offending lines.
+ *
+ * Written once and derived from the finding CODES so the renderer and the
+ * finding generator cannot drift apart. `GOV-VIOLATION` is emitted exactly
+ * when there are violations and `GOV-PROFILE-MARKER` exactly when the marker
+ * is mismatched or unrecognized, which is the same condition
+ * `generateFindings` computes from `soul` directly — `governance-cross-surface`
+ * pins the two against each other.
+ */
+export function governanceIsSubverted(findings: readonly Pick<Finding, 'code'>[]): boolean {
+  return findings.some((f) => f.code === 'GOV-VIOLATION' || f.code === 'GOV-PROFILE-MARKER');
+}
+
+/** The command that can actually move a governance score, given the cause. */
+export function governanceRemediation(
+  findings: readonly Pick<Finding, 'code'>[],
+  target: string,
+): string {
+  return governanceIsSubverted(findings)
+    ? `hackmyagent scan-soul ${target}`
+    : `hackmyagent harden-soul ${target}`;
+}
+
 function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScanResult): Finding[] {
   const findings: Finding[] = [];
   const target = citationTarget(result.scanDirectory);
@@ -607,8 +637,12 @@ function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScan
    * as opposed to merely incomplete. This is the distinction that decides
    * which command to cite: `harden-soul` adds control text, which fixes
    * incompleteness and cannot touch any of these.
+   *
+   * The codes below are emitted under exactly these conditions, which is what
+   * lets the renderer reach the same verdict from the findings alone — see
+   * `governanceIsSubverted`.
    */
-  const governanceIsSubverted =
+  const isSubverted =
     violations.length > 0 || Boolean(soul.profileMismatch) || Boolean(soul.markerInvalid);
 
   // Ungoverned agents
@@ -652,7 +686,7 @@ function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScan
       // the substance failures: no amount of added control text removes a
       // sentence that subverts one, or repairs a profile marker. Those go to
       // `scan-soul`, which lists the offending sentences with line numbers.
-      remediation: governanceIsSubverted
+      remediation: isSubverted
         ? `hackmyagent scan-soul ${target}`
         : `hackmyagent harden-soul ${target}`,
     });
@@ -667,7 +701,10 @@ function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScan
       severity: 'high',
       category: 'governance',
       code: 'GOV-VIOLATION',
-      title: `Governance document subverts ${violations.length} of its own control${violations.length !== 1 ? 's' : ''}`,
+      // Partitive: "N of its own controls" takes the plural at every N,
+      // including 1 — the noun describes the SET being drawn from, not the
+      // count drawn. "subverts 1 of its own control" is ungrammatical.
+      title: `Governance document subverts ${violations.length} of its own controls`,
       detail: first
         .map((v) => `${soul.file}:${v.line} ${v.name} (${v.controlId})`)
         .join('; ')
@@ -1107,8 +1144,26 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
   const steps: Step[] = [];
   if (result.findings.length > 0) {
     steps.push({ label: 'Full scan:',       cmd: `hackmyagent secure ${targetDir}`, desc: 'deep security scan with findings' });
-    if (result.identity.soulFiles === 0 || result.agents.some((a) => a.governanceStatus === 'no governance')) {
-      steps.push({ label: 'Add governance:',  cmd: `hackmyagent harden-soul ${targetDir}`, desc: 'generate SOUL.md behavioral boundaries' });
+    // #307 — the THIRD consumer of `identity.soulFiles`, and the one that was
+    // missed when the other two were fixed. `soulFiles` counts `SOUL.md`
+    // alone, so a project governed by a fully-conformant `CLAUDE.md` was told
+    // to `harden-soul` right under a Governance meter reading 100/100 that had
+    // just been computed FROM that file. `governanceFile` is null only when no
+    // governance document was found at all, which is the actual question.
+    //
+    // The command comes from the shared cause split, so this surface cites
+    // what the ungoverned finding cites: `harden-soul` cannot remove a
+    // violation, and offering it as the next step on a subverted document is
+    // the same dead end one screen lower.
+    const noGovernanceDoc = result.identity.governanceFile === null;
+    if (noGovernanceDoc || result.agents.some((a) => a.governanceStatus === 'no governance')) {
+      steps.push({
+        label: 'Add governance:',
+        cmd: governanceRemediation(result.findings, targetDir),
+        desc: governanceIsSubverted(result.findings)
+          ? 'list the sentences that subvert your own controls'
+          : 'generate SOUL.md behavioral boundaries',
+      });
     }
     if (result.aiConfigs.some((cc) => cc.risk === 'critical')) {
       steps.push({ label: 'Protect credentials:', cmd: `opena2a protect ${targetDir}`, desc: 'encrypt hardcoded secrets into secure vault' });

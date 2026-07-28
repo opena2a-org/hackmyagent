@@ -196,6 +196,87 @@ describe('#281 anchored env-ref predicate', () => {
         await rm(dir, { recursive: true, force: true });
       }
     });
+
+    /**
+     * #308 — the #301 repair matched the exact wrapper shape
+     * `\$\{(?:pattern)\}`, i.e. a span whose ENTIRE content is the credential.
+     * Detection had since widened to padded spans, so for those only the inner
+     * bare replace fired and the fix emitted the very thing #301 removed:
+     *
+     *   ${MY_ghp_…}    -> ${MY_${GITHUB_TOKEN}}
+     *   ${ghp_…_PROD}  -> ${${GITHUB_TOKEN}_PROD}
+     *   ${A_ghp_…_B}   -> ${A_${GITHUB_TOKEN}_B}
+     *
+     * All three then re-scanned clean at 98/100 and reported `verified`, so
+     * the run claimed success over output no shell expands.
+     *
+     * The assertion above could not catch two of these: it forbids the literal
+     * `${${`, and `${MY_${GITHUB_TOKEN}}` does not contain it. The check here
+     * is the general property — no `${` opening inside another `${…}` span,
+     * whatever the padding.
+     */
+    describe('#308 padded reference spans', () => {
+      const NESTED_REF = /\$\{[^}]*\$\{/;
+
+      const paddings: { label: string; wrap: (k: string) => string }[] = [
+        { label: 'prefix',  wrap: (k) => `\${MY_${k}}` },
+        { label: 'suffix',  wrap: (k) => `\${${k}_PROD}` },
+        { label: 'both',    wrap: (k) => `\${A_${k}_B}` },
+        { label: 'none',    wrap: (k) => `\${${k}}` },
+      ];
+
+      for (const { label, wrap } of paddings) {
+        it(`repairs a ${label}-padded span into one usable reference`, async () => {
+          const dir = await mkdtemp(path.join(tmpdir(), 'hma-308-'));
+          try {
+            await writeFile(path.join(dir, 'package.json'), '{"name":"p","version":"1.0.0"}\n');
+            const target = path.join(dir, 'config.json');
+            await writeFile(target, JSON.stringify({ token: wrap(LIVE_GH) }) + '\n');
+
+            await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+
+            const fixed = await readFile(target, 'utf-8');
+            expect(fixed, 'the credential survived the fix').not.toContain(LIVE_GH);
+            expect(
+              NESTED_REF.test(fixed),
+              `the fix emitted a nested reference: ${fixed.trim()}`,
+            ).toBe(false);
+            expect(() => JSON.parse(fixed)).not.toThrow();
+            expect(
+              JSON.parse(fixed).token,
+              'the repaired value is not a plain env reference',
+            ).toBe('${GITHUB_TOKEN}');
+          } finally {
+            await rm(dir, { recursive: true, force: true });
+          }
+        });
+      }
+
+      it('leaves a legitimate reference beside a repaired one untouched', async () => {
+        // Widening the replace to "the whole enclosing span" must not start
+        // eating spans that hold no credential.
+        const dir = await mkdtemp(path.join(tmpdir(), 'hma-308-legit-'));
+        try {
+          await writeFile(path.join(dir, 'package.json'), '{"name":"p","version":"1.0.0"}\n');
+          const target = path.join(dir, 'config.json');
+          await writeFile(
+            target,
+            JSON.stringify({ db: '${DATABASE_URL}', token: `\${MY_${LIVE_GH}}` }) + '\n',
+          );
+
+          await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+
+          const parsed = JSON.parse(await readFile(target, 'utf-8'));
+          expect(parsed.token).toBe('${GITHUB_TOKEN}');
+          expect(
+            parsed.db,
+            'the fix rewrote a reference that never contained a credential',
+          ).toBe('${DATABASE_URL}');
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+      });
+    });
   });
 
   describe('MCP-003 end to end', () => {

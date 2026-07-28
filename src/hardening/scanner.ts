@@ -2341,8 +2341,26 @@ export class HardeningScanner {
                 // into `"${${GITHUB_TOKEN}}"`: nested, expanded by no shell,
                 // and still not the value anyone wanted. Wrapper first, so
                 // the bare pass below sees only genuinely bare occurrences.
-                const wrapped = new RegExp(`\\$\\{(?:${pattern.source})\\}`, 'g');
-                lines[i] = lines[i].replace(wrapped, '${' + envVar + '}');
+                //
+                // #308 — the whole ENCLOSING span, not the exact-wrapper
+                // shape. `\$\{(?:pattern)\}` only matched a span whose entire
+                // content was the credential, so detection widening to padded
+                // spans left the fix emitting the very thing #301 removed:
+                //
+                //   ${MY_ghp_…}    -> ${MY_${GITHUB_TOKEN}}
+                //   ${ghp_…_PROD}  -> ${${GITHUB_TOKEN}_PROD}
+                //   ${A_ghp_…_B}   -> ${A_${GITHUB_TOKEN}_B}
+                //
+                // All three then re-scanned clean at 98/100 and were reported
+                // `verified`, so the run claimed success over output no shell
+                // expands. A span that contains a credential is a value in
+                // reference clothing whatever else is padded around it, so the
+                // span goes and the reference replaces it.
+                const enclosingSpan = /\$\{[^{}]*\}/g;
+                lines[i] = lines[i].replace(enclosingSpan, (span) => {
+                  pattern.lastIndex = 0;
+                  return pattern.test(span) ? '${' + envVar + '}' : span;
+                });
                 pattern.lastIndex = 0;
                 lines[i] = lines[i].replace(pattern, '${' + envVar + '}');
                 fileModified = true;

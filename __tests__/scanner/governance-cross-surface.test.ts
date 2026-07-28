@@ -368,6 +368,92 @@ describe('#291 governance model reconciliation', () => {
     });
   });
 
+  /**
+   * #307 — the THIRD consumer of `identity.soulFiles`. Two were fixed for
+   * #303 and this one was missed, so the governed/no-governance-file
+   * contradiction survived in the Next Steps block: a project governed by a
+   * fully-conformant `CLAUDE.md` was told to run `harden-soul` directly under
+   * a Governance meter computed FROM that file.
+   *
+   * Every governance surface has to cite from ONE cause split. `harden-soul`
+   * adds control text and cannot remove a sentence that subverts a control,
+   * so offering it on a subverted document is the same dead end the finding
+   * layer already avoids.
+   */
+  describe('every surface cites the same cause', () => {
+    function nextSteps(dir: string): string {
+      const out = runCli(['detect', dir]);
+      const i = out.indexOf('Next Steps');
+      expect(i, 'no Next Steps block in detect output').toBeGreaterThan(-1);
+      return out.slice(i);
+    }
+
+    it('does not tell a CLAUDE.md-governed project to add governance', () => {
+      // Precondition: the fixture is governed, by a file that is not SOUL.md.
+      const j = detectJson(dirClaudeMd);
+      expect(j.identity.soulFiles, 'fixture should have no SOUL.md').toBe(0);
+      expect(j.identity.governanceFile, 'fixture should be governed by CLAUDE.md').toBe('CLAUDE.md');
+
+      expect(
+        nextSteps(dirClaudeMd),
+        'Next Steps offers to generate governance for a project whose governance '
+        + 'this same output just measured (#307)',
+      ).not.toMatch(/Add governance:/);
+    });
+
+    it('cites scan-soul, not harden-soul, when the document subverts itself', () => {
+      const steps = nextSteps(dirViolating);
+      // Precondition: this fixture must reach the Next Steps branch at all.
+      expect(steps, 'no governance step offered on a below-bar tree').toMatch(/Add governance:/);
+      expect(
+        steps,
+        'Next Steps sends a subverted document to harden-soul, which adds controls '
+        + 'and cannot remove a violation — the command runs and the score does not move',
+      ).not.toMatch(/Add governance:\s+hackmyagent harden-soul/);
+      expect(steps).toMatch(/Add governance:\s+hackmyagent scan-soul/);
+    });
+
+    it('still offers harden-soul when the document is merely absent', () => {
+      // The other side of the split. Narrowing the citation must not make
+      // `harden-soul` unreachable where it IS the right command.
+      const steps = nextSteps(dirNone);
+      expect(steps).toMatch(/Add governance:\s+hackmyagent harden-soul/);
+    });
+
+    it('agrees with the finding layer about which cause applies', () => {
+      // The renderer derives the split from the finding CODES while
+      // `generateFindings` derives it from `soul` directly. Two derivations of
+      // one predicate drift; this pins them together across every fixture.
+      for (const dir of [dirNone, dirProse, dirHardened, dirViolating, dirClaudeMd]) {
+        const j = detectJson(dir);
+        const subvertedByCode = j.findings.some(
+          (f) => f.code === 'GOV-VIOLATION' || f.code === 'GOV-PROFILE-MARKER',
+        );
+        const ungovernedFinding = j.findings.find((f) =>
+          f.title.includes('running without governance'));
+        if (!ungovernedFinding) continue;
+        const citesScanSoul = /scan-soul/.test(
+          (ungovernedFinding as { remediation?: string }).remediation ?? '',
+        );
+        expect(
+          citesScanSoul,
+          `${dir}: the finding layer and the code-derived split disagree about `
+          + 'whether the document is subverted',
+        ).toBe(subvertedByCode);
+      }
+    });
+
+    it('takes the plural in the partitive, at every count', () => {
+      const j = detectJson(dirViolating);
+      const v = j.findings.find((f) => f.code === 'GOV-VIOLATION');
+      expect(v, 'no GOV-VIOLATION finding on the violating fixture').toBeTruthy();
+      // "subverts 1 of its own control" is ungrammatical — the noun names the
+      // SET being drawn from, not the count drawn.
+      expect(v!.title).not.toMatch(/of its own control$/);
+      expect(v!.title).toMatch(/of its own controls$/);
+    });
+  });
+
   describe('band coherence', () => {
     it('does not paint a green Governance band beside an outstanding CRITICAL', () => {
       const summary = detectSummary(dirHardenedCritical);
