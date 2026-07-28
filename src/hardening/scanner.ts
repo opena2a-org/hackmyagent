@@ -347,6 +347,27 @@ export function hasCredentialOutsideEnvRef(text: string, pattern: RegExp): boole
 const CONFIG_DIR_NAMES = new Set(['config', 'conf', 'configs', 'settings']);
 const CONFIG_DIR_EXTENSIONS = new Set(['.json', '.yaml', '.yml', '.toml', '.ini']);
 
+/**
+ * The directory `--fix` writes its backups into. Named once because two
+ * different walks have to agree about it, and they did not: the gateway walk
+ * tested the entry NAME at every level while the sensitive-artifact walk
+ * tested a root-anchored PREFIX (#302).
+ */
+const BACKUP_DIR_NAME = '.hackmyagent-backup';
+
+/**
+ * True when a target-relative path lies inside a backup directory at ANY
+ * depth. Segment-wise, never `startsWith`: a prefix test is a statement about
+ * the scan root, and the property needed here is about the file.
+ *
+ * The final segment is the filename, so it is excluded — a FILE called
+ * `.hackmyagent-backup` is not a backup directory.
+ */
+function isInsideBackupDir(rel: string): boolean {
+  const segments = rel.split(/[\\/]/);
+  return segments.slice(0, -1).includes(BACKUP_DIR_NAME);
+}
+
 /** True when a file is config-shaped by filename, or by sitting directly in a config directory. */
 function isConfigShapedFile(basename: string, parentDirName: string): boolean {
   if (CONFIG_CANDIDATE_NAMES.has(basename)) return true;
@@ -3494,8 +3515,16 @@ dist/
         // finding (one for the live file, one for its backup). Scoped to the
         // config list rather than the whole walk so `keyFiles` /
         // `namedSensitive` semantics are untouched.
+        //
+        // #302 — the test is on every path segment, not on the prefix. `rel`
+        // is relative to the SCAN ROOT, so `startsWith` only ever recognised
+        // a backup directory sitting AT that root, and scanning one level up
+        // walked straight back into it as `child/.hackmyagent-backup/…`. That
+        // reopened all three consequences one directory higher, which is not
+        // an exotic invocation: `secure ~/projects` over a tree where any one
+        // project has been secured before.
         if (
-          !rel.startsWith(`.hackmyagent-backup${path.sep}`) &&
+          !isInsideBackupDir(rel) &&
           isConfigShapedFile(dirent.name, path.basename(dir))
         ) {
           configFiles.push(rel);
@@ -8439,7 +8468,7 @@ dist/
         }
 
         // Skip node_modules, .git, and backup directories
-        if (entryName === 'node_modules' || entryName === '.git' || entryName === '.hackmyagent-backup') {
+        if (entryName === 'node_modules' || entryName === '.git' || entryName === BACKUP_DIR_NAME) {
           continue;
         }
 

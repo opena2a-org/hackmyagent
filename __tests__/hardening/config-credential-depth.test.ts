@@ -117,6 +117,58 @@ describe('#292 config-shaped credential detection below the scan root', () => {
     }
   });
 
+  it('never treats a backup directory BELOW the scan root as a scan target', async () => {
+    // #302 — the exclusion above was `rel.startsWith('.hackmyagent-backup/')`,
+    // and `rel` is relative to the SCAN ROOT. So it recognised a backup
+    // directory only at that exact root, and scanning one level up walked
+    // back into it as `child/.hackmyagent-backup/…`. Every consequence the
+    // test above guards against returned, one directory higher:
+    //
+    //   secure child --fix    child/.hackmyagent-backup/…/config.json = the token
+    //   secure PARENT --fix   that same copy is now ${GITHUB_TOKEN}
+    //   rollback child        exit 0, restores the redacted bytes
+    //
+    // Not an exotic invocation — `secure ~/projects` over a tree where any
+    // one project has been secured before.
+    const parent = await mkdtemp(path.join(tmpdir(), 'hma-302-'));
+    try {
+      const child = path.join(parent, 'child');
+      const backupDir = path.join(child, '.hackmyagent-backup', '2026-01-01T00-00-00');
+      await mkdir(backupDir, { recursive: true });
+      await writeFile(path.join(parent, 'package.json'), '{"name":"p","version":"1.0.0"}\n');
+      await writeFile(path.join(child, 'package.json'), '{"name":"c","version":"1.0.0"}\n');
+
+      const backupCopy = path.join(backupDir, 'config.json');
+      const backupBody = JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n';
+      await writeFile(backupCopy, backupBody);
+      // A live config beside it, so the scan has real work to do here and the
+      // assertion is not just "the walk found nothing at all".
+      await writeFile(path.join(child, 'config.json'), backupBody);
+
+      const result = await new HardeningScanner().scan({ targetDir: parent, autoFix: true });
+
+      // Non-vacuity: the scan must have reached the child and fired there.
+      expect(
+        result.findings.some((f) => f.checkId === 'CRED-001' && f.file === 'child/config.json'),
+        'the parent scan never reached the child; this test is measuring nothing',
+      ).toBe(true);
+
+      expect(
+        result.findings.filter((f) => f.file?.includes('.hackmyagent-backup')),
+        'a backup directory one level down produced findings (double-counted)',
+      ).toEqual([]);
+
+      const { readFile } = await import('node:fs/promises');
+      expect(
+        await readFile(backupCopy, 'utf-8'),
+        'the parent scan rewrote the CHILD\'s backup; the child\'s rollback now '
+        + 'restores redacted content over redacted content',
+      ).toBe(backupBody);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
   it('treats a nested .env as an env file, not a rewritable config file', async () => {
     // `isEnvFile` keys on basename; a raw `startsWith` on the relative path
     // would classify `sub/.env` as ordinary config and mark it auto-fixable,
