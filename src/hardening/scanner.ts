@@ -7651,8 +7651,31 @@ dist/
       // `${OPENCLAW_AUTH_TOKEN}`, a non-empty string — so a successfully
       // fixed config stayed failing forever and `fixVerified` was
       // permanently false. Same idiom MCP-003 already uses.
-      const isEnvRef = (v: unknown): boolean =>
-        typeof v === 'string' && /^(\$\{[^}]+\}|\$[A-Za-z_][A-Za-z0-9_]*)$/.test(v.trim());
+      //
+      // `${[^}]+}` accepted ANY braced content, so `${sk-ant-api03-<key>}`
+      // read as a reference and the check went quiet on a file with a real
+      // key sitting in it. A `${...}` wrapper does not un-leak a secret:
+      // whether or not the gateway expands it at runtime, the bytes are on
+      // disk for anyone who can read the config. The braced form is now the
+      // same shell-identifier grammar as the bare form, which rejects the
+      // hyphens and dots every vendor key carries.
+      //
+      // The identifier grammar alone still admits `$ghp_<36>` — a reference
+      // to a variable *named* after a token — so a value whose name opens
+      // with a known secret prefix is treated as plaintext rather than as a
+      // reference. Prefixes only, deliberately: this decides "is this a
+      // reference", not "is this a credential", and the credential detectors
+      // own the latter.
+      const isEnvRef = (v: unknown): boolean => {
+        if (typeof v !== 'string') return false;
+        const trimmed = v.trim();
+        // Matched braces or none — `${FOO` is malformed, not a reference.
+        if (!/^(\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*)$/.test(trimmed)) return false;
+        // Only prefixes that can actually survive the grammar above: the
+        // hyphen- and dot-bearing vendor formats (`sk-ant-`, `xoxb-`, `SG.`)
+        // are already rejected by it.
+        return !/^\$\{?(gh[pousr]_|github_pat_|sk_live_|sk_test_|AKIA|AIza)/i.test(trimmed);
+      };
       const hasPlaintextTokenInAuth = gatewayAuth && typeof gatewayAuth.token === 'string'
         && gatewayAuth.token.length > 0 && !isEnvRef(gatewayAuth.token);
       const hasPlaintextTokenAtRoot = typeof config.token === 'string'
