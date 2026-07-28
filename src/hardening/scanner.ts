@@ -2067,9 +2067,12 @@ export class HardeningScanner {
         }
       }
 
-      // Save fixed config
+      // Save fixed config. `mcp001Fixed` was set on the in-memory mutation
+      // above, so it has to be revoked when the write does not land —
+      // otherwise the finding reports `passed: true` for a config still
+      // scoped at `/` on disk.
       if (mcp001Fixed) {
-        await fs.writeFile(mcpConfigPath, JSON.stringify(config, null, 2));
+        mcp001Fixed = await this.applyFixWrite(mcpConfigPath, JSON.stringify(config, null, 2));
       }
 
       // Only report if there's an issue
@@ -2110,6 +2113,33 @@ export class HardeningScanner {
     }
 
     return findings;
+  }
+
+  /**
+   * Apply a fix write. Returns whether it landed; never throws.
+   *
+   * Every auto-fix write used to be a bare `await fs.writeFile` sitting
+   * inside the same `try` as its own `findings.push`, under a `catch` that
+   * exists to mean "this config file isn't here". So an unwritable target —
+   * immutable flag, read-only mount, EPERM, a restrictive MAC policy — threw
+   * past the push, and the finding was never created at all. Not downgraded,
+   * not marked unverified: absent. The scan then scored as though the issue
+   * had never been detected, which is strictly worse than never running the
+   * fix. Measured on an MCP project with an unwritable `mcp.json`: `secure`
+   * reports `MCP-001` HIGH at 69/100 clamped, `secure --fix` reported
+   * 100/100 with no finding and the root-scoped config still on disk.
+   *
+   * Returning a boolean instead of throwing keeps the failure local to the
+   * fix and lets the check report what is actually true: the issue is still
+   * there, and the fix did not land.
+   */
+  private async applyFixWrite(filePath: string, content: string): Promise<boolean> {
+    try {
+      await fs.writeFile(filePath, content);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async checkFilePermissions(
@@ -2226,10 +2256,11 @@ dist/
 
     let git001Fixed = false;
     if (!gitignoreExists && autoFix) {
-      await fs.writeFile(gitignorePath, defaultGitignore);
-      gitignoreContent = defaultGitignore;
-      gitignoreExists = true;
-      git001Fixed = true;
+      git001Fixed = await this.applyFixWrite(gitignorePath, defaultGitignore);
+      if (git001Fixed) {
+        gitignoreContent = defaultGitignore;
+        gitignoreExists = true;
+      }
     }
 
     // Only report if .gitignore is missing.
@@ -2286,9 +2317,9 @@ dist/
       let git002Fixed = false;
       if (missingPatterns.length > 0 && autoFix) {
         const patternsToAdd = '\n# Security patterns (auto-added)\n' + missingPatterns.join('\n') + '\n';
-        gitignoreContent += patternsToAdd;
-        await fs.writeFile(gitignorePath, gitignoreContent);
-        git002Fixed = true;
+        const git002Content = gitignoreContent + patternsToAdd;
+        git002Fixed = await this.applyFixWrite(gitignorePath, git002Content);
+        if (git002Fixed) gitignoreContent = git002Content;
       }
 
       // Exposure is computed authoritatively (git check-ignore) over ALL
@@ -2368,9 +2399,9 @@ dist/
 
     let git003Fixed = false;
     if (envAtRisk && autoFix) {
-      gitignoreContent += '\n.env\n';
-      await fs.writeFile(gitignorePath, gitignoreContent);
-      git003Fixed = true;
+      const git003Content = gitignoreContent + '\n.env\n';
+      git003Fixed = await this.applyFixWrite(gitignorePath, git003Content);
+      if (git003Fixed) gitignoreContent = git003Content;
     }
 
     // Only report if .env is at risk
@@ -2439,8 +2470,7 @@ dist/
     if (boundToAllInterfaces && autoFix && mcpContent) {
       // Replace 0.0.0.0 with 127.0.0.1 in the file
       const fixedContent = mcpContent.replace(/0\.0\.0\.0/g, '127.0.0.1');
-      await fs.writeFile(mcpConfigPath, fixedContent);
-      net001Fixed = true;
+      net001Fixed = await this.applyFixWrite(mcpConfigPath, fixedContent);
     }
 
     // Only report if bound to 0.0.0.0
@@ -2547,7 +2577,7 @@ dist/
 
       // Save fixed config
       if (mcp003Fixed) {
-        await fs.writeFile(mcpConfigPath, JSON.stringify(mcpConfig, null, 2));
+        mcp003Fixed = await this.applyFixWrite(mcpConfigPath, JSON.stringify(mcpConfig, null, 2));
       }
     }
 
@@ -6793,9 +6823,9 @@ dist/
               ? ` expires_at="${new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()}"`
               : '';
             const newSigBlock = `<!-- opena2a-guard hash="sha256:${newHash}" signed="${newDate}"${expiresAt} -->`;
-            content = content.replace(signatureBlock, newSigBlock);
-            await fs.writeFile(skillFile, content);
-            skill019Fixed = true;
+            const skill019Content = content.replace(signatureBlock, newSigBlock);
+            skill019Fixed = await this.applyFixWrite(skillFile, skill019Content);
+            if (skill019Fixed) content = skill019Content;
           }
 
           findings.push({
@@ -6829,9 +6859,9 @@ dist/
               const newDate = new Date().toISOString();
               const newExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
               const newSigBlock = `<!-- opena2a-guard hash="sha256:${newHash}" signed="${newDate}" expires_at="${newExpiry}" -->`;
-              content = content.replace(signatureMatch[0], newSigBlock);
-              await fs.writeFile(skillFile, content);
-              hb007Fixed = true;
+              const hb007Content = content.replace(signatureMatch[0], newSigBlock);
+              hb007Fixed = await this.applyFixWrite(skillFile, hb007Content);
+              if (hb007Fixed) content = hb007Content;
             }
 
             findings.push({
@@ -7679,6 +7709,19 @@ dist/
             guidance: 'Auto-fixes were applied to this configuration. Use rollback to revert if any fix caused unexpected behavior.',
           });
         } catch (writeError) {
+          // The GATEWAY-00x findings above were pushed with
+          // `passed: <check>Fixed`, set from an in-memory mutation, before
+          // this write ran. The write is what makes them true, so a failure
+          // has to take them back — otherwise the report shows `passed: true`
+          // for a config sitting unchanged on disk. Unlike the other checks
+          // these are already in the array, so revoke in place.
+          for (const f of findings) {
+            if (f.category === 'gateway' && f.fixed) {
+              f.passed = false;
+              f.fixed = false;
+              f.fixMessage = undefined;
+            }
+          }
           findings.push({
             checkId: 'FIX-ERROR',
             name: 'Auto-Fix Failed',
