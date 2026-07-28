@@ -435,10 +435,26 @@ function detectCredentialsInInstructions(file: AnalysisFile): SemanticFinding[] 
     const line = lines[i];
     for (const { name, pattern, requiresEntropy } of broadCredentialPatterns) {
       pattern.lastIndex = 0;
-      const match = pattern.exec(line);
-      const matched =
-        match !== null &&
-        (!requiresEntropy || isCredibleEntropyBlob(match[1] ?? match[0]));
+      // Walk EVERY match on the line, not just the first. A line can carry a
+      // form blank and a real token together
+      // (`password: ____…____  token: <real>`); taking only the first match
+      // meant the rejected blank suppressed the credential beside it.
+      let matched = false;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(line)) !== null) {
+        if (!requiresEntropy) { matched = true; break; }
+        // Every `requiresEntropy` pattern must capture its VALUE. Falling back
+        // to the whole match would score the `password:` descriptor toward
+        // diversity and make the floor a no-op.
+        const value = match[1];
+        if (value === undefined) {
+          throw new Error(
+            `credential pattern "${name}" is marked requiresEntropy but has no capture group`,
+          );
+        }
+        if (isCredibleEntropyBlob(value)) { matched = true; break; }
+        if (match.index === pattern.lastIndex) pattern.lastIndex++;
+      }
       if (matched) {
         findings.push({
           id: 'SEM-CRED-003',

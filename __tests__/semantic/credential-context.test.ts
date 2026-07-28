@@ -130,6 +130,36 @@ describe('CredentialContextAnalyzer', () => {
       const findings = analyzer.analyze([file]);
       expect(findings.filter((f) => f.id === 'SEM-CRED-003')).toHaveLength(0);
     });
+
+    // A fill-in-the-blank form rule is not a credential, so the generic
+    // value patterns skip a captured value that is one repeated character.
+    it('does not flag a fill-in-the-blank form rule', () => {
+      const file = makeFile('CLAUDE.md', `Password: ${'_'.repeat(40)}`, 'agent_instructions');
+      const findings = analyzer.analyze([file]);
+      expect(findings.filter((f) => f.id === 'SEM-CRED-003')).toHaveLength(0);
+    });
+
+    // Adversarial Phase 4.5: the analyzer took only the FIRST match per line,
+    // so a rejected form blank earlier on the line suppressed a real token
+    // beside it. It now walks every match on the line.
+    it('detects a real token that shares a line with a rejected form blank', () => {
+      const file = makeFile(
+        'CLAUDE.md',
+        `password: ${'_'.repeat(40)}  token: aB3xK9zQ7pR2mT8wY5vL4jH6nC1dF0sG`,
+        'agent_instructions',
+      );
+      const findings = analyzer.analyze([file]);
+      expect(
+        findings.filter((f) => f.id === 'SEM-CRED-003').length,
+        'a form blank earlier on the line must not mask the real token after it',
+      ).toBeGreaterThan(0);
+    });
+
+    it('still detects a real token on its own line (control)', () => {
+      const file = makeFile('CLAUDE.md', 'token = aB3xK9zQ7pR2mT8wY5vL4jH6nC1dF0sG', 'agent_instructions');
+      const findings = analyzer.analyze([file]);
+      expect(findings.filter((f) => f.id === 'SEM-CRED-003').length).toBeGreaterThan(0);
+    });
   });
 
   describe('MCP env secrets', () => {

@@ -594,6 +594,42 @@ Then ask the agent to provide a response.
     expect(withLine?.line, 'the reported line must point at the secret, not at a form blank').toBe(9);
   });
 
+  it('b17d: a LOW-ALPHABET planted secret in a taxonomy JSON MUST still fire (entropy-floor bypass)', async () => {
+    // Adversarial Phase 4.5 caught this against the first version of the
+    // entropy floor. The taxonomy carve-out is a NEGATED test — suppress only
+    // when no credential-shaped value is present — so raising the predicate's
+    // strictness made the carve-out fire MORE often. A secret drawn from a
+    // four-letter alphabet was discarded by the floor, the veto stopped
+    // holding, and a CRITICAL AST-CRED-002 went silent. b17c missed it because
+    // it only ever exercises one alphabet.
+    //
+    // Fix: the vetoes consult the UNFILTERED candidate predicate.
+    const lowAlphabetSecrets = [
+      'ACGT'.repeat(16), // 64 chars, 4 distinct, 128 bits
+      'ACGT'.repeat(32), // 128 chars, 4 distinct
+      'a1b2'.repeat(16), // hex over 4 nibbles
+    ];
+
+    for (const raw of lowAlphabetSecrets) {
+      const planted = JSON.stringify({
+        ...JSON.parse(taxonomyCoverageDoc),
+        leaked: { dbPassword: raw },
+      });
+      const compiler = new SemanticCompiler({ useNanoMind: false });
+      const result = await compiler.compile(planted, 'public/coverage.json');
+      const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+      const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+      const findings = analyzeCredentials(result.ast, verifier, undefined, planted);
+
+      const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
+      expect(
+        cred.length,
+        `a ${new Set(raw).size}-symbol planted secret (${raw.length} chars) must not be masked by the taxonomy carve-out`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
   it('b14: real hardcoded secret in markdown still fires AST-CRED-003 (positive control for b13)', async () => {
     // Pair to b13: confirm the doc-context suppression does NOT swallow
     // genuine hardcoded secrets in markdown. A real sk-ant- prefix matches

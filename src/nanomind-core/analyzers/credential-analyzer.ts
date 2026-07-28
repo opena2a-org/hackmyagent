@@ -19,6 +19,8 @@ import { lineFromOffset, findLineFromString } from '../../types/text-position.js
 import {
   findCredentialFormatMatch,
   hasCredentialFormat,
+  hasAnyCredentialCandidate,
+  VENDOR_PREFIX_ALTERNATIVES,
 } from '../../types/credential-format.js';
 import { isCorpusPath, isIntegrityManifestPath } from '../../hardening/path-context.js';
 
@@ -213,11 +215,16 @@ function checkCredentialForwarding(
   // FORMAT value (vendor prefix or 40+ char high-entropy run) — a planted secret,
   // vendor-prefixed or raw, still fires. An executable config classified as
   // mcp_config/agent_config/skill is never silenced here.
+  // NOTE: this veto uses the UNFILTERED candidate predicate on purpose. The
+  // test is negated — suppress only when no credential-shaped value is present
+  // — so a stricter predicate makes the carve-out fire MORE often, and every
+  // value the entropy floor discards becomes a place to hide a secret. A
+  // taxonomy of category labels has no legitimate 40-char run at all.
   if (
     artifactContent &&
     ast.artifactType === 'unknown' &&
     isSecurityTaxonomyDocument(artifactContent) &&
-    !findFirstCredentialFormat(artifactContent)
+    !hasAnyCredentialCandidate(artifactContent)
   ) {
     return findings;
   }
@@ -742,8 +749,17 @@ function isSecurityTaxonomyDocument(content: string): boolean {
  * outside this list are hash-indistinguishable; the verified-manifest
  * content gate is the load-bearing defense in that case.
  */
+// Built from the SHARED vendor list so this gate and the credential-format
+// matcher cannot drift apart. Two hand-maintained copies is how `hf_`, `ghs_`,
+// `ghu_`, `glpat-` and `npm_` came to be vendor-known here while the
+// credential-format matcher treated them as anonymous blobs subject to the
+// entropy fallback.
+const VENDOR_PREFIX_CONTENT_RE = new RegExp(
+  `\\b(?:${VENDOR_PREFIX_ALTERNATIVES.join('|')})`,
+);
+
 function hasVendorPrefixCredential(content: string): boolean {
-  return /\b(?:sk-[a-zA-Z0-9_-]{20,}|sk_(?:live|test)_[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{20,}|gho_[a-zA-Z0-9]{20,}|ghs_[a-zA-Z0-9]{20,}|ghu_[a-zA-Z0-9]{20,}|github_pat_[a-zA-Z0-9_]{20,}|hf_[a-zA-Z0-9]{20,}|glpat-[a-zA-Z0-9_-]{20,}|npm_[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|xox[abprs]-[0-9A-Za-z-]{10,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/.test(content);
+  return VENDOR_PREFIX_CONTENT_RE.test(content);
 }
 
 /**
@@ -775,10 +791,14 @@ function shouldSuppressCredentialChecks(
   // manifest (legit 64-hex hashes) or an adversarial corpus, a taxonomy of
   // category LABELS has no legitimate reason to carry a high-entropy secret, so
   // a planted raw/non-vendor secret still fires.
+  //
+  // Uses the UNFILTERED candidate predicate: the test is negated, so applying
+  // the entropy floor here would make the carve-out fire more often and turn
+  // every floor-rejected value into a hiding place.
   if (
     artifactType === 'unknown' &&
     isSecurityTaxonomyDocument(artifactContent) &&
-    !findFirstCredentialFormat(artifactContent)
+    !hasAnyCredentialCandidate(artifactContent)
   ) {
     return true;
   }
