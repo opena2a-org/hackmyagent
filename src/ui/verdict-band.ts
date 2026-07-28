@@ -79,9 +79,18 @@ export function countsAgainstScore(f: {
   fixed?: boolean;
   fixVerified?: boolean;
 }): boolean {
-  if (f.passed) return false;
   // Fixed, but the verification pass proved the issue survived.
+  //
+  // Tested BEFORE `passed`, not after. Twelve checks report
+  // `passed: <check>Fixed` — they flip `passed` to true the moment they
+  // apply a fix — so an early return on `passed` made this branch
+  // unreachable for every one of them, and the verification pass could
+  // never rescue an unverified fix on `MCP-001`, `GIT-001..003`,
+  // `NET-001`, `MCP-003`, `SKILL-019`, `HB-007` or the gateway checks.
+  // Only `PERM-001`'s shape (`passed` stays false while fixing) was ever
+  // covered. Order matters more than the predicate here.
   if (f.fixed && f.fixVerified === false) return true;
+  if (f.passed) return false;
   return !f.fixed;
 }
 
