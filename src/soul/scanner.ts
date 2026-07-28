@@ -1325,6 +1325,18 @@ export class SoulScanner {
    * Returns the first match from GOVERNANCE_FILES priority order, or null.
    */
   findGovernanceFile(targetDir: string): string | null {
+    // A file target names the governance file itself. Without this the join
+    // below builds `SOUL.md/SOUL.md`, nothing matches, and the caller scans
+    // the empty string — which `scanSoul` then scored as a confident 0/100
+    // on a file it had never opened. Honour the exact file the caller named
+    // rather than re-picking one by priority order: "scan this document" must
+    // not silently scan a different one.
+    try {
+      if (fs.statSync(targetDir).isFile()) return targetDir;
+    } catch {
+      // Missing path — fall through and let the join below return null.
+    }
+
     for (const filename of GOVERNANCE_FILES) {
       const fullPath = path.join(targetDir, filename);
       if (fs.existsSync(fullPath)) {
@@ -1763,7 +1775,7 @@ export class SoulScanner {
    * Scan a directory for behavioral governance coverage.
    */
   async scanSoul(
-    targetDir: string,
+    target: string,
     options?: {
       verbose?: boolean;
       tier?: string;
@@ -1779,7 +1791,16 @@ export class SoulScanner {
       onProgress?: (analyzed: number, total: number) => void;
     },
   ): Promise<SoulScanResult> {
-    const govFile = this.findGovernanceFile(targetDir);
+    const govFile = this.findGovernanceFile(target);
+
+    // A file target names the governance document; the directory it sits in
+    // supplies the project context, since tier detection and the project-file
+    // heuristics below read siblings. Everything after this line treats
+    // `targetDir` as a directory, which is what it always assumed it was.
+    const targetIsFile = (() => {
+      try { return fs.statSync(target).isFile(); } catch { return false; }
+    })();
+    const targetDir = targetIsFile ? path.dirname(target) : target;
 
     // Read content early (needed for tier + profile detection)
     const contentForTier = govFile
