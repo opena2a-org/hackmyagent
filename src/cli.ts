@@ -162,7 +162,7 @@ function writeJsonStdout(data: unknown): void {
 // ./cli-prefix). When a parent CLI sets HMA_CLI_PREFIX, every user-facing
 // command citation — program name, --help examples, hints, scanner `fix:`
 // strings — reads in the parent's verb namespace (e.g. `opena2a secure …`).
-import { CLI_PREFIX, rebrandCommandCitations, OPENA2A_PACKAGE } from './cli-prefix';
+import { CLI_PREFIX, rebrandCommandCitations, OPENA2A_PACKAGE, setCitationTarget } from './cli-prefix';
 
 let nanomindDeprecationWarned = false;
 /**
@@ -9264,7 +9264,12 @@ function printCheckNextSteps(
     citedOpena2a = true;
   }
   if (context?.hasCodeVulns && isLocal) {
-    console.log(`  ${colors.cyan}Auto-fix all issues:${RESET()}  ${CLI_PREFIX} secure --fix`);
+    // #293 — `secure --fix` with no target acts on the CURRENT directory, so
+    // this line told a user who scanned `./proj` to remediate the tree they
+    // are standing in. Its siblings above already cite `dirTarget`; this one
+    // was the odd line out, and it printed directly rather than through the
+    // citation rewriter, so pass 3 could not reach it either.
+    console.log(`  ${colors.cyan}Auto-fix all issues:${RESET()}  ${CLI_PREFIX} secure ${dirTarget} --fix`);
   }
   if (context?.hasFindings) {
     if (!context?.suppressFullScanHint) {
@@ -10420,6 +10425,42 @@ async function checkNpmPackage(
           console.log(`  ${colors.dim}Scanned with hackmyagent v${VERSION}${RESET()}`);
         });
       }
+
+      // #293 / #288 — teach the citation rewriter which tree this run is
+      // about, so `secure --fix` and `protect .` in finding-fix text name the
+      // scanned target instead of the current directory. Done here, once, for
+      // every command: the alternative is threading the target through ~50
+      // call sites, and #261 already showed that fixing one surface leaves the
+      // others citing the wrong tree.
+      //
+      // Silent by design — a citation that cannot be completed is left exactly
+      // as it is today rather than guessed at.
+      try {
+        const rawTarget = actionCommand.args?.[0];
+        if (!rawTarget) {
+          // No positional target: the command acts on the cwd, which is what
+          // the pathless citation already says. Nothing to complete.
+          setCitationTarget(undefined);
+        } else {
+          const { statSync } = require('node:fs') as typeof import('node:fs');
+          const nodePath = require('node:path') as typeof import('node:path');
+          let st: ReturnType<typeof statSync> | undefined;
+          try { st = statSync(rawTarget); } catch { /* not a local path */ }
+          if (!st) {
+            // npm / PyPI / GitHub / skill ref — there is no local path any
+            // local-fix advice could correctly name.
+            setCitationTarget(undefined, { remote: true });
+          } else {
+            const asDir = st.isDirectory() ? nodePath.resolve(rawTarget) : nodePath.dirname(nodePath.resolve(rawTarget));
+            if (asDir === nodePath.resolve(process.cwd())) {
+              setCitationTarget(undefined);
+            } else {
+              // Cite it the way the user typed it, not as an absolute path.
+              setCitationTarget(st.isDirectory() ? rawTarget : nodePath.dirname(rawTarget));
+            }
+          }
+        }
+      } catch { /* citation completion is best-effort, never fails a scan */ }
 
       const name = actionCommand.name();
       if (NON_TRACKED_TELEMETRY_COMMANDS.has(name)) return;

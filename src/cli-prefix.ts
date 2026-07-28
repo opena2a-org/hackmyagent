@@ -100,6 +100,112 @@ const OPENA2A_CITATION_RE = new RegExp(
 );
 
 /**
+ * Verbs whose citation is only runnable when it names the tree to act on.
+ *
+ * `hackmyagent secure --fix` with no target acts on the CURRENT directory, so
+ * a user who ran `cd parent && hackmyagent secure ./proj` and pasted the fix
+ * line got `.gitignore` and `.hackmyagent-backup/` created in `parent`, the
+ * credential in `proj` untouched, and a success summary — a false signal that
+ * the finding was resolved (#293). Same class as `harden-soul .` (#288).
+ */
+const TARGET_TAKING_VERBS = [
+  'secure-openclaw', 'secure-nemoclaw', 'harden-soul', 'harden-skill',
+  'scan-soul', 'fix-all', 'secure', 'scan', 'check', 'detect', 'rollback',
+  'protect',
+] as const;
+
+const TARGET_VERB_ALT = [...TARGET_TAKING_VERBS].sort((a, b) => b.length - a.length).join('|');
+
+/**
+ * The tree the current scan is actually about, as the reader should type it.
+ *
+ * `undefined` means "no rewrite" — either nothing set it yet, or the scan
+ * target IS the working directory, in which case the pathless form is already
+ * correct and rewriting it would be noise.
+ */
+let citationTarget: string | undefined;
+
+/**
+ * Set the scan target used to complete pathless command citations.
+ *
+ * Pass the display form the rest of the output uses (`./proj`), NOT an
+ * absolute path — the citation should read like something the user would type.
+ *
+ * For a REMOTE target (npm / PyPI / GitHub / a skill ref) there is no local
+ * path any local-fix advice could correctly name, so pass `{ remote: true }`.
+ * Citations then get the house-style `<dir>` placeholder rather than a path
+ * that would silently mean "wherever you happen to be standing".
+ *
+ * Pass `undefined` when the target is the working directory.
+ */
+export function setCitationTarget(target: string | undefined, opts?: { remote?: boolean }): void {
+  if (opts?.remote) {
+    citationTarget = '<dir>';
+    return;
+  }
+  citationTarget = target;
+}
+
+/** Test seam — reset module state between cases. */
+export function __resetCitationTargetForTests(): void {
+  citationTarget = undefined;
+}
+
+/**
+ * Where a command citation ends and prose begins.
+ *
+ * These strings are a command followed by an explanation, separated by a
+ * double space or a dash: "protect .  — migrates hardcoded secrets…". Cutting
+ * at the separator keeps the tokenizer from reading the prose as arguments.
+ */
+const COMMAND_TAIL_END = /( {2,}|\s+[—–]\s|\s+--\s|\n|`|$)/;
+
+/**
+ * Insert the scan target into citations that need one and do not have one.
+ *
+ * Deliberately conservative — it only acts when it can prove the citation is
+ * targetless. A citation that already carries any non-flag argument (an
+ * explicit path, a package name, a `<dir>` placeholder, a check list) is left
+ * exactly as it is, so `secure --fix <dir>` and `check express` never get a
+ * second target grafted on.
+ */
+function completeTargetlessCitations(text: string, prefix: string): string {
+  if (!citationTarget) return text;
+
+  const re = new RegExp(
+    `((?:npx ${OPENA2A_PACKAGE}|${escapeRegExp(prefix)})\\s+(?:${TARGET_VERB_ALT})(?![\\w-]))([^\\n\`]*)`,
+    'g',
+  );
+
+  return text.replace(re, (whole, head: string, tail: string) => {
+    // Trim the tail at the command/prose boundary so an explanation is never
+    // parsed as arguments.
+    const cut = tail.search(COMMAND_TAIL_END);
+    const cmdTail = cut === -1 ? tail : tail.slice(0, cut);
+    const rest = cut === -1 ? '' : tail.slice(cut);
+
+    const tokens = cmdTail.split(/\s+/).filter(Boolean);
+
+    // A lone `.` is the wrong target spelled explicitly — replace it.
+    const dotIndex = tokens.indexOf('.');
+    if (dotIndex !== -1) {
+      tokens[dotIndex] = citationTarget!;
+      return head + ' ' + tokens.join(' ') + rest;
+    }
+
+    // Any other non-flag token means the citation already names something.
+    if (tokens.some((t) => !t.startsWith('-'))) return whole;
+
+    // Targetless: insert ahead of any flags so the command reads naturally.
+    return head + ' ' + [citationTarget!, ...tokens].join(' ') + rest;
+  });
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
  * Rewrite command citations in a string so they are runnable for the reader.
  *
  * Two independent passes:
@@ -127,5 +233,9 @@ export function rebrandCommandCitations(text: string): string {
   if (!opena2aIsOnPath()) {
     out = out.replace(OPENA2A_CITATION_RE, `npx ${OPENA2A_PACKAGE} $1`);
   }
+  // Pass 3 runs LAST, on purpose: passes 1 and 2 have already normalised the
+  // tool name, so this only has to recognise `${CLI_PREFIX}` and
+  // `npx opena2a-cli` rather than every spelling the call sites use.
+  out = completeTargetlessCitations(out, CLI_PREFIX);
   return out;
 }
