@@ -189,15 +189,40 @@ describe('H-7: no published surface computes a composite without the clamp', () 
     // Wide enough to span an explanatory comment between the call and its
     // clamp (the quick-scan site has 16 lines of rationale in between),
     // narrow enough to still mean "the same block".
+    //
+    // COMMENTS ARE STRIPPED FROM THE WINDOW FIRST. Without that this sweep
+    // is satisfied by *mentioning* the clamp: deleting the publish clamp and
+    // leaving `// TODO: re-enable clampScoreToVerdictBand here` behind made
+    // it pass with the defect fully present. A test that a comment can
+    // satisfy is not a test — it asserts the word, not the call.
     const LOOKAHEAD = 25;
     const offenders: string[] = [];
-    for (const rel of [['registry', 'publish.ts'], ['cli.ts']]) {
+    const stripComments = (src: string): string =>
+      src
+        .split('\n')
+        .map(l => {
+          const t = l.trimStart();
+          if (t.startsWith('//') || t.startsWith('*') || t.startsWith('/*')) return '';
+          return l.replace(/\/\/.*$/, '');
+        })
+        .join('\n');
+
+    for (const rel of [
+      ['registry', 'publish.ts'],
+      ['cli.ts'],
+      // The scanner owns `scan()` and `applyScore()`, the two sites every
+      // other surface delegates to. Omitting it left the sweep blind to the
+      // one file where a regression would affect every consumer at once.
+      ['hardening', 'scanner.ts'],
+    ]) {
       const lines = readFileSync(join(SRC, ...rel), 'utf8').split('\n');
       lines.forEach((line, i) => {
         const trimmed = line.trimStart();
         if (!line.includes('calculateSecurityScore(')) return;
         if (trimmed.startsWith('*') || trimmed.startsWith('//') || line.includes('import')) return;
-        const window = lines.slice(i, i + LOOKAHEAD).join('\n');
+        // Skip the declaration itself — it is the function being guarded.
+        if (/^(export\s+)?function\s+calculateSecurityScore/.test(trimmed)) return;
+        const window = stripComments(lines.slice(i, i + LOOKAHEAD).join('\n'));
         if (window.includes('clampScoreToVerdictBand')) return;
         offenders.push(`${rel.join('/')}:${i + 1}: ${trimmed}`);
       });
