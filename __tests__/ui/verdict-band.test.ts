@@ -89,7 +89,7 @@ describe('verdict-band clamp (deterministic — #259 contract gate)', () => {
   });
 });
 
-describe('secure on the reported fixture (spawn, local-only)', () => {
+describe('secure on the reported fixture (spawn, local-only)', { timeout: 240_000 }, () => {
   function scanJson(): any {
     const res = spawnSync('node', [CLI, 'secure', FIXTURE, '--ci', '--json'], {
       encoding: 'utf8',

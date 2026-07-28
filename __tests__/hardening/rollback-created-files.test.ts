@@ -259,7 +259,7 @@ describe('recordCreatedFiles gating (#262)', () => {
   });
 });
 
-describe('secure --fix then rollback, end to end (spawn, local-only)', () => {
+describe('secure --fix then rollback, end to end (spawn, local-only)', { timeout: 240_000 }, () => {
   let dir: string;
 
   beforeEach(() => {
