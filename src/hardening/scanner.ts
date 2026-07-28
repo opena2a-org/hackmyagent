@@ -898,6 +898,19 @@ export class HardeningScanner {
   private cliName = 'hackmyagent';
   /** Fix writes that did not land this run. Reset per `scan()`. */
   private fixWriteFailures: { file: string; code: string; message: string }[] = [];
+  /**
+   * Every path a fix write actually landed on this run. Reset per `scan()`.
+   *
+   * `recordCreatedFiles` used to derive its candidates from the findings —
+   * `f.fixed && f.file` — which silently assumes every file a fix writes is
+   * named by some finding. `.env.example` is written by the `CRED-001` fix
+   * while that finding's `file` names the config it EDITED, so the generated
+   * file reached no candidate list, `rollback` never removed it, and the
+   * report still claimed completeness. Tracking the writes themselves does
+   * not depend on finding attribution, so a fix with no owning finding cannot
+   * fall through the same gap again.
+   */
+  private fixWritePaths: string[] = [];
   // Files that may be created or modified during auto-fix
   private static readonly BACKUP_FILES = [
     'config.json',
@@ -1029,6 +1042,7 @@ export class HardeningScanner {
     // Per-run, so a reused scanner instance cannot report a previous run's
     // failed writes.
     this.fixWriteFailures = [];
+    this.fixWritePaths = [];
 
     // Resolve effective scan depth — --deep flag implies 'deep' depth
     const scanDepth: ScanDepth = options.scanDepth || (options.deep ? 'deep' : 'standard');
@@ -1675,7 +1689,14 @@ export class HardeningScanner {
       await this.recordCreatedFiles(
         targetDir,
         backupPath,
-        findings.filter(f => f.fixed && f.file).map(f => f.file as string),
+        [
+          ...findings.filter(f => f.fixed && f.file).map(f => f.file as string),
+          // Plus every path a fix actually wrote. `recordCreatedFiles` still
+          // records only paths it observed MISSING at backup time and guards
+          // each with a sha256, so widening the candidate list cannot make
+          // rollback delete a file the user wrote.
+          ...this.fixWritePaths,
+        ],
       );
     }
 
@@ -2243,6 +2264,10 @@ export class HardeningScanner {
   private async applyFixWrite(filePath: string, content: string): Promise<boolean> {
     try {
       await fs.writeFile(filePath, content);
+      // Recorded regardless of whether any finding names this path, so
+      // `recordCreatedFiles` can decide what was GENERATED without relying
+      // on finding attribution.
+      this.fixWritePaths.push(filePath);
       return true;
     } catch (err) {
       // Recorded, not swallowed. Returning a bare `false` made these sites
