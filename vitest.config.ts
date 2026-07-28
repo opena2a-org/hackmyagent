@@ -1,10 +1,19 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig, configDefaults } from 'vitest/config';
 
 export default defineConfig({
   test: {
     globals: false,
     environment: 'node',
     include: ['src/**/*.test.ts', '__tests__/**/*.test.ts', '__tests__/**/*.ts'],
+    // `__tests__/**/*.ts` sweeps in every file under `__tests__`, including
+    // shared test infrastructure, which vitest then fails as "No test suite
+    // found in file". Helpers are not test files.
+    //
+    // Spread the defaults rather than replacing them: assigning `exclude`
+    // drops vitest's own list (node_modules, dist, .idea, .git, .cache), and
+    // dropping the `dist` entry would hand the runner the compiled copy of
+    // every suite alongside the source.
+    exclude: [...configDefaults.exclude, '__tests__/helpers/**'],
     // 23 test files spawn `dist/cli.js` and run a real scan. A full scan of
     // the kitchen-sink corpus fixture takes a few seconds idle and comfortably
     // over ten under parallel load, so a 10s cap made every one of them a
