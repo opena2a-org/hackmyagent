@@ -1,9 +1,9 @@
 // Regression gate: the #202 version footer must never enter machine output.
 //
 // #202 gated the `Scanned with hackmyagent vX.Y.Z` trailer on `--json` alone.
-// `secure` and `scan-soul` also take `-f, --format <text|json|sarif|html|asff>`,
-// and `--json` is documented as deprecated in favour of `--format json` — so
-// the deprecated path was protected and every recommended one was corrupted:
+// `secure` also takes `-f, --format <text|json|sarif|html|asp|asff>` and
+// documents `--json` as deprecated in favour of `--format json` — so the
+// deprecated path was protected and every recommended one was corrupted:
 //
 //   $ hackmyagent secure <dir> --format sarif
 //     }
@@ -91,11 +91,14 @@ describe('secure output formats parse (spawn, local-only)', () => {
   // CI, since the deterministic tests above only exercise the helper module.
   const canRun = () => existsSync(CLI);
 
+  // Explicit timeouts: each case spawns one or two full `secure` scans, and
+  // the suite default (10s in vitest.config.ts) was measured at 75% consumed
+  // on an M4 Max — a slower CI runner would flake the release gate.
   it.runIf(canRun())('text output still carries the footer', () => {
     // Non-vacuity for every assertion below: if #202's footer stopped being
     // emitted at all, the absence checks would pass for the wrong reason.
     expect(run(fixture(), [])).toMatch(FOOTER_RE);
-  });
+  }, 60_000);
 
   it.runIf(canRun())('--format json and --format sarif stay parseable', () => {
     for (const format of ['json', 'sarif']) {
@@ -103,11 +106,11 @@ describe('secure output formats parse (spawn, local-only)', () => {
       expect(out, `--format ${format} carries the footer`).not.toMatch(FOOTER_RE);
       expect(() => JSON.parse(out), `--format ${format} does not parse`).not.toThrow();
     }
-  });
+  }, 120_000);
 
   it.runIf(canRun())('the deprecated --json alias stays parseable too', () => {
     const out = run(fixture(), ['--json']);
     expect(out).not.toMatch(FOOTER_RE);
     expect(() => JSON.parse(out)).not.toThrow();
-  });
+  }, 60_000);
 });

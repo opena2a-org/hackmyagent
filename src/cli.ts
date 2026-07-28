@@ -2804,7 +2804,11 @@ function generateScanSarif(findings: SecurityFinding[], targetDir: string): stri
 // HTML report for non-benchmark secure scans
 function generateScanHtmlReport(scanResult: { findings: SecurityFinding[]; score: number; maxScore: number; projectType: string }, targetDir: string): string {
   const issues = scanResult.findings.filter(f => countsAgainstScore(f));
-  const fixedFindings = scanResult.findings.filter(f => f.fixed);
+  // Verified fixes only, so "Auto-Fixed" and "issues" stay disjoint and the
+  // header arithmetic adds up. A fix the verification pass could not confirm
+  // is counted as an outstanding issue (it is still on disk), and listing it
+  // in both tables made `issues + fixed + passed` exceed the check total.
+  const fixedFindings = scanResult.findings.filter(f => f.fixed && f.fixVerified !== false);
   const score = scanResult.score;
   const scoreColor = score >= 90 ? '#22c55e' : score >= 70 ? '#eab308' : score >= 50 ? '#f97316' : '#ef4444';
   const gradeLetters = score >= 90 ? 'strong' : score >= 80 ? 'good' : score >= 70 ? 'moderate' : score >= 60 ? 'improving' : 'needs-attention';

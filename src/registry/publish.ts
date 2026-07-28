@@ -13,7 +13,7 @@ import { readdirSync, statSync, readFileSync } from 'fs';
 import { join, relative } from 'path';
 import type { SecurityFinding, Severity } from '../hardening';
 import { calculateSecurityScore } from '../hardening';
-import { clampScoreToVerdictBand } from '../ui/verdict-band';
+import { clampScoreToVerdictBand, countsAgainstScore } from '../ui/verdict-band';
 import type { AttackReport } from '../attack';
 import type { SoulScanResult } from '../soul';
 import type { BenchmarkResult } from '../benchmarks';
@@ -176,7 +176,13 @@ export function buildPublishPayload(data: PublishScanData, toolVersion: string):
         checkId: f.checkId,
         name: f.name,
         severity: f.severity,
-        passed: f.passed || !!f.fixed,
+        // A fix the verification pass could not confirm is NOT passed. Folding
+        // every `fixed` into `passed` here discarded `fixVerified` before the
+        // score, the clamp and the verdict ever saw it, so the fixture the
+        // terminal reports as `69/100 ... exit 1` published as
+        // `score 100 / verdict pass / 0 failed checks` — and `score` is inside
+        // the signed strong canonical below.
+        passed: !countsAgainstScore(f),
         message: f.description,
         category: f.category,
       });
@@ -244,7 +250,7 @@ export function buildPublishPayload(data: PublishScanData, toolVersion: string):
 
   if (data.hardeningFindings) {
     const total = data.hardeningFindings.length;
-    const failed = data.hardeningFindings.filter(f => !f.passed && !f.fixed).length;
+    const failed = data.hardeningFindings.filter(f => countsAgainstScore(f)).length;
     subReports.hardening = {
       totalChecks: total,
       failedChecks: failed,
@@ -494,7 +500,7 @@ export function formatPublishOutput(
     // Build summary of what was included
     const parts: string[] = [];
     if (data.hardeningFindings) {
-      const failed = data.hardeningFindings.filter(f => !f.passed && !f.fixed);
+      const failed = data.hardeningFindings.filter(f => countsAgainstScore(f));
       parts.push(`hardening (${failed.length} finding${failed.length === 1 ? '' : 's'})`);
     }
     if (data.oasbResult) {
