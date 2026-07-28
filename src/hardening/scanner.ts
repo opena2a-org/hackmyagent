@@ -220,6 +220,52 @@ const CREDENTIAL_PATTERNS = [
   { name: 'SENDGRID_KEY', pattern: /SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/ },
 ];
 
+/**
+ * #292 — config-shaped filenames CRED-001 inspects for hardcoded credentials.
+ *
+ * These used to be probed only as `path.join(targetDir, name)`, so the same
+ * token scored 69/100 at `config.json` and 96/100 with no finding at all at
+ * `src/config.json`, `sub/config.json` or `config/production.json`. A
+ * conventional layout therefore passed clean. Code files were never affected —
+ * the AST layer covers those at any depth (AST-CRED-001/003) — so the gap was
+ * specific to config-shaped files below the scan root.
+ *
+ * Matching is on BASENAME at any depth, via the bounded, symlink-safe walk in
+ * `collectSensitiveArtifacts`. Order of the root probe is preserved separately
+ * by the caller so existing golden output does not churn.
+ */
+const CONFIG_CANDIDATE_NAMES = new Set([
+  'config.json',
+  'config.yaml',
+  'config.yml',
+  'mcp.json',
+  'settings.json',
+  'secrets.json',
+  'credentials.json',
+  '.env',
+  '.env.local',
+  'CLAUDE.md',
+]);
+
+/**
+ * #292, second half — directories whose contents are config BY LOCATION rather
+ * than by filename. `config/production.json` is the case the issue calls out
+ * explicitly, and basename matching alone does not reach it: nothing about
+ * `production.json` is config-shaped, the enclosing `config/` is.
+ *
+ * Scoped to structured-data extensions so a `config/README.md` or a
+ * `config/build.ts` (already covered by the AST layer) is not re-read here.
+ */
+const CONFIG_DIR_NAMES = new Set(['config', 'conf', 'configs', 'settings']);
+const CONFIG_DIR_EXTENSIONS = new Set(['.json', '.yaml', '.yml', '.toml', '.ini']);
+
+/** True when a file is config-shaped by filename, or by sitting directly in a config directory. */
+function isConfigShapedFile(basename: string, parentDirName: string): boolean {
+  if (CONFIG_CANDIDATE_NAMES.has(basename)) return true;
+  if (!CONFIG_DIR_NAMES.has(parentDirName.toLowerCase())) return false;
+  return CONFIG_DIR_EXTENSIONS.has(path.extname(basename).toLowerCase());
+}
+
 // MEM-006 receiver gate: persistence-semantic identifier parts. A `.push(...)`
 // only counts as a memory/persistence sink when its receiver chain contains one
 // of these word-parts (matched after splitting on dots, brackets, snake_case,
@@ -2003,7 +2049,13 @@ export class HardeningScanner {
     // Files to check for credentials. secrets.json / credentials.json
     // added in #250 — they were previously unscanned even though their
     // names promise exactly this content.
-    const filesToCheck = [
+    //
+    // #292 — this was a fixed ROOT-relative probe list, so a credential in
+    // `src/config.json` was invisible while the identical token in
+    // `./config.json` scored 69/100 with CRED-001 + SEM-CRED-002. The list
+    // below is now the canonical root ORDER only; the actual set of files
+    // comes from a recursive basename match at any depth.
+    const rootProbeOrder = [
       'config.json',
       'config.yaml',
       'config.yml',
@@ -2015,6 +2067,22 @@ export class HardeningScanner {
       '.env.local',
       'CLAUDE.md',
     ];
+
+    // Root files first, in their historical order, then everything deeper in
+    // sorted order. Preserving the root sequence keeps finding order — and so
+    // the byte-compared corpus goldens — stable for trees that only have
+    // root-level config, which is every pre-existing fixture.
+    //
+    // The root names are probed UNCONDITIONALLY, exactly as before, rather
+    // than being filtered through the walk's results. The walk is bounded and
+    // can return `complete: false` on a pathological or unreadable tree;
+    // gating the root probe on it would let a deep/unreadable directory
+    // REMOVE detection that exists today. This change may only ever add
+    // locations, never subtract them. Absent files are skipped by the same
+    // readFile catch as before.
+    const { configFiles: discovered } = await this.collectSensitiveArtifacts(targetDir);
+    const nested = discovered.filter((rel) => rel.includes(path.sep)).sort();
+    const filesToCheck = [...rootProbeOrder, ...nested];
 
     for (const filename of filesToCheck) {
       const filePath = path.join(targetDir, filename);
@@ -2033,7 +2101,10 @@ export class HardeningScanner {
 
               // Fix: replace credential with env var reference (but NOT in .env files
               // where the actual value is supposed to live)
-              const isEnvFile = filename.startsWith('.env');
+              // #292 — basename, not the whole relative path: `filename` is
+              // now `sub/.env` for a nested hit, and a raw `startsWith` would
+              // classify it as a normal config file and REWRITE it in place.
+              const isEnvFile = path.basename(filename).startsWith('.env');
               if (autoFix && !isEnvFile) {
                 pattern.lastIndex = 0;
                 lines[i] = lines[i].replace(pattern, '${' + envVar + '}');
@@ -2055,7 +2126,7 @@ export class HardeningScanner {
             if (fileModified) content = credContent;
           }
 
-          const isEnvFile = filename.startsWith('.env');
+          const isEnvFile = path.basename(filename).startsWith('.env');
           findings.push({
             checkId: 'CRED-001',
             name: 'Exposed Credential',
@@ -3037,10 +3108,12 @@ dist/
   private async collectSensitiveArtifacts(targetDir: string): Promise<{
     keyFiles: string[];
     namedSensitive: string[];
+    configFiles: string[];
     complete: boolean;
   }> {
     const keyFiles: string[] = [];
     const namedSensitive: string[] = [];
+    const configFiles: string[] = [];
     const SENSITIVE_NAMES = new Set(['secrets.json', 'credentials.json']);
     const MAX_DEPTH = 25;
     const MAX_ENTRIES = 50000;
@@ -3053,9 +3126,9 @@ dist/
     // unreadable *directory* below counts as incomplete.
     try {
       const rootStat = await fs.stat(targetDir);
-      if (!rootStat.isDirectory()) return { keyFiles, namedSensitive, complete: true };
+      if (!rootStat.isDirectory()) return { keyFiles, namedSensitive, configFiles, complete: true };
     } catch {
-      return { keyFiles, namedSensitive, complete: true };
+      return { keyFiles, namedSensitive, configFiles, complete: true };
     }
 
     const targetRoot = path.resolve(targetDir);
@@ -3127,6 +3200,25 @@ dist/
         if (!dirent.isFile()) continue;
         const rel = path.relative(targetDir, abs);
         if (SENSITIVE_NAMES.has(dirent.name)) namedSensitive.push(rel);
+        // #292 — config-shaped files at ANY depth, not just the scan root.
+        // Config-shaped by filename (`src/config.json`) or by location
+        // (`config/production.json`, whose basename says nothing).
+        //
+        // `.hackmyagent-backup/` is excluded, and that exclusion is load-
+        // bearing rather than cosmetic. It holds verbatim copies of the very
+        // files this check rewrites, so descending into it made `--fix`
+        // rewrite its own backups: the credential was substituted inside the
+        // backup copy, `rollback` then restored the ALREADY-REDACTED content,
+        // and the original was unrecoverable. It also double-counted every
+        // finding (one for the live file, one for its backup). Scoped to the
+        // config list rather than the whole walk so `keyFiles` /
+        // `namedSensitive` semantics are untouched.
+        if (
+          !rel.startsWith(`.hackmyagent-backup${path.sep}`) &&
+          isConfigShapedFile(dirent.name, path.basename(dir))
+        ) {
+          configFiles.push(rel);
+        }
         if (dirent.name.endsWith('.key')) {
           keyFiles.push(rel);
         } else if (dirent.name.endsWith('.pem')) {
@@ -3149,7 +3241,12 @@ dist/
       }
     }
 
-    return { keyFiles, namedSensitive, complete };
+    // Deterministic order. `readdir` order is filesystem-dependent, and the
+    // corpus goldens are byte-compared, so an unsorted list would make golden
+    // stability a property of the host filesystem.
+    configFiles.sort();
+
+    return { keyFiles, namedSensitive, configFiles, complete };
   }
 
   /**
