@@ -29,11 +29,50 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, appendFileSync, renameSync, rmSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync, mkdirSync, writeFileSync, appendFileSync, renameSync, rmSync, existsSync, chmodSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const CLI = path.resolve(__dirname, '../../dist/cli.js');
+
+/**
+ * #306 — the agent list is INJECTED, never sampled from the host.
+ *
+ * The two assertions the whole #303 issue exists for were gated on
+ * `totalAgents === 0`, which comes from `ps aux`. A CI runner has no AI
+ * processes, so both skipped exactly where the merge is decided — proven with
+ * a header-only `ps`: 14 passed, 2 skipped, exit 0. A test gated on host state
+ * is not a gate.
+ *
+ * `detect` shells out to `ps aux` and reads home-relative MCP configs, so both
+ * are pinned for the child: a `ps` earlier on PATH, and an empty HOME. That
+ * keeps the real end-to-end code path under test (no test-only branch in
+ * production code) while making the measurement identical on every machine.
+ */
+const INJECTED_AGENTS = 2;
+
+let shimDir: string;
+let fakeHome: string;
+
+/** A `ps` that reports exactly two AI processes, on any host. */
+function installPsShim(root: string): void {
+  shimDir = path.join(root, 'bin');
+  fakeHome = path.join(root, 'home');
+  mkdirSync(shimDir, { recursive: true });
+  mkdirSync(fakeHome, { recursive: true });
+  const psPath = path.join(shimDir, 'ps');
+  writeFileSync(
+    psPath,
+    '#!/bin/sh\n'
+    + 'echo "USER  PID  %CPU %MEM      VSZ    RSS   TT  STAT STARTED      TIME COMMAND"\n'
+    + 'echo "tester 4242   0.0  0.1  1000  2000   ??  S     1:00PM   0:01.00 '
+    + 'node /opt/lib/node_modules/@anthropic-ai/claude-code/cli.js"\n'
+    + 'echo "tester 4243   0.0  0.1  1000  2000   ??  S     1:00PM   0:01.00 ollama serve"\n',
+  );
+  chmodSync(psPath, 0o755);
+}
 
 function runCli(args: string[], cwd?: string): string {
   try {
@@ -41,7 +80,12 @@ function runCli(args: string[], cwd?: string): string {
       encoding: 'utf8',
       timeout: 180_000,
       cwd,
-      env: { ...process.env, NO_COLOR: '1' },
+      env: {
+        ...process.env,
+        NO_COLOR: '1',
+        PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ''}`,
+        HOME: fakeHome,
+      },
     });
   } catch (e: unknown) {
     // Both commands exit 1 when they find something. That is the case under
@@ -108,6 +152,10 @@ let dirClaudeMd: string;
 beforeAll(() => {
   if (!existsSync(CLI)) throw new Error('dist/cli.js missing — run npm run build');
   root = mkdtempSync(path.join(tmpdir(), 'hma-291-'));
+  // Before the first runCli: every child in this file, including the
+  // harden-soul fixtures below, sees the same two agents and the same empty
+  // HOME.
+  installPsShim(root);
 
   const pkg = '{"name":"agent","version":"1.0.0"}\n';
 
@@ -204,7 +252,11 @@ describe('#291 governance model reconciliation', () => {
 
     it('does not mark agents governed on the strength of an empty governance file', () => {
       const summary = detectSummary(dirProse);
-      if (summary.totalAgents === 0) return; // no AI processes on this host
+      expect(
+        summary.totalAgents,
+        'the injected agent list did not reach detect; the assertion below would '
+        + 'have passed without measuring anything (#306)',
+      ).toBe(INJECTED_AGENTS);
       expect(
         summary.ungoverned,
         'agents were marked governed because a file existed, not because it governs anything',
@@ -226,7 +278,7 @@ describe('#291 governance model reconciliation', () => {
       ).toBe(soul.score);
     });
 
-    it('does not call an agent governed by a document that subverts its own controls', (ctx) => {
+    it('does not call an agent governed by a document that subverts its own controls', () => {
       const soul = soulScore(dirViolating);
       // Sanity: this fixture must reach the state the defect needed — every
       // critical control PRESENT (so conformance is not `none`) and the
@@ -238,11 +290,14 @@ describe('#291 governance model reconciliation', () => {
       expect(soul.violations, 'fixture carries no violations').toBeGreaterThan(0);
 
       const j = detectJson(dirViolating);
-      // A host with no AI processes cannot exercise the governed/ungoverned
-      // path at all. Skip explicitly rather than `return` — a silent pass on
-      // a machine that never ran the assertion is the #136 anti-pattern, and
-      // this is the assertion the whole issue is about.
-      if (j.summary.totalAgents === 0) ctx.skip();
+      // #306 — this used to `ctx.skip()` when the host had no AI processes,
+      // which is every CI runner, so the assertion the whole issue is about
+      // never ran where the merge is decided. The agents are injected now, so
+      // their absence is a failure, not a reason to stand down.
+      expect(
+        j.summary.totalAgents,
+        'the injected agent list did not reach detect (#306)',
+      ).toBe(INJECTED_AGENTS);
       expect(
         j.summary.ungoverned,
         `agents are governed by a document scoring ${soul.score}/100 that instructs them `
@@ -289,12 +344,22 @@ describe('#291 governance model reconciliation', () => {
       ).toBe('CLAUDE.md');
     });
 
-    it('does not claim there is no governance file while calling agents governed', (ctx) => {
+    it('does not claim there is no governance file while calling agents governed', () => {
       const j = detectJson(dirClaudeMd);
-      // Same reason as above: without agents there is no "governed" claim to
-      // contradict, so there is nothing here to measure.
-      if (j.summary.totalAgents === 0) ctx.skip();
-      if (j.summary.ungoverned > 0) ctx.skip();  // host findings put it below the bar
+      // #306 — both of these were `ctx.skip()`. The first fired on every CI
+      // runner; the second fired whenever the real HOME happened to carry
+      // findings, so whether this ran at all depended on the machine. Agents
+      // are injected and HOME is empty, so both are now preconditions that
+      // FAIL rather than excuse the test.
+      expect(
+        j.summary.totalAgents,
+        'the injected agent list did not reach detect (#306)',
+      ).toBe(INJECTED_AGENTS);
+      expect(
+        j.summary.ungoverned,
+        'the fixture is below the governance bar, so there is no "governed" '
+        + 'claim for the contradiction to be about',
+      ).toBe(0);
 
       expect(
         j.findings.map((f) => f.title),
@@ -339,7 +404,15 @@ describe('#291 governance model reconciliation', () => {
 
     it('leaves the score alone when nothing is fail-direction', () => {
       const summary = detectSummary(dirHardened);
-      if (summary.governanceClamped) return; // host had its own findings
+      // #306 — this used to `return` when the clamp had fired, which on a
+      // developer machine meant the real HOME's own findings quietly turned
+      // the test into a no-op. With HOME pinned empty the fixture is the only
+      // input, so a clamp here is a genuine failure of the "ceiling only when
+      // something is fail-direction" rule.
+      expect(
+        summary.governanceClamped,
+        'a fully-conformant tree with no fail-direction finding was clamped anyway',
+      ).toBe(false);
       expect(summary.governanceScore).toBe(summary.governanceRaw);
     });
   });
