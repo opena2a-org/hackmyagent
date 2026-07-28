@@ -1495,6 +1495,35 @@ export class HardeningScanner {
 
           finding.fixMessage = (finding.fixMessage || '') + ' [FIX NOT VERIFIED - issue may persist]';
 
+          // The check did not pass, so stop saying it did.
+          //
+          // Thirteen checks report `passed: <check>Fixed` and flip `passed`
+          // true the moment they apply a fix. This block is the authority
+          // that learns the fix did not land, and until now it recorded that
+          // only in `fixVerified` — a second field every consumer had to
+          // remember to consult. `countsAgainstScore` does (it tests
+          // `fixVerified` BEFORE `passed`), so the score counted the finding
+          // and the clamp fired; every surface reading the raw field did not,
+          // so the finding vanished from the report while the number it
+          // caused stayed. Measured on a repo with an incomplete `.gitignore`
+          // and a committable `credentials.json`:
+          //
+          //   Security  ━━━ 69/100  (score capped from 89 to 69 — verdict is
+          //                          fail-direction)
+          //   Verdict   Usable with caveats.
+          //   ── Findings ──   1 low
+          //
+          // — the GIT-002 HIGH driving the cap reported nowhere. That is #259
+          // inverted, and it only ever worked for `PERM-001`, which keeps
+          // `passed: false` while fixing.
+          //
+          // Clearing it here fixes the findings block, the category summary,
+          // the verdict, `--format asp`, the opt-in telemetry payload and
+          // `secure-openclaw` at once, instead of teaching ~20 call sites a
+          // two-field rule. `countsAgainstScore` is unaffected: its first
+          // branch already returns true for this shape.
+          finding.passed = false;
+
           // An unverified finding is now reported like any other outstanding
           // issue, so its location has to be true. The pre-fix `file` and
           // `message` describe the pre-fix tree: `PERM-001` names
