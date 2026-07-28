@@ -16,6 +16,10 @@ import type { ASTFinding } from './capability-analyzer.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
 import { lineFromOffset, findLineFromString } from '../../types/text-position.js';
+import {
+  findCredentialFormatMatch,
+  hasCredentialFormat,
+} from '../../types/credential-format.js';
 import { isCorpusPath, isIntegrityManifestPath } from '../../hardening/path-context.js';
 
 // ============================================================================
@@ -444,7 +448,7 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
   // NO vendor-prefix credential anywhere in the content. This
   // suppresses the SHA-256 / SHA-512 / SHA-1 / MD5 hex digests that
   // match the 40+ alphanumeric high-entropy fallback in
-  // `buildCredentialFormatRegex` without requiring every evidence
+  // the shared credential-format matcher without requiring every evidence
   // text to be hash-shaped (real evidence often includes descriptive
   // context alongside the hash). A planted real credential alongside
   // hashes still fires because `hasVendorPrefixCredential` short-
@@ -597,10 +601,14 @@ function isDocumentationOrTestContext(ast: SecurityAST): boolean {
  * descriptive text do NOT count: those words appear in well-governed agent
  * docs, fixture manifests, and release-smoke walkthroughs without being
  * actual hardcoded secrets.
+ *
+ * The entropy fallback additionally requires real character diversity, so a
+ * fill-in-the-blank form rule (`**Local Office**: ______________…`) sitting
+ * next to the word "Secret" no longer reads as a hardcoded credential. See
+ * `../../types/credential-format.js`.
  */
 function evidenceShowsCredentialFormat(evidenceTexts: string[]): boolean {
-  const re = buildCredentialFormatRegex();
-  return evidenceTexts.some(t => re.test(t));
+  return evidenceTexts.some(t => hasCredentialFormat(t));
 }
 
 /**
@@ -779,62 +787,27 @@ function shouldSuppressCredentialChecks(
 
 
 /**
- * Build the credential-format detector. The regex is shared between the
- * AST-CRED-003 evidence-text gate and the AST-CRED-001 content-scanning
- * gate (#164) so both code paths agree on what counts as a credential.
- *
- * Curated multi-vendor prefixes — Anthropic / OpenAI (`sk-`), Stripe
- * (`sk_live_` / `sk_test_`), GitHub PAT (`ghp_` / `gho_` / `github_pat_`),
- * AWS access key IDs (`AKIA…`), Google API keys (`AIza…`), Slack
- * (`xox[abprs]-…`), and JWTs (`eyJ…header.payload.sig`) — plus a
- * high-entropy 40+ word-character fallback (anchored on word boundaries,
- * excluding `-` and `/` so URL slugs and slug-style identifiers do not
- * match). Bare-keyword mentions ("credentials", "API key", "token") in
- * descriptive text do NOT count.
- *
- * Placeholder / env-var reference values (`$OPENAI_API_KEY`,
- * `${OPENAI_API_KEY}`, `<YOUR_KEY>`) deliberately fail the entropy gate
- * because the leading `$`/`<` characters are not in the word-character
- * class, and the all-uppercase env-var convention rarely produces 40+
- * consecutive characters anyway.
- */
-function buildCredentialFormatRegex(): RegExp {
-  return new RegExp(
-    [
-      'sk-[a-zA-Z0-9_-]{20,}',
-      'sk_live_[a-zA-Z0-9]{20,}',
-      'sk_test_[a-zA-Z0-9]{20,}',
-      'ghp_[a-zA-Z0-9]{20,}',
-      'gho_[a-zA-Z0-9]{20,}',
-      'github_pat_[a-zA-Z0-9_]{20,}',
-      'AKIA[0-9A-Z]{16}',
-      'AIza[0-9A-Za-z_-]{35}',
-      'xox[abprs]-[0-9A-Za-z-]{10,}',
-      'eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+',
-      '\\b[A-Za-z0-9+=_]{40,}\\b',
-    ].join('|'),
-  );
-}
-
-/**
  * Scan `content` for the first credential-format substring (per
- * `buildCredentialFormatRegex`). Returns the 1-based line number of the
- * match and the masked matched substring, or undefined when no match
- * exists. The match is masked at this layer so callers cannot
- * accidentally leak the raw credential value into a finding's
- * `evidence` field — HMA must never echo a real credential back to the
- * user, JSON output, telemetry, or Registry sync.
+ * `../../types/credential-format.js`, shared with the AST-CRED-003
+ * evidence-text gate so both code paths agree on what counts as a
+ * credential). Returns the 1-based line number of the match and the masked
+ * matched substring, or undefined when no match exists. The match is masked
+ * at this layer so callers cannot accidentally leak the raw credential value
+ * into a finding's `evidence` field — HMA must never echo a real credential
+ * back to the user, JSON output, telemetry, or Registry sync.
+ *
+ * The shared helper skips candidates that fail the entropy floor, so a form
+ * blank early in a document no longer masks a real credential later in it.
  */
 function findFirstCredentialFormat(content: string): { line: number; match: string } | undefined {
-  const re = buildCredentialFormatRegex();
-  const m = re.exec(content);
-  if (!m) return undefined;
+  const hit = findCredentialFormatMatch(content);
+  if (!hit) return undefined;
   // Count newlines before the match index — 1-based line number.
   let line = 1;
-  for (let i = 0; i < m.index; i++) {
+  for (let i = 0; i < hit.index; i++) {
     if (content.charCodeAt(i) === 10 /* \n */) line++;
   }
-  return { line, match: maskCredentialValue(m[0]) };
+  return { line, match: maskCredentialValue(hit.value) };
 }
 
 /**

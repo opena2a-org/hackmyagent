@@ -505,6 +505,95 @@ Refer to https://docs.example.com/v1/auth/getting-started/api-key-information fo
     ).toHaveLength(0);
   });
 
+  it('b18: fill-in-the-blank contact sheet does NOT fire AST-CRED-003 (form blanks are not secrets)', async () => {
+    // Real-world FP found scanning csnp.org (2026-07-28): a public
+    // incident-response contact-sheet template scored HIGH "Hardcoded Secret
+    // Detected" at the heading `### U.S. Secret Service (Cyber Fraud)`. The
+    // file contains no credential. Two signals combined: the word "Secret"
+    // produced the CRED-HARVEST evidence span, and the 47-underscore form
+    // blanks satisfied the credential-format gate, whose high-entropy
+    // fallback was a pure LENGTH test over a word-character class that
+    // includes `_`. Root fix: an entropy floor on the fallback
+    // (src/types/credential-format.ts).
+    const blank = '_'.repeat(47);
+    const contactSheet = `# Incident response contacts
+
+## Law enforcement
+
+### FBI - Cyber Division (Local Field Office)
+**Office Location**: ${blank}
+**Phone**: ${blank}
+**IC3 (Internet Crime Complaint)**: https://www.ic3.gov
+**Cyber Task Force**: ${blank}
+
+---
+
+### U.S. Secret Service (Cyber Fraud)
+**Local Office**: ${blank}
+**Phone**: ${blank}
+
+---
+
+### Local Police Department
+**Non-Emergency**: ${blank}
+**Emergency**: 911
+`;
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(contactSheet, 'templates/incident-response-contacts-sheet.md');
+    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const findings = analyzeCredentials(result.ast, verifier, undefined, contactSheet);
+
+    const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
+    expect(
+      cred,
+      `no AST-CRED finding may fire on a form template whose only "secret" is the phrase "Secret Service". Got: ${cred.map(f => `${f.checkId}(${f.severity}): ${f.message}`).join(', ')}`,
+    ).toHaveLength(0);
+  });
+
+  it('b18-positive: form blanks must not mask a real secret later in the same file (no detection loss)', async () => {
+    // Pair to b18, and a NO-DETECTION-LOSS control: unlike b18 it passes both
+    // before and after the entropy floor, which is the point — suppressing
+    // form blanks must not blind the check to a genuine credential in the same
+    // file, including one that appears AFTER the blanks.
+    //
+    // AST-CRED-003 derives its line from the evidence span, so the line
+    // assertion below guards line attribution generally; the candidate-
+    // iteration half of the fix (skip the blank, return the real credential)
+    // is locked directly in __tests__/types/credential-format.test.ts.
+    const blank = '_'.repeat(47);
+    const docWithBlanksThenSecret = `# Setup
+
+**Local Office**: ${blank}
+**Phone**: ${blank}
+
+Set your API key in the environment:
+
+\`\`\`
+export ANTHROPIC_API_KEY=sk-ant-AAAAAAAAAAAAAAAAAAAAAAAAAAAA
+\`\`\`
+
+Then ask the agent to provide a response.
+`;
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(docWithBlanksThenSecret, 'docs/setup.md');
+    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const findings = analyzeCredentials(result.ast, verifier, undefined, docWithBlanksThenSecret);
+
+    const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
+    expect(
+      cred.length,
+      'a real sk-ant- secret after form blanks must still fire — the blanks must not mask it',
+    ).toBeGreaterThan(0);
+
+    // The reported line must be the secret's line (9), never a form blank (3/4).
+    const withLine = cred.find(f => typeof f.line === 'number');
+    expect(withLine?.line, 'the reported line must point at the secret, not at a form blank').toBe(9);
+  });
+
   it('b14: real hardcoded secret in markdown still fires AST-CRED-003 (positive control for b13)', async () => {
     // Pair to b13: confirm the doc-context suppression does NOT swallow
     // genuine hardcoded secrets in markdown. A real sk-ant- prefix matches

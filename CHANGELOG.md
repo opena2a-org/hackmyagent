@@ -2,6 +2,18 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **AST-CRED-003 no longer reads a fill-in-the-blank form rule as a hardcoded secret.** A public incident-response contact-sheet template scored HIGH "Hardcoded Secret Detected" on the heading `### U.S. Secret Service (Cyber Fraud)`; the file contains no credential. Two signals combined: the word "Secret" produced the `CRED-HARVEST` evidence span, and the template's 47-underscore form blanks (`**Local Office**: _______…`) satisfied the credential-format gate. The gate's "high-entropy fallback" was a pure LENGTH test (`\b[A-Za-z0-9+=_]{40,}\b`) over a word-character class that includes `_`, so any run of 40+ underscores qualified as a high-entropy blob. The fallback now carries an entropy floor: a match must show at least 5 distinct characters. Vendor-prefixed credentials (`sk-`, `ghp_`, `AKIA…`, JWTs) are positively identified by their prefix and bypass the floor entirely, so a real key with a repetitive body still fires. Detection is unchanged for every realistic credential shape: a random token over even a 10-symbol alphabet has a ~2.6e-14 chance of showing fewer than 5 distinct characters across 40 positions.
+
+  The predicate moved to `src/types/credential-format.ts` and is now shared by all four call sites that previously duplicated or re-derived it — the AST-CRED-003 evidence gate, the AST-CRED-001 content gate, and the two taxonomy/corpus suppression gates — so the fix applies to every consumer rather than the one that reported the bug. The matcher also iterates candidates instead of testing only the first, so a form blank early in a document can no longer mask a real credential later in the same file.
+
+  The same defect class is fixed in `SEM-CRED-003` (`src/semantic/structural/credential-context.ts`), whose "Generic long token" and "Base64 credential" patterns matched a bare character-class run as a value and so treated `Password: ________________________________` in an instruction file as a CRITICAL credential.
+
+  Measured on the reporting file: 69/100 with one false HIGH, to 96/100 with none. The known-bad `test/hma/` playground is unchanged at 0/100 with 36 CRITICAL + 49 HIGH, and the adversarial corpus release-smoke stays 12/12.
+
 ## [0.25.1] - 2026-07-27
 
 ### Security

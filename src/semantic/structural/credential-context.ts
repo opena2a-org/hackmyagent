@@ -10,6 +10,7 @@
 
 import type { SemanticFinding, AnalysisFile } from '../types';
 import type { GitContext } from './git-context';
+import { isCredibleEntropyBlob } from '../../types/credential-format.js';
 
 /** Key names that indicate a secret value */
 const SECRET_KEY_PATTERN =
@@ -414,19 +415,31 @@ function detectCredentialsInInstructions(file: AnalysisFile): SemanticFinding[] 
   const findings: SemanticFinding[] = [];
   const lines = file.content.split('\n');
 
-  // Patterns that look like API keys/tokens (broader than core scanner's regex)
+  // Patterns that look like API keys/tokens (broader than core scanner's regex).
+  //
+  // `requiresEntropy` marks the two patterns whose VALUE group is a bare
+  // character-class run. Those admit a fill-in-the-blank form rule
+  // (`Password: ________________________________`) as a credential, which is
+  // the same defect class fixed in the AST-CRED entropy fallback. The captured
+  // value must clear the shared entropy floor before a finding is raised. The
+  // prefix and Bearer patterns carry their own positive marker, so they are
+  // accepted on shape alone.
   const broadCredentialPatterns = [
-    { name: 'API key prefix', pattern: /(?:sk-|pk-|rk-|ak-)[a-zA-Z0-9_-]{16,}/g },
-    { name: 'Bearer token', pattern: /Bearer\s+[a-zA-Z0-9._-]{20,}/g },
-    { name: 'Generic long token', pattern: /(?:token|key|secret|password)\s*[=:]\s*['"]?([a-zA-Z0-9_-]{32,})['"]?/gi },
-    { name: 'Base64 credential', pattern: /(?:password|secret|token|key)\s*[=:]\s*['"]?([A-Za-z0-9+/]{40,}={0,2})['"]?/gi },
+    { name: 'API key prefix', pattern: /(?:sk-|pk-|rk-|ak-)[a-zA-Z0-9_-]{16,}/g, requiresEntropy: false },
+    { name: 'Bearer token', pattern: /Bearer\s+[a-zA-Z0-9._-]{20,}/g, requiresEntropy: false },
+    { name: 'Generic long token', pattern: /(?:token|key|secret|password)\s*[=:]\s*['"]?([a-zA-Z0-9_-]{32,})['"]?/gi, requiresEntropy: true },
+    { name: 'Base64 credential', pattern: /(?:password|secret|token|key)\s*[=:]\s*['"]?([A-Za-z0-9+/]{40,}={0,2})['"]?/gi, requiresEntropy: true },
   ];
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    for (const { name, pattern } of broadCredentialPatterns) {
+    for (const { name, pattern, requiresEntropy } of broadCredentialPatterns) {
       pattern.lastIndex = 0;
-      if (pattern.test(line)) {
+      const match = pattern.exec(line);
+      const matched =
+        match !== null &&
+        (!requiresEntropy || isCredibleEntropyBlob(match[1] ?? match[0]));
+      if (matched) {
         findings.push({
           id: 'SEM-CRED-003',
           title: 'Credential in agent instructions',
