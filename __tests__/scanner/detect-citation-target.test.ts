@@ -82,8 +82,14 @@ describe('#293 detect fix citations name the scanned target', () => {
 
   it('names the actual directory in the running-agent rows, if any', () => {
     const out = detectFrom(elsewhere, target);
-    const rows = out.split('\n').filter((l) => l.includes('ungoverned') && l.includes('harden-soul'));
+    // Filtering on `harden-soul` made this loop silently empty the moment the
+    // row started citing a different command — a change to the citation VERB
+    // would have turned the assertion off rather than failing it. Anchor on
+    // what the row is, then assert the command inside it. (#303 changed the
+    // verb for subverted documents, which is how this was caught.)
+    const rows = out.split('\n').filter((l) => l.includes('ungoverned'));
     for (const row of rows) {
+      expect(row, `agent row cites no fix command at all:\n${row}`).toMatch(/harden-soul|scan-soul/);
       expect(row, `agent row cites the cwd:\n${row}`).toContain(target);
     }
   });
