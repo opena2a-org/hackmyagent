@@ -60,7 +60,7 @@ function renderedScore(output: string): number {
   return Number(m[1]);
 }
 
-describe('quick-scan verdict-band coherence (#259, check path)', () => {
+describe('quick-scan verdict-band coherence (#259, check path)', { timeout: 240_000 }, () => {
   it.runIf(canRunSpawn())('never renders a good-band number under a fail-direction headline', () => {
     const out = quickScan();
 

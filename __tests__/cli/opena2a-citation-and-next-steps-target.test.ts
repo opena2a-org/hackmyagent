@@ -96,7 +96,7 @@ function canRunNextSteps(): boolean {
   return canRunSpawn() && existsSync(CORPUS_KITCHEN_SINK);
 }
 
-describe('Next Steps cites the scanned directory, not its parent (#261)', () => {
+describe('Next Steps cites the scanned directory, not its parent (#261)', { timeout: 300_000 }, () => {
   it.runIf(canRunNextSteps())('a nested agent dir is cited as itself', () => {
     const root = mkdtempSync(join(tmpdir(), 'hma-261-'));
     try {

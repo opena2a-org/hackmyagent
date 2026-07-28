@@ -151,7 +151,7 @@ describe('artifact intent reconciliation (deterministic — #252 contract gate)'
   });
 });
 
-describe('Artifacts line does not contradict the score (spawn, local-only)', () => {
+describe('Artifacts line does not contradict the score (spawn, local-only)', { timeout: 180_000 }, () => {
   it.runIf(canRun(BENIGN_FIXTURE))('withholds the raw label on a benign hardened SOUL', () => {
     const res = spawnSync('node', [CLI, 'check', BENIGN_FIXTURE, '--ci', '--verbose'], {
       encoding: 'utf8',

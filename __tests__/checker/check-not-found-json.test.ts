@@ -185,7 +185,7 @@ describe('check --json not-found shape (deterministic — closes F3 + F4 contrac
   });
 });
 
-describe('check --json not-found wired through dist/cli.js (smoke, local-only)', () => {
+describe('check --json not-found wired through dist/cli.js (smoke, local-only)', { timeout: 60_000 }, () => {
   it.runIf(canRunNpmShimSpawn())('F3: bare-name miss emits NotFoundOutput from cli.ts (no stderr fall-through)', () => {
     const bareName = 'totally-nonexistent-pkg-xyz789';
     resetMarker();

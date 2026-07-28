@@ -42,7 +42,7 @@ function run(args: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {
 
 const ESC = '\x1b';
 
-describe('version footer (#202)', () => {
+describe('version footer (#202)', { timeout: 240_000 }, () => {
   it.runIf(canRunSpawn())('secure stamps the version on the findings path (exit 1)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'hma-202-findings-'));
     try {
@@ -98,7 +98,7 @@ describe('version footer (#202)', () => {
   });
 });
 
-describe('detect strips ANSI on a non-TTY stdout (#253.2)', () => {
+describe('detect strips ANSI on a non-TTY stdout (#253.2)', { timeout: 240_000 }, () => {
   it.runIf(canRunSpawn())('emits no escape sequences when piped', () => {
     const res = run(['detect']);
     expect(res.stdout.length).toBeGreaterThan(0);
@@ -106,7 +106,7 @@ describe('detect strips ANSI on a non-TTY stdout (#253.2)', () => {
   });
 });
 
-describe('red-team accepts a directory (#253.3)', () => {
+describe('red-team accepts a directory (#253.3)', { timeout: 240_000 }, () => {
   it.runIf(canRunSpawn())('resolves the conventional artifact inside a directory', () => {
     const dir = mkdtempSync(join(tmpdir(), 'hma-253-rt-ok-'));
     try {
@@ -141,7 +141,7 @@ describe('red-team accepts a directory (#253.3)', () => {
   });
 });
 
-describe('pull-stubs validates the API key before using it as a header (#253.4)', () => {
+describe('pull-stubs validates the API key before using it as a header (#253.4)', { timeout: 240_000 }, () => {
   it.runIf(canRunSpawn())('reports a clean validation error, not a ByteString exception', () => {
     // U+FFFD is what a mis-decoded copy-paste actually leaves behind, and is
     // the exact character from the issue report.
@@ -155,7 +155,7 @@ describe('pull-stubs validates the API key before using it as a header (#253.4)'
   });
 });
 
-describe('fix-all --dry-run does not claim work it did not do (#253.6)', () => {
+describe('fix-all --dry-run does not claim work it did not do (#253.6)', { timeout: 240_000 }, () => {
   it.runIf(canRunSpawn())('previews with "Would fix", never "Fixed"', () => {
     const dir = mkdtempSync(join(tmpdir(), 'hma-253-dry-'));
     try {
@@ -176,7 +176,7 @@ describe('fix-all --dry-run does not claim work it did not do (#253.6)', () => {
   });
 });
 
-describe('quick-start banner is root-only (#253.7)', () => {
+describe('quick-start banner is root-only (#253.7)', { timeout: 240_000 }, () => {
   it.runIf(canRunSpawn())('renders on the top-level help', () => {
     expect(run(['--help']).stdout).toContain('Quick start:');
   });

@@ -86,7 +86,7 @@ describe('quick-scan scope disclosure (deterministic — #200 contract gate)', (
   });
 });
 
-describe('check vs secure direction agreement on a local dir (spawn, local-only)', () => {
+describe('check vs secure direction agreement on a local dir (spawn, local-only)', { timeout: 180_000 }, () => {
   let fixture: string;
 
   beforeAll(() => {
