@@ -44,8 +44,9 @@ npm run build            # produces dist/cli.js — MUST rebuild per run
 Canonical real-world fixtures live at `/tmp/hma-real-world/`. They are
 intentionally representative of user-hit shapes. **Never run HMA against the
 canonical fixtures directly — copy first.** Some (e.g. `mega-mcp`) are
-already polluted from prior runs; replace from source-of-truth in this repo's
-`test/hma/` or re-pull if needed.
+already polluted from prior runs; replace from source-of-truth in the
+workspace playground at `~/workspace/opena2a-org/test/hma/` (see below — it is
+NOT in this repo) or re-pull if needed.
 
 ```bash
 rm -rf /tmp/walk-<N> && cp -r /tmp/hma-real-world/<fixture> /tmp/walk-<N>
@@ -63,17 +64,36 @@ and must pass before touching the per-surface scenarios.
 
 ### B1 — intentionally vulnerable baseline
 
-**Fixture.** `test/hma/` in this repo. Intentional: fake credentials in
+**Fixture.** `~/workspace/opena2a-org/test/hma/` — the **workspace-level**
+playground, NOT a path in this repo. A clean clone does not contain it, and
+`secure` on a missing directory exits 1 with `Error: Directory ... does not
+exist.`, which is indistinguishable by exit code alone from "found findings".
+Confirm the directory exists before grading. Intentional: fake credentials in
 `.env`, unsafe `mcp.json`, prompt-injection SOUL.md, unsigned skill, etc.
 
-**Command.** `node dist/cli.js secure test/hma/`
+**Command.** `node dist/cli.js secure ~/workspace/opena2a-org/test/hma/`
 
 **Grade.**
 - Score MUST be `0/100` or very close.
-- MUST fire at least 34 CRITICAL and 55 HIGH findings (the documented
-  baseline — see `test/hma/README.md` for the mapping of files to check IDs).
+- MUST fire at least 36 CRITICAL and 49 HIGH findings (see
+  `~/workspace/opena2a-org/test/hma/README.md` for the file → check-ID map).
 - Any regression where score exceeds 20 or CRITICALs drop below 30 means
   detection was narrowed — investigate which rule weakened.
+
+**Baseline provenance (measured 2026-07-28, same fixture, `--json`, counting
+`!passed`).** The floors above are the 0.25.x measurement, not a target:
+
+| version | score | critical | high | medium | low | total |
+|---|---|---|---|---|---|---|
+| 0.24.0 | 0 | 34 | 48 | 28 | 1 | 111 |
+| 0.25.0 | 0 | 36 | 49 | 28 | 2 | 115 |
+| 0.25.1 | 0 | 36 | 49 | 28 | 2 | 115 |
+
+The floors previously read "34 CRITICAL and 55 HIGH". The 55 was stale — no
+version in this table reaches it, and the trend across them is strictly
+upward, so it was an old baseline rather than evidence of narrowing. Re-measure
+and update this table on any release that moves the counts, and treat a
+*downward* move as a narrowing until proven otherwise.
 
 **Failure class.** CRITICAL. Detection-health regression on the canonical
 vulnerable fixture is the worst class of release bug — it ships a scanner
@@ -81,14 +101,28 @@ that does not scan.
 
 ### B2 — hardened SOUL.md via scan-soul
 
-**Command.** `node dist/cli.js scan-soul test/hma/SOUL.md`
+**Command.** `node dist/cli.js scan-soul ~/workspace/opena2a-org/test/hma/SOUL.md`
 
-**Grade.**
-- Score MUST be `100/100 HARDENED`.
-- Output MUST name the SOUL as compliant and list no findings.
+**Grade (measured 2026-07-28 on 0.25.1).**
+- Score is `74/100`, reported as `(scope: 4/9 domains) (score clamped from 100
+  to 74 -- 1 HIGH unaddressed)`.
+- Output MUST show the clamp and the scope, not a bare number.
 
-**Failure class.** CRITICAL. A known-hardened SOUL scoring below 100 means
-scoring is broken on the one canonical positive case.
+**This row previously demanded `100/100 HARDENED`, and that expectation was
+stale in two ways.** Both are current correct behaviour, not regressions:
+
+1. The fixture's SOUL.md declares `<!-- soul:profile=conversational -->`, so
+   only 4 of 9 domains are evaluated — Trust Hierarchy, Capability Boundaries,
+   Data Handling, Agentic Safety and Human Oversight are skipped. An
+   unqualified "100/100" over a self-declared 4/9 scope is precisely the
+   attacker-controllable-profile shape that #216 was filed against; the
+   scanner now discloses the scope instead of hiding it.
+2. The remaining HIGH triggers the #259 verdict-band clamp, so 100 becomes 74.
+
+**Failure class.** CRITICAL if the *scope and clamp disclosure disappears*, or
+if the score moves without a corresponding scanner change. A bare `100/100` on
+this fixture is now a FAILURE, not a pass — it would mean the profile scope or
+the clamp stopped being applied.
 
 ### B3 — empty directory
 
@@ -241,8 +275,8 @@ revert to generic prose.
 ### M2 — mega-mcp already-secure
 
 **Note.** `/tmp/hma-real-world/mega-mcp` is pre-polluted from prior runs.
-Restore from repo `test/hma/` pattern or skip until a clean source-of-truth
-is re-pinned.
+Restore from the `~/workspace/opena2a-org/test/hma/` pattern (workspace
+playground, not this repo) or skip until a clean source-of-truth is re-pinned.
 
 **Grade (when re-pinned).**
 - Score MUST be `80-100`.

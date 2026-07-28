@@ -2,6 +2,22 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **The release-smoke checklist certified releases against paths that do not exist.** `docs/testing/release-smoke.md` pointed §2, §3, §5 and §6 at `test/hma/`, which lives in the workspace playground (`~/workspace/opena2a-org/test/hma`) and has never been a path in this repo. From a clean clone every one of those steps hit `Error: Directory ... does not exist.` and exited **1** — the same exit code the checklist expects for "findings were found" — so they passed vacuously. §6.1's exit assertion, §5.6's telemetry-payload PII check and §3's score-sanity rule were all inert. The checklist now builds its own throwaway fixtures in a new §0.5 (`$BAD`, a synthetic credential at the scan root; `$CLEAN`, an empty tree), asserts they exist before use, and pairs every non-zero exit expectation with a content assertion so a missing target can no longer read as a pass.
+- **§6.3 expected the wrong exit code.** A not-found package under `check <pkg> --json` exits **1**, not 2 — verified identical on published 0.24.0, 0.25.0 and 0.25.1, and asserted by existing tests. The expectation was corrected; the code was not.
+- **`docs/release-playbook.md` B1/B2 baselines were stale.** B1 demanded "at least 34 CRITICAL and 55 HIGH" on the workspace fixture; the measured values are 36 CRITICAL / 49 HIGH, and no version in the 0.24.0–0.25.1 range reaches 55. The trend across those versions is strictly upward (34/48 → 36/49), so the 55 was an old baseline rather than a detection narrowing. B2 demanded `100/100 HARDENED` from `scan-soul` on that fixture's SOUL.md; the real value is `74/100`, scope 4/9 domains, clamped from 100 by one unaddressed HIGH — both the profile-scope disclosure (#216) and the verdict-band clamp (#259) are working as intended, and a bare `100/100` there is now documented as a **failure**, since it would mean one of them stopped firing. Both baselines are now recorded with the measurement date and a per-version provenance table.
+
+### Added
+
+- **`__tests__/docs/release-smoke-paths.test.ts`** — gates the checklist against its own rot: every repo-relative path it names must exist, the §0.5 fixtures the later steps depend on must actually be defined with a loud failure guard, the workspace-only `test/hma` spelling cannot return as a repo-relative target, and no step may read an exit code through a pipe (`cmd | head; echo $?` reports `head`'s status, not the CLI's). Each assertion was mutation-verified: reintroducing a piped exit read, deleting the fixture guard, and pointing a step at a nonexistent in-repo path each turn it red.
+
+### Known issues
+
+- **#297 — telemetry is dropped on every findings-bearing scan except `--json`.** The scan commands call `process.exit(1)` when they find something, which skips the Commander `postAction` hook that fires `tele.track()`; text, SARIF and HTML mode therefore emit no telemetry at all on a scan with findings, while `--json` (which sets `process.exitCode = 1` and returns) does. Usage telemetry is consequently biased toward clean scans, and `successFromExitCode(1) === true` — written precisely to record "findings detected, the command did its job" — is unreachable from the default text path. Found while repairing §5.6, whose broken target had been masking it with empty output. Not fixed here: swapping `process.exit(1)` for `process.exitCode = 1` interacts with the stdout-truncation behaviour noted at `src/cli.ts:116` and with open-handle drain, so it wants a deliberate decision. §5.6 targets `$CLEAN` until it lands, and a new §5.8 pins the one path that still reports.
+
 ## [0.25.1] - 2026-07-27
 
 ### Security
