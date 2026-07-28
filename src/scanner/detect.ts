@@ -13,6 +13,9 @@ import { execSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { SoulScanner } from '../soul';
+import type { SoulScanResult } from '../soul';
+import { clampScoreToVerdictBand, clampDisclosure, isFailDirection } from '../ui/verdict-band';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -77,7 +80,16 @@ export interface DetectResult {
     mcpServers: number;
     localLlms: number;
     aiConfigs: number;
+    /**
+     * Governance conformance for `scanDirectory`, after the #259
+     * verdict-band clamp. Identical to what `scan-soul` reports for the same
+     * directory whenever no fail-direction finding forced a clamp (#291).
+     */
     governanceScore: number;
+    /** Pre-clamp conformance — always exactly `scan-soul`'s score (#291). */
+    governanceRaw: number;
+    /** True when a fail-direction finding lowered `governanceScore`. */
+    governanceClamped: boolean;
     recoverablePoints: number;
   };
   agents: DetectedAgent[];
@@ -465,41 +477,56 @@ export function scanIdentity(targetDir: string): IdentitySummary {
 // Governance scoring
 // ---------------------------------------------------------------------------
 
-function calculateGovernanceScore(
-  result: Pick<DetectResult, 'agents' | 'mcpServers' | 'aiConfigs' | 'identity'>
-): { governanceScore: number; deductions: number } {
-  let score = 100;
-  let deductions = 0;
+/**
+ * Governance score for `detect` (#291).
+ *
+ * There is one Governance number in this tool and `scan-soul`'s control
+ * conformance computes it. `detect` consumes that number; it does not have
+ * a second opinion.
+ *
+ * The model this replaced scored *presence*, not substance. It started at
+ * 100 and deducted, and the only thing it asked of governance was whether a
+ * file existed — `detect()` marked every agent `governed` the moment a
+ * SOUL.md was on disk. So the two surfaces answered the same question about
+ * the same directory in opposite directions:
+ *
+ *   SOUL.md containing one line of prose   scan-soul   0/100   detect 100/100
+ *   a real CLAUDE.md (22/100 conformance)  scan-soul  22/100   detect 100/100
+ *   no governance file at all              scan-soul   0/100   detect  55/100
+ *
+ * Both numbers shipped under the label "Governance". That is a data-integrity
+ * defect rather than a display one, so the models are reconciled instead of
+ * one of them being renamed: conformance is authoritative because it measures
+ * whether controls actually exist, and because it is already the figure the
+ * Registry publishes (`publish.ts` -> `subReports.soul`). `detect` has no
+ * publish path, so reconciling it moves no already-published number.
+ *
+ * The deductions the old model applied — ungoverned agents, project-local
+ * critical MCP servers, credentials in AI configs — are NOT folded into the
+ * number. They are host- and project-inventory facts, they remain findings
+ * with their own severities, and they reach the meter the same way every
+ * other fail-direction finding does: through the #259 verdict-band clamp,
+ * which can only ever lower a score and always discloses the pre-clamp value.
+ * Averaging a substance measure against a presence measure would have
+ * produced a third number that means nothing.
+ */
+function reconciledGovernanceScore(
+  soul: SoulScanResult,
+  findings: readonly Finding[],
+): { governanceScore: number; governanceRaw: number; governanceClamped: boolean; deductions: number } {
+  const governanceRaw = soul.score;
+  const { score, clamped } = clampScoreToVerdictBand(governanceRaw, findings);
 
-  const ungoverned = result.agents.filter((a) => a.governanceStatus === 'no governance');
-  const projectMcpCritical = result.mcpServers.filter(
-    (s) => s.risk === 'critical' && s.source.includes('(project)')
-  );
-  const criticalConfigs = result.aiConfigs.filter((c) => c.risk === 'critical');
-
-  // Each ungoverned agent costs 15 pts (capped at 30)
-  const agentDeduction = Math.min(30, ungoverned.length * 15);
-  score -= agentDeduction;
-  deductions += agentDeduction;
-
-  // No SOUL.md when agents present: -15
-  if (result.identity.soulFiles === 0 && result.agents.length > 0) {
-    score -= 15;
-    deductions += 15;
-  }
-
-  // Each project-local critical MCP: -10 (capped at 30)
-  const mcpDeduction = Math.min(30, projectMcpCritical.length * 10);
-  score -= mcpDeduction;
-  deductions += mcpDeduction;
-
-  // Credentials in AI configs: -20
-  if (criticalConfigs.length > 0) {
-    score -= 20;
-    deductions += 20;
-  }
-
-  return { governanceScore: Math.max(0, score), deductions };
+  return {
+    governanceScore: score,
+    governanceRaw,
+    governanceClamped: clamped,
+    // Recoverable points are the conformance gap: the controls `harden-soul`
+    // would add. Measured against the raw score, because clearing the
+    // findings that caused a clamp is a separate path already spelled out in
+    // the findings themselves.
+    deductions: Math.max(0, 100 - governanceRaw),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -672,7 +699,16 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
   const lines: string[] = [];
   const { summary } = result;
   const score = summary.governanceScore;
-  const projected = Math.min(100, score + summary.recoverablePoints);
+  // Best achievable governance: every applicable control covered, and no
+  // fail-direction finding left to cap the result. Both routes are spelled
+  // out in the Path forward line below.
+  //
+  // NOT `score + recoverablePoints`. Recoverable points measure the
+  // conformance gap only, so a tree already at full conformance but capped
+  // by a CRITICAL projected 69 -> 69 and the path forward vanished — the one
+  // case where the operator most needs to be told that clearing the finding
+  // restores the number.
+  const projected = 100;
 
   // Severity counts
   const critical = result.findings.filter((f) => f.severity === 'critical').length;
@@ -714,7 +750,15 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
   }
   lines.push(`  ${verdictColor}${c.bold}${verdictText}${R}`);
   lines.push('');
-  lines.push(`  Governance  ${scoreMeter(score)}`);
+  // #291/#259: when a fail-direction finding floored the number, name the
+  // pre-clamp value. The clamp adds information; it must not look like the
+  // conformance measurement itself came out lower than `scan-soul` says.
+  const govClampNote = clampDisclosure({
+    rawScore: summary.governanceRaw,
+    score,
+    clamped: summary.governanceClamped,
+  });
+  lines.push(`  Governance  ${scoreMeter(score)}${govClampNote}`);
 
   // ── Findings ──────────────────────────────────────────────────────
   if (result.findings.length > 0) {
@@ -745,17 +789,36 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
       lines.push(`  ${c.dim}+ ${remaining} more (run with --verbose to see all)${R}`);
     }
 
-    // Path forward
-    if (projected > score) {
+  }
+
+  // ── Path forward ──────────────────────────────────────────────────
+  //
+  // Named after what actually moves the number (#291). The meter is
+  // governance conformance, so the recoverable points are missing controls
+  // and `harden-soul` is what recovers them — not "fixing N high", which is
+  // what this said while the score was finding-driven. Attributing 22 -> 100
+  // to clearing a HIGH finding was a promise the tool could not keep.
+  //
+  // Rendered outside the findings block: a directory can sit at 22/100
+  // conformance with nothing else wrong, and that must not be a dead end.
+  if (projected > score) {
+    const steps: string[] = [];
+    if (summary.governanceRaw < 100) steps.push('adding the missing governance controls');
+    // Gated on fail-direction, NOT on `governanceClamped`. The clamp only
+    // fires once the raw score is above the band floor, but a critical or
+    // high finding caps the achievable score at VERDICT_FAIL_CLAMP the whole
+    // time. Gating on the clamp promised "19 -> 100 by adding the missing
+    // governance controls" on a tree with an outstanding CRITICAL, where
+    // full conformance would have landed on 69, not 100.
+    if (isFailDirection(result.findings)) {
+      const sevParts: string[] = [];
+      if (critical > 0) sevParts.push(`${critical} critical`);
+      if (high > 0) sevParts.push(`${high} high`);
+      if (sevParts.length > 0) steps.push(`clearing ${sevParts.join(' + ')}`);
+    }
+    if (steps.length > 0) {
       lines.push('');
-      const recoveryParts: string[] = [];
-      if (critical > 0) recoveryParts.push(`${critical} critical`);
-      if (high > 0) recoveryParts.push(`${high} high`);
-      if (medium > 0 && recoveryParts.length === 0) recoveryParts.push(`${medium} medium`);
-      const desc = recoveryParts.length > 0
-        ? `by fixing ${recoveryParts.join(' + ')}`
-        : `by addressing ${result.findings.length} finding${result.findings.length !== 1 ? 's' : ''}`;
-      lines.push(`  ${c.cyan}${c.bold}Path forward:${R} ${c.cyan}${score} ${c.dim}->${R} ${c.green}${c.bold}${projected}${R} ${c.cyan}${desc}${R}`);
+      lines.push(`  ${c.cyan}${c.bold}Path forward:${R} ${c.cyan}${score} ${c.dim}->${R} ${c.green}${c.bold}${projected}${R} ${c.cyan}by ${steps.join(' and ')}${R}`);
     }
   }
 
@@ -909,8 +972,23 @@ export async function detect(options: DetectOptions): Promise<number> {
 
   identity.totalAgents = agents.length;
 
-  // Apply governance status from scanned identity
-  if (identity.soulFiles > 0 || identity.capabilityPolicies > 0) {
+  // The authoritative governance measurement (#291). Same scanner, same
+  // controls, same number `scan-soul` renders for this directory.
+  const soul = await new SoulScanner().scanSoul(dir);
+
+  // Apply governance status from the conformance result.
+  //
+  // This used to key on `identity.soulFiles > 0` — the mere presence of a
+  // file. A SOUL.md holding nothing but prose marked every agent `governed`
+  // and printed "All detected AI tools have governance in place" over a
+  // document with no controls in it. Presence is not governance.
+  //
+  // The bar is the soul model's own vocabulary: conformance `none` means one
+  // or more CRITICAL governance controls are missing, which is exactly the
+  // condition under which an agent is not meaningfully governed. Anything at
+  // `essential` or above has its critical controls covered.
+  const governanceEstablished = soul.conformance !== 'none';
+  if (governanceEstablished) {
     for (const agent of agents) {
       agent.governanceStatus = 'governed';
       agent.risk = 'low';
@@ -920,10 +998,6 @@ export async function detect(options: DetectOptions): Promise<number> {
   // Mark project-local MCP servers that have been scanned by HMA as lower risk
   // (a prior `hackmyagent secure` run passing is implicit approval)
   // For now, all project-local servers stay at their inferred risk level.
-
-  const { governanceScore, deductions } = calculateGovernanceScore({
-    agents, mcpServers, aiConfigs, identity,
-  });
 
   const ungoverned  = agents.filter((a) => a.governanceStatus === 'no governance').length;
   const localLlms   = agents.filter((a) => a.category === 'local-llm').length;
@@ -937,8 +1011,12 @@ export async function detect(options: DetectOptions): Promise<number> {
       mcpServers:       mcpServers.length,
       localLlms,
       aiConfigs:        aiConfigs.length,
-      governanceScore,
-      recoverablePoints: deductions,
+      // Filled in below: the clamp reads the findings, so the findings have
+      // to exist first.
+      governanceScore:   0,
+      governanceRaw:     0,
+      governanceClamped: false,
+      recoverablePoints: 0,
     },
     agents,
     mcpServers,
@@ -948,6 +1026,13 @@ export async function detect(options: DetectOptions): Promise<number> {
   };
 
   result.findings = generateFindings(result);
+
+  const { governanceScore, governanceRaw, governanceClamped, deductions } =
+    reconciledGovernanceScore(soul, result.findings);
+  result.summary.governanceScore   = governanceScore;
+  result.summary.governanceRaw     = governanceRaw;
+  result.summary.governanceClamped = governanceClamped;
+  result.summary.recoverablePoints = deductions;
 
   if (options.format === 'json') {
     process.stdout.write(JSON.stringify(result, null, 2) + '\n');
