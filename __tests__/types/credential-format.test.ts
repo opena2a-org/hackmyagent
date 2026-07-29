@@ -374,22 +374,45 @@ describe('credential-format entropy floor', () => {
       });
     }
 
+    it('rejects the degenerate segment shapes, exactly as main rejects them', () => {
+      // Each segment must be NON-EMPTY (`[A-Za-z0-9_-]+` in main's regex). These
+      // are pinned explicitly rather than left to the randomised sweep below:
+      // relaxing the header check to allow an empty segment survived a 300-case
+      // random parity test, because the shapes are too rare to be drawn
+      // reliably. An edge case worth asserting is worth asserting by name.
+      for (const text of ['eyJ.abc.def', 'eyJa..def', 'eyJa.bcd.', 'eyJ..', 'eyJabc.def', 'eyJ']) {
+        expect(findJwtMatch(text, false), `must not match: ${text}`).toBeUndefined();
+        expect(MAIN_JWT_RE.test(text), `main must also reject: ${text}`).toBe(false);
+      }
+      expect(findJwtMatch('eyJa.bcd.ef', false)?.value, 'the minimal real shape').toBe('eyJa.bcd.ef');
+    });
+
     it('agrees with main\'s regex on leftmost match over randomised inputs', () => {
       // Existence AND position, because the scan replaced a regex and the whole
       // point is that nothing about what it accepts changed.
+      //
+      // The generator uses `Math.imul` and the HIGH bits. Written as
+      // `(state * 1103515245 + 12345) & 0x7fffffff` with `% alphabet.length`,
+      // the product exceeds 2**53 and loses its low bits, so `% 10` yielded
+      // only EVEN indices — `.` was never emitted, no input ever contained a
+      // JWT, and 300 cases compared undefined to undefined. Mutation caught it.
       const alphabet = ['eyJ', '.', '-', '_', 'a', 'Z', '9', ' ', 'eyJ', '..'];
+      let drew = 0;
       for (let seed = 1; seed <= 300; seed++) {
         let text = '';
-        let state = seed;
+        let state = seed >>> 0;
         for (let i = 0; i < 40; i++) {
-          state = (state * 1103515245 + 12345) & 0x7fffffff;
-          text += alphabet[state % alphabet.length];
+          state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+          text += alphabet[Math.floor((state / 0x100000000) * alphabet.length)];
         }
         const mine = findJwtMatch(text, false);
         const theirs = MAIN_JWT_RE.exec(text);
+        if (theirs) drew++;
         expect(mine?.index, `seed ${seed}: index on ${JSON.stringify(text)}`).toBe(theirs?.index);
         expect(mine?.value, `seed ${seed}: value on ${JSON.stringify(text)}`).toBe(theirs?.[0]);
       }
+      // Non-vacuity: a sweep that never generates a JWT proves nothing.
+      expect(drew, 'the randomised sweep must actually produce JWTs to compare').toBeGreaterThan(20);
     });
 
     it('anchors only where the anchored gate asks it to', () => {
@@ -541,6 +564,29 @@ describe('credential-format entropy floor', () => {
         expect(elapsed, `1 MB ${label} took ${elapsed.toFixed(0)} ms`).toBeLessThan(2000);
       });
     }
+
+    it('does not pay asymptotically more for PERIODIC filler than for uniform filler', () => {
+      // Guards the whole-run periodicity short circuit. Without it every window
+      // of `'ab'x500k` is judged separately — 121 ms measured against 7 ms —
+      // and no absolute threshold loose enough to be stable on CI can see that.
+      // A RATIO can: both scans are the same size, in the same process, so
+      // machine load cancels out. Measured ratio is ~1.2 with the short circuit
+      // and ~14 without, so 5 is a wide margin either way.
+      const uniform = 'a'.repeat(1024 * 1024);
+      const periodic = 'ab'.repeat((1024 * 1024) / 2);
+      const time = (payload: string) => {
+        hasCredentialFormat(payload); // warm
+        const started = performance.now();
+        hasCredentialFormat(payload);
+        return performance.now() - started;
+      };
+      const uniformMs = Math.max(time(uniform), 1);
+      const periodicMs = time(periodic);
+      expect(
+        periodicMs / uniformMs,
+        `periodic filler cost ${periodicMs.toFixed(0)} ms vs ${uniformMs.toFixed(0)} ms uniform`,
+      ).toBeLessThan(5);
+    });
 
     it('finds a VENDOR key buried behind a megabyte of filler', () => {
       const filler = ('a'.repeat(40) + '=').repeat(Math.floor((1024 * 1024) / 41));
