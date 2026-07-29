@@ -180,6 +180,51 @@ describe('CredentialContextAnalyzer', () => {
         expect(findings.length, 'the blank must not mask the real secret below it').toBe(1);
         expect(findings[0].line, 'and the reported line must be the secret, not the blank').toBe(2);
       });
+
+      // THIRD adversarial pass, MEDIUM. The first fix reused the AST path's
+      // STRUCTURAL floor (`isCredibleEntropyBlob`) here. Those rules were
+      // written for anonymous 40+ character runs and are far too blunt for an
+      // 8-character config value: a short repeated unit and a dominant
+      // character are both perfectly ordinary in a WEAK key, and a weak key is
+      // still a key. These two are real secrets a scanner exists to find, and
+      // both were being dropped silently.
+      //
+      // Asserted through the ANALYZER, not through `isVisualFiller`. A helper-
+      // level assertion on this exact fix stayed green once already this
+      // branch, when the consumer was reverted to a stale list and only
+      // mutation caught it. The leak lives in the consumer.
+      it('flags weak-but-real secrets that the structural floor dropped', () => {
+        const weakButReal: Array<[string, string]> = [
+          ['a repeated-unit password', 'Ab12'.repeat(6)],
+          ['base64 of an all-zero AES-256 key', 'A'.repeat(43) + '='],
+        ];
+        for (const [label, value] of weakButReal) {
+          const findings = analyzer
+            .analyze([makeFile('deploy/values.yaml', `db_password: ${value}\n`)])
+            .filter((f) => f.id === 'SEM-CRED-002');
+          expect(findings.length, `${label} (${value}) must still be reported`).toBeGreaterThan(0);
+        }
+      });
+
+      it('rejects drawn blanks of every filler character, not just underscores', () => {
+        // The rule that replaced the structural floor keys on the filler
+        // CHARACTERS, so it has to cover the whole family a document draws
+        // with — otherwise the reported complaint just moves one character over.
+        const blanks: Array<[string, string]> = [
+          ['underscores', '_'.repeat(47)],
+          ['dashes', '-'.repeat(40)],
+          ['dots', '.'.repeat(30)],
+          ['asterisks', '*'.repeat(24)],
+          ['a blank with one stray mark', '_'.repeat(46) + '1'],
+          ['a redaction bar', 'x'.repeat(32)],
+        ];
+        for (const [label, value] of blanks) {
+          const findings = analyzer
+            .analyze([makeFile('deploy/values.yaml', `db_password: ${value}\n`)])
+            .filter((f) => f.id === 'SEM-CRED-002');
+          expect(findings, `${label} is a drawn blank, not a secret`).toHaveLength(0);
+        }
+      });
     });
   });
 

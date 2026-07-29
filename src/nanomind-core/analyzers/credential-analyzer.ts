@@ -20,7 +20,7 @@ import {
   findCredentialFormatMatch,
   hasCredentialFormat,
   hasAnyCredentialCandidate,
-  anchoredVendorAlternation,
+  hasAnchoredVendorCredential,
   matchVendorPrefix,
 } from '../../types/credential-format.js';
 import { isCorpusPath, isIntegrityManifestPath } from '../../hardening/path-context.js';
@@ -750,20 +750,23 @@ function isSecurityTaxonomyDocument(content: string): boolean {
  * outside this list are hash-indistinguishable; the verified-manifest
  * content gate is the load-bearing defense in that case.
  */
-// Built from the SHARED vendor list, through the SHARED anchoring helper, so
-// this gate and the credential-format matcher cannot drift apart. Two
-// hand-maintained copies is how `hf_`, `ghs_`, `ghu_`, `glpat-` and `npm_` came
-// to be vendor-known here while the credential-format matcher treated them as
-// anonymous blobs subject to the entropy fallback.
+// Delegated to the SHARED predicate, so this gate and the credential-format
+// matcher cannot drift apart. Two hand-maintained copies is how `hf_`, `ghs_`,
+// `ghu_`, `glpat-` and `npm_` came to be vendor-known here while the
+// credential-format matcher treated them as anonymous blobs subject to the
+// entropy fallback.
 //
-// Anchored, matching `origin/main`'s behaviour exactly. This is a POSITIVE
-// gate whose result blocks suppression, so anchoring is the narrower (and here,
-// unchanged) choice; the negated vetoes deliberately use the unanchored
-// `hasAnyCredentialCandidate` instead. See `anchoredVendorAlternation`.
-const VENDOR_PREFIX_CONTENT_RE = new RegExp(anchoredVendorAlternation());
-
+// Composing the pattern locally is what let them drift a SECOND time: this gate
+// was built from the vendor alternation alone, and when the JWT alternative
+// inside that alternation acquired a 256-character header bound as a DoS
+// defense, the bound silently landed here too. This is the only gate that LIFTS
+// the corpus and integrity-manifest carve-outs, so a DPoP or `x5c` JWT stopped
+// matching and a live token planted in a corpus path was fully suppressed —
+// `AST-CRED-002` CRITICAL included. `hasAnchoredVendorCredential` owns both
+// halves (alternation + unbounded JWT scan) so there is nothing left to compose
+// incorrectly here.
 function hasVendorPrefixCredential(content: string): boolean {
-  return VENDOR_PREFIX_CONTENT_RE.test(content);
+  return hasAnchoredVendorCredential(content);
 }
 
 /**

@@ -18,58 +18,49 @@
  * incident-response contact-sheet template whose only "secret" was the heading
  * "U.S. Secret Service (Cyber Fraud)" sitting next to two form blanks.
  *
- * See `isCredibleEntropyBlob` for the rule that separates the two classes and
- * for the two weaker rules that were tried and rejected.
+ * See `isCredibleEntropyBlob` for the rule that separates the two classes, and
+ * `findCredibleWindowOffset` for why that rule is applied to a sliding WINDOW
+ * rather than to the whole greedy run.
  *
  * Bare-keyword mentions ("credentials", "API key", "token") in descriptive text
  * do NOT count as either signal. Placeholder / env-var reference values
  * (`$OPENAI_API_KEY`, `${OPENAI_API_KEY}`, `<YOUR_KEY>`) fail the fallback
  * because the leading `$`/`<` are not word characters.
+ *
+ * ## Why there is no length bound and no work budget in this file
+ *
+ * Three consecutive adversarial passes killed three designs here, and all three
+ * failed the same way: a bound added to stop a quadratic ALSO narrowed a gate
+ * that lifts suppression, so a real credential went undetected and the score
+ * ROSE. A bounded JWT header silenced a live token planted in a corpus path; a
+ * character budget on the filler walk lost an anonymous secret behind 12 KB of
+ * padding. Both were invisible to the whole test suite because neither
+ * `test/hma` nor the adversarial corpus contains an oversized JWT, an anonymous
+ * high-entropy secret, or a long padded run.
+ *
+ * So the performance defense here is LINEARITY, never truncation:
+ *
+ *   - the JWT is matched by a linear scan (`findJwtMatch`), not by a regex, so
+ *     it needs no segment bound;
+ *   - each blob run is judged exactly once by a sliding window, so the walk
+ *     needs no resume and therefore no budget.
+ *
+ * If a future change to this file reaches for a cap, that is the signal to
+ * check which negated or suppression-lifting gate the cap just narrowed.
  */
+
+/* ------------------------------------------------------------------ *
+ * Vendor prefixes
+ * ------------------------------------------------------------------ */
 
 /**
- * Longest run of base64url characters accepted for a JWT's HEADER segment
- * before the first `.`.
+ * Every JWT begins with the base64url encoding of `{"`.
  *
- * This bound is a denial-of-service defense, not a format detail. `eyJ` is
- * followed by `[A-Za-z0-9_-]+`, a class that contains `-`, so on adversarial
- * filler (`eyJ-eyJ-eyJ-…`) the segment run extends to the end of the file. The
- * engine then walks back looking for a `.` that is not there, at every one of
- * the O(n) `eyJ` offsets: quadratic. Measured on `'_'x47 + '-' + 'eyJ-'xN`
- * before this bound existed: 58 ms at 16 KB, 808 ms at 64 KB, 13.5 s at 256 KB,
- * ~215 s extrapolated at the 1 MB scanner cap. `main` was 0.0 ms at every size
- * only because it stopped at the first candidate and never reached the filler.
- *
- * A real JWT header encodes a small JSON object (`{"alg":"RS256","typ":"JWT"}`
- * and friends), so 256 base64url characters is roughly 190 bytes of header —
- * far more than any hardcoded token carries. Segments after the first dot use
- * the larger bound below, because reaching them already required a literal
- * `eyJ<seg>.`, which adversarial filler does not produce by accident.
+ * Declared here rather than beside `findJwtMatch` because
+ * `VENDOR_PREFIX_MATCHERS` below needs it at module-initialisation time, and a
+ * `const` is not hoisted.
  */
-const MAX_JWT_HEADER_CHARS = 256;
-
-/** Bound for the JWT payload and signature segments. See above. */
-const MAX_JWT_TAIL_CHARS = 4096;
-
-/**
- * The JWT alternative, written so it cannot backtrack.
- *
- * `(?=(?<name>X))\k<name>` is the standard emulation of an atomic group: the
- * lookahead matches `X` greedily, and a lookahead is never re-entered once it
- * has succeeded, so the backreference consumes exactly that run and a
- * subsequent failure discards the whole alternative instead of walking back
- * through it one character at a time.
- *
- * NAMED, not numbered, groups: this string is spliced into more than one
- * alternation (`buildCredentialFormatRegex`, `VENDOR_PREFIX_ONLY_RE`,
- * `VENDOR_PREFIX_CONTENT_RE` in the credential analyzer) at different offsets,
- * so `\1` would refer to a different group in each one. Each name appears once
- * per built regex; do not splice this array into a single regex twice.
- */
-const JWT_ALTERNATIVE =
-  `eyJ(?=(?<jwtHead>[A-Za-z0-9_-]{1,${MAX_JWT_HEADER_CHARS}}))\\k<jwtHead>\\.` +
-  `(?=(?<jwtBody>[A-Za-z0-9_-]{1,${MAX_JWT_TAIL_CHARS}}))\\k<jwtBody>\\.` +
-  `[A-Za-z0-9_-]{1,${MAX_JWT_TAIL_CHARS}}`;
+const JWT_PREFIX = 'eyJ';
 
 /**
  * Vendor-prefixed credential shapes, in one place.
@@ -81,9 +72,14 @@ const JWT_ALTERNATIVE =
  * `hf_`, `ghs_`, `ghu_`, `glpat-` and `npm_` ended up subject to the entropy
  * fallback in one code path and exempt in the next.
  *
- * Alternatives are NOT anchored here. Anchoring is applied once, centrally, by
- * `anchoredVendorAlternation()` — see the comment there for why every consumer
- * must use it.
+ * The JWT is deliberately NOT here — it is the one shape whose segments are
+ * unbounded, and expressing it as a regex alternative is what made every
+ * consumer either quadratic or truncating. `findJwtMatch` covers it for all of
+ * them; `hasAnchoredVendorCredential`, `hasAnyCredentialCandidate` and
+ * `findCredentialFormatMatch` each call both.
+ *
+ * Alternatives are NOT anchored here. See `anchoredVendorAlternation` for who
+ * anchors and who deliberately does not.
  */
 export const VENDOR_PREFIX_ALTERNATIVES = [
   'sk-ant-api[0-9][a-zA-Z0-9_-]{16,}',
@@ -102,13 +98,19 @@ export const VENDOR_PREFIX_ALTERNATIVES = [
   'AKIA[0-9A-Z]{16}',
   'AIza[0-9A-Za-z_-]{35}',
   'xox[abprs]-[0-9A-Za-z-]{10,}',
-  // SendGrid keys are `SG.<key id>.<secret>` — BOTH dots are required.
-  // Written as a single-dot prefix it matched any dotted identifier whose
-  // namespace happened to end in `SG`, which is how `MSG.INCIDENT_ESCALATION_QUEUE`
-  // and `using SG.Configuration_Providers_Internal;` became "credentials". The
-  // second segment is what makes this a key rather than a namespace.
-  'SG\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}',
-  JWT_ALTERNATIVE,
+  // SendGrid keys are `SG.<22-char key id>.<43-char secret>`, both segments at
+  // FIXED lengths. Written as `SG\.<16,>\.<16,>` this matched any dotted
+  // identifier with two long segments, so
+  // `MSG.INCIDENT_ESCALATION_QUEUE.HIGH_PRIORITY_ROUTE` was positively
+  // identified as a credential on a benign taxonomy document — the very
+  // false-positive class this module exists to remove, re-created one gate
+  // over. `origin/main` has no `SG.` at all and is clean on it.
+  //
+  // The fixed lengths are what separate a key from a namespace, and they do it
+  // in the UNANCHORED veto too, which is where the anchor could not reach. A
+  // real SendGrid secret is 43 characters, so it also clears the 40-character
+  // blob fallback on its own; this alternative is what names it.
+  'SG\\.[A-Za-z0-9_-]{22}\\.[A-Za-z0-9_-]{43}',
 ];
 
 /**
@@ -118,34 +120,39 @@ export const VENDOR_PREFIX_ALTERNATIVES = [
  * NOT `\b`. `\b` counts `_` as a word character, and the whole point of this
  * unit is that documents are full of underscore filler — `'_'x38 +
  * 'sk-ant-api03-<real key>'` has no word boundary before `sk`, so `\b` silently
- * dropped a real credential glued to a form blank. That case has a regression
- * test and it caught this exact mistake.
- *
- * `(?<![A-Za-z0-9])` blocks what the false positives actually looked like — a
- * prefix continuing an alphanumeric identifier (`MSG.…`, `MYghp_…`) — while
- * still matching a credential that follows punctuation or filler.
+ * dropped a real credential glued to a form blank. `origin/main` uses `\b` here
+ * and has that bug; `(?<![A-Za-z0-9])` matches everywhere `\b` does and also
+ * after filler, so it is strictly wider than main.
  */
 const VENDOR_PREFIX_LEFT_ANCHOR = '(?<![A-Za-z0-9])';
 
+/** The vendor alternation, unanchored. */
+export function vendorAlternation(): string {
+  return `(?:${VENDOR_PREFIX_ALTERNATIVES.join('|')})`;
+}
+
 /**
- * The vendor alternation with its left anchor, built once.
+ * The vendor alternation with its left anchor.
  *
- * Without central anchoring the consumers disagreed: only the analyzer's
- * content gate was anchored, so `MSG.INCIDENT_ESCALATION_QUEUE` was a
- * credential to the detection path and not to the suppression gate. Anchoring
- * here makes agreement a property of the module rather than a per-call-site
- * convention.
+ * ANCHORING IS CHOSEN BY GATE POLARITY, NOT APPLIED UNIFORMLY, and the choice
+ * has been wrong in both directions on this branch:
  *
- * ANCHORING IS CHOSEN BY GATE POLARITY, NOT APPLIED UNIFORMLY. Use this in
- * POSITIVE gates, where matching means "a credential is present" and a
- * narrower predicate means fewer false positives. Do NOT use it in a NEGATED
- * gate: the suppression vetoes read `!predicate(content)`, so narrowing the
- * predicate makes the carve-out fire MORE often and turns every value the
- * anchor rejects into a place to hide a secret. Those callers take
- * `VENDOR_PREFIX_ALTERNATIVES` raw and stay deliberately trigger-happy.
+ *   - In a NEGATED gate (`!predicate(content)`), narrowing the predicate makes
+ *     the suppression carve-out fire MORE often, so every value the anchor
+ *     rejects becomes a place to hide a secret. Those callers take
+ *     `vendorAlternation()` and stay deliberately trigger-happy.
+ *
+ *   - In the primary DETECTION path, anchoring is a pure narrowing with no
+ *     remaining benefit: it dropped `tokenghp_…`, `v1AKIA…` and
+ *     `prefixsk-ant-…`, all of which `origin/main` detects, while the false
+ *     positives it was added for (`MSG.…`) are removed by the SendGrid fixed
+ *     lengths above. So detection uses `vendorAlternation()` and matches main.
+ *
+ * What is left is `hasAnchoredVendorCredential`, the one gate `origin/main`
+ * anchors: a POSITIVE gate whose result BLOCKS suppression.
  */
 export function anchoredVendorAlternation(): string {
-  return `${VENDOR_PREFIX_LEFT_ANCHOR}(?:${VENDOR_PREFIX_ALTERNATIVES.join('|')})`;
+  return `${VENDOR_PREFIX_LEFT_ANCHOR}${vendorAlternation()}`;
 }
 
 /**
@@ -164,33 +171,40 @@ export function anchoredVendorAlternation(): string {
  * so `xox[abprs]-` preserves the full `xoxb-` rather than a bare `xox` — the
  * evidence line has to stay recognisable as a Slack BOT token to be useful.
  */
-const VENDOR_PREFIX_MATCHERS: readonly RegExp[] = VENDOR_PREFIX_ALTERNATIVES.map(alt => {
-  const isQuantifier = (c: string | undefined) => c === '{' || c === '+' || c === '*' || c === '?';
-  let head = '';
-  let i = 0;
-  while (i < alt.length) {
-    const ch = alt[i];
-    if (ch === '\\') {
-      // An escaped metacharacter is a literal. Keep the escape as written.
-      if (i + 1 >= alt.length || isQuantifier(alt[i + 2])) break;
-      head += alt.slice(i, i + 2);
-      i += 2;
-      continue;
+const VENDOR_PREFIX_MATCHERS: readonly RegExp[] = [
+  ...VENDOR_PREFIX_ALTERNATIVES.map(alt => {
+    const isQuantifier = (c: string | undefined) => c === '{' || c === '+' || c === '*' || c === '?';
+    let head = '';
+    let i = 0;
+    while (i < alt.length) {
+      const ch = alt[i];
+      if (ch === '\\') {
+        // An escaped metacharacter is a literal. Keep the escape as written.
+        if (i + 1 >= alt.length || isQuantifier(alt[i + 2])) break;
+        head += alt.slice(i, i + 2);
+        i += 2;
+        continue;
+      }
+      if (ch === '[') {
+        const close = alt.indexOf(']', i + 1);
+        if (close === -1 || isQuantifier(alt[close + 1])) break;
+        head += alt.slice(i, close + 1);
+        i = close + 1;
+        continue;
+      }
+      if ('(){}+*?|^$.'.includes(ch)) break;
+      if (isQuantifier(alt[i + 1])) break;
+      head += ch.replace(/[-]/, '\\$&');
+      i++;
     }
-    if (ch === '[') {
-      const close = alt.indexOf(']', i + 1);
-      if (close === -1 || isQuantifier(alt[close + 1])) break;
-      head += alt.slice(i, close + 1);
-      i = close + 1;
-      continue;
-    }
-    if ('(){}+*?|^$.'.includes(ch)) break;
-    if (isQuantifier(alt[i + 1])) break;
-    head += ch.replace(/[-]/, '\\$&');
-    i++;
-  }
-  return new RegExp(`^${head}`);
-});
+    return new RegExp(`^${head}`);
+  }),
+  // The JWT is detected by scan rather than by an alternative, so its prefix
+  // has to be added here explicitly. Leaving it out would send every detected
+  // JWT down the unknown-shape masking branch, which prints the first 8
+  // characters — 5 bytes of live header past `eyJ`.
+  new RegExp(`^${JWT_PREFIX}`),
+];
 
 /**
  * The longest recognisable vendor prefix of `value`, or undefined when the
@@ -205,8 +219,113 @@ export function matchVendorPrefix(value: string): string | undefined {
   return longest;
 }
 
+/* ------------------------------------------------------------------ *
+ * JWT: a linear scan, not a regex alternative
+ * ------------------------------------------------------------------ */
+
+const CHAR_DOT = 46;
+const CHAR_e = 101;
+const CHAR_y = 121;
+const CHAR_J = 74;
+
+/** `[A-Za-z0-9_-]`, the base64url alphabet a JWT segment is drawn from. */
+function isBase64UrlCode(c: number): boolean {
+  return (
+    (c >= 48 && c <= 57) || // 0-9
+    (c >= 65 && c <= 90) || // A-Z
+    (c >= 97 && c <= 122) || // a-z
+    c === 45 || // -
+    c === 95 // _
+  );
+}
+
+/** `[A-Za-z0-9]`, the class the vendor left anchor forbids. */
+function isAlphanumericCode(c: number): boolean {
+  return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+}
+
+/**
+ * The leftmost `eyJ<header>.<payload>.<signature>` in `text`, with UNBOUNDED
+ * segments — identical in what it accepts to `origin/main`'s
+ * `eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`, and linear rather than
+ * quadratic in what it costs.
+ *
+ * Why this is not a regex. The segment class contains `-`, so on adversarial
+ * filler (`eyJ-eyJ-eyJ-…`) the greedy run reaches end-of-file and the engine
+ * then walks back looking for a `.` that is not there — at every one of the
+ * O(n) `eyJ` offsets. Measured: 13.5 s at 256 KB, ~215 s extrapolated at the
+ * 1 MB scanner cap.
+ *
+ * The previous fix bounded the header at 256 characters, and that bound leaked
+ * into `VENDOR_PREFIX_CONTENT_RE` — the single gate that LIFTS the corpus and
+ * integrity-manifest carve-outs. A DPoP proof (550-character header carrying an
+ * embedded JWK) or an `x5c` certificate-chain header stopped matching, so a
+ * live token planted in a corpus path was fully suppressed, `AST-CRED-002`
+ * CRITICAL included. Truncation is not available to this predicate. Linearity
+ * is.
+ *
+ * The scan walks maximal base64url runs. Everything after the header's
+ * terminating `.` is a property of the RUN, not of the `eyJ` inside it, so the
+ * payload and signature are resolved once per run rather than once per `eyJ` —
+ * that is what removes the quadratic without removing any input.
+ */
+export function findJwtMatch(
+  text: string,
+  anchored: boolean,
+): { value: string; index: number } | undefined {
+  const n = text.length;
+  let i = 0;
+  while (i < n) {
+    if (!isBase64UrlCode(text.charCodeAt(i))) {
+      i++;
+      continue;
+    }
+    // [i, runEnd) is a maximal base64url run — a candidate header segment.
+    let runEnd = i;
+    while (runEnd < n && isBase64UrlCode(text.charCodeAt(runEnd))) runEnd++;
+
+    if (runEnd < n && text.charCodeAt(runEnd) === CHAR_DOT) {
+      let payloadEnd = runEnd + 1;
+      while (payloadEnd < n && isBase64UrlCode(text.charCodeAt(payloadEnd))) payloadEnd++;
+      if (payloadEnd > runEnd + 1 && payloadEnd < n && text.charCodeAt(payloadEnd) === CHAR_DOT) {
+        let signatureEnd = payloadEnd + 1;
+        while (signatureEnd < n && isBase64UrlCode(text.charCodeAt(signatureEnd))) signatureEnd++;
+        if (signatureEnd > payloadEnd + 1) {
+          // Leftmost `eyJ` in this run that still leaves a non-empty header
+          // segment. Each is checked against the anchor separately: `_` and `-`
+          // are base64url characters but not alphanumeric, so an `eyJ` in the
+          // middle of a run can clear an anchor that the run's first one fails.
+          for (let p = i; p + JWT_PREFIX.length < runEnd; p++) {
+            if (
+              text.charCodeAt(p) !== CHAR_e ||
+              text.charCodeAt(p + 1) !== CHAR_y ||
+              text.charCodeAt(p + 2) !== CHAR_J
+            ) {
+              continue;
+            }
+            if (anchored && p > 0 && isAlphanumericCode(text.charCodeAt(p - 1))) continue;
+            return { value: text.slice(p, signatureEnd), index: p };
+          }
+        }
+      }
+    }
+    i = runEnd;
+  }
+  return undefined;
+}
+
+/* ------------------------------------------------------------------ *
+ * The high-entropy fallback
+ * ------------------------------------------------------------------ */
+
 /** High-entropy fallback: 40+ word characters, word-boundary anchored. */
 const ENTROPY_BLOB_ALTERNATIVE = '\\b[A-Za-z0-9+=_]{40,}\\b';
+
+/**
+ * Width of the window the filler rules judge. Also the fallback's own length
+ * floor, so a window is exactly the smallest run that could be a credential.
+ */
+const CREDENTIAL_WINDOW_CHARS = 40;
 
 /**
  * Longest period treated as filler, and the number of times that unit must
@@ -221,53 +340,61 @@ const MAX_FILLER_PERIOD = 4;
 const MIN_FILLER_REPEATS = 3;
 
 /**
- * Share of the run a single character may occupy before the run is filler.
+ * Share of the span a single character may occupy before the span is filler.
  *
  * A form blank with one stray mark (`'_'x46 + '1'`) is aperiodic, so the period
- * rule alone does not reach it — that is the "one character from failing" case.
- * At 40+ characters a genuine secret cannot be 90% one symbol: even a base-4
- * secret sits near 25% per symbol, and the probability of a random 40-character
- * draw reaching 90% is negligible.
+ * rule alone does not reach it. At 40 characters a genuine secret cannot be 90%
+ * one symbol: even a base-4 secret sits near 25% per symbol, and the
+ * probability of a random 40-character draw reaching 90% is negligible.
  */
 const MAX_DOMINANT_CHAR_SHARE = 0.9;
 
 /**
- * Smallest p such that `value[i] === value[i - p]` for every i >= p, computed
- * from the KMP failure function's longest proper border. A string with no
- * border has period equal to its own length, i.e. it is aperiodic.
+ * True when `[start, start+len)` is some unit of at most `MAX_FILLER_PERIOD`
+ * characters repeated at least `MIN_FILLER_REPEATS` times.
+ *
+ * Tests each period directly instead of computing the minimal period, which is
+ * the same predicate (a span with minimal period m <= 4 and length >= 3m is
+ * exactly a span with SOME period p <= 4 and length >= 3p) without the
+ * per-window array allocation that made a sliding judgement unaffordable.
  */
-function minimalPeriod(value: string): number {
-  const n = value.length;
-  const failure = new Int32Array(n);
-  let k = 0;
-  for (let i = 1; i < n; i++) {
-    while (k > 0 && value[i] !== value[k]) k = failure[k - 1];
-    if (value[i] === value[k]) k++;
-    failure[i] = k;
+function hasFillerPeriod(s: string, start: number, len: number): boolean {
+  for (let p = 1; p <= MAX_FILLER_PERIOD; p++) {
+    if (len < p * MIN_FILLER_REPEATS) break;
+    let periodic = true;
+    for (let i = p; i < len; i++) {
+      if (s.charCodeAt(start + i) !== s.charCodeAt(start + i - p)) {
+        periodic = false;
+        break;
+      }
+    }
+    if (periodic) return true;
   }
-  return n - (n > 0 ? failure[n - 1] : 0);
+  return false;
 }
 
-/** True when one character occupies more than `MAX_DOMINANT_CHAR_SHARE` of the run. */
-function isDominatedBySingleChar(value: string): boolean {
-  const counts = new Map<string, number>();
+/** Reused across calls; the blob class is ASCII, so 128 slots always suffice. */
+const SPAN_CHAR_COUNTS = new Uint32Array(128);
+
+/** True when one character occupies more than 90% of `[start, start+len)`. */
+function isDominatedBySingleChar(s: string, start: number, len: number): boolean {
+  SPAN_CHAR_COUNTS.fill(0);
   let max = 0;
-  for (const ch of value) {
-    const next = (counts.get(ch) ?? 0) + 1;
-    counts.set(ch, next);
+  for (let i = 0; i < len; i++) {
+    const next = ++SPAN_CHAR_COUNTS[s.charCodeAt(start + i)];
     if (next > max) max = next;
   }
-  return max > value.length * MAX_DOMINANT_CHAR_SHARE;
+  return max > len * MAX_DOMINANT_CHAR_SHARE;
 }
 
 /**
- * True when a fallback match could carry entropy at all.
+ * True when `[start, start+len)` could carry entropy at all.
  *
  * Two rules, both aimed at the same class: text used as visual filler.
  *
- *   1. The run is a short unit repeated at least three times
+ *   1. The span is a short unit repeated at least three times
  *      (`'_'x47`, `'_='x25`, `'01'x20`, `'de'x24`, `'a1'x24`).
- *   2. One character occupies more than 90% of the run (`'_'x46 + '1'`).
+ *   2. One character occupies more than 90% of the span (`'_'x46 + '1'`).
  *
  * Two weaker rules were tried first and rejected, both by adversarial review:
  *
@@ -284,146 +411,158 @@ function isDominatedBySingleChar(value: string): boolean {
  * no short period and no dominant symbol — which is the property the distinct-
  * character floor could not express.
  */
+function isCredibleSpan(s: string, start: number, len: number): boolean {
+  if (len === 0) return false;
+  if (hasFillerPeriod(s, start, len)) return false;
+  return !isDominatedBySingleChar(s, start, len);
+}
+
+/** `isCredibleSpan` over a whole value. */
 export function isCredibleEntropyBlob(value: string): boolean {
-  if (value.length === 0) return false;
-  const period = minimalPeriod(value);
-  if (period <= MAX_FILLER_PERIOD && value.length >= period * MIN_FILLER_REPEATS) {
-    return false;
+  return isCredibleSpan(value, 0, value.length);
+}
+
+/**
+ * Offset of the leftmost 40-character window of `run` that could carry entropy,
+ * or undefined when no window can.
+ *
+ * WHY A WINDOW AND NOT THE WHOLE RUN. The fallback is greedy over a class
+ * containing `_`, so filler glued to a secret is absorbed into one candidate:
+ * `'_'x361 + <40-char secret>` is a single 401-character run in which the
+ * underscores are 90.02% of the total, just over the dominance threshold. The
+ * run was rejected whole, and the secret with it. `'_'x300` happened to sit
+ * under the threshold, which is the only reason the defect looked fixed — and
+ * the one test covering the shape used `'_'x400 + '=' + secret`, tuned to the
+ * single variant that survived, because `=` is a non-word character and so gave
+ * the walk an interior `\b` to restart from. Delete the `=` and it failed.
+ *
+ * Judging a window instead removes the whole family: a secret is credible in
+ * its own right no matter how much filler is glued to it, and no interior word
+ * boundary is needed to find it. It also removes the two mechanisms that were
+ * added to compensate — the "resume one character past a rejected candidate"
+ * walk and the character budget that had to bound it — because each run is now
+ * examined exactly once. That budget was itself a CRITICAL detection hole: 12 KB
+ * of `('a'x40 + '=')` padding ahead of an anonymous secret exhausted it and the
+ * score went UP.
+ *
+ * Cost is O(40n) worst case and linear in practice: the whole-run periodicity
+ * check below disposes of uniform filler in one pass, and the dominance rule is
+ * maintained incrementally, so the expensive full predicate runs only on
+ * windows that are not already dominated.
+ */
+function findCredibleWindowOffset(run: string): number | undefined {
+  const w = CREDENTIAL_WINDOW_CHARS;
+  const n = run.length;
+  if (n < w) return isCredibleSpan(run, 0, n) ? 0 : undefined;
+
+  // If the run itself is a repeated short unit then so is every window of it —
+  // period is inherited by substrings — so a megabyte of `'_'` or `'ab'` filler
+  // costs one linear pass instead of n window judgements.
+  if (hasFillerPeriod(run, 0, n)) return undefined;
+
+  // Sliding dominance count. `bucket[c]` is how many distinct characters occur
+  // exactly c times in the window, which keeps the running max O(1) per step:
+  // a max can only fall when the last character holding it leaves.
+  SPAN_CHAR_COUNTS.fill(0);
+  const bucket = new Uint32Array(w + 2);
+  let max = 0;
+  for (let i = 0; i < w; i++) {
+    const code = run.charCodeAt(i);
+    const before = SPAN_CHAR_COUNTS[code]++;
+    if (before > 0) bucket[before]--;
+    bucket[before + 1]++;
+    if (before + 1 > max) max = before + 1;
   }
-  return !isDominatedBySingleChar(value);
+
+  const dominanceLimit = w * MAX_DOMINANT_CHAR_SHARE;
+  for (let k = 0; ; k++) {
+    // The incremental counter is an ACCELERATOR for `isCredibleSpan`, never a
+    // second opinion: `max <= dominanceLimit` is exactly the negation of the
+    // dominance rule, so skipping on it can only skip windows the full
+    // predicate would reject anyway. `credential-format.test.ts` cross-checks
+    // the two over randomised runs.
+    if (max <= dominanceLimit && isCredibleSpan(run, k, w)) return k;
+    if (k + w >= n) return undefined;
+
+    const leaving = run.charCodeAt(k);
+    const had = SPAN_CHAR_COUNTS[leaving]--;
+    bucket[had]--;
+    bucket[had - 1]++;
+    if (had === max && bucket[had] === 0) max = had - 1;
+
+    const entering = run.charCodeAt(k + w);
+    const has = SPAN_CHAR_COUNTS[entering]++;
+    if (has > 0) bucket[has]--;
+    bucket[has + 1]++;
+    if (has + 1 > max) max = has + 1;
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Entry points
+ * ------------------------------------------------------------------ */
+
+/** Leftmost wins; on a tie the vendor match wins, as in `origin/main`. */
+function leftmost(
+  a: { value: string; index: number } | undefined,
+  b: { value: string; index: number } | undefined,
+): { value: string; index: number } | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  return b.index < a.index ? b : a;
 }
 
 /**
- * Build the candidate matcher. Vendor alternatives are listed before the
- * entropy fallback so that at any given start offset a vendor-prefixed key
- * matches as a vendor key, not as an anonymous blob.
+ * Find the first credential-format substring in `text`.
  *
- * Not exported: this is the CANDIDATE gate, and using it directly reproduces
- * the original defect. Callers want `hasCredentialFormat` /
- * `findCredentialFormatMatch` (filtered) or `hasAnyCredentialCandidate`
- * (deliberately unfiltered, for suppression vetoes).
- */
-function buildCredentialFormatRegex(flags = ''): RegExp {
-  return new RegExp(
-    `${anchoredVendorAlternation()}|${ENTROPY_BLOB_ALTERNATIVE}`,
-    flags,
-  );
-}
-
-/**
- * The candidate matcher for NEGATED gates: same alternation, vendor prefixes
- * left UNANCHORED on purpose.
+ * Vendor prefixes and the JWT are matched over the whole input, unanchored and
+ * unbounded, exactly as `origin/main` matches them. The high-entropy fallback
+ * then walks maximal blob runs, judging each by sliding window.
  *
- * `hasAnyCredentialCandidate` is read as `!hasAnyCredentialCandidate(content)`,
- * so every narrowing of this predicate widens a suppression carve-out. Under
- * the anchored alternation a token glued to a preceding identifier
- * (`"label":"MSGghp_AAAAAAAAAAAAAAAAAAAA"`, 27 characters and so below the
- * 40-character blob floor) matches nothing, the veto stops holding, and the
- * planted secret is suppressed. Unanchored, it still matches.
- */
-function buildCandidateRegexForNegatedGate(): RegExp {
-  return new RegExp(
-    `(?:${VENDOR_PREFIX_ALTERNATIVES.join('|')})|${ENTROPY_BLOB_ALTERNATIVE}`,
-  );
-}
-
-/**
- * Vendor-prefix-only matcher, used to tell the two signals apart.
- *
- * Module-level and deliberately WITHOUT the `g` flag: a global regex carries
- * `lastIndex` state across `.test()` calls, which would make a shared instance
- * skip matches non-deterministically. Without `g`, `.test()` is stateless and
- * the instance is safe to reuse.
- */
-const VENDOR_PREFIX_ONLY_RE = new RegExp(anchoredVendorAlternation());
-
-/**
- * True when a candidate substring should count as a credential: either it is
- * vendor-prefixed, or it clears the filler rules.
- */
-export function isAcceptedCredentialMatch(candidate: string): boolean {
-  return VENDOR_PREFIX_ONLY_RE.test(candidate) || isCredibleEntropyBlob(candidate);
-}
-
-/**
- * Characters the filler rules may examine across one call, in total.
- *
- * The entropy-blob walk resumes one character past where a REJECTED candidate
- * started, so consecutive candidates overlap: candidate k is very nearly
- * candidate k-1 minus its first character. Evaluating each one costs its own
- * length, in the filler rules AND in the regex engine's greedy run, so a file
- * built to produce many long rejected candidates costs O(n^2).
- *
- * `+` and `=` are what make that reachable. Both are inside the blob class
- * `[A-Za-z0-9+=_]` yet are NON-word characters, so each one is an interior `\b`
- * that starts a fresh candidate running to end-of-file. Measured on
- * `('a'x40 + '=')xN` before this budget existed: 135 ms at 16 KB, 2.0 s at
- * 64 KB, 32 s at 256 KB, ~512 s extrapolated at the 1 MB scanner cap — worse
- * than the JWT case, and reachable with no `eyJ` in the file at all.
- *
- * Charging each rejected candidate its own length against one budget bounds
- * both costs at once, and makes total work linear in the budget rather than in
- * the square of the file size. Exhausting it is treated as "no accepted match":
- * the vendor pass below has already run to completion, so no real vendor key
- * can be lost this way, and reporting a credential instead would turn a large
- * filler file into a false-positive storm.
- */
-const MAX_FILLER_CHARS_EXAMINED = 1_000_000;
-
-/**
- * Find the first ACCEPTED credential-format substring in `text`.
- *
- * Two passes, deliberately.
- *
- * Pass 1 matches VENDOR prefixes only. It never evaluates the filler rules, so
- * it is linear and unbudgeted, and it is what makes pass 2 safe to bound: a
- * real `sk-ant-…`/`ghp_…`/JWT is found here no matter how much filler surrounds
- * it. This also replaces the reason the old single-pass loop had to resume one
- * character past a rejected candidate — that walk existed to find a vendor
- * prefix swallowed by a greedy filler run (`'_'x38 + 'sk-ant-api03-…'` matches
- * as one 40-character candidate), and pass 1 finds it directly.
- *
- * Pass 2 matches the high-entropy blob, still resuming one character past a
- * rejected candidate, but now under the budget above. That resume is what keeps
- * filler from hiding an ANONYMOUS blob — the case pass 1 cannot cover. It is
- * reachable because `+` and `=` are inside the blob class yet are non-word
- * characters, so they are interior `\b` positions: in
- * `'_'x400 + '=' + <40 random>` the whole 441-character run is one candidate and
- * is filler (underscores are 90.7% of it), while the secret after the `=` is a
- * second candidate that only the resume reaches. Advancing to the end of the
- * rejected run instead would lose it.
- *
- * The leftmost match wins. On a tie the vendor match wins, which preserves the
- * single-regex behaviour where vendor alternatives were listed first and so
- * matched in preference to the blob at the same offset.
+ * The reported value starts at the leftmost credible WINDOW and runs to the end
+ * of its blob run. Starting at the run start would report the filler that
+ * swallowed the secret; stopping at the window's own 40th character would cut a
+ * longer secret in half. The index is the window's, so the derived line number
+ * points at the secret rather than at the form blank preceding it.
  */
 export function findCredentialFormatMatch(
   text: string,
 ): { value: string; index: number } | undefined {
-  const vendorRe = new RegExp(anchoredVendorAlternation(), 'g');
+  const vendorRe = new RegExp(vendorAlternation(), 'g');
   const vm = vendorRe.exec(text);
-  const vendorHit = vm ? { value: vm[0], index: vm.index } : undefined;
+  let best = leftmost(
+    vm ? { value: vm[0], index: vm.index } : undefined,
+    findJwtMatch(text, false),
+  );
 
   const blobRe = new RegExp(ENTROPY_BLOB_ALTERNATIVE, 'g');
-  let budget = MAX_FILLER_CHARS_EXAMINED;
   let m: RegExpExecArray | null;
   while ((m = blobRe.exec(text)) !== null) {
-    // Nothing past the vendor hit can be leftmost, so stop looking.
-    if (vendorHit && m.index >= vendorHit.index) break;
-    if (isCredibleEntropyBlob(m[0])) {
-      return { value: m[0], index: m.index };
+    // Runs are disjoint and left to right, so nothing from here on can be
+    // leftmost.
+    if (best && m.index >= best.index) break;
+    const offset = findCredibleWindowOffset(m[0]);
+    if (offset !== undefined) {
+      const index = m.index + offset;
+      if (!best || index < best.index) best = { value: m[0].slice(offset), index };
+      break;
     }
-    budget -= m[0].length;
-    if (budget <= 0) break;
-    blobRe.lastIndex = m.index + 1;
   }
-  return vendorHit;
+  return best;
 }
 
 /** True when `text` contains at least one accepted credential-format value. */
 export function hasCredentialFormat(text: string): boolean {
   return findCredentialFormatMatch(text) !== undefined;
 }
+
+/**
+ * The candidate matcher for NEGATED gates: same alternation, vendor prefixes
+ * left UNANCHORED on purpose, entropy floor NOT applied.
+ */
+const CANDIDATE_RE_FOR_NEGATED_GATE = new RegExp(
+  `${vendorAlternation()}|${ENTROPY_BLOB_ALTERNATIVE}`,
+);
 
 /**
  * True when `text` contains any credential-format CANDIDATE, entropy floor NOT
@@ -437,8 +576,72 @@ export function hasCredentialFormat(text: string): boolean {
  * category labels has no legitimate reason to carry a 40-character run at all,
  * so the veto is intentionally trigger-happy: any candidate at all blocks the
  * carve-out, and vendor prefixes are matched UNANCHORED here for the same
- * reason (see `buildCandidateRegexForNegatedGate`).
+ * reason.
+ *
+ * Being trigger-happy is not licence to be wrong about the SHAPE. `SG\.` with
+ * open-ended segments made this predicate fire on
+ * `MSG.INCIDENT_ESCALATION_QUEUE.HIGH_PRIORITY_ROUTE`, which blocked the
+ * taxonomy carve-out and raised a CRITICAL on a benign document — a false
+ * positive the anchor could not reach precisely because this gate must stay
+ * unanchored. The fix belongs in the pattern, not the anchoring.
  */
 export function hasAnyCredentialCandidate(text: string): boolean {
-  return buildCandidateRegexForNegatedGate().test(text);
+  return CANDIDATE_RE_FOR_NEGATED_GATE.test(text) || findJwtMatch(text, false) !== undefined;
+}
+
+/** Module-level and deliberately without `g`, so `.test()` carries no state. */
+const ANCHORED_VENDOR_RE = new RegExp(anchoredVendorAlternation());
+
+/**
+ * True when `text` carries a positively-identified vendor credential.
+ *
+ * This is the gate that LIFTS the corpus and integrity-manifest suppression, so
+ * every narrowing of it suppresses MORE — the same trap as a negated gate, one
+ * gate over, and the one a bounded JWT header fell into. It must see exactly
+ * what `origin/main` sees, at minimum.
+ */
+export function hasAnchoredVendorCredential(text: string): boolean {
+  return ANCHORED_VENDOR_RE.test(text) || findJwtMatch(text, true) !== undefined;
+}
+
+/* ------------------------------------------------------------------ *
+ * Form blanks in KEY-NAMED config values
+ * ------------------------------------------------------------------ */
+
+/**
+ * Characters a document uses to DRAW rather than to encode: form blanks, dot
+ * leaders, rules, redaction bars.
+ */
+const FILLER_CHARS = new Set(['_', '-', '.', '*', '#', '~', '?', '=', ' ', '\t']);
+const MAX_FILLER_CHAR_SHARE = 0.9;
+
+/**
+ * True when `value` is visual filler rather than a secret, for values that
+ * arrive WITH a key name (`password:`, `api_key =`).
+ *
+ * Deliberately a different test from `isCredibleEntropyBlob`, because the
+ * evidence is different. The entropy blob is an anonymous 40+ character run
+ * found anywhere in a document, so structure is all there is to go on and a run
+ * of one repeated symbol is filler. Here a key name has already said "this is a
+ * secret", so the only question left is whether the VALUE is a drawn blank —
+ * and the structural rules are far too blunt for that at 8 characters. They
+ * dropped `Ab12Ab12Ab12…` (period 4) and the base64 of an all-zero AES key
+ * (`'A'x43`), both of which are weak but entirely real secrets that a scanner
+ * exists to find.
+ *
+ * Keying on the filler CHARACTERS instead separates the classes exactly: `_`,
+ * `-` and `.` draw blanks and never carry key material in bulk, while `A` and
+ * `1` do.
+ */
+export function isVisualFiller(value: string): boolean {
+  if (value.length === 0) return true;
+  let fillerCount = 0;
+  for (const ch of value) {
+    if (FILLER_CHARS.has(ch)) fillerCount++;
+  }
+  if (fillerCount > value.length * MAX_FILLER_CHAR_SHARE) return true;
+  // A redaction bar. `x` is not a filler character in general — it appears in
+  // real base64 — but a value that is nothing else is a mask, not a key.
+  if (/^x+$/i.test(value)) return true;
+  return false;
 }

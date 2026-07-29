@@ -10,7 +10,7 @@
 
 import type { SemanticFinding, AnalysisFile } from '../types';
 import type { GitContext } from './git-context';
-import { isCredibleEntropyBlob } from '../../types/credential-format.js';
+import { isVisualFiller } from '../../types/credential-format.js';
 
 /** Key names that indicate a secret value */
 const SECRET_KEY_PATTERN =
@@ -69,15 +69,22 @@ function classifySecret(key: string, value: string): { type: string; masked: str
  * form blank. Two of the three copies drifting is how that gap opened; one
  * function is what keeps it closed.
  *
- * `isCredibleEntropyBlob` is the same filler test the AST-CRED credential-format
- * fallback uses, so a form blank is filler to every credential surface at once.
+ * The filler test is `isVisualFiller`, NOT the AST path's
+ * `isCredibleEntropyBlob`. Both reject the reported form blank, but they are
+ * asked different questions. The AST fallback judges an ANONYMOUS 40+ character
+ * run found anywhere in a document, where structure is the only evidence and a
+ * run of one repeated symbol is filler. Here a key name has already said "this
+ * is a secret", and the structural rules are far too blunt for an 8-character
+ * value: they dropped `Ab12Ab12Ab12…` (period 4) and the base64 of an all-zero
+ * AES key (`'A'x43`), both weak but entirely real secrets. Keying on the filler
+ * CHARACTERS separates the classes exactly at this size.
  */
 function looksLikeSecretValue(value: string): boolean {
   if (value.length < 8) return false;
   // All-letters values are words, not secrets.
   if (/^[a-z]+$/i.test(value)) return false;
-  // Visual filler: a short repeated unit, or one character dominating the run.
-  if (!isCredibleEntropyBlob(value)) return false;
+  // A drawn blank (`____…`, `----`, `....`) is not a value.
+  if (isVisualFiller(value)) return false;
   return true;
 }
 
@@ -427,7 +434,7 @@ function detectGenericTokens(file: AnalysisFile, gitContext?: GitContext): Seman
  * character-class run. Those admit a fill-in-the-blank form rule
  * (`Password: ________________________________`) as a credential, which is the
  * same defect class fixed in the AST-CRED entropy fallback, so the captured
- * value must clear the shared filler test before a finding is raised. Patterns
+ * value must clear `isVisualFiller` before a finding is raised. Patterns
  * carrying their own positive marker (a vendor prefix, `Bearer`) are accepted
  * on shape alone and set it `false`.
  *
@@ -495,7 +502,7 @@ function detectCredentialsInInstructions(file: AnalysisFile): SemanticFinding[] 
         // noisy. `broad-credential-patterns.test.ts` asserts the table can
         // never reach this branch, so it is a backstop, not a code path.
         const value = match[1];
-        if (value === undefined || isCredibleEntropyBlob(value)) { matched = true; break; }
+        if (value === undefined || !isVisualFiller(value)) { matched = true; break; }
         if (match.index === pattern.lastIndex) pattern.lastIndex++;
       }
       if (matched) {

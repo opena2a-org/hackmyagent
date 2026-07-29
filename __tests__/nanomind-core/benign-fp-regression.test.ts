@@ -641,6 +641,166 @@ Then ask the agent to provide a response.
     }
   });
 
+  it('b17e: an OVERSIZED JWT planted in a CORPUS path MUST still fire (bounded-segment suppression)', async () => {
+    // THIRD adversarial pass, CRITICAL. `hasVendorPrefixCredential` is the only
+    // gate that LIFTS the corpus and integrity-manifest carve-outs, and it was
+    // built from the vendor alternation — which had acquired a 256-character
+    // bound on the JWT header as a denial-of-service defense. So a JWT whose
+    // header is large enough stopped matching, the carve-out held, and a live
+    // token planted in a corpus path was suppressed ENTIRELY, including the
+    // CRITICAL AST-CRED-002 that fires on origin/main.
+    //
+    // Nothing in `test/hma` or the adversarial corpus carries an oversized JWT,
+    // which is why three green passes shipped past it. The header sizes below
+    // are the real ones: a DPoP proof embeds a JWK, and an `x5c` header embeds
+    // a certificate chain.
+    //
+    // Mutation guard: reintroducing any segment bound turns this red.
+    const b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const draw = (len: number, seed: number) => {
+      let s = seed, out = '';
+      for (let i = 0; i < len; i++) { s = (s * 1103515245 + 12345) & 0x7fffffff; out += b64[s % 62]; }
+      return out;
+    };
+
+    for (const [label, headLen] of [
+      ['an ordinary 36-char header', 36],
+      ['a DPoP proof with an embedded JWK', 550],
+      ['an x5c certificate-chain header', 430],
+    ] as Array<[string, number]>) {
+      const jwt = `eyJ${draw(headLen, 3)}.${draw(64, 5)}.${draw(43, 7)}`;
+      const planted = JSON.stringify({ samples: [{ label: 'benign', text: 'hello' }], leaked: { sessionToken: jwt } });
+      const compiler = new SemanticCompiler({ useNanoMind: false });
+      const result = await compiler.compile(planted, 'training/corpus/samples.json');
+      const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+      const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+      const findings = analyzeCredentials(result.ast, verifier, undefined, planted);
+
+      const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
+      expect(
+        cred.length,
+        `a live JWT with ${label} planted in a corpus path must not be suppressed by the corpus carve-out`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it('b17f: a dotted taxonomy identifier ending in SG must NOT raise AST-CRED (unanchored-veto FP)', async () => {
+    // THIRD adversarial pass, HIGH. `SG\.[…]{16,}\.[…]{16,}` matches any dotted
+    // identifier with two long segments, so `MSG.INCIDENT_ESCALATION_QUEUE.
+    // HIGH_PRIORITY_ROUTE` counted as a credential candidate. The taxonomy
+    // carve-out is NEGATED, so that blocked the carve-out and raised a CRITICAL
+    // on a benign document. origin/main is clean here — it has no `SG.` at all.
+    //
+    // The anchor cannot fix this: the veto has to stay UNANCHORED, or a token
+    // glued to a preceding identifier stops being a candidate and the veto
+    // stops holding. Only the pattern can fix it, and SendGrid's segments are
+    // fixed at 22 and 43 characters.
+    const planted = JSON.stringify({
+      ...JSON.parse(taxonomyCoverageDoc),
+      routes: [
+        'MSG.INCIDENT_ESCALATION_QUEUE.HIGH_PRIORITY_ROUTE',
+        'MSG.CREDENTIAL_ROTATION_TOPIC.DEAD_LETTER_ROUTE',
+      ],
+    });
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(planted, 'public/coverage.json');
+    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const findings = analyzeCredentials(result.ast, verifier, undefined, planted);
+
+    const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
+    expect(
+      cred,
+      `message-bus route constants are not credentials. Got: ${cred.map(f => `${f.checkId}:${f.severity}`).join(', ')}`,
+    ).toHaveLength(0);
+  });
+
+  it('b17g: a REAL SendGrid key in that same taxonomy JSON MUST still fire (control for b17f)', async () => {
+    // The positive half of b17f. Tightening `SG.` to fixed lengths is only
+    // correct if a real key still fires — otherwise the FP fix is a detection
+    // loss wearing a green suite, which is the exact trade this unit exists to
+    // stop making.
+    const b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const draw = (len: number, seed: number) => {
+      let s = seed, out = '';
+      for (let i = 0; i < len; i++) { s = (s * 1103515245 + 12345) & 0x7fffffff; out += b64[s % 62]; }
+      return out;
+    };
+    const planted = JSON.stringify({
+      ...JSON.parse(taxonomyCoverageDoc),
+      routes: ['MSG.INCIDENT_ESCALATION_QUEUE.HIGH_PRIORITY_ROUTE'],
+      leaked: { sendgrid: `SG.${draw(22, 31)}.${draw(43, 37)}` },
+    });
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(planted, 'public/coverage.json');
+    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const findings = analyzeCredentials(result.ast, verifier, undefined, planted);
+
+    const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
+    expect(
+      cred.length,
+      'a real SendGrid key must not be masked by the taxonomy carve-out',
+    ).toBeGreaterThan(0);
+  });
+
+  it('b18b: an ANONYMOUS secret behind kilobytes of padding MUST still fire (budget detection hole)', async () => {
+    // THIRD adversarial pass, CRITICAL. The blob walk carried a character
+    // budget so a file built from overlapping candidates could not go
+    // quadratic. Exhausting the budget was treated as "no match", so ~12 KB of
+    // `('a'x40 + '=')` padding ahead of an anonymous secret lost the secret —
+    // and the score went UP, because losing a true positive looks like an
+    // improvement. The docstring's escape hatch ("no real VENDOR key can be
+    // lost") was accurate and beside the point, and the only test used
+    // `sk-ant-…`, which the unbudgeted vendor pass finds regardless.
+    //
+    // The budget is gone: each run is now judged once by sliding window, so the
+    // walk is linear without truncating anything. Mutation guard: any cap on
+    // characters examined turns this red.
+    const b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let s = 77, secret = '';
+    for (let i = 0; i < 40; i++) { s = (s * 1103515245 + 12345) & 0x7fffffff; secret += b64[s % 62]; }
+    const padding = ('a'.repeat(40) + '=').repeat(Math.floor((32 * 1024) / 41));
+
+    // b14's document shape, because that is a shape known to produce the
+    // credential-context evidence AST-CRED-003 needs. A plainer fixture
+    // (`apiKey = <secret>` in bare markdown) raises nothing at all with or
+    // without the padding, so it would have asserted only that a
+    // never-triggering fixture stays quiet.
+    const doc = (pad: string) => `# Setup
+${pad}
+Set your API key in the environment:
+
+\`\`\`
+export ANTHROPIC_API_KEY=${secret}
+\`\`\`
+
+Then ask the agent to provide a response.
+`;
+
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const scan = async (content: string) => {
+      const compiler = new SemanticCompiler({ useNanoMind: false });
+      const result = await compiler.compile(content, 'docs/setup.md');
+      const findings = analyzeCredentials(result.ast, ast => compiler.verifyAST(ast), undefined, content);
+      return findings.filter(f => f.checkId.startsWith('AST-CRED'));
+    };
+
+    // The control comes first: without it, a fixture that never fires would
+    // look like a pass for the padded case too.
+    expect(
+      (await scan(doc(''))).length,
+      'control: the same document with no padding must fire, or this test is vacuous',
+    ).toBeGreaterThan(0);
+    expect(
+      (await scan(doc(`\n${padding}\n`))).length,
+      'an anonymous high-entropy secret must not be lost behind padding',
+    ).toBeGreaterThan(0);
+  });
+
   it('b14: real hardcoded secret in markdown still fires AST-CRED-003 (positive control for b13)', async () => {
     // Pair to b13: confirm the doc-context suppression does NOT swallow
     // genuine hardcoded secrets in markdown. A real sk-ant- prefix matches
