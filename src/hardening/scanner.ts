@@ -483,6 +483,23 @@ function isInsideBackupArchive(absPath: string, targetDir: string): boolean {
   return backupArchiveDirFor(absPath, targetDir) !== null;
 }
 
+/**
+ * POSIX single-quoting for a path that goes into a citation the user will paste.
+ *
+ * A bare `'…'` wrapper is not enough: a directory whose name contains an
+ * apostrophe closes the quote early, and the remainder of the path is then
+ * re-parsed by the shell. That matters more here than at the other citation
+ * sites (#273, still open for those) because this one is `rm -rf` — a broken
+ * quote turns a cleanup instruction into an argument list nobody intended.
+ *
+ * The standard construction: end the quote, add an escaped literal quote, start
+ * a new one. Nothing inside a single-quoted POSIX string is special otherwise,
+ * so this is total.
+ */
+function shellQuote(p: string): string {
+  return `'${p.split("'").join(`'\\''`)}'`;
+}
+
 /** True when a file is config-shaped by filename, or by sitting directly in a config directory. */
 function isConfigShapedFile(basename: string, parentDirName: string): boolean {
   if (CONFIG_CANDIDATE_NAMES.has(basename)) return true;
@@ -2485,7 +2502,7 @@ export class HardeningScanner {
             fixable: !isEnvFile && !archiveDir,
             fixed: fileModified,
             fix: archiveDir
-              ? `rm -rf '${path.join(targetDir, archiveDir)}'`
+              ? `rm -rf ${shellQuote(path.join(targetDir, archiveDir))}`
               : isEnvFile
                 ? 'Add .env to .gitignore to prevent committing secrets'
                 : `${this.cliName} secure --fix`,
@@ -7106,13 +7123,28 @@ dist/
     const latestBackup = sortedBackups[0];
     const backupDir = path.join(backupBaseDir, latestBackup);
 
-    // Read manifest
+    // Read manifest.
+    //
+    // Size-guarded. #305's follow-up bounded the manifest read on the SCAN path
+    // and explicitly exempted this one, on the grounds that "rollback only ever
+    // reads a manifest HMA itself just wrote". #312 disproved that: a cloned
+    // repo can ship its own `.hackmyagent-backup/9999-99-99-999999/`, which
+    // sorts above every real stamp and is therefore always the one selected.
+    // The same tree that supplies the traversal paths supplies this file, so a
+    // 60MB manifest was read whole — measured at 493MB resident.
+    //
+    // Fails closed: an oversized manifest is treated as unreadable, which takes
+    // the existing branch telling the user to restore by hand from the backup
+    // directory. Refusing to parse an implausible manifest cannot lose a real
+    // rollback — `createBackup` writes a list of paths, not payloads.
     let manifest: BackupManifest;
     try {
-      const manifestContent = await fs.readFile(
-        path.join(backupDir, '.manifest.json'),
-        'utf-8'
-      );
+      const manifestPath = path.join(backupDir, '.manifest.json');
+      const stat = await fs.stat(manifestPath);
+      if (!stat.isFile() || stat.size > MAX_FILE_SIZE) {
+        throw new Error('manifest is not a plausible backup manifest');
+      }
+      const manifestContent = await fs.readFile(manifestPath, 'utf-8');
       manifest = this.parseManifest(manifestContent);
     } catch {
       throw new Error(

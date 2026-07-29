@@ -1208,7 +1208,11 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
   if (hasFindings) {
     steps.push({ label: 'Full scan:',       cmd: `hackmyagent secure ${targetDir}`, desc: 'deep security scan with findings' });
   }
-  if (governanceActionAvailable(result.findings, summary.governanceRaw ?? 100)) {
+  // `?? 0`, not `?? 100`: `governanceRaw` is non-optional on the type, so this
+  // only fires if a caller ever hands us a partial summary — and the safe
+  // direction there is to OFFER the step. Defaulting to 100 would suppress it,
+  // which is the dead end #311 exists to remove.
+  if (governanceActionAvailable(result.findings, summary.governanceRaw ?? 0)) {
     steps.push({
       label: governanceStepLabel(result.findings),
       cmd: governanceRemediation(result.findings, targetDir),

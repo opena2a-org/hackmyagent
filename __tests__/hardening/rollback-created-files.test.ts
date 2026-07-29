@@ -178,6 +178,40 @@ describe('rollback contract (#262)', () => {
     }
   });
 
+  it('refuses an implausibly large manifest instead of reading it whole', async () => {
+    // The #305 follow-up bounded the manifest read on the SCAN path and
+    // exempted this one, reasoning that "rollback only ever reads a manifest
+    // HMA itself just wrote". #312 disproved that: the same cloned tree that
+    // supplies the traversal paths supplies this file, and a stamp of
+    // `9999-…` is always the one selected. Measured before the guard: a 60MB
+    // manifest read whole, 493MB resident.
+    //
+    // Fails CLOSED — an oversized manifest takes the existing unreadable
+    // branch, which names the directory to restore from by hand, so refusing
+    // is not a dead end.
+    const backupDir = join(dir, '.hackmyagent-backup', '2026-07-27-120000');
+    mkdirSync(backupDir, { recursive: true });
+    const oversized = JSON.stringify({
+      version: 2,
+      existingFiles: [],
+      absentAtBackup: [],
+      createdFiles: [],
+      pad: 'A'.repeat(11 * 1024 * 1024),
+    });
+    writeFileSync(join(backupDir, '.manifest.json'), oversized, 'utf8');
+
+    await expect(scanner.rollback(dir)).rejects.toThrow(/unreadable/i);
+
+    // Non-vacuity: the same fixture UNDER the bound must still roll back, or
+    // this only proves rollback can throw.
+    writeFileSync(
+      join(backupDir, '.manifest.json'),
+      JSON.stringify({ version: 2, existingFiles: [], absentAtBackup: [], createdFiles: [] }),
+      'utf8',
+    );
+    await expect(scanner.rollback(dir)).resolves.toBeTruthy();
+  });
+
   /**
    * #312 — the same traversal, through the loop that had no guard.
    *

@@ -153,6 +153,50 @@ describe('#292 config-shaped credential detection below the scan root', () => {
     }
   });
 
+  it('quotes the archive path so an apostrophe cannot break the command', async () => {
+    // The archive remediation is `rm -rf <path>`. A bare '…' wrapper closes
+    // early on a directory whose name contains an apostrophe, and the rest of
+    // the path is re-parsed by the shell — which for a destructive command is
+    // considerably worse than the #273 class it belongs to.
+    const parent = await mkdtemp(path.join(tmpdir(), 'hma-quote-'));
+    const dir = path.join(parent, "it's a project");
+    try {
+      await mkdir(dir, { recursive: true });
+      await writeFile(path.join(dir, 'package.json'), '{"name":"c","version":"1.0.0"}\n');
+      await writeFile(path.join(dir, 'config.json'), '{"note":"already remediated"}\n');
+      await seedRealBackup(dir, {
+        'config.json': JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n',
+      });
+
+      const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
+      const archived = result.findings.find(
+        (f) => f.checkId === 'CRED-001' && f.file?.includes('.hackmyagent-backup'),
+      );
+      expect(archived, 'the archived credential was not reported').toBeDefined();
+
+      // Asserted by ROUND TRIP through a real shell rather than by inspecting
+      // the syntax: `'…'\''…'` legitimately has an odd number of quotes, so a
+      // parity check on the string is the wrong test and passes the wrong
+      // things. What matters is that the shell resolves the argument back to
+      // exactly the directory that must be removed — no more, no fewer.
+      const { execFileSync } = await import('node:child_process');
+      const quotedArg = archived!.fix.replace(/^rm -rf /, '');
+      const resolved = execFileSync('sh', ['-c', `printf '%s\\n' ${quotedArg}`], {
+        encoding: 'utf8',
+      }).trimEnd();
+
+      expect(
+        resolved,
+        `the shell did not resolve the citation back to one path: ${archived!.fix}`,
+      ).toBe(path.join(dir, '.hackmyagent-backup', '2026-01-01-000000'));
+      // One line out means one argument in — an apostrophe that broke the
+      // quoting would split it into several.
+      expect(resolved.split('\n')).toHaveLength(1);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
   it('REPORTS a pre-existing archive, and never rewrites it', async () => {
     // #309 reversed the previous expectation here, so the reason is recorded
     // rather than the assertion quietly flipped.
