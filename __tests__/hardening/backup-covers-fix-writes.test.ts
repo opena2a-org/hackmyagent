@@ -420,3 +420,96 @@ describe('#304 coverage is keyed on the path being written', () => {
     });
   });
 });
+
+/**
+ * Phase 3.5 enforcement matrix for the fix-write authorization.
+ *
+ * `applyFixWrite` returns an allow/deny verdict for every auto-fix write, so
+ * each condition it is responsible for needs a case that VIOLATES that one
+ * condition and asserts the verdict flips to deny. Three were enforced in code
+ * with no such case — a guard nobody can fail is a guard nobody can trust, and
+ * the containment one was added in this same branch without a test.
+ */
+describe('fix-write authorization: every deny condition has a failing case', () => {
+  type Probe = HardeningScanner & {
+    backupContext?: { backupDir: string; targetDir: string; covered: Set<string> };
+    applyFixWrite(p: string, c: string): Promise<boolean>;
+  };
+
+  /** A scanner with a REAL backup context, so a deny can only come from the condition under test. */
+  const withContext = async (
+    body: (scanner: Probe, dir: string, backupDir: string) => Promise<void>,
+  ) => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'hma-enforce-'));
+    try {
+      const backupDir = path.join(dir, '.hackmyagent-backup', '2026-02-02-000000');
+      await mkdir(backupDir, { recursive: true });
+      await writeFile(
+        path.join(backupDir, '.manifest.json'),
+        JSON.stringify({ version: 2, existingFiles: [], absentAtBackup: [], createdFiles: [] }),
+      );
+      const scanner = new HardeningScanner() as unknown as Probe;
+      scanner.backupContext = { backupDir, targetDir: dir, covered: new Set() };
+      await body(scanner, dir, backupDir);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('allows an ordinary in-tree write (the control)', async () => {
+    // Without this the three denials below could all be "applyFixWrite always
+    // returns false" and every assertion would still pass.
+    await withContext(async (scanner, dir) => {
+      const target = path.join(dir, 'config.json');
+      await writeFile(target, 'ORIGINAL\n');
+      expect(await scanner.applyFixWrite(target, 'REWRITTEN\n')).toBe(true);
+      expect(await readFile(target, 'utf-8')).toBe('REWRITTEN\n');
+    });
+  });
+
+  it('denies a write to a path outside the scanned tree', async () => {
+    await withContext(async (scanner, dir) => {
+      const outside = path.join(dir, '..', `escape-${path.basename(dir)}.txt`);
+      await writeFile(outside, 'USER_CONTENT\n');
+      try {
+        expect(
+          await scanner.applyFixWrite(outside, 'CLOBBERED\n'),
+          'a write outside the scanned tree was authorised',
+        ).toBe(false);
+        expect(await readFile(outside, 'utf-8')).toBe('USER_CONTENT\n');
+      } finally {
+        await rm(outside, { force: true });
+      }
+    });
+  });
+
+  it('denies the write when the manifest cannot be updated', async () => {
+    // Coverage that is not PERSISTED is not coverage: `rollback` is a separate
+    // process and reads this file from disk. Removing it is uid-independent,
+    // unlike a chmod fixture.
+    await withContext(async (scanner, dir, backupDir) => {
+      const target = path.join(dir, 'config.json');
+      await writeFile(target, 'ORIGINAL\n');
+      await rm(path.join(backupDir, '.manifest.json'), { force: true });
+
+      expect(
+        await scanner.applyFixWrite(target, 'REWRITTEN\n'),
+        'the write was authorised although nothing recorded how to undo it',
+      ).toBe(false);
+      expect(await readFile(target, 'utf-8')).toBe('ORIGINAL\n');
+    });
+  });
+
+  it('denies the write when there is no backup context at all', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'hma-enforce-'));
+    try {
+      const scanner = new HardeningScanner() as unknown as Probe;
+      const target = path.join(dir, 'config.json');
+      await writeFile(target, 'ORIGINAL\n');
+      expect(await scanner.applyFixWrite(target, 'REWRITTEN\n')).toBe(false);
+      expect(await readFile(target, 'utf-8')).toBe('ORIGINAL\n');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

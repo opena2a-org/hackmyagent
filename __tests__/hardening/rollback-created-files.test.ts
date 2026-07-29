@@ -178,6 +178,45 @@ describe('rollback contract (#262)', () => {
     }
   });
 
+  it('does not report on out-of-tree paths from a v1 manifest', async () => {
+    // The legacy loop performs no write, which is why it had no containment
+    // check — but an unguarded path still let a forged manifest probe for files
+    // outside the tree and have their existence reported back. The guard was
+    // added in this branch alongside #312 and had no failing case, so it was
+    // enforcement nobody could fail.
+    const parent = mkdtempSync(join(tmpdir(), 'hma-312-legacy-'));
+    const target = join(parent, 'scan-target');
+    const victimDir = join(parent, 'sibling');
+    mkdirSync(target, { recursive: true });
+    mkdirSync(victimDir, { recursive: true });
+    writeFileSync(join(victimDir, 'private.txt'), 'exists\n', 'utf8');
+    // In tree, so the loop is proven to still work.
+    writeFileSync(join(target, 'CLAUDE.md'), 'exists\n', 'utf8');
+
+    try {
+      seedBackup(target, {
+        version: 1,
+        existingFiles: [],
+        absentAtBackup: [],
+        createdFiles: ['../sibling/private.txt', 'CLAUDE.md'],
+      });
+
+      const report = await scanner.rollback(target);
+
+      expect(
+        report.keptUnverifiable,
+        'a v1 manifest probed for a file outside the scanned tree and the report '
+        + 'confirmed it exists',
+      ).not.toContain('../sibling/private.txt');
+      // Non-vacuity: the in-tree entry must still be reported, or the guard has
+      // simply disabled the loop.
+      expect(report.keptUnverifiable).toContain('CLAUDE.md');
+      expect(existsSync(join(victimDir, 'private.txt'))).toBe(true);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
   it('refuses an implausibly large manifest instead of reading it whole', async () => {
     // The #305 follow-up bounded the manifest read on the SCAN path and
     // exempted this one, reasoning that "rollback only ever reads a manifest
