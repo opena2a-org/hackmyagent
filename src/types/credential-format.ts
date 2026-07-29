@@ -676,8 +676,17 @@ const MIN_SECRET_CORE_CHARS = 8;
  * Keying on the filler CHARACTERS instead separates the classes exactly: `_`,
  * `-` and `.` draw blanks and never carry key material in bulk, while `A` and
  * `1` do.
+ *
+ * `minCore` is how much value must survive the drawn runs. It defaults to the
+ * caller's own 8-character floor, but a caller that applies NO length floor of
+ * its own must pass a smaller one — otherwise this function silently becomes a
+ * length gate for it. SEM-CRED-004 hit exactly that: routed through the
+ * 8-character default it stopped reporting `supersecretpassword` and
+ * `hunt3r`, real MCP env secrets that `origin/main` reported, and the score
+ * rose. A gate added to suppress drawn blanks must suppress drawn blanks and
+ * nothing else.
  */
-export function isVisualFiller(value: string): boolean {
+export function isVisualFiller(value: string, minCore = MIN_SECRET_CORE_CHARS): boolean {
   if (value.length === 0) return true;
   // A redaction bar. `x` is not a filler character in general — it appears in
   // real base64 — but a value that is nothing else is a mask, not a key.
@@ -717,7 +726,7 @@ export function isVisualFiller(value: string): boolean {
     }
     if (run > 0 && run < MIN_DRAWN_RUN_CHARS) core += run; // punctuation, kept
     run = 0;
-    if (++core >= MIN_SECRET_CORE_CHARS) return false;
+    if (++core >= minCore) return false;
   }
   return true
 }

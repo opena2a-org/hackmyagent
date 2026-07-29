@@ -12,6 +12,14 @@ import type { SemanticFinding, AnalysisFile } from '../types';
 import type { GitContext } from './git-context';
 import { isVisualFiller } from '../../types/credential-format.js';
 
+/**
+ * How much of an MCP env value must survive the drawn runs to count as a
+ * value. Small on purpose: unlike the SEM-CRED-002 shapes, this call site
+ * applies no length floor of its own, so anything larger turns a blank gate
+ * into a length gate and drops short real secrets that `origin/main` reports.
+ */
+const MIN_MCP_ENV_CORE_CHARS = 2;
+
 /** Key names that indicate a secret value */
 const SECRET_KEY_PATTERN =
   /^(.*_)?(secret|token|key|password|passwd|credential|auth|apikey|api_key|access_key|private_key|client_secret|signing_key|encryption_key|master_key|jwt_secret|session_secret|db_password|database_password)(_.*)?$/i;
@@ -556,17 +564,23 @@ function detectMcpEnvSecrets(file: AnalysisFile): SemanticFinding[] {
 
     for (const [key, value] of Object.entries(serverConfig.env)) {
       if (typeof value !== 'string') continue;
-      // The value gate belongs here too. SEM-CRED-004 had a key-name test and
-      // NO value test, so the reported false positive reproduced one file type
-      // over: an `.mcp.json` onboarding template carrying
-      // `"GITHUB_TOKEN": "________"` scored CRITICAL on a drawn blank, exactly
-      // as the `CLAUDE.md` checklist did. Adversarial review found it by asking
-      // who ELSE decides this question — `looksLikeSecretValue`'s own docstring
-      // claimed three call sites, and there were four.
+      // A DRAWN-BLANK gate, and deliberately nothing more. SEM-CRED-004 had a
+      // key-name test and no value test, so the reported false positive
+      // reproduced one file type over: an MCP onboarding template carrying
+      // `"GITHUB_TOKEN": "________"` scored CRITICAL on a blank, exactly as the
+      // `CLAUDE.md` checklist did.
+      //
+      // The floor is 2, NOT the shared `looksLikeSecretValue`. That helper
+      // carries an 8-character length floor and an all-letters rejection, which
+      // its other callers apply for their own reasons and this one never did —
+      // routing through it silently stopped reporting `supersecretpassword`,
+      // `correcthorsebatterystaple` and `hunt3r`, all real MCP env secrets that
+      // `origin/main` reports, and raised the score by doing so. A suppression
+      // added for blanks must suppress blanks and nothing else.
       if (
         SECRET_KEY_PATTERN.test(key) &&
         !isNonSecretValue(value) &&
-        looksLikeSecretValue(value.trim().replace(/^["']|["']$/g, ''))
+        !isVisualFiller(value.trim().replace(/^["']|["']$/g, ''), MIN_MCP_ENV_CORE_CHARS)
       ) {
         // Find the line number
         let lineNum: number | undefined;

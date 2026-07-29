@@ -322,14 +322,30 @@ describe('CredentialContextAnalyzer', () => {
       ).toHaveLength(0);
     });
 
-    it('STILL flags a real secret in an MCP env block (control)', () => {
-      const file = makeFile(
-        '.mcp.json',
-        JSON.stringify({ mcpServers: { gh: { env: { GITHUB_TOKEN: 'ghp_' + 'a'.repeat(36), DB_PASSWORD: 'dev_pass' } } } }, null, 2),
-        'mcp_config',
-      );
-      const findings = analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-004');
-      expect(findings.length, 'real secrets in an MCP env block must still fire').toBeGreaterThan(1);
+    it('STILL flags every real secret shape in an MCP env block (control)', () => {
+      // This gate suppresses DRAWN BLANKS and nothing else. Routing it through
+      // the shared `looksLikeSecretValue` instead imported that helper's
+      // 8-character floor and all-letters rejection — neither of which this
+      // call site ever applied — and silently stopped reporting
+      // `supersecretpassword`, `correcthorsebatterystaple` and `hunt3r`, all
+      // real secrets origin/main reports. The score rose. Adversarial review
+      // caught it; the whole suite stayed green, so only this test stands
+      // between that mistake and the next refactor.
+      for (const [label, value] of [
+        ['a vendor token', 'ghp_' + 'a'.repeat(36)],
+        ['a short password with a separator', 'dev_pass'],
+        ['an ALL-LETTERS passphrase', 'supersecretpassword'],
+        ['a long all-letters passphrase', 'correcthorsebatterystaple'],
+        ['a SHORT secret below any length floor', 'hunt3r'],
+      ] as Array<[string, string]>) {
+        const file = makeFile(
+          '.mcp.json',
+          JSON.stringify({ mcpServers: { gh: { env: { DB_PASSWORD: value } } } }, null, 2),
+          'mcp_config',
+        );
+        const findings = analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-004');
+        expect(findings.length, `${label} (${value}) must still fire`).toBeGreaterThan(0);
+      }
     });
 
     it('detects hardcoded secrets in MCP server env blocks', () => {
