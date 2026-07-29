@@ -349,6 +349,87 @@ export function hasCredentialOutsideEnvRef(text: string, pattern: RegExp): boole
 }
 
 /**
+ * The only characters a `${...}` reference may pad a credential with. Shell
+ * identifier bytes, and deliberately nothing else: this class cannot cross a
+ * quote, comma, colon or brace, which is the entire safety property below.
+ */
+const REF_PADDING_CHAR = /[A-Za-z0-9_]/;
+
+/**
+ * Replace every occurrence of `pattern` in one line with `${envVar}`, absorbing
+ * an enclosing `${...}` wrapper when — and only when — the wrapper really is
+ * one.
+ *
+ * #310 — this replaced a regex, `/\$\{[^{}]*\}/g`, whose character class
+ * admits quotes, commas and colons. On a minified one-line config it paired the
+ * `${` of an unrelated value with the NEXT `}` anywhere on the line and deleted
+ * everything between:
+ *
+ *   {"template":"${","token":"ghp_…","keep":"KEEP","port":8080}
+ *     ->  {"template":"${GITHUB_TOKEN}          <- two keys gone, invalid JSON
+ *
+ * and reported `fixed: true` at 98/100 over the wreckage. A regex cannot
+ * express "the brace that opens THIS span", so the span is walked out from the
+ * match instead: over identifier padding only, and only into a `${` that is
+ * still adjacent after that walk. Everything a reference may legally contain is
+ * absorbed; nothing else can be, because the padding class cannot reach past a
+ * structural character.
+ *
+ * The three shapes #308 exists for are still absorbed whole — `${MY_ghp_…}`,
+ * `${ghp_…_PROD}`, `${A_ghp_…_B}` — so the fix no longer emits the
+ * `${MY_${GITHUB_TOKEN}}` nesting that no shell expands. An unterminated
+ * `"${ghp_…<EOL>` absorbs its opener too, since there is no brace to pair with
+ * and leaving it would emit exactly that nesting.
+ *
+ * A `${` that is NOT followed by a well-formed span — `${MY_ghp_…"}` — is left
+ * alone and only the credential is replaced. That is literal text that happens
+ * to precede a credential, not a reference, and preserving it is lossless.
+ */
+export function replaceCredentialWithEnvRef(
+  line: string,
+  pattern: RegExp,
+  envVar: string,
+): string {
+  const ref = '${' + envVar + '}';
+  const re = new RegExp(
+    pattern.source,
+    pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g',
+  );
+  let out = '';
+  let cursor = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) {
+    if (m[0].length === 0) {
+      re.lastIndex++; // zero-width match: never advances on its own
+      continue;
+    }
+    if (m.index < cursor) continue; // already inside an absorbed wrapper
+    let start = m.index;
+    let end = start + m[0].length;
+
+    // Walk left over padding, stopping at `cursor` so the walk can never
+    // re-enter text an earlier replacement already emitted.
+    let left = start;
+    while (left > cursor && REF_PADDING_CHAR.test(line[left - 1])) left--;
+    if (left - 2 >= cursor && line[left - 1] === '{' && line[left - 2] === '$') {
+      let right = end;
+      while (right < line.length && REF_PADDING_CHAR.test(line[right])) right++;
+      if (line[right] === '}') {
+        start = left - 2;
+        end = right + 1;
+      } else if (line.indexOf('}', end) === -1) {
+        start = left - 2; // unterminated span: absorb the opener, keep `end`
+      }
+    }
+
+    out += line.slice(cursor, start) + ref;
+    cursor = end;
+    if (re.lastIndex < cursor) re.lastIndex = cursor;
+  }
+  return out + line.slice(cursor);
+}
+
+/**
  * #292, second half — directories whose contents are config BY LOCATION rather
  * than by filename. `config/production.json` is the case the issue calls out
  * explicitly, and basename matching alone does not reach it: nothing about
@@ -2314,6 +2395,15 @@ export class HardeningScanner {
       try {
         let content = await fs.readFile(filePath, 'utf-8');
         const lines = content.split('\n');
+        // #310, second harm — detection reads the file AS IT ARRIVED; only the
+        // fix mutates `lines`. The loops are pattern-major, so with detection
+        // reading the working copy an earlier pattern's replacement removed a
+        // LATER pattern's credential from the line before that pattern was ever
+        // examined. `${AKIA…_ghp_…}` reported "AWS Access Key" alone: the
+        // GitHub token was deleted from the file and never named, so the user
+        // rotates one key and leaves the other live. Which secret vanished
+        // depended on `credentialPatterns` order.
+        const originalLines = [...lines];
         let fileModified = false;
         const keysFoundInFile: Array<{ name: string; line: number }> = [];
 
@@ -2326,7 +2416,7 @@ export class HardeningScanner {
             // appending ` ${ANTHROPIC_API_KEY}` to a live key silenced the
             // CRITICAL entirely. Now the exemption applies only to a match
             // that is itself inside a well-formed reference.
-            if (hasCredentialOutsideEnvRef(lines[i], pattern)) {
+            if (hasCredentialOutsideEnvRef(originalLines[i], pattern)) {
               keysFoundInFile.push({ name, line: i + 1 });
 
               // Fix: replace credential with env var reference (but NOT in .env files
@@ -2339,30 +2429,15 @@ export class HardeningScanner {
                 // #301 — a key wrapped in braces has to lose the braces with
                 // it. Replacing only the inner match turns `"${ghp_aaa…}"`
                 // into `"${${GITHUB_TOKEN}}"`: nested, expanded by no shell,
-                // and still not the value anyone wanted. Wrapper first, so
-                // the bare pass below sees only genuinely bare occurrences.
+                // and still not the value anyone wanted.
                 //
-                // #308 — the whole ENCLOSING span, not the exact-wrapper
-                // shape. `\$\{(?:pattern)\}` only matched a span whose entire
-                // content was the credential, so detection widening to padded
-                // spans left the fix emitting the very thing #301 removed:
+                // #308 — the whole ENCLOSING span, not just the exact-wrapper
+                // shape, so padded spans (`${MY_ghp_…}`) lose their braces too.
                 //
-                //   ${MY_ghp_…}    -> ${MY_${GITHUB_TOKEN}}
-                //   ${ghp_…_PROD}  -> ${${GITHUB_TOKEN}_PROD}
-                //   ${A_ghp_…_B}   -> ${A_${GITHUB_TOKEN}_B}
-                //
-                // All three then re-scanned clean at 98/100 and were reported
-                // `verified`, so the run claimed success over output no shell
-                // expands. A span that contains a credential is a value in
-                // reference clothing whatever else is padded around it, so the
-                // span goes and the reference replaces it.
-                const enclosingSpan = /\$\{[^{}]*\}/g;
-                lines[i] = lines[i].replace(enclosingSpan, (span) => {
-                  pattern.lastIndex = 0;
-                  return pattern.test(span) ? '${' + envVar + '}' : span;
-                });
-                pattern.lastIndex = 0;
-                lines[i] = lines[i].replace(pattern, '${' + envVar + '}');
+                // #310 — but bounded to a span that IS a reference. See
+                // `replaceCredentialWithEnvRef`: the previous regex paired any
+                // `${` with the next `}` and destroyed unrelated config data.
+                lines[i] = replaceCredentialWithEnvRef(lines[i], pattern, envVar);
                 fileModified = true;
                 envVarsToAdd.add(envVar);
               }
