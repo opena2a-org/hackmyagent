@@ -322,6 +322,25 @@ describe('CredentialContextAnalyzer', () => {
       ).toHaveLength(0);
     });
 
+    it('does not flag an MCP blank carrying a single stray mark', () => {
+      // Pins the lower side of MIN_MCP_ENV_CORE_CHARS: at a floor of 1 this
+      // becomes CRITICAL again. The upper side is deliberately not pinned —
+      // 2 -> 3 only suppresses two-character values, and no real secret has a
+      // two-character core — so a test for it would assert an arbitrary
+      // number rather than a property.
+      for (const value of ['_'.repeat(46) + '1', '_'.repeat(10) + 'X' + '_'.repeat(10)]) {
+        const file = makeFile(
+          '.mcp.json',
+          JSON.stringify({ mcpServers: { gh: { env: { DB_PASSWORD: value } } } }, null, 2),
+          'mcp_config',
+        );
+        expect(
+          analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-004'),
+          `a blank with one stray mark is still a blank: ${value.slice(0, 12)}…`,
+        ).toHaveLength(0);
+      }
+    });
+
     it('STILL flags every real secret shape in an MCP env block (control)', () => {
       // This gate suppresses DRAWN BLANKS and nothing else. Routing it through
       // the shared `looksLikeSecretValue` instead imported that helper's
