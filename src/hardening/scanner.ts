@@ -450,31 +450,37 @@ const CONFIG_DIR_EXTENSIONS = new Set(['.json', '.yaml', '.yml', '.toml', '.ini'
 const BACKUP_DIR_NAME = '.hackmyagent-backup';
 
 /**
- * Locate the backup-shaped part of a target-relative path.
+ * True when any DIRECTORY component of an absolute path is a backup archive
+ * root. Used only to refuse a WRITE (#314), never to suppress a finding.
  *
- * Layout is `<project>/.hackmyagent-backup/<stamp>/<path within the project>`,
- * so a hit yields the three pieces needed to decide whether this really is one
- * of HMA's own backups and, if so, which live file it is a copy of. The final
- * segment is the filename and is never considered — a FILE called
- * `.hackmyagent-backup` is not a backup directory.
+ * Keying this on the name is safe in a way that keying DETECTION on it is not.
+ * The most an attacker gains by naming a directory `.hackmyagent-backup` is
+ * that HMA declines to auto-edit files inside it — the finding is still
+ * reported, with a path forward. A name that can only make the tool do LESS
+ * damage is not a suppression token; that asymmetry is the whole reason the
+ * two hazards are gated separately.
  *
- * Segment-wise, never `startsWith`: a prefix test is a statement about the scan
- * root, and the property needed here is about the file (#302).
+ * Compares real path components, never a `\`-folded copy of them: on POSIX a
+ * backslash is a filename byte, and re-deriving a path from a normalized
+ * description of it was #304.
  */
-function splitAtBackupDir(
-  rel: string,
-): { project: string[]; stamp: string; within: string[] } | null {
-  const segments = rel.split(/[\\/]/);
+function backupArchiveDirFor(absPath: string, targetDir: string): string | null {
+  const rel = path.relative(targetDir, absPath);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  const segments = rel.split(path.sep);
+  // The final segment is the filename: a FILE called `.hackmyagent-backup` is
+  // not an archive.
   const i = segments.slice(0, -1).indexOf(BACKUP_DIR_NAME);
   if (i === -1) return null;
-  // `<stamp>/<file>` at minimum: a bare `.hackmyagent-backup/x` has no
-  // timestamp directory and so is not the shape HMA writes.
-  if (segments.length < i + 3) return null;
-  return {
-    project: segments.slice(0, i),
-    stamp: segments[i + 1],
-    within: segments.slice(i + 2),
-  };
+  // Name the timestamped run directory when there is one, so the remediation
+  // removes ONE archived run rather than every backup the project has.
+  const end = i + 2 <= segments.length - 1 ? i + 2 : i + 1;
+  return segments.slice(0, end).join(path.sep);
+}
+
+/** One predicate, so the write guard and the remediation cannot drift apart. */
+function isInsideBackupArchive(absPath: string, targetDir: string): boolean {
+  return backupArchiveDirFor(absPath, targetDir) !== null;
 }
 
 /** True when a file is config-shaped by filename, or by sitting directly in a config directory. */
@@ -1188,12 +1194,6 @@ export class HardeningScanner {
    * candidates are not re-copied one at a time.
    */
   private lastBackupCovered: string[] = [];
-  /**
-   * Memoized `isRealBackupDir` verdicts, keyed by absolute backup directory.
-   * Reset per `scan()` so a directory that gains or loses a manifest between
-   * runs is re-judged.
-   */
-  private verifiedBackupDirs = new Map<string, boolean>();
   // Files that may be created or modified during auto-fix
   private static readonly BACKUP_FILES = [
     'config.json',
@@ -1386,7 +1386,6 @@ export class HardeningScanner {
     // exists. A reused scanner instance must not let one run's backup
     // authorise the next run's writes (#300).
     this.backupContext = undefined;
-    this.verifiedBackupDirs.clear();
 
     // Resolve effective scan depth — --deep flag implies 'deep' depth
     const scanDepth: ScanDepth = options.scanDepth || (options.deep ? 'deep' : 'standard');
@@ -2425,7 +2424,13 @@ export class HardeningScanner {
               // now `sub/.env` for a nested hit, and a raw `startsWith` would
               // classify it as a normal config file and REWRITE it in place.
               const isEnvFile = path.basename(filename).startsWith('.env');
-              if (autoFix && !isEnvFile) {
+              // #309/#314 — a file inside a backup archive is never auto-fixed:
+              // rewriting it would destroy the copy `rollback` restores from.
+              // Not attempted at all rather than attempted and refused, so the
+              // finding carries a remediation that WORKS instead of a
+              // `secure --fix` that this same guard would decline.
+              const inArchive = isInsideBackupArchive(filePath, targetDir);
+              if (autoFix && !isEnvFile && !inArchive) {
                 // #301 — a key wrapped in braces has to lose the braces with
                 // it. Replacing only the inner match turns `"${ghp_aaa…}"`
                 // into `"${${GITHUB_TOKEN}}"`: nested, expanded by no shell,
@@ -2457,24 +2462,41 @@ export class HardeningScanner {
           }
 
           const isEnvFile = path.basename(filename).startsWith('.env');
+          // #309 — a pre-existing archive is scanned like any other directory,
+          // so this finding has to be actionable. `secure --fix` is the one
+          // command that CANNOT resolve it, and offering it would be the dead
+          // end the project's own rule forbids. Quoted, because a project path
+          // may contain a space (#273).
+          const archiveDir = backupArchiveDirFor(filePath, targetDir);
           findings.push({
             checkId: 'CRED-001',
             name: 'Exposed Credential',
-            description: `${keyNames.join(', ')} found in plaintext`,
+            description: archiveDir
+              ? `${keyNames.join(', ')} found in plaintext in a HackMyAgent backup`
+              : `${keyNames.join(', ')} found in plaintext`,
             category: 'credentials',
             severity: 'critical',
             passed: fileModified,
             message: keyNames.join(', '),
             file: filename,
             line: firstLine,
-            fixable: !isEnvFile, // .env files can't be auto-fixed (that's where values belong)
+            // .env files can't be auto-fixed (that's where values belong);
+            // archives must not be (rewriting them destroys the rollback copy).
+            fixable: !isEnvFile && !archiveDir,
             fixed: fileModified,
-            fix: isEnvFile
-              ? 'Add .env to .gitignore to prevent committing secrets'
-              : `${this.cliName} secure --fix`,
-            guidance: isEnvFile
-              ? 'Credentials in .env are expected but the file must be in .gitignore. Run `hackmyagent secure --fix` to create a .gitignore.'
-              : 'Replaces hardcoded credentials with ${ENV_VAR} references. Store actual values in your .env file, which should be in .gitignore.',
+            fix: archiveDir
+              ? `rm -rf '${path.join(targetDir, archiveDir)}'`
+              : isEnvFile
+                ? 'Add .env to .gitignore to prevent committing secrets'
+                : `${this.cliName} secure --fix`,
+            guidance: archiveDir
+              ? 'This is the copy `--fix` saved before rewriting your config, so it still holds the ORIGINAL secret in plaintext. '
+                + 'It is not auto-fixed, because rewriting it would destroy what `rollback` restores from. '
+                + `Confirm the live file is correct (\`${this.cliName} secure\` reports no credential outside this archive), then delete the archive. `
+                + 'Rotate the credential either way: it has been on disk in plaintext.'
+              : isEnvFile
+                ? 'Credentials in .env are expected but the file must be in .gitignore. Run `hackmyagent secure --fix` to create a .gitignore.'
+                : 'Replaces hardcoded credentials with ${ENV_VAR} references. Store actual values in your .env file, which should be in .gitignore.',
           });
         }
       } catch {
@@ -2719,107 +2741,42 @@ export class HardeningScanner {
   }
 
   /**
-   * True when this path is a copy, inside one of HMA's OWN backups, of a file
-   * that is still in the live tree — so scanning it would report the same
-   * credential twice and `--fix` would churn the copy the user restores from.
+   * True when this path is inside the backup THIS RUN just created.
    *
-   * #305: the previous test was `is any ancestor directory NAMED
-   * .hackmyagent-backup`, and the scanned tree is attacker-controlled, so the
-   * NAME was a suppression token. Identical bytes, only the directory name
-   * differing: `lib/.notabackup` scored 69/100 with 2 CRED-001 CRITICAL, while
-   * `lib/.hackmyagent-backup` scored 96/100 with the finding silent. That is
-   * the same shape as the `${...}` brace bypass this release calls
-   * unacceptable, so it gets the same answer: key on the artifact, never on a
-   * name anyone can type.
+   * #309 — the only exclusion left, and the only one that can be justified.
+   * Every previous version decided whether to suppress a CRITICAL by reading
+   * the scanned tree, which is the attacker's own filesystem:
    *
-   * Two conditions, and BOTH are required:
+   *   #292/#302  ancestor directory NAMED `.hackmyagent-backup`
+   *              -> the name was a one-word suppression token
+   *   #305       name + a `.manifest.json` + a live counterpart
+   *              -> the manifest is 70 bytes of JSON with two array keys, and
+   *                 "is really a copy" was an EXISTENCE test that never
+   *                 compared content. A forged manifest plus a benign decoy at
+   *                 the mirrored path restored the bypass exactly: identical
+   *                 credential bytes, `.notabackup` 69/100 with the CRITICAL,
+   *                 `.hackmyagent-backup` 96/100 and silent. Two variants
+   *                 needed no decoy at all — a dangling symlink, and an
+   *                 ENOTDIR counterpart where the errno was read as "exists".
    *
-   *  1. it is really an HMA backup — a `<stamp>/.manifest.json` that parses
-   *     with the shape `createBackup` writes;
-   *  2. it is really a COPY — the live file it mirrors still exists.
+   * Three rounds, three replacements of one attacker-suppliable token with
+   * another. So the property is no longer taken from the tree at all: the run's
+   * own `backupDir` is a path HMA chose this run, and nothing in the scanned
+   * tree can name it. `createBackup` runs before every check, so without this
+   * the same run would report the credential twice — once in the live file and
+   * once in the copy HMA made microseconds earlier.
    *
-   * (2) is what makes the exclusion unforgeable in the way that matters.
-   * Suppressing a genuine copy hides nothing, because the original is in the
-   * same scan and reports the finding. Planting a directory that merely looks
-   * like a backup mirrors nothing, so it is scanned like any other directory.
-   *
-   * The write hazard the exclusion originally existed for (`--fix` rewriting
-   * its own backups, #292/#302) is now independently gated per write by
-   * #300/#304, which is why the detection exclusion can be this narrow.
+   * A PRE-EXISTING archive is deliberately NOT excluded. After `--fix` the live
+   * file holds `${GITHUB_TOKEN}` and the archive holds the only remaining
+   * plaintext copy of the secret, so it is not a duplicate of anything —
+   * suppressing it would mean hiding a plaintext credential that HMA itself
+   * created. It reports, and `remediationForArchivePath` gives it a fix line
+   * that is not `secure --fix`, since the write guard refuses to edit archives.
    */
-  private async isRedundantBackupCopy(rel: string, targetDir: string): Promise<boolean> {
-    const split = splitAtBackupDir(rel);
-    if (!split) return false;
-
-    const backupDir = path.join(targetDir, ...split.project, BACKUP_DIR_NAME, split.stamp);
-    if (!(await this.isRealBackupDir(backupDir))) return false;
-
-    // What this file would be a backup OF. `project` is the tree the backup
-    // belongs to, which is the scan root itself when scanning that project and
-    // a subdirectory when scanning a parent of it (#302).
-    const liveCounterpart = path.join(targetDir, ...split.project, ...split.within);
-    if (!this.isPathWithinDirectory(liveCounterpart, targetDir)) return false;
-    return !(await this.isGenuinelyAbsent(liveCounterpart));
-  }
-
-  /**
-   * True when `dir` is a `.hackmyagent-backup` ROOT that really holds HMA
-   * backups — at least one timestamped child with a valid manifest.
-   *
-   * Same #305 reasoning as `isRedundantBackupCopy`, for the walks that skip a
-   * whole directory rather than filtering file by file. A genuine backup root
-   * mirrors files those walks find in the live tree anyway, so skipping it
-   * hides nothing; a planted directory wearing the name is walked normally.
-   */
-  private async isRealBackupRoot(dir: string): Promise<boolean> {
-    let children: string[];
-    try {
-      children = await fs.readdir(dir);
-    } catch {
-      return false;
-    }
-    for (const child of children) {
-      if (child.startsWith('.')) continue;
-      if (await this.isRealBackupDir(path.join(dir, child))) return true;
-    }
-    return false;
-  }
-
-  /**
-   * True when `backupDir` holds a manifest of the shape `createBackup` writes.
-   * Cached per scan: a tree with many files under one backup would otherwise
-   * re-read and re-parse the same manifest for each of them.
-   */
-  private async isRealBackupDir(backupDir: string): Promise<boolean> {
-    const cached = this.verifiedBackupDirs.get(backupDir);
-    if (cached !== undefined) return cached;
-
-    let verdict = false;
-    try {
-      const manifestPath = path.join(backupDir, '.manifest.json');
-      // Size-guarded because this reads from the SCANNED tree, which is
-      // attacker-controlled — unlike `rollback`, which only ever reads a
-      // manifest HMA itself just wrote. Same `MAX_FILE_SIZE` bound the content
-      // scanners use. The bound fails in the safe direction: an oversized file
-      // is judged NOT a manifest, so the directory is scanned rather than
-      // excluded.
-      const stat = await fs.stat(manifestPath);
-      if (!stat.isFile() || stat.size > MAX_FILE_SIZE) {
-        this.verifiedBackupDirs.set(backupDir, false);
-        return false;
-      }
-      const raw = await fs.readFile(manifestPath, 'utf-8');
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      // The shape, not merely valid JSON: both lists `createBackup` always
-      // writes have to be there.
-      verdict = !!parsed
-        && Array.isArray(parsed.existingFiles)
-        && Array.isArray(parsed.createdFiles);
-    } catch {
-      verdict = false;
-    }
-    this.verifiedBackupDirs.set(backupDir, verdict);
-    return verdict;
+  private isInsideOwnBackup(absPath: string): boolean {
+    const ctx = this.backupContext;
+    if (!ctx) return false;
+    return this.isPathWithinDirectory(absPath, ctx.backupDir);
   }
 
   /**
@@ -2889,6 +2846,22 @@ export class HardeningScanner {
    * there, and the fix did not land.
    */
   private async applyFixWrite(filePath: string, content: string): Promise<boolean> {
+    // #314 — never rewrite a backup archive, HMA's own or a previous run's.
+    // #300/#304 gate RECOVERABILITY: they guarantee a copy exists before a
+    // write. They do not stop `--fix` from redacting the archive the user
+    // RESTORES from, and once #309 stopped excluding archives from detection
+    // this became reachable for every prior run's backup. Refusing is
+    // fail-safe, so this may key on the directory name.
+    const ctx = this.backupContext;
+    if (ctx && isInsideBackupArchive(filePath, ctx.targetDir)) {
+      this.fixWriteFailures.push({
+        file: filePath,
+        code: 'BACKUP-ARCHIVE',
+        message: 'not written: this is a backup archive, and rewriting it would '
+          + 'destroy the copy rollback restores from',
+      });
+      return false;
+    }
     // #300 — a write the backup cannot undo is not a fix, it is data loss.
     // Reported through the same channel as a filesystem refusal, because to
     // the user it is the same outcome: the issue is still there and the fix
@@ -3795,12 +3768,14 @@ dist/
         // an exotic invocation: `secure ~/projects` over a tree where any one
         // project has been secured before.
         //
-        // #305 — but the test is on the ARTIFACT, not on the directory name.
-        // Matching the name alone handed the scanned tree a one-word
-        // suppression token. See `isRedundantBackupCopy`.
+        // #305/#309 — the exclusion is now THIS RUN's own backup directory and
+        // nothing else. Matching a name, or a name plus a forgeable manifest,
+        // handed the scanned tree a suppression token; a pre-existing archive
+        // holds a real plaintext secret and is reported. See
+        // `isInsideOwnBackup`.
         if (
           isConfigShapedFile(dirent.name, path.basename(dir)) &&
-          !(await this.isRedundantBackupCopy(rel, targetDir))
+          !this.isInsideOwnBackup(abs)
         ) {
           configFiles.push(rel);
         }
@@ -8763,13 +8738,14 @@ dist/
           continue;
         }
 
-        // Skip node_modules and .git unconditionally. A backup directory is
-        // skipped only once it is verified to BE one (#305) — the name alone
-        // was a suppression token any scanned tree could type.
+        // Skip node_modules and .git unconditionally. The only backup
+        // directory skipped is the one THIS RUN created (#309) — a name, or a
+        // name plus a forgeable manifest, was a suppression token any scanned
+        // tree could type, and this walk feeds seven checks.
         if (entryName === 'node_modules' || entryName === '.git') {
           continue;
         }
-        if (entryName === BACKUP_DIR_NAME && await this.isRealBackupRoot(fullPath)) {
+        if (this.isInsideOwnBackup(fullPath)) {
           continue;
         }
 

@@ -119,37 +119,79 @@ describe('#292 config-shaped credential detection below the scan root', () => {
     expect(cred.map((f) => f.file)).not.toContain('config/README.md');
   });
 
-  it('never treats HMA\'s own backup directory as a scan target', async () => {
-    // The recursive walk descends into everything except .git/node_modules, and
-    // `.hackmyagent-backup/` holds verbatim copies of the files this very check
-    // rewrites. Without an explicit exclusion, `--fix` substituted the
-    // credential INSIDE the backup, so `rollback` restored already-redacted
-    // content and the original was gone — the backup silently stopped being a
-    // backup. It also double-counted every finding.
+  it('does not double-report the backup THIS RUN just created', async () => {
+    // `createBackup` runs before every check, so without an exclusion the same
+    // run reports the credential twice: once in the live file and once in the
+    // copy HMA made microseconds earlier. The exclusion is `backupContext
+    // .backupDir` — a path HMA chose this run, which nothing in the scanned
+    // tree can name (#309).
     //
-    // #305: the fixture is now a REAL backup — a valid manifest, and a live
-    // file that the copy mirrors. Those are the two things that make it HMA's
-    // own artifact rather than a directory wearing its name, and suppressing
-    // it hides nothing because the live original reports the same finding.
+    // The fixture deliberately does NOT pre-seed a backup: the archive under
+    // test has to be one this run produced, or the test is measuring the
+    // pre-existing-archive case below instead.
     const dir = await mkdtemp(path.join(tmpdir(), 'hma-292-bak-'));
     try {
-      const backupBody = JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n';
+      const body = JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n';
       await writeFile(path.join(dir, 'package.json'), '{"name":"c","version":"1.0.0"}\n');
-      await writeFile(path.join(dir, 'config.json'), backupBody);
-      const backupCopy = await seedRealBackup(dir, { 'config.json': backupBody });
+      await writeFile(path.join(dir, 'config.json'), body);
 
-      const scanner = new HardeningScanner();
-      const result = await scanner.scan({ targetDir: dir, autoFix: true });
+      const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+      const cred = result.findings.filter((f) => f.checkId === 'CRED-001');
 
       // Non-vacuity: the live original must fire, or "no backup findings" is
       // just "the walk found nothing anywhere".
       expect(
-        result.findings.some((f) => f.checkId === 'CRED-001' && f.file === 'config.json'),
+        cred.some((f) => f.file === 'config.json'),
         'the live config never fired; this test is measuring nothing',
       ).toBe(true);
+      expect(
+        cred.filter((f) => f.file?.includes('.hackmyagent-backup')),
+        'the run reported the copy it had just made itself',
+      ).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 
-      const backupFindings = result.findings.filter((f) => f.file?.includes('.hackmyagent-backup'));
-      expect(backupFindings, 'the backup directory must not produce findings').toEqual([]);
+  it('REPORTS a pre-existing archive, and never rewrites it', async () => {
+    // #309 reversed the previous expectation here, so the reason is recorded
+    // rather than the assertion quietly flipped.
+    //
+    // The old test asserted that a genuine pre-existing backup produced NO
+    // findings, on the theory that it duplicated the live file. That theory is
+    // false after a `--fix`: the live file then holds `${GITHUB_TOKEN}` and the
+    // archive holds the ONLY remaining plaintext copy of the secret. It is not
+    // a duplicate of anything, and suppressing it meant hiding a plaintext
+    // credential that HMA itself created. Worse, the predicate that decided
+    // "this really is a backup" read the scanned tree — a name, then a name
+    // plus a 70-byte manifest plus an existence probe — so it was forgeable
+    // three rounds running.
+    //
+    // The write hazard is real and is now gated separately, on its own: `--fix`
+    // refuses to write into an archive. That assertion is unchanged, and is the
+    // one that actually protects the user's bytes.
+    const dir = await mkdtemp(path.join(tmpdir(), 'hma-292-bak2-'));
+    try {
+      const backupBody = JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n';
+      await writeFile(path.join(dir, 'package.json'), '{"name":"c","version":"1.0.0"}\n');
+      await writeFile(path.join(dir, 'config.json'), '{"note":"already remediated"}\n');
+      const backupCopy = await seedRealBackup(dir, { 'config.json': backupBody });
+
+      const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+      const archived = result.findings.filter(
+        (f) => f.checkId === 'CRED-001' && f.file?.includes('.hackmyagent-backup'),
+      );
+
+      expect(
+        archived.length,
+        'the plaintext secret left behind in HMA\'s own archive was not reported',
+      ).toBeGreaterThan(0);
+
+      // Not a dead end: `secure --fix` is the one command that cannot resolve
+      // this, so it must not be the offered remedy.
+      expect(archived[0].fixable).toBe(false);
+      expect(archived[0].fix).not.toContain('secure --fix');
+      expect(archived[0].fix).toContain('.hackmyagent-backup');
 
       const { readFile } = await import('node:fs/promises');
       expect(
@@ -196,11 +238,10 @@ describe('#292 config-shaped credential detection below the scan root', () => {
         'the parent scan never reached the child; this test is measuring nothing',
       ).toBe(true);
 
-      expect(
-        result.findings.filter((f) => f.file?.includes('.hackmyagent-backup')),
-        'a backup directory one level down produced findings (double-counted)',
-      ).toEqual([]);
-
+      // #309 — the child's archive is a foreign archive to this run, so it is
+      // reported like any other directory holding a plaintext secret. What must
+      // NOT happen is the parent scan REWRITING it, which is the harm #302 was
+      // filed for and is asserted below.
       const { readFile } = await import('node:fs/promises');
       expect(
         await readFile(backupCopy, 'utf-8'),
@@ -331,6 +372,165 @@ describe('#292 config-shaped credential detection below the scan root', () => {
         cred.length,
         'writing a plausible .manifest.json was enough to suppress detection (#305)',
       ).toBeGreaterThan(0);
+    });
+
+    /**
+     * #309 — THE QUADRANT THAT WAS THE BYPASS.
+     *
+     * The #305 tests above ran three of the four combinations of
+     * {manifest} x {live counterpart} and every one of them passed. The fourth,
+     * both-true, was the one the guard was designed around, so it was the one
+     * never asserted — and it restored the full suppression:
+     *
+     *   .notabackup          69/100, CRED-001 CRITICAL, exit 1
+     *   .hackmyagent-backup  96/100, silent,            exit 0
+     *
+     * on identical credential bytes. The forged half costs 70 bytes of JSON and
+     * a benign decoy file. So the whole 2x2 is enumerated here rather than the
+     * cases the fix was built for, and each case is compared against a control
+     * tree that differs by one word in a directory name — any divergence at all
+     * IS the bypass, whatever the reasoning behind it.
+     */
+    for (const manifest of [false, true]) {
+      for (const live of [false, true]) {
+        it(`is unaffected by the directory name: manifest=${manifest} live=${live}`, async () => {
+          const named = await scanWithCredIn(NAMED, { manifest, live });
+          const control = await scanWithCredIn(CONTROL, { manifest, live });
+          expect(
+            control.length,
+            'the control fixture did not fire; nothing is being compared',
+          ).toBeGreaterThan(0);
+          expect(
+            named.length,
+            `manifest=${manifest} live=${live}: the .hackmyagent-backup name changed `
+            + 'the verdict, so it is still a suppression token the scanned tree can type',
+          ).toBe(control.length);
+        });
+      }
+    }
+
+    it('suppression cannot be bought with a dangling-symlink counterpart', async () => {
+      // No decoy needed at all: `lstat` says the entry exists, and the config
+      // walk skips symlinks, so the counterpart was never read or reported.
+      const dir = await mkdtemp(path.join(tmpdir(), 'hma-309-sym-'));
+      try {
+        const { symlink } = await import('node:fs/promises');
+        await writeFile(path.join(dir, 'package.json'), '{"name":"c","version":"1.0.0"}\n');
+        await mkdir(path.join(dir, NAMED), { recursive: true });
+        await writeFile(
+          path.join(dir, NAMED, 'config.json'),
+          JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n',
+        );
+        await writeFile(
+          path.join(dir, NAMED, '.manifest.json'),
+          JSON.stringify({ version: 2, existingFiles: [], absentAtBackup: [], createdFiles: [] }),
+        );
+        await mkdir(path.join(dir, 'lib'), { recursive: true });
+        await symlink('./nowhere-at-all', path.join(dir, 'lib', 'config.json'));
+
+        const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
+        expect(
+          result.findings.filter((f) => f.checkId === 'CRED-001' && !f.passed).length,
+          'a dangling symlink was accepted as proof the copy mirrored a live file (#309)',
+        ).toBeGreaterThan(0);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    /**
+     * #314 — the write guard, asserted at the layer that enforces it.
+     *
+     * Every auto-fix write goes through `applyFixWrite`, so that is where "never
+     * rewrite a backup archive" belongs. It is deliberately NOT reachable end to
+     * end today: CRED-001 skips the attempt before it gets here (so the finding
+     * can carry a remediation that works instead of a refusal), and every other
+     * fix-capable discovery is either root-relative or skips hidden directories.
+     * That was verified caller by caller, not assumed.
+     *
+     * An unreachable guard is exactly the kind of thing that rots into a no-op,
+     * so it is exercised directly rather than left to an end-to-end path that
+     * does not exist. #309 widened detection INTO archives, which is what makes
+     * this the layer that has to hold if any future check gains a recursive
+     * walk — the same "fix at the layer" reasoning as #300.
+     */
+    it('applyFixWrite refuses to write inside a backup archive', async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), 'hma-314-write-'));
+      try {
+        const archive = path.join(dir, '.hackmyagent-backup', '2026-01-01-000000');
+        await mkdir(archive, { recursive: true });
+        const victim = path.join(archive, 'config.json');
+        const original = JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n';
+        await writeFile(victim, original);
+
+        // A REAL backup context for this run, with the manifest `ensureBackupCovers`
+        // appends to. Without it every write fails at the #300 gate instead, and
+        // the control below would agree with the archive case for the wrong
+        // reason — which is what the non-vacuity assertion caught.
+        const runBackup = path.join(dir, '.hackmyagent-backup', '2026-02-02-000000');
+        await mkdir(runBackup, { recursive: true });
+        await writeFile(
+          path.join(runBackup, '.manifest.json'),
+          JSON.stringify({ version: 2, existingFiles: [], absentAtBackup: [], createdFiles: [] }),
+        );
+
+        const scanner = new HardeningScanner() as unknown as {
+          backupContext?: { backupDir: string; targetDir: string; covered: Set<string> };
+          applyFixWrite(p: string, c: string): Promise<boolean>;
+        };
+        scanner.backupContext = { backupDir: runBackup, targetDir: dir, covered: new Set() };
+
+        const wrote = await scanner.applyFixWrite(victim, 'CLOBBERED\n');
+        const { readFile } = await import('node:fs/promises');
+
+        expect(wrote, 'the write into a backup archive was allowed').toBe(false);
+        expect(
+          await readFile(victim, 'utf-8'),
+          'the archive was rewritten; rollback would restore redacted content',
+        ).toBe(original);
+
+        // Non-vacuity: the same call on a normal path must succeed, or this is
+        // asserting nothing more than "applyFixWrite returns false".
+        const ordinary = path.join(dir, 'config.json');
+        await writeFile(ordinary, original);
+        expect(
+          await scanner.applyFixWrite(ordinary, 'REWRITTEN\n'),
+          'the control write failed for an unrelated reason; nothing is being compared',
+        ).toBe(true);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('suppression cannot be bought with an ENOTDIR counterpart', async () => {
+      // Nothing exists at the counterpart path at all. `lstat` raised ENOTDIR
+      // rather than ENOENT, `isGenuinelyAbsent` is fail-SAFE and returned
+      // false, and the suppression site read `!absent` as "it exists" — so
+      // every non-ENOENT errno silenced a CRITICAL.
+      const dir = await mkdtemp(path.join(tmpdir(), 'hma-309-notdir-'));
+      try {
+        const deep = path.join(dir, 'lib', '.hackmyagent-backup', '2026-01-01-000000', 'sub');
+        await mkdir(deep, { recursive: true });
+        await writeFile(path.join(dir, 'package.json'), '{"name":"c","version":"1.0.0"}\n');
+        await writeFile(
+          path.join(deep, 'config.json'),
+          JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n',
+        );
+        await writeFile(
+          path.join(deep, '..', '.manifest.json'),
+          JSON.stringify({ version: 2, existingFiles: [], absentAtBackup: [], createdFiles: [] }),
+        );
+        // `lib/sub` is a FILE, so lstat('lib/sub/config.json') raises ENOTDIR.
+        await writeFile(path.join(dir, 'lib', 'sub'), 'i am a regular file\n');
+
+        const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
+        expect(
+          result.findings.filter((f) => f.checkId === 'CRED-001' && !f.passed).length,
+          'an ENOTDIR errno was read as "the counterpart exists" and silenced a CRITICAL (#309)',
+        ).toBeGreaterThan(0);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
     });
   });
 
