@@ -404,13 +404,25 @@ describe('#291 governance model reconciliation', () => {
     it('cites scan-soul, not harden-soul, when the document subverts itself', () => {
       const steps = nextSteps(dirViolating);
       // Precondition: this fixture must reach the Next Steps branch at all.
-      expect(steps, 'no governance step offered on a below-bar tree').toMatch(/Add governance:/);
+      expect(steps, 'no governance step offered on a below-bar tree')
+        .toMatch(/(?:Add|Fix) governance:/);
       expect(
         steps,
         'Next Steps sends a subverted document to harden-soul, which adds controls '
         + 'and cannot remove a violation — the command runs and the score does not move',
-      ).not.toMatch(/Add governance:\s+hackmyagent harden-soul/);
-      expect(steps).toMatch(/Add governance:\s+hackmyagent scan-soul/);
+      ).not.toMatch(/governance:\s+hackmyagent harden-soul/);
+      expect(steps).toMatch(/governance:\s+hackmyagent scan-soul/);
+    });
+
+    it('labels the step with what the command actually does', () => {
+      // #311 (LOW) — `Add governance:` sat over a `scan-soul` citation, which
+      // describes neither the cause nor the effect: nothing is being added, the
+      // controls are already present and one of them is contradicted.
+      expect(
+        nextSteps(dirViolating),
+        'the step still says "Add" while citing the command that lists violations',
+      ).toMatch(/Fix governance:\s+hackmyagent scan-soul/);
+      expect(nextSteps(dirNone)).toMatch(/Add governance:\s+hackmyagent harden-soul/);
     });
 
     it('still offers harden-soul when the document is merely absent', () => {
@@ -418,6 +430,37 @@ describe('#291 governance model reconciliation', () => {
       // `harden-soul` unreachable where it IS the right command.
       const steps = nextSteps(dirNone);
       expect(steps).toMatch(/Add governance:\s+hackmyagent harden-soul/);
+    });
+
+    it('offers harden-soul for a document that EXISTS but is inadequate', () => {
+      // #311 — the regression. `identity.governanceFile === null` is false as
+      // soon as any document exists, so a prose-only file scoring near zero was
+      // offered nothing at all, while the Path forward line directly above it
+      // promised "adding the missing governance controls". `harden-soul` is
+      // exactly right here: it APPENDS the missing sections to the file that is
+      // already there.
+      const j = detectJson(dirProse);
+      // Preconditions, so this cannot pass by measuring the absent case.
+      expect(j.identity.governanceFile, 'fixture must HAVE a governance document')
+        .not.toBeNull();
+      expect(j.summary.governanceRaw, 'fixture must be below the bar').toBeLessThan(100);
+
+      expect(
+        nextSteps(dirProse),
+        'a present-but-inadequate governance document was offered no way forward, '
+        + 'under a meter that says the score can still move (#311)',
+      ).toMatch(/Add governance:\s+hackmyagent harden-soul/);
+    });
+
+    it('offers no governance step once the meter is full', () => {
+      // The negative side: the step must not become unconditional noise. Without
+      // this, "always show it" passes every assertion above.
+      const j = detectJson(dirHardened);
+      expect(j.summary.governanceRaw, 'fixture must be AT the bar').toBe(100);
+      expect(
+        nextSteps(dirHardened),
+        'a fully conformant project was told to add governance',
+      ).not.toMatch(/(?:Add|Fix) governance:/);
     });
 
     it('agrees with the finding layer about which cause applies', () => {
@@ -441,6 +484,84 @@ describe('#291 governance model reconciliation', () => {
           + 'whether the document is subverted',
         ).toBe(subvertedByCode);
       }
+    });
+
+    /**
+     * #311 — the governance step must not depend on the host running an AI
+     * process.
+     *
+     * This is the assertion that actually catches the regression. Every fixture
+     * above runs under a `ps` shim reporting TWO agents, and an inadequate
+     * document marks those agents ungoverned — so the old
+     * `noGovernanceDoc || agents.some(ungoverned)` kept its step here and looked
+     * fine. On CI, where `ps` shows no AI process, the second disjunct is false
+     * and a 0/100 meter had no path forward at all.
+     *
+     * So the agent list is injected as EMPTY, which is the CI condition, and the
+     * step still has to be there. Same #306 discipline: inject the state, never
+     * sample the host.
+     */
+    it('offers the step on a host with no AI process running', () => {
+      const emptyPsDir = path.join(root, 'bin-noagents');
+      mkdirSync(emptyPsDir, { recursive: true });
+      const psPath = path.join(emptyPsDir, 'ps');
+      writeFileSync(
+        psPath,
+        '#!/bin/sh\n'
+        + 'echo "USER  PID  %CPU %MEM      VSZ    RSS   TT  STAT STARTED      TIME COMMAND"\n',
+      );
+      chmodSync(psPath, 0o755);
+
+      const runWithoutAgents = (dir: string): string => {
+        try {
+          return execFileSync(process.execPath, [CLI, 'detect', dir], {
+            encoding: 'utf8',
+            timeout: 180_000,
+            env: {
+              ...process.env,
+              NO_COLOR: '1',
+              PATH: `${emptyPsDir}${path.delimiter}${process.env.PATH ?? ''}`,
+              HOME: fakeHome,
+            },
+          });
+        } catch (e: unknown) {
+          return String((e as { stdout?: string }).stdout ?? '');
+        }
+      };
+
+      // Non-vacuity: the shim must actually have removed the agents, or this is
+      // just the two-agent case again under a different name.
+      const raw = runWithoutAgents(dirProse);
+      const jsonOut = JSON.parse(
+        (() => {
+          try {
+            return execFileSync(process.execPath, [CLI, 'detect', dirProse, '--json'], {
+              encoding: 'utf8',
+              timeout: 180_000,
+              env: {
+                ...process.env,
+                NO_COLOR: '1',
+                PATH: `${emptyPsDir}${path.delimiter}${process.env.PATH ?? ''}`,
+                HOME: fakeHome,
+              },
+            });
+          } catch (e: unknown) {
+            return String((e as { stdout?: string }).stdout ?? '');
+          }
+        })(),
+      ) as DetectJson;
+      expect(
+        jsonOut.summary.totalAgents,
+        'the empty-ps shim did not take effect; this is measuring the 2-agent case',
+      ).toBe(0);
+
+      const i = raw.indexOf('Next Steps');
+      expect(i, 'no Next Steps block in detect output').toBeGreaterThan(-1);
+      expect(
+        raw.slice(i),
+        'with no AI process running, an inadequate governance document has no path '
+        + 'forward — the step survived only on the host-dependent disjunct (#311)',
+      ).toMatch(/Add governance:\s+hackmyagent harden-soul/);
     });
 
     it('takes the plural in the partitive, at every count', () => {

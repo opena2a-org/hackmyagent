@@ -628,6 +628,43 @@ export function governanceRemediation(
     : `hackmyagent harden-soul ${target}`;
 }
 
+/**
+ * The label that matches the command. `Add governance:` over a `scan-soul`
+ * citation described neither the cause nor the effect: nothing is being added,
+ * the controls are already there and one of them is being contradicted.
+ */
+export function governanceStepLabel(findings: readonly Pick<Finding, 'code'>[]): string {
+  return governanceIsSubverted(findings) ? 'Fix governance:' : 'Add governance:';
+}
+
+/**
+ * True when the governance meter still has room to move, so Next Steps owes the
+ * user a command for it.
+ *
+ * #311 — this was `identity.governanceFile === null`, which is null only when
+ * NO governance document exists at all. A prose-only `CLAUDE.md` scoring 0/100
+ * therefore got no governance step, while the Path forward line one screen up
+ * was still promising `0 -> 100 by adding the missing governance controls`. A
+ * promise with no command is the dead end this project's own rule forbids, and
+ * `harden-soul` is exactly right there — it APPENDS missing sections to an
+ * existing document.
+ *
+ * Deliberately host-independent. The step previously survived only via a second
+ * disjunct, "some agent is ungoverned", which comes from `ps`: on CI, or any
+ * machine not currently running an AI process, a 0/100 meter was a dead end.
+ * That disjunct is also subsumed — full conformance with no subversion is what
+ * marks every agent `governed` — so dropping it costs no coverage.
+ *
+ * Same inputs as the Path forward line by construction, so the two surfaces
+ * cannot promise different things.
+ */
+export function governanceActionAvailable(
+  findings: readonly Pick<Finding, 'code'>[],
+  governanceRaw: number,
+): boolean {
+  return governanceIsSubverted(findings) || governanceRaw < 100;
+}
+
 function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScanResult): Finding[] {
   const findings: Finding[] = [];
   const target = citationTarget(result.scanDirectory);
@@ -1142,29 +1179,45 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
   // ── Next Steps ────────────────────────────────────────────────────
   type Step = { label: string; cmd: string; desc: string };
   const steps: Step[] = [];
-  if (result.findings.length > 0) {
+  // #307 — the THIRD consumer of `identity.soulFiles`, and the one that was
+  // missed when the other two were fixed. `soulFiles` counts `SOUL.md` alone,
+  // so a project governed by a fully-conformant `CLAUDE.md` was told to
+  // `harden-soul` right under a Governance meter reading 100/100 that had just
+  // been computed FROM that file.
+  //
+  // #311 — but "a document exists" was the wrong question too, in the other
+  // direction: it is false only when NOTHING exists, so an inadequate but
+  // present document lost its step entirely. The question is whether the METER
+  // can still move, which is what the Path forward line already answers — so
+  // both surfaces read the same predicate and cannot promise different things.
+  //
+  // Rendered OUTSIDE the findings block, for the same reason the Path forward
+  // line is (#291): a tree can sit far below the governance bar with nothing
+  // else wrong. On a host with no AI process running there is no ungoverned-
+  // agent finding, so the whole block was skipped and a 4/100 meter was left
+  // promising "adding the missing governance controls" with no command anywhere
+  // in the output. That is the CI condition, not an exotic one.
+  //
+  // The command and the label come from the shared cause split, so this surface
+  // cites what the ungoverned finding cites: `harden-soul` cannot remove a
+  // violation, and offering it as the next step on a subverted document is the
+  // same dead end one screen lower.
+  // Step ORDER is unchanged: `Full scan` stays first where it applies, and the
+  // governance step keeps its original position behind it. Only its GATE moved.
+  const hasFindings = result.findings.length > 0;
+  if (hasFindings) {
     steps.push({ label: 'Full scan:',       cmd: `hackmyagent secure ${targetDir}`, desc: 'deep security scan with findings' });
-    // #307 — the THIRD consumer of `identity.soulFiles`, and the one that was
-    // missed when the other two were fixed. `soulFiles` counts `SOUL.md`
-    // alone, so a project governed by a fully-conformant `CLAUDE.md` was told
-    // to `harden-soul` right under a Governance meter reading 100/100 that had
-    // just been computed FROM that file. `governanceFile` is null only when no
-    // governance document was found at all, which is the actual question.
-    //
-    // The command comes from the shared cause split, so this surface cites
-    // what the ungoverned finding cites: `harden-soul` cannot remove a
-    // violation, and offering it as the next step on a subverted document is
-    // the same dead end one screen lower.
-    const noGovernanceDoc = result.identity.governanceFile === null;
-    if (noGovernanceDoc || result.agents.some((a) => a.governanceStatus === 'no governance')) {
-      steps.push({
-        label: 'Add governance:',
-        cmd: governanceRemediation(result.findings, targetDir),
-        desc: governanceIsSubverted(result.findings)
-          ? 'list the sentences that subvert your own controls'
-          : 'generate SOUL.md behavioral boundaries',
-      });
-    }
+  }
+  if (governanceActionAvailable(result.findings, summary.governanceRaw ?? 100)) {
+    steps.push({
+      label: governanceStepLabel(result.findings),
+      cmd: governanceRemediation(result.findings, targetDir),
+      desc: governanceIsSubverted(result.findings)
+        ? 'list the sentences that subvert your own controls'
+        : 'generate SOUL.md behavioral boundaries',
+    });
+  }
+  if (hasFindings) {
     if (result.aiConfigs.some((cc) => cc.risk === 'critical')) {
       steps.push({ label: 'Protect credentials:', cmd: `opena2a protect ${targetDir}`, desc: 'encrypt hardcoded secrets into secure vault' });
     }
