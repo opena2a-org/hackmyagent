@@ -7128,10 +7128,26 @@ dist/
       keptUnverifiable: [],
     };
 
-    // Restore existing files from backup
+    // Restore existing files from backup.
+    //
+    // #312 — the manifest is read from the SCANNED tree, which is attacker-
+    // controlled, and this loop had no containment check while the
+    // `createdFiles` loop below did. A cloned repo carrying its own
+    // `.hackmyagent-backup/9999-99-99-999999/` (which sorts above any real
+    // stamp, so it is always selected as the latest) turned `rollback` into an
+    // arbitrary file write:
+    //
+    //   existingFiles: ["../<stamp>/authorized_keys"]
+    //   -> copies the attacker's bytes OUTSIDE the scanned tree
+    //   -> "[+] Rollback complete / Restored 1 modified file"
+    //
+    // Guarding the destination is sufficient for both ends: if the joined
+    // destination stays inside `targetDir`, the normalized relative path has no
+    // leading `..`, so the source cannot climb out of `backupDir` either.
     for (const file of manifest.existingFiles) {
       const sourcePath = path.join(backupDir, file);
       const destPath = path.join(targetDir, file);
+      if (!this.isPathWithinDirectory(destPath, targetDir)) continue;
       try {
         await fs.copyFile(sourcePath, destPath);
         report.restored.push(file);
@@ -7170,6 +7186,10 @@ dist/
     // these are reported instead of acted on.
     for (const file of manifest.legacyCreatedFiles ?? []) {
       const filePath = path.join(targetDir, file);
+      // #312 — no write here, but an unguarded path still lets a forged
+      // manifest probe for files outside the tree and have their existence
+      // reported back. All three manifest loops now agree.
+      if (!this.isPathWithinDirectory(filePath, targetDir)) continue;
       try {
         await fs.access(filePath);
         report.keptUnverifiable.push(file);

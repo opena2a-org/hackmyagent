@@ -177,6 +177,81 @@ describe('rollback contract (#262)', () => {
       rmSync(parent, { recursive: true, force: true });
     }
   });
+
+  /**
+   * #312 — the same traversal, through the loop that had no guard.
+   *
+   * `createdFiles` was guarded (the test above); `existingFiles` was not, and it
+   * is the loop that WRITES. The manifest is read from the scanned tree, so a
+   * cloned repo carrying its own `.hackmyagent-backup/9999-99-99-999999/` — a
+   * stamp that sorts above any real one, and is therefore always selected as
+   * the latest — turned `rollback` into an arbitrary file write that reported
+   * success.
+   *
+   * Pre-existing: reproduces on 0.25.1 too, so not a regression from this
+   * stack. It is #305 that taught this code to reason about forged manifests in
+   * an attacker-controlled tree while leaving the manifest a write primitive.
+   */
+  it('does not WRITE outside the target directory via a manifest path', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'hma-312-'));
+    const target = join(parent, 'scan-target');
+    mkdirSync(target, { recursive: true });
+
+    // `seedBackup` stamps the backup `2026-07-27-120000`, and the escape is
+    // built around that name so BOTH ends resolve somewhere real:
+    //   source = join(backupDir, ESCAPE) -> <backupDir>/authorized_keys
+    //   dest   = join(target,    ESCAPE) -> <parent>/2026-07-27-120000/…
+    // The source has to exist, or a missing containment guard fails on ENOENT
+    // instead of writing, and the test would pass for the wrong reason.
+    const STAMP = '2026-07-27-120000';
+    const ESCAPE = `../${STAMP}/authorized_keys`;
+    const victimDir = join(parent, STAMP);
+    mkdirSync(victimDir, { recursive: true });
+
+    const original = 'LEGITIMATE_USER_CONTENT\n';
+    const victim = join(victimDir, 'authorized_keys');
+    writeFileSync(victim, original, 'utf8');
+
+    try {
+      seedBackup(
+        target,
+        {
+          version: 2,
+          existingFiles: [ESCAPE, 'config.json'],
+          absentAtBackup: [],
+          createdFiles: [],
+        },
+        { 'config.json': 'RESTORED_ORIGINAL\n', 'authorized_keys': 'ATTACKER_PAYLOAD\n' },
+      );
+      writeFileSync(join(target, 'config.json'), 'MODIFIED\n', 'utf8');
+
+      // Precondition: the escape must actually resolve to the victim, or this
+      // asserts nothing. A broken traversal path exits the same way a blocked
+      // one does.
+      expect(join(target, ESCAPE)).toBe(victim);
+      expect(existsSync(join(target, '.hackmyagent-backup', STAMP, 'authorized_keys'))).toBe(true);
+
+      const report = await scanner.rollback(target);
+
+      expect(
+        readFileSync(victim, 'utf8'),
+        'rollback overwrote a file outside the scanned tree from a forged manifest, '
+        + 'and reported a clean restore (#312)',
+      ).toBe(original);
+      expect(report.restored).not.toContain(ESCAPE);
+
+      // Non-vacuity: the guard must block the escape without becoming a blanket
+      // refusal. An in-tree entry in the SAME manifest still has to restore, or
+      // this passes just as well against a rollback that does nothing at all.
+      expect(
+        readFileSync(join(target, 'config.json'), 'utf8'),
+        'the legitimate in-tree restore was blocked too; the guard is too broad',
+      ).toBe('RESTORED_ORIGINAL\n');
+      expect(report.restored).toContain('config.json');
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('recordCreatedFiles gating (#262)', () => {
