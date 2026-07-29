@@ -305,6 +305,33 @@ describe('CredentialContextAnalyzer', () => {
   });
 
   describe('MCP env secrets', () => {
+    it('does not flag a form blank in an MCP env block (SEM-CRED-004)', () => {
+      // Adversarial review MEDIUM: SEM-CRED-004 had a key-name test and NO
+      // value test, so the reported false positive reproduced one file type
+      // over — an onboarding `.mcp.json` template scored CRITICAL on a drawn
+      // blank. The shared value gate now guards this call site too.
+      const file = makeFile(
+        '.mcp.json',
+        JSON.stringify({ mcpServers: { gh: { env: { GITHUB_TOKEN: '_'.repeat(47), API_KEY: '-'.repeat(30) } } } }, null, 2),
+        'mcp_config',
+      );
+      const findings = analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-004');
+      expect(
+        findings,
+        `a form blank in an MCP env block is not a secret. Got: ${findings.map((f) => f.title).join(', ')}`,
+      ).toHaveLength(0);
+    });
+
+    it('STILL flags a real secret in an MCP env block (control)', () => {
+      const file = makeFile(
+        '.mcp.json',
+        JSON.stringify({ mcpServers: { gh: { env: { GITHUB_TOKEN: 'ghp_' + 'a'.repeat(36), DB_PASSWORD: 'dev_pass' } } } }, null, 2),
+        'mcp_config',
+      );
+      const findings = analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-004');
+      expect(findings.length, 'real secrets in an MCP env block must still fire').toBeGreaterThan(1);
+    });
+
     it('detects hardcoded secrets in MCP server env blocks', () => {
       const content = JSON.stringify({
         mcpServers: {

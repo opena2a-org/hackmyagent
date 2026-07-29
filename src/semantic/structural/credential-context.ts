@@ -61,7 +61,7 @@ function classifySecret(key: string, value: string): { type: string; masked: str
  * Value-level gate shared by all three SEM-CRED-002 shapes (JSON pair, YAML
  * pair, `KEY=VALUE`).
  *
- * Hoisted into one function on purpose. The three call sites carried three
+ * Hoisted into one function on purpose. Three of the four call sites carried
  * byte-identical copies of the length/all-letters test, and the entropy floor
  * that fixed AST-CRED-003 was added to neither — so the reported complaint kept
  * reproducing through this detector: a `CLAUDE.md` onboarding checklist reading
@@ -556,7 +556,18 @@ function detectMcpEnvSecrets(file: AnalysisFile): SemanticFinding[] {
 
     for (const [key, value] of Object.entries(serverConfig.env)) {
       if (typeof value !== 'string') continue;
-      if (SECRET_KEY_PATTERN.test(key) && !isNonSecretValue(value)) {
+      // The value gate belongs here too. SEM-CRED-004 had a key-name test and
+      // NO value test, so the reported false positive reproduced one file type
+      // over: an `.mcp.json` onboarding template carrying
+      // `"GITHUB_TOKEN": "________"` scored CRITICAL on a drawn blank, exactly
+      // as the `CLAUDE.md` checklist did. Adversarial review found it by asking
+      // who ELSE decides this question — `looksLikeSecretValue`'s own docstring
+      // claimed three call sites, and there were four.
+      if (
+        SECRET_KEY_PATTERN.test(key) &&
+        !isNonSecretValue(value) &&
+        looksLikeSecretValue(value.trim().replace(/^["']|["']$/g, ''))
+      ) {
         // Find the line number
         let lineNum: number | undefined;
         for (let i = 0; i < lines.length; i++) {

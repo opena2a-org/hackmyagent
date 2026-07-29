@@ -638,7 +638,20 @@ export function hasAnchoredVendorCredential(text: string): boolean {
 const FILLER_CHARS = new Set(['_', '-', '.', '*', '#', '~', '?', '=', ' ', '\t']);
 
 /**
- * Non-filler characters a value must carry to be a value.
+ * Length at which a consecutive filler run stops being punctuation and becomes
+ * something someone DREW.
+ *
+ * This is the distinction the whole rule turns on, and dropping it is what
+ * broke `dev_pass`. Filler characters appear inside real secrets constantly,
+ * but as SEPARATORS, one at a time — `dev_pass`, `pass-123`, `api.key1`,
+ * `super-secret-jwt-key-2024`, a UUID, `sk-ant-api03-…`. Nobody writes four in
+ * a row unless they are drawing a line. So a run this long is subtracted from
+ * the value and anything shorter is part of it.
+ */
+const MIN_DRAWN_RUN_CHARS = 4;
+
+/**
+ * Characters a value must carry, once the drawn runs are removed, to be a value.
  *
  * Matches the 8-character floor `looksLikeSecretValue` already applies to the
  * value as a whole, so a secret is judged by the same minimum whether or not
@@ -669,27 +682,42 @@ export function isVisualFiller(value: string): boolean {
   // A redaction bar. `x` is not a filler character in general — it appears in
   // real base64 — but a value that is nothing else is a mask, not a key.
   if (/^x+$/i.test(value)) return true;
-  // Count what is NOT filler, and apply the same 8-character floor the caller
-  // applies to the whole value. A drawn blank is made of filler by definition,
-  // so however long it is drawn it contributes nothing.
+  // Subtract what was DRAWN — the long runs — and apply the same 8-character
+  // floor the caller applies to the whole value. Separators survive, because
+  // they are part of the value.
   //
-  // Two other rules were tried here and both were wrong, in opposite directions:
+  // THREE rules were tried here before this one, each failing in its own
+  // direction. They are recorded because the shape of the mistake repeated:
   //
-  //   - The filler SHARE of the whole value. This is the same whole-value
-  //     judgement `findCredibleWindowOffset` exists to avoid, and it failed in
-  //     the identical way at the identical threshold: `'_'x361 + <40-char
-  //     secret>` is 90.02% underscores, so it was called a blank and the secret
-  //     dropped, while `'_'x360 + secret` was reported. An ordinary dashed
-  //     trailing comment did it too, since the YAML value is the rest of the
-  //     line. Any rule whose verdict moves with how much filler is present has
-  //     this bug; counting only the non-filler characters cannot.
-  //   - The longest contiguous non-filler STRETCH. That reads every separator
-  //     as a boundary, so `super-secret-jwt-key-2024` — whose longest stretch is
-  //     `secret`, six characters — stopped being a secret. An existing test
-  //     caught it.
+  //   - The filler SHARE of the whole value. The same whole-value judgement
+  //     `findCredibleWindowOffset` exists to avoid, and it failed at the
+  //     identical threshold: `'_'x361 + <40-char secret>` is 90.02%
+  //     underscores, so it was called a blank and the secret dropped, while
+  //     `'_'x360 + secret` was reported. A dashed trailing comment did it too,
+  //     since the YAML/env value is the rest of the line. Any rule whose
+  //     verdict moves with how MUCH filler is present has this bug.
+  //   - The longest contiguous non-filler STRETCH. Reads every separator as a
+  //     boundary, so `super-secret-jwt-key-2024` — longest stretch `secret`,
+  //     six characters — stopped being a secret.
+  //   - Counting non-filler characters with no notion of a run. Strictly
+  //     stricter than the caller's length floor rather than equal to it, so
+  //     every 8-character password carrying ONE separator went silent:
+  //     `dev_pass`, `prod_key`, `pass-123`, `api.key1`, `pw#12345`. The score
+  //     rose 27 points on a lost CRITICAL.
+  //
+  // The RUN length is what separates a drawn blank from punctuation, so it is
+  // the thing to measure. Pinned in both directions: `dev_pass` (8 characters,
+  // one separator, a secret) and `'_'x47` (a blank).
   let core = 0;
+  let run = 0;
   for (const ch of value) {
-    if (!FILLER_CHARS.has(ch) && ++core >= MIN_SECRET_CORE_CHARS) return false;
+    if (FILLER_CHARS.has(ch)) {
+      run++;
+      continue;
+    }
+    if (run > 0 && run < MIN_DRAWN_RUN_CHARS) core += run; // punctuation, kept
+    run = 0;
+    if (++core >= MIN_SECRET_CORE_CHARS) return false;
   }
-  return true;
+  return true
 }

@@ -795,12 +795,33 @@ describe('credential-format entropy floor', () => {
       expect(isVisualFiller(`${drawFrom(B64, 32, 5)}   # ${'='.repeat(80)}`)).toBe(false);
     });
 
+    it('keeps a short password whose only filler is a SEPARATOR', () => {
+      // Adversarial review, HIGH, against the rule that replaced the share:
+      // counting non-filler characters with no notion of a run is strictly
+      // stricter than the caller's 8-character length floor, so every 8-char
+      // password carrying one separator went silent and the CLI rose 27 points
+      // on a lost CRITICAL. Separators are part of the value; only a drawn RUN
+      // is not.
+      //
+      // Pins MIN_DRAWN_RUN_CHARS (4 -> 1 makes these filler) and the upper side
+      // of MIN_SECRET_CORE_CHARS (8 -> 9 makes these filler).
+      for (const value of [
+        'dev_pass', 'prod_key', 'db_pass1', 'admin_pw',
+        'api.key1', 'pass-123', 'pw#12345', 'x=abcdef',
+      ]) {
+        expect(isVisualFiller(value), `${value} is a weak password, not a blank`).toBe(false);
+      }
+    });
+
     it('still rejects a blank whose only non-filler stretch is too short', () => {
       // The other side of the core rule: a blank with a stray mark or a short
       // word in it is still a blank.
       for (const [label, value] of [
         ['stray digit', '_'.repeat(46) + '1'],
         ['short word', '_'.repeat(20) + 'TODO' + '_'.repeat(20)],
+        // Exactly one character under the floor, which pins its lower side:
+        // MIN_SECRET_CORE_CHARS 8 -> 7 makes this a credential.
+        ['seven-character word', '_'.repeat(20) + 'ABCDEFG' + '_'.repeat(20)],
         ['alternating', '_-'.repeat(30)],
       ] as Array<[string, string]>) {
         expect(isVisualFiller(value), label).toBe(true);
