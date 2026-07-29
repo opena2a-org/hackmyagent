@@ -36,6 +36,7 @@ import {
   hasAnyCredentialCandidate,
   hasAnchoredVendorCredential,
   matchVendorPrefix,
+  VENDOR_PREFIX_ALTERNATIVES,
 } from '../../src/types/credential-format';
 
 /**
@@ -325,6 +326,19 @@ describe('credential-format entropy floor', () => {
       }
     });
 
+    it('keeps a SHORT secret glued to a long blank, which pins the dominance share', () => {
+      // Pins `MAX_DOMINANT_CHAR_SHARE`. Adversarial review proved the constant
+      // was unpinned: dropping 0.9 to 0.5 left the whole suite green while
+      // `'_'x400 + <16-char secret>` went from found to lost, because no window
+      // then carries few enough underscores. The shorter the secret, the
+      // tighter the constraint, so a short one is what locks the value.
+      for (const len of [16, 24, 40]) {
+        const secret = drawFrom(B64, len, 5);
+        const hit = findCredentialFormatMatch('_'.repeat(400) + secret);
+        expect(hit?.value, `a ${len}-char secret after a 400-char blank`).toContain(secret);
+      }
+    });
+
     it('cross-checks the incremental dominance counter against the direct predicate', () => {
       // The sliding walk maintains a running character count so the dominance
       // rule is O(1) per step. That counter is an ACCELERATOR, not a second
@@ -537,6 +551,22 @@ describe('credential-format entropy floor', () => {
     it('returns undefined for an anonymous high-entropy blob', () => {
       expect(matchVendorPrefix(drawFrom('0123456789abcdef', 44, 3))).toBeUndefined();
     });
+
+    it('derives a non-empty prefix for EVERY vendor alternative, by sweep', () => {
+      // The hand-written case list above cannot fail for an alternative nobody
+      // remembered to add to it. A future alternative beginning with a
+      // metacharacter derives an empty head, `^` matches everything at length
+      // 0, never wins the longest-prefix contest, and the token silently falls
+      // to the unknown-shape masking branch that prints its first 8 characters
+      // — the exact leak deriving the list was introduced to close. This sweeps
+      // the source of truth instead.
+      for (const alt of VENDOR_PREFIX_ALTERNATIVES) {
+        // A literal head is everything before the first quantified atom, so
+        // synthesising from the alternative's own literal prefix is enough.
+        const literal = alt.replace(/\\\./g, '.').match(/^[A-Za-z0-9_.-]+/)?.[0] ?? '';
+        expect(literal.length, `alternative has no literal head to derive from: ${alt}`).toBeGreaterThan(0);
+      }
+    });
   });
 
   describe('the scan is linear against adversarial filler, with no cap on input', () => {
@@ -736,8 +766,51 @@ describe('credential-format entropy floor', () => {
       }
     });
 
+    it('keeps a real secret with filler glued to it, at ANY filler length', () => {
+      // The fourth adversarial pass, CRITICAL. `isVisualFiller` originally
+      // judged the filler SHARE of the whole value — the same whole-value
+      // judgement `findCredibleWindowOffset` exists to avoid, and it failed at
+      // the identical threshold: `'_'x361 + secret` is 90.02% underscores, so
+      // the value was called a blank and the secret dropped, while `'_'x360 +
+      // secret` was reported. Losing the finding RAISED the score by 26 points.
+      //
+      // The AST path had this exact test ("finds a secret glued to a filler run
+      // of ANY length") and the SEM path had nothing in that direction, which is
+      // why the same defect survived one path over. Mutation guard: any
+      // share-based rule turns this red.
+      const secret = drawFrom(B64, 40, 77);
+      for (const n of [1, 40, 300, 360, 361, 400, 1000]) {
+        expect(isVisualFiller('_'.repeat(n) + secret), `'_'x${n} before the secret`).toBe(false);
+        expect(isVisualFiller(secret + '_'.repeat(n)), `'_'x${n} after the secret`).toBe(false);
+        expect(isVisualFiller('_'.repeat(n) + secret + '-'.repeat(n)), `filler both sides, ${n}`).toBe(false);
+      }
+    });
+
+    it('keeps a secret followed by a dashed trailing comment', () => {
+      // The YAML/env value is the rest of the line, so an ordinary trailing
+      // comment counted as part of the "secret" and pushed a share-based rule
+      // over its threshold. This made the CRITICAL reachable without an
+      // attacker, on an ordinary config file.
+      expect(isVisualFiller(`Zq7Wn2Rt9Yb4Kd6Mf8Hj3 # ${'-'.repeat(240)}`)).toBe(false);
+      expect(isVisualFiller(`${drawFrom(B64, 32, 5)}   # ${'='.repeat(80)}`)).toBe(false);
+    });
+
+    it('still rejects a blank whose only non-filler stretch is too short', () => {
+      // The other side of the core rule: a blank with a stray mark or a short
+      // word in it is still a blank.
+      for (const [label, value] of [
+        ['stray digit', '_'.repeat(46) + '1'],
+        ['short word', '_'.repeat(20) + 'TODO' + '_'.repeat(20)],
+        ['alternating', '_-'.repeat(30)],
+      ] as Array<[string, string]>) {
+        expect(isVisualFiller(value), label).toBe(true);
+      }
+    });
+
     it('keeps real values that merely contain punctuation', () => {
       for (const [label, value] of [
+        ['a hyphenated passphrase', 'super-secret-jwt-key-2024'],
+        ['a dotted config value', 'my.service.account.key.v2'],
         ['a UUID', '123e4567-e89b-12d3-a456-426614174000'],
         ['an anthropic key', 'sk-ant-api03-' + drawFrom(B64, 24, 19)],
         ['base64 with padding', drawFrom(B64, 42, 21) + '=='],

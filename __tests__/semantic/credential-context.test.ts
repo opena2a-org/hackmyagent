@@ -206,6 +206,31 @@ describe('CredentialContextAnalyzer', () => {
         }
       });
 
+      it('flags a real secret with a long filler run glued to it', () => {
+        // Fourth adversarial pass, CRITICAL, asserted through the ANALYZER.
+        // The value gate judged the filler SHARE of the whole value, so
+        // `'_'x361 + <40-char secret>` (90.02% underscores) went silent while
+        // `'_'x360 + secret` was reported — and the score ROSE by 26 points
+        // because a lost true positive reads as an improvement. 360 vs 361 is
+        // the giveaway that a threshold, not a property, was being measured.
+        const secret = 'Zk3nQ7pR2mT9wX4vL8jH5yB0cF6dS1aG3eN7uI2o';
+        for (const n of [300, 360, 361, 400, 1000]) {
+          const findings = analyzer
+            .analyze([makeFile('deploy/values.yaml', `db_password: ${'_'.repeat(n)}${secret}\n`)])
+            .filter((f) => f.id === 'SEM-CRED-002');
+          expect(findings.length, `a secret behind '_'x${n} must still be reported`).toBeGreaterThan(0);
+        }
+      });
+
+      it('flags a real secret followed by a dashed trailing comment', () => {
+        // The YAML value is the rest of the line, so an ordinary trailing
+        // comment made the share-based rule suppress an ordinary config file.
+        const findings = analyzer
+          .analyze([makeFile('deploy/values.yaml', `api_key: Zq7Wn2Rt9Yb4Kd6Mf8Hj3 # ${'-'.repeat(240)}\n`)])
+          .filter((f) => f.id === 'SEM-CRED-002');
+        expect(findings.length, 'a trailing comment is not part of the secret').toBeGreaterThan(0);
+      });
+
       it('rejects drawn blanks of every filler character, not just underscores', () => {
         // The rule that replaced the structural floor keys on the filler
         // CHARACTERS, so it has to cover the whole family a document draws

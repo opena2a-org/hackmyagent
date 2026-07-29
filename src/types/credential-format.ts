@@ -636,7 +636,15 @@ export function hasAnchoredVendorCredential(text: string): boolean {
  * leaders, rules, redaction bars.
  */
 const FILLER_CHARS = new Set(['_', '-', '.', '*', '#', '~', '?', '=', ' ', '\t']);
-const MAX_FILLER_CHAR_SHARE = 0.9;
+
+/**
+ * Non-filler characters a value must carry to be a value.
+ *
+ * Matches the 8-character floor `looksLikeSecretValue` already applies to the
+ * value as a whole, so a secret is judged by the same minimum whether or not
+ * someone drew a line next to it.
+ */
+const MIN_SECRET_CORE_CHARS = 8;
 
 /**
  * True when `value` is visual filler rather than a secret, for values that
@@ -658,13 +666,30 @@ const MAX_FILLER_CHAR_SHARE = 0.9;
  */
 export function isVisualFiller(value: string): boolean {
   if (value.length === 0) return true;
-  let fillerCount = 0;
-  for (const ch of value) {
-    if (FILLER_CHARS.has(ch)) fillerCount++;
-  }
-  if (fillerCount > value.length * MAX_FILLER_CHAR_SHARE) return true;
   // A redaction bar. `x` is not a filler character in general — it appears in
   // real base64 — but a value that is nothing else is a mask, not a key.
   if (/^x+$/i.test(value)) return true;
-  return false;
+  // Count what is NOT filler, and apply the same 8-character floor the caller
+  // applies to the whole value. A drawn blank is made of filler by definition,
+  // so however long it is drawn it contributes nothing.
+  //
+  // Two other rules were tried here and both were wrong, in opposite directions:
+  //
+  //   - The filler SHARE of the whole value. This is the same whole-value
+  //     judgement `findCredibleWindowOffset` exists to avoid, and it failed in
+  //     the identical way at the identical threshold: `'_'x361 + <40-char
+  //     secret>` is 90.02% underscores, so it was called a blank and the secret
+  //     dropped, while `'_'x360 + secret` was reported. An ordinary dashed
+  //     trailing comment did it too, since the YAML value is the rest of the
+  //     line. Any rule whose verdict moves with how much filler is present has
+  //     this bug; counting only the non-filler characters cannot.
+  //   - The longest contiguous non-filler STRETCH. That reads every separator
+  //     as a boundary, so `super-secret-jwt-key-2024` — whose longest stretch is
+  //     `secret`, six characters — stopped being a secret. An existing test
+  //     caught it.
+  let core = 0;
+  for (const ch of value) {
+    if (!FILLER_CHARS.has(ch) && ++core >= MIN_SECRET_CORE_CHARS) return false;
+  }
+  return true;
 }
