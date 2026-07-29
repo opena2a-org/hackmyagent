@@ -6873,9 +6873,37 @@ dist/
         await fs.copyFile(sourcePath, destPath);
         manifest.existingFiles.push(file);
       } catch {
-        // File doesn't exist. Candidate only — a fix stage may create it,
-        // and recordCreatedFiles() decides afterwards whether it did.
-        manifest.absentAtBackup.push(file);
+        // #313 — absence is PROVEN here, never inferred from the fact that
+        // something went wrong. This catch-all collapsed ENOENT-of-target,
+        // EACCES, ELOOP, EISDIR, ENOSPC and EMFILE into "the file isn't
+        // there", and `absentAtBackup` is the candidate list `recordCreatedFiles`
+        // draws from — so anything that merely FAILED to copy became eligible
+        // to be reported as HMA-generated and deleted by `rollback`.
+        //
+        // Measured, on the exact case `isGenuinelyAbsent`'s own docstring
+        // describes: a user's `.gitignore -> ./nowhere` dangling symlink landed
+        // in `absentAtBackup`, was recorded in `createdFiles`, and `rollback`
+        // DELETED it while printing "Rollback complete / removed 1 generated
+        // file" — leaving behind the file HMA had actually created through the
+        // link. A pre-existing `.gitignore` at mode 0222 took the same route:
+        // `access(F_OK)` passes, `copyFile` raises EACCES, and the original was
+        // overwritten with no copy anywhere.
+        //
+        // #304 replaced this inference with an lstat proof in
+        // `ensureBackupCovers`, but the identical inference survived here, and
+        // because `ctx.covered` is pre-seeded from `absentAtBackup` the proof
+        // was never consulted for any of the static candidates.
+        //
+        // Three outcomes, not two. A path that exists but could not be copied
+        // belongs in NEITHER list: it is not restorable, so `existingFiles`
+        // would lie, and it is not a creation, so `absentAtBackup` would let
+        // rollback delete it. Landing in neither leaves it uncovered, which
+        // makes `ensureBackupCovers` refuse the write — the safe direction.
+        if (await this.isGenuinelyAbsent(sourcePath)) {
+          // Candidate only — a fix stage may create it, and
+          // recordCreatedFiles() decides afterwards whether it did.
+          manifest.absentAtBackup.push(file);
+        }
       }
     }
 
@@ -6937,6 +6965,13 @@ dist/
     // read as an observation: a failed copy meant "absent", so a file that
     // existed could be classified as generated and unlinked at rollback. See
     // `isGenuinelyAbsent`.
+    //
+    // #313 — that claim was FALSE for `absentAtBackup` when it was written.
+    // #304 proved absence in `ensureBackupCovers` but left the identical errno
+    // inference in `createBackup`, and since `ctx.covered` is pre-seeded from
+    // `absentAtBackup` the new proof was never reached for any of the 25 static
+    // candidates. Both producers of both lists now prove it, so the sentence
+    // above is true of the whole path rather than of one branch of it.
     const provenAbsent = new Set([
       ...manifest.absentAtBackup,
       ...(manifest.absentAtFixWrite ?? []),
