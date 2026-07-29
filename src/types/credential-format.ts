@@ -328,6 +328,18 @@ const ENTROPY_BLOB_ALTERNATIVE = '\\b[A-Za-z0-9+=_]{40,}\\b';
 const CREDENTIAL_WINDOW_CHARS = 40;
 
 /**
+ * The sliding walk's own counters, separate from `SPAN_CHAR_COUNTS` above and
+ * hoisted so a file of many blob runs does not allocate per run.
+ *
+ * `WINDOW_COUNT_BUCKETS[c]` is how many distinct characters occur exactly `c`
+ * times in the current window; it is what makes the running maximum O(1) to
+ * maintain, since a maximum can only fall when the last character holding it
+ * leaves. Both are reset at the top of every walk, so no state survives a call.
+ */
+const WINDOW_CHAR_COUNTS = new Uint32Array(128);
+const WINDOW_COUNT_BUCKETS = new Uint32Array(CREDENTIAL_WINDOW_CHARS + 2);
+
+/**
  * Longest period treated as filler, and the number of times that unit must
  * repeat before the run is called filler rather than a short coincidence.
  *
@@ -373,7 +385,18 @@ function hasFillerPeriod(s: string, start: number, len: number): boolean {
   return false;
 }
 
-/** Reused across calls; the blob class is ASCII, so 128 slots always suffice. */
+/**
+ * Reused across calls; the blob class is ASCII, so 128 slots always suffice.
+ *
+ * DELIBERATELY NOT SHARED with the sliding walk's counter below. This one is
+ * filled from scratch on every call, and the walk maintains its own
+ * incrementally ACROSS iterations while calling into this function — so a
+ * single shared buffer would have the callee zero and rebuild the caller's live
+ * state mid-walk. That happens to be harmless today, because the two always
+ * count the same span, but it is a trap set for the next edit: the moment the
+ * spans differ the walk silently corrupts and starts skipping windows, which is
+ * a detection loss with no visible symptom. Two buffers, no coupling.
+ */
 const SPAN_CHAR_COUNTS = new Uint32Array(128);
 
 /** True when one character occupies more than 90% of `[start, start+len)`. */
@@ -463,14 +486,14 @@ function findCredibleWindowOffset(run: string): number | undefined {
   // Sliding dominance count. `bucket[c]` is how many distinct characters occur
   // exactly c times in the window, which keeps the running max O(1) per step:
   // a max can only fall when the last character holding it leaves.
-  SPAN_CHAR_COUNTS.fill(0);
-  const bucket = new Uint32Array(w + 2);
+  WINDOW_CHAR_COUNTS.fill(0);
+  WINDOW_COUNT_BUCKETS.fill(0);
   let max = 0;
   for (let i = 0; i < w; i++) {
     const code = run.charCodeAt(i);
-    const before = SPAN_CHAR_COUNTS[code]++;
-    if (before > 0) bucket[before]--;
-    bucket[before + 1]++;
+    const before = WINDOW_CHAR_COUNTS[code]++;
+    if (before > 0) WINDOW_COUNT_BUCKETS[before]--;
+    WINDOW_COUNT_BUCKETS[before + 1]++;
     if (before + 1 > max) max = before + 1;
   }
 
@@ -485,15 +508,15 @@ function findCredibleWindowOffset(run: string): number | undefined {
     if (k + w >= n) return undefined;
 
     const leaving = run.charCodeAt(k);
-    const had = SPAN_CHAR_COUNTS[leaving]--;
-    bucket[had]--;
-    bucket[had - 1]++;
-    if (had === max && bucket[had] === 0) max = had - 1;
+    const had = WINDOW_CHAR_COUNTS[leaving]--;
+    WINDOW_COUNT_BUCKETS[had]--;
+    WINDOW_COUNT_BUCKETS[had - 1]++;
+    if (had === max && WINDOW_COUNT_BUCKETS[had] === 0) max = had - 1;
 
     const entering = run.charCodeAt(k + w);
-    const has = SPAN_CHAR_COUNTS[entering]++;
-    if (has > 0) bucket[has]--;
-    bucket[has + 1]++;
+    const has = WINDOW_CHAR_COUNTS[entering]++;
+    if (has > 0) WINDOW_COUNT_BUCKETS[has]--;
+    WINDOW_COUNT_BUCKETS[has + 1]++;
     if (has + 1 > max) max = has + 1;
   }
 }
