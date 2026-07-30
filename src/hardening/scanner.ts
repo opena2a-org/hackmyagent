@@ -20,6 +20,7 @@ import {
   validateCapabilities,
 } from './skill-capability-validator';
 import { clampScoreToVerdictBand, countsAgainstScore } from '../ui/verdict-band';
+import { shellQuote } from '../ui/shell-quote';
 
 /**
  * Backup manifest format version. v1 (pre-0.25.1) wrote `createdFiles` as a
@@ -556,23 +557,6 @@ function isInsideBackupArchive(absPath: string, targetDir: string): boolean {
   return backupArchiveDirFor(absPath, targetDir) !== null;
 }
 
-/**
- * POSIX single-quoting for a path that goes into a citation the user will paste.
- *
- * A bare `'…'` wrapper is not enough: a directory whose name contains an
- * apostrophe closes the quote early, and the remainder of the path is then
- * re-parsed by the shell. That matters more here than at the other citation
- * sites (#273, still open for those) because this one is `rm -rf` — a broken
- * quote turns a cleanup instruction into an argument list nobody intended.
- *
- * The standard construction: end the quote, add an escaped literal quote, start
- * a new one. Nothing inside a single-quoted POSIX string is special otherwise,
- * so this is total.
- */
-function shellQuote(p: string): string {
-  return `'${p.split("'").join(`'\\''`)}'`;
-}
-
 /** True when a file is config-shaped by filename, or by sitting directly in a config directory. */
 function isConfigShapedFile(basename: string, parentDirName: string): boolean {
   if (CONFIG_CANDIDATE_NAMES.has(basename)) return true;
@@ -974,11 +958,14 @@ export function isCheckIgnored(checkId: string, ignoredChecks: string[]): boolea
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB max file size to prevent memory exhaustion
 const MAX_LINE_LENGTH = 10000; // 10KB max line length for regex safety
 
-/** Shell-escape a string for safe interpolation into advisory fix commands. */
-function shellEscape(s: string): string {
-  // Wrap in single quotes and escape embedded single quotes: ' -> '\''
-  return "'" + s.replace(/'/g, "'\\''") + "'";
-}
+/**
+ * Shell-escape a string for safe interpolation into advisory fix commands.
+ *
+ * #328 — an alias for the one implementation in `src/ui/shell-quote.ts`. Two
+ * copies of this function lived in this file under two names, which is how the
+ * report that most needed it ended up with neither.
+ */
+const shellEscape = shellQuote;
 
 /**
  * Detect whether a SKILL.md content has any of the malice signals listed in

@@ -12,6 +12,7 @@
  * cites itself as `hackmyagent` (or `opena2a scan` when invoked through that
  * wrapper's argv0), and `rebrandCommandCitations` is a no-op.
  */
+import { citationPath } from './ui/shell-quote';
 
 /**
  * Resolve the binary-level command prefix.
@@ -143,7 +144,14 @@ export function setCitationTarget(target: string | undefined, opts?: { remote?: 
     citationTarget = '<dir>';
     return;
   }
-  citationTarget = target;
+  // #328 — this string is spliced into commands the reader is told to paste, and
+  // it is a path out of the scanned tree. Sanitised HERE, at the one place the
+  // target enters the citation layer, rather than at each of the ~29 strings the
+  // rewriter reaches: the alternative is escaping downstream of the splice,
+  // which is what left raw ESC bytes in `check`'s report while `secure` had been
+  // escaping since #324. Ordinary paths are returned unchanged, so nothing that
+  // reads normally today starts reading like an incantation.
+  citationTarget = target === undefined ? undefined : citationPath(target);
 }
 
 /** Test seam — reset module state between cases. */

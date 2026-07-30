@@ -93,6 +93,7 @@ import { shouldPrintVersionFooter } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { generateVerifyCommand } from './ui/verify-command';
 import { escapeForDisplay } from './ui/display-safe';
+import { shellQuote, citationPath } from './ui/shell-quote';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
 import type { ConceptId } from './types/finding-evidence';
 import { trustAapGate } from './aap';
@@ -995,6 +996,15 @@ function renderRegistryOnlyCheck(
 function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   const { name, sourceLabel, projectType, localScan, registry, verbose, version, nanomindScan, usedAnalm } = opts;
 
+  // #328 — `fullAuditTarget` is a path out of the scanned tree and it is spliced
+  // into `Run \`secure <target>\``. Sanitised ONCE here, where it enters the
+  // renderer, because it has two consumers below (the follow-up line and the
+  // scope disclosure) and fixing the one that was noticed is how a raw ESC byte
+  // survived the first pass of this change.
+  const quickScan = opts.quickScan
+    ? { ...opts.quickScan, fullAuditTarget: citationPath(opts.quickScan.fullAuditTarget) }
+    : undefined;
+
   // ── Registry-only render path (cli-ui 0.3.0 renderCheckBlock) ────────
   // When we have registry trust data and nothing scanned locally, delegate
   // to the shared renderer so `hackmyagent check --no-scan @pkg` shows the
@@ -1114,7 +1124,10 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   if (localScan?.filesScanned) meta.push(`${localScan.filesScanned} files scanned`);
 
   console.log();
-  console.log(`  ${colors.bold}${colors.white}${name}${RESET()}  ${colors.dim}${meta.join(' · ')}${RESET()}`);
+  // #328 — `name` is the target as given, which for a local scan is a path out
+  // of the tree. It is a heading rather than a command, so it is escaped for
+  // display and not quoted.
+  console.log(`  ${colors.bold}${colors.white}${escapeForDisplay(name)}${RESET()}  ${colors.dim}${meta.join(' · ')}${RESET()}`);
 
   // ── Verdict + Score ─────────────────────────────────────────────────
   if (localScan || nanomindScan) {
@@ -1129,7 +1142,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     } else if (totalFindings > 0) {
       verdictColor = colors.yellow;
       verdictText = `${totalFindings} issue${totalFindings > 1 ? 's' : ''} found`;
-    } else if (opts.quickScan) {
+    } else if (quickScan) {
       // A narrowed matrix finding nothing is not a clean bill (#200).
       // Green + "No security issues found" is exactly what let a user
       // with an un-ignored `.env` read `check` as an all-clear, so the
@@ -1150,13 +1163,13 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       score,
       clamped: localScan ? localScan.scoreClamped : nanomindScoreClamped,
     });
-    console.log(`  ${scoreLineLabel(opts.quickScan)}  ${scoreMeter(score, maxScore)}${colors.dim}${bandDisclosure}${RESET()}`);
-    if (opts.quickScan) {
+    console.log(`  ${scoreLineLabel(quickScan)}  ${scoreMeter(score, maxScore)}${colors.dim}${bandDisclosure}${RESET()}`);
+    if (quickScan) {
       // Cyan + bold, same visual weight as the suppressed Path-forward
       // line so the disclaimer cannot be skimmed past. (#136 adversarial
       // review: a dim follow-up was easy to miss, leaving the user
       // anchored on the narrow-matrix numeric score.)
-      console.log(`  ${colors.cyan}${colors.bold}${quickScanFollowupText(opts.quickScan)}${RESET()}`);
+      console.log(`  ${colors.cyan}${colors.bold}${quickScanFollowupText(quickScan)}${RESET()}`);
     }
   } else if (registry?.found) {
     const normalized = normalizeTrustVerdict(registry.verdict);
@@ -1202,11 +1215,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // "(all clear)" / "N others clear" tail over checks that never ran;
     // the scope note applied below states what was skipped instead.
     const allCategorySummaries = buildCategorySummaries(failed);
-    const quickScanDisclosure = opts.quickScan
+    const quickScanDisclosure = quickScan
       ? quickScanScopeDisclosure({
           staticCount,
           semanticCount,
-          fullAuditTarget: opts.quickScan.fullAuditTarget,
+          // #328 — spliced into `Run \`secure <target>\``, so it is a citation
+          // and gets the citation treatment. Escaped at the renderer's INPUT,
+          // like the verdict file and the artifact intents below.
+          fullAuditTarget: quickScan.fullAuditTarget,
         })
       : null;
     const categorySummaries = quickScanDisclosure
@@ -1471,7 +1487,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // implies the user can reach 100 by addressing only the quick-scan
     // findings, when the full audit will surface additional supply-chain
     // and hygiene findings the quick-scan never ran. Closes #136.
-    if (shouldRenderPathForward({ quickScan: opts.quickScan, critical, high })) {
+    if (shouldRenderPathForward({ quickScan, critical, high })) {
       const recoveryParts: string[] = [];
       if (critical > 0) recoveryParts.push(`${critical} critical`);
       if (high > 0) recoveryParts.push(`${high} high`);
@@ -4986,23 +5002,30 @@ Examples:
 
       // Files deliberately left alone. Each says why and what to do, so the
       // user is never left to discover the leftover on their own.
+      //
+      // #328 — the path in these lines comes out of the scanned tree, through
+      // the manifest. It is quoted inside the citation (so a filename cannot be
+      // a command) and escaped for display (so it cannot split the line or move
+      // the cursor), in that order. Both were missing here while `secure` had
+      // had them since #324: a property asserted about one command is not a
+      // property. See `__tests__/helpers/render-safety.ts`.
+      const keptLine = (file: string): string =>
+        `   ${colors.dim}kept    ${RESET()}  ${escapeForDisplay(file)}  `
+        + `${colors.dim}— review, then \`rm ${escapeForDisplay(shellQuote(file))}\` if unwanted${RESET()}`;
+
       if (report.keptModified.length > 0) {
         console.log(
           `\n   ${colors.yellow}Kept ${report.keptModified.length} generated file${report.keptModified.length === 1 ? '' : 's'} you edited after the fix${RESET()} ` +
           `(deleting them would discard your changes):`,
         );
-        for (const file of report.keptModified) {
-          console.log(`   ${colors.dim}kept    ${RESET()}  ${file}  ${colors.dim}— review, then \`rm ${file}\` if unwanted${RESET()}`);
-        }
+        for (const file of report.keptModified) console.log(keptLine(file));
       }
       if (report.keptUnverifiable.length > 0) {
         console.log(
           `\n   ${colors.yellow}Kept ${report.keptUnverifiable.length} file${report.keptUnverifiable.length === 1 ? '' : 's'} from an older backup format${RESET()} ` +
           `(no content hash recorded, so HMA cannot confirm it generated them):`,
         );
-        for (const file of report.keptUnverifiable) {
-          console.log(`   ${colors.dim}kept    ${RESET()}  ${file}  ${colors.dim}— review, then \`rm ${file}\` if unwanted${RESET()}`);
-        }
+        for (const file of report.keptUnverifiable) console.log(keptLine(file));
       }
       console.log();
       // An incomplete rollback exits non-zero for the same reason it does not
@@ -9293,6 +9316,12 @@ function printCheckNextSteps(
       return target;
     }
   })();
+  // #328 — every line below splices one of these into a command the reader is
+  // told to run, and both are paths. The filesystem calls above use the raw
+  // values; only the rendered forms are quoted and escaped. Ordinary paths come
+  // back unchanged.
+  const citeTarget = citationPath(target);
+  const citeDirTarget = citationPath(dirTarget);
   console.log();
   console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
 
@@ -9302,13 +9331,13 @@ function printCheckNextSteps(
   // (release-test P2 / CISO Rule 11).
   let citedOpena2a = false;
   if (context?.hasGovernanceIssues && isLocal) {
-    console.log(`  ${colors.cyan}Auto-fix governance:${RESET()}  ${CLI_PREFIX} harden-soul ${dirTarget}`);
+    console.log(`  ${colors.cyan}Auto-fix governance:${RESET()}  ${CLI_PREFIX} harden-soul ${citeDirTarget}`);
   }
   if (context?.hasCredentialFindings) {
     // Routed through the citation rewriter for the same reason the `Fix:`
     // lines are: standalone installs have no `opena2a` on PATH, so the bare
     // form is a dead end (#201). Bundled runs are left as-is by the rewriter.
-    console.log(`  ${colors.cyan}Protect credentials:${RESET()}  ${rebrandCommandCitations(`opena2a protect ${isLocal ? dirTarget : '.'}`)}`);
+    console.log(`  ${colors.cyan}Protect credentials:${RESET()}  ${rebrandCommandCitations(`opena2a protect ${isLocal ? citeDirTarget : '.'}`)}`);
     citedOpena2a = true;
   }
   if (context?.hasMcpFindings) {
@@ -9321,28 +9350,28 @@ function printCheckNextSteps(
     // are standing in. Its siblings above already cite `dirTarget`; this one
     // was the odd line out, and it printed directly rather than through the
     // citation rewriter, so pass 3 could not reach it either.
-    console.log(`  ${colors.cyan}Auto-fix all issues:${RESET()}  ${CLI_PREFIX} secure ${dirTarget} --fix`);
+    console.log(`  ${colors.cyan}Auto-fix all issues:${RESET()}  ${CLI_PREFIX} secure ${citeDirTarget} --fix`);
   }
   if (context?.hasFindings) {
     if (!context?.suppressFullScanHint) {
       console.log(`  ${colors.cyan}Full project audit:${RESET()}   ${getFullScanHint()}`);
     }
     if (!context?.usedAnalm) {
-      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${citeTarget} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
     }
   } else if (context?.isCleanScan && isLocal) {
-    console.log(`  ${colors.cyan}Governance scan:${RESET()}      ${CLI_PREFIX} scan-soul ${target}`);
+    console.log(`  ${colors.cyan}Governance scan:${RESET()}      ${CLI_PREFIX} scan-soul ${citeTarget}`);
     console.log(`  ${colors.cyan}Red-team test:${RESET()}        ${CLI_PREFIX} attack --local`);
     if (!context?.usedAnalm) {
-      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${citeTarget} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
     }
   } else if (context?.isCleanScan) {
     if (!context?.usedAnalm) {
-      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${citeTarget} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
     }
   } else {
     if (!context?.usedAnalm) {
-      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${citeTarget} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
     }
   }
   console.log(`  ${colors.cyan}All commands:${RESET()}         ${CLI_PREFIX} --help`);
