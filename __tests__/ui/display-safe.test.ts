@@ -84,4 +84,35 @@ describe('escapeForDisplay', () => {
     const path = "rm -rf '/Users/me/projets/données/配置'";
     expect(escapeForDisplay(path)).toBe(path);
   });
+
+  /**
+   * #330 — the class that makes a DISPLAYED path differ from the real one.
+   *
+   * These are not cosmetic: `U+202E` + `gnp.elif_ngineb` renders as
+   * `benign_file.png`, so a destructive command's argument reads as one
+   * directory and names another. Measured before the fix: all 17 of these passed
+   * through `escapeForDisplay` unchanged.
+   */
+  it('escapes bidi, zero-width and format controls', () => {
+    const covered = [
+      0x00ad, 0x061c,
+      0x200b, 0x200c, 0x200d, 0x200e, 0x200f,
+      0x202a, 0x202b, 0x202c, 0x202d, 0x202e,
+      0x2066, 0x2067, 0x2068, 0x2069,
+      0xfeff,
+    ];
+
+    for (const code of covered) {
+      const label = `U+${code.toString(16).toUpperCase().padStart(4, '0')}`;
+      const ch = String.fromCodePoint(code);
+      const out = escapeForDisplay(`before${ch}after`);
+      expect(out, `${label} reached the terminal unescaped`).not.toContain(ch);
+      expect(out.startsWith('before'), `${label} corrupted the text before it`).toBe(true);
+      expect(out.endsWith('after'), `${label} corrupted the text after it`).toBe(true);
+    }
+
+    // The measured spoof: what is displayed must not read as a different name.
+    const spoof = `.${String.fromCodePoint(0x202e)}gnp.elif_ngineb`;
+    expect(escapeForDisplay(spoof)).toBe('.\\u202egnp.elif_ngineb');
+  });
 });

@@ -32,13 +32,31 @@
  */
 
 /**
- * C0, DEL, C1, and the two Unicode line separators.
+ * C0, DEL, C1, the two Unicode line separators, and the bidi/format controls.
  *
  * Built from a string of `\u` escapes rather than written as a regex literal: a
  * literal control byte inside a character class is invisible in every diff and
  * every editor that would review it, and this is a security-relevant pattern.
+ *
+ * #330 — the bidi and zero-width classes were missing, and they are the ones
+ * that make a DISPLAYED path differ from the real one. A directory named
+ * U+202E followed by `gnp.elif_ngineb` renders as `benign_file.png`; the
+ * `Fix:` line naming it then describes a directory that is not the one the
+ * command acts on. That is the same harm this module already fixes for CSI
+ * sequences — "a path could edit the report describing it" — and it landed on
+ * the one citation that was destructive.
+ *
+ * The class is: SOFT HYPHEN, ARABIC LETTER MARK, the zero-width and directional
+ * marks (U+200B..U+200F), the bidi embeddings and overrides (U+202A..U+202E),
+ * the bidi isolates (U+2066..U+2069) and the BOM/ZWNBSP (U+FEFF). Escaped
+ * visibly rather than stripped, per the rule below: dropping is what truncated
+ * the command in #324.
  */
-const CONTROL_CHARS = new RegExp('[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]', 'g');
+const CONTROL_CHARS = new RegExp(
+  '[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u200b-\\u200f'
+  + '\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\ufeff]',
+  'g',
+);
 
 /** Keyed by code point, for the same reason: no control characters in source. */
 const NAMED: Record<number, string> = {
