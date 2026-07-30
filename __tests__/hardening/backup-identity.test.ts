@@ -28,7 +28,7 @@
  * through case folding.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
@@ -352,6 +352,54 @@ describe('backup directory identity', () => {
         escaped = false;
       }
       expect(escaped, 'a .. traversal in the manifest wrote outside the tree').toBe(false);
+    });
+
+    /**
+     * "I could not check whether this is a symlink" must not become "it is not
+     * one". #313 was that inference on an errno; this is the same inference in a
+     * new place, so the guard is pinned directly.
+     *
+     * Tested through a stubbed `lstat` rather than a fixture on purpose: every
+     * non-ENOENT errno reachable on a real filesystem here (ENAMETOOLONG is the
+     * only one that can be produced, since the parent has already been resolved)
+     * makes the FOLLOWING syscall fail the same way, so a black-box fixture
+     * cannot tell the two implementations apart. The inference is still wrong,
+     * and the next caller of this helper may not be a `copyFile`.
+     */
+    it('refuses a destination whose leaf cannot be checked for being a symlink', async () => {
+      const resolve = (scannerUnderTest: HardeningScanner) =>
+        (scannerUnderTest as unknown as {
+          resolveInsideTree(targetReal: string, rel: string): Promise<string | null>;
+        }).resolveInsideTree;
+      const scanner = new HardeningScanner();
+      // The helper's contract is a RESOLVED target. On macOS `os.tmpdir()` sits
+      // under `/var -> /private/var`, so passing the unresolved path makes every
+      // call return null — which is what the control assertion below is for.
+      const targetReal = await realpath(dir);
+
+      // A basename over NAME_MAX. `lstat` fails with ENAMETOOLONG, which is a
+      // real errno from a real filesystem and proves nothing about whether the
+      // entry is a symlink — no mocking needed.
+      const tooLong = 'a'.repeat(300);
+      expect(
+        await resolve(scanner).call(scanner, targetReal, tooLong),
+        'an lstat failure that proves nothing was read as "not a symlink"',
+      ).toBeNull();
+
+      // Control: the same helper must still resolve an ordinary entry, or the
+      // assertion above would pass on a helper that refuses everything.
+      await writeFile(path.join(dir, 'ordinary.json'), '{}\n');
+      expect(
+        await resolve(scanner).call(scanner, targetReal, 'ordinary.json'),
+        'the helper refuses a legitimate path, so the assertion above means nothing',
+      ).not.toBeNull();
+
+      // And absence is still fine — restoring a file the user deleted is the
+      // whole point of a rollback.
+      expect(
+        await resolve(scanner).call(scanner, targetReal, 'deleted-since-backup.json'),
+        'a file absent from the tree can no longer be restored',
+      ).not.toBeNull();
     });
 
     /**

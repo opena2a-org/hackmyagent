@@ -7412,9 +7412,17 @@ dist/
     try {
       const st = await fs.lstat(resolved);
       if (st.isSymbolicLink()) return null;
-    } catch {
-      // Absent is fine — restoring a file the user deleted is the point, and
-      // the created-file loops treat absence as "nothing to do" themselves.
+    } catch (err) {
+      // ENOENT is the only failure that PROVES the leaf is not a symlink:
+      // nothing is there. Absence is expected and fine — restoring a file the
+      // user deleted is the point, and the created-file loops treat absence as
+      // "nothing to do" themselves.
+      //
+      // Any other errno (EACCES on the parent, ELOOP, EIO) proves nothing, and
+      // "I could not check whether this is a symlink" must not become "it is
+      // not one" — that is #313's inference in a new place. Refuse instead: the
+      // entry is reported as not restored, which is recoverable.
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') return null;
     }
     return resolved;
   }
