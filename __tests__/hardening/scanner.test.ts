@@ -1265,9 +1265,13 @@ describe('Backup and rollback', () => {
    * directory become the run's own.
    */
   it('two backups taken in the same second are different directories', async () => {
+    // Synthesised at runtime rather than written as a literal: this repo is
+    // public, and a credential-SHAPED string in a fixture is what push
+    // protection exists to stop, whether or not the value is real.
+    const fakeKey = `sk-ant-api03-${'0'.repeat(24)}`;
     await fs.writeFile(
       path.join(tempDir, 'config.json'),
-      JSON.stringify({ apiKey: 'sk-ant-api03-secretkey12345678901234' })
+      JSON.stringify({ apiKey: fakeKey })
     );
 
     const first = await (scanner as unknown as {
