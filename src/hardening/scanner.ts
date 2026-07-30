@@ -675,23 +675,59 @@ function backupSetupError(code: BackupSetupCode, message: string): NodeJS.ErrnoE
  * directory that HackMyAgent would never write to. Neither case needs a
  * per-spelling rule, and no Unicode fold, symlink or `..` changes the answer.
  *
- * A base that is not a real directory (absent, a symlink, a file) yields null:
- * `prepareBackupRoot` refuses to write backups through any of those, so there
- * is no archive of ours in that tree to protect.
+ * Three-valued, and only a PROVEN absence is `none`. Returning "no base here"
+ * on any failure would be fail-OPEN at the one caller that matters: the write
+ * gate reads "not an archive" as permission to rewrite the file, so a transient
+ * EACCES on the tree root would have authorised HackMyAgent to redact a previous
+ * run's backup. That is #313's inference and #333's, arrived at through a
+ * different door.
+ *
+ * A base that is a symlink or not a directory IS a proven `none`:
+ * `prepareBackupRoot` refuses to write backups through either, so there is
+ * nothing of HackMyAgent's in that tree to protect.
  */
-async function resolveArchiveBase(
-  targetDir: string,
-): Promise<{ real: string; ident: FsIdentity } | null> {
+type ArchiveBase =
+  | { kind: 'base'; real: string; ident: FsIdentity }
+  /** Proven: nothing HackMyAgent would use as a backup base is there. */
+  | { kind: 'none' }
+  /** The filesystem refused to answer. Establishes nothing in either direction. */
+  | { kind: 'unknown' };
+
+async function resolveArchiveBase(targetDir: string): Promise<ArchiveBase> {
+  let treeReal: string;
   try {
-    const base = path.join(await fs.realpath(targetDir), BACKUP_DIR_NAME);
-    const st = await fs.lstat(base);
-    if (st.isSymbolicLink() || !st.isDirectory()) return null;
-    const real = fsSync.realpathSync.native(base);
-    const probe = await identityOf(real);
-    return probe.kind === 'identity' ? { real, ident: probe.id } : null;
-  } catch {
-    return null;
+    treeReal = await fs.realpath(targetDir);
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'ENOENT'
+      ? { kind: 'none' }
+      : { kind: 'unknown' };
   }
+
+  const base = path.join(treeReal, BACKUP_DIR_NAME);
+  try {
+    const st = await fs.lstat(base);
+    // A base that is a symlink or not a directory is PROVEN not to be an archive
+    // of ours: `prepareBackupRoot` refuses to write backups through either, so
+    // there is nothing of HackMyAgent's in that tree to protect.
+    if (st.isSymbolicLink() || !st.isDirectory()) return { kind: 'none' };
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'ENOENT'
+      ? { kind: 'none' }
+      : { kind: 'unknown' };
+  }
+
+  let real: string;
+  try {
+    real = fsSync.realpathSync.native(base);
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'ENOENT'
+      ? { kind: 'none' }
+      : { kind: 'unknown' };
+  }
+
+  const probe = await identityOf(real);
+  if (probe.kind === 'identity') return { kind: 'base', real, ident: probe.id };
+  return probe.kind === 'absent' ? { kind: 'none' } : { kind: 'unknown' };
 }
 
 /** True when a file is config-shaped by filename, or by sitting directly in a config directory. */
@@ -1472,7 +1508,7 @@ export class HardeningScanner {
    * context and still has to answer "is this file inside a backup archive" the
    * same way, or `secure` and `secure --fix` disagree about the same file.
    */
-  private archiveBases = new Map<string, { real: string; ident: FsIdentity } | null>();
+  private archiveBases = new Map<string, ArchiveBase>();
   /** Per-directory memo for `isInsideArchiveBase`. Reset per `scan()`. */
   private archiveDirAnswers = new Map<string, 'yes' | 'no' | 'unknown'>();
   /**
@@ -3246,7 +3282,11 @@ export class HardeningScanner {
       base = await resolveArchiveBase(targetDir);
       this.archiveBases.set(targetDir, base);
     }
-    if (!base) return 'no';
+    // A base HackMyAgent could not resolve leaves the question OPEN. "No base
+    // here" would authorise the write, which is the direction that rewrites a
+    // previous run's backup.
+    if (base.kind === 'unknown') return 'unknown';
+    if (base.kind === 'none') return 'no';
     let dir = path.dirname(path.resolve(absPath));
     const asked: string[] = [];
     let answer: 'yes' | 'no' | 'unknown' = 'no';

@@ -238,4 +238,36 @@ describe('#347.1/#347.3 the guards that decide a refusal are observed by somethi
       'an ordinary file was called an archive',
     ).toBe('no');
   });
+
+  /**
+   * The same inference one level up, found while auditing this change's own
+   * diff: `resolveArchiveBase` returned null on ANY failure, and null means "no
+   * archive here", which at the write gate is permission to rewrite the file. A
+   * tree root the filesystem will not describe would have authorised HackMyAgent
+   * to redact a previous run's backup.
+   *
+   * Only a proven absence is `none`. A refused probe leaves the question open.
+   */
+  it('leaves the question open when the tree root itself cannot be resolved', async () => {
+    const scanner = new HardeningScanner() as unknown as {
+      isInsideArchiveBase(p: string, targetDir: string): Promise<'yes' | 'no' | 'unknown'>;
+    };
+    // A target whose own basename is over NAME_MAX: `realpath` fails
+    // ENAMETOOLONG, a real errno that proves nothing about what is there.
+    const unresolvable = path.join(dir, 'b'.repeat(300));
+    expect(
+      await scanner.isInsideArchiveBase(path.join(unresolvable, 'config.json'), unresolvable),
+      'a tree root the filesystem would not describe was answered "no archive here", '
+      + 'which authorises rewriting a backup',
+    ).toBe('unknown');
+
+    // Control: a target that genuinely has no backup base is still a settled
+    // "no", or the assertion above would pass on a build that never answers.
+    const plain = path.join(dir, 'plain');
+    await mkdir(plain, { recursive: true });
+    expect(
+      await scanner.isInsideArchiveBase(path.join(plain, 'config.json'), plain),
+      'a tree with no backup directory refuses to answer, so nothing would ever be fixable',
+    ).toBe('no');
+  });
 });
