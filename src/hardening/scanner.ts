@@ -23,7 +23,7 @@ import {
   validateCapabilities,
 } from './skill-capability-validator';
 import { clampScoreToVerdictBand, countsAgainstScore } from '../ui/verdict-band';
-import { shellQuote } from '../ui/shell-quote';
+import { shellQuote, citationTarget } from '../ui/shell-quote';
 
 /**
  * Backup manifest format version. v1 (pre-0.25.1) wrote `createdFiles` as a
@@ -725,7 +725,18 @@ async function resolveArchiveBase(targetDir: string): Promise<ArchiveBase> {
       : { kind: 'unknown' };
   }
 
-  const probe = await identityOf(real);
+  return archiveBaseFromProbe(await identityOf(real), real);
+}
+
+/**
+ * The base a probe of the resolved directory establishes.
+ *
+ * Split out because the window between "lstat said directory" and "stat for the
+ * identity" is not something a test can hold open, and mutating this clause to
+ * `{ kind: 'none' }` left the whole suite green — which by this project's own
+ * rule (#347.1) means the fail-open direction was untested.
+ */
+export function archiveBaseFromProbe(probe: IdentityProbe, real: string): ArchiveBase {
   if (probe.kind === 'identity') return { kind: 'base', real, ident: probe.id };
   return probe.kind === 'absent' ? { kind: 'none' } : { kind: 'unknown' };
 }
@@ -1415,21 +1426,6 @@ function isCyrillicInCyrillicContext(chars: string[], ci: number): boolean {
 }
 
 /**
- * The ordering field of a backup directory name: exactly three characters,
- * always.
- *
- * #347.6 — the clamp used to live in `nextStampSequence`, which capped `seq` at
- * 998, and `createRunBackupDir` then added `attempt` (up to 7) before padding.
- * So a 999th same-millisecond sibling produced a FOUR-character field, breaking
- * both the sort invariant the name exists for and the three-character parse that
- * reads it back. Clamping after the addition is the only place that holds.
- *
- * Exported so the invariant can be asserted against THIS expression rather than
- * against a copy of it in a test — the whole width range is unreachable through
- * `createRunBackupDir`, which needs 999 directories in one millisecond plus two
- * `EEXIST` collisions on an unpredictable component.
- */
-/**
  * The identity of a just-created backup directory, or the right refusal.
  *
  * #347.3 — this used to be `identityOrUndefined(...)` followed by `if (!ident)`,
@@ -1458,6 +1454,22 @@ export function backupIdentityOrThrow(probe: IdentityProbe, backupDir: string): 
   );
 }
 
+/**
+ * The ordering field of a backup directory name: exactly three characters,
+ * always.
+ *
+ * #347.6 — `createRunBackupDir` added `attempt` (up to 7) to a sequence already
+ * capped at 998 and then padded, so a 999th same-millisecond sibling produced a
+ * FOUR-character field, breaking both the sort invariant the name exists for and
+ * the three-character parse that reads it back. `nextStampSequence` keeps its own
+ * cap; what was missing is a clamp AFTER the addition, which is the only place
+ * that holds.
+ *
+ * Exported so the invariant can be asserted against THIS expression rather than
+ * against a copy of it in a test — the whole width range is unreachable through
+ * `createRunBackupDir`, which needs 999 directories in one millisecond plus two
+ * `EEXIST` collisions on an unpredictable component.
+ */
 export function stampSequenceField(seq: number, attempt: number): string {
   return String(Math.min(seq + attempt, 999)).padStart(3, '0');
 }
@@ -1466,6 +1478,15 @@ export class HardeningScanner {
   private cliName = 'hackmyagent';
   /** Fix writes that did not land this run. Reset per `scan()`. */
   private fixWriteFailures: { file: string; code: string; message: string }[] = [];
+  /**
+   * Fix writes that landed inside a directory named like a backup archive but
+   * belonging to a DIFFERENT tree. Reset per `scan()`.
+   *
+   * Not a failure — the write is recoverable through this run's own backup. It
+   * is a fact the other tree's owner has to be told, because their `rollback`
+   * no longer restores what they expect.
+   */
+  private fixWritesIntoForeignArchive: string[] = [];
   /**
    * Every path a fix write actually landed on this run. Reset per `scan()`.
    *
@@ -1706,6 +1727,7 @@ export class HardeningScanner {
     // Per-run, so a reused scanner instance cannot report a previous run's
     // failed writes.
     this.fixWriteFailures = [];
+    this.fixWritesIntoForeignArchive = [];
     this.fixWritePaths = [];
     // Cleared per run, and only ever set below once a backup actually
     // exists. A reused scanner instance must not let one run's backup
@@ -2163,6 +2185,34 @@ export class HardeningScanner {
         fix: `Make the file writable, then re-run: ${this.cliName} secure --fix`,
         guidance:
           'The issue these fixes address is still present on disk. A write can fail because the file is read-only or immutable, the filesystem is mounted read-only, the volume is full, or a security policy denies it. Findings for those files are reported as unfixed, so the score reflects the tree as it actually is.',
+      });
+    }
+
+    if (this.fixWritesIntoForeignArchive.length > 0) {
+      const rels = [...new Set(this.fixWritesIntoForeignArchive.map(
+        (f) => path.relative(targetDir, f) || path.basename(f),
+      ))];
+      findings.push({
+        checkId: 'FIX-FOREIGN-ARCHIVE',
+        name: 'Fix Applied Inside Another Project\'s Backup',
+        description: `${rels.length} file${rels.length === 1 ? '' : 's'} rewritten inside a nested backup directory`,
+        category: 'hardening',
+        severity: 'low',
+        // `passed: false` so it is SHOWN. A `passed: true` finding is filtered
+        // out of the report, which is how the first version of this disclosure
+        // managed to exist in the code and appear nowhere on screen — the same
+        // failure as putting it in the changelog.
+        passed: false,
+        message: rels.join(', '),
+        file: rels[0],
+        fixable: false,
+        fix: `${this.cliName} rollback ${citationTarget(targetDir)}`,
+        guidance:
+          'These files sit inside a `.hackmyagent-backup` directory belonging to a project nested under '
+          + 'the one you scanned. They were rewritten like any other file, and this run copied the '
+          + 'originals into its own backup first, so nothing is lost — but running `rollback` inside '
+          + 'that nested project will now restore the rewritten copy rather than the original, and will '
+          + 'report success. Roll back from the directory you scanned instead.',
       });
     }
 
@@ -3314,6 +3364,29 @@ export class HardeningScanner {
     return answer;
   }
 
+  /**
+   * Does this path run through a directory NAMED like a backup archive that is
+   * not the one this tree uses?
+   *
+   * Only ever used to add a sentence of advice (see `applyFixWrite`). It gates
+   * nothing, suppresses nothing, and deletes nothing, which is what makes a name
+   * acceptable here when #341 removed it from every decision: the worst a
+   * scanned tree achieves by naming a directory `.hackmyagent-backup` is one
+   * extra note in the report.
+   */
+  private namesAForeignArchive(absPath: string, targetDir: string): boolean {
+    const rel = path.relative(targetDir, absPath);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return false;
+    // EXACT, not case-folded. The note asserts "this is another project's
+    // backup", and that has to be true or it is a finding that lies: a
+    // `vendor/.HACKMYAGENT-BACKUP/` or a KELVIN-SIGN variant is a name no
+    // HackMyAgent run writes on any filesystem where it differs, and on one
+    // where it does not differ it IS the directory the identity check already
+    // answered about. Loose here would cost a false statement on an ordinary
+    // vendor tree, which is worse than the note being missing.
+    return rel.split(path.sep).slice(0, -1).includes(BACKUP_DIR_NAME);
+  }
+
   private async isOwnBackupDir(dirPath: string): Promise<boolean> {
     const ctx = this.backupContext;
     if (!ctx) return false;
@@ -3413,6 +3486,20 @@ export class HardeningScanner {
     const ctx = this.backupContext;
     const ownBackup = ctx ? await this.isInsideOwnBackup(filePath) : 'no';
     const inArchive = ctx ? await this.isInsideArchiveBase(filePath, ctx.targetDir) : 'no';
+    // #341, second-order — a write that lands inside ANOTHER tree's backup is
+    // allowed (this run has already made a recoverable copy), but it degrades
+    // that tree's own rollback: `rollback <child>` will restore the redaction
+    // over the redaction and report success. The bytes are recoverable only
+    // through `rollback <this target>`, and nothing said so — the disclosure
+    // lived in a changelog sentence, which is not a place a user looks.
+    //
+    // A NAME test, deliberately, and sound here for the reason #314's was not:
+    // it gates no decision. Recognising one directory too many costs a sentence
+    // of advice; recognising one too few costs a silent false "Rollback
+    // complete" in a tree the user thinks they can recover.
+    if (ctx && inArchive === 'no' && this.namesAForeignArchive(filePath, ctx.targetDir)) {
+      this.fixWritesIntoForeignArchive.push(filePath);
+    }
     if (ownBackup === 'yes' || inArchive === 'yes') {
       this.fixWriteFailures.push({
         file: filePath,
@@ -7961,18 +8048,31 @@ dist/
   ): Promise<{ ok: true } | { ok: false; cause: RestoreRefusal; detail?: string; backupHoldsCopy: boolean }> {
     // ---- Does the backup hold a copy of this entry? ----
     //
-    // `nothingThere` is PROVEN, never inferred: only a lexical escape or an
-    // ENOENT establishes that the backup holds nothing for this path. An EACCES
-    // or an EIO establishes nothing, and answering "nothing there" on those
-    // would authorise deleting the directory around a copy nobody could read —
-    // #313's inference pointed at the user's last remaining bytes.
+    // What the backup HOLDS for this entry, decided by this run's own probe.
+    //
+    // This started as "nothing there is PROVEN, everything else counts as a
+    // copy", on the reasoning that refusing to delete is the fail-safe
+    // direction. That was wrong in a way the adversarial pass caught: three of
+    // the five refusals are decided by bytes the scanned tree wrote INSIDE the
+    // forged backup, so `mkdir X` beside a manifest naming `X` made
+    // `backupHoldsCopy` true, the directory was retained, and #338's wedge came
+    // straight back — three runs, nothing restored, the real backup never
+    // reached. A symlink pointing out of the backup did it too.
+    //
+    // So the question is the one the retention decision actually needs: is there
+    // a REGULAR FILE at the resolved source inside the backup — the thing
+    // `restoreOneBackupFile` could have copied out? A directory, a link pointing
+    // outside, and an entry the filesystem would not describe are all "no":
+    // deleting the backup around them destroys nothing this run could have
+    // restored, and keeping it hands the scanned tree a permanent lock on the
+    // recovery path. The cost is that an EACCES on a real copy goes with the
+    // directory; it was unreadable to the user too, and the alternative is an
+    // attacker-controlled denial of recovery.
     let sourceReal: string | null = null;
     let sourceRefusal: RestoreRefusal | null = null;
-    let nothingThere = false;
     const sourcePath = path.join(backupReal, rel);
     if (!this.isPathWithinDirectory(sourcePath, backupReal)) {
       sourceRefusal = 'source-outside-backup';
-      nothingThere = true; // the backup cannot hold what the entry does not name
     } else {
       try {
         const candidate = await fs.realpath(sourcePath);
@@ -7986,12 +8086,13 @@ dist/
           }
           if (!sourceRefusal) sourceReal = candidate;
         }
-      } catch (err) {
+      } catch {
         sourceRefusal = 'source-unreadable';
-        nothingThere = (err as NodeJS.ErrnoException)?.code === 'ENOENT';
       }
     }
-    const backupHoldsCopy = !nothingThere;
+    // `sourceReal` is set only when realpath succeeded, the result is inside the
+    // backup, and it is a regular file. That is the whole definition.
+    const backupHoldsCopy = sourceReal !== null;
 
     // ---- Where would it go? ----
     const dest = await this.resolveInsideTree(targetReal, rel, { followLeafLink: true });
@@ -8101,10 +8202,6 @@ dist/
     let backupDir: string | undefined;
     let latestBackup: string | undefined;
     let manifest: BackupManifest | undefined;
-    // Reading is bounded across ALL candidates, not per candidate: the tree
-    // chooses how many directories there are and what is in them, and #312
-    // measured 493MB resident from a single 60MB manifest.
-    let readBudget = MAX_FILE_SIZE;
 
     for (const candidate of sortedBackups) {
       const candidateDir = path.join(backupBaseDir, candidate);
@@ -8152,11 +8249,16 @@ dist/
       try {
         const manifestPath = path.join(candidateReal, '.manifest.json');
         const stat = await fs.stat(manifestPath);
+        // Per candidate, not cumulative. A shared allowance across the loop was
+        // a wedge of exactly the shape this change exists to remove: eleven
+        // directories carrying 1MB of invalid JSON each exhausted it before the
+        // real backup was reached, and nothing is deleted, so re-running never
+        // helped. Dropping it costs reads bounded by bytes the tree has already
+        // written to disk — sequential, no amplification — and each candidate is
+        // still capped at a size no real manifest reaches.
         if (!stat.isFile()) manifestRefusal = 'its .manifest.json is not a regular file';
         else if (stat.size > MAX_FILE_SIZE) manifestRefusal = 'its .manifest.json is implausibly large';
-        else if (stat.size > readBudget) manifestRefusal = 'too many unreadable backups came before it';
         if (!manifestRefusal) {
-          readBudget -= stat.size;
           manifest = this.parseManifest(await fs.readFile(manifestPath, 'utf-8'));
         }
       } catch {

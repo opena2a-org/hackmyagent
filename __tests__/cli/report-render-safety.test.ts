@@ -35,6 +35,7 @@ import {
   assertRenderSafe,
   HOSTILE_NAME,
   SHELL_HOSTILE_NAME,
+  SHELLS_TESTED,
   SPLIT_MARKER,
 } from '../helpers/render-safety';
 import { assertDistFresh, BUILT_CLI } from '../helpers/dist-freshness';
@@ -132,6 +133,24 @@ describe('#328 every report that renders a tree-derived path renders it safely',
     const out = run(['secure', scanDir, '--fix']);
     expect(out, 'secure --fix never named the hostile path').toContain(SPLIT_MARKER);
     assertRenderSafe(out, 'secure --fix');
+  }, 300_000);
+
+  /**
+   * #339, the miss that the two cases above could not see: they put the hostile
+   * name INSIDE an ordinary target, so the target-rendering path — `Scanning
+   * <target>`, `Backup created: <path>`, `Run \`rollback <target>\`` — was never
+   * exercised on the flagship command. Measured on the build before this: three
+   * raw ESC bytes, three split lines and three pasteable
+   * `; touch PWNED-BY-CITATION;` citations, one of them inside a backticked
+   * command the report tells the user to run.
+   */
+  it('secure: with the hostile name on the TARGET rather than inside it', () => {
+    const out = run(['secure', hostileDir, '--fix']);
+    expect(
+      out,
+      'secure never rendered its own target, so this case measures nothing',
+    ).toContain(SPLIT_MARKER);
+    assertRenderSafe(out, 'secure (hostile target)');
   }, 300_000);
 
   it('rollback', () => {
@@ -294,7 +313,11 @@ describe('#328 every report that renders a tree-derived path renders it safely',
       // apostrophe closes the quoting, a `;` makes a filename a command, a `~`
       // makes the shell resolve somewhere else entirely, and a leading `-`
       // makes the path an option.
-      const planted = ["it's a file.txt", SHELL_HOSTILE_NAME, '~/evil.txt', '-rf/x.txt', '~'];
+      const planted = [
+        "it's a file.txt", SHELL_HOSTILE_NAME, '~/evil.txt', '-rf/x.txt', '~',
+        // zsh EQUALS expansion: `rm =python3` means `rm $(command -v python3)`.
+        '=python3',
+      ];
       const legacy = path.join(dir, '.hackmyagent-backup', '9999-99-99-999999');
       mkdirSync(legacy, { recursive: true });
       mkdirSync(path.join(dir, '~'), { recursive: true });
@@ -303,6 +326,7 @@ describe('#328 every report that renders a tree-derived path renders it safely',
       writeFileSync(path.join(dir, SHELL_HOSTILE_NAME), 'x\n');
       writeFileSync(path.join(dir, '~', 'evil.txt'), 'x\n');
       writeFileSync(path.join(dir, '-rf', 'x.txt'), 'x\n');
+      writeFileSync(path.join(dir, '=python3'), 'x\n');
       writeFileSync(
         path.join(legacy, '.manifest.json'),
         JSON.stringify({ version: 1, existingFiles: [], absentAtBackup: [], createdFiles: planted }),
@@ -317,6 +341,17 @@ describe('#328 every report that renders a tree-derived path renders it safely',
         + 'measures nothing',
       ).toBe(planted.length);
       assertRenderSafe(out, 'rollback citations', planted);
+      // Non-vacuity for #340's second half: asking only `sh` is what let
+      // `rm =python3` through, since zsh's EQUALS expansion resolves it to a
+      // command path. If only one shell is on this machine, say so rather than
+      // reporting a pass the assertion did not earn.
+      expect(
+        SHELLS_TESTED.length,
+        'only one shell was available, so the citation round trip covers a subset '
+        + 'of the shells a reader pastes into',
+      ).toBeGreaterThan(1);
+      expect(SHELLS_TESTED, 'zsh — the macOS default shell — was not exercised')
+        .toContain('zsh');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

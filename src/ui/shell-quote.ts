@@ -26,7 +26,7 @@
  * rendered line, and the two compose in that order — quote the path, then escape
  * the line that carries it.
  */
-import { escapePathForDisplay } from './display-safe';
+import { hasDisplayHazard } from './display-safe';
 
 /**
  * POSIX only, deliberately (#347.7).
@@ -63,17 +63,37 @@ export function shellQuote(p: string): string {
  * this function exists to prevent: `<project>/~/evil.txt` was displayed and
  * `rm ~/evil.txt` was emitted, so pasting it acted on `$HOME`. A file named `~`
  * alone yielded `rm ~`.
+ *
+ * And `=` was still on it after that. zsh expands a leading `=` to the resolved
+ * path of a command — EQUALS expansion, on by default, and zsh is the default
+ * shell on macOS — so a file named `=python3` rendered `rm =python3`, which in
+ * the shell the reader is actually typing into means
+ * `rm /opt/homebrew/bin/python3`. Measured: `sh -c "printf '%s\n' =python3"`
+ * prints `=python3`, `zsh -c` prints `/opt/homebrew/bin/python3`. The list is
+ * now only characters no common shell expands anywhere in a word.
  */
-const SAFE_UNQUOTED = /^[A-Za-z0-9._@:+=/-]+$/;
+const SAFE_UNQUOTED = /^[A-Za-z0-9._@:+/-]+$/;
 
 /**
  * A path as it should appear inside a command citation a human will read and
  * paste, or null when no correct command can name it.
  *
- * **The rule: a line never shows one path two ways.** The citation is emitted
- * only when the path is displayed exactly as it is — `escapePathForDisplay`
- * leaves it unchanged. Otherwise what the reader sees is a RENDERING, and any
- * command built from the real bytes names something the reader cannot see.
+ * **The rule: a path the reader cannot be shown truthfully gets no command.**
+ * The citation is emitted unless the path carries a character the terminal would
+ * act on or hide — a control byte, a bidi override, an invisible format
+ * character. Those are displayed as a RENDERING, so any command built from the
+ * real bytes names something the reader cannot see.
+ *
+ * The first version of this rule was `escapePathForDisplay(p) !== p`, which is a
+ * stricter and WRONG predicate: for `a\test.json` the only difference is this
+ * module's own backslash doubling, and `rm 'a\test.json'` is a perfectly correct
+ * command. That version printed "its name carries characters a pasted command
+ * cannot name" about a path a command names fine — a dead end plus a false
+ * statement, where the previous build got it right. A backslash followed by one
+ * of this module's escape letters therefore still renders differently from its
+ * citation; that difference is forced (the display must distinguish `a\test` from
+ * `a<TAB>est`) and is the honest residual of #347.5 rather than a reason to
+ * withhold a working command.
  *
  * #343 — the previous version escaped for display AFTER quoting, so the escape
  * landed between the quotes. For a file named `nl<LF>second` it emitted
@@ -101,7 +121,7 @@ const SAFE_UNQUOTED = /^[A-Za-z0-9._@:+=/-]+$/;
  * Human-readable output only. A `--json` consumer needs the real bytes.
  */
 export function citationPath(p: string): string | null {
-  if (escapePathForDisplay(p) !== p) return null;
+  if (hasDisplayHazard(p)) return null;
   const operand = p.startsWith('-') ? `./${p}` : p;
   return SAFE_UNQUOTED.test(operand) ? operand : shellQuote(operand);
 }

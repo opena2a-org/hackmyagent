@@ -26,7 +26,7 @@ import { createHash } from 'node:crypto';
 import { access, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { HardeningScanner, backupIdentityOrThrow } from '../../src/hardening/scanner';
+import { HardeningScanner, archiveBaseFromProbe, backupIdentityOrThrow } from '../../src/hardening/scanner';
 
 const FORGED = '9999-99-99-999999';
 
@@ -270,4 +270,96 @@ describe('#347.1/#347.3 the guards that decide a refusal are observed by somethi
       'a tree with no backup directory refuses to answer, so nothing would ever be fixable',
     ).toBe('no');
   });
+
+  /**
+   * M3 — the last clause of the three-valued chain survived mutation. Replacing
+   * it with `{ kind: 'none' }` (fail open) left the whole suite green: 203 files,
+   * 2615 passed. Its two siblings were covered; this one was not.
+   *
+   * Asserted at the decision, for the same reason as #347.3: the window between
+   * "lstat said directory" and "stat for the identity" cannot be held open.
+   */
+  it('maps an unreadable identity probe of the base to unknown, not to "no base"', () => {
+    expect(archiveBaseFromProbe({ kind: 'identity', id: { dev: 7, ino: 9 } }, '/b'))
+      .toEqual({ kind: 'base', real: '/b', ident: { dev: 7, ino: 9 } });
+    expect(
+      archiveBaseFromProbe({ kind: 'absent' }, '/b'),
+      'a proven absence is no longer a proven absence',
+    ).toEqual({ kind: 'none' });
+    expect(
+      archiveBaseFromProbe({ kind: 'unknown' }, '/b'),
+      'a refused probe of the backup base was read as "there is no backup here", '
+      + 'which at the write gate authorises rewriting one',
+    ).toEqual({ kind: 'unknown' });
+  });
+});
+
+describe('#341 second-order: a fix inside another project\'s backup is disclosed', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'hma-foreign-'));
+  });
+
+  afterEach(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * The residual of #341's decision, which the CHANGELOG claimed was "stated in
+   * the test" when no test asserted it. `secure --fix <parent>` rewrites a
+   * nested project's archive; `rollback <child>` then restores the redaction
+   * over the redaction and reports success. The bytes are recoverable only
+   * through `rollback <parent>`, and nothing on screen said so.
+   *
+   * A changelog sentence is not a disclosure. This asserts the finding.
+   */
+  it('reports it, on screen, with a command that recovers the bytes', async () => {
+    const token = `ghp_${'a'.repeat(36)}`;
+    const child = path.join(dir, 'child');
+    const childArchive = path.join(child, '.hackmyagent-backup', '2026-01-01-000000-000-abcdabcd');
+    await mkdir(childArchive, { recursive: true });
+    await writeFile(path.join(dir, 'package.json'), '{"name":"p","version":"1.0.0"}\n');
+    await writeFile(path.join(child, 'package.json'), '{"name":"c","version":"1.0.0"}\n');
+    await writeFile(path.join(child, 'config.json'), `{"t":"${token}"}\n`);
+    await writeFile(path.join(childArchive, 'config.json'), `{"t":"${token}"}\n`);
+
+    const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+
+    // Non-vacuity: the write really did land inside the child's archive.
+    const { readFile } = await import('node:fs/promises');
+    expect(
+      await readFile(path.join(childArchive, 'config.json'), 'utf-8'),
+      'the nested archive was not rewritten, so there is nothing to disclose',
+    ).not.toContain(token);
+
+    const disclosure = result.findings.find((f) => f.checkId === 'FIX-FOREIGN-ARCHIVE');
+    expect(
+      disclosure,
+      'a nested project\'s rollback was silently degraded and nothing reported it',
+    ).toBeDefined();
+    // `passed: false` is what puts it on screen; a passed finding is filtered out,
+    // which is how the first version of this disclosure existed and appeared nowhere.
+    expect(disclosure!.passed, 'the finding exists but is filtered out of the report').toBe(false);
+    expect(disclosure!.fix, 'the disclosure has no command that recovers the bytes')
+      .toContain('rollback');
+    expect(disclosure!.guidance ?? '').toContain('report success');
+  }, 120_000);
+
+  /**
+   * CONTROL — an ordinary tree with no nested archive says nothing. Without it
+   * the assertion above would pass on a build that emits the note always.
+   */
+  it('says nothing when no write lands in a nested archive', async () => {
+    const token = `ghp_${'a'.repeat(36)}`;
+    await writeFile(path.join(dir, 'package.json'), '{"name":"p","version":"1.0.0"}\n');
+    await writeFile(path.join(dir, 'config.json'), `{"t":"${token}"}\n`);
+
+    const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+
+    expect(
+      result.findings.some((f) => f.checkId === 'FIX-FOREIGN-ARCHIVE'),
+      'an ordinary tree was told its nested project was affected',
+    ).toBe(false);
+  }, 120_000);
 });

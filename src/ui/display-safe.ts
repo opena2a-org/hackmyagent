@@ -155,24 +155,29 @@ export function hasDisplayHazard(text: string): boolean {
 const AMBIGUOUS_AFTER_BACKSLASH = new Set(['0', 't', 'n', 'r', 'e', 'x', 'u', '\\']);
 
 export function escapePathForDisplay(p: string): string {
+  // TWO passes, and the order matters. Doubling is decided per character with a
+  // one-character lookahead; escaping is decided over the WHOLE string, because
+  // the pictograph exemption is a lookbehind and a per-character test cannot see
+  // what precedes it. Doing both in one loop escaped every variation selector,
+  // so `❤️.txt` rendered `❤\ufe0f.txt` and lost its citation — the exact outcome
+  // the exemption exists to prevent, in the one function that renders a bare
+  // filename.
   const chars = [...p];
-  let out = '';
+  let doubled = '';
   for (let i = 0; i < chars.length; i++) {
     const ch = chars[i];
-    if (hasDisplayHazard(ch)) {
-      out += escapeCodePoint(ch.codePointAt(0) ?? 0);
-      continue;
-    }
     if (ch !== '\\') {
-      out += ch;
+      doubled += ch;
       continue;
     }
     const next = chars[i + 1];
     // A trailing backslash cannot be read as an escape: there is nothing after
-    // it to complete one.
+    // it to complete one. A backslash before a hazard is ambiguous whatever the
+    // exemption says, because the backslash itself now stands between the
+    // pictograph and the selector.
     const ambiguous = next !== undefined
       && (AMBIGUOUS_AFTER_BACKSLASH.has(next) || hasDisplayHazard(next));
-    out += ambiguous ? '\\\\' : '\\';
+    doubled += ambiguous ? '\\\\' : '\\';
   }
-  return out;
+  return escapeForDisplay(doubled);
 }

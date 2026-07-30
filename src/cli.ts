@@ -3495,10 +3495,15 @@ Examples:
 
       // Only show progress for text output — write to stderr so stdout stays clean for pipes
       if (format === 'text') {
+        // #339 — `displayDir` is the scan TARGET, and a target is a path the
+        // scanned tree can name. The sweep that fixed `detect`/`scan-soul`/
+        // `harden-soul`/`wild` missed `secure`, the flagship command, because
+        // the test that covers `secure` puts the hostile name INSIDE the tree
+        // rather than on the target.
         if (options.dryRun) {
-          process.stderr.write(`\nScanning ${displayDir} (dry-run)...\n\n`);
+          process.stderr.write(`\nScanning ${escapePathForDisplay(displayDir)} (dry-run)...\n\n`);
         } else {
-          process.stderr.write(`\nScanning ${displayDir}...\n\n`);
+          process.stderr.write(`\nScanning ${escapePathForDisplay(displayDir)}...\n\n`);
         }
       }
 
@@ -4077,8 +4082,10 @@ Examples:
         }
 
         if (result.backupPath) {
-          console.log(`${colors.yellow}Backup created:${RESET()} ${result.backupPath}`);
-          console.log(`${colors.yellow}Something wrong?${RESET()} Run \`${CLI_PREFIX} rollback ${directory}\` to undo all changes.\n`);
+          // #339 — the backup path is derived from the target, and the rollback
+          // hint is a command the report tells the user to paste. Both were raw.
+          console.log(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
+          console.log(`${colors.yellow}Something wrong?${RESET()} Run \`${CLI_PREFIX} rollback ${citationTarget(directory)}\` to undo all changes.\n`);
         }
       }
 
@@ -4578,7 +4585,7 @@ Examples:
         console.log();
 
         if (result.backupPath) {
-          console.log(`${colors.yellow}Backup created:${RESET()} ${result.backupPath}`);
+          console.log(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
           console.log(`${colors.yellow}To rollback:${RESET()} ${CLI_PREFIX} rollback ${targetDir}`);
           console.log();
           console.log(`${colors.cyan}Note:${RESET()} If you replaced tokens with env vars, set OPENCLAW_AUTH_TOKEN`);
@@ -5066,7 +5073,10 @@ Examples:
           console.log(`   ${colors.dim}skipped ${RESET()}  ${escapePathForDisplay(s.name)}  ${colors.dim}— ${escapeForDisplay(s.reason)}${RESET()}`);
         }
       }
-      if (incomplete && report.backupsBehind > 0) {
+      // Only when the directory is still on disk: if this run consumed it there
+      // is nothing left to deal with, and the next run reaches the one behind it
+      // without the reader doing anything.
+      if (report.backupRetainedAt && report.backupsBehind > 0) {
         console.log(
           `\n   ${report.backupsBehind} older backup${report.backupsBehind === 1 ? '' : 's'} ` +
           `${report.backupsBehind === 1 ? 'is' : 'are'} behind this one. ` +

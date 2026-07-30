@@ -451,6 +451,12 @@ export const TAXONOMY_EXEMPT_CHECKIDS: ReadonlySet<string> = new Set([
   // External port-scanner status — `Score is not applicable — nothing was tested`.
   // A scan-status indicator, not a security threat.
   'SCAN-UNREACHABLE',
+  // Reports that a fix landed inside a nested project's backup directory, so
+  // that project's own `rollback` no longer restores the original. A statement
+  // about what THIS run did and how to undo it, in the same family as
+  // FIX-WRITE-FAILED beside it — the credential it redacted is reported by
+  // CRED-001, which carries its own attack class.
+  'FIX-FOREIGN-ARCHIVE',
 ]);
 
 /**

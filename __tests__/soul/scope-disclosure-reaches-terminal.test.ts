@@ -24,15 +24,42 @@ import { assertDistFresh, BUILT_CLI } from '../helpers/dist-freshness';
 
 let dir: string;
 
+/**
+ * The spawn, and an honest report when it does not finish.
+ *
+ * The catch used to collapse every failure into `stdout ?? ''`, so a spawn that
+ * TIMED OUT became an empty string and the `--deep` case failed with "no output
+ * captured" — a message about the assertion rather than about the cause. On a
+ * loaded machine `scan-soul --profile conversational --deep` runs a real
+ * semantic pass and exceeded the 240s budget; the same run passes on an idle
+ * one, and it fails identically on the base commit, so it is machine speed and
+ * not a regression.
+ *
+ * Two changes: a budget with real headroom, and a failure that names the timeout
+ * so the next reader is not sent looking for a rendering bug that is not there.
+ * This is still host-speed dependent, which is a weakness worth stating rather
+ * than papering over.
+ */
+const SPAWN_BUDGET_MS = 600_000;
+
 function scanSoul(extraArgs: string[]): string {
   try {
     return execFileSync(
       process.execPath,
       [BUILT_CLI, 'scan-soul', dir, '--profile', 'conversational', ...extraArgs],
-      { encoding: 'utf8', timeout: 240_000, env: { ...process.env, NO_COLOR: '1' } },
+      { encoding: 'utf8', timeout: SPAWN_BUDGET_MS, env: { ...process.env, NO_COLOR: '1' } },
     );
   } catch (e: unknown) {
-    return String((e as { stdout?: string }).stdout ?? '');
+    const err = e as { stdout?: string; signal?: string; code?: string };
+    const out = String(err.stdout ?? '');
+    if (out.length === 0 && (err.signal === 'SIGTERM' || err.code === 'ETIMEDOUT')) {
+      throw new Error(
+        `scan-soul ${extraArgs.join(' ')} did not finish within ${SPAWN_BUDGET_MS}ms and was `
+        + 'killed, so this case measured nothing. That is a machine-speed failure, not a '
+        + 'rendering one.',
+      );
+    }
+    return out;
   }
 }
 
@@ -53,7 +80,7 @@ afterAll(() => {
 describe('#260 scope disclosure is rendered, not merely called', () => {
   describe('without --deep', () => {
     let out: string;
-    beforeAll(() => { out = scanSoul([]); }, 300_000);
+    beforeAll(() => { out = scanSoul([]); }, 660_000);
 
     it('tells the user the scan was keyword-based', () => {
       expect(out.length, 'no output captured').toBeGreaterThan(0);
@@ -86,7 +113,7 @@ describe('#260 scope disclosure is rendered, not merely called', () => {
 
   describe('with --deep', () => {
     let out: string;
-    beforeAll(() => { out = scanSoul(['--deep']); }, 300_000);
+    beforeAll(() => { out = scanSoul(['--deep']); }, 660_000);
 
     it('reports what the semantic pass actually did', () => {
       expect(out.length, 'no output captured').toBeGreaterThan(0);

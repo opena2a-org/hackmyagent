@@ -169,18 +169,47 @@ export function assertCitationsQuoted(
       `${label}: a citation names a path a command would read as a flag: ${JSON.stringify(line)}`,
     ).toBe(false);
 
-    // Property 2. One argument in, one word out, and that word is the file.
-    let expanded: string;
-    try {
-      expanded = execFileSync('sh', ['-c', `printf '%s\\n' ${arg}`], {
-        encoding: 'utf8',
-        timeout: 30_000,
-      });
-    } catch {
-      throw new Error(
-        `${label}: a shell could not even parse the emitted citation: ${JSON.stringify(line)}`,
-      );
+    // Property 2. One argument in, one word out, and that word is the file —
+    // asked of EVERY shell the reader might paste into, not just `sh`.
+    //
+    // #340's second half: asking only `sh` is a subset of the real expansion
+    // set. zsh is the default shell on macOS and expands a leading `=` to a
+    // resolved command path, so `rm =python3` deleted a binary while `sh` said
+    // the citation was fine and this test stayed green.
+    for (const shell of SHELLS) {
+      let expanded: string;
+      try {
+        expanded = execFileSync(shell, ['-c', `printf '%s\\n' ${arg}`], {
+          encoding: 'utf8',
+          timeout: 30_000,
+        });
+      } catch {
+        throw new Error(
+          `${label}: ${shell} could not even parse the emitted citation: ${JSON.stringify(line)}`,
+        );
+      }
+      assertOneWord(expanded, `${label} [${shell}]`, line, plantedPaths);
     }
+  }
+}
+
+/** Every shell available on this machine that a reader could paste into. */
+const SHELLS: string[] = ['sh', 'bash', 'zsh'].filter((sh) => {
+  try {
+    execFileSync('command', ['-v', sh], { stdio: 'ignore', shell: '/bin/sh' });
+    return true;
+  } catch {
+    return false;
+  }
+});
+
+function assertOneWord(
+  expanded: string,
+  label: string,
+  line: string,
+  plantedPaths: readonly string[],
+): void {
+  {
     const words = expanded.split('\n').filter((w) => w !== '');
     expect(
       words.length,
@@ -201,6 +230,9 @@ export function assertCitationsQuoted(
     ).toContain(named);
   }
 }
+
+/** The shells this run actually exercised, for a non-vacuity assertion. */
+export const SHELLS_TESTED = SHELLS;
 
 /** All of it, for one command's output. */
 export function assertRenderSafe(

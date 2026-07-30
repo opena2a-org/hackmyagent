@@ -25,7 +25,7 @@
  * did not.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
@@ -231,4 +231,67 @@ describe('#338 one unusable backup directory cannot wedge recovery', () => {
       'two different causes were given the same sentence',
     ).toBe(2);
   });
+
+  /**
+   * The wedge, as the adversarial pass found it still reachable.
+   *
+   * The first fix made `backupHoldsCopy` true for every refusal except a
+   * lexical escape and an ENOENT — on the reasoning that refusing to delete is
+   * fail-safe. Three of the five refusals are decided by bytes the scanned tree
+   * writes INSIDE the forged backup, so `mkdir X` beside a manifest naming `X`
+   * restored the wedge exactly: three runs, nothing restored, the real backup
+   * never reached. A symlink out of the backup did the same.
+   *
+   * Retention now asks whether a REGULAR FILE is there — the thing a restore
+   * could have copied out — so none of these buys the tree a lock on recovery.
+   */
+  it.each([
+    ['a directory', async (b: string) => { await mkdir(path.join(b, 'X'), { recursive: true }); }],
+    ['a symlink pointing out of the backup', async (b: string) => { await symlink('/etc/hosts', path.join(b, 'X')); }],
+    ['nothing at all', async () => { /* the manifest names a file that is simply absent */ }],
+  ])('is not wedged when the forged entry is %s', async (_label, plant) => {
+    await fixForReal();
+    const forged = path.join(dir, '.hackmyagent-backup', FORGED);
+    await mkdir(forged, { recursive: true });
+    await plant(forged);
+    await writeFile(
+      path.join(forged, '.manifest.json'),
+      JSON.stringify({ version: 2, existingFiles: ['X'], absentAtBackup: [], createdFiles: [] }),
+    );
+
+    await new HardeningScanner().rollback(dir);
+    expect(
+      await exists(forged),
+      'a directory holding no restorable copy was kept, so the next run selects it again',
+    ).toBe(false);
+
+    const second = await new HardeningScanner().rollback(dir);
+    expect(second.restored, 'the real backup was never reached').toContain('config.json');
+    expect(await readFile(path.join(dir, 'config.json'), 'utf-8')).toBe(original);
+  }, 120_000);
+
+  /**
+   * The read allowance was shared across every candidate, and the tree chooses
+   * how many candidates there are. Eleven directories carrying 1MB of invalid
+   * JSON exhausted it before the real backup was reached, and nothing is
+   * deleted, so re-running never helped — the same permanent denial of recovery
+   * the fix is named for, introduced by the fix.
+   */
+  it('reaches the real backup past eleven oversized forged manifests', async () => {
+    await fixForReal();
+    for (let n = 0; n <= 10; n++) {
+      const d = path.join(dir, '.hackmyagent-backup', `9999-99-99-99999${n}`);
+      await mkdir(d, { recursive: true });
+      await writeFile(path.join(d, '.manifest.json'), 'x'.repeat(1024 * 1024));
+    }
+
+    const report = await new HardeningScanner().rollback(dir);
+
+    expect(report.skippedBackups, 'not every unreadable candidate was reported').toHaveLength(11);
+    expect(report.restored, 'the real backup was not reached in one run').toContain('config.json');
+    expect(
+      await readFile(path.join(dir, 'config.json'), 'utf-8'),
+      'the original bytes were not recovered',
+    ).toBe(original);
+  }, 120_000);
 });
