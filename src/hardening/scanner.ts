@@ -518,11 +518,12 @@ function backupSetupError(code: BackupSetupCode, message: string): NodeJS.ErrnoE
  * The segment compare is case-INSENSITIVE (#317). On a case-insensitive
  * filesystem — the macOS default — `.HACKMYAGENT-BACKUP` and
  * `.hackmyagent-backup` are one directory, and the exact-match version of this
- * compare let `--fix` rewrite HMA's own backup through the case variant. Folding
- * case only ever recognises MORE directories as archives, and recognition here
- * has exactly two consequences: a refusal to write (fail-safe by construction)
- * and a citation (gated on proven provenance since #319, so a name buys
- * nothing). Neither can suppress a finding.
+ * compare let `--fix` rewrite HMA's own backup through the case variant.
+ *
+ * Recognition here has exactly one consequence: HMA declines to auto-edit the
+ * file, and says so in the finding. It cannot suppress a finding, and since #326
+ * it cannot produce a destructive citation either — nothing keyed on this name
+ * asserts who created the directory or offers to delete it.
  */
 function backupArchiveDirFor(absPath: string, targetDir: string): string | null {
   const rel = path.relative(targetDir, absPath);
@@ -2545,6 +2546,23 @@ export class HardeningScanner {
         let fileModified = false;
         const keysFoundInFile: Array<{ name: string; line: number }> = [];
 
+        // #292 — basename, not the whole relative path: `filename` is now
+        // `sub/.env` for a nested hit, and a raw `startsWith` would classify it
+        // as a normal config file and REWRITE it in place.
+        const isEnvFile = path.basename(filename).startsWith('.env');
+        // #309/#314 — a file inside a backup archive is never auto-fixed:
+        // rewriting it would destroy the copy `rollback` restores from. Not
+        // attempted at all rather than attempted and refused, so the finding
+        // carries a remediation that WORKS instead of a `secure --fix` that this
+        // same guard would decline.
+        //
+        // #326 — asked ONCE per file, and the answer drives both the fix
+        // attempt and the wording. It used to be asked twice, and the second
+        // question was a different, stronger one ("is this PROVABLY our
+        // archive?") whose positive answer emitted `rm -rf`. See the guidance
+        // below for why that question can no longer be asked of the tree.
+        const inArchive = isInsideBackupArchive(filePath, targetDir);
+
         for (const { name, pattern, envVar } of credentialPatterns) {
           // Check each line for credentials
           for (let i = 0; i < lines.length; i++) {
@@ -2558,17 +2576,8 @@ export class HardeningScanner {
               keysFoundInFile.push({ name, line: i + 1 });
 
               // Fix: replace credential with env var reference (but NOT in .env files
-              // where the actual value is supposed to live)
-              // #292 — basename, not the whole relative path: `filename` is
-              // now `sub/.env` for a nested hit, and a raw `startsWith` would
-              // classify it as a normal config file and REWRITE it in place.
-              const isEnvFile = path.basename(filename).startsWith('.env');
-              // #309/#314 — a file inside a backup archive is never auto-fixed:
-              // rewriting it would destroy the copy `rollback` restores from.
-              // Not attempted at all rather than attempted and refused, so the
-              // finding carries a remediation that WORKS instead of a
-              // `secure --fix` that this same guard would decline.
-              const inArchive = isInsideBackupArchive(filePath, targetDir);
+              // where the actual value is supposed to live, and never inside a
+              // backup archive — both decided once, above).
               if (autoFix && !isEnvFile && !inArchive) {
                 // #301 — a key wrapped in braces has to lose the braces with
                 // it. Replacing only the inner match turns `"${ghp_aaa…}"`
@@ -2600,30 +2609,40 @@ export class HardeningScanner {
             if (fileModified) content = credContent;
           }
 
-          const isEnvFile = path.basename(filename).startsWith('.env');
-          // #309 — a pre-existing archive is scanned like any other directory,
-          // so this finding has to be actionable. `secure --fix` is the one
-          // command that CANNOT resolve it, and offering it would be the dead
-          // end the project's own rule forbids. Quoted, because a project path
-          // may contain a space (#273).
+          // #326 — HackMyAgent no longer claims to know who created a
+          // `.hackmyagent-backup`-named directory, and never emits `rm -rf` for
+          // one.
           //
-          // #319 — three cases, not two, because "looks like an archive" and "is
-          // an archive" are different claims. `namedArchiveDir` decides whether
-          // HMA will auto-edit the file (it will not, fail-safe, on the name
-          // alone). `provenArchiveDir` decides whether HMA may ASSERT it made the
-          // copy and offer `rm -rf` for the directory — and that needs proof,
-          // because both the target and the claim would otherwise come from the
-          // scanned tree.
-          const namedArchiveDir = backupArchiveDirFor(filePath, targetDir);
-          const provenArchiveDir = namedArchiveDir
-            ? await this.provenArchiveDirFor(filePath, targetDir)
-            : null;
+          // #319 made the claim conditional on the archive's `.manifest.json`
+          // LISTING the cited file. That manifest is a file in the scanned tree,
+          // inside the attacker's own directory: they control its location AND
+          // its contents, so one array element restored the fabricated citation
+          // in full — `rm -rf` against `important-lib/` holding `main.js` and
+          // `lib.js`, under "This is the copy `--fix` saved". A credential
+          // directly in the base aimed the same deletion at the WHOLE
+          // `.hackmyagent-backup`, destroying real prior-run backups.
+          //
+          // Fifth instance of one class: #304 a `\`-folded path, #305 a name,
+          // #309 a manifest shape, #317 a case-sensitive compare, #326 a
+          // manifest array element. Every one of them was a STRING the scanned
+          // tree could write, used as proof of a property of the filesystem.
+          //
+          // So the question is not asked. The only non-forgeable evidence
+          // available without new state is the `dev`+`ino` of a directory THIS
+          // run created — and a this-run backup is already excluded from
+          // detection, so there is no case left where proof exists and the
+          // citation is wanted. A cross-run claim would need state HMA holds and
+          // the tree cannot write (a per-user record of the identities it
+          // created, or a MAC over the manifest keyed outside the tree); both
+          // buy one convenience command in exchange for new state and its
+          // failure modes, against a downside — deleting a directory that is not
+          // ours — that is unrecoverable. The wording below states what is true
+          // in both cases, names the verify step, and leaves the deletion to the
+          // one party who can tell which case it is.
           findings.push({
             checkId: 'CRED-001',
             name: 'Exposed Credential',
-            description: provenArchiveDir
-              ? `${keyNames.join(', ')} found in plaintext in a HackMyAgent backup`
-              : `${keyNames.join(', ')} found in plaintext`,
+            description: `${keyNames.join(', ')} found in plaintext`,
             category: 'credentials',
             severity: 'critical',
             passed: fileModified,
@@ -2632,28 +2651,26 @@ export class HardeningScanner {
             line: firstLine,
             // .env files can't be auto-fixed (that's where values belong);
             // archives must not be (rewriting them destroys the rollback copy).
-            fixable: !isEnvFile && !namedArchiveDir,
+            fixable: !isEnvFile && !inArchive,
             fixed: fileModified,
-            fix: provenArchiveDir
-              ? `rm -rf ${shellQuote(path.join(targetDir, provenArchiveDir))}`
-              : namedArchiveDir
-                ? `Replace the credential in this file with a \${ENV_VAR} reference, then rotate it`
-                : isEnvFile
-                  ? 'Add .env to .gitignore to prevent committing secrets'
-                  : `${this.cliName} secure --fix`,
-            guidance: provenArchiveDir
-              ? 'This is the copy `--fix` saved before rewriting your config, so it still holds the ORIGINAL secret in plaintext. '
-                + 'It is not auto-fixed, because rewriting it would destroy what `rollback` restores from. '
-                + `Confirm the live file is correct (\`${this.cliName} secure\` reports no credential outside this archive), then delete the archive. `
-                + 'Rotate the credential either way: it has been on disk in plaintext.'
-              : namedArchiveDir
-                ? `This file sits under a directory named \`${BACKUP_DIR_NAME}\`, but no HackMyAgent backup manifest lists it, `
-                  + 'so there is no evidence HackMyAgent created it. It is reported and left alone: nothing here is auto-edited, '
-                  + 'and no deletion is offered for a directory that may be your own source. '
-                  + 'Rotate the credential and remove the plaintext copy yourself.'
-                : isEnvFile
-                  ? 'Credentials in .env are expected but the file must be in .gitignore. Run `hackmyagent secure --fix` to create a .gitignore.'
-                  : 'Replaces hardcoded credentials with ${ENV_VAR} references. Store actual values in your .env file, which should be in .gitignore.',
+            fix: inArchive
+              ? 'Rotate the credential, then clear the plaintext copy: if this is a HackMyAgent backup, '
+                + 'delete the directory once the live file is verified; if it is your own file, replace the '
+                + 'value with a ${ENV_VAR} reference'
+              : isEnvFile
+                ? 'Add .env to .gitignore to prevent committing secrets'
+                : `${this.cliName} secure --fix`,
+            guidance: inArchive
+              ? `This file sits under a directory named \`${BACKUP_DIR_NAME}\`. HackMyAgent does not auto-edit anything `
+                + 'there: if the directory IS one of its backups, rewriting it would destroy what `rollback` restores from. '
+                + 'It also cannot prove it created the directory — the name and the manifest inside it are both files in the '
+                + 'scanned tree, so anything with write access to the tree can produce them — so no deletion is offered for a '
+                + `directory that may be your own source. Confirm the live file is correct (\`${this.cliName} secure\` reports `
+                + 'no credential outside this directory), then clear the plaintext copy yourself. Rotate the credential either '
+                + 'way: it has been on disk in plaintext.'
+              : isEnvFile
+                ? 'Credentials in .env are expected but the file must be in .gitignore. Run `hackmyagent secure --fix` to create a .gitignore.'
+                : 'Replaces hardcoded credentials with ${ENV_VAR} references. Store actual values in your .env file, which should be in .gitignore.',
           });
         }
       } catch {
@@ -2898,53 +2915,6 @@ export class HardeningScanner {
   }
 
   /**
-   * The archive directory a credential sits in, but only when that directory is
-   * PROVABLY one HackMyAgent wrote. Null otherwise, including for a directory
-   * that merely carries the name.
-   *
-   * #319 — `backupArchiveDirFor` keys on the directory NAME, and that name comes
-   * out of the scanned tree, so the tree chose both the `rm -rf` target and the
-   * sentence asserting HMA created it. Measured: a
-   * `vendor/.hackmyagent-backup/important-lib/` holding unrelated source
-   * (`main.js`, `config/production.json`) was offered for recursive deletion
-   * under "This is the copy `--fix` saved before rewriting your config".
-   *
-   * That refutes #309's justification that keying the write refusal on a name is
-   * harmless because "the most an attacker gains is that HMA declines to
-   * auto-edit files there". The REFUSAL is fail-safe. The destructive
-   * INSTRUCTION the refusal generates is not, and it also breaks the project's
-   * own rule that a finding's fix must be correct for the cause.
-   *
-   * Proof is the manifest LISTING the file, not merely a manifest existing.
-   * Existence is what #305 already showed to be forgeable — 70 bytes of JSON
-   * with two array keys — so an empty manifest dropped beside someone else's
-   * source must not buy provenance for it. Requiring the path to appear means
-   * the claim "this is the copy `--fix` saved" is backed by HMA's own record of
-   * having saved that exact path.
-   */
-  private async provenArchiveDirFor(absPath: string, targetDir: string): Promise<string | null> {
-    const archiveRel = backupArchiveDirFor(absPath, targetDir);
-    if (!archiveRel) return null;
-    const archiveAbs = path.join(targetDir, archiveRel);
-
-    const rel = path.relative(archiveAbs, absPath);
-    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
-
-    try {
-      const manifestPath = path.join(archiveAbs, '.manifest.json');
-      const st = await fs.stat(manifestPath);
-      // Bounded, for the same reason `rollback`'s read is (#305 follow-up,
-      // #312): this file comes from the scanned tree.
-      if (!st.isFile() || st.size > MAX_FILE_SIZE) return null;
-      const manifest = this.parseManifest(await fs.readFile(manifestPath, 'utf-8'));
-      if (!manifest.existingFiles.includes(rel)) return null;
-      return archiveRel;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
    * True when this path is inside the backup THIS RUN just created.
    *
    * #309 — the only exclusion left, and the only one that can be justified.
@@ -2974,8 +2944,9 @@ export class HardeningScanner {
    * file holds `${GITHUB_TOKEN}` and the archive holds the only remaining
    * plaintext copy of the secret, so it is not a duplicate of anything —
    * suppressing it would mean hiding a plaintext credential that HMA itself
-   * created. It reports, and `remediationForArchivePath` gives it a fix line
-   * that is not `secure --fix`, since the write guard refuses to edit archives.
+   * created. It reports, with a fix line that is not `secure --fix` (the write
+   * guard refuses to edit archives) and, since #326, one that neither claims HMA
+   * created the directory nor offers to delete it.
    *
    * #317 — the fourth round, and the one that made the shape of the class
    * unmistakable. `ctx.backupDir` was compared with `isPathWithinDirectory`, a

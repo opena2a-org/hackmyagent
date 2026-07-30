@@ -166,16 +166,22 @@ describe('#314 backup archives are never rewritten', () => {
 });
 
 /**
- * #319 — the citation may claim provenance and offer deletion only for a
- * directory PROVEN to be HackMyAgent's own.
+ * #326 — no citation asserts WHO created a `.hackmyagent-backup`-named
+ * directory, and none offers to delete one.
  *
- * #323 named the gap that let this ship: every fixture in this file seeded a
- * valid manifest and none of them asserted the emitted citation, so the
- * no-manifest attacker-named case was uncovered. These fixtures vary PROVENANCE
- * — absent, forged-by-existence, and real — and they assert the `fix` and
- * `guidance` strings, not just the finding count.
+ * #319 gated the claim on the archive's manifest LISTING the cited file, and
+ * #323 was supposed to be the lesson about fixture strength. The test written
+ * for it used `existingFiles: []` — the weakest forgery in the input space — so
+ * it passed while ONE array element restored the full `rm -rf` citation against
+ * a directory holding somebody else's source. The manifest is a file in the
+ * scanned tree; the tree chooses its location and its contents.
+ *
+ * These fixtures therefore use the STRONGEST forgery available to the tree (a
+ * manifest that names exactly the file HMA is reporting), plus the base-directory
+ * escalation, plus a genuine archive — and they assert the emitted `fix`,
+ * `guidance` and `description`, not the finding count.
  */
-describe('#319 archive citations require proven provenance', () => {
+describe('#326 archive citations claim no provenance and delete nothing', () => {
   let dir: string;
 
   beforeEach(async () => {
@@ -201,8 +207,22 @@ describe('#319 archive citations require proven provenance', () => {
   const credFinding = (findings: readonly { checkId: string; file?: string }[]) =>
     findings.find((f) => f.checkId === 'CRED-001' && f.file?.includes('production.json'));
 
-  it('offers no rm -rf and claims no provenance for a directory with no manifest', async () => {
-    await seedNamedButNotOurs();
+  /**
+   * The forgery the #319 test should have used: a manifest that names EXACTLY the
+   * file being reported. Nothing about it is harder to write than the empty one —
+   * it is the same file with one string in one array — and it is what restored
+   * the citation in full.
+   */
+  it('offers no rm -rf when the manifest names the very file being reported', async () => {
+    await seedNamedButNotOurs(
+      JSON.stringify({
+        version: 2,
+        // The strongest claim the tree can make about itself.
+        existingFiles: ['config/production.json'],
+        absentAtBackup: [],
+        createdFiles: [],
+      }),
+    );
 
     const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
     const finding = credFinding(result.findings);
@@ -211,40 +231,62 @@ describe('#319 archive citations require proven provenance', () => {
     // assertion below while being a worse outcome than the defect.
     expect(finding, 'the credential inside the named directory was not reported at all')
       .toBeDefined();
-    expect(finding!.fix, 'a recursive deletion was offered for a directory HMA never created')
-      .not.toContain('rm -rf');
-    expect(finding!.guidance ?? '', 'HMA asserted it created a directory it did not create')
-      .not.toContain('copy `--fix` saved');
-    expect(finding!.description, 'the description still claims the file is a HackMyAgent backup')
-      .not.toContain('HackMyAgent backup');
-    // Still not a dead end: the finding says what to do.
-    expect(finding!.fix, 'the finding has no path forward at all').toBeTruthy();
-  });
-
-  /**
-   * Existence is not proof. #305 already showed the manifest to be 70 bytes of
-   * JSON with two array keys — so a manifest that lists NOTHING must not buy
-   * provenance for the source sitting next to it.
-   */
-  it('offers no rm -rf for a manifest that does not list the file', async () => {
-    await seedNamedButNotOurs(
-      JSON.stringify({ version: 2, existingFiles: [], absentAtBackup: [], createdFiles: [] }),
-    );
-
-    const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
-    const finding = credFinding(result.findings);
-
-    expect(finding, 'the credential was not reported').toBeDefined();
     expect(
       finding!.fix,
-      'an empty manifest dropped beside unrelated source bought provenance for it',
+      'a manifest listing the file bought a recursive deletion of somebody else\'s source',
     ).not.toContain('rm -rf');
+    expect(finding!.guidance ?? '', 'HMA asserted it created a directory it did not create')
+      .not.toContain('copy `--fix` saved');
+    expect(finding!.description, 'the description claims the file is a HackMyAgent backup')
+      .not.toContain('HackMyAgent backup');
+    // Still not a dead end: the finding says what to do, and names the check
+    // that tells the user which case they are in.
+    expect(finding!.fix, 'the finding has no path forward at all').toBeTruthy();
+    expect(finding!.guidance ?? '', 'no verify step for deciding whether this is a backup')
+      .toContain('secure');
   });
 
   /**
-   * The parse branch. A manifest that is not valid JSON cannot establish
-   * anything, and "the file could not be read" must not fall through to a claim
-   * of provenance.
+   * The escalation, at identical attacker cost. A credential sitting DIRECTLY in
+   * the base makes the base itself the archive directory, so the emitted
+   * deletion covered every real prior-run backup stored beside it.
+   */
+  it('offers no rm -rf aimed at the whole backup base, where real backups live', async () => {
+    const base = path.join(dir, '.hackmyagent-backup');
+    const realPriorRun = path.join(base, ARCHIVE_STAMP);
+    await mkdir(realPriorRun, { recursive: true });
+    await writeFile(path.join(realPriorRun, 'config.json'), '{"real":"prior backup copy"}\n');
+    await writeFile(
+      path.join(base, '.manifest.json'),
+      JSON.stringify({
+        version: 2,
+        existingFiles: ['config.json'],
+        absentAtBackup: [],
+        createdFiles: [],
+      }),
+    );
+    const holder = path.join(base, 'config.json');
+    await writeFile(holder, JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n');
+
+    const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
+    const finding = result.findings.find(
+      (f) => f.checkId === 'CRED-001' && f.file?.endsWith(path.join('.hackmyagent-backup', 'config.json')),
+    );
+
+    expect(finding, 'the credential in the backup base was not reported').toBeDefined();
+    expect(
+      finding!.fix,
+      'a deletion was offered for the base directory, which holds every prior backup',
+    ).not.toContain('rm -rf');
+    // The real prior-run copy is still there: no emitted command targets it.
+    expect(await readFile(path.join(realPriorRun, 'config.json'), 'utf-8'))
+      .toBe('{"real":"prior backup copy"}\n');
+  });
+
+  /**
+   * A manifest that does not parse establishes nothing either — kept as its own
+   * case because "the file could not be read" is a different code path from "the
+   * file said no".
    */
   it('offers no rm -rf for a manifest that does not parse', async () => {
     await seedNamedButNotOurs('{ this is not json');
@@ -257,12 +299,12 @@ describe('#319 archive citations require proven provenance', () => {
   });
 
   /**
-   * The control that makes the tests above mean something: a real archive,
-   * whose manifest lists the file, still gets the provenance sentence and the
-   * deletion. Without this, "no rm -rf anywhere" would pass on a build that had
-   * simply dropped the citation.
+   * A GENUINE archive gets the same treatment: reported, not auto-edited, no
+   * deletion offered, and no sentence claiming HMA wrote it. HMA cannot tell
+   * this fixture apart from the forgery above — that is the whole finding — so
+   * the honest output is the same for both.
    */
-  it('still offers rm -rf and the provenance sentence for a real archive', async () => {
+  it('claims nothing and deletes nothing for a real archive either', async () => {
     const archive = path.join(dir, '.hackmyagent-backup', ARCHIVE_STAMP);
     await mkdir(archive, { recursive: true });
     await writeFile(
@@ -285,10 +327,30 @@ describe('#319 archive citations require proven provenance', () => {
     );
 
     expect(finding, 'the archived credential was not reported').toBeDefined();
-    expect(finding!.fix, 'a proven archive lost its deletion command').toContain('rm -rf');
-    expect(finding!.fix).toContain(ARCHIVE_STAMP);
-    expect(finding!.guidance ?? '', 'a proven archive lost its provenance sentence')
-      .toContain('copy `--fix` saved');
+    expect(finding!.fix, 'a destructive citation is still emitted for an archive')
+      .not.toContain('rm -rf');
+    expect(finding!.guidance ?? '', 'HMA still asserts it created this directory')
+      .not.toContain('copy `--fix` saved');
+    expect(finding!.fixable, 'an archive was offered to `secure --fix`').toBe(false);
+  });
+
+  /**
+   * The control that keeps every `not.toContain('rm -rf')` above honest: an
+   * ordinary credential OUTSIDE any archive still reports, is still fixable, and
+   * still gets `secure --fix`. Without this, a build that dropped CRED-001
+   * altogether would pass this whole describe block.
+   */
+  it('still reports and offers secure --fix for an ordinary credential (the control)', async () => {
+    await writeFile(path.join(dir, 'config.json'), JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n');
+
+    const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
+    const finding = result.findings.find(
+      (f) => f.checkId === 'CRED-001' && f.file === 'config.json',
+    );
+
+    expect(finding, 'an ordinary plaintext credential was not reported').toBeDefined();
+    expect(finding!.fixable, 'an ordinary credential is no longer fixable').toBe(true);
+    expect(finding!.fix).toContain('secure --fix');
   });
 
   /**

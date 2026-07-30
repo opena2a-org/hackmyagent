@@ -65,25 +65,22 @@ afterAll(() => {
 });
 
 describe('#324 rendering a path that contains a control character', () => {
-  it('renders the whole fix command on one line, with the quote closed', () => {
+  /**
+   * #326 — this used to anchor on the `rm -rf` citation, which no longer exists:
+   * nothing keyed on a `.hackmyagent-backup` NAME may emit a deletion, because
+   * the name, the manifest and the file the manifest lists all come out of the
+   * scanned tree. The end-to-end property is asserted here rather than dropped.
+   */
+  it('emits no destructive citation for a directory it cannot prove it created', () => {
     const out = runSecure([]);
-    const fixLine = out.split('\n').find((l) => l.includes('rm -rf'));
 
-    // Non-vacuity: the destructive citation must be present. If the finding did
-    // not fire, or provenance was not proven, there is no line to assert about.
-    expect(fixLine, 'no rm -rf citation was rendered; this test measures nothing')
-      .toBeDefined();
-    expect(
-      fixLine,
-      'the fix line does not name the archive directory, so it is not the line under test',
-    ).toContain('2026-01-01-000000');
-    expect(
-      fixLine,
-      'the rendered command ends mid-quote — pasting it leaves the shell at a '
-      + 'continuation prompt',
-    ).toMatch(/'$/);
-    expect(fixLine, 'the escaped newline is not visible in the rendered path')
-      .toContain('\\nEVIL-SECOND-LINE');
+    // Non-vacuity: the finding has to be on screen, or there is nothing to
+    // assert about. It names the archived file.
+    expect(out, 'the archived credential was never reported').toContain('config.json');
+    expect(out, 'a recursive deletion was offered for a tree-named directory')
+      .not.toContain('rm -rf');
+    expect(out, 'HMA still asserts it wrote a directory it cannot prove it wrote')
+      .not.toContain('copy `--fix` saved');
   });
 
   /**
@@ -134,7 +131,7 @@ describe('#324 rendering a path that contains a control character', () => {
 
   it('keeps the exact bytes in --json, so machine consumers are unaffected', () => {
     // The escaping is a DISPLAY concern. A consumer parsing `--json` needs the
-    // real path, and the real command.
+    // real path.
     const j = JSON.parse(runSecure(['--json'])) as {
       findings: { checkId: string; file?: string; fix?: string }[];
     };
@@ -142,7 +139,9 @@ describe('#324 rendering a path that contains a control character', () => {
     expect(finding, 'no CRED-001 in the JSON output').toBeDefined();
     expect(finding!.file, 'the JSON path was escaped; it must carry the real bytes')
       .toContain('\n');
-    expect(finding!.fix, 'the JSON fix command was escaped; it must be runnable verbatim')
-      .toContain('\n');
+    // #326 — and the machine-readable half carries no deletion either. A
+    // consumer that pipes `fix` into a shell must not be handed one.
+    expect(finding!.fix, 'the JSON output still offers a recursive deletion')
+      .not.toContain('rm -rf');
   });
 });
