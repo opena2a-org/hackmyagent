@@ -124,4 +124,58 @@ describe('#328 every report that renders a tree-derived path renders it safely',
     expect(out, 'check never named the hostile path').toContain(SPLIT_MARKER);
     assertRenderSafe(out, 'check');
   }, 300_000);
+
+  /**
+   * The quoting, asserted by ROUND TRIP through a real shell rather than by
+   * inspecting the syntax: `'…'\''…'` legitimately has an odd number of quotes,
+   * so a parity check on the string is the wrong test and passes the wrong
+   * things. What matters is that the shell resolves the emitted argument back to
+   * exactly one path — the file the report is talking about.
+   *
+   * This assertion used to live on the archive `rm -rf` citation, which #326
+   * removed. It follows the property, not the citation it happened to be
+   * written against.
+   */
+  it('rollback: a real shell resolves the emitted rm argument back to the one file', () => {
+    const apostrophe = "it's a file.txt";
+    const dir = mkdtempSync(path.join(tmpdir(), 'hma-328-quote-'));
+    try {
+      const legacy = path.join(dir, '.hackmyagent-backup', '9999-99-99-999999');
+      mkdirSync(legacy, { recursive: true });
+      writeFileSync(path.join(dir, apostrophe), 'x\n');
+      writeFileSync(
+        path.join(legacy, '.manifest.json'),
+        JSON.stringify({ version: 1, existingFiles: [], absentAtBackup: [], createdFiles: [apostrophe] }),
+      );
+
+      let out = '';
+      try {
+        out = execFileSync(process.execPath, [BUILT_CLI, 'rollback', dir], {
+          encoding: 'utf8',
+          timeout: 120_000,
+          maxBuffer: 64 * 1024 * 1024,
+          env: { ...process.env, NO_COLOR: '1', OPENA2A_CORPUS_DETERMINISTIC: '1' },
+        });
+      } catch (e: unknown) {
+        out = String((e as { stdout?: string }).stdout ?? '');
+      }
+
+      const citation = out.split('\n').map((l) => /`rm (.+?)`/.exec(l)?.[1]).find(Boolean);
+      expect(citation, 'no rm citation was rendered; this test measures nothing').toBeTruthy();
+
+      const resolved = execFileSync('sh', ['-c', `printf '%s\\n' ${citation}`], {
+        encoding: 'utf8',
+      }).trimEnd();
+
+      expect(
+        resolved,
+        `the shell did not resolve the citation back to one path: ${citation}`,
+      ).toBe(apostrophe);
+      // One line out means one argument in — an apostrophe that broke the
+      // quoting would split it into several.
+      expect(resolved.split('\n')).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 300_000);
 });

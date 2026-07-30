@@ -354,6 +354,77 @@ describe('#326 archive citations claim no provenance and delete nothing', () => 
   });
 
   /**
+   * #331 — recognition is not free, so a folded-only name must show evidence.
+   *
+   * Folding case was justified as "only ever recognises MORE directories as
+   * archives … neither can suppress a finding". Recognition sets
+   * `fixable: false` and stops the write, so it suppresses the FIX. Measured on
+   * two trees that are nobody's backup: a credential `--fix` used to redact was
+   * left in plaintext, score 98 to 69.
+   *
+   * The KELVIN SIGN case is the one that shows the compare is not about the
+   * filesystem at all: U+212A lowercases to `k` in JavaScript, so
+   * `.hac<U+212A>myagent-backup` folded to HackMyAgent's own directory name
+   * while no filesystem anywhere considers those the same directory.
+   */
+  it('still fixes a credential under a folded-name directory that is not an archive', async () => {
+    const KELVIN = String.fromCodePoint(0x212a);
+    for (const dirName of ['.HACKMYAGENT-BACKUP', `.hac${KELVIN}myagent-backup`]) {
+      const tree = await mkdtemp(path.join(tmpdir(), 'hma-331-'));
+      try {
+        const deep = path.join(tree, 'vendor', dirName, 'lib', 'config');
+        await mkdir(deep, { recursive: true });
+        const live = path.join(deep, 'production.json');
+        await writeFile(live, JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n');
+        await writeFile(path.join(tree, 'package.json'), '{"name":"p","version":"1.0.0"}\n');
+
+        const result = await new HardeningScanner().scan({ targetDir: tree, autoFix: true });
+        const cred = result.findings.find((f) => f.checkId === 'CRED-001');
+
+        expect(cred, `${dirName}: the credential was not detected at all`).toBeDefined();
+        expect(
+          await readFile(live, 'utf-8'),
+          `${dirName}: a credential --fix used to redact was left in plaintext because a `
+          + 'directory in the tree carries a name that case-folds to HackMyAgent\'s own',
+        ).not.toContain(FAKE_GH_TOKEN);
+        expect(cred!.fixable, `${dirName}: the finding was marked unfixable`).toBe(true);
+      } finally {
+        await rm(tree, { recursive: true, force: true });
+      }
+    }
+  });
+
+  /**
+   * The control for the case above: a folded name that IS an archive — it holds
+   * a manifest — is still refused. Without this, "stop folding case" would be
+   * indistinguishable from reopening #317's write.
+   */
+  it('still refuses to rewrite a folded-name directory that holds a manifest', async () => {
+    const archive = path.join(dir, 'vendor', '.HACKMYAGENT-BACKUP', ARCHIVE_STAMP);
+    await mkdir(archive, { recursive: true });
+    await writeFile(
+      path.join(archive, '.manifest.json'),
+      JSON.stringify({ version: 2, existingFiles: ['config.json'], absentAtBackup: [], createdFiles: [] }),
+    );
+    const body = JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n';
+    const copy = path.join(archive, 'config.json');
+    await writeFile(copy, body);
+    // A live fixable finding, so the run really does take a backup and run fixes.
+    await writeFile(path.join(dir, 'settings.json'), body);
+
+    const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+
+    expect(
+      result.findings.some((f) => f.checkId === 'CRED-001' && f.file?.includes(ARCHIVE_STAMP)),
+      'the archived credential was never detected; this test is measuring nothing',
+    ).toBe(true);
+    expect(
+      await readFile(copy, 'utf-8'),
+      'a real archive was rewritten through a case variant of its name',
+    ).toBe(body);
+  });
+
+  /**
    * #323 — the fixtures in this file were all case-exact. Recognition of an
    * archive by NAME governs the write refusal, and on a case-insensitive
    * filesystem `.HACKMYAGENT-BACKUP` is the same directory (#317). Folding case

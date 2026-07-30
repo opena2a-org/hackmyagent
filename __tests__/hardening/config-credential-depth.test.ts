@@ -153,11 +153,21 @@ describe('#292 config-shaped credential detection below the scan root', () => {
     }
   });
 
-  it('quotes the archive path so an apostrophe cannot break the command', async () => {
-    // The archive remediation is `rm -rf <path>`. A bare '…' wrapper closes
-    // early on a directory whose name contains an apostrophe, and the rest of
-    // the path is re-parsed by the shell — which for a destructive command is
-    // considerably worse than the #273 class it belongs to.
+  /**
+   * #326 — this asserted that the archive remediation `rm -rf <path>` quoted its
+   * argument. There is no such remediation any more: nothing keyed on a
+   * `.hackmyagent-backup` NAME may claim HackMyAgent created the directory or
+   * offer to delete it, because the name and the manifest are both files in the
+   * scanned tree.
+   *
+   * What has to hold instead is asserted here: a project path that would have
+   * broken the quoting produces no destructive command at all, and the finding
+   * is still actionable. The quoting property itself did not disappear with the
+   * citation — it moved to the report that still emits an `rm`, where
+   * `__tests__/cli/report-render-safety.test.ts` round-trips the emitted
+   * argument through a real shell.
+   */
+  it('emits no destructive command for an archive, whatever the path contains', async () => {
     const parent = await mkdtemp(path.join(tmpdir(), 'hma-quote-'));
     const dir = path.join(parent, "it's a project");
     try {
@@ -174,24 +184,13 @@ describe('#292 config-shaped credential detection below the scan root', () => {
       );
       expect(archived, 'the archived credential was not reported').toBeDefined();
 
-      // Asserted by ROUND TRIP through a real shell rather than by inspecting
-      // the syntax: `'…'\''…'` legitimately has an odd number of quotes, so a
-      // parity check on the string is the wrong test and passes the wrong
-      // things. What matters is that the shell resolves the argument back to
-      // exactly the directory that must be removed — no more, no fewer.
-      const { execFileSync } = await import('node:child_process');
-      const quotedArg = archived!.fix.replace(/^rm -rf /, '');
-      const resolved = execFileSync('sh', ['-c', `printf '%s\\n' ${quotedArg}`], {
-        encoding: 'utf8',
-      }).trimEnd();
-
       expect(
-        resolved,
-        `the shell did not resolve the citation back to one path: ${archived!.fix}`,
-      ).toBe(path.join(dir, '.hackmyagent-backup', '2026-01-01-000000'));
-      // One line out means one argument in — an apostrophe that broke the
-      // quoting would split it into several.
-      expect(resolved.split('\n')).toHaveLength(1);
+        archived!.fix,
+        'a destructive command was emitted for a directory HackMyAgent cannot prove it created',
+      ).not.toContain('rm ');
+      // Still not a dead end: the finding says what to do and how to check.
+      expect(archived!.fix, 'the finding has no path forward').toBeTruthy();
+      expect(archived!.guidance ?? '', 'the finding never names the verify step').toContain('secure');
     } finally {
       await rm(parent, { recursive: true, force: true });
     }
@@ -235,7 +234,11 @@ describe('#292 config-shaped credential detection below the scan root', () => {
       // this, so it must not be the offered remedy.
       expect(archived[0].fixable).toBe(false);
       expect(archived[0].fix).not.toContain('secure --fix');
-      expect(archived[0].fix).toContain('.hackmyagent-backup');
+      // #326 — the fix names the ACTION, and the guidance names the directory
+      // by its name rather than by a path HackMyAgent would then offer to
+      // delete. Asserting on the guidance keeps the "says which directory this
+      // is about" property without the citation that carried it.
+      expect(archived[0].guidance ?? '').toContain('.hackmyagent-backup');
 
       const { readFile } = await import('node:fs/promises');
       expect(

@@ -528,33 +528,71 @@ function backupSetupError(code: BackupSetupCode, message: string): NodeJS.ErrnoE
  * backslash is a filename byte, and re-deriving a path from a normalized
  * description of it was #304.
  *
- * The segment compare is case-INSENSITIVE (#317). On a case-insensitive
- * filesystem — the macOS default — `.HACKMYAGENT-BACKUP` and
- * `.hackmyagent-backup` are one directory, and the exact-match version of this
- * compare let `--fix` rewrite HMA's own backup through the case variant.
- *
  * Recognition here has exactly one consequence: HMA declines to auto-edit the
  * file, and says so in the finding. It cannot suppress a finding, and since #326
  * it cannot produce a destructive citation either — nothing keyed on this name
  * asserts who created the directory or offers to delete it.
+ *
+ * An EXACT name match is an archive on its own; that is the case #314 was about
+ * and the name is HackMyAgent's own. A case-FOLDED match is reported separately,
+ * because folding is not free — see `isInsideBackupArchive`.
  */
-function backupArchiveDirFor(absPath: string, targetDir: string): string | null {
+function backupArchiveDirFor(
+  absPath: string,
+  targetDir: string,
+): { dir: string; exact: boolean } | null {
   const rel = path.relative(targetDir, absPath);
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
   const segments = rel.split(path.sep);
   // The final segment is the filename: a FILE called `.hackmyagent-backup` is
   // not an archive.
-  const i = segments.slice(0, -1).findIndex((s) => s.toLowerCase() === BACKUP_DIR_NAME);
+  const dirSegments = segments.slice(0, -1);
+  let i = dirSegments.indexOf(BACKUP_DIR_NAME);
+  let exact = true;
+  if (i === -1) {
+    i = dirSegments.findIndex((s) => s.toLowerCase() === BACKUP_DIR_NAME);
+    exact = false;
+  }
   if (i === -1) return null;
-  // Name the timestamped run directory when there is one, so the remediation
-  // removes ONE archived run rather than every backup the project has.
+  // Name the timestamped run directory when there is one, so the answer is
+  // about ONE archived run rather than every backup the project has.
   const end = i + 2 <= segments.length - 1 ? i + 2 : i + 1;
-  return segments.slice(0, end).join(path.sep);
+  return { dir: segments.slice(0, end).join(path.sep), exact };
 }
 
-/** One predicate, so the write guard and the remediation cannot drift apart. */
-function isInsideBackupArchive(absPath: string, targetDir: string): boolean {
-  return backupArchiveDirFor(absPath, targetDir) !== null;
+/**
+ * One predicate, so the write guard and the finding's wording cannot drift
+ * apart: is this file inside a backup archive HackMyAgent must not rewrite?
+ *
+ * #317 folded case here, on the argument that folding "only ever recognises
+ * MORE directories as archives … neither can suppress a finding". Recognition
+ * is not free: it sets `fixable: false` and stops `applyFixWrite`, so it
+ * suppresses the FIX. Measured on two trees that are nobody's backup —
+ * `vendor/.HACKMYAGENT-BACKUP/lib/config/production.json`, and the same path
+ * with U+212A KELVIN SIGN for the `k`, which JS lowercases to `k` while no
+ * filesystem thinks the names are the same — a credential `--fix` used to
+ * redact was left in plaintext, score 98 to 69.
+ *
+ * So a folded-only match has to show evidence: the directory must contain a
+ * `.manifest.json`. That is sound HERE precisely because the consequence is a
+ * refusal, which is fail-safe, and unlike a citation (#326) it cannot be turned
+ * into an instruction. The run's own backup does not depend on this at all —
+ * `isInsideOwnBackup` answers that by `dev`+`ino`.
+ *
+ * Fails SAFE on an unreadable probe: only a proven ENOENT allows the write.
+ */
+async function isInsideBackupArchive(absPath: string, targetDir: string): Promise<boolean> {
+  const match = backupArchiveDirFor(absPath, targetDir);
+  if (!match) return false;
+  if (match.exact) return true;
+  try {
+    const st = await fs.stat(path.join(targetDir, match.dir, '.manifest.json'));
+    return st.isFile();
+  } catch (err) {
+    // "I could not check" must not become "not an archive": that direction
+    // rewrites a real backup. #313's inference, in one more place.
+    return (err as NodeJS.ErrnoException)?.code !== 'ENOENT';
+  }
 }
 
 /** True when a file is config-shaped by filename, or by sitting directly in a config directory. */
@@ -2560,7 +2598,7 @@ export class HardeningScanner {
         // question was a different, stronger one ("is this PROVABLY our
         // archive?") whose positive answer emitted `rm -rf`. See the guidance
         // below for why that question can no longer be asked of the tree.
-        const inArchive = isInsideBackupArchive(filePath, targetDir);
+        const inArchive = await isInsideBackupArchive(filePath, targetDir);
 
         for (const { name, pattern, envVar } of credentialPatterns) {
           // Check each line for credentials
@@ -3084,7 +3122,7 @@ export class HardeningScanner {
     // name test needs `filePath` and `targetDir` to be spelled compatibly, and
     // trusting that they are is how the last four rounds started.
     const ctx = this.backupContext;
-    if (ctx && (isInsideBackupArchive(filePath, ctx.targetDir) || await this.isInsideOwnBackup(filePath))) {
+    if (ctx && (await isInsideBackupArchive(filePath, ctx.targetDir) || await this.isInsideOwnBackup(filePath))) {
       this.fixWriteFailures.push({
         file: filePath,
         code: 'BACKUP-ARCHIVE',
