@@ -76,6 +76,46 @@ describe('CredentialContextAnalyzer', () => {
       }
     });
 
+    it('does not read a real password as a placeholder because of how it STARTS', () => {
+      // `isNonSecretValue`'s placeholder rule was anchored only at the front,
+      // so it matched any value BEGINNING with the vocabulary. Harmless while
+      // its callers were key/value checks whose key already had to look
+      // secret-bearing; a live bypass once a caller passes a bare value, which
+      // is exactly what routing `detectUrlPasswords` through it did. Each of
+      // these is a real password that the prefix form silently dropped.
+      for (const [label, url] of [
+        ['starts with example', 'postgres://admin:examplePassw0rd!@db.example.com/app'],
+        ['starts with xxx', 'postgres://admin:xxxSecretKey123@db.example.com/app'],
+        ['starts with TODO', 'postgres://admin:TODOfixthis2026@db.example.com/app'],
+        ['starts with fixme', 'mysql://root:fixmeL8rK9x@localhost/app'],
+      ] as Array<[string, string]>) {
+        const findings = analyzer.analyze([makeFile('README.md', url, 'documentation')]);
+        expect(
+          findings.filter((f) => f.id === 'SEM-CRED-001').length,
+          `${label} is a real password, not documentation: ${url}`,
+        ).toBeGreaterThan(0);
+      }
+    });
+
+    it('still treats a value that IS the placeholder as a placeholder', () => {
+      // The other side of the anchoring change: narrowing the rule must not
+      // resurrect the false positives it exists to suppress.
+      for (const [label, url] of [
+        ['bare example', 'postgres://admin:example@db.example.com/app'],
+        ['bare TODO', 'postgres://admin:TODO@db.example.com/app'],
+        ['a mask', 'postgres://admin:xxxxxxxxxxxx@db.example.com/app'],
+        ['your_ vocabulary', 'postgres://admin:your_api_key_here@db.example.com/app'],
+        ['change-me', 'postgres://admin:change-me@db.example.com/app'],
+        ['placeholder suffix', 'postgres://admin:placeholder-value@db.example.com/app'],
+      ] as Array<[string, string]>) {
+        const findings = analyzer.analyze([makeFile('README.md', url, 'documentation')]);
+        expect(
+          findings.filter((f) => f.id === 'SEM-CRED-001'),
+          `${label} is documentation, not a leaked credential: ${url}`,
+        ).toHaveLength(0);
+      }
+    });
+
     it('ignores URLs with env var references in password', () => {
       const file = makeFile('.env', 'DATABASE_URL=postgres://admin:${DB_PASSWORD}@localhost:5432/mydb', 'env_file');
       const findings = analyzer.analyze([file]);

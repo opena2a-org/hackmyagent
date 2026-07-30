@@ -16,9 +16,9 @@
 //
 // plus the default itself, which is the whole job of vitest.setup.ts.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -29,9 +29,19 @@ const canRun = () => existsSync(CLI);
 /** How the merge labels a finding it pulled out of $HOME. */
 const INFRA_TAG = /^\[(OpenClaw|NemoClaw|OpenShell|Moltbot|ClawdBot)\]/;
 
+// Every temp dir this file makes, so none of them survive the run. A suite
+// that diagnoses $TMPDIR pollution has no business adding to it.
+const created: string[] = [];
+const track = (d: string) => (created.push(d), d);
+afterAll(() => {
+  for (const d of created) {
+    try { rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+});
+
 /** A $HOME whose ~/.openclaw holds a skill any scan is obliged to flag. */
 function fakeHome(): string {
-  const home = mkdtempSync(join(tmpdir(), 'hma-hermetic-home-'));
+  const home = track(mkdtempSync(join(tmpdir(), 'hma-hermetic-home-')));
   const skill = join(home, '.openclaw', 'skills', 'probe');
   mkdirSync(skill, { recursive: true });
   writeFileSync(
@@ -48,7 +58,7 @@ function fakeHome(): string {
 
 /** A target directory with nothing wrong with it. */
 function benignTarget(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'hma-hermetic-target-'));
+  const dir = track(mkdtempSync(join(tmpdir(), 'hma-hermetic-target-')));
   writeFileSync(
     join(dir, 'SOUL.md'),
     '# Agent Governance\n\n## Trust Hierarchy\nSystem prompt has highest priority.\n',
@@ -72,7 +82,17 @@ function infraFindings(hermetic: boolean): Array<{ name?: string; file?: string 
     maxBuffer: 64 * 1024 * 1024,
     env,
   });
-  const data = JSON.parse((r.stdout || '').trim());
+  // Say what actually went wrong. A bare JSON.parse throw here reads as
+  // "Unterminated string", which is the exact misdiagnosis this file exists to
+  // prevent — a killed or truncated child, reported as malformed output.
+  const out = (r.stdout || '').trim();
+  if (r.signal || !out) {
+    throw new Error(
+      `scan did not produce a report (signal=${r.signal}, status=${r.status}, ` +
+        `stdout=${out.length}B): ${(r.stderr || '').slice(0, 400)}`,
+    );
+  }
+  const data = JSON.parse(out);
   return (data.findings || []).filter((f: { name?: string }) => INFRA_TAG.test(f.name || ''));
 }
 

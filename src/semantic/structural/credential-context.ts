@@ -122,8 +122,24 @@ function isNonSecretValue(value: string): boolean {
   // URL without credentials
   if (/^https?:\/\/[^:@]*$/.test(trimmed)) return true;
 
-  // Placeholder values
-  if (/^(xxx|your[-_]|change[-_]me|replace[-_]|TODO|FIXME|placeholder|example)/i.test(trimmed)) return true;
+  // Placeholder values, anchored at BOTH ends.
+  //
+  // This was prefix-only, which suppressed every value that merely STARTED
+  // with the vocabulary. `examplePassw0rd!`, `xxxSecretKey123` and
+  // `TODOfixthis2026` are real passwords and were all read as documentation.
+  // Harmless while the only callers were key/value checks whose keys already
+  // had to look secret-bearing; a live bypass the moment a caller passes a
+  // bare value, which `detectUrlPasswords` now does.
+  //
+  // The unambiguous vocabularies (`your-`, `change-me`, `replace-`,
+  // `placeholder`) keep their suffixes, because `your_api_key_here` is a
+  // placeholder however it ends. The short ambiguous ones (`example`, `todo`,
+  // `fixme`) must be the WHOLE value, because they are also ordinary English
+  // that real passwords begin with.
+  // Every token is anchored to at most what it already matched: the separator
+  // in `change[-_]me` stays REQUIRED, so bare `changeme` keeps being reported
+  // as it is today. Suppression only ever narrows here, never widens.
+  if (/^(your[-_][\w-]*|change[-_]me|replace[-_][\w-]*|placeholder[\w-]*|x{3,}|todo|fixme|example)$/i.test(trimmed)) return true;
 
   // Angle-bracket templates: <APIKEY>, <your_token>, <TENANT_NAME>
   if (/^<[^>]+>$/.test(trimmed)) return true;
