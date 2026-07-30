@@ -505,6 +505,302 @@ Refer to https://docs.example.com/v1/auth/getting-started/api-key-information fo
     ).toHaveLength(0);
   });
 
+  it('b18: fill-in-the-blank contact sheet does NOT fire AST-CRED-003 (form blanks are not secrets)', async () => {
+    // Real-world FP found scanning csnp.org (2026-07-28): a public
+    // incident-response contact-sheet template scored HIGH "Hardcoded Secret
+    // Detected" at the heading `### U.S. Secret Service (Cyber Fraud)`. The
+    // file contains no credential. Two signals combined: the word "Secret"
+    // produced the CRED-HARVEST evidence span, and the 47-underscore form
+    // blanks satisfied the credential-format gate, whose high-entropy
+    // fallback was a pure LENGTH test over a word-character class that
+    // includes `_`. Root fix: an entropy floor on the fallback
+    // (src/types/credential-format.ts).
+    const blank = '_'.repeat(47);
+    const contactSheet = `# Incident response contacts
+
+## Law enforcement
+
+### FBI - Cyber Division (Local Field Office)
+**Office Location**: ${blank}
+**Phone**: ${blank}
+**IC3 (Internet Crime Complaint)**: https://www.ic3.gov
+**Cyber Task Force**: ${blank}
+
+---
+
+### U.S. Secret Service (Cyber Fraud)
+**Local Office**: ${blank}
+**Phone**: ${blank}
+
+---
+
+### Local Police Department
+**Non-Emergency**: ${blank}
+**Emergency**: 911
+`;
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(contactSheet, 'templates/incident-response-contacts-sheet.md');
+    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const findings = analyzeCredentials(result.ast, verifier, undefined, contactSheet);
+
+    const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
+    expect(
+      cred,
+      `no AST-CRED finding may fire on a form template whose only "secret" is the phrase "Secret Service". Got: ${cred.map(f => `${f.checkId}(${f.severity}): ${f.message}`).join(', ')}`,
+    ).toHaveLength(0);
+  });
+
+  it('b18-positive: form blanks must not mask a real secret later in the same file (no detection loss)', async () => {
+    // Pair to b18, and a NO-DETECTION-LOSS control: unlike b18 it passes both
+    // before and after the entropy floor, which is the point — suppressing
+    // form blanks must not blind the check to a genuine credential in the same
+    // file, including one that appears AFTER the blanks.
+    //
+    // AST-CRED-003 derives its line from the evidence span, so the line
+    // assertion below guards line attribution generally; the candidate-
+    // iteration half of the fix (skip the blank, return the real credential)
+    // is locked directly in __tests__/types/credential-format.test.ts.
+    const blank = '_'.repeat(47);
+    const docWithBlanksThenSecret = `# Setup
+
+**Local Office**: ${blank}
+**Phone**: ${blank}
+
+Set your API key in the environment:
+
+\`\`\`
+export ANTHROPIC_API_KEY=sk-ant-AAAAAAAAAAAAAAAAAAAAAAAAAAAA
+\`\`\`
+
+Then ask the agent to provide a response.
+`;
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(docWithBlanksThenSecret, 'docs/setup.md');
+    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const findings = analyzeCredentials(result.ast, verifier, undefined, docWithBlanksThenSecret);
+
+    const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
+    expect(
+      cred.length,
+      'a real sk-ant- secret after form blanks must still fire — the blanks must not mask it',
+    ).toBeGreaterThan(0);
+
+    // The reported line must be the secret's line (9), never a form blank (3/4).
+    const withLine = cred.find(f => typeof f.line === 'number');
+    expect(withLine?.line, 'the reported line must point at the secret, not at a form blank').toBe(9);
+  });
+
+  it('b17d: a LOW-ALPHABET planted secret in a taxonomy JSON MUST still fire (entropy-floor bypass)', async () => {
+    // Adversarial Phase 4.5 caught this against the first version of the
+    // entropy floor. The taxonomy carve-out is a NEGATED test — suppress only
+    // when no credential-shaped value is present — so raising the predicate's
+    // strictness made the carve-out fire MORE often. A secret drawn from a
+    // four-letter alphabet was discarded by the floor, the veto stopped
+    // holding, and a CRITICAL AST-CRED-002 went silent. b17c missed it because
+    // it only ever exercises one alphabet.
+    //
+    // Fix: the vetoes consult the UNFILTERED candidate predicate.
+    //
+    // The plants below are chosen so this test locks the VETO rather than the
+    // FLOOR. Mutation proved the original three did not: they were all values
+    // the filtered predicate ACCEPTS, so reverting both vetoes to the filtered
+    // predicate left every assertion green. A plant the filtered predicate
+    // REJECTS is the only kind that can tell the two apart — for such a value
+    // the filtered veto stops holding, the carve-out fires, and the finding
+    // goes silent. `'A'x64` and the 47-underscore blank are exactly that.
+    const lowAlphabetSecrets = [
+      'A'.repeat(64), // filler to the DETECTION floor, still a candidate to the veto
+      '_'.repeat(47), // the reported form blank, same role
+      'ACGT'.repeat(16), // period 4: also rejected by the floor
+      // Random over a four-symbol alphabet: 128 bits, and accepted by the
+      // filtered predicate too, so this half is a no-detection-loss control.
+      'GCGTGGTTATAATACAAGTTGAGCATATAAGCTAGCTTAAGGCTATTGCACGATGGTACGTA',
+    ];
+
+    for (const raw of lowAlphabetSecrets) {
+      const planted = JSON.stringify({
+        ...JSON.parse(taxonomyCoverageDoc),
+        leaked: { dbPassword: raw },
+      });
+      const compiler = new SemanticCompiler({ useNanoMind: false });
+      const result = await compiler.compile(planted, 'public/coverage.json');
+      const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+      const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+      const findings = analyzeCredentials(result.ast, verifier, undefined, planted);
+
+      const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
+      expect(
+        cred.length,
+        `a ${new Set(raw).size}-symbol planted secret (${raw.length} chars) must not be masked by the taxonomy carve-out`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it('b17e: an OVERSIZED JWT planted in a CORPUS path MUST still fire (bounded-segment suppression)', async () => {
+    // THIRD adversarial pass, CRITICAL. `hasVendorPrefixCredential` is the only
+    // gate that LIFTS the corpus and integrity-manifest carve-outs, and it was
+    // built from the vendor alternation — which had acquired a 256-character
+    // bound on the JWT header as a denial-of-service defense. So a JWT whose
+    // header is large enough stopped matching, the carve-out held, and a live
+    // token planted in a corpus path was suppressed ENTIRELY, including the
+    // CRITICAL AST-CRED-002 that fires on origin/main.
+    //
+    // Nothing in `test/hma` or the adversarial corpus carries an oversized JWT,
+    // which is why three green passes shipped past it. The header sizes below
+    // are the real ones: a DPoP proof embeds a JWK, and an `x5c` header embeds
+    // a certificate chain.
+    //
+    // Mutation guard: reintroducing any segment bound turns this red.
+    const b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const draw = (len: number, seed: number) => {
+      let s = seed, out = '';
+      for (let i = 0; i < len; i++) { s = (s * 1103515245 + 12345) & 0x7fffffff; out += b64[s % 62]; }
+      return out;
+    };
+
+    for (const [label, headLen] of [
+      ['an ordinary 36-char header', 36],
+      ['a DPoP proof with an embedded JWK', 550],
+      ['an x5c certificate-chain header', 430],
+    ] as Array<[string, number]>) {
+      const jwt = `eyJ${draw(headLen, 3)}.${draw(64, 5)}.${draw(43, 7)}`;
+      const planted = JSON.stringify({ samples: [{ label: 'benign', text: 'hello' }], leaked: { sessionToken: jwt } });
+      const compiler = new SemanticCompiler({ useNanoMind: false });
+      const result = await compiler.compile(planted, 'training/corpus/samples.json');
+      const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+      const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+      const findings = analyzeCredentials(result.ast, verifier, undefined, planted);
+
+      const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
+      expect(
+        cred.length,
+        `a live JWT with ${label} planted in a corpus path must not be suppressed by the corpus carve-out`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it('b17f: a dotted taxonomy identifier ending in SG must NOT raise AST-CRED (unanchored-veto FP)', async () => {
+    // THIRD adversarial pass, HIGH. `SG\.[…]{16,}\.[…]{16,}` matches any dotted
+    // identifier with two long segments, so `MSG.INCIDENT_ESCALATION_QUEUE.
+    // HIGH_PRIORITY_ROUTE` counted as a credential candidate. The taxonomy
+    // carve-out is NEGATED, so that blocked the carve-out and raised a CRITICAL
+    // on a benign document. origin/main is clean here — it has no `SG.` at all.
+    //
+    // The anchor cannot fix this: the veto has to stay UNANCHORED, or a token
+    // glued to a preceding identifier stops being a candidate and the veto
+    // stops holding. Only the pattern can fix it, and SendGrid's segments are
+    // fixed at 22 and 43 characters.
+    const planted = JSON.stringify({
+      ...JSON.parse(taxonomyCoverageDoc),
+      routes: [
+        'MSG.INCIDENT_ESCALATION_QUEUE.HIGH_PRIORITY_ROUTE',
+        'MSG.CREDENTIAL_ROTATION_TOPIC.DEAD_LETTER_ROUTE',
+      ],
+    });
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(planted, 'public/coverage.json');
+    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const findings = analyzeCredentials(result.ast, verifier, undefined, planted);
+
+    const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
+    expect(
+      cred,
+      `message-bus route constants are not credentials. Got: ${cred.map(f => `${f.checkId}:${f.severity}`).join(', ')}`,
+    ).toHaveLength(0);
+  });
+
+  it('b17g: a REAL SendGrid key in that same taxonomy JSON MUST still fire (control for b17f)', async () => {
+    // The positive half of b17f. Tightening `SG.` to fixed lengths is only
+    // correct if a real key still fires — otherwise the FP fix is a detection
+    // loss wearing a green suite, which is the exact trade this unit exists to
+    // stop making.
+    const b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const draw = (len: number, seed: number) => {
+      let s = seed, out = '';
+      for (let i = 0; i < len; i++) { s = (s * 1103515245 + 12345) & 0x7fffffff; out += b64[s % 62]; }
+      return out;
+    };
+    const planted = JSON.stringify({
+      ...JSON.parse(taxonomyCoverageDoc),
+      routes: ['MSG.INCIDENT_ESCALATION_QUEUE.HIGH_PRIORITY_ROUTE'],
+      leaked: { sendgrid: `SG.${draw(22, 31)}.${draw(43, 37)}` },
+    });
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(planted, 'public/coverage.json');
+    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const findings = analyzeCredentials(result.ast, verifier, undefined, planted);
+
+    const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
+    expect(
+      cred.length,
+      'a real SendGrid key must not be masked by the taxonomy carve-out',
+    ).toBeGreaterThan(0);
+  });
+
+  it('b18b: an ANONYMOUS secret behind kilobytes of padding MUST still fire (budget detection hole)', async () => {
+    // THIRD adversarial pass, CRITICAL. The blob walk carried a character
+    // budget so a file built from overlapping candidates could not go
+    // quadratic. Exhausting the budget was treated as "no match", so ~12 KB of
+    // `('a'x40 + '=')` padding ahead of an anonymous secret lost the secret —
+    // and the score went UP, because losing a true positive looks like an
+    // improvement. The docstring's escape hatch ("no real VENDOR key can be
+    // lost") was accurate and beside the point, and the only test used
+    // `sk-ant-…`, which the unbudgeted vendor pass finds regardless.
+    //
+    // The budget is gone: each run is now judged once by sliding window, so the
+    // walk is linear without truncating anything. Mutation guard: any cap on
+    // characters examined turns this red.
+    const b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let s = 77, secret = '';
+    for (let i = 0; i < 40; i++) { s = (s * 1103515245 + 12345) & 0x7fffffff; secret += b64[s % 62]; }
+    const padding = ('a'.repeat(40) + '=').repeat(Math.floor((32 * 1024) / 41));
+
+    // b14's document shape, because that is a shape known to produce the
+    // credential-context evidence AST-CRED-003 needs. A plainer fixture
+    // (`apiKey = <secret>` in bare markdown) raises nothing at all with or
+    // without the padding, so it would have asserted only that a
+    // never-triggering fixture stays quiet.
+    const doc = (pad: string) => `# Setup
+${pad}
+Set your API key in the environment:
+
+\`\`\`
+export ANTHROPIC_API_KEY=${secret}
+\`\`\`
+
+Then ask the agent to provide a response.
+`;
+
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const scan = async (content: string) => {
+      const compiler = new SemanticCompiler({ useNanoMind: false });
+      const result = await compiler.compile(content, 'docs/setup.md');
+      const findings = analyzeCredentials(result.ast, ast => compiler.verifyAST(ast), undefined, content);
+      return findings.filter(f => f.checkId.startsWith('AST-CRED'));
+    };
+
+    // The control comes first: without it, a fixture that never fires would
+    // look like a pass for the padded case too.
+    expect(
+      (await scan(doc(''))).length,
+      'control: the same document with no padding must fire, or this test is vacuous',
+    ).toBeGreaterThan(0);
+    expect(
+      (await scan(doc(`\n${padding}\n`))).length,
+      'an anonymous high-entropy secret must not be lost behind padding',
+    ).toBeGreaterThan(0);
+  });
+
   it('b14: real hardcoded secret in markdown still fires AST-CRED-003 (positive control for b13)', async () => {
     // Pair to b13: confirm the doc-context suppression does NOT swallow
     // genuine hardcoded secrets in markdown. A real sk-ant- prefix matches
@@ -737,4 +1033,62 @@ slackBot:
     expect(finding.evidence, 'evidence body must be masked (no raw token bytes after prefix)').toMatch(/\*+$/);
     expect(finding.evidence, 'masked evidence must not contain the raw token body').not.toMatch(/AbCdEfGhIjKl/);
   });
+
+  // The vendor-list unification made `hf_`, `glpat-`, `npm_`, `ghu_` and `SG.`
+  // newly DETECTABLE, but `maskCredentialValue` kept its own hand-written prefix
+  // list and was never updated. Those tokens therefore took the "unknown shape"
+  // masking branch, which exposes the first 8 characters of the value — for
+  // `hf_…` that is 5 characters of live secret body written into a finding's
+  // `evidence`, which the same file's docstring says must never happen.
+  //
+  // This asserts through `analyzeCredentials`, NOT through the shared
+  // `matchVendorPrefix` helper. Mutation proved the helper-level test alone did
+  // not gate this: reverting `maskCredentialValue` to the stale hand-written
+  // list left it green, because the leak lives in the CONSUMER.
+  const maskedVendorTokens: Array<[string, string, string]> = [
+    // label, token, the ONLY text allowed to survive masking
+    ['Hugging Face', 'hf_' + 'QrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWx', 'hf_'],
+    ['GitLab PAT', 'glpat-' + 'QrStUvWxYzAbCdEfGhIjKlMnOp', 'glpat-'],
+    ['npm token', 'npm_' + 'QrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWx', 'npm_'],
+    ['GitHub user-to-server', 'ghu_' + 'QrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWx', 'ghu_'],
+    ['SendGrid', 'SG.' + 'QrStUvWxYzAbCdEfGhIjKl' + '.' + 'MnOpQrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWxYzAbC', 'SG.'],
+  ];
+
+  for (const [label, token, allowedPrefix] of maskedVendorTokens) {
+    it(`b15-mask: a ${label} token is masked in evidence, never echoed back`, async () => {
+      const yaml = `name: agent-config
+description: stores credentials for the bot
+service:
+  apiToken: ${token}
+`;
+      const compiler = new SemanticCompiler({ useNanoMind: false });
+      const result = await compiler.compile(yaml, 'agent-config.yaml');
+      const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+
+      const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+      const findings = analyzeCredentials(result.ast, verifier, undefined, yaml);
+
+      const withEvidence = findings.filter(f => typeof f.evidence === 'string' && f.evidence.length > 0);
+      expect(
+        withEvidence.length,
+        `a real ${label} token must be detected at all (detection precondition for this test)`,
+      ).toBeGreaterThan(0);
+
+      for (const f of withEvidence) {
+        expect(
+          f.evidence,
+          `${label}: ${f.checkId} evidence must end in the mask, not in secret bytes`,
+        ).toMatch(/\*+$/);
+        // Exact, not "does not contain the body". The unknown-shape branch
+        // exposes the first EIGHT characters of the whole value, so for `hf_`
+        // it leaks only five body bytes — a substring assertion long enough to
+        // read as thorough silently misses it. Everything before the mask must
+        // be the vendor prefix and nothing else.
+        expect(
+          (f.evidence as string).replace(/\*+$/, ''),
+          `${label}: ${f.checkId} evidence "${f.evidence}" must reveal the prefix and nothing more`,
+        ).toBe(allowedPrefix);
+      }
+    });
+  }
 });

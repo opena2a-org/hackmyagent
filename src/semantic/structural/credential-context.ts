@@ -10,6 +10,15 @@
 
 import type { SemanticFinding, AnalysisFile } from '../types';
 import type { GitContext } from './git-context';
+import { isVisualFiller } from '../../types/credential-format.js';
+
+/**
+ * How much of an MCP env value must survive the drawn runs to count as a
+ * value. Small on purpose: unlike the SEM-CRED-002 shapes, this call site
+ * applies no length floor of its own, so anything larger turns a blank gate
+ * into a length gate and drops short real secrets that `origin/main` reports.
+ */
+const MIN_MCP_ENV_CORE_CHARS = 2;
 
 /** Key names that indicate a secret value */
 const SECRET_KEY_PATTERN =
@@ -54,6 +63,37 @@ function classifySecret(key: string, value: string): { type: string; masked: str
   if (/private.*key|signing.*key/.test(k)) return { type: 'private key', masked: preview };
 
   return { type: 'secret', masked: preview };
+}
+
+/**
+ * Value-level gate shared by all three SEM-CRED-002 shapes (JSON pair, YAML
+ * pair, `KEY=VALUE`).
+ *
+ * Hoisted into one function on purpose. Three of the four call sites carried
+ * byte-identical copies of the length/all-letters test, and the entropy floor
+ * that fixed AST-CRED-003 was added to neither — so the reported complaint kept
+ * reproducing through this detector: a `CLAUDE.md` onboarding checklist reading
+ * `password: ______…` scored SEM-CRED-002 CRITICAL, on the same 47-underscore
+ * form blank. Two of the three copies drifting is how that gap opened; one
+ * function is what keeps it closed.
+ *
+ * The filler test is `isVisualFiller`, NOT the AST path's
+ * `isCredibleEntropyBlob`. Both reject the reported form blank, but they are
+ * asked different questions. The AST fallback judges an ANONYMOUS 40+ character
+ * run found anywhere in a document, where structure is the only evidence and a
+ * run of one repeated symbol is filler. Here a key name has already said "this
+ * is a secret", and the structural rules are far too blunt for an 8-character
+ * value: they dropped `Ab12Ab12Ab12…` (period 4) and the base64 of an all-zero
+ * AES key (`'A'x43`), both weak but entirely real secrets. Keying on the filler
+ * CHARACTERS separates the classes exactly at this size.
+ */
+function looksLikeSecretValue(value: string): boolean {
+  if (value.length < 8) return false;
+  // All-letters values are words, not secrets.
+  if (/^[a-z]+$/i.test(value)) return false;
+  // A drawn blank (`____…`, `----`, `....`) is not a value.
+  if (isVisualFiller(value)) return false;
+  return true;
 }
 
 /** Values that are NOT secrets (env var refs, booleans, paths, etc.) */
@@ -302,7 +342,7 @@ function detectGenericTokens(file: AnalysisFile, gitContext?: GitContext): Seman
       const [, key, value] = jsonMatch;
       if (SECRET_KEY_PATTERN.test(key) && !isNonSecretValue(value)) {
         // Ensure value looks like it could be a secret (min length, some entropy)
-        if (value.length >= 8 && !/^[a-z]+$/i.test(value)) {
+        if (looksLikeSecretValue(value)) {
           const { type, masked } = classifySecret(key, value);
           const sev = effectiveSeverityForEnvCredential(file.path, gitContext);
           const downgraded = sev === 'medium';
@@ -334,7 +374,7 @@ function detectGenericTokens(file: AnalysisFile, gitContext?: GitContext): Seman
       const [, , key, rawValue] = yamlMatch;
       const value = rawValue.trim().replace(/^["']|["']$/g, '');
       if (SECRET_KEY_PATTERN.test(key) && !isNonSecretValue(value)) {
-        if (value.length >= 8 && !/^[a-z]+$/i.test(value)) {
+        if (looksLikeSecretValue(value)) {
           const { type, masked } = classifySecret(key, value);
           const sev = effectiveSeverityForEnvCredential(file.path, gitContext);
           const downgraded = sev === 'medium';
@@ -366,7 +406,7 @@ function detectGenericTokens(file: AnalysisFile, gitContext?: GitContext): Seman
       const [, key, rawValue] = envMatch;
       const value = rawValue.trim().replace(/^["']|["']$/g, '');
       if (SECRET_KEY_PATTERN.test(key) && !isNonSecretValue(value)) {
-        if (value.length >= 8 && !/^[a-z]+$/i.test(value)) {
+        if (looksLikeSecretValue(value)) {
           const sev = effectiveSeverityForEnvCredential(file.path, gitContext);
           const downgraded = sev === 'medium';
           const wording = downgraded
@@ -396,6 +436,36 @@ function detectGenericTokens(file: AnalysisFile, gitContext?: GitContext): Seman
 }
 
 /**
+ * A SEM-CRED-003 pattern.
+ *
+ * `requiresEntropy: true` marks a pattern whose VALUE group is a bare
+ * character-class run. Those admit a fill-in-the-blank form rule
+ * (`Password: ________________________________`) as a credential, which is the
+ * same defect class fixed in the AST-CRED entropy fallback, so the captured
+ * value must clear `isVisualFiller` before a finding is raised. Patterns
+ * carrying their own positive marker (a vendor prefix, `Bearer`) are accepted
+ * on shape alone and set it `false`.
+ *
+ * The discriminated union makes `valueGroup` unreachable unless
+ * `requiresEntropy` is `true`, so the two can never be written out of step.
+ * TypeScript cannot prove that a RegExp literal actually HAS that group —
+ * `broad-credential-patterns.test.ts` closes the remaining gap at CI time,
+ * which is where this belongs; the previous runtime `throw` sat in a per-line
+ * loop under a bare `catch`.
+ */
+type BroadCredentialPattern =
+  | { readonly name: string; readonly pattern: RegExp; readonly requiresEntropy: false }
+  | { readonly name: string; readonly pattern: RegExp; readonly requiresEntropy: true; readonly valueGroup: 1 };
+
+/** Patterns that look like API keys/tokens (broader than core scanner's regex). */
+export const BROAD_CREDENTIAL_PATTERNS: readonly BroadCredentialPattern[] = [
+  { name: 'API key prefix', pattern: /(?:sk-|pk-|rk-|ak-)[a-zA-Z0-9_-]{16,}/g, requiresEntropy: false },
+  { name: 'Bearer token', pattern: /Bearer\s+[a-zA-Z0-9._-]{20,}/g, requiresEntropy: false },
+  { name: 'Generic long token', pattern: /(?:token|key|secret|password)\s*[=:]\s*['"]?([a-zA-Z0-9_-]{32,})['"]?/gi, requiresEntropy: true, valueGroup: 1 },
+  { name: 'Base64 credential', pattern: /(?:password|secret|token|key)\s*[=:]\s*['"]?([A-Za-z0-9+/]{40,}={0,2})['"]?/gi, requiresEntropy: true, valueGroup: 1 },
+];
+
+/**
  * Detect credential-like strings in instruction files
  * (CLAUDE.md, .cursorrules, copilot-instructions.md)
  *
@@ -414,19 +484,36 @@ function detectCredentialsInInstructions(file: AnalysisFile): SemanticFinding[] 
   const findings: SemanticFinding[] = [];
   const lines = file.content.split('\n');
 
-  // Patterns that look like API keys/tokens (broader than core scanner's regex)
-  const broadCredentialPatterns = [
-    { name: 'API key prefix', pattern: /(?:sk-|pk-|rk-|ak-)[a-zA-Z0-9_-]{16,}/g },
-    { name: 'Bearer token', pattern: /Bearer\s+[a-zA-Z0-9._-]{20,}/g },
-    { name: 'Generic long token', pattern: /(?:token|key|secret|password)\s*[=:]\s*['"]?([a-zA-Z0-9_-]{32,})['"]?/gi },
-    { name: 'Base64 credential', pattern: /(?:password|secret|token|key)\s*[=:]\s*['"]?([A-Za-z0-9+/]{40,}={0,2})['"]?/gi },
-  ];
-
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    for (const { name, pattern } of broadCredentialPatterns) {
+    for (const { name, pattern, requiresEntropy } of BROAD_CREDENTIAL_PATTERNS) {
       pattern.lastIndex = 0;
-      if (pattern.test(line)) {
+      // Walk EVERY match on the line, not just the first. A line can carry a
+      // form blank and a real token together
+      // (`password: ____…____  token: <real>`); taking only the first match
+      // meant the rejected blank suppressed the credential beside it.
+      let matched = false;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(line)) !== null) {
+        if (!requiresEntropy) { matched = true; break; }
+        // Every `requiresEntropy` pattern must capture its VALUE; scoring the
+        // whole match would feed the `password:` descriptor into the filler
+        // test and make the floor a no-op.
+        //
+        // A missing capture group FAILS CLOSED — the match is treated as a
+        // credential. This used to `throw`, which was the wrong failure mode
+        // twice over: `scanner.ts` wraps the whole structural pass in a bare
+        // `catch` ("Structural analysis failure is non-fatal"), so the throw
+        // deleted all four Layer 2 analyzers, produced no findings, and
+        // IMPROVED the score. A silent detection loss that also looks like
+        // success is the worst available outcome; extra findings are merely
+        // noisy. `broad-credential-patterns.test.ts` asserts the table can
+        // never reach this branch, so it is a backstop, not a code path.
+        const value = match[1];
+        if (value === undefined || !isVisualFiller(value)) { matched = true; break; }
+        if (match.index === pattern.lastIndex) pattern.lastIndex++;
+      }
+      if (matched) {
         findings.push({
           id: 'SEM-CRED-003',
           title: 'Credential in agent instructions',
@@ -477,7 +564,24 @@ function detectMcpEnvSecrets(file: AnalysisFile): SemanticFinding[] {
 
     for (const [key, value] of Object.entries(serverConfig.env)) {
       if (typeof value !== 'string') continue;
-      if (SECRET_KEY_PATTERN.test(key) && !isNonSecretValue(value)) {
+      // A DRAWN-BLANK gate, and deliberately nothing more. SEM-CRED-004 had a
+      // key-name test and no value test, so the reported false positive
+      // reproduced one file type over: an MCP onboarding template carrying
+      // `"GITHUB_TOKEN": "________"` scored CRITICAL on a blank, exactly as the
+      // `CLAUDE.md` checklist did.
+      //
+      // The floor is 2, NOT the shared `looksLikeSecretValue`. That helper
+      // carries an 8-character length floor and an all-letters rejection, which
+      // its other callers apply for their own reasons and this one never did —
+      // routing through it silently stopped reporting `supersecretpassword`,
+      // `correcthorsebatterystaple` and `hunt3r`, all real MCP env secrets that
+      // `origin/main` reports, and raised the score by doing so. A suppression
+      // added for blanks must suppress blanks and nothing else.
+      if (
+        SECRET_KEY_PATTERN.test(key) &&
+        !isNonSecretValue(value) &&
+        !isVisualFiller(value.trim().replace(/^["']|["']$/g, ''), MIN_MCP_ENV_CORE_CHARS)
+      ) {
         // Find the line number
         let lineNum: number | undefined;
         for (let i = 0; i < lines.length; i++) {
