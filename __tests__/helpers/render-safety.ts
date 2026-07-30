@@ -68,20 +68,35 @@ export function assertNoSplitLines(out: string, label: string): void {
 }
 
 /**
- * Property 2 — every `rm` citation quotes its argument.
+ * Characters that mean the same thing to a shell quoted or bare. Kept in step
+ * with `SAFE_UNQUOTED` in `src/ui/shell-quote.ts` — this is the test's own
+ * statement of the rule, not an import of the implementation's.
+ */
+const SHELL_INERT = /^[A-Za-z0-9._@:+=/~-]+$/;
+
+/**
+ * Property 2 — no `rm` citation can be read as anything but the path it names.
  *
- * Deliberately checks the SHAPE rather than one expected string: any renderer
- * that emits `rm <path>` has to quote, whichever path and whichever report. The
- * argument's first character after the flags must be a single quote.
+ * Checks the SHAPE rather than one expected string: any renderer that emits `rm
+ * <path>` is covered, whichever path and whichever report. An argument is
+ * acceptable when it is single-quoted, or when every character in it is inert to
+ * a shell — `rm SOUL.md` and `rm 'it'\''s a file.txt'` are both correct, and
+ * quoting a name that needs no quoting only makes the line harder to read.
+ *
+ * The pairing that matters is asserted by the hostile fixture: a name carrying a
+ * quote and a `;` MUST come back quoted, so this cannot pass by treating
+ * everything as inert.
  */
 export function assertCitationsQuoted(out: string, label: string): void {
   for (const line of out.split('\n')) {
-    for (const m of line.matchAll(/\brm(?:\s+-[A-Za-z]+)*\s+(\S)/g)) {
+    // Up to the closing backtick of the citation, or the end of the line.
+    for (const m of line.matchAll(/\brm(?:\s+-[A-Za-z]+)*\s+([^`]+)/g)) {
+      const arg = m[1].trim();
       expect(
-        m[1],
-        `${label}: an rm citation names an unquoted path, so a filename is a `
-        + `command: ${JSON.stringify(line)}`,
-      ).toBe("'");
+        arg.startsWith("'") || SHELL_INERT.test(arg),
+        `${label}: an rm citation names a path a shell would re-interpret, so a `
+        + `filename is a command: ${JSON.stringify(line)}`,
+      ).toBe(true);
     }
   }
 }

@@ -479,19 +479,49 @@ interface FsIdentity {
   ino: number;
 }
 
+/**
+ * The identity of what a path reaches, or why it could not be taken.
+ *
+ * #333 — `identityOf` used to return `null` for every failure, and `null` means
+ * "not our backup" to both callers. For the DETECTION walk that is fail-closed:
+ * the directory gets scanned, so nothing is hidden. For the WRITE gate it is
+ * fail-OPEN — `isInsideOwnBackup` returning false there means ALLOW THE WRITE —
+ * so any `EACCES`, `ELOOP`, `EIO` or `EMFILE` on an ancestor `stat` during a
+ * `--fix` run left HackMyAgent free to rewrite its own backup, with only the
+ * name check standing in the way: the string this whole change argues cannot be
+ * trusted.
+ *
+ * Only ENOENT proves absence. Everything else proves nothing, and "I could not
+ * check" must not become "it is not ours" — the same inference as #313, and as
+ * the `resolveInsideTree` fail-open fixed earlier in this stack.
+ */
+type IdentityProbe =
+  | { kind: 'identity'; id: FsIdentity }
+  /** Proven absent: nothing is there. */
+  | { kind: 'absent' }
+  /** The filesystem refused to answer. Establishes nothing in either direction. */
+  | { kind: 'unknown' };
+
 /** `stat`, not `lstat`: the identity wanted is the directory a path REACHES. */
-async function identityOf(p: string): Promise<FsIdentity | null> {
+async function identityOf(p: string): Promise<IdentityProbe> {
   try {
     const st = await fs.stat(p);
-    return { dev: st.dev, ino: st.ino };
-  } catch {
-    return null;
+    return { kind: 'identity', id: { dev: st.dev, ino: st.ino } };
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'ENOENT'
+      ? { kind: 'absent' }
+      : { kind: 'unknown' };
   }
 }
 
 /** Fails closed: a missing identity on either side is never a match. */
 function sameIdentity(a: FsIdentity | null | undefined, b: FsIdentity | null | undefined): boolean {
   return !!a && !!b && a.dev === b.dev && a.ino === b.ino;
+}
+
+/** The identity if one could be taken, else undefined — for the callers that only need a match. */
+function identityOrUndefined(probe: IdentityProbe): FsIdentity | undefined {
+  return probe.kind === 'identity' ? probe.id : undefined;
 }
 
 /**
@@ -3003,22 +3033,27 @@ export class HardeningScanner {
    * dozen calls per run) and is not affordable per scanned file — hence the
    * separate primitive the walks use.
    */
-  private async isInsideOwnBackup(absPath: string): Promise<boolean> {
+  private async isInsideOwnBackup(absPath: string): Promise<'yes' | 'no' | 'unknown'> {
     const ctx = this.backupContext;
-    if (!ctx) return false;
+    if (!ctx) return 'no';
     // Sound positive, no syscall. Only the negative needs the filesystem.
-    if (this.isPathWithinDirectory(absPath, ctx.backupDir)) return true;
+    if (this.isPathWithinDirectory(absPath, ctx.backupDir)) return 'yes';
 
     let dir = path.dirname(path.resolve(absPath));
     // Bounded: a path with more than 64 components is not something to keep
     // stat-ing, and the answer for anything that deep is "not our backup".
     for (let i = 0; i < 64; i++) {
-      if (sameIdentity(await identityOf(dir), ctx.backupIdent)) return true;
+      const probe = await identityOf(dir);
+      if (sameIdentity(identityOrUndefined(probe), ctx.backupIdent)) return 'yes';
+      // #333 — an ancestor the filesystem would not describe leaves the question
+      // OPEN. Reported as such rather than collapsed into "no", because the
+      // caller here is the write gate and "no" there authorises the write.
+      if (probe.kind === 'unknown') return 'unknown';
       const parent = path.dirname(dir);
-      if (parent === dir) return false; // filesystem root
+      if (parent === dir) return 'no'; // filesystem root
       dir = parent;
     }
-    return false;
+    return 'no';
   }
 
   /**
@@ -3031,6 +3066,12 @@ export class HardeningScanner {
    * walking so `keyFiles`/`namedSensitive` semantics stay untouched) carries the
    * answer down its own recursion. That keeps the syscall cost at one `stat`
    * per directory of a `--fix` run, and zero for a detect-only scan.
+   *
+   * An unreadable directory is deliberately answered "not ours" HERE: the
+   * consequence is that the directory is SCANNED, so a credential inside it is
+   * still reported. That is the fail-closed direction for detection, and it is
+   * the opposite of the direction the write gate needs — see `isInsideOwnBackup`
+   * (#333).
    */
   private async isOwnBackupDir(dirPath: string): Promise<boolean> {
     const ctx = this.backupContext;
@@ -3039,7 +3080,7 @@ export class HardeningScanner {
     // only the NEGATIVE that cannot be trusted, so the syscall is spent only
     // when the cheap compare says no.
     if (this.isPathWithinDirectory(dirPath, ctx.backupDir)) return true;
-    return sameIdentity(await identityOf(dirPath), ctx.backupIdent);
+    return sameIdentity(identityOrUndefined(await identityOf(dirPath)), ctx.backupIdent);
   }
 
   /**
@@ -3122,12 +3163,26 @@ export class HardeningScanner {
     // name test needs `filePath` and `targetDir` to be spelled compatibly, and
     // trusting that they are is how the last four rounds started.
     const ctx = this.backupContext;
-    if (ctx && (await isInsideBackupArchive(filePath, ctx.targetDir) || await this.isInsideOwnBackup(filePath))) {
+    const ownBackup = ctx ? await this.isInsideOwnBackup(filePath) : 'no';
+    if (ctx && (ownBackup === 'yes' || await isInsideBackupArchive(filePath, ctx.targetDir))) {
       this.fixWriteFailures.push({
         file: filePath,
         code: 'BACKUP-ARCHIVE',
         message: 'not written: this is a backup archive, and rewriting it would '
           + 'destroy the copy rollback restores from',
+      });
+      return false;
+    }
+    // #333 — an identity probe that FAILED is not a "no". The write gate is the
+    // one caller for which "not our backup" authorises the write, so an
+    // ancestor the filesystem would not describe has to stop it, with its own
+    // cause rather than under a claim about a backup archive nobody established.
+    if (ownBackup === 'unknown') {
+      this.fixWriteFailures.push({
+        file: filePath,
+        code: 'BACKUP-IDENTITY-UNKNOWN',
+        message: 'not written: a directory above this path could not be examined, so '
+          + 'HackMyAgent cannot rule out that this is its own backup',
       });
       return false;
     }
@@ -7230,7 +7285,7 @@ dist/
     // The identity of the directory just created, captured once. Every later
     // "is this inside the backup?" question is answered against this rather
     // than against a path string — see `isInsideOwnBackup` (#317).
-    const ident = await identityOf(backupDir);
+    const ident = identityOrUndefined(await identityOf(backupDir));
     if (!ident) {
       throw backupSetupError(
         'HMA-BACKUP-VANISHED',

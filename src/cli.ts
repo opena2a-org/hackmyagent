@@ -5011,7 +5011,7 @@ Examples:
       // property. See `__tests__/helpers/render-safety.ts`.
       const keptLine = (file: string): string =>
         `   ${colors.dim}kept    ${RESET()}  ${escapeForDisplay(file)}  `
-        + `${colors.dim}— review, then \`rm ${escapeForDisplay(shellQuote(file))}\` if unwanted${RESET()}`;
+        + `${colors.dim}— review, then \`rm ${citationPath(file)}\` if unwanted${RESET()}`;
 
       if (report.keptModified.length > 0) {
         console.log(
