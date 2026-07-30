@@ -28,12 +28,29 @@ const STAMP_WITH_NEWLINE = '2026-01-01-000000\nEVIL-SECOND-LINE';
 
 let dir: string;
 
+/**
+ * `secure` merges findings from any AI infrastructure it auto-detects under the
+ * user's HOME (`~/.openclaw`, `~/.nemoclaw`, `~/.openshell`) into the scan of
+ * the requested directory. That makes a spawn test's output a function of the
+ * developer's home directory, not of the fixture.
+ *
+ * Measured: with 250 `SKILL.md` files under a real `~/.openclaw`, this fixture's
+ * `--json` output grew from a few KB to 1.36MB — past `execFileSync`'s 1MB
+ * default `maxBuffer` — so the JSON arrived truncated and the parse threw. The
+ * suite went from green to red without a line of source changing.
+ *
+ * `OPENA2A_CORPUS_DETERMINISTIC=1` is the flag `secure` already documents for
+ * exactly this ("a developer's real ~/.nemoclaw / ~/.openclaw cannot leak
+ * machine state into fixture scores"). The larger `maxBuffer` is defence in
+ * depth: truncated stdout must never be mistaken for the program's output.
+ */
 function runSecure(args: string[]): string {
   try {
     return execFileSync(process.execPath, [CLI, 'secure', dir, ...args], {
       encoding: 'utf8',
       timeout: 180_000,
-      env: { ...process.env, NO_COLOR: '1' },
+      maxBuffer: 64 * 1024 * 1024,
+      env: { ...process.env, NO_COLOR: '1', OPENA2A_CORPUS_DETERMINISTIC: '1' },
     });
   } catch (e: unknown) {
     // `secure` exits 1 on findings, which is the case under test.
