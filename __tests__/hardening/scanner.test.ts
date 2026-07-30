@@ -1231,7 +1231,19 @@ describe('Backup and rollback', () => {
     expect(backupContent).toContain('sk-ant-api03');
   });
 
-  it('backup contains timestamp in folder name', async () => {
+  /**
+   * The stamp carries BOTH properties the backup directory depends on, and this
+   * test exists to fail if either is dropped:
+   *
+   *   - a `YYYY-MM-DD-HHMMSS` prefix, because `rollback` selects the latest
+   *     backup by lexical sort and needs the name to be time-ordered;
+   *   - a random suffix, because #320 showed a pure timestamp is a name the
+   *     scanned tree can guess. 125 pre-seeded stamp directories covering two
+   *     minutes made `mkdir(..., {recursive: true})` adopt one of them as the
+   *     run's own backup, which silently dropped a CRITICAL and moved the score
+   *     UP. The suffix is why a pre-seeded name can no longer be this run's.
+   */
+  it('backup folder name is time-ordered AND not guessable', async () => {
     const configPath = path.join(tempDir, 'config.json');
     await fs.writeFile(
       configPath,
@@ -1243,8 +1255,35 @@ describe('Backup and rollback', () => {
     const backupDir = path.join(tempDir, '.hackmyagent-backup');
     const backups = await fs.readdir(backupDir);
 
-    // Backup folder should have timestamp format: YYYY-MM-DD-HHMMSS
-    expect(backups[0]).toMatch(/^\d{4}-\d{2}-\d{2}-\d{6}$/);
+    expect(backups[0]).toMatch(/^\d{4}-\d{2}-\d{2}-\d{6}-[0-9a-f]{8}$/);
+  });
+
+  /**
+   * #320 — the property above, stated as behaviour rather than as a name shape:
+   * two runs in the same second must not share a backup directory. A pure
+   * timestamp made them collide, and a collision is what let a pre-seeded
+   * directory become the run's own.
+   */
+  it('two backups taken in the same second are different directories', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'config.json'),
+      JSON.stringify({ apiKey: 'sk-ant-api03-secretkey12345678901234' })
+    );
+
+    const first = await (scanner as unknown as {
+      createBackup(d: string): Promise<string>;
+    }).createBackup(tempDir);
+    const second = await (scanner as unknown as {
+      createBackup(d: string): Promise<string>;
+    }).createBackup(tempDir);
+
+    // Two directories, both on disk. Deliberately does NOT assert that the
+    // timestamp prefixes are equal: the two calls can straddle a second
+    // boundary, and a test that fails once an hour teaches people to re-run it.
+    // The property under test is non-collision, which holds either way.
+    expect(second).not.toBe(first);
+    expect((await fs.stat(first)).isDirectory()).toBe(true);
+    expect((await fs.stat(second)).isDirectory()).toBe(true);
   });
 
   it('can rollback to previous state', async () => {
