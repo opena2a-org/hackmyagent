@@ -2544,11 +2544,22 @@ export class HardeningScanner {
           // command that CANNOT resolve it, and offering it would be the dead
           // end the project's own rule forbids. Quoted, because a project path
           // may contain a space (#273).
-          const archiveDir = backupArchiveDirFor(filePath, targetDir);
+          //
+          // #319 — three cases, not two, because "looks like an archive" and "is
+          // an archive" are different claims. `namedArchiveDir` decides whether
+          // HMA will auto-edit the file (it will not, fail-safe, on the name
+          // alone). `provenArchiveDir` decides whether HMA may ASSERT it made the
+          // copy and offer `rm -rf` for the directory — and that needs proof,
+          // because both the target and the claim would otherwise come from the
+          // scanned tree.
+          const namedArchiveDir = backupArchiveDirFor(filePath, targetDir);
+          const provenArchiveDir = namedArchiveDir
+            ? await this.provenArchiveDirFor(filePath, targetDir)
+            : null;
           findings.push({
             checkId: 'CRED-001',
             name: 'Exposed Credential',
-            description: archiveDir
+            description: provenArchiveDir
               ? `${keyNames.join(', ')} found in plaintext in a HackMyAgent backup`
               : `${keyNames.join(', ')} found in plaintext`,
             category: 'credentials',
@@ -2559,21 +2570,28 @@ export class HardeningScanner {
             line: firstLine,
             // .env files can't be auto-fixed (that's where values belong);
             // archives must not be (rewriting them destroys the rollback copy).
-            fixable: !isEnvFile && !archiveDir,
+            fixable: !isEnvFile && !namedArchiveDir,
             fixed: fileModified,
-            fix: archiveDir
-              ? `rm -rf ${shellQuote(path.join(targetDir, archiveDir))}`
-              : isEnvFile
-                ? 'Add .env to .gitignore to prevent committing secrets'
-                : `${this.cliName} secure --fix`,
-            guidance: archiveDir
+            fix: provenArchiveDir
+              ? `rm -rf ${shellQuote(path.join(targetDir, provenArchiveDir))}`
+              : namedArchiveDir
+                ? `Replace the credential in this file with a \${ENV_VAR} reference, then rotate it`
+                : isEnvFile
+                  ? 'Add .env to .gitignore to prevent committing secrets'
+                  : `${this.cliName} secure --fix`,
+            guidance: provenArchiveDir
               ? 'This is the copy `--fix` saved before rewriting your config, so it still holds the ORIGINAL secret in plaintext. '
                 + 'It is not auto-fixed, because rewriting it would destroy what `rollback` restores from. '
                 + `Confirm the live file is correct (\`${this.cliName} secure\` reports no credential outside this archive), then delete the archive. `
                 + 'Rotate the credential either way: it has been on disk in plaintext.'
-              : isEnvFile
-                ? 'Credentials in .env are expected but the file must be in .gitignore. Run `hackmyagent secure --fix` to create a .gitignore.'
-                : 'Replaces hardcoded credentials with ${ENV_VAR} references. Store actual values in your .env file, which should be in .gitignore.',
+              : namedArchiveDir
+                ? `This file sits under a directory named \`${BACKUP_DIR_NAME}\`, but no HackMyAgent backup manifest lists it, `
+                  + 'so there is no evidence HackMyAgent created it. It is reported and left alone: nothing here is auto-edited, '
+                  + 'and no deletion is offered for a directory that may be your own source. '
+                  + 'Rotate the credential and remove the plaintext copy yourself.'
+                : isEnvFile
+                  ? 'Credentials in .env are expected but the file must be in .gitignore. Run `hackmyagent secure --fix` to create a .gitignore.'
+                  : 'Replaces hardcoded credentials with ${ENV_VAR} references. Store actual values in your .env file, which should be in .gitignore.',
           });
         }
       } catch {
@@ -2815,6 +2833,53 @@ export class HardeningScanner {
     if (!(await this.appendToBackupManifest(ctx.backupDir, rel, existed))) return false;
     ctx.covered.add(rel);
     return true;
+  }
+
+  /**
+   * The archive directory a credential sits in, but only when that directory is
+   * PROVABLY one HackMyAgent wrote. Null otherwise, including for a directory
+   * that merely carries the name.
+   *
+   * #319 — `backupArchiveDirFor` keys on the directory NAME, and that name comes
+   * out of the scanned tree, so the tree chose both the `rm -rf` target and the
+   * sentence asserting HMA created it. Measured: a
+   * `vendor/.hackmyagent-backup/important-lib/` holding unrelated source
+   * (`main.js`, `config/production.json`) was offered for recursive deletion
+   * under "This is the copy `--fix` saved before rewriting your config".
+   *
+   * That refutes #309's justification that keying the write refusal on a name is
+   * harmless because "the most an attacker gains is that HMA declines to
+   * auto-edit files there". The REFUSAL is fail-safe. The destructive
+   * INSTRUCTION the refusal generates is not, and it also breaks the project's
+   * own rule that a finding's fix must be correct for the cause.
+   *
+   * Proof is the manifest LISTING the file, not merely a manifest existing.
+   * Existence is what #305 already showed to be forgeable — 70 bytes of JSON
+   * with two array keys — so an empty manifest dropped beside someone else's
+   * source must not buy provenance for it. Requiring the path to appear means
+   * the claim "this is the copy `--fix` saved" is backed by HMA's own record of
+   * having saved that exact path.
+   */
+  private async provenArchiveDirFor(absPath: string, targetDir: string): Promise<string | null> {
+    const archiveRel = backupArchiveDirFor(absPath, targetDir);
+    if (!archiveRel) return null;
+    const archiveAbs = path.join(targetDir, archiveRel);
+
+    const rel = path.relative(archiveAbs, absPath);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+
+    try {
+      const manifestPath = path.join(archiveAbs, '.manifest.json');
+      const st = await fs.stat(manifestPath);
+      // Bounded, for the same reason `rollback`'s read is (#305 follow-up,
+      // #312): this file comes from the scanned tree.
+      if (!st.isFile() || st.size > MAX_FILE_SIZE) return null;
+      const manifest = this.parseManifest(await fs.readFile(manifestPath, 'utf-8'));
+      if (!manifest.existingFiles.includes(rel)) return null;
+      return archiveRel;
+    } catch {
+      return null;
+    }
   }
 
   /**
