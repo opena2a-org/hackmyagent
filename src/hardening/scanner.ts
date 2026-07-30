@@ -482,6 +482,25 @@ function sameIdentity(a: FsIdentity | null | undefined, b: FsIdentity | null | u
 }
 
 /**
+ * A backup-setup failure that carries WHY, machine-readably.
+ *
+ * `FIX-BACKUP-FAILED` used to report `code` from `err.name`, which is `Error` for
+ * anything that is not an errno — so a refusal HMA decided on its own arrived at
+ * the user as a bare "Backup failed (Error)" under guidance that listed only
+ * permission causes and a fix line saying "make the target writable". For a
+ * symlinked backup base that advice is wrong: making it writable changes nothing.
+ * The code lets the finding name the real cause and the matching remedy.
+ */
+type BackupSetupCode = 'HMA-BACKUP-SYMLINK' | 'HMA-BACKUP-NOT-DIR'
+  | 'HMA-BACKUP-OUTSIDE-TREE' | 'HMA-BACKUP-NO-NEW-DIR' | 'HMA-BACKUP-VANISHED';
+
+function backupSetupError(code: BackupSetupCode, message: string): NodeJS.ErrnoException {
+  const err = new Error(message) as NodeJS.ErrnoException;
+  err.code = code;
+  return err;
+}
+
+/**
  * True when any DIRECTORY component of an absolute path is a backup archive
  * root. Used only to refuse a WRITE (#314), never to suppress a finding.
  *
@@ -1824,6 +1843,46 @@ export class HardeningScanner {
     // then loops with no diagnosis. One finding names every file, so the
     // signal cannot be lost among per-check noise.
     if (backupFailure) {
+      // The remedy has to match the CAUSE. Every cause used to be described as a
+      // permission problem ("make the target writable", "a read-only mount, a
+      // container volume, or a checkout owned by another user"), which is simply
+      // wrong for a backup base HMA refused on its own: making a symlink writable
+      // changes nothing, and the sentence sends the user to look at the wrong
+      // thing. `backupSetupError` carries the reason so this can dispatch on it.
+      const basePath = path.join(targetDir, BACKUP_DIR_NAME);
+      const rerun = `${this.cliName} secure ${shellQuote(targetDir)} --fix`;
+      const CAUSES: Record<string, { fix: string; guidance: string }> = {
+        'HMA-BACKUP-SYMLINK': {
+          fix: `Replace ${shellQuote(basePath)} with a real directory, or remove it, then re-run: ${rerun}`,
+          guidance:
+            `${BACKUP_DIR_NAME} is a symbolic link. Backups are never written through a link, because `
+            + 'the copies would land wherever the link points — outside the directory you asked to '
+            + 'scan, and outside what `rollback` can restore from. Nothing was written and nothing '
+            + 'was changed. Replace it with a real directory to enable auto-fix.',
+        },
+        'HMA-BACKUP-NOT-DIR': {
+          fix: `Remove or rename ${shellQuote(basePath)}, then re-run: ${rerun}`,
+          guidance:
+            `Something that is not a directory already occupies ${BACKUP_DIR_NAME}, so there is `
+            + 'nowhere to store the copies auto-fix would need. Nothing was written and nothing was '
+            + 'changed.',
+        },
+        'HMA-BACKUP-OUTSIDE-TREE': {
+          fix: `Replace ${shellQuote(basePath)} with a real directory inside the project, then re-run: ${rerun}`,
+          guidance:
+            `${BACKUP_DIR_NAME} resolves to a location outside the directory being scanned. Backups `
+            + 'stay inside the tree they belong to, so the run detected only. Nothing was written '
+            + 'and nothing was changed.',
+        },
+        'HMA-BACKUP-NO-NEW-DIR': {
+          fix: `Re-run: ${rerun}`,
+          guidance:
+            'Auto-fix creates a backup directory that must be provably new, and the name it chose '
+            + 'was already taken on every attempt. That is transient — re-running takes a fresh '
+            + 'name. Nothing was written and nothing was changed.',
+        },
+      };
+      const cause = CAUSES[backupFailure.code ?? ''];
       findings.push({
         checkId: 'FIX-BACKUP-FAILED',
         name: 'Auto-Fix Skipped: Backup Could Not Be Created',
@@ -1831,12 +1890,15 @@ export class HardeningScanner {
         category: 'hardening',
         severity: 'medium',
         passed: false,
-        message: `Backup failed (${backupFailure.code}); --fix was skipped and this run only detected. Findings below are unmodified.`,
+        // The reason, in words, not just an error code: for a refusal HMA decided
+        // on its own the code was `Error`, which told the user nothing.
+        message: `Backup failed: ${backupFailure.message} --fix was skipped and this run only `
+          + 'detected. Findings below are unmodified.',
         file: path.basename(targetDir),
         fixable: false,
-        fix: `Make the target writable, then re-run: ${this.cliName} secure --fix`,
-        guidance:
-          'Applying fixes without a backup would leave nothing to roll back to, so the run detects only. Every finding below reflects the tree as it is on disk. This usually means a read-only mount, a container volume, or a checkout owned by another user.',
+        fix: cause?.fix ?? `Make the target writable, then re-run: ${rerun}`,
+        guidance: cause?.guidance
+          ?? 'Applying fixes without a backup would leave nothing to roll back to, so the run detects only. Every finding below reflects the tree as it is on disk. This usually means a read-only mount, a container volume, or a checkout owned by another user.',
       });
     }
 
@@ -7023,13 +7085,16 @@ dist/
     // which is exactly how #321 stayed invisible.
     const st = await fs.lstat(base);
     if (st.isSymbolicLink()) {
-      throw new Error(
-        `${base} is a symbolic link. Backups are not written through a link — `
-        + `replace it with a real directory, or remove it and re-run.`
+      throw backupSetupError(
+        'HMA-BACKUP-SYMLINK',
+        `${base} is a symbolic link, and backups are not written through a link.`,
       );
     }
     if (!st.isDirectory()) {
-      throw new Error(`${base} exists and is not a directory, so backups cannot be stored there.`);
+      throw backupSetupError(
+        'HMA-BACKUP-NOT-DIR',
+        `${base} exists and is not a directory, so backups cannot be stored there.`,
+      );
     }
 
     // Canonical, including the on-disk casing: everything downstream compares
@@ -7037,8 +7102,9 @@ dist/
     // leave the run's own paths spelled one way and read back another (#317).
     const baseReal = await fs.realpath(base);
     if (!this.isPathWithinDirectory(baseReal, targetReal)) {
-      throw new Error(
-        `${base} resolves to ${baseReal}, outside the scanned tree. Refusing to write backups there.`
+      throw backupSetupError(
+        'HMA-BACKUP-OUTSIDE-TREE',
+        `${base} resolves to ${baseReal}, which is outside the scanned tree.`,
       );
     }
     return baseReal;
@@ -7084,9 +7150,11 @@ dist/
         if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err;
       }
     }
-    throw lastErr instanceof Error
-      ? lastErr
-      : new Error(`Could not create a new backup directory under ${baseReal}.`);
+    throw backupSetupError(
+      'HMA-BACKUP-NO-NEW-DIR',
+      `Could not create a new backup directory under ${baseReal} after 8 attempts`
+      + `${lastErr instanceof Error ? `: ${lastErr.message}` : '.'}`,
+    );
   }
 
   /**
@@ -7100,7 +7168,10 @@ dist/
     // than against a path string — see `isInsideOwnBackup` (#317).
     const ident = await identityOf(backupDir);
     if (!ident) {
-      throw new Error(`Backup directory ${backupDir} disappeared immediately after being created.`);
+      throw backupSetupError(
+        'HMA-BACKUP-VANISHED',
+        `Backup directory ${backupDir} disappeared immediately after being created.`,
+      );
     }
     this.lastBackupIdent = ident;
 

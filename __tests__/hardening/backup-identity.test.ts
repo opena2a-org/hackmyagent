@@ -201,6 +201,43 @@ describe('backup directory identity', () => {
   });
 
   /**
+   * The remedy has to match the CAUSE.
+   *
+   * Refusing a symlinked backup base added a new reason for `FIX-BACKUP-FAILED`,
+   * and the finding described every reason as a permission problem: "make the
+   * target writable", over guidance blaming a read-only mount, a container volume
+   * or a checkout owned by another user. None of that is true here, and making a
+   * symlink writable changes nothing — the user is sent to look at the wrong
+   * thing while their fixes stay unapplied.
+   */
+  it('tells the user the backup base is a symlink, not that the tree is read-only', async () => {
+    const drop = await mkdtemp(path.join(tmpdir(), 'hma-identity-cause-'));
+    try {
+      await symlink(drop, path.join(dir, BACKUP));
+      await writeFile(path.join(dir, 'config.json'), BODY);
+
+      const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+      const failed = result.findings.find((f) => f.checkId === 'FIX-BACKUP-FAILED');
+
+      expect(failed, 'the run degraded to detect-only without saying so').toBeDefined();
+      const text = `${failed!.message} ${failed!.fix ?? ''} ${failed!.guidance ?? ''}`;
+      expect(text, 'the finding never mentions the actual cause').toContain('symbolic link');
+      expect(
+        failed!.fix ?? '',
+        'the fix line tells the user to make the target writable, which does not fix a symlink',
+      ).not.toContain('writable');
+      expect(
+        failed!.guidance ?? '',
+        'the guidance blames a read-only mount for a cause that has nothing to do with permissions',
+      ).not.toContain('read-only mount');
+      // Names the thing to act on, literally.
+      expect(failed!.fix ?? '').toContain(BACKUP);
+    } finally {
+      await rm(drop, { recursive: true, force: true });
+    }
+  });
+
+  /**
    * #320 — the stamp was a UTC second and the `mkdir` was recursive, so the tree
    * could name HMA's own backup by guessing. Measured: 125 pre-seeded stamps,
    * 126 CRED-001 detect-only vs 125 under `--fix`, and the score moved UP.
