@@ -13,12 +13,16 @@ import type { GitContext } from './git-context';
 import { isVisualFiller } from '../../types/credential-format.js';
 
 /**
- * How much of an MCP env value must survive the drawn runs to count as a
- * value. Small on purpose: unlike the SEM-CRED-002 shapes, this call site
- * applies no length floor of its own, so anything larger turns a blank gate
- * into a length gate and drops short real secrets that `origin/main` reports.
+ * How much of a value must survive the drawn runs, for the call sites that
+ * apply no length floor of their own (the MCP env block, the URL password).
+ *
+ * Small on purpose. The SEM-CRED-002 shapes carry an 8-character floor for
+ * their own reasons, and reusing it here would turn a blank gate into a length
+ * gate: it silently dropped `supersecretpassword` and `hunt3r` from MCP env
+ * blocks the first time, and `hunter2` is a real URL password. A gate added to
+ * suppress drawn blanks must suppress drawn blanks and nothing else.
  */
-const MIN_MCP_ENV_CORE_CHARS = 2;
+const MIN_DRAWN_ONLY_CORE_CHARS = 2;
 
 /** Key names that indicate a secret value */
 const SECRET_KEY_PATTERN =
@@ -281,6 +285,19 @@ function detectUrlPasswords(file: AnalysisFile): SemanticFinding[] {
       if (password.startsWith('${') || password.startsWith('$')) continue;
       // Skip very short passwords that might be ports
       if (password.length < 3) continue;
+      // A documented connection string is not a leaked one. This detector had
+      // no value gate at all, so it was the last place the reported form-blank
+      // complaint still reproduced: `postgres://admin:____________@host` and —
+      // far more common — `mongodb://user:<password>@cluster0.mongodb.net/db`,
+      // the verbatim MongoDB Atlas documentation string, both scored CRITICAL.
+      //
+      // `isNonSecretValue` covers the placeholder vocabulary (`<password>`,
+      // `YOUR_PASSWORD`, `changeme`), which this function never consulted;
+      // `isVisualFiller` covers the drawn blanks. The floor is deliberately the
+      // small one — a URL password of `hunter2` is real, and an 8-character
+      // floor here would drop it.
+      if (isNonSecretValue(password)) continue;
+      if (isVisualFiller(password, MIN_DRAWN_ONLY_CORE_CHARS)) continue;
 
       const urlPwMasked = password.length > 5 ? password.slice(0, 5) + '****' : '****';
       // Redact every occurrence of the raw password from the line before placing it
@@ -580,7 +597,7 @@ function detectMcpEnvSecrets(file: AnalysisFile): SemanticFinding[] {
       if (
         SECRET_KEY_PATTERN.test(key) &&
         !isNonSecretValue(value) &&
-        !isVisualFiller(value.trim().replace(/^["']|["']$/g, ''), MIN_MCP_ENV_CORE_CHARS)
+        !isVisualFiller(value.trim().replace(/^["']|["']$/g, ''), MIN_DRAWN_ONLY_CORE_CHARS)
       ) {
         // Find the line number
         let lineNum: number | undefined;

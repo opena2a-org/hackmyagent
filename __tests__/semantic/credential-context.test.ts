@@ -41,6 +41,41 @@ describe('CredentialContextAnalyzer', () => {
       expect(findings.filter((f) => f.id === 'SEM-CRED-001')).toHaveLength(0);
     });
 
+    // The last place the reported form-blank complaint still reproduced.
+    // `detectUrlPasswords` had no value gate beyond `length < 3`, so a
+    // documented connection string was a leaked credential.
+    it('ignores documented placeholder passwords in connection strings', () => {
+      for (const [label, url] of [
+        // The verbatim MongoDB Atlas docs string. It is in a great many READMEs.
+        ['MongoDB Atlas docs string', 'mongodb://user:<password>@cluster0.mongodb.net/db'],
+        ['angle-bracket placeholder', 'postgres://admin:<YOUR_PASSWORD>@host:5432/db'],
+        ['a named placeholder', 'redis://default:your-password-here@redis.example.com:6379'],
+        ['a form blank', 'postgres://admin:' + '_'.repeat(20) + '@db.example.com/app'],
+        ['a drawn rule', 'mysql://root:' + '-'.repeat(16) + '@localhost/app'],
+      ] as Array<[string, string]>) {
+        const findings = analyzer.analyze([makeFile('README.md', url, 'documentation')]);
+        expect(
+          findings.filter((f) => f.id === 'SEM-CRED-001'),
+          `${label} is documentation, not a leaked credential: ${url}`,
+        ).toHaveLength(0);
+      }
+    });
+
+    it('STILL flags real URL passwords, including short ones', () => {
+      // The no-detection-loss half. The gate uses the SMALL core floor on
+      // purpose: an 8-character floor here would drop `hunter2`, which is a
+      // real password, reproducing the defect class this gate closes.
+      for (const [label, url] of [
+        ['an ordinary password', 'postgres://admin:password123@localhost:5432/mydb'],
+        ['a 7-character password', 'postgres://admin:hunter2@localhost:5432/mydb'],
+        ['a password with punctuation', 'mysql://root:s3cr3t!@localhost/app'],
+        ['a password containing @', 'postgres://admin:P@ssw0rd123!@db.prod.example.com:5432/production'],
+      ] as Array<[string, string]>) {
+        const findings = analyzer.analyze([makeFile('README.md', url, 'documentation')]);
+        expect(findings.filter((f) => f.id === 'SEM-CRED-001').length, `${label} must fire: ${url}`).toBeGreaterThan(0);
+      }
+    });
+
     it('ignores URLs with env var references in password', () => {
       const file = makeFile('.env', 'DATABASE_URL=postgres://admin:${DB_PASSWORD}@localhost:5432/mydb', 'env_file');
       const findings = analyzer.analyze([file]);
