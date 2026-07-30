@@ -22,8 +22,19 @@
 //
 // The assignment is conditional on purpose: a test that needs the infra merge
 // (see __tests__/harness/hermetic-home.test.ts) overrides it in its own spawn
-// env, and `OPENA2A_CORPUS_DETERMINISTIC=0 npm test` still reproduces field
-// behaviour.
-if (process.env.OPENA2A_CORPUS_DETERMINISTIC === undefined) {
+// env.
+//
+// Running the whole suite with `OPENA2A_CORPUS_DETERMINISTIC=0` is NOT a
+// supported way to reproduce field behaviour — the hermeticity guard in that
+// file asserts the default and will fail, on purpose, because in that mode the
+// suite is reading your home directory again. Reproduce field behaviour by
+// running the CLI directly instead.
+//
+// Empty counts as unset. An exported-but-empty `OPENA2A_CORPUS_DETERMINISTIC=`
+// is not a deliberate opt-out, and leaving it empty would sail past a
+// `=== undefined` check while `src/cli.ts` reads it as "not 1" and merges $HOME
+// anyway — hermetic by neither measure. `'0'` is a non-empty string, so a real
+// opt-out still survives this.
+if (!process.env.OPENA2A_CORPUS_DETERMINISTIC) {
   process.env.OPENA2A_CORPUS_DETERMINISTIC = '1';
 }

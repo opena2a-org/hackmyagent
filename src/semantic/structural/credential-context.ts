@@ -122,24 +122,26 @@ function isNonSecretValue(value: string): boolean {
   // URL without credentials
   if (/^https?:\/\/[^:@]*$/.test(trimmed)) return true;
 
-  // Placeholder values, anchored at BOTH ends.
+  // Placeholder values.
   //
-  // This was prefix-only, which suppressed every value that merely STARTED
-  // with the vocabulary. `examplePassw0rd!`, `xxxSecretKey123` and
-  // `TODOfixthis2026` are real passwords and were all read as documentation.
-  // Harmless while the only callers were key/value checks whose keys already
-  // had to look secret-bearing; a live bypass the moment a caller passes a
-  // bare value, which `detectUrlPasswords` now does.
+  // NOTE: prefix-anchored, so this also matches any value merely BEGINNING
+  // with the vocabulary — `examplePassw0rd!` reads as documentation. That is a
+  // real weakness, but it is bounded here: every caller of this function pairs
+  // it with a key that already had to match SECRET_KEY_PATTERN, so the key
+  // carries the signal and the value is only ever a veto.
   //
-  // The unambiguous vocabularies (`your-`, `change-me`, `replace-`,
-  // `placeholder`) keep their suffixes, because `your_api_key_here` is a
-  // placeholder however it ends. The short ambiguous ones (`example`, `todo`,
-  // `fixme`) must be the WHOLE value, because they are also ordinary English
-  // that real passwords begin with.
-  // Every token is anchored to at most what it already matched: the separator
-  // in `change[-_]me` stays REQUIRED, so bare `changeme` keeps being reported
-  // as it is today. Suppression only ever narrows here, never widens.
-  if (/^(your[-_][\w-]*|change[-_]me|replace[-_][\w-]*|placeholder[\w-]*|x{3,}|todo|fixme|example)$/i.test(trimmed)) return true;
+  // Anchoring it at both ends was tried and reverted. It closes the bypass and
+  // strictly narrows suppression — but on this function's real call sites it
+  // un-suppresses the redaction forms that dominate committed templates
+  // (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, `example-api-key-12345`,
+  // `TODO: add key`), each of which becomes a CRITICAL SEM-CRED-004 in an MCP
+  // config. Measured 48 new false-positive rows against 16 intended gains.
+  //
+  // Fixing it properly needs entropy corroboration rather than vocabulary
+  // alone, plus a corpus re-bake. Tracked separately; do NOT hand a bare,
+  // key-less value to this function in the meantime — see
+  // `isPlaceholderUrlPassword` for what a caller without a key should use.
+  if (/^(xxx|your[-_]|change[-_]me|replace[-_]|TODO|FIXME|placeholder|example)/i.test(trimmed)) return true;
 
   // Angle-bracket templates: <APIKEY>, <your_token>, <TENANT_NAME>
   if (/^<[^>]+>$/.test(trimmed)) return true;
@@ -284,6 +286,37 @@ function envHighOverrideWording(
 }
 
 /**
+ * Is this URL password documentation rather than a leaked secret?
+ *
+ * Narrow on purpose, and local on purpose. The password slot of a connection
+ * string carries no key to corroborate it, so vocabulary alone decides — which
+ * means the vocabulary must also be SHAPED like a placeholder, not merely start
+ * like one. Two rules:
+ *
+ *   1. An angle-bracket template: `<password>`, `<YOUR_TOKEN>`.
+ *   2. A placeholder word, optionally continued by further lowercase words
+ *      joined with `-` or `_`, and nothing else.
+ *
+ * Rule 2 is what keeps the gate honest. `your-password-here` and
+ * `YOUR_API_KEY` are placeholders; `your-8Kd9fLm2QpXv7Zr4Nt6Bw1Hs` is a real
+ * 24-character secret that merely opens with the word, and the digits and
+ * mixed case disqualify it. Likewise `examplePassw0rd!` — no separator, and
+ * `!` is not a word character — so it is reported.
+ *
+ * Anything not matched here is treated as a real credential. That direction is
+ * deliberate: a false positive on a placeholder costs a user one suppression,
+ * a false negative on a live database password costs them the database.
+ */
+const PLACEHOLDER_URL_PASSWORD =
+  /^(?:your|my|todo|fixme|example|placeholder|change|replace|insert|enter|dummy|sample)(?:[-_][a-z]+)*$/i;
+
+function isPlaceholderUrlPassword(password: string): boolean {
+  const trimmed = password.trim();
+  if (/^<[^>]+>$/.test(trimmed)) return true;
+  return PLACEHOLDER_URL_PASSWORD.test(trimmed);
+}
+
+/**
  * Detect URL-embedded passwords
  */
 function detectUrlPasswords(file: AnalysisFile): SemanticFinding[] {
@@ -307,12 +340,19 @@ function detectUrlPasswords(file: AnalysisFile): SemanticFinding[] {
       // far more common — `mongodb://user:<password>@cluster0.mongodb.net/db`,
       // the verbatim MongoDB Atlas documentation string, both scored CRITICAL.
       //
-      // `isNonSecretValue` covers the placeholder vocabulary (`<password>`,
-      // `YOUR_PASSWORD`, `changeme`), which this function never consulted;
-      // `isVisualFiller` covers the drawn blanks. The floor is deliberately the
+      // Deliberately NOT `isNonSecretValue`. That function is written for a
+      // key/value pair and assumes the key already asserted "secret", so the
+      // value only has to veto. A URL password slot has no key, and routing it
+      // through there imported rules that are wrong without one: it treats
+      // `12345678`, `default`, `none` and `null` as non-secrets, and those are
+      // precisely the leaked credentials this check exists to report. Measured
+      // against the previous build, that silently dropped every numeric and
+      // every keyword URL password.
+      //
+      // `isVisualFiller` covers the drawn blanks. Its floor is deliberately the
       // small one — a URL password of `hunter2` is real, and an 8-character
       // floor here would drop it.
-      if (isNonSecretValue(password)) continue;
+      if (isPlaceholderUrlPassword(password)) continue;
       if (isVisualFiller(password, MIN_DRAWN_ONLY_CORE_CHARS)) continue;
 
       const urlPwMasked = password.length > 5 ? password.slice(0, 5) + '****' : '****';

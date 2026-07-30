@@ -76,13 +76,52 @@ describe('CredentialContextAnalyzer', () => {
       }
     });
 
+    it('reports a URL password that is only a NUMBER or a keyword', () => {
+      // The password slot has no key to corroborate it, so the gate must not
+      // borrow rules written for key/value pairs. `isNonSecretValue` treats a
+      // pure number and the words `default`/`none`/`null`/`localhost` as
+      // non-secrets — sound when a SECRET_KEY_PATTERN key already asserted
+      // "secret", catastrophic here. Routing this detector through it silently
+      // dropped every one of these; `default` is the textbook default-credential
+      // finding.
+      for (const [label, url] of [
+        ['a numeric password', 'postgres://admin:12345678@db.prod.example.com:5432/app'],
+        ['a long numeric password', 'postgres://admin:867530912345@db.prod.example.com/app'],
+        ['the literal default', 'postgres://admin:default@db.prod.example.com:5432/app'],
+        ['the literal none', 'postgres://admin:none@db.prod.example.com:5432/app'],
+        ['the literal null', 'postgres://admin:null@db.prod.example.com:5432/app'],
+        ['a boolean-looking password', 'postgres://admin:true@db.prod.example.com:5432/app'],
+      ] as Array<[string, string]>) {
+        const findings = analyzer.analyze([makeFile('README.md', url, 'documentation')]);
+        expect(
+          findings.filter((f) => f.id === 'SEM-CRED-001').length,
+          `${label} is a leaked credential, not a config default: ${url}`,
+        ).toBeGreaterThan(0);
+      }
+    });
+
+    it('reports a real secret that merely OPENS with placeholder vocabulary', () => {
+      // The evasion the vocabulary invites: prefix any password with `your-`
+      // and it describes itself as a placeholder. The gate requires placeholder
+      // SHAPE as well as vocabulary — lowercase words joined by - or _ — so a
+      // high-entropy suffix disqualifies it.
+      for (const [label, url] of [
+        ['your- + 24 random chars', 'postgres://admin:your-8Kd9fLm2QpXv7Zr4Nt6Bw1Hs@db.prod.example.com/app'],
+        ['your_ + random', 'postgres://admin:your_9aK3mQ7xR1zPqW5vT@db.prod.example.com/app'],
+        ['placeholder + random', 'postgres://admin:placeholderA9f3K2mQ7xR1zPq@db.prod.example.com/app'],
+        ['replace_ + random', 'postgres://admin:replace_9aK3mQ7xR1zPqW5vT@db.prod.example.com/app'],
+      ] as Array<[string, string]>) {
+        const findings = analyzer.analyze([makeFile('README.md', url, 'documentation')]);
+        expect(
+          findings.filter((f) => f.id === 'SEM-CRED-001').length,
+          `${label} is a real secret wearing a placeholder prefix: ${url}`,
+        ).toBeGreaterThan(0);
+      }
+    });
+
     it('does not read a real password as a placeholder because of how it STARTS', () => {
-      // `isNonSecretValue`'s placeholder rule was anchored only at the front,
-      // so it matched any value BEGINNING with the vocabulary. Harmless while
-      // its callers were key/value checks whose key already had to look
-      // secret-bearing; a live bypass once a caller passes a bare value, which
-      // is exactly what routing `detectUrlPasswords` through it did. Each of
-      // these is a real password that the prefix form silently dropped.
+      // Placeholder vocabulary with no separator is just an English-flavoured
+      // password. Each of these is real.
       for (const [label, url] of [
         ['starts with example', 'postgres://admin:examplePassw0rd!@db.example.com/app'],
         ['starts with xxx', 'postgres://admin:xxxSecretKey123@db.example.com/app'],
@@ -398,7 +437,7 @@ describe('CredentialContextAnalyzer', () => {
     });
 
     it('does not flag an MCP blank carrying a single stray mark', () => {
-      // Pins the lower side of MIN_MCP_ENV_CORE_CHARS: at a floor of 1 this
+      // Pins the lower side of MIN_DRAWN_ONLY_CORE_CHARS: at a floor of 1 this
       // becomes CRITICAL again. The upper side is deliberately not pinned —
       // 2 -> 3 only suppresses two-character values, and no real secret has a
       // two-character core — so a test for it would assert an arbitrary

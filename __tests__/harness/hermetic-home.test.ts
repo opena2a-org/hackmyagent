@@ -102,8 +102,9 @@ describe('the suite never reads the developer home directory', () => {
     // the CLI silently become a function of whoever runs them.
     expect(
       process.env.OPENA2A_CORPUS_DETERMINISTIC,
-      'vitest.setup.ts did not run — the suite is not hermetic. ' +
-        '(Expected if you set OPENA2A_CORPUS_DETERMINISTIC=0 yourself.)',
+      'vitest.setup.ts did not run, or you exported ' +
+        'OPENA2A_CORPUS_DETERMINISTIC=0. Either way the suite is reading your ' +
+        'home directory, and this failure is the intended report of that.',
     ).toBe('1');
   });
 
