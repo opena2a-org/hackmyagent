@@ -42,6 +42,17 @@ All notable changes to HackMyAgent are documented in this file.
 
 - **Newly detectable tokens are no longer partly echoed back in finding evidence.** `maskCredentialValue` kept a fourth hand-maintained copy of the vendor list, five entries behind (`SG.`, `hf_`, `glpat-`, `npm_`, `ghu_`). Those tokens fell to the unknown-shape masking branch, which exposes the first eight characters — for `hf_…` that is five characters of live secret body written into `evidence`, which the masking layer exists to prevent. The prefix set is now derived from the shared vendor list, so a prefix cannot become detectable without also becoming maskable.
 
+- **`.mcp.json` was invisible to every Layer 2 MCP analyzer.** `FILE_DISCOVERY` knew `mcp.json`, `.cursor/mcp.json` and `.vscode/mcp.json` but not `.mcp.json` — the project-scope file Claude Code writes, the one that gets committed and shared with a team. A file type that is not discovered is skipped silently and with no error, so the failure looks like a clean scan: a byte-identical config carrying a live token scored 96/100 as `.mcp.json` and 69/100 as `.cursor/mcp.json`. `SEM-CRED-004` and every other MCP check now run on it. Three repositories on the author's machine turned out to have committed credentials that no previous version could see.
+
+- **`SEM-CRED-001` no longer reports a documented connection string as a leaked one.** `detectUrlPasswords` had no value gate beyond `password.length < 3`, so `mongodb://user:<password>@cluster0.mongodb.net/db` — the verbatim MongoDB Atlas documentation string — and `postgres://admin:____________@host` were both reported.
+
+  The gate is deliberately local rather than the existing `isNonSecretValue`. That predicate is written for a key/value pair, where a `SECRET_KEY_PATTERN` key has already asserted "secret" and the value only has to veto; a URL password slot has no key. Routing it there imported rules that are wrong without one, and silently dropped every numeric password (`12345678`) and the textbook default credential (`default`, `none`, `null`) while raising the score.
+
+  What replaced it requires placeholder SHAPE as well as vocabulary: uniform case, short prose words, a bound on the payload after the vocabulary word, and no hex runs. Vocabulary alone is a one-line evasion — `your-8Kd9fLm2QpXv7Zr4Nt6Bw1Hs`, `your-KdfLmQpXvZrNtBwHs` and `your-abc-def-ghi-jkl-mno-pqr` are real secrets that merely open with the word, and a pair of angle brackets was laundering `<vendorkey-aaaabbbbccccdddd>` on its own. `changeme`, `default`, `admin` and `root` all remain reported.
+
+  Three successive adversarial passes each broke the previous gate; the shape that survived is pinned by a differential over 58 real credentials and 21 placeholders, and every guard in it is mutation-verified.
+
+
 ### Changed
 
 - A `requiresEntropy` pattern with no capture group now **fails closed** (the match is treated as a credential) instead of throwing. The throw was swallowed by the bare `catch` around the structural pass in `scanner.ts`, so it deleted all four Layer 2 analyzers, produced no findings, and *improved* the reported score. A silent detection loss that also looks like a pass is worse than a noisy finding; `__tests__/semantic/broad-credential-patterns.test.ts` now enforces the table's contract in CI so the branch stays unreachable.
