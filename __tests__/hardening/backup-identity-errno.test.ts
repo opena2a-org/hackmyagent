@@ -85,6 +85,31 @@ describe('#333 the identity probe reports what it could not establish', () => {
    * against the previous build too. A control that goes red on the base commit
    * is not a control.
    */
+  /**
+   * The write gate is the caller this matters for, so the branch it takes is
+   * asserted here rather than left to the predicate alone. `applyFixWrite`
+   * consults the identity FIRST, so the recorded failure code says which guard
+   * refused: an unreadable ancestor must be reported as exactly that, not as the
+   * "no recoverable backup copy" the later guard would report.
+   */
+  it('refuses the write with its own cause when the identity cannot be established', async () => {
+    await symlink(path.join(dir, 'loop-b'), path.join(dir, 'loop-a'));
+    await symlink(path.join(dir, 'loop-a'), path.join(dir, 'loop-b'));
+
+    const probe = scanner as unknown as {
+      applyFixWrite(p: string, c: string): Promise<boolean>;
+      fixWriteFailures: Array<{ file: string; code: string; message: string }>;
+    };
+
+    const wrote = await probe.applyFixWrite(path.join(dir, 'loop-a', 'inner', 'config.json'), 'X\n');
+
+    expect(wrote, 'the write was authorised although the identity could not be established').toBe(false);
+    expect(
+      probe.fixWriteFailures.map((f) => f.code),
+      'the refusal was attributed to a cause that was never established',
+    ).toContain('BACKUP-IDENTITY-UNKNOWN');
+  });
+
   it('still answers no for an ordinary path and yes for one inside the backup', async () => {
     const asVerdict = (v: unknown): unknown => (v === true ? 'yes' : v === false ? 'no' : v);
 

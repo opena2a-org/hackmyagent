@@ -145,6 +145,44 @@ describe('#327 a rollback reports what it could not restore', () => {
   });
 
   /**
+   * The other side of the #327 split, kept as a control: following the link is
+   * correct for a RESTORE (HackMyAgent followed it on the way in) and wrong for
+   * a DELETE. A symlink standing where a generated file should be is not the
+   * file HackMyAgent generated, so unlinking it would destroy what it points at.
+   *
+   * Passes against the previous build too — that refusal was already correct.
+   * It is here so the `followLeafLink` split cannot silently lose it.
+   */
+  it('does not unlink through a symlink standing where a generated file should be', async () => {
+    const target = path.join(dir, 'real-file.json');
+    const contents = '{"the-user-wrote-this":true}\n';
+    await writeFile(target, contents);
+    const { createHash } = await import('node:crypto');
+    const sha256 = createHash('sha256').update(contents).digest('hex');
+    await symlink(target, path.join(dir, 'generated.json'));
+
+    const backup = path.join(dir, '.hackmyagent-backup', '9999-99-99-999999');
+    await mkdir(backup, { recursive: true });
+    await writeFile(
+      path.join(backup, '.manifest.json'),
+      JSON.stringify({
+        version: 2,
+        existingFiles: [],
+        absentAtBackup: [],
+        createdFiles: [{ path: 'generated.json', sha256 }],
+      }),
+    );
+
+    const report = await new HardeningScanner().rollback(dir);
+
+    expect(report.removed, 'rollback unlinked through a symlinked leaf').not.toContain('generated.json');
+    expect(
+      await readFile(target, 'utf-8'),
+      'the file the link pointed at was deleted',
+    ).toBe(contents);
+  });
+
+  /**
    * #334 — a FILE in the backup base is not a backup.
    *
    * The selection filtered dotfiles and nothing else, so an ordinary file named
