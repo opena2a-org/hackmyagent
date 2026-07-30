@@ -46,16 +46,38 @@
  * sequences — "a path could edit the report describing it" — and it landed on
  * the one citation that was destructive.
  *
- * The class is: SOFT HYPHEN, ARABIC LETTER MARK, the zero-width and directional
- * marks (U+200B..U+200F), the bidi embeddings and overrides (U+202A..U+202E),
- * the bidi isolates (U+2066..U+2069) and the BOM/ZWNBSP (U+FEFF). Escaped
- * visibly rather than stripped, per the rule below: dropping is what truncated
- * the command in #324.
+ * It named seventeen code points one at a time: SOFT HYPHEN, ARABIC LETTER MARK,
+ * the zero-width and directional marks, the bidi embeddings, overrides and
+ * isolates, and the BOM. Escaped visibly rather than stripped, per the rule
+ * below: dropping is what truncated the command in #324.
+ *
+ * #345 — and an enumerated list is the wrong shape for this class. That list
+ * grew one reporter at a time and still missed the families the scanner itself
+ * hunts: the Unicode TAG block (U+E0000..U+E007F, which HackMyAgent's own
+ * steganography check reports as an ATTACK, emitting `xxd … | grep "f3a0"` for
+ * its UTF-8 prefix), the variation selectors, the word joiner and the invisible
+ * operators, the Hangul fillers, the Mongolian vowel separator and the musical
+ * format controls. One module called those bytes an attack while another printed
+ * them silently, and `benign<U+E0041…>evil.png` renders with nothing visible
+ * between the parts — #330's harm statement verbatim.
+ *
+ * So the class is a CATEGORY, and it cannot fall behind a reporter again:
+ * `\p{Cc}` (C0, DEL, C1), `\p{Cf}` (every format character, including the tag
+ * block, the bidi marks, the joiners and the Arabic number signs), `\p{Zl}` and
+ * `\p{Zp}` (the two Unicode line separators), plus the two families that are
+ * invisible without being Cc/Cf: the variation selectors, and the Hangul filler
+ * letters that render as nothing.
+ *
+ * One deliberate exemption: a variation selector that FOLLOWS a pictograph is
+ * emoji presentation, not concealment — the character it modifies is visible and
+ * is what the reader sees. Escaping those would turn every `❤️` in a filename
+ * into `❤️` for no gain. A variation selector after anything else has
+ * nothing visible to modify, and is escaped.
  */
-const CONTROL_CHARS = new RegExp(
-  '[\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u200b-\\u200f'
-  + '\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\ufeff]',
-  'g',
+const DISPLAY_HAZARD = new RegExp(
+  '[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\\u{115F}\\u{1160}\\u{3164}\\u{FFA0}]'
+  + '|(?<!\\p{Extended_Pictographic})[\\u{FE00}-\\u{FE0F}\\u{E0100}-\\u{E01EF}]',
+  'gu',
 );
 
 /** Keyed by code point, for the same reason: no control characters in source. */
@@ -68,22 +90,37 @@ const NAMED: Record<number, string> = {
 };
 
 /**
- * Make control characters visible so a single-line render stays a single line.
+ * One code point, rendered visibly. Astral code points take `\u{…}` braces:
+ * `1` is five hex digits where `\uXXXX` is four, so U+E0041 and
+ * U+E004 followed by `1` produced the same text — an injectivity hole in the
+ * escape alphabet itself.
+ */
+function escapeCodePoint(code: number): string {
+  const named = NAMED[code];
+  if (named) return named;
+  if (code <= 0xff) return `\\x${code.toString(16).padStart(2, '0')}`;
+  return code <= 0xffff
+    ? `\\u${code.toString(16).padStart(4, '0')}`
+    : `\\u{${code.toString(16)}}`;
+}
+
+/**
+ * Make invisible and terminal-controlling characters visible, so a single-line
+ * render stays a single line and says what is really there.
  *
  * Total: every replaced character maps to printable ASCII, so the result cannot
  * split a line, move the cursor, or change the terminal's state. Text with no
- * control characters is returned unchanged, which is the overwhelmingly common
- * case and keeps every existing rendering byte-identical.
+ * such characters is returned unchanged, which is the overwhelmingly common case
+ * and keeps every existing rendering byte-identical.
  */
 export function escapeForDisplay(text: string): string {
-  return text.replace(CONTROL_CHARS, (ch) => {
-    const code = ch.codePointAt(0) ?? 0;
-    const named = NAMED[code];
-    if (named) return named;
-    return code > 0xff
-      ? `\\u${code.toString(16).padStart(4, '0')}`
-      : `\\x${code.toString(16).padStart(2, '0')}`;
-  });
+  return text.replace(DISPLAY_HAZARD, (ch) => escapeCodePoint(ch.codePointAt(0) ?? 0));
+}
+
+/** True when `escapeForDisplay` would change `text` — i.e. what is shown is a rendering. */
+export function hasDisplayHazard(text: string): boolean {
+  DISPLAY_HAZARD.lastIndex = 0;
+  return DISPLAY_HAZARD.test(text);
 }
 
 /**
@@ -93,7 +130,17 @@ export function escapeForDisplay(text: string): string {
  * five characters, backslash then `n` — renders exactly like one named `dir<LF>x`.
  * For a module whose stated purpose is keeping "the rendered text a faithful
  * description of what was found", two different files reading identically is the
- * defect, not a detail. Escaping the escape character first fixes it.
+ * defect, not a detail. Escaping the escape character fixes it.
+ *
+ * #347.5 — but escaping EVERY backslash bought that at the cost of a second
+ * defect: one path rendered two ways in one line. `a\b.txt` displayed as
+ * `a\\b.txt` beside a citation reading `rm 'a\b.txt'`, and a reader has no way
+ * to tell which of the two is the file. A backslash only needs escaping when it
+ * could be READ as one of this module's own escapes, so only those are doubled:
+ * a backslash followed by `0`, `t`, `n`, `r`, `e`, `x`, `u`, another backslash,
+ * or a character that is about to BECOME an escape. `a\b.txt` renders as itself
+ * and matches its citation; `dir\nx` still renders `dir\\nx`, distinct from
+ * `dir<LF>x`.
  *
  * It is a SEPARATE function because doubling backslashes is only correct on a
  * raw path. `escapeForDisplay` is also applied to composed text — fix lines,
@@ -105,6 +152,27 @@ export function escapeForDisplay(text: string): string {
  * So: this one for a path rendered on its own, `escapeForDisplay` for a line
  * built out of one.
  */
+const AMBIGUOUS_AFTER_BACKSLASH = new Set(['0', 't', 'n', 'r', 'e', 'x', 'u', '\\']);
+
 export function escapePathForDisplay(p: string): string {
-  return escapeForDisplay(p.split('\\').join('\\\\'));
+  const chars = [...p];
+  let out = '';
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
+    if (hasDisplayHazard(ch)) {
+      out += escapeCodePoint(ch.codePointAt(0) ?? 0);
+      continue;
+    }
+    if (ch !== '\\') {
+      out += ch;
+      continue;
+    }
+    const next = chars[i + 1];
+    // A trailing backslash cannot be read as an escape: there is nothing after
+    // it to complete one.
+    const ambiguous = next !== undefined
+      && (AMBIGUOUS_AFTER_BACKSLASH.has(next) || hasDisplayHazard(next));
+    out += ambiguous ? '\\\\' : '\\';
+  }
+  return out;
 }

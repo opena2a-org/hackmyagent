@@ -151,7 +151,19 @@ export function setCitationTarget(target: string | undefined, opts?: { remote?: 
   // which is what left raw ESC bytes in `check`'s report while `secure` had been
   // escaping since #324. Ordinary paths are returned unchanged, so nothing that
   // reads normally today starts reading like an incantation.
-  citationTarget = target === undefined ? undefined : citationPath(target);
+  //
+  // #343 — `citationPath` returns null when the path cannot be both shown and
+  // pasted: a name carrying a control character is displayed as a rendering, so
+  // any command built from the real bytes would name something the reader cannot
+  // see. The house-style `<dir>` placeholder is already the answer for a target
+  // no local command can correctly name, so it is the answer here too — the
+  // citation stays runnable once the reader fills it in, rather than becoming a
+  // command that quietly acts on a different file.
+  if (target === undefined) {
+    citationTarget = undefined;
+    return;
+  }
+  citationTarget = citationPath(target) ?? '<dir>';
 }
 
 /** Test seam — reset module state between cases. */

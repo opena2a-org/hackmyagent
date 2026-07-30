@@ -93,7 +93,7 @@ import { shouldPrintVersionFooter } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { generateVerifyCommand } from './ui/verify-command';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
-import { shellQuote, citationPath } from './ui/shell-quote';
+import { shellQuote, citationPath, citationTarget } from './ui/shell-quote';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
 import type { ConceptId } from './types/finding-evidence';
 import { trustAapGate } from './aap';
@@ -1002,7 +1002,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   // scope disclosure) and fixing the one that was noticed is how a raw ESC byte
   // survived the first pass of this change.
   const quickScan = opts.quickScan
-    ? { ...opts.quickScan, fullAuditTarget: citationPath(opts.quickScan.fullAuditTarget) }
+    ? { ...opts.quickScan, fullAuditTarget: citationTarget(opts.quickScan.fullAuditTarget) }
     : undefined;
 
   // ── Registry-only render path (cli-ui 0.3.0 renderCheckBlock) ────────
@@ -4476,9 +4476,9 @@ Examples:
         console.log(`\nOpenClaw Security Report`);
         console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
         if (options.dryRun) {
-          console.log(`Scanning ${targetDir} (dry-run - previewing fixes)...\n`);
+          console.log(`Scanning ${escapePathForDisplay(targetDir)} (dry-run - previewing fixes)...\n`);
         } else if (options.fix) {
-          console.log(`Scanning and fixing ${targetDir}...\n`);
+          console.log(`Scanning and fixing ${escapePathForDisplay(targetDir)}...\n`);
           console.log(`${colors.yellow}Auto-fix will:${RESET()}`);
           console.log(`  • Bind gateway to 127.0.0.1 (local-only)`);
           console.log(`  • Replace plaintext tokens with env var references`);
@@ -4486,7 +4486,7 @@ Examples:
           console.log(`  • Enable sandbox mode`);
           console.log(`\n${colors.cyan}A backup will be created for rollback if needed.${RESET()}\n`);
         } else {
-          console.log(`Scanning ${targetDir}...\n`);
+          console.log(`Scanning ${escapePathForDisplay(targetDir)}...\n`);
         }
       }
 
@@ -4712,7 +4712,7 @@ Examples:
       if (!options.json) {
         console.log(`\nNemoClaw Security Report`);
         console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
-        console.log(`Scanning ${targetDir}...\n`);
+        console.log(`Scanning ${escapePathForDisplay(targetDir)}...\n`);
       }
 
       const scanner = new HardeningScanner();
@@ -4878,7 +4878,7 @@ Examples:
         const portCount = customPorts?.length ?? 2;
 
         if (!options.json) {
-          console.log(`\nScanning ${target} (${portCount} ports, ${timeoutMs}ms timeout)...\n`);
+          console.log(`\nScanning ${escapePathForDisplay(target)} (${portCount} ports, ${timeoutMs}ms timeout)...\n`);
         }
 
         const scanner = new ExternalScanner();
@@ -4899,7 +4899,10 @@ Examples:
             : result.grade === 'moderate'
               ? colors.yellow
               : colors.red;
-        console.log(`Target: ${result.target}`);
+        // #339 — the wild report's own header, and for a local scan the target
+        // is a path out of the tree. Display, not a command, so it takes the
+        // path escaping.
+        console.log(`Target: ${escapePathForDisplay(result.target)}`);
         console.log(`Score: ${gradeColor}${result.score}/100 (${result.grade})${RESET()}`);
         console.log(`Open Ports: ${result.openPorts.length > 0 ? result.openPorts.join(', ') : 'None detected'}`);
         console.log(`Duration: ${result.duration}ms\n`);
@@ -4970,7 +4973,7 @@ Examples:
     try {
       const targetDir = require("path").resolve(directory);
 
-      console.log(`\nRolling back changes in ${targetDir}...\n`);
+      console.log(`\nRolling back changes in ${escapePathForDisplay(targetDir)}...\n`);
 
       const scanner = new HardeningScanner();
       const report = await scanner.rollback(targetDir);
@@ -5060,9 +5063,24 @@ Examples:
       // the cursor), in that order. Both were missing here while `secure` had
       // had them since #324: a property asserted about one command is not a
       // property. See `__tests__/helpers/render-safety.ts`.
-      const keptLine = (file: string): string =>
-        `   ${colors.dim}kept    ${RESET()}  ${escapePathForDisplay(file)}  `
-        + `${colors.dim}— review, then \`rm ${citationPath(file)}\` if unwanted${RESET()}`;
+      //
+      // #343/#347.5 — the citation is emitted only when the path is displayed
+      // exactly as it is. Escaping used to happen AFTER quoting, so for a file
+      // named `nl<LF>second` the line read `rm 'nl\nsecond'`, which names a
+      // ten-character file with a literal backslash rather than the one the
+      // report is about — and for `a\b.txt` the same line showed the path twice,
+      // once doubled and once not. When no command can name the file, the line
+      // says so instead: the path is already on it, which is what keeps that a
+      // path forward rather than a dead end.
+      const keptLine = (file: string): string => {
+        const cite = citationPath(file);
+        const tail = cite
+          ? `— review, then \`rm ${cite}\` if unwanted`
+          : '— review, then remove it by hand if unwanted (its name carries characters '
+            + 'a pasted command cannot name)';
+        return `   ${colors.dim}kept    ${RESET()}  ${escapePathForDisplay(file)}  `
+          + `${colors.dim}${tail}${RESET()}`;
+      };
 
       if (report.keptModified.length > 0) {
         console.log(
@@ -6449,11 +6467,11 @@ Examples:
           console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
 
           if (options.dryRun) {
-            console.log(`Scanning ${targetDir} (dry-run -- previewing fixes)...\n`);
+            console.log(`Scanning ${escapePathForDisplay(targetDir)} (dry-run -- previewing fixes)...\n`);
           } else if (options.scanOnly) {
-            console.log(`Scanning ${targetDir} (scan-only -- no fixes applied)...\n`);
+            console.log(`Scanning ${escapePathForDisplay(targetDir)} (scan-only -- no fixes applied)...\n`);
           } else {
-            console.log(`Scanning and fixing ${targetDir}...\n`);
+            console.log(`Scanning and fixing ${escapePathForDisplay(targetDir)}...\n`);
           }
         }
 
@@ -6992,7 +7010,9 @@ Examples:
           deepAvailable: result.deepAnalysisAvailable !== false,
           upgraded: (result.deepAnalysisResults ?? []).filter((e) => e.llmPassed).length,
           prefix,
-          directory,
+          // #339 — this line splices the target into `scan-soul <dir> --deep`,
+          // so it is a citation and takes the citation form.
+          directory: citationTarget(directory),
         });
         for (const line of disclosureLines) {
           console.log(`  ${colors.dim}${line}${RESET()}`);
@@ -7170,13 +7190,13 @@ Examples:
         console.log();
         console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
         if (missing > 0) {
-          console.log(`  ${colors.cyan}Auto-fix:${RESET()}   ${prefix} harden-soul ${directory}`);
+          console.log(`  ${colors.cyan}Auto-fix:${RESET()}   ${prefix} harden-soul ${citationTarget(directory)}`);
         }
         if (!options.publish) {
-          console.log(`  ${colors.cyan}Publish:${RESET()}    ${prefix} scan-soul ${directory} --publish`);
+          console.log(`  ${colors.cyan}Publish:${RESET()}    ${prefix} scan-soul ${citationTarget(directory)} --publish`);
         }
         if (!options.deep) {
-          console.log(`  ${colors.cyan}Deep scan:${RESET()}  ${prefix} scan-soul ${directory} --deep`);
+          console.log(`  ${colors.cyan}Deep scan:${RESET()}  ${prefix} scan-soul ${citationTarget(directory)} --deep`);
         }
         console.log(`  ${colors.cyan}All commands:${RESET()} ${prefix} --help`);
         console.log();
@@ -7364,9 +7384,9 @@ Examples:
         console.log();
         console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
         if (result.dryRun) {
-          console.log(`  ${colors.cyan}Apply:${RESET()}   ${prefix} harden-soul ${directory}`);
+          console.log(`  ${colors.cyan}Apply:${RESET()}   ${prefix} harden-soul ${citationTarget(directory)}`);
         }
-        console.log(`  ${colors.cyan}Verify:${RESET()}  ${prefix} scan-soul ${directory}`);
+        console.log(`  ${colors.cyan}Verify:${RESET()}  ${prefix} scan-soul ${citationTarget(directory)}`);
         console.log();
       }
     } catch (error) {
@@ -8253,7 +8273,10 @@ Examples:
       if (!options.json) {
         console.log(`\n${colors.cyan}HackMyAgent Wild Scanner${colors.reset}`);
         console.log(`${'━'.repeat(50)}\n`);
-        console.log(`Target: ${url || 'https://agentpwn.com'}`);
+        // #339 — `url` is a positional argument and for a local run it is a path
+        // out of the tree, so the header takes the path escaping like every other
+        // rendered path. Display, not a command.
+        console.log(`Target: ${escapePathForDisplay(url || 'https://agentpwn.com')}`);
         if (options.category) console.log(`Category: ${options.category}`);
         if (options.tier) console.log(`Tier: ${options.tier}`);
         console.log('');
@@ -9371,8 +9394,8 @@ function printCheckNextSteps(
   // told to run, and both are paths. The filesystem calls above use the raw
   // values; only the rendered forms are quoted and escaped. Ordinary paths come
   // back unchanged.
-  const citeTarget = citationPath(target);
-  const citeDirTarget = citationPath(dirTarget);
+  const citeTarget = citationTarget(target);
+  const citeDirTarget = citationTarget(dirTarget);
   console.log();
   console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
 

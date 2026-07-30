@@ -16,6 +16,8 @@ import * as os from 'node:os';
 import { SoulScanner } from '../soul';
 import type { SoulScanResult } from '../soul';
 import { clampScoreToVerdictBand, clampDisclosure, isFailDirection } from '../ui/verdict-band';
+import { citationTarget as safeCitationTarget } from '../ui/shell-quote';
+import { escapePathForDisplay } from '../ui/display-safe';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -587,14 +589,25 @@ function reconciledGovernanceScore(
  *
  * Kept pathless when the scan target IS the working directory, so the common
  * case stays free of churn.
+ *
+ * #339 — and it is sanitised HERE, at the one place the target enters `detect`'s
+ * citation layer, for the reason #328 gives for doing it at the entry point
+ * rather than at each consumer: there are four of them, and fixing the ones that
+ * were noticed is how six injectable citations survived a change named for this
+ * property. Measured on the previous build, with a directory named
+ * `pwn.txt'; touch PWNED; echo '<LF>EVIL-SECOND-LINE<ESC>[2Jcleared`, `detect`
+ * emitted six pasteable `; touch PWNED;` citations, six raw control bytes and
+ * six split lines. A target that cannot be both shown and pasted becomes the
+ * house `<dir>` placeholder rather than a command naming bytes the reader cannot
+ * see.
  */
 function citationTarget(scanDirectory: string): string {
   try {
     return path.resolve(scanDirectory) === path.resolve(process.cwd())
       ? '.'
-      : scanDirectory;
+      : safeCitationTarget(scanDirectory);
   } catch {
-    return scanDirectory;
+    return safeCitationTarget(scanDirectory);
   }
 }
 
@@ -1065,9 +1078,15 @@ function generateAssetCsv(result: DetectResult): string {
 // Text formatting
 // ---------------------------------------------------------------------------
 
-function formatText(result: DetectResult, verbose: boolean, targetDir: string): string {
+function formatText(result: DetectResult, verbose: boolean, rawTargetDir: string): string {
   const lines: string[] = [];
   const { summary } = result;
+  // #339 — `targetDir` is a path out of the scanned tree and every Next Step
+  // below splices it into a command the reader is told to paste. Sanitised ONCE
+  // here, at the entry to this renderer, rather than at each of the four
+  // consumers: fixing the consumers that were noticed is exactly how six
+  // injectable citations survived a change named for this property.
+  const targetDir = safeCitationTarget(rawTargetDir);
   const score = summary.governanceScore;
   // Best achievable governance: every applicable control covered, and no
   // fail-direction finding left to cap the result. Both routes are spelled
@@ -1088,7 +1107,10 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
   const total = critical + high + medium + low;
 
   // ── Header ────────────────────────────────────────────────────────
-  const dirBase = path.basename(targetDir) || targetDir;
+  // The header is DISPLAY, not a command, so it takes the path escaping rather
+  // than the citation form — a basename that carries a newline split this line
+  // and put the attacker's second line above the report's own metadata.
+  const dirBase = escapePathForDisplay(path.basename(rawTargetDir) || rawTargetDir);
   const metaParts = [
     'shadow ai audit',
     `${os.hostname()}`,

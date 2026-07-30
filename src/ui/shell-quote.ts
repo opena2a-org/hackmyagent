@@ -26,7 +26,7 @@
  * rendered line, and the two compose in that order — quote the path, then escape
  * the line that carries it.
  */
-import { escapeForDisplay } from './display-safe';
+import { escapePathForDisplay } from './display-safe';
 
 /**
  * POSIX single-quote a string. Total: nothing inside a single-quoted string is
@@ -40,24 +40,67 @@ export function shellQuote(p: string): string {
  * Characters a path may contain and still be pasted unquoted. Everything else —
  * spaces, quotes, `;`, `&`, `$`, backticks, newlines, control bytes — either
  * changes what the shell does or what the terminal shows.
+ *
+ * #340 — `~` used to be on this list, and tilde expansion is exactly the thing
+ * this function exists to prevent: `<project>/~/evil.txt` was displayed and
+ * `rm ~/evil.txt` was emitted, so pasting it acted on `$HOME`. A file named `~`
+ * alone yielded `rm ~`.
  */
-const SAFE_UNQUOTED = /^[A-Za-z0-9._@:+=/~-]+$/;
+const SAFE_UNQUOTED = /^[A-Za-z0-9._@:+=/-]+$/;
 
 /**
  * A path as it should appear inside a command citation a human will read and
- * paste: quoted when it needs quoting, then escaped for display.
+ * paste, or null when no correct command can name it.
+ *
+ * **The rule: a line never shows one path two ways.** The citation is emitted
+ * only when the path is displayed exactly as it is — `escapePathForDisplay`
+ * leaves it unchanged. Otherwise what the reader sees is a RENDERING, and any
+ * command built from the real bytes names something the reader cannot see.
+ *
+ * #343 — the previous version escaped for display AFTER quoting, so the escape
+ * landed between the quotes. For a file named `nl<LF>second` it emitted
+ * `rm 'nl\nsecond'`, which in any POSIX shell names a ten-character file with a
+ * literal backslash — not the one the report is about. An attacker who creates
+ * both names gets the user to delete the wrong one; otherwise the citation is a
+ * dead end that fails with "no such file". `generateVerifyCommand` already took
+ * the other route for its own case, omitting a command it cannot render rather
+ * than emitting a wrong one, and this is the same rule.
+ *
+ * #347.5 — and it is also what stops one path being rendered two ways in one
+ * line, which the previous version did for any path containing a backslash.
+ *
+ * #340 — a leading `-` is an argument, not a path, to every command that takes
+ * flags: a file named `-rf` rendered `rm -rf`, and `-i` or `--no-preserve-root`
+ * rendered themselves. Prefixing `./` makes it an operand again, and reads the
+ * same to a human. Quoting alone does not help — the shell strips the quotes
+ * before the command sees the word.
  *
  * Quoting only when necessary is deliberate. Citations are the most-read output
  * this tool produces, and `secure './proj'` reads like an incantation where
  * `secure ./proj` reads like a command — while the byte-compared corpus goldens,
- * whose targets are all ordinary paths, stay unchanged. A path that needs
- * quoting gets it, and one that needs display escaping gets that too, in the
- * order that composes: the quoting decides what the shell will do, the escaping
- * decides what the terminal will show.
+ * whose targets are all ordinary paths, stay unchanged.
  *
- * Human-readable output only. A `--json` consumer needs the real bytes, and
- * `escapeForDisplay` is a display transformation — see its own docstring.
+ * Human-readable output only. A `--json` consumer needs the real bytes.
  */
-export function citationPath(p: string): string {
-  return escapeForDisplay(SAFE_UNQUOTED.test(p) ? p : shellQuote(p));
+export function citationPath(p: string): string | null {
+  if (escapePathForDisplay(p) !== p) return null;
+  const operand = p.startsWith('-') ? `./${p}` : p;
+  return SAFE_UNQUOTED.test(operand) ? operand : shellQuote(operand);
+}
+
+/**
+ * The scan TARGET as it should appear in a citation, falling back to the house
+ * `<dir>` placeholder.
+ *
+ * For a target the reader cannot be shown truthfully, `<dir>` is already this
+ * project's answer (it is what a remote target gets): the citation stays
+ * runnable once the reader fills it in, which is a path forward, where a command
+ * naming bytes the reader cannot see is a command that acts on the wrong file.
+ *
+ * Only for a target spliced into a command that must remain runnable. A citation
+ * whose subject is already named on the same line — the rollback report's `rm` —
+ * should take the null and omit the command instead.
+ */
+export function citationTarget(p: string): string {
+  return citationPath(p) ?? '<dir>';
 }
