@@ -25,7 +25,7 @@
  * here.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -57,19 +57,20 @@ let hostileDir: string;
  * output describes the fixture and not the developer's `~/.openclaw`.
  */
 function run(args: string[]): string {
-  try {
-    return execFileSync(process.execPath, [BUILT_CLI, ...args], {
-      encoding: 'utf8',
-      timeout: 180_000,
-      maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, NO_COLOR: '1', OPENA2A_CORPUS_DETERMINISTIC: '1' },
-    });
-  } catch (e: unknown) {
-    // Every command under test exits non-zero when it has findings, which is
-    // the case being rendered.
-    const err = e as { stdout?: string; stderr?: string };
-    return String(err.stdout ?? '') + String(err.stderr ?? '');
-  }
+  // BOTH streams, ALWAYS. `execFileSync` returns only stdout on success, and
+  // this helper used to add stderr in its `catch` branch alone — so for any
+  // command that exits 0 the entire stderr channel went uninspected. That is
+  // where `Scanning <target>` is written, and it is why reverting its escaping
+  // survived the whole suite: the `secure` case exits 0 on its fixture, the
+  // non-vacuity assertion was satisfied by an unrelated stdout line, and the
+  // one site the case was written for was never read.
+  const r = spawnSync(process.execPath, [BUILT_CLI, ...args], {
+    encoding: 'utf8',
+    timeout: 180_000,
+    maxBuffer: 64 * 1024 * 1024,
+    env: { ...process.env, NO_COLOR: '1', OPENA2A_CORPUS_DETERMINISTIC: '1' },
+  });
+  return String(r.stdout ?? '') + String(r.stderr ?? '');
 }
 
 beforeAll(() => {

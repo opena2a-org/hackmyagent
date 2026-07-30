@@ -5068,7 +5068,10 @@ Examples:
           '(left in place, in case they hold something this run could not read):',
         );
         for (const b of report.barrenBackups) {
-          console.log(`   ${colors.dim}restored nothing${RESET()}  ${escapePathForDisplay(b.name)}  ${colors.dim}— listed ${b.listed} file${b.listed === 1 ? '' : 's'}, put none back${RESET()}`);
+          const why = b.listed === 0
+            ? 'it lists nothing to restore'
+            : `it lists ${b.listed} file${b.listed === 1 ? '' : 's'} and put none of them back`;
+          console.log(`   ${colors.dim}restored nothing${RESET()}  ${escapePathForDisplay(b.name)}  ${colors.dim}— ${why}${RESET()}`);
         }
         console.log('   Review each one and delete it if it is not yours.');
       }

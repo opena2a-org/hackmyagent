@@ -8323,6 +8323,22 @@ dist/
           });
         }
       }
+      // A candidate that promises NOTHING contributes nothing either, and the
+      // cheapest forgery there is — 49 bytes of empty manifest — used to be
+      // selected, restore nothing, print "[+] Rollback complete", consume
+      // itself, and say nothing about the backup behind it. Three of them cost
+      // a user three runs of reading success before recovery. Advancing past it
+      // cannot write anything stale, because it would have written nothing.
+      const promisesNothing = (manifest?.existingFiles.length ?? 0) === 0
+        && (manifest?.createdFiles.length ?? 0) === 0
+        && (manifest?.legacyCreatedFiles?.length ?? 0) === 0;
+      if (promisesNothing && sortedBackups.indexOf(candidate) < sortedBackups.length - 1) {
+        barren.push({
+          name: candidate, at: candidateReal, dir: candidateDir,
+          manifest: manifest as BackupManifest, unrestored: [],
+        });
+        continue;
+      }
       if (put.length === 0 && attempt.length > 0) {
         barren.push({
           name: candidate, at: candidateReal, dir: candidateDir,
