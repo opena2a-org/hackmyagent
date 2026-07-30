@@ -242,7 +242,22 @@ describe('#319 archive citations require proven provenance', () => {
   });
 
   /**
-   * The control that makes the two tests above mean something: a real archive,
+   * The parse branch. A manifest that is not valid JSON cannot establish
+   * anything, and "the file could not be read" must not fall through to a claim
+   * of provenance.
+   */
+  it('offers no rm -rf for a manifest that does not parse', async () => {
+    await seedNamedButNotOurs('{ this is not json');
+
+    const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
+    const finding = credFinding(result.findings);
+
+    expect(finding, 'the credential was not reported').toBeDefined();
+    expect(finding!.fix, 'an unparseable manifest bought provenance').not.toContain('rm -rf');
+  });
+
+  /**
+   * The control that makes the tests above mean something: a real archive,
    * whose manifest lists the file, still gets the provenance sentence and the
    * deletion. Without this, "no rm -rf anywhere" would pass on a build that had
    * simply dropped the citation.

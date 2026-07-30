@@ -355,6 +355,75 @@ describe('backup directory identity', () => {
     });
 
     /**
+     * The LEAF, not a directory component.
+     *
+     * Resolving the destination's parent says nothing about the final component,
+     * and `copyFile` follows a symlink at the leaf just as happily. The
+     * symlinked-component test above exercises the parent; this exercises the
+     * entry itself, which is a separate enforcement in the same guard and had no
+     * failing case of its own.
+     */
+    it('does not write through a symlink at the destination leaf', async () => {
+      const victim = await mkdtemp(path.join(tmpdir(), 'hma-identity-leaf-'));
+      try {
+        const target = path.join(victim, 'outside.json');
+        await writeFile(target, 'ORIGINAL-OUTSIDE-CONTENT\n');
+        // The leaf inside the tree is a link pointing out of it.
+        await symlink(target, path.join(dir, 'config.json'));
+
+        const backupDir = await seedForgedBackup(dir, {
+          version: 2,
+          existingFiles: ['config.json'],
+          absentAtBackup: [],
+          createdFiles: [],
+        });
+        await writeFile(path.join(backupDir, 'config.json'), 'PAYLOAD\n');
+
+        const report = await new HardeningScanner().rollback(dir);
+
+        expect(
+          await readFile(target, 'utf-8'),
+          'rollback wrote through a symlinked leaf and overwrote a file outside the tree',
+        ).toBe('ORIGINAL-OUTSIDE-CONTENT\n');
+        expect(report.restored).not.toContain('config.json');
+      } finally {
+        await rm(victim, { recursive: true, force: true });
+      }
+    });
+
+    /**
+     * A backup entry that is not a regular file.
+     *
+     * `copyFile` on a FIFO blocks in `open()` until a writer appears, so a named
+     * pipe shipped in a cloned repo's `.hackmyagent-backup/9999-…/` and listed in
+     * its manifest hangs `rollback` indefinitely. The `isFile()` check is what
+     * makes that a refusal instead of a stall, and the timeout on this test is
+     * what gives the assertion teeth: against the unguarded loop it does not fail,
+     * it never returns.
+     */
+    it('refuses a backup source that is not a regular file, instead of blocking on it', async () => {
+      const backupDir = await seedForgedBackup(dir, {
+        version: 2,
+        existingFiles: ['pipe'],
+        absentAtBackup: [],
+        createdFiles: [],
+      });
+      const { execFileSync } = await import('node:child_process');
+      execFileSync('mkfifo', [path.join(backupDir, 'pipe')]);
+
+      const report = await new HardeningScanner().rollback(dir);
+
+      expect(report.restored, 'a FIFO was treated as a restorable file').not.toContain('pipe');
+      let landed = true;
+      try {
+        await lstat(path.join(dir, 'pipe'));
+      } catch {
+        landed = false;
+      }
+      expect(landed, 'a non-regular backup entry was copied into the tree').toBe(false);
+    }, 15_000);
+
+    /**
      * "I could not check whether this is a symlink" must not become "it is not
      * one". #313 was that inference on an errno; this is the same inference in a
      * new place, so the guard is pinned directly.
