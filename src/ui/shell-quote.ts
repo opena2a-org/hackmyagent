@@ -29,6 +29,24 @@
 import { escapePathForDisplay } from './display-safe';
 
 /**
+ * POSIX only, deliberately (#347.7).
+ *
+ * The question was raised as a defect: `escapePathForDisplay` doubles every
+ * backslash so a Windows path renders `C:\\proj\\src`, and `SAFE_UNQUOTED`
+ * excludes `\`, so every Windows path in a citation is POSIX-single-quoted —
+ * wrong in `cmd.exe`. The answer to "is Windows supported" has to come first,
+ * and it is NO: `src/` contains zero `process.platform`/`win32` branches, the
+ * README makes no Windows claim, `package.json` declares no `os`, and every CI
+ * job runs `ubuntu-latest`. Nothing here has ever run on Windows.
+ *
+ * So the quoting stays POSIX. Adding a `cmd.exe` branch would add an untested
+ * code path for a platform with no CI, on the function whose whole job is that
+ * the emitted command names the file it displays. Declaring `"os"` in
+ * package.json so `npm i` refuses on Windows is the honest next step, and it is
+ * a product decision rather than a review fix — tracked separately.
+ */
+
+/**
  * POSIX single-quote a string. Total: nothing inside a single-quoted string is
  * special, and an embedded quote is closed, escaped and reopened.
  */

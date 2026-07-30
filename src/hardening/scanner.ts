@@ -92,6 +92,21 @@ export interface RollbackReport {
    */
   unrestored: Array<{ path: string; reason: string; backupHoldsCopy: boolean }>;
   /**
+   * Files the manifest listed as GENERATED that this run could not act on
+   * (#342).
+   *
+   * #327's stated property is that a rollback either puts every listed file back
+   * or says which ones it could not, and only `existingFiles` got that channel.
+   * A `createdFiles` entry whose destination would not resolve was dropped with a
+   * bare `continue`, and the legacy loop did the same: measured on a `SOUL.md`
+   * that is a symlink, `[+] Rollback complete / removed 0 generated files`, exit
+   * 0, the file still on disk and the backup consumed.
+   *
+   * Reported, never retained on: the backup holds no copy of a generated file, so
+   * keeping the directory buys nothing and would feed the #338 wedge.
+   */
+  unremoved: Array<{ path: string; reason: string }>;
+  /**
    * Backups this run passed over because they could not be used at all — a
    * symlink, a non-directory, an unreadable or implausible manifest (#338).
    *
@@ -618,7 +633,8 @@ function identityOrUndefined(probe: IdentityProbe): FsIdentity | undefined {
  * The code lets the finding name the real cause and the matching remedy.
  */
 type BackupSetupCode = 'HMA-BACKUP-SYMLINK' | 'HMA-BACKUP-NOT-DIR'
-  | 'HMA-BACKUP-OUTSIDE-TREE' | 'HMA-BACKUP-NO-NEW-DIR' | 'HMA-BACKUP-VANISHED';
+  | 'HMA-BACKUP-OUTSIDE-TREE' | 'HMA-BACKUP-NO-NEW-DIR' | 'HMA-BACKUP-VANISHED'
+  | 'HMA-BACKUP-UNIDENTIFIED';
 
 function backupSetupError(code: BackupSetupCode, message: string): NodeJS.ErrnoException {
   const err = new Error(message) as NodeJS.ErrnoException;
@@ -1360,6 +1376,54 @@ function isCyrillicInCyrillicContext(chars: string[], ci: number): boolean {
   // Ambiguous case: not enough context. If there are ANY other Cyrillic
   // chars nearby, give benefit of the doubt (i18n).
   return cyrillicCount > 0;
+}
+
+/**
+ * The ordering field of a backup directory name: exactly three characters,
+ * always.
+ *
+ * #347.6 — the clamp used to live in `nextStampSequence`, which capped `seq` at
+ * 998, and `createRunBackupDir` then added `attempt` (up to 7) before padding.
+ * So a 999th same-millisecond sibling produced a FOUR-character field, breaking
+ * both the sort invariant the name exists for and the three-character parse that
+ * reads it back. Clamping after the addition is the only place that holds.
+ *
+ * Exported so the invariant can be asserted against THIS expression rather than
+ * against a copy of it in a test — the whole width range is unreachable through
+ * `createRunBackupDir`, which needs 999 directories in one millisecond plus two
+ * `EEXIST` collisions on an unpredictable component.
+ */
+/**
+ * The identity of a just-created backup directory, or the right refusal.
+ *
+ * #347.3 — this used to be `identityOrUndefined(...)` followed by `if (!ident)`,
+ * which collapses the three-valued probe back into two and throws away exactly
+ * the distinction #333 added it for. An EACCES, ELOOP or EIO on the directory
+ * `mkdir` had just returned was reported as `HMA-BACKUP-VANISHED — disappeared
+ * immediately after being created`, a claim about the filesystem that only
+ * ENOENT supports, sending the user to look for a race that is not there.
+ *
+ * A named function rather than three lines inline, because the window between
+ * `mkdir` and `stat` is not something a test can hold open: the decision is
+ * observable here, and observing it is the point.
+ */
+export function backupIdentityOrThrow(probe: IdentityProbe, backupDir: string): FsIdentity {
+  if (probe.kind === 'identity') return probe.id;
+  if (probe.kind === 'absent') {
+    throw backupSetupError(
+      'HMA-BACKUP-VANISHED',
+      `Backup directory ${backupDir} disappeared immediately after being created.`,
+    );
+  }
+  throw backupSetupError(
+    'HMA-BACKUP-UNIDENTIFIED',
+    `Backup directory ${backupDir} was created, but the filesystem would not describe it, `
+    + 'so HackMyAgent cannot tell its own backup apart from the files it is about to fix.',
+  );
+}
+
+export function stampSequenceField(seq: number, attempt: number): string {
+  return String(Math.min(seq + attempt, 999)).padStart(3, '0');
 }
 
 export class HardeningScanner {
@@ -7397,7 +7461,8 @@ dist/
     for (let attempt = 0; attempt < 8; attempt++) {
       const dir = path.join(
         baseReal,
-        `${stamp}-${String(seq + attempt).padStart(3, '0')}-${crypto.randomBytes(4).toString('hex')}`,
+        `${stamp}-${stampSequenceField(seq, attempt)}`
+        + `-${crypto.randomBytes(4).toString('hex')}`,
       );
       try {
         await fs.mkdir(dir);
@@ -7453,14 +7518,15 @@ dist/
     // The identity of the directory just created, captured once. Every later
     // "is this inside the backup?" question is answered against this rather
     // than against a path string — see `isInsideOwnBackup` (#317).
-    const ident = identityOrUndefined(await identityOf(backupDir));
-    if (!ident) {
-      throw backupSetupError(
-        'HMA-BACKUP-VANISHED',
-        `Backup directory ${backupDir} disappeared immediately after being created.`,
-      );
-    }
-    this.lastBackupIdent = ident;
+    //
+    // #347.3 — this used to go through `identityOrUndefined`, which collapses
+    // the three-valued probe back into two and throws away exactly the
+    // distinction #333 added it for. An EACCES, ELOOP or EIO on the directory
+    // `mkdir` had just returned was reported as `HMA-BACKUP-VANISHED —
+    // disappeared immediately after being created`, which is a claim about the
+    // filesystem that only ENOENT supports, and it sent the user looking for a
+    // race that is not there.
+    this.lastBackupIdent = backupIdentityOrThrow(await identityOf(backupDir), backupDir);
 
     // Create manifest to track what existed before.
     //
@@ -8090,6 +8156,7 @@ dist/
       keptModified: [],
       keptUnverifiable: [],
       unrestored: [],
+      unremoved: [],
       skippedBackups,
       backupsBehind: remainingBehind,
       backupUsed: latestBackup,
@@ -8146,13 +8213,35 @@ dist/
       // Not followed: a symlink where a generated file should be is not the file
       // HMA generated, and unlinking through it would delete the target instead.
       const resolved = await this.resolveInsideTree(targetReal, created.path, { followLeafLink: false });
-      if (!resolved.ok) continue;
+      // #342 — this used to be a bare `continue`. HackMyAgent said it would
+      // remove the file, could not, and reported "Rollback complete / removed 0
+      // generated files" with exit 0 while the file was still on disk. The
+      // symlinked-`SOUL.md` fixture the #327 test builds hits it exactly, and
+      // that test asserted only that the link's target survived — never that the
+      // user is told — which is why the gap survived the change named for it.
+      if (!resolved.ok) {
+        report.unremoved.push({
+          path: created.path,
+          reason: RESTORE_REFUSAL_REASONS[resolved.cause],
+        });
+        continue;
+      }
       const filePath = resolved.path;
       let current: Buffer;
       try {
         current = await fs.readFile(filePath);
-      } catch {
-        continue; // Already gone — nothing to revert.
+      } catch (err) {
+        // Only ENOENT proves it is already gone. Any other errno proves nothing,
+        // and "I could not read it" must not become "there was nothing to
+        // revert" — #313's inference, in the one loop that had no channel to
+        // report it through.
+        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+          report.unremoved.push({
+            path: created.path,
+            reason: 'it could not be read, so HackMyAgent cannot tell whether it generated it',
+          });
+        }
+        continue;
       }
       const currentHash = crypto.createHash('sha256').update(current).digest('hex');
       if (currentHash !== created.sha256) {
@@ -8176,7 +8265,16 @@ dist/
       // reported back. #318 — and a lexical guard does not stop that probe,
       // only a `..` in it. All three manifest loops resolve.
       const resolved = await this.resolveInsideTree(targetReal, file, { followLeafLink: false });
-      if (!resolved.ok) continue;
+      // #342 — same gap, same silence. This loop only ever REPORTS, so a path it
+      // cannot resolve produced no line at all and the entry vanished from the
+      // report entirely.
+      if (!resolved.ok) {
+        report.unremoved.push({
+          path: file,
+          reason: RESTORE_REFUSAL_REASONS[resolved.cause],
+        });
+        continue;
+      }
       try {
         await fs.access(resolved.path);
         report.keptUnverifiable.push(file);

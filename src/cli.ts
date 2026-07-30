@@ -4985,7 +4985,11 @@ Examples:
       // #327 — and "complete" is now a claim this checks before making. A run
       // that could not put every listed file back has not completed, however
       // many it did put back.
-      const incomplete = report.unrestored.length > 0;
+      // #342 — a generated file HackMyAgent said it would remove and did not is
+      // an incomplete rollback too. Only the RESTORE half was counted, so a
+      // `SOUL.md` that is a symlink produced "[+] Rollback complete / removed 0
+      // generated files", exit 0, and the file still on disk.
+      const incomplete = report.unrestored.length > 0 || report.unremoved.length > 0;
       console.log(
         incomplete
           ? `${colors.yellow}[!] Rollback incomplete${RESET()}`
@@ -5004,7 +5008,7 @@ Examples:
       // first among the exceptions: this is the one case where the user's own
       // bytes are still missing, and the backup holding them is deliberately
       // left on disk.
-      if (incomplete) {
+      if (report.unrestored.length > 0) {
         // #346 — the header used to assert, unconditionally, that the backup
         // "still holds the only copy". That is a filesystem fact, and it was
         // false for the two commonest reasons an entry goes unrestored: the
@@ -5030,6 +5034,22 @@ Examples:
           console.log(`   ${colors.dim}backup kept at${RESET()}  ${escapePathForDisplay(report.backupRetainedAt)}`);
           console.log(`   Copy those files back by hand, then delete the backup directory.`);
         }
+      }
+
+      // Files listed as generated that this run could not act on (#342). A
+      // separate channel from `unrestored` because the retention rule differs:
+      // the backup holds no copy of a generated file, so keeping the directory
+      // buys nothing — and keeping it would feed the wedge #338 is about.
+      if (report.unremoved.length > 0) {
+        const n = report.unremoved.length;
+        console.log(
+          `\n   ${colors.red}Could not act on ${n} file${n === 1 ? '' : 's'} the manifest `
+          + `lists as generated${RESET()} (${n === 1 ? 'it is' : 'they are'} still there):`,
+        );
+        for (const entry of report.unremoved) {
+          console.log(`   ${colors.dim}not removed${RESET()}   ${escapePathForDisplay(entry.path)}  ${colors.dim}— ${escapeForDisplay(entry.reason)}${RESET()}`);
+        }
+        console.log('   Review each one and delete it by hand if HackMyAgent generated it.');
       }
 
       // Backups this run could not read at all, and what is still behind the one
@@ -5100,7 +5120,15 @@ Examples:
       // An incomplete rollback exits non-zero for the same reason it does not
       // print "complete": a script that treats exit 0 as "the tree is back to
       // where it was" would be wrong (#327).
-      if (incomplete) process.exit(1);
+      //
+      // #344 — `process.exitCode`, not `process.exit`. On a pipe stdout is not
+      // flushed before the process dies: measured with a manifest listing 4000
+      // unrestorable entries and six runs piped to `tail -1`, the report was cut
+      // at roughly 15% of its length, at a different point each time. The two
+      // lines that get lost are `backup kept at <path>` and "Copy those files
+      // back by hand" — the only information that makes manual recovery
+      // possible, on the code path #327 added to make failure recoverable.
+      if (incomplete) process.exitCode = 1;
     } catch (error) {
       console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       process.exit(1);
