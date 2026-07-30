@@ -588,7 +588,7 @@ Examples:
         process.exit(1);
       }
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       process.exit(1);
     }
   });
@@ -1845,7 +1845,7 @@ function generateBenchmarkReport(
   if (categoryFilter) {
     const categoryControls = getControlsForCategory(categoryFilter);
     if (categoryControls.length === 0) {
-      console.error(`Error: Unknown category '${categoryFilter}'.`);
+      console.error(`Error: Unknown category '${escapeForDisplay(String(categoryFilter))}'.`);
       console.error(`Available categories: ${OASB_1_CATEGORIES.map((c: BenchmarkCategory) => c.name).join(', ')}`);
       process.exit(1);
     }
@@ -3415,7 +3415,7 @@ Examples:
 
       // Check if the target exists
       if (!require('fs').existsSync(originalTarget)) {
-        console.error(`Error: Directory '${originalTarget}' does not exist.`);
+        console.error(`Error: Directory '${escapeForDisplay(String(originalTarget))}' does not exist.`);
         process.exit(1);
       }
 
@@ -3466,7 +3466,7 @@ Examples:
       // Validate benchmark flag if provided
       const isOasb2 = options.benchmark?.toLowerCase() === 'oasb-2';
       if (options.benchmark && !isOasb2 && !isValidBenchmark(options.benchmark)) {
-        console.error(`Error: Unknown benchmark '${options.benchmark}'. Available: ${[...AVAILABLE_BENCHMARKS, 'oasb-2'].join(', ')}`);
+        console.error(`Error: Unknown benchmark '${escapeForDisplay(String(options.benchmark))}'. Available: ${[...AVAILABLE_BENCHMARKS, 'oasb-2'].join(', ')}`);
         process.exit(1);
       }
 
@@ -3474,7 +3474,7 @@ Examples:
       const validLevels = ['L1', 'L2', 'L3'];
       const level = (options.level?.toUpperCase() || 'L1') as BenchmarkLevel;
       if (options.benchmark && !isOasb2 && !validLevels.includes(level)) {
-        console.error(`Error: Invalid level '${options.level}'. Use: L1, L2, or L3`);
+        console.error(`Error: Invalid level '${escapeForDisplay(String(options.level))}'. Use: L1, L2, or L3`);
         process.exit(1);
       }
 
@@ -3482,7 +3482,7 @@ Examples:
       const validFormats = ['text', 'json', 'sarif', 'html', 'asp', 'asff'];
       const format = options.json ? 'json' : (options.format || 'text');
       if (!validFormats.includes(format)) {
-        console.error(`Error: Invalid format '${format}'. Use: ${validFormats.join(', ')}`);
+        console.error(`Error: Invalid format '${escapeForDisplay(String(format))}'. Use: ${validFormats.join(', ')}`);
         process.exit(1);
       }
 
@@ -3506,7 +3506,7 @@ Examples:
       const validDepths = ['quick', 'standard', 'deep'];
       const scanDepth = (options.scanDepth || 'standard') as 'quick' | 'standard' | 'deep';
       if (!validDepths.includes(scanDepth)) {
-        console.error(`Error: Invalid scan depth '${options.scanDepth}'. Use: ${validDepths.join(', ')}`);
+        console.error(`Error: Invalid scan depth '${escapeForDisplay(String(options.scanDepth))}'. Use: ${validDepths.join(', ')}`);
         process.exit(1);
       }
 
@@ -4304,7 +4304,7 @@ Examples:
         process.exit(1);
       }
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       process.exit(1);
     }
   });
@@ -4606,7 +4606,7 @@ Examples:
         process.exit(1);
       }
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       process.exit(1);
     }
   });
@@ -4823,7 +4823,7 @@ Examples:
         process.exit(1);
       }
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       process.exit(1);
     }
   });
@@ -4945,7 +4945,7 @@ Examples:
           process.exit(1);
         }
       } catch (error) {
-        console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
         process.exit(1);
       }
     }
@@ -5044,7 +5044,7 @@ Examples:
       // where it was" would be wrong (#327).
       if (incomplete) process.exit(1);
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       process.exit(1);
     }
   });
@@ -5147,7 +5147,7 @@ Examples:
       const validIntensities = ['passive', 'active', 'aggressive'];
       const intensity = (options.intensity || 'active') as AttackIntensity;
       if (!validIntensities.includes(intensity)) {
-        console.error(`Error: Invalid intensity '${options.intensity}'. Use: ${validIntensities.join(', ')}`);
+        console.error(`Error: Invalid intensity '${escapeForDisplay(String(options.intensity))}'. Use: ${validIntensities.join(', ')}`);
         process.exit(1);
       }
 
@@ -5157,7 +5157,7 @@ Examples:
         categories = options.category.split(',').map(c => c.trim()) as AttackCategory[];
         for (const cat of categories) {
           if (!ATTACK_CATEGORY_NAMES.includes(cat)) {
-            console.error(`Error: Invalid category '${cat}'. Use: ${ATTACK_CATEGORY_NAMES.join(', ')}`);
+            console.error(`Error: Invalid category '${escapeForDisplay(String(cat))}'. Use: ${ATTACK_CATEGORY_NAMES.join(', ')}`);
             process.exit(1);
           }
         }
@@ -5182,7 +5182,7 @@ Examples:
       } else if (options.targetType) {
         const validTypes = ['api', 'mcp', 'a2a', 'local'];
         if (!validTypes.includes(options.targetType)) {
-          console.error(`Error: Invalid target type '${options.targetType}'. Use: ${validTypes.join(', ')}`);
+          console.error(`Error: Invalid target type '${escapeForDisplay(String(options.targetType))}'. Use: ${validTypes.join(', ')}`);
           process.exit(1);
         }
         targetType = options.targetType as 'api' | 'mcp' | 'a2a' | 'local';
@@ -5225,7 +5225,7 @@ Examples:
       const validFormats = ['text', 'json', 'sarif', 'html'];
       const format = options.json ? 'json' : (options.format || 'text');
       if (!validFormats.includes(format)) {
-        console.error(`Error: Invalid format '${format}'. Use: ${validFormats.join(', ')}`);
+        console.error(`Error: Invalid format '${escapeForDisplay(String(format))}'. Use: ${validFormats.join(', ')}`);
         process.exit(1);
       }
 
@@ -5239,7 +5239,7 @@ Examples:
         } catch (e) {
           const code = (e as NodeJS.ErrnoException).code;
           if (code === 'ENOENT') {
-            console.error(`Error: Payload file not found: ${filePath}`);
+            console.error(`Error: Payload file not found: ${escapeForDisplay(String(filePath))}`);
           } else {
             console.error(`Error reading payload file ${filePath}: ${(e as Error).message}`);
           }
@@ -5382,7 +5382,7 @@ Examples:
         process.exit(1);
       }
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       process.exit(1);
     }
   });
@@ -6354,14 +6354,14 @@ Examples:
         try {
           realTarget = fs.realpathSync(targetDir);
         } catch {
-          console.error(`Error: Directory not found: ${targetDir}`);
+          console.error(`Error: Directory not found: ${escapeForDisplay(String(targetDir))}`);
           process.exit(1);
         }
 
         // Verify resolved path is a directory (realpath already resolved any symlinks)
         const resolvedStat = fs.statSync(realTarget);
         if (!resolvedStat.isDirectory()) {
-          console.error(`Error: Not a directory: ${realTarget}`);
+          console.error(`Error: Not a directory: ${escapeForDisplay(String(realTarget))}`);
           process.exit(1);
         }
 
@@ -6608,7 +6608,7 @@ Examples:
         }
       } catch (error) {
         console.error(
-          `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+          `Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`
         );
         process.exit(1);
       }
@@ -6666,7 +6666,7 @@ Examples:
       console.log(`    hackmyagent_benchmark  — OASB-1 compliance assessment\n`);
       console.log(`  Try: "Run a deep security scan on this project"\n`);
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : error}`);
+      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : String(error))}`);
       process.exit(1);
     }
   });
@@ -7231,7 +7231,7 @@ Examples:
         process.exit(1);
       }
     } catch (error) {
-      process.stderr.write(`Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
+      process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
       process.exit(1);
     }
   });
@@ -7330,7 +7330,7 @@ Examples:
         console.log();
       }
     } catch (error) {
-      process.stderr.write(`Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
+      process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
       process.exit(1);
     }
   });
@@ -7856,7 +7856,7 @@ Examples:
         process.exitCode = 1;
       }
     } catch (error) {
-      process.stderr.write(`Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
+      process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
       process.exit(1);
     }
   });
@@ -8244,7 +8244,7 @@ Examples:
         process.exit(1);
       }
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       process.exit(1);
     }
   });
@@ -8661,7 +8661,7 @@ program
           const oraclePath = opts.oracleDir.replace(/^~/, process.env.HOME ?? '~');
 
           if (!fsSync.existsSync(oraclePath)) {
-            console.error(`Error: oracle-dir not found: ${oraclePath}`);
+            console.error(`Error: oracle-dir not found: ${escapeForDisplay(String(oraclePath))}`);
             console.error('  Clone or create the oracle fixture directory first.');
             process.exit(1);
           }
@@ -9667,12 +9667,12 @@ async function checkGitHubRepo(
         });
       }
     } else if (message.includes('timeout') || message.includes('Timeout')) {
-      console.error(`Error: Cloning "${displayName}" timed out (120s). The repo may be too large.`);
+      console.error(`Error: Cloning "${escapeForDisplay(String(displayName))}" timed out (120s). The repo may be too large.`);
       console.error(`\nTry cloning manually and scanning the local path:`);
       console.error(`  git clone --depth 1 ${cloneUrl}`);
       console.error(`  ${getCheckCommand()} ./${repo}/`);
     } else {
-      console.error(`Error: ${message}`);
+      console.error(`Error: ${escapeForDisplay(String(message))}`);
     }
     process.exitCode = 1;
   } finally {
@@ -9789,7 +9789,7 @@ async function checkPyPiPackage(
           printNotFoundBlock({ pkg: name, ecosystem: 'pypi' });
         }
       } else {
-        console.error(`Error: PyPI API returned ${metaRes.status} for "${name}".`);
+        console.error(`Error: PyPI API returned ${metaRes.status} for "${escapeForDisplay(String(name))}".`);
       }
       // Set exit code and return so `finally` can clean up tempDir (was already
       // allocated above). process.exit() would skip the cleanup and orphan the
@@ -9809,7 +9809,7 @@ async function checkPyPiPackage(
     const dist = sdist || wheel || meta.urls[0];
 
     if (!dist) {
-      console.error(`Error: No downloadable distribution found for "${name}" on PyPI.`);
+      console.error(`Error: No downloadable distribution found for "${escapeForDisplay(String(name))}" on PyPI.`);
       process.exitCode = 1;
       return;
     }
@@ -9920,7 +9920,7 @@ async function checkPyPiPackage(
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('not found on PyPI')) {
-      console.error(`Error: ${message}`);
+      console.error(`Error: ${escapeForDisplay(String(message))}`);
     } else {
       console.error(`Error scanning PyPI package "${name}": ${message}`);
     }
@@ -9975,7 +9975,7 @@ async function checkRawUrl(
 
       const headRes = await fetch(url, { method: 'HEAD', redirect: 'follow' });
       if (!headRes.ok) {
-        console.error(`Error: HTTP ${headRes.status} fetching "${url}".`);
+        console.error(`Error: HTTP ${headRes.status} fetching "${escapeForDisplay(String(url))}".`);
         // Set exit code and return so `finally` can clean up tempDir (was
         // already allocated above). process.exit() would skip the cleanup
         // and orphan the /tmp/hma-check-url-* directory.
@@ -9995,7 +9995,7 @@ async function checkRawUrl(
 
       const bodyRes = await fetch(finalUrl, { redirect: 'follow' });
       if (!bodyRes.ok || !bodyRes.body) {
-        console.error(`Error: Failed to download "${url}" (HTTP ${bodyRes.status}).`);
+        console.error(`Error: Failed to download "${escapeForDisplay(String(url))}" (HTTP ${bodyRes.status}).`);
         process.exitCode = 1;
         return;
       }
@@ -10130,10 +10130,10 @@ async function checkRawUrl(
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
-      console.error(`Error: Could not clone repository from "${url}".`);
+      console.error(`Error: Could not clone repository from "${escapeForDisplay(String(url))}".`);
       console.error(`\nVerify the URL is accessible and contains a git repository.`);
     } else if (message.includes('timeout') || message.includes('Timeout')) {
-      console.error(`Error: Fetching "${url}" timed out. The target may be too large.`);
+      console.error(`Error: Fetching "${escapeForDisplay(String(url))}" timed out. The target may be too large.`);
       console.error(`\nTry downloading manually and scanning the local path:`);
       console.error(`  ${getCheckCommand()} ./downloaded-dir/`);
     } else {
@@ -10361,7 +10361,7 @@ async function checkNpmPackage(
           });
         }
       } else {
-        console.error(`Error: ${message}`);
+        console.error(`Error: ${escapeForDisplay(String(message))}`);
       }
     }
     process.exitCode = 1;

@@ -21,7 +21,13 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { assertRenderSafe, HOSTILE_NAME, SPLIT_MARKER } from '../helpers/render-safety';
+import {
+  assertNoRawControlBytes,
+  assertNoSplitLines,
+  assertRenderSafe,
+  HOSTILE_NAME,
+  SPLIT_MARKER,
+} from '../helpers/render-safety';
 import { assertDistFresh, BUILT_CLI } from '../helpers/dist-freshness';
 
 const FAKE_GH_TOKEN = `ghp_${'a'.repeat(36)}`;
@@ -123,6 +129,45 @@ describe('#328 every report that renders a tree-derived path renders it safely',
     const out = run(['check', skillDir]);
     expect(out, 'check never named the hostile path').toContain(SPLIT_MARKER);
     assertRenderSafe(out, 'check');
+  }, 300_000);
+
+  /**
+   * The ERROR channel is a rendered report too.
+   *
+   * `rollback` puts the offending directory's path into the message it throws,
+   * and the CLI prints that to stderr. The path comes out of the scanned tree
+   * like every other, so the same property has to hold there — and stdout-only
+   * assertions cannot see it.
+   */
+  it('rollback: an error message carries no raw control byte either', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hma-328-err-'));
+    try {
+      // A real directory carrying the hostile name, with no manifest in it:
+      // `zzz` sorts above any real stamp so it is the one selected, and the
+      // refusal names the path it could not use.
+      mkdirSync(path.join(dir, '.hackmyagent-backup', `zzz${HOSTILE_NAME}`), { recursive: true });
+
+      let stderr = '';
+      try {
+        execFileSync(process.execPath, [BUILT_CLI, 'rollback', dir], {
+          encoding: 'utf8',
+          timeout: 120_000,
+          maxBuffer: 64 * 1024 * 1024,
+          env: { ...process.env, NO_COLOR: '1', OPENA2A_CORPUS_DETERMINISTIC: '1' },
+        });
+      } catch (e: unknown) {
+        stderr = String((e as { stderr?: string }).stderr ?? '');
+      }
+
+      expect(stderr, 'the error path was never taken; this test measures nothing')
+        .toContain('Error:');
+      expect(stderr, 'the error message does not name the offending directory')
+        .toContain(SPLIT_MARKER);
+      assertNoRawControlBytes(stderr, 'rollback stderr');
+      assertNoSplitLines(stderr, 'rollback stderr');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }, 300_000);
 
   /**
