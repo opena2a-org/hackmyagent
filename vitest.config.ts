@@ -32,5 +32,23 @@ export default defineConfig({
     // exceed 60s carry an explicit higher `{ timeout }` on their describe.
     testTimeout: 60_000,
     hookTimeout: 60_000,
+    // `secure` merges findings from AI infrastructure it auto-detects under the
+    // user's HOME (`~/.openclaw`, `~/.nemoclaw`, `~/.openshell`) into the scan of
+    // the requested directory. Every suite that scans a temporary fixture — and
+    // 23 of them spawn the real CLI — therefore has a finding count, a score and
+    // an output SIZE that depend on the machine it runs on rather than on the
+    // fixture.
+    //
+    // Measured, with no source change: 250 SKILL.md files appeared under a real
+    // `~/.openclaw` and seven suites went from green to red in one morning. One
+    // of them died on truncated JSON, because the fixture's `--json` output had
+    // grown to 1.36MB and passed `execFileSync`'s 1MB default buffer.
+    //
+    // This is the flag `secure` already documents for the case ("a developer's
+    // real ~/.nemoclaw / ~/.openclaw cannot leak machine state into fixture
+    // scores"), set in one place rather than in each suite that noticed. Any
+    // suite that wants to exercise the infrastructure merge must set it back to
+    // '0' for its own spawn — there is no such suite today.
+    env: { OPENA2A_CORPUS_DETERMINISTIC: '1' },
   },
 });
