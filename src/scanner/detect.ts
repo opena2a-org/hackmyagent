@@ -618,14 +618,115 @@ export function governanceIsSubverted(findings: readonly Pick<Finding, 'code'>[]
   return findings.some((f) => f.code === 'GOV-VIOLATION' || f.code === 'GOV-PROFILE-MARKER');
 }
 
-/** The command that can actually move a governance score, given the cause. */
+/**
+ * The three causes a governance score can have, and everything each surface says
+ * about them, in ONE place.
+ *
+ * #322 — #311 claimed the surfaces "cannot promise different things" because they
+ * read one predicate. They shared the AVAILABILITY predicate and not the CAUSE
+ * predicate: Path forward split on `GOV-VIOLATION` alone, while the step label
+ * and command went through `governanceIsSubverted`, which also matches
+ * `GOV-PROFILE-MARKER`. On a document whose only problem is an unrecognized
+ * marker, four consecutive lines said:
+ *
+ *   Path forward: 74 -> 100 by adding the missing governance controls
+ *   Fix governance:  hackmyagent scan-soul <dir>   list the sentences that subvert your own controls
+ *
+ * The first promises `harden-soul`'s effect and offers no command for it; the
+ * second describes subverting sentences that do not exist. A malformed marker is
+ * neither of the two causes the code knew about, so it got the wrong half of
+ * each.
+ *
+ * `pathForward` is a phrase, not a sentence, because the caller joins several
+ * with "and".
+ */
+export type GovernanceCause = 'subverted' | 'profile-marker' | 'incomplete';
+
+interface GovernanceStep {
+  label: string;
+  command: (target: string) => string;
+  desc: string;
+  pathForward: string;
+}
+
+const GOVERNANCE_STEPS: Record<GovernanceCause, GovernanceStep> = {
+  // `harden-soul` adds control text and cannot delete a sentence, so the command
+  // is the one that LISTS the sentences to delete.
+  subverted: {
+    label: 'Fix governance:',
+    command: (target) => `hackmyagent scan-soul ${target}`,
+    desc: 'list the sentences that subvert your own controls',
+    pathForward: 'removing the sentences that subvert your own controls',
+  },
+  // Also `scan-soul`, and for a different reason: it is what reports which
+  // domains the marker caused to be skipped. `harden-soul` would add controls
+  // that are already there, and "remove the subverting sentences" names lines
+  // that do not exist.
+  'profile-marker': {
+    label: 'Fix governance:',
+    command: (target) => `hackmyagent scan-soul ${target}`,
+    desc: 'show which governance domains the profile marker skipped',
+    pathForward: 'correcting the profile marker so every domain is evaluated',
+  },
+  incomplete: {
+    label: 'Add governance:',
+    command: (target) => `hackmyagent harden-soul ${target}`,
+    desc: 'generate SOUL.md behavioral boundaries',
+    pathForward: 'adding the missing governance controls',
+  },
+};
+
+/**
+ * The cause, from the finding codes plus the raw conformance number. Null when
+ * the governance meter is full and nothing is wrong with the document, which is
+ * the one case where no surface owes the user anything.
+ *
+ * Precedence is deliberate: a document that both subverts a control and carries a
+ * bad marker is described by the more serious of the two, and the marker case is
+ * only reached when there are no violations to remove.
+ */
+export function governanceCause(
+  findings: readonly Pick<Finding, 'code'>[],
+  governanceRaw: number,
+): GovernanceCause | null {
+  if (findings.some((f) => f.code === 'GOV-VIOLATION')) return 'subverted';
+  if (findings.some((f) => f.code === 'GOV-PROFILE-MARKER')) return 'profile-marker';
+  if (governanceRaw < 100) return 'incomplete';
+  return null;
+}
+
+/**
+ * The same cause, derived from the scan signals instead of from the findings.
+ *
+ * `generateFindings` runs BEFORE any finding exists, so it cannot use
+ * `governanceCause` — and two independent derivations of one predicate drift,
+ * which is what #322 was. Both now come from this table, and
+ * `governance-cross-surface` pins them against each other on every fixture.
+ */
+export function governanceCauseFromSignals(signals: {
+  violations: number;
+  profileBad: boolean;
+  incomplete: boolean;
+}): GovernanceCause | null {
+  if (signals.violations > 0) return 'subverted';
+  if (signals.profileBad) return 'profile-marker';
+  if (signals.incomplete) return 'incomplete';
+  return null;
+}
+
+/**
+ * The command that can actually move a governance score, given the cause.
+ *
+ * Defaults to `incomplete` when there is no cause: the only caller that can
+ * reach that state is one rendering a step it has already decided to show, and
+ * `harden-soul` is the honest default for "the document could carry more".
+ */
 export function governanceRemediation(
   findings: readonly Pick<Finding, 'code'>[],
   target: string,
 ): string {
-  return governanceIsSubverted(findings)
-    ? `hackmyagent scan-soul ${target}`
-    : `hackmyagent harden-soul ${target}`;
+  const cause = governanceCause(findings, 0) ?? 'incomplete';
+  return GOVERNANCE_STEPS[cause].command(target);
 }
 
 /**
@@ -634,7 +735,24 @@ export function governanceRemediation(
  * the controls are already there and one of them is being contradicted.
  */
 export function governanceStepLabel(findings: readonly Pick<Finding, 'code'>[]): string {
-  return governanceIsSubverted(findings) ? 'Fix governance:' : 'Add governance:';
+  return GOVERNANCE_STEPS[governanceCause(findings, 0) ?? 'incomplete'].label;
+}
+
+/** What the cited command will do, in the user's words rather than ours. */
+export function governanceStepDescription(findings: readonly Pick<Finding, 'code'>[]): string {
+  return GOVERNANCE_STEPS[governanceCause(findings, 0) ?? 'incomplete'].desc;
+}
+
+/**
+ * The phrase Path forward attributes the recoverable points to. Same cause, same
+ * table, so the promise and the command cannot describe different work.
+ */
+export function governancePathForwardPhrase(
+  findings: readonly Pick<Finding, 'code'>[],
+  governanceRaw: number,
+): string | null {
+  const cause = governanceCause(findings, governanceRaw);
+  return cause ? GOVERNANCE_STEPS[cause].pathForward : null;
 }
 
 /**
@@ -662,7 +780,11 @@ export function governanceActionAvailable(
   findings: readonly Pick<Finding, 'code'>[],
   governanceRaw: number,
 ): boolean {
-  return governanceIsSubverted(findings) || governanceRaw < 100;
+  // Availability is "there is a cause", so it reads the same function the label,
+  // the command, the description and the Path forward phrase read (#322). The
+  // previous `subverted || raw < 100` was equivalent, and being equivalent is
+  // exactly how the cause split drifted while the availability gate did not.
+  return governanceCause(findings, governanceRaw) !== null;
 }
 
 function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScanResult): Finding[] {
@@ -679,8 +801,15 @@ function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScan
    * lets the renderer reach the same verdict from the findings alone — see
    * `governanceIsSubverted`.
    */
-  const isSubverted =
-    violations.length > 0 || Boolean(soul.profileMismatch) || Boolean(soul.markerInvalid);
+  // #322 — the CAUSE, not a boolean. `incomplete: true` is the fallback because
+  // the only finding that consumes this is raised when the document is already
+  // inadequate, so "nothing is wrong" is not a reachable state here.
+  const cause = governanceCauseFromSignals({
+    violations: violations.length,
+    profileBad: Boolean(soul.profileMismatch) || Boolean(soul.markerInvalid),
+    incomplete: true,
+  }) ?? 'incomplete';
+  const isSubverted = cause !== 'incomplete';
 
   // Ungoverned agents
   const ungoverned = result.agents.filter((a) => a.governanceStatus === 'no governance');
@@ -723,9 +852,7 @@ function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScan
       // the substance failures: no amount of added control text removes a
       // sentence that subverts one, or repairs a profile marker. Those go to
       // `scan-soul`, which lists the offending sentences with line numbers.
-      remediation: isSubverted
-        ? `hackmyagent scan-soul ${target}`
-        : `hackmyagent harden-soul ${target}`,
+      remediation: GOVERNANCE_STEPS[cause].command(target),
     });
   }
 
@@ -1052,9 +1179,14 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
     // controls` while the 75 lost points came entirely from the #251
     // violation clamp: every control it names was already present. Name the
     // sentences instead, since deleting them is what moves the number.
-    const hasViolation = result.findings.some((f) => f.code === 'GOV-VIOLATION');
-    if (hasViolation) steps.push('removing the sentences that subvert your own controls');
-    else if (summary.governanceRaw < 100) steps.push('adding the missing governance controls');
+    //
+    // #322 — and the split has to be the SAME one the Next Steps command comes
+    // from. This read `hasViolation ? … : raw < 100 ? …`, which put a malformed
+    // profile marker in the "missing controls" branch: the line promised
+    // `harden-soul`'s effect while the step one screen down cited `scan-soul`,
+    // and no command for the promise appeared anywhere.
+    const govPhrase = governancePathForwardPhrase(result.findings, summary.governanceRaw);
+    if (govPhrase) steps.push(govPhrase);
     // Gated on fail-direction, NOT on `governanceClamped`. The clamp only
     // fires once the raw score is above the band floor, but a critical or
     // high finding caps the achievable score at VERDICT_FAIL_CLAMP the whole
@@ -1088,9 +1220,9 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
       // same way, so the row and the finding cannot disagree. `harden-soul`
       // adds control text; against a document whose problem is a sentence
       // that subverts a control, it is a command with nothing to do.
-      const govFix = result.findings.some((f) => f.code === 'GOV-VIOLATION' || f.code === 'GOV-PROFILE-MARKER')
-        ? `hackmyagent scan-soul ${citationTarget(result.scanDirectory)}`
-        : `hackmyagent harden-soul ${citationTarget(result.scanDirectory)}`;
+      // #322 — through the shared cause table rather than a fourth inline copy
+      // of the predicate. An inline copy is what drifted.
+      const govFix = governanceRemediation(result.findings, citationTarget(result.scanDirectory));
       const fixHint = !isGoverned ? `  ${dim('→')}  ${cyan(govFix)}` : '';
       lines.push(`  ${nameCol}${govStr}${pidStr}${fixHint}`);
     }
@@ -1216,9 +1348,11 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
     steps.push({
       label: governanceStepLabel(result.findings),
       cmd: governanceRemediation(result.findings, targetDir),
-      desc: governanceIsSubverted(result.findings)
-        ? 'list the sentences that subvert your own controls'
-        : 'generate SOUL.md behavioral boundaries',
+      // #322 — the description comes from the same cause as the command. It used
+      // to be its own two-way `governanceIsSubverted` branch, so a malformed
+      // profile marker was described as "the sentences that subvert your own
+      // controls" — sentences the document does not contain.
+      desc: governanceStepDescription(result.findings),
     });
   }
   if (hasFindings) {

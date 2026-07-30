@@ -30,7 +30,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import {
-  mkdtempSync, mkdirSync, writeFileSync, appendFileSync, renameSync, rmSync, existsSync, chmodSync,
+  mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, renameSync, rmSync,
+  existsSync, chmodSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -148,6 +149,16 @@ let dirViolating: string;
  * "No SOUL.md governance file in this project" in the same output.
  */
 let dirClaudeMd: string;
+/**
+ * #322/#323 — a document whose ONLY problem is an unrecognized profile marker.
+ *
+ * `GOV-PROFILE-MARKER` appeared exactly once in this file before: inside the
+ * predicate under test. No fixture produced one, so the second disjunct of
+ * `governanceIsSubverted` was never exercised and the cause split could drift
+ * from the availability gate unobserved. Measured on this fixture:
+ * `governanceRaw` 74, one MEDIUM, no violations.
+ */
+let dirMarker: string;
 
 beforeAll(() => {
   if (!existsSync(CLI)) throw new Error('dist/cli.js missing — run npm run build');
@@ -200,6 +211,18 @@ beforeAll(() => {
   writeFileSync(path.join(dirClaudeMd, 'package.json'), pkg);
   runCli(['harden-soul', dirClaudeMd]);
   renameSync(path.join(dirClaudeMd, 'SOUL.md'), path.join(dirClaudeMd, 'CLAUDE.md'));
+
+  // The tool's own remediation output, with an unrecognized profile marker
+  // prepended. Starting from `harden-soul` is what isolates the cause: every
+  // control is present, so the marker is the only thing wrong.
+  dirMarker = mkdtempSync(path.join(root, 'marker-'));
+  writeFileSync(path.join(dirMarker, 'package.json'), pkg);
+  runCli(['harden-soul', dirMarker]);
+  const markerSoul = path.join(dirMarker, 'SOUL.md');
+  writeFileSync(
+    markerSoul,
+    `<!-- soul:profile=totally-not-a-real-profile -->\n${readFileSync(markerSoul, 'utf8')}`,
+  );
 }, 300_000);
 
 afterAll(() => {
@@ -463,11 +486,90 @@ describe('#291 governance model reconciliation', () => {
       ).not.toMatch(/(?:Add|Fix) governance:/);
     });
 
+    /**
+     * #322 — the marker case, which is the whole reason the cause split had to
+     * become one predicate.
+     *
+     * Before: `Path forward: 74 -> 100 by adding the missing governance
+     * controls`, one screen above `Fix governance: hackmyagent scan-soul …
+     * list the sentences that subvert your own controls`. The promise named
+     * `harden-soul`'s effect and offered no command for it; the step described
+     * sentences the document does not contain.
+     */
+    it('names the profile marker, not missing controls, when the marker is the cause', () => {
+      const j = detectJson(dirMarker);
+      // Preconditions: exactly the case under test, and no violations.
+      expect(
+        j.findings.some((f) => f.code === 'GOV-PROFILE-MARKER'),
+        'the fixture produced no GOV-PROFILE-MARKER, so this test measures nothing',
+      ).toBe(true);
+      expect(
+        j.findings.some((f) => f.code === 'GOV-VIOLATION'),
+        'the fixture also subverts a control, so the cause is not isolated',
+      ).toBe(false);
+
+      const out = runCli(['detect', dirMarker]);
+      const pathForward = out.split('\n').find((l) => l.includes('Path forward'));
+      expect(pathForward, 'no Path forward line on a below-bar fixture').toBeDefined();
+      expect(
+        pathForward,
+        'Path forward attributes the recoverable points to adding controls, which is '
+        + '`harden-soul`\'s effect — and no surface offers `harden-soul` here',
+      ).not.toContain('adding the missing governance controls');
+      expect(pathForward).toContain('profile marker');
+    });
+
+    it('does not describe a marker problem as sentences that subvert controls', () => {
+      const steps = nextSteps(dirMarker);
+      expect(steps, 'no governance step offered on a below-bar tree')
+        .toMatch(/(?:Add|Fix) governance:/);
+      expect(
+        steps,
+        'the step describes subverting sentences on a document whose only problem is '
+        + 'a malformed profile marker',
+      ).not.toContain('subvert');
+      expect(steps).toMatch(/governance:\s+hackmyagent scan-soul/);
+    });
+
+    /**
+     * The implication, over every fixture, rather than a snapshot per fixture:
+     * a surface may only describe a cause the findings actually support. Both
+     * halves of #322 are instances of this being violated.
+     */
+    it('never describes a cause the findings do not support', () => {
+      for (const dir of [dirNone, dirProse, dirHardened, dirViolating, dirClaudeMd, dirMarker]) {
+        const j = detectJson(dir);
+        const hasViolation = j.findings.some((f) => f.code === 'GOV-VIOLATION');
+        const hasMarker = j.findings.some((f) => f.code === 'GOV-PROFILE-MARKER');
+        const out = runCli(['detect', dir]);
+        const steps = out.includes('Next Steps') ? out.slice(out.indexOf('Next Steps')) : '';
+        const pathForward = out.split('\n').find((l) => l.includes('Path forward')) ?? '';
+
+        if (/subvert/.test(steps) || /subvert/.test(pathForward)) {
+          expect(
+            hasViolation,
+            `${dir}: a surface names subverting sentences with no GOV-VIOLATION finding`,
+          ).toBe(true);
+        }
+        if (pathForward.includes('adding the missing governance controls')) {
+          expect(
+            hasViolation || hasMarker,
+            `${dir}: Path forward promises added controls while the cause is a subverted `
+            + 'or malformed document, which adding controls cannot fix',
+          ).toBe(false);
+        }
+        if (pathForward.includes('profile marker')) {
+          expect(hasMarker, `${dir}: Path forward names a marker with no marker finding`).toBe(true);
+        }
+      }
+    });
+
     it('agrees with the finding layer about which cause applies', () => {
       // The renderer derives the split from the finding CODES while
       // `generateFindings` derives it from `soul` directly. Two derivations of
-      // one predicate drift; this pins them together across every fixture.
-      for (const dir of [dirNone, dirProse, dirHardened, dirViolating, dirClaudeMd]) {
+      // one predicate drift; this pins them together across every fixture —
+      // including the marker fixture, which is the disjunct nothing exercised.
+      for (const dir of [dirNone, dirProse, dirHardened, dirViolating, dirClaudeMd, dirMarker]) {
         const j = detectJson(dir);
         const subvertedByCode = j.findings.some(
           (f) => f.code === 'GOV-VIOLATION' || f.code === 'GOV-PROFILE-MARKER',
