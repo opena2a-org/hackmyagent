@@ -4958,6 +4958,10 @@ program
 Restores files to their state before the last --fix operation.
 Backups are stored in .hackmyagent-backup/ with timestamps.
 
+A file it cannot restore is named, with the reason. The backup is then kept
+rather than deleted, since it holds the only remaining copy, and the command
+exits non-zero.
+
 Examples:
   $ ${CLI_PREFIX} rollback              Rollback current directory
   $ ${CLI_PREFIX} rollback ./my-project Rollback specific directory`)
