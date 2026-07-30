@@ -81,17 +81,97 @@ export interface RollbackReport {
   keptUnverifiable: string[];
   /**
    * Files the manifest listed that could NOT be put back, with the reason
-   * (#327). A rollback with any of these has not completed: the backup copy is
-   * the only remaining version of each one, so it is kept rather than deleted
-   * and the caller must report this rather than claim a clean revert.
+   * (#327). A rollback with any of these has not completed, so the caller must
+   * report this rather than claim a clean revert.
+   *
+   * #338/#346 — `backupHoldsCopy` says whether the backup actually still holds a
+   * copy of THIS entry. It is the fact the retention decision is made on, and
+   * the fact the header states; both used to be asserted unconditionally of
+   * every entry, and for a manifest naming a file the backup never held, both
+   * were false.
    */
-  unrestored: Array<{ path: string; reason: string }>;
+  unrestored: Array<{ path: string; reason: string; backupHoldsCopy: boolean }>;
   /**
-   * Where the backup was left when something could not be restored. Absent on a
-   * complete rollback, which consumes its backup.
+   * Backups this run passed over because they could not be used at all — a
+   * symlink, a non-directory, an unreadable or implausible manifest (#338).
+   *
+   * Selection is a GUESS at a name the scanned tree can write, so it must be
+   * able to try the next candidate. These are reported, never deleted: HMA
+   * could not read them, so it cannot know they hold nothing.
+   */
+  skippedBackups: Array<{ name: string; reason: string }>;
+  /**
+   * How many further backup directories sit behind the one this run used
+   * (#338). Reported when a rollback does not complete, so a user staring at a
+   * retained directory is told that dealing with it uncovers another.
+   */
+  backupsBehind: number;
+  /**
+   * Where the backup was left when it still holds a copy of something that
+   * could not be restored. Absent when the backup held nothing worth keeping,
+   * which is the case that consumes it.
    */
   backupRetainedAt?: string;
+  /** Which backup directory under the base this run actually used. */
+  backupUsed?: string;
 }
+
+/**
+ * Why `resolveInsideTree` would not hand back a path to act on.
+ *
+ * #347.4 — one sentence used to be printed for every one of these. "Its
+ * destination does not resolve to a location inside the scanned directory" was
+ * shown for a dangling symlink, for an EACCES on the parent, and for a `..`:
+ * three causes, and it is true of one of them. A user who reads it about an
+ * EACCES goes looking for a traversal that is not there.
+ *
+ * The refusals are the same as before — this names them.
+ */
+type ResolveRefusal =
+  | 'escapes-tree'
+  | 'parent-unresolvable'
+  | 'parent-outside-tree'
+  | 'leaf-is-link'
+  | 'leaf-link-dangling'
+  | 'leaf-link-outside-tree'
+  | 'leaf-unexaminable';
+
+type ResolveOutcome =
+  | { ok: true; path: string }
+  | { ok: false; cause: ResolveRefusal };
+
+/** Why one manifest entry could not be put back. */
+type RestoreRefusal =
+  | ResolveRefusal
+  | 'source-outside-backup'
+  | 'source-unreadable'
+  | 'source-resolves-outside-backup'
+  | 'source-not-regular-file'
+  | 'source-unexaminable'
+  | 'write-failed';
+
+/**
+ * One sentence per cause, each true of that cause and of nothing else.
+ *
+ * Written as a total record rather than a `switch` with a default, so adding a
+ * refusal without giving it a sentence is a compile error rather than a silent
+ * fallback to whichever sentence was nearest.
+ */
+const RESTORE_REFUSAL_REASONS: Record<RestoreRefusal, string> = {
+  'escapes-tree': 'the manifest entry points outside the scanned directory',
+  'parent-unresolvable': 'the directory it belongs in could not be resolved',
+  'parent-outside-tree': 'a directory on the way to it leads outside the scanned directory',
+  'leaf-is-link': 'a symbolic link stands where the file should be',
+  'leaf-link-dangling': 'it is a symbolic link that points at nothing',
+  'leaf-link-outside-tree': 'it is a symbolic link that points outside the scanned directory',
+  'leaf-unexaminable': 'the filesystem would not say what is currently at that path',
+  'source-outside-backup': 'the manifest entry points outside the backup',
+  'source-unreadable': 'the backup holds no readable copy of it',
+  'source-resolves-outside-backup': 'the copy in the backup resolves outside the backup',
+  'source-not-regular-file': 'the copy in the backup is not a regular file',
+  'source-unexaminable': 'the copy in the backup could not be examined',
+  'write-failed': 'writing it back failed',
+};
 
 /**
  * Defines which checks apply to which project types
@@ -7629,23 +7709,28 @@ dist/
     targetReal: string,
     rel: string,
     opts: { followLeafLink: boolean },
-  ): Promise<string | null> {
+  ): Promise<ResolveOutcome> {
     const joined = path.join(targetReal, rel);
-    if (!this.isPathWithinDirectory(joined, targetReal)) return null;
+    if (!this.isPathWithinDirectory(joined, targetReal)) {
+      return { ok: false, cause: 'escapes-tree' };
+    }
 
     let parentReal: string;
     try {
       parentReal = await fs.realpath(path.dirname(joined));
     } catch {
-      return null; // parent gone: nothing to restore into, nothing to delete
+      // parent gone: nothing to restore into, nothing to delete
+      return { ok: false, cause: 'parent-unresolvable' };
     }
-    if (!this.isPathWithinDirectory(parentReal, targetReal)) return null;
+    if (!this.isPathWithinDirectory(parentReal, targetReal)) {
+      return { ok: false, cause: 'parent-outside-tree' };
+    }
 
     const resolved = path.join(parentReal, path.basename(joined));
     try {
       const st = await fs.lstat(resolved);
       if (st.isSymbolicLink()) {
-        if (!opts.followLeafLink) return null;
+        if (!opts.followLeafLink) return { ok: false, cause: 'leaf-is-link' };
         // Where the link actually goes, decided by the filesystem. A dangling
         // link resolves to nothing and is refused: `createBackup` could not have
         // copied through it either, so there is nothing to restore.
@@ -7653,9 +7738,11 @@ dist/
         try {
           linkReal = await fs.realpath(resolved);
         } catch {
-          return null;
+          return { ok: false, cause: 'leaf-link-dangling' };
         }
-        return this.isPathWithinDirectory(linkReal, targetReal) ? linkReal : null;
+        return this.isPathWithinDirectory(linkReal, targetReal)
+          ? { ok: true, path: linkReal }
+          : { ok: false, cause: 'leaf-link-outside-tree' };
       }
     } catch (err) {
       // ENOENT is the only failure that PROVES the leaf is not a symlink:
@@ -7667,9 +7754,11 @@ dist/
       // "I could not check whether this is a symlink" must not become "it is
       // not one" — that is #313's inference in a new place. Refuse instead: the
       // entry is reported as not restored, which is recoverable.
-      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') return null;
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        return { ok: false, cause: 'leaf-unexaminable' };
+      }
     }
-    return resolved;
+    return { ok: true, path: resolved };
   }
 
   /**
@@ -7685,48 +7774,66 @@ dist/
    * nothing reports is the harm the containment guards exist to prevent, arrived
    * at from the other side: the user is told the revert is complete while their
    * bytes are only in the backup that is about to be deleted.
+   *
+   * #338 — and it reports whether the BACKUP still holds a copy of this entry,
+   * because that is the fact the retention decision and the report header both
+   * depend on and neither was checking it. So the SOURCE is probed first, even
+   * for an entry whose destination is refused: "is the copy in there" has an
+   * answer in every case, and deciding what to keep on disk from a fact nobody
+   * established is what #326 was about.
    */
   private async restoreOneBackupFile(
     backupReal: string,
     targetReal: string,
     rel: string,
-  ): Promise<{ ok: true } | { ok: false; reason: string }> {
-    const dest = await this.resolveInsideTree(targetReal, rel, { followLeafLink: true });
-    if (!dest) {
-      return {
-        ok: false,
-        reason: 'its destination does not resolve to a location inside the scanned directory',
-      };
-    }
-
+  ): Promise<{ ok: true } | { ok: false; cause: RestoreRefusal; detail?: string; backupHoldsCopy: boolean }> {
+    // ---- Does the backup hold a copy of this entry? ----
+    //
+    // `nothingThere` is PROVEN, never inferred: only a lexical escape or an
+    // ENOENT establishes that the backup holds nothing for this path. An EACCES
+    // or an EIO establishes nothing, and answering "nothing there" on those
+    // would authorise deleting the directory around a copy nobody could read —
+    // #313's inference pointed at the user's last remaining bytes.
+    let sourceReal: string | null = null;
+    let sourceRefusal: RestoreRefusal | null = null;
+    let nothingThere = false;
     const sourcePath = path.join(backupReal, rel);
     if (!this.isPathWithinDirectory(sourcePath, backupReal)) {
-      return { ok: false, reason: 'the manifest entry points outside the backup' };
-    }
-    let sourceReal: string;
-    try {
-      sourceReal = await fs.realpath(sourcePath);
-    } catch {
-      return { ok: false, reason: 'the backup holds no readable copy of it' };
-    }
-    if (!this.isPathWithinDirectory(sourceReal, backupReal)) {
-      return { ok: false, reason: 'the copy in the backup resolves outside the backup' };
-    }
-    try {
-      const st = await fs.lstat(sourceReal);
-      if (!st.isFile()) {
-        return { ok: false, reason: 'the copy in the backup is not a regular file' };
+      sourceRefusal = 'source-outside-backup';
+      nothingThere = true; // the backup cannot hold what the entry does not name
+    } else {
+      try {
+        const candidate = await fs.realpath(sourcePath);
+        if (!this.isPathWithinDirectory(candidate, backupReal)) {
+          sourceRefusal = 'source-resolves-outside-backup';
+        } else {
+          try {
+            sourceRefusal = (await fs.lstat(candidate)).isFile() ? null : 'source-not-regular-file';
+          } catch {
+            sourceRefusal = 'source-unexaminable';
+          }
+          if (!sourceRefusal) sourceReal = candidate;
+        }
+      } catch (err) {
+        sourceRefusal = 'source-unreadable';
+        nothingThere = (err as NodeJS.ErrnoException)?.code === 'ENOENT';
       }
-    } catch {
-      return { ok: false, reason: 'the copy in the backup could not be examined' };
+    }
+    const backupHoldsCopy = !nothingThere;
+
+    // ---- Where would it go? ----
+    const dest = await this.resolveInsideTree(targetReal, rel, { followLeafLink: true });
+    if (!dest.ok) return { ok: false, cause: dest.cause, backupHoldsCopy };
+    if (sourceRefusal || !sourceReal) {
+      return { ok: false, cause: sourceRefusal ?? 'source-unreadable', backupHoldsCopy };
     }
 
     try {
-      await fs.copyFile(sourceReal, dest);
+      await fs.copyFile(sourceReal, dest.path);
       return { ok: true };
     } catch (err) {
       const code = (err as NodeJS.ErrnoException)?.code;
-      return { ok: false, reason: `writing it back failed${code ? ` (${code})` : ''}` };
+      return { ok: false, cause: 'write-failed', detail: code, backupHoldsCopy };
     }
   }
 
@@ -7798,68 +7905,118 @@ dist/
       throw new Error('No backup found. Run hackmyagent secure --fix <dir> first to create a backup.');
     }
 
-    const latestBackup = sortedBackups[0];
-    const backupDir = path.join(backupBaseDir, latestBackup);
-
-    // The selected backup gets the same treatment as its parent: the tree chose
-    // which entry sorts highest, so it can offer a symlink here too (#318/#321).
-    // Resolved once, and everything read out of it is required to resolve back
-    // inside this directory.
+    // Select a backup that can actually be USED, trying the next candidate when
+    // one cannot (#338).
     //
-    // #334 — and it says which of those it was. These refusals used to report
-    // "Backup manifest is unreadable", naming a `.manifest.json` that was never
-    // opened, so the user was sent to look at the wrong file for a cause that
-    // was the directory itself.
-    let backupReal: string;
-    try {
-      const st = await fs.lstat(backupDir);
-      if (st.isSymbolicLink()) {
-        throw new Error(`${backupDir} is a symbolic link, and rollback does not read through one.`);
+    // The highest-sorting name is a GUESS, and it is a guess at a name the
+    // scanned tree can write: a cloned repo shipping
+    // `.hackmyagent-backup/9999-99-99-999999/` sorts above every real stamp and
+    // is therefore always selected. Treating that guess as final meant one
+    // unusable directory disabled the recovery path of a tool that had just
+    // rewritten the user's files — permanently, since nothing consumed it and
+    // the next run selected it again.
+    //
+    // Advancing is not a suppression channel: every candidate passed over is
+    // reported by name and reason, and NONE is deleted. HMA could not read them,
+    // so it cannot know they hold nothing.
+    //
+    // "Usable" means only that a plausible manifest could be parsed out of it. A
+    // candidate that parses is the backup for this run whatever its entries
+    // then do — advancing on a RESTORE failure would silently reach past a real
+    // backup into an older one and put stale content back, which is #332's harm.
+    const skippedBackups: Array<{ name: string; reason: string }> = [];
+    let backupReal: string | undefined;
+    let backupDir: string | undefined;
+    let latestBackup: string | undefined;
+    let manifest: BackupManifest | undefined;
+    // Reading is bounded across ALL candidates, not per candidate: the tree
+    // chooses how many directories there are and what is in them, and #312
+    // measured 493MB resident from a single 60MB manifest.
+    let readBudget = MAX_FILE_SIZE;
+
+    for (const candidate of sortedBackups) {
+      const candidateDir = path.join(backupBaseDir, candidate);
+      // The selected backup gets the same treatment as its parent: the tree
+      // chose which entry sorts highest, so it can offer a symlink here too
+      // (#318/#321). Resolved once, and everything read out of it is required to
+      // resolve back inside this directory.
+      //
+      // #334 — and it says which of those it was. These refusals used to report
+      // "Backup manifest is unreadable", naming a `.manifest.json` that was
+      // never opened, so the user was sent to look at the wrong file for a cause
+      // that was the directory itself.
+      // Every reason below is a FIXED sentence. The candidate's name is already
+      // tree-derived and the report escapes it; the reason must not become a
+      // second channel for tree bytes, which is what an errno message or a
+      // resolved link target would be.
+      let candidateReal = '';
+      let dirRefusal: string | undefined;
+      try {
+        const st = await fs.lstat(candidateDir);
+        if (st.isSymbolicLink()) dirRefusal = 'it is a symbolic link, and rollback does not read through one';
+        else if (!st.isDirectory()) dirRefusal = 'it is not a directory';
+        else {
+          candidateReal = await fs.realpath(candidateDir);
+          if (!this.isPathWithinDirectory(candidateReal, backupBaseDir)) {
+            dirRefusal = 'it resolves to somewhere outside the backup directory';
+          }
+        }
+      } catch {
+        dirRefusal = 'the filesystem would not say what it is';
       }
-      if (!st.isDirectory()) {
-        throw new Error(`${backupDir} is not a directory, so it is not a backup this run can use.`);
+      if (dirRefusal) {
+        skippedBackups.push({ name: candidate, reason: dirRefusal });
+        continue;
       }
-      backupReal = await fs.realpath(backupDir);
-      if (!this.isPathWithinDirectory(backupReal, backupBaseDir)) {
-        throw new Error(`${backupDir} resolves to ${backupReal}, which is outside the backup directory.`);
+
+      // Size-guarded. #305's follow-up bounded the manifest read on the SCAN
+      // path and explicitly exempted this one, on the grounds that "rollback
+      // only ever reads a manifest HMA itself just wrote". #312 disproved that.
+      //
+      // Fails closed: an implausible manifest makes the candidate unusable, and
+      // refusing to parse one cannot lose a real rollback — `createBackup`
+      // writes a list of paths, not payloads.
+      let manifestRefusal: string | undefined;
+      try {
+        const manifestPath = path.join(candidateReal, '.manifest.json');
+        const stat = await fs.stat(manifestPath);
+        if (!stat.isFile()) manifestRefusal = 'its .manifest.json is not a regular file';
+        else if (stat.size > MAX_FILE_SIZE) manifestRefusal = 'its .manifest.json is implausibly large';
+        else if (stat.size > readBudget) manifestRefusal = 'too many unreadable backups came before it';
+        if (!manifestRefusal) {
+          readBudget -= stat.size;
+          manifest = this.parseManifest(await fs.readFile(manifestPath, 'utf-8'));
+        }
+      } catch {
+        // Never the thrown message: a JSON parse error quotes the file, and that
+        // file is in the scanned tree. Whatever went wrong, the user's next step
+        // is the same, and it does not depend on the parser's phrasing.
+        manifestRefusal = 'its .manifest.json could not be read as a backup manifest';
       }
-    } catch (err) {
-      const why = err instanceof Error ? err.message : String(err);
+      if (manifestRefusal) {
+        skippedBackups.push({ name: candidate, reason: manifestRefusal });
+        continue;
+      }
+
+      backupReal = candidateReal;
+      backupDir = candidateDir;
+      latestBackup = candidate;
+      break;
+    }
+
+    if (!backupReal || !backupDir || !latestBackup || !manifest) {
+      const tried = skippedBackups.length;
       throw new Error(
-        `The most recent backup cannot be used: ${why} `
-        + `Restore files by hand from ${backupDir} if it holds them, then delete it.`,
+        `None of the ${tried} backup director${tried === 1 ? 'y' : 'ies'} under ${backupBaseDir} `
+        + `can be used. ${skippedBackups.map((s) => `${s.name}: ${s.reason}`).join('; ')}. `
+        + 'Restore files by hand from whichever of them holds them, then delete it.',
       );
     }
 
-    // Read manifest.
-    //
-    // Size-guarded. #305's follow-up bounded the manifest read on the SCAN path
-    // and explicitly exempted this one, on the grounds that "rollback only ever
-    // reads a manifest HMA itself just wrote". #312 disproved that: a cloned
-    // repo can ship its own `.hackmyagent-backup/9999-99-99-999999/`, which
-    // sorts above every real stamp and is therefore always the one selected.
-    // The same tree that supplies the traversal paths supplies this file, so a
-    // 60MB manifest was read whole — measured at 493MB resident.
-    //
-    // Fails closed: an oversized manifest is treated as unreadable, which takes
-    // the existing branch telling the user to restore by hand from the backup
-    // directory. Refusing to parse an implausible manifest cannot lose a real
-    // rollback — `createBackup` writes a list of paths, not payloads.
-    let manifest: BackupManifest;
-    try {
-      const manifestPath = path.join(backupDir, '.manifest.json');
-      const stat = await fs.stat(manifestPath);
-      if (!stat.isFile() || stat.size > MAX_FILE_SIZE) {
-        throw new Error('manifest is not a plausible backup manifest');
-      }
-      const manifestContent = await fs.readFile(manifestPath, 'utf-8');
-      manifest = this.parseManifest(manifestContent);
-    } catch {
-      throw new Error(
-        `Backup manifest is unreadable: ${path.join(backupDir, '.manifest.json')}. ` +
-        `Restore files by hand from ${backupDir}, then delete it.`
-      );
-    }
+    // How many candidates the tree is holding in front of the ones behind this
+    // run's choice. Reported when the rollback does not complete, so a user
+    // looking at a retained directory is told there is something behind it.
+    const remainingBehind = sortedBackups.length - sortedBackups.indexOf(latestBackup) - 1;
 
     const report: RollbackReport = {
       restored: [],
@@ -7867,6 +8024,9 @@ dist/
       keptModified: [],
       keptUnverifiable: [],
       unrestored: [],
+      skippedBackups,
+      backupsBehind: remainingBehind,
+      backupUsed: latestBackup,
     };
 
     // Restore existing files from backup.
@@ -7895,8 +8055,16 @@ dist/
     // `..` case is still refused before any syscall is spent on it.
     for (const file of manifest.existingFiles) {
       const outcome = await this.restoreOneBackupFile(backupReal, targetReal, file);
-      if (outcome.ok) report.restored.push(file);
-      else report.unrestored.push({ path: file, reason: outcome.reason });
+      if (outcome.ok) {
+        report.restored.push(file);
+      } else {
+        const base = RESTORE_REFUSAL_REASONS[outcome.cause];
+        report.unrestored.push({
+          path: file,
+          reason: outcome.detail ? `${base} (${outcome.detail})` : base,
+          backupHoldsCopy: outcome.backupHoldsCopy,
+        });
+      }
     }
 
     // Remove files a fix stage created — but only when the bytes on disk are
@@ -7911,8 +8079,9 @@ dist/
     for (const created of manifest.createdFiles) {
       // Not followed: a symlink where a generated file should be is not the file
       // HMA generated, and unlinking through it would delete the target instead.
-      const filePath = await this.resolveInsideTree(targetReal, created.path, { followLeafLink: false });
-      if (!filePath) continue;
+      const resolved = await this.resolveInsideTree(targetReal, created.path, { followLeafLink: false });
+      if (!resolved.ok) continue;
+      const filePath = resolved.path;
       let current: Buffer;
       try {
         current = await fs.readFile(filePath);
@@ -7940,10 +8109,10 @@ dist/
       // manifest probe for files outside the tree and have their existence
       // reported back. #318 — and a lexical guard does not stop that probe,
       // only a `..` in it. All three manifest loops resolve.
-      const filePath = await this.resolveInsideTree(targetReal, file, { followLeafLink: false });
-      if (!filePath) continue;
+      const resolved = await this.resolveInsideTree(targetReal, file, { followLeafLink: false });
+      if (!resolved.ok) continue;
       try {
-        await fs.access(filePath);
+        await fs.access(resolved.path);
         report.keptUnverifiable.push(file);
       } catch {
         // Never created — nothing to report.
@@ -7952,16 +8121,34 @@ dist/
 
     // Remove the used backup — but only when it has been fully used.
     //
-    // #327 — every entry this run could not restore has its only remaining copy
-    // inside this directory, so deleting it here destroys the bytes the rollback
-    // was asked to bring back. Measured on an ordinary symlinked config with no
-    // attacker: `[+] Rollback complete`, exit 0, and no copy of the original
-    // left anywhere in the tree. The backup is kept and its location reported;
-    // the caller must not describe this run as complete.
-    if (report.unrestored.length === 0) {
-      await fs.rm(backupReal, { recursive: true, force: true });
-    } else {
+    // #327 — an entry this run could not restore may have its only remaining
+    // copy inside this directory, so deleting it would destroy the bytes the
+    // rollback was asked to bring back. Measured on an ordinary symlinked config
+    // with no attacker: `[+] Rollback complete`, exit 0, and no copy of the
+    // original left anywhere in the tree.
+    //
+    // #338 — but "may" is not "does", and retaining on the weaker claim turned
+    // this fix into a permanent denial of recovery. A directory the tree ships
+    // as `9999-99-99-999999/` holding a manifest that names a file it does not
+    // contain is selected every run, restores nothing, and was then KEPT — so
+    // the next run selected it again, and the real backup behind it was never
+    // reachable. Before this fix a failing selection consumed itself and the
+    // second run recovered; after it, three runs recovered nothing.
+    //
+    // So retention is decided on the fact rather than on the possibility: keep
+    // the directory when it still holds a copy of something that did not go
+    // back. A backup that restored nothing and holds nothing is protecting
+    // nothing, and deleting it is what lets the run behind it be reached.
+    //
+    // "Holds nothing" is PROVEN per entry (see `restoreOneBackupFile`): a
+    // lexical escape or an ENOENT. Anything the filesystem would not answer
+    // counts as holding a copy, because the cost of being wrong in that
+    // direction is the user's last bytes.
+    const retaining = report.unrestored.some((u) => u.backupHoldsCopy);
+    if (retaining) {
       report.backupRetainedAt = backupReal;
+    } else {
+      await fs.rm(backupReal, { recursive: true, force: true });
     }
 
     return report;

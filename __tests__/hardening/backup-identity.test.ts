@@ -550,9 +550,18 @@ describe('backup directory identity', () => {
      * and the next caller of this helper may not be a `copyFile`.
      */
     it('refuses a destination whose leaf cannot be checked for being a symlink', async () => {
+      // #347.4 — the helper now says WHY it refused, so this asserts the cause
+      // rather than a bare null. A single null could not distinguish "a symlink
+      // stands here" from "the filesystem would not answer", and one sentence
+      // was printed for both.
+      type Outcome = { ok: true; path: string } | { ok: false; cause: string };
       const resolve = (scannerUnderTest: HardeningScanner) =>
         (scannerUnderTest as unknown as {
-          resolveInsideTree(targetReal: string, rel: string): Promise<string | null>;
+          resolveInsideTree(
+            targetReal: string,
+            rel: string,
+            opts: { followLeafLink: boolean },
+          ): Promise<Outcome>;
         }).resolveInsideTree;
       const scanner = new HardeningScanner();
       // The helper's contract is a RESOLVED target. On macOS `os.tmpdir()` sits
@@ -565,24 +574,24 @@ describe('backup directory identity', () => {
       // entry is a symlink — no mocking needed.
       const tooLong = 'a'.repeat(300);
       expect(
-        await resolve(scanner).call(scanner, targetReal, tooLong),
+        await resolve(scanner).call(scanner, targetReal, tooLong, { followLeafLink: true }),
         'an lstat failure that proves nothing was read as "not a symlink"',
-      ).toBeNull();
+      ).toEqual({ ok: false, cause: 'leaf-unexaminable' });
 
       // Control: the same helper must still resolve an ordinary entry, or the
       // assertion above would pass on a helper that refuses everything.
       await writeFile(path.join(dir, 'ordinary.json'), '{}\n');
       expect(
-        await resolve(scanner).call(scanner, targetReal, 'ordinary.json'),
+        (await resolve(scanner).call(scanner, targetReal, 'ordinary.json', { followLeafLink: true })).ok,
         'the helper refuses a legitimate path, so the assertion above means nothing',
-      ).not.toBeNull();
+      ).toBe(true);
 
       // And absence is still fine — restoring a file the user deleted is the
       // whole point of a rollback.
       expect(
-        await resolve(scanner).call(scanner, targetReal, 'deleted-since-backup.json'),
+        (await resolve(scanner).call(scanner, targetReal, 'deleted-since-backup.json', { followLeafLink: true })).ok,
         'a file absent from the tree can no longer be restored',
-      ).not.toBeNull();
+      ).toBe(true);
     });
 
     /**

@@ -5002,17 +5002,53 @@ Examples:
       // bytes are still missing, and the backup holding them is deliberately
       // left on disk.
       if (incomplete) {
+        // #346 — the header used to assert, unconditionally, that the backup
+        // "still holds the only copy". That is a filesystem fact, and it was
+        // false for the two commonest reasons an entry goes unrestored: the
+        // backup holding no readable copy of it, and the manifest entry pointing
+        // outside the backup. The line above and the line below it contradicted
+        // each other on one screen, and a user preserved an empty directory on
+        // this tool's say-so.
+        //
+        // So it is derived from what `restoreOneBackupFile` established per
+        // entry, and says nothing more than that.
+        const held = report.unrestored.filter((u) => u.backupHoldsCopy).length;
+        const n = report.unrestored.length;
+        const suffix = report.backupRetainedAt
+          ? `(the backup was kept: it still holds a copy of ${held === n ? (n === 1 ? 'it' : 'them') : `${held} of them`})`
+          : `(the backup held no copy of ${n === 1 ? 'it' : 'them'}, so it was removed)`;
         console.log(
-          `\n   ${colors.red}Could not restore ${report.unrestored.length} file${report.unrestored.length === 1 ? '' : 's'}${RESET()} ` +
-          '(the backup was kept, and still holds the only copy):',
+          `\n   ${colors.red}Could not restore ${n} file${n === 1 ? '' : 's'}${RESET()} ${suffix}:`,
         );
         for (const entry of report.unrestored) {
           console.log(`   ${colors.dim}not restored${RESET()}  ${escapePathForDisplay(entry.path)}  ${colors.dim}— ${escapeForDisplay(entry.reason)}${RESET()}`);
         }
         if (report.backupRetainedAt) {
           console.log(`   ${colors.dim}backup kept at${RESET()}  ${escapePathForDisplay(report.backupRetainedAt)}`);
+          console.log(`   Copy those files back by hand, then delete the backup directory.`);
         }
-        console.log(`   Copy those files back by hand, then delete the backup directory.`);
+      }
+
+      // Backups this run could not read at all, and what is still behind the one
+      // it used (#338). Selection is a guess at a name the scanned tree can
+      // write, so both facts belong to the user: a directory that was passed
+      // over is never deleted, and a retained one may be standing in front of
+      // the backup that actually holds their files.
+      if (report.skippedBackups.length > 0) {
+        console.log(
+          `\n   ${colors.yellow}Passed over ${report.skippedBackups.length} backup director${report.skippedBackups.length === 1 ? 'y' : 'ies'}${RESET()} ` +
+          `(left in place, since HackMyAgent could not read ${report.skippedBackups.length === 1 ? 'it' : 'them'}):`,
+        );
+        for (const s of report.skippedBackups) {
+          console.log(`   ${colors.dim}skipped ${RESET()}  ${escapePathForDisplay(s.name)}  ${colors.dim}— ${escapeForDisplay(s.reason)}${RESET()}`);
+        }
+      }
+      if (incomplete && report.backupsBehind > 0) {
+        console.log(
+          `\n   ${report.backupsBehind} older backup${report.backupsBehind === 1 ? '' : 's'} ` +
+          `${report.backupsBehind === 1 ? 'is' : 'are'} behind this one. ` +
+          'Running rollback again reaches the next one once this directory is dealt with.',
+        );
       }
 
       // Files deliberately left alone. Each says why and what to do, so the

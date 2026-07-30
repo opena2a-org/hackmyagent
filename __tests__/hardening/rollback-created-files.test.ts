@@ -239,7 +239,12 @@ describe('rollback contract (#262)', () => {
     });
     writeFileSync(join(backupDir, '.manifest.json'), oversized, 'utf8');
 
-    await expect(scanner.rollback(dir)).rejects.toThrow(/unreadable/i);
+    // #338 — the refusal now NAMES the cause: this candidate was passed over
+    // because its manifest is implausibly large, and it was the only one, so the
+    // run has nothing to roll back from. Asserting the cause rather than the
+    // word "unreadable" is what distinguishes this from every other way the
+    // selection can come up empty.
+    await expect(scanner.rollback(dir)).rejects.toThrow(/implausibly large/i);
 
     // Non-vacuity: the same fixture UNDER the bound must still roll back, or
     // this only proves rollback can throw.
