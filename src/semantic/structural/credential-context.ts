@@ -286,34 +286,75 @@ function envHighOverrideWording(
 }
 
 /**
+ * The vocabulary a placeholder may OPEN with. Deliberately the same set
+ * `isNonSecretValue` already uses — this gate exists to stop reporting
+ * documentation, not to invent new reasons to stay quiet. An earlier draft
+ * added `my`, `insert`, `enter`, `dummy` and `sample`; nothing justified them,
+ * the suite stayed green without them, and `my` alone was enough to silence
+ * `my-SuperSecretPassphrase` and `my_prod_db_password`.
+ */
+const PLACEHOLDER_WORDS = new Set(['your', 'todo', 'fixme', 'example', 'placeholder', 'change', 'replace']);
+
+/** Longest a single word may be before it stops reading as prose. */
+const MAX_PLACEHOLDER_WORD_CHARS = 12;
+/** Longest the whole value may be before it stops reading as a placeholder. */
+const MAX_PLACEHOLDER_CHARS = 40;
+
+/**
+ * All lowercase, or all uppercase. Placeholders are written in one case —
+ * `your-password-here`, `YOUR_PASSWORD`. Mixed case is how secrets are written,
+ * and it is the signal that survives when an attacker or a careless developer
+ * borrows the vocabulary.
+ */
+function hasUniformCase(value: string): boolean {
+  return value === value.toLowerCase() || value === value.toUpperCase();
+}
+
+/**
  * Is this URL password documentation rather than a leaked secret?
  *
  * Narrow on purpose, and local on purpose. The password slot of a connection
- * string carries no key to corroborate it, so vocabulary alone decides — which
- * means the vocabulary must also be SHAPED like a placeholder, not merely start
- * like one. Two rules:
+ * string carries no key to corroborate it — unlike every caller of
+ * `isNonSecretValue`, where a SECRET_KEY_PATTERN key already asserted "secret"
+ * and the value only has to veto. So the value must be shaped like a
+ * placeholder, not merely open with the vocabulary:
  *
- *   1. An angle-bracket template: `<password>`, `<YOUR_TOKEN>`.
- *   2. A placeholder word, optionally continued by further lowercase words
- *      joined with `-` or `_`, and nothing else.
+ *   1. An angle-bracket template whose body is wordy and single-cased:
+ *      `<password>`, `<YOUR_PASSWORD>`. Brackets alone do not launder a
+ *      secret — `<sk-proj-AAAABBBB>` is mixed case and stays reported.
+ *   2. A vocabulary word, optionally continued by short same-case words joined
+ *      with `-` or `_`, within an overall length bound.
  *
- * Rule 2 is what keeps the gate honest. `your-password-here` and
- * `YOUR_API_KEY` are placeholders; `your-8Kd9fLm2QpXv7Zr4Nt6Bw1Hs` is a real
- * 24-character secret that merely opens with the word, and the digits and
- * mixed case disqualify it. Likewise `examplePassw0rd!` — no separator, and
- * `!` is not a word character — so it is reported.
+ * What that buys, each verified against the previous build:
+ *
+ *   your-password-here            placeholder   (suppressed)
+ *   YOUR_PASSWORD                 placeholder   (suppressed)
+ *   your-8Kd9fLm2QpXv7Zr4Nt6Bw1Hs secret, mixed case
+ *   your-KdfLmQpXvZrNtBwHs        secret, mixed case — the digit-free form
+ *   your_KJHGFDSAQWERTYUIOPZXC    secret, one 25-character "word"
+ *   examplePassw0rd!              secret, mixed case and no separator
+ *   change                        an imperative a user could have typed
  *
  * Anything not matched here is treated as a real credential. That direction is
  * deliberate: a false positive on a placeholder costs a user one suppression,
  * a false negative on a live database password costs them the database.
  */
-const PLACEHOLDER_URL_PASSWORD =
-  /^(?:your|my|todo|fixme|example|placeholder|change|replace|insert|enter|dummy|sample)(?:[-_][a-z]+)*$/i;
-
 function isPlaceholderUrlPassword(password: string): boolean {
   const trimmed = password.trim();
-  if (/^<[^>]+>$/.test(trimmed)) return true;
-  return PLACEHOLDER_URL_PASSWORD.test(trimmed);
+  if (!trimmed || trimmed.length > MAX_PLACEHOLDER_CHARS) return false;
+
+  const angle = /^<([A-Za-z][A-Za-z0-9 _-]*)>$/.exec(trimmed);
+  if (angle) return hasUniformCase(angle[1]);
+
+  if (!hasUniformCase(trimmed)) return false;
+
+  const words = trimmed.toLowerCase().split(/[-_]/);
+  if (!PLACEHOLDER_WORDS.has(words[0])) return false;
+  // `change` and `replace` only introduce a placeholder when they lead a phrase
+  // (`change-me`, `replace-with-your-key`). Alone they are imperatives someone
+  // could plausibly have typed as an actual password.
+  if (words.length === 1 && (words[0] === 'change' || words[0] === 'replace')) return false;
+  return words.slice(1).every((w) => w.length > 0 && w.length <= MAX_PLACEHOLDER_WORD_CHARS && /^[a-z]+$/.test(w));
 }
 
 /**
