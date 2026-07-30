@@ -605,17 +605,33 @@ describe('credential-format entropy floor', () => {
       const uniform = 'a'.repeat(1024 * 1024);
       const periodic = 'ab'.repeat((1024 * 1024) / 2);
       const time = (payload: string) => {
-        hasCredentialFormat(payload); // warm
         const started = performance.now();
         hasCredentialFormat(payload);
         return performance.now() - started;
       };
-      const uniformMs = Math.max(time(uniform), 1);
-      const periodicMs = time(periodic);
+      // INTERLEAVED medians, not one sample each. Vitest runs test files in
+      // parallel, so a single pair of samples straddles whatever else the
+      // machine is doing and the ratio swings — this assertion was written with
+      // one sample each and went flaky in the full suite while passing every
+      // time in isolation. Alternating the two payloads puts both under the
+      // same load, and the median discards the transient that hits one of them.
+      const uniformSamples: number[] = [];
+      const periodicSamples: number[] = [];
+      hasCredentialFormat(uniform); // warm both paths
+      hasCredentialFormat(periodic);
+      for (let i = 0; i < 5; i++) {
+        uniformSamples.push(time(uniform));
+        periodicSamples.push(time(periodic));
+      }
+      const median = (xs: number[]) => xs.slice().sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+      const uniformMs = Math.max(median(uniformSamples), 1);
+      const periodicMs = median(periodicSamples);
+      // Measured ~1.2 with the short circuit and ~14 without, so 6 separates
+      // them with margin on both sides.
       expect(
         periodicMs / uniformMs,
-        `periodic filler cost ${periodicMs.toFixed(0)} ms vs ${uniformMs.toFixed(0)} ms uniform`,
-      ).toBeLessThan(5);
+        `periodic filler cost ${periodicMs.toFixed(1)} ms vs ${uniformMs.toFixed(1)} ms uniform (medians of 5)`,
+      ).toBeLessThan(6);
     });
 
     it('finds a VENDOR key buried behind a megabyte of filler', () => {
