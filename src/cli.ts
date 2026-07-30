@@ -4947,15 +4947,42 @@ Examples:
       // Report what happened rather than asserting a clean revert (#262).
       // The old copy said "All auto-fix changes have been reverted" even
       // when the harden-soul-generated SOUL.md was still sitting there.
-      console.log(`${colors.green}[+] Rollback complete${RESET()}`);
+      //
+      // #327 — and "complete" is now a claim this checks before making. A run
+      // that could not put every listed file back has not completed, however
+      // many it did put back.
+      const incomplete = report.unrestored.length > 0;
+      console.log(
+        incomplete
+          ? `${colors.yellow}[!] Rollback incomplete${RESET()}`
+          : `${colors.green}[+] Rollback complete${RESET()}`,
+      );
       const restoredCount = report.restored.length;
       const removedCount = report.removed.length;
       console.log(
         `   Restored ${restoredCount} modified file${restoredCount === 1 ? '' : 's'}, ` +
         `removed ${removedCount} generated file${removedCount === 1 ? '' : 's'}.`,
       );
-      for (const file of report.restored) console.log(`   ${colors.dim}restored${RESET()}  ${file}`);
-      for (const file of report.removed) console.log(`   ${colors.dim}removed ${RESET()}  ${file}`);
+      for (const file of report.restored) console.log(`   ${colors.dim}restored${RESET()}  ${escapeForDisplay(file)}`);
+      for (const file of report.removed) console.log(`   ${colors.dim}removed ${RESET()}  ${escapeForDisplay(file)}`);
+
+      // Files the manifest listed and rollback could not put back (#327). Named
+      // first among the exceptions: this is the one case where the user's own
+      // bytes are still missing, and the backup holding them is deliberately
+      // left on disk.
+      if (incomplete) {
+        console.log(
+          `\n   ${colors.red}Could not restore ${report.unrestored.length} file${report.unrestored.length === 1 ? '' : 's'}${RESET()} ` +
+          '(the backup was kept, and still holds the only copy):',
+        );
+        for (const entry of report.unrestored) {
+          console.log(`   ${colors.dim}not restored${RESET()}  ${escapeForDisplay(entry.path)}  ${colors.dim}— ${escapeForDisplay(entry.reason)}${RESET()}`);
+        }
+        if (report.backupRetainedAt) {
+          console.log(`   ${colors.dim}backup kept at${RESET()}  ${escapeForDisplay(report.backupRetainedAt)}`);
+        }
+        console.log(`   Copy those files back by hand, then delete the backup directory.`);
+      }
 
       // Files deliberately left alone. Each says why and what to do, so the
       // user is never left to discover the leftover on their own.
@@ -4978,6 +5005,10 @@ Examples:
         }
       }
       console.log();
+      // An incomplete rollback exits non-zero for the same reason it does not
+      // print "complete": a script that treats exit 0 as "the tree is back to
+      // where it was" would be wrong (#327).
+      if (incomplete) process.exit(1);
     } catch (error) {
       console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
       process.exit(1);

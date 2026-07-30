@@ -75,6 +75,18 @@ export interface RollbackReport {
   keptModified: string[];
   /** Files a pre-0.25.1 manifest listed with no hash to verify against. */
   keptUnverifiable: string[];
+  /**
+   * Files the manifest listed that could NOT be put back, with the reason
+   * (#327). A rollback with any of these has not completed: the backup copy is
+   * the only remaining version of each one, so it is kept rather than deleted
+   * and the caller must report this rather than claim a clean revert.
+   */
+  unrestored: Array<{ path: string; reason: string }>;
+  /**
+   * Where the backup was left when something could not be restored. Absent on a
+   * complete rollback, which consumes its backup.
+   */
+  backupRetainedAt?: string;
 }
 
 /**
@@ -7430,15 +7442,36 @@ dist/
    *   - the `..` cases are refused first, with no syscall spent on them;
    *   - the destination's PARENT is resolved and required to be inside the tree,
    *     which is what catches a symlinked component;
-   *   - the leaf itself must not be a symlink. Resolving the parent says nothing
-   *     about the final component, and HMA never backs up or creates a symlink,
-   *     so a link at the leaf is not something a rollback has any business
-   *     writing through or unlinking.
+   *   - the LEAF is handled per caller, because the two callers are asking
+   *     different questions. See `followLeafLink`.
    *
-   * Returns the path to ACT on — parent-resolved, leaf appended — never the
-   * caller's spelling, so the write and the check cannot diverge.
+   * #327 — the leaf used to be refused outright whenever it was a symlink, for
+   * every caller. That broke an ordinary dotfile-sharing layout with no attacker
+   * involved: `--fix` writes THROUGH a symlinked config (`ensureBackupCovers`
+   * says so explicitly), so the file was backed up and redacted and then could
+   * not be restored. Refusing to follow on the way back what was followed on the
+   * way in is not a containment property, it is an asymmetry.
+   *
+   *   - `followLeafLink: true` (restore) resolves the link and requires the
+   *     TARGET to be inside the tree. An out-of-tree target is still refused —
+   *     that is #318's harm — and the returned path is the resolved one, so the
+   *     copy lands where the check looked.
+   *   - `followLeafLink: false` (unlink, probe) keeps the refusal. HMA never
+   *     CREATES a symlink, so a link standing where a generated file should be
+   *     is not the thing HMA generated, and deleting what it points at would be
+   *     #318 with the arrow reversed.
+   *
+   * Returns the path to ACT on — never the caller's spelling. Three separate
+   * resolutions of one string (`realpath` here, then `lstat`/`copyFile` at the
+   * call site) are not atomic against a tree changing underneath them; that is
+   * outside the static-tree threat model the rest of this file assumes, and only
+   * a descriptor (`open` + `fstat`) would close it.
    */
-  private async resolveInsideTree(targetReal: string, rel: string): Promise<string | null> {
+  private async resolveInsideTree(
+    targetReal: string,
+    rel: string,
+    opts: { followLeafLink: boolean },
+  ): Promise<string | null> {
     const joined = path.join(targetReal, rel);
     if (!this.isPathWithinDirectory(joined, targetReal)) return null;
 
@@ -7453,7 +7486,19 @@ dist/
     const resolved = path.join(parentReal, path.basename(joined));
     try {
       const st = await fs.lstat(resolved);
-      if (st.isSymbolicLink()) return null;
+      if (st.isSymbolicLink()) {
+        if (!opts.followLeafLink) return null;
+        // Where the link actually goes, decided by the filesystem. A dangling
+        // link resolves to nothing and is refused: `createBackup` could not have
+        // copied through it either, so there is nothing to restore.
+        let linkReal: string;
+        try {
+          linkReal = await fs.realpath(resolved);
+        } catch {
+          return null;
+        }
+        return this.isPathWithinDirectory(linkReal, targetReal) ? linkReal : null;
+      }
     } catch (err) {
       // ENOENT is the only failure that PROVES the leaf is not a symlink:
       // nothing is there. Absence is expected and fine — restoring a file the
@@ -7470,43 +7515,60 @@ dist/
   }
 
   /**
-   * Copy one manifest entry out of the backup and back into the tree. Returns
-   * whether it landed.
+   * Copy one manifest entry out of the backup and back into the tree.
    *
    * Both ends are resolved (#318). The source must be a regular file that
    * resolves back inside the backup directory — a symlink there copies
    * out-of-tree CONTENT IN, which is the same defect mirrored and was verified
    * with a link to a file outside the tree landing in it.
+   *
+   * #327 — returns WHY it did not land, never a bare false. Every one of these
+   * refusals leaves a manifest entry unrestored, and an unrestored entry that
+   * nothing reports is the harm the containment guards exist to prevent, arrived
+   * at from the other side: the user is told the revert is complete while their
+   * bytes are only in the backup that is about to be deleted.
    */
   private async restoreOneBackupFile(
     backupReal: string,
     targetReal: string,
     rel: string,
-  ): Promise<boolean> {
-    const dest = await this.resolveInsideTree(targetReal, rel);
-    if (!dest) return false;
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const dest = await this.resolveInsideTree(targetReal, rel, { followLeafLink: true });
+    if (!dest) {
+      return {
+        ok: false,
+        reason: 'its destination does not resolve to a location inside the scanned directory',
+      };
+    }
 
     const sourcePath = path.join(backupReal, rel);
-    if (!this.isPathWithinDirectory(sourcePath, backupReal)) return false;
+    if (!this.isPathWithinDirectory(sourcePath, backupReal)) {
+      return { ok: false, reason: 'the manifest entry points outside the backup' };
+    }
     let sourceReal: string;
     try {
       sourceReal = await fs.realpath(sourcePath);
     } catch {
-      return false;
+      return { ok: false, reason: 'the backup holds no readable copy of it' };
     }
-    if (!this.isPathWithinDirectory(sourceReal, backupReal)) return false;
+    if (!this.isPathWithinDirectory(sourceReal, backupReal)) {
+      return { ok: false, reason: 'the copy in the backup resolves outside the backup' };
+    }
     try {
       const st = await fs.lstat(sourceReal);
-      if (!st.isFile()) return false;
+      if (!st.isFile()) {
+        return { ok: false, reason: 'the copy in the backup is not a regular file' };
+      }
     } catch {
-      return false;
+      return { ok: false, reason: 'the copy in the backup could not be examined' };
     }
 
     try {
       await fs.copyFile(sourceReal, dest);
-      return true;
-    } catch {
-      return false;
+      return { ok: true };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      return { ok: false, reason: `writing it back failed${code ? ` (${code})` : ''}` };
     }
   }
 
@@ -7625,6 +7687,7 @@ dist/
       removed: [],
       keptModified: [],
       keptUnverifiable: [],
+      unrestored: [],
     };
 
     // Restore existing files from backup.
@@ -7652,9 +7715,9 @@ dist/
     // out-of-tree content the other way. Both ends are now resolved, and the
     // `..` case is still refused before any syscall is spent on it.
     for (const file of manifest.existingFiles) {
-      if (await this.restoreOneBackupFile(backupReal, targetReal, file)) {
-        report.restored.push(file);
-      }
+      const outcome = await this.restoreOneBackupFile(backupReal, targetReal, file);
+      if (outcome.ok) report.restored.push(file);
+      else report.unrestored.push({ path: file, reason: outcome.reason });
     }
 
     // Remove files a fix stage created — but only when the bytes on disk are
@@ -7667,7 +7730,9 @@ dist/
     // aimed outside the tree. #318 named the write; this is the same defect with
     // the arrow reversed.
     for (const created of manifest.createdFiles) {
-      const filePath = await this.resolveInsideTree(targetReal, created.path);
+      // Not followed: a symlink where a generated file should be is not the file
+      // HMA generated, and unlinking through it would delete the target instead.
+      const filePath = await this.resolveInsideTree(targetReal, created.path, { followLeafLink: false });
       if (!filePath) continue;
       let current: Buffer;
       try {
@@ -7696,7 +7761,7 @@ dist/
       // manifest probe for files outside the tree and have their existence
       // reported back. #318 — and a lexical guard does not stop that probe,
       // only a `..` in it. All three manifest loops resolve.
-      const filePath = await this.resolveInsideTree(targetReal, file);
+      const filePath = await this.resolveInsideTree(targetReal, file, { followLeafLink: false });
       if (!filePath) continue;
       try {
         await fs.access(filePath);
@@ -7706,8 +7771,19 @@ dist/
       }
     }
 
-    // Remove the used backup
-    await fs.rm(backupReal, { recursive: true, force: true });
+    // Remove the used backup — but only when it has been fully used.
+    //
+    // #327 — every entry this run could not restore has its only remaining copy
+    // inside this directory, so deleting it here destroys the bytes the rollback
+    // was asked to bring back. Measured on an ordinary symlinked config with no
+    // attacker: `[+] Rollback complete`, exit 0, and no copy of the original
+    // left anywhere in the tree. The backup is kept and its location reported;
+    // the caller must not describe this run as complete.
+    if (report.unrestored.length === 0) {
+      await fs.rm(backupReal, { recursive: true, force: true });
+    } else {
+      report.backupRetainedAt = backupReal;
+    }
 
     return report;
   }
