@@ -2724,20 +2724,16 @@ export class HardeningScanner {
             fixable: !isEnvFile && !inArchive,
             fixed: fileModified,
             fix: inArchive
-              ? 'Rotate the credential, then clear the plaintext copy: if this is a HackMyAgent backup, '
-                + 'delete the directory once the live file is verified; if it is your own file, replace the '
-                + 'value with a ${ENV_VAR} reference'
+              ? 'Rotate the credential, then remove this plaintext copy by hand'
               : isEnvFile
                 ? 'Add .env to .gitignore to prevent committing secrets'
                 : `${this.cliName} secure --fix`,
             guidance: inArchive
-              ? `This file sits under a directory named \`${BACKUP_DIR_NAME}\`. HackMyAgent does not auto-edit anything `
-                + 'there: if the directory IS one of its backups, rewriting it would destroy what `rollback` restores from. '
-                + 'It also cannot prove it created the directory — the name and the manifest inside it are both files in the '
-                + 'scanned tree, so anything with write access to the tree can produce them — so no deletion is offered for a '
-                + `directory that may be your own source. Confirm the live file is correct (\`${this.cliName} secure\` reports `
-                + 'no credential outside this directory), then clear the plaintext copy yourself. Rotate the credential either '
-                + 'way: it has been on disk in plaintext.'
+              ? 'Rotate the credential: it has been on disk in plaintext. Clearing the copy is yours to do — this file sits '
+                + `under a directory named \`${BACKUP_DIR_NAME}\`, which HackMyAgent never auto-edits (rewriting one of its `
+                + 'backups would destroy what `rollback` restores from) and never offers to delete, because the name and the '
+                + `manifest inside it are both files in the scanned tree. Check the live file first: \`${this.cliName} secure\` `
+                + 'should report no credential outside this directory.'
               : isEnvFile
                 ? 'Credentials in .env are expected but the file must be in .gitignore. Run `hackmyagent secure --fix` to create a .gitignore.'
                 : 'Replaces hardcoded credentials with ${ENV_VAR} references. Store actual values in your .env file, which should be in .gitignore.',
