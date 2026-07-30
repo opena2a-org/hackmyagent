@@ -626,85 +626,55 @@ function backupSetupError(code: BackupSetupCode, message: string): NodeJS.ErrnoE
   return err;
 }
 
-/**
- * True when any DIRECTORY component of an absolute path is a backup archive
- * root. Used only to refuse a WRITE (#314), never to suppress a finding.
+/*
+ * `backupArchiveDirFor` used to live here: it walked the path's SEGMENTS looking
+ * for one spelled `.hackmyagent-backup`, exactly or case-folded.
  *
- * Keying this on the name is safe in a way that keying DETECTION on it is not.
- * The most an attacker gains by naming a directory `.hackmyagent-backup` is
- * that HMA declines to auto-edit files inside it — the finding is still
- * reported, with a path forward. A name that can only make the tool do LESS
- * damage is not a suppression token; that asymmetry is the whole reason the
- * two hazards are gated separately.
+ * It is gone with #341, and so is everything built on it. Recognising an archive
+ * by a name in the scanned tree is the sixth instance of the class this stack
+ * exists to close — a `\`-folded path (#304), a directory name (#305), a
+ * manifest shape (#309), a case-sensitive compare (#317), a manifest array
+ * element (#326), a manifest's existence (#331) — and the exact-name half was
+ * never gated on anything at all, so a `vendor/.hackmyagent-backup/lib/…`
+ * credential was left in plaintext with no forgery required.
  *
- * Compares real path components, never a `\`-folded copy of them: on POSIX a
- * backslash is a filename byte, and re-deriving a path from a normalized
- * description of it was #304.
- *
- * Recognition here has exactly one consequence: HMA declines to auto-edit the
- * file, and says so in the finding. It cannot suppress a finding, and since #326
- * it cannot produce a destructive citation either — nothing keyed on this name
- * asserts who created the directory or offers to delete it.
- *
- * An EXACT name match is an archive on its own; that is the case #314 was about
- * and the name is HackMyAgent's own. A case-FOLDED match is reported separately,
- * because folding is not free — see `isInsideBackupArchive`.
+ * See `resolveArchiveBase` for what replaced it: not a better description of the
+ * directory, but the directory.
  */
-function backupArchiveDirFor(
-  absPath: string,
-  targetDir: string,
-): { dir: string; exact: boolean } | null {
-  const rel = path.relative(targetDir, absPath);
-  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
-  const segments = rel.split(path.sep);
-  // The final segment is the filename: a FILE called `.hackmyagent-backup` is
-  // not an archive.
-  const dirSegments = segments.slice(0, -1);
-  let i = dirSegments.indexOf(BACKUP_DIR_NAME);
-  let exact = true;
-  if (i === -1) {
-    i = dirSegments.findIndex((s) => s.toLowerCase() === BACKUP_DIR_NAME);
-    exact = false;
-  }
-  if (i === -1) return null;
-  // Name the timestamped run directory when there is one, so the answer is
-  // about ONE archived run rather than every backup the project has.
-  const end = i + 2 <= segments.length - 1 ? i + 2 : i + 1;
-  return { dir: segments.slice(0, end).join(path.sep), exact };
-}
 
 /**
- * One predicate, so the write guard and the finding's wording cannot drift
- * apart: is this file inside a backup archive HackMyAgent must not rewrite?
+ * The backup directory HackMyAgent uses for a given tree, as the filesystem
+ * resolves it — or null when there is none.
  *
- * #317 folded case here, on the argument that folding "only ever recognises
- * MORE directories as archives … neither can suppress a finding". Recognition
- * is not free: it sets `fixable: false` and stops `applyFixWrite`, so it
- * suppresses the FIX. Measured on two trees that are nobody's backup —
- * `vendor/.HACKMYAGENT-BACKUP/lib/config/production.json`, and the same path
- * with U+212A KELVIN SIGN for the `k`, which JS lowercases to `k` while no
- * filesystem thinks the names are the same — a credential `--fix` used to
- * redact was left in plaintext, score 98 to 69.
+ * This is the whole answer to "is this file inside a backup archive". It is not
+ * a name, not a shape, and not a file: it is `<realpath(target)>/`
+ * `.hackmyagent-backup` as `realpath.native` canonicalizes it, plus that
+ * directory's `dev`+`ino`. The scanned tree can CREATE that directory — that is
+ * the ordinary pre-existing-backup case, and adopting it is correct — but it
+ * cannot make some other directory be it, under any spelling.
  *
- * So a folded-only match has to show evidence: the directory must contain a
- * `.manifest.json`. That is sound HERE precisely because the consequence is a
- * refusal, which is fail-safe, and unlike a citation (#326) it cannot be turned
- * into an instruction. The run's own backup does not depend on this at all —
- * `isInsideOwnBackup` answers that by `dev`+`ino`.
+ * `realpath.native` is what makes one rule cover every spelling: on a
+ * case-insensitive filesystem a tree shipping `.HACKMYAGENT-BACKUP` IS this
+ * directory and resolves to it, and on a case-sensitive one it is a different
+ * directory that HackMyAgent would never write to. Neither case needs a
+ * per-spelling rule, and no Unicode fold, symlink or `..` changes the answer.
  *
- * Fails SAFE on an unreadable probe: only a proven ENOENT allows the write.
+ * A base that is not a real directory (absent, a symlink, a file) yields null:
+ * `prepareBackupRoot` refuses to write backups through any of those, so there
+ * is no archive of ours in that tree to protect.
  */
-async function isInsideBackupArchive(absPath: string, targetDir: string): Promise<boolean> {
-  const match = backupArchiveDirFor(absPath, targetDir);
-  if (!match) return false;
-  if (match.exact) return true;
+async function resolveArchiveBase(
+  targetDir: string,
+): Promise<{ real: string; ident: FsIdentity } | null> {
   try {
-    const st = await fs.stat(path.join(targetDir, match.dir, '.manifest.json'));
-    return st.isFile();
-  } catch (err) {
-    // "I could not check" must not become "not an archive": that direction
-    // rewrites a real backup. #313's inference, in one more place.
-    return (err as NodeJS.ErrnoException)?.code !== 'ENOENT';
+    const base = path.join(await fs.realpath(targetDir), BACKUP_DIR_NAME);
+    const st = await fs.lstat(base);
+    if (st.isSymbolicLink() || !st.isDirectory()) return null;
+    const real = fsSync.realpathSync.native(base);
+    const probe = await identityOf(real);
+    return probe.kind === 'identity' ? { real, ident: probe.id } : null;
+  } catch {
+    return null;
   }
 }
 
@@ -1426,6 +1396,22 @@ export class HardeningScanner {
     covered: Set<string>;
   } | undefined;
   /**
+   * The backup directory a given tree uses, resolved on first ask (#341).
+   *
+   * Keyed by the scanned directory and resolved LAZILY rather than seeded by
+   * `scan()`. A guard whose state some other method has to remember to
+   * initialise is a guard that is off whenever a caller forgets — and this one
+   * decides whether a write can destroy a backup. Asking for it is what
+   * resolves it.
+   *
+   * Not derived from the backup CONTEXT either: a detect-only run has no
+   * context and still has to answer "is this file inside a backup archive" the
+   * same way, or `secure` and `secure --fix` disagree about the same file.
+   */
+  private archiveBases = new Map<string, { real: string; ident: FsIdentity } | null>();
+  /** Per-directory memo for `isInsideArchiveBase`. Reset per `scan()`. */
+  private archiveDirAnswers = new Map<string, 'yes' | 'no' | 'unknown'>();
+  /**
    * Target-relative paths the last `createBackup` already accounted for, in
    * either manifest list. Seeds `backupContext.covered` so the static
    * candidates are not re-copied one at a time.
@@ -1625,6 +1611,8 @@ export class HardeningScanner {
     // exists. A reused scanner instance must not let one run's backup
     // authorise the next run's writes (#300).
     this.backupContext = undefined;
+    this.archiveDirAnswers = new Map();
+    this.archiveBases = new Map();
 
     // Resolve effective scan depth — --deep flag implies 'deep' depth
     const scanDepth: ScanDepth = options.scanDepth || (options.deep ? 'deep' : 'standard');
@@ -2711,7 +2699,15 @@ export class HardeningScanner {
         // question was a different, stronger one ("is this PROVABLY our
         // archive?") whose positive answer emitted `rm -rf`. See the guidance
         // below for why that question can no longer be asked of the tree.
-        const inArchive = await isInsideBackupArchive(filePath, targetDir);
+        //
+        // #341 — and this one is no longer asked of the tree either. A `yes`
+        // means the file is inside the backup directory HackMyAgent uses for
+        // THIS tree, decided by identity. An `unknown` is left to the write gate,
+        // which has its own cause for it and its own channel to report it: the
+        // remediation here stays `secure --fix`, because on an ancestor the
+        // filesystem momentarily would not describe, that command is still the
+        // right one to run.
+        const inArchive = (await this.isInsideArchiveBase(filePath, targetDir)) === 'yes';
 
         for (const { name, pattern, envVar } of credentialPatterns) {
           // Check each line for credentials
@@ -2810,10 +2806,10 @@ export class HardeningScanner {
                 : `${this.cliName} secure --fix`,
             guidance: inArchive
               ? 'Rotate the credential: it has been on disk in plaintext. Clearing the copy is yours to do — this file sits '
-                + `under a directory named \`${BACKUP_DIR_NAME}\`, which HackMyAgent never auto-edits (rewriting one of its `
-                + 'backups would destroy what `rollback` restores from) and never offers to delete, because the name and the '
-                + `manifest inside it are both files in the scanned tree. Check the live file first: \`${this.cliName} secure\` `
-                + 'should report no credential outside this directory.'
+                + `inside \`${BACKUP_DIR_NAME}\`, the directory HackMyAgent stores this tree's backups in, which it never `
+                + 'auto-edits (rewriting a backup would destroy what `rollback` restores from) and never offers to delete, '
+                + 'because it cannot tell which run wrote a given copy. Check the live file first: '
+                + `\`${this.cliName} secure\` should report no credential outside this directory.`
               : isEnvFile
                 ? 'Credentials in .env are expected but the file must be in .gitignore. Run `hackmyagent secure --fix` to create a .gitignore.'
                 : 'Replaces hardcoded credentials with ${ENV_VAR} references. Store actual values in your .env file, which should be in .gitignore.',
@@ -3152,6 +3148,68 @@ export class HardeningScanner {
    * the opposite of the direction the write gate needs — see `isInsideOwnBackup`
    * (#333).
    */
+  /**
+   * Is this file inside the backup directory HackMyAgent uses for this tree?
+   *
+   * #341 — this replaces a chain of six guards that each described the backup
+   * directory with a value the scanned tree could write. The last of them gated
+   * a case-folded NAME match on the directory holding a `.manifest.json` — never
+   * opened, never parsed, an `fs.stat().isFile()` on a file in the tree being
+   * judged. `printf '{}' > …/.manifest.json` restored the harm #331 had just
+   * measured: a credential `--fix` would have redacted, left in plaintext. And
+   * the exact-name half required no evidence at all, so it left the same
+   * credential in plaintext with no forgery at all.
+   *
+   * The question is asked of the FILESYSTEM instead. `resolveArchiveBase` is a
+   * path HackMyAgent derives from the target the user named; the ancestor walk
+   * compares `dev`+`ino`, so no spelling — case, Unicode fold, symlink, `..` —
+   * changes the answer, and there is no per-spelling rule left to bypass.
+   *
+   * Three-valued for the same reason `isInsideOwnBackup` is (#333): the caller
+   * is a write gate, "no" there AUTHORISES the write, and an ancestor the
+   * filesystem would not describe proves nothing in either direction.
+   *
+   * Memoized per DIRECTORY. The answer is a property of the directory, every
+   * file in one shares it, and the walk consults the cache for ancestors — so a
+   * scan costs about one `stat` per directory rather than one per file.
+   */
+  private async isInsideArchiveBase(
+    absPath: string,
+    targetDir: string,
+  ): Promise<'yes' | 'no' | 'unknown'> {
+    let base = this.archiveBases.get(targetDir);
+    if (base === undefined) {
+      base = await resolveArchiveBase(targetDir);
+      this.archiveBases.set(targetDir, base);
+    }
+    if (!base) return 'no';
+    let dir = path.dirname(path.resolve(absPath));
+    const asked: string[] = [];
+    let answer: 'yes' | 'no' | 'unknown' = 'no';
+    // Bounded for the same reason the identity walk is: a path more than 64
+    // components deep is not something to keep stat-ing.
+    for (let i = 0; i < 64; i++) {
+      const cached = this.archiveDirAnswers.get(dir);
+      if (cached) { answer = cached; break; }
+      asked.push(dir);
+      // A lexical hit is a sound POSITIVE — same spelling, same directory — and
+      // it is the common case for a real archive, so the syscall is spent only
+      // when the cheap compare says no.
+      if (this.isPathWithinDirectory(dir, base.real) || dir === base.real) { answer = 'yes'; break; }
+      const probe = await identityOf(dir);
+      if (sameIdentity(identityOrUndefined(probe), base.ident)) { answer = 'yes'; break; }
+      if (probe.kind === 'unknown') { answer = 'unknown'; break; }
+      const parent = path.dirname(dir);
+      if (parent === dir) break; // filesystem root, and it is not the base
+      dir = parent;
+    }
+    // Only a settled answer is memoized for the whole chain: a 'yes' or a 'no'
+    // holds for every directory asked on the way, an 'unknown' holds only for
+    // the level that could not be read.
+    if (answer !== 'unknown') for (const d of asked) this.archiveDirAnswers.set(d, answer);
+    return answer;
+  }
+
   private async isOwnBackupDir(dirPath: string): Promise<boolean> {
     const ctx = this.backupContext;
     if (!ctx) return false;
@@ -3241,9 +3299,17 @@ export class HardeningScanner {
     // asked about by identity, because the two are not the same question: the
     // name test needs `filePath` and `targetDir` to be spelled compatibly, and
     // trusting that they are is how the last four rounds started.
+    //
+    // #341 — the archive half no longer walks the path's SEGMENTS looking for a
+    // name. It asks whether the file is inside the backup directory this tree
+    // uses, decided by identity. That covers a previous run's backup, this run's
+    // own, and every respelling of either, and it stops recognising directories
+    // that merely carry the name — which is what left a
+    // `vendor/.hackmyagent-backup/lib/…` credential in plaintext.
     const ctx = this.backupContext;
     const ownBackup = ctx ? await this.isInsideOwnBackup(filePath) : 'no';
-    if (ctx && (ownBackup === 'yes' || await isInsideBackupArchive(filePath, ctx.targetDir))) {
+    const inArchive = ctx ? await this.isInsideArchiveBase(filePath, ctx.targetDir) : 'no';
+    if (ownBackup === 'yes' || inArchive === 'yes') {
       this.fixWriteFailures.push({
         file: filePath,
         code: 'BACKUP-ARCHIVE',
@@ -3256,7 +3322,7 @@ export class HardeningScanner {
     // one caller for which "not our backup" authorises the write, so an
     // ancestor the filesystem would not describe has to stop it, with its own
     // cause rather than under a claim about a backup archive nobody established.
-    if (ownBackup === 'unknown') {
+    if (ownBackup === 'unknown' || inArchive === 'unknown') {
       this.fixWriteFailures.push({
         file: filePath,
         code: 'BACKUP-IDENTITY-UNKNOWN',

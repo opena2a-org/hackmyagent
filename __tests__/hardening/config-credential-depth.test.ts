@@ -250,19 +250,27 @@ describe('#292 config-shaped credential detection below the scan root', () => {
     }
   });
 
-  it('never treats a backup directory BELOW the scan root as a scan target', async () => {
-    // #302 — the exclusion above was `rel.startsWith('.hackmyagent-backup/')`,
-    // and `rel` is relative to the SCAN ROOT. So it recognised a backup
-    // directory only at that exact root, and scanning one level up walked
-    // back into it as `child/.hackmyagent-backup/…`. Every consequence the
-    // test above guards against returned, one directory higher:
+  it('keeps a nested project\'s backup recoverable when the parent is fixed', async () => {
+    // #302 filed this as "the parent must not rewrite the child's backup", and
+    // the guard was a NAME: any ancestor directory called `.hackmyagent-backup`.
     //
-    //   secure child --fix    child/.hackmyagent-backup/…/config.json = the token
-    //   secure PARENT --fix   that same copy is now ${GITHUB_TOKEN}
-    //   rollback child        exit 0, restores the redacted bytes
+    // #341 retired that guard, because a name in the scanned tree is the class
+    // this stack exists to close and recognising one costs a real remediation
+    // (#331: a live credential left in plaintext under a vendor directory that
+    // merely carries the name). The write is allowed here — and the harm #302
+    // was filed over does not follow, because `ensureBackupCovers` copies the
+    // file before the write, so the parent's own backup holds the child's
+    // archived original.
     //
-    // Not an exotic invocation — `secure ~/projects` over a tree where any
-    // one project has been secured before.
+    // Measured on this fixture: after `secure --fix <parent>` the parent's
+    // backup contains BOTH `child/config.json` and
+    // `child/.hackmyagent-backup/<stamp>/config.json`, and `rollback <parent>`
+    // returns both to their original bytes.
+    //
+    // What is left is a degradation, not a loss: `rollback <child>` restores the
+    // child's archived copy, which is now redacted, so recovery goes through the
+    // parent. That is asserted below so the trade is visible rather than
+    // implied.
     const parent = await mkdtemp(path.join(tmpdir(), 'hma-302-'));
     try {
       const child = path.join(parent, 'child');
@@ -286,14 +294,27 @@ describe('#292 config-shaped credential detection below the scan root', () => {
       ).toBe(true);
 
       // #309 — the child's archive is a foreign archive to this run, so it is
-      // reported like any other directory holding a plaintext secret. What must
-      // NOT happen is the parent scan REWRITING it, which is the harm #302 was
-      // filed for and is asserted below.
+      // reported like any other directory holding a plaintext secret, and since
+      // #341 it is FIXED like one too.
       const { readFile } = await import('node:fs/promises');
       expect(
         await readFile(backupCopy, 'utf-8'),
-        'the parent scan rewrote the CHILD\'s backup; the child\'s rollback now '
-        + 'restores redacted content over redacted content',
+        'the plaintext credential in the child\'s archive was left on disk',
+      ).not.toContain(FAKE_GH_TOKEN);
+
+      // The property that makes allowing the write acceptable, asserted rather
+      // than assumed: the parent's rollback puts the child's archived original
+      // back byte for byte. Without this the change above is data loss.
+      const rolled = await new HardeningScanner().rollback(parent);
+      expect(rolled.unrestored, 'the parent rollback could not put everything back').toEqual([]);
+      expect(
+        await readFile(backupCopy, 'utf-8'),
+        'the child\'s archived original is not recoverable from the parent\'s backup, '
+        + 'so rewriting it destroyed the only copy',
+      ).toBe(backupBody);
+      expect(
+        await readFile(path.join(child, 'config.json'), 'utf-8'),
+        'the child\'s live file is not recoverable either',
       ).toBe(backupBody);
     } finally {
       await rm(parent, { recursive: true, force: true });

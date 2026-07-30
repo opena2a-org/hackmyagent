@@ -239,11 +239,17 @@ describe('#326 archive citations claim no provenance and delete nothing', () => 
       .not.toContain('copy `--fix` saved');
     expect(finding!.description, 'the description claims the file is a HackMyAgent backup')
       .not.toContain('HackMyAgent backup');
-    // Still not a dead end: the finding says what to do, and names the check
-    // that tells the user which case they are in.
+    // Still not a dead end: the finding says what to do.
+    //
+    // #341 — the fixture is `vendor/.hackmyagent-backup/…`, which this build no
+    // longer treats as an archive at all, so the remediation is the ordinary
+    // `secure --fix` rather than the archive wording. The assertion is moved
+    // onto `fix` so it states the property that holds in BOTH branches — every
+    // finding names a runnable command — instead of a sentence only one branch
+    // emits. The archive branch's own wording is asserted by the genuine-archive
+    // fixtures below.
     expect(finding!.fix, 'the finding has no path forward at all').toBeTruthy();
-    expect(finding!.guidance ?? '', 'no verify step for deciding whether this is a backup')
-      .toContain('secure');
+    expect(finding!.fix, 'the finding gives no command to run').toContain('secure');
   });
 
   /**
@@ -395,17 +401,72 @@ describe('#326 archive citations claim no provenance and delete nothing', () => 
   });
 
   /**
-   * The control for the case above: a folded name that IS an archive — it holds
-   * a manifest — is still refused. Without this, "stop folding case" would be
-   * indistinguishable from reopening #317's write.
+   * #341 — a `.manifest.json` is not evidence, and this is the PLANTED one.
+   *
+   * #331 gated the case-folded name on the directory holding a `.manifest.json`.
+   * That file is never opened and it is a file in the scanned tree, so
+   * `printf '{}' > …/.manifest.json` — two bytes — restored the exact harm #331
+   * had just measured: a credential `--fix` would have redacted, left in
+   * plaintext. Sixth instance of the class, in the function written to close the
+   * fifth. The test that shipped with #331 used the ABSENT manifest, which is
+   * the half that was already working.
+   *
+   * The two trees here are identical but for that one file, so the assertion is
+   * about the file and nothing else.
    */
-  it('still refuses to rewrite a folded-name directory that holds a manifest', async () => {
-    const archive = path.join(dir, 'vendor', '.HACKMYAGENT-BACKUP', ARCHIVE_STAMP);
+  it('is not swayed by a .manifest.json planted beside the credential', async () => {
+    const body = JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n';
+
+    const seed = async (plantManifest: boolean): Promise<string> => {
+      const tree = await mkdtemp(path.join(tmpdir(), 'hma-341-'));
+      const vendor = path.join(tree, 'vendor', '.HACKMYAGENT-BACKUP', 'lib');
+      await mkdir(path.join(vendor, 'config'), { recursive: true });
+      await writeFile(path.join(tree, 'package.json'), '{"name":"p","version":"1.0.0"}\n');
+      await writeFile(path.join(vendor, 'config', 'production.json'), body);
+      if (plantManifest) await writeFile(path.join(vendor, '.manifest.json'), '{}');
+      return tree;
+    };
+
+    for (const planted of [false, true]) {
+      const tree = await seed(planted);
+      try {
+        const live = path.join(tree, 'vendor', '.HACKMYAGENT-BACKUP', 'lib', 'config', 'production.json');
+        const result = await new HardeningScanner().scan({ targetDir: tree, autoFix: true });
+        const cred = result.findings.find(
+          (f) => f.checkId === 'CRED-001' && f.file?.includes('production.json'),
+        );
+        expect(cred, `planted=${planted}: the credential was not reported at all`).toBeDefined();
+        expect(
+          await readFile(live, 'utf-8'),
+          `planted=${planted}: two bytes of JSON in the scanned tree stopped a fix that `
+          + 'would otherwise have redacted a live credential',
+        ).not.toContain(FAKE_GH_TOKEN);
+        expect(cred!.fixable, `planted=${planted}: the finding was marked unfixable`).toBe(true);
+      } finally {
+        await rm(tree, { recursive: true, force: true });
+      }
+    }
+  });
+
+  /**
+   * The other side of the same predicate, and — measured against the previous
+   * build — a second regression rather than the control it was written to be.
+   *
+   * The tree's OWN backup base, spelled `.HACKMYAGENT-BACKUP` on a
+   * case-insensitive filesystem, with no `.manifest.json` inside the run
+   * directory: #331's evidence requirement made that a NON-archive, so the
+   * previous build redacted HackMyAgent's own backup, which is #317's harm
+   * statement verbatim. Requiring evidence from the tree did not only admit
+   * forgeries — it also refused the genuine article.
+   *
+   * Recognition here comes from `realpath.native` resolving
+   * `<target>/.hackmyagent-backup` to whatever is on disk, so it holds for every
+   * spelling rather than for the ones that happen to case-fold, and it needs
+   * nothing inside the directory to be true.
+   */
+  it('still refuses to rewrite the tree\'s own backup base under a case variant', async () => {
+    const archive = path.join(dir, '.HACKMYAGENT-BACKUP', ARCHIVE_STAMP);
     await mkdir(archive, { recursive: true });
-    await writeFile(
-      path.join(archive, '.manifest.json'),
-      JSON.stringify({ version: 2, existingFiles: ['config.json'], absentAtBackup: [], createdFiles: [] }),
-    );
     const body = JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n';
     const copy = path.join(archive, 'config.json');
     await writeFile(copy, body);
@@ -419,8 +480,12 @@ describe('#326 archive citations claim no provenance and delete nothing', () => 
       'the archived credential was never detected; this test is measuring nothing',
     ).toBe(true);
     expect(
+      await readFile(path.join(dir, 'settings.json'), 'utf-8'),
+      'the live file was not fixed, so this run refused everything and proves nothing',
+    ).not.toContain(FAKE_GH_TOKEN);
+    expect(
       await readFile(copy, 'utf-8'),
-      'a real archive was rewritten through a case variant of its name',
+      'the tree\'s own backup was rewritten through a case variant of its name',
     ).toBe(body);
   });
 
