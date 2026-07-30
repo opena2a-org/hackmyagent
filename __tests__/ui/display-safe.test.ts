@@ -15,7 +15,7 @@
  * invisible in review and, for NUL, silently truncates the line it sits on.
  */
 import { describe, it, expect } from 'vitest';
-import { escapeForDisplay } from '../../src/ui/display-safe';
+import { escapeForDisplay, escapePathForDisplay } from '../../src/ui/display-safe';
 
 const ESC = String.fromCodePoint(0x1b);
 const NUL = String.fromCodePoint(0x00);
@@ -83,6 +83,41 @@ describe('escapeForDisplay', () => {
     // Escaping must not mangle a legitimate non-English path.
     const path = "rm -rf '/Users/me/projets/données/配置'";
     expect(escapeForDisplay(path)).toBe(path);
+  });
+
+  /**
+   * #334 — two different files must not render as the same text.
+   *
+   * `escapeForDisplay` is not injective: a directory literally named `dir\nx`
+   * (five characters) renders exactly like one named `dir<LF>x`. For a module
+   * whose stated purpose is keeping the rendered text a faithful description of
+   * what was found, that is the defect rather than a detail.
+   *
+   * The doubling lives in a separate function because it is only correct on a
+   * bare path: `escapeForDisplay` is also applied to composed lines, where a
+   * backslash may already be shell syntax or an escape this module produced, and
+   * doubling there would corrupt the command and would not be idempotent.
+   */
+  it('escapePathForDisplay distinguishes a real control character from a literal escape', () => {
+    const realLF = 'dir\nx';
+    const literal = 'dir\\nx';
+
+    expect(escapeForDisplay(realLF), 'the shared escaper is expected to collapse these')
+      .toBe(escapeForDisplay(literal));
+    expect(
+      escapePathForDisplay(realLF),
+      'two different paths still render identically',
+    ).not.toBe(escapePathForDisplay(literal));
+    expect(escapePathForDisplay(realLF)).toBe('dir\\nx');
+    expect(escapePathForDisplay(literal)).toBe('dir\\\\nx');
+  });
+
+  it('escapePathForDisplay still neutralizes everything the shared escaper does', () => {
+    const ESC_CH = String.fromCodePoint(0x1b);
+    const out = escapePathForDisplay(`a${ESC_CH}[2Jb\nc${String.fromCodePoint(0x202e)}d`);
+    expect(out).not.toContain(ESC_CH);
+    expect(out.split('\n')).toHaveLength(1);
+    expect(out).toContain('\\u202e');
   });
 
   /**

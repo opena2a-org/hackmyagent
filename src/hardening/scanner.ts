@@ -4,6 +4,9 @@
  */
 
 import * as fs from 'fs/promises';
+// `realpath.native` exists only on the callback and sync APIs, and the backup
+// root needs it: the JS implementation does not canonicalize case (#334).
+import * as fsSync from 'fs';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import { execFile } from 'child_process';
@@ -7160,10 +7163,26 @@ dist/
       );
     }
 
-    // Canonical, including the on-disk casing: everything downstream compares
+    // Canonical, including the ON-DISK CASING: everything downstream compares
     // against this, and a `.HACKMYAGENT-BACKUP` adopted by name would otherwise
     // leave the run's own paths spelled one way and read back another (#317).
-    const baseReal = await fs.realpath(base);
+    //
+    // #334 — that property needs `realpath.native`. Measured on macOS with the
+    // directory on disk named `.HACKMYAGENT-BACKUP`:
+    //
+    //   fs.realpathSync(".../.hackmyagent-backup")        -> ".../.hackmyagent-backup"
+    //   fs.realpathSync.native(".../.hackmyagent-backup") -> ".../.HACKMYAGENT-BACKUP"
+    //
+    // The JS implementation returns the CALLER's spelling for the final
+    // component, so the comment above described something the code did not do
+    // and the lexical fast path in `isOwnBackupDir` almost never fired — one
+    // `stat` per directory of every `--fix` walk, for a compare that could not
+    // match. Identity covered the gap, which is why nothing broke; correctness
+    // of the stated property and the cost are both worth fixing.
+    //
+    // Sync because there is no promises-API `.native` (Node exposes it on the
+    // callback and sync forms only), and because this runs once per run.
+    const baseReal = fsSync.realpathSync.native(base);
     if (!this.isPathWithinDirectory(baseReal, targetReal)) {
       throw backupSetupError(
         'HMA-BACKUP-OUTSIDE-TREE',
@@ -7178,10 +7197,17 @@ dist/
    *
    * #320 — the stamp was `YYYY-MM-DD-HHMMSS` in UTC and the `mkdir` was
    * `recursive: true`, which silently ADOPTS an existing directory. So the
-   * scanned tree could name HMA's own backup by guessing a second: 125
-   * pre-seeded stamp directories turned a CRITICAL into a silent drop and moved
-   * the score UP (measured 91 -> 90 CRED-001, score 13 -> 14). "Unforgeable by
-   * construction" was false, and 86,400 empty directories cover a whole day.
+   * scanned tree could name HMA's own backup by guessing a second, turning a
+   * CRITICAL into a silent drop and moving the score UP. Two independent
+   * reproductions, kept apart rather than blended (#334):
+   *
+   *   the #320 report          125 pre-seeded stamps, 126 CRED-001 detect-only
+   *                            vs 125 under `--fix`
+   *   this stack's own run      90 pre-seeded stamps,  91 CRED-001 detect-only
+   *                            vs  90 under `--fix`, score 13 -> 14
+   *
+   * "Unforgeable by construction" was false either way, and 86,400 empty
+   * directories cover a whole day.
    *
    * Two independent properties, either of which suffices:
    *   - a random component the tree cannot predict, and
@@ -7734,10 +7760,15 @@ dist/
     //
     // `backupBaseDir` is the RESOLVED base from here on, and every path below is
     // built from it. Comparing a resolved path against a lexically-joined one is
-    // the #317 mistake in miniature: on a case-insensitive filesystem
-    // `realpath` returns the on-disk casing, so a `.HACKMYAGENT-BACKUP` would
-    // fail a compare against the name we joined and a legitimate rollback would
-    // be refused.
+    // the #317 mistake in miniature: a compare against the name we joined would
+    // refuse a legitimate rollback on a `.HACKMYAGENT-BACKUP`.
+    //
+    // #334 — this comment used to say `realpath` returns the on-disk casing. It
+    // does not: the JS implementation returns the caller's spelling for the
+    // final component, and only `realpath.native` canonicalizes case. The code
+    // is correct either way — everything below is built from whatever this
+    // returns, so the two spellings cannot diverge — but the reason stated for
+    // it was wrong.
     let backupBaseDir: string;
     try {
       const joinedBase = path.join(targetReal, BACKUP_DIR_NAME);
@@ -7753,10 +7784,17 @@ dist/
       throw new Error('No backup found. Run hackmyagent secure --fix <dir> first to create a backup.');
     }
 
-    // Find the most recent backup
-    const backups = await fs.readdir(backupBaseDir);
+    // Find the most recent backup.
+    //
+    // #334 — DIRECTORIES only. This filtered dotfiles and nothing else, so an
+    // ordinary file dropped in the backup base — `zzz` sorts above every stamp —
+    // was selected as "the latest backup", and every legitimate rollback in that
+    // tree failed on it. `withFileTypes` decides by what the entry IS rather
+    // than by what it is called.
+    const backups = await fs.readdir(backupBaseDir, { withFileTypes: true });
     const sortedBackups = backups
-      .filter((b) => !b.startsWith('.'))
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+      .map((e) => e.name)
       .sort()
       .reverse();
 
@@ -7771,20 +7809,29 @@ dist/
     // which entry sorts highest, so it can offer a symlink here too (#318/#321).
     // Resolved once, and everything read out of it is required to resolve back
     // inside this directory.
+    //
+    // #334 — and it says which of those it was. These refusals used to report
+    // "Backup manifest is unreadable", naming a `.manifest.json` that was never
+    // opened, so the user was sent to look at the wrong file for a cause that
+    // was the directory itself.
     let backupReal: string;
     try {
       const st = await fs.lstat(backupDir);
-      if (st.isSymbolicLink() || !st.isDirectory()) {
-        throw new Error('selected backup is not a real directory');
+      if (st.isSymbolicLink()) {
+        throw new Error(`${backupDir} is a symbolic link, and rollback does not read through one.`);
+      }
+      if (!st.isDirectory()) {
+        throw new Error(`${backupDir} is not a directory, so it is not a backup this run can use.`);
       }
       backupReal = await fs.realpath(backupDir);
       if (!this.isPathWithinDirectory(backupReal, backupBaseDir)) {
-        throw new Error('selected backup resolves outside the backup directory');
+        throw new Error(`${backupDir} resolves to ${backupReal}, which is outside the backup directory.`);
       }
-    } catch {
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `Backup manifest is unreadable: ${path.join(backupDir, '.manifest.json')}. ` +
-        `Restore files by hand from ${backupDir}, then delete it.`
+        `The most recent backup cannot be used: ${why} `
+        + `Restore files by hand from ${backupDir} if it holds them, then delete it.`,
       );
     }
 

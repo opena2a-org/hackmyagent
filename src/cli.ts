@@ -92,7 +92,7 @@ import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore } from './
 import { shouldPrintVersionFooter } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { generateVerifyCommand } from './ui/verify-command';
-import { escapeForDisplay } from './ui/display-safe';
+import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
 import { shellQuote, citationPath } from './ui/shell-quote';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
 import type { ConceptId } from './types/finding-evidence';
@@ -623,7 +623,7 @@ function displayCheckFindings(
         }
         if (f.file) {
           const location = f.line ? `${f.file}:${f.line}` : f.file;
-          console.log(`    ${colors.dim}File:     ${escapeForDisplay(location)}${RESET()}`);
+          console.log(`    ${colors.dim}File:     ${escapePathForDisplay(location)}${RESET()}`);
         }
         if (f.fix) {
           // #324 — the verbose renderer interpolates the same untrusted paths.
@@ -1127,7 +1127,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   // #328 — `name` is the target as given, which for a local scan is a path out
   // of the tree. It is a heading rather than a command, so it is escaped for
   // display and not quoted.
-  console.log(`  ${colors.bold}${colors.white}${escapeForDisplay(name)}${RESET()}  ${colors.dim}${meta.join(' · ')}${RESET()}`);
+  console.log(`  ${colors.bold}${colors.white}${escapePathForDisplay(name)}${RESET()}  ${colors.dim}${meta.join(' · ')}${RESET()}`);
 
   // ── Verdict + Score ─────────────────────────────────────────────────
   if (localScan || nanomindScan) {
@@ -1240,7 +1240,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         // pass below, so the line stays formatted by one place. Found by a test
         // asserting no rendered line splits: the finding header and the fix line
         // were escaped and this third consumer of the same path was not.
-        file: f.file === undefined ? undefined : escapeForDisplay(f.file),
+        file: f.file === undefined ? undefined : escapePathForDisplay(f.file),
         line: f.line,
       })),
     );
@@ -1259,7 +1259,18 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       checks: { staticCount, semanticCount },
       categories: categorySummaries,
       verdict: verdictLine,
-      artifacts: opts.artifactSummaries ? reconciledArtifacts : undefined,
+      // #334 — the artifact PATHS come out of the scanned tree too, and this was
+      // the one line of five that a control-character probe still found raw:
+      //
+      //   Artifacts   .claude/skills/esc<ESC>[2JSKILL/SKILL.md  skill · unknown · …
+      //
+      // The comment on the verdict line above cites "the artifact-intent pass
+      // below" as the precedent for escaping at renderer input — and that pass
+      // was exactly the one that did not escape. Escaped here, at the same
+      // input, so the citation is true of both.
+      artifacts: opts.artifactSummaries
+        ? reconciledArtifacts.map((a) => ({ ...a, path: escapePathForDisplay(a.path) }))
+        : undefined,
       verbose: !!verbose,
     });
 
@@ -1392,7 +1403,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       // the list (issue #134).
       const topFindings = [...failed].sort(compareFindingsByTier).slice(0, 3);
       for (const f of topFindings) {
-        const shortFile = f.file ? escapeForDisplay(shortenPath(f.file)) : '';
+        const shortFile = f.file ? escapePathForDisplay(shortenPath(f.file)) : '';
         const loc = shortFile + (f.line ? `:${f.line}` : '');
         const borderColor = SEVERITY_DISPLAY[f.severity].color();
         console.log();
@@ -1428,7 +1439,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         // #324 — the finding header, the guidance and the fix all interpolate a
         // path that came from the scanned tree. A newline in one split the
         // location line and truncated the fix command mid-quote.
-        const shortFile = f.file ? escapeForDisplay(shortenPath(f.file)) : '';
+        const shortFile = f.file ? escapePathForDisplay(shortenPath(f.file)) : '';
         const loc = shortFile + (f.line ? `:${f.line}` : '');
         const borderColor = SEVERITY_DISPLAY[f.severity].color();
         console.log();
@@ -4979,8 +4990,8 @@ Examples:
         `   Restored ${restoredCount} modified file${restoredCount === 1 ? '' : 's'}, ` +
         `removed ${removedCount} generated file${removedCount === 1 ? '' : 's'}.`,
       );
-      for (const file of report.restored) console.log(`   ${colors.dim}restored${RESET()}  ${escapeForDisplay(file)}`);
-      for (const file of report.removed) console.log(`   ${colors.dim}removed ${RESET()}  ${escapeForDisplay(file)}`);
+      for (const file of report.restored) console.log(`   ${colors.dim}restored${RESET()}  ${escapePathForDisplay(file)}`);
+      for (const file of report.removed) console.log(`   ${colors.dim}removed ${RESET()}  ${escapePathForDisplay(file)}`);
 
       // Files the manifest listed and rollback could not put back (#327). Named
       // first among the exceptions: this is the one case where the user's own
@@ -4992,10 +5003,10 @@ Examples:
           '(the backup was kept, and still holds the only copy):',
         );
         for (const entry of report.unrestored) {
-          console.log(`   ${colors.dim}not restored${RESET()}  ${escapeForDisplay(entry.path)}  ${colors.dim}— ${escapeForDisplay(entry.reason)}${RESET()}`);
+          console.log(`   ${colors.dim}not restored${RESET()}  ${escapePathForDisplay(entry.path)}  ${colors.dim}— ${escapeForDisplay(entry.reason)}${RESET()}`);
         }
         if (report.backupRetainedAt) {
-          console.log(`   ${colors.dim}backup kept at${RESET()}  ${escapeForDisplay(report.backupRetainedAt)}`);
+          console.log(`   ${colors.dim}backup kept at${RESET()}  ${escapePathForDisplay(report.backupRetainedAt)}`);
         }
         console.log(`   Copy those files back by hand, then delete the backup directory.`);
       }
@@ -5010,7 +5021,7 @@ Examples:
       // had them since #324: a property asserted about one command is not a
       // property. See `__tests__/helpers/render-safety.ts`.
       const keptLine = (file: string): string =>
-        `   ${colors.dim}kept    ${RESET()}  ${escapeForDisplay(file)}  `
+        `   ${colors.dim}kept    ${RESET()}  ${escapePathForDisplay(file)}  `
         + `${colors.dim}— review, then \`rm ${citationPath(file)}\` if unwanted${RESET()}`;
 
       if (report.keptModified.length > 0) {

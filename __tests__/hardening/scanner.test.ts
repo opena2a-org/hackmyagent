@@ -1235,13 +1235,16 @@ describe('Backup and rollback', () => {
    * The stamp carries BOTH properties the backup directory depends on, and this
    * test exists to fail if either is dropped:
    *
-   *   - a `YYYY-MM-DD-HHMMSS` prefix, because `rollback` selects the latest
-   *     backup by lexical sort and needs the name to be time-ordered;
+   *   - a time-ordered prefix, because `rollback` selects the latest backup by
+   *     lexical sort and needs the name to sort in creation order. It carries
+   *     milliseconds and an ordering sequence since #332, where the random
+   *     suffix was deciding that order inside a second;
    *   - a random suffix, because #320 showed a pure timestamp is a name the
-   *     scanned tree can guess. 125 pre-seeded stamp directories covering two
-   *     minutes made `mkdir(..., {recursive: true})` adopt one of them as the
-   *     run's own backup, which silently dropped a CRITICAL and moved the score
-   *     UP. The suffix is why a pre-seeded name can no longer be this run's.
+   *     scanned tree can guess. In the #320 report, 125 pre-seeded stamp
+   *     directories covering two minutes made `mkdir(..., {recursive: true})`
+   *     adopt one of them as the run's own backup, which silently dropped a
+   *     CRITICAL and moved the score UP. The suffix is why a pre-seeded name can
+   *     no longer be this run's.
    */
   it('backup folder name is time-ordered AND not guessable', async () => {
     const configPath = path.join(tempDir, 'config.json');

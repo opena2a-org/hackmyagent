@@ -85,3 +85,26 @@ export function escapeForDisplay(text: string): string {
       : `\\x${code.toString(16).padStart(2, '0')}`;
   });
 }
+
+/**
+ * The same escaping for a BARE path, and injective (#334).
+ *
+ * `escapeForDisplay` is not one-to-one: a directory literally named `dir\nx` —
+ * five characters, backslash then `n` — renders exactly like one named `dir<LF>x`.
+ * For a module whose stated purpose is keeping "the rendered text a faithful
+ * description of what was found", two different files reading identically is the
+ * defect, not a detail. Escaping the escape character first fixes it.
+ *
+ * It is a SEPARATE function because doubling backslashes is only correct on a
+ * raw path. `escapeForDisplay` is also applied to composed text — fix lines,
+ * guidance, citations — where a backslash may already be shell syntax
+ * (`'…'\''…'` is how a quoted path carries an apostrophe) or an escape this
+ * module itself produced. Doubling there would change a correct command into a
+ * wrong one, and would not be idempotent: `\n` would grow on every pass.
+ *
+ * So: this one for a path rendered on its own, `escapeForDisplay` for a line
+ * built out of one.
+ */
+export function escapePathForDisplay(p: string): string {
+  return escapeForDisplay(p.split('\\').join('\\\\'));
+}

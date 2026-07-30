@@ -145,6 +145,33 @@ describe('#327 a rollback reports what it could not restore', () => {
   });
 
   /**
+   * #334 — a FILE in the backup base is not a backup.
+   *
+   * The selection filtered dotfiles and nothing else, so an ordinary file named
+   * `zzz` — which sorts above every stamp — was chosen as "the most recent
+   * backup", and every legitimate rollback in that tree failed on it under a
+   * message naming a `.manifest.json` that was never opened.
+   */
+  it('ignores a non-directory in the backup base and rolls back the real one', async () => {
+    await writeFile(
+      path.join(dir, 'config.json'),
+      `${JSON.stringify({ token: FAKE_GH_TOKEN }, null, 2)}\n`,
+    );
+
+    const scanner = new HardeningScanner();
+    await scanner.scan({ targetDir: dir, autoFix: true });
+    // Dropped in after the backup exists, so it can only affect SELECTION.
+    await writeFile(path.join(dir, '.hackmyagent-backup', 'zzz'), 'not a backup\n');
+
+    const report = await scanner.rollback(dir);
+
+    expect(
+      report.restored,
+      'a file in the backup base was selected as the latest backup, so the real one was never used',
+    ).toContain('config.json');
+  }, 120_000);
+
+  /**
    * The control that keeps the assertion above from being satisfied by "never
    * delete the backup". A rollback that restored everything still consumes it.
    *

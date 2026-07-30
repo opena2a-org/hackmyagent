@@ -249,8 +249,10 @@ describe('backup directory identity', () => {
 
   /**
    * #320 — the stamp was a UTC second and the `mkdir` was recursive, so the tree
-   * could name HMA's own backup by guessing. Measured: 125 pre-seeded stamps,
-   * 126 CRED-001 detect-only vs 125 under `--fix`, and the score moved UP.
+   * could name HMA's own backup by guessing. Measured in the #320 report: 125
+   * pre-seeded stamps, 126 CRED-001 detect-only vs 125 under `--fix`, and the
+   * score moved UP. (This stack's own reproduction used 90 stamps and saw 91 vs
+   * 90; the two runs are reported separately rather than averaged — #334.)
    *
    * Seeds a WINDOW around the current second so the run cannot dodge the fixture
    * by landing on an unseeded second.
