@@ -74,7 +74,7 @@ describe('#338 one unusable backup directory cannot wedge recovery', () => {
    * not contain, which is the cheapest forgery there is: nothing to plant but a
    * name.
    */
-  it('recovers the original bytes on the second rollback, not never', async () => {
+  it('recovers the original bytes in ONE run, not never', async () => {
     await fixForReal();
     const forged = path.join(dir, '.hackmyagent-backup', FORGED);
     await mkdir(forged, { recursive: true });
@@ -88,20 +88,21 @@ describe('#338 one unusable backup directory cannot wedge recovery', () => {
       }),
     );
 
-    const first = await new HardeningScanner().rollback(dir);
-    expect(first.unrestored.map((u) => u.path)).toContain('no-such-file.json');
-    expect(
-      first.backupRetainedAt,
-      'a directory holding no copy of anything was kept, which is what wedges the next run',
-    ).toBeUndefined();
-    expect(await exists(forged), 'the unusable directory was kept on disk').toBe(false);
+    const report = await new HardeningScanner().rollback(dir);
 
-    const second = await new HardeningScanner().rollback(dir);
-    expect(second.restored, 'the real backup was still not reached').toContain('config.json');
+    expect(
+      report.barrenBackups.map((b) => b.name),
+      'the directory that restored nothing was not reported',
+    ).toContain(FORGED);
+    expect(report.restored, 'the real backup behind it was not reached').toContain('config.json');
     expect(
       await readFile(path.join(dir, 'config.json'), 'utf-8'),
       'the original bytes never came back',
     ).toBe(original);
+    expect(
+      await exists(forged),
+      'a directory HackMyAgent could not use was deleted; it may hold bytes nobody can read yet',
+    ).toBe(true);
   }, 120_000);
 
   /**
@@ -246,28 +247,45 @@ describe('#338 one unusable backup directory cannot wedge recovery', () => {
    * could have copied out — so none of these buys the tree a lock on recovery.
    */
   it.each([
-    ['a directory', async (b: string) => { await mkdir(path.join(b, 'X'), { recursive: true }); }],
-    ['a symlink pointing out of the backup', async (b: string) => { await symlink('/etc/hosts', path.join(b, 'X')); }],
+    // Source-side: what the backup holds.
+    ['a directory in the backup', async (b: string) => { await mkdir(path.join(b, 'X'), { recursive: true }); }],
+    ['a link out of the backup', async (b: string) => { await symlink('/etc/hosts', path.join(b, 'X')); }],
     ['nothing at all', async () => { /* the manifest names a file that is simply absent */ }],
-  ])('is not wedged when the forged entry is %s', async (_label, plant) => {
+    // Destination-side: the copy is REAL, and the obstacle is where it must go.
+    // Refining the source predicate could never catch these — the tree owns both
+    // ends — which is why the loop is what changed.
+    ['a real copy blocked by a directory at the destination', async (b: string, d: string) => {
+      await writeFile(path.join(b, 'X'), 'A\n');
+      await mkdir(path.join(d, 'X'), { recursive: true });
+    }],
+    ['a real copy blocked by a link out of the tree', async (b: string, d: string) => {
+      await writeFile(path.join(b, 'X'), 'A\n');
+      await symlink('/etc/hosts', path.join(d, 'X'));
+    }],
+    ['a real copy blocked by a dangling link', async (b: string, d: string) => {
+      await writeFile(path.join(b, 'X'), 'A\n');
+      await symlink('nowhere-at-all', path.join(d, 'X'));
+    }],
+  ])('is not wedged when the forged entry is %s', async (_label: string, plant: (b: string, d: string) => Promise<void>) => {
     await fixForReal();
     const forged = path.join(dir, '.hackmyagent-backup', FORGED);
     await mkdir(forged, { recursive: true });
-    await plant(forged);
+    await plant(forged, dir);
     await writeFile(
       path.join(forged, '.manifest.json'),
       JSON.stringify({ version: 2, existingFiles: ['X'], absentAtBackup: [], createdFiles: [] }),
     );
 
-    await new HardeningScanner().rollback(dir);
+    const report = await new HardeningScanner().rollback(dir);
+    expect(
+      report.restored,
+      'the real backup behind the forged one was never reached, so this shape still wedges',
+    ).toContain('config.json');
+    expect(await readFile(path.join(dir, 'config.json'), 'utf-8')).toBe(original);
     expect(
       await exists(forged),
-      'a directory holding no restorable copy was kept, so the next run selects it again',
-    ).toBe(false);
-
-    const second = await new HardeningScanner().rollback(dir);
-    expect(second.restored, 'the real backup was never reached').toContain('config.json');
-    expect(await readFile(path.join(dir, 'config.json'), 'utf-8')).toBe(original);
+      'a directory HackMyAgent could not use was deleted rather than passed over',
+    ).toBe(true);
   }, 120_000);
 
   /**

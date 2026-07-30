@@ -116,6 +116,16 @@ export interface RollbackReport {
    */
   skippedBackups: Array<{ name: string; reason: string }>;
   /**
+   * Candidates that listed files and put none of them back.
+   *
+   * A backup that promised entries and delivered nothing is not this run's
+   * backup, whatever the reason — and the reason is always something the scanned
+   * tree arranged, at one end or the other. It is KEPT (it may hold bytes nobody
+   * can read yet), reported, and passed over, so one forged directory cannot
+   * stand in front of the real backup for ever.
+   */
+  barrenBackups: Array<{ name: string; listed: number }>;
+  /**
    * How many further backup directories sit behind the one this run used
    * (#338). Reported when a rollback does not complete, so a user staring at a
    * retained directory is told that dealing with it uncovers another.
@@ -8198,6 +8208,13 @@ dist/
     // then do — advancing on a RESTORE failure would silently reach past a real
     // backup into an older one and put stale content back, which is #332's harm.
     const skippedBackups: Array<{ name: string; reason: string }> = [];
+    /** Candidates that listed files and restored none of them. Kept, never used. */
+    const barren: Array<{
+      name: string; at: string; dir: string;
+      manifest: BackupManifest; unrestored: RollbackReport['unrestored'];
+    }> = [];
+    let restored: string[] = [];
+    let unrestored: RollbackReport['unrestored'] = [];
     let backupReal: string | undefined;
     let backupDir: string | undefined;
     let latestBackup: string | undefined;
@@ -8272,10 +8289,69 @@ dist/
         continue;
       }
 
+      // Try this candidate's restores HERE, because the decision to use it
+      // depends on what they do.
+      //
+      // Refining `backupHoldsCopy` was not enough and could never have been: the
+      // scanned tree controls BOTH ends. It plants a real regular file in the
+      // forged backup — so the copy genuinely is there — and plants a directory,
+      // or a link pointing out of the tree, at the DESTINATION. The restore then
+      // fails for a reason that has nothing to do with the copy, retention is
+      // correct to keep the directory, and the wedge is back: measured three
+      // runs each on `destdir`, `destlink-out` and `destlink-dangling`, nothing
+      // restored, the real backup never reached. Any predicate over the tree's
+      // own bytes loses this game.
+      //
+      // So the LOOP is what changes. A candidate that promised entries and
+      // delivered none of them is not this run's backup, whatever the reason: it
+      // is kept (it may hold bytes nobody can read yet) and REPORTED, and the run
+      // moves to the next one. A candidate that restored something, or that
+      // promised nothing, is the backup — advancing past either of those is what
+      // would reach into an older run and restore stale content.
+      const attempt: RollbackReport['unrestored'] = [];
+      const put: string[] = [];
+      for (const file of manifest?.existingFiles ?? []) {
+        const outcome = await this.restoreOneBackupFile(candidateReal, targetReal, file);
+        if (outcome.ok) {
+          put.push(file);
+        } else {
+          const base = RESTORE_REFUSAL_REASONS[outcome.cause];
+          attempt.push({
+            path: file,
+            reason: outcome.detail ? `${base} (${outcome.detail})` : base,
+            backupHoldsCopy: outcome.backupHoldsCopy,
+          });
+        }
+      }
+      if (put.length === 0 && attempt.length > 0) {
+        barren.push({
+          name: candidate, at: candidateReal, dir: candidateDir,
+          manifest: manifest as BackupManifest, unrestored: attempt,
+        });
+        continue;
+      }
+
+      restored = put;
+      unrestored = attempt;
       backupReal = candidateReal;
       backupDir = candidateDir;
       latestBackup = candidate;
       break;
+    }
+
+    // Every candidate was barren. There is nothing behind them to be wedged out
+    // of, so the newest one becomes this run's backup after all: the user gets
+    // the full per-entry report and the retention decision, instead of a
+    // one-line refusal that names no reason. The no-wedge property is unaffected
+    // — passing over only matters when there IS something behind.
+    if (!backupReal && barren.length > 0) {
+      const first = barren.shift()!;
+      backupReal = first.at;
+      backupDir = first.dir;
+      latestBackup = first.name;
+      manifest = first.manifest;
+      restored = [];
+      unrestored = first.unrestored;
     }
 
     if (!backupReal || !backupDir || !latestBackup || !manifest) {
@@ -8293,13 +8369,14 @@ dist/
     const remainingBehind = sortedBackups.length - sortedBackups.indexOf(latestBackup) - 1;
 
     const report: RollbackReport = {
-      restored: [],
+      restored,
       removed: [],
       keptModified: [],
       keptUnverifiable: [],
-      unrestored: [],
+      unrestored,
       unremoved: [],
       skippedBackups,
+      barrenBackups: barren.map((b) => ({ name: b.name, listed: b.unrestored.length })),
       backupsBehind: remainingBehind,
       backupUsed: latestBackup,
     };
@@ -8328,19 +8405,6 @@ dist/
     // `restored sshlink/authorized_keys`; a symlink INSIDE the backup pulled
     // out-of-tree content the other way. Both ends are now resolved, and the
     // `..` case is still refused before any syscall is spent on it.
-    for (const file of manifest.existingFiles) {
-      const outcome = await this.restoreOneBackupFile(backupReal, targetReal, file);
-      if (outcome.ok) {
-        report.restored.push(file);
-      } else {
-        const base = RESTORE_REFUSAL_REASONS[outcome.cause];
-        report.unrestored.push({
-          path: file,
-          reason: outcome.detail ? `${base} (${outcome.detail})` : base,
-          backupHoldsCopy: outcome.backupHoldsCopy,
-        });
-      }
-    }
 
     // Remove files a fix stage created — but only when the bytes on disk are
     // still the bytes HMA wrote. Any edit since means the file is the user's

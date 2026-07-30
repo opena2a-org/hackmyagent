@@ -5059,6 +5059,20 @@ Examples:
         console.log('   Review each one and delete it by hand if HackMyAgent generated it.');
       }
 
+      // Candidates that listed files and put none of them back. Kept on disk —
+      // they may hold bytes nobody can read yet — but passed over, so one forged
+      // directory cannot stand in front of the real backup for ever.
+      if (report.barrenBackups.length > 0) {
+        console.log(
+          `\n   ${colors.yellow}Passed over ${report.barrenBackups.length} backup director${report.barrenBackups.length === 1 ? 'y' : 'ies'} that restored nothing${RESET()} ` +
+          '(left in place, in case they hold something this run could not read):',
+        );
+        for (const b of report.barrenBackups) {
+          console.log(`   ${colors.dim}restored nothing${RESET()}  ${escapePathForDisplay(b.name)}  ${colors.dim}— listed ${b.listed} file${b.listed === 1 ? '' : 's'}, put none back${RESET()}`);
+        }
+        console.log('   Review each one and delete it if it is not yours.');
+      }
+
       // Backups this run could not read at all, and what is still behind the one
       // it used (#338). Selection is a guess at a name the scanned tree can
       // write, so both facts belong to the user: a directory that was passed
