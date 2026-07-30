@@ -7135,19 +7135,47 @@ dist/
    *     pre-seeded `.../2026-07-29-120000-AB12CD34` cannot become this run's
    *     backup either.
    *
-   * The `YYYY-MM-DD-HHMMSS` prefix stays: `rollback` selects the latest backup
-   * by lexical sort, so the stamp has to remain time-ordered.
+   * The time-ordered prefix stays: `rollback` selects the latest backup by
+   * lexical sort, so the NAME has to sort in creation order.
+   *
+   * #332 — adding the random suffix broke exactly that, and the comment here
+   * asserting the invariant was the only thing left holding it. Two backups
+   * created inside one second sorted by random hex: measured at the primitive
+   * level, 5 of 6 trials selected the OLDER backup, which leaves run 2's
+   * generated files in place, deletes run 1's copies, and lets a second
+   * rollback restore already-redacted content — #317's shape again.
+   *
+   * Two changes, so the ordering component is decided by time and only by time:
+   *
+   *   - the stamp carries MILLISECONDS. Two `createBackup` calls were measured
+   *     2-6ms apart, so seconds were not enough resolution to order them.
+   *   - within one millisecond, a fixed-width SEQUENCE derived from what is
+   *     already in the base orders the siblings. That is what makes sequential
+   *     creation deterministic rather than merely likely.
+   *
+   * The random component stays (that is #320) but no longer decides anything.
+   * Truly concurrent creation in the same millisecond by two processes is still
+   * a tie — neither is "later" at that resolution — and the concurrency test
+   * covers what matters there: neither run adopts or deletes the other's backup.
+   *
+   * Names written by earlier versions (`YYYY-MM-DD-HHMMSS-<rand>`) sort BELOW a
+   * new name from the same second, since a digit outranks the `-` that follows
+   * the seconds field. That is the correct order: the new one is later.
    */
   private async createRunBackupDir(baseReal: string): Promise<string> {
     const stamp = new Date()
       .toISOString()
-      .slice(0, 19)
+      .slice(0, 23)
       .replace('T', '-')
-      .replace(/:/g, '');
+      .replace(/[:.]/g, '');
+    const seq = await this.nextStampSequence(baseReal, stamp);
 
     let lastErr: unknown;
     for (let attempt = 0; attempt < 8; attempt++) {
-      const dir = path.join(baseReal, `${stamp}-${crypto.randomBytes(4).toString('hex')}`);
+      const dir = path.join(
+        baseReal,
+        `${stamp}-${String(seq + attempt).padStart(3, '0')}-${crypto.randomBytes(4).toString('hex')}`,
+      );
       try {
         await fs.mkdir(dir);
         return dir;
@@ -7163,6 +7191,34 @@ dist/
       `Could not create a new backup directory under ${baseReal} after 8 attempts`
       + `${lastErr instanceof Error ? `: ${lastErr.message}` : '.'}`,
     );
+  }
+
+  /**
+   * The next ordering slot for `stamp`: one past the highest sequence already
+   * recorded for that same millisecond in this base.
+   *
+   * Reading the base is what makes SEQUENTIAL creation deterministic rather than
+   * merely probable — run 1 is on disk before run 2 asks. Two processes asking
+   * at the same instant can still choose the same slot, which is the tie the
+   * millisecond stamp has already declared.
+   *
+   * Fails to zero: an unreadable base leaves ordering to the millisecond stamp,
+   * which is the behaviour without this function at all, and never blocks a
+   * backup — this is an ordering aid, not a guard.
+   */
+  private async nextStampSequence(baseReal: string, stamp: string): Promise<number> {
+    try {
+      const entries = await fs.readdir(baseReal);
+      let highest = -1;
+      for (const entry of entries) {
+        if (!entry.startsWith(`${stamp}-`)) continue;
+        const seq = Number.parseInt(entry.slice(stamp.length + 1, stamp.length + 4), 10);
+        if (Number.isFinite(seq) && seq > highest) highest = seq;
+      }
+      return Math.min(highest + 1, 998);
+    } catch {
+      return 0;
+    }
   }
 
   /**

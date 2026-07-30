@@ -1255,7 +1255,13 @@ describe('Backup and rollback', () => {
     const backupDir = path.join(tempDir, '.hackmyagent-backup');
     const backups = await fs.readdir(backupDir);
 
-    expect(backups[0]).toMatch(/^\d{4}-\d{2}-\d{2}-\d{6}-[0-9a-f]{8}$/);
+    // #332 — the stamp carries milliseconds and a fixed-width ordering sequence
+    // now, because seconds could not separate two runs measured 2-6ms apart and
+    // the random suffix was deciding which backup `rollback` selected. The
+    // property this asserts is unchanged: a time-ordered prefix, then something
+    // the scanned tree cannot predict. `__tests__/hardening/backup-stamp-ordering.test.ts`
+    // asserts the ordering itself rather than its spelling.
+    expect(backups[0]).toMatch(/^\d{4}-\d{2}-\d{2}-\d{9}-\d{3}-[0-9a-f]{8}$/);
   });
 
   /**
