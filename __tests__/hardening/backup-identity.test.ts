@@ -22,10 +22,20 @@
  * reproduce on a case-insensitive filesystem (the macOS default, where #317 was
  * measured); on a case-sensitive one the two names are simply two directories.
  * So it asserts a filesystem-independent invariant, plus a stronger claim about
- * the mechanism when the filesystem is measured to fold case — and the same root
- * is covered on EVERY filesystem by `symlinked to a sibling inside the tree`
- * below, which is the identical defect reached through a symlink instead of
- * through case folding.
+ * the mechanism when the filesystem is measured to fold case.
+ *
+ * #329 — the sentence that used to sit here claimed the same root was covered on
+ * every filesystem by `symlinked to a sibling inside the tree` below. It is not:
+ * that test asserts `FIX-BACKUP-FAILED`, which is `prepareBackupRoot` refusing
+ * before any backup exists, so there is no `backupContext` in the run and
+ * `backupIdent` is never read. Measured consequence: replacing `sameIdentity`
+ * with `return false` — deleting the whole mechanism — left this file and
+ * `backup-archive-integrity` green under a NON-symlinked TMPDIR, which is
+ * exactly ubuntu-latest. The lexical fast path succeeds whenever
+ * `realpath(target) === target`, so identity is never consulted there.
+ *
+ * `identity survives a scan root that is a symlink` below is the case that does
+ * reach it, on any filesystem, by making the two spellings differ.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
@@ -286,6 +296,71 @@ describe('backup directory identity', () => {
       }
     } finally {
       await rm(fixDir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * #329 — the case that actually reaches the identity mechanism, on every
+   * filesystem.
+   *
+   * `isOwnBackupDir` tries a lexical compare first and only asks the filesystem
+   * when that fails. On a plain Linux `/tmp` — ubuntu-latest — `realpath(target)
+   * === target`, so the lexical compare always succeeds and identity is never
+   * consulted: replacing `sameIdentity` with `return false` left every suite in
+   * this file green there.
+   *
+   * Scanning THROUGH a symlink to the root makes the two spellings differ:
+   * `prepareBackupRoot` resolves the target, so `backupContext.backupDir` is
+   * spelled with the real path while the walk produces paths spelled with the
+   * link. Nothing lexical can match, and the only thing that can recognise the
+   * run's own backup is its `dev`+`ino`.
+   *
+   * The measured consequence when it cannot: the copy `--fix` has just written
+   * is scanned as if it were a second exposure, so one credential is reported
+   * twice and the score drops for a file the user does not have.
+   *
+   * The fixture carries the case-variant base as well, so on a case-folding
+   * filesystem it reproduces against the pre-identity commit too — there the
+   * adopted directory is spelled one way and read back another. On a
+   * case-sensitive filesystem that half is inert and the symlinked root carries
+   * the test on its own.
+   */
+  it('identity survives a scan root that is a symlink', async () => {
+    const link = path.join(path.dirname(dir), `${path.basename(dir)}-link`);
+    await symlink(dir, link);
+    try {
+      await mkdir(path.join(dir, '.HACKMYAGENT-BACKUP'));
+      await writeFile(path.join(dir, 'config.json'), BODY);
+
+      const result = await new HardeningScanner().scan({ targetDir: link, autoFix: true });
+      const cred = result.findings.filter((f) => f.checkId === 'CRED-001');
+
+      // Non-vacuity, both directions: the credential must have been found, and
+      // the fix must have landed — otherwise "exactly one finding" would be
+      // satisfied by a run that did nothing.
+      expect(cred.length, 'no credential was detected through the symlinked root').toBeGreaterThan(0);
+      expect(
+        await readFile(path.join(dir, 'config.json'), 'utf-8'),
+        'the live file was not redacted, so no backup copy was made to recognise',
+      ).not.toContain(FAKE_GH_TOKEN);
+
+      const copies = (await walkFiles(dir)).filter(
+        (f) => path.basename(f) === 'config.json' && f !== 'config.json',
+      );
+      expect(copies.length, 'no backup copy was made at all').toBeGreaterThan(0);
+
+      expect(
+        cred.length,
+        'the copy `--fix` had just made was reported as a second exposure: the run '
+        + 'did not recognise its own backup through a path spelled differently, which '
+        + 'is what filesystem identity is for',
+      ).toBe(1);
+      expect(
+        cred[0].file,
+        'the reported credential is the backup copy rather than the live file',
+      ).toBe('config.json');
+    } finally {
+      await rm(link, { force: true });
     }
   });
 
