@@ -5,6 +5,12 @@ export default defineConfig({
     globals: false,
     environment: 'node',
     include: ['src/**/*.test.ts', '__tests__/**/*.test.ts', '__tests__/**/*.ts'],
+    // Keeps the spawn tests off the developer's home directory. Without it a
+    // scan of a two-file fixture inherits every finding in a populated
+    // ~/.openclaw, which is what made five files red on main locally while CI
+    // was green. Reasoning in vitest.setup.ts; contract pinned by
+    // __tests__/harness/hermetic-home.test.ts.
+    setupFiles: ['./vitest.setup.ts'],
     // 23 test files spawn `dist/cli.js` and run a real scan. A full scan of
     // the kitchen-sink corpus fixture takes a few seconds idle and comfortably
     // over ten under parallel load, so a 10s cap made every one of them a
