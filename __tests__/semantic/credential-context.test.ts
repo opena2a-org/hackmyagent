@@ -128,8 +128,21 @@ describe('CredentialContextAnalyzer', () => {
         // silenced both of these.
         ['my- passphrase', 'postgres://admin:my-SuperSecretPassphrase@db.prod.example.com/app'],
         ['my_ prod password', 'postgres://admin:my_prod_db_password@db.prod.example.com/app'],
-        // Brackets must not launder a secret.
+        // Brackets must not launder a secret. Case alone did not stop this:
+        // a lowercase hex digest and an uppercase base32 secret are both
+        // single-cased by construction, so the bracket body is word-bounded.
         ['angle-wrapped secret', 'postgres://admin:<vendorkey-AAAABBBBCCCCDDDD>@db.prod.example.com/app'],
+        ['angle-wrapped, all lowercase', 'postgres://admin:<vendorkey-aaaabbbbccccdddd>@db.prod.example.com/app'],
+        ['angle-wrapped, all uppercase', 'postgres://admin:<GHP-ABCDEFGHIJKLMNOPQRSTUV>@db.prod.example.com/app'],
+        ['angle-wrapped hex digest', 'postgres://admin:<deadbeefcafebabe0123456789ab>@db.prod.example.com/app'],
+        // Short same-case words are not enough on their own — this is ~155 bits
+        // of lowercase payload whose every word clears the per-word bound.
+        ['vocabulary + short-word entropy', 'postgres://admin:your-bwyyoabskkd-byxhwmitldt-ypgydpmzx@db.prod.example.com/app'],
+        ['vocabulary + chunked entropy', 'postgres://admin:your-abc-def-ghi-jkl-mno-pqr@db.prod.example.com/app'],
+        // One separator inserted into a shouted blob defeated the per-word bound.
+        ['shouted blob split in two', 'postgres://admin:YOUR_KJHGFDSAQWE_RTYUIOPZXC@db.prod.example.com/app'],
+        // A hex run clears every length bound and is still a digest.
+        ['vocabulary + hex digest', 'postgres://admin:your_deadbeefcafe@db.prod.example.com/app'],
         // A bare imperative is something a user could actually have typed.
         ['bare change', 'postgres://admin:change@db.prod.example.com/app'],
         ['bare replace', 'postgres://admin:replace@db.prod.example.com/app'],
@@ -175,6 +188,10 @@ describe('CredentialContextAnalyzer', () => {
         // reported, so the default-credential finding is not lost.
         ['a shouted change-me phrase', 'postgres://admin:CHANGE_ME_NOW_OR_ELSE@db.example.com/app'],
         ['placeholder suffix', 'postgres://admin:placeholder-value@db.example.com/app'],
+        // Prose continuations must survive the hex rule — `credentials` is 11
+        // characters and every letter of `accede` is a hex digit.
+        ['a prose placeholder', 'postgres://admin:your-credentials-here@db.example.com/app'],
+        ['another prose placeholder', 'postgres://admin:your-access-token@db.example.com/app'],
       ] as Array<[string, string]>) {
         const findings = analyzer.analyze([makeFile('config.json', url, 'config_file')]);
         expect(

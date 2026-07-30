@@ -299,6 +299,20 @@ const PLACEHOLDER_WORDS = new Set(['your', 'todo', 'fixme', 'example', 'placehol
 const MAX_PLACEHOLDER_WORD_CHARS = 12;
 /** Longest the whole value may be before it stops reading as a placeholder. */
 const MAX_PLACEHOLDER_CHARS = 40;
+/**
+ * Longest the remainder after the leading vocabulary word may be.
+ *
+ * Short words are not enough on their own: `your-abc-def-ghi-jkl-mno-pqr` is
+ * 23 characters of lowercase payload — around 155 bits — and every one of its
+ * words clears the per-word bound. Inserting a single separator into a shouted
+ * blob (`YOUR_KJHGFDSAQWE_RTYUIOPZXC`) does the same thing.
+ *
+ * Measured separation on this file's own fixtures: the longest payload any
+ * suppressed placeholder carries is 15 (`CHANGE_ME_NOW_OR_ELSE`), and the
+ * shortest payload of a secret found this way is 23. 18 sits between them with
+ * margin on both sides.
+ */
+const MAX_PLACEHOLDER_PAYLOAD_CHARS = 18;
 
 /**
  * All lowercase, or all uppercase. Placeholders are written in one case —
@@ -319,11 +333,15 @@ function hasUniformCase(value: string): boolean {
  * and the value only has to veto. So the value must be shaped like a
  * placeholder, not merely open with the vocabulary:
  *
- *   1. An angle-bracket template whose body is wordy and single-cased:
- *      `<password>`, `<YOUR_PASSWORD>`. Brackets alone do not launder a
- *      secret — `<sk-proj-AAAABBBB>` is mixed case and stays reported.
+ *   1. An angle-bracket template whose body is single-cased AND made of words:
+ *      `<password>`, `<YOUR_PASSWORD>`. Case alone was not enough — it let a
+ *      pair of brackets launder `<vendorkey-aaaabbbbccccdddd>`, and a lowercase
+ *      hex digest or an uppercase base32 secret is single-cased by
+ *      construction — so the body is word-bounded too.
  *   2. A vocabulary word, optionally continued by short same-case words joined
- *      with `-` or `_`, within an overall length bound.
+ *      with `-` or `_`, within a per-word, a payload and an overall bound.
+ *      All three are load-bearing: short words alone still admit
+ *      `your-abc-def-ghi-jkl-mno-pqr`.
  *
  * What that buys, each verified against the previous build:
  *
@@ -344,7 +362,21 @@ function isPlaceholderUrlPassword(password: string): boolean {
   if (!trimmed || trimmed.length > MAX_PLACEHOLDER_CHARS) return false;
 
   const angle = /^<([A-Za-z][A-Za-z0-9 _-]*)>$/.exec(trimmed);
-  if (angle) return hasUniformCase(angle[1]);
+  if (angle) {
+    const body = angle[1];
+    if (!hasUniformCase(body)) return false;
+    // Brackets are not a suppression primitive. Case alone let a pair of them
+    // launder any single-cased secret — `<vendorkey-aaaabbbbccccdddd>`,
+    // `<deadbeefcafebabe0123456789ab>`, `<GHP-ABCDEFGHIJKLMNOPQRSTUV>` — and
+    // lowercase hex digests and uppercase base32 secrets are single-cased by
+    // construction, so that is most of the shapes that matter. The bodies this
+    // branch exists for are words: `password` and `PASSWORD` are 8 characters,
+    // the laundered secrets 16 to 28.
+    //
+    // Vocabulary cannot be required here — `<password>` is the MongoDB Atlas
+    // docs string this whole gate was written for.
+    return body.split(/[-_ ]/).every((w) => w.length > 0 && w.length <= MAX_PLACEHOLDER_WORD_CHARS);
+  }
 
   if (!hasUniformCase(trimmed)) return false;
 
@@ -354,7 +386,17 @@ function isPlaceholderUrlPassword(password: string): boolean {
   // (`change-me`, `replace-with-your-key`). Alone they are imperatives someone
   // could plausibly have typed as an actual password.
   if (words.length === 1 && (words[0] === 'change' || words[0] === 'replace')) return false;
-  return words.slice(1).every((w) => w.length > 0 && w.length <= MAX_PLACEHOLDER_WORD_CHARS && /^[a-z]+$/.test(w));
+  if (trimmed.length - words[0].length > MAX_PLACEHOLDER_PAYLOAD_CHARS) return false;
+  return words.slice(1).every(
+    (w) =>
+      w.length > 0 &&
+      w.length <= MAX_PLACEHOLDER_WORD_CHARS &&
+      /^[a-z]+$/.test(w) &&
+      // A hex run is a digest, not prose. `your_deadbeefcafe` clears every
+      // length bound — twelve lowercase letters, one word — and is still a
+      // secret. `password`, `credentials`, `here`, `token` are not hex.
+      !/^[0-9a-f]{8,}$/.test(w),
+  );
 }
 
 /**
