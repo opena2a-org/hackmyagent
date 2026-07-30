@@ -264,6 +264,13 @@ describe('rollback contract (#262)', () => {
    * Pre-existing: reproduces on 0.25.1 too, so not a regression from this
    * stack. It is #305 that taught this code to reason about forged manifests in
    * an attacker-controlled tree while leaving the manifest a write primitive.
+   *
+   * #323 — this fixture uses only a `../` traversal, and it PASSED against the
+   * symlink-vulnerable restore loop (#318): a lexical containment check on the
+   * joined destination decides where the string points, not where the filesystem
+   * sends it. The symlink cases for both ends, and for the unlink loop, live in
+   * `backup-identity.test.ts`. Keep this one — the lexical guard is still
+   * load-bearing, and it is what stops a traversal before any syscall is spent.
    */
   it('does not WRITE outside the target directory via a manifest path', async () => {
     const parent = mkdtempSync(join(tmpdir(), 'hma-312-'));

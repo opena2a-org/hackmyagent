@@ -92,6 +92,7 @@ import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore } from './
 import { shouldPrintVersionFooter } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { generateVerifyCommand } from './ui/verify-command';
+import { escapeForDisplay } from './ui/display-safe';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
 import type { ConceptId } from './types/finding-evidence';
 import { trustAapGate } from './aap';
@@ -621,13 +622,14 @@ function displayCheckFindings(
         }
         if (f.file) {
           const location = f.line ? `${f.file}:${f.line}` : f.file;
-          console.log(`    ${colors.dim}File:     ${location}${RESET()}`);
+          console.log(`    ${colors.dim}File:     ${escapeForDisplay(location)}${RESET()}`);
         }
         if (f.fix) {
-          console.log(`    ${colors.cyan}Fix:      ${rebrandCommandCitations(f.fix)}${RESET()}`);
+          // #324 — the verbose renderer interpolates the same untrusted paths.
+          console.log(`    ${colors.cyan}Fix:      ${escapeForDisplay(rebrandCommandCitations(f.fix))}${RESET()}`);
         }
         if ((f as any).guidance) {
-          console.log(`    ${colors.dim}Guidance: ${(f as any).guidance}${RESET()}`);
+          console.log(`    ${colors.dim}Guidance: ${escapeForDisplay(String((f as any).guidance))}${RESET()}`);
         }
       }
     }
@@ -755,6 +757,12 @@ function rightAlign(left: string, right: string, width: number = 68): string {
  */
 function cleanFixText(text: string, fileAlreadyShown?: string): string {
   // Take first meaningful line (skip blank lines)
+  //
+  // #324 — this is the line-DROPPING step, and dropping is what truncated a
+  // rendered `Fix:` command mid-quote when a directory name contained a newline.
+  // Callers rendering a command escape the text BEFORE calling in, so there is
+  // one line here and nothing is lost; callers rendering prose escape the result,
+  // which keeps this paragraph selection intact. See `escapeForDisplay`.
   let line = text.split('\n').map(l => l.trim()).filter(Boolean)[0] || text;
   // Strip "In <file>," prefix when file is already shown in the finding header
   if (fileAlreadyShown) {
@@ -1211,7 +1219,12 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         severity: f.severity as 'critical' | 'high' | 'medium' | 'low',
         name: f.name,
         checkId: f.checkId,
-        file: f.file,
+        // #324 — the Verdict line names a file, and that name came out of the
+        // scanned tree. Escaped at the renderer's INPUT, like the artifact-intent
+        // pass below, so the line stays formatted by one place. Found by a test
+        // asserting no rendered line splits: the finding header and the fix line
+        // were escaped and this third consumer of the same path was not.
+        file: f.file === undefined ? undefined : escapeForDisplay(f.file),
         line: f.line,
       })),
     );
@@ -1363,21 +1376,23 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       // the list (issue #134).
       const topFindings = [...failed].sort(compareFindingsByTier).slice(0, 3);
       for (const f of topFindings) {
-        const shortFile = f.file ? shortenPath(f.file) : '';
+        const shortFile = f.file ? escapeForDisplay(shortenPath(f.file)) : '';
         const loc = shortFile + (f.line ? `:${f.line}` : '');
         const borderColor = SEVERITY_DISPLAY[f.severity].color();
         console.log();
         console.log(`  ${borderColor}│${RESET()} ${sevBadge(f.severity)}  ${colors.bold}${colors.white}${f.name || f.message}${RESET()}`);
         if (loc) console.log(`  ${borderColor}│${RESET()} ${colors.dim}${loc}${RESET()}`);
         if (f.guidance) {
-          console.log(`  ${borderColor}│${RESET()} ${cleanFixText(f.guidance, f.file)}`);
+          console.log(`  ${borderColor}│${RESET()} ${escapeForDisplay(cleanFixText(f.guidance, f.file))}`);
         }
         const verifyCmd = generateVerifyCommand(f);
         if (verifyCmd) {
           console.log(`  ${borderColor}│${RESET()} ${colors.dim}Verify: ${verifyCmd}${RESET()}`);
         }
         if (f.fix) {
-          console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(f.fix, f.file))}`);
+          // #324 — escaped BEFORE `cleanFixText`, which keeps only the first
+          // line: a command must be rendered whole or it is not runnable.
+          console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(escapeForDisplay(f.fix), f.file))}`);
           renderConceptForFinding(f, conceptsSeen, borderColor);
         }
       }
@@ -1394,21 +1409,24 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         if (shown >= limit) break;
         if (skipped.has(i)) continue;
         const f = failed[i];
-        const shortFile = f.file ? shortenPath(f.file) : '';
+        // #324 — the finding header, the guidance and the fix all interpolate a
+        // path that came from the scanned tree. A newline in one split the
+        // location line and truncated the fix command mid-quote.
+        const shortFile = f.file ? escapeForDisplay(shortenPath(f.file)) : '';
         const loc = shortFile + (f.line ? `:${f.line}` : '');
         const borderColor = SEVERITY_DISPLAY[f.severity].color();
         console.log();
         console.log(`  ${borderColor}│${RESET()} ${sevBadge(f.severity)}  ${colors.bold}${colors.white}${f.name || f.message}${RESET()}`);
         if (loc) console.log(`  ${borderColor}│${RESET()} ${colors.dim}${loc}${RESET()}`);
         if (f.guidance) {
-          console.log(`  ${borderColor}│${RESET()} ${cleanFixText(f.guidance, f.file)}`);
+          console.log(`  ${borderColor}│${RESET()} ${escapeForDisplay(cleanFixText(f.guidance, f.file))}`);
         }
         const verifyLine = generateVerifyCommand(f);
         if (verifyLine) {
           console.log(`  ${borderColor}│${RESET()} ${colors.dim}Verify: ${verifyLine}${RESET()}`);
         }
         if (f.fix) {
-          console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(f.fix, f.file))}`);
+          console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(escapeForDisplay(f.fix), f.file))}`);
           renderConceptForFinding(f, conceptsSeen, borderColor);
         }
         if (verbose) {
@@ -4011,12 +4029,13 @@ Examples:
               : `${colors.yellow}Attempted ${attempted} fix${plural} — ${verifiedCount} verified, ${unverifiedCount} not confirmed:${RESET()}`
         );
         for (const finding of fixedFindings) {
-          const location = finding.file ? (finding.line ? `${finding.file}:${finding.line}` : finding.file) : '';
+          // #324 — every rendered path is scanned-tree data.
+          const location = escapeForDisplay(finding.file ? (finding.line ? `${finding.file}:${finding.line}` : finding.file) : '');
           const verified = (finding as any).fixVerified;
           const verifyIcon = verified === true ? `${colors.green}✓✓${RESET()}` : verified === false ? `${colors.yellow}✓?${RESET()}` : `${colors.green}✓${RESET()}`;
           console.log(`  ${verifyIcon} [${finding.checkId}] ${location} - ${finding.name}`);
           if (finding.fixMessage) {
-            console.log(`    ${colors.cyan}→${RESET()} ${finding.fixMessage}`);
+            console.log(`    ${colors.cyan}→${RESET()} ${escapeForDisplay(finding.fixMessage)}`);
           }
         }
         if (unverifiedCount > 0) {
@@ -4498,11 +4517,12 @@ Examples:
 
         for (const finding of issues) {
           const display = SEVERITY_DISPLAY[finding.severity];
-          const location = finding.file
+          // #324 — scanned-tree path, escaped for display.
+          const location = escapeForDisplay(finding.file
             ? finding.line
               ? `${finding.file}:${finding.line}`
               : finding.file
-            : '';
+            : '');
 
           const sevLabel = finding.severity.charAt(0).toUpperCase() + finding.severity.slice(1);
           console.log(`${display.color()}${display.symbol} [${finding.checkId}] ${sevLabel}${RESET()}`);
@@ -4511,7 +4531,7 @@ Examples:
             console.log(`   File: ${location}`);
           }
           if (finding.fix) {
-            console.log(`   ${colors.cyan}Recommended fix:${RESET()} ${finding.fix}`);
+            console.log(`   ${colors.cyan}Recommended fix:${RESET()} ${escapeForDisplay(finding.fix)}`);
           }
           console.log();
         }
@@ -4525,7 +4545,7 @@ Examples:
         for (const finding of fixedFindings) {
           console.log(`  ${colors.green}✓${RESET()} [${finding.checkId}] ${finding.name}`);
           if (finding.fixMessage) {
-            console.log(`     ${colors.cyan}→${RESET()} ${finding.fixMessage}`);
+            console.log(`     ${colors.cyan}→${RESET()} ${escapeForDisplay(finding.fixMessage)}`);
           }
         }
         console.log();
@@ -4725,11 +4745,12 @@ Examples:
 
         for (const finding of issues) {
           const display = SEVERITY_DISPLAY[finding.severity as Severity];
-          const location = finding.file
+          // #324 — scanned-tree path, escaped for display.
+          const location = escapeForDisplay(finding.file
             ? finding.line
               ? `${finding.file}:${finding.line}`
               : finding.file
-            : '';
+            : '');
 
           const sevLabel = finding.severity.charAt(0).toUpperCase() + finding.severity.slice(1);
           console.log(`${display.color()}${display.symbol} [${finding.checkId}] ${sevLabel}${RESET()}`);
@@ -4738,7 +4759,7 @@ Examples:
             console.log(`   File: ${location}`);
           }
           if (finding.fix) {
-            console.log(`   ${colors.cyan}Recommended fix:${RESET()} ${finding.fix}`);
+            console.log(`   ${colors.cyan}Recommended fix:${RESET()} ${escapeForDisplay(finding.fix)}`);
           }
           console.log();
         }
@@ -4883,7 +4904,7 @@ Examples:
               console.log(`     ${finding.description}`);
               console.log(`     Evidence: ${finding.evidence}`);
               console.log(`     Impact: ${finding.impact}`);
-              console.log(`     Fix: ${finding.fix}`);
+              console.log(`     Fix: ${escapeForDisplay(finding.fix)}`);
             }
           }
           console.log();
@@ -6465,7 +6486,7 @@ Examples:
             console.log(`   ${finding.title}`);
             console.log(`   ${finding.description}`);
             if (finding.filePath) {
-              console.log(`   File: ${finding.filePath}`);
+              console.log(`   File: ${escapeForDisplay(finding.filePath)}`);
             }
             console.log();
           }
@@ -8170,7 +8191,7 @@ function printWildReport(report: WildScanReport): void {
     const status = f.hasPayload
       ? `${colors.red}PAYLOAD FOUND${colors.reset}`
       : `${colors.green}clean${colors.reset}`;
-    console.log(`  ${f.file}: ${f.statusCode} [${status}]`);
+    console.log(`  ${escapeForDisplay(f.file)}: ${f.statusCode} [${status}]`);
     if (f.payloadExcerpt) {
       console.log(`    ${colors.dim}${f.payloadExcerpt}${colors.reset}`);
     }
