@@ -34,6 +34,7 @@
  * another module, and the fixture cannot see a branch it does not reach.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import {
   unescapedRenderSites,
@@ -78,6 +79,50 @@ describe('the report surface renders no unescaped path', () => {
       + '`escapeForDisplay(text)` for a line built out of one, and\n'
       + '`citationTarget(p)` for a path spliced into a command meant to be pasted.\n\n'
       + `${report}\n`,
+    ).toEqual([]);
+  });
+
+  /**
+   * The rule this project states twice in prose and had never enforced.
+   *
+   * `display-safe.ts` builds its hazard class from `\u` escapes "rather than
+   * written as a regex literal: a literal control byte inside a character class
+   * is invisible in every diff and every editor that would review it, and this
+   * is a security-relevant pattern". `render-safety.ts` says the same of test
+   * source. Both are right, and neither was checked — a raw ESC byte sat in
+   * `__tests__/cli-citation-target.test.ts` inside `/<ESC>\[[0-9;]*m/`, where
+   * it read as an empty character class to anyone reviewing the diff.
+   *
+   * It was harmless: it stripped ANSI, which is what it was for. The defect is
+   * that a reviewer cannot SEE it, in the one repository whose subject is
+   * characters a reader cannot see.
+   */
+  it('carries no raw control byte in its own source', () => {
+    const offenders: string[] = [];
+    // Newline and tab are how source is formatted; everything else below 0x20,
+    // plus DEL, is a byte someone typed on purpose and nobody can review.
+    const hazard = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) { walk(full); continue; }
+        if (!entry.name.endsWith('.ts')) continue;
+        const lines = readFileSync(full, 'utf8').split('\n');
+        lines.forEach((line, i) => {
+          if (hazard.test(line)) {
+            offenders.push(`${path.relative(REPO_ROOT, full)}:${i + 1}`);
+          }
+        });
+      }
+    };
+    walk(path.join(REPO_ROOT, 'src'));
+    walk(path.join(REPO_ROOT, '__tests__'));
+    expect(
+      offenders,
+      'a source file contains a raw control character. It is invisible in every '
+      + 'diff and every editor that would review it. Build it from a code point '
+      + 'instead — `String.fromCodePoint(0x1b)` or a `\\u` escape — the way '
+      + 'src/ui/display-safe.ts does.',
     ).toEqual([]);
   });
 

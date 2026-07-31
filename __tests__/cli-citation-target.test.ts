@@ -160,7 +160,10 @@ describe('#293 citation target completion', () => {
 
       const offenders = out
         .split('\n')
-        .map((l) => l.replace(/\[[0-9;]*m/g, '')) // strip ANSI
+        // Built from a code point, not written as a literal: a raw ESC byte in
+        // source is invisible in every diff that would review it, which is this
+        // project's own rule for exactly the class of character this strips.
+        .map((l) => l.replace(new RegExp(`${String.fromCodePoint(0x1b)}\\[[0-9;]*m`, 'g'), ''))
         .filter((l) =>
           // a target-taking verb followed immediately by a flag, EOL, or a
           // bare `.` — i.e. no tree named
