@@ -13,12 +13,16 @@ import type { GitContext } from './git-context';
 import { isVisualFiller } from '../../types/credential-format.js';
 
 /**
- * How much of an MCP env value must survive the drawn runs to count as a
- * value. Small on purpose: unlike the SEM-CRED-002 shapes, this call site
- * applies no length floor of its own, so anything larger turns a blank gate
- * into a length gate and drops short real secrets that `origin/main` reports.
+ * How much of a value must survive the drawn runs, for the call sites that
+ * apply no length floor of their own (the MCP env block, the URL password).
+ *
+ * Small on purpose. The SEM-CRED-002 shapes carry an 8-character floor for
+ * their own reasons, and reusing it here would turn a blank gate into a length
+ * gate: it silently dropped `supersecretpassword` and `hunt3r` from MCP env
+ * blocks the first time, and `hunter2` is a real URL password. A gate added to
+ * suppress drawn blanks must suppress drawn blanks and nothing else.
  */
-const MIN_MCP_ENV_CORE_CHARS = 2;
+const MIN_DRAWN_ONLY_CORE_CHARS = 2;
 
 /** Key names that indicate a secret value */
 const SECRET_KEY_PATTERN =
@@ -118,7 +122,25 @@ function isNonSecretValue(value: string): boolean {
   // URL without credentials
   if (/^https?:\/\/[^:@]*$/.test(trimmed)) return true;
 
-  // Placeholder values
+  // Placeholder values.
+  //
+  // NOTE: prefix-anchored, so this also matches any value merely BEGINNING
+  // with the vocabulary — `examplePassw0rd!` reads as documentation. That is a
+  // real weakness, but it is bounded here: every caller of this function pairs
+  // it with a key that already had to match SECRET_KEY_PATTERN, so the key
+  // carries the signal and the value is only ever a veto.
+  //
+  // Anchoring it at both ends was tried and reverted. It closes the bypass and
+  // strictly narrows suppression — but on this function's real call sites it
+  // un-suppresses the redaction forms that dominate committed templates
+  // (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, `example-api-key-12345`,
+  // `TODO: add key`), each of which becomes a CRITICAL SEM-CRED-004 in an MCP
+  // config. Measured 48 new false-positive rows against 16 intended gains.
+  //
+  // Fixing it properly needs entropy corroboration rather than vocabulary
+  // alone, plus a corpus re-bake. Tracked separately; do NOT hand a bare,
+  // key-less value to this function in the meantime — see
+  // `isPlaceholderUrlPassword` for what a caller without a key should use.
   if (/^(xxx|your[-_]|change[-_]me|replace[-_]|TODO|FIXME|placeholder|example)/i.test(trimmed)) return true;
 
   // Angle-bracket templates: <APIKEY>, <your_token>, <TENANT_NAME>
@@ -264,6 +286,120 @@ function envHighOverrideWording(
 }
 
 /**
+ * The vocabulary a placeholder may OPEN with. Deliberately the same set
+ * `isNonSecretValue` already uses — this gate exists to stop reporting
+ * documentation, not to invent new reasons to stay quiet. An earlier draft
+ * added `my`, `insert`, `enter`, `dummy` and `sample`; nothing justified them,
+ * the suite stayed green without them, and `my` alone was enough to silence
+ * `my-SuperSecretPassphrase` and `my_prod_db_password`.
+ */
+const PLACEHOLDER_WORDS = new Set(['your', 'todo', 'fixme', 'example', 'placeholder', 'change', 'replace']);
+
+/** Longest a single word may be before it stops reading as prose. */
+const MAX_PLACEHOLDER_WORD_CHARS = 12;
+/** Longest the whole value may be before it stops reading as a placeholder. */
+const MAX_PLACEHOLDER_CHARS = 40;
+/**
+ * Longest the remainder after the leading vocabulary word may be.
+ *
+ * Short words are not enough on their own: `your-abc-def-ghi-jkl-mno-pqr` is
+ * 23 characters of lowercase payload — around 155 bits — and every one of its
+ * words clears the per-word bound. Inserting a single separator into a shouted
+ * blob (`YOUR_KJHGFDSAQWE_RTYUIOPZXC`) does the same thing.
+ *
+ * Measured separation on this file's own fixtures: the longest payload any
+ * suppressed placeholder carries is 15 (`CHANGE_ME_NOW_OR_ELSE`), and the
+ * shortest payload of a secret found this way is 23. 18 sits between them with
+ * margin on both sides.
+ */
+const MAX_PLACEHOLDER_PAYLOAD_CHARS = 18;
+
+/**
+ * All lowercase, or all uppercase. Placeholders are written in one case —
+ * `your-password-here`, `YOUR_PASSWORD`. Mixed case is how secrets are written,
+ * and it is the signal that survives when an attacker or a careless developer
+ * borrows the vocabulary.
+ */
+function hasUniformCase(value: string): boolean {
+  return value === value.toLowerCase() || value === value.toUpperCase();
+}
+
+/**
+ * Is this URL password documentation rather than a leaked secret?
+ *
+ * Narrow on purpose, and local on purpose. The password slot of a connection
+ * string carries no key to corroborate it — unlike every caller of
+ * `isNonSecretValue`, where a SECRET_KEY_PATTERN key already asserted "secret"
+ * and the value only has to veto. So the value must be shaped like a
+ * placeholder, not merely open with the vocabulary:
+ *
+ *   1. An angle-bracket template whose body is single-cased AND made of words:
+ *      `<password>`, `<YOUR_PASSWORD>`. Case alone was not enough — it let a
+ *      pair of brackets launder `<vendorkey-aaaabbbbccccdddd>`, and a lowercase
+ *      hex digest or an uppercase base32 secret is single-cased by
+ *      construction — so the body is word-bounded too.
+ *   2. A vocabulary word, optionally continued by short same-case words joined
+ *      with `-` or `_`, within a per-word, a payload and an overall bound.
+ *      All three are load-bearing: short words alone still admit
+ *      `your-abc-def-ghi-jkl-mno-pqr`.
+ *
+ * What that buys, each verified against the previous build:
+ *
+ *   your-password-here            placeholder   (suppressed)
+ *   YOUR_PASSWORD                 placeholder   (suppressed)
+ *   your-8Kd9fLm2QpXv7Zr4Nt6Bw1Hs secret, mixed case
+ *   your-KdfLmQpXvZrNtBwHs        secret, mixed case — the digit-free form
+ *   your_KJHGFDSAQWERTYUIOPZXC    secret, one 25-character "word"
+ *   examplePassw0rd!              secret, mixed case and no separator
+ *   change                        an imperative a user could have typed
+ *
+ * Anything not matched here is treated as a real credential. That direction is
+ * deliberate: a false positive on a placeholder costs a user one suppression,
+ * a false negative on a live database password costs them the database.
+ */
+function isPlaceholderUrlPassword(password: string): boolean {
+  const trimmed = password.trim();
+  if (!trimmed || trimmed.length > MAX_PLACEHOLDER_CHARS) return false;
+
+  const angle = /^<([A-Za-z][A-Za-z0-9 _-]*)>$/.exec(trimmed);
+  if (angle) {
+    const body = angle[1];
+    if (!hasUniformCase(body)) return false;
+    // Brackets are not a suppression primitive. Case alone let a pair of them
+    // launder any single-cased secret — `<vendorkey-aaaabbbbccccdddd>`,
+    // `<deadbeefcafebabe0123456789ab>`, `<GHP-ABCDEFGHIJKLMNOPQRSTUV>` — and
+    // lowercase hex digests and uppercase base32 secrets are single-cased by
+    // construction, so that is most of the shapes that matter. The bodies this
+    // branch exists for are words: `password` and `PASSWORD` are 8 characters,
+    // the laundered secrets 16 to 28.
+    //
+    // Vocabulary cannot be required here — `<password>` is the MongoDB Atlas
+    // docs string this whole gate was written for.
+    return body.split(/[-_ ]/).every((w) => w.length > 0 && w.length <= MAX_PLACEHOLDER_WORD_CHARS);
+  }
+
+  if (!hasUniformCase(trimmed)) return false;
+
+  const words = trimmed.toLowerCase().split(/[-_]/);
+  if (!PLACEHOLDER_WORDS.has(words[0])) return false;
+  // `change` and `replace` only introduce a placeholder when they lead a phrase
+  // (`change-me`, `replace-with-your-key`). Alone they are imperatives someone
+  // could plausibly have typed as an actual password.
+  if (words.length === 1 && (words[0] === 'change' || words[0] === 'replace')) return false;
+  if (trimmed.length - words[0].length > MAX_PLACEHOLDER_PAYLOAD_CHARS) return false;
+  return words.slice(1).every(
+    (w) =>
+      w.length > 0 &&
+      w.length <= MAX_PLACEHOLDER_WORD_CHARS &&
+      /^[a-z]+$/.test(w) &&
+      // A hex run is a digest, not prose. `your_deadbeefcafe` clears every
+      // length bound — twelve lowercase letters, one word — and is still a
+      // secret. `password`, `credentials`, `here`, `token` are not hex.
+      !/^[0-9a-f]{8,}$/.test(w),
+  );
+}
+
+/**
  * Detect URL-embedded passwords
  */
 function detectUrlPasswords(file: AnalysisFile): SemanticFinding[] {
@@ -281,6 +417,26 @@ function detectUrlPasswords(file: AnalysisFile): SemanticFinding[] {
       if (password.startsWith('${') || password.startsWith('$')) continue;
       // Skip very short passwords that might be ports
       if (password.length < 3) continue;
+      // A documented connection string is not a leaked one. This detector had
+      // no value gate at all, so it was the last place the reported form-blank
+      // complaint still reproduced: `postgres://admin:____________@host` and —
+      // far more common — `mongodb://user:<password>@cluster0.mongodb.net/db`,
+      // the verbatim MongoDB Atlas documentation string, both scored CRITICAL.
+      //
+      // Deliberately NOT `isNonSecretValue`. That function is written for a
+      // key/value pair and assumes the key already asserted "secret", so the
+      // value only has to veto. A URL password slot has no key, and routing it
+      // through there imported rules that are wrong without one: it treats
+      // `12345678`, `default`, `none` and `null` as non-secrets, and those are
+      // precisely the leaked credentials this check exists to report. Measured
+      // against the previous build, that silently dropped every numeric and
+      // every keyword URL password.
+      //
+      // `isVisualFiller` covers the drawn blanks. Its floor is deliberately the
+      // small one — a URL password of `hunter2` is real, and an 8-character
+      // floor here would drop it.
+      if (isPlaceholderUrlPassword(password)) continue;
+      if (isVisualFiller(password, MIN_DRAWN_ONLY_CORE_CHARS)) continue;
 
       const urlPwMasked = password.length > 5 ? password.slice(0, 5) + '****' : '****';
       // Redact every occurrence of the raw password from the line before placing it
@@ -580,7 +736,7 @@ function detectMcpEnvSecrets(file: AnalysisFile): SemanticFinding[] {
       if (
         SECRET_KEY_PATTERN.test(key) &&
         !isNonSecretValue(value) &&
-        !isVisualFiller(value.trim().replace(/^["']|["']$/g, ''), MIN_MCP_ENV_CORE_CHARS)
+        !isVisualFiller(value.trim().replace(/^["']|["']$/g, ''), MIN_DRAWN_ONLY_CORE_CHARS)
       ) {
         // Find the line number
         let lineNum: number | undefined;

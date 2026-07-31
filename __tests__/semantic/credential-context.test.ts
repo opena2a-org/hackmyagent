@@ -41,6 +41,166 @@ describe('CredentialContextAnalyzer', () => {
       expect(findings.filter((f) => f.id === 'SEM-CRED-001')).toHaveLength(0);
     });
 
+    // The last place the reported form-blank complaint still reproduced.
+    // `detectUrlPasswords` had no value gate beyond `length < 3`, so a
+    // documented connection string was a leaked credential.
+    it('ignores documented placeholder passwords in connection strings', () => {
+      for (const [label, url] of [
+        // The verbatim MongoDB Atlas docs string. It is in a great many READMEs.
+        ['MongoDB Atlas docs string', 'mongodb://user:<password>@cluster0.mongodb.net/db'],
+        ['angle-bracket placeholder', 'postgres://admin:<YOUR_PASSWORD>@host:5432/db'],
+        ['a named placeholder', 'redis://default:your-password-here@redis.example.com:6379'],
+        ['a form blank', 'postgres://admin:' + '_'.repeat(20) + '@db.example.com/app'],
+        ['a drawn rule', 'mysql://root:' + '-'.repeat(16) + '@localhost/app'],
+      ] as Array<[string, string]>) {
+        const findings = analyzer.analyze([makeFile('config.json', url, 'config_file')]);
+        expect(
+          findings.filter((f) => f.id === 'SEM-CRED-001'),
+          `${label} is documentation, not a leaked credential: ${url}`,
+        ).toHaveLength(0);
+      }
+    });
+
+    it('STILL flags real URL passwords, including short ones', () => {
+      // The no-detection-loss half. The gate uses the SMALL core floor on
+      // purpose: an 8-character floor here would drop `hunter2`, which is a
+      // real password, reproducing the defect class this gate closes.
+      for (const [label, url] of [
+        ['an ordinary password', 'postgres://admin:password123@localhost:5432/mydb'],
+        ['a 7-character password', 'postgres://admin:hunter2@localhost:5432/mydb'],
+        ['a password with punctuation', 'mysql://root:s3cr3t!@localhost/app'],
+        ['a password containing @', 'postgres://admin:P@ssw0rd123!@db.prod.example.com:5432/production'],
+      ] as Array<[string, string]>) {
+        const findings = analyzer.analyze([makeFile('config.json', url, 'config_file')]);
+        expect(findings.filter((f) => f.id === 'SEM-CRED-001').length, `${label} must fire: ${url}`).toBeGreaterThan(0);
+      }
+    });
+
+    it('reports a URL password that is only a NUMBER or a keyword', () => {
+      // The password slot has no key to corroborate it, so the gate must not
+      // borrow rules written for key/value pairs. `isNonSecretValue` treats a
+      // pure number and the words `default`/`none`/`null`/`localhost` as
+      // non-secrets — sound when a SECRET_KEY_PATTERN key already asserted
+      // "secret", catastrophic here. Routing this detector through it silently
+      // dropped every one of these; `default` is the textbook default-credential
+      // finding.
+      for (const [label, url] of [
+        ['a numeric password', 'postgres://admin:12345678@db.prod.example.com:5432/app'],
+        ['a long numeric password', 'postgres://admin:867530912345@db.prod.example.com/app'],
+        ['the literal default', 'postgres://admin:default@db.prod.example.com:5432/app'],
+        ['the literal none', 'postgres://admin:none@db.prod.example.com:5432/app'],
+        ['the literal null', 'postgres://admin:null@db.prod.example.com:5432/app'],
+        ['a boolean-looking password', 'postgres://admin:true@db.prod.example.com:5432/app'],
+      ] as Array<[string, string]>) {
+        const findings = analyzer.analyze([makeFile('config.json', url, 'config_file')]);
+        expect(
+          findings.filter((f) => f.id === 'SEM-CRED-001').length,
+          `${label} is a leaked credential, not a config default: ${url}`,
+        ).toBeGreaterThan(0);
+      }
+    });
+
+    it('reports a real secret that merely OPENS with placeholder vocabulary', () => {
+      // The evasion the vocabulary invites: prefix any password with `your-`
+      // and it describes itself as a placeholder. The gate requires placeholder
+      // SHAPE as well as vocabulary — same-case short words joined by - or _.
+      //
+      // The digit-free rows are the ones that matter. A first attempt used
+      // `(?:[-_][a-z]+)*` under /i, where `[a-z]` also matches A-Z, so only the
+      // DIGITS were doing the work: strip them and the same secrets went
+      // silent again. Case is the signal that survives, so these are pinned
+      // with and without digits.
+      for (const [label, url] of [
+        ['your- + 24 random chars', 'postgres://admin:your-8Kd9fLm2QpXv7Zr4Nt6Bw1Hs@db.prod.example.com/app'],
+        ['your_ + random', 'postgres://admin:your_9aK3mQ7xR1zPqW5vT@db.prod.example.com/app'],
+        ['placeholder + random', 'postgres://admin:placeholderA9f3K2mQ7xR1zPq@db.prod.example.com/app'],
+        ['replace_ + random', 'postgres://admin:replace_9aK3mQ7xR1zPqW5vT@db.prod.example.com/app'],
+        ['your- + digit-free mixed case', 'postgres://admin:your-KdfLmQpXvZrNtBwHs@db.prod.example.com/app'],
+        ['your_ + digit-free mixed case', 'postgres://admin:your_aKmQxRzPqWvT@db.prod.example.com/app'],
+        ['replace_ + digit-free mixed case', 'postgres://admin:replace_aKmQxRzPqWvT@db.prod.example.com/app'],
+        ['your_ + one long SHOUTED word', 'postgres://admin:your_KJHGFDSAQWERTYUIOPZXC@db.prod.example.com/app'],
+        // Uniform case AND placeholder vocabulary, so only the per-word length
+        // bound rejects these. Without a row that reaches it, the bound is
+        // unreachable code that a later edit can silently delete.
+        ['your_ + one long lowercase blob', 'postgres://admin:your_kjhgfdsaqwertyuiopzxcvbnm@db.prod.example.com/app'],
+        ['YOUR_ + one long uppercase blob', 'postgres://admin:YOUR_KJHGFDSAQWERTYUIOPZXCVBNM@db.prod.example.com/app'],
+        // `my` is not placeholder vocabulary. An earlier draft added it and
+        // silenced both of these.
+        ['my- passphrase', 'postgres://admin:my-SuperSecretPassphrase@db.prod.example.com/app'],
+        ['my_ prod password', 'postgres://admin:my_prod_db_password@db.prod.example.com/app'],
+        // Brackets must not launder a secret. Case alone did not stop this:
+        // a lowercase hex digest and an uppercase base32 secret are both
+        // single-cased by construction, so the bracket body is word-bounded.
+        ['angle-wrapped secret', 'postgres://admin:<vendorkey-AAAABBBBCCCCDDDD>@db.prod.example.com/app'],
+        ['angle-wrapped, all lowercase', 'postgres://admin:<vendorkey-aaaabbbbccccdddd>@db.prod.example.com/app'],
+        ['angle-wrapped, all uppercase', 'postgres://admin:<GHP-ABCDEFGHIJKLMNOPQRSTUV>@db.prod.example.com/app'],
+        ['angle-wrapped hex digest', 'postgres://admin:<deadbeefcafebabe0123456789ab>@db.prod.example.com/app'],
+        // Short same-case words are not enough on their own — this is ~155 bits
+        // of lowercase payload whose every word clears the per-word bound.
+        ['vocabulary + short-word entropy', 'postgres://admin:your-bwyyoabskkd-byxhwmitldt-ypgydpmzx@db.prod.example.com/app'],
+        ['vocabulary + chunked entropy', 'postgres://admin:your-abc-def-ghi-jkl-mno-pqr@db.prod.example.com/app'],
+        // One separator inserted into a shouted blob defeated the per-word bound.
+        ['shouted blob split in two', 'postgres://admin:YOUR_KJHGFDSAQWE_RTYUIOPZXC@db.prod.example.com/app'],
+        // A hex run clears every length bound and is still a digest.
+        ['vocabulary + hex digest', 'postgres://admin:your_deadbeefcafe@db.prod.example.com/app'],
+        // A bare imperative is something a user could actually have typed.
+        ['bare change', 'postgres://admin:change@db.prod.example.com/app'],
+        ['bare replace', 'postgres://admin:replace@db.prod.example.com/app'],
+      ] as Array<[string, string]>) {
+        const findings = analyzer.analyze([makeFile('config.json', url, 'config_file')]);
+        expect(
+          findings.filter((f) => f.id === 'SEM-CRED-001').length,
+          `${label} is a real secret wearing a placeholder prefix: ${url}`,
+        ).toBeGreaterThan(0);
+      }
+    });
+
+    it('does not read a real password as a placeholder because of how it STARTS', () => {
+      // Placeholder vocabulary with no separator is just an English-flavoured
+      // password. Each of these is real.
+      for (const [label, url] of [
+        ['starts with example', 'postgres://admin:examplePassw0rd!@db.example.com/app'],
+        ['starts with xxx', 'postgres://admin:xxxSecretKey123@db.example.com/app'],
+        ['starts with TODO', 'postgres://admin:TODOfixthis2026@db.example.com/app'],
+        ['starts with fixme', 'mysql://root:fixmeL8rK9x@localhost/app'],
+      ] as Array<[string, string]>) {
+        const findings = analyzer.analyze([makeFile('config.json', url, 'config_file')]);
+        expect(
+          findings.filter((f) => f.id === 'SEM-CRED-001').length,
+          `${label} is a real password, not documentation: ${url}`,
+        ).toBeGreaterThan(0);
+      }
+    });
+
+    it('still treats a value that IS the placeholder as a placeholder', () => {
+      // The other side of the anchoring change: narrowing the rule must not
+      // resurrect the false positives it exists to suppress.
+      for (const [label, url] of [
+        ['bare example', 'postgres://admin:example@db.example.com/app'],
+        ['bare TODO', 'postgres://admin:TODO@db.example.com/app'],
+        ['a mask', 'postgres://admin:xxxxxxxxxxxx@db.example.com/app'],
+        ['your_ vocabulary', 'postgres://admin:your_api_key_here@db.example.com/app'],
+        ['change-me', 'postgres://admin:change-me@db.example.com/app'],
+        // A shouted change-me phrase is still a change-me phrase. Judgement
+        // call, recorded because it went the other way in review: every word
+        // is short, the case is uniform, and the string's whole content is an
+        // instruction to replace it. Bare `changeme` and `default` stay
+        // reported, so the default-credential finding is not lost.
+        ['a shouted change-me phrase', 'postgres://admin:CHANGE_ME_NOW_OR_ELSE@db.example.com/app'],
+        ['placeholder suffix', 'postgres://admin:placeholder-value@db.example.com/app'],
+        // Prose continuations must survive the hex rule — `credentials` is 11
+        // characters and every letter of `accede` is a hex digit.
+        ['a prose placeholder', 'postgres://admin:your-credentials-here@db.example.com/app'],
+        ['another prose placeholder', 'postgres://admin:your-access-token@db.example.com/app'],
+      ] as Array<[string, string]>) {
+        const findings = analyzer.analyze([makeFile('config.json', url, 'config_file')]);
+        expect(
+          findings.filter((f) => f.id === 'SEM-CRED-001'),
+          `${label} is documentation, not a leaked credential: ${url}`,
+        ).toHaveLength(0);
+      }
+    });
+
     it('ignores URLs with env var references in password', () => {
       const file = makeFile('.env', 'DATABASE_URL=postgres://admin:${DB_PASSWORD}@localhost:5432/mydb', 'env_file');
       const findings = analyzer.analyze([file]);
@@ -323,7 +483,7 @@ describe('CredentialContextAnalyzer', () => {
     });
 
     it('does not flag an MCP blank carrying a single stray mark', () => {
-      // Pins the lower side of MIN_MCP_ENV_CORE_CHARS: at a floor of 1 this
+      // Pins the lower side of MIN_DRAWN_ONLY_CORE_CHARS: at a floor of 1 this
       // becomes CRITICAL again. The upper side is deliberately not pinned —
       // 2 -> 3 only suppresses two-character values, and no real secret has a
       // two-character core — so a test for it would assert an arbitrary
