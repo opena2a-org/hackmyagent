@@ -5,13 +5,19 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { execFileSync } from 'child_process';
+import { initThrowawayRepo } from '../helpers/throwaway-repo';
 
-/** Initialize a throwaway git repo so `git check-ignore` has real ground truth. */
+/**
+ * Initialize a throwaway git repo so `git check-ignore` has real ground truth.
+ *
+ * #348 — this used to be three `git -C <dir> …` calls with the ambient
+ * environment. Under a git hook, which exports `GIT_DIR`, `-C` changes the
+ * directory while `GIT_DIR` still names the repository: the fixture repo was
+ * never created and the identity was written into the DEVELOPER's `.git/config`
+ * instead. The pre-push hook runs this suite, so it happened on push.
+ */
 function gitInit(dir: string): void {
-  const run = (args: string[]) => execFileSync('git', ['-C', dir, ...args], { stdio: 'ignore' });
-  run(['init', '-q']);
-  run(['config', 'user.email', 'test@example.com']);
-  run(['config', 'user.name', 'test']);
+  initThrowawayRepo(dir);
 }
 
 /**
