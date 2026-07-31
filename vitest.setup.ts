@@ -38,3 +38,32 @@
 if (!process.env.OPENA2A_CORPUS_DETERMINISTIC) {
   process.env.OPENA2A_CORPUS_DETERMINISTIC = '1';
 }
+
+// Second half of the same contract: a test that shells out to git must talk to
+// the repository it created, not to whichever one launched the suite.
+//
+// Git exports GIT_DIR, GIT_INDEX_FILE and friends to every hook it runs. The
+// pre-push hook runs `npm test`, those variables are inherited by the worker,
+// and every `git` the suite spawns inside a fixture directory silently
+// retargets at the OUTER repository — `git check-ignore` then answers about
+// this checkout instead of the temp one. Four tests in
+// __tests__/hardening/scanner.test.ts fail that way with `expected undefined
+// to be false`, on `main` as much as on any branch, so `npm test` passes from a
+// shell and the identical suite fails from the hook that gates the push.
+//
+// Only the repository-location variables are cleared. GIT_AUTHOR_*,
+// GIT_COMMITTER_* and GIT_CONFIG_* are left alone: tests set those deliberately
+// per spawn, and they say nothing about which repository is being addressed.
+for (const v of [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_COMMON_DIR',
+  'GIT_INDEX_FILE',
+  'GIT_PREFIX',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_NAMESPACE',
+  'GIT_QUARANTINE_PATH',
+]) {
+  delete process.env[v];
+}

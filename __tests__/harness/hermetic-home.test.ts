@@ -108,6 +108,17 @@ describe('the suite never reads the developer home directory', () => {
     ).toBe('1');
   });
 
+  it('does not inherit a git repository from whatever launched the suite', () => {
+    // Git exports these to every hook. `npm test` from a shell has them unset,
+    // `npm test` from the pre-push hook has them pointing at this checkout, and
+    // a fixture that runs `git check-ignore` in its own temp repo then gets
+    // answers about the wrong repository. That is why four scanner tests pass
+    // interactively and fail at the moment they gate a push.
+    for (const v of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX']) {
+      expect(process.env[v], `${v} leaked into the test worker`).toBeUndefined();
+    }
+  });
+
   it.runIf(canRun())(
     'non-vacuity: with the flag off, $HOME infrastructure IS merged in',
     () => {
