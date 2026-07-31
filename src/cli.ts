@@ -1759,7 +1759,11 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       const cls = attackClass && attackClass !== 'none'
         ? `${attackClass}${sev}`
         : (singleLine(esc.classification) || 'unclassified');
-      console.log(`  ${tag}  ${colors.white}${esc.file}${RESET()}  ${colors.dim}${cls}${RESET()}`);
+      // The analyst reads attacker-controlled artifacts and reports the file it
+      // read, so this path is tree-derived like any finding's. Rendered once and
+      // reused, so the row and the Verify line below cannot disagree (#347.5).
+      const escFile = escapePathForDisplay(esc.file);
+      console.log(`  ${tag}  ${colors.white}${escFile}${RESET()}  ${colors.dim}${cls}${RESET()}`);
       const summary = singleLine(esc.summary);
       if (summary) {
         const summaryText = summary.length > 220 && !verbose
@@ -1770,7 +1774,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           console.log(`  ${colors.dim}(run with --verbose for the full analysis)${RESET()}`);
         }
       }
-      console.log(`  ${colors.cyan}Verify:${RESET()} review ${esc.file} for the behavior described above`);
+      console.log(`  ${colors.cyan}Verify:${RESET()} review ${escFile} for the behavior described above`);
       console.log(`  ${colors.dim}${esc.modelVersion} | ${esc.routed === 'attack' ? 'named attack class at high severity' : 'uncertain verdict — needs a human call'}${RESET()}`);
       console.log();
     }
@@ -3415,7 +3419,7 @@ Examples:
 
       // Check if the target exists
       if (!require('fs').existsSync(originalTarget)) {
-        console.error(`Error: Directory '${escapeForDisplay(String(originalTarget))}' does not exist.`);
+        console.error(`Error: Directory '${escapePathForDisplay(String(originalTarget))}' does not exist.`);
         process.exit(1);
       }
 
@@ -3432,9 +3436,13 @@ Examples:
         const _path = require('node:path');
         const mode = options.dryRun ? '--dry-run' : '--fix';
         console.error(`secure ${mode} needs a project directory, not a single file.`);
-        console.error(`  Scan this file:        ${CLI_PREFIX} secure ${directory}`);
-        console.error(`  Remediate (directory): ${CLI_PREFIX} secure --fix ${_path.dirname(originalTarget)}`);
-        console.error(`  Harden governance:     ${CLI_PREFIX} harden-soul ${_path.dirname(originalTarget)}`);
+        // Three citations the reader is meant to paste, built out of the path
+        // they typed. `citationTarget` quotes it, makes a leading `-` an
+        // operand, and falls back to `<dir>` for a name no command can spell.
+        const _parent = citationTarget(_path.dirname(originalTarget));
+        console.error(`  Scan this file:        ${CLI_PREFIX} secure ${citationTarget(directory)}`);
+        console.error(`  Remediate (directory): ${CLI_PREFIX} secure --fix ${_parent}`);
+        console.error(`  Harden governance:     ${CLI_PREFIX} harden-soul ${_parent}`);
         process.exit(2);
       }
 
@@ -4586,7 +4594,7 @@ Examples:
 
         if (result.backupPath) {
           console.log(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
-          console.log(`${colors.yellow}To rollback:${RESET()} ${CLI_PREFIX} rollback ${targetDir}`);
+          console.log(`${colors.yellow}To rollback:${RESET()} ${CLI_PREFIX} rollback ${citationTarget(targetDir)}`);
           console.log();
           console.log(`${colors.cyan}Note:${RESET()} If you replaced tokens with env vars, set OPENCLAW_AUTH_TOKEN`);
           console.log(`      in your environment before starting OpenClaw.\n`);
@@ -4873,7 +4881,7 @@ Examples:
           console.error(
             `\n"scan" is for external targets (hostnames/IPs).` +
             `\nTo scan a local project, use:\n` +
-            `\n  ${secureCmd} ${target}` +
+            `\n  ${secureCmd} ${citationTarget(target)}` +
             `\n`
           );
           process.exit(1);
@@ -4933,14 +4941,22 @@ Examples:
           );
 
           for (const finding of findings) {
-            console.log(`   • [${finding.checkId}] ${finding.title}`);
+            // Every field below is REMOTE data: `scan` talks to a host the user
+            // named, and the title, URL path, evidence and impact are built out
+            // of that host's response. Only `fix` was escaped, so a banner
+            // carrying `ESC [ 2 J` cleared the terminal from inside the report —
+            // #324's harm with the tree replaced by a server. The URL path is
+            // not a filesystem path, so it takes the text escape, not the path
+            // one: no backslash doubling on a URL.
+            console.log(`   • [${finding.checkId}] ${escapeForDisplay(finding.title)}`);
             if (finding.port) {
-              console.log(`     Port: ${finding.port}${finding.path ? `, Path: ${finding.path}` : ''}`);
+              const urlPath = finding.path ? `, Path: ${escapeForDisplay(finding.path)}` : '';
+              console.log(`     Port: ${finding.port}${urlPath}`);
             }
             if (options.verbose) {
-              console.log(`     ${finding.description}`);
-              console.log(`     Evidence: ${finding.evidence}`);
-              console.log(`     Impact: ${finding.impact}`);
+              console.log(`     ${escapeForDisplay(finding.description)}`);
+              console.log(`     Evidence: ${escapeForDisplay(finding.evidence)}`);
+              console.log(`     Impact: ${escapeForDisplay(finding.impact)}`);
               console.log(`     Fix: ${escapeForDisplay(finding.fix)}`);
             }
           }
@@ -5354,7 +5370,10 @@ Examples:
           if (code === 'ENOENT') {
             console.error(`Error: Payload file not found: ${escapeForDisplay(String(filePath))}`);
           } else {
-            console.error(`Error reading payload file ${filePath}: ${(e as Error).message}`);
+            console.error(
+              `Error reading payload file ${escapePathForDisplay(String(filePath))}: `
+              + `${escapeForDisplay((e as Error).message)}`,
+            );
           }
           process.exit(1);
         }
@@ -5365,7 +5384,10 @@ Examples:
       if (format === 'text') {
         console.log(`\nHackMyAgent Attack Mode`);
         console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
-        console.log(`Target: ${target.type === 'local' ? (localPath ? `Local Directory: ${localPath}` : 'Local Simulation') : targetUrl}`);
+        const attackTarget = target.type === 'local'
+          ? (localPath ? `Local Directory: ${escapePathForDisplay(localPath)}` : 'Local Simulation')
+          : targetUrl;
+        console.log(`Target: ${attackTarget}`);
         console.log(`Intensity: ${intensity}`);
         if (customPayloads) {
           console.log(`Payloads: ${customPayloads.length} custom (from file)`);
@@ -6661,10 +6683,13 @@ Examples:
             console.log(
               `${display.color()}${display.symbol} [${finding.id}] ${finding.severity.toUpperCase()}${RESET()}`
             );
-            console.log(`   ${finding.title}`);
-            console.log(`   ${finding.description}`);
+            // Title and description carry names lifted out of the scanned tree
+            // the same way `filePath` does; escaping one of the three and not
+            // the other two is the inconsistency, not a judgement about them.
+            console.log(`   ${escapeForDisplay(finding.title)}`);
+            console.log(`   ${escapeForDisplay(finding.description)}`);
             if (finding.filePath) {
-              console.log(`   File: ${escapeForDisplay(finding.filePath)}`);
+              console.log(`   File: ${escapePathForDisplay(finding.filePath)}`);
             }
             console.log();
           }
@@ -6676,10 +6701,10 @@ Examples:
           console.log(`${colors.green}[+] ${label}${RESET()}\n`);
 
           for (const remediation of allRemediations) {
-            console.log(`  ${colors.green}[+]${RESET()} [${remediation.findingId}] ${remediation.description}`);
+            console.log(`  ${colors.green}[+]${RESET()} [${remediation.findingId}] ${escapeForDisplay(remediation.description)}`);
             if (remediation.filesModified.length > 0 && options.verbose) {
               for (const file of remediation.filesModified) {
-                console.log(`     ${colors.cyan}→${RESET()} ${file}`);
+                console.log(`     ${colors.cyan}→${RESET()} ${escapePathForDisplay(file)}`);
               }
             }
           }
@@ -6687,10 +6712,10 @@ Examples:
 
           if (!options.dryRun) {
             console.log(
-              `${colors.cyan}Note:${RESET()} Plugin data stored in ${targetDir}/.opena2a/`
+              `${colors.cyan}Note:${RESET()} Plugin data stored in ${escapePathForDisplay(targetDir)}/.opena2a/`
             );
             console.log(
-              `      Uninstall with: ${CLI_PREFIX} fix-all ${directory || '.'} --uninstall\n`
+              `      Uninstall with: ${CLI_PREFIX} fix-all ${citationTarget(directory || '.')} --uninstall\n`
             );
           }
         }
@@ -6766,12 +6791,12 @@ Examples:
       const result = initMcp(targetDir, options.tool);
 
       if (!result.created) {
-        console.log(`\n  HackMyAgent MCP server already configured in ${result.configPath}\n`);
+        console.log(`\n  HackMyAgent MCP server already configured in ${escapePathForDisplay(result.configPath)}\n`);
         return;
       }
 
       console.log(`\n  Detected: ${result.tool}\n`);
-      console.log(`  Added HackMyAgent MCP server to ${result.configPath}\n`);
+      console.log(`  Added HackMyAgent MCP server to ${escapePathForDisplay(result.configPath)}\n`);
       console.log(`  Available tools in ${result.tool}:`);
       console.log(`    hackmyagent_scan       — ${CHECK_COUNT} checks + structural analysis`);
       console.log(`    hackmyagent_deep_scan  — Full analysis with LLM reasoning`);
@@ -6898,7 +6923,7 @@ Examples:
       }
 
       if (!require('fs').existsSync(targetDir)) {
-        process.stderr.write(`Error: Directory '${targetDir}' does not exist.\n`);
+        process.stderr.write(`Error: Directory '${escapePathForDisplay(targetDir)}' does not exist.\n`);
         process.exit(1);
       }
 
@@ -6983,7 +7008,12 @@ Examples:
       }
 
       // Text output — unified visual style (matches `check` command)
-      const soulFileName = result.file ? require('path').basename(result.file) : 'No governance file';
+      // Escaped at the ONE place it is built, not at each of the places it is
+      // printed: a basename out of the scanned tree, and the header and the
+      // per-violation evidence lines must not be able to spell it differently.
+      const soulFileName = result.file
+        ? escapePathForDisplay(require('path').basename(result.file))
+        : 'No governance file';
       const tierMeta = result.tierForced ? `${result.agentTier} tier (forced)` : `${result.agentTier} tier`;
       const profileMeta = result.profileForced ? `${result.agentProfile} (forced)` : `${result.agentProfile}`;
       const soulSkippedNote = result.skippedDomains.length > 0 ? ` · skipping ${result.skippedDomains.join(', ')}` : '';
@@ -7378,7 +7408,7 @@ Examples:
       const targetDir = require("path").resolve(directory);
 
       if (!require('fs').existsSync(targetDir)) {
-        process.stderr.write(`Error: Directory '${targetDir}' does not exist.\n`);
+        process.stderr.write(`Error: Directory '${escapePathForDisplay(targetDir)}' does not exist.\n`);
         process.exit(1);
       }
 
@@ -7401,7 +7431,9 @@ Examples:
       }
 
       // Text output — unified visual style (matches `check` command)
-      const hardenFileName = result.file ? require('path').basename(result.file) : 'SOUL.md';
+      const hardenFileName = result.file
+        ? escapePathForDisplay(require('path').basename(result.file))
+        : 'SOUL.md';
       const hardenMeta = result.dryRun ? 'soul governance · dry run' : 'soul governance';
 
       if (result.sectionsAdded.length === 0) {
@@ -7427,7 +7459,7 @@ Examples:
       console.log(`  ${colors.bold}${colors.white}${hardenFileName}${RESET()}  ${colors.dim}${hardenMeta}${RESET()}`);
       console.log(`  ${result.dryRun ? colors.cyan : colors.green}${colors.bold}${hardenActionLabel}${RESET()}  ${colors.dim}+${result.controlsAdded} controls${RESET()}`);
       console.log();
-      console.log(`  ${colors.dim}File  ${result.file}  ${hardenFileState}${RESET()}`);
+      console.log(`  ${colors.dim}File  ${escapePathForDisplay(result.file)}  ${hardenFileState}${RESET()}`);
 
       console.log(uiDivider('Sections'));
       for (const section of result.sectionsAdded) {
@@ -8193,8 +8225,9 @@ program
           .map(f => join(target, f))
           .find(p => existsSync(p));
         if (!resolved) {
-          console.error(`${target} is a directory with no SKILL.md, SOUL.md, or mcp.json.`);
-          console.error(`red-team takes a single artifact — point it at a file, e.g. red-team ${join(target, 'SKILL.md')}`);
+          console.error(`${escapePathForDisplay(target)} is a directory with no SKILL.md, SOUL.md, or mcp.json.`);
+          // The example is meant to be pasted, so it takes the citation form.
+          console.error(`red-team takes a single artifact — point it at a file, e.g. red-team ${citationTarget(join(target, 'SKILL.md'))}`);
           process.exit(1);
         }
         target = resolved;
@@ -8202,9 +8235,9 @@ program
       content = readFileSync(target, 'utf-8');
     } catch (err: any) {
       if (err?.code === 'ENOENT') {
-        console.error(`No such file or directory: ${target}`);
+        console.error(`No such file or directory: ${escapePathForDisplay(target)}`);
       } else {
-        console.error(`Cannot read file: ${target}`);
+        console.error(`Cannot read file: ${escapePathForDisplay(target)}`);
       }
       process.exit(1);
     }
@@ -8685,9 +8718,11 @@ program
     console.log(`\nGenerating secured skill...\n`);
     const result = writeSkill({ purpose: description, name: options.name, outputDir: options.output });
     const outputDir = options.output ?? result.dirName;
-    console.log(`Created ${outputDir}/`);
-    for (const file of result.filesWritten) { console.log(`  ${file.split('/').pop()}`); }
-    console.log(`\nYour skill is ready. Verify security with: ${CLI_PREFIX} secure ${outputDir}/`);
+    console.log(`Created ${escapePathForDisplay(outputDir)}/`);
+    for (const file of result.filesWritten) {
+      console.log(`  ${escapePathForDisplay(file.split('/').pop() ?? file)}`);
+    }
+    console.log(`\nYour skill is ready. Verify security with: ${CLI_PREFIX} secure ${citationTarget(`${outputDir}/`)}`);
   });
 // nanomind: manage the NanoMind generative model
 // `analm` is preserved as a deprecated alias for backward compatibility.
@@ -8784,7 +8819,7 @@ program
             process.exit(1);
           }
 
-          console.log(`Running oracle eval against: ${oraclePath}`);
+          console.log(`Running oracle eval against: ${escapePathForDisplay(oraclePath)}`);
 
           let report = await runOracleEval(oraclePath);
 

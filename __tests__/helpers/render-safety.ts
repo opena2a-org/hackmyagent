@@ -72,7 +72,10 @@ export const SHELL_HOSTILE_NAME = "pwn.txt'; touch PWNED-BY-CITATION; echo 'x";
  */
 export const COMMAND_CLASSIFICATION: Record<string, 'renders-paths' | string> = {
   secure: 'renders-paths',
-  scan: 'scans an external network endpoint; its target is a host the user typed, not a path from a scanned tree',
+  // Was: "scans an external network endpoint; its target is a host the user
+  // typed, not a path from a scanned tree." It also catches `scan ./project`
+  // and renders that path back in the hint that points at `secure`.
+  scan: 'renders-paths',
   check: 'renders-paths',
   detect: 'renders-paths',
   'scan-soul': 'renders-paths',
@@ -82,10 +85,22 @@ export const COMMAND_CLASSIFICATION: Record<string, 'renders-paths' | string> = 
   'fix-all': 'renders-paths',
   'secure-openclaw': 'renders-paths',
   'secure-nemoclaw': 'renders-paths',
-  'create-skill': 'writes a new tree from arguments the user typed; no scanned path is rendered',
-  'init-mcp': 'writes a config from arguments the user typed; no scanned path is rendered',
-  attack: 'sends payloads to an endpoint; renders payload names, not filesystem paths',
-  'red-team': 'sends payloads to an endpoint; renders payload names, not filesystem paths',
+  // The four the classification got WRONG, and the reason each was wrong:
+  //   create-skill  prints the output directory and every file it wrote
+  //   init-mcp      prints the config path it created or found — and that one
+  //                 is relative and comes from a three-entry table, so it is
+  //                 the weakest of the four: the escape is insurance, not a
+  //                 measured hazard. Classified here so it stays covered.
+  //   attack        prints `--payload-file` on the error channel, and a
+  //                 `--target-type local` directory in its header
+  //   red-team      prints its target four times when the artifact is missing
+  // "Arguments the user typed" was doing the work in three of these, and it is
+  // not a reason: a path the user typed still renders, and a report that splits
+  // its own line is the same defect whoever supplied the bytes.
+  'create-skill': 'renders-paths',
+  'init-mcp': 'renders-paths',
+  attack: 'renders-paths',
+  'red-team': 'renders-paths',
   eval: 'renders benchmark identifiers and scores, not filesystem paths',
   explain: 'renders a check ID and static prose',
   'check-metadata': 'renders the tool\'s own catalogue',

@@ -221,6 +221,119 @@ describe('#328 every report that renders a tree-derived path renders it safely',
   }, 300_000);
 
   /**
+   * The five commands `COMMAND_CLASSIFICATION` said did not render a path, and
+   * did.
+   *
+   * The classification is a STRING, and the coverage gate only checked that a
+   * string was present — so "sends payloads to an endpoint; renders payload
+   * names, not filesystem paths" passed the gate while `attack` printed
+   * `Error reading payload file <path>` and `Target: Local Directory: <path>`,
+   * and `red-team` printed its target four times on the error channel. A
+   * decision on the record is worth nothing if nothing checks the decision;
+   * `render-source-gate.test.ts` now derives the same answer from the source and
+   * fails when the two disagree.
+   */
+  /**
+   * TWO runs, because the two raw sites are on branches that exclude each other
+   * — and the first shape of this case reached NEITHER.
+   *
+   * A MISSING payload file takes the `ENOENT` branch, which was already
+   * escaped, and then exits: the header below it never renders. Only a payload
+   * file that exists and cannot be read — a directory, which gives `EISDIR` —
+   * reaches `Error reading payload file <path>: <message>`, the raw one. And
+   * the local-target header needs a run with no `--payload-file` at all,
+   * because any payload error exits first.
+   *
+   * Measured against the build before the fix: the one-run version of this case
+   * passed. That is #339's own defect — a regression test that cannot see the
+   * site it was written for — so both runs are asserted here.
+   */
+  it('attack', () => {
+    // Run 1: EISDIR on the payload file, which is the branch that renders raw.
+    const unreadable = path.join(hostileDir, 'payloads-as-a-directory');
+    mkdirSync(unreadable, { recursive: true });
+    const errOut = run([
+      'attack', hostileDir, '--target-type', 'local', '--intensity', 'passive',
+      '--payload-file', unreadable,
+    ]);
+    expect(
+      errOut,
+      'attack did not reach the unreadable-payload branch (a missing file takes '
+      + 'the ENOENT branch instead, which is a different line)',
+    ).toContain('Error reading payload file');
+    expect(errOut, 'attack never named the hostile payload path').toContain(SPLIT_MARKER);
+    assertRenderSafe(errOut, 'attack (payload file)');
+
+    // Run 2: the header that names a local target directory.
+    const headerOut = run([
+      'attack', hostileDir, '--target-type', 'local', '--intensity', 'passive',
+    ]);
+    expect(
+      headerOut,
+      'attack did not render a local target header, so the second site is unmeasured',
+    ).toContain('Local Directory:');
+    expect(headerOut, 'attack never named the hostile target').toContain(SPLIT_MARKER);
+    assertRenderSafe(headerOut, 'attack (local target)');
+  }, 300_000);
+
+  it('red-team', () => {
+    // A directory with no SKILL.md / SOUL.md / mcp.json: the refusal names the
+    // target twice, once as prose and once as a pasteable example.
+    const bare = path.join(root, `rt${HOSTILE_NAME}`);
+    mkdirSync(bare, { recursive: true });
+    const out = run(['red-team', bare]);
+    expect(out, 'red-team never named the hostile target').toContain(SPLIT_MARKER);
+    assertRenderSafe(out, 'red-team');
+  }, 300_000);
+
+  it('create-skill', () => {
+    const out = run(['create-skill', 'summarise a file', '-o', path.join(hostileDir, 'out')]);
+    expect(out, 'create-skill never named its output directory').toContain(SPLIT_MARKER);
+    assertRenderSafe(out, 'create-skill');
+  }, 300_000);
+
+  /**
+   * `init-mcp` is the weakest case here, and saying so is the point.
+   *
+   * Its rendered path is RELATIVE and comes from a three-entry table in
+   * `src/init-mcp.ts` — `.claude/settings.json`, `.cursor/mcp.json`,
+   * `.vscode/mcp.json`. The target directory's name never reaches the line, so
+   * the hostile marker cannot appear no matter what the tree is called, and
+   * asserting that it does would be asserting something untrue.
+   *
+   * The case still earns its place: the escape is applied, the property runs
+   * over the real output, and the day someone renders `targetDir` on that line
+   * it is already covered. What it does NOT do is prove escaping was needed
+   * here, and the non-vacuity assertion says only what it can — that the line
+   * carrying the path was reached.
+   */
+  it('init-mcp', () => {
+    // Its own tree: `init-mcp` WRITES a config, and the shared fixture is read
+    // by every case above.
+    const dir = path.join(root, `mcp${HOSTILE_NAME}`);
+    mkdirSync(dir, { recursive: true });
+    const out = run(['init-mcp', dir]);
+    expect(
+      out,
+      'init-mcp never rendered a config path at all, so this case measures nothing',
+    ).toMatch(/HackMyAgent MCP server (?:already configured in|to) \S/);
+    assertRenderSafe(out, 'init-mcp');
+  }, 300_000);
+
+  it('scan', () => {
+    // `scan` is for network targets, and the branch that renders a filesystem
+    // path is the one that catches `scan ./some-project` and points at `secure`.
+    // It exits before any socket is opened, so this case makes no network call.
+    const out = run(['scan', hostileDir]);
+    expect(
+      out,
+      'scan did not take the local-path branch, so no path was rendered and this '
+      + 'case measures nothing',
+    ).toContain('is for external targets');
+    assertRenderSafe(out, 'scan');
+  }, 300_000);
+
+  /**
    * The ERROR channel is a rendered report too.
    *
    * `rollback` puts the offending directory's path into the message it throws,
