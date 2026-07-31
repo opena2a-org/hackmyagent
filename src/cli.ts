@@ -5153,15 +5153,24 @@ Examples:
       // named `nl<LF>second` the line read `rm 'nl\nsecond'`, which names a
       // ten-character file with a literal backslash rather than the one the
       // report is about — and for `a\b.txt` the same line showed the path twice,
-      // once doubled and once not. When no command can name the file, the line
-      // says so instead: the path is already on it, which is what keeps that a
-      // path forward rather than a dead end.
+      // once doubled and once not. When the file cannot be both shown truthfully
+      // and named correctly, the line says so instead: the path is already on
+      // it, which is what keeps that a path forward rather than a dead end.
+      //
+      // The REASON was false, and a false reason is its own defect. It said the
+      // name carries characters "a pasted command cannot name", and that is
+      // never why: `shellQuote` is total, and a shell names `dev<ZWJ>💻.txt`
+      // perfectly well. What HackMyAgent cannot do is SHOW it exactly as it is —
+      // the ZWJ has to be escaped or the two halves of the name close up — and a
+      // command built from a rendering could name a different file. So the line
+      // states the reason that is true, which is also the one that tells the
+      // reader what to look at: the name on screen is a rendering.
       const keptLine = (file: string): string => {
         const cite = citationPath(file);
         const tail = cite
           ? `— review, then \`rm ${cite}\` if unwanted`
-          : '— review, then remove it by hand if unwanted (its name carries characters '
-            + 'a pasted command cannot name)';
+          : '— review, then remove it by hand if unwanted (the name above is an '
+            + 'escaped rendering, so a command built from it could name a different file)';
         return `   ${colors.dim}kept    ${RESET()}  ${escapePathForDisplay(file)}  `
           + `${colors.dim}${tail}${RESET()}`;
       };

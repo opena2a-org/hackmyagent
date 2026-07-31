@@ -406,6 +406,21 @@ describe('#328 every report that renders a tree-derived path renders it safely',
       out,
       'the finding has no path forward: no command and no instruction',
     ).toContain('by hand');
+    // And the REASON has to be true. It used to say the name carries
+    // characters "a pasted command cannot name", which is never why:
+    // `shellQuote` is total and a shell names any of these perfectly well.
+    // What HackMyAgent cannot do is show the name exactly as it is, and a
+    // command built from a rendering could reach a different file. A false
+    // reason sends the reader looking for the wrong thing.
+    expect(
+      out,
+      'the refusal blames the shell for something the shell can do',
+    ).not.toMatch(/cannot name/i);
+    expect(
+      out,
+      'the refusal does not say why there is no command, so the reader cannot '
+      + 'tell what to check about the name on screen',
+    ).toMatch(/escaped rendering/i);
     rmSync(dir, { recursive: true, force: true });
   }, 300_000);
 
