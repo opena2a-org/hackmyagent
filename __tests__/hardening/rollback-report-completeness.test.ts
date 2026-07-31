@@ -521,6 +521,40 @@ describe('#341 second-order: a fix inside another project\'s backup is disclosed
   }, 120_000);
 
   /**
+   * The probe is three-valued, and the unreadable case fires the note.
+   *
+   * Every other probe in `scanner.ts` fails CLOSED, because there "I could not
+   * check" becoming "it is not ours" authorises a write. Here the consequence
+   * runs the other way: a missed answer is D5 — a nested project whose
+   * `rollback` restores a redaction over a redaction and reports success, with
+   * nothing on screen — and a spurious answer is one conditional sentence.
+   *
+   * A self-referential `.hackmyagent-backup` symlink makes `realpath` answer
+   * ELOOP rather than ENOENT, which is the "I could not check" case without
+   * needing permissions the test runner may not be able to arrange.
+   */
+  it('speaks up when it cannot tell, and stays quiet on a proven absence', async () => {
+    const token = `ghp_${'e'.repeat(36)}`;
+    const child = path.join(dir, 'child');
+    const inner = path.join(child, 'conf');
+    await mkdir(inner, { recursive: true });
+    await writeFile(path.join(dir, 'package.json'), '{"name":"p","version":"1.0.0"}\n');
+    await writeFile(path.join(child, 'package.json'), '{"name":"c","version":"1.0.0"}\n');
+    await writeFile(path.join(inner, 'config.json'), `{"t":"${token}"}\n`);
+    const { symlink } = await import('node:fs/promises');
+    // Points at itself: `realpath` gives ELOOP, not ENOENT.
+    await symlink('.hackmyagent-backup', path.join(child, '.hackmyagent-backup'), 'dir');
+
+    const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+
+    expect(
+      result.findings.some((f) => f.checkId === 'FIX-FOREIGN-ARCHIVE'),
+      'a probe that could not answer was read as "this is not a backup base", '
+      + 'which is the direction that leaves a nested project undisclosed',
+    ).toBe(true);
+  }, 120_000);
+
+  /**
    * CONTROL — an ordinary tree with no nested archive says nothing. Without it
    * the assertion above would pass on a build that emits the note always.
    */

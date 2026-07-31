@@ -3458,22 +3458,40 @@ export class HardeningScanner {
   /**
    * Is `dir` the directory `<dirname(dir)>/.hackmyagent-backup` reaches?
    *
-   * Fails closed on every error. This adds a sentence to a report; a
-   * filesystem that will not answer is a reason to say nothing, not a reason
-   * to guess.
+   * THREE-VALUED, and the direction is the opposite of the one every other
+   * probe in this file takes — deliberately, because the consequence is.
+   *
+   * Only ENOENT proves the answer is no: nothing is named `.hackmyagent-backup`
+   * beside this directory, so this directory is not it. Every other errno
+   * establishes nothing, and the two mistakes do not cost the same. Saying
+   * nothing when the answer was yes is D5 — a nested project whose `rollback`
+   * now restores a redaction over a redaction and reports success, with no line
+   * anywhere. Saying something when the answer was no costs one conditional
+   * sentence in a report, and the sentence already names the condition.
+   *
+   * So an unreadable probe fires the note. This is the same reasoning as the
+   * retention rule — "anything the filesystem declines to answer counts as
+   * holding a copy, because the cost of being wrong in that direction is the
+   * user's last bytes" — pointed at a different asymmetry, and NOT the same
+   * conclusion, which is why it is written out rather than copied.
+   *
+   * Rare in practice: reaching this at all means HackMyAgent is fixing a file
+   * inside `dir`, so `dir` and its parent are already traversable.
    */
   private async isBackupBaseByIdentity(dir: string): Promise<boolean> {
     const canonical = path.join(path.dirname(dir), BACKUP_DIR_NAME);
+    let canonicalReal: string;
     try {
       // `realpath.native` for the reason #334 established: on macOS the JS
       // implementation returns the spelling it was GIVEN, so it cannot tell a
       // case-variant apart, while the native one returns the spelling on disk.
-      const canonicalReal = fsSync.realpathSync.native(canonical);
-      const [here, there] = await Promise.all([identityOf(dir), identityOf(canonicalReal)]);
-      return sameIdentity(identityOrUndefined(here), identityOrUndefined(there));
-    } catch {
-      return false;
+      canonicalReal = fsSync.realpathSync.native(canonical);
+    } catch (err) {
+      return (err as NodeJS.ErrnoException)?.code !== 'ENOENT';
     }
+    const [here, there] = await Promise.all([identityOf(dir), identityOf(canonicalReal)]);
+    if (here.kind === 'unknown' || there.kind === 'unknown') return true;
+    return sameIdentity(identityOrUndefined(here), identityOrUndefined(there));
   }
 
   private async isOwnBackupDir(dirPath: string): Promise<boolean> {
