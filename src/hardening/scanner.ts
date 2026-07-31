@@ -139,6 +139,15 @@ export interface RollbackReport {
   backupRetainedAt?: string;
   /** Which backup directory under the base this run actually used. */
   backupUsed?: string;
+  /**
+   * The backup this run finished with and could not delete.
+   *
+   * Its own channel, not `backupRetainedAt`: that one means "kept on purpose,
+   * because it still holds a copy", it is rendered only inside the
+   * `unrestored` block, and a run with nothing unrestored would have set it and
+   * printed nothing — a backup left on disk with no line saying so.
+   */
+  backupRemovalFailed?: { path: string; reason: string };
 }
 
 /**
@@ -1542,6 +1551,8 @@ export class HardeningScanner {
   private archiveBases = new Map<string, ArchiveBase>();
   /** Per-directory memo for `isInsideArchiveBase`. Reset per `scan()`. */
   private archiveDirAnswers = new Map<string, 'yes' | 'no' | 'unknown'>();
+  /** Per-directory memo for `resolvesToANestedArchive`. Reset per `scan()`. */
+  private nestedArchiveDirs = new Map<string, boolean>();
   /**
    * Target-relative paths the last `createBackup` already accounted for, in
    * either manifest list. Seeds `backupContext.covered` so the static
@@ -1745,6 +1756,7 @@ export class HardeningScanner {
     this.backupContext = undefined;
     this.archiveDirAnswers = new Map();
     this.archiveBases = new Map();
+    this.nestedArchiveDirs = new Map();
 
     // Resolve effective scan depth — --deep flag implies 'deep' depth
     const scanDepth: ScanDepth = options.scanDepth || (options.deep ? 'deep' : 'standard');
@@ -2204,7 +2216,13 @@ export class HardeningScanner {
       ))];
       findings.push({
         checkId: 'FIX-FOREIGN-ARCHIVE',
-        name: 'Fix Applied Inside Another Project\'s Backup',
+        // Was "Fix Applied Inside Another Project's Backup". Neither this name
+        // nor the guidance below may assert that a project is there: what was
+        // established is that an ancestor directory IS what
+        // `<its parent>/.hackmyagent-backup` resolves to, and a vendored tree
+        // carrying that name satisfies that truthfully. Proving a project sits
+        // beside it would mean trusting files the scanned tree wrote.
+        name: 'Fix Applied Inside a Nested Backup Directory',
         description: `${rels.length} file${rels.length === 1 ? '' : 's'} rewritten inside a nested backup directory`,
         category: 'hardening',
         severity: 'low',
@@ -2218,11 +2236,14 @@ export class HardeningScanner {
         fixable: false,
         fix: `${this.cliName} rollback ${citationTarget(targetDir)}`,
         guidance:
-          'These files sit inside a `.hackmyagent-backup` directory belonging to a project nested under '
-          + 'the one you scanned. They were rewritten like any other file, and this run copied the '
-          + 'originals into its own backup first, so nothing is lost — but running `rollback` inside '
-          + 'that nested project will now restore the rewritten copy rather than the original, and will '
-          + 'report success. Roll back from the directory you scanned instead.',
+          'These files sit under a directory below the one you scanned that resolves to '
+          + '`.hackmyagent-backup` — the name HackMyAgent stores a tree\'s backups in. They were '
+          + 'rewritten like any other file, and this run copied the originals into its own backup '
+          + 'first, so nothing is lost. If that directory IS another project\'s backup archive, '
+          + 'running `rollback` inside that project will now restore the rewritten copy rather than '
+          + 'the original, and will report success — roll back from the directory you scanned '
+          + 'instead. If it is a vendored or copied tree that merely carries the name, no rollback '
+          + 'is affected and the rewrite is the ordinary fix.',
       });
     }
 
@@ -3375,26 +3396,84 @@ export class HardeningScanner {
   }
 
   /**
-   * Does this path run through a directory NAMED like a backup archive that is
-   * not the one this tree uses?
+   * Does this path run through a directory that IS what
+   * `<its parent>/.hackmyagent-backup` resolves to, below the scanned tree?
    *
    * Only ever used to add a sentence of advice (see `applyFixWrite`). It gates
-   * nothing, suppresses nothing, and deletes nothing, which is what makes a name
-   * acceptable here when #341 removed it from every decision: the worst a
-   * scanned tree achieves by naming a directory `.hackmyagent-backup` is one
-   * extra note in the report.
+   * nothing, suppresses nothing and deletes nothing.
+   *
+   * It used to compare the ancestor NAMES against `.hackmyagent-backup`
+   * exactly, and the two halves of that were wrong in opposite directions.
+   *
+   * It fired where there is no nested project. `vendor/.hackmyagent-backup/`
+   * `lib/config/production.json` carries the exact lowercase name, and the note
+   * then told the user their file sat in "a `.hackmyagent-backup` directory
+   * belonging to a project nested under the one you scanned" — a claim about
+   * the tree that nothing had established. The reasoning that an exact name
+   * avoids a false claim was simply wrong: an exact name is the easiest of all
+   * the spellings for a vendored tree to carry.
+   *
+   * And it was SILENT on the case it exists for. On a case-insensitive
+   * filesystem, a base created as `.HACKMYAGENT-BACKUP` is adopted by `mkdir`
+   * and every later run writes through that spelling — #317's scenario. The
+   * exact compare misses it, so a real nested project got no disclosure at all,
+   * and `rollback <child>` there restores the redaction over the redaction and
+   * reports success. That half is invisible on Linux CI, where the two names
+   * are two directories.
+   *
+   * So it asks the filesystem instead: for each ancestor `A`, is `A` the same
+   * directory as `<dirname(A)>/.hackmyagent-backup`, by `dev`+`ino` through
+   * `realpath.native`? On a case-insensitive filesystem `.HACKMYAGENT-BACKUP`
+   * answers yes, and on a case-sensitive one it answers no because there it
+   * really is a different directory that no HackMyAgent run writes.
+   *
+   * What identity CANNOT establish is that a project is there — the vendor
+   * directory is also, truthfully, what that name resolves to. Nothing short of
+   * opening files in the scanned tree could, and a claim resting on those is
+   * forgeable by whoever wrote them, which is the class this stack spent six
+   * rounds removing. So the finding no longer asserts it: it says what was
+   * observed and makes the consequence conditional. See the guidance in
+   * `FIX-FOREIGN-ARCHIVE`.
    */
-  private namesAForeignArchive(absPath: string, targetDir: string): boolean {
+  private async resolvesToANestedArchive(absPath: string, targetDir: string): Promise<boolean> {
     const rel = path.relative(targetDir, absPath);
     if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return false;
-    // EXACT, not case-folded. The note asserts "this is another project's
-    // backup", and that has to be true or it is a finding that lies: a
-    // `vendor/.HACKMYAGENT-BACKUP/` or a KELVIN-SIGN variant is a name no
-    // HackMyAgent run writes on any filesystem where it differs, and on one
-    // where it does not differ it IS the directory the identity check already
-    // answered about. Loose here would cost a false statement on an ordinary
-    // vendor tree, which is worse than the note being missing.
-    return rel.split(path.sep).slice(0, -1).includes(BACKUP_DIR_NAME);
+
+    let dir = path.dirname(path.resolve(absPath));
+    const targetResolved = path.resolve(targetDir);
+    // Bounded like every other ancestor walk here: a path more than 64
+    // components deep is not something to keep stat-ing.
+    for (let i = 0; i < 64 && dir !== targetResolved; i++) {
+      const cached = this.nestedArchiveDirs.get(dir);
+      const answer = cached ?? await this.isBackupBaseByIdentity(dir);
+      this.nestedArchiveDirs.set(dir, answer);
+      if (answer) return true;
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return false;
+  }
+
+  /**
+   * Is `dir` the directory `<dirname(dir)>/.hackmyagent-backup` reaches?
+   *
+   * Fails closed on every error. This adds a sentence to a report; a
+   * filesystem that will not answer is a reason to say nothing, not a reason
+   * to guess.
+   */
+  private async isBackupBaseByIdentity(dir: string): Promise<boolean> {
+    const canonical = path.join(path.dirname(dir), BACKUP_DIR_NAME);
+    try {
+      // `realpath.native` for the reason #334 established: on macOS the JS
+      // implementation returns the spelling it was GIVEN, so it cannot tell a
+      // case-variant apart, while the native one returns the spelling on disk.
+      const canonicalReal = fsSync.realpathSync.native(canonical);
+      const [here, there] = await Promise.all([identityOf(dir), identityOf(canonicalReal)]);
+      return sameIdentity(identityOrUndefined(here), identityOrUndefined(there));
+    } catch {
+      return false;
+    }
   }
 
   private async isOwnBackupDir(dirPath: string): Promise<boolean> {
@@ -3503,11 +3582,13 @@ export class HardeningScanner {
     // through `rollback <this target>`, and nothing said so — the disclosure
     // lived in a changelog sentence, which is not a place a user looks.
     //
-    // A NAME test, deliberately, and sound here for the reason #314's was not:
-    // it gates no decision. Recognising one directory too many costs a sentence
-    // of advice; recognising one too few costs a silent false "Rollback
-    // complete" in a tree the user thinks they can recover.
-    if (ctx && inArchive === 'no' && this.namesAForeignArchive(filePath, ctx.targetDir)) {
+    // Decided by IDENTITY, not by a name. It gates no decision, so the cost of
+    // recognising one directory too many is a sentence of advice, while the cost
+    // of recognising one too few is a silent false "Rollback complete" in a tree
+    // the user thinks they can recover — and an exact-name test got BOTH wrong,
+    // firing on a vendored directory carrying the name and missing a real
+    // nested base spelled `.HACKMYAGENT-BACKUP` on a case-insensitive disk.
+    if (ctx && inArchive === 'no' && await this.resolvesToANestedArchive(filePath, ctx.targetDir)) {
       this.fixWritesIntoForeignArchive.push(filePath);
     }
     if (ownBackup === 'yes' || inArchive === 'yes') {
@@ -8534,7 +8615,31 @@ dist/
     if (retaining) {
       report.backupRetainedAt = backupReal;
     } else {
-      await fs.rm(backupReal, { recursive: true, force: true });
+      // GUARDED, and this is the whole of the fix.
+      //
+      // `force: true` ignores one thing — the path not existing. Everything
+      // else throws, and it throws HERE, after every file has been restored and
+      // the entire report assembled. A `0500` subdirectory inside a forged
+      // backup is enough: `fs.rm` cannot unlink through a directory it may not
+      // write, and the exception replaced the whole report — restored list,
+      // unrestored list, `backup kept at`, "copy those files back by hand" —
+      // with a bare EACCES. That is #344's harm reached through a different
+      // door, and the barren-candidate change fires this `rm` in more cases
+      // than before, so the door is wider than it was.
+      //
+      // The removal is housekeeping. The rollback already happened, and a
+      // failure to tidy up must not throw away the account of it.
+      try {
+        await fs.rm(backupReal, { recursive: true, force: true });
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        report.backupRemovalFailed = {
+          path: backupReal,
+          reason: code
+            ? `${code} — the directory or something inside it could not be removed`
+            : 'it could not be removed',
+        };
+      }
     }
 
     return report;

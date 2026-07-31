@@ -5106,6 +5106,27 @@ Examples:
           console.log(`   ${colors.dim}skipped ${RESET()}  ${escapePathForDisplay(s.name)}  ${colors.dim}— ${escapeForDisplay(s.reason)}${RESET()}`);
         }
       }
+      // The backup this run finished with and could not delete.
+      //
+      // Unconditional, and its own block: `backupRetainedAt` is rendered only
+      // inside the `unrestored` section, so a run that restored everything and
+      // then failed to tidy up would have left a directory on disk with nothing
+      // on screen about it. The consequence is real rather than cosmetic — the
+      // directory still holds a readable manifest, so a later `rollback` can
+      // select it again and put the same content back.
+      if (report.backupRemovalFailed) {
+        console.log(
+          `\n   ${colors.yellow}The rollback finished, but its backup could not be removed${RESET()} `
+          + `(${escapeForDisplay(report.backupRemovalFailed.reason)}):`,
+        );
+        console.log(`   ${colors.dim}left at${RESET()}  ${escapePathForDisplay(report.backupRemovalFailed.path)}`);
+        console.log(
+          '   Your files were restored. Delete that directory by hand when you can — '
+          + 'while it is there, running rollback again may select it and restore the same '
+          + 'content a second time.',
+        );
+      }
+
       // Only when the directory is still on disk: if this run consumed it there
       // is nothing left to deal with, and the next run reaches the one behind it
       // without the reader doing anything.

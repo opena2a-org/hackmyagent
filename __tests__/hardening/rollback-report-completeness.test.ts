@@ -347,6 +347,180 @@ describe('#341 second-order: a fix inside another project\'s backup is disclosed
   }, 120_000);
 
   /**
+   * D5 — the case the exact-name test was SILENT on, asserted where every
+   * filesystem can run it.
+   *
+   * The disclosure keyed on an ancestor being named `.hackmyagent-backup`
+   * exactly. A base created as `.HACKMYAGENT-BACKUP` is adopted by `mkdir` on a
+   * case-insensitive filesystem and every later run writes through that
+   * spelling (#317's scenario), so a real nested project got no disclosure and
+   * `rollback <child>` there restores the redaction over the redaction and
+   * reports success. On Linux CI the two names are two directories, so a
+   * case-variant fixture asserts nothing there.
+   *
+   * A SYMLINK exercises the same mechanism on every platform: the write goes
+   * through `child/archive/…`, an ancestor whose NAME is not the backup name
+   * and whose IDENTITY is the directory `child/.hackmyagent-backup` reaches.
+   * Name says no, `dev`+`ino` says yes. Verified red against the exact-name
+   * build.
+   */
+  it('reports a nested archive reached under another name', async () => {
+    const token = `ghp_${'b'.repeat(36)}`;
+    const child = path.join(dir, 'child');
+    // The base is a SYMLINK to a directory with another name — an ordinary
+    // layout when a user parks archives on a scratch volume. The scanner walks
+    // the child by its real names, so the path it fixes runs through
+    // `child/real-archive/…`, whose basename is not the backup name while its
+    // identity IS what `child/.hackmyagent-backup` reaches.
+    //
+    // The first version of this fixture put the alias the other way round —
+    // real `.hackmyagent-backup` plus an extra `archive ->` link — and the
+    // scanner still reached the file by the canonical name, so the exact-name
+    // build passed it. A regression test that its own defect cannot fail is the
+    // defect it was written for.
+    const realBase = path.join(child, 'real-archive');
+    const stamp = path.join(realBase, '2026-01-01-000000-000-abcdabcd');
+    await mkdir(stamp, { recursive: true });
+    await writeFile(path.join(dir, 'package.json'), '{"name":"p","version":"1.0.0"}\n');
+    await writeFile(path.join(child, 'package.json'), '{"name":"c","version":"1.0.0"}\n');
+    await writeFile(path.join(stamp, 'config.json'), `{"t":"${token}"}\n`);
+    const { symlink } = await import('node:fs/promises');
+    await symlink(realBase, path.join(child, '.hackmyagent-backup'), 'dir');
+
+    const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+
+    const { readFile } = await import('node:fs/promises');
+    expect(
+      await readFile(path.join(stamp, 'config.json'), 'utf-8'),
+      'the nested archive was not rewritten, so there is nothing to disclose',
+    ).not.toContain(token);
+    expect(
+      result.findings.some((f) => f.checkId === 'FIX-FOREIGN-ARCHIVE'),
+      'a nested backup archive reached under a name other than '
+      + '`.hackmyagent-backup` was not disclosed, so `rollback <child>` there '
+      + 'degrades silently',
+    ).toBe(true);
+  }, 120_000);
+
+  /**
+   * D5 verbatim — the base spelled `.HACKMYAGENT-BACKUP`, which is what
+   * `mkdir` adopts on a case-insensitive filesystem once the directory exists
+   * in that spelling (#317's scenario).
+   *
+   * This one genuinely cannot assert the same thing on both platforms, so it
+   * asserts the RIGHT thing on each and says which it ran rather than skipping.
+   * On a case-insensitive disk the two names are one directory and the
+   * disclosure must fire. On a case-sensitive one they are two directories, no
+   * HackMyAgent run writes the upper-case one, and firing would be the false
+   * claim D4 is about — so there the assertion is that it stays quiet. The
+   * mechanism itself is covered on every platform by the symlink case above.
+   */
+  it('handles a case-variant nested base according to what the filesystem does', async () => {
+    const token = `ghp_${'d'.repeat(36)}`;
+    const child = path.join(dir, 'child');
+    const upper = path.join(child, '.HACKMYAGENT-BACKUP');
+    const stamp = path.join(upper, '2026-01-01-000000-000-abcdabcd');
+    await mkdir(stamp, { recursive: true });
+    await writeFile(path.join(dir, 'package.json'), '{"name":"p","version":"1.0.0"}\n');
+    await writeFile(path.join(child, 'package.json'), '{"name":"c","version":"1.0.0"}\n');
+    await writeFile(path.join(stamp, 'config.json'), `{"t":"${token}"}\n`);
+
+    // Ask the filesystem rather than the platform name: a case-sensitive volume
+    // mounted on macOS, or a case-insensitive one on Linux, both exist.
+    const { access } = await import('node:fs/promises');
+    let caseInsensitive = true;
+    try {
+      await access(path.join(child, '.hackmyagent-backup'));
+    } catch {
+      caseInsensitive = false;
+    }
+
+    const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+    const fired = result.findings.some((f) => f.checkId === 'FIX-FOREIGN-ARCHIVE');
+
+    if (caseInsensitive) {
+      expect(
+        fired,
+        'on a case-insensitive filesystem `.HACKMYAGENT-BACKUP` IS the backup '
+        + 'base, and a rewrite inside it was not disclosed',
+      ).toBe(true);
+    } else {
+      expect(
+        fired,
+        'on a case-sensitive filesystem `.HACKMYAGENT-BACKUP` is a different '
+        + 'directory that no run writes, and the report claimed it was a backup',
+      ).toBe(false);
+    }
+  }, 120_000);
+
+  /**
+   * D4 — the finding fires on a vendored directory that merely carries the
+   * name, and there it must not CLAIM a nested project.
+   *
+   * `vendor/.hackmyagent-backup/lib/config/production.json` is the exact
+   * lowercase name with no project beside it, and the guidance told the user
+   * their file sat in a directory "belonging to a project nested under the one
+   * you scanned". Identity cannot separate the two cases — the vendored
+   * directory truthfully IS what that name resolves to — and the only signals
+   * that could are files the scanned tree wrote, which is the class this stack
+   * spent six rounds removing from decisions. So the claim is conditional, and
+   * this asserts that it stays conditional.
+   */
+  it('does not assert a nested project it has not established', async () => {
+    const token = `ghp_${'c'.repeat(36)}`;
+    const vendored = path.join(dir, 'vendor', '.hackmyagent-backup', 'lib', 'config');
+    await mkdir(vendored, { recursive: true });
+    await writeFile(path.join(dir, 'package.json'), '{"name":"p","version":"1.0.0"}\n');
+    await writeFile(path.join(vendored, 'production.json'), `{"t":"${token}"}\n`);
+
+    const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+
+    const disclosure = result.findings.find((f) => f.checkId === 'FIX-FOREIGN-ARCHIVE');
+    expect(
+      disclosure,
+      'the write into a directory resolving to `.hackmyagent-backup` was not '
+      + 'reported at all, so this case measures nothing',
+    ).toBeDefined();
+    const said = `${disclosure!.name} ${disclosure!.guidance ?? ''}`;
+    expect(
+      said,
+      'the finding states as fact that the directory belongs to a nested '
+      + 'project, and nothing established that a project is there',
+    ).not.toMatch(/belonging to a (?:project|nested)/i);
+
+    // The property is not "the phrase never appears" — the hazard has to be
+    // described or the finding is useless to the reader it IS about. It is that
+    // every sentence describing the hazard is conditional. Asserted per
+    // sentence, because a stray `If` elsewhere in the paragraph would satisfy a
+    // whole-string match while the claim stayed flat.
+    const sentences = (disclosure!.guidance ?? '').split(/(?<=[.!?])\s+/);
+    const hazardSentences = sentences.filter(
+      (t) => /another project|restore the rewritten copy|report success/i.test(t),
+    );
+    expect(
+      hazardSentences.length,
+      'the guidance never describes the rollback hazard, so the reader it IS '
+      + 'about is told nothing',
+    ).toBeGreaterThan(0);
+    for (const sentence of hazardSentences) {
+      expect(
+        sentence,
+        'a sentence states the rollback hazard unconditionally, so on a vendored '
+        + 'tree the report describes a hazard that does not exist',
+      ).toMatch(/\bif\b/i);
+    }
+    // And the other reading is named, so a user looking at a vendored tree can
+    // recognise their case rather than assuming the worse one.
+    expect(
+      disclosure!.guidance ?? '',
+      'only the nested-project reading is described, so a vendored tree has no '
+      + 'way to tell which of the two it is',
+    ).toMatch(/vendored|copied tree|merely carries the name/i);
+    // Still a path forward in both readings.
+    expect(disclosure!.fix).toContain('rollback');
+  }, 120_000);
+
+  /**
    * CONTROL — an ordinary tree with no nested archive says nothing. Without it
    * the assertion above would pass on a build that emits the note always.
    */
