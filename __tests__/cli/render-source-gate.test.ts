@@ -188,7 +188,9 @@ describe('the command classification agrees with what the commands print', () =>
     const rendersElsewhere = classified.filter((c) => !derived.has(c)).sort();
     // Not an emptiness assertion — a record of which commands this instrument
     // is blind to, so the runtime property is known to be the only thing
-    // covering them.
-    expect(rendersElsewhere).toEqual(['detect']);
+    // covering them. `detect`, `check` and `wild` render their paths from
+    // `src/scanner/detect.ts`, `src/check/**` and `src/wild/index.ts`, where
+    // there is no `.command(…)` for the call to be attributed to.
+    expect(rendersElsewhere).toEqual(['check', 'detect', 'wild']);
   });
 });

@@ -1413,7 +1413,7 @@ export async function detect(options: DetectOptions): Promise<number> {
   try {
     fs.accessSync(dir, fs.constants.R_OK);
   } catch {
-    process.stderr.write(`Cannot access directory: ${dir}\n`);
+    process.stderr.write(`Cannot access directory: ${escapePathForDisplay(dir)}\n`);
     return 1;
   }
 

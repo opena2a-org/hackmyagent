@@ -50,6 +50,12 @@ function testSources(): string[] {
 
 const SPAWNERS = new Set(['execSync', 'execFileSync', 'spawnSync', 'spawn', 'exec']);
 
+/** `git`, `/usr/bin/git`, `git -C …` — the command, however it is spelled. */
+function namesGit(command: string): boolean {
+  const word = command.trim().split(/\s+/)[0] ?? '';
+  return word === 'git' || word.endsWith('/git');
+}
+
 /**
  * Every spawn of the literal command `git`, read from the syntax rather than
  * from the text.
@@ -74,11 +80,21 @@ function rawGitSpawns(file: string): Array<{ line: number; text: string }> {
   );
   const out: Array<{ line: number; text: string }> = [];
 
+  /**
+   * Does the function CONTAINING this spawn build its environment with
+   * `gitFreeEnv`?
+   *
+   * Stops at the first function-like ancestor. It used to fall through to the
+   * `SourceFile`, so one `import { gitFreeEnv }` anywhere exempted every raw
+   * git spawn in that file — including one in an unrelated function that
+   * inherited the ambient environment. The claim in this file's header is that
+   * the check is structural rather than textual, and a file-scoped exemption is
+   * barely stronger than a comment.
+   */
   const mentionsScrub = (node: ts.Node | undefined): boolean => {
     while (node) {
       if (ts.isFunctionDeclaration(node) || ts.isArrowFunction(node)
-        || ts.isFunctionExpression(node) || ts.isMethodDeclaration(node)
-        || ts.isSourceFile(node)) {
+        || ts.isFunctionExpression(node) || ts.isMethodDeclaration(node)) {
         let found = false;
         const look = (n: ts.Node): void => {
           if (found) return;
@@ -86,22 +102,26 @@ function rawGitSpawns(file: string): Array<{ line: number; text: string }> {
           else ts.forEachChild(n, look);
         };
         look(node);
-        if (found) return true;
-        if (ts.isSourceFile(node)) return false;
+        return found;
       }
+      if (ts.isSourceFile(node)) return false;
       node = node.parent;
     }
     return false;
   };
 
   const walk = (n: ts.Node): void => {
-    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)
-      && SPAWNERS.has(n.expression.text) && n.arguments.length > 0) {
+    if (ts.isCallExpression(n) && n.arguments.length > 0
+      // `execFileSync(…)` and `cp.execFileSync(…)` are the same hazard.
+      && (ts.isIdentifier(n.expression)
+        ? SPAWNERS.has(n.expression.text)
+        : ts.isPropertyAccessExpression(n.expression)
+          && SPAWNERS.has(n.expression.name.text))) {
       const first = n.arguments[0];
       const command = ts.isStringLiteralLike(first) ? first.text
         : ts.isTemplateExpression(first) ? first.head.text
         : null;
-      if (command !== null && /^git(\s|$)/.test(command) && !mentionsScrub(n)) {
+      if (command !== null && namesGit(command) && !mentionsScrub(n)) {
         const { line } = source.getLineAndCharacterOfPosition(n.getStart());
         out.push({ line: line + 1, text: n.getText().replace(/\s+/g, ' ').slice(0, 90) });
       }
@@ -176,13 +196,44 @@ describe('#348 every fixture repository is created with git isolated from this o
     }
   });
 
-  it('fails loudly when git creates no repository', async () => {
-    // The silent half. `git init` under an inherited GIT_DIR creates nothing in
-    // the fixture and exits 0, so the fixture is not a repository and
-    // `git check-ignore` answers from nowhere. Simulated by pointing the helper
-    // at a directory git will refuse.
-    const { initThrowawayRepo } = await import('../helpers/throwaway-repo');
-    expect(() => initThrowawayRepo(path.join(__dirname, 'no-such-fixture-dir')))
-      .toThrow();
+  it('fails loudly when git exits 0 and creates no repository', async () => {
+    // The SILENT half, reproduced rather than approximated.
+    //
+    // The first version of this case pointed the helper at a nonexistent
+    // directory, where `git -C <missing> init` exits non-zero and
+    // `execFileSync` throws before the guard is ever reached — so deleting the
+    // guard entirely left it green. The real failure is `init` exiting ZERO
+    // while creating nothing in the fixture, which is what an inherited
+    // `GIT_DIR` does, so that is what this builds.
+    const { initThrowawayRepo, gitFreeEnv } = await import('../helpers/throwaway-repo');
+    const { mkdtempSync, existsSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+
+    const victim = mkdtempSync(path.join(tmpdir(), 'hma-348-victim-'));
+    const fixture = mkdtempSync(path.join(tmpdir(), 'hma-348-fixture-'));
+    try {
+      initThrowawayRepo(victim);
+      expect(existsSync(path.join(victim, '.git')), 'the control repo was not created')
+        .toBe(true);
+
+      // Now the poisoned environment, which is exactly what a git hook hands
+      // the suite.
+      const poisoned = { ...gitFreeEnv(), GIT_DIR: path.join(victim, '.git') };
+      expect(
+        () => initThrowawayRepo(fixture, true, poisoned),
+        'git exited 0 and created no repository in the fixture, and the helper '
+        + 'carried on — so the fixture is not a repository and the identity '
+        + 'write landed in whatever GIT_DIR names',
+      ).toThrow(/no repository/i);
+      expect(
+        existsSync(path.join(fixture, '.git')),
+        'this case assumes git creates nothing under GIT_DIR; it did create '
+        + 'something, so the reproduction no longer holds',
+      ).toBe(false);
+    } finally {
+      const { rmSync } = await import('node:fs');
+      rmSync(victim, { recursive: true, force: true });
+      rmSync(fixture, { recursive: true, force: true });
+    }
   });
 });

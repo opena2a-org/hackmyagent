@@ -622,8 +622,12 @@ function displayCheckFindings(
           console.log(`    ${colors.dim}Category: ${f.category}${RESET()}`);
         }
         if (f.file) {
-          const location = f.line ? `${f.file}:${f.line}` : f.file;
-          console.log(`    ${colors.dim}File:     ${escapePathForDisplay(location)}${RESET()}`);
+          // Escaped where it is BUILT, like the other three `location`s in this
+          // file. Escaping at the print site instead left this name half
+          // sanitized, and the rule that one raw declaration disqualifies a
+          // name everywhere then hid the three that were already correct.
+          const location = escapePathForDisplay(f.line ? `${f.file}:${f.line}` : f.file);
+          console.log(`    ${colors.dim}File:     ${location}${RESET()}`);
         }
         if (f.fix) {
           // #324 — the verbose renderer interpolates the same untrusted paths.
@@ -3701,7 +3705,7 @@ Examples:
               const simResult = await sim.runLayer3(profile);
 
               const icon = simResult.verdict === 'CLEAN' ? 'PASS' : simResult.verdict === 'SUSPICIOUS' ? 'WARN' : 'FAIL';
-              process.stderr.write(`  [${icon}] ${file.split('/').pop()} — ${simResult.verdict} (${(simResult.confidence * 100).toFixed(0)}% confidence, ${simResult.failedProbes.length}/${simResult.probeCount} probes failed)\n`);
+              process.stderr.write(`  [${icon}] ${escapePathForDisplay(file.split('/').pop() ?? file)} — ${simResult.verdict} (${(simResult.confidence * 100).toFixed(0)}% confidence, ${simResult.failedProbes.length}/${simResult.probeCount} probes failed)\n`);
 
               // Training export is opt-in only (HMA_EXPORT_TRAINING=1). Self-labeled
               // simulation verdicts bypass the training sanitizer, so the default
@@ -3966,7 +3970,7 @@ Examples:
           const hardenResult = await soulScanner.hardenSoul(targetDir, { dryRun: false });
           if (hardenResult.sectionsAdded && hardenResult.sectionsAdded.length > 0) {
             process.stderr.write(`\nGovernance auto-fix: harden-soul applied\n`);
-            process.stderr.write(`  + ${hardenResult.sectionsAdded.length} section(s) added to ${hardenResult.file ?? 'SOUL.md'}`);
+            process.stderr.write(`  + ${hardenResult.sectionsAdded.length} section(s) added to ${escapePathForDisplay(hardenResult.file ?? 'SOUL.md')}`);
             if (typeof hardenResult.controlsAdded === 'number') {
               process.stderr.write(` (+${hardenResult.controlsAdded} controls)`);
             }
@@ -3986,10 +3990,16 @@ Examples:
               result.backupPath,
               [hardenResult.file ?? 'SOUL.md'],
             );
+            // A backticked command the reader is meant to paste, built out of
+            // the scan target: `citationTarget`, not a display escape. Escaping
+            // is enough to SHOW a path and never enough to NAME one — pasting
+            // an escaped path names a different file (#343), and pasting an
+            // unescaped one runs whatever the directory is called.
+            const govRollback = citationTarget(displayDir);
             process.stderr.write(
               soulHashBefore
-                ? `  Rollback: \`${CLI_PREFIX} rollback ${displayDir}\` restores the previous SOUL.md (hash: ${soulHashBefore.slice(0, 8)}...)\n`
-                : `  Rollback: \`${CLI_PREFIX} rollback ${displayDir}\` removes the generated SOUL.md (kept if you edit it first)\n`,
+                ? `  Rollback: \`${CLI_PREFIX} rollback ${govRollback}\` restores the previous SOUL.md (hash: ${soulHashBefore.slice(0, 8)}...)\n`
+                : `  Rollback: \`${CLI_PREFIX} rollback ${govRollback}\` removes the generated SOUL.md (kept if you edit it first)\n`,
             );
             process.stderr.write('\n');
           }
@@ -5042,11 +5052,20 @@ Examples:
         //
         // So it is derived from what `restoreOneBackupFile` established per
         // entry, and says nothing more than that.
+        // THREE-valued, because there are three outcomes and this line used to
+        // know about two. When the backup held no copy it was "removed" — but
+        // the removal can fail, and then this line said "so it was removed"
+        // directly above a block reporting that it was not. The guard that
+        // stopped a failed cleanup from throwing away the report created a
+        // report that contradicted itself, which is #346 in the fix for #344.
         const held = report.unrestored.filter((u) => u.backupHoldsCopy).length;
         const n = report.unrestored.length;
+        const heldPhrase = held === n ? (n === 1 ? 'it' : 'them') : `${held} of them`;
         const suffix = report.backupRetainedAt
-          ? `(the backup was kept: it still holds a copy of ${held === n ? (n === 1 ? 'it' : 'them') : `${held} of them`})`
-          : `(the backup held no copy of ${n === 1 ? 'it' : 'them'}, so it was removed)`;
+          ? `(the backup was kept: it still holds a copy of ${heldPhrase})`
+          : report.backupRemovalFailed
+            ? `(the backup held no copy of ${n === 1 ? 'it' : 'them'}, and could not be removed — see below)`
+            : `(the backup held no copy of ${n === 1 ? 'it' : 'them'}, so it was removed)`;
         console.log(
           `\n   ${colors.red}Could not restore ${n} file${n === 1 ? '' : 's'}${RESET()} ${suffix}:`,
         );
@@ -5115,15 +5134,26 @@ Examples:
       // directory still holds a readable manifest, so a later `rollback` can
       // select it again and put the same content back.
       if (report.backupRemovalFailed) {
+        // Says only what is true of THIS run. The first version opened with
+        // "The rollback finished" under a `Rollback incomplete` header and
+        // closed with "Your files were restored" on a run that restored none —
+        // three false statements in five lines, on the screen a user reads
+        // when recovery has already gone wrong.
         console.log(
-          `\n   ${colors.yellow}The rollback finished, but its backup could not be removed${RESET()} `
+          `\n   ${colors.yellow}The backup could not be removed${RESET()} `
           + `(${escapeForDisplay(report.backupRemovalFailed.reason)}):`,
         );
         console.log(`   ${colors.dim}left at${RESET()}  ${escapePathForDisplay(report.backupRemovalFailed.path)}`);
+        if (report.restored.length > 0 || report.removed.length > 0) {
+          console.log(
+            `   The ${report.restored.length + report.removed.length} file`
+            + `${report.restored.length + report.removed.length === 1 ? '' : 's'} above `
+            + 'went back as reported; only the cleanup failed.',
+          );
+        }
         console.log(
-          '   Your files were restored. Delete that directory by hand when you can — '
-          + 'while it is there, running rollback again may select it and restore the same '
-          + 'content a second time.',
+          '   Delete that directory by hand when you can — while it is there, running '
+          + 'rollback again may select it and restore the same content a second time.',
         );
       }
 

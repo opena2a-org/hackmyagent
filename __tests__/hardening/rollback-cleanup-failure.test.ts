@@ -160,6 +160,66 @@ describe('#344 second door: a backup that cannot be deleted', () => {
   }, 120_000);
 
   /**
+   * The report must not contradict itself, and must not claim a restore that
+   * did not happen.
+   *
+   * The guard above stopped a failed cleanup throwing the report away, and then
+   * the report it saved said three false things in five lines: the `unrestored`
+   * suffix said the backup "was removed" directly above a block reporting that
+   * it was not; the new block opened with "The rollback finished" under a
+   * `Rollback incomplete` header; and it closed with "Your files were restored"
+   * on a run that restored nothing. Fixing #344's truncation reintroduced #346's
+   * self-contradiction, in the fix for it.
+   */
+  it.skipIf(isRoot)('does not contradict the block above it, or claim a restore that did not happen', async () => {
+    // A manifest naming a file the backup does not hold: nothing restores, so
+    // the backup is due for deletion, and the deletion fails.
+    const backup = path.join(dir, '.hackmyagent-backup', STAMP);
+    await mkdir(backup, { recursive: true });
+    await writeFile(path.join(dir, 'package.json'), '{"name":"p","version":"1.0.0"}\n');
+    await writeFile(
+      path.join(backup, '.manifest.json'),
+      JSON.stringify({ version: 2, existingFiles: ['missing.json'], absentAtBackup: [], createdFiles: [] }),
+    );
+    locked = path.join(backup, 'locked');
+    await mkdir(locked, { recursive: true });
+    await writeFile(path.join(locked, 'stuck.txt'), 'x\n');
+    await chmod(locked, 0o500);
+
+    assertDistFresh();
+    let out = '';
+    try {
+      out = execFileSync(process.execPath, [BUILT_CLI, 'rollback', dir], {
+        encoding: 'utf8',
+        timeout: 120_000,
+        env: { ...process.env, NO_COLOR: '1', OPENA2A_CORPUS_DETERMINISTIC: '1' },
+      });
+    } catch (e: unknown) {
+      const err = e as { stdout?: string; stderr?: string };
+      out = `${String(err.stdout ?? '')}${String(err.stderr ?? '')}`;
+    }
+
+    expect(
+      out,
+      'the cleanup did not fail, so this case measures nothing',
+    ).toMatch(/could not be removed/i);
+    expect(
+      out,
+      'the report says the backup was removed, and the block below says it was not',
+    ).not.toMatch(/so it was removed/);
+    expect(
+      out,
+      'a run that restored nothing told the user their files were restored',
+    ).not.toMatch(/[Yy]our files were restored/);
+    expect(
+      out,
+      'the cleanup block says the rollback finished, under a header saying it did not',
+    ).not.toMatch(/rollback finished/i);
+    // The header itself is still the truth about the restore.
+    expect(out, 'an incomplete rollback no longer says so').toMatch(/Rollback incomplete/);
+  }, 120_000);
+
+  /**
    * CONTROL — the ordinary path still consumes the backup and says nothing.
    * Without it, every assertion above passes on a build that simply stopped
    * deleting backups.

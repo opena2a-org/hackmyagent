@@ -58,8 +58,18 @@ export function gitFreeEnv(): NodeJS.ProcessEnv {
  * `git check-ignore` to have ground truth would otherwise pass over a
  * directory that is not a repository at all.
  */
-export function initThrowawayRepo(dir: string, identity = true): void {
-  const env = gitFreeEnv();
+export function initThrowawayRepo(
+  dir: string,
+  identity = true,
+  /**
+   * Environment override, for the ONE test that has to reproduce the failure
+   * this guard exists for. A caller cannot otherwise construct "init exits 0
+   * and creates nothing here", because that needs the very `GIT_DIR` this
+   * function strips.
+   */
+  envOverride?: NodeJS.ProcessEnv,
+): void {
+  const env = envOverride ?? gitFreeEnv();
   execFileSync('git', ['-C', dir, 'init', '-q'], { env, stdio: 'ignore' });
 
   const gitDir = path.join(dir, '.git');

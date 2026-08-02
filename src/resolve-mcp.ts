@@ -5,6 +5,8 @@
  * into the full scoped name "@modelcontextprotocol/server-*".
  */
 
+import { escapePathForDisplay, escapeForDisplay } from './ui/display-safe';
+
 const MCP_SCOPE = '@modelcontextprotocol';
 
 /**
@@ -30,7 +32,7 @@ export function resolveMcpShorthand(name: string): string {
 export function resolveAndLogMcpShorthand(name: string): string {
   const resolved = resolveMcpShorthand(name);
   if (resolved !== name) {
-    process.stderr.write(`Resolved: ${name} -> ${resolved}\n`);
+    process.stderr.write(`Resolved: ${escapeForDisplay(name)} -> ${escapePathForDisplay(resolved)}\n`);
   }
   return resolved;
 }
