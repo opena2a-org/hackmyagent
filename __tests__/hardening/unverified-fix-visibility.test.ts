@@ -37,6 +37,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync, execFileSync } from 'node:child_process';
+import { initThrowawayRepo } from '../helpers/throwaway-repo';
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -61,7 +62,7 @@ const dirs: string[] = [];
 function makeFixture(): string {
   const dir = mkdtempSync(join(tmpdir(), 'hma-unverified-'));
   dirs.push(dir);
-  execFileSync('git', ['init', '-q', '.'], { cwd: dir });
+  initThrowawayRepo(dir, false);
   writeFileSync(join(dir, 'package.json'), '{"name":"repro","version":"1.0.0"}\n');
   writeFileSync(join(dir, '.gitignore'), 'node_modules/\n');
   writeFileSync(join(dir, 'credentials.json'), '{"apiKey":"placeholder"}\n');

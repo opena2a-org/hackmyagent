@@ -31,6 +31,7 @@
 import { execFileSync } from 'node:child_process';
 import { realpathSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { escapePathForDisplay, escapeForDisplay } from '../../ui/display-safe';
 import {
   sendClassify,
   sendHealthz,
@@ -212,7 +213,7 @@ export async function setupAnalystModel(quiet = false): Promise<boolean> {
 
   if (!quiet) {
     process.stderr.write(
-      `Found nanomind-analyst installer at ${installerPath}.\n` +
+      `Found nanomind-analyst installer at ${escapePathForDisplay(installerPath)}.\n` +
       'Running: nanomind-analyst install\n' +
       '(first run downloads ~3.4 GB of NLM weights; subsequent runs reuse the cache)\n\n',
     );

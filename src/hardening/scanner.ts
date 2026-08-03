@@ -4,6 +4,9 @@
  */
 
 import * as fs from 'fs/promises';
+// `realpath.native` exists only on the callback and sync APIs, and the backup
+// root needs it: the JS implementation does not canonicalize case (#334).
+import * as fsSync from 'fs';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import { execFile } from 'child_process';
@@ -20,6 +23,7 @@ import {
   validateCapabilities,
 } from './skill-capability-validator';
 import { clampScoreToVerdictBand, countsAgainstScore } from '../ui/verdict-band';
+import { shellQuote, citationTarget } from '../ui/shell-quote';
 
 /**
  * Backup manifest format version. v1 (pre-0.25.1) wrote `createdFiles` as a
@@ -44,8 +48,21 @@ export interface BackupManifest {
   version?: number;
   /** Files that existed before the fix and were copied into the backup. */
   existingFiles: string[];
-  /** Backup candidates that did not exist yet. Candidates only, not claims. */
+  /**
+   * Backup candidates observed missing WHEN THE BACKUP WAS TAKEN. Candidates
+   * only, not claims: nothing here is known to have been written.
+   */
   absentAtBackup: string[];
+  /**
+   * Paths proven missing immediately BEFORE a fix wrote them (#300/#304).
+   *
+   * Kept apart from `absentAtBackup` because the two are different evidence
+   * and `recordCreatedFiles` turns both into a rollback-time `unlink`. Folding
+   * write-time absences into the backup-time list silently falsified the
+   * safety argument stated at that call site — that every entry was observed
+   * missing at backup time — which is the one property making the delete safe.
+   */
+  absentAtFixWrite?: string[];
   /** Files a fix stage created, hashed so rollback can verify before deleting. */
   createdFiles: CreatedFileRecord[];
   /** v1 `createdFiles` entries, preserved verbatim so rollback can report them. */
@@ -62,7 +79,133 @@ export interface RollbackReport {
   keptModified: string[];
   /** Files a pre-0.25.1 manifest listed with no hash to verify against. */
   keptUnverifiable: string[];
+  /**
+   * Files the manifest listed that could NOT be put back, with the reason
+   * (#327). A rollback with any of these has not completed, so the caller must
+   * report this rather than claim a clean revert.
+   *
+   * #338/#346 — `backupHoldsCopy` says whether the backup actually still holds a
+   * copy of THIS entry. It is the fact the retention decision is made on, and
+   * the fact the header states; both used to be asserted unconditionally of
+   * every entry, and for a manifest naming a file the backup never held, both
+   * were false.
+   */
+  unrestored: Array<{ path: string; reason: string; backupHoldsCopy: boolean }>;
+  /**
+   * Files the manifest listed as GENERATED that this run could not act on
+   * (#342).
+   *
+   * #327's stated property is that a rollback either puts every listed file back
+   * or says which ones it could not, and only `existingFiles` got that channel.
+   * A `createdFiles` entry whose destination would not resolve was dropped with a
+   * bare `continue`, and the legacy loop did the same: measured on a `SOUL.md`
+   * that is a symlink, `[+] Rollback complete / removed 0 generated files`, exit
+   * 0, the file still on disk and the backup consumed.
+   *
+   * Reported, never retained on: the backup holds no copy of a generated file, so
+   * keeping the directory buys nothing and would feed the #338 wedge.
+   */
+  unremoved: Array<{ path: string; reason: string }>;
+  /**
+   * Backups this run passed over because they could not be used at all — a
+   * symlink, a non-directory, an unreadable or implausible manifest (#338).
+   *
+   * Selection is a GUESS at a name the scanned tree can write, so it must be
+   * able to try the next candidate. These are reported, never deleted: HMA
+   * could not read them, so it cannot know they hold nothing.
+   */
+  skippedBackups: Array<{ name: string; reason: string }>;
+  /**
+   * Candidates that listed files and put none of them back.
+   *
+   * A backup that promised entries and delivered nothing is not this run's
+   * backup, whatever the reason — and the reason is always something the scanned
+   * tree arranged, at one end or the other. It is KEPT (it may hold bytes nobody
+   * can read yet), reported, and passed over, so one forged directory cannot
+   * stand in front of the real backup for ever.
+   */
+  barrenBackups: Array<{ name: string; listed: number }>;
+  /**
+   * How many further backup directories sit behind the one this run used
+   * (#338). Reported when a rollback does not complete, so a user staring at a
+   * retained directory is told that dealing with it uncovers another.
+   */
+  backupsBehind: number;
+  /**
+   * Where the backup was left when it still holds a copy of something that
+   * could not be restored. Absent when the backup held nothing worth keeping,
+   * which is the case that consumes it.
+   */
+  backupRetainedAt?: string;
+  /** Which backup directory under the base this run actually used. */
+  backupUsed?: string;
+  /**
+   * The backup this run finished with and could not delete.
+   *
+   * Its own channel, not `backupRetainedAt`: that one means "kept on purpose,
+   * because it still holds a copy", it is rendered only inside the
+   * `unrestored` block, and a run with nothing unrestored would have set it and
+   * printed nothing — a backup left on disk with no line saying so.
+   */
+  backupRemovalFailed?: { path: string; reason: string };
 }
+
+/**
+ * Why `resolveInsideTree` would not hand back a path to act on.
+ *
+ * #347.4 — one sentence used to be printed for every one of these. "Its
+ * destination does not resolve to a location inside the scanned directory" was
+ * shown for a dangling symlink, for an EACCES on the parent, and for a `..`:
+ * three causes, and it is true of one of them. A user who reads it about an
+ * EACCES goes looking for a traversal that is not there.
+ *
+ * The refusals are the same as before — this names them.
+ */
+type ResolveRefusal =
+  | 'escapes-tree'
+  | 'parent-unresolvable'
+  | 'parent-outside-tree'
+  | 'leaf-is-link'
+  | 'leaf-link-dangling'
+  | 'leaf-link-outside-tree'
+  | 'leaf-unexaminable';
+
+type ResolveOutcome =
+  | { ok: true; path: string }
+  | { ok: false; cause: ResolveRefusal };
+
+/** Why one manifest entry could not be put back. */
+type RestoreRefusal =
+  | ResolveRefusal
+  | 'source-outside-backup'
+  | 'source-unreadable'
+  | 'source-resolves-outside-backup'
+  | 'source-not-regular-file'
+  | 'source-unexaminable'
+  | 'write-failed';
+
+/**
+ * One sentence per cause, each true of that cause and of nothing else.
+ *
+ * Written as a total record rather than a `switch` with a default, so adding a
+ * refusal without giving it a sentence is a compile error rather than a silent
+ * fallback to whichever sentence was nearest.
+ */
+const RESTORE_REFUSAL_REASONS: Record<RestoreRefusal, string> = {
+  'escapes-tree': 'the manifest entry points outside the scanned directory',
+  'parent-unresolvable': 'the directory it belongs in could not be resolved',
+  'parent-outside-tree': 'a directory on the way to it leads outside the scanned directory',
+  'leaf-is-link': 'a symbolic link stands where the file should be',
+  'leaf-link-dangling': 'it is a symbolic link that points at nothing',
+  'leaf-link-outside-tree': 'it is a symbolic link that points outside the scanned directory',
+  'leaf-unexaminable': 'the filesystem would not say what is currently at that path',
+  'source-outside-backup': 'the manifest entry points outside the backup',
+  'source-unreadable': 'the backup holds no readable copy of it',
+  'source-resolves-outside-backup': 'the copy in the backup resolves outside the backup',
+  'source-not-regular-file': 'the copy in the backup is not a regular file',
+  'source-unexaminable': 'the copy in the backup could not be examined',
+  'write-failed': 'writing it back failed',
+};
 
 /**
  * Defines which checks apply to which project types
@@ -219,6 +362,410 @@ const CREDENTIAL_PATTERNS = [
   // SendGrid
   { name: 'SENDGRID_KEY', pattern: /SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/ },
 ];
+
+/**
+ * #292 — config-shaped filenames CRED-001 inspects for hardcoded credentials.
+ *
+ * These used to be probed only as `path.join(targetDir, name)`, so the same
+ * token scored 69/100 at `config.json` and 96/100 with no finding at all at
+ * `src/config.json`, `sub/config.json` or `config/production.json`. A
+ * conventional layout therefore passed clean. Code files were never affected —
+ * the AST layer covers those at any depth (AST-CRED-001/003) — so the gap was
+ * specific to config-shaped files below the scan root.
+ *
+ * Matching is on BASENAME at any depth, via the bounded, symlink-safe walk in
+ * `collectSensitiveArtifacts`. Order of the root probe is preserved separately
+ * by the caller so existing golden output does not churn.
+ */
+const CONFIG_CANDIDATE_NAMES = new Set([
+  'config.json',
+  'config.yaml',
+  'config.yml',
+  'mcp.json',
+  'settings.json',
+  'secrets.json',
+  'credentials.json',
+  '.env',
+  '.env.local',
+  'CLAUDE.md',
+]);
+
+/**
+ * Spans in `text` that are well-formed environment-variable references.
+ *
+ * Deliberately strict: matched braces and a shell-identifier name. `${FOO`
+ * is malformed and `${sk-ant-api03-…}` is not an identifier, so neither earns
+ * an exemption. Mirrors the anchored `isEnvRef` predicate GATEWAY-003 already
+ * uses, adapted from whole-value to span matching because CRED-001 scans raw
+ * lines rather than parsed JSON values.
+ */
+function envRefSpans(text: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  const re = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) spans.push([m.index, m.index + m[0].length]);
+  return spans;
+}
+
+/**
+ * #301 — a reference wraps a NAME. A span whose name is itself
+ * credential-shaped is a VALUE wearing reference syntax, and earns nothing.
+ *
+ * #281 replaced a substring test with a span test, which was the right
+ * shape, but the span pattern is a shell identifier — `[A-Za-z_][A-Za-z0-9_]*`
+ * — and five of the ten credential patterns are built entirely from
+ * identifier-legal characters. So the credential FITS INSIDE the exemption:
+ *
+ *   {"token":"ghp_aaa…"}      score 69   CRED-001 fires
+ *   {"token":"${ghp_aaa…}"}   score 96   CRED-001 silent
+ *
+ * Two braces, and a CRITICAL is gone — the same one-token suppression #281
+ * set out to remove, relocated from "append a reference" to "become one".
+ * Affects `ghp_`, `github_pat_`, `sk_live_`, `AKIA`, and dash-free `AIza`.
+ * Anthropic/OpenAI/Slack/SendGrid keys contain `-` or `.`, which no
+ * identifier admits, which is why the suite never saw this.
+ *
+ * The legitimate exemption survives untouched, because the names it exists
+ * for are not credential-shaped: `${ANTHROPIC_API_KEY}`, `${GITHUB_TOKEN}` —
+ * including the ones CRED-001's own fix writes — match no pattern here.
+ *
+ * What this DOES give up is a braced AWS-key-shaped NAME, a variable genuinely
+ * named after the credential it holds, which now reports. That trade is
+ * deliberate and one-directional: a name indistinguishable from a live key is
+ * indistinguishable to a reader too, the finding names the file and line, and
+ * the cost of the other reading is a silently unreported secret.
+ */
+function isCredentialShapedName(inner: string, pattern: RegExp): boolean {
+  // Non-global: `test` on a /g regex advances lastIndex between calls.
+  return new RegExp(pattern.source, pattern.flags.replace(/g/g, '')).test(inner);
+}
+
+/**
+ * #281 — true when `text` carries a live credential that is NOT merely part of
+ * an environment-variable reference.
+ *
+ * CRED-001 tested `line.includes('${' + envVar + '}')` and MCP-003 tested
+ * `!value.includes('${')`. Both are SUBSTRING tests over the whole line/value,
+ * so appending ` ${ANTHROPIC_API_KEY}` to a live key silenced the check and
+ * moved the score — a one-token suppression of a CRITICAL finding, available
+ * to anyone who can edit the file being scanned. GATEWAY-003 was given an
+ * anchored whole-value predicate in 0.25.1; this is the same discipline.
+ *
+ * The exemption is kept, but narrowed to what it was actually for: a match
+ * that lies ENTIRELY inside a well-formed reference. That still matters —
+ * `AKIA[0-9A-Z]{16}` matches inside a braced name of that shape, and
+ * `AIza[0-9A-Za-z_-]{35}` inside a long `${AIza…}`, so a blanket removal
+ * would invent false positives on legitimately-referenced variables.
+ */
+export function hasCredentialOutsideEnvRef(text: string, pattern: RegExp): boolean {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  // Fresh global regex: callers pass both /g and non-/g patterns, and a
+  // shared /g regex carries `lastIndex` between calls.
+  const re = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g');
+  // #301 — a span only exempts if it references a NAME. `${ghp_aaa…}` is the
+  // key itself in braces, so it is not an exemption, it is the finding.
+  const spans = envRefSpans(text).filter(
+    ([s, e]) => !isCredentialShapedName(text.slice(s + 2, e - 1), pattern),
+  );
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const start = m.index;
+    const end = m.index + m[0].length;
+    const insideRef = spans.some(([s, e]) => start >= s && end <= e);
+    if (!insideRef) return true;
+    if (m[0].length === 0) re.lastIndex++; // guard against zero-width loops
+  }
+  return false;
+}
+
+/**
+ * The only characters a `${...}` reference may pad a credential with. Shell
+ * identifier bytes, and deliberately nothing else: this class cannot cross a
+ * quote, comma, colon or brace, which is the entire safety property below.
+ */
+const REF_PADDING_CHAR = /[A-Za-z0-9_]/;
+
+/**
+ * Replace every occurrence of `pattern` in one line with `${envVar}`, absorbing
+ * an enclosing `${...}` wrapper when — and only when — the wrapper really is
+ * one.
+ *
+ * #310 — this replaced a regex, `/\$\{[^{}]*\}/g`, whose character class
+ * admits quotes, commas and colons. On a minified one-line config it paired the
+ * `${` of an unrelated value with the NEXT `}` anywhere on the line and deleted
+ * everything between:
+ *
+ *   {"template":"${","token":"ghp_…","keep":"KEEP","port":8080}
+ *     ->  {"template":"${GITHUB_TOKEN}          <- two keys gone, invalid JSON
+ *
+ * and reported `fixed: true` at 98/100 over the wreckage. A regex cannot
+ * express "the brace that opens THIS span", so the span is walked out from the
+ * match instead: over identifier padding only, and only into a `${` that is
+ * still adjacent after that walk. Everything a reference may legally contain is
+ * absorbed; nothing else can be, because the padding class cannot reach past a
+ * structural character.
+ *
+ * The three shapes #308 exists for are still absorbed whole — `${MY_ghp_…}`,
+ * `${ghp_…_PROD}`, `${A_ghp_…_B}` — so the fix no longer emits the
+ * `${MY_${GITHUB_TOKEN}}` nesting that no shell expands. An unterminated
+ * `"${ghp_…<EOL>` absorbs its opener too, since there is no brace to pair with
+ * and leaving it would emit exactly that nesting.
+ *
+ * A `${` that is NOT followed by a well-formed span — `${MY_ghp_…"}` — is left
+ * alone and only the credential is replaced. That is literal text that happens
+ * to precede a credential, not a reference, and preserving it is lossless.
+ */
+export function replaceCredentialWithEnvRef(
+  line: string,
+  pattern: RegExp,
+  envVar: string,
+): string {
+  const ref = '${' + envVar + '}';
+  const re = new RegExp(
+    pattern.source,
+    pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g',
+  );
+  let out = '';
+  let cursor = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) {
+    if (m[0].length === 0) {
+      re.lastIndex++; // zero-width match: never advances on its own
+      continue;
+    }
+    if (m.index < cursor) continue; // already inside an absorbed wrapper
+    let start = m.index;
+    let end = start + m[0].length;
+
+    // Walk left over padding, stopping at `cursor` so the walk can never
+    // re-enter text an earlier replacement already emitted.
+    let left = start;
+    while (left > cursor && REF_PADDING_CHAR.test(line[left - 1])) left--;
+    if (left - 2 >= cursor && line[left - 1] === '{' && line[left - 2] === '$') {
+      let right = end;
+      while (right < line.length && REF_PADDING_CHAR.test(line[right])) right++;
+      if (line[right] === '}') {
+        start = left - 2;
+        end = right + 1;
+      } else if (line.indexOf('}', end) === -1) {
+        start = left - 2; // unterminated span: absorb the opener, keep `end`
+      }
+    }
+
+    out += line.slice(cursor, start) + ref;
+    cursor = end;
+    if (re.lastIndex < cursor) re.lastIndex = cursor;
+  }
+  return out + line.slice(cursor);
+}
+
+/**
+ * #292, second half — directories whose contents are config BY LOCATION rather
+ * than by filename. `config/production.json` is the case the issue calls out
+ * explicitly, and basename matching alone does not reach it: nothing about
+ * `production.json` is config-shaped, the enclosing `config/` is.
+ *
+ * Scoped to structured-data extensions so a `config/README.md` or a
+ * `config/build.ts` (already covered by the AST layer) is not re-read here.
+ */
+const CONFIG_DIR_NAMES = new Set(['config', 'conf', 'configs', 'settings']);
+const CONFIG_DIR_EXTENSIONS = new Set(['.json', '.yaml', '.yml', '.toml', '.ini']);
+
+/**
+ * The directory `--fix` writes its backups into. Named once because two
+ * different walks have to agree about it, and they did not: the gateway walk
+ * tested the entry NAME at every level while the sensitive-artifact walk
+ * tested a root-anchored PREFIX (#302).
+ */
+const BACKUP_DIR_NAME = '.hackmyagent-backup';
+
+/**
+ * A directory named by its filesystem IDENTITY rather than by any spelling of
+ * its path.
+ *
+ * Four rounds of this subsystem's guards were strings that DESCRIBE the backup
+ * directory — a `\`-folded path (#304), a directory name (#305), a manifest
+ * shape (#309), a case-sensitive `path.resolve` prefix compare (#317) — and
+ * every round the attacker changed the string without changing the directory.
+ * `dev`+`ino` is the directory itself: it cannot be respelled by case folding
+ * on a case-insensitive filesystem, by a symlink, by Unicode normalization, or
+ * by a `..` that cancels out.
+ */
+interface FsIdentity {
+  dev: number;
+  ino: number;
+}
+
+/**
+ * The identity of what a path reaches, or why it could not be taken.
+ *
+ * #333 — `identityOf` used to return `null` for every failure, and `null` means
+ * "not our backup" to both callers. For the DETECTION walk that is fail-closed:
+ * the directory gets scanned, so nothing is hidden. For the WRITE gate it is
+ * fail-OPEN — `isInsideOwnBackup` returning false there means ALLOW THE WRITE —
+ * so any `EACCES`, `ELOOP`, `EIO` or `EMFILE` on an ancestor `stat` during a
+ * `--fix` run left HackMyAgent free to rewrite its own backup, with only the
+ * name check standing in the way: the string this whole change argues cannot be
+ * trusted.
+ *
+ * Only ENOENT proves absence. Everything else proves nothing, and "I could not
+ * check" must not become "it is not ours" — the same inference as #313, and as
+ * the `resolveInsideTree` fail-open fixed earlier in this stack.
+ */
+type IdentityProbe =
+  | { kind: 'identity'; id: FsIdentity }
+  /** Proven absent: nothing is there. */
+  | { kind: 'absent' }
+  /** The filesystem refused to answer. Establishes nothing in either direction. */
+  | { kind: 'unknown' };
+
+/** `stat`, not `lstat`: the identity wanted is the directory a path REACHES. */
+async function identityOf(p: string): Promise<IdentityProbe> {
+  try {
+    const st = await fs.stat(p);
+    return { kind: 'identity', id: { dev: st.dev, ino: st.ino } };
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'ENOENT'
+      ? { kind: 'absent' }
+      : { kind: 'unknown' };
+  }
+}
+
+/** Fails closed: a missing identity on either side is never a match. */
+function sameIdentity(a: FsIdentity | null | undefined, b: FsIdentity | null | undefined): boolean {
+  return !!a && !!b && a.dev === b.dev && a.ino === b.ino;
+}
+
+/** The identity if one could be taken, else undefined — for the callers that only need a match. */
+function identityOrUndefined(probe: IdentityProbe): FsIdentity | undefined {
+  return probe.kind === 'identity' ? probe.id : undefined;
+}
+
+/**
+ * A backup-setup failure that carries WHY, machine-readably.
+ *
+ * `FIX-BACKUP-FAILED` used to report `code` from `err.name`, which is `Error` for
+ * anything that is not an errno — so a refusal HMA decided on its own arrived at
+ * the user as a bare "Backup failed (Error)" under guidance that listed only
+ * permission causes and a fix line saying "make the target writable". For a
+ * symlinked backup base that advice is wrong: making it writable changes nothing.
+ * The code lets the finding name the real cause and the matching remedy.
+ */
+type BackupSetupCode = 'HMA-BACKUP-SYMLINK' | 'HMA-BACKUP-NOT-DIR'
+  | 'HMA-BACKUP-OUTSIDE-TREE' | 'HMA-BACKUP-NO-NEW-DIR' | 'HMA-BACKUP-VANISHED'
+  | 'HMA-BACKUP-UNIDENTIFIED';
+
+function backupSetupError(code: BackupSetupCode, message: string): NodeJS.ErrnoException {
+  const err = new Error(message) as NodeJS.ErrnoException;
+  err.code = code;
+  return err;
+}
+
+/*
+ * `backupArchiveDirFor` used to live here: it walked the path's SEGMENTS looking
+ * for one spelled `.hackmyagent-backup`, exactly or case-folded.
+ *
+ * It is gone with #341, and so is everything built on it. Recognising an archive
+ * by a name in the scanned tree is the sixth instance of the class this stack
+ * exists to close — a `\`-folded path (#304), a directory name (#305), a
+ * manifest shape (#309), a case-sensitive compare (#317), a manifest array
+ * element (#326), a manifest's existence (#331) — and the exact-name half was
+ * never gated on anything at all, so a `vendor/.hackmyagent-backup/lib/…`
+ * credential was left in plaintext with no forgery required.
+ *
+ * See `resolveArchiveBase` for what replaced it: not a better description of the
+ * directory, but the directory.
+ */
+
+/**
+ * The backup directory HackMyAgent uses for a given tree, as the filesystem
+ * resolves it — or null when there is none.
+ *
+ * This is the whole answer to "is this file inside a backup archive". It is not
+ * a name, not a shape, and not a file: it is `<realpath(target)>/`
+ * `.hackmyagent-backup` as `realpath.native` canonicalizes it, plus that
+ * directory's `dev`+`ino`. The scanned tree can CREATE that directory — that is
+ * the ordinary pre-existing-backup case, and adopting it is correct — but it
+ * cannot make some other directory be it, under any spelling.
+ *
+ * `realpath.native` is what makes one rule cover every spelling: on a
+ * case-insensitive filesystem a tree shipping `.HACKMYAGENT-BACKUP` IS this
+ * directory and resolves to it, and on a case-sensitive one it is a different
+ * directory that HackMyAgent would never write to. Neither case needs a
+ * per-spelling rule, and no Unicode fold, symlink or `..` changes the answer.
+ *
+ * Three-valued, and only a PROVEN absence is `none`. Returning "no base here"
+ * on any failure would be fail-OPEN at the one caller that matters: the write
+ * gate reads "not an archive" as permission to rewrite the file, so a transient
+ * EACCES on the tree root would have authorised HackMyAgent to redact a previous
+ * run's backup. That is #313's inference and #333's, arrived at through a
+ * different door.
+ *
+ * A base that is a symlink or not a directory IS a proven `none`:
+ * `prepareBackupRoot` refuses to write backups through either, so there is
+ * nothing of HackMyAgent's in that tree to protect.
+ */
+type ArchiveBase =
+  | { kind: 'base'; real: string; ident: FsIdentity }
+  /** Proven: nothing HackMyAgent would use as a backup base is there. */
+  | { kind: 'none' }
+  /** The filesystem refused to answer. Establishes nothing in either direction. */
+  | { kind: 'unknown' };
+
+async function resolveArchiveBase(targetDir: string): Promise<ArchiveBase> {
+  let treeReal: string;
+  try {
+    treeReal = await fs.realpath(targetDir);
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'ENOENT'
+      ? { kind: 'none' }
+      : { kind: 'unknown' };
+  }
+
+  const base = path.join(treeReal, BACKUP_DIR_NAME);
+  try {
+    const st = await fs.lstat(base);
+    // A base that is a symlink or not a directory is PROVEN not to be an archive
+    // of ours: `prepareBackupRoot` refuses to write backups through either, so
+    // there is nothing of HackMyAgent's in that tree to protect.
+    if (st.isSymbolicLink() || !st.isDirectory()) return { kind: 'none' };
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'ENOENT'
+      ? { kind: 'none' }
+      : { kind: 'unknown' };
+  }
+
+  let real: string;
+  try {
+    real = fsSync.realpathSync.native(base);
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'ENOENT'
+      ? { kind: 'none' }
+      : { kind: 'unknown' };
+  }
+
+  return archiveBaseFromProbe(await identityOf(real), real);
+}
+
+/**
+ * The base a probe of the resolved directory establishes.
+ *
+ * Split out because the window between "lstat said directory" and "stat for the
+ * identity" is not something a test can hold open, and mutating this clause to
+ * `{ kind: 'none' }` left the whole suite green — which by this project's own
+ * rule (#347.1) means the fail-open direction was untested.
+ */
+export function archiveBaseFromProbe(probe: IdentityProbe, real: string): ArchiveBase {
+  if (probe.kind === 'identity') return { kind: 'base', real, ident: probe.id };
+  return probe.kind === 'absent' ? { kind: 'none' } : { kind: 'unknown' };
+}
+
+/** True when a file is config-shaped by filename, or by sitting directly in a config directory. */
+function isConfigShapedFile(basename: string, parentDirName: string): boolean {
+  if (CONFIG_CANDIDATE_NAMES.has(basename)) return true;
+  if (!CONFIG_DIR_NAMES.has(parentDirName.toLowerCase())) return false;
+  return CONFIG_DIR_EXTENSIONS.has(path.extname(basename).toLowerCase());
+}
 
 // MEM-006 receiver gate: persistence-semantic identifier parts. A `.push(...)`
 // only counts as a memory/persistence sink when its receiver chain contains one
@@ -614,11 +1161,14 @@ export function isCheckIgnored(checkId: string, ignoredChecks: string[]): boolea
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB max file size to prevent memory exhaustion
 const MAX_LINE_LENGTH = 10000; // 10KB max line length for regex safety
 
-/** Shell-escape a string for safe interpolation into advisory fix commands. */
-function shellEscape(s: string): string {
-  // Wrap in single quotes and escape embedded single quotes: ' -> '\''
-  return "'" + s.replace(/'/g, "'\\''") + "'";
-}
+/**
+ * Shell-escape a string for safe interpolation into advisory fix commands.
+ *
+ * #328 — an alias for the one implementation in `src/ui/shell-quote.ts`. Two
+ * copies of this function lived in this file under two names, which is how the
+ * report that most needed it ended up with neither.
+ */
+const shellEscape = shellQuote;
 
 /**
  * Detect whether a SKILL.md content has any of the malice signals listed in
@@ -894,10 +1444,68 @@ function isCyrillicInCyrillicContext(chars: string[], ci: number): boolean {
   return cyrillicCount > 0;
 }
 
+/**
+ * The identity of a just-created backup directory, or the right refusal.
+ *
+ * #347.3 — this used to be `identityOrUndefined(...)` followed by `if (!ident)`,
+ * which collapses the three-valued probe back into two and throws away exactly
+ * the distinction #333 added it for. An EACCES, ELOOP or EIO on the directory
+ * `mkdir` had just returned was reported as `HMA-BACKUP-VANISHED — disappeared
+ * immediately after being created`, a claim about the filesystem that only
+ * ENOENT supports, sending the user to look for a race that is not there.
+ *
+ * A named function rather than three lines inline, because the window between
+ * `mkdir` and `stat` is not something a test can hold open: the decision is
+ * observable here, and observing it is the point.
+ */
+export function backupIdentityOrThrow(probe: IdentityProbe, backupDir: string): FsIdentity {
+  if (probe.kind === 'identity') return probe.id;
+  if (probe.kind === 'absent') {
+    throw backupSetupError(
+      'HMA-BACKUP-VANISHED',
+      `Backup directory ${backupDir} disappeared immediately after being created.`,
+    );
+  }
+  throw backupSetupError(
+    'HMA-BACKUP-UNIDENTIFIED',
+    `Backup directory ${backupDir} was created, but the filesystem would not describe it, `
+    + 'so HackMyAgent cannot tell its own backup apart from the files it is about to fix.',
+  );
+}
+
+/**
+ * The ordering field of a backup directory name: exactly three characters,
+ * always.
+ *
+ * #347.6 — `createRunBackupDir` added `attempt` (up to 7) to a sequence already
+ * capped at 998 and then padded, so a 999th same-millisecond sibling produced a
+ * FOUR-character field, breaking both the sort invariant the name exists for and
+ * the three-character parse that reads it back. `nextStampSequence` keeps its own
+ * cap; what was missing is a clamp AFTER the addition, which is the only place
+ * that holds.
+ *
+ * Exported so the invariant can be asserted against THIS expression rather than
+ * against a copy of it in a test — the whole width range is unreachable through
+ * `createRunBackupDir`, which needs 999 directories in one millisecond plus two
+ * `EEXIST` collisions on an unpredictable component.
+ */
+export function stampSequenceField(seq: number, attempt: number): string {
+  return String(Math.min(seq + attempt, 999)).padStart(3, '0');
+}
+
 export class HardeningScanner {
   private cliName = 'hackmyagent';
   /** Fix writes that did not land this run. Reset per `scan()`. */
   private fixWriteFailures: { file: string; code: string; message: string }[] = [];
+  /**
+   * Fix writes that landed inside a directory named like a backup archive but
+   * belonging to a DIFFERENT tree. Reset per `scan()`.
+   *
+   * Not a failure — the write is recoverable through this run's own backup. It
+   * is a fact the other tree's owner has to be told, because their `rollback`
+   * no longer restores what they expect.
+   */
+  private fixWritesIntoForeignArchive: string[] = [];
   /**
    * Every path a fix write actually landed on this run. Reset per `scan()`.
    *
@@ -911,6 +1519,48 @@ export class HardeningScanner {
    * fall through the same gap again.
    */
   private fixWritePaths: string[] = [];
+  /**
+   * Backup context for the current `--fix` run, or undefined when no backup
+   * was taken (detect-only, dry-run, or a `createBackup` failure that already
+   * downgraded the run). `applyFixWrite` refuses to write without it — see
+   * `ensureBackupCovers`.
+   */
+  private backupContext: {
+    backupDir: string;
+    /**
+     * The backup directory's `dev`+`ino`. Carried separately from the path
+     * because the path is what four rounds of attackers respelled (#317).
+     */
+    backupIdent: FsIdentity;
+    targetDir: string;
+    covered: Set<string>;
+  } | undefined;
+  /**
+   * The backup directory a given tree uses, resolved on first ask (#341).
+   *
+   * Keyed by the scanned directory and resolved LAZILY rather than seeded by
+   * `scan()`. A guard whose state some other method has to remember to
+   * initialise is a guard that is off whenever a caller forgets — and this one
+   * decides whether a write can destroy a backup. Asking for it is what
+   * resolves it.
+   *
+   * Not derived from the backup CONTEXT either: a detect-only run has no
+   * context and still has to answer "is this file inside a backup archive" the
+   * same way, or `secure` and `secure --fix` disagree about the same file.
+   */
+  private archiveBases = new Map<string, ArchiveBase>();
+  /** Per-directory memo for `isInsideArchiveBase`. Reset per `scan()`. */
+  private archiveDirAnswers = new Map<string, 'yes' | 'no' | 'unknown'>();
+  /** Per-directory memo for `resolvesToANestedArchive`. Reset per `scan()`. */
+  private nestedArchiveDirs = new Map<string, boolean>();
+  /**
+   * Target-relative paths the last `createBackup` already accounted for, in
+   * either manifest list. Seeds `backupContext.covered` so the static
+   * candidates are not re-copied one at a time.
+   */
+  private lastBackupCovered: string[] = [];
+  /** Identity of the directory the last `createBackup` created. See #317. */
+  private lastBackupIdent: FsIdentity | undefined;
   // Files that may be created or modified during auto-fix
   private static readonly BACKUP_FILES = [
     'config.json',
@@ -1019,9 +1669,65 @@ export class HardeningScanner {
 
     return findings.filter(f => {
       if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) return false;
-      if (f.file && this.isPathIgnored(f.file, allIgnoredPaths)) return false;
+      // #280 — keys on every covered path, not just `f.file`.
+      if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) return false;
       return true;
     });
+  }
+
+  /**
+   * Every path a finding speaks for.
+   *
+   * `details.files`: checks like GIT-001 and PERM-001 point `file` at one
+   * representative path and carry the rest of the evidence in
+   * `details.files`, so reading either side alone loses paths.
+   */
+  private coveredFilesOf(f: SecurityFinding): string[] {
+    const listed = Array.isArray(f.details?.files) ? f.details.files : [];
+    return [...new Set(
+      [f.file, ...listed].filter(
+        (p): p is string => typeof p === 'string' && p.length > 0,
+      ),
+    )];
+  }
+
+  /**
+   * #280 — decide whether `.hmaignore` should suppress a finding, keying on
+   * ALL the paths it covers rather than on `f.file` alone.
+   *
+   * The old predicate was `f.file && isPathIgnored(f.file, ignored)`. Because
+   * PERM-001's `file` is just `permissionIssues[0]`, ignoring that one path
+   * deleted the whole finding — including the still-world-readable `.env`
+   * listed in `details.files` — and RAISED the score. Measured on a fixture
+   * with `.env` and `secrets.json` both 0644: ignoring `secrets.json` moved
+   * 44 -> 49 and PERM-001 vanished while `.env` stayed `-rw-r--r--`. A
+   * suppression rule that improves the score while the hazard is untouched
+   * is the same class of defect as a failed fix raising it.
+   *
+   * Now: suppress only when EVERY covered path is ignored. Otherwise keep the
+   * finding and re-point it onto a surviving path, so the report never names
+   * a file the user asked not to hear about while still reporting the ones
+   * they did.
+   *
+   * Returns true to KEEP. May re-point `f.file` / `f.details.files` in place.
+   */
+  private retainAfterPathSuppression(f: SecurityFinding, ignoredPaths: string[]): boolean {
+    const covered = this.coveredFilesOf(f);
+    // Nothing path-shaped to judge — a finding about the tree as a whole.
+    if (covered.length === 0) return true;
+
+    const survivors = covered.filter((p) => !this.isPathIgnored(p, ignoredPaths));
+    if (survivors.length === 0) return false;
+    if (survivors.length === covered.length) return true;
+
+    // Partially ignored: keep it, but stop naming suppressed paths.
+    if (f.file && this.isPathIgnored(f.file, ignoredPaths)) {
+      f.file = survivors[0];
+    }
+    if (Array.isArray(f.details?.files)) {
+      (f.details as { files: string[] }).files = survivors;
+    }
+    return true;
   }
 
   /**
@@ -1042,7 +1748,15 @@ export class HardeningScanner {
     // Per-run, so a reused scanner instance cannot report a previous run's
     // failed writes.
     this.fixWriteFailures = [];
+    this.fixWritesIntoForeignArchive = [];
     this.fixWritePaths = [];
+    // Cleared per run, and only ever set below once a backup actually
+    // exists. A reused scanner instance must not let one run's backup
+    // authorise the next run's writes (#300).
+    this.backupContext = undefined;
+    this.archiveDirAnswers = new Map();
+    this.archiveBases = new Map();
+    this.nestedArchiveDirs = new Map();
 
     // Resolve effective scan depth — --deep flag implies 'deep' depth
     const scanDepth: ScanDepth = options.scanDepth || (options.deep ? 'deep' : 'standard');
@@ -1082,6 +1796,22 @@ export class HardeningScanner {
     if (shouldFix) {
       try {
         backupPath = await this.createBackup(targetDir);
+        // Every fix write from here on is gated on this (#300). Seeded with
+        // what `createBackup` already copied so the static candidates are not
+        // re-copied one at a time.
+        //
+        // `lastBackupIdent` is set by the same call and is non-undefined
+        // whenever it resolves, so a missing identity here means the contract
+        // broke; refuse the fix rather than fall back to a path compare (#317).
+        if (!this.lastBackupIdent) {
+          throw new Error(`Backup at ${backupPath} could not be identified on the filesystem.`);
+        }
+        this.backupContext = {
+          backupDir: backupPath,
+          backupIdent: this.lastBackupIdent,
+          targetDir,
+          covered: new Set(this.lastBackupCovered),
+        };
       } catch (err) {
         const e = err as NodeJS.ErrnoException;
         backupFailure = {
@@ -1396,6 +2126,46 @@ export class HardeningScanner {
     // then loops with no diagnosis. One finding names every file, so the
     // signal cannot be lost among per-check noise.
     if (backupFailure) {
+      // The remedy has to match the CAUSE. Every cause used to be described as a
+      // permission problem ("make the target writable", "a read-only mount, a
+      // container volume, or a checkout owned by another user"), which is simply
+      // wrong for a backup base HMA refused on its own: making a symlink writable
+      // changes nothing, and the sentence sends the user to look at the wrong
+      // thing. `backupSetupError` carries the reason so this can dispatch on it.
+      const basePath = path.join(targetDir, BACKUP_DIR_NAME);
+      const rerun = `${this.cliName} secure ${shellQuote(targetDir)} --fix`;
+      const CAUSES: Record<string, { fix: string; guidance: string }> = {
+        'HMA-BACKUP-SYMLINK': {
+          fix: `Replace ${shellQuote(basePath)} with a real directory, or remove it, then re-run: ${rerun}`,
+          guidance:
+            `${BACKUP_DIR_NAME} is a symbolic link. Backups are never written through a link, because `
+            + 'the copies would land wherever the link points — outside the directory you asked to '
+            + 'scan, and outside what `rollback` can restore from. Nothing was written and nothing '
+            + 'was changed. Replace it with a real directory to enable auto-fix.',
+        },
+        'HMA-BACKUP-NOT-DIR': {
+          fix: `Remove or rename ${shellQuote(basePath)}, then re-run: ${rerun}`,
+          guidance:
+            `Something that is not a directory already occupies ${BACKUP_DIR_NAME}, so there is `
+            + 'nowhere to store the copies auto-fix would need. Nothing was written and nothing was '
+            + 'changed.',
+        },
+        'HMA-BACKUP-OUTSIDE-TREE': {
+          fix: `Replace ${shellQuote(basePath)} with a real directory inside the project, then re-run: ${rerun}`,
+          guidance:
+            `${BACKUP_DIR_NAME} resolves to a location outside the directory being scanned. Backups `
+            + 'stay inside the tree they belong to, so the run detected only. Nothing was written '
+            + 'and nothing was changed.',
+        },
+        'HMA-BACKUP-NO-NEW-DIR': {
+          fix: `Re-run: ${rerun}`,
+          guidance:
+            'Auto-fix creates a backup directory that must be provably new, and the name it chose '
+            + 'was already taken on every attempt. That is transient — re-running takes a fresh '
+            + 'name. Nothing was written and nothing was changed.',
+        },
+      };
+      const cause = CAUSES[backupFailure.code ?? ''];
       findings.push({
         checkId: 'FIX-BACKUP-FAILED',
         name: 'Auto-Fix Skipped: Backup Could Not Be Created',
@@ -1403,12 +2173,15 @@ export class HardeningScanner {
         category: 'hardening',
         severity: 'medium',
         passed: false,
-        message: `Backup failed (${backupFailure.code}); --fix was skipped and this run only detected. Findings below are unmodified.`,
+        // The reason, in words, not just an error code: for a refusal HMA decided
+        // on its own the code was `Error`, which told the user nothing.
+        message: `Backup failed: ${backupFailure.message} --fix was skipped and this run only `
+          + 'detected. Findings below are unmodified.',
         file: path.basename(targetDir),
         fixable: false,
-        fix: `Make the target writable, then re-run: ${this.cliName} secure --fix`,
-        guidance:
-          'Applying fixes without a backup would leave nothing to roll back to, so the run detects only. Every finding below reflects the tree as it is on disk. This usually means a read-only mount, a container volume, or a checkout owned by another user.',
+        fix: cause?.fix ?? `Make the target writable, then re-run: ${rerun}`,
+        guidance: cause?.guidance
+          ?? 'Applying fixes without a backup would leave nothing to roll back to, so the run detects only. Every finding below reflects the tree as it is on disk. This usually means a read-only mount, a container volume, or a checkout owned by another user.',
       });
     }
 
@@ -1434,6 +2207,43 @@ export class HardeningScanner {
         fix: `Make the file writable, then re-run: ${this.cliName} secure --fix`,
         guidance:
           'The issue these fixes address is still present on disk. A write can fail because the file is read-only or immutable, the filesystem is mounted read-only, the volume is full, or a security policy denies it. Findings for those files are reported as unfixed, so the score reflects the tree as it actually is.',
+      });
+    }
+
+    if (this.fixWritesIntoForeignArchive.length > 0) {
+      const rels = [...new Set(this.fixWritesIntoForeignArchive.map(
+        (f) => path.relative(targetDir, f) || path.basename(f),
+      ))];
+      findings.push({
+        checkId: 'FIX-FOREIGN-ARCHIVE',
+        // Was "Fix Applied Inside Another Project's Backup". Neither this name
+        // nor the guidance below may assert that a project is there: what was
+        // established is that an ancestor directory IS what
+        // `<its parent>/.hackmyagent-backup` resolves to, and a vendored tree
+        // carrying that name satisfies that truthfully. Proving a project sits
+        // beside it would mean trusting files the scanned tree wrote.
+        name: 'Fix Applied Inside a Nested Backup Directory',
+        description: `${rels.length} file${rels.length === 1 ? '' : 's'} rewritten inside a nested backup directory`,
+        category: 'hardening',
+        severity: 'low',
+        // `passed: false` so it is SHOWN. A `passed: true` finding is filtered
+        // out of the report, which is how the first version of this disclosure
+        // managed to exist in the code and appear nowhere on screen — the same
+        // failure as putting it in the changelog.
+        passed: false,
+        message: rels.join(', '),
+        file: rels[0],
+        fixable: false,
+        fix: `${this.cliName} rollback ${citationTarget(targetDir)}`,
+        guidance:
+          'These files sit under a directory below the one you scanned that resolves to '
+          + '`.hackmyagent-backup` — the name HackMyAgent stores a tree\'s backups in. They were '
+          + 'rewritten like any other file, and this run copied the originals into its own backup '
+          + 'first, so nothing is lost. If that directory IS another project\'s backup archive, '
+          + 'running `rollback` inside that project will now restore the rewritten copy rather than '
+          + 'the original, and will report success — roll back from the directory you scanned '
+          + 'instead. If it is a vendored or copied tree that merely carries the name, no rollback '
+          + 'is affected and the rewrite is the ordinary fix.',
       });
     }
 
@@ -1465,14 +2275,11 @@ export class HardeningScanner {
         // motivated it, so dropping either side can lose the still-failing
         // path. Union on both sides can only make verification stricter,
         // never looser — and under-claiming a repair is the safe direction.
-        const coveredFiles = (f: SecurityFinding): string[] => {
-          const listed = Array.isArray(f.details?.files) ? f.details.files : [];
-          return [...new Set(
-            [f.file, ...listed].filter(
-              (p): p is string => typeof p === 'string' && p.length > 0,
-            ),
-          )];
-        };
+        // Hoisted to `coveredFilesOf` so `.hmaignore` suppression uses the
+        // SAME notion of "which paths does this finding speak for" that
+        // verification does (#280) — the two disagreeing is what let one
+        // ignored path delete a multi-file finding.
+        const coveredFiles = (f: SecurityFinding): string[] => this.coveredFilesOf(f);
 
         // Compare against the verify scan's UNFILTERED findings. Its
         // `findings` has already been through the user-facing filter below,
@@ -1627,8 +2434,10 @@ export class HardeningScanner {
       // Filter out check IDs suppressed via .hmaignore (supports wildcards)
       if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) return false;
 
-      // Filter out paths matching .hmaignore
-      if (f.file && this.isPathIgnored(f.file, allIgnoredPaths)) return false;
+      // Filter out paths matching .hmaignore.
+      // #280 — a multi-file finding survives while ANY covered path is
+      // un-ignored, and is re-pointed onto a survivor rather than deleted.
+      if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) return false;
 
       return true;
     });
@@ -1692,9 +2501,10 @@ export class HardeningScanner {
         [
           ...findings.filter(f => f.fixed && f.file).map(f => f.file as string),
           // Plus every path a fix actually wrote. `recordCreatedFiles` still
-          // records only paths it observed MISSING at backup time and guards
-          // each with a sha256, so widening the candidate list cannot make
-          // rollback delete a file the user wrote.
+          // records only paths HMA OBSERVED missing — at backup time, or
+          // proven absent immediately before the write — and guards each with
+          // a sha256, so widening the candidate list cannot make rollback
+          // delete a file the user wrote.
           ...this.fixWritePaths,
         ],
       );
@@ -2003,7 +2813,13 @@ export class HardeningScanner {
     // Files to check for credentials. secrets.json / credentials.json
     // added in #250 — they were previously unscanned even though their
     // names promise exactly this content.
-    const filesToCheck = [
+    //
+    // #292 — this was a fixed ROOT-relative probe list, so a credential in
+    // `src/config.json` was invisible while the identical token in
+    // `./config.json` scored 69/100 with CRED-001 + SEM-CRED-002. The list
+    // below is now the canonical root ORDER only; the actual set of files
+    // comes from a recursive basename match at any depth.
+    const rootProbeOrder = [
       'config.json',
       'config.yaml',
       'config.yml',
@@ -2016,27 +2832,92 @@ export class HardeningScanner {
       'CLAUDE.md',
     ];
 
+    // Root files first, in their historical order, then everything deeper in
+    // sorted order. Preserving the root sequence keeps finding order — and so
+    // the byte-compared corpus goldens — stable for trees that only have
+    // root-level config, which is every pre-existing fixture.
+    //
+    // The root names are probed UNCONDITIONALLY, exactly as before, rather
+    // than being filtered through the walk's results. The walk is bounded and
+    // can return `complete: false` on a pathological or unreadable tree;
+    // gating the root probe on it would let a deep/unreadable directory
+    // REMOVE detection that exists today. This change may only ever add
+    // locations, never subtract them. Absent files are skipped by the same
+    // readFile catch as before.
+    const { configFiles: discovered } = await this.collectSensitiveArtifacts(targetDir);
+    const nested = discovered.filter((rel) => rel.includes(path.sep)).sort();
+    const filesToCheck = [...rootProbeOrder, ...nested];
+
     for (const filename of filesToCheck) {
       const filePath = path.join(targetDir, filename);
       try {
         let content = await fs.readFile(filePath, 'utf-8');
         const lines = content.split('\n');
+        // #310, second harm — detection reads the file AS IT ARRIVED; only the
+        // fix mutates `lines`. The loops are pattern-major, so with detection
+        // reading the working copy an earlier pattern's replacement removed a
+        // LATER pattern's credential from the line before that pattern was ever
+        // examined. `${AKIA…_ghp_…}` reported "AWS Access Key" alone: the
+        // GitHub token was deleted from the file and never named, so the user
+        // rotates one key and leaves the other live. Which secret vanished
+        // depended on `credentialPatterns` order.
+        const originalLines = [...lines];
         let fileModified = false;
         const keysFoundInFile: Array<{ name: string; line: number }> = [];
+
+        // #292 — basename, not the whole relative path: `filename` is now
+        // `sub/.env` for a nested hit, and a raw `startsWith` would classify it
+        // as a normal config file and REWRITE it in place.
+        const isEnvFile = path.basename(filename).startsWith('.env');
+        // #309/#314 — a file inside a backup archive is never auto-fixed:
+        // rewriting it would destroy the copy `rollback` restores from. Not
+        // attempted at all rather than attempted and refused, so the finding
+        // carries a remediation that WORKS instead of a `secure --fix` that this
+        // same guard would decline.
+        //
+        // #326 — asked ONCE per file, and the answer drives both the fix
+        // attempt and the wording. It used to be asked twice, and the second
+        // question was a different, stronger one ("is this PROVABLY our
+        // archive?") whose positive answer emitted `rm -rf`. See the guidance
+        // below for why that question can no longer be asked of the tree.
+        //
+        // #341 — and this one is no longer asked of the tree either. A `yes`
+        // means the file is inside the backup directory HackMyAgent uses for
+        // THIS tree, decided by identity. An `unknown` is left to the write gate,
+        // which has its own cause for it and its own channel to report it: the
+        // remediation here stays `secure --fix`, because on an ancestor the
+        // filesystem momentarily would not describe, that command is still the
+        // right one to run.
+        const inArchive = (await this.isInsideArchiveBase(filePath, targetDir)) === 'yes';
 
         for (const { name, pattern, envVar } of credentialPatterns) {
           // Check each line for credentials
           for (let i = 0; i < lines.length; i++) {
             pattern.lastIndex = 0;
-            if (pattern.test(lines[i]) && !lines[i].includes('${' + envVar + '}')) {
+            // #281 — was `pattern.test(line) && !line.includes('${'+envVar+'}')`.
+            // The second half is a SUBSTRING test over the whole line, so
+            // appending ` ${ANTHROPIC_API_KEY}` to a live key silenced the
+            // CRITICAL entirely. Now the exemption applies only to a match
+            // that is itself inside a well-formed reference.
+            if (hasCredentialOutsideEnvRef(originalLines[i], pattern)) {
               keysFoundInFile.push({ name, line: i + 1 });
 
               // Fix: replace credential with env var reference (but NOT in .env files
-              // where the actual value is supposed to live)
-              const isEnvFile = filename.startsWith('.env');
-              if (autoFix && !isEnvFile) {
-                pattern.lastIndex = 0;
-                lines[i] = lines[i].replace(pattern, '${' + envVar + '}');
+              // where the actual value is supposed to live, and never inside a
+              // backup archive — both decided once, above).
+              if (autoFix && !isEnvFile && !inArchive) {
+                // #301 — a key wrapped in braces has to lose the braces with
+                // it. Replacing only the inner match turns `"${ghp_aaa…}"`
+                // into `"${${GITHUB_TOKEN}}"`: nested, expanded by no shell,
+                // and still not the value anyone wanted.
+                //
+                // #308 — the whole ENCLOSING span, not just the exact-wrapper
+                // shape, so padded spans (`${MY_ghp_…}`) lose their braces too.
+                //
+                // #310 — but bounded to a span that IS a reference. See
+                // `replaceCredentialWithEnvRef`: the previous regex paired any
+                // `${` with the next `}` and destroyed unrelated config data.
+                lines[i] = replaceCredentialWithEnvRef(lines[i], pattern, envVar);
                 fileModified = true;
                 envVarsToAdd.add(envVar);
               }
@@ -2055,7 +2936,36 @@ export class HardeningScanner {
             if (fileModified) content = credContent;
           }
 
-          const isEnvFile = filename.startsWith('.env');
+          // #326 — HackMyAgent no longer claims to know who created a
+          // `.hackmyagent-backup`-named directory, and never emits `rm -rf` for
+          // one.
+          //
+          // #319 made the claim conditional on the archive's `.manifest.json`
+          // LISTING the cited file. That manifest is a file in the scanned tree,
+          // inside the attacker's own directory: they control its location AND
+          // its contents, so one array element restored the fabricated citation
+          // in full — `rm -rf` against `important-lib/` holding `main.js` and
+          // `lib.js`, under "This is the copy `--fix` saved". A credential
+          // directly in the base aimed the same deletion at the WHOLE
+          // `.hackmyagent-backup`, destroying real prior-run backups.
+          //
+          // Fifth instance of one class: #304 a `\`-folded path, #305 a name,
+          // #309 a manifest shape, #317 a case-sensitive compare, #326 a
+          // manifest array element. Every one of them was a STRING the scanned
+          // tree could write, used as proof of a property of the filesystem.
+          //
+          // So the question is not asked. The only non-forgeable evidence
+          // available without new state is the `dev`+`ino` of a directory THIS
+          // run created — and a this-run backup is already excluded from
+          // detection, so there is no case left where proof exists and the
+          // citation is wanted. A cross-run claim would need state HMA holds and
+          // the tree cannot write (a per-user record of the identities it
+          // created, or a MAC over the manifest keyed outside the tree); both
+          // buy one convenience command in exchange for new state and its
+          // failure modes, against a downside — deleting a directory that is not
+          // ours — that is unrecoverable. The wording below states what is true
+          // in both cases, names the verify step, and leaves the deletion to the
+          // one party who can tell which case it is.
           findings.push({
             checkId: 'CRED-001',
             name: 'Exposed Credential',
@@ -2066,14 +2976,24 @@ export class HardeningScanner {
             message: keyNames.join(', '),
             file: filename,
             line: firstLine,
-            fixable: !isEnvFile, // .env files can't be auto-fixed (that's where values belong)
+            // .env files can't be auto-fixed (that's where values belong);
+            // archives must not be (rewriting them destroys the rollback copy).
+            fixable: !isEnvFile && !inArchive,
             fixed: fileModified,
-            fix: isEnvFile
-              ? 'Add .env to .gitignore to prevent committing secrets'
-              : `${this.cliName} secure --fix`,
-            guidance: isEnvFile
-              ? 'Credentials in .env are expected but the file must be in .gitignore. Run `hackmyagent secure --fix` to create a .gitignore.'
-              : 'Replaces hardcoded credentials with ${ENV_VAR} references. Store actual values in your .env file, which should be in .gitignore.',
+            fix: inArchive
+              ? 'Rotate the credential, then remove this plaintext copy by hand'
+              : isEnvFile
+                ? 'Add .env to .gitignore to prevent committing secrets'
+                : `${this.cliName} secure --fix`,
+            guidance: inArchive
+              ? 'Rotate the credential: it has been on disk in plaintext. Clearing the copy is yours to do — this file sits '
+                + `inside \`${BACKUP_DIR_NAME}\`, the directory HackMyAgent stores this tree's backups in, which it never `
+                + 'auto-edits (rewriting a backup would destroy what `rollback` restores from) and never offers to delete, '
+                + 'because it cannot tell which run wrote a given copy. Check the live file first: '
+                + `\`${this.cliName} secure\` should report no credential outside this directory.`
+              : isEnvFile
+                ? 'Credentials in .env are expected but the file must be in .gitignore. Run `hackmyagent secure --fix` to create a .gitignore.'
+                : 'Replaces hardcoded credentials with ${ENV_VAR} references. Store actual values in your .env file, which should be in .gitignore.',
           });
         }
       } catch {
@@ -2244,6 +3164,395 @@ export class HardeningScanner {
   }
 
   /**
+   * Guarantee the backup can undo a write to `filePath` before it happens.
+   * Returns false when it cannot, and the caller must then not write (#300).
+   *
+   * The backup candidate set used to be a static, root-relative list
+   * (`BACKUP_FILES`), predicted ahead of the scan. Every widening of
+   * DETECTION therefore silently widened the set of files `--fix` rewrites
+   * WITHOUT widening the set it can restore. #292 widened CRED-001 to
+   * config-shaped files at any depth and this is what shipped:
+   *
+   *   before   config/production.json + src/config.json  = a live token
+   *   --fix    both -> ${GITHUB_TOKEN}
+   *   backup   holds only package.json
+   *   rollback "Restored 1 modified file", exit 0
+   *   after    both still redacted, original bytes unrecoverable
+   *
+   * Irreversible data loss behind an explicit success message. Extending the
+   * static list would have closed that one instance and left the next
+   * widening — #298 is already queued — to reopen it, so the coverage is
+   * derived from the WRITE instead of predicted before it: whatever a fix is
+   * about to touch is captured now, at the one choke point every fix write
+   * already goes through.
+   *
+   * Fail-safe in every direction. No backup context, a path outside the
+   * scanned tree, or a failed copy all return false, and the write is
+   * abandoned and reported as FIX-WRITE-FAILED — the user keeps their bytes
+   * and is told the fix did not land, which is the recoverable outcome. A
+   * file that does not exist yet is a creation, not an overwrite: nothing to
+   * copy, so it is recorded as an absent candidate and left to
+   * `recordCreatedFiles`, which hash-verifies before rollback removes it.
+   */
+  private async ensureBackupCovers(filePath: string): Promise<boolean> {
+    const ctx = this.backupContext;
+    if (!ctx) return false;
+
+    const rel = this.toTargetRelativePath(filePath, ctx.targetDir);
+    if (!rel) return false; // escapes the scanned tree — not ours to rewrite
+    if (ctx.covered.has(rel)) return true;
+
+    // `copyFile` follows symlinks, matching `createBackup`: the fix sites
+    // write THROUGH a link, so the bytes at the far end are what has to be
+    // recoverable. See the symlink note in `createBackup`.
+    //
+    // Copy FROM `filePath` — the path this write will actually land on — and
+    // never from a path rebuilt out of `rel`. `rel` is a normalized
+    // description of `filePath`, and re-deriving the source from it was #304:
+    // the guard protected a path that was not the one being written.
+    let existed = true;
+    try {
+      const destPath = path.join(ctx.backupDir, rel);
+      await fs.mkdir(path.dirname(destPath), { recursive: true });
+      await fs.copyFile(filePath, destPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') return false;
+      // ENOENT is overloaded here and only ONE of its meanings is a creation.
+      // It is also raised for a dangling symlink (the entry exists and the fix
+      // writes THROUGH it), for a backup directory that vanished mid-run, and
+      // for any source that resolves somewhere unexpected. So absence is
+      // PROVEN against the real path rather than inferred from an errno —
+      // inferring it is what made the guard authorise the write it exists to
+      // gate. `lstat`, not `stat`: a dangling symlink is an entry that exists,
+      // so it is not a creation, and it has no recoverable copy — fail safe.
+      if (!(await this.isGenuinelyAbsent(filePath))) return false;
+      existed = false;
+    }
+
+    // Persist before returning: `recordCreatedFiles` re-reads this file from
+    // disk, and `rollback` is a separate process. An in-memory-only update
+    // would restore nothing.
+    if (!(await this.appendToBackupManifest(ctx.backupDir, rel, existed))) return false;
+    ctx.covered.add(rel);
+    return true;
+  }
+
+  /**
+   * True when this path is inside the backup THIS RUN just created.
+   *
+   * #309 — the only exclusion left, and the only one that can be justified.
+   * Every previous version decided whether to suppress a CRITICAL by reading
+   * the scanned tree, which is the attacker's own filesystem:
+   *
+   *   #292/#302  ancestor directory NAMED `.hackmyagent-backup`
+   *              -> the name was a one-word suppression token
+   *   #305       name + a `.manifest.json` + a live counterpart
+   *              -> the manifest is 70 bytes of JSON with two array keys, and
+   *                 "is really a copy" was an EXISTENCE test that never
+   *                 compared content. A forged manifest plus a benign decoy at
+   *                 the mirrored path restored the bypass exactly: identical
+   *                 credential bytes, `.notabackup` 69/100 with the CRITICAL,
+   *                 `.hackmyagent-backup` 96/100 and silent. Two variants
+   *                 needed no decoy at all — a dangling symlink, and an
+   *                 ENOTDIR counterpart where the errno was read as "exists".
+   *
+   * Three rounds, three replacements of one attacker-suppliable token with
+   * another. So the property is no longer taken from the tree at all: the run's
+   * own `backupDir` is a path HMA chose this run, and nothing in the scanned
+   * tree can name it. `createBackup` runs before every check, so without this
+   * the same run would report the credential twice — once in the live file and
+   * once in the copy HMA made microseconds earlier.
+   *
+   * A PRE-EXISTING archive is deliberately NOT excluded. After `--fix` the live
+   * file holds `${GITHUB_TOKEN}` and the archive holds the only remaining
+   * plaintext copy of the secret, so it is not a duplicate of anything —
+   * suppressing it would mean hiding a plaintext credential that HMA itself
+   * created. It reports, with a fix line that is not `secure --fix` (the write
+   * guard refuses to edit archives) and, since #326, one that neither claims HMA
+   * created the directory nor offers to delete it.
+   *
+   * #317 — the fourth round, and the one that made the shape of the class
+   * unmistakable. `ctx.backupDir` was compared with `isPathWithinDirectory`, a
+   * case-SENSITIVE `path.resolve` prefix compare, so the property was still a
+   * STRING describing the directory rather than the directory. One pre-existing
+   * `.HACKMYAGENT-BACKUP` on a case-insensitive filesystem (the macOS default)
+   * was enough: `mkdir` adopted it, `readdir` returned the original casing, the
+   * compare said no, and `--fix` redacted its own backup while `rollback`
+   * restored the redaction and reported a clean revert. Measured: the archived
+   * copy held `${GITHUB_TOKEN}` 200ms after the original was read.
+   *
+   * So the question is asked of the FILESYSTEM. `isOwnBackupDir` compares
+   * `dev`+`ino`, which no spelling of a path can change.
+   *
+   * This variant answers the question for a FILE, by walking its ancestors. It
+   * costs a `stat` per level, which is affordable at the write gate (a few
+   * dozen calls per run) and is not affordable per scanned file — hence the
+   * separate primitive the walks use.
+   */
+  private async isInsideOwnBackup(absPath: string): Promise<'yes' | 'no' | 'unknown'> {
+    const ctx = this.backupContext;
+    if (!ctx) return 'no';
+    // Sound positive, no syscall. Only the negative needs the filesystem.
+    if (this.isPathWithinDirectory(absPath, ctx.backupDir)) return 'yes';
+
+    let dir = path.dirname(path.resolve(absPath));
+    // Bounded: a path with more than 64 components is not something to keep
+    // stat-ing, and the answer for anything that deep is "not our backup".
+    for (let i = 0; i < 64; i++) {
+      const probe = await identityOf(dir);
+      if (sameIdentity(identityOrUndefined(probe), ctx.backupIdent)) return 'yes';
+      // #333 — an ancestor the filesystem would not describe leaves the question
+      // OPEN. Reported as such rather than collapsed into "no", because the
+      // caller here is the write gate and "no" there authorises the write.
+      if (probe.kind === 'unknown') return 'unknown';
+      const parent = path.dirname(dir);
+      if (parent === dir) return 'no'; // filesystem root
+      dir = parent;
+    }
+    return 'no';
+  }
+
+  /**
+   * True when `dirPath` is the backup directory this run created, or lies
+   * inside it — decided by identity.
+   *
+   * This is the primitive the walks use, and it is asked once per directory
+   * rather than once per file: a walk that does not descend into the backup
+   * cannot produce a path inside it, and one that does (the config walk keeps
+   * walking so `keyFiles`/`namedSensitive` semantics stay untouched) carries the
+   * answer down its own recursion. That keeps the syscall cost at one `stat`
+   * per directory of a `--fix` run, and zero for a detect-only scan.
+   *
+   * An unreadable directory is deliberately answered "not ours" HERE: the
+   * consequence is that the directory is SCANNED, so a credential inside it is
+   * still reported. That is the fail-closed direction for detection, and it is
+   * the opposite of the direction the write gate needs — see `isInsideOwnBackup`
+   * (#333).
+   */
+  /**
+   * Is this file inside the backup directory HackMyAgent uses for this tree?
+   *
+   * #341 — this replaces a chain of six guards that each described the backup
+   * directory with a value the scanned tree could write. The last of them gated
+   * a case-folded NAME match on the directory holding a `.manifest.json` — never
+   * opened, never parsed, an `fs.stat().isFile()` on a file in the tree being
+   * judged. `printf '{}' > …/.manifest.json` restored the harm #331 had just
+   * measured: a credential `--fix` would have redacted, left in plaintext. And
+   * the exact-name half required no evidence at all, so it left the same
+   * credential in plaintext with no forgery at all.
+   *
+   * The question is asked of the FILESYSTEM instead. `resolveArchiveBase` is a
+   * path HackMyAgent derives from the target the user named; the ancestor walk
+   * compares `dev`+`ino`, so no spelling — case, Unicode fold, symlink, `..` —
+   * changes the answer, and there is no per-spelling rule left to bypass.
+   *
+   * Three-valued for the same reason `isInsideOwnBackup` is (#333): the caller
+   * is a write gate, "no" there AUTHORISES the write, and an ancestor the
+   * filesystem would not describe proves nothing in either direction.
+   *
+   * Memoized per DIRECTORY. The answer is a property of the directory, every
+   * file in one shares it, and the walk consults the cache for ancestors — so a
+   * scan costs about one `stat` per directory rather than one per file.
+   */
+  private async isInsideArchiveBase(
+    absPath: string,
+    targetDir: string,
+  ): Promise<'yes' | 'no' | 'unknown'> {
+    let base = this.archiveBases.get(targetDir);
+    if (base === undefined) {
+      base = await resolveArchiveBase(targetDir);
+      this.archiveBases.set(targetDir, base);
+    }
+    // A base HackMyAgent could not resolve leaves the question OPEN. "No base
+    // here" would authorise the write, which is the direction that rewrites a
+    // previous run's backup.
+    if (base.kind === 'unknown') return 'unknown';
+    if (base.kind === 'none') return 'no';
+    let dir = path.dirname(path.resolve(absPath));
+    const asked: string[] = [];
+    let answer: 'yes' | 'no' | 'unknown' = 'no';
+    // Bounded for the same reason the identity walk is: a path more than 64
+    // components deep is not something to keep stat-ing.
+    for (let i = 0; i < 64; i++) {
+      const cached = this.archiveDirAnswers.get(dir);
+      if (cached) { answer = cached; break; }
+      asked.push(dir);
+      // A lexical hit is a sound POSITIVE — same spelling, same directory — and
+      // it is the common case for a real archive, so the syscall is spent only
+      // when the cheap compare says no.
+      if (this.isPathWithinDirectory(dir, base.real) || dir === base.real) { answer = 'yes'; break; }
+      const probe = await identityOf(dir);
+      if (sameIdentity(identityOrUndefined(probe), base.ident)) { answer = 'yes'; break; }
+      if (probe.kind === 'unknown') { answer = 'unknown'; break; }
+      const parent = path.dirname(dir);
+      if (parent === dir) break; // filesystem root, and it is not the base
+      dir = parent;
+    }
+    // Only a settled answer is memoized for the whole chain: a 'yes' or a 'no'
+    // holds for every directory asked on the way, an 'unknown' holds only for
+    // the level that could not be read.
+    if (answer !== 'unknown') for (const d of asked) this.archiveDirAnswers.set(d, answer);
+    return answer;
+  }
+
+  /**
+   * Does this path run through a directory that IS what
+   * `<its parent>/.hackmyagent-backup` resolves to, below the scanned tree?
+   *
+   * Only ever used to add a sentence of advice (see `applyFixWrite`). It gates
+   * nothing, suppresses nothing and deletes nothing.
+   *
+   * It used to compare the ancestor NAMES against `.hackmyagent-backup`
+   * exactly, and the two halves of that were wrong in opposite directions.
+   *
+   * It fired where there is no nested project. `vendor/.hackmyagent-backup/`
+   * `lib/config/production.json` carries the exact lowercase name, and the note
+   * then told the user their file sat in "a `.hackmyagent-backup` directory
+   * belonging to a project nested under the one you scanned" — a claim about
+   * the tree that nothing had established. The reasoning that an exact name
+   * avoids a false claim was simply wrong: an exact name is the easiest of all
+   * the spellings for a vendored tree to carry.
+   *
+   * And it was SILENT on the case it exists for. On a case-insensitive
+   * filesystem, a base created as `.HACKMYAGENT-BACKUP` is adopted by `mkdir`
+   * and every later run writes through that spelling — #317's scenario. The
+   * exact compare misses it, so a real nested project got no disclosure at all,
+   * and `rollback <child>` there restores the redaction over the redaction and
+   * reports success. That half is invisible on Linux CI, where the two names
+   * are two directories.
+   *
+   * So it asks the filesystem instead: for each ancestor `A`, is `A` the same
+   * directory as `<dirname(A)>/.hackmyagent-backup`, by `dev`+`ino` through
+   * `realpath.native`? On a case-insensitive filesystem `.HACKMYAGENT-BACKUP`
+   * answers yes, and on a case-sensitive one it answers no because there it
+   * really is a different directory that no HackMyAgent run writes.
+   *
+   * What identity CANNOT establish is that a project is there — the vendor
+   * directory is also, truthfully, what that name resolves to. Nothing short of
+   * opening files in the scanned tree could, and a claim resting on those is
+   * forgeable by whoever wrote them, which is the class this stack spent six
+   * rounds removing. So the finding no longer asserts it: it says what was
+   * observed and makes the consequence conditional. See the guidance in
+   * `FIX-FOREIGN-ARCHIVE`.
+   */
+  private async resolvesToANestedArchive(absPath: string, targetDir: string): Promise<boolean> {
+    const rel = path.relative(targetDir, absPath);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return false;
+
+    let dir = path.dirname(path.resolve(absPath));
+    const targetResolved = path.resolve(targetDir);
+    // Bounded like every other ancestor walk here: a path more than 64
+    // components deep is not something to keep stat-ing.
+    for (let i = 0; i < 64 && dir !== targetResolved; i++) {
+      const cached = this.nestedArchiveDirs.get(dir);
+      const answer = cached ?? await this.isBackupBaseByIdentity(dir);
+      this.nestedArchiveDirs.set(dir, answer);
+      if (answer) return true;
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return false;
+  }
+
+  /**
+   * Is `dir` the directory `<dirname(dir)>/.hackmyagent-backup` reaches?
+   *
+   * THREE-VALUED, and the direction is the opposite of the one every other
+   * probe in this file takes — deliberately, because the consequence is.
+   *
+   * Only ENOENT proves the answer is no: nothing is named `.hackmyagent-backup`
+   * beside this directory, so this directory is not it. Every other errno
+   * establishes nothing, and the two mistakes do not cost the same. Saying
+   * nothing when the answer was yes is D5 — a nested project whose `rollback`
+   * now restores a redaction over a redaction and reports success, with no line
+   * anywhere. Saying something when the answer was no costs one conditional
+   * sentence in a report, and the sentence already names the condition.
+   *
+   * So an unreadable probe fires the note. This is the same reasoning as the
+   * retention rule — "anything the filesystem declines to answer counts as
+   * holding a copy, because the cost of being wrong in that direction is the
+   * user's last bytes" — pointed at a different asymmetry, and NOT the same
+   * conclusion, which is why it is written out rather than copied.
+   *
+   * Rare in practice: reaching this at all means HackMyAgent is fixing a file
+   * inside `dir`, so `dir` and its parent are already traversable.
+   */
+  private async isBackupBaseByIdentity(dir: string): Promise<boolean> {
+    const canonical = path.join(path.dirname(dir), BACKUP_DIR_NAME);
+    let canonicalReal: string;
+    try {
+      // `realpath.native` for the reason #334 established: on macOS the JS
+      // implementation returns the spelling it was GIVEN, so it cannot tell a
+      // case-variant apart, while the native one returns the spelling on disk.
+      canonicalReal = fsSync.realpathSync.native(canonical);
+    } catch (err) {
+      return (err as NodeJS.ErrnoException)?.code !== 'ENOENT';
+    }
+    const [here, there] = await Promise.all([identityOf(dir), identityOf(canonicalReal)]);
+    if (here.kind === 'unknown' || there.kind === 'unknown') return true;
+    return sameIdentity(identityOrUndefined(here), identityOrUndefined(there));
+  }
+
+  private async isOwnBackupDir(dirPath: string): Promise<boolean> {
+    const ctx = this.backupContext;
+    if (!ctx) return false;
+    // A lexical hit is a sound POSITIVE — same spelling, same directory. It is
+    // only the NEGATIVE that cannot be trusted, so the syscall is spent only
+    // when the cheap compare says no.
+    if (this.isPathWithinDirectory(dirPath, ctx.backupDir)) return true;
+    return sameIdentity(identityOrUndefined(await identityOf(dirPath)), ctx.backupIdent);
+  }
+
+  /**
+   * True only when nothing exists at `filePath` — proven, not inferred.
+   *
+   * This is the sole evidence that a fix write is a CREATION rather than an
+   * overwrite, and `recordCreatedFiles` turns that classification into a
+   * rollback-time `unlink`. So it fails safe in every unclear direction: an
+   * entry that exists is not a creation, and an `lstat` that fails for any
+   * other reason (EACCES, ELOOP, EIO) proves nothing, so it is not a creation
+   * either. `lstat` deliberately does not follow symlinks — a dangling link
+   * is an entry the user put there, and deleting it at rollback would destroy
+   * something HMA did not create.
+   */
+  private async isGenuinelyAbsent(filePath: string): Promise<boolean> {
+    try {
+      await fs.lstat(filePath);
+      return false;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException)?.code === 'ENOENT';
+    }
+  }
+
+  /**
+   * Add one path to the on-disk manifest, into `existingFiles` (rollback
+   * restores it) or `absentAtBackup` (rollback may remove it once
+   * `recordCreatedFiles` proves HMA generated it). Returns false if the
+   * manifest cannot be read or written, which makes the write unrecoverable
+   * and so must abandon it.
+   */
+  private async appendToBackupManifest(
+    backupDir: string,
+    rel: string,
+    existed: boolean,
+  ): Promise<boolean> {
+    const manifestPath = path.join(backupDir, '.manifest.json');
+    try {
+      const manifest = this.parseManifest(await fs.readFile(manifestPath, 'utf-8'));
+      // Write-time absences go in their OWN list. See `absentAtFixWrite`.
+      const list = existed
+        ? manifest.existingFiles
+        : (manifest.absentAtFixWrite ??= []);
+      if (!list.includes(rel)) list.push(rel);
+      await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Apply a fix write. Returns whether it landed; never throws.
    *
    * Every auto-fix write used to be a bare `await fs.writeFile` sitting
@@ -2262,6 +3571,78 @@ export class HardeningScanner {
    * there, and the fix did not land.
    */
   private async applyFixWrite(filePath: string, content: string): Promise<boolean> {
+    // #314 — never rewrite a backup archive, HMA's own or a previous run's.
+    // #300/#304 gate RECOVERABILITY: they guarantee a copy exists before a
+    // write. They do not stop `--fix` from redacting the archive the user
+    // RESTORES from, and once #309 stopped excluding archives from detection
+    // this became reachable for every prior run's backup. Refusing is
+    // fail-safe, so this may key on the directory name.
+    //
+    // #317 — the name test is anchored on `ctx.targetDir`, so it answers "is
+    // this an archive inside the scanned tree". The run's OWN backup is also
+    // asked about by identity, because the two are not the same question: the
+    // name test needs `filePath` and `targetDir` to be spelled compatibly, and
+    // trusting that they are is how the last four rounds started.
+    //
+    // #341 — the archive half no longer walks the path's SEGMENTS looking for a
+    // name. It asks whether the file is inside the backup directory this tree
+    // uses, decided by identity. That covers a previous run's backup, this run's
+    // own, and every respelling of either, and it stops recognising directories
+    // that merely carry the name — which is what left a
+    // `vendor/.hackmyagent-backup/lib/…` credential in plaintext.
+    const ctx = this.backupContext;
+    const ownBackup = ctx ? await this.isInsideOwnBackup(filePath) : 'no';
+    const inArchive = ctx ? await this.isInsideArchiveBase(filePath, ctx.targetDir) : 'no';
+    // #341, second-order — a write that lands inside ANOTHER tree's backup is
+    // allowed (this run has already made a recoverable copy), but it degrades
+    // that tree's own rollback: `rollback <child>` will restore the redaction
+    // over the redaction and report success. The bytes are recoverable only
+    // through `rollback <this target>`, and nothing said so — the disclosure
+    // lived in a changelog sentence, which is not a place a user looks.
+    //
+    // Decided by IDENTITY, not by a name. It gates no decision, so the cost of
+    // recognising one directory too many is a sentence of advice, while the cost
+    // of recognising one too few is a silent false "Rollback complete" in a tree
+    // the user thinks they can recover — and an exact-name test got BOTH wrong,
+    // firing on a vendored directory carrying the name and missing a real
+    // nested base spelled `.HACKMYAGENT-BACKUP` on a case-insensitive disk.
+    if (ctx && inArchive === 'no' && await this.resolvesToANestedArchive(filePath, ctx.targetDir)) {
+      this.fixWritesIntoForeignArchive.push(filePath);
+    }
+    if (ownBackup === 'yes' || inArchive === 'yes') {
+      this.fixWriteFailures.push({
+        file: filePath,
+        code: 'BACKUP-ARCHIVE',
+        message: 'not written: this is a backup archive, and rewriting it would '
+          + 'destroy the copy rollback restores from',
+      });
+      return false;
+    }
+    // #333 — an identity probe that FAILED is not a "no". The write gate is the
+    // one caller for which "not our backup" authorises the write, so an
+    // ancestor the filesystem would not describe has to stop it, with its own
+    // cause rather than under a claim about a backup archive nobody established.
+    if (ownBackup === 'unknown' || inArchive === 'unknown') {
+      this.fixWriteFailures.push({
+        file: filePath,
+        code: 'BACKUP-IDENTITY-UNKNOWN',
+        message: 'not written: a directory above this path could not be examined, so '
+          + 'HackMyAgent cannot rule out that this is its own backup',
+      });
+      return false;
+    }
+    // #300 — a write the backup cannot undo is not a fix, it is data loss.
+    // Reported through the same channel as a filesystem refusal, because to
+    // the user it is the same outcome: the issue is still there and the fix
+    // did not land.
+    if (!(await this.ensureBackupCovers(filePath))) {
+      this.fixWriteFailures.push({
+        file: filePath,
+        code: 'BACKUP-UNCOVERED',
+        message: 'not written: no recoverable backup copy could be made for this path',
+      });
+      return false;
+    }
     try {
       await fs.writeFile(filePath, content);
       // Recorded regardless of whether any finding names this path, so
@@ -2715,10 +4096,15 @@ dist/
       for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { env?: Record<string, string> }>)) {
         if (server.env) {
           for (const [key, value] of Object.entries(server.env)) {
-            // Check if value is a hardcoded secret (not a reference)
-            if (typeof value === 'string' && !value.includes('${')) {
+            // Check if value is a hardcoded secret (not a reference).
+            // #281 — the guard was `!value.includes('${')`, looser even than
+            // CRED-001's: ANY value containing `${` anywhere was exempt, so
+            // `"sk-ant-api03-<live> ${X}"` passed clean. Now each candidate
+            // match is tested for whether it sits outside a well-formed
+            // reference.
+            if (typeof value === 'string') {
               for (const { pattern, envVar } of credPatterns) {
-                if (pattern.test(value)) {
+                if (hasCredentialOutsideEnvRef(value, pattern)) {
                   hasHardcodedSecrets = true;
 
                   if (autoFix) {
@@ -3037,10 +4423,12 @@ dist/
   private async collectSensitiveArtifacts(targetDir: string): Promise<{
     keyFiles: string[];
     namedSensitive: string[];
+    configFiles: string[];
     complete: boolean;
   }> {
     const keyFiles: string[] = [];
     const namedSensitive: string[] = [];
+    const configFiles: string[] = [];
     const SENSITIVE_NAMES = new Set(['secrets.json', 'credentials.json']);
     const MAX_DEPTH = 25;
     const MAX_ENTRIES = 50000;
@@ -3053,9 +4441,9 @@ dist/
     // unreadable *directory* below counts as incomplete.
     try {
       const rootStat = await fs.stat(targetDir);
-      if (!rootStat.isDirectory()) return { keyFiles, namedSensitive, complete: true };
+      if (!rootStat.isDirectory()) return { keyFiles, namedSensitive, configFiles, complete: true };
     } catch {
-      return { keyFiles, namedSensitive, complete: true };
+      return { keyFiles, namedSensitive, configFiles, complete: true };
     }
 
     const targetRoot = path.resolve(targetDir);
@@ -3067,7 +4455,14 @@ dist/
     // never committable, so skipping it never affects completeness.
     const skippedNodeModules: string[] = [];
 
-    const walk = async (dir: string, depth: number): Promise<void> => {
+    /**
+     * `insideOwnBackup` travels DOWN the recursion instead of being recomputed
+     * per file. #317 made the per-file version a case-sensitive prefix compare
+     * on a path string; the identity check that replaces it costs a `stat`, and
+     * spending one per directory (only during a `--fix` run, since a detect-only
+     * scan has no backup context) is what keeps the correct answer affordable.
+     */
+    const walk = async (dir: string, depth: number, insideOwnBackup: boolean): Promise<void> => {
       if (entries >= MAX_ENTRIES) {
         complete = false;
         return;
@@ -3121,12 +4516,46 @@ dist/
             complete = false;
             continue;
           }
-          await walk(abs, depth + 1);
+          await walk(abs, depth + 1, insideOwnBackup || (await this.isOwnBackupDir(abs)));
           continue;
         }
         if (!dirent.isFile()) continue;
         const rel = path.relative(targetDir, abs);
         if (SENSITIVE_NAMES.has(dirent.name)) namedSensitive.push(rel);
+        // #292 — config-shaped files at ANY depth, not just the scan root.
+        // Config-shaped by filename (`src/config.json`) or by location
+        // (`config/production.json`, whose basename says nothing).
+        //
+        // `.hackmyagent-backup/` is excluded, and that exclusion is load-
+        // bearing rather than cosmetic. It holds verbatim copies of the very
+        // files this check rewrites, so descending into it made `--fix`
+        // rewrite its own backups: the credential was substituted inside the
+        // backup copy, `rollback` then restored the ALREADY-REDACTED content,
+        // and the original was unrecoverable. It also double-counted every
+        // finding (one for the live file, one for its backup). Scoped to the
+        // config list rather than the whole walk so `keyFiles` /
+        // `namedSensitive` semantics are untouched.
+        //
+        // #302 — the test is on every path segment, not on the prefix. `rel`
+        // is relative to the SCAN ROOT, so `startsWith` only ever recognised
+        // a backup directory sitting AT that root, and scanning one level up
+        // walked straight back into it as `child/.hackmyagent-backup/…`. That
+        // reopened all three consequences one directory higher, which is not
+        // an exotic invocation: `secure ~/projects` over a tree where any one
+        // project has been secured before.
+        //
+        // #305/#309 — the exclusion is now THIS RUN's own backup directory and
+        // nothing else. Matching a name, or a name plus a forgeable manifest,
+        // handed the scanned tree a suppression token; a pre-existing archive
+        // holds a real plaintext secret and is reported. See
+        // `isInsideOwnBackup`.
+        //
+        // #317 — and the directory is recognised by `dev`+`ino`, decided on the
+        // way in by `isOwnBackupDir`, never by comparing this file's path
+        // against a string.
+        if (isConfigShapedFile(dirent.name, path.basename(dir)) && !insideOwnBackup) {
+          configFiles.push(rel);
+        }
         if (dirent.name.endsWith('.key')) {
           keyFiles.push(rel);
         } else if (dirent.name.endsWith('.pem')) {
@@ -3135,7 +4564,9 @@ dist/
       }
     };
 
-    await walk(targetDir, 0);
+    // The scan root itself is never the backup directory: `createBackup` always
+    // puts it at least two levels below the target.
+    await walk(targetDir, 0, false);
 
     // A skipped node_modules only breaks completeness if git would commit
     // a sensitive file hidden inside it. Ask git directly (ls-files over
@@ -3149,7 +4580,12 @@ dist/
       }
     }
 
-    return { keyFiles, namedSensitive, complete };
+    // Deterministic order. `readdir` order is filesystem-dependent, and the
+    // corpus goldens are byte-compared, so an unsorted list would make golden
+    // stability a property of the host filesystem.
+    configFiles.sort();
+
+    return { keyFiles, namedSensitive, configFiles, complete };
   }
 
   /**
@@ -6124,26 +7560,209 @@ dist/
   }
 
   /**
+   * The directory `--fix` stores backups under, resolved to a real directory
+   * inside the scanned tree. Throws otherwise, which degrades the run to
+   * detect-only rather than writing somewhere unintended.
+   *
+   * #321 — this used to be a bare `mkdir -p <target>/.hackmyagent-backup/<stamp>`
+   * followed by `copyFile`, and both follow symlinks. One
+   * `ln -s /attacker/drop <target>/.hackmyagent-backup` sent every backup copy,
+   * `.env` included, out of the tree. Reproduced on the base commit as well as
+   * on this branch, so it is not a regression from the unpushed range — but it
+   * shares its root with #317/#318/#320, and the root is trusting a path string
+   * where filesystem identity is needed.
+   *
+   * The base directory is REFUSED outright when it is a symlink, wherever it
+   * points. Resolving it and accepting an in-tree target would still mean
+   * backups landing somewhere the scanned tree chose, and this is the one
+   * directory whose location HMA must own.
+   */
+  private async prepareBackupRoot(targetDir: string): Promise<string> {
+    const targetReal = await fs.realpath(targetDir);
+    const base = path.join(targetReal, BACKUP_DIR_NAME);
+
+    try {
+      // Non-recursive: `targetReal` exists (realpath just proved it), so the
+      // only thing this can create is the base itself.
+      await fs.mkdir(base);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err;
+    }
+
+    // `lstat`, not `stat`: a symlink to a directory is a directory to `stat`,
+    // which is exactly how #321 stayed invisible.
+    const st = await fs.lstat(base);
+    if (st.isSymbolicLink()) {
+      throw backupSetupError(
+        'HMA-BACKUP-SYMLINK',
+        `${base} is a symbolic link, and backups are not written through a link.`,
+      );
+    }
+    if (!st.isDirectory()) {
+      throw backupSetupError(
+        'HMA-BACKUP-NOT-DIR',
+        `${base} exists and is not a directory, so backups cannot be stored there.`,
+      );
+    }
+
+    // Canonical, including the ON-DISK CASING: everything downstream compares
+    // against this, and a `.HACKMYAGENT-BACKUP` adopted by name would otherwise
+    // leave the run's own paths spelled one way and read back another (#317).
+    //
+    // #334 — that property needs `realpath.native`. Measured on macOS with the
+    // directory on disk named `.HACKMYAGENT-BACKUP`:
+    //
+    //   fs.realpathSync(".../.hackmyagent-backup")        -> ".../.hackmyagent-backup"
+    //   fs.realpathSync.native(".../.hackmyagent-backup") -> ".../.HACKMYAGENT-BACKUP"
+    //
+    // The JS implementation returns the CALLER's spelling for the final
+    // component, so the comment above described something the code did not do
+    // and the lexical fast path in `isOwnBackupDir` almost never fired — one
+    // `stat` per directory of every `--fix` walk, for a compare that could not
+    // match. Identity covered the gap, which is why nothing broke; correctness
+    // of the stated property and the cost are both worth fixing.
+    //
+    // Sync because there is no promises-API `.native` (Node exposes it on the
+    // callback and sync forms only), and because this runs once per run.
+    const baseReal = fsSync.realpathSync.native(base);
+    if (!this.isPathWithinDirectory(baseReal, targetReal)) {
+      throw backupSetupError(
+        'HMA-BACKUP-OUTSIDE-TREE',
+        `${base} resolves to ${baseReal}, which is outside the scanned tree.`,
+      );
+    }
+    return baseReal;
+  }
+
+  /**
+   * The run's own backup directory, created and PROVEN new.
+   *
+   * #320 — the stamp was `YYYY-MM-DD-HHMMSS` in UTC and the `mkdir` was
+   * `recursive: true`, which silently ADOPTS an existing directory. So the
+   * scanned tree could name HMA's own backup by guessing a second, turning a
+   * CRITICAL into a silent drop and moving the score UP. Two independent
+   * reproductions, kept apart rather than blended (#334):
+   *
+   *   the #320 report          125 pre-seeded stamps, 126 CRED-001 detect-only
+   *                            vs 125 under `--fix`
+   *   this stack's own run      90 pre-seeded stamps,  91 CRED-001 detect-only
+   *                            vs  90 under `--fix`, score 13 -> 14
+   *
+   * "Unforgeable by construction" was false either way, and 86,400 empty
+   * directories cover a whole day.
+   *
+   * Two independent properties, either of which suffices:
+   *   - a random component the tree cannot predict, and
+   *   - a NON-recursive `mkdir`, which fails EEXIST instead of adopting. On a
+   *     case-insensitive filesystem EEXIST also fires for a case variant, so a
+   *     pre-seeded `.../2026-07-29-120000-AB12CD34` cannot become this run's
+   *     backup either.
+   *
+   * The time-ordered prefix stays: `rollback` selects the latest backup by
+   * lexical sort, so the NAME has to sort in creation order.
+   *
+   * #332 — adding the random suffix broke exactly that, and the comment here
+   * asserting the invariant was the only thing left holding it. Two backups
+   * created inside one second sorted by random hex: measured at the primitive
+   * level, 5 of 6 trials selected the OLDER backup, which leaves run 2's
+   * generated files in place, deletes run 1's copies, and lets a second
+   * rollback restore already-redacted content — #317's shape again.
+   *
+   * Two changes, so the ordering component is decided by time and only by time:
+   *
+   *   - the stamp carries MILLISECONDS. Two `createBackup` calls were measured
+   *     2-6ms apart, so seconds were not enough resolution to order them.
+   *   - within one millisecond, a fixed-width SEQUENCE derived from what is
+   *     already in the base orders the siblings. That is what makes sequential
+   *     creation deterministic rather than merely likely.
+   *
+   * The random component stays (that is #320) but no longer decides anything.
+   * Truly concurrent creation in the same millisecond by two processes is still
+   * a tie — neither is "later" at that resolution — and the concurrency test
+   * covers what matters there: neither run adopts or deletes the other's backup.
+   *
+   * Names written by earlier versions (`YYYY-MM-DD-HHMMSS-<rand>`) sort BELOW a
+   * new name from the same second, since a digit outranks the `-` that follows
+   * the seconds field. That is the correct order: the new one is later.
+   */
+  private async createRunBackupDir(baseReal: string): Promise<string> {
+    const stamp = new Date()
+      .toISOString()
+      .slice(0, 23)
+      .replace('T', '-')
+      .replace(/[:.]/g, '');
+    const seq = await this.nextStampSequence(baseReal, stamp);
+
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const dir = path.join(
+        baseReal,
+        `${stamp}-${stampSequenceField(seq, attempt)}`
+        + `-${crypto.randomBytes(4).toString('hex')}`,
+      );
+      try {
+        await fs.mkdir(dir);
+        return dir;
+      } catch (err) {
+        lastErr = err;
+        // Anything other than "it already exists" is a real filesystem
+        // failure and must degrade the run, not be retried 8 times.
+        if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err;
+      }
+    }
+    throw backupSetupError(
+      'HMA-BACKUP-NO-NEW-DIR',
+      `Could not create a new backup directory under ${baseReal} after 8 attempts`
+      + `${lastErr instanceof Error ? `: ${lastErr.message}` : '.'}`,
+    );
+  }
+
+  /**
+   * The next ordering slot for `stamp`: one past the highest sequence already
+   * recorded for that same millisecond in this base.
+   *
+   * Reading the base is what makes SEQUENTIAL creation deterministic rather than
+   * merely probable — run 1 is on disk before run 2 asks. Two processes asking
+   * at the same instant can still choose the same slot, which is the tie the
+   * millisecond stamp has already declared.
+   *
+   * Fails to zero: an unreadable base leaves ordering to the millisecond stamp,
+   * which is the behaviour without this function at all, and never blocks a
+   * backup — this is an ordering aid, not a guard.
+   */
+  private async nextStampSequence(baseReal: string, stamp: string): Promise<number> {
+    try {
+      const entries = await fs.readdir(baseReal);
+      let highest = -1;
+      for (const entry of entries) {
+        if (!entry.startsWith(`${stamp}-`)) continue;
+        const seq = Number.parseInt(entry.slice(stamp.length + 1, stamp.length + 4), 10);
+        if (Number.isFinite(seq) && seq > highest) highest = seq;
+      }
+      return Math.min(highest + 1, 998);
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
    * Create a backup of files that may be modified during auto-fix
    */
   private async createBackup(targetDir: string): Promise<string> {
-    const timestamp = new Date()
-      .toISOString()
-      .replace(/[T:]/g, '-')
-      .replace(/\..+/, '')
-      .replace(/-/g, (m, i) => (i < 10 ? '-' : ''));
+    const backupDir = await this.createRunBackupDir(await this.prepareBackupRoot(targetDir));
 
-    // Format: YYYY-MM-DD-HHMMSS
-    const formattedTimestamp = new Date()
-      .toISOString()
-      .slice(0, 19)
-      .replace('T', '-')
-      .replace(/:/g, '');
-
-    const backupDir = path.join(targetDir, '.hackmyagent-backup', formattedTimestamp);
-
-    // Create backup directory
-    await fs.mkdir(backupDir, { recursive: true });
+    // The identity of the directory just created, captured once. Every later
+    // "is this inside the backup?" question is answered against this rather
+    // than against a path string — see `isInsideOwnBackup` (#317).
+    //
+    // #347.3 — this used to go through `identityOrUndefined`, which collapses
+    // the three-valued probe back into two and throws away exactly the
+    // distinction #333 added it for. An EACCES, ELOOP or EIO on the directory
+    // `mkdir` had just returned was reported as `HMA-BACKUP-VANISHED —
+    // disappeared immediately after being created`, which is a claim about the
+    // filesystem that only ENOENT supports, and it sent the user looking for a
+    // race that is not there.
+    this.lastBackupIdent = backupIdentityOrThrow(await identityOf(backupDir), backupDir);
 
     // Create manifest to track what existed before.
     //
@@ -6216,9 +7835,37 @@ dist/
         await fs.copyFile(sourcePath, destPath);
         manifest.existingFiles.push(file);
       } catch {
-        // File doesn't exist. Candidate only — a fix stage may create it,
-        // and recordCreatedFiles() decides afterwards whether it did.
-        manifest.absentAtBackup.push(file);
+        // #313 — absence is PROVEN here, never inferred from the fact that
+        // something went wrong. This catch-all collapsed ENOENT-of-target,
+        // EACCES, ELOOP, EISDIR, ENOSPC and EMFILE into "the file isn't
+        // there", and `absentAtBackup` is the candidate list `recordCreatedFiles`
+        // draws from — so anything that merely FAILED to copy became eligible
+        // to be reported as HMA-generated and deleted by `rollback`.
+        //
+        // Measured, on the exact case `isGenuinelyAbsent`'s own docstring
+        // describes: a user's `.gitignore -> ./nowhere` dangling symlink landed
+        // in `absentAtBackup`, was recorded in `createdFiles`, and `rollback`
+        // DELETED it while printing "Rollback complete / removed 1 generated
+        // file" — leaving behind the file HMA had actually created through the
+        // link. A pre-existing `.gitignore` at mode 0222 took the same route:
+        // `access(F_OK)` passes, `copyFile` raises EACCES, and the original was
+        // overwritten with no copy anywhere.
+        //
+        // #304 replaced this inference with an lstat proof in
+        // `ensureBackupCovers`, but the identical inference survived here, and
+        // because `ctx.covered` is pre-seeded from `absentAtBackup` the proof
+        // was never consulted for any of the static candidates.
+        //
+        // Three outcomes, not two. A path that exists but could not be copied
+        // belongs in NEITHER list: it is not restorable, so `existingFiles`
+        // would lie, and it is not a creation, so `absentAtBackup` would let
+        // rollback delete it. Landing in neither leaves it uncovered, which
+        // makes `ensureBackupCovers` refuse the write — the safe direction.
+        if (await this.isGenuinelyAbsent(sourcePath)) {
+          // Candidate only — a fix stage may create it, and
+          // recordCreatedFiles() decides afterwards whether it did.
+          manifest.absentAtBackup.push(file);
+        }
       }
     }
 
@@ -6227,6 +7874,13 @@ dist/
       path.join(backupDir, '.manifest.json'),
       JSON.stringify(manifest, null, 2)
     );
+
+    // Normalized so `ensureBackupCovers` compares like with like: the entries
+    // above are joined with `path.join`, and `toTargetRelativePath` is what
+    // the write path produces (#300).
+    this.lastBackupCovered = [...manifest.existingFiles, ...manifest.absentAtBackup]
+      .map((f) => this.toTargetRelativePath(f, targetDir))
+      .filter((f): f is string => f !== null);
 
     return backupDir;
   }
@@ -6261,20 +7915,35 @@ dist/
       return;
     }
 
-    // Only a file we affirmatively observed to be MISSING when the backup was
-    // taken can be recorded as created. A fixed finding on a file that is in
-    // neither list (not a backup candidate) proves the fix touched it, not
-    // that the fix made it — recording it would let rollback delete a file
-    // the user wrote. Fail-safe direction: never delete what we cannot prove
-    // we generated, even at the cost of leaving a file behind (which the
-    // rollback report then names).
-    const absentAtBackup = new Set(manifest.absentAtBackup);
+    // Only a file HMA affirmatively observed to be MISSING — either when the
+    // backup was taken, or immediately before a fix wrote it — can be recorded
+    // as created. A fixed finding on a file in neither list (not a backup
+    // candidate) proves the fix touched it, not that the fix made it, and
+    // recording it would let rollback delete a file the user wrote. Fail-safe
+    // direction: never delete what we cannot prove we generated, even at the
+    // cost of leaving a file behind (which the rollback report then names).
+    //
+    // Both lists are OBSERVATIONS, never inferences. #304 was an errno being
+    // read as an observation: a failed copy meant "absent", so a file that
+    // existed could be classified as generated and unlinked at rollback. See
+    // `isGenuinelyAbsent`.
+    //
+    // #313 — that claim was FALSE for `absentAtBackup` when it was written.
+    // #304 proved absence in `ensureBackupCovers` but left the identical errno
+    // inference in `createBackup`, and since `ctx.covered` is pre-seeded from
+    // `absentAtBackup` the new proof was never reached for any of the 25 static
+    // candidates. Both producers of both lists now prove it, so the sentence
+    // above is true of the whole path rather than of one branch of it.
+    const provenAbsent = new Set([
+      ...manifest.absentAtBackup,
+      ...(manifest.absentAtFixWrite ?? []),
+    ]);
     const alreadyRecorded = new Set(manifest.createdFiles.map(c => c.path));
     let changed = false;
 
     for (const candidate of candidatePaths) {
       const rel = this.toTargetRelativePath(candidate, targetDir);
-      if (!rel || !absentAtBackup.has(rel) || alreadyRecorded.has(rel)) continue;
+      if (!rel || !provenAbsent.has(rel) || alreadyRecorded.has(rel)) continue;
 
       const absolute = path.join(targetDir, rel);
       // Defense in depth: a finding's `file` is data, and this path feeds an
@@ -6308,7 +7977,17 @@ dist/
    * target directory.
    */
   private toTargetRelativePath(candidate: string, targetDir: string): string | null {
-    const cleaned = candidate.replace(/\\/g, '/').replace(/^\.\//, '');
+    // No manual separator rewriting (#304). `\` was folded to `/` here to
+    // "handle Windows paths", but `path.join`/`path.relative`/`path.isAbsolute`
+    // are already platform-correct — on Windows both separators are separators,
+    // and on POSIX `\` is an ordinary filename byte. Rewriting it turned a
+    // legal name into a different path: the value became a description of
+    // itself that no longer round-trips to the file it names. Everything
+    // downstream (the backup copy, the manifest key, the rollback restore, the
+    // created-file proof) then operated on that description, so a component
+    // containing a `\` was rewritten with no recoverable copy while rollback
+    // reported success. Two distinct files could also collide onto one key.
+    const cleaned = candidate.replace(/^\.\//, '');
     if (!cleaned) return null;
     const absolute = path.isAbsolute(cleaned) ? cleaned : path.join(targetDir, cleaned);
     const rel = path.relative(targetDir, absolute);
@@ -6349,9 +8028,195 @@ dist/
       absentAtBackup: Array.isArray(parsed.absentAtBackup)
         ? (parsed.absentAtBackup as unknown[]).filter((f): f is string => typeof f === 'string')
         : [],
+      absentAtFixWrite: Array.isArray(parsed.absentAtFixWrite)
+        ? (parsed.absentAtFixWrite as unknown[]).filter((f): f is string => typeof f === 'string')
+        : [],
       createdFiles,
       legacyCreatedFiles: legacyCreatedFiles.length > 0 ? legacyCreatedFiles : undefined,
     };
+  }
+
+  /**
+   * Resolve a manifest-supplied relative path to a real location inside the
+   * tree, or null when it does not stay there.
+   *
+   * The manifest comes out of the scanned tree, so every path in it is attacker
+   * data (#312). A lexical containment check on the JOINED path is not enough
+   * (#318): it decides where the string points, not where the filesystem sends
+   * it, and a symlinked directory component sends it anywhere. So:
+   *
+   *   - the `..` cases are refused first, with no syscall spent on them;
+   *   - the destination's PARENT is resolved and required to be inside the tree,
+   *     which is what catches a symlinked component;
+   *   - the LEAF is handled per caller, because the two callers are asking
+   *     different questions. See `followLeafLink`.
+   *
+   * #327 — the leaf used to be refused outright whenever it was a symlink, for
+   * every caller. That broke an ordinary dotfile-sharing layout with no attacker
+   * involved: `--fix` writes THROUGH a symlinked config (`ensureBackupCovers`
+   * says so explicitly), so the file was backed up and redacted and then could
+   * not be restored. Refusing to follow on the way back what was followed on the
+   * way in is not a containment property, it is an asymmetry.
+   *
+   *   - `followLeafLink: true` (restore) resolves the link and requires the
+   *     TARGET to be inside the tree. An out-of-tree target is still refused —
+   *     that is #318's harm — and the returned path is the resolved one, so the
+   *     copy lands where the check looked.
+   *   - `followLeafLink: false` (unlink, probe) keeps the refusal. HMA never
+   *     CREATES a symlink, so a link standing where a generated file should be
+   *     is not the thing HMA generated, and deleting what it points at would be
+   *     #318 with the arrow reversed.
+   *
+   * Returns the path to ACT on — never the caller's spelling. Three separate
+   * resolutions of one string (`realpath` here, then `lstat`/`copyFile` at the
+   * call site) are not atomic against a tree changing underneath them; that is
+   * outside the static-tree threat model the rest of this file assumes, and only
+   * a descriptor (`open` + `fstat`) would close it.
+   */
+  private async resolveInsideTree(
+    targetReal: string,
+    rel: string,
+    opts: { followLeafLink: boolean },
+  ): Promise<ResolveOutcome> {
+    const joined = path.join(targetReal, rel);
+    if (!this.isPathWithinDirectory(joined, targetReal)) {
+      return { ok: false, cause: 'escapes-tree' };
+    }
+
+    let parentReal: string;
+    try {
+      parentReal = await fs.realpath(path.dirname(joined));
+    } catch {
+      // parent gone: nothing to restore into, nothing to delete
+      return { ok: false, cause: 'parent-unresolvable' };
+    }
+    if (!this.isPathWithinDirectory(parentReal, targetReal)) {
+      return { ok: false, cause: 'parent-outside-tree' };
+    }
+
+    const resolved = path.join(parentReal, path.basename(joined));
+    try {
+      const st = await fs.lstat(resolved);
+      if (st.isSymbolicLink()) {
+        if (!opts.followLeafLink) return { ok: false, cause: 'leaf-is-link' };
+        // Where the link actually goes, decided by the filesystem. A dangling
+        // link resolves to nothing and is refused: `createBackup` could not have
+        // copied through it either, so there is nothing to restore.
+        let linkReal: string;
+        try {
+          linkReal = await fs.realpath(resolved);
+        } catch {
+          return { ok: false, cause: 'leaf-link-dangling' };
+        }
+        return this.isPathWithinDirectory(linkReal, targetReal)
+          ? { ok: true, path: linkReal }
+          : { ok: false, cause: 'leaf-link-outside-tree' };
+      }
+    } catch (err) {
+      // ENOENT is the only failure that PROVES the leaf is not a symlink:
+      // nothing is there. Absence is expected and fine — restoring a file the
+      // user deleted is the point, and the created-file loops treat absence as
+      // "nothing to do" themselves.
+      //
+      // Any other errno (EACCES on the parent, ELOOP, EIO) proves nothing, and
+      // "I could not check whether this is a symlink" must not become "it is
+      // not one" — that is #313's inference in a new place. Refuse instead: the
+      // entry is reported as not restored, which is recoverable.
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        return { ok: false, cause: 'leaf-unexaminable' };
+      }
+    }
+    return { ok: true, path: resolved };
+  }
+
+  /**
+   * Copy one manifest entry out of the backup and back into the tree.
+   *
+   * Both ends are resolved (#318). The source must be a regular file that
+   * resolves back inside the backup directory — a symlink there copies
+   * out-of-tree CONTENT IN, which is the same defect mirrored and was verified
+   * with a link to a file outside the tree landing in it.
+   *
+   * #327 — returns WHY it did not land, never a bare false. Every one of these
+   * refusals leaves a manifest entry unrestored, and an unrestored entry that
+   * nothing reports is the harm the containment guards exist to prevent, arrived
+   * at from the other side: the user is told the revert is complete while their
+   * bytes are only in the backup that is about to be deleted.
+   *
+   * #338 — and it reports whether the BACKUP still holds a copy of this entry,
+   * because that is the fact the retention decision and the report header both
+   * depend on and neither was checking it. So the SOURCE is probed first, even
+   * for an entry whose destination is refused: "is the copy in there" has an
+   * answer in every case, and deciding what to keep on disk from a fact nobody
+   * established is what #326 was about.
+   */
+  private async restoreOneBackupFile(
+    backupReal: string,
+    targetReal: string,
+    rel: string,
+  ): Promise<{ ok: true } | { ok: false; cause: RestoreRefusal; detail?: string; backupHoldsCopy: boolean }> {
+    // ---- Does the backup hold a copy of this entry? ----
+    //
+    // What the backup HOLDS for this entry, decided by this run's own probe.
+    //
+    // This started as "nothing there is PROVEN, everything else counts as a
+    // copy", on the reasoning that refusing to delete is the fail-safe
+    // direction. That was wrong in a way the adversarial pass caught: three of
+    // the five refusals are decided by bytes the scanned tree wrote INSIDE the
+    // forged backup, so `mkdir X` beside a manifest naming `X` made
+    // `backupHoldsCopy` true, the directory was retained, and #338's wedge came
+    // straight back — three runs, nothing restored, the real backup never
+    // reached. A symlink pointing out of the backup did it too.
+    //
+    // So the question is the one the retention decision actually needs: is there
+    // a REGULAR FILE at the resolved source inside the backup — the thing
+    // `restoreOneBackupFile` could have copied out? A directory, a link pointing
+    // outside, and an entry the filesystem would not describe are all "no":
+    // deleting the backup around them destroys nothing this run could have
+    // restored, and keeping it hands the scanned tree a permanent lock on the
+    // recovery path. The cost is that an EACCES on a real copy goes with the
+    // directory; it was unreadable to the user too, and the alternative is an
+    // attacker-controlled denial of recovery.
+    let sourceReal: string | null = null;
+    let sourceRefusal: RestoreRefusal | null = null;
+    const sourcePath = path.join(backupReal, rel);
+    if (!this.isPathWithinDirectory(sourcePath, backupReal)) {
+      sourceRefusal = 'source-outside-backup';
+    } else {
+      try {
+        const candidate = await fs.realpath(sourcePath);
+        if (!this.isPathWithinDirectory(candidate, backupReal)) {
+          sourceRefusal = 'source-resolves-outside-backup';
+        } else {
+          try {
+            sourceRefusal = (await fs.lstat(candidate)).isFile() ? null : 'source-not-regular-file';
+          } catch {
+            sourceRefusal = 'source-unexaminable';
+          }
+          if (!sourceRefusal) sourceReal = candidate;
+        }
+      } catch {
+        sourceRefusal = 'source-unreadable';
+      }
+    }
+    // `sourceReal` is set only when realpath succeeded, the result is inside the
+    // backup, and it is a regular file. That is the whole definition.
+    const backupHoldsCopy = sourceReal !== null;
+
+    // ---- Where would it go? ----
+    const dest = await this.resolveInsideTree(targetReal, rel, { followLeafLink: true });
+    if (!dest.ok) return { ok: false, cause: dest.cause, backupHoldsCopy };
+    if (sourceRefusal || !sourceReal) {
+      return { ok: false, cause: sourceRefusal ?? 'source-unreadable', backupHoldsCopy };
+    }
+
+    try {
+      await fs.copyFile(sourceReal, dest.path);
+      return { ok: true };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      return { ok: false, cause: 'write-failed', detail: code, backupHoldsCopy };
+    }
   }
 
   /**
@@ -6363,19 +8228,58 @@ dist/
    * expected to report the kept files rather than claim a clean revert.
    */
   async rollback(targetDir: string): Promise<RollbackReport> {
-    const backupBaseDir = path.join(targetDir, '.hackmyagent-backup');
-
-    // Check if backup directory exists
+    // Resolved once, and every containment decision below is made against this
+    // rather than against the caller's spelling. On macOS `os.tmpdir()` alone
+    // makes the two differ (`/var` -> `/private/var`), so a resolved-vs-lexical
+    // mismatch is the normal case, not an exotic one.
+    let targetReal: string;
     try {
-      await fs.access(backupBaseDir);
+      targetReal = await fs.realpath(targetDir);
+    } catch {
+      throw new Error('No backup found. Run hackmyagent secure --fix <dir> first to create a backup.');
+    }
+    // Check if backup directory exists — and that it is a real directory in the
+    // tree, not a link out of it (#321). `access` follows symlinks, so a
+    // `.hackmyagent-backup -> /attacker/drop` passed this gate and rollback then
+    // read its manifest and restored from its contents.
+    //
+    // `backupBaseDir` is the RESOLVED base from here on, and every path below is
+    // built from it. Comparing a resolved path against a lexically-joined one is
+    // the #317 mistake in miniature: a compare against the name we joined would
+    // refuse a legitimate rollback on a `.HACKMYAGENT-BACKUP`.
+    //
+    // #334 — this comment used to say `realpath` returns the on-disk casing. It
+    // does not: the JS implementation returns the caller's spelling for the
+    // final component, and only `realpath.native` canonicalizes case. The code
+    // is correct either way — everything below is built from whatever this
+    // returns, so the two spellings cannot diverge — but the reason stated for
+    // it was wrong.
+    let backupBaseDir: string;
+    try {
+      const joinedBase = path.join(targetReal, BACKUP_DIR_NAME);
+      const baseSt = await fs.lstat(joinedBase);
+      if (baseSt.isSymbolicLink() || !baseSt.isDirectory()) {
+        throw new Error('not a real backup directory');
+      }
+      backupBaseDir = await fs.realpath(joinedBase);
+      if (!this.isPathWithinDirectory(backupBaseDir, targetReal)) {
+        throw new Error('backup directory resolves outside the tree');
+      }
     } catch {
       throw new Error('No backup found. Run hackmyagent secure --fix <dir> first to create a backup.');
     }
 
-    // Find the most recent backup
-    const backups = await fs.readdir(backupBaseDir);
+    // Find the most recent backup.
+    //
+    // #334 — DIRECTORIES only. This filtered dotfiles and nothing else, so an
+    // ordinary file dropped in the backup base — `zzz` sorts above every stamp —
+    // was selected as "the latest backup", and every legitimate rollback in that
+    // tree failed on it. `withFileTypes` decides by what the entry IS rather
+    // than by what it is called.
+    const backups = await fs.readdir(backupBaseDir, { withFileTypes: true });
     const sortedBackups = backups
-      .filter((b) => !b.startsWith('.'))
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+      .map((e) => e.name)
       .sort()
       .reverse();
 
@@ -6383,54 +8287,282 @@ dist/
       throw new Error('No backup found. Run hackmyagent secure --fix <dir> first to create a backup.');
     }
 
-    const latestBackup = sortedBackups[0];
-    const backupDir = path.join(backupBaseDir, latestBackup);
+    // Select a backup that can actually be USED, trying the next candidate when
+    // one cannot (#338).
+    //
+    // The highest-sorting name is a GUESS, and it is a guess at a name the
+    // scanned tree can write: a cloned repo shipping
+    // `.hackmyagent-backup/9999-99-99-999999/` sorts above every real stamp and
+    // is therefore always selected. Treating that guess as final meant one
+    // unusable directory disabled the recovery path of a tool that had just
+    // rewritten the user's files — permanently, since nothing consumed it and
+    // the next run selected it again.
+    //
+    // Advancing is not a suppression channel: every candidate passed over is
+    // reported by name and reason, and NONE is deleted. HMA could not read them,
+    // so it cannot know they hold nothing.
+    //
+    // "Usable" means only that a plausible manifest could be parsed out of it. A
+    // candidate that parses is the backup for this run whatever its entries
+    // then do — advancing on a RESTORE failure would silently reach past a real
+    // backup into an older one and put stale content back, which is #332's harm.
+    const skippedBackups: Array<{ name: string; reason: string }> = [];
+    /** Candidates that listed files and restored none of them. Kept, never used. */
+    const barren: Array<{
+      name: string; at: string; dir: string;
+      manifest: BackupManifest; unrestored: RollbackReport['unrestored'];
+    }> = [];
+    let restored: string[] = [];
+    let unrestored: RollbackReport['unrestored'] = [];
+    let backupReal: string | undefined;
+    let backupDir: string | undefined;
+    let latestBackup: string | undefined;
+    let manifest: BackupManifest | undefined;
 
-    // Read manifest
-    let manifest: BackupManifest;
-    try {
-      const manifestContent = await fs.readFile(
-        path.join(backupDir, '.manifest.json'),
-        'utf-8'
-      );
-      manifest = this.parseManifest(manifestContent);
-    } catch {
+    for (const candidate of sortedBackups) {
+      const candidateDir = path.join(backupBaseDir, candidate);
+      // The selected backup gets the same treatment as its parent: the tree
+      // chose which entry sorts highest, so it can offer a symlink here too
+      // (#318/#321). Resolved once, and everything read out of it is required to
+      // resolve back inside this directory.
+      //
+      // #334 — and it says which of those it was. These refusals used to report
+      // "Backup manifest is unreadable", naming a `.manifest.json` that was
+      // never opened, so the user was sent to look at the wrong file for a cause
+      // that was the directory itself.
+      // Every reason below is a FIXED sentence. The candidate's name is already
+      // tree-derived and the report escapes it; the reason must not become a
+      // second channel for tree bytes, which is what an errno message or a
+      // resolved link target would be.
+      let candidateReal = '';
+      let dirRefusal: string | undefined;
+      try {
+        const st = await fs.lstat(candidateDir);
+        if (st.isSymbolicLink()) dirRefusal = 'it is a symbolic link, and rollback does not read through one';
+        else if (!st.isDirectory()) dirRefusal = 'it is not a directory';
+        else {
+          candidateReal = await fs.realpath(candidateDir);
+          if (!this.isPathWithinDirectory(candidateReal, backupBaseDir)) {
+            dirRefusal = 'it resolves to somewhere outside the backup directory';
+          }
+        }
+      } catch {
+        dirRefusal = 'the filesystem would not say what it is';
+      }
+      if (dirRefusal) {
+        skippedBackups.push({ name: candidate, reason: dirRefusal });
+        continue;
+      }
+
+      // Size-guarded. #305's follow-up bounded the manifest read on the SCAN
+      // path and explicitly exempted this one, on the grounds that "rollback
+      // only ever reads a manifest HMA itself just wrote". #312 disproved that.
+      //
+      // Fails closed: an implausible manifest makes the candidate unusable, and
+      // refusing to parse one cannot lose a real rollback — `createBackup`
+      // writes a list of paths, not payloads.
+      let manifestRefusal: string | undefined;
+      try {
+        const manifestPath = path.join(candidateReal, '.manifest.json');
+        const stat = await fs.stat(manifestPath);
+        // Per candidate, not cumulative. A shared allowance across the loop was
+        // a wedge of exactly the shape this change exists to remove: eleven
+        // directories carrying 1MB of invalid JSON each exhausted it before the
+        // real backup was reached, and nothing is deleted, so re-running never
+        // helped. Dropping it costs reads bounded by bytes the tree has already
+        // written to disk — sequential, no amplification — and each candidate is
+        // still capped at a size no real manifest reaches.
+        if (!stat.isFile()) manifestRefusal = 'its .manifest.json is not a regular file';
+        else if (stat.size > MAX_FILE_SIZE) manifestRefusal = 'its .manifest.json is implausibly large';
+        if (!manifestRefusal) {
+          manifest = this.parseManifest(await fs.readFile(manifestPath, 'utf-8'));
+        }
+      } catch {
+        // Never the thrown message: a JSON parse error quotes the file, and that
+        // file is in the scanned tree. Whatever went wrong, the user's next step
+        // is the same, and it does not depend on the parser's phrasing.
+        manifestRefusal = 'its .manifest.json could not be read as a backup manifest';
+      }
+      if (manifestRefusal) {
+        skippedBackups.push({ name: candidate, reason: manifestRefusal });
+        continue;
+      }
+
+      // Try this candidate's restores HERE, because the decision to use it
+      // depends on what they do.
+      //
+      // Refining `backupHoldsCopy` was not enough and could never have been: the
+      // scanned tree controls BOTH ends. It plants a real regular file in the
+      // forged backup — so the copy genuinely is there — and plants a directory,
+      // or a link pointing out of the tree, at the DESTINATION. The restore then
+      // fails for a reason that has nothing to do with the copy, retention is
+      // correct to keep the directory, and the wedge is back: measured three
+      // runs each on `destdir`, `destlink-out` and `destlink-dangling`, nothing
+      // restored, the real backup never reached. Any predicate over the tree's
+      // own bytes loses this game.
+      //
+      // So the LOOP is what changes. A candidate that promised entries and
+      // delivered none of them is not this run's backup, whatever the reason: it
+      // is kept (it may hold bytes nobody can read yet) and REPORTED, and the run
+      // moves to the next one. A candidate that restored something, or that
+      // promised nothing, is the backup — advancing past either of those is what
+      // would reach into an older run and restore stale content.
+      const attempt: RollbackReport['unrestored'] = [];
+      const put: string[] = [];
+      for (const file of manifest?.existingFiles ?? []) {
+        const outcome = await this.restoreOneBackupFile(candidateReal, targetReal, file);
+        if (outcome.ok) {
+          put.push(file);
+        } else {
+          const base = RESTORE_REFUSAL_REASONS[outcome.cause];
+          attempt.push({
+            path: file,
+            reason: outcome.detail ? `${base} (${outcome.detail})` : base,
+            backupHoldsCopy: outcome.backupHoldsCopy,
+          });
+        }
+      }
+      // A candidate that promises NOTHING contributes nothing either, and the
+      // cheapest forgery there is — 49 bytes of empty manifest — used to be
+      // selected, restore nothing, print "[+] Rollback complete", consume
+      // itself, and say nothing about the backup behind it. Three of them cost
+      // a user three runs of reading success before recovery. Advancing past it
+      // cannot write anything stale, because it would have written nothing.
+      const promisesNothing = (manifest?.existingFiles.length ?? 0) === 0
+        && (manifest?.createdFiles.length ?? 0) === 0
+        && (manifest?.legacyCreatedFiles?.length ?? 0) === 0;
+      if (promisesNothing && sortedBackups.indexOf(candidate) < sortedBackups.length - 1) {
+        barren.push({
+          name: candidate, at: candidateReal, dir: candidateDir,
+          manifest: manifest as BackupManifest, unrestored: [],
+        });
+        continue;
+      }
+      if (put.length === 0 && attempt.length > 0) {
+        barren.push({
+          name: candidate, at: candidateReal, dir: candidateDir,
+          manifest: manifest as BackupManifest, unrestored: attempt,
+        });
+        continue;
+      }
+
+      restored = put;
+      unrestored = attempt;
+      backupReal = candidateReal;
+      backupDir = candidateDir;
+      latestBackup = candidate;
+      break;
+    }
+
+    // Every candidate was barren. There is nothing behind them to be wedged out
+    // of, so the newest one becomes this run's backup after all: the user gets
+    // the full per-entry report and the retention decision, instead of a
+    // one-line refusal that names no reason. The no-wedge property is unaffected
+    // — passing over only matters when there IS something behind.
+    if (!backupReal && barren.length > 0) {
+      const first = barren.shift()!;
+      backupReal = first.at;
+      backupDir = first.dir;
+      latestBackup = first.name;
+      manifest = first.manifest;
+      restored = [];
+      unrestored = first.unrestored;
+    }
+
+    if (!backupReal || !backupDir || !latestBackup || !manifest) {
+      const tried = skippedBackups.length;
       throw new Error(
-        `Backup manifest is unreadable: ${path.join(backupDir, '.manifest.json')}. ` +
-        `Restore files by hand from ${backupDir}, then delete it.`
+        `None of the ${tried} backup director${tried === 1 ? 'y' : 'ies'} under ${backupBaseDir} `
+        + `can be used. ${skippedBackups.map((s) => `${s.name}: ${s.reason}`).join('; ')}. `
+        + 'Restore files by hand from whichever of them holds them, then delete it.',
       );
     }
 
+    // How many candidates the tree is holding in front of the ones behind this
+    // run's choice. Reported when the rollback does not complete, so a user
+    // looking at a retained directory is told there is something behind it.
+    const remainingBehind = sortedBackups.length - sortedBackups.indexOf(latestBackup) - 1;
+
     const report: RollbackReport = {
-      restored: [],
+      restored,
       removed: [],
       keptModified: [],
       keptUnverifiable: [],
+      unrestored,
+      unremoved: [],
+      skippedBackups,
+      barrenBackups: barren.map((b) => ({ name: b.name, listed: b.unrestored.length })),
+      backupsBehind: remainingBehind,
+      backupUsed: latestBackup,
     };
 
-    // Restore existing files from backup
-    for (const file of manifest.existingFiles) {
-      const sourcePath = path.join(backupDir, file);
-      const destPath = path.join(targetDir, file);
-      try {
-        await fs.copyFile(sourcePath, destPath);
-        report.restored.push(file);
-      } catch {
-        // Continue with other files
-      }
-    }
+    // Restore existing files from backup.
+    //
+    // #312 — the manifest is read from the SCANNED tree, which is attacker-
+    // controlled, and this loop had no containment check while the
+    // `createdFiles` loop below did. A cloned repo carrying its own
+    // `.hackmyagent-backup/9999-99-99-999999/` (which sorts above any real
+    // stamp, so it is always selected as the latest) turned `rollback` into an
+    // arbitrary file write:
+    //
+    //   existingFiles: ["../<stamp>/authorized_keys"]
+    //   -> copies the attacker's bytes OUTSIDE the scanned tree
+    //   -> "[+] Rollback complete / Restored 1 modified file"
+    //
+    // #318 — and that guard closed only the `..` half. It reasoned that
+    // "guarding the destination is sufficient for both ends: if the joined
+    // destination stays inside targetDir, the normalized relative path has no
+    // leading `..`, so the source cannot climb out of backupDir either" — a
+    // statement about path arithmetic, not about the filesystem, and false in
+    // both directions. `evil/sshlink -> /home/victim/.ssh` plus
+    // `existingFiles: ["sshlink/authorized_keys"]` wrote the attacker's bytes to
+    // `/home/victim/.ssh/authorized_keys` and printed
+    // `restored sshlink/authorized_keys`; a symlink INSIDE the backup pulled
+    // out-of-tree content the other way. Both ends are now resolved, and the
+    // `..` case is still refused before any syscall is spent on it.
 
     // Remove files a fix stage created — but only when the bytes on disk are
     // still the bytes HMA wrote. Any edit since means the file is the user's
     // now, and a rollback of our changes is not a licence to delete it.
+    //
+    // Resolved, for the same reason as the restore loop: the manifest names both
+    // the path AND the hash it must match, so a forged entry pointing through a
+    // symlink at a file whose contents the attacker knows is a DELETE primitive
+    // aimed outside the tree. #318 named the write; this is the same defect with
+    // the arrow reversed.
     for (const created of manifest.createdFiles) {
-      const filePath = path.join(targetDir, created.path);
-      if (!this.isPathWithinDirectory(filePath, targetDir)) continue;
+      // Not followed: a symlink where a generated file should be is not the file
+      // HMA generated, and unlinking through it would delete the target instead.
+      const resolved = await this.resolveInsideTree(targetReal, created.path, { followLeafLink: false });
+      // #342 — this used to be a bare `continue`. HackMyAgent said it would
+      // remove the file, could not, and reported "Rollback complete / removed 0
+      // generated files" with exit 0 while the file was still on disk. The
+      // symlinked-`SOUL.md` fixture the #327 test builds hits it exactly, and
+      // that test asserted only that the link's target survived — never that the
+      // user is told — which is why the gap survived the change named for it.
+      if (!resolved.ok) {
+        report.unremoved.push({
+          path: created.path,
+          reason: RESTORE_REFUSAL_REASONS[resolved.cause],
+        });
+        continue;
+      }
+      const filePath = resolved.path;
       let current: Buffer;
       try {
         current = await fs.readFile(filePath);
-      } catch {
-        continue; // Already gone — nothing to revert.
+      } catch (err) {
+        // Only ENOENT proves it is already gone. Any other errno proves nothing,
+        // and "I could not read it" must not become "there was nothing to
+        // revert" — #313's inference, in the one loop that had no channel to
+        // report it through.
+        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+          report.unremoved.push({
+            path: created.path,
+            reason: 'it could not be read, so HackMyAgent cannot tell whether it generated it',
+          });
+        }
+        continue;
       }
       const currentHash = crypto.createHash('sha256').update(current).digest('hex');
       if (currentHash !== created.sha256) {
@@ -6449,17 +8581,84 @@ dist/
     // hash. Deleting on that basis is what could remove a user's own file, so
     // these are reported instead of acted on.
     for (const file of manifest.legacyCreatedFiles ?? []) {
-      const filePath = path.join(targetDir, file);
+      // #312 — no write here, but an unguarded path still lets a forged
+      // manifest probe for files outside the tree and have their existence
+      // reported back. #318 — and a lexical guard does not stop that probe,
+      // only a `..` in it. All three manifest loops resolve.
+      const resolved = await this.resolveInsideTree(targetReal, file, { followLeafLink: false });
+      // #342 — same gap, same silence. This loop only ever REPORTS, so a path it
+      // cannot resolve produced no line at all and the entry vanished from the
+      // report entirely.
+      if (!resolved.ok) {
+        report.unremoved.push({
+          path: file,
+          reason: RESTORE_REFUSAL_REASONS[resolved.cause],
+        });
+        continue;
+      }
       try {
-        await fs.access(filePath);
+        await fs.access(resolved.path);
         report.keptUnverifiable.push(file);
       } catch {
         // Never created — nothing to report.
       }
     }
 
-    // Remove the used backup
-    await fs.rm(backupDir, { recursive: true, force: true });
+    // Remove the used backup — but only when it has been fully used.
+    //
+    // #327 — an entry this run could not restore may have its only remaining
+    // copy inside this directory, so deleting it would destroy the bytes the
+    // rollback was asked to bring back. Measured on an ordinary symlinked config
+    // with no attacker: `[+] Rollback complete`, exit 0, and no copy of the
+    // original left anywhere in the tree.
+    //
+    // #338 — but "may" is not "does", and retaining on the weaker claim turned
+    // this fix into a permanent denial of recovery. A directory the tree ships
+    // as `9999-99-99-999999/` holding a manifest that names a file it does not
+    // contain is selected every run, restores nothing, and was then KEPT — so
+    // the next run selected it again, and the real backup behind it was never
+    // reachable. Before this fix a failing selection consumed itself and the
+    // second run recovered; after it, three runs recovered nothing.
+    //
+    // So retention is decided on the fact rather than on the possibility: keep
+    // the directory when it still holds a copy of something that did not go
+    // back. A backup that restored nothing and holds nothing is protecting
+    // nothing, and deleting it is what lets the run behind it be reached.
+    //
+    // "Holds nothing" is PROVEN per entry (see `restoreOneBackupFile`): a
+    // lexical escape or an ENOENT. Anything the filesystem would not answer
+    // counts as holding a copy, because the cost of being wrong in that
+    // direction is the user's last bytes.
+    const retaining = report.unrestored.some((u) => u.backupHoldsCopy);
+    if (retaining) {
+      report.backupRetainedAt = backupReal;
+    } else {
+      // GUARDED, and this is the whole of the fix.
+      //
+      // `force: true` ignores one thing — the path not existing. Everything
+      // else throws, and it throws HERE, after every file has been restored and
+      // the entire report assembled. A `0500` subdirectory inside a forged
+      // backup is enough: `fs.rm` cannot unlink through a directory it may not
+      // write, and the exception replaced the whole report — restored list,
+      // unrestored list, `backup kept at`, "copy those files back by hand" —
+      // with a bare EACCES. That is #344's harm reached through a different
+      // door, and the barren-candidate change fires this `rm` in more cases
+      // than before, so the door is wider than it was.
+      //
+      // The removal is housekeeping. The rollback already happened, and a
+      // failure to tidy up must not throw away the account of it.
+      try {
+        await fs.rm(backupReal, { recursive: true, force: true });
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        report.backupRemovalFailed = {
+          path: backupReal,
+          reason: code
+            ? `${code} — the directory or something inside it could not be removed`
+            : 'it could not be removed',
+        };
+      }
+    }
 
     return report;
   }
@@ -7924,8 +10123,19 @@ dist/
 
       // Write modified config back to file if any fixes were applied
       if (configModified) {
-        try {
-          await fs.writeFile(configFile, JSON.stringify(config, null, 2) + '\n');
+        // #300 — the one fix write that still bypassed `applyFixWrite`, and
+        // so the one still able to rewrite a file the backup cannot restore.
+        // Gateway configs are discovered by a recursive walk, exactly like
+        // the #292 config files: `openclaw.json` at the root is a backup
+        // candidate, the same file one directory down was not. Routed
+        // through the choke point; the failure branch is unchanged, since a
+        // refused write and a failed write have the same consequence for the
+        // findings already pushed against this file.
+        const gatewayWritten = await this.applyFixWrite(
+          configFile,
+          JSON.stringify(config, null, 2) + '\n',
+        );
+        if (gatewayWritten) {
           // Add a summary finding about what was fixed
           findings.push({
             checkId: 'FIX-SUMMARY',
@@ -7940,7 +10150,7 @@ dist/
             fix: 'hackmyagent rollback',
             guidance: 'Auto-fixes were applied to this configuration. Use rollback to revert if any fix caused unexpected behavior.',
           });
-        } catch (writeError) {
+        } else {
           // The GATEWAY-00x findings above were pushed with
           // `passed: <check>Fixed`, set from an in-memory mutation, before
           // this write ran. The write is what makes them true, so a failure
@@ -7963,19 +10173,13 @@ dist/
               f.message = `${f.name} (auto-fix could not be written)`;
             }
           }
-          findings.push({
-            checkId: 'FIX-ERROR',
-            name: 'Auto-Fix Failed',
-            description: 'Could not write configuration changes',
-            category: 'gateway',
-            severity: 'medium',
-            passed: false,
-            message: `Failed to write fixes to ${relativePath}: ${writeError instanceof Error ? writeError.message : 'Unknown error'}`,
-            file: relativePath,
-            fixable: false,
-            fix: 'Check file permissions and try again',
-            guidance: 'The auto-fix could not write changes to the configuration file. Verify the file is not read-only and that you have write permissions.',
-          });
+          // No local FIX-ERROR push. `applyFixWrite` has already recorded the
+          // path and errno, and `scan()` renders one FIX-WRITE-FAILED finding
+          // covering every failed write in the run. Pushing here as well
+          // would report a single event twice, and the local finding was the
+          // weaker of the two: `fix: 'Check file permissions and try again'`
+          // is advice, while FIX-WRITE-FAILED carries a runnable re-run
+          // command. Closes #284, which asked for exactly this unification.
         }
       }
     }
@@ -8048,8 +10252,11 @@ dist/
           continue;
         }
 
-        // Skip node_modules, .git, and backup directories
-        if (entryName === 'node_modules' || entryName === '.git' || entryName === '.hackmyagent-backup') {
+        // Skip node_modules and .git unconditionally. The only backup
+        // directory skipped is the one THIS RUN created (#309) — a name, or a
+        // name plus a forgeable manifest, was a suppression token any scanned
+        // tree could type, and this walk feeds seven checks.
+        if (entryName === 'node_modules' || entryName === '.git') {
           continue;
         }
 
@@ -8061,6 +10268,14 @@ dist/
         }
 
         if (stat.isDirectory()) {
+          // #317 — by identity, and against the `stat` this walk already
+          // takes, so recognising the run's own backup costs no extra syscall
+          // and cannot be defeated by respelling the path. The lexical
+          // compare it replaces missed a case variant of the directory name.
+          const ctx = this.backupContext;
+          if (ctx && sameIdentity({ dev: stat.dev, ino: stat.ino }, ctx.backupIdent)) {
+            continue;
+          }
           await scanDir(fullPath, currentDepth + 1);
         } else if (stat.isFile()) {
           // Check if filename matches any pattern

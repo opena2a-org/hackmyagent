@@ -15,6 +15,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync, linkSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { gitFreeEnv } from '../helpers/throwaway-repo';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StructuralAnalyzer } from '../../src/semantic/structural';
@@ -28,10 +29,17 @@ function git(cwd: string, ...args: string[]): void {
   // temp-dir commits land in the actual repo (observed: the pre-push hook's
   // test run committed `.env` / `secrets/real.env` onto the working branch).
   // cwd alone is not enough — GIT_DIR overrides cwd.
-  const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
-  delete env.GIT_DIR;
-  delete env.GIT_WORK_TREE;
-  delete env.GIT_INDEX_FILE;
+  //
+  // #348 — the three deletions this used to do named the three variables that
+  // had been observed. `gitFreeEnv` removes the whole `GIT_*` family instead,
+  // so `GIT_OBJECT_DIRECTORY`, `GIT_COMMON_DIR` and the rest cannot redirect a
+  // fixture commit either, and the same helper is now the only way any test
+  // spawns git.
+  const env = {
+    ...gitFreeEnv(),
+    GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t',
+    GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t',
+  };
   const r = spawnSync('git', args, {
     cwd,
     env,

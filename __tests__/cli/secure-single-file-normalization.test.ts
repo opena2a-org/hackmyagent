@@ -108,13 +108,38 @@ describe('secure single-file target normalization (audit follow-up to #220)', ()
 
   it('cleans up its normalization temp dir (no net leftover from this run)', () => {
     if (!canRun()) return;
-    const countTmp = () => readdirSync(tmpdir()).filter((n) => n.startsWith('hma-secure-file-')).length;
-    const before = countTmp();
+
+    // Give the child its OWN tmp root and count inside that, rather than
+    // counting `hma-secure-file-*` across the shared system tmpdir.
+    //
+    // The shared-global form was racy by construction: any concurrently
+    // running vitest worker that spawned a single-file `secure` could add an
+    // entry between `before` and the assertion, and a child killed by
+    // spawnSync's timeout leaks one by design, because `process.on('exit')`
+    // does not fire on SIGTERM. It passed for a long time and then started
+    // failing intermittently once the suite grew — "expected 1 to be less
+    // than or equal to 0" on a run whose own child exited cleanly in 4s. The
+    // leak it is meant to catch is real, so the fix is to make the
+    // measurement isolated rather than to loosen the assertion.
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'hma-norm-tmproot-'));
+    const countTmp = () => readdirSync(tmpRoot).filter((n) => n.startsWith('hma-secure-file-')).length;
+    expect(countTmp(), 'isolated tmp root did not start empty').toBe(0);
+
     const dir = mkdtempSync(join(tmpdir(), 'hma-norm-clean-'));
     writeFileSync(join(dir, 'SOUL.md'), BENIGN_SOUL);
-    spawnSync('node', [CLI, 'secure', join(dir, 'SOUL.md'), '--json', '--ci'], { encoding: 'utf8', timeout: 60_000 });
-    // The temp dir is removed on the child's process exit, so by the time spawn
-    // returns the count must be back to baseline (no net increase from this run).
-    expect(countTmp()).toBeLessThanOrEqual(before);
+    const run = spawnSync(
+      'node',
+      [CLI, 'secure', join(dir, 'SOUL.md'), '--json', '--ci'],
+      { encoding: 'utf8', timeout: 60_000, env: { ...process.env, TMPDIR: tmpRoot } },
+    );
+
+    // Sanity: the child must have run to completion under the redirected
+    // TMPDIR, or a clean count proves only that it never got that far.
+    expect(run.signal, `child was killed by ${run.signal}; cleanup never ran`).toBeNull();
+    expect(run.stdout || '', 'child produced no JSON output').toContain('{');
+
+    // The temp dir is removed on the child's process exit, so by the time
+    // spawn returns nothing may remain in its tmp root.
+    expect(countTmp(), 'normalization temp dir leaked').toBe(0);
   });
 });

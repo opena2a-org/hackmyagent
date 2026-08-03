@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import https from 'node:https';
+import { escapeForDisplay } from '../../ui/display-safe';
 
 const HF_BASE = 'https://huggingface.co/opena2a/nanomind-security-classifier/resolve/main';
 const MODEL_FILES: Array<{ name: string; sha256: string }> = [
@@ -183,12 +184,12 @@ export class TMEClassifier {
         // Verify integrity
         const hash = await TMEClassifier.computeHash(dest);
         if (file.sha256 && hash !== file.sha256) {
-          if (!quiet) console.error(`  Integrity check failed for ${file.name}. Removing.`);
+          if (!quiet) console.error(`  Integrity check failed for ${escapeForDisplay(file.name)}. Removing.`);
           try { unlinkSync(dest); } catch { /* ignore */ }
           return false;
         }
       } catch (err: any) {
-        if (!quiet) console.error(`  Failed to download ${file.name}: ${err?.message ?? 'unknown error'}`);
+        if (!quiet) console.error(`  Failed to download ${escapeForDisplay(file.name)}: ${escapeForDisplay(String(err?.message ?? 'unknown error'))}`);
         try { unlinkSync(dest); } catch { /* ignore */ }
         return false;
       }

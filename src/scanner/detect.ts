@@ -13,6 +13,11 @@ import { execSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { SoulScanner } from '../soul';
+import type { SoulScanResult } from '../soul';
+import { clampScoreToVerdictBand, clampDisclosure, isFailDirection } from '../ui/verdict-band';
+import { citationTarget as safeCitationTarget } from '../ui/shell-quote';
+import { escapePathForDisplay } from '../ui/display-safe';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,6 +62,19 @@ export interface IdentitySummary {
   soulFiles: number;
   capabilityPolicies: number;
   totalAgents: number;
+  /**
+   * The governance document `scan-soul` actually measured, or null when
+   * there is none (#303).
+   *
+   * `soulFiles` counts `SOUL.md` alone, while `SoulScanner.GOVERNANCE_FILES`
+   * accepts nine names including `CLAUDE.md` and `.cursorrules`. Every
+   * consumer that asked `soulFiles === 0` to mean "this project has no
+   * governance" was therefore wrong for eight of them, and `detect` printed
+   * "No SOUL.md governance file in this project" over a file it had just
+   * scored. This is the field to ask instead; `soulFiles` still means what
+   * it always meant.
+   */
+  governanceFile: string | null;
 }
 
 export interface Finding {
@@ -66,6 +84,13 @@ export interface Finding {
   detail: string;
   whyItMatters: string;
   remediation: string;
+  /**
+   * Stable identifier for findings the renderer has to reason about, so it
+   * does not have to match on prose. Added for #303: the Path-forward line
+   * has to know a governance VIOLATION is outstanding, because that is the
+   * one case where adding controls does not move the number.
+   */
+  code?: 'GOV-VIOLATION' | 'GOV-PROFILE-MARKER';
 }
 
 export interface DetectResult {
@@ -77,7 +102,30 @@ export interface DetectResult {
     mcpServers: number;
     localLlms: number;
     aiConfigs: number;
+    /**
+     * Governance conformance for `scanDirectory`, after the #259
+     * verdict-band clamp. Identical to what `scan-soul` reports for the same
+     * directory whenever no fail-direction finding forced a clamp (#291).
+     */
     governanceScore: number;
+    /**
+     * `scan-soul`'s reported score for the same directory, before `detect`
+     * applies the #259 verdict-band clamp on top (#291).
+     *
+     * NOT a pre-clamp conformance figure, which is what this said. It is
+     * `soul.score`, which `scan-soul` has ALREADY clamped for a #206 HIGH
+     * (profileMismatch / markerInvalid) or a #251 violation. The pre-clamp
+     * average of applicable-domain percentages is `soul.rawScore`, and it can
+     * be far higher: a document that carries every control and then subverts
+     * one reports rawScore 100 / score 25, and `governanceRaw` is 25.
+     *
+     * "Raw" is relative to `detect`'s own clamp and means only that — it is
+     * the number `scan-soul` prints, so the two surfaces can be compared
+     * without `detect`'s host- and project-level findings in the way (#303).
+     */
+    governanceRaw: number;
+    /** True when a fail-direction finding lowered `governanceScore`. */
+    governanceClamped: boolean;
     recoverablePoints: number;
   };
   agents: DetectedAgent[];
@@ -458,63 +506,350 @@ export function scanIdentity(targetDir: string): IdentitySummary {
     if (fs.existsSync(p)) capabilityPolicies++;
   }
 
-  return { soulFiles, capabilityPolicies, totalAgents: 0 };
+  // `governanceFile` is filled in by the caller, which has the SoulScanner
+  // result. `scanIdentity` deliberately stays a pure filesystem probe.
+  return { soulFiles, capabilityPolicies, totalAgents: 0, governanceFile: null };
 }
 
 // ---------------------------------------------------------------------------
 // Governance scoring
 // ---------------------------------------------------------------------------
 
-function calculateGovernanceScore(
-  result: Pick<DetectResult, 'agents' | 'mcpServers' | 'aiConfigs' | 'identity'>
-): { governanceScore: number; deductions: number } {
-  let score = 100;
-  let deductions = 0;
+/**
+ * Governance score for `detect` (#291).
+ *
+ * There is one Governance number in this tool and `scan-soul`'s control
+ * conformance computes it. `detect` consumes that number; it does not have
+ * a second opinion.
+ *
+ * The model this replaced scored *presence*, not substance. It started at
+ * 100 and deducted, and the only thing it asked of governance was whether a
+ * file existed — `detect()` marked every agent `governed` the moment a
+ * SOUL.md was on disk. So the two surfaces answered the same question about
+ * the same directory in opposite directions:
+ *
+ *   SOUL.md containing one line of prose   scan-soul   0/100   detect 100/100
+ *   a real CLAUDE.md (22/100 conformance)  scan-soul  22/100   detect 100/100
+ *   no governance file at all              scan-soul   0/100   detect  55/100
+ *
+ * Both numbers shipped under the label "Governance". That is a data-integrity
+ * defect rather than a display one, so the models are reconciled instead of
+ * one of them being renamed: conformance is authoritative because it measures
+ * whether controls actually exist, and because it is already the figure the
+ * Registry publishes (`publish.ts` -> `subReports.soul`). `detect` has no
+ * publish path, so reconciling it moves no already-published number.
+ *
+ * The deductions the old model applied — ungoverned agents, project-local
+ * critical MCP servers, credentials in AI configs — are NOT folded into the
+ * number. They are host- and project-inventory facts, they remain findings
+ * with their own severities, and they reach the meter the same way every
+ * other fail-direction finding does: through the #259 verdict-band clamp,
+ * which can only ever lower a score and always discloses the pre-clamp value.
+ * Averaging a substance measure against a presence measure would have
+ * produced a third number that means nothing.
+ */
+function reconciledGovernanceScore(
+  soul: SoulScanResult,
+  findings: readonly Finding[],
+): { governanceScore: number; governanceRaw: number; governanceClamped: boolean; deductions: number } {
+  const governanceRaw = soul.score;
+  const { score, clamped } = clampScoreToVerdictBand(governanceRaw, findings);
 
-  const ungoverned = result.agents.filter((a) => a.governanceStatus === 'no governance');
-  const projectMcpCritical = result.mcpServers.filter(
-    (s) => s.risk === 'critical' && s.source.includes('(project)')
-  );
-  const criticalConfigs = result.aiConfigs.filter((c) => c.risk === 'critical');
-
-  // Each ungoverned agent costs 15 pts (capped at 30)
-  const agentDeduction = Math.min(30, ungoverned.length * 15);
-  score -= agentDeduction;
-  deductions += agentDeduction;
-
-  // No SOUL.md when agents present: -15
-  if (result.identity.soulFiles === 0 && result.agents.length > 0) {
-    score -= 15;
-    deductions += 15;
-  }
-
-  // Each project-local critical MCP: -10 (capped at 30)
-  const mcpDeduction = Math.min(30, projectMcpCritical.length * 10);
-  score -= mcpDeduction;
-  deductions += mcpDeduction;
-
-  // Credentials in AI configs: -20
-  if (criticalConfigs.length > 0) {
-    score -= 20;
-    deductions += 20;
-  }
-
-  return { governanceScore: Math.max(0, score), deductions };
+  return {
+    governanceScore: score,
+    governanceRaw,
+    governanceClamped: clamped,
+    // Recoverable points are the conformance gap: the controls `harden-soul`
+    // would add. Measured against the raw score, because clearing the
+    // findings that caused a clamp is a separate path already spelled out in
+    // the findings themselves.
+    deductions: Math.max(0, 100 - governanceRaw),
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Finding generation
 // ---------------------------------------------------------------------------
 
-function generateFindings(result: Omit<DetectResult, 'findings'>): Finding[] {
+/**
+ * How this scan should name its target inside a fix citation (#293, second
+ * pass — `detect`).
+ *
+ * `detect`'s remediation strings were hardcoded to a bare `.`, so scanning
+ * one tree from another directory printed
+ *
+ *   Fix: hackmyagent harden-soul .
+ *
+ * and pasting it generated a SOUL.md in the CURRENT directory rather than the
+ * one that was scanned — writing to the wrong tree while reporting success,
+ * which is the harm #293 was filed over. `secure` was fixed there; `detect`
+ * builds these strings itself and never reached the rewriter, which
+ * deliberately leaves an explicit `.` alone because for every other command a
+ * `.` really does mean the scanned tree.
+ *
+ * Kept pathless when the scan target IS the working directory, so the common
+ * case stays free of churn.
+ *
+ * #339 — and it is sanitised HERE, at the one place the target enters `detect`'s
+ * citation layer, for the reason #328 gives for doing it at the entry point
+ * rather than at each consumer: there are four of them, and fixing the ones that
+ * were noticed is how six injectable citations survived a change named for this
+ * property. Measured on the previous build, with a directory named
+ * `pwn.txt'; touch PWNED; echo '<LF>EVIL-SECOND-LINE<ESC>[2Jcleared`, `detect`
+ * emitted six pasteable `; touch PWNED;` citations, six raw control bytes and
+ * six split lines. A target that cannot be both shown and pasted becomes the
+ * house `<dir>` placeholder rather than a command naming bytes the reader cannot
+ * see.
+ */
+function citationTarget(scanDirectory: string): string {
+  try {
+    return path.resolve(scanDirectory) === path.resolve(process.cwd())
+      ? '.'
+      : safeCitationTarget(scanDirectory);
+  } catch {
+    return safeCitationTarget(scanDirectory);
+  }
+}
+
+/**
+ * The cause split every governance surface cites from (#303/#307).
+ *
+ * `harden-soul` adds control text. That fixes a document that is absent or
+ * incomplete, and it cannot touch a sentence that subverts a control or a
+ * broken profile marker — so citing it on a subverted document is a dead end:
+ * the command runs, changes nothing relevant, and the score does not move.
+ * Those go to `scan-soul`, which lists the offending lines.
+ *
+ * Written once and derived from the finding CODES so the renderer and the
+ * finding generator cannot drift apart. `GOV-VIOLATION` is emitted exactly
+ * when there are violations and `GOV-PROFILE-MARKER` exactly when the marker
+ * is mismatched or unrecognized, which is the same condition
+ * `generateFindings` computes from `soul` directly — `governance-cross-surface`
+ * pins the two against each other.
+ */
+export function governanceIsSubverted(findings: readonly Pick<Finding, 'code'>[]): boolean {
+  return findings.some((f) => f.code === 'GOV-VIOLATION' || f.code === 'GOV-PROFILE-MARKER');
+}
+
+/**
+ * The three causes a governance score can have, and everything each surface says
+ * about them, in ONE place.
+ *
+ * #322 — #311 claimed the surfaces "cannot promise different things" because they
+ * read one predicate. They shared the AVAILABILITY predicate and not the CAUSE
+ * predicate: Path forward split on `GOV-VIOLATION` alone, while the step label
+ * and command went through `governanceIsSubverted`, which also matches
+ * `GOV-PROFILE-MARKER`. On a document whose only problem is an unrecognized
+ * marker, four consecutive lines said:
+ *
+ *   Path forward: 74 -> 100 by adding the missing governance controls
+ *   Fix governance:  hackmyagent scan-soul <dir>   list the sentences that subvert your own controls
+ *
+ * The first promises `harden-soul`'s effect and offers no command for it; the
+ * second describes subverting sentences that do not exist. A malformed marker is
+ * neither of the two causes the code knew about, so it got the wrong half of
+ * each.
+ *
+ * `pathForward` is a phrase, not a sentence, because the caller joins several
+ * with "and".
+ */
+export type GovernanceCause = 'subverted' | 'profile-marker' | 'incomplete';
+
+interface GovernanceStep {
+  label: string;
+  command: (target: string) => string;
+  desc: string;
+  pathForward: string;
+}
+
+const GOVERNANCE_STEPS: Record<GovernanceCause, GovernanceStep> = {
+  // `harden-soul` adds control text and cannot delete a sentence, so the command
+  // is the one that LISTS the sentences to delete.
+  subverted: {
+    label: 'Fix governance:',
+    command: (target) => `hackmyagent scan-soul ${target}`,
+    desc: 'list the sentences that subvert your own controls',
+    pathForward: 'removing the sentences that subvert your own controls',
+  },
+  // Also `scan-soul`, and for a different reason: it is what reports which
+  // domains the marker caused to be skipped. `harden-soul` would add controls
+  // that are already there, and "remove the subverting sentences" names lines
+  // that do not exist.
+  'profile-marker': {
+    label: 'Fix governance:',
+    command: (target) => `hackmyagent scan-soul ${target}`,
+    desc: 'show which governance domains the profile marker skipped',
+    pathForward: 'correcting the profile marker so every domain is evaluated',
+  },
+  incomplete: {
+    label: 'Add governance:',
+    command: (target) => `hackmyagent harden-soul ${target}`,
+    desc: 'generate SOUL.md behavioral boundaries',
+    pathForward: 'adding the missing governance controls',
+  },
+};
+
+/**
+ * The cause, from the finding codes plus the raw conformance number. Null when
+ * the governance meter is full and nothing is wrong with the document, which is
+ * the one case where no surface owes the user anything.
+ *
+ * Precedence is deliberate: a document that both subverts a control and carries a
+ * bad marker is described by the more serious of the two, and the marker case is
+ * only reached when there are no violations to remove.
+ */
+export function governanceCause(
+  findings: readonly Pick<Finding, 'code'>[],
+  governanceRaw: number,
+): GovernanceCause | null {
+  if (findings.some((f) => f.code === 'GOV-VIOLATION')) return 'subverted';
+  if (findings.some((f) => f.code === 'GOV-PROFILE-MARKER')) return 'profile-marker';
+  if (governanceRaw < 100) return 'incomplete';
+  return null;
+}
+
+/**
+ * The same cause, derived from the scan signals instead of from the findings.
+ *
+ * `generateFindings` runs BEFORE any finding exists, so it cannot use
+ * `governanceCause` — and two independent derivations of one predicate drift,
+ * which is what #322 was. Both now come from this table, and
+ * `governance-cross-surface` pins them against each other on every fixture.
+ */
+export function governanceCauseFromSignals(signals: {
+  violations: number;
+  profileBad: boolean;
+  incomplete: boolean;
+}): GovernanceCause | null {
+  if (signals.violations > 0) return 'subverted';
+  if (signals.profileBad) return 'profile-marker';
+  if (signals.incomplete) return 'incomplete';
+  return null;
+}
+
+/**
+ * The command that can actually move a governance score, given the cause.
+ *
+ * Defaults to `incomplete` when there is no cause: the only caller that can
+ * reach that state is one rendering a step it has already decided to show, and
+ * `harden-soul` is the honest default for "the document could carry more".
+ */
+export function governanceRemediation(
+  findings: readonly Pick<Finding, 'code'>[],
+  target: string,
+): string {
+  const cause = governanceCause(findings, 0) ?? 'incomplete';
+  return GOVERNANCE_STEPS[cause].command(target);
+}
+
+/**
+ * The label that matches the command. `Add governance:` over a `scan-soul`
+ * citation described neither the cause nor the effect: nothing is being added,
+ * the controls are already there and one of them is being contradicted.
+ */
+export function governanceStepLabel(findings: readonly Pick<Finding, 'code'>[]): string {
+  return GOVERNANCE_STEPS[governanceCause(findings, 0) ?? 'incomplete'].label;
+}
+
+/** What the cited command will do, in the user's words rather than ours. */
+export function governanceStepDescription(findings: readonly Pick<Finding, 'code'>[]): string {
+  return GOVERNANCE_STEPS[governanceCause(findings, 0) ?? 'incomplete'].desc;
+}
+
+/**
+ * The phrase Path forward attributes the recoverable points to. Same cause, same
+ * table, so the promise and the command cannot describe different work.
+ */
+export function governancePathForwardPhrase(
+  findings: readonly Pick<Finding, 'code'>[],
+  governanceRaw: number,
+): string | null {
+  const cause = governanceCause(findings, governanceRaw);
+  return cause ? GOVERNANCE_STEPS[cause].pathForward : null;
+}
+
+/**
+ * True when the governance meter still has room to move, so Next Steps owes the
+ * user a command for it.
+ *
+ * #311 — this was `identity.governanceFile === null`, which is null only when
+ * NO governance document exists at all. A prose-only `CLAUDE.md` scoring 0/100
+ * therefore got no governance step, while the Path forward line one screen up
+ * was still promising `0 -> 100 by adding the missing governance controls`. A
+ * promise with no command is the dead end this project's own rule forbids, and
+ * `harden-soul` is exactly right there — it APPENDS missing sections to an
+ * existing document.
+ *
+ * Deliberately host-independent. The step previously survived only via a second
+ * disjunct, "some agent is ungoverned", which comes from `ps`: on CI, or any
+ * machine not currently running an AI process, a 0/100 meter was a dead end.
+ * That disjunct is also subsumed — full conformance with no subversion is what
+ * marks every agent `governed` — so dropping it costs no coverage.
+ *
+ * Same inputs as the Path forward line by construction, so the two surfaces
+ * cannot promise different things.
+ */
+export function governanceActionAvailable(
+  findings: readonly Pick<Finding, 'code'>[],
+  governanceRaw: number,
+): boolean {
+  // Availability is "there is a cause", so it reads the same function the label,
+  // the command, the description and the Path forward phrase read (#322). The
+  // previous `subverted || raw < 100` was equivalent, and being equivalent is
+  // exactly how the cause split drifted while the availability gate did not.
+  return governanceCause(findings, governanceRaw) !== null;
+}
+
+function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScanResult): Finding[] {
   const findings: Finding[] = [];
+  const target = citationTarget(result.scanDirectory);
+  const violations = soul.violations ?? [];
+  /**
+   * The governance document is present and actively working against itself,
+   * as opposed to merely incomplete. This is the distinction that decides
+   * which command to cite: `harden-soul` adds control text, which fixes
+   * incompleteness and cannot touch any of these.
+   *
+   * The codes below are emitted under exactly these conditions, which is what
+   * lets the renderer reach the same verdict from the findings alone — see
+   * `governanceIsSubverted`.
+   */
+  // #322 — the CAUSE, not a boolean. `incomplete: true` is the fallback because
+  // the only finding that consumes this is raised when the document is already
+  // inadequate, so "nothing is wrong" is not a reachable state here.
+  const cause = governanceCauseFromSignals({
+    violations: violations.length,
+    profileBad: Boolean(soul.profileMismatch) || Boolean(soul.markerInvalid),
+    incomplete: true,
+  }) ?? 'incomplete';
+  const isSubverted = cause !== 'incomplete';
 
   // Ungoverned agents
   const ungoverned = result.agents.filter((a) => a.governanceStatus === 'no governance');
   if (ungoverned.length > 0) {
-    const noSoul = result.identity.soulFiles === 0;
+    // #303 — the reason has to travel with the verdict, and it has to be the
+    // real one. This read `no SOUL.md governance file found` whenever
+    // `identity.soulFiles === 0`, but `identity` counts only `SOUL.md` while
+    // `SoulScanner.GOVERNANCE_FILES` also accepts `CLAUDE.md`,
+    // `.cursorrules`, `system-prompt.md` and six more. A project governed
+    // through a `CLAUDE.md` was therefore told its agents were ungoverned
+    // because no file existed, over a file the scanner had just read and
+    // scored. Name the document that was actually measured, and say what is
+    // wrong with it — `harden-soul` cannot remove a violation, so pointing
+    // there without that sentence is a dead end.
+    const reasons: string[] = [];
+    if (!soul.file) reasons.push('no governance file found');
+    else if (soul.criticalMissing.length > 0) {
+      reasons.push(`${soul.file} is missing ${soul.criticalMissing.length} critical control(s)`);
+    }
+    if (violations.length > 0) {
+      reasons.push(`${soul.file} contains ${violations.length} governance violation(s)`);
+    }
+    if (soul.profileMismatch) reasons.push(`${soul.file} declares a narrower profile than its content`);
+    if (soul.markerInvalid) reasons.push(`${soul.file} carries an unrecognized profile marker`);
+
     const detail = ungoverned.map((a) => a.name).join(', ')
-      + (noSoul ? ' — no SOUL.md governance file found' : '');
+      + (reasons.length > 0 ? ` — ${reasons.join('; ')}` : '');
     findings.push({
       severity: 'high',
       category: 'governance',
@@ -524,7 +859,58 @@ function generateFindings(result: Omit<DetectResult, 'findings'>): Finding[] {
         'These agents can take actions in your project but have no rules defining what they '
         + 'should or should not do. A SOUL.md file sets behavioral boundaries — what agents can and '
         + 'cannot do, and what requires human approval.',
-      remediation: 'hackmyagent harden-soul .',
+      // `harden-soul` both CREATES a governance document and appends missing
+      // sections to an existing one, so it is the right command for "no file"
+      // and for "file missing controls" alike. It is the wrong command for
+      // the substance failures: no amount of added control text removes a
+      // sentence that subverts one, or repairs a profile marker. Those go to
+      // `scan-soul`, which lists the offending sentences with line numbers.
+      remediation: GOVERNANCE_STEPS[cause].command(target),
+    });
+  }
+
+  // #303 — the three substance signals `detect` used to drop. `scan-soul`
+  // clamps its score for each of these; rendering the clamped number without
+  // them left the user a lower score and no way to find out why.
+  if (violations.length > 0) {
+    const first = violations.slice(0, 3);
+    findings.push({
+      severity: 'high',
+      category: 'governance',
+      code: 'GOV-VIOLATION',
+      // Partitive: "N of its own controls" takes the plural at every N,
+      // including 1 — the noun describes the SET being drawn from, not the
+      // count drawn. "subverts 1 of its own control" is ungrammatical.
+      title: `Governance document subverts ${violations.length} of its own controls`,
+      detail: first
+        .map((v) => `${soul.file}:${v.line} ${v.name} (${v.controlId})`)
+        .join('; ')
+        + (violations.length > first.length ? `; +${violations.length - first.length} more` : ''),
+      whyItMatters:
+        'These are not controls the document is missing — they are sentences that instruct the '
+        + 'agent to do the opposite of what the control requires, such as complying with override '
+        + 'requests or concealing its reasoning. A document like this scores as governance while '
+        + 'removing it, so adding more controls does not help; the sentences have to go.',
+      remediation: `hackmyagent scan-soul ${target}`,
+    });
+  }
+
+  if (soul.profileMismatch || soul.markerInvalid) {
+    const isInvalid = Boolean(soul.markerInvalid);
+    findings.push({
+      severity: 'medium',
+      category: 'governance',
+      code: 'GOV-PROFILE-MARKER',
+      title: isInvalid
+        ? 'Governance document carries an unrecognized profile marker'
+        : 'Governance document declares a narrower profile than its content',
+      detail: `${soul.file}`,
+      whyItMatters:
+        'The profile marker decides which governance domains are evaluated. A marker that is '
+        + 'narrower than the document, or that names nothing the scanner recognizes, means whole '
+        + 'domains were skipped rather than passed — so the score describes less of the document '
+        + 'than it appears to.',
+      remediation: `hackmyagent scan-soul ${target}`,
     });
   }
 
@@ -546,7 +932,7 @@ function generateFindings(result: Omit<DetectResult, 'findings'>): Finding[] {
         'These MCP servers are configured in your project and grant access to sensitive operations '
         + 'like running shell commands or accessing databases. '
         + 'Running a security scan confirms they match what you intended to install.',
-      remediation: 'hackmyagent secure .',
+      remediation: `hackmyagent secure ${target}`,
     });
   }
 
@@ -566,7 +952,7 @@ function generateFindings(result: Omit<DetectResult, 'findings'>): Finding[] {
       whyItMatters:
         'These servers are configured in your project but have not been scanned for security issues. '
         + 'Running hackmyagent secure surfaces any vulnerabilities in their configuration.',
-      remediation: 'hackmyagent secure .',
+      remediation: `hackmyagent secure ${target}`,
     });
   }
 
@@ -581,7 +967,7 @@ function generateFindings(result: Omit<DetectResult, 'findings'>): Finding[] {
       whyItMatters:
         'API keys or tokens appear to be stored directly in these configuration files. '
         + 'Anyone with repository access can see and use these credentials.',
-      remediation: 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.',
+      remediation: `opena2a protect ${target}  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.`,
     });
   }
 
@@ -596,12 +982,18 @@ function generateFindings(result: Omit<DetectResult, 'findings'>): Finding[] {
       whyItMatters:
         'These configs allow AI agents to perform a wide range of actions without restrictions. '
         + 'Broad permissions increase risk if an agent behaves unexpectedly.',
-      remediation: 'hackmyagent scan-soul .',
+      remediation: `hackmyagent scan-soul ${target}`,
     });
   }
 
-  // No SOUL.md when agents present but no ungoverned finding yet
-  if (result.identity.soulFiles === 0 && result.agents.length > 0 && ungoverned.length === 0) {
+  // No SOUL.md when agents present but no ungoverned finding yet.
+  //
+  // #303 — gated on `soul.file`, not on `identity.soulFiles`. `identity`
+  // counts `SOUL.md` alone, so a project governed through a `CLAUDE.md` got
+  // "No SOUL.md governance file in this project" printed directly beneath
+  // "All detected AI tools have governance in place", each half of the same
+  // output contradicting the other about whether governance exists.
+  if (!soul.file && result.agents.length > 0 && ungoverned.length === 0) {
     findings.push({
       severity: 'medium',
       category: 'governance',
@@ -610,7 +1002,25 @@ function generateFindings(result: Omit<DetectResult, 'findings'>): Finding[] {
       whyItMatters:
         'A SOUL.md file defines what an agent should and should not do beyond capability restrictions — '
         + 'handling errors, sensitive data, and when to ask for human approval.',
-      remediation: 'hackmyagent harden-soul .',
+      remediation: `hackmyagent harden-soul ${target}`,
+    });
+  }
+
+  // The governance document lives somewhere other than SOUL.md. Not a
+  // failure — `SoulScanner` accepts nine filenames and scored this one — but
+  // the tool's own remediation, its docs and `harden-soul` all write
+  // `SOUL.md`, so a reader has to be told which file the number came from.
+  if (soul.file && soul.file !== 'SOUL.md' && result.agents.length > 0) {
+    findings.push({
+      severity: 'low',
+      category: 'governance',
+      title: `Governance is defined in ${soul.file}, not SOUL.md`,
+      detail: `The Governance score above was measured against ${soul.file}.`,
+      whyItMatters:
+        'This is a supported location, so nothing is broken. It is worth knowing because every '
+        + 'other surface of this tool — harden-soul, the docs, the fix commands — refers to '
+        + 'SOUL.md, and a reader looking for the file the score came from would not find it.',
+      remediation: `hackmyagent scan-soul ${target}`,
     });
   }
 
@@ -668,11 +1078,26 @@ function generateAssetCsv(result: DetectResult): string {
 // Text formatting
 // ---------------------------------------------------------------------------
 
-function formatText(result: DetectResult, verbose: boolean, targetDir: string): string {
+function formatText(result: DetectResult, verbose: boolean, rawTargetDir: string): string {
   const lines: string[] = [];
   const { summary } = result;
+  // #339 — `targetDir` is a path out of the scanned tree and every Next Step
+  // below splices it into a command the reader is told to paste. Sanitised ONCE
+  // here, at the entry to this renderer, rather than at each of the four
+  // consumers: fixing the consumers that were noticed is exactly how six
+  // injectable citations survived a change named for this property.
+  const targetDir = safeCitationTarget(rawTargetDir);
   const score = summary.governanceScore;
-  const projected = Math.min(100, score + summary.recoverablePoints);
+  // Best achievable governance: every applicable control covered, and no
+  // fail-direction finding left to cap the result. Both routes are spelled
+  // out in the Path forward line below.
+  //
+  // NOT `score + recoverablePoints`. Recoverable points measure the
+  // conformance gap only, so a tree already at full conformance but capped
+  // by a CRITICAL projected 69 -> 69 and the path forward vanished — the one
+  // case where the operator most needs to be told that clearing the finding
+  // restores the number.
+  const projected = 100;
 
   // Severity counts
   const critical = result.findings.filter((f) => f.severity === 'critical').length;
@@ -682,7 +1107,10 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
   const total = critical + high + medium + low;
 
   // ── Header ────────────────────────────────────────────────────────
-  const dirBase = path.basename(targetDir) || targetDir;
+  // The header is DISPLAY, not a command, so it takes the path escaping rather
+  // than the citation form — a basename that carries a newline split this line
+  // and put the attacker's second line above the report's own metadata.
+  const dirBase = escapePathForDisplay(path.basename(rawTargetDir) || rawTargetDir);
   const metaParts = [
     'shadow ai audit',
     `${os.hostname()}`,
@@ -714,7 +1142,15 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
   }
   lines.push(`  ${verdictColor}${c.bold}${verdictText}${R}`);
   lines.push('');
-  lines.push(`  Governance  ${scoreMeter(score)}`);
+  // #291/#259: when a fail-direction finding floored the number, name the
+  // pre-clamp value. The clamp adds information; it must not look like the
+  // conformance measurement itself came out lower than `scan-soul` says.
+  const govClampNote = clampDisclosure({
+    rawScore: summary.governanceRaw,
+    score,
+    clamped: summary.governanceClamped,
+  });
+  lines.push(`  Governance  ${scoreMeter(score)}${govClampNote}`);
 
   // ── Findings ──────────────────────────────────────────────────────
   if (result.findings.length > 0) {
@@ -745,17 +1181,49 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
       lines.push(`  ${c.dim}+ ${remaining} more (run with --verbose to see all)${R}`);
     }
 
-    // Path forward
-    if (projected > score) {
+  }
+
+  // ── Path forward ──────────────────────────────────────────────────
+  //
+  // Named after what actually moves the number (#291). The meter is
+  // governance conformance, so the recoverable points are missing controls
+  // and `harden-soul` is what recovers them — not "fixing N high", which is
+  // what this said while the score was finding-driven. Attributing 22 -> 100
+  // to clearing a HIGH finding was a promise the tool could not keep.
+  //
+  // Rendered outside the findings block: a directory can sit at 22/100
+  // conformance with nothing else wrong, and that must not be a dead end.
+  if (projected > score) {
+    const steps: string[] = [];
+    // #303 — a violation is not a missing control, and `harden-soul` cannot
+    // remove one. On a document that carries every control and then subverts
+    // one, this line read `25 -> 100 by adding the missing governance
+    // controls` while the 75 lost points came entirely from the #251
+    // violation clamp: every control it names was already present. Name the
+    // sentences instead, since deleting them is what moves the number.
+    //
+    // #322 — and the split has to be the SAME one the Next Steps command comes
+    // from. This read `hasViolation ? … : raw < 100 ? …`, which put a malformed
+    // profile marker in the "missing controls" branch: the line promised
+    // `harden-soul`'s effect while the step one screen down cited `scan-soul`,
+    // and no command for the promise appeared anywhere.
+    const govPhrase = governancePathForwardPhrase(result.findings, summary.governanceRaw);
+    if (govPhrase) steps.push(govPhrase);
+    // Gated on fail-direction, NOT on `governanceClamped`. The clamp only
+    // fires once the raw score is above the band floor, but a critical or
+    // high finding caps the achievable score at VERDICT_FAIL_CLAMP the whole
+    // time. Gating on the clamp promised "19 -> 100 by adding the missing
+    // governance controls" on a tree with an outstanding CRITICAL, where
+    // full conformance would have landed on 69, not 100.
+    if (isFailDirection(result.findings)) {
+      const sevParts: string[] = [];
+      if (critical > 0) sevParts.push(`${critical} critical`);
+      if (high > 0) sevParts.push(`${high} high`);
+      if (sevParts.length > 0) steps.push(`clearing ${sevParts.join(' + ')}`);
+    }
+    if (steps.length > 0) {
       lines.push('');
-      const recoveryParts: string[] = [];
-      if (critical > 0) recoveryParts.push(`${critical} critical`);
-      if (high > 0) recoveryParts.push(`${high} high`);
-      if (medium > 0 && recoveryParts.length === 0) recoveryParts.push(`${medium} medium`);
-      const desc = recoveryParts.length > 0
-        ? `by fixing ${recoveryParts.join(' + ')}`
-        : `by addressing ${result.findings.length} finding${result.findings.length !== 1 ? 's' : ''}`;
-      lines.push(`  ${c.cyan}${c.bold}Path forward:${R} ${c.cyan}${score} ${c.dim}->${R} ${c.green}${c.bold}${projected}${R} ${c.cyan}${desc}${R}`);
+      lines.push(`  ${c.cyan}${c.bold}Path forward:${R} ${c.cyan}${score} ${c.dim}->${R} ${c.green}${c.bold}${projected}${R} ${c.cyan}by ${steps.join(' and ')}${R}`);
     }
   }
 
@@ -770,7 +1238,14 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
       const isGoverned = agent.governanceStatus === 'governed';
       const govStr = isGoverned ? green('governed') : yellow('ungoverned');
       const pidStr = verbose ? dim(` (PID ${agent.pid})`) : '';
-      const fixHint = !isGoverned ? `  ${dim('→')}  ${cyan('hackmyagent harden-soul .')}` : '';
+      // #303 — the same citation the ungoverned finding carries, chosen the
+      // same way, so the row and the finding cannot disagree. `harden-soul`
+      // adds control text; against a document whose problem is a sentence
+      // that subverts a control, it is a command with nothing to do.
+      // #322 — through the shared cause table rather than a fourth inline copy
+      // of the predicate. An inline copy is what drifted.
+      const govFix = governanceRemediation(result.findings, citationTarget(result.scanDirectory));
+      const fixHint = !isGoverned ? `  ${dim('→')}  ${cyan(govFix)}` : '';
       lines.push(`  ${nameCol}${govStr}${pidStr}${fixHint}`);
     }
   }
@@ -858,11 +1333,51 @@ function formatText(result: DetectResult, verbose: boolean, targetDir: string): 
   // ── Next Steps ────────────────────────────────────────────────────
   type Step = { label: string; cmd: string; desc: string };
   const steps: Step[] = [];
-  if (result.findings.length > 0) {
+  // #307 — the THIRD consumer of `identity.soulFiles`, and the one that was
+  // missed when the other two were fixed. `soulFiles` counts `SOUL.md` alone,
+  // so a project governed by a fully-conformant `CLAUDE.md` was told to
+  // `harden-soul` right under a Governance meter reading 100/100 that had just
+  // been computed FROM that file.
+  //
+  // #311 — but "a document exists" was the wrong question too, in the other
+  // direction: it is false only when NOTHING exists, so an inadequate but
+  // present document lost its step entirely. The question is whether the METER
+  // can still move, which is what the Path forward line already answers — so
+  // both surfaces read the same predicate and cannot promise different things.
+  //
+  // Rendered OUTSIDE the findings block, for the same reason the Path forward
+  // line is (#291): a tree can sit far below the governance bar with nothing
+  // else wrong. On a host with no AI process running there is no ungoverned-
+  // agent finding, so the whole block was skipped and a 4/100 meter was left
+  // promising "adding the missing governance controls" with no command anywhere
+  // in the output. That is the CI condition, not an exotic one.
+  //
+  // The command and the label come from the shared cause split, so this surface
+  // cites what the ungoverned finding cites: `harden-soul` cannot remove a
+  // violation, and offering it as the next step on a subverted document is the
+  // same dead end one screen lower.
+  // Step ORDER is unchanged: `Full scan` stays first where it applies, and the
+  // governance step keeps its original position behind it. Only its GATE moved.
+  const hasFindings = result.findings.length > 0;
+  if (hasFindings) {
     steps.push({ label: 'Full scan:',       cmd: `hackmyagent secure ${targetDir}`, desc: 'deep security scan with findings' });
-    if (result.identity.soulFiles === 0 || result.agents.some((a) => a.governanceStatus === 'no governance')) {
-      steps.push({ label: 'Add governance:',  cmd: `hackmyagent harden-soul ${targetDir}`, desc: 'generate SOUL.md behavioral boundaries' });
-    }
+  }
+  // `?? 0`, not `?? 100`: `governanceRaw` is non-optional on the type, so this
+  // only fires if a caller ever hands us a partial summary — and the safe
+  // direction there is to OFFER the step. Defaulting to 100 would suppress it,
+  // which is the dead end #311 exists to remove.
+  if (governanceActionAvailable(result.findings, summary.governanceRaw ?? 0)) {
+    steps.push({
+      label: governanceStepLabel(result.findings),
+      cmd: governanceRemediation(result.findings, targetDir),
+      // #322 — the description comes from the same cause as the command. It used
+      // to be its own two-way `governanceIsSubverted` branch, so a malformed
+      // profile marker was described as "the sentences that subvert your own
+      // controls" — sentences the document does not contain.
+      desc: governanceStepDescription(result.findings),
+    });
+  }
+  if (hasFindings) {
     if (result.aiConfigs.some((cc) => cc.risk === 'critical')) {
       steps.push({ label: 'Protect credentials:', cmd: `opena2a protect ${targetDir}`, desc: 'encrypt hardcoded secrets into secure vault' });
     }
@@ -898,7 +1413,7 @@ export async function detect(options: DetectOptions): Promise<number> {
   try {
     fs.accessSync(dir, fs.constants.R_OK);
   } catch {
-    process.stderr.write(`Cannot access directory: ${dir}\n`);
+    process.stderr.write(`Cannot access directory: ${escapePathForDisplay(dir)}\n`);
     return 1;
   }
 
@@ -909,8 +1424,47 @@ export async function detect(options: DetectOptions): Promise<number> {
 
   identity.totalAgents = agents.length;
 
-  // Apply governance status from scanned identity
-  if (identity.soulFiles > 0 || identity.capabilityPolicies > 0) {
+  // The authoritative governance measurement (#291). Same scanner, same
+  // controls, same number `scan-soul` renders for this directory.
+  const soul = await new SoulScanner().scanSoul(dir);
+  // Which document that measurement came from, so no consumer has to infer
+  // it from `soulFiles` and get it wrong for the other eight names (#303).
+  identity.governanceFile = soul.file;
+
+  // Apply governance status from the conformance result.
+  //
+  // This used to key on `identity.soulFiles > 0` — the mere presence of a
+  // file. A SOUL.md holding nothing but prose marked every agent `governed`
+  // and printed "All detected AI tools have governance in place" over a
+  // document with no controls in it. Presence is not governance.
+  //
+  // The bar is the soul model's own vocabulary: conformance `none` means one
+  // or more CRITICAL governance controls are missing, which is exactly the
+  // condition under which an agent is not meaningfully governed. Anything at
+  // `essential` or above has its critical controls covered.
+  //
+  // #303 — conformance alone is not that bar. `calculateConformance` returns
+  // `none` only when a critical control is MISSING, so a document that
+  // carries every critical control and then instructs the agent to comply
+  // with override requests is `essential`, and every agent was marked
+  // `governed` by it:
+  //
+  //   scan-soul   25/100   conformance essential   1 violation
+  //   detect      ungoverned 0/2, zero findings, exit 0
+  //               "All detected AI tools have governance in place"
+  //
+  // `scan-soul` clamps its score for exactly these three signals, and
+  // `detect` was rendering the clamped number while ignoring what caused it —
+  // consuming the verdict and discarding the evidence. A control that is
+  // present and subverted governs nothing, and a profile marker the scanner
+  // could not trust means the domains it skipped were never measured at all.
+  const violations = soul.violations ?? [];
+  const governanceEstablished =
+    soul.conformance !== 'none' &&
+    violations.length === 0 &&
+    !soul.profileMismatch &&
+    !soul.markerInvalid;
+  if (governanceEstablished) {
     for (const agent of agents) {
       agent.governanceStatus = 'governed';
       agent.risk = 'low';
@@ -920,10 +1474,6 @@ export async function detect(options: DetectOptions): Promise<number> {
   // Mark project-local MCP servers that have been scanned by HMA as lower risk
   // (a prior `hackmyagent secure` run passing is implicit approval)
   // For now, all project-local servers stay at their inferred risk level.
-
-  const { governanceScore, deductions } = calculateGovernanceScore({
-    agents, mcpServers, aiConfigs, identity,
-  });
 
   const ungoverned  = agents.filter((a) => a.governanceStatus === 'no governance').length;
   const localLlms   = agents.filter((a) => a.category === 'local-llm').length;
@@ -937,8 +1487,12 @@ export async function detect(options: DetectOptions): Promise<number> {
       mcpServers:       mcpServers.length,
       localLlms,
       aiConfigs:        aiConfigs.length,
-      governanceScore,
-      recoverablePoints: deductions,
+      // Filled in below: the clamp reads the findings, so the findings have
+      // to exist first.
+      governanceScore:   0,
+      governanceRaw:     0,
+      governanceClamped: false,
+      recoverablePoints: 0,
     },
     agents,
     mcpServers,
@@ -947,7 +1501,14 @@ export async function detect(options: DetectOptions): Promise<number> {
     findings: [],
   };
 
-  result.findings = generateFindings(result);
+  result.findings = generateFindings(result, soul);
+
+  const { governanceScore, governanceRaw, governanceClamped, deductions } =
+    reconciledGovernanceScore(soul, result.findings);
+  result.summary.governanceScore   = governanceScore;
+  result.summary.governanceRaw     = governanceRaw;
+  result.summary.governanceClamped = governanceClamped;
+  result.summary.recoverablePoints = deductions;
 
   if (options.format === 'json') {
     process.stdout.write(JSON.stringify(result, null, 2) + '\n');

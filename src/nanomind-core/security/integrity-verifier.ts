@@ -20,6 +20,7 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { readFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, lstatSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { escapePathForDisplay, escapeForDisplay } from '../../ui/display-safe';
 
 // ============================================================================
 // Types
@@ -145,13 +146,13 @@ export function loadManifest(packageRoot: string): IntegrityManifest | null {
       // (per feedback_iife_after_parseasync_timing_trap.md — bare catch{} is
       // the silent-no-op mechanism we explicitly avoid).
       process.stderr.write(
-        `INTEGRITY MANIFEST READ ERROR at ${manifestPath}: ${(err as Error).message}\n`,
+        `INTEGRITY MANIFEST READ ERROR at ${escapePathForDisplay(manifestPath)}: ${escapeForDisplay((err as Error).message)}\n`,
       );
       continue;
     }
     if (stat.isSymbolicLink()) {
       process.stderr.write(
-        `INTEGRITY MANIFEST REJECTED: symlink at ${manifestPath} (manifests must be regular files)\n`,
+        `INTEGRITY MANIFEST REJECTED: symlink at ${escapePathForDisplay(manifestPath)} (manifests must be regular files)\n`,
       );
       manifestSymlinkRejection = manifestPath;
       continue;
@@ -159,7 +160,7 @@ export function loadManifest(packageRoot: string): IntegrityManifest | null {
     if (!stat.isFile()) {
       // Not a regular file (could be a directory, socket, fifo, etc.)
       process.stderr.write(
-        `INTEGRITY MANIFEST REJECTED: not a regular file at ${manifestPath}\n`,
+        `INTEGRITY MANIFEST REJECTED: not a regular file at ${escapePathForDisplay(manifestPath)}\n`,
       );
       continue;
     }
@@ -170,7 +171,7 @@ export function loadManifest(packageRoot: string): IntegrityManifest | null {
       // Surface the parse / read failure so a malformed manifest doesn't
       // silently downgrade to dev-mode.
       process.stderr.write(
-        `INTEGRITY MANIFEST PARSE ERROR at ${manifestPath}: ${(err as Error).message}\n`,
+        `INTEGRITY MANIFEST PARSE ERROR at ${escapePathForDisplay(manifestPath)}: ${escapeForDisplay((err as Error).message)}\n`,
       );
       continue;
     }

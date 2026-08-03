@@ -13,6 +13,7 @@
 import { fetchPage, fetchTextFile, extractContent, parseSitemap } from './browser';
 import { computeResilienceScore } from './scorer';
 import type { WildScanOptions, WildScanReport, WildPageResult, FileFetchResult } from './types';
+import { escapePathForDisplay, escapeForDisplay } from '../ui/display-safe';
 
 export type { WildScanOptions, WildScanReport, WildPageResult, FileFetchResult };
 
@@ -59,7 +60,7 @@ export class WildScanner {
         });
         if (this.options.verbose) {
           const status = hasPayload ? 'PAYLOAD FOUND' : 'clean';
-          process.stderr.write(`  ${file}: ${result.statusCode} [${status}]\n`);
+          process.stderr.write(`  ${escapePathForDisplay(file)}: ${result.statusCode} [${status}]\n`);
         }
       } catch (err) {
         fileFetches.push({

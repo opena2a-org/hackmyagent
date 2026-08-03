@@ -35,6 +35,40 @@ Fail the release if:
 
 ---
 
+## 0.5 Build the throwaway fixtures (1 min)
+
+Every scan step below targets one of these. They are built here so the
+checklist works **from a clean clone** — do not substitute a path that only
+exists on a maintainer's machine.
+
+```bash
+# Known-bad: one config-shaped file with a synthetic credential at the scan
+# root. Built at runtime so no credential-looking string is ever committed.
+BAD=$(mktemp -d)
+printf '{"name":"smoke-bad","version":"1.0.0"}\n' > "$BAD/package.json"
+printf '{"apiKey":"ghp_%s"}\n' "$(printf 'a%.0s' {1..36})" > "$BAD/config.json"
+
+# Known-clean: an empty tree.
+CLEAN=$(mktemp -d)
+
+# Assert both exist before trusting any exit code below.
+test -f "$BAD/config.json" && test -d "$CLEAN" || { echo "FIXTURE BUILD FAILED"; exit 1; }
+```
+
+`test/` and `test/fixtures/governed-mcp` are tracked in this repo and are the
+only in-repo scan targets the checklist uses.
+
+**Instrument rule — read before reading any result.** A missing target makes
+HMA print `Error: Directory '...' does not exist.` and exit **1**, which is
+the same exit code as "findings were found". Any step whose expectation is a
+non-zero exit MUST also assert on output content, or it passes vacuously. This
+is not hypothetical: §2/§3/§5/§6 all pointed at the workspace playground
+(`~/workspace/opena2a-org/test/hma`) using a bare repo-relative spelling, so
+from a clean clone those steps errored before reaching their assertion and read
+as passes. `__tests__/docs/release-smoke-paths.test.ts` now gates against it.
+
+---
+
 ## 1. Help and version (1 min)
 
 ```bash
@@ -67,13 +101,13 @@ HMA=node\ dist/cli.js   # alias to shorten examples below
 $HMA --help
 $HMA -v
 
-# Core scan — local directory
-$HMA secure test/hma/
-$HMA secure test/hma/ --json | head -5   # must be valid JSON object on line 1
+# Core scan — local directory (fixtures from §0.5)
+$HMA secure "$BAD"
+$HMA secure "$BAD" --json | head -5      # must be valid JSON object on line 1
 
 # Governance
-$HMA scan-soul test/hma/                     # SOUL.md compliance score
-$HMA harden-soul --dry-run /tmp/test-dir     # dry-run: no write to disk
+$HMA scan-soul test/                         # SOUL.md compliance score
+$HMA harden-soul --dry-run "$CLEAN"          # dry-run: no write to disk
 
 # Attack
 $HMA attack --local --system-prompt "You are helpful."
@@ -108,9 +142,11 @@ coverage.
 
 | Surface | Real-world target | Expected score |
 |---|---|---|
+| Known-bad tree | `"$BAD"` (§0.5) | 69/100, ≥ 1 CRITICAL credential finding, exit 1 |
 | Local repo (clean) | `../ai-trust` or `../secretless` | 60–90 |
-| Empty dir | `$(mktemp -d)` | ~95–98 (`.gitignore` LOW only) |
-| Standalone SOUL.md | `test/hma/SOUL.md` via `scan-soul` | 100/100 HARDENED |
+| Empty dir | `"$CLEAN"` (§0.5) | ~95–98 (`.gitignore` LOW only) |
+| Governed MCP | `node dist/cli.js secure test/fixtures/governed-mcp` | 96/100 |
+| Standalone SOUL.md | `node dist/cli.js scan-soul test/` | see note below |
 | npm package | `node dist/cli.js check express` | ≥ 95 |
 | PyPI package | `node dist/cli.js check pip:requests` | ~90 |
 | GitHub repo | `node dist/cli.js check getsentry/sentry-mcp` | varies |
@@ -118,10 +154,19 @@ coverage.
 | MCP server | a real MCP repo (e.g. `../hma-test/ibm-mcp`) | 70–90 |
 | A2A agent | `../a2a-security-examples/examples/secure-agent-card` | 80–90 |
 
+**On the `scan-soul test/` row.** Measured 18/100 on 0.25.1 (BASIC tier, "23 of
+29 applicable controls not detected"). That number is depressed by the
+keyword-vs-prose matcher gap tracked as **#266**, not by anything wrong with
+the fixture — `test/SOUL.md` is a well-formed governance file. Gate on the
+command running, emitting per-domain scores, and not regressing *further*;
+do not "fix" this row by loosening the matcher, and re-baseline it upward when
+#266 lands. The row above it (`secure test/fixtures/governed-mcp` → 96/100)
+is the one that gates the clean-tree direction.
+
 **Score sanity rule:** a score below 30 for a known-good project, or above 70
 for a known-bad project, means the scoring is broken — investigate before
-publishing. Do not publish a release where `test/hma/` scores ≥ 70 (it is
-intentionally vulnerable) or where `../ai-trust` scores < 30 (it is
+publishing. Do not publish a release where `"$BAD"` scores ≥ 70 (it carries a
+credential at the scan root) or where `../ai-trust` scores < 30 (it is
 intentionally clean).
 
 ---
@@ -173,8 +218,26 @@ unset OPENA2A_TELEMETRY
 | 5.3 | `node dist/cli.js telemetry off` | Prints `Telemetry disabled for hackmyagent.` |
 | 5.4 | `node dist/cli.js telemetry on` | Re-enables persistently |
 | 5.5 | `OPENA2A_TELEMETRY=off node dist/cli.js telemetry status` | Shows `state: off` (env wins over file) |
-| 5.6 | `OPENA2A_TELEMETRY_DEBUG=print node dist/cli.js secure test/hma/ 2>&1 \| grep opena2a:telemetry` | Shows JSON payload with `tool: "hackmyagent"`, `event: "command"`, `name: "secure"`, `success: true`, `duration_ms: <int>`. No PII fields (no file paths, no scan results, no credentials). |
-| 5.7 | `node dist/cli.js secure test/hma/` (with unreachable URL) | Command completes. Telemetry timeout must not delay the command by more than 2 s. |
+| 5.6 | `OPENA2A_TELEMETRY_DEBUG=print node dist/cli.js secure "$CLEAN" 2>&1 \| grep opena2a:telemetry` | Shows JSON payload with `tool: "hackmyagent"`, `event: "command"`, `name: "secure"`, `success: true`, `duration_ms: <int>`. No PII fields (no file paths, no scan results, no credentials). |
+| 5.7 | `node dist/cli.js secure "$BAD"` (with unreachable URL) | Command completes. Telemetry timeout must not delay the command by more than 2 s. |
+
+`OPENA2A_TELEMETRY_URL` and `OPENA2A_TELEMETRY_DEBUG` are implemented in the
+`@opena2a/telemetry` dependency, **not** in this repo's `src/`. Grepping `src/`
+alone will wrongly suggest they do not exist. They work — 5.6 emits exactly the
+allowlisted fields.
+
+**5.6 must target `"$CLEAN"`, not a fixture with findings — and that is a bug,
+not a preference.** Tracked as **#297**: the scan commands call
+`process.exit(1)` when they find something, which skips the Commander
+`postAction` hook that fires `tele.track()`. So text, SARIF and HTML mode emit
+no telemetry at all on a findings-bearing scan; only `--json` does (it sets
+`process.exitCode = 1` and returns instead). Until #297 lands, pointing 5.6 at
+`"$BAD"` produces empty output that looks like "no PII" but actually means "no
+event". Re-point this row at `"$BAD"` once #297 is fixed.
+
+| # | Command | Expected |
+|---|---|---|
+| 5.8 | `OPENA2A_TELEMETRY_DEBUG=print node dist/cli.js secure "$BAD" --json 2>&1 >/dev/null \| grep -c opena2a:telemetry` | `1`. This is the one findings-bearing path that still reports. If it ever prints `0`, the `--json` branch has regressed onto `process.exit()` too and telemetry is fully blind. |
 
 Fail the release if:
 - Version line omits the telemetry disclosure
@@ -193,19 +256,32 @@ unset OPENA2A_TELEMETRY_URL   # restore after telemetry section
 
 After every release that touches exit codes, the router, or JSON output shape:
 
+Capture the exit code from the command itself, never through a pipe — `cmd |
+head; echo $?` reports `head`'s status and will read as a pass regardless of
+what the CLI did.
+
 ```bash
 # scan with findings → exit 1
-node dist/cli.js secure test/hma/ --json; echo "exit: $?"
-# Expected: valid JSON object on stdout, exit 1 (critical/high findings)
+node dist/cli.js secure "$BAD" --json > /tmp/smoke-bad.json; echo "exit: $?"
+# Expected: exit 1, AND the payload must actually carry the findings:
+node -e 'const j=require("/tmp/smoke-bad.json");
+  const f=(j.findings||[]).filter(x=>!x.passed);
+  if(!f.length) throw new Error("VACUOUS PASS: exit 1 with no findings");
+  console.log("findings:", f.length, "score:", j.score)'
 
 # scan of clean dir → exit 0
-node dist/cli.js secure $(mktemp -d) --json; echo "exit: $?"
+node dist/cli.js secure "$CLEAN" --json > /tmp/smoke-clean.json; echo "exit: $?"
 # Expected: valid JSON object on stdout, exit 0
 
-# not-found package → exit 2
-node dist/cli.js check nonexistent-xyz-999999 --json; echo "exit: $?"
-# Expected: JSON with found: false or equivalent error shape, exit 2
+# not-found package → exit 1
+node dist/cli.js check nonexistent-xyz-999999 --json > /tmp/smoke-404.json; echo "exit: $?"
+# Expected: JSON with found: false or equivalent error shape, exit 1
 ```
+
+**On the not-found exit code.** It is **1**, not 2. This is long-standing
+behaviour — verified identical on published 0.24.0, 0.25.0 and 0.25.1 — and
+other tests assert it. The previous "exit 2" line in this checklist was the
+expectation that was wrong, not the code. Do not "fix" the CLI to match it.
 
 ---
 

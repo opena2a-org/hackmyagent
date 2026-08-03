@@ -177,6 +177,166 @@ describe('rollback contract (#262)', () => {
       rmSync(parent, { recursive: true, force: true });
     }
   });
+
+  it('does not report on out-of-tree paths from a v1 manifest', async () => {
+    // The legacy loop performs no write, which is why it had no containment
+    // check — but an unguarded path still let a forged manifest probe for files
+    // outside the tree and have their existence reported back. The guard was
+    // added in this branch alongside #312 and had no failing case, so it was
+    // enforcement nobody could fail.
+    const parent = mkdtempSync(join(tmpdir(), 'hma-312-legacy-'));
+    const target = join(parent, 'scan-target');
+    const victimDir = join(parent, 'sibling');
+    mkdirSync(target, { recursive: true });
+    mkdirSync(victimDir, { recursive: true });
+    writeFileSync(join(victimDir, 'private.txt'), 'exists\n', 'utf8');
+    // In tree, so the loop is proven to still work.
+    writeFileSync(join(target, 'CLAUDE.md'), 'exists\n', 'utf8');
+
+    try {
+      seedBackup(target, {
+        version: 1,
+        existingFiles: [],
+        absentAtBackup: [],
+        createdFiles: ['../sibling/private.txt', 'CLAUDE.md'],
+      });
+
+      const report = await scanner.rollback(target);
+
+      expect(
+        report.keptUnverifiable,
+        'a v1 manifest probed for a file outside the scanned tree and the report '
+        + 'confirmed it exists',
+      ).not.toContain('../sibling/private.txt');
+      // Non-vacuity: the in-tree entry must still be reported, or the guard has
+      // simply disabled the loop.
+      expect(report.keptUnverifiable).toContain('CLAUDE.md');
+      expect(existsSync(join(victimDir, 'private.txt'))).toBe(true);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an implausibly large manifest instead of reading it whole', async () => {
+    // The #305 follow-up bounded the manifest read on the SCAN path and
+    // exempted this one, reasoning that "rollback only ever reads a manifest
+    // HMA itself just wrote". #312 disproved that: the same cloned tree that
+    // supplies the traversal paths supplies this file, and a stamp of
+    // `9999-…` is always the one selected. Measured before the guard: a 60MB
+    // manifest read whole, 493MB resident.
+    //
+    // Fails CLOSED — an oversized manifest takes the existing unreadable
+    // branch, which names the directory to restore from by hand, so refusing
+    // is not a dead end.
+    const backupDir = join(dir, '.hackmyagent-backup', '2026-07-27-120000');
+    mkdirSync(backupDir, { recursive: true });
+    const oversized = JSON.stringify({
+      version: 2,
+      existingFiles: [],
+      absentAtBackup: [],
+      createdFiles: [],
+      pad: 'A'.repeat(11 * 1024 * 1024),
+    });
+    writeFileSync(join(backupDir, '.manifest.json'), oversized, 'utf8');
+
+    // #338 — the refusal now NAMES the cause: this candidate was passed over
+    // because its manifest is implausibly large, and it was the only one, so the
+    // run has nothing to roll back from. Asserting the cause rather than the
+    // word "unreadable" is what distinguishes this from every other way the
+    // selection can come up empty.
+    await expect(scanner.rollback(dir)).rejects.toThrow(/implausibly large/i);
+
+    // Non-vacuity: the same fixture UNDER the bound must still roll back, or
+    // this only proves rollback can throw.
+    writeFileSync(
+      join(backupDir, '.manifest.json'),
+      JSON.stringify({ version: 2, existingFiles: [], absentAtBackup: [], createdFiles: [] }),
+      'utf8',
+    );
+    await expect(scanner.rollback(dir)).resolves.toBeTruthy();
+  });
+
+  /**
+   * #312 — the same traversal, through the loop that had no guard.
+   *
+   * `createdFiles` was guarded (the test above); `existingFiles` was not, and it
+   * is the loop that WRITES. The manifest is read from the scanned tree, so a
+   * cloned repo carrying its own `.hackmyagent-backup/9999-99-99-999999/` — a
+   * stamp that sorts above any real one, and is therefore always selected as
+   * the latest — turned `rollback` into an arbitrary file write that reported
+   * success.
+   *
+   * Pre-existing: reproduces on 0.25.1 too, so not a regression from this
+   * stack. It is #305 that taught this code to reason about forged manifests in
+   * an attacker-controlled tree while leaving the manifest a write primitive.
+   *
+   * #323 — this fixture uses only a `../` traversal, and it PASSED against the
+   * symlink-vulnerable restore loop (#318): a lexical containment check on the
+   * joined destination decides where the string points, not where the filesystem
+   * sends it. The symlink cases for both ends, and for the unlink loop, live in
+   * `backup-identity.test.ts`. Keep this one — the lexical guard is still
+   * load-bearing, and it is what stops a traversal before any syscall is spent.
+   */
+  it('does not WRITE outside the target directory via a manifest path', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'hma-312-'));
+    const target = join(parent, 'scan-target');
+    mkdirSync(target, { recursive: true });
+
+    // `seedBackup` stamps the backup `2026-07-27-120000`, and the escape is
+    // built around that name so BOTH ends resolve somewhere real:
+    //   source = join(backupDir, ESCAPE) -> <backupDir>/authorized_keys
+    //   dest   = join(target,    ESCAPE) -> <parent>/2026-07-27-120000/…
+    // The source has to exist, or a missing containment guard fails on ENOENT
+    // instead of writing, and the test would pass for the wrong reason.
+    const STAMP = '2026-07-27-120000';
+    const ESCAPE = `../${STAMP}/authorized_keys`;
+    const victimDir = join(parent, STAMP);
+    mkdirSync(victimDir, { recursive: true });
+
+    const original = 'LEGITIMATE_USER_CONTENT\n';
+    const victim = join(victimDir, 'authorized_keys');
+    writeFileSync(victim, original, 'utf8');
+
+    try {
+      seedBackup(
+        target,
+        {
+          version: 2,
+          existingFiles: [ESCAPE, 'config.json'],
+          absentAtBackup: [],
+          createdFiles: [],
+        },
+        { 'config.json': 'RESTORED_ORIGINAL\n', 'authorized_keys': 'ATTACKER_PAYLOAD\n' },
+      );
+      writeFileSync(join(target, 'config.json'), 'MODIFIED\n', 'utf8');
+
+      // Precondition: the escape must actually resolve to the victim, or this
+      // asserts nothing. A broken traversal path exits the same way a blocked
+      // one does.
+      expect(join(target, ESCAPE)).toBe(victim);
+      expect(existsSync(join(target, '.hackmyagent-backup', STAMP, 'authorized_keys'))).toBe(true);
+
+      const report = await scanner.rollback(target);
+
+      expect(
+        readFileSync(victim, 'utf8'),
+        'rollback overwrote a file outside the scanned tree from a forged manifest, '
+        + 'and reported a clean restore (#312)',
+      ).toBe(original);
+      expect(report.restored).not.toContain(ESCAPE);
+
+      // Non-vacuity: the guard must block the escape without becoming a blanket
+      // refusal. An in-tree entry in the SAME manifest still has to restore, or
+      // this passes just as well against a rollback that does nothing at all.
+      expect(
+        readFileSync(join(target, 'config.json'), 'utf8'),
+        'the legitimate in-tree restore was blocked too; the guard is too broad',
+      ).toBe('RESTORED_ORIGINAL\n');
+      expect(report.restored).toContain('config.json');
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('recordCreatedFiles gating (#262)', () => {

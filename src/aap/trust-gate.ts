@@ -5,6 +5,7 @@
  * non-zero to abort.
  */
 import * as fs from 'node:fs';
+import { escapePathForDisplay, escapeForDisplay } from './../ui/display-safe';
 
 import {
   BrokerClient,
@@ -49,18 +50,18 @@ export async function trustAapGate(options: TrustAapGateOptions): Promise<number
   try {
     const stat = fs.statSync(options.atxPath);
     if (stat.size > MAX_ATX_FILE_BYTES) {
-      process.stderr.write(`ATX file at ${options.atxPath} is ${stat.size} bytes; expected <= ${MAX_ATX_FILE_BYTES}\n`);
+      process.stderr.write(`ATX file at ${escapePathForDisplay(options.atxPath)} is ${stat.size} bytes; expected <= ${MAX_ATX_FILE_BYTES}\n`);
       return 2;
     }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') {
-      process.stderr.write(`ATX file not found: ${options.atxPath}\n`);
+      process.stderr.write(`ATX file not found: ${escapePathForDisplay(options.atxPath)}\n`);
       process.stderr.write('  Pass --atx <path> pointing to a JSON ATX issued by your AIM identity.\n');
     } else if (code === 'EACCES') {
-      process.stderr.write(`Permission denied reading ATX file: ${options.atxPath}\n`);
+      process.stderr.write(`Permission denied reading ATX file: ${escapePathForDisplay(options.atxPath)}\n`);
     } else {
-      process.stderr.write(`Could not read ATX file at ${options.atxPath}\n`);
+      process.stderr.write(`Could not read ATX file at ${escapePathForDisplay(options.atxPath)}\n`);
     }
     return 2;
   }
@@ -70,11 +71,11 @@ export async function trustAapGate(options: TrustAapGateOptions): Promise<number
     const raw = fs.readFileSync(options.atxPath, 'utf-8');
     atx = JSON.parse(raw);
   } catch (err) {
-    process.stderr.write(`Could not parse ATX file at ${options.atxPath}: ${(err as Error).message}\n`);
+    process.stderr.write(`Could not parse ATX file at ${escapePathForDisplay(options.atxPath)}: ${escapeForDisplay((err as Error).message)}\n`);
     return 2;
   }
   if (!isStructurallyValidAtx(atx)) {
-    process.stderr.write(`ATX file at ${options.atxPath} is not a valid ATX object (missing atcVersion or agentId)\n`);
+    process.stderr.write(`ATX file at ${escapePathForDisplay(options.atxPath)} is not a valid ATX object (missing atcVersion or agentId)\n`);
     return 2;
   }
 
@@ -84,7 +85,7 @@ export async function trustAapGate(options: TrustAapGateOptions): Promise<number
       const stat = fs.statSync(socketPath);
       const myUid = typeof process.getuid === 'function' ? process.getuid() : -1;
       if (myUid !== -1 && stat.uid !== myUid) {
-        process.stderr.write(`Refusing to connect to broker socket ${socketPath}: owned by uid ${stat.uid}, expected ${myUid}\n`);
+        process.stderr.write(`Refusing to connect to broker socket ${escapePathForDisplay(socketPath)}: owned by uid ${stat.uid}, expected ${myUid}\n`);
         process.stderr.write('  This protects against impostor brokers on multi-user systems.\n');
         return 4;
       }

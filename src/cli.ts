@@ -92,6 +92,8 @@ import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore } from './
 import { shouldPrintVersionFooter } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { generateVerifyCommand } from './ui/verify-command';
+import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
+import { shellQuote, citationPath, citationTarget } from './ui/shell-quote';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
 import type { ConceptId } from './types/finding-evidence';
 import { trustAapGate } from './aap';
@@ -162,7 +164,7 @@ function writeJsonStdout(data: unknown): void {
 // ./cli-prefix). When a parent CLI sets HMA_CLI_PREFIX, every user-facing
 // command citation — program name, --help examples, hints, scanner `fix:`
 // strings — reads in the parent's verb namespace (e.g. `opena2a secure …`).
-import { CLI_PREFIX, rebrandCommandCitations, OPENA2A_PACKAGE } from './cli-prefix';
+import { CLI_PREFIX, rebrandCommandCitations, OPENA2A_PACKAGE, setCitationTarget } from './cli-prefix';
 
 let nanomindDeprecationWarned = false;
 /**
@@ -586,7 +588,7 @@ Examples:
         process.exit(1);
       }
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       process.exit(1);
     }
   });
@@ -620,14 +622,19 @@ function displayCheckFindings(
           console.log(`    ${colors.dim}Category: ${f.category}${RESET()}`);
         }
         if (f.file) {
-          const location = f.line ? `${f.file}:${f.line}` : f.file;
+          // Escaped where it is BUILT, like the other three `location`s in this
+          // file. Escaping at the print site instead left this name half
+          // sanitized, and the rule that one raw declaration disqualifies a
+          // name everywhere then hid the three that were already correct.
+          const location = escapePathForDisplay(f.line ? `${f.file}:${f.line}` : f.file);
           console.log(`    ${colors.dim}File:     ${location}${RESET()}`);
         }
         if (f.fix) {
-          console.log(`    ${colors.cyan}Fix:      ${rebrandCommandCitations(f.fix)}${RESET()}`);
+          // #324 — the verbose renderer interpolates the same untrusted paths.
+          console.log(`    ${colors.cyan}Fix:      ${escapeForDisplay(rebrandCommandCitations(f.fix))}${RESET()}`);
         }
         if ((f as any).guidance) {
-          console.log(`    ${colors.dim}Guidance: ${(f as any).guidance}${RESET()}`);
+          console.log(`    ${colors.dim}Guidance: ${escapeForDisplay(String((f as any).guidance))}${RESET()}`);
         }
       }
     }
@@ -755,6 +762,12 @@ function rightAlign(left: string, right: string, width: number = 68): string {
  */
 function cleanFixText(text: string, fileAlreadyShown?: string): string {
   // Take first meaningful line (skip blank lines)
+  //
+  // #324 — this is the line-DROPPING step, and dropping is what truncated a
+  // rendered `Fix:` command mid-quote when a directory name contained a newline.
+  // Callers rendering a command escape the text BEFORE calling in, so there is
+  // one line here and nothing is lost; callers rendering prose escape the result,
+  // which keeps this paragraph selection intact. See `escapeForDisplay`.
   let line = text.split('\n').map(l => l.trim()).filter(Boolean)[0] || text;
   // Strip "In <file>," prefix when file is already shown in the finding header
   if (fileAlreadyShown) {
@@ -987,6 +1000,15 @@ function renderRegistryOnlyCheck(
 function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   const { name, sourceLabel, projectType, localScan, registry, verbose, version, nanomindScan, usedAnalm } = opts;
 
+  // #328 — `fullAuditTarget` is a path out of the scanned tree and it is spliced
+  // into `Run \`secure <target>\``. Sanitised ONCE here, where it enters the
+  // renderer, because it has two consumers below (the follow-up line and the
+  // scope disclosure) and fixing the one that was noticed is how a raw ESC byte
+  // survived the first pass of this change.
+  const quickScan = opts.quickScan
+    ? { ...opts.quickScan, fullAuditTarget: citationTarget(opts.quickScan.fullAuditTarget) }
+    : undefined;
+
   // ── Registry-only render path (cli-ui 0.3.0 renderCheckBlock) ────────
   // When we have registry trust data and nothing scanned locally, delegate
   // to the shared renderer so `hackmyagent check --no-scan @pkg` shows the
@@ -1106,7 +1128,10 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   if (localScan?.filesScanned) meta.push(`${localScan.filesScanned} files scanned`);
 
   console.log();
-  console.log(`  ${colors.bold}${colors.white}${name}${RESET()}  ${colors.dim}${meta.join(' · ')}${RESET()}`);
+  // #328 — `name` is the target as given, which for a local scan is a path out
+  // of the tree. It is a heading rather than a command, so it is escaped for
+  // display and not quoted.
+  console.log(`  ${colors.bold}${colors.white}${escapePathForDisplay(name)}${RESET()}  ${colors.dim}${meta.join(' · ')}${RESET()}`);
 
   // ── Verdict + Score ─────────────────────────────────────────────────
   if (localScan || nanomindScan) {
@@ -1121,7 +1146,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     } else if (totalFindings > 0) {
       verdictColor = colors.yellow;
       verdictText = `${totalFindings} issue${totalFindings > 1 ? 's' : ''} found`;
-    } else if (opts.quickScan) {
+    } else if (quickScan) {
       // A narrowed matrix finding nothing is not a clean bill (#200).
       // Green + "No security issues found" is exactly what let a user
       // with an un-ignored `.env` read `check` as an all-clear, so the
@@ -1142,13 +1167,13 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       score,
       clamped: localScan ? localScan.scoreClamped : nanomindScoreClamped,
     });
-    console.log(`  ${scoreLineLabel(opts.quickScan)}  ${scoreMeter(score, maxScore)}${colors.dim}${bandDisclosure}${RESET()}`);
-    if (opts.quickScan) {
+    console.log(`  ${scoreLineLabel(quickScan)}  ${scoreMeter(score, maxScore)}${colors.dim}${bandDisclosure}${RESET()}`);
+    if (quickScan) {
       // Cyan + bold, same visual weight as the suppressed Path-forward
       // line so the disclaimer cannot be skimmed past. (#136 adversarial
       // review: a dim follow-up was easy to miss, leaving the user
       // anchored on the narrow-matrix numeric score.)
-      console.log(`  ${colors.cyan}${colors.bold}${quickScanFollowupText(opts.quickScan)}${RESET()}`);
+      console.log(`  ${colors.cyan}${colors.bold}${quickScanFollowupText(quickScan)}${RESET()}`);
     }
   } else if (registry?.found) {
     const normalized = normalizeTrustVerdict(registry.verdict);
@@ -1194,11 +1219,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // "(all clear)" / "N others clear" tail over checks that never ran;
     // the scope note applied below states what was skipped instead.
     const allCategorySummaries = buildCategorySummaries(failed);
-    const quickScanDisclosure = opts.quickScan
+    const quickScanDisclosure = quickScan
       ? quickScanScopeDisclosure({
           staticCount,
           semanticCount,
-          fullAuditTarget: opts.quickScan.fullAuditTarget,
+          // #328 — spliced into `Run \`secure <target>\``, so it is a citation
+          // and gets the citation treatment. Escaped at the renderer's INPUT,
+          // like the verdict file and the artifact intents below.
+          fullAuditTarget: quickScan.fullAuditTarget,
         })
       : null;
     const categorySummaries = quickScanDisclosure
@@ -1211,7 +1239,12 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         severity: f.severity as 'critical' | 'high' | 'medium' | 'low',
         name: f.name,
         checkId: f.checkId,
-        file: f.file,
+        // #324 — the Verdict line names a file, and that name came out of the
+        // scanned tree. Escaped at the renderer's INPUT, like the artifact-intent
+        // pass below, so the line stays formatted by one place. Found by a test
+        // asserting no rendered line splits: the finding header and the fix line
+        // were escaped and this third consumer of the same path was not.
+        file: f.file === undefined ? undefined : escapePathForDisplay(f.file),
         line: f.line,
       })),
     );
@@ -1230,7 +1263,18 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       checks: { staticCount, semanticCount },
       categories: categorySummaries,
       verdict: verdictLine,
-      artifacts: opts.artifactSummaries ? reconciledArtifacts : undefined,
+      // #334 — the artifact PATHS come out of the scanned tree too, and this was
+      // the one line of five that a control-character probe still found raw:
+      //
+      //   Artifacts   .claude/skills/esc<ESC>[2JSKILL/SKILL.md  skill · unknown · …
+      //
+      // The comment on the verdict line above cites "the artifact-intent pass
+      // below" as the precedent for escaping at renderer input — and that pass
+      // was exactly the one that did not escape. Escaped here, at the same
+      // input, so the citation is true of both.
+      artifacts: opts.artifactSummaries
+        ? reconciledArtifacts.map((a) => ({ ...a, path: escapePathForDisplay(a.path) }))
+        : undefined,
       verbose: !!verbose,
     });
 
@@ -1363,21 +1407,23 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       // the list (issue #134).
       const topFindings = [...failed].sort(compareFindingsByTier).slice(0, 3);
       for (const f of topFindings) {
-        const shortFile = f.file ? shortenPath(f.file) : '';
+        const shortFile = f.file ? escapePathForDisplay(shortenPath(f.file)) : '';
         const loc = shortFile + (f.line ? `:${f.line}` : '');
         const borderColor = SEVERITY_DISPLAY[f.severity].color();
         console.log();
         console.log(`  ${borderColor}│${RESET()} ${sevBadge(f.severity)}  ${colors.bold}${colors.white}${f.name || f.message}${RESET()}`);
         if (loc) console.log(`  ${borderColor}│${RESET()} ${colors.dim}${loc}${RESET()}`);
         if (f.guidance) {
-          console.log(`  ${borderColor}│${RESET()} ${cleanFixText(f.guidance, f.file)}`);
+          console.log(`  ${borderColor}│${RESET()} ${escapeForDisplay(cleanFixText(f.guidance, f.file))}`);
         }
         const verifyCmd = generateVerifyCommand(f);
         if (verifyCmd) {
           console.log(`  ${borderColor}│${RESET()} ${colors.dim}Verify: ${verifyCmd}${RESET()}`);
         }
         if (f.fix) {
-          console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(f.fix, f.file))}`);
+          // #324 — escaped BEFORE `cleanFixText`, which keeps only the first
+          // line: a command must be rendered whole or it is not runnable.
+          console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(escapeForDisplay(f.fix), f.file))}`);
           renderConceptForFinding(f, conceptsSeen, borderColor);
         }
       }
@@ -1394,21 +1440,24 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         if (shown >= limit) break;
         if (skipped.has(i)) continue;
         const f = failed[i];
-        const shortFile = f.file ? shortenPath(f.file) : '';
+        // #324 — the finding header, the guidance and the fix all interpolate a
+        // path that came from the scanned tree. A newline in one split the
+        // location line and truncated the fix command mid-quote.
+        const shortFile = f.file ? escapePathForDisplay(shortenPath(f.file)) : '';
         const loc = shortFile + (f.line ? `:${f.line}` : '');
         const borderColor = SEVERITY_DISPLAY[f.severity].color();
         console.log();
         console.log(`  ${borderColor}│${RESET()} ${sevBadge(f.severity)}  ${colors.bold}${colors.white}${f.name || f.message}${RESET()}`);
         if (loc) console.log(`  ${borderColor}│${RESET()} ${colors.dim}${loc}${RESET()}`);
         if (f.guidance) {
-          console.log(`  ${borderColor}│${RESET()} ${cleanFixText(f.guidance, f.file)}`);
+          console.log(`  ${borderColor}│${RESET()} ${escapeForDisplay(cleanFixText(f.guidance, f.file))}`);
         }
         const verifyLine = generateVerifyCommand(f);
         if (verifyLine) {
           console.log(`  ${borderColor}│${RESET()} ${colors.dim}Verify: ${verifyLine}${RESET()}`);
         }
         if (f.fix) {
-          console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(f.fix, f.file))}`);
+          console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(escapeForDisplay(f.fix), f.file))}`);
           renderConceptForFinding(f, conceptsSeen, borderColor);
         }
         if (verbose) {
@@ -1453,7 +1502,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // implies the user can reach 100 by addressing only the quick-scan
     // findings, when the full audit will surface additional supply-chain
     // and hygiene findings the quick-scan never ran. Closes #136.
-    if (shouldRenderPathForward({ quickScan: opts.quickScan, critical, high })) {
+    if (shouldRenderPathForward({ quickScan, critical, high })) {
       const recoveryParts: string[] = [];
       if (critical > 0) recoveryParts.push(`${critical} critical`);
       if (high > 0) recoveryParts.push(`${high} high`);
@@ -1714,7 +1763,11 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       const cls = attackClass && attackClass !== 'none'
         ? `${attackClass}${sev}`
         : (singleLine(esc.classification) || 'unclassified');
-      console.log(`  ${tag}  ${colors.white}${esc.file}${RESET()}  ${colors.dim}${cls}${RESET()}`);
+      // The analyst reads attacker-controlled artifacts and reports the file it
+      // read, so this path is tree-derived like any finding's. Rendered once and
+      // reused, so the row and the Verify line below cannot disagree (#347.5).
+      const escFile = escapePathForDisplay(esc.file);
+      console.log(`  ${tag}  ${colors.white}${escFile}${RESET()}  ${colors.dim}${cls}${RESET()}`);
       const summary = singleLine(esc.summary);
       if (summary) {
         const summaryText = summary.length > 220 && !verbose
@@ -1725,7 +1778,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           console.log(`  ${colors.dim}(run with --verbose for the full analysis)${RESET()}`);
         }
       }
-      console.log(`  ${colors.cyan}Verify:${RESET()} review ${esc.file} for the behavior described above`);
+      console.log(`  ${colors.cyan}Verify:${RESET()} review ${escFile} for the behavior described above`);
       console.log(`  ${colors.dim}${esc.modelVersion} | ${esc.routed === 'attack' ? 'named attack class at high severity' : 'uncertain verdict — needs a human call'}${RESET()}`);
       console.log();
     }
@@ -1800,7 +1853,7 @@ function generateBenchmarkReport(
   if (categoryFilter) {
     const categoryControls = getControlsForCategory(categoryFilter);
     if (categoryControls.length === 0) {
-      console.error(`Error: Unknown category '${categoryFilter}'.`);
+      console.error(`Error: Unknown category '${escapeForDisplay(String(categoryFilter))}'.`);
       console.error(`Available categories: ${OASB_1_CATEGORIES.map((c: BenchmarkCategory) => c.name).join(', ')}`);
       process.exit(1);
     }
@@ -3370,7 +3423,7 @@ Examples:
 
       // Check if the target exists
       if (!require('fs').existsSync(originalTarget)) {
-        console.error(`Error: Directory '${originalTarget}' does not exist.`);
+        console.error(`Error: Directory '${escapePathForDisplay(String(originalTarget))}' does not exist.`);
         process.exit(1);
       }
 
@@ -3387,9 +3440,13 @@ Examples:
         const _path = require('node:path');
         const mode = options.dryRun ? '--dry-run' : '--fix';
         console.error(`secure ${mode} needs a project directory, not a single file.`);
-        console.error(`  Scan this file:        ${CLI_PREFIX} secure ${directory}`);
-        console.error(`  Remediate (directory): ${CLI_PREFIX} secure --fix ${_path.dirname(originalTarget)}`);
-        console.error(`  Harden governance:     ${CLI_PREFIX} harden-soul ${_path.dirname(originalTarget)}`);
+        // Three citations the reader is meant to paste, built out of the path
+        // they typed. `citationTarget` quotes it, makes a leading `-` an
+        // operand, and falls back to `<dir>` for a name no command can spell.
+        const _parent = citationTarget(_path.dirname(originalTarget));
+        console.error(`  Scan this file:        ${CLI_PREFIX} secure ${citationTarget(directory)}`);
+        console.error(`  Remediate (directory): ${CLI_PREFIX} secure --fix ${_parent}`);
+        console.error(`  Harden governance:     ${CLI_PREFIX} harden-soul ${_parent}`);
         process.exit(2);
       }
 
@@ -3421,7 +3478,7 @@ Examples:
       // Validate benchmark flag if provided
       const isOasb2 = options.benchmark?.toLowerCase() === 'oasb-2';
       if (options.benchmark && !isOasb2 && !isValidBenchmark(options.benchmark)) {
-        console.error(`Error: Unknown benchmark '${options.benchmark}'. Available: ${[...AVAILABLE_BENCHMARKS, 'oasb-2'].join(', ')}`);
+        console.error(`Error: Unknown benchmark '${escapeForDisplay(String(options.benchmark))}'. Available: ${[...AVAILABLE_BENCHMARKS, 'oasb-2'].join(', ')}`);
         process.exit(1);
       }
 
@@ -3429,7 +3486,7 @@ Examples:
       const validLevels = ['L1', 'L2', 'L3'];
       const level = (options.level?.toUpperCase() || 'L1') as BenchmarkLevel;
       if (options.benchmark && !isOasb2 && !validLevels.includes(level)) {
-        console.error(`Error: Invalid level '${options.level}'. Use: L1, L2, or L3`);
+        console.error(`Error: Invalid level '${escapeForDisplay(String(options.level))}'. Use: L1, L2, or L3`);
         process.exit(1);
       }
 
@@ -3437,7 +3494,7 @@ Examples:
       const validFormats = ['text', 'json', 'sarif', 'html', 'asp', 'asff'];
       const format = options.json ? 'json' : (options.format || 'text');
       if (!validFormats.includes(format)) {
-        console.error(`Error: Invalid format '${format}'. Use: ${validFormats.join(', ')}`);
+        console.error(`Error: Invalid format '${escapeForDisplay(String(format))}'. Use: ${validFormats.join(', ')}`);
         process.exit(1);
       }
 
@@ -3450,10 +3507,15 @@ Examples:
 
       // Only show progress for text output — write to stderr so stdout stays clean for pipes
       if (format === 'text') {
+        // #339 — `displayDir` is the scan TARGET, and a target is a path the
+        // scanned tree can name. The sweep that fixed `detect`/`scan-soul`/
+        // `harden-soul`/`wild` missed `secure`, the flagship command, because
+        // the test that covers `secure` puts the hostile name INSIDE the tree
+        // rather than on the target.
         if (options.dryRun) {
-          process.stderr.write(`\nScanning ${displayDir} (dry-run)...\n\n`);
+          process.stderr.write(`\nScanning ${escapePathForDisplay(displayDir)} (dry-run)...\n\n`);
         } else {
-          process.stderr.write(`\nScanning ${displayDir}...\n\n`);
+          process.stderr.write(`\nScanning ${escapePathForDisplay(displayDir)}...\n\n`);
         }
       }
 
@@ -3461,7 +3523,7 @@ Examples:
       const validDepths = ['quick', 'standard', 'deep'];
       const scanDepth = (options.scanDepth || 'standard') as 'quick' | 'standard' | 'deep';
       if (!validDepths.includes(scanDepth)) {
-        console.error(`Error: Invalid scan depth '${options.scanDepth}'. Use: ${validDepths.join(', ')}`);
+        console.error(`Error: Invalid scan depth '${escapeForDisplay(String(options.scanDepth))}'. Use: ${validDepths.join(', ')}`);
         process.exit(1);
       }
 
@@ -3643,7 +3705,7 @@ Examples:
               const simResult = await sim.runLayer3(profile);
 
               const icon = simResult.verdict === 'CLEAN' ? 'PASS' : simResult.verdict === 'SUSPICIOUS' ? 'WARN' : 'FAIL';
-              process.stderr.write(`  [${icon}] ${file.split('/').pop()} — ${simResult.verdict} (${(simResult.confidence * 100).toFixed(0)}% confidence, ${simResult.failedProbes.length}/${simResult.probeCount} probes failed)\n`);
+              process.stderr.write(`  [${icon}] ${escapePathForDisplay(file.split('/').pop() ?? file)} — ${simResult.verdict} (${(simResult.confidence * 100).toFixed(0)}% confidence, ${simResult.failedProbes.length}/${simResult.probeCount} probes failed)\n`);
 
               // Training export is opt-in only (HMA_EXPORT_TRAINING=1). Self-labeled
               // simulation verdicts bypass the training sanitizer, so the default
@@ -3908,7 +3970,7 @@ Examples:
           const hardenResult = await soulScanner.hardenSoul(targetDir, { dryRun: false });
           if (hardenResult.sectionsAdded && hardenResult.sectionsAdded.length > 0) {
             process.stderr.write(`\nGovernance auto-fix: harden-soul applied\n`);
-            process.stderr.write(`  + ${hardenResult.sectionsAdded.length} section(s) added to ${hardenResult.file ?? 'SOUL.md'}`);
+            process.stderr.write(`  + ${hardenResult.sectionsAdded.length} section(s) added to ${escapePathForDisplay(hardenResult.file ?? 'SOUL.md')}`);
             if (typeof hardenResult.controlsAdded === 'number') {
               process.stderr.write(` (+${hardenResult.controlsAdded} controls)`);
             }
@@ -3928,10 +3990,16 @@ Examples:
               result.backupPath,
               [hardenResult.file ?? 'SOUL.md'],
             );
+            // A backticked command the reader is meant to paste, built out of
+            // the scan target: `citationTarget`, not a display escape. Escaping
+            // is enough to SHOW a path and never enough to NAME one — pasting
+            // an escaped path names a different file (#343), and pasting an
+            // unescaped one runs whatever the directory is called.
+            const govRollback = citationTarget(displayDir);
             process.stderr.write(
               soulHashBefore
-                ? `  Rollback: \`${CLI_PREFIX} rollback ${displayDir}\` restores the previous SOUL.md (hash: ${soulHashBefore.slice(0, 8)}...)\n`
-                : `  Rollback: \`${CLI_PREFIX} rollback ${displayDir}\` removes the generated SOUL.md (kept if you edit it first)\n`,
+                ? `  Rollback: \`${CLI_PREFIX} rollback ${govRollback}\` restores the previous SOUL.md (hash: ${soulHashBefore.slice(0, 8)}...)\n`
+                : `  Rollback: \`${CLI_PREFIX} rollback ${govRollback}\` removes the generated SOUL.md (kept if you edit it first)\n`,
             );
             process.stderr.write('\n');
           }
@@ -4011,12 +4079,13 @@ Examples:
               : `${colors.yellow}Attempted ${attempted} fix${plural} — ${verifiedCount} verified, ${unverifiedCount} not confirmed:${RESET()}`
         );
         for (const finding of fixedFindings) {
-          const location = finding.file ? (finding.line ? `${finding.file}:${finding.line}` : finding.file) : '';
+          // #324 — every rendered path is scanned-tree data.
+          const location = escapeForDisplay(finding.file ? (finding.line ? `${finding.file}:${finding.line}` : finding.file) : '');
           const verified = (finding as any).fixVerified;
           const verifyIcon = verified === true ? `${colors.green}✓✓${RESET()}` : verified === false ? `${colors.yellow}✓?${RESET()}` : `${colors.green}✓${RESET()}`;
           console.log(`  ${verifyIcon} [${finding.checkId}] ${location} - ${finding.name}`);
           if (finding.fixMessage) {
-            console.log(`    ${colors.cyan}→${RESET()} ${finding.fixMessage}`);
+            console.log(`    ${colors.cyan}→${RESET()} ${escapeForDisplay(finding.fixMessage)}`);
           }
         }
         if (unverifiedCount > 0) {
@@ -4031,8 +4100,10 @@ Examples:
         }
 
         if (result.backupPath) {
-          console.log(`${colors.yellow}Backup created:${RESET()} ${result.backupPath}`);
-          console.log(`${colors.yellow}Something wrong?${RESET()} Run \`${CLI_PREFIX} rollback ${directory}\` to undo all changes.\n`);
+          // #339 — the backup path is derived from the target, and the rollback
+          // hint is a command the report tells the user to paste. Both were raw.
+          console.log(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
+          console.log(`${colors.yellow}Something wrong?${RESET()} Run \`${CLI_PREFIX} rollback ${citationTarget(directory)}\` to undo all changes.\n`);
         }
       }
 
@@ -4258,7 +4329,7 @@ Examples:
         process.exit(1);
       }
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       process.exit(1);
     }
   });
@@ -4430,9 +4501,9 @@ Examples:
         console.log(`\nOpenClaw Security Report`);
         console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
         if (options.dryRun) {
-          console.log(`Scanning ${targetDir} (dry-run - previewing fixes)...\n`);
+          console.log(`Scanning ${escapePathForDisplay(targetDir)} (dry-run - previewing fixes)...\n`);
         } else if (options.fix) {
-          console.log(`Scanning and fixing ${targetDir}...\n`);
+          console.log(`Scanning and fixing ${escapePathForDisplay(targetDir)}...\n`);
           console.log(`${colors.yellow}Auto-fix will:${RESET()}`);
           console.log(`  • Bind gateway to 127.0.0.1 (local-only)`);
           console.log(`  • Replace plaintext tokens with env var references`);
@@ -4440,7 +4511,7 @@ Examples:
           console.log(`  • Enable sandbox mode`);
           console.log(`\n${colors.cyan}A backup will be created for rollback if needed.${RESET()}\n`);
         } else {
-          console.log(`Scanning ${targetDir}...\n`);
+          console.log(`Scanning ${escapePathForDisplay(targetDir)}...\n`);
         }
       }
 
@@ -4498,11 +4569,12 @@ Examples:
 
         for (const finding of issues) {
           const display = SEVERITY_DISPLAY[finding.severity];
-          const location = finding.file
+          // #324 — scanned-tree path, escaped for display.
+          const location = escapeForDisplay(finding.file
             ? finding.line
               ? `${finding.file}:${finding.line}`
               : finding.file
-            : '';
+            : '');
 
           const sevLabel = finding.severity.charAt(0).toUpperCase() + finding.severity.slice(1);
           console.log(`${display.color()}${display.symbol} [${finding.checkId}] ${sevLabel}${RESET()}`);
@@ -4511,7 +4583,7 @@ Examples:
             console.log(`   File: ${location}`);
           }
           if (finding.fix) {
-            console.log(`   ${colors.cyan}Recommended fix:${RESET()} ${finding.fix}`);
+            console.log(`   ${colors.cyan}Recommended fix:${RESET()} ${escapeForDisplay(finding.fix)}`);
           }
           console.log();
         }
@@ -4525,14 +4597,14 @@ Examples:
         for (const finding of fixedFindings) {
           console.log(`  ${colors.green}✓${RESET()} [${finding.checkId}] ${finding.name}`);
           if (finding.fixMessage) {
-            console.log(`     ${colors.cyan}→${RESET()} ${finding.fixMessage}`);
+            console.log(`     ${colors.cyan}→${RESET()} ${escapeForDisplay(finding.fixMessage)}`);
           }
         }
         console.log();
 
         if (result.backupPath) {
-          console.log(`${colors.yellow}Backup created:${RESET()} ${result.backupPath}`);
-          console.log(`${colors.yellow}To rollback:${RESET()} ${CLI_PREFIX} rollback ${targetDir}`);
+          console.log(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
+          console.log(`${colors.yellow}To rollback:${RESET()} ${CLI_PREFIX} rollback ${citationTarget(targetDir)}`);
           console.log();
           console.log(`${colors.cyan}Note:${RESET()} If you replaced tokens with env vars, set OPENCLAW_AUTH_TOKEN`);
           console.log(`      in your environment before starting OpenClaw.\n`);
@@ -4559,7 +4631,7 @@ Examples:
         process.exit(1);
       }
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       process.exit(1);
     }
   });
@@ -4665,7 +4737,7 @@ Examples:
       if (!options.json) {
         console.log(`\nNemoClaw Security Report`);
         console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
-        console.log(`Scanning ${targetDir}...\n`);
+        console.log(`Scanning ${escapePathForDisplay(targetDir)}...\n`);
       }
 
       const scanner = new HardeningScanner();
@@ -4725,11 +4797,12 @@ Examples:
 
         for (const finding of issues) {
           const display = SEVERITY_DISPLAY[finding.severity as Severity];
-          const location = finding.file
+          // #324 — scanned-tree path, escaped for display.
+          const location = escapeForDisplay(finding.file
             ? finding.line
               ? `${finding.file}:${finding.line}`
               : finding.file
-            : '';
+            : '');
 
           const sevLabel = finding.severity.charAt(0).toUpperCase() + finding.severity.slice(1);
           console.log(`${display.color()}${display.symbol} [${finding.checkId}] ${sevLabel}${RESET()}`);
@@ -4738,7 +4811,7 @@ Examples:
             console.log(`   File: ${location}`);
           }
           if (finding.fix) {
-            console.log(`   ${colors.cyan}Recommended fix:${RESET()} ${finding.fix}`);
+            console.log(`   ${colors.cyan}Recommended fix:${RESET()} ${escapeForDisplay(finding.fix)}`);
           }
           console.log();
         }
@@ -4775,7 +4848,7 @@ Examples:
         process.exit(1);
       }
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       process.exit(1);
     }
   });
@@ -4818,7 +4891,7 @@ Examples:
           console.error(
             `\n"scan" is for external targets (hostnames/IPs).` +
             `\nTo scan a local project, use:\n` +
-            `\n  ${secureCmd} ${target}` +
+            `\n  ${secureCmd} ${citationTarget(target)}` +
             `\n`
           );
           process.exit(1);
@@ -4830,7 +4903,7 @@ Examples:
         const portCount = customPorts?.length ?? 2;
 
         if (!options.json) {
-          console.log(`\nScanning ${target} (${portCount} ports, ${timeoutMs}ms timeout)...\n`);
+          console.log(`\nScanning ${escapePathForDisplay(target)} (${portCount} ports, ${timeoutMs}ms timeout)...\n`);
         }
 
         const scanner = new ExternalScanner();
@@ -4851,7 +4924,10 @@ Examples:
             : result.grade === 'moderate'
               ? colors.yellow
               : colors.red;
-        console.log(`Target: ${result.target}`);
+        // #339 — the wild report's own header, and for a local scan the target
+        // is a path out of the tree. Display, not a command, so it takes the
+        // path escaping.
+        console.log(`Target: ${escapePathForDisplay(result.target)}`);
         console.log(`Score: ${gradeColor}${result.score}/100 (${result.grade})${RESET()}`);
         console.log(`Open Ports: ${result.openPorts.length > 0 ? result.openPorts.join(', ') : 'None detected'}`);
         console.log(`Duration: ${result.duration}ms\n`);
@@ -4875,15 +4951,23 @@ Examples:
           );
 
           for (const finding of findings) {
-            console.log(`   • [${finding.checkId}] ${finding.title}`);
+            // Every field below is REMOTE data: `scan` talks to a host the user
+            // named, and the title, URL path, evidence and impact are built out
+            // of that host's response. Only `fix` was escaped, so a banner
+            // carrying `ESC [ 2 J` cleared the terminal from inside the report —
+            // #324's harm with the tree replaced by a server. The URL path is
+            // not a filesystem path, so it takes the text escape, not the path
+            // one: no backslash doubling on a URL.
+            console.log(`   • [${finding.checkId}] ${escapeForDisplay(finding.title)}`);
             if (finding.port) {
-              console.log(`     Port: ${finding.port}${finding.path ? `, Path: ${finding.path}` : ''}`);
+              const urlPath = finding.path ? `, Path: ${escapeForDisplay(finding.path)}` : '';
+              console.log(`     Port: ${finding.port}${urlPath}`);
             }
             if (options.verbose) {
-              console.log(`     ${finding.description}`);
-              console.log(`     Evidence: ${finding.evidence}`);
-              console.log(`     Impact: ${finding.impact}`);
-              console.log(`     Fix: ${finding.fix}`);
+              console.log(`     ${escapeForDisplay(finding.description)}`);
+              console.log(`     Evidence: ${escapeForDisplay(finding.evidence)}`);
+              console.log(`     Impact: ${escapeForDisplay(finding.impact)}`);
+              console.log(`     Fix: ${escapeForDisplay(finding.fix)}`);
             }
           }
           console.log();
@@ -4897,7 +4981,7 @@ Examples:
           process.exit(1);
         }
       } catch (error) {
-        console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
         process.exit(1);
       }
     }
@@ -4910,6 +4994,10 @@ program
 Restores files to their state before the last --fix operation.
 Backups are stored in .hackmyagent-backup/ with timestamps.
 
+A file it cannot restore is named, with the reason. The backup is then kept
+rather than deleted, since it holds the only remaining copy, and the command
+exits non-zero.
+
 Examples:
   $ ${CLI_PREFIX} rollback              Rollback current directory
   $ ${CLI_PREFIX} rollback ./my-project Rollback specific directory`)
@@ -4918,7 +5006,7 @@ Examples:
     try {
       const targetDir = require("path").resolve(directory);
 
-      console.log(`\nRolling back changes in ${targetDir}...\n`);
+      console.log(`\nRolling back changes in ${escapePathForDisplay(targetDir)}...\n`);
 
       const scanner = new HardeningScanner();
       const report = await scanner.rollback(targetDir);
@@ -4926,39 +5014,226 @@ Examples:
       // Report what happened rather than asserting a clean revert (#262).
       // The old copy said "All auto-fix changes have been reverted" even
       // when the harden-soul-generated SOUL.md was still sitting there.
-      console.log(`${colors.green}[+] Rollback complete${RESET()}`);
+      //
+      // #327 — and "complete" is now a claim this checks before making. A run
+      // that could not put every listed file back has not completed, however
+      // many it did put back.
+      // #342 — a generated file HackMyAgent said it would remove and did not is
+      // an incomplete rollback too. Only the RESTORE half was counted, so a
+      // `SOUL.md` that is a symlink produced "[+] Rollback complete / removed 0
+      // generated files", exit 0, and the file still on disk.
+      const incomplete = report.unrestored.length > 0 || report.unremoved.length > 0;
+      console.log(
+        incomplete
+          ? `${colors.yellow}[!] Rollback incomplete${RESET()}`
+          : `${colors.green}[+] Rollback complete${RESET()}`,
+      );
       const restoredCount = report.restored.length;
       const removedCount = report.removed.length;
       console.log(
         `   Restored ${restoredCount} modified file${restoredCount === 1 ? '' : 's'}, ` +
         `removed ${removedCount} generated file${removedCount === 1 ? '' : 's'}.`,
       );
-      for (const file of report.restored) console.log(`   ${colors.dim}restored${RESET()}  ${file}`);
-      for (const file of report.removed) console.log(`   ${colors.dim}removed ${RESET()}  ${file}`);
+      for (const file of report.restored) console.log(`   ${colors.dim}restored${RESET()}  ${escapePathForDisplay(file)}`);
+      for (const file of report.removed) console.log(`   ${colors.dim}removed ${RESET()}  ${escapePathForDisplay(file)}`);
+
+      // Files the manifest listed and rollback could not put back (#327). Named
+      // first among the exceptions: this is the one case where the user's own
+      // bytes are still missing, and the backup holding them is deliberately
+      // left on disk.
+      if (report.unrestored.length > 0) {
+        // #346 — the header used to assert, unconditionally, that the backup
+        // "still holds the only copy". That is a filesystem fact, and it was
+        // false for the two commonest reasons an entry goes unrestored: the
+        // backup holding no readable copy of it, and the manifest entry pointing
+        // outside the backup. The line above and the line below it contradicted
+        // each other on one screen, and a user preserved an empty directory on
+        // this tool's say-so.
+        //
+        // So it is derived from what `restoreOneBackupFile` established per
+        // entry, and says nothing more than that.
+        // THREE-valued, because there are three outcomes and this line used to
+        // know about two. When the backup held no copy it was "removed" — but
+        // the removal can fail, and then this line said "so it was removed"
+        // directly above a block reporting that it was not. The guard that
+        // stopped a failed cleanup from throwing away the report created a
+        // report that contradicted itself, which is #346 in the fix for #344.
+        const held = report.unrestored.filter((u) => u.backupHoldsCopy).length;
+        const n = report.unrestored.length;
+        const heldPhrase = held === n ? (n === 1 ? 'it' : 'them') : `${held} of them`;
+        const suffix = report.backupRetainedAt
+          ? `(the backup was kept: it still holds a copy of ${heldPhrase})`
+          : report.backupRemovalFailed
+            ? `(the backup held no copy of ${n === 1 ? 'it' : 'them'}, and could not be removed — see below)`
+            : `(the backup held no copy of ${n === 1 ? 'it' : 'them'}, so it was removed)`;
+        console.log(
+          `\n   ${colors.red}Could not restore ${n} file${n === 1 ? '' : 's'}${RESET()} ${suffix}:`,
+        );
+        for (const entry of report.unrestored) {
+          console.log(`   ${colors.dim}not restored${RESET()}  ${escapePathForDisplay(entry.path)}  ${colors.dim}— ${escapeForDisplay(entry.reason)}${RESET()}`);
+        }
+        if (report.backupRetainedAt) {
+          console.log(`   ${colors.dim}backup kept at${RESET()}  ${escapePathForDisplay(report.backupRetainedAt)}`);
+          console.log(`   Copy those files back by hand, then delete the backup directory.`);
+        }
+      }
+
+      // Files listed as generated that this run could not act on (#342). A
+      // separate channel from `unrestored` because the retention rule differs:
+      // the backup holds no copy of a generated file, so keeping the directory
+      // buys nothing — and keeping it would feed the wedge #338 is about.
+      if (report.unremoved.length > 0) {
+        const n = report.unremoved.length;
+        console.log(
+          `\n   ${colors.red}Could not act on ${n} file${n === 1 ? '' : 's'} the manifest `
+          + `lists as generated${RESET()} (${n === 1 ? 'it is' : 'they are'} still there):`,
+        );
+        for (const entry of report.unremoved) {
+          console.log(`   ${colors.dim}not removed${RESET()}   ${escapePathForDisplay(entry.path)}  ${colors.dim}— ${escapeForDisplay(entry.reason)}${RESET()}`);
+        }
+        console.log('   Review each one and delete it by hand if HackMyAgent generated it.');
+      }
+
+      // Candidates that listed files and put none of them back. Kept on disk —
+      // they may hold bytes nobody can read yet — but passed over, so one forged
+      // directory cannot stand in front of the real backup for ever.
+      if (report.barrenBackups.length > 0) {
+        console.log(
+          `\n   ${colors.yellow}Passed over ${report.barrenBackups.length} backup director${report.barrenBackups.length === 1 ? 'y' : 'ies'} that restored nothing${RESET()} ` +
+          '(left in place, in case they hold something this run could not read):',
+        );
+        for (const b of report.barrenBackups) {
+          const why = b.listed === 0
+            ? 'it lists nothing to restore'
+            : `it lists ${b.listed} file${b.listed === 1 ? '' : 's'} and put none of them back`;
+          console.log(`   ${colors.dim}restored nothing${RESET()}  ${escapePathForDisplay(b.name)}  ${colors.dim}— ${why}${RESET()}`);
+        }
+        console.log('   Review each one and delete it if it is not yours.');
+      }
+
+      // Backups this run could not read at all, and what is still behind the one
+      // it used (#338). Selection is a guess at a name the scanned tree can
+      // write, so both facts belong to the user: a directory that was passed
+      // over is never deleted, and a retained one may be standing in front of
+      // the backup that actually holds their files.
+      if (report.skippedBackups.length > 0) {
+        console.log(
+          `\n   ${colors.yellow}Passed over ${report.skippedBackups.length} backup director${report.skippedBackups.length === 1 ? 'y' : 'ies'}${RESET()} ` +
+          `(left in place, since HackMyAgent could not read ${report.skippedBackups.length === 1 ? 'it' : 'them'}):`,
+        );
+        for (const s of report.skippedBackups) {
+          console.log(`   ${colors.dim}skipped ${RESET()}  ${escapePathForDisplay(s.name)}  ${colors.dim}— ${escapeForDisplay(s.reason)}${RESET()}`);
+        }
+      }
+      // The backup this run finished with and could not delete.
+      //
+      // Unconditional, and its own block: `backupRetainedAt` is rendered only
+      // inside the `unrestored` section, so a run that restored everything and
+      // then failed to tidy up would have left a directory on disk with nothing
+      // on screen about it. The consequence is real rather than cosmetic — the
+      // directory still holds a readable manifest, so a later `rollback` can
+      // select it again and put the same content back.
+      if (report.backupRemovalFailed) {
+        // Says only what is true of THIS run. The first version opened with
+        // "The rollback finished" under a `Rollback incomplete` header and
+        // closed with "Your files were restored" on a run that restored none —
+        // three false statements in five lines, on the screen a user reads
+        // when recovery has already gone wrong.
+        console.log(
+          `\n   ${colors.yellow}The backup could not be removed${RESET()} `
+          + `(${escapeForDisplay(report.backupRemovalFailed.reason)}):`,
+        );
+        console.log(`   ${colors.dim}left at${RESET()}  ${escapePathForDisplay(report.backupRemovalFailed.path)}`);
+        if (report.restored.length > 0 || report.removed.length > 0) {
+          console.log(
+            `   The ${report.restored.length + report.removed.length} file`
+            + `${report.restored.length + report.removed.length === 1 ? '' : 's'} above `
+            + 'went back as reported; only the cleanup failed.',
+          );
+        }
+        console.log(
+          '   Delete that directory by hand when you can — while it is there, running '
+          + 'rollback again may select it and restore the same content a second time.',
+        );
+      }
+
+      // Only when the directory is still on disk: if this run consumed it there
+      // is nothing left to deal with, and the next run reaches the one behind it
+      // without the reader doing anything.
+      if (report.backupRetainedAt && report.backupsBehind > 0) {
+        console.log(
+          `\n   ${report.backupsBehind} older backup${report.backupsBehind === 1 ? '' : 's'} ` +
+          `${report.backupsBehind === 1 ? 'is' : 'are'} behind this one. ` +
+          'Running rollback again reaches the next one once this directory is dealt with.',
+        );
+      }
 
       // Files deliberately left alone. Each says why and what to do, so the
       // user is never left to discover the leftover on their own.
+      //
+      // #328 — the path in these lines comes out of the scanned tree, through
+      // the manifest. It is quoted inside the citation (so a filename cannot be
+      // a command) and escaped for display (so it cannot split the line or move
+      // the cursor), in that order. Both were missing here while `secure` had
+      // had them since #324: a property asserted about one command is not a
+      // property. See `__tests__/helpers/render-safety.ts`.
+      //
+      // #343/#347.5 — the citation is emitted only when the path is displayed
+      // exactly as it is. Escaping used to happen AFTER quoting, so for a file
+      // named `nl<LF>second` the line read `rm 'nl\nsecond'`, which names a
+      // ten-character file with a literal backslash rather than the one the
+      // report is about — and for `a\b.txt` the same line showed the path twice,
+      // once doubled and once not. When the file cannot be both shown truthfully
+      // and named correctly, the line says so instead: the path is already on
+      // it, which is what keeps that a path forward rather than a dead end.
+      //
+      // The REASON was false, and a false reason is its own defect. It said the
+      // name carries characters "a pasted command cannot name", and that is
+      // never why: `shellQuote` is total, and a shell names `dev<ZWJ>💻.txt`
+      // perfectly well. What HackMyAgent cannot do is SHOW it exactly as it is —
+      // the ZWJ has to be escaped or the two halves of the name close up — and a
+      // command built from a rendering could name a different file. So the line
+      // states the reason that is true, which is also the one that tells the
+      // reader what to look at: the name on screen is a rendering.
+      const keptLine = (file: string): string => {
+        const cite = citationPath(file);
+        const tail = cite
+          ? `— review, then \`rm ${cite}\` if unwanted`
+          : '— review, then remove it by hand if unwanted (the name above is an '
+            + 'escaped rendering, so a command built from it could name a different file)';
+        return `   ${colors.dim}kept    ${RESET()}  ${escapePathForDisplay(file)}  `
+          + `${colors.dim}${tail}${RESET()}`;
+      };
+
       if (report.keptModified.length > 0) {
         console.log(
           `\n   ${colors.yellow}Kept ${report.keptModified.length} generated file${report.keptModified.length === 1 ? '' : 's'} you edited after the fix${RESET()} ` +
           `(deleting them would discard your changes):`,
         );
-        for (const file of report.keptModified) {
-          console.log(`   ${colors.dim}kept    ${RESET()}  ${file}  ${colors.dim}— review, then \`rm ${file}\` if unwanted${RESET()}`);
-        }
+        for (const file of report.keptModified) console.log(keptLine(file));
       }
       if (report.keptUnverifiable.length > 0) {
         console.log(
           `\n   ${colors.yellow}Kept ${report.keptUnverifiable.length} file${report.keptUnverifiable.length === 1 ? '' : 's'} from an older backup format${RESET()} ` +
           `(no content hash recorded, so HMA cannot confirm it generated them):`,
         );
-        for (const file of report.keptUnverifiable) {
-          console.log(`   ${colors.dim}kept    ${RESET()}  ${file}  ${colors.dim}— review, then \`rm ${file}\` if unwanted${RESET()}`);
-        }
+        for (const file of report.keptUnverifiable) console.log(keptLine(file));
       }
       console.log();
+      // An incomplete rollback exits non-zero for the same reason it does not
+      // print "complete": a script that treats exit 0 as "the tree is back to
+      // where it was" would be wrong (#327).
+      //
+      // #344 — `process.exitCode`, not `process.exit`. On a pipe stdout is not
+      // flushed before the process dies: measured with a manifest listing 4000
+      // unrestorable entries and six runs piped to `tail -1`, the report was cut
+      // at roughly 15% of its length, at a different point each time. The two
+      // lines that get lost are `backup kept at <path>` and "Copy those files
+      // back by hand" — the only information that makes manual recovery
+      // possible, on the code path #327 added to make failure recoverable.
+      if (incomplete) process.exitCode = 1;
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       process.exit(1);
     }
   });
@@ -5061,7 +5336,7 @@ Examples:
       const validIntensities = ['passive', 'active', 'aggressive'];
       const intensity = (options.intensity || 'active') as AttackIntensity;
       if (!validIntensities.includes(intensity)) {
-        console.error(`Error: Invalid intensity '${options.intensity}'. Use: ${validIntensities.join(', ')}`);
+        console.error(`Error: Invalid intensity '${escapeForDisplay(String(options.intensity))}'. Use: ${validIntensities.join(', ')}`);
         process.exit(1);
       }
 
@@ -5071,7 +5346,7 @@ Examples:
         categories = options.category.split(',').map(c => c.trim()) as AttackCategory[];
         for (const cat of categories) {
           if (!ATTACK_CATEGORY_NAMES.includes(cat)) {
-            console.error(`Error: Invalid category '${cat}'. Use: ${ATTACK_CATEGORY_NAMES.join(', ')}`);
+            console.error(`Error: Invalid category '${escapeForDisplay(String(cat))}'. Use: ${ATTACK_CATEGORY_NAMES.join(', ')}`);
             process.exit(1);
           }
         }
@@ -5096,7 +5371,7 @@ Examples:
       } else if (options.targetType) {
         const validTypes = ['api', 'mcp', 'a2a', 'local'];
         if (!validTypes.includes(options.targetType)) {
-          console.error(`Error: Invalid target type '${options.targetType}'. Use: ${validTypes.join(', ')}`);
+          console.error(`Error: Invalid target type '${escapeForDisplay(String(options.targetType))}'. Use: ${validTypes.join(', ')}`);
           process.exit(1);
         }
         targetType = options.targetType as 'api' | 'mcp' | 'a2a' | 'local';
@@ -5139,7 +5414,7 @@ Examples:
       const validFormats = ['text', 'json', 'sarif', 'html'];
       const format = options.json ? 'json' : (options.format || 'text');
       if (!validFormats.includes(format)) {
-        console.error(`Error: Invalid format '${format}'. Use: ${validFormats.join(', ')}`);
+        console.error(`Error: Invalid format '${escapeForDisplay(String(format))}'. Use: ${validFormats.join(', ')}`);
         process.exit(1);
       }
 
@@ -5153,9 +5428,12 @@ Examples:
         } catch (e) {
           const code = (e as NodeJS.ErrnoException).code;
           if (code === 'ENOENT') {
-            console.error(`Error: Payload file not found: ${filePath}`);
+            console.error(`Error: Payload file not found: ${escapeForDisplay(String(filePath))}`);
           } else {
-            console.error(`Error reading payload file ${filePath}: ${(e as Error).message}`);
+            console.error(
+              `Error reading payload file ${escapePathForDisplay(String(filePath))}: `
+              + `${escapeForDisplay((e as Error).message)}`,
+            );
           }
           process.exit(1);
         }
@@ -5166,7 +5444,10 @@ Examples:
       if (format === 'text') {
         console.log(`\nHackMyAgent Attack Mode`);
         console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
-        console.log(`Target: ${target.type === 'local' ? (localPath ? `Local Directory: ${localPath}` : 'Local Simulation') : targetUrl}`);
+        const attackTarget = target.type === 'local'
+          ? (localPath ? `Local Directory: ${escapePathForDisplay(localPath)}` : 'Local Simulation')
+          : targetUrl;
+        console.log(`Target: ${attackTarget}`);
         console.log(`Intensity: ${intensity}`);
         if (customPayloads) {
           console.log(`Payloads: ${customPayloads.length} custom (from file)`);
@@ -5296,7 +5577,7 @@ Examples:
         process.exit(1);
       }
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       process.exit(1);
     }
   });
@@ -6268,14 +6549,14 @@ Examples:
         try {
           realTarget = fs.realpathSync(targetDir);
         } catch {
-          console.error(`Error: Directory not found: ${targetDir}`);
+          console.error(`Error: Directory not found: ${escapeForDisplay(String(targetDir))}`);
           process.exit(1);
         }
 
         // Verify resolved path is a directory (realpath already resolved any symlinks)
         const resolvedStat = fs.statSync(realTarget);
         if (!resolvedStat.isDirectory()) {
-          console.error(`Error: Not a directory: ${realTarget}`);
+          console.error(`Error: Not a directory: ${escapeForDisplay(String(realTarget))}`);
           process.exit(1);
         }
 
@@ -6323,11 +6604,11 @@ Examples:
           console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
 
           if (options.dryRun) {
-            console.log(`Scanning ${targetDir} (dry-run -- previewing fixes)...\n`);
+            console.log(`Scanning ${escapePathForDisplay(targetDir)} (dry-run -- previewing fixes)...\n`);
           } else if (options.scanOnly) {
-            console.log(`Scanning ${targetDir} (scan-only -- no fixes applied)...\n`);
+            console.log(`Scanning ${escapePathForDisplay(targetDir)} (scan-only -- no fixes applied)...\n`);
           } else {
-            console.log(`Scanning and fixing ${targetDir}...\n`);
+            console.log(`Scanning and fixing ${escapePathForDisplay(targetDir)}...\n`);
           }
         }
 
@@ -6462,10 +6743,13 @@ Examples:
             console.log(
               `${display.color()}${display.symbol} [${finding.id}] ${finding.severity.toUpperCase()}${RESET()}`
             );
-            console.log(`   ${finding.title}`);
-            console.log(`   ${finding.description}`);
+            // Title and description carry names lifted out of the scanned tree
+            // the same way `filePath` does; escaping one of the three and not
+            // the other two is the inconsistency, not a judgement about them.
+            console.log(`   ${escapeForDisplay(finding.title)}`);
+            console.log(`   ${escapeForDisplay(finding.description)}`);
             if (finding.filePath) {
-              console.log(`   File: ${finding.filePath}`);
+              console.log(`   File: ${escapePathForDisplay(finding.filePath)}`);
             }
             console.log();
           }
@@ -6477,10 +6761,10 @@ Examples:
           console.log(`${colors.green}[+] ${label}${RESET()}\n`);
 
           for (const remediation of allRemediations) {
-            console.log(`  ${colors.green}[+]${RESET()} [${remediation.findingId}] ${remediation.description}`);
+            console.log(`  ${colors.green}[+]${RESET()} [${remediation.findingId}] ${escapeForDisplay(remediation.description)}`);
             if (remediation.filesModified.length > 0 && options.verbose) {
               for (const file of remediation.filesModified) {
-                console.log(`     ${colors.cyan}→${RESET()} ${file}`);
+                console.log(`     ${colors.cyan}→${RESET()} ${escapePathForDisplay(file)}`);
               }
             }
           }
@@ -6488,10 +6772,10 @@ Examples:
 
           if (!options.dryRun) {
             console.log(
-              `${colors.cyan}Note:${RESET()} Plugin data stored in ${targetDir}/.opena2a/`
+              `${colors.cyan}Note:${RESET()} Plugin data stored in ${escapePathForDisplay(targetDir)}/.opena2a/`
             );
             console.log(
-              `      Uninstall with: ${CLI_PREFIX} fix-all ${directory || '.'} --uninstall\n`
+              `      Uninstall with: ${CLI_PREFIX} fix-all ${citationTarget(directory || '.')} --uninstall\n`
             );
           }
         }
@@ -6522,7 +6806,7 @@ Examples:
         }
       } catch (error) {
         console.error(
-          `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+          `Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`
         );
         process.exit(1);
       }
@@ -6567,12 +6851,12 @@ Examples:
       const result = initMcp(targetDir, options.tool);
 
       if (!result.created) {
-        console.log(`\n  HackMyAgent MCP server already configured in ${result.configPath}\n`);
+        console.log(`\n  HackMyAgent MCP server already configured in ${escapePathForDisplay(result.configPath)}\n`);
         return;
       }
 
       console.log(`\n  Detected: ${result.tool}\n`);
-      console.log(`  Added HackMyAgent MCP server to ${result.configPath}\n`);
+      console.log(`  Added HackMyAgent MCP server to ${escapePathForDisplay(result.configPath)}\n`);
       console.log(`  Available tools in ${result.tool}:`);
       console.log(`    hackmyagent_scan       — ${CHECK_COUNT} checks + structural analysis`);
       console.log(`    hackmyagent_deep_scan  — Full analysis with LLM reasoning`);
@@ -6580,7 +6864,7 @@ Examples:
       console.log(`    hackmyagent_benchmark  — OASB-1 compliance assessment\n`);
       console.log(`  Try: "Run a deep security scan on this project"\n`);
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : error}`);
+      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : String(error))}`);
       process.exit(1);
     }
   });
@@ -6699,7 +6983,7 @@ Examples:
       }
 
       if (!require('fs').existsSync(targetDir)) {
-        process.stderr.write(`Error: Directory '${targetDir}' does not exist.\n`);
+        process.stderr.write(`Error: Directory '${escapePathForDisplay(targetDir)}' does not exist.\n`);
         process.exit(1);
       }
 
@@ -6784,7 +7068,12 @@ Examples:
       }
 
       // Text output — unified visual style (matches `check` command)
-      const soulFileName = result.file ? require('path').basename(result.file) : 'No governance file';
+      // Escaped at the ONE place it is built, not at each of the places it is
+      // printed: a basename out of the scanned tree, and the header and the
+      // per-violation evidence lines must not be able to spell it differently.
+      const soulFileName = result.file
+        ? escapePathForDisplay(require('path').basename(result.file))
+        : 'No governance file';
       const tierMeta = result.tierForced ? `${result.agentTier} tier (forced)` : `${result.agentTier} tier`;
       const profileMeta = result.profileForced ? `${result.agentProfile} (forced)` : `${result.agentProfile}`;
       const soulSkippedNote = result.skippedDomains.length > 0 ? ` · skipping ${result.skippedDomains.join(', ')}` : '';
@@ -6866,7 +7155,9 @@ Examples:
           deepAvailable: result.deepAnalysisAvailable !== false,
           upgraded: (result.deepAnalysisResults ?? []).filter((e) => e.llmPassed).length,
           prefix,
-          directory,
+          // #339 — this line splices the target into `scan-soul <dir> --deep`,
+          // so it is a citation and takes the citation form.
+          directory: citationTarget(directory),
         });
         for (const line of disclosureLines) {
           console.log(`  ${colors.dim}${line}${RESET()}`);
@@ -7044,13 +7335,13 @@ Examples:
         console.log();
         console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
         if (missing > 0) {
-          console.log(`  ${colors.cyan}Auto-fix:${RESET()}   ${prefix} harden-soul ${directory}`);
+          console.log(`  ${colors.cyan}Auto-fix:${RESET()}   ${prefix} harden-soul ${citationTarget(directory)}`);
         }
         if (!options.publish) {
-          console.log(`  ${colors.cyan}Publish:${RESET()}    ${prefix} scan-soul ${directory} --publish`);
+          console.log(`  ${colors.cyan}Publish:${RESET()}    ${prefix} scan-soul ${citationTarget(directory)} --publish`);
         }
         if (!options.deep) {
-          console.log(`  ${colors.cyan}Deep scan:${RESET()}  ${prefix} scan-soul ${directory} --deep`);
+          console.log(`  ${colors.cyan}Deep scan:${RESET()}  ${prefix} scan-soul ${citationTarget(directory)} --deep`);
         }
         console.log(`  ${colors.cyan}All commands:${RESET()} ${prefix} --help`);
         console.log();
@@ -7145,7 +7436,7 @@ Examples:
         process.exit(1);
       }
     } catch (error) {
-      process.stderr.write(`Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
+      process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
       process.exit(1);
     }
   });
@@ -7177,7 +7468,7 @@ Examples:
       const targetDir = require("path").resolve(directory);
 
       if (!require('fs').existsSync(targetDir)) {
-        process.stderr.write(`Error: Directory '${targetDir}' does not exist.\n`);
+        process.stderr.write(`Error: Directory '${escapePathForDisplay(targetDir)}' does not exist.\n`);
         process.exit(1);
       }
 
@@ -7200,7 +7491,9 @@ Examples:
       }
 
       // Text output — unified visual style (matches `check` command)
-      const hardenFileName = result.file ? require('path').basename(result.file) : 'SOUL.md';
+      const hardenFileName = result.file
+        ? escapePathForDisplay(require('path').basename(result.file))
+        : 'SOUL.md';
       const hardenMeta = result.dryRun ? 'soul governance · dry run' : 'soul governance';
 
       if (result.sectionsAdded.length === 0) {
@@ -7226,7 +7519,7 @@ Examples:
       console.log(`  ${colors.bold}${colors.white}${hardenFileName}${RESET()}  ${colors.dim}${hardenMeta}${RESET()}`);
       console.log(`  ${result.dryRun ? colors.cyan : colors.green}${colors.bold}${hardenActionLabel}${RESET()}  ${colors.dim}+${result.controlsAdded} controls${RESET()}`);
       console.log();
-      console.log(`  ${colors.dim}File  ${result.file}  ${hardenFileState}${RESET()}`);
+      console.log(`  ${colors.dim}File  ${escapePathForDisplay(result.file)}  ${hardenFileState}${RESET()}`);
 
       console.log(uiDivider('Sections'));
       for (const section of result.sectionsAdded) {
@@ -7238,13 +7531,13 @@ Examples:
         console.log();
         console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
         if (result.dryRun) {
-          console.log(`  ${colors.cyan}Apply:${RESET()}   ${prefix} harden-soul ${directory}`);
+          console.log(`  ${colors.cyan}Apply:${RESET()}   ${prefix} harden-soul ${citationTarget(directory)}`);
         }
-        console.log(`  ${colors.cyan}Verify:${RESET()}  ${prefix} scan-soul ${directory}`);
+        console.log(`  ${colors.cyan}Verify:${RESET()}  ${prefix} scan-soul ${citationTarget(directory)}`);
         console.log();
       }
     } catch (error) {
-      process.stderr.write(`Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
+      process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
       process.exit(1);
     }
   });
@@ -7770,7 +8063,7 @@ Examples:
         process.exitCode = 1;
       }
     } catch (error) {
-      process.stderr.write(`Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
+      process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
       process.exit(1);
     }
   });
@@ -7992,8 +8285,9 @@ program
           .map(f => join(target, f))
           .find(p => existsSync(p));
         if (!resolved) {
-          console.error(`${target} is a directory with no SKILL.md, SOUL.md, or mcp.json.`);
-          console.error(`red-team takes a single artifact — point it at a file, e.g. red-team ${join(target, 'SKILL.md')}`);
+          console.error(`${escapePathForDisplay(target)} is a directory with no SKILL.md, SOUL.md, or mcp.json.`);
+          // The example is meant to be pasted, so it takes the citation form.
+          console.error(`red-team takes a single artifact — point it at a file, e.g. red-team ${citationTarget(join(target, 'SKILL.md'))}`);
           process.exit(1);
         }
         target = resolved;
@@ -8001,9 +8295,9 @@ program
       content = readFileSync(target, 'utf-8');
     } catch (err: any) {
       if (err?.code === 'ENOENT') {
-        console.error(`No such file or directory: ${target}`);
+        console.error(`No such file or directory: ${escapePathForDisplay(target)}`);
       } else {
-        console.error(`Cannot read file: ${target}`);
+        console.error(`Cannot read file: ${escapePathForDisplay(target)}`);
       }
       process.exit(1);
     }
@@ -8127,7 +8421,10 @@ Examples:
       if (!options.json) {
         console.log(`\n${colors.cyan}HackMyAgent Wild Scanner${colors.reset}`);
         console.log(`${'━'.repeat(50)}\n`);
-        console.log(`Target: ${url || 'https://agentpwn.com'}`);
+        // #339 — `url` is a positional argument and for a local run it is a path
+        // out of the tree, so the header takes the path escaping like every other
+        // rendered path. Display, not a command.
+        console.log(`Target: ${escapePathForDisplay(url || 'https://agentpwn.com')}`);
         if (options.category) console.log(`Category: ${options.category}`);
         if (options.tier) console.log(`Tier: ${options.tier}`);
         console.log('');
@@ -8158,7 +8455,7 @@ Examples:
         process.exit(1);
       }
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       process.exit(1);
     }
   });
@@ -8170,7 +8467,7 @@ function printWildReport(report: WildScanReport): void {
     const status = f.hasPayload
       ? `${colors.red}PAYLOAD FOUND${colors.reset}`
       : `${colors.green}clean${colors.reset}`;
-    console.log(`  ${f.file}: ${f.statusCode} [${status}]`);
+    console.log(`  ${escapeForDisplay(f.file)}: ${f.statusCode} [${status}]`);
     if (f.payloadExcerpt) {
       console.log(`    ${colors.dim}${f.payloadExcerpt}${colors.reset}`);
     }
@@ -8481,9 +8778,11 @@ program
     console.log(`\nGenerating secured skill...\n`);
     const result = writeSkill({ purpose: description, name: options.name, outputDir: options.output });
     const outputDir = options.output ?? result.dirName;
-    console.log(`Created ${outputDir}/`);
-    for (const file of result.filesWritten) { console.log(`  ${file.split('/').pop()}`); }
-    console.log(`\nYour skill is ready. Verify security with: ${CLI_PREFIX} secure ${outputDir}/`);
+    console.log(`Created ${escapePathForDisplay(outputDir)}/`);
+    for (const file of result.filesWritten) {
+      console.log(`  ${escapePathForDisplay(file.split('/').pop() ?? file)}`);
+    }
+    console.log(`\nYour skill is ready. Verify security with: ${CLI_PREFIX} secure ${citationTarget(`${outputDir}/`)}`);
   });
 // nanomind: manage the NanoMind generative model
 // `analm` is preserved as a deprecated alias for backward compatibility.
@@ -8575,12 +8874,12 @@ program
           const oraclePath = opts.oracleDir.replace(/^~/, process.env.HOME ?? '~');
 
           if (!fsSync.existsSync(oraclePath)) {
-            console.error(`Error: oracle-dir not found: ${oraclePath}`);
+            console.error(`Error: oracle-dir not found: ${escapeForDisplay(String(oraclePath))}`);
             console.error('  Clone or create the oracle fixture directory first.');
             process.exit(1);
           }
 
-          console.log(`Running oracle eval against: ${oraclePath}`);
+          console.log(`Running oracle eval against: ${escapePathForDisplay(oraclePath)}`);
 
           let report = await runOracleEval(oraclePath);
 
@@ -9241,6 +9540,12 @@ function printCheckNextSteps(
       return target;
     }
   })();
+  // #328 — every line below splices one of these into a command the reader is
+  // told to run, and both are paths. The filesystem calls above use the raw
+  // values; only the rendered forms are quoted and escaped. Ordinary paths come
+  // back unchanged.
+  const citeTarget = citationTarget(target);
+  const citeDirTarget = citationTarget(dirTarget);
   console.log();
   console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
 
@@ -9250,13 +9555,13 @@ function printCheckNextSteps(
   // (release-test P2 / CISO Rule 11).
   let citedOpena2a = false;
   if (context?.hasGovernanceIssues && isLocal) {
-    console.log(`  ${colors.cyan}Auto-fix governance:${RESET()}  ${CLI_PREFIX} harden-soul ${dirTarget}`);
+    console.log(`  ${colors.cyan}Auto-fix governance:${RESET()}  ${CLI_PREFIX} harden-soul ${citeDirTarget}`);
   }
   if (context?.hasCredentialFindings) {
     // Routed through the citation rewriter for the same reason the `Fix:`
     // lines are: standalone installs have no `opena2a` on PATH, so the bare
     // form is a dead end (#201). Bundled runs are left as-is by the rewriter.
-    console.log(`  ${colors.cyan}Protect credentials:${RESET()}  ${rebrandCommandCitations(`opena2a protect ${isLocal ? dirTarget : '.'}`)}`);
+    console.log(`  ${colors.cyan}Protect credentials:${RESET()}  ${rebrandCommandCitations(`opena2a protect ${isLocal ? citeDirTarget : '.'}`)}`);
     citedOpena2a = true;
   }
   if (context?.hasMcpFindings) {
@@ -9264,28 +9569,33 @@ function printCheckNextSteps(
     citedOpena2a = true;
   }
   if (context?.hasCodeVulns && isLocal) {
-    console.log(`  ${colors.cyan}Auto-fix all issues:${RESET()}  ${CLI_PREFIX} secure --fix`);
+    // #293 — `secure --fix` with no target acts on the CURRENT directory, so
+    // this line told a user who scanned `./proj` to remediate the tree they
+    // are standing in. Its siblings above already cite `dirTarget`; this one
+    // was the odd line out, and it printed directly rather than through the
+    // citation rewriter, so pass 3 could not reach it either.
+    console.log(`  ${colors.cyan}Auto-fix all issues:${RESET()}  ${CLI_PREFIX} secure ${citeDirTarget} --fix`);
   }
   if (context?.hasFindings) {
     if (!context?.suppressFullScanHint) {
       console.log(`  ${colors.cyan}Full project audit:${RESET()}   ${getFullScanHint()}`);
     }
     if (!context?.usedAnalm) {
-      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${citeTarget} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
     }
   } else if (context?.isCleanScan && isLocal) {
-    console.log(`  ${colors.cyan}Governance scan:${RESET()}      ${CLI_PREFIX} scan-soul ${target}`);
+    console.log(`  ${colors.cyan}Governance scan:${RESET()}      ${CLI_PREFIX} scan-soul ${citeTarget}`);
     console.log(`  ${colors.cyan}Red-team test:${RESET()}        ${CLI_PREFIX} attack --local`);
     if (!context?.usedAnalm) {
-      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${citeTarget} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
     }
   } else if (context?.isCleanScan) {
     if (!context?.usedAnalm) {
-      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${citeTarget} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
     }
   } else {
     if (!context?.usedAnalm) {
-      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${target} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
+      console.log(`  ${colors.cyan}AI analysis:${RESET()}          ${CLI_PREFIX} check ${citeTarget} --nanomind  ${colors.dim}(attack vectors + targeted remediation)${RESET()}`);
     }
   }
   console.log(`  ${colors.cyan}All commands:${RESET()}         ${CLI_PREFIX} --help`);
@@ -9570,12 +9880,12 @@ async function checkGitHubRepo(
         });
       }
     } else if (message.includes('timeout') || message.includes('Timeout')) {
-      console.error(`Error: Cloning "${displayName}" timed out (120s). The repo may be too large.`);
+      console.error(`Error: Cloning "${escapeForDisplay(String(displayName))}" timed out (120s). The repo may be too large.`);
       console.error(`\nTry cloning manually and scanning the local path:`);
       console.error(`  git clone --depth 1 ${cloneUrl}`);
       console.error(`  ${getCheckCommand()} ./${repo}/`);
     } else {
-      console.error(`Error: ${message}`);
+      console.error(`Error: ${escapeForDisplay(String(message))}`);
     }
     process.exitCode = 1;
   } finally {
@@ -9692,7 +10002,7 @@ async function checkPyPiPackage(
           printNotFoundBlock({ pkg: name, ecosystem: 'pypi' });
         }
       } else {
-        console.error(`Error: PyPI API returned ${metaRes.status} for "${name}".`);
+        console.error(`Error: PyPI API returned ${metaRes.status} for "${escapeForDisplay(String(name))}".`);
       }
       // Set exit code and return so `finally` can clean up tempDir (was already
       // allocated above). process.exit() would skip the cleanup and orphan the
@@ -9712,7 +10022,7 @@ async function checkPyPiPackage(
     const dist = sdist || wheel || meta.urls[0];
 
     if (!dist) {
-      console.error(`Error: No downloadable distribution found for "${name}" on PyPI.`);
+      console.error(`Error: No downloadable distribution found for "${escapeForDisplay(String(name))}" on PyPI.`);
       process.exitCode = 1;
       return;
     }
@@ -9823,7 +10133,7 @@ async function checkPyPiPackage(
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('not found on PyPI')) {
-      console.error(`Error: ${message}`);
+      console.error(`Error: ${escapeForDisplay(String(message))}`);
     } else {
       console.error(`Error scanning PyPI package "${name}": ${message}`);
     }
@@ -9878,7 +10188,7 @@ async function checkRawUrl(
 
       const headRes = await fetch(url, { method: 'HEAD', redirect: 'follow' });
       if (!headRes.ok) {
-        console.error(`Error: HTTP ${headRes.status} fetching "${url}".`);
+        console.error(`Error: HTTP ${headRes.status} fetching "${escapeForDisplay(String(url))}".`);
         // Set exit code and return so `finally` can clean up tempDir (was
         // already allocated above). process.exit() would skip the cleanup
         // and orphan the /tmp/hma-check-url-* directory.
@@ -9898,7 +10208,7 @@ async function checkRawUrl(
 
       const bodyRes = await fetch(finalUrl, { redirect: 'follow' });
       if (!bodyRes.ok || !bodyRes.body) {
-        console.error(`Error: Failed to download "${url}" (HTTP ${bodyRes.status}).`);
+        console.error(`Error: Failed to download "${escapeForDisplay(String(url))}" (HTTP ${bodyRes.status}).`);
         process.exitCode = 1;
         return;
       }
@@ -10033,10 +10343,10 @@ async function checkRawUrl(
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
-      console.error(`Error: Could not clone repository from "${url}".`);
+      console.error(`Error: Could not clone repository from "${escapeForDisplay(String(url))}".`);
       console.error(`\nVerify the URL is accessible and contains a git repository.`);
     } else if (message.includes('timeout') || message.includes('Timeout')) {
-      console.error(`Error: Fetching "${url}" timed out. The target may be too large.`);
+      console.error(`Error: Fetching "${escapeForDisplay(String(url))}" timed out. The target may be too large.`);
       console.error(`\nTry downloading manually and scanning the local path:`);
       console.error(`  ${getCheckCommand()} ./downloaded-dir/`);
     } else {
@@ -10264,7 +10574,7 @@ async function checkNpmPackage(
           });
         }
       } else {
-        console.error(`Error: ${message}`);
+        console.error(`Error: ${escapeForDisplay(String(message))}`);
       }
     }
     process.exitCode = 1;
@@ -10420,6 +10730,42 @@ async function checkNpmPackage(
           console.log(`  ${colors.dim}Scanned with hackmyagent v${VERSION}${RESET()}`);
         });
       }
+
+      // #293 / #288 — teach the citation rewriter which tree this run is
+      // about, so `secure --fix` and `protect .` in finding-fix text name the
+      // scanned target instead of the current directory. Done here, once, for
+      // every command: the alternative is threading the target through ~50
+      // call sites, and #261 already showed that fixing one surface leaves the
+      // others citing the wrong tree.
+      //
+      // Silent by design — a citation that cannot be completed is left exactly
+      // as it is today rather than guessed at.
+      try {
+        const rawTarget = actionCommand.args?.[0];
+        if (!rawTarget) {
+          // No positional target: the command acts on the cwd, which is what
+          // the pathless citation already says. Nothing to complete.
+          setCitationTarget(undefined);
+        } else {
+          const { statSync } = require('node:fs') as typeof import('node:fs');
+          const nodePath = require('node:path') as typeof import('node:path');
+          let st: ReturnType<typeof statSync> | undefined;
+          try { st = statSync(rawTarget); } catch { /* not a local path */ }
+          if (!st) {
+            // npm / PyPI / GitHub / skill ref — there is no local path any
+            // local-fix advice could correctly name.
+            setCitationTarget(undefined, { remote: true });
+          } else {
+            const asDir = st.isDirectory() ? nodePath.resolve(rawTarget) : nodePath.dirname(nodePath.resolve(rawTarget));
+            if (asDir === nodePath.resolve(process.cwd())) {
+              setCitationTarget(undefined);
+            } else {
+              // Cite it the way the user typed it, not as an absolute path.
+              setCitationTarget(st.isDirectory() ? rawTarget : nodePath.dirname(rawTarget));
+            }
+          }
+        }
+      } catch { /* citation completion is best-effort, never fails a scan */ }
 
       const name = actionCommand.name();
       if (NON_TRACKED_TELEMETRY_COMMANDS.has(name)) return;

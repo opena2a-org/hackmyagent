@@ -28,6 +28,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { execSync } from 'node:child_process';
+import { initThrowawayRepo } from '../helpers/throwaway-repo';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -56,7 +57,7 @@ function lock(p: string) {
 function mcpFixture(): string {
   const dir = mkdtempSync(join(tmpdir(), 'hma-fixwrite-'));
   dirs.push(dir);
-  execSync('git init -q .', { cwd: dir });
+  initThrowawayRepo(dir, false);
   writeFileSync(join(dir, 'package.json'), MCP_PKG);
   writeFileSync(join(dir, 'mcp.json'), ROOT_SCOPED_MCP);
   return dir;
@@ -154,7 +155,7 @@ describe.runIf(darwin)('the whole fix-write class, not just one check', { timeou
     it(`${c.name}: keeps its finding and does not raise the score`, async () => {
       const dir = mkdtempSync(join(tmpdir(), 'hma-fixclass-'));
       dirs.push(dir);
-      execSync('git init -q .', { cwd: dir });
+      initThrowawayRepo(dir, false);
       writeFileSync(join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}');
       const target = join(dir, c.file);
       writeFileSync(target, c.body);
@@ -181,7 +182,7 @@ describe.runIf(darwin)('the whole fix-write class, not just one check', { timeou
     // and the user got a raw EPERM and no scan of any kind.
     const dir = mkdtempSync(join(tmpdir(), 'hma-fixclass-'));
     dirs.push(dir);
-    execSync('git init -q .', { cwd: dir });
+    initThrowawayRepo(dir, false);
     writeFileSync(join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}');
     mkdirSync(join(dir, 'skills', 'demo'), { recursive: true });
     const skill = join(dir, 'skills', 'demo', 'SKILL.md');
@@ -207,7 +208,7 @@ describe.runIf(darwin)('the whole fix-write class, not just one check', { timeou
     // was `secure --fix` — the command that had just silently failed.
     const dir = mkdtempSync(join(tmpdir(), 'hma-fixclass-'));
     dirs.push(dir);
-    execSync('git init -q .', { cwd: dir });
+    initThrowawayRepo(dir, false);
     writeFileSync(join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}');
     const target = join(dir, 'config.json');
     writeFileSync(target, '{"anthropic":"sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}');
@@ -265,7 +266,7 @@ describe.runIf(darwin)('revokes are scoped, and do not leave a success message',
     // reported a CRITICAL on a file the tool had just correctly repaired.
     const dir = mkdtempSync(join(tmpdir(), 'hma-scope-'));
     dirs.push(dir);
-    execSync('git init -q .', { cwd: dir });
+    initThrowawayRepo(dir, false);
     writeFileSync(join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}');
     mkdirSync(join(dir, '.openclaw'), { recursive: true });
     const cfg = '{"gateway":{"host":"0.0.0.0","auth":{"token":"plaintext-secret-value-123"}}}';
@@ -300,7 +301,7 @@ describe.runIf(darwin)('revokes are scoped, and do not leave a success message',
   it('a revoked WEBCRED-001 does not claim the credential was replaced', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'hma-scope-'));
     dirs.push(dir);
-    execSync('git init -q .', { cwd: dir });
+    initThrowawayRepo(dir, false);
     writeFileSync(join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}');
     mkdirSync(join(dir, 'public'), { recursive: true });
     const body = '<script>const k="sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";</script>';
@@ -325,7 +326,7 @@ describe('GATEWAY-003 does not flag its own remedy', () => {
     // could never verify.
     const dir = mkdtempSync(join(tmpdir(), 'hma-envref-'));
     dirs.push(dir);
-    execSync('git init -q .', { cwd: dir });
+    initThrowawayRepo(dir, false);
     writeFileSync(join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}');
     writeFileSync(join(dir, 'openclaw.json'),
       '{"gateway":{"host":"127.0.0.1","auth":{"token":"${OPENCLAW_AUTH_TOKEN}"}}}');
@@ -337,7 +338,7 @@ describe('GATEWAY-003 does not flag its own remedy', () => {
   it('still flags a real plaintext token', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'hma-envref-'));
     dirs.push(dir);
-    execSync('git init -q .', { cwd: dir });
+    initThrowawayRepo(dir, false);
     writeFileSync(join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}');
     writeFileSync(join(dir, 'openclaw.json'),
       '{"gateway":{"host":"127.0.0.1","auth":{"token":"supersecrettoken123"}}}');

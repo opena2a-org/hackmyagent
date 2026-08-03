@@ -28,6 +28,7 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { execSync } from 'node:child_process';
+import { initThrowawayRepo } from '../helpers/throwaway-repo';
 import { mkdtempSync, rmSync, writeFileSync, statSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -64,7 +65,7 @@ const dirs: string[] = [];
 function fixture(files: Record<string, string>, opts: { git?: boolean } = {}): string {
   const dir = mkdtempSync(join(tmpdir(), 'hma-fixverify-'));
   dirs.push(dir);
-  if (opts.git) execSync('git init -q .', { cwd: dir });
+  if (opts.git) initThrowawayRepo(dir, false);
   writeFileSync(join(dir, 'package.json'), '{"name":"h","version":"1.0.0"}\n');
   for (const [name, body] of Object.entries(files)) {
     const p = join(dir, name);
