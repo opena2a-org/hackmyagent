@@ -14,6 +14,7 @@ import {
   type RiskLevel,
   type Severity,
   type SecurityFinding,
+  type MachinePostureSummary,
   type ExternalFinding,
   type FindingSeverity,
   // Benchmark imports
@@ -650,6 +651,13 @@ function displayCheckFindings(
 // Unified check display — one function for all target types (0.17.0)
 // ---------------------------------------------------------------------------
 
+/**
+ * One auto-detected AI runtime living outside the scan target — the summary of
+ * scanning it, NOT its findings. Single definition, shared with `ScanResult`,
+ * so the rendered section and the JSON field can never drift apart.
+ */
+type MachinePostureEntry = MachinePostureSummary;
+
 interface UnifiedCheckDisplayOptions {
   name: string;
   sourceLabel?: string;
@@ -719,6 +727,16 @@ interface UnifiedCheckDisplayOptions {
     modelVersion: string;
     policy: 'abstention-gated';
   }>;
+  /**
+   * Machine-wide AI-runtime posture (`~/.openclaw`, `~/.nemoclaw`, ...).
+   *
+   * Advisory channel, same contract as `analystEscalations`: rendered in its
+   * own labelled section, never merged into `findings`, never counted toward
+   * the target score or the exit code. A directory-scoped score has to mean
+   * the directory — see [CHIEF-CA] in
+   * `.claude-sessions/2026-08-03-opena2a-cli-0-10-13-p1-fixes.md`.
+   */
+  machinePosture?: MachinePostureEntry[];
   /** When set, this path is used in Next Steps hints instead of `name`. Use for local directory targets (e.g., `secure`). */
   nextStepsTarget?: string;
   /**
@@ -1785,6 +1803,34 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     if (hiddenAbstains > 0) {
       console.log(`  ${colors.dim}${hiddenAbstains} uncertain analyst verdict${hiddenAbstains === 1 ? '' : 's'} (model hedged or gave no usable class) not shown.${RESET()}`);
       console.log(`  ${colors.dim}Inspect with --verbose, or programmatically via --json analystEscalations.${RESET()}`);
+      console.log();
+    }
+  }
+
+  // ── Machine posture ─────────────────────────────────────────────────
+  // AI runtimes installed on this machine but OUTSIDE the scan target. Same
+  // advisory contract as the escalations above: reported, never scored. The
+  // section states the scope explicitly, because the whole defect this fixes
+  // was a machine-wide number wearing a directory-scoped label.
+  const machinePosture = opts.machinePosture ?? [];
+  if (machinePosture.length > 0) {
+    divider('Machine Posture');
+    console.log(`  ${colors.dim}Outside this scan's target — AI runtimes installed on this machine.${RESET()}`);
+    console.log(`  ${colors.dim}Not included in the score above, the findings above, or the exit code.${RESET()}`);
+    console.log();
+    for (const entry of machinePosture) {
+      const parts: string[] = [];
+      if (entry.critical > 0) parts.push(`${entry.critical} critical`);
+      if (entry.high > 0) parts.push(`${entry.high} high`);
+      if (entry.medium > 0) parts.push(`${entry.medium} medium`);
+      if (entry.low > 0) parts.push(`${entry.low} low`);
+      const breakdown = parts.length > 0 ? parts.join(' · ') : 'no findings';
+      // Vendor name and path are tree-derived (a directory name on disk), so
+      // both go through the same display escaping as any finding path.
+      const label = `${escapeForDisplay(entry.name)}  ${colors.dim}${escapePathForDisplay(entry.dir)}${RESET()}`;
+      console.log(`  ${colors.white}${label}${RESET()}`);
+      console.log(`  ${colors.dim}${entry.score}/100 on its own terms — ${breakdown}${RESET()}`);
+      console.log(`  ${colors.cyan}Scan it:${RESET()} ${escapeForDisplay(entry.scanCommand)}`);
       console.log();
     }
   }
@@ -3406,7 +3452,8 @@ Examples:
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
   .option('--ci', 'CI mode: suppress interactive prompts, exit non-zero on findings')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; nanomind?: boolean; analm?: boolean; scanDepth?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean }) => {
+  .option('--no-machine-posture', 'Skip the advisory scan of AI runtimes installed outside the target (~/.openclaw, ~/.nemoclaw)')
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; nanomind?: boolean; analm?: boolean; scanDepth?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean; machinePosture?: boolean }) => {
     try {
       const originalTarget = require("path").resolve(directory);
       let targetDir = originalTarget;
@@ -3638,34 +3685,56 @@ Examples:
         scanner.applyScore(result, forScore);
       }
 
-      // AI Infrastructure auto-detection — scan NemoClaw, OpenClaw, etc. if present
-      // Infrastructure scans run transparently alongside the primary scan.
-      // No separate vendor-specific commands needed.
+      // AI Infrastructure auto-detection — scan NemoClaw, OpenClaw, etc. if present.
       //
-      // Skipped under OPENA2A_CORPUS_DETERMINISTIC=1 (the corpus release-smoke
-      // harness) so a developer's real ~/.nemoclaw / ~/.openclaw cannot leak
-      // machine state into fixture scores — the flag the harness already sets
-      // is now genuinely hermetic, not just accidentally so on clean CI runners.
-      if (process.env.OPENA2A_CORPUS_DETERMINISTIC !== '1') {
+      // [CHIEF-CA 2026-08-03] These runtimes live in $HOME, OUTSIDE the scan
+      // target. Their findings are REPORTED but never SCORED: they do not enter
+      // `result.findings`, do not reach `applyScore`, and do not set the exit
+      // code. They are summarized on `result.machinePosture` instead.
+      //
+      // This block used to name-prefix them `[<Vendor>]`, push them into
+      // `result.findings`, and re-run `applyScore` over the merged list. On a
+      // machine with a real `~/.openclaw`, `secure <empty dir>` measured
+      // **0/100 with 1782 findings** — 1780 of them from 250 SKILL.md files
+      // under `~/.openclaw/sandboxes/` — where the same directory scored 98/100
+      // with 1 finding under a sandboxed HOME. That made `--fail-below` useless
+      // as a CI gate (identical code, different verdict per machine), buried the
+      // target's own finding under unrelated ones, and silently read $HOME
+      // during what the user asked to be a directory scan.
+      //
+      // Skipped entirely under OPENA2A_CORPUS_DETERMINISTIC=1 (the corpus
+      // release-smoke harness) and under --no-machine-posture.
+      if (process.env.OPENA2A_CORPUS_DETERMINISTIC !== '1' && options.machinePosture !== false) {
         const infraDirs = detectAIInfrastructure(targetDir);
+        const posture: MachinePostureEntry[] = [];
         for (const infra of infraDirs) {
           try {
             const infraScanner = new HardeningScanner();
             const infraResult = await infraScanner.scan({ targetDir: infra.dir, autoFix: false });
-            const infraFailed = (infraResult.findings || []).filter((f: SecurityFinding) => !f.passed);
-            if (infraFailed.length > 0 && result.findings) {
-              // Tag findings with infrastructure source and merge
-              const tagged = infraFailed.map((f: SecurityFinding) => ({
-                ...f,
-                name: `[${infra.name}] ${f.name}`,
-                file: f.file ? `${infra.dir.replace(require('os').homedir(), '~')}/${f.file}` : infra.dir,
-              }));
-              result.findings = [...(result.findings as SecurityFinding[]), ...tagged] as typeof result.findings;
-              // Recalculate score with infrastructure findings included
-              const allForScore = (result.findings || []).filter((f: any) => countsAgainstScore(f));
-              scanner.applyScore(result, allForScore);
-            }
+            const infraFailed = (infraResult.findings || []).filter(
+              (f: SecurityFinding) => countsAgainstScore(f),
+            );
+            if (infraFailed.length === 0) continue;
+            const bySeverity = (sev: string) =>
+              infraFailed.filter((f: SecurityFinding) => f.severity === sev).length;
+            const displayDir = infra.dir.startsWith(require('os').homedir())
+              ? `~${infra.dir.slice(require('os').homedir().length)}`
+              : infra.dir;
+            posture.push({
+              name: infra.name,
+              dir: displayDir,
+              score: infraResult.score ?? 0,
+              critical: bySeverity('critical'),
+              high: bySeverity('high'),
+              medium: bySeverity('medium'),
+              low: bySeverity('low'),
+              total: infraFailed.length,
+              scanCommand: `${CLI_PREFIX} secure ${displayDir}`,
+            });
           } catch { /* Infrastructure scan failures are non-fatal */ }
+        }
+        if (posture.length > 0) {
+          result.machinePosture = posture;
         }
       }
 
@@ -4049,6 +4118,7 @@ Examples:
           ? nmResult.analystEscalations
           : undefined,
         artifactSummaries: nmResult.artifactSummaries,
+        machinePosture: result.machinePosture,
         nextStepsTarget: directory,
       });
 
