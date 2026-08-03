@@ -10,6 +10,19 @@
 
 import type { SemanticFinding, AnalysisFile } from '../types';
 import type { GitContext } from './git-context';
+import { isVisualFiller } from '../../types/credential-format.js';
+
+/**
+ * How much of a value must survive the drawn runs, for the call sites that
+ * apply no length floor of their own (the MCP env block, the URL password).
+ *
+ * Small on purpose. The SEM-CRED-002 shapes carry an 8-character floor for
+ * their own reasons, and reusing it here would turn a blank gate into a length
+ * gate: it silently dropped `supersecretpassword` and `hunt3r` from MCP env
+ * blocks the first time, and `hunter2` is a real URL password. A gate added to
+ * suppress drawn blanks must suppress drawn blanks and nothing else.
+ */
+const MIN_DRAWN_ONLY_CORE_CHARS = 2;
 
 /** Key names that indicate a secret value */
 const SECRET_KEY_PATTERN =
@@ -56,6 +69,37 @@ function classifySecret(key: string, value: string): { type: string; masked: str
   return { type: 'secret', masked: preview };
 }
 
+/**
+ * Value-level gate shared by all three SEM-CRED-002 shapes (JSON pair, YAML
+ * pair, `KEY=VALUE`).
+ *
+ * Hoisted into one function on purpose. Three of the four call sites carried
+ * byte-identical copies of the length/all-letters test, and the entropy floor
+ * that fixed AST-CRED-003 was added to neither — so the reported complaint kept
+ * reproducing through this detector: a `CLAUDE.md` onboarding checklist reading
+ * `password: ______…` scored SEM-CRED-002 CRITICAL, on the same 47-underscore
+ * form blank. Two of the three copies drifting is how that gap opened; one
+ * function is what keeps it closed.
+ *
+ * The filler test is `isVisualFiller`, NOT the AST path's
+ * `isCredibleEntropyBlob`. Both reject the reported form blank, but they are
+ * asked different questions. The AST fallback judges an ANONYMOUS 40+ character
+ * run found anywhere in a document, where structure is the only evidence and a
+ * run of one repeated symbol is filler. Here a key name has already said "this
+ * is a secret", and the structural rules are far too blunt for an 8-character
+ * value: they dropped `Ab12Ab12Ab12…` (period 4) and the base64 of an all-zero
+ * AES key (`'A'x43`), both weak but entirely real secrets. Keying on the filler
+ * CHARACTERS separates the classes exactly at this size.
+ */
+function looksLikeSecretValue(value: string): boolean {
+  if (value.length < 8) return false;
+  // All-letters values are words, not secrets.
+  if (/^[a-z]+$/i.test(value)) return false;
+  // A drawn blank (`____…`, `----`, `....`) is not a value.
+  if (isVisualFiller(value)) return false;
+  return true;
+}
+
 /** Values that are NOT secrets (env var refs, booleans, paths, etc.) */
 function isNonSecretValue(value: string): boolean {
   const trimmed = value.trim().replace(/^["']|["']$/g, '');
@@ -78,7 +122,25 @@ function isNonSecretValue(value: string): boolean {
   // URL without credentials
   if (/^https?:\/\/[^:@]*$/.test(trimmed)) return true;
 
-  // Placeholder values
+  // Placeholder values.
+  //
+  // NOTE: prefix-anchored, so this also matches any value merely BEGINNING
+  // with the vocabulary — `examplePassw0rd!` reads as documentation. That is a
+  // real weakness, but it is bounded here: every caller of this function pairs
+  // it with a key that already had to match SECRET_KEY_PATTERN, so the key
+  // carries the signal and the value is only ever a veto.
+  //
+  // Anchoring it at both ends was tried and reverted. It closes the bypass and
+  // strictly narrows suppression — but on this function's real call sites it
+  // un-suppresses the redaction forms that dominate committed templates
+  // (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, `example-api-key-12345`,
+  // `TODO: add key`), each of which becomes a CRITICAL SEM-CRED-004 in an MCP
+  // config. Measured 48 new false-positive rows against 16 intended gains.
+  //
+  // Fixing it properly needs entropy corroboration rather than vocabulary
+  // alone, plus a corpus re-bake. Tracked separately; do NOT hand a bare,
+  // key-less value to this function in the meantime — see
+  // `isPlaceholderUrlPassword` for what a caller without a key should use.
   if (/^(xxx|your[-_]|change[-_]me|replace[-_]|TODO|FIXME|placeholder|example)/i.test(trimmed)) return true;
 
   // Angle-bracket templates: <APIKEY>, <your_token>, <TENANT_NAME>
@@ -224,6 +286,120 @@ function envHighOverrideWording(
 }
 
 /**
+ * The vocabulary a placeholder may OPEN with. Deliberately the same set
+ * `isNonSecretValue` already uses — this gate exists to stop reporting
+ * documentation, not to invent new reasons to stay quiet. An earlier draft
+ * added `my`, `insert`, `enter`, `dummy` and `sample`; nothing justified them,
+ * the suite stayed green without them, and `my` alone was enough to silence
+ * `my-SuperSecretPassphrase` and `my_prod_db_password`.
+ */
+const PLACEHOLDER_WORDS = new Set(['your', 'todo', 'fixme', 'example', 'placeholder', 'change', 'replace']);
+
+/** Longest a single word may be before it stops reading as prose. */
+const MAX_PLACEHOLDER_WORD_CHARS = 12;
+/** Longest the whole value may be before it stops reading as a placeholder. */
+const MAX_PLACEHOLDER_CHARS = 40;
+/**
+ * Longest the remainder after the leading vocabulary word may be.
+ *
+ * Short words are not enough on their own: `your-abc-def-ghi-jkl-mno-pqr` is
+ * 23 characters of lowercase payload — around 155 bits — and every one of its
+ * words clears the per-word bound. Inserting a single separator into a shouted
+ * blob (`YOUR_KJHGFDSAQWE_RTYUIOPZXC`) does the same thing.
+ *
+ * Measured separation on this file's own fixtures: the longest payload any
+ * suppressed placeholder carries is 15 (`CHANGE_ME_NOW_OR_ELSE`), and the
+ * shortest payload of a secret found this way is 23. 18 sits between them with
+ * margin on both sides.
+ */
+const MAX_PLACEHOLDER_PAYLOAD_CHARS = 18;
+
+/**
+ * All lowercase, or all uppercase. Placeholders are written in one case —
+ * `your-password-here`, `YOUR_PASSWORD`. Mixed case is how secrets are written,
+ * and it is the signal that survives when an attacker or a careless developer
+ * borrows the vocabulary.
+ */
+function hasUniformCase(value: string): boolean {
+  return value === value.toLowerCase() || value === value.toUpperCase();
+}
+
+/**
+ * Is this URL password documentation rather than a leaked secret?
+ *
+ * Narrow on purpose, and local on purpose. The password slot of a connection
+ * string carries no key to corroborate it — unlike every caller of
+ * `isNonSecretValue`, where a SECRET_KEY_PATTERN key already asserted "secret"
+ * and the value only has to veto. So the value must be shaped like a
+ * placeholder, not merely open with the vocabulary:
+ *
+ *   1. An angle-bracket template whose body is single-cased AND made of words:
+ *      `<password>`, `<YOUR_PASSWORD>`. Case alone was not enough — it let a
+ *      pair of brackets launder `<vendorkey-aaaabbbbccccdddd>`, and a lowercase
+ *      hex digest or an uppercase base32 secret is single-cased by
+ *      construction — so the body is word-bounded too.
+ *   2. A vocabulary word, optionally continued by short same-case words joined
+ *      with `-` or `_`, within a per-word, a payload and an overall bound.
+ *      All three are load-bearing: short words alone still admit
+ *      `your-abc-def-ghi-jkl-mno-pqr`.
+ *
+ * What that buys, each verified against the previous build:
+ *
+ *   your-password-here            placeholder   (suppressed)
+ *   YOUR_PASSWORD                 placeholder   (suppressed)
+ *   your-8Kd9fLm2QpXv7Zr4Nt6Bw1Hs secret, mixed case
+ *   your-KdfLmQpXvZrNtBwHs        secret, mixed case — the digit-free form
+ *   your_KJHGFDSAQWERTYUIOPZXC    secret, one 25-character "word"
+ *   examplePassw0rd!              secret, mixed case and no separator
+ *   change                        an imperative a user could have typed
+ *
+ * Anything not matched here is treated as a real credential. That direction is
+ * deliberate: a false positive on a placeholder costs a user one suppression,
+ * a false negative on a live database password costs them the database.
+ */
+function isPlaceholderUrlPassword(password: string): boolean {
+  const trimmed = password.trim();
+  if (!trimmed || trimmed.length > MAX_PLACEHOLDER_CHARS) return false;
+
+  const angle = /^<([A-Za-z][A-Za-z0-9 _-]*)>$/.exec(trimmed);
+  if (angle) {
+    const body = angle[1];
+    if (!hasUniformCase(body)) return false;
+    // Brackets are not a suppression primitive. Case alone let a pair of them
+    // launder any single-cased secret — `<vendorkey-aaaabbbbccccdddd>`,
+    // `<deadbeefcafebabe0123456789ab>`, `<GHP-ABCDEFGHIJKLMNOPQRSTUV>` — and
+    // lowercase hex digests and uppercase base32 secrets are single-cased by
+    // construction, so that is most of the shapes that matter. The bodies this
+    // branch exists for are words: `password` and `PASSWORD` are 8 characters,
+    // the laundered secrets 16 to 28.
+    //
+    // Vocabulary cannot be required here — `<password>` is the MongoDB Atlas
+    // docs string this whole gate was written for.
+    return body.split(/[-_ ]/).every((w) => w.length > 0 && w.length <= MAX_PLACEHOLDER_WORD_CHARS);
+  }
+
+  if (!hasUniformCase(trimmed)) return false;
+
+  const words = trimmed.toLowerCase().split(/[-_]/);
+  if (!PLACEHOLDER_WORDS.has(words[0])) return false;
+  // `change` and `replace` only introduce a placeholder when they lead a phrase
+  // (`change-me`, `replace-with-your-key`). Alone they are imperatives someone
+  // could plausibly have typed as an actual password.
+  if (words.length === 1 && (words[0] === 'change' || words[0] === 'replace')) return false;
+  if (trimmed.length - words[0].length > MAX_PLACEHOLDER_PAYLOAD_CHARS) return false;
+  return words.slice(1).every(
+    (w) =>
+      w.length > 0 &&
+      w.length <= MAX_PLACEHOLDER_WORD_CHARS &&
+      /^[a-z]+$/.test(w) &&
+      // A hex run is a digest, not prose. `your_deadbeefcafe` clears every
+      // length bound — twelve lowercase letters, one word — and is still a
+      // secret. `password`, `credentials`, `here`, `token` are not hex.
+      !/^[0-9a-f]{8,}$/.test(w),
+  );
+}
+
+/**
  * Detect URL-embedded passwords
  */
 function detectUrlPasswords(file: AnalysisFile): SemanticFinding[] {
@@ -241,6 +417,26 @@ function detectUrlPasswords(file: AnalysisFile): SemanticFinding[] {
       if (password.startsWith('${') || password.startsWith('$')) continue;
       // Skip very short passwords that might be ports
       if (password.length < 3) continue;
+      // A documented connection string is not a leaked one. This detector had
+      // no value gate at all, so it was the last place the reported form-blank
+      // complaint still reproduced: `postgres://admin:____________@host` and —
+      // far more common — `mongodb://user:<password>@cluster0.mongodb.net/db`,
+      // the verbatim MongoDB Atlas documentation string, both scored CRITICAL.
+      //
+      // Deliberately NOT `isNonSecretValue`. That function is written for a
+      // key/value pair and assumes the key already asserted "secret", so the
+      // value only has to veto. A URL password slot has no key, and routing it
+      // through there imported rules that are wrong without one: it treats
+      // `12345678`, `default`, `none` and `null` as non-secrets, and those are
+      // precisely the leaked credentials this check exists to report. Measured
+      // against the previous build, that silently dropped every numeric and
+      // every keyword URL password.
+      //
+      // `isVisualFiller` covers the drawn blanks. Its floor is deliberately the
+      // small one — a URL password of `hunter2` is real, and an 8-character
+      // floor here would drop it.
+      if (isPlaceholderUrlPassword(password)) continue;
+      if (isVisualFiller(password, MIN_DRAWN_ONLY_CORE_CHARS)) continue;
 
       const urlPwMasked = password.length > 5 ? password.slice(0, 5) + '****' : '****';
       // Redact every occurrence of the raw password from the line before placing it
@@ -302,7 +498,7 @@ function detectGenericTokens(file: AnalysisFile, gitContext?: GitContext): Seman
       const [, key, value] = jsonMatch;
       if (SECRET_KEY_PATTERN.test(key) && !isNonSecretValue(value)) {
         // Ensure value looks like it could be a secret (min length, some entropy)
-        if (value.length >= 8 && !/^[a-z]+$/i.test(value)) {
+        if (looksLikeSecretValue(value)) {
           const { type, masked } = classifySecret(key, value);
           const sev = effectiveSeverityForEnvCredential(file.path, gitContext);
           const downgraded = sev === 'medium';
@@ -334,7 +530,7 @@ function detectGenericTokens(file: AnalysisFile, gitContext?: GitContext): Seman
       const [, , key, rawValue] = yamlMatch;
       const value = rawValue.trim().replace(/^["']|["']$/g, '');
       if (SECRET_KEY_PATTERN.test(key) && !isNonSecretValue(value)) {
-        if (value.length >= 8 && !/^[a-z]+$/i.test(value)) {
+        if (looksLikeSecretValue(value)) {
           const { type, masked } = classifySecret(key, value);
           const sev = effectiveSeverityForEnvCredential(file.path, gitContext);
           const downgraded = sev === 'medium';
@@ -366,7 +562,7 @@ function detectGenericTokens(file: AnalysisFile, gitContext?: GitContext): Seman
       const [, key, rawValue] = envMatch;
       const value = rawValue.trim().replace(/^["']|["']$/g, '');
       if (SECRET_KEY_PATTERN.test(key) && !isNonSecretValue(value)) {
-        if (value.length >= 8 && !/^[a-z]+$/i.test(value)) {
+        if (looksLikeSecretValue(value)) {
           const sev = effectiveSeverityForEnvCredential(file.path, gitContext);
           const downgraded = sev === 'medium';
           const wording = downgraded
@@ -396,6 +592,36 @@ function detectGenericTokens(file: AnalysisFile, gitContext?: GitContext): Seman
 }
 
 /**
+ * A SEM-CRED-003 pattern.
+ *
+ * `requiresEntropy: true` marks a pattern whose VALUE group is a bare
+ * character-class run. Those admit a fill-in-the-blank form rule
+ * (`Password: ________________________________`) as a credential, which is the
+ * same defect class fixed in the AST-CRED entropy fallback, so the captured
+ * value must clear `isVisualFiller` before a finding is raised. Patterns
+ * carrying their own positive marker (a vendor prefix, `Bearer`) are accepted
+ * on shape alone and set it `false`.
+ *
+ * The discriminated union makes `valueGroup` unreachable unless
+ * `requiresEntropy` is `true`, so the two can never be written out of step.
+ * TypeScript cannot prove that a RegExp literal actually HAS that group —
+ * `broad-credential-patterns.test.ts` closes the remaining gap at CI time,
+ * which is where this belongs; the previous runtime `throw` sat in a per-line
+ * loop under a bare `catch`.
+ */
+type BroadCredentialPattern =
+  | { readonly name: string; readonly pattern: RegExp; readonly requiresEntropy: false }
+  | { readonly name: string; readonly pattern: RegExp; readonly requiresEntropy: true; readonly valueGroup: 1 };
+
+/** Patterns that look like API keys/tokens (broader than core scanner's regex). */
+export const BROAD_CREDENTIAL_PATTERNS: readonly BroadCredentialPattern[] = [
+  { name: 'API key prefix', pattern: /(?:sk-|pk-|rk-|ak-)[a-zA-Z0-9_-]{16,}/g, requiresEntropy: false },
+  { name: 'Bearer token', pattern: /Bearer\s+[a-zA-Z0-9._-]{20,}/g, requiresEntropy: false },
+  { name: 'Generic long token', pattern: /(?:token|key|secret|password)\s*[=:]\s*['"]?([a-zA-Z0-9_-]{32,})['"]?/gi, requiresEntropy: true, valueGroup: 1 },
+  { name: 'Base64 credential', pattern: /(?:password|secret|token|key)\s*[=:]\s*['"]?([A-Za-z0-9+/]{40,}={0,2})['"]?/gi, requiresEntropy: true, valueGroup: 1 },
+];
+
+/**
  * Detect credential-like strings in instruction files
  * (CLAUDE.md, .cursorrules, copilot-instructions.md)
  *
@@ -414,19 +640,36 @@ function detectCredentialsInInstructions(file: AnalysisFile): SemanticFinding[] 
   const findings: SemanticFinding[] = [];
   const lines = file.content.split('\n');
 
-  // Patterns that look like API keys/tokens (broader than core scanner's regex)
-  const broadCredentialPatterns = [
-    { name: 'API key prefix', pattern: /(?:sk-|pk-|rk-|ak-)[a-zA-Z0-9_-]{16,}/g },
-    { name: 'Bearer token', pattern: /Bearer\s+[a-zA-Z0-9._-]{20,}/g },
-    { name: 'Generic long token', pattern: /(?:token|key|secret|password)\s*[=:]\s*['"]?([a-zA-Z0-9_-]{32,})['"]?/gi },
-    { name: 'Base64 credential', pattern: /(?:password|secret|token|key)\s*[=:]\s*['"]?([A-Za-z0-9+/]{40,}={0,2})['"]?/gi },
-  ];
-
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    for (const { name, pattern } of broadCredentialPatterns) {
+    for (const { name, pattern, requiresEntropy } of BROAD_CREDENTIAL_PATTERNS) {
       pattern.lastIndex = 0;
-      if (pattern.test(line)) {
+      // Walk EVERY match on the line, not just the first. A line can carry a
+      // form blank and a real token together
+      // (`password: ____…____  token: <real>`); taking only the first match
+      // meant the rejected blank suppressed the credential beside it.
+      let matched = false;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(line)) !== null) {
+        if (!requiresEntropy) { matched = true; break; }
+        // Every `requiresEntropy` pattern must capture its VALUE; scoring the
+        // whole match would feed the `password:` descriptor into the filler
+        // test and make the floor a no-op.
+        //
+        // A missing capture group FAILS CLOSED — the match is treated as a
+        // credential. This used to `throw`, which was the wrong failure mode
+        // twice over: `scanner.ts` wraps the whole structural pass in a bare
+        // `catch` ("Structural analysis failure is non-fatal"), so the throw
+        // deleted all four Layer 2 analyzers, produced no findings, and
+        // IMPROVED the score. A silent detection loss that also looks like
+        // success is the worst available outcome; extra findings are merely
+        // noisy. `broad-credential-patterns.test.ts` asserts the table can
+        // never reach this branch, so it is a backstop, not a code path.
+        const value = match[1];
+        if (value === undefined || !isVisualFiller(value)) { matched = true; break; }
+        if (match.index === pattern.lastIndex) pattern.lastIndex++;
+      }
+      if (matched) {
         findings.push({
           id: 'SEM-CRED-003',
           title: 'Credential in agent instructions',
@@ -477,7 +720,24 @@ function detectMcpEnvSecrets(file: AnalysisFile): SemanticFinding[] {
 
     for (const [key, value] of Object.entries(serverConfig.env)) {
       if (typeof value !== 'string') continue;
-      if (SECRET_KEY_PATTERN.test(key) && !isNonSecretValue(value)) {
+      // A DRAWN-BLANK gate, and deliberately nothing more. SEM-CRED-004 had a
+      // key-name test and no value test, so the reported false positive
+      // reproduced one file type over: an MCP onboarding template carrying
+      // `"GITHUB_TOKEN": "________"` scored CRITICAL on a blank, exactly as the
+      // `CLAUDE.md` checklist did.
+      //
+      // The floor is 2, NOT the shared `looksLikeSecretValue`. That helper
+      // carries an 8-character length floor and an all-letters rejection, which
+      // its other callers apply for their own reasons and this one never did —
+      // routing through it silently stopped reporting `supersecretpassword`,
+      // `correcthorsebatterystaple` and `hunt3r`, all real MCP env secrets that
+      // `origin/main` reports, and raised the score by doing so. A suppression
+      // added for blanks must suppress blanks and nothing else.
+      if (
+        SECRET_KEY_PATTERN.test(key) &&
+        !isNonSecretValue(value) &&
+        !isVisualFiller(value.trim().replace(/^["']|["']$/g, ''), MIN_DRAWN_ONLY_CORE_CHARS)
+      ) {
         // Find the line number
         let lineNum: number | undefined;
         for (let i = 0; i < lines.length; i++) {

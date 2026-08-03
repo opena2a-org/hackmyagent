@@ -29,6 +29,12 @@ const FILE_DISCOVERY: Array<{ glob: string; type: FileType }> = [
 
   // MCP config files
   { glob: 'mcp.json', type: 'mcp_config' },
+  // `.mcp.json` is Claude Code's PROJECT-scope MCP file, the one checked into
+  // a repo and shared with the team. It was missing, so every MCP analyzer —
+  // including the SEM-CRED-004 secret check — silently never ran on it: an
+  // identical config with a live token scored 69/100 as `.cursor/mcp.json` and
+  // 96/100 as `.mcp.json`.
+  { glob: '.mcp.json', type: 'mcp_config' },
   { glob: '.cursor/mcp.json', type: 'mcp_config' },
   { glob: '.vscode/mcp.json', type: 'mcp_config' },
 

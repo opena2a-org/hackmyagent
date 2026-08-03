@@ -41,6 +41,166 @@ describe('CredentialContextAnalyzer', () => {
       expect(findings.filter((f) => f.id === 'SEM-CRED-001')).toHaveLength(0);
     });
 
+    // The last place the reported form-blank complaint still reproduced.
+    // `detectUrlPasswords` had no value gate beyond `length < 3`, so a
+    // documented connection string was a leaked credential.
+    it('ignores documented placeholder passwords in connection strings', () => {
+      for (const [label, url] of [
+        // The verbatim MongoDB Atlas docs string. It is in a great many READMEs.
+        ['MongoDB Atlas docs string', 'mongodb://user:<password>@cluster0.mongodb.net/db'],
+        ['angle-bracket placeholder', 'postgres://admin:<YOUR_PASSWORD>@host:5432/db'],
+        ['a named placeholder', 'redis://default:your-password-here@redis.example.com:6379'],
+        ['a form blank', 'postgres://admin:' + '_'.repeat(20) + '@db.example.com/app'],
+        ['a drawn rule', 'mysql://root:' + '-'.repeat(16) + '@localhost/app'],
+      ] as Array<[string, string]>) {
+        const findings = analyzer.analyze([makeFile('config.json', url, 'config_file')]);
+        expect(
+          findings.filter((f) => f.id === 'SEM-CRED-001'),
+          `${label} is documentation, not a leaked credential: ${url}`,
+        ).toHaveLength(0);
+      }
+    });
+
+    it('STILL flags real URL passwords, including short ones', () => {
+      // The no-detection-loss half. The gate uses the SMALL core floor on
+      // purpose: an 8-character floor here would drop `hunter2`, which is a
+      // real password, reproducing the defect class this gate closes.
+      for (const [label, url] of [
+        ['an ordinary password', 'postgres://admin:password123@localhost:5432/mydb'],
+        ['a 7-character password', 'postgres://admin:hunter2@localhost:5432/mydb'],
+        ['a password with punctuation', 'mysql://root:s3cr3t!@localhost/app'],
+        ['a password containing @', 'postgres://admin:P@ssw0rd123!@db.prod.example.com:5432/production'],
+      ] as Array<[string, string]>) {
+        const findings = analyzer.analyze([makeFile('config.json', url, 'config_file')]);
+        expect(findings.filter((f) => f.id === 'SEM-CRED-001').length, `${label} must fire: ${url}`).toBeGreaterThan(0);
+      }
+    });
+
+    it('reports a URL password that is only a NUMBER or a keyword', () => {
+      // The password slot has no key to corroborate it, so the gate must not
+      // borrow rules written for key/value pairs. `isNonSecretValue` treats a
+      // pure number and the words `default`/`none`/`null`/`localhost` as
+      // non-secrets — sound when a SECRET_KEY_PATTERN key already asserted
+      // "secret", catastrophic here. Routing this detector through it silently
+      // dropped every one of these; `default` is the textbook default-credential
+      // finding.
+      for (const [label, url] of [
+        ['a numeric password', 'postgres://admin:12345678@db.prod.example.com:5432/app'],
+        ['a long numeric password', 'postgres://admin:867530912345@db.prod.example.com/app'],
+        ['the literal default', 'postgres://admin:default@db.prod.example.com:5432/app'],
+        ['the literal none', 'postgres://admin:none@db.prod.example.com:5432/app'],
+        ['the literal null', 'postgres://admin:null@db.prod.example.com:5432/app'],
+        ['a boolean-looking password', 'postgres://admin:true@db.prod.example.com:5432/app'],
+      ] as Array<[string, string]>) {
+        const findings = analyzer.analyze([makeFile('config.json', url, 'config_file')]);
+        expect(
+          findings.filter((f) => f.id === 'SEM-CRED-001').length,
+          `${label} is a leaked credential, not a config default: ${url}`,
+        ).toBeGreaterThan(0);
+      }
+    });
+
+    it('reports a real secret that merely OPENS with placeholder vocabulary', () => {
+      // The evasion the vocabulary invites: prefix any password with `your-`
+      // and it describes itself as a placeholder. The gate requires placeholder
+      // SHAPE as well as vocabulary — same-case short words joined by - or _.
+      //
+      // The digit-free rows are the ones that matter. A first attempt used
+      // `(?:[-_][a-z]+)*` under /i, where `[a-z]` also matches A-Z, so only the
+      // DIGITS were doing the work: strip them and the same secrets went
+      // silent again. Case is the signal that survives, so these are pinned
+      // with and without digits.
+      for (const [label, url] of [
+        ['your- + 24 random chars', 'postgres://admin:your-8Kd9fLm2QpXv7Zr4Nt6Bw1Hs@db.prod.example.com/app'],
+        ['your_ + random', 'postgres://admin:your_9aK3mQ7xR1zPqW5vT@db.prod.example.com/app'],
+        ['placeholder + random', 'postgres://admin:placeholderA9f3K2mQ7xR1zPq@db.prod.example.com/app'],
+        ['replace_ + random', 'postgres://admin:replace_9aK3mQ7xR1zPqW5vT@db.prod.example.com/app'],
+        ['your- + digit-free mixed case', 'postgres://admin:your-KdfLmQpXvZrNtBwHs@db.prod.example.com/app'],
+        ['your_ + digit-free mixed case', 'postgres://admin:your_aKmQxRzPqWvT@db.prod.example.com/app'],
+        ['replace_ + digit-free mixed case', 'postgres://admin:replace_aKmQxRzPqWvT@db.prod.example.com/app'],
+        ['your_ + one long SHOUTED word', 'postgres://admin:your_KJHGFDSAQWERTYUIOPZXC@db.prod.example.com/app'],
+        // Uniform case AND placeholder vocabulary, so only the per-word length
+        // bound rejects these. Without a row that reaches it, the bound is
+        // unreachable code that a later edit can silently delete.
+        ['your_ + one long lowercase blob', 'postgres://admin:your_kjhgfdsaqwertyuiopzxcvbnm@db.prod.example.com/app'],
+        ['YOUR_ + one long uppercase blob', 'postgres://admin:YOUR_KJHGFDSAQWERTYUIOPZXCVBNM@db.prod.example.com/app'],
+        // `my` is not placeholder vocabulary. An earlier draft added it and
+        // silenced both of these.
+        ['my- passphrase', 'postgres://admin:my-SuperSecretPassphrase@db.prod.example.com/app'],
+        ['my_ prod password', 'postgres://admin:my_prod_db_password@db.prod.example.com/app'],
+        // Brackets must not launder a secret. Case alone did not stop this:
+        // a lowercase hex digest and an uppercase base32 secret are both
+        // single-cased by construction, so the bracket body is word-bounded.
+        ['angle-wrapped secret', 'postgres://admin:<vendorkey-AAAABBBBCCCCDDDD>@db.prod.example.com/app'],
+        ['angle-wrapped, all lowercase', 'postgres://admin:<vendorkey-aaaabbbbccccdddd>@db.prod.example.com/app'],
+        ['angle-wrapped, all uppercase', 'postgres://admin:<GHP-ABCDEFGHIJKLMNOPQRSTUV>@db.prod.example.com/app'],
+        ['angle-wrapped hex digest', 'postgres://admin:<deadbeefcafebabe0123456789ab>@db.prod.example.com/app'],
+        // Short same-case words are not enough on their own — this is ~155 bits
+        // of lowercase payload whose every word clears the per-word bound.
+        ['vocabulary + short-word entropy', 'postgres://admin:your-bwyyoabskkd-byxhwmitldt-ypgydpmzx@db.prod.example.com/app'],
+        ['vocabulary + chunked entropy', 'postgres://admin:your-abc-def-ghi-jkl-mno-pqr@db.prod.example.com/app'],
+        // One separator inserted into a shouted blob defeated the per-word bound.
+        ['shouted blob split in two', 'postgres://admin:YOUR_KJHGFDSAQWE_RTYUIOPZXC@db.prod.example.com/app'],
+        // A hex run clears every length bound and is still a digest.
+        ['vocabulary + hex digest', 'postgres://admin:your_deadbeefcafe@db.prod.example.com/app'],
+        // A bare imperative is something a user could actually have typed.
+        ['bare change', 'postgres://admin:change@db.prod.example.com/app'],
+        ['bare replace', 'postgres://admin:replace@db.prod.example.com/app'],
+      ] as Array<[string, string]>) {
+        const findings = analyzer.analyze([makeFile('config.json', url, 'config_file')]);
+        expect(
+          findings.filter((f) => f.id === 'SEM-CRED-001').length,
+          `${label} is a real secret wearing a placeholder prefix: ${url}`,
+        ).toBeGreaterThan(0);
+      }
+    });
+
+    it('does not read a real password as a placeholder because of how it STARTS', () => {
+      // Placeholder vocabulary with no separator is just an English-flavoured
+      // password. Each of these is real.
+      for (const [label, url] of [
+        ['starts with example', 'postgres://admin:examplePassw0rd!@db.example.com/app'],
+        ['starts with xxx', 'postgres://admin:xxxSecretKey123@db.example.com/app'],
+        ['starts with TODO', 'postgres://admin:TODOfixthis2026@db.example.com/app'],
+        ['starts with fixme', 'mysql://root:fixmeL8rK9x@localhost/app'],
+      ] as Array<[string, string]>) {
+        const findings = analyzer.analyze([makeFile('config.json', url, 'config_file')]);
+        expect(
+          findings.filter((f) => f.id === 'SEM-CRED-001').length,
+          `${label} is a real password, not documentation: ${url}`,
+        ).toBeGreaterThan(0);
+      }
+    });
+
+    it('still treats a value that IS the placeholder as a placeholder', () => {
+      // The other side of the anchoring change: narrowing the rule must not
+      // resurrect the false positives it exists to suppress.
+      for (const [label, url] of [
+        ['bare example', 'postgres://admin:example@db.example.com/app'],
+        ['bare TODO', 'postgres://admin:TODO@db.example.com/app'],
+        ['a mask', 'postgres://admin:xxxxxxxxxxxx@db.example.com/app'],
+        ['your_ vocabulary', 'postgres://admin:your_api_key_here@db.example.com/app'],
+        ['change-me', 'postgres://admin:change-me@db.example.com/app'],
+        // A shouted change-me phrase is still a change-me phrase. Judgement
+        // call, recorded because it went the other way in review: every word
+        // is short, the case is uniform, and the string's whole content is an
+        // instruction to replace it. Bare `changeme` and `default` stay
+        // reported, so the default-credential finding is not lost.
+        ['a shouted change-me phrase', 'postgres://admin:CHANGE_ME_NOW_OR_ELSE@db.example.com/app'],
+        ['placeholder suffix', 'postgres://admin:placeholder-value@db.example.com/app'],
+        // Prose continuations must survive the hex rule — `credentials` is 11
+        // characters and every letter of `accede` is a hex digit.
+        ['a prose placeholder', 'postgres://admin:your-credentials-here@db.example.com/app'],
+        ['another prose placeholder', 'postgres://admin:your-access-token@db.example.com/app'],
+      ] as Array<[string, string]>) {
+        const findings = analyzer.analyze([makeFile('config.json', url, 'config_file')]);
+        expect(
+          findings.filter((f) => f.id === 'SEM-CRED-001'),
+          `${label} is documentation, not a leaked credential: ${url}`,
+        ).toHaveLength(0);
+      }
+    });
+
     it('ignores URLs with env var references in password', () => {
       const file = makeFile('.env', 'DATABASE_URL=postgres://admin:${DB_PASSWORD}@localhost:5432/mydb', 'env_file');
       const findings = analyzer.analyze([file]);
@@ -109,6 +269,148 @@ describe('CredentialContextAnalyzer', () => {
       const findings = analyzer.analyze([file]);
       expect(findings.filter((f) => f.id === 'SEM-CRED-002')).toHaveLength(0);
     });
+
+    // The reported complaint survived the AST-CRED-003 fix through THIS
+    // detector. `detectGenericTokens` carried three byte-identical copies of
+    // the value gate and none of them had an entropy floor, so a form blank
+    // next to a secret-shaped key name was still a credential — and in an
+    // instruction file it scored CRITICAL, louder than the finding that
+    // started the unit. All three shapes are covered because all three copies
+    // were wrong; they now share one `looksLikeSecretValue`.
+    describe('form blanks are not secret values (the reported complaint, via SEM-CRED-002)', () => {
+      const BLANK = '_'.repeat(47);
+
+      it('does not flag a form blank in a CLAUDE.md onboarding checklist', () => {
+        const file = makeFile(
+          'CLAUDE.md',
+          `# Onboarding\n\nFill these in on your first day:\n\npassword: ${BLANK}\napi_key: ${BLANK}\n`,
+          'agent_instructions',
+        );
+        const findings = analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-002');
+        expect(
+          findings,
+          `a form blank must not score CRITICAL. Got: ${findings.map((f) => `${f.severity} ${f.title}`).join(', ')}`,
+        ).toHaveLength(0);
+      });
+
+      it('does not flag a form blank in a JSON pair', () => {
+        const file = makeFile('config/app.json', `{\n  "password": "${BLANK}",\n  "api_key": "${BLANK}"\n}\n`);
+        expect(analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-002')).toHaveLength(0);
+      });
+
+      it('does not flag a form blank in a YAML pair', () => {
+        const file = makeFile('deploy/values.yaml', `db_password: ${BLANK}\n`);
+        expect(analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-002')).toHaveLength(0);
+      });
+
+      it('does not flag a form blank in a KEY=VALUE line', () => {
+        const file = makeFile('.env.template', `PASSWORD=${BLANK}\nAPI_KEY=${BLANK}\n`, 'env_file');
+        expect(analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-002')).toHaveLength(0);
+      });
+
+      it('does not flag a dot-leader run', () => {
+        const file = makeFile('config.yaml', `api_token: ${'_='.repeat(25)}\n`);
+        expect(analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-002')).toHaveLength(0);
+      });
+
+      // NO-DETECTION-LOSS controls. The three shapes above must keep firing on
+      // real values, or the fix traded a false positive for a blind spot.
+      it('still flags a real secret in each of the three shapes', () => {
+        const real = 'aB3xK9zQ7pR2mT8wY5vL4jH6nC1dF0sG';
+        const shapes: Array<[string, string, AnalysisFile['type']]> = [
+          ['config/app.json', `{ "password": "${real}" }`, 'config_file'],
+          ['deploy/values.yaml', `db_password: ${real}`, 'config_file'],
+          ['.env.local', `PASSWORD=${real}`, 'env_file'],
+        ];
+        for (const [path, content, type] of shapes) {
+          const findings = analyzer.analyze([makeFile(path, content, type)]);
+          expect(
+            findings.filter((f) => f.id === 'SEM-CRED-002').length,
+            `${path} must still report a real secret`,
+          ).toBeGreaterThan(0);
+        }
+      });
+
+      it('still flags a real secret sitting beside a form blank', () => {
+        const file = makeFile(
+          'config.yaml',
+          `placeholder_token: ${BLANK}\napi_secret: aB3xK9zQ7pR2mT8wY5vL4jH6nC1dF0sG\n`,
+        );
+        const findings = analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-002');
+        expect(findings.length, 'the blank must not mask the real secret below it').toBe(1);
+        expect(findings[0].line, 'and the reported line must be the secret, not the blank').toBe(2);
+      });
+
+      // THIRD adversarial pass, MEDIUM. The first fix reused the AST path's
+      // STRUCTURAL floor (`isCredibleEntropyBlob`) here. Those rules were
+      // written for anonymous 40+ character runs and are far too blunt for an
+      // 8-character config value: a short repeated unit and a dominant
+      // character are both perfectly ordinary in a WEAK key, and a weak key is
+      // still a key. These two are real secrets a scanner exists to find, and
+      // both were being dropped silently.
+      //
+      // Asserted through the ANALYZER, not through `isVisualFiller`. A helper-
+      // level assertion on this exact fix stayed green once already this
+      // branch, when the consumer was reverted to a stale list and only
+      // mutation caught it. The leak lives in the consumer.
+      it('flags weak-but-real secrets that the structural floor dropped', () => {
+        const weakButReal: Array<[string, string]> = [
+          ['a repeated-unit password', 'Ab12'.repeat(6)],
+          ['base64 of an all-zero AES-256 key', 'A'.repeat(43) + '='],
+        ];
+        for (const [label, value] of weakButReal) {
+          const findings = analyzer
+            .analyze([makeFile('deploy/values.yaml', `db_password: ${value}\n`)])
+            .filter((f) => f.id === 'SEM-CRED-002');
+          expect(findings.length, `${label} (${value}) must still be reported`).toBeGreaterThan(0);
+        }
+      });
+
+      it('flags a real secret with a long filler run glued to it', () => {
+        // Fourth adversarial pass, CRITICAL, asserted through the ANALYZER.
+        // The value gate judged the filler SHARE of the whole value, so
+        // `'_'x361 + <40-char secret>` (90.02% underscores) went silent while
+        // `'_'x360 + secret` was reported — and the score ROSE by 26 points
+        // because a lost true positive reads as an improvement. 360 vs 361 is
+        // the giveaway that a threshold, not a property, was being measured.
+        const secret = 'Zk3nQ7pR2mT9wX4vL8jH5yB0cF6dS1aG3eN7uI2o';
+        for (const n of [300, 360, 361, 400, 1000]) {
+          const findings = analyzer
+            .analyze([makeFile('deploy/values.yaml', `db_password: ${'_'.repeat(n)}${secret}\n`)])
+            .filter((f) => f.id === 'SEM-CRED-002');
+          expect(findings.length, `a secret behind '_'x${n} must still be reported`).toBeGreaterThan(0);
+        }
+      });
+
+      it('flags a real secret followed by a dashed trailing comment', () => {
+        // The YAML value is the rest of the line, so an ordinary trailing
+        // comment made the share-based rule suppress an ordinary config file.
+        const findings = analyzer
+          .analyze([makeFile('deploy/values.yaml', `api_key: Zq7Wn2Rt9Yb4Kd6Mf8Hj3 # ${'-'.repeat(240)}\n`)])
+          .filter((f) => f.id === 'SEM-CRED-002');
+        expect(findings.length, 'a trailing comment is not part of the secret').toBeGreaterThan(0);
+      });
+
+      it('rejects drawn blanks of every filler character, not just underscores', () => {
+        // The rule that replaced the structural floor keys on the filler
+        // CHARACTERS, so it has to cover the whole family a document draws
+        // with — otherwise the reported complaint just moves one character over.
+        const blanks: Array<[string, string]> = [
+          ['underscores', '_'.repeat(47)],
+          ['dashes', '-'.repeat(40)],
+          ['dots', '.'.repeat(30)],
+          ['asterisks', '*'.repeat(24)],
+          ['a blank with one stray mark', '_'.repeat(46) + '1'],
+          ['a redaction bar', 'x'.repeat(32)],
+        ];
+        for (const [label, value] of blanks) {
+          const findings = analyzer
+            .analyze([makeFile('deploy/values.yaml', `db_password: ${value}\n`)])
+            .filter((f) => f.id === 'SEM-CRED-002');
+          expect(findings, `${label} is a drawn blank, not a secret`).toHaveLength(0);
+        }
+      });
+    });
   });
 
   describe('credentials in instruction files', () => {
@@ -130,9 +432,101 @@ describe('CredentialContextAnalyzer', () => {
       const findings = analyzer.analyze([file]);
       expect(findings.filter((f) => f.id === 'SEM-CRED-003')).toHaveLength(0);
     });
+
+    // A fill-in-the-blank form rule is not a credential, so the generic
+    // value patterns skip a captured value that is one repeated character.
+    it('does not flag a fill-in-the-blank form rule', () => {
+      const file = makeFile('CLAUDE.md', `Password: ${'_'.repeat(40)}`, 'agent_instructions');
+      const findings = analyzer.analyze([file]);
+      expect(findings.filter((f) => f.id === 'SEM-CRED-003')).toHaveLength(0);
+    });
+
+    // Adversarial Phase 4.5: the analyzer took only the FIRST match per line,
+    // so a rejected form blank earlier on the line suppressed a real token
+    // beside it. It now walks every match on the line.
+    it('detects a real token that shares a line with a rejected form blank', () => {
+      const file = makeFile(
+        'CLAUDE.md',
+        `password: ${'_'.repeat(40)}  token: aB3xK9zQ7pR2mT8wY5vL4jH6nC1dF0sG`,
+        'agent_instructions',
+      );
+      const findings = analyzer.analyze([file]);
+      expect(
+        findings.filter((f) => f.id === 'SEM-CRED-003').length,
+        'a form blank earlier on the line must not mask the real token after it',
+      ).toBeGreaterThan(0);
+    });
+
+    it('still detects a real token on its own line (control)', () => {
+      const file = makeFile('CLAUDE.md', 'token = aB3xK9zQ7pR2mT8wY5vL4jH6nC1dF0sG', 'agent_instructions');
+      const findings = analyzer.analyze([file]);
+      expect(findings.filter((f) => f.id === 'SEM-CRED-003').length).toBeGreaterThan(0);
+    });
   });
 
   describe('MCP env secrets', () => {
+    it('does not flag a form blank in an MCP env block (SEM-CRED-004)', () => {
+      // Adversarial review MEDIUM: SEM-CRED-004 had a key-name test and NO
+      // value test, so the reported false positive reproduced one file type
+      // over — an onboarding `.mcp.json` template scored CRITICAL on a drawn
+      // blank. The shared value gate now guards this call site too.
+      const file = makeFile(
+        '.mcp.json',
+        JSON.stringify({ mcpServers: { gh: { env: { GITHUB_TOKEN: '_'.repeat(47), API_KEY: '-'.repeat(30) } } } }, null, 2),
+        'mcp_config',
+      );
+      const findings = analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-004');
+      expect(
+        findings,
+        `a form blank in an MCP env block is not a secret. Got: ${findings.map((f) => f.title).join(', ')}`,
+      ).toHaveLength(0);
+    });
+
+    it('does not flag an MCP blank carrying a single stray mark', () => {
+      // Pins the lower side of MIN_DRAWN_ONLY_CORE_CHARS: at a floor of 1 this
+      // becomes CRITICAL again. The upper side is deliberately not pinned —
+      // 2 -> 3 only suppresses two-character values, and no real secret has a
+      // two-character core — so a test for it would assert an arbitrary
+      // number rather than a property.
+      for (const value of ['_'.repeat(46) + '1', '_'.repeat(10) + 'X' + '_'.repeat(10)]) {
+        const file = makeFile(
+          '.mcp.json',
+          JSON.stringify({ mcpServers: { gh: { env: { DB_PASSWORD: value } } } }, null, 2),
+          'mcp_config',
+        );
+        expect(
+          analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-004'),
+          `a blank with one stray mark is still a blank: ${value.slice(0, 12)}…`,
+        ).toHaveLength(0);
+      }
+    });
+
+    it('STILL flags every real secret shape in an MCP env block (control)', () => {
+      // This gate suppresses DRAWN BLANKS and nothing else. Routing it through
+      // the shared `looksLikeSecretValue` instead imported that helper's
+      // 8-character floor and all-letters rejection — neither of which this
+      // call site ever applied — and silently stopped reporting
+      // `supersecretpassword`, `correcthorsebatterystaple` and `hunt3r`, all
+      // real secrets origin/main reports. The score rose. Adversarial review
+      // caught it; the whole suite stayed green, so only this test stands
+      // between that mistake and the next refactor.
+      for (const [label, value] of [
+        ['a vendor token', 'ghp_' + 'a'.repeat(36)],
+        ['a short password with a separator', 'dev_pass'],
+        ['an ALL-LETTERS passphrase', 'supersecretpassword'],
+        ['a long all-letters passphrase', 'correcthorsebatterystaple'],
+        ['a SHORT secret below any length floor', 'hunt3r'],
+      ] as Array<[string, string]>) {
+        const file = makeFile(
+          '.mcp.json',
+          JSON.stringify({ mcpServers: { gh: { env: { DB_PASSWORD: value } } } }, null, 2),
+          'mcp_config',
+        );
+        const findings = analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-004');
+        expect(findings.length, `${label} (${value}) must still fire`).toBeGreaterThan(0);
+      }
+    });
+
     it('detects hardcoded secrets in MCP server env blocks', () => {
       const content = JSON.stringify({
         mcpServers: {

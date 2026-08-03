@@ -16,6 +16,13 @@ import type { ASTFinding } from './capability-analyzer.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
 import { lineFromOffset, findLineFromString } from '../../types/text-position.js';
+import {
+  findCredentialFormatMatch,
+  hasCredentialFormat,
+  hasAnyCredentialCandidate,
+  hasAnchoredVendorCredential,
+  matchVendorPrefix,
+} from '../../types/credential-format.js';
 import { isCorpusPath, isIntegrityManifestPath } from '../../hardening/path-context.js';
 
 // ============================================================================
@@ -209,11 +216,16 @@ function checkCredentialForwarding(
   // FORMAT value (vendor prefix or 40+ char high-entropy run) — a planted secret,
   // vendor-prefixed or raw, still fires. An executable config classified as
   // mcp_config/agent_config/skill is never silenced here.
+  // NOTE: this veto uses the UNFILTERED candidate predicate on purpose. The
+  // test is negated — suppress only when no credential-shaped value is present
+  // — so a stricter predicate makes the carve-out fire MORE often, and every
+  // value the entropy floor discards becomes a place to hide a secret. A
+  // taxonomy of category labels has no legitimate 40-char run at all.
   if (
     artifactContent &&
     ast.artifactType === 'unknown' &&
     isSecurityTaxonomyDocument(artifactContent) &&
-    !findFirstCredentialFormat(artifactContent)
+    !hasAnyCredentialCandidate(artifactContent)
   ) {
     return findings;
   }
@@ -444,7 +456,7 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
   // NO vendor-prefix credential anywhere in the content. This
   // suppresses the SHA-256 / SHA-512 / SHA-1 / MD5 hex digests that
   // match the 40+ alphanumeric high-entropy fallback in
-  // `buildCredentialFormatRegex` without requiring every evidence
+  // the shared credential-format matcher without requiring every evidence
   // text to be hash-shaped (real evidence often includes descriptive
   // context alongside the hash). A planted real credential alongside
   // hashes still fires because `hasVendorPrefixCredential` short-
@@ -597,10 +609,14 @@ function isDocumentationOrTestContext(ast: SecurityAST): boolean {
  * descriptive text do NOT count: those words appear in well-governed agent
  * docs, fixture manifests, and release-smoke walkthroughs without being
  * actual hardcoded secrets.
+ *
+ * The entropy fallback additionally requires real character diversity, so a
+ * fill-in-the-blank form rule (`**Local Office**: ______________…`) sitting
+ * next to the word "Secret" no longer reads as a hardcoded credential. See
+ * `../../types/credential-format.js`.
  */
 function evidenceShowsCredentialFormat(evidenceTexts: string[]): boolean {
-  const re = buildCredentialFormatRegex();
-  return evidenceTexts.some(t => re.test(t));
+  return evidenceTexts.some(t => hasCredentialFormat(t));
 }
 
 /**
@@ -734,8 +750,23 @@ function isSecurityTaxonomyDocument(content: string): boolean {
  * outside this list are hash-indistinguishable; the verified-manifest
  * content gate is the load-bearing defense in that case.
  */
+// Delegated to the SHARED predicate, so this gate and the credential-format
+// matcher cannot drift apart. Two hand-maintained copies is how `hf_`, `ghs_`,
+// `ghu_`, `glpat-` and `npm_` came to be vendor-known here while the
+// credential-format matcher treated them as anonymous blobs subject to the
+// entropy fallback.
+//
+// Composing the pattern locally is what let them drift a SECOND time: this gate
+// was built from the vendor alternation alone, and when the JWT alternative
+// inside that alternation acquired a 256-character header bound as a DoS
+// defense, the bound silently landed here too. This is the only gate that LIFTS
+// the corpus and integrity-manifest carve-outs, so a DPoP or `x5c` JWT stopped
+// matching and a live token planted in a corpus path was fully suppressed —
+// `AST-CRED-002` CRITICAL included. `hasAnchoredVendorCredential` owns both
+// halves (alternation + unbounded JWT scan) so there is nothing left to compose
+// incorrectly here.
 function hasVendorPrefixCredential(content: string): boolean {
-  return /\b(?:sk-[a-zA-Z0-9_-]{20,}|sk_(?:live|test)_[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{20,}|gho_[a-zA-Z0-9]{20,}|ghs_[a-zA-Z0-9]{20,}|ghu_[a-zA-Z0-9]{20,}|github_pat_[a-zA-Z0-9_]{20,}|hf_[a-zA-Z0-9]{20,}|glpat-[a-zA-Z0-9_-]{20,}|npm_[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|xox[abprs]-[0-9A-Za-z-]{10,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/.test(content);
+  return hasAnchoredVendorCredential(content);
 }
 
 /**
@@ -767,10 +798,14 @@ function shouldSuppressCredentialChecks(
   // manifest (legit 64-hex hashes) or an adversarial corpus, a taxonomy of
   // category LABELS has no legitimate reason to carry a high-entropy secret, so
   // a planted raw/non-vendor secret still fires.
+  //
+  // Uses the UNFILTERED candidate predicate: the test is negated, so applying
+  // the entropy floor here would make the carve-out fire more often and turn
+  // every floor-rejected value into a hiding place.
   if (
     artifactType === 'unknown' &&
     isSecurityTaxonomyDocument(artifactContent) &&
-    !findFirstCredentialFormat(artifactContent)
+    !hasAnyCredentialCandidate(artifactContent)
   ) {
     return true;
   }
@@ -779,62 +814,27 @@ function shouldSuppressCredentialChecks(
 
 
 /**
- * Build the credential-format detector. The regex is shared between the
- * AST-CRED-003 evidence-text gate and the AST-CRED-001 content-scanning
- * gate (#164) so both code paths agree on what counts as a credential.
- *
- * Curated multi-vendor prefixes — Anthropic / OpenAI (`sk-`), Stripe
- * (`sk_live_` / `sk_test_`), GitHub PAT (`ghp_` / `gho_` / `github_pat_`),
- * AWS access key IDs (`AKIA…`), Google API keys (`AIza…`), Slack
- * (`xox[abprs]-…`), and JWTs (`eyJ…header.payload.sig`) — plus a
- * high-entropy 40+ word-character fallback (anchored on word boundaries,
- * excluding `-` and `/` so URL slugs and slug-style identifiers do not
- * match). Bare-keyword mentions ("credentials", "API key", "token") in
- * descriptive text do NOT count.
- *
- * Placeholder / env-var reference values (`$OPENAI_API_KEY`,
- * `${OPENAI_API_KEY}`, `<YOUR_KEY>`) deliberately fail the entropy gate
- * because the leading `$`/`<` characters are not in the word-character
- * class, and the all-uppercase env-var convention rarely produces 40+
- * consecutive characters anyway.
- */
-function buildCredentialFormatRegex(): RegExp {
-  return new RegExp(
-    [
-      'sk-[a-zA-Z0-9_-]{20,}',
-      'sk_live_[a-zA-Z0-9]{20,}',
-      'sk_test_[a-zA-Z0-9]{20,}',
-      'ghp_[a-zA-Z0-9]{20,}',
-      'gho_[a-zA-Z0-9]{20,}',
-      'github_pat_[a-zA-Z0-9_]{20,}',
-      'AKIA[0-9A-Z]{16}',
-      'AIza[0-9A-Za-z_-]{35}',
-      'xox[abprs]-[0-9A-Za-z-]{10,}',
-      'eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+',
-      '\\b[A-Za-z0-9+=_]{40,}\\b',
-    ].join('|'),
-  );
-}
-
-/**
  * Scan `content` for the first credential-format substring (per
- * `buildCredentialFormatRegex`). Returns the 1-based line number of the
- * match and the masked matched substring, or undefined when no match
- * exists. The match is masked at this layer so callers cannot
- * accidentally leak the raw credential value into a finding's
- * `evidence` field — HMA must never echo a real credential back to the
- * user, JSON output, telemetry, or Registry sync.
+ * `../../types/credential-format.js`, shared with the AST-CRED-003
+ * evidence-text gate so both code paths agree on what counts as a
+ * credential). Returns the 1-based line number of the match and the masked
+ * matched substring, or undefined when no match exists. The match is masked
+ * at this layer so callers cannot accidentally leak the raw credential value
+ * into a finding's `evidence` field — HMA must never echo a real credential
+ * back to the user, JSON output, telemetry, or Registry sync.
+ *
+ * The shared helper skips candidates that fail the entropy floor, so a form
+ * blank early in a document no longer masks a real credential later in it.
  */
 function findFirstCredentialFormat(content: string): { line: number; match: string } | undefined {
-  const re = buildCredentialFormatRegex();
-  const m = re.exec(content);
-  if (!m) return undefined;
+  const hit = findCredentialFormatMatch(content);
+  if (!hit) return undefined;
   // Count newlines before the match index — 1-based line number.
   let line = 1;
-  for (let i = 0; i < m.index; i++) {
+  for (let i = 0; i < hit.index; i++) {
     if (content.charCodeAt(i) === 10 /* \n */) line++;
   }
-  return { line, match: maskCredentialValue(m[0]) };
+  return { line, match: maskCredentialValue(hit.value) };
 }
 
 /**
@@ -848,33 +848,21 @@ function findFirstCredentialFormat(content: string): { line: number; match: stri
  *   itself never appears in scanner output.
  * - For unknown shapes, expose the first 8 characters and mask up to 16
  *   more.
+ *
+ * The prefix set is DERIVED from the shared vendor alternatives
+ * (`matchVendorPrefix`), not hand-maintained here. The hand-written copy this
+ * replaces was missing `SG.`, `hf_`, `glpat-`, `npm_` and `ghu_` — every prefix
+ * the vendor-list unification newly made detectable — so those tokens fell
+ * through to the unknown-shape branch and leaked 2-5 characters of live secret
+ * body into finding `evidence`, which is exactly what this function exists to
+ * prevent.
  */
 function maskCredentialValue(value: string): string {
   if (value.length === 0) return '';
-  const knownPrefixes = [
-    'sk-ant-api03-',
-    'sk-ant-api02-',
-    'sk-proj-',
-    'sk_live_',
-    'sk_test_',
-    'github_pat_',
-    'ghp_',
-    'gho_',
-    'ghs_',
-    'AKIA',
-    'AIza',
-    'xoxb-',
-    'xoxa-',
-    'xoxp-',
-    'xoxr-',
-    'xoxs-',
-    'eyJ',
-  ];
-  for (const prefix of knownPrefixes) {
-    if (value.startsWith(prefix)) {
-      const remaining = Math.max(0, value.length - prefix.length);
-      return `${prefix}${'*'.repeat(Math.min(remaining, 16))}`;
-    }
+  const prefix = matchVendorPrefix(value);
+  if (prefix !== undefined) {
+    const remaining = Math.max(0, value.length - prefix.length);
+    return `${prefix}${'*'.repeat(Math.min(remaining, 16))}`;
   }
   // Unknown shape — show first 8 chars then asterisks. Cap so the
   // masked output never exceeds 24 chars regardless of input length.
