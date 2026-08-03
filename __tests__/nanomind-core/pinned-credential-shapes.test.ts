@@ -32,7 +32,11 @@ const SHAPES: Array<{ label: string; value: string }> = [
   { label: 'OpenAI legacy key', value: `sk-${fill(48)}` },
   { label: 'OpenAI project key', value: `sk-proj-${fill(48)}` },
   { label: 'Anthropic API key', value: `sk-ant-api03-${fill(40)}` },
-  { label: 'AWS access key', value: 'AKIA2X4YQZ7NPLMK3RTV' },
+  // Composed, never written literally: an `AKIA` + 16 upper-alnum literal in a
+  // committed file is the shape GitHub push protection blocks on, and this file
+  // would be pushed to a public repo. Every other value here is composed for the
+  // same reason. See reference_github_push_protection_secret_fixtures.
+  { label: 'AWS access key', value: 'AKIA' + 'ABCDEFGHIJKLMNOP' },
   { label: 'GitHub personal access token', value: `ghp_${fill(36)}` },
   { label: 'GitHub OAuth token', value: `gho_${fill(36)}` },
   { label: 'GitHub app token', value: `ghs_${fill(36)}` },

@@ -3721,8 +3721,9 @@ Examples:
             if (infraFailed.length === 0) continue;
             const bySeverity = (sev: string) =>
               infraFailed.filter((f: SecurityFinding) => f.severity === sev).length;
-            const displayDir = infra.dir.startsWith(require('os').homedir())
-              ? `~${infra.dir.slice(require('os').homedir().length)}`
+            const home = require('os').homedir();
+            const displayDir = infra.dir.startsWith(home)
+              ? `~${infra.dir.slice(home.length)}`
               : infra.dir;
             posture.push({
               name: infra.name,
@@ -3733,7 +3734,22 @@ Examples:
               medium: bySeverity('medium'),
               low: bySeverity('low'),
               total: infraFailed.length,
-              scanCommand: `${CLI_PREFIX} secure ${displayDir}`,
+              // The command is built from the ABSOLUTE path through
+              // `citationTarget`, not from `displayDir`. Two reasons, and both
+              // produce a wrong command if ignored:
+              //
+              //   - `citationTarget('~/.openclaw')` returns `'~/.openclaw'`.
+              //     `~` is not shell-inert (#340 took it off that list because
+              //     `rm ~/evil.txt` acted on $HOME), so it gets quoted — and a
+              //     quoted tilde does not expand. The pasted command would look
+              //     right and resolve to a literal `~` directory.
+              //   - a home directory containing a quote or a space is spliced
+              //     into a command the report tells the user to RUN, which is
+              //     the injection class #339/#343 closed. `citationTarget`
+              //     quotes it; a display escape would not make it runnable.
+              //
+              // `dir` above stays the `~` form: it is read, not pasted.
+              scanCommand: `${CLI_PREFIX} secure ${citationTarget(infra.dir)}`,
             });
           } catch { /* Infrastructure scan failures are non-fatal */ }
         }

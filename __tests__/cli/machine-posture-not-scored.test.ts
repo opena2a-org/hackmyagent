@@ -128,11 +128,55 @@ describe('machine posture is reported, never scored', () => {
     // while the target above stayed clean.
     expect(openclaw.critical + openclaw.high).toBeGreaterThan(0);
     expect(openclaw.total).toBeGreaterThan(0);
-    // Home-relative, never the absolute path.
+    // Home-relative for READING, never the absolute path.
     expect(openclaw.dir.startsWith('~/')).toBe(true);
     // No dead ends: the citation must be a command that scans that scope.
     expect(openclaw.scanCommand).toContain('secure');
-    expect(openclaw.scanCommand).toContain(openclaw.dir);
+  });
+
+  it('the reported command actually resolves to the runtime directory', () => {
+    if (!canRun()) return;
+    // The label and the command have different jobs, and pasting the label
+    // would not work: `citationTarget('~/.openclaw')` quotes the tilde, and a
+    // quoted `~` does not expand — the command would resolve to a literal `~`
+    // directory. So the command must carry the ABSOLUTE path.
+    const dir = target();
+    const home = homeWithRuntime();
+    const { data } = scan(dir, home);
+    const openclaw = (data.machinePosture || []).find(
+      (m: { name: string }) => m.name === 'OpenClaw',
+    );
+
+    expect(openclaw.scanCommand).not.toContain('~/');
+    // Ask a real shell what the emitted argument expands to: exactly one word,
+    // and that word is the directory on disk. This is the property a display
+    // escape cannot provide, and it fails if `displayDir` is ever spliced back in.
+    const arg = openclaw.scanCommand.replace(/^\S+\s+secure\s+/, '');
+    const expanded = spawnSync('sh', ['-c', `printf '%s\\n' ${arg}`], { encoding: 'utf8' });
+    expect(expanded.status).toBe(0);
+    expect(expanded.stdout.trim().split('\n')).toEqual([join(home, '.openclaw')]);
+  });
+
+  it('a home directory carrying shell metacharacters still yields a safe command', () => {
+    if (!canRun()) return;
+    // The injection class #339/#343 closed, reached through this new citation.
+    const hostile = mkdtempSync(join(tmpdir(), "hma-mp-ho me'x-"));
+    const skillDir = join(hostile, '.openclaw', 'skills', 'harvester');
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(join(skillDir, 'SKILL.md'), MALICIOUS_SKILL);
+
+    const { data } = scan(target(), hostile);
+    const openclaw = (data.machinePosture || []).find(
+      (m: { name: string }) => m.name === 'OpenClaw',
+    );
+    expect(openclaw).toBeDefined();
+
+    const arg = openclaw.scanCommand.replace(/^\S+\s+secure\s+/, '');
+    const expanded = spawnSync('sh', ['-c', `printf '%s\\n' ${arg}`], { encoding: 'utf8' });
+    expect(expanded.status).toBe(0);
+    // One word, and it is the real directory — not two words split on the
+    // space, and not a path mangled by the quote.
+    expect(expanded.stdout.trim().split('\n')).toEqual([join(hostile, '.openclaw')]);
   });
 
   it('--no-machine-posture suppresses the section without touching the target score', () => {
