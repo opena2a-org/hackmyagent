@@ -87,10 +87,26 @@ describe('#333 the identity probe reports what it could not establish', () => {
    */
   /**
    * The write gate is the caller this matters for, so the branch it takes is
-   * asserted here rather than left to the predicate alone. `applyFixWrite`
-   * consults the identity FIRST, so the recorded failure code says which guard
-   * refused: an unreadable ancestor must be reported as exactly that, not as the
-   * "no recoverable backup copy" the later guard would report.
+   * asserted here rather than left to the predicate alone.
+   *
+   * The property is the one #333 was filed for: a refusal must be attributed to
+   * something that was ESTABLISHED, never to "no recoverable backup copy could
+   * be made" — a claim about the backup that nothing here checked.
+   *
+   * #270 added a containment gate ahead of the identity probes, so an ancestor
+   * the filesystem will not describe is now answered by the earlier guard:
+   * `realpath` on the parent fails ELOOP and the write is refused as
+   * uncontained, with "the directory that would contain it could not be
+   * resolved". That is the same physical condition stated more directly, so it
+   * satisfies the property — and the ordering is deliberate, because every gate
+   * after it decides something about the path the write will HIT, and letting
+   * them reason about an unresolved spelling is #304/#317.
+   *
+   * So the assertion is on the property rather than on one code: any
+   * established cause is acceptable, and falling through to the backup claim is
+   * not. Pinning a single code here would have to be relaxed every time a
+   * sounder guard is added ahead of it, which is how a control becomes a
+   * description of the implementation instead of a constraint on it.
    */
   it('refuses the write with its own cause when the identity cannot be established', async () => {
     await symlink(path.join(dir, 'loop-b'), path.join(dir, 'loop-a'));
@@ -104,10 +120,20 @@ describe('#333 the identity probe reports what it could not establish', () => {
     const wrote = await probe.applyFixWrite(path.join(dir, 'loop-a', 'inner', 'config.json'), 'X\n');
 
     expect(wrote, 'the write was authorised although the identity could not be established').toBe(false);
+
+    const codes = probe.fixWriteFailures.map((f) => f.code);
     expect(
-      probe.fixWriteFailures.map((f) => f.code),
-      'the refusal was attributed to a cause that was never established',
-    ).toContain('BACKUP-IDENTITY-UNKNOWN');
+      codes,
+      'the refusal was attributed to a backup copy nobody tried to make',
+    ).not.toContain('BACKUP-UNCOVERED');
+    expect(
+      codes.some((c) => c === 'BACKUP-IDENTITY-UNKNOWN' || c === 'FIX-WRITE-UNCONTAINED'),
+      `expected an established cause, got ${JSON.stringify(codes)}`,
+    ).toBe(true);
+    // And it has to SAY what could not be established, not just carry a code.
+    expect(
+      probe.fixWriteFailures.map((f) => f.message).join(' '),
+    ).toMatch(/could not be (resolved|examined)/i);
   });
 
   it('still answers no for an ordinary path and yes for one inside the backup', async () => {
