@@ -3963,11 +3963,32 @@ Examples:
           const { SoulScanner } = await import('./soul/scanner.js');
           const { createHash } = await import('node:crypto');
           const { readFileSync } = await import('node:fs');
-          const soulPath = require('path').join(targetDir, 'SOUL.md');
-          let soulHashBefore: string | null = null;
-          try { soulHashBefore = createHash('sha256').update(readFileSync(soulPath)).digest('hex'); } catch { /* SOUL.md may not exist yet */ }
           const soulScanner = new SoulScanner();
-          const hardenResult = await soulScanner.hardenSoul(targetDir, { dryRun: false });
+          // #271 — hash the file harden-soul will ACTUALLY target, not `SOUL.md`.
+          // `findGovernanceFile()` returns any of ten governance artifacts, and
+          // the pre-hash was hardcoded to one of them, so a repo governed by
+          // `.cursorrules` got a "restores the previous SOUL.md (hash: ...)"
+          // line naming a file that was never touched, with a hash of nothing.
+          const govTarget = soulScanner.findGovernanceFile(targetDir)
+            ?? require('path').join(targetDir, 'SOUL.md');
+          let soulHashBefore: string | null = null;
+          try { soulHashBefore = createHash('sha256').update(readFileSync(govTarget)).digest('hex'); } catch { /* the governance file may not exist yet */ }
+          const hardenResult = await soulScanner.hardenSoul(targetDir, {
+            dryRun: false,
+            // The governance write is gated by the same recoverability rule as
+            // every fix write inside the scan (#271). `scanner` still holds this
+            // run's backup context — harden-soul runs after `scan()` returns.
+            writeGuard: (rel: string) => scanner.ensureGovernanceBackup(targetDir, rel),
+          });
+          if (hardenResult.writeRefused) {
+            // Never silent. A refused write with a composed section list is the
+            // shape of report this repo has spent six rounds removing.
+            process.stderr.write(
+              `\nGovernance auto-fix: NOT applied to ${escapePathForDisplay(hardenResult.writeRefused.path)}\n`
+              + `  ${hardenResult.writeRefused.reason}\n`
+              + `  The file is unchanged and the governance findings above still stand.\n\n`,
+            );
+          }
           if (hardenResult.sectionsAdded && hardenResult.sectionsAdded.length > 0) {
             process.stderr.write(`\nGovernance auto-fix: harden-soul applied\n`);
             process.stderr.write(`  + ${hardenResult.sectionsAdded.length} section(s) added to ${escapePathForDisplay(hardenResult.file ?? 'SOUL.md')}`);
@@ -3996,10 +4017,15 @@ Examples:
             // an escaped path names a different file (#343), and pasting an
             // unescaped one runs whatever the directory is called.
             const govRollback = citationTarget(displayDir);
+            // #271 — name the file that was actually written. This said
+            // "SOUL.md" for all ten governance artifacts, so the one sentence
+            // telling the user what rollback would give them back named the
+            // wrong file whenever the repo was governed by anything else.
+            const govName = escapePathForDisplay(hardenResult.file ?? 'SOUL.md');
             process.stderr.write(
               soulHashBefore
-                ? `  Rollback: \`${CLI_PREFIX} rollback ${govRollback}\` restores the previous SOUL.md (hash: ${soulHashBefore.slice(0, 8)}...)\n`
-                : `  Rollback: \`${CLI_PREFIX} rollback ${govRollback}\` removes the generated SOUL.md (kept if you edit it first)\n`,
+                ? `  Rollback: \`${CLI_PREFIX} rollback ${govRollback}\` restores the previous ${govName} (hash: ${soulHashBefore.slice(0, 8)}...)\n`
+                : `  Rollback: \`${CLI_PREFIX} rollback ${govRollback}\` removes the generated ${govName} (kept if you edit it first)\n`,
             );
             process.stderr.write('\n');
           }
@@ -7474,7 +7500,39 @@ Examples:
 
       const prefix = getCommandPrefix();
       const scanner = new SoulScanner();
-      const result = await scanner.hardenSoul(targetDir, { dryRun: options.dryRun, profile: options.profile });
+
+      // #271 — a real write gets a real backup. This command rewrote a
+      // governance file (measured: `.cursorrules` 113 -> 19055 bytes) and took
+      // no backup, so `rollback` restored a previous run's manifest and
+      // reported a clean revert having never heard of the file that changed.
+      //
+      // Only for an actual write: `--dry-run` modifies nothing, and creating a
+      // backup directory for it would be a side effect of a preview.
+      let hardenBackup: string | null = null;
+      let hardenGuard: ((rel: string) => Promise<boolean>) | undefined;
+      if (!options.dryRun) {
+        const { HardeningScanner } = await import('./hardening/scanner.js');
+        const hardening = new HardeningScanner();
+        hardenBackup = await hardening.beginExternalBackup(targetDir);
+        if (hardenBackup === null) {
+          // Fail closed, like `scan()` does when its backup cannot be taken.
+          process.stderr.write(
+            `\nharden-soul did NOT modify anything.\n`
+            + `  No backup could be taken in ${escapePathForDisplay(targetDir)}, and hardening a `
+            + `governance file with nothing to roll back to is not something HackMyAgent will do.\n`
+            + `  Make the directory writable and re-run.\n\n`,
+          );
+          process.exitCode = 1;
+          return;
+        }
+        hardenGuard = (rel: string) => hardening.ensureGovernanceBackup(targetDir, rel);
+      }
+
+      const result = await scanner.hardenSoul(targetDir, {
+        dryRun: options.dryRun,
+        profile: options.profile,
+        writeGuard: hardenGuard,
+      });
 
       // JSON output
       if (options.json) {
@@ -7485,8 +7543,26 @@ Examples:
           controlsAdded: result.controlsAdded,
           dryRun: result.dryRun,
           existedBefore: result.existedBefore,
+          // #270/#271 — a consumer that only reads `sectionsAdded` would see an
+          // empty list and conclude the file was already compliant. The refusal
+          // is the reason it is empty, so it travels in the machine output too.
+          ...(result.writeRefused ? { writeRefused: result.writeRefused } : {}),
         };
         writeJsonStdout(jsonResult);
+        if (result.writeRefused) process.exitCode = 1;
+        return;
+      }
+
+      // #270/#271 — the write was refused. Say so before anything that could be
+      // read as "this ran". Nothing was modified, so exit non-zero: a script
+      // treating exit 0 as "governance is now hardened" would be wrong.
+      if (result.writeRefused) {
+        process.stderr.write(
+          `\nharden-soul did NOT modify ${escapePathForDisplay(result.writeRefused.path)}\n`
+          + `  ${result.writeRefused.reason}\n`
+          + `  The file is unchanged.\n\n`,
+        );
+        process.exitCode = 1;
         return;
       }
 
@@ -7534,6 +7610,12 @@ Examples:
           console.log(`  ${colors.cyan}Apply:${RESET()}   ${prefix} harden-soul ${citationTarget(directory)}`);
         }
         console.log(`  ${colors.cyan}Verify:${RESET()}  ${prefix} scan-soul ${citationTarget(directory)}`);
+        // #271 — the undo path, stated where the change is reported. This
+        // command rewrote a governance file and said nothing about how to get
+        // the previous one back, because there was no way to.
+        if (!result.dryRun && hardenBackup) {
+          console.log(`  ${colors.cyan}Undo:${RESET()}    ${prefix} rollback ${citationTarget(directory)}`);
+        }
         console.log();
       }
     } catch (error) {

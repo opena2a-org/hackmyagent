@@ -9,6 +9,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execSync, execFileSync } from 'child_process';
 import { DOMAIN_TEMPLATES } from './templates';
+import { GOVERNANCE_FILES } from './governance-files';
+import { resolveInsideTree, describeResolveRefusal } from '../hardening/contain';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -205,24 +207,36 @@ export interface HardenResult {
   dryRun: boolean;
   content: string;
   existedBefore: boolean;
+  /**
+   * Set when the governance file was NOT written, and why (#271).
+   *
+   * `sectionsAdded` describes what harden-soul COMPOSED, not what reached the
+   * disk, and every caller printed it as though the two were the same thing. A
+   * refused write with a populated `sectionsAdded` is exactly the shape of
+   * report this repo has spent six rounds removing from `rollback` — the tool
+   * saying it did something it did not do — so the refusal travels with the
+   * result and the callers must render it.
+   */
+  writeRefused?: { path: string; reason: string };
 }
+
+/**
+ * Decides whether `hardenSoul` may write to a governance file.
+ *
+ * Supplied by `secure --fix`, which has a backup context and can answer "is
+ * there a recoverable copy of this path". Takes the target-relative path and
+ * returns false when the write must not happen.
+ */
+export type GovernanceWriteGuard = (relPath: string) => Promise<boolean>;
 
 // ---------------------------------------------------------------------------
 // Governance file search order
 // ---------------------------------------------------------------------------
 
-const GOVERNANCE_FILES = [
-  'SOUL.md',
-  'system-prompt.md',
-  'SYSTEM_PROMPT.md',
-  '.cursorrules',
-  '.github/copilot-instructions.md',
-  'CLAUDE.md',
-  '.clinerules',
-  'instructions.md',
-  'constitution.md',
-  'agent-config.yaml',
-];
+// GOVERNANCE_FILES now lives in `./governance-files` (#271): `BACKUP_FILES` in
+// the hardening scanner has to derive its governance entries from the same list
+// `findGovernanceFile` reads, and the hand-copied subset it carried is what left
+// `.cursorrules` modified with no backup while `rollback` reported success.
 
 // ---------------------------------------------------------------------------
 // Control definitions (9 domains, 72 controls)
@@ -2279,7 +2293,29 @@ export class SoulScanner {
    * Supports iterative hardening: if a domain heading exists but controls
    * are failing, appends targeted remediation for those controls.
    */
-  async hardenSoul(targetDir: string, options?: { dryRun?: boolean; profile?: string }): Promise<HardenResult> {
+  /**
+   * The scan target's real path, or the path as given when it cannot be
+   * resolved.
+   *
+   * Containment is anchored on the REAL target: on macOS the temp root alone
+   * is a symlink (`/tmp` -> `/private/tmp`), so comparing a resolved
+   * destination against an unresolved root reports every write in a temp tree
+   * as an escape. Falling back to the literal path when `realpath` fails keeps
+   * `resolveInsideTree` the thing that decides — it refuses an unresolvable
+   * parent on its own, with its own cause.
+   */
+  private async realpathOrSelf(dir: string): Promise<string> {
+    try {
+      return await fs.promises.realpath(dir);
+    } catch {
+      return dir;
+    }
+  }
+
+  async hardenSoul(
+    targetDir: string,
+    options?: { dryRun?: boolean; profile?: string; writeGuard?: GovernanceWriteGuard },
+  ): Promise<HardenResult> {
     const dryRun = options?.dryRun ?? false;
 
     // Detect tier BEFORE hardening so we can pin it
@@ -2362,26 +2398,71 @@ export class SoulScanner {
       newContent = `\n<!-- soul:tier=${preTier} -->\n<!-- soul:profile=${preProfile} -->\n` + newContent;
     }
 
+    const outputFile = path.relative(targetDir, govFile) || path.basename(govFile);
+
     // Apply or preview
+    let writeRefused: { path: string; reason: string } | undefined;
     if (!dryRun && newContent.length > 0) {
-      if (existedBefore) {
-        // Append to existing file
-        fs.appendFileSync(govFile, '\n' + newContent);
+      // #270/#271 — the two writes below were the only mutations in the product
+      // that reached the filesystem with no containment and no backup guarantee.
+      // `applyFixWrite` in the hardening scanner gates every other one; these
+      // are in a different class and were simply never routed through anything.
+      //
+      // Measured on merged main, standalone `harden-soul`: `.cursorrules`
+      // 113 -> 19055 bytes with no manifest entry, and `rollback` then printing
+      // `[+] Rollback complete` at exit 0.
+      //
+      // Two independent gates, because they answer different questions:
+      //   1. CONTAINMENT — will this write stay inside the scanned tree? Always
+      //      asked; a governance file symlinked out of the tree is #270 arriving
+      //      through `harden-soul` instead of through `secure --fix`.
+      //   2. RECOVERABILITY — is there a copy to restore from? Only `secure
+      //      --fix` can answer (it owns the backup), so it supplies the guard.
+      //      Standalone `harden-soul` makes no backup and never claimed to.
+      const contained = await resolveInsideTree(
+        await this.realpathOrSelf(targetDir),
+        outputFile,
+        { followLeafLink: true },
+      );
+      if (!contained.ok) {
+        writeRefused = {
+          path: outputFile,
+          reason: describeResolveRefusal(contained.cause),
+        };
+      } else if (options?.writeGuard && !(await options.writeGuard(outputFile))) {
+        writeRefused = {
+          path: outputFile,
+          reason: 'no recoverable backup copy could be made for it, so `rollback` could not undo this',
+        };
       } else {
-        // Create new file
-        fs.writeFileSync(govFile, newContent);
+        try {
+          if (existedBefore) {
+            // Append to existing file
+            fs.appendFileSync(contained.path, '\n' + newContent);
+          } else {
+            // Create new file
+            fs.writeFileSync(contained.path, newContent);
+          }
+        } catch (err) {
+          // Reported, not thrown past the caller's success message. A harden
+          // run that could not write is an unchanged file, and saying so is the
+          // recoverable outcome.
+          writeRefused = {
+            path: outputFile,
+            reason: err instanceof Error ? err.message : String(err),
+          };
+        }
       }
     }
 
-    const outputFile = path.relative(targetDir, govFile) || path.basename(govFile);
-
     return {
       file: outputFile,
-      sectionsAdded,
-      controlsAdded,
+      sectionsAdded: writeRefused ? [] : sectionsAdded,
+      controlsAdded: writeRefused ? 0 : controlsAdded,
       dryRun,
       content: newContent,
       existedBefore,
+      ...(writeRefused ? { writeRefused } : {}),
     };
   }
 }
