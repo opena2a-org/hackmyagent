@@ -948,13 +948,43 @@ interface CanonicalCredentialHit {
 const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   { label: 'Anthropic API key', regex: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/g },
   { label: 'OpenAI project key', regex: /sk-proj-[a-zA-Z0-9_-]{20,}/g },
+  // OpenAI's PRE-project key format, and the one still issued to older accounts.
+  // Its absence here is what let `scan` return 98/100 exit 0 on a source file
+  // holding a hardcoded `sk-` key while the byte-identical fixture using a
+  // `sk-proj-` key returned 69/100 exit 1. `scan` is the CI gate, so the miss
+  // was shape-dependent silence on the exact thing the command exists to catch.
+  //
+  // 48 consecutive ALPHANUMERICS is the documented legacy shape and is what
+  // keeps this from colliding with its siblings: `sk-proj-` and `sk-ant-api03-`
+  // both break the character class at their first hyphen (4 and 3 chars in),
+  // so neither can be captured here and re-reported under the wrong label.
+  { label: 'OpenAI legacy key', regex: /sk-[a-zA-Z0-9]{48,}/g },
   { label: 'AWS access key', regex: /AKIA[0-9A-Z]{16}/g },
   { label: 'GitHub personal access token', regex: /ghp_[a-zA-Z0-9]{36}/g },
   { label: 'GitHub OAuth token', regex: /gho_[a-zA-Z0-9]{36}/g },
   { label: 'GitHub app token', regex: /ghs_[a-zA-Z0-9]{36}/g },
+  // Same GitHub token family, same fixed width. `ghu_` was the only sibling
+  // absent — a user-to-server token is exactly as usable as the three above.
+  { label: 'GitHub user-to-server token', regex: /ghu_[a-zA-Z0-9]{36}/g },
+  // Fine-grained PAT: `github_pat_` + 22-char id + `_` + 59-char secret. Bounded
+  // low so a future width change still matches, but high enough (60) that no
+  // ordinary identifier reaches it.
+  { label: 'GitHub fine-grained token', regex: /github_pat_[a-zA-Z0-9_]{60,}/g },
   { label: 'Slack bot token', regex: /xox[baprs]-[a-zA-Z0-9-]{10,}/g },
   { label: 'Google API key', regex: /AIza[0-9A-Za-z_-]{35}/g },
   { label: 'Stripe live key', regex: /sk_live_[0-9a-zA-Z]{24,}/g },
+  // Test keys are not harmless: they read a live Stripe account's test data and
+  // are routinely committed by the same mistake that commits the live one.
+  { label: 'Stripe test key', regex: /sk_test_[0-9a-zA-Z]{24,}/g },
+  { label: 'HuggingFace token', regex: /hf_[a-zA-Z0-9]{34,}/g },
+  { label: 'GitLab personal access token', regex: /glpat-[a-zA-Z0-9_-]{20,}/g },
+  { label: 'npm access token', regex: /npm_[a-zA-Z0-9]{36}/g },
+  // `SG.<22-char id>.<43-char secret>`, both segments at FIXED widths. The
+  // widths are load-bearing: written loosely this matches any dotted identifier
+  // with two long segments (`MSG.INCIDENT_ESCALATION_QUEUE.HIGH_PRIORITY_ROUTE`
+  // was positively identified as a credential once already — see the note in
+  // src/types/credential-format.ts). Do not relax them.
+  { label: 'SendGrid API key', regex: /SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/g },
   { label: 'PEM private key', regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PRIVATE)[A-Z ]*KEY-----/g },
 ];
 
@@ -1003,6 +1033,17 @@ const NAME_GATED_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = 
  *   - Test fixtures containing `FAKE`, `EXAMPLE`, `PLACEHOLDER`, `DUMMY`,
  *     `SAMPLE`, `TEST`, `XXX`, `YOUR_` markers in the surrounding window.
  */
+/**
+ * Test-only accessor for the canonical scan. Exported so
+ * `__tests__/nanomind-core/pinned-credential-shapes.test.ts` can assert the
+ * detector and the daemon-bound redactor cover the same shapes; asserting that
+ * through a full CLI spawn could not distinguish "not detected" from "detected
+ * and then filtered", which is the distinction that matters here.
+ */
+export function scanCanonicalCredentialFormatsForTest(content: string): CanonicalCredentialHit[] {
+  return scanCanonicalCredentialFormats(content);
+}
+
 function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit[] {
   const hits: CanonicalCredentialHit[] = [];
 

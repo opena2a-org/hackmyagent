@@ -1818,19 +1818,23 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     console.log(`  ${colors.dim}Outside this scan's target — AI runtimes installed on this machine.${RESET()}`);
     console.log(`  ${colors.dim}Not included in the score above, the findings above, or the exit code.${RESET()}`);
     console.log();
-    for (const entry of machinePosture) {
+    // Named `runtime`, not `entry`: `entry` is on the render gate's
+    // path-bearing name list (it is what a dirent is called), and a loop
+    // variable that claims to be a path while holding a summary object makes
+    // that gate report a site it cannot actually judge.
+    for (const runtime of machinePosture) {
       const parts: string[] = [];
-      if (entry.critical > 0) parts.push(`${entry.critical} critical`);
-      if (entry.high > 0) parts.push(`${entry.high} high`);
-      if (entry.medium > 0) parts.push(`${entry.medium} medium`);
-      if (entry.low > 0) parts.push(`${entry.low} low`);
+      if (runtime.critical > 0) parts.push(`${runtime.critical} critical`);
+      if (runtime.high > 0) parts.push(`${runtime.high} high`);
+      if (runtime.medium > 0) parts.push(`${runtime.medium} medium`);
+      if (runtime.low > 0) parts.push(`${runtime.low} low`);
       const breakdown = parts.length > 0 ? parts.join(' · ') : 'no findings';
       // Vendor name and path are tree-derived (a directory name on disk), so
       // both go through the same display escaping as any finding path.
-      const label = `${escapeForDisplay(entry.name)}  ${colors.dim}${escapePathForDisplay(entry.dir)}${RESET()}`;
+      const label = `${escapeForDisplay(runtime.name)}  ${colors.dim}${escapePathForDisplay(runtime.dir)}${RESET()}`;
       console.log(`  ${colors.white}${label}${RESET()}`);
-      console.log(`  ${colors.dim}${entry.score}/100 on its own terms — ${breakdown}${RESET()}`);
-      console.log(`  ${colors.cyan}Scan it:${RESET()} ${escapeForDisplay(entry.scanCommand)}`);
+      console.log(`  ${colors.dim}${runtime.score}/100 on its own terms — ${breakdown}${RESET()}`);
+      console.log(`  ${colors.cyan}Scan it:${RESET()} ${escapeForDisplay(runtime.scanCommand)}`);
       console.log();
     }
   }

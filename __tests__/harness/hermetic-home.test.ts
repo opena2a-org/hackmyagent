@@ -1,20 +1,28 @@
 // The suite's hermeticity contract, stated once.
 //
-// `secure` merges findings from the AI-infrastructure directories that exist in
-// $HOME into the result for whatever target it was given (`detectAIInfrastructure`
-// in src/cli.ts). Deliberate in the field, corrosive in a test suite: it makes
-// every spawn test a function of the machine running it. Five files failed on
-// merged main locally while CI was green for exactly this reason — a two-file
-// fixture picked up 1780 findings from a populated ~/.openclaw, which truncated
-// JSON past the default spawnSync maxBuffer and moved verdicts off the fixture.
+// `secure` scans the AI-infrastructure directories that exist in $HOME
+// (`detectAIInfrastructure` in src/cli.ts) whatever target it was given.
+// Deliberate in the field, corrosive in a test suite: it makes every spawn test
+// a function of the machine running it. Five files failed on merged main locally
+// while CI was green for exactly this reason — a two-file fixture picked up 1780
+// findings from a populated ~/.openclaw, which truncated JSON past the default
+// spawnSync maxBuffer and moved verdicts off the fixture.
 //
 // Both halves are pinned here against a synthetic $HOME, so this proves the same
 // thing on a laptop with a real ~/.openclaw and on a bare CI runner:
 //
-//   flag off -> the infra merge fires        (without this, the "on" case is vacuous)
+//   flag off -> the $HOME scan fires         (without this, the "on" case is vacuous)
 //   flag on  -> nothing in the report came from $HOME
 //
 // plus the default itself, which is the whole job of vitest.setup.ts.
+//
+// The OBSERVABLE changed in 0.25.2 and this file changed with it. $HOME findings
+// used to be merged into `findings` and scored; they are now summarized on
+// `machinePosture` and never scored ([CHIEF-CA 2026-08-03]). The hermeticity
+// contract is unchanged — what the flag suppresses is the same $HOME read — so
+// the non-vacuity probe now watches `machinePosture` instead of tagged findings.
+// Watching only the old signal would have left this gate permanently green and
+// therefore unable to fail: the merge it looked for no longer exists.
 
 import { describe, it, expect, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -26,7 +34,7 @@ const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
 const canRun = () => existsSync(CLI);
 
-/** How the merge labels a finding it pulled out of $HOME. */
+/** How a finding pulled out of $HOME would identify itself if one ever appeared. */
 const INFRA_TAG = /^\[(OpenClaw|NemoClaw|OpenShell|Moltbot|ClawdBot)\]/;
 
 // Every temp dir this file makes, so none of them survive the run. A suite
@@ -67,8 +75,13 @@ function benignTarget(): string {
   return dir;
 }
 
-/** Findings the scan of `target` pulled out of `home`. */
-function infraFindings(hermetic: boolean): Array<{ name?: string; file?: string }> {
+/** Everything the scan of `target` pulled out of `home`, by either channel. */
+function homeDerived(hermetic: boolean): {
+  /** $HOME findings that reached the target's own list. Must always be empty now. */
+  taggedFindings: Array<{ name?: string; file?: string }>;
+  /** $HOME runtimes summarized on the advisory channel. Empty iff $HOME was not read. */
+  posture: Array<{ name: string; total: number }>;
+} {
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: fakeHome() };
   // The suite default has to be cleared, not just left unset, for the off case.
   if (hermetic) env.OPENA2A_CORPUS_DETERMINISTIC = '1';
@@ -77,8 +90,8 @@ function infraFindings(hermetic: boolean): Array<{ name?: string; file?: string 
   const r = spawnSync('node', [CLI, 'secure', benignTarget(), '--json', '--ci'], {
     encoding: 'utf8',
     timeout: 120_000,
-    // The un-hermetic case is deliberately the large one. A default 1 MB cap
-    // truncates it and JSON.parse fails with a misleading syntax error.
+    // The un-hermetic case was historically the large one. Kept generous: a
+    // default 1 MB cap truncates and JSON.parse fails with a misleading error.
     maxBuffer: 64 * 1024 * 1024,
     env,
   });
@@ -93,7 +106,12 @@ function infraFindings(hermetic: boolean): Array<{ name?: string; file?: string 
     );
   }
   const data = JSON.parse(out);
-  return (data.findings || []).filter((f: { name?: string }) => INFRA_TAG.test(f.name || ''));
+  return {
+    taggedFindings: (data.findings || []).filter((f: { name?: string }) =>
+      INFRA_TAG.test(f.name || ''),
+    ),
+    posture: data.machinePosture || [],
+  };
 }
 
 describe('the suite never reads the developer home directory', () => {
@@ -120,17 +138,35 @@ describe('the suite never reads the developer home directory', () => {
   });
 
   it.runIf(canRun())(
-    'non-vacuity: with the flag off, $HOME infrastructure IS merged in',
+    'non-vacuity: with the flag off, $HOME infrastructure IS read and reported',
     () => {
-      expect(infraFindings(false).length).toBeGreaterThan(0);
+      const off = homeDerived(false);
+      // The flag has something to suppress. Assert on the count too — a
+      // present-but-empty array would mean the $HOME scan ran and found nothing,
+      // which would make the "on" case below pass for the wrong reason.
+      expect(off.posture.length).toBeGreaterThan(0);
+      expect(off.posture.some(p => p.total > 0)).toBe(true);
     },
     180_000,
   );
 
   it.runIf(canRun())(
-    'with the flag on, no finding in the report came from $HOME',
+    'with the flag on, nothing in the report came from $HOME',
     () => {
-      expect(infraFindings(true)).toEqual([]);
+      const on = homeDerived(true);
+      expect(on.posture).toEqual([]);
+      expect(on.taggedFindings).toEqual([]);
+    },
+    180_000,
+  );
+
+  it.runIf(canRun())(
+    'even with the flag off, $HOME never reaches the target findings list',
+    () => {
+      // The flag governs whether $HOME is READ. It is not what keeps $HOME out
+      // of the target's score — that is unconditional, and this pins it so a
+      // future change cannot restore the merge behind an unset flag.
+      expect(homeDerived(false).taggedFindings).toEqual([]);
     },
     180_000,
   );
