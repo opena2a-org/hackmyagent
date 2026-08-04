@@ -486,10 +486,27 @@ function literalTextBefore(ref: ts.Node): string | null {
  * not caught, because deciding it needs a second fixed point tracking WHICH
  * helper made each name safe. The direct form is the one that has actually
  * shipped twice; the indirect one is open work.
+ *
+ * SECOND BOUND, and it is the one that let a live site through: the alternation
+ * below is a hand-maintained list of COMMAND NAMES, so this gate only asks its
+ * question about commands someone remembered to add. `readlink ${filePath}` in
+ * `src/semantic/structural/credential-context.ts` shipped unquoted and reachable
+ * to a rendered `Fix:` line for exactly that reason — the gate written to close
+ * the class could not see it, which is the same shape as the printer-scoped gate
+ * this one replaced. `find`/`stat`/`readlink` are on the list now, and adding
+ * them was confirmed to turn the gate RED on the unfixed site before it was
+ * fixed. That is a patch, not the fix: a list cannot be complete. The real
+ * version keys on the argument POSITION alone, independent of which binary is
+ * named, and it is open work.
+ *
+ * The prefix also gives up on a quoted literal argument (`stat -f '%i' ${p}`),
+ * since `[\w:.@-]+` does not admit a quote — so that shape is still unseen even
+ * with `stat` on the list. Do not read a green run here as "no unquoted command
+ * interpolation exists".
  */
 const COMMAND_PREFIX = new RegExp(
   '(?:\\$\\{(?:CLI_PREFIX|prefix|cliName|secureCmd)\\}|\\bhackmyagent\\b|\\bopena2a(?:-cli)?\\b'
-  + '|\\bnpx\\b|\\brm\\b|\\bcat\\b|\\bchmod\\b|\\bgit\\s+rm\\b'
+  + '|\\bnpx\\b|\\brm\\b|\\bcat\\b|\\bchmod\\b|\\bgit\\s+rm\\b|\\bfind\\b|\\bstat\\b|\\breadlink\\b'
   // A backtick opening a code span, then a bare subcommand. `quick-scan-labels`
   // writes ``Run \`secure ${target}\``` with no binary name in front of it, so
   // the alternation above could not see the most-read follow-up line in the
