@@ -69,6 +69,9 @@ describe('#298 structural discovery reaches below the scan root', () => {
     // `CLAUDE.md` for a finding in `sub/CLAUDE.md` sends them to a file that
     // may not exist.
     const nested = await new StructuralAnalyzer().analyze(path.join(dir, 'nested'));
+    // Non-vacuity: on the pre-fix code `nested` is EMPTY, so a bare for-loop
+    // over it asserts nothing and passes. The count has to be pinned first.
+    expect(nested.length, 'nothing was discovered, so the loop below proves nothing').toBeGreaterThan(0);
     for (const f of nested) {
       expect(f.file, `${f.id} must carry its nested path`).toContain(`sub${path.sep}`);
     }
