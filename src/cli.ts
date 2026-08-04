@@ -732,9 +732,9 @@ interface UnifiedCheckDisplayOptions {
    *
    * Advisory channel, same contract as `analystEscalations`: rendered in its
    * own labelled section, never merged into `findings`, never counted toward
-   * the target score or the exit code. A directory-scoped score has to mean
-   * the directory — see [CHIEF-CA] in
-   * `.claude-sessions/2026-08-03-opena2a-cli-0-10-13-p1-fixes.md`.
+   * the target score or the exit code. A directory-scoped score has to mean the
+   * directory, or `--fail-below` is not a CI gate — the same commit scores 98
+   * on a runner and 0 on a laptop with an AI runtime installed. [CHIEF-CA]
    */
   machinePosture?: MachinePostureEntry[];
   /** When set, this path is used in Next Steps hints instead of `name`. Use for local directory targets (e.g., `secure`). */
