@@ -152,6 +152,8 @@ import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifac
 import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, retainForVerdict } from './ui/verdict-band';
 import { shouldPrintVersionFooter } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
+import { fixSummaryLine } from './ui/fix-summary';
+import { shouldShowDeepProgress } from './ui/progress-gate';
 import { generateVerifyCommand } from './ui/verify-command';
 import { commandSucceeded } from './telemetry/command-success';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
@@ -4167,15 +4169,9 @@ Examples:
         // proven not to have landed still opened in green with "Fixed 1
         // issue:". Lead with what was confirmed; a run with nothing confirmed
         // does not get to claim a repair.
-        const attempted = fixedFindings.length;
-        const plural = attempted === 1 ? '' : 'es';
-        console.log(
-          unverifiedCount === 0
-            ? `${colors.green}Fixed ${attempted} issue${attempted === 1 ? '' : 's'}${verifiedCount > 0 ? ` (${verifiedCount} verified)` : ''}:${RESET()}`
-            : verifiedCount === 0
-              ? `${colors.yellow}Attempted ${attempted} fix${plural}, none confirmed:${RESET()}`
-              : `${colors.yellow}Attempted ${attempted} fix${plural} — ${verifiedCount} verified, ${unverifiedCount} not confirmed:${RESET()}`
-        );
+        const summary = fixSummaryLine(fixedFindings.length, verifiedCount, unverifiedCount);
+        const summaryColor = summary.tone === 'confirmed' ? colors.green : colors.yellow;
+        console.log(`${summaryColor}${summary.text}${RESET()}`);
         for (const finding of fixedFindings) {
           // #324 — every rendered path is scanned-tree data.
           const location = escapeForDisplay(finding.file ? (finding.line ? `${finding.file}:${finding.line}` : finding.file) : '');
@@ -7092,8 +7088,13 @@ Examples:
       // the canonical hardened-prose SOUL — and printed nothing until it
       // finished, reading as a hang. TTY-only so JSON and CI logs are
       // byte-unaffected, same gate as the `wild` counter (#253).
-      const showDeepProgress = !!options.deep && !options.json && !globalCiMode
-        && !options.ci && process.stderr.isTTY;
+      const showDeepProgress = shouldShowDeepProgress({
+        deep: options.deep,
+        json: options.json,
+        ci: options.ci,
+        ciMode: globalCiMode,
+        isTty: process.stderr.isTTY,
+      });
       const result = await scanner.scanSoul(targetDir, {
         verbose: options.verbose,
         tier: options.tier,
