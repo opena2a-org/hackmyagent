@@ -142,3 +142,50 @@ export function citationPath(p: string): string | null {
 export function citationTarget(p: string): string {
   return citationPath(p) ?? '<dir>';
 }
+
+/**
+ * A command that names `p`, or `undefined` when `p` cannot be put into one
+ * truthfully.
+ *
+ * #273 — the sites this exists for are not printers. They build a `fix:` or a
+ * disclosure line, return it as DATA, and something else renders it much later.
+ * The source gate in `__tests__/helpers/render-source.ts` follows taint one
+ * level inside a single file, so a path interpolated into a finding's `fix` in
+ * `src/hardening/scanner.ts` and printed as `f.fix` from `src/cli.ts` crosses
+ * both a module boundary and a name change and is invisible to it. Measured on
+ * `6a5c1db`, with a skill directory named `my skill$(id)`:
+ *
+ *     Verify: hackmyagent secure .claude/skills/my skill$(id)
+ *
+ * — the space retargets the command at a path that does not exist, and `$(id)`
+ * runs on paste.
+ *
+ * Taking the `undefined` is the point. `citationTarget`'s `<dir>` placeholder
+ * is right for a SCAN TARGET, where the reader can fill in the blank and the
+ * command still means what it said. It is wrong for a command whose subject is
+ * the finding's own file: `rm <dir>` is not a fillable template, it is a
+ * different and destructive instruction. Those callers pass prose instead.
+ */
+export function commandNaming(p: string, build: (cited: string) => string): string | undefined {
+  const cited = citationPath(p);
+  return cited === null ? undefined : build(cited);
+}
+
+/**
+ * Several paths as one space-separated operand list, or null if ANY of them
+ * cannot be named truthfully.
+ *
+ * All-or-nothing on purpose. `chmod 600 a b c` that silently dropped `b` would
+ * report a remedy it did not offer, and the reader would have no way to tell —
+ * the command looks complete. The names are already on the finding, so the
+ * caller can fall back to prose that points at them.
+ */
+export function citationPaths(ps: readonly string[]): string | null {
+  const out: string[] = [];
+  for (const p of ps) {
+    const cited = citationPath(p);
+    if (cited === null) return null;
+    out.push(cited);
+  }
+  return out.join(' ');
+}

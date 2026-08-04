@@ -23,7 +23,7 @@ import {
   validateCapabilities,
 } from './skill-capability-validator';
 import { clampScoreToVerdictBand, countsAgainstScore } from '../ui/verdict-band';
-import { shellQuote, citationTarget } from '../ui/shell-quote';
+import { shellQuote, citationTarget, citationPaths, commandNaming } from '../ui/shell-quote';
 import {
   isPathWithinDirectory as containIsPathWithinDirectory,
   resolveInsideTree as containResolveInsideTree,
@@ -1158,6 +1158,41 @@ const MAX_LINE_LENGTH = 10000; // 10KB max line length for regex safety
  * report that most needed it ended up with neither.
  */
 const shellEscape = shellQuote;
+
+/**
+ * `rm <path>` for a file this scanner wants removed, quoted (#273).
+ *
+ * These `fix:` strings are DATA — built here, rendered from `src/cli.ts` much
+ * later as `f.fix` — so the source gate, which follows taint one level inside a
+ * single file, never saw them. Unquoted, a skill at `.claude/skills/my
+ * skill$(id)/SKILL.md` produced `rm .claude/skills/my skill$(id)/SKILL.md`:
+ * three arguments, one of them a live command substitution, on a command whose
+ * whole job is deletion.
+ *
+ * When the path cannot be shown truthfully there is no command, per the rule in
+ * `shell-quote.ts`: the finding already names the file in its `file` field, and
+ * a `rm` naming bytes the reader cannot see deletes the wrong thing. The prose
+ * says what to do and why no command came with it.
+ */
+/**
+ * `chmod 600 <files…>` with every operand quoted (#273).
+ *
+ * A list, so it fails as a list: if any one name cannot be shown truthfully the
+ * whole command is withheld, because a `chmod` that silently drops one file
+ * reports a remedy it did not offer. The names stay on the finding's
+ * `details.files`, which is where the reader gets them.
+ */
+function chmodFix(files: readonly string[]): string {
+  const cited = citationPaths(files);
+  return cited === null
+    ? 'Set these files to mode 600. At least one name cannot be shown truthfully in a shell command, so no runnable citation is offered — the full list is on this finding.'
+    : `chmod 600 ${cited}`;
+}
+
+function removeFileFix(relativePath: string, why: string): string {
+  return commandNaming(relativePath, (p) => `rm ${p}`)
+    ?? `${why} Remove the file named in this finding. Its name contains characters that cannot be shown truthfully in a shell command, so no runnable citation is offered — delete it from a file manager, or quote the name yourself.`;
+}
 
 /**
  * Detect whether a SKILL.md content has any of the malice signals listed in
@@ -3911,7 +3946,7 @@ export class HardeningScanner {
       // flag, read-only mount, restrictive MAC policy) and verification
       // proved the file is still world-readable. Names only the files that
       // are still failing, because the re-scan recomputes this list.
-      manualFix: passed ? undefined : `chmod 600 ${permissionIssues.join(' ')}`,
+      manualFix: passed ? undefined : chmodFix(permissionIssues),
       fixMessage: autoFix && !passed ? 'Changed permissions to 600' : undefined,
       details: passed ? undefined : { files: permissionIssues },
       guidance: 'Overly broad file permissions let any user on the system read sensitive config files that may contain credentials or API keys.',
@@ -5065,7 +5100,9 @@ dist/
         message: `Private key files found: ${foundKeys.slice(0, 5).join(', ')}${foundKeys.length > 5 ? ` (+${foundKeys.length - 5} more)` : ''} - move to secure location`,
         file: foundKeys[0],
         fixable: false,
-        fix: `Move the key outside the repository or into a secrets manager. If it was ever committed, rotate it, then run: git rm --cached ${foundKeys[0]}`,
+        fix: 'Move the key outside the repository or into a secrets manager. If it was ever committed, rotate it, then run: '
+          + (commandNaming(foundKeys[0], (q) => `git rm --cached ${q}`)
+            ?? 'git rm --cached on the file named above (its name cannot be shown truthfully in a command).'),
         details: { files: foundKeys },
         guidance: 'Private key files (.pem, .key) in a project directory are easily committed to git. Once pushed, the keys are compromised and must be rotated.',
       });
@@ -9192,7 +9229,8 @@ dist/
             message: `Skill name "${skillBasename}" is similar to popular skill "${popular}" (potential typosquatting)`,
             file: relativePath,
             fixable: false,
-            fix: `hackmyagent check ${relativePath}`,
+            fix: commandNaming(relativePath, (q) => `hackmyagent check ${q}`)
+              ?? 'Inspect the file named in this finding by hand — its name cannot be shown truthfully in a shell command.',
             guidance: 'Typosquatting uses names similar to popular skills to trick users into installing malicious versions. Verify the skill source and rename if unintentional.',
           });
           break; // One typosquatting finding per skill file
@@ -10859,7 +10897,8 @@ dist/
             : 'Skill lacks publisher metadata - cannot verify source',
         file: relativePath,
         fixable: false,
-        fix: `hackmyagent check ${relativePath}`,
+        fix: commandNaming(relativePath, (q) => `hackmyagent check ${q}`)
+              ?? 'Inspect the file named in this finding by hand — its name cannot be shown truthfully in a shell command.',
         guidance: 'Unverified publishers cannot be trusted. Add publisher: and publisher_verified: true to skill frontmatter after DNS TXT record verification.',
       });
 
@@ -10914,7 +10953,7 @@ dist/
           message: `Skill matches known malicious pattern: "${matchedPattern}"`,
           file: relativePath,
           fixable: false,
-          fix: `rm ${relativePath}`,
+          fix: removeFileFix(relativePath, 'This skill matches a known ClawHavoc pattern.'),
           guidance: 'This skill matches known malicious patterns from the ClawHavoc campaign. Remove immediately and audit any systems it had access to.',
         });
       }
@@ -10952,7 +10991,7 @@ dist/
             message: `Known C2 IP address found: ${ip}`,
             file: relativePath,
             fixable: false,
-            fix: `rm ${relativePath}`,
+            fix: removeFileFix(relativePath, 'This skill contains a known ClawHavoc C2 IP address.'),
             guidance: 'This skill contains a known ClawHavoc command-and-control IP address. Remove immediately and check network logs for connections to this IP.',
           });
           break;
@@ -10972,7 +11011,7 @@ dist/
             message: `Known malware filename referenced: "${filename}"`,
             file: relativePath,
             fixable: false,
-            fix: `rm ${relativePath}`,
+            fix: removeFileFix(relativePath, 'This skill references a known ClawHavoc malware payload filename.'),
             guidance: 'This skill references a known ClawHavoc malware payload filename. Remove and scan for other indicators of compromise.',
           });
           break;

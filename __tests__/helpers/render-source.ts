@@ -58,6 +58,15 @@ const SANITIZERS = new Set([
   'escapePathForDisplay',
   'citationPath',
   'citationTarget',
+  'citationPaths',
+  // `src/scanner/detect.ts` imports `citationTarget` under an alias because it
+  // declares a local wrapper of the same name. Matching on the callee text
+  // means the alias is a different function to this gate, so `const targetDir =
+  // safeCitationTarget(rawTargetDir)` read as unsanitised and every citation
+  // built from it was reported raw. Aliases are named here rather than
+  // resolved, because resolving imports needs a type checker and a program,
+  // and this gate deliberately parses one file at a time.
+  'safeCitationTarget',
   'JSON.stringify',
 ]);
 
@@ -77,7 +86,12 @@ const SANITIZERS = new Set([
  *
  * in `secure --fix` — a live injection, in the flagship command.
  */
-const CITATION_HELPERS = new Set(['citationPath', 'citationTarget']);
+const CITATION_HELPERS = new Set([
+  'citationPath',
+  'citationTarget',
+  'citationPaths',
+  'safeCitationTarget', // the aliased import in src/scanner/detect.ts — see SANITIZERS
+]);
 
 /**
  * Names that hold a filesystem path.
@@ -475,7 +489,13 @@ function literalTextBefore(ref: ts.Node): string | null {
  */
 const COMMAND_PREFIX = new RegExp(
   '(?:\\$\\{(?:CLI_PREFIX|prefix|cliName|secureCmd)\\}|\\bhackmyagent\\b|\\bopena2a(?:-cli)?\\b'
-  + '|\\bnpx\\b|\\brm\\b|\\bcat\\b|\\bchmod\\b)'
+  + '|\\bnpx\\b|\\brm\\b|\\bcat\\b|\\bchmod\\b|\\bgit\\s+rm\\b'
+  // A backtick opening a code span, then a bare subcommand. `quick-scan-labels`
+  // writes ``Run \`secure ${target}\``` with no binary name in front of it, so
+  // the alternation above could not see the most-read follow-up line in the
+  // `check` report. Anchored on the backtick so ordinary prose using the word
+  // "secure" as a verb does not match.
+  + '|`(?:secure|scan-soul|harden-soul|detect|check|protect|rollback|wild|trust)\\b)'
   + '\\s+(?:--?[\\w-]+\\s+|[\\w:.@-]+\\s+)*$',
 );
 
@@ -610,6 +630,156 @@ function readdirSyncSorted(dir: string): import('node:fs').Dirent[] {
 export function unescapedRenderSites(repoRoot: string): RenderSite[] {
   return reportSurfaceFiles(repoRoot)
     .flatMap((file) => sitesIn(analyseFile(file, repoRoot)));
+}
+
+/**
+ * Values that may sit in a command-argument position without being a citation.
+ *
+ * Every entry is a constant this repo controls, not data from a scanned tree or
+ * a Registry response. The list is here rather than implied by a name test
+ * because it is the whole exception surface of the rule below, and an exception
+ * nobody can see is how the printer-scoped gate quietly covered nothing for
+ * sixteen live sites.
+ */
+const NON_PATH_OPERANDS = new Set([
+  'CLI_PREFIX',       // our own binary name
+  'prefix',           // ditto, threaded as a parameter
+  'cliName',
+  'secureCmd',
+  'OPENA2A_PACKAGE',  // npm package name, a literal constant
+  'verb',             // a subcommand name, always a literal at the call site
+  'mode',             // scan-mode enum
+]);
+
+/**
+ * Property names whose value is a count rather than an operand.
+ *
+ * Narrow on purpose: these are the shapes that appear after a command in help
+ * text, where the position test cannot tell an argument from prose.
+ */
+const NUMERIC_PROPERTIES = new Set(['length', 'total', 'size', 'count']);
+
+/** A branch of a ternary that is already a citation, a literal, or a safe name. */
+function isCitedExpression(b: ts.Expression, analysis: FileAnalysis): boolean {
+  if (ts.isStringLiteralLike(b)) return true;
+  if (insideCitationHelper(b, b)) return true;
+  if (ts.isIdentifier(b)) return analysis.sanitizedNames.has(b.text) || NON_PATH_OPERANDS.has(b.text);
+  if (ts.isPropertyAccessExpression(b)) return analysis.sanitizedNames.has(b.name.text);
+  return false;
+}
+
+/**
+ * The parameter of a builder callback handed to `commandNaming` is ALREADY a
+ * citation — that is the helper's contract — so interpolating it is correct.
+ */
+function isCitationBuilderParameter(node: ts.Node): boolean {
+  if (!ts.isIdentifier(node)) return false;
+  let cur: ts.Node | undefined = node;
+  while (cur) {
+    if ((ts.isArrowFunction(cur) || ts.isFunctionExpression(cur))
+      && cur.parent && ts.isCallExpression(cur.parent)
+      && calleeName(cur.parent) === 'commandNaming'
+      && cur.parameters.length > 0
+      && ts.isIdentifier(cur.parameters[0].name)
+      && cur.parameters[0].name.text === node.text) {
+      return true;
+    }
+    cur = cur.parent;
+  }
+  return false;
+}
+
+/**
+ * Every interpolation sitting in a COMMAND-ARGUMENT position that is not a
+ * citation — anywhere in the report surface, printer or not.
+ *
+ * This is the half `unescapedRenderSites` structurally cannot see (#273). That
+ * gate walks arguments to `console.log` / `process.std*.write`, so it only ever
+ * asks the question about a module that PRINTS. The sites that shipped the
+ * defect do not print: `src/hardening/scanner.ts` builds a finding's `fix:`
+ * string, `src/ui/soul-scope-disclosure.ts` returns an array of lines, and
+ * `src/cli.ts` renders them much later as `f.fix` — across a module boundary
+ * and a name change, both of which that gate documents as blind spots.
+ *
+ * Measured before the fix: sixteen path-bearing sites across six files, of
+ * which the issue had identified four files. One was live and pasteable —
+ * `Verify: hackmyagent secure .claude/skills/my skill$(id)`.
+ *
+ * The rule is deliberately stricter than the printer gate's: in command-argument
+ * position EVERYTHING must be a citation, a literal, or a named constant from
+ * `NON_PATH_OPERANDS`. The printer gate can afford a name test because escaping
+ * a non-path is a harmless no-op; here the failure mode is a pasted command, and
+ * two of the real sites (`foundKeys[0]`, `permissionIssues.join(' ')`) carry no
+ * path-shaped name at all, so a name test would have missed them.
+ */
+export function unquotedCommandSites(repoRoot: string): RenderSite[] {
+  const sites: RenderSite[] = [];
+  for (const file of reportSurfaceFiles(repoRoot)) {
+    const analysis = analyseFile(file, repoRoot);
+    // Names bound DIRECTLY from a citation helper.
+    //
+    // `safeNames` cannot answer this one. It requires an initializer to contain
+    // at least one path-NAMED reference — the guard that stops it declaring
+    // every path-free expression safe — so `const cited = citationPaths(files)`
+    // fails it, because `files` is not a spelling the name test knows. The
+    // question here is narrower and needs no name test: the initializer IS a
+    // call to a helper whose entire contract is returning a citation.
+    const citationBound = new Set<string>();
+    (function collect(n: ts.Node): void {
+      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) {
+        const init = ts.isBinaryExpression(n.initializer)
+          && n.initializer.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+          ? n.initializer.left
+          : n.initializer;
+        if (ts.isCallExpression(init) && CITATION_HELPERS.has(calleeName(init))) {
+          citationBound.add(n.name.text);
+        }
+      }
+      ts.forEachChild(n, collect);
+    })(analysis.source);
+    const walk = (n: ts.Node): void => {
+      if (ts.isTemplateExpression(n)) {
+        for (const span of n.templateSpans) {
+          const e = span.expression;
+          if (!inCommandArgumentPosition(e)) continue;
+          if (insideCitationHelper(e, e)) continue;
+          if (isCitationBuilderParameter(e)) continue;
+          if (ts.isStringLiteralLike(e) || ts.isNumericLiteral(e)) continue;
+          const base = ts.isIdentifier(e) ? e.text
+            : ts.isPropertyAccessExpression(e) ? e.name.text : null;
+          if (base && (NON_PATH_OPERANDS.has(base) || analysis.sanitizedNames.has(base)
+            || citationBound.has(base))) continue;
+          // A count, not an operand. `Red-team with ${PAYLOAD_STATS.total}
+          // payloads` and `${domains.length} domains` follow a command earlier
+          // on the line, so the position test reads them as arguments; the
+          // value is a number and cannot carry a quoting hazard.
+          if (base && NUMERIC_PROPERTIES.has(base)) continue;
+          // `a ? citationPath(x) : '<name>'` and friends — safe when EVERY
+          // branch is.
+          if (ts.isConditionalExpression(e)
+            && [e.whenTrue, e.whenFalse].every((b) => isCitedExpression(b, analysis))) continue;
+          // `citationPath(x) ?? '<name>'`
+          if (ts.isBinaryExpression(e)
+            && e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+            && insideCitationHelper(e.left, e.left)
+            && ts.isStringLiteralLike(e.right)) continue;
+          // A call whose callee is a local helper returning a citation.
+          if (ts.isCallExpression(e) && analysis.helpers.has(calleeName(e))) continue;
+          const { line } = analysis.source.getLineAndCharacterOfPosition(e.getStart());
+          sites.push({
+            file: analysis.relative,
+            line: line + 1,
+            name: e.getText().slice(0, 60),
+            code: n.getText().replace(/\s+/g, ' ').slice(0, 140),
+            command: enclosingCommand(e),
+          });
+        }
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(analysis.source);
+  }
+  return sites;
 }
 
 /** Every command that prints a filesystem path at all, escaped or not. */

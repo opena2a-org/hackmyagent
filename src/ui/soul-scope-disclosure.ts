@@ -9,11 +9,15 @@
  *   Keyword conformance scan — controls implemented as prose may not be
  *   detected. Semantic pass: hackmyagent scan-soul <dir> --deep
  *
+ * Both emitted commands quote their target (#273).
+ *
  * #260: a `--deep` run re-printed that line verbatim — the escape hatch
  * suggesting itself while already running. Anyone following the pointer had
  * already followed it. Once the semantic pass has run, the disclosure has to
  * report what it found and hand over a next step that has not been spent.
  */
+
+import { citationTarget } from './shell-quote';
 
 export interface SoulScopeDisclosureInput {
   /** Controls still undetected after every tier that ran. */
@@ -39,7 +43,14 @@ export interface SoulScopeDisclosureInput {
  * the caller paints them, since HMA and its wrappers use different palettes.
  */
 export function soulScopeDisclosureLines(input: SoulScopeDisclosureInput): string[] {
-  const { missing, deep, deepAvailable, upgraded, prefix, directory } = input;
+  const { missing, deep, deepAvailable, upgraded, prefix } = input;
+  // #273 — these two lines are commands the reader is meant to paste, and
+  // `directory` arrives as the user typed it. A target named `my proj` emitted
+  // `scan-soul my proj --deep`, which scans `my`; one named `p; touch X` ran
+  // the `touch`. `citationTarget` because this IS the scan target: an
+  // un-nameable one becomes `<dir>`, which stays a correct instruction once the
+  // reader fills it in.
+  const directory = citationTarget(input.directory);
 
   if (deep && deepAvailable) {
     // The semantic pass ran. Report it, then hand over a next step that is
