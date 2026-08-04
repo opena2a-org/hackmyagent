@@ -1001,17 +1001,20 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   // are routinely committed by the same mistake that commits the live one.
   { label: 'Stripe test key', regex: vendor(String.raw`sk_test_[0-9a-zA-Z]{24,}`) },
   { label: 'HuggingFace token', regex: vendor(String.raw`hf_[a-zA-Z0-9]{34,}`) },
-  // The one shape whose character class admits `-`, which makes it the one the
-  // left anchor cannot rescue: `glpat-internal-runner-config-name` is 27 valid
-  // characters and matched as a token. The lookahead requires an uppercase
-  // letter or a digit somewhere in the body — a random 20-char token contains
-  // one with probability ~1, while a lowercase-and-hyphens identifier never
-  // does. Length is asserted separately so the entropy test does not have to
-  // carry it.
-  {
-    label: 'GitLab personal access token',
-    regex: vendor(String.raw`glpat-(?=[A-Za-z0-9_-]{20,})(?=[a-z_-]*[A-Z0-9])[A-Za-z0-9_-]{20,}`),
-  },
+  // GitLab is DELIBERATELY ABSENT from the verdict path. Its token body class
+  // admits `-` and `_`, so `glpat-` plus any hyphenated identifier of 20+
+  // characters matches, and no cheap predicate separates the two: an entropy
+  // lookahead (`(?=[a-z_-]*[A-Z0-9])`) still passed
+  // `glpat-shared-linux-docker-runner-1` and `glpat-XXXXXXXXXXXXXXXXXXXX` —
+  // GitLab's own docs placeholder — while introducing a QUADRATIC scan on
+  // attacker-supplied file content (measured 0ms -> 651ms at 60 KB,
+  // 1ms -> 40s at 480 KB, against a 10 MB file cap). A denial of service in a
+  // security scanner is worse than the false negative it was closing, and
+  // GitLab detection was never part of the defect this release fixes.
+  //
+  // The static credential lists in `scanner.ts` still carry `glpat-`, so
+  // `protect` and `--fix` are unaffected. Re-adding it here needs a bounded
+  // pattern and a ReDoS measurement, not another lookahead.
   { label: 'npm access token', regex: vendor(String.raw`npm_[a-zA-Z0-9]{36}`) },
   // `SG.<22-char id>.<43-char secret>`, both segments at FIXED widths. The
   // widths are load-bearing: written loosely this matches any dotted identifier

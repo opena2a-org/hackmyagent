@@ -178,13 +178,22 @@ export interface MachinePostureSummary {
   name: string;
   /** Home-relative display path (`~/.openclaw`). Never the absolute path. */
   dir: string;
-  /** That directory's score, on its own terms. Never mixed with the target's. */
-  score: number;
-  critical: number;
-  high: number;
-  medium: number;
-  low: number;
-  total: number;
+  /**
+   * That directory's score, on its own terms. Never mixed with the target's.
+   *
+   * ABSENT when `degraded` is true. A partial scan of an unreadable tree
+   * produces a number that is not a measurement — and it is a FLATTERING one,
+   * because the findings it could not reach are the ones missing. Publishing it
+   * next to a `degraded` flag still hands a CI consumer reading
+   * `machinePosture[].score` the figure the failure produced, so the field is
+   * omitted instead. Same rule for the counts.
+   */
+  score?: number;
+  critical?: number;
+  high?: number;
+  medium?: number;
+  low?: number;
+  total?: number;
   /**
    * Runnable command that scans this scope properly, or `null` when no correct
    * command can name the path — a home directory carrying a control byte or an

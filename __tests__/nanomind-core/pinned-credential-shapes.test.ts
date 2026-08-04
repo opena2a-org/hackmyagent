@@ -45,7 +45,6 @@ const SHAPES: Array<{ label: string; value: string }> = [
   { label: 'GitHub app token', value: `ghs_${fill(36)}` },
   { label: 'GitHub user-to-server token', value: `ghu_${fill(36)}` },
   { label: 'GitHub fine-grained token', value: `github_pat_${fill(22)}_${fill(59)}` },
-  { label: 'GitLab personal access token', value: `glpat-${fill(20)}` },
   { label: 'HuggingFace token', value: `hf_${fill(34)}` },
   { label: 'npm access token', value: `npm_${fill(36)}` },
   { label: 'Stripe live key', value: `sk_live_${fill(24)}` },
@@ -95,7 +94,22 @@ describe('credential shapes: detected and redacted, never one without the other'
     }
   });
 
-  it('the two lists agree: nothing is detectable but unredactable', () => {
+  it('two adjacent tokens are both redacted', () => {
+    // The redactor is deliberately unanchored. Anchoring it made
+    // `ghp_<36>ghp_<36>` redact the first and leave the SECOND verbatim in
+    // daemon-bound content, because the replacement consumed the boundary the
+    // next match needed. Concatenated tokens are narrow but the direction of
+    // the failure is the one that leaks.
+    for (const width36 of ['ghp_', 'gho_', 'ghs_', 'ghu_', 'npm_']) {
+      const pair = `${width36}${fill(36)}${width36}${fill(36)}`;
+      const redacted = redactSecretsForNanoMind(asProse(pair));
+      expect(redacted, `${width36} pair leaked a token`).not.toMatch(
+        new RegExp(`${width36}[A-Za-z0-9]{36}`),
+      );
+    }
+  });
+
+  it('the redactor covers everything the detector can find', () => {
     // The failure this catches is asymmetric drift — a shape added to the
     // detector alone, which makes the scanner forward a secret it has just
     // confirmed is real.
@@ -145,7 +159,6 @@ describe('credential shapes: detected and redacted, never one without the other'
       // `MSG.` contains `SG.` — the exact string credential-format.ts records as
       // having been positively identified as a credential once already.
       ['dotted namespace', 'const topic = MSG.INCIDENT_ESCALATION_QU.HIGH_PRIORITY_ROUTE_FOR_ONCALL_TEAM_ALPHA_9;'],
-      ['hyphenated glpat identifier', 'const runner = "glpat-internal-runner-config-name";'],
     ];
     for (const [name, content] of notCredentials) {
       it(`${name} produces no credential finding`, () => {

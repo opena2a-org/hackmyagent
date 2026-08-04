@@ -1835,19 +1835,25 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // property name. Escaping a string that needed no escaping is a no-op; a
     // render site the gate cannot see is not.
     for (const entry of machinePosture) {
+      // Counts are absent on a degraded entry by design; the degraded branch
+      // below never reads them.
       const parts: string[] = [];
-      if (entry.critical > 0) parts.push(`${entry.critical} critical`);
-      if (entry.high > 0) parts.push(`${entry.high} high`);
-      if (entry.medium > 0) parts.push(`${entry.medium} medium`);
-      if (entry.low > 0) parts.push(`${entry.low} low`);
+      if ((entry.critical ?? 0) > 0) parts.push(`${entry.critical} critical`);
+      if ((entry.high ?? 0) > 0) parts.push(`${entry.high} high`);
+      if ((entry.medium ?? 0) > 0) parts.push(`${entry.medium} medium`);
+      if ((entry.low ?? 0) > 0) parts.push(`${entry.low} low`);
       const breakdown = parts.join(' · ');
-      const score = String(entry.score);
-      // The vendor name is a fixed label from the candidate table; the path is
-      // tree-derived. Both go through display escaping — the name because a
-      // uniform rule at a render site is what survives the table gaining a
-      // derived entry later.
-      const label = `${escapeForDisplay(entry.name)}  ${colors.dim}${escapePathForDisplay(entry.dir)}${RESET()}`;
-      console.log(`  ${colors.white}${label}${RESET()}`);
+      const score = String(entry.score ?? 0);
+      // Escapes are applied INSIDE the print call, not hoisted into a `label`
+      // local. The static gate inspects the arguments of printer calls, so a
+      // path routed through an intermediate whose name is not path-like becomes
+      // invisible to it: with `const label = ...` in place, deleting the escape
+      // on `entry.dir` or `entry.name` left the gate green. Only the expression
+      // that stayed inline was actually covered.
+      console.log(
+        `  ${colors.white}${escapeForDisplay(entry.name)}${RESET()}`
+        + `  ${colors.dim}${escapePathForDisplay(entry.dir)}${RESET()}`,
+      );
       if (entry.degraded) {
         // No number. A scan that could not read the directory has not measured
         // it, and printing a score here would report a FAVOURABLE figure
@@ -3767,17 +3773,20 @@ Examples:
           // "not installed". Both now say what happened.
           let degraded = false;
           try {
-            // Probe readability FIRST. The scanner does not throw on an
-            // unreadable tree — it walks what it can and returns a partial
-            // result, so a `catch` alone cannot see this. Measured: `chmod 000`
-            // yielded `69/100, 2 findings` where the readable directory yielded
-            // `37/100, 13`. The failure made the number look BETTER, which is
-            // the one direction a security tool must never fail in silently.
-            try {
-              require('fs').readdirSync(infra.dir);
-            } catch {
-              degraded = true;
-            }
+            // Probe readability FIRST, and RECURSIVELY. The scanner does not
+            // throw on an unreadable tree — it walks what it can and returns a
+            // partial result, so a `catch` alone cannot see this. Measured:
+            // `chmod 000 ~/.openclaw` yielded `69/100, 2 findings` where the
+            // readable directory yielded `37/100, 13`. The failure made the
+            // number look BETTER, which is the one direction a security tool
+            // must never fail in silently.
+            //
+            // A top-level-only probe has the same blind spot one level down,
+            // and `~/.openclaw` at 0755 with a restricted `sandboxes/` is the
+            // MORE likely real-world shape. Bounded so the probe cannot become
+            // its own cost problem on a large tree; hitting the bound is not
+            // degradation, it just stops looking.
+            degraded = !isTreeFullyReadable(infra.dir);
             const infraScanner = new HardeningScanner();
             const infraResult = await infraScanner.scan({ targetDir: infra.dir, autoFix: false });
             const infraFailed = (infraResult.findings || []).filter(
@@ -3793,12 +3802,17 @@ Examples:
             posture.push({
               name: infra.name,
               dir: displayDir,
-              score: infraResult.score ?? 0,
-              critical: bySeverity('critical'),
-              high: bySeverity('high'),
-              medium: bySeverity('medium'),
-              low: bySeverity('low'),
-              total: infraFailed.length,
+              // Numbers ONLY when the tree was fully readable. A partial scan's
+              // score is not a measurement and is flattering by construction —
+              // the findings it could not reach are exactly the missing ones.
+              ...(degraded ? {} : {
+                score: infraResult.score ?? 0,
+                critical: bySeverity('critical'),
+                high: bySeverity('high'),
+                medium: bySeverity('medium'),
+                low: bySeverity('low'),
+                total: infraFailed.length,
+              }),
               // The command is built from the ABSOLUTE path through
               // `citationTarget`, not from `displayDir`. Two reasons, and both
               // produce a wrong command if ignored:
@@ -3832,11 +3846,12 @@ Examples:
             degraded = true;
             const displayDir = homeRelative(infra.dir);
             const cited = citationPath(infra.dir);
+            // No numbers at all: the scan raised, so nothing was measured.
+            // Reporting zeros would read as "clean" to anyone scanning the
+            // JSON, which is the opposite of what happened.
             posture.push({
               name: infra.name,
               dir: displayDir,
-              score: 0,
-              critical: 0, high: 0, medium: 0, low: 0, total: 0,
               scanCommand: cited === null ? null : `${CLI_PREFIX} secure ${cited}`,
               degraded: true,
             });
@@ -4635,6 +4650,41 @@ function assessRiskLevel(findings: SecurityFinding[]): { level: string; color: s
  * Returns paths for environments that exist and are different from the primary scan target.
  */
 /**
+ * True when every directory under `root` could be listed.
+ *
+ * A machine-posture score is only a measurement if the scan could actually see
+ * the tree. `readdirSync` on the root alone misses the common shape — the
+ * runtime readable, one subdirectory restricted — and the partial result then
+ * reports a BETTER score than the full one, with no disclosure.
+ *
+ * Bounded by node count so the probe cannot become its own cost problem;
+ * exhausting the bound means "found nothing unreadable in the part I looked
+ * at", which is reported as readable rather than as degradation.
+ */
+function isTreeFullyReadable(root: string, maxNodes = 5000): boolean {
+  const fs = require('fs');
+  const path = require('path');
+  const queue: string[] = [root];
+  let seen = 0;
+  while (queue.length > 0 && seen < maxNodes) {
+    const dir = queue.shift() as string;
+    seen++;
+    let entries: Array<{ name: string; isDirectory(): boolean; isSymbolicLink(): boolean }>;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    for (const e of entries) {
+      // Do not follow symlinks: a link out of the tree is not this runtime's
+      // readability, and following one invites a cycle.
+      if (e.isDirectory() && !e.isSymbolicLink()) queue.push(path.join(dir, e.name));
+    }
+  }
+  return true;
+}
+
+/**
  * A path shown relative to `$HOME`, for reading rather than pasting.
  *
  * Only rewrites on a SEPARATOR boundary. Slicing by `home.length` alone turned
@@ -4666,26 +4716,34 @@ function detectAIInfrastructure(primaryTarget: string): Array<{ name: string; di
   };
   const primary = realOrResolved(primaryTarget);
 
-  /**
-   * True when `dir` IS the target or lives underneath it.
-   *
-   * Exact inequality was the old test, and it was wrong in the direction that
-   * makes the report lie. Scanning `~` (or `.` from `$HOME`) put every
-   * `~/.openclaw` finding into the target's own findings, score and exit code —
-   * correctly, they are inside the target — while the Machine Posture section
-   * below still announced "Outside this scan's target … not included in the
-   * score above, the findings above, or the exit code." The same findings were
-   * reported twice on one screen, one of the two reports was false, and the
-   * directory was scanned twice.
-   *
-   * The separator test is what stops `~/.openclaw-backup` counting as inside
-   * `~/.openclaw`.
-   */
-  const isInsideTarget = (dir: string): boolean => {
-    const real = realOrResolved(dir);
-    if (real === primary) return true;
-    const rel = path.relative(primary, real);
+  /** True when `a` IS `b` or lives underneath it. Separator-bounded, so
+   *  `.openclaw-backup` is not inside `.openclaw`. */
+  const contains = (a: string, b: string): boolean => {
+    if (a === b) return true;
+    const rel = path.relative(a, b);
     return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  };
+
+  /**
+   * True when the runtime and the target OVERLAP in either direction.
+   *
+   * Both directions matter, and each was wrong in its own release:
+   *
+   *   - runtime inside target (`secure ~`): the runtime's findings are in the
+   *     target's findings, score and exit code — correctly, they are inside it —
+   *     so a section announcing "Outside this scan's target … not included in
+   *     the score above" is false, and the directory is scanned twice.
+   *   - target inside runtime (`secure ~/.openclaw/sandboxes`): identical
+   *     falsehood, reached by inverting the nesting. This is a natural
+   *     invocation — the tool itself prints `Scan it: hackmyagent secure
+   *     ~/.openclaw`, and a user who then narrows to a subdirectory lands here.
+   *
+   * Overlap in EITHER direction means the runtime is not "outside this scan's
+   * target", so it does not belong in a section that says it is.
+   */
+  const overlapsTarget = (dir: string): boolean => {
+    const real = realOrResolved(dir);
+    return contains(primary, real) || contains(real, primary);
   };
 
   const candidates: Array<{ name: string; dir: string }> = [
@@ -4699,9 +4757,10 @@ function detectAIInfrastructure(primaryTarget: string): Array<{ name: string; di
   return candidates.filter(c => {
     try {
       if (!fs.existsSync(c.dir) || !fs.statSync(c.dir).isDirectory()) return false;
-      // Inside the target: the primary scan already covers it, and it counts
-      // toward the target's score because it genuinely is part of the target.
-      return !isInsideTarget(c.dir);
+      // Overlapping the target in either direction: the primary scan already
+      // covers the shared part, and those findings count toward the target's
+      // score because they genuinely are part of the target.
+      return !overlapsTarget(c.dir);
     } catch {
       return false;
     }
