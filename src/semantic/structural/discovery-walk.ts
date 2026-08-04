@@ -107,16 +107,31 @@ const MAX_ARTIFACTS = 500;
  * The most path segments wins, so the specific location beats the generic
  * name. `.env` does not match `sub/.env.local`, and `sub/x.env` matches
  * nothing, because the comparison is anchored at a separator.
+ *
+ * The comparison is CASE-INSENSITIVE, and that is a security property rather
+ * than a convenience. The root probe reaches the file through `fs.stat`, which
+ * on a case-insensitive filesystem — the macOS default, i.e. most dev laptops —
+ * resolves `CLAUDE.md` to a file actually named `Claude.md`. A case-sensitive
+ * walk would therefore be STRICTER than the root probe it extends, and the gap
+ * is reachable: measured on `aa27ca0`, `Claude.md` at the root produced 2
+ * SEM-INST findings while `sub/Claude.md` produced none, on the same bytes and
+ * the same filesystem that hands both files to the agent. Matching case on a
+ * case-SENSITIVE filesystem costs a little over-inclusion (`claude.md` is
+ * analyzed as agent instructions), which is the safe direction: the analyzers
+ * only report on content they actually match.
+ *
+ * `toLowerCase` rather than `toLocaleLowerCase` — the latter is locale-
+ * dependent and would fold `I` differently under a Turkish locale.
  */
 export function classifyArtifact(
   rel: string,
   specs: readonly ArtifactSpec[],
 ): FileType | undefined {
-  const posix = rel.split(path.sep).join('/');
+  const posix = rel.split(path.sep).join('/').toLowerCase();
   let best: ArtifactSpec | undefined;
   let bestSegments = -1;
   for (const spec of specs) {
-    const glob = spec.glob.split(path.sep).join('/');
+    const glob = spec.glob.split(path.sep).join('/').toLowerCase();
     if (posix !== glob && !posix.endsWith(`/${glob}`)) continue;
     const segments = glob.split('/').length;
     // Strictly greater keeps the FIRST spec of equal specificity, so the

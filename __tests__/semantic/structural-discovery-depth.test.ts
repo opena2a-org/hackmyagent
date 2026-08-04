@@ -214,4 +214,14 @@ describe('#298 artifact classification', () => {
   it('returns undefined for a path matching nothing', () => {
     expect(classifyArtifact(path.join('a', 'README.md'), SPECS)).toBeUndefined();
   });
+
+  it('matches a case variant, because the root probe already does', () => {
+    // On a case-insensitive filesystem `fs.stat(dir + '/CLAUDE.md')` resolves a
+    // file named `Claude.md`, so the root probe finds it. A case-sensitive walk
+    // would be stricter than the probe it extends, and the gap is reachable:
+    // measured on `aa27ca0`, root `Claude.md` gave 2 SEM-INST findings and
+    // `sub/Claude.md` gave none, on a filesystem that hands both to the agent.
+    expect(classifyArtifact(path.join('a', 'Claude.md'), SPECS)).toBe('agent_instructions');
+    expect(classifyArtifact(path.join('a', '.CLAUDE', 'Settings.JSON'), SPECS)).toBe('claude_settings');
+  });
 });
