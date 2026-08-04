@@ -34,8 +34,30 @@ const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
 const canRun = () => existsSync(CLI);
 
-/** How a finding pulled out of $HOME would identify itself if one ever appeared. */
-const INFRA_TAG = /^\[(OpenClaw|NemoClaw|OpenShell|Moltbot|ClawdBot)\]/;
+/**
+ * A finding is $HOME-derived when its FILE is under the fixture home — not when
+ * its name carries a vendor tag.
+ *
+ * The tag test was the original probe and it is now unfalsifiable: the
+ * `[<Vendor>] ` prefix was applied by the merge that 0.25.2 removed, so nothing
+ * in `src/` produces it and the filter returns `[]` whatever the code does.
+ * Proven by mutation — re-merging $HOME findings untagged left all four tests in
+ * this file green, including the one whose stated job is "$HOME never reaches
+ * the target findings list". A gate that cannot fail is not a gate.
+ *
+ * The path test survives the rename because it keys on where the finding came
+ * from rather than on how a since-deleted code path labelled it.
+ */
+function fromHome(
+  findings: Array<{ name?: string; file?: string }>,
+  home: string,
+): Array<{ name?: string; file?: string }> {
+  const marker = /(^|[/\\])\.(openclaw|nemoclaw|openshell|moltbot|clawdbot)([/\\]|$)/i;
+  return findings.filter(f => {
+    const hay = `${f.file ?? ''} ${f.name ?? ''}`;
+    return hay.includes(home) || marker.test(hay);
+  });
+}
 
 // Every temp dir this file makes, so none of them survive the run. A suite
 // that diagnoses $TMPDIR pollution has no business adding to it.
@@ -81,8 +103,12 @@ function homeDerived(hermetic: boolean): {
   taggedFindings: Array<{ name?: string; file?: string }>;
   /** $HOME runtimes summarized on the advisory channel. Empty iff $HOME was not read. */
   posture: Array<{ name: string; total: number }>;
+  /** The target's own score, so a merge can be caught by the number it moves. */
+  score: number;
+  findingCount: number;
 } {
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: fakeHome() };
+  const home = fakeHome();
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
   // The suite default has to be cleared, not just left unset, for the off case.
   if (hermetic) env.OPENA2A_CORPUS_DETERMINISTIC = '1';
   else delete env.OPENA2A_CORPUS_DETERMINISTIC;
@@ -107,10 +133,10 @@ function homeDerived(hermetic: boolean): {
   }
   const data = JSON.parse(out);
   return {
-    taggedFindings: (data.findings || []).filter((f: { name?: string }) =>
-      INFRA_TAG.test(f.name || ''),
-    ),
+    taggedFindings: fromHome(data.findings || [], home),
     posture: data.machinePosture || [],
+    score: data.score,
+    findingCount: (data.findings || []).length,
   };
 }
 
@@ -166,7 +192,17 @@ describe('the suite never reads the developer home directory', () => {
       // The flag governs whether $HOME is READ. It is not what keeps $HOME out
       // of the target's score — that is unconditional, and this pins it so a
       // future change cannot restore the merge behind an unset flag.
-      expect(homeDerived(false).taggedFindings).toEqual([]);
+      //
+      // THREE independent observables, because the first two are each defeatable
+      // on their own: a merge that carries relative paths evades the path
+      // filter, and a merge that skips `applyScore` leaves the score untouched.
+      // The finding COUNT is what no untagged, unscored merge can hide.
+      const off = homeDerived(false);
+      const on = homeDerived(true);
+
+      expect(off.taggedFindings).toEqual([]);
+      expect(off.score).toBe(on.score);
+      expect(off.findingCount).toBe(on.findingCount);
     },
     180_000,
   );

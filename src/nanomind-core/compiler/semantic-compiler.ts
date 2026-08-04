@@ -945,9 +945,33 @@ interface CanonicalCredentialHit {
  * the surrounding context is source code. Each pattern targets a real-world
  * secret format with low false-positive rate on arbitrary text.
  */
+/**
+ * Left anchor, applied to EVERY pattern below.
+ *
+ * A vendor prefix glued to the tail of an identifier is not that vendor's key.
+ * Without this, `sk-[a-zA-Z0-9]{48,}` matches the tail of `disk-<sha256>` —
+ * a sha256 is 64 hex characters, so `disk-`, `task-`, `mask-`, `risk-` and
+ * `desk-` followed by a hash all became CRITICAL "Hardcoded Secret Detected"
+ * and exited 1 on infrastructure code containing no credential at all.
+ * `SG\.…` matched inside `MSG.INCIDENT_ESCALATION_QU.HIGH_PRIORITY_…` for the
+ * same reason — the very string `src/types/credential-format.ts` records as
+ * having been positively identified as a credential once already.
+ *
+ * NOT `\b`: `\b` treats `_` as a word character, so `____sk-ant-api03-<key>`
+ * has no boundary before `sk` and a real credential glued to underscore filler
+ * would be dropped. `(?<![A-Za-z0-9])` matches everywhere `\b` does and also
+ * after filler, so it is strictly wider. Same constant and same reasoning as
+ * `VENDOR_PREFIX_LEFT_ANCHOR` in `src/types/credential-format.ts`, which this
+ * list is supposed to mirror and had silently diverged from.
+ */
+const LEFT_ANCHOR = '(?<![A-Za-z0-9])';
+
+/** Build an anchored, global pattern from a bare vendor shape. */
+const vendor = (shape: string) => new RegExp(LEFT_ANCHOR + shape, 'g');
+
 const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
-  { label: 'Anthropic API key', regex: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/g },
-  { label: 'OpenAI project key', regex: /sk-proj-[a-zA-Z0-9_-]{20,}/g },
+  { label: 'Anthropic API key', regex: vendor(String.raw`sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}`) },
+  { label: 'OpenAI project key', regex: vendor(String.raw`sk-proj-[a-zA-Z0-9_-]{20,}`) },
   // OpenAI's PRE-project key format, and the one still issued to older accounts.
   // Its absence here is what let `scan` return 98/100 exit 0 on a source file
   // holding a hardcoded `sk-` key while the byte-identical fixture using a
@@ -958,33 +982,43 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   // keeps this from colliding with its siblings: `sk-proj-` and `sk-ant-api03-`
   // both break the character class at their first hyphen (4 and 3 chars in),
   // so neither can be captured here and re-reported under the wrong label.
-  { label: 'OpenAI legacy key', regex: /sk-[a-zA-Z0-9]{48,}/g },
-  { label: 'AWS access key', regex: /AKIA[0-9A-Z]{16}/g },
-  { label: 'GitHub personal access token', regex: /ghp_[a-zA-Z0-9]{36}/g },
-  { label: 'GitHub OAuth token', regex: /gho_[a-zA-Z0-9]{36}/g },
-  { label: 'GitHub app token', regex: /ghs_[a-zA-Z0-9]{36}/g },
+  { label: 'OpenAI legacy key', regex: vendor(String.raw`sk-[a-zA-Z0-9]{48,}`) },
+  { label: 'AWS access key', regex: vendor(String.raw`AKIA[0-9A-Z]{16}`) },
+  { label: 'GitHub personal access token', regex: vendor(String.raw`ghp_[a-zA-Z0-9]{36}`) },
+  { label: 'GitHub OAuth token', regex: vendor(String.raw`gho_[a-zA-Z0-9]{36}`) },
+  { label: 'GitHub app token', regex: vendor(String.raw`ghs_[a-zA-Z0-9]{36}`) },
   // Same GitHub token family, same fixed width. `ghu_` was the only sibling
   // absent — a user-to-server token is exactly as usable as the three above.
-  { label: 'GitHub user-to-server token', regex: /ghu_[a-zA-Z0-9]{36}/g },
+  { label: 'GitHub user-to-server token', regex: vendor(String.raw`ghu_[a-zA-Z0-9]{36}`) },
   // Fine-grained PAT: `github_pat_` + 22-char id + `_` + 59-char secret. Bounded
   // low so a future width change still matches, but high enough (60) that no
   // ordinary identifier reaches it.
-  { label: 'GitHub fine-grained token', regex: /github_pat_[a-zA-Z0-9_]{60,}/g },
-  { label: 'Slack bot token', regex: /xox[baprs]-[a-zA-Z0-9-]{10,}/g },
-  { label: 'Google API key', regex: /AIza[0-9A-Za-z_-]{35}/g },
-  { label: 'Stripe live key', regex: /sk_live_[0-9a-zA-Z]{24,}/g },
+  { label: 'GitHub fine-grained token', regex: vendor(String.raw`github_pat_[a-zA-Z0-9_]{60,}`) },
+  { label: 'Slack bot token', regex: vendor(String.raw`xox[baprs]-[a-zA-Z0-9-]{10,}`) },
+  { label: 'Google API key', regex: vendor(String.raw`AIza[0-9A-Za-z_-]{35}`) },
+  { label: 'Stripe live key', regex: vendor(String.raw`sk_live_[0-9a-zA-Z]{24,}`) },
   // Test keys are not harmless: they read a live Stripe account's test data and
   // are routinely committed by the same mistake that commits the live one.
-  { label: 'Stripe test key', regex: /sk_test_[0-9a-zA-Z]{24,}/g },
-  { label: 'HuggingFace token', regex: /hf_[a-zA-Z0-9]{34,}/g },
-  { label: 'GitLab personal access token', regex: /glpat-[a-zA-Z0-9_-]{20,}/g },
-  { label: 'npm access token', regex: /npm_[a-zA-Z0-9]{36}/g },
+  { label: 'Stripe test key', regex: vendor(String.raw`sk_test_[0-9a-zA-Z]{24,}`) },
+  { label: 'HuggingFace token', regex: vendor(String.raw`hf_[a-zA-Z0-9]{34,}`) },
+  // The one shape whose character class admits `-`, which makes it the one the
+  // left anchor cannot rescue: `glpat-internal-runner-config-name` is 27 valid
+  // characters and matched as a token. The lookahead requires an uppercase
+  // letter or a digit somewhere in the body — a random 20-char token contains
+  // one with probability ~1, while a lowercase-and-hyphens identifier never
+  // does. Length is asserted separately so the entropy test does not have to
+  // carry it.
+  {
+    label: 'GitLab personal access token',
+    regex: vendor(String.raw`glpat-(?=[A-Za-z0-9_-]{20,})(?=[a-z_-]*[A-Z0-9])[A-Za-z0-9_-]{20,}`),
+  },
+  { label: 'npm access token', regex: vendor(String.raw`npm_[a-zA-Z0-9]{36}`) },
   // `SG.<22-char id>.<43-char secret>`, both segments at FIXED widths. The
   // widths are load-bearing: written loosely this matches any dotted identifier
   // with two long segments (`MSG.INCIDENT_ESCALATION_QUEUE.HIGH_PRIORITY_ROUTE`
   // was positively identified as a credential once already — see the note in
   // src/types/credential-format.ts). Do not relax them.
-  { label: 'SendGrid API key', regex: /SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/g },
+  { label: 'SendGrid API key', regex: vendor(String.raw`SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}`) },
   { label: 'PEM private key', regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PRIVATE)[A-Z ]*KEY-----/g },
 ];
 
@@ -1042,6 +1076,17 @@ const NAME_GATED_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = 
  */
 export function scanCanonicalCredentialFormatsForTest(content: string): CanonicalCredentialHit[] {
   return scanCanonicalCredentialFormats(content);
+}
+
+/**
+ * Test-only: the labels this detector knows about.
+ *
+ * Exported so the shape test can DERIVE its expected set instead of keeping a
+ * hand-maintained copy. The defect this module was fixed for was two lists
+ * drifting apart; a test with its own third list would have reproduced it.
+ */
+export function canonicalCredentialLabelsForTest(): string[] {
+  return CANONICAL_CREDENTIAL_PATTERNS.map(p => p.label);
 }
 
 function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit[] {

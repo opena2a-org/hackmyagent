@@ -185,8 +185,20 @@ export interface MachinePostureSummary {
   medium: number;
   low: number;
   total: number;
-  /** Runnable command that scans this scope properly. No dead ends. */
-  scanCommand: string;
+  /**
+   * Runnable command that scans this scope properly, or `null` when no correct
+   * command can name the path — a home directory carrying a control byte or an
+   * invisible character has no truthful citation, and the placeholder
+   * `citationTarget` would return (`<dir>`) is shell redirection when pasted.
+   */
+  scanCommand: string | null;
+  /**
+   * True when the runtime's own scan did not complete (unreadable directory,
+   * permission error). The counts and score below are then a floor, not a
+   * measurement, and the renderer says so rather than reporting a number that
+   * looks better than reality because the scan failed.
+   */
+  degraded?: boolean;
 }
 
 /**

@@ -23,7 +23,10 @@
 
 import { describe, it, expect } from 'vitest';
 import { redactSecretsForNanoMind } from '../../src/nanomind-core/security/defense-in-depth';
-import { scanCanonicalCredentialFormatsForTest } from '../../src/nanomind-core/compiler/semantic-compiler';
+import {
+  scanCanonicalCredentialFormatsForTest,
+  canonicalCredentialLabelsForTest,
+} from '../../src/nanomind-core/compiler/semantic-compiler';
 
 /** Synthetic filler: alphanumeric, no placeholder markers the FP filters strip. */
 const fill = (n: number) => 'Ab3Cd4Ef5Gh6Ij7Kl8Mn9Op0Qr1St2Uv3Wx4Yz5Ab6Cd7Ef8Gh9Ij0Kl1Mn2Op3'.repeat(3).slice(0, n);
@@ -49,6 +52,7 @@ const SHAPES: Array<{ label: string; value: string }> = [
   { label: 'Stripe test key', value: `sk_test_${fill(24)}` },
   { label: 'SendGrid API key', value: `SG.${fill(22)}.${fill(43)}` },
   { label: 'Google API key', value: `AIza${fill(35)}` },
+  { label: 'Slack bot token', value: `xoxb-${fill(12)}-${fill(12)}-${fill(24)}` },
 ];
 
 /** Realistic carrier: a source line, which is the context `scan` reads. */
@@ -124,5 +128,49 @@ describe('credential shapes: detected and redacted, never one without the other'
     const benign = 'const skill = "sk-basic-tool";\nconst mode = "sk-fast";\n';
     const labels = scanCanonicalCredentialFormatsForTest(benign).map(h => h.label);
     expect(labels).not.toContain('OpenAI legacy key');
+  });
+
+  describe('a vendor prefix glued to an identifier tail is not that vendor key', () => {
+    // The regression that shipped in the first draft of this change: the shapes
+    // were copied from `credential-format.ts` WITHOUT its left anchor, so any
+    // word ending `sk` + `-` + 48 alphanumerics matched. A sha256 is 64 hex
+    // characters, which is how `disk-<hash>` in ordinary infrastructure code
+    // became CRITICAL "Hardcoded Secret Detected" with exit 1.
+    const SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+    const notCredentials: Array<[string, string]> = [
+      ['disk id', `primary: "disk-${SHA256}",`],
+      ['task id', `const id = "task-${SHA256}";`],
+      ['mask id', `mask-${SHA256}`],
+      ['risk id', `risk-${SHA256}`],
+      // `MSG.` contains `SG.` — the exact string credential-format.ts records as
+      // having been positively identified as a credential once already.
+      ['dotted namespace', 'const topic = MSG.INCIDENT_ESCALATION_QU.HIGH_PRIORITY_ROUTE_FOR_ONCALL_TEAM_ALPHA_9;'],
+      ['hyphenated glpat identifier', 'const runner = "glpat-internal-runner-config-name";'],
+    ];
+    for (const [name, content] of notCredentials) {
+      it(`${name} produces no credential finding`, () => {
+        expect(scanCanonicalCredentialFormatsForTest(content)).toEqual([]);
+      });
+    }
+
+    it('the anchor does not drop a real key glued to underscore filler', () => {
+      // The reason the anchor is `(?<![A-Za-z0-9])` and not `\b`: `\b` treats
+      // `_` as a word character, so a key following form-blank filler would
+      // have no boundary and be silently dropped.
+      const content = `${'_'.repeat(38)}sk-${fill(48)}`;
+      expect(scanCanonicalCredentialFormatsForTest(content).map(h => h.label))
+        .toContain('OpenAI legacy key');
+    });
+  });
+
+  it('every shape the detector knows is covered by this file', () => {
+    // The drift this whole change exists to fix can recur silently if the test
+    // keeps its own hand-maintained list. Deriving the expected set from the
+    // detector means a newly added shape with no case here fails by
+    // construction rather than passing unnoticed.
+    const covered = new Set(SHAPES.map(s => s.label));
+    const known = new Set(canonicalCredentialLabelsForTest());
+    const uncovered = [...known].filter(l => !covered.has(l) && l !== 'PEM private key');
+    expect(uncovered).toEqual([]);
   });
 });

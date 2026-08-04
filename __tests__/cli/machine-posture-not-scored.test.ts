@@ -21,7 +21,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, symlinkSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -78,8 +78,7 @@ function scan(dir: string, home: string, extraArgs: string[] = []) {
 }
 
 describe('machine posture is reported, never scored', () => {
-  it('fixture check: the fake home runtime really does produce high/critical findings', () => {
-    if (!canRun()) return;
+  it.runIf(canRun())('fixture check: the fake home runtime really does produce high/critical findings', () => {
     const home = homeWithRuntime();
     // Scan the runtime AS the target — this is the scope where those findings
     // legitimately count. If this is clean, every other assertion below would
@@ -92,8 +91,7 @@ describe('machine posture is reported, never scored', () => {
     expect(bad.length).toBeGreaterThan(0);
   });
 
-  it('the target score, finding count and exit code do not move when a home runtime exists', () => {
-    if (!canRun()) return;
+  it.runIf(canRun())('the target score, finding count and exit code do not move when a home runtime exists', () => {
     const dir = target();
     const withRuntime = scan(dir, homeWithRuntime());
     const withoutRuntime = scan(dir, homeWithoutRuntime());
@@ -105,18 +103,32 @@ describe('machine posture is reported, never scored', () => {
     expect(withRuntime.exitCode).toBe(withoutRuntime.exitCode);
   });
 
-  it('no finding in a target-scoped scan comes from the home runtime', () => {
-    if (!canRun()) return;
+  it.runIf(canRun())('no finding in a target-scoped scan comes from the home runtime', () => {
     const dir = target();
-    const { data } = scan(dir, homeWithRuntime());
-    const leaked = (data.findings || []).filter((f: { name?: string; file?: string }) =>
+    const withRuntime = scan(dir, homeWithRuntime());
+    const control = scan(dir, homeWithoutRuntime());
+
+    // A vendor-name regex over name+file is NOT sufficient on its own, and
+    // believing it was is how this test came to pass against a re-merge: merged
+    // infra findings carry a RELATIVE file like
+    // `sandboxes/agent-a/skills/harvester/SKILL.md`, which contains no vendor
+    // string at all. It stays as the cheap direct check.
+    const leaked = (withRuntime.data.findings || []).filter((f: { name?: string; file?: string }) =>
       /openclaw|nemoclaw|openshell|moltbot|clawdbot/i.test(`${f.name ?? ''} ${f.file ?? ''}`),
     );
     expect(leaked).toEqual([]);
+
+    // The load-bearing check: the finding SET is identical to a run with no
+    // runtime in $HOME at all. Nothing a merge could carry — tagged, untagged,
+    // absolute-pathed or relative — survives this.
+    const ids = (r: typeof withRuntime) =>
+      (r.data.findings || [])
+        .map((f: { checkId: string; file?: string }) => `${f.checkId}:${f.file ?? ''}`)
+        .sort();
+    expect(ids(withRuntime)).toEqual(ids(control));
   });
 
-  it('the home runtime is still reported, with its own score and a runnable command', () => {
-    if (!canRun()) return;
+  it.runIf(canRun())('the home runtime is still reported, with its own score and a runnable command', () => {
     const dir = target();
     const { data } = scan(dir, homeWithRuntime());
 
@@ -134,8 +146,7 @@ describe('machine posture is reported, never scored', () => {
     expect(openclaw.scanCommand).toContain('secure');
   });
 
-  it('the reported command actually resolves to the runtime directory', () => {
-    if (!canRun()) return;
+  it.runIf(canRun())('the reported command actually resolves to the runtime directory', () => {
     // The label and the command have different jobs, and pasting the label
     // would not work: `citationTarget('~/.openclaw')` quotes the tilde, and a
     // quoted `~` does not expand — the command would resolve to a literal `~`
@@ -157,8 +168,7 @@ describe('machine posture is reported, never scored', () => {
     expect(expanded.stdout.trim().split('\n')).toEqual([join(home, '.openclaw')]);
   });
 
-  it('a home directory carrying shell metacharacters still yields a safe command', () => {
-    if (!canRun()) return;
+  it.runIf(canRun())('a home directory carrying shell metacharacters still yields a safe command', () => {
     // The injection class #339/#343 closed, reached through this new citation.
     const hostile = mkdtempSync(join(tmpdir(), "hma-mp-ho me'x-"));
     const skillDir = join(hostile, '.openclaw', 'skills', 'harvester');
@@ -179,8 +189,74 @@ describe('machine posture is reported, never scored', () => {
     expect(expanded.stdout.trim().split('\n')).toEqual([join(hostile, '.openclaw')]);
   });
 
-  it('--no-machine-posture suppresses the section without touching the target score', () => {
-    if (!canRun()) return;
+  it.runIf(canRun())('a runtime INSIDE the scan target is not also reported as outside it', () => {
+    // Scanning `~` (or `.` from $HOME) put every `~/.openclaw` finding into the
+    // target's findings, score and exit code — correctly, they ARE inside the
+    // target — while the Machine Posture section still announced "Outside this
+    // scan's target ... not included in the score above, the findings above, or
+    // the exit code." The same findings were reported twice on one screen and
+    // one of the two reports was false.
+    const home = homeWithRuntime();
+    const { data } = scan(home, home);
+
+    // The runtime's findings legitimately count here.
+    const fromRuntime = (data.findings || []).filter((f: { file?: string }) =>
+      /openclaw/i.test(f.file ?? ''),
+    );
+    expect(fromRuntime.length).toBeGreaterThan(0);
+    // ...and precisely because they count, the "outside this target" section
+    // must not claim them.
+    expect(data.machinePosture).toBeUndefined();
+  });
+
+  it.runIf(canRun())('a symlink to the runtime is recognised as the runtime', () => {
+    // `path.resolve` does not follow symlinks, so a link in the scanned tree
+    // pointing at ~/.openclaw compared unequal to the runtime it actually is,
+    // and the section made the same false claim as above.
+    const home = homeWithRuntime();
+    const linkParent = mkdtempSync(join(tmpdir(), 'hma-mp-link-'));
+    const link = join(linkParent, 'oclink');
+    symlinkSync(join(home, '.openclaw'), link, 'dir');
+
+    const { data } = scan(link, home);
+    expect(data.machinePosture).toBeUndefined();
+  });
+
+  it.runIf(canRun())('a sibling directory sharing the prefix is still reported as outside', () => {
+    // Containment must be a path test, not a string prefix test:
+    // `~/.openclaw-backup` is not inside `~/.openclaw`.
+    const home = homeWithRuntime();
+    const sibling = join(home, '.openclaw-backup');
+    mkdirSync(sibling, { recursive: true });
+    writeFileSync(join(sibling, 'package.json'), JSON.stringify({ name: 's', version: '1.0.0' }));
+
+    const { data } = scan(sibling, home);
+    const openclaw = (data.machinePosture || []).find((m: { name: string }) => m.name === 'OpenClaw');
+    expect(openclaw).toBeDefined();
+  });
+
+  it.runIf(canRun())('an unreadable runtime is disclosed, not scored as if measured', () => {
+    // chmod 000 produced `69/100, 2 findings` where a readable runtime produced
+    // `37/100, 13 findings` — the failure made the number look BETTER, under a
+    // line reading "on its own terms".
+    const home = homeWithRuntime();
+    chmodSync(join(home, '.openclaw'), 0o000);
+    try {
+      const { data } = scan(target(), home);
+      const openclaw = (data.machinePosture || []).find(
+        (m: { name: string }) => m.name === 'OpenClaw',
+      );
+      // Either it is reported as degraded, or it is not reported at all — what
+      // it must never do is report a flattering score as a measurement.
+      if (openclaw) {
+        expect(openclaw.degraded).toBe(true);
+      }
+    } finally {
+      chmodSync(join(home, '.openclaw'), 0o755);
+    }
+  });
+
+  it.runIf(canRun())('--no-machine-posture suppresses the section without touching the target score', () => {
     const dir = target();
     const home = homeWithRuntime();
     const on = scan(dir, home);

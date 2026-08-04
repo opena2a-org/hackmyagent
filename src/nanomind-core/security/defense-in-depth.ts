@@ -144,6 +144,16 @@ export function requireBenignConsensus(
  * Even if the daemon is compromised, it cannot exfiltrate credentials
  * because it never received them.
  */
+/**
+ * Same left anchor the detector uses. A vendor prefix glued to the tail of an
+ * identifier is not that vendor's key: without this, `disk-<sha256>` was
+ * rewritten to `[REDACTED_OPENAI_KEY]`, corrupting benign content on its way to
+ * the daemon. Kept byte-identical to `LEFT_ANCHOR` in the semantic compiler so
+ * the detector and the redactor cannot disagree about what a key even looks
+ * like — `pinned-credential-shapes.test.ts` asserts they do not.
+ */
+const LEFT_ANCHOR = '(?<![A-Za-z0-9])';
+
 export function redactSecretsForNanoMind(content: string): string {
   let redacted = content;
 
@@ -160,23 +170,23 @@ export function redactSecretsForNanoMind(content: string): string {
   // key would be reported under the legacy label. The legacy rule's
   // alphanumeric-only class already excludes both, and the ordering makes that
   // independent of the class staying that way.
-  redacted = redacted.replace(/sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/g, '[REDACTED_ANTHROPIC_KEY]');
-  redacted = redacted.replace(/sk-proj-[a-zA-Z0-9_-]{20,}/g, '[REDACTED_OPENAI_KEY]');
-  redacted = redacted.replace(/sk-[a-zA-Z0-9]{48,}/g, '[REDACTED_OPENAI_KEY]');
-  redacted = redacted.replace(/AKIA[0-9A-Z]{16}/g, '[REDACTED_AWS_KEY]');
-  redacted = redacted.replace(/ghp_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_TOKEN]');
-  redacted = redacted.replace(/gho_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_TOKEN]');
-  redacted = redacted.replace(/ghs_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_TOKEN]');
-  redacted = redacted.replace(/ghu_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_TOKEN]');
-  redacted = redacted.replace(/github_pat_[a-zA-Z0-9_]{60,}/g, '[REDACTED_GITHUB_TOKEN]');
-  redacted = redacted.replace(/glpat-[a-zA-Z0-9_-]{20,}/g, '[REDACTED_GITLAB_TOKEN]');
-  redacted = redacted.replace(/hf_[a-zA-Z0-9]{34,}/g, '[REDACTED_HUGGINGFACE_TOKEN]');
-  redacted = redacted.replace(/npm_[a-zA-Z0-9]{36}/g, '[REDACTED_NPM_TOKEN]');
-  redacted = redacted.replace(/sk_live_[0-9a-zA-Z]{24,}/g, '[REDACTED_STRIPE_KEY]');
-  redacted = redacted.replace(/sk_test_[0-9a-zA-Z]{24,}/g, '[REDACTED_STRIPE_KEY]');
-  redacted = redacted.replace(/SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/g, '[REDACTED_SENDGRID_KEY]');
-  redacted = redacted.replace(/AIza[0-9A-Za-z_-]{35}/g, '[REDACTED_GOOGLE_KEY]');
-  redacted = redacted.replace(/xox[baprs]-[a-zA-Z0-9-]{10,}/g, '[REDACTED_SLACK_TOKEN]');
+  redacted = redacted.replace(new RegExp(LEFT_ANCHOR + String.raw`sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}`, 'g'), '[REDACTED_ANTHROPIC_KEY]');
+  redacted = redacted.replace(new RegExp(LEFT_ANCHOR + String.raw`sk-proj-[a-zA-Z0-9_-]{20,}`, 'g'), '[REDACTED_OPENAI_KEY]');
+  redacted = redacted.replace(new RegExp(LEFT_ANCHOR + String.raw`sk-[a-zA-Z0-9]{48,}`, 'g'), '[REDACTED_OPENAI_KEY]');
+  redacted = redacted.replace(new RegExp(LEFT_ANCHOR + String.raw`AKIA[0-9A-Z]{16}`, 'g'), '[REDACTED_AWS_KEY]');
+  redacted = redacted.replace(new RegExp(LEFT_ANCHOR + String.raw`ghp_[a-zA-Z0-9]{36}`, 'g'), '[REDACTED_GITHUB_TOKEN]');
+  redacted = redacted.replace(new RegExp(LEFT_ANCHOR + String.raw`gho_[a-zA-Z0-9]{36}`, 'g'), '[REDACTED_GITHUB_TOKEN]');
+  redacted = redacted.replace(new RegExp(LEFT_ANCHOR + String.raw`ghs_[a-zA-Z0-9]{36}`, 'g'), '[REDACTED_GITHUB_TOKEN]');
+  redacted = redacted.replace(new RegExp(LEFT_ANCHOR + String.raw`ghu_[a-zA-Z0-9]{36}`, 'g'), '[REDACTED_GITHUB_TOKEN]');
+  redacted = redacted.replace(new RegExp(LEFT_ANCHOR + String.raw`github_pat_[a-zA-Z0-9_]{60,}`, 'g'), '[REDACTED_GITHUB_TOKEN]');
+  redacted = redacted.replace(new RegExp(LEFT_ANCHOR + String.raw`glpat-[a-zA-Z0-9_-]{20,}`, 'g'), '[REDACTED_GITLAB_TOKEN]');
+  redacted = redacted.replace(new RegExp(LEFT_ANCHOR + String.raw`hf_[a-zA-Z0-9]{34,}`, 'g'), '[REDACTED_HUGGINGFACE_TOKEN]');
+  redacted = redacted.replace(new RegExp(LEFT_ANCHOR + String.raw`npm_[a-zA-Z0-9]{36}`, 'g'), '[REDACTED_NPM_TOKEN]');
+  redacted = redacted.replace(new RegExp(LEFT_ANCHOR + String.raw`sk_live_[0-9a-zA-Z]{24,}`, 'g'), '[REDACTED_STRIPE_KEY]');
+  redacted = redacted.replace(new RegExp(LEFT_ANCHOR + String.raw`sk_test_[0-9a-zA-Z]{24,}`, 'g'), '[REDACTED_STRIPE_KEY]');
+  redacted = redacted.replace(new RegExp(LEFT_ANCHOR + String.raw`SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}`, 'g'), '[REDACTED_SENDGRID_KEY]');
+  redacted = redacted.replace(new RegExp(LEFT_ANCHOR + String.raw`AIza[0-9A-Za-z_-]{35}`, 'g'), '[REDACTED_GOOGLE_KEY]');
+  redacted = redacted.replace(new RegExp(LEFT_ANCHOR + String.raw`xox[baprs]-[a-zA-Z0-9-]{10,}`, 'g'), '[REDACTED_SLACK_TOKEN]');
 
   // Generic secret patterns
   redacted = redacted.replace(/-----BEGIN [A-Z ]+ KEY-----[\s\S]*?-----END [A-Z ]+ KEY-----/g, '[REDACTED_PRIVATE_KEY]');
