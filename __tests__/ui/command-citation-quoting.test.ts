@@ -125,9 +125,16 @@ describe('the citation primitives (#273)', () => {
 
   // The rule from shell-quote.ts: a path that cannot be SHOWN truthfully gets no
   // command at all, rather than a command naming bytes the reader cannot see.
+  //
+  // The ESC is built from its code point rather than typed. A raw control byte
+  // in a source file is invisible in every diff and every editor that would
+  // review it -- the sibling gate in `render-source-gate.test.ts` caught exactly
+  // that in the first draft of this file, which is the gate doing its job on the
+  // person adding tests to it.
   it('commandNaming yields no command for a path with a display hazard', () => {
     expect(commandNaming('nl\nsecond', (p) => `rm ${p}`)).toBeUndefined();
-    expect(commandNaming('esc[2Jcleared', (p) => `rm ${p}`)).toBeUndefined();
+    const esc = String.fromCodePoint(0x1b);
+    expect(commandNaming(`esc${esc}[2Jcleared`, (p) => `rm ${p}`)).toBeUndefined();
   });
 
   it('citationPaths quotes every operand', () => {
