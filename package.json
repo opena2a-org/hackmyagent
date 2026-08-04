@@ -29,9 +29,10 @@
   ],
   "scripts": {
     "build": "tsc && node -e \"const{generateManifest}=require('./dist/nanomind-core/security/integrity-verifier.js');const m=generateManifest(__dirname);if(m)require('fs').writeFileSync('dist/.integrity-manifest.json',JSON.stringify(m))\"",
+    "typecheck": "tsc --noEmit",
+    "lint": "npm run typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint src --ext .ts",
     "clean": "rm -rf dist",
     "release-smoke:corpus": "tsx scripts/release-smoke-corpus.ts"
   },
