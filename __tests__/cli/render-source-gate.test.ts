@@ -241,20 +241,41 @@ describe('every command citation quotes its operands (#273)', () => {
     // The gate's own red-proof. `toEqual([])` over a detector that silently
     // matches nothing is the failure mode this whole file was written about, so
     // the detector is shown finding a planted defect rather than trusted to.
-    const planted = path.join(REPO_ROOT, 'src', '__gate_probe__.ts');
-    const { writeFileSync, rmSync } = require('node:fs') as typeof import('node:fs');
+    //
+    // The probe goes in a THROWAWAY root, never in this repo's `src/`. The
+    // first version wrote `src/__gate_probe__.ts` and deleted it in a `finally`,
+    // which is correct in isolation and wrong under vitest: files run in
+    // parallel workers, so for the moment that probe existed it was a `.ts` file
+    // newer than `dist/`, and `assertDistFresh` in a spawn suite running
+    // concurrently failed with "dist/cli.js is STALE". A test must not mutate
+    // the tree another test is measuring.
+    const { mkdtempSync, mkdirSync, writeFileSync } = require('node:fs') as typeof import('node:fs');
+    const { tmpdir } = require('node:os') as typeof import('node:os');
+    const root = mkdtempSync(path.join(tmpdir(), 'hma-gate-probe-'));
+    mkdirSync(path.join(root, 'src'));
     writeFileSync(
-      planted,
+      path.join(root, 'src', 'probe.ts'),
       'export function probe(targetDir: string): string {\n'
       + '  return `hackmyagent secure ${targetDir}`;\n}\n',
     );
-    try {
-      const hit = unquotedCommandSites(REPO_ROOT)
-        .find((s) => s.file.endsWith('__gate_probe__.ts'));
-      expect(hit, 'the gate did not flag a deliberately raw citation').toBeDefined();
-      expect(hit?.name).toBe('targetDir');
-    } finally {
-      rmSync(planted, { force: true });
-    }
+    const hit = unquotedCommandSites(root).find((s) => s.file.endsWith('probe.ts'));
+    expect(hit, 'the gate did not flag a deliberately raw citation').toBeDefined();
+    expect(hit?.name).toBe('targetDir');
+  });
+
+  it('accepts the same probe once it is a citation', () => {
+    // The other direction: the gate must not simply flag everything, or the
+    // assertion above would pass on a detector that is always positive.
+    const { mkdtempSync, mkdirSync, writeFileSync } = require('node:fs') as typeof import('node:fs');
+    const { tmpdir } = require('node:os') as typeof import('node:os');
+    const root = mkdtempSync(path.join(tmpdir(), 'hma-gate-probe-ok-'));
+    mkdirSync(path.join(root, 'src'));
+    writeFileSync(
+      path.join(root, 'src', 'probe.ts'),
+      "import { citationTarget } from './shell-quote';\n"
+      + 'export function probe(targetDir: string): string {\n'
+      + '  return `hackmyagent secure ${citationTarget(targetDir)}`;\n}\n',
+    );
+    expect(unquotedCommandSites(root)).toEqual([]);
   });
 });

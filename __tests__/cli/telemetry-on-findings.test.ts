@@ -24,41 +24,19 @@
 // meant to fix looks healthy.
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync, statSync, readdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-
-const REPO_ROOT = path.join(__dirname, '..', '..');
-const CLI = path.join(REPO_ROOT, 'dist', 'cli.js');
+import { assertDistFresh, BUILT_CLI as CLI } from '../helpers/dist-freshness';
 
 beforeAll(() => {
   // Presence is not freshness. #285's process note: spawn suites gated on
   // `existsSync(dist/cli.js)`, so roughly half of one round's coverage ran
-  // against a stale binary and passed. Assert the build is newer than the
-  // sources it is built from, and FAIL rather than skip — a silently skipped
-  // spawn test is indistinguishable from a passing one in a summary.
-  let built: number;
-  try {
-    built = statSync(CLI).mtimeMs;
-  } catch {
-    throw new Error(`dist/cli.js is missing — run \`npm run build\` before this suite (${CLI})`);
-  }
-  const newest = newestMtime(path.join(REPO_ROOT, 'src'));
-  expect(
-    built,
-    'dist/cli.js is older than src/ — this suite would be measuring a stale binary. Run `npm run build`.',
-  ).toBeGreaterThanOrEqual(newest);
+  // against a stale binary and passed. `assertDistFresh` already states that
+  // property once for every spawn suite -- the first draft of this file
+  // reimplemented it, which is a second copy to drift.
+  assertDistFresh();
 });
-
-function newestMtime(dir: string): number {
-  let newest = 0;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) newest = Math.max(newest, newestMtime(full));
-    else if (entry.name.endsWith('.ts')) newest = Math.max(newest, statSync(full).mtimeMs);
-  }
-  return newest;
-}
 
 /** A tree that scores one CRITICAL, so every mode takes its findings branch. */
 function fixture(): string {
