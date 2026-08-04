@@ -1815,8 +1815,8 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   const machinePosture = opts.machinePosture ?? [];
   if (machinePosture.length > 0) {
     divider('Machine Posture');
-    console.log(`  ${colors.dim}Outside this scan's target — AI runtimes installed on this machine.${RESET()}`);
-    console.log(`  ${colors.dim}Not included in the score above, the findings above, or the exit code.${RESET()}`);
+    console.log(`  ${colors.dim}AI runtimes installed on this machine, outside this scan's target.${RESET()}`);
+    console.log(`  ${colors.dim}Not scanned here, and not included in the score above, the findings above, or the exit code.${RESET()}`);
     console.log();
     // The loop variable is `entry` ON PURPOSE, and an earlier version of this
     // block called it `runtime` for a reason that was wrong.
@@ -1835,40 +1835,13 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // property name. Escaping a string that needed no escaping is a no-op; a
     // render site the gate cannot see is not.
     for (const entry of machinePosture) {
-      // Counts are absent on a degraded entry by design; the degraded branch
-      // below never reads them.
-      const parts: string[] = [];
-      if ((entry.critical ?? 0) > 0) parts.push(`${entry.critical} critical`);
-      if ((entry.high ?? 0) > 0) parts.push(`${entry.high} high`);
-      if ((entry.medium ?? 0) > 0) parts.push(`${entry.medium} medium`);
-      if ((entry.low ?? 0) > 0) parts.push(`${entry.low} low`);
-      const breakdown = parts.join(' · ');
-      const score = String(entry.score ?? 0);
-      // Escapes are applied INSIDE the print call, not hoisted into a `label`
-      // local. The static gate inspects the arguments of printer calls, so a
-      // path routed through an intermediate whose name is not path-like becomes
-      // invisible to it: with `const label = ...` in place, deleting the escape
-      // on `entry.dir` or `entry.name` left the gate green. Only the expression
-      // that stayed inline was actually covered.
+      // Escapes are applied INSIDE the print call, never hoisted into a local:
+      // the static gate inspects printer arguments, so a path routed through an
+      // intermediate whose name is not path-like becomes invisible to it.
       console.log(
         `  ${colors.white}${escapeForDisplay(entry.name)}${RESET()}`
         + `  ${colors.dim}${escapePathForDisplay(entry.dir)}${RESET()}`,
       );
-      if (entry.degraded) {
-        // No number. A scan that could not read the directory has not measured
-        // it, and printing a score here would report a FAVOURABLE figure
-        // produced by the failure itself.
-        console.log(`  ${colors.yellow}Could not be scanned${RESET()}${colors.dim} — the directory exists but was not readable. Nothing below is a measurement.${RESET()}`);
-      } else {
-        console.log(`  ${colors.dim}${score}/100 on its own terms — ${breakdown}${RESET()}`);
-      }
-      // A command is emitted only when one can be written truthfully. For a
-      // home directory carrying a character the terminal would act on or hide,
-      // `citationTarget` yields the `<dir>` placeholder — and `<dir>` pasted
-      // into a shell is a REDIRECTION: it errors, or, if a file named `dir`
-      // exists in the working directory, silently runs `secure` against `.`
-      // and scores the wrong tree under this heading. Same rule the rollback
-      // report already follows: name the subject, omit the command.
       if (entry.scanCommand !== null) {
         console.log(`  ${colors.cyan}Scan it:${RESET()} ${escapeForDisplay(entry.scanCommand)}`);
       } else {
@@ -3762,101 +3735,31 @@ Examples:
         && options.machinePosture !== false
         && posturePresentable
       ) {
-        const infraDirs = detectAIInfrastructure(targetDir);
-        const posture: MachinePostureEntry[] = [];
-        for (const infra of infraDirs) {
-          // A runtime that exists but cannot be read must not be reported as a
-          // measurement. `chmod 000 ~/.openclaw` produced `69/100, 2 findings`
-          // where a readable one produced `37/100, 13 findings` — the failure
-          // made the number look BETTER, under a line reading "on its own
-          // terms". A thrown scan disappeared entirely, indistinguishable from
-          // "not installed". Both now say what happened.
-          let degraded = false;
-          try {
-            // Probe readability FIRST, and RECURSIVELY. The scanner does not
-            // throw on an unreadable tree — it walks what it can and returns a
-            // partial result, so a `catch` alone cannot see this. Measured:
-            // `chmod 000 ~/.openclaw` yielded `69/100, 2 findings` where the
-            // readable directory yielded `37/100, 13`. The failure made the
-            // number look BETTER, which is the one direction a security tool
-            // must never fail in silently.
-            //
-            // A top-level-only probe has the same blind spot one level down,
-            // and `~/.openclaw` at 0755 with a restricted `sandboxes/` is the
-            // MORE likely real-world shape. Bounded so the probe cannot become
-            // its own cost problem on a large tree; hitting the bound is not
-            // degradation, it just stops looking.
-            degraded = !isTreeFullyReadable(infra.dir);
-            const infraScanner = new HardeningScanner();
-            const infraResult = await infraScanner.scan({ targetDir: infra.dir, autoFix: false });
-            const infraFailed = (infraResult.findings || []).filter(
-              (f: SecurityFinding) => countsAgainstScore(f),
-            );
-            // A clean readable runtime is genuinely nothing to report. A
-            // DEGRADED one still is: "could not be read" and "not installed"
-            // must not render identically.
-            if (infraFailed.length === 0 && !degraded) continue;
-            const bySeverity = (sev: string) =>
-              infraFailed.filter((f: SecurityFinding) => f.severity === sev).length;
-            const displayDir = homeRelative(infra.dir);
-            posture.push({
-              name: infra.name,
-              dir: displayDir,
-              // Numbers ONLY when the tree was fully readable. A partial scan's
-              // score is not a measurement and is flattering by construction —
-              // the findings it could not reach are exactly the missing ones.
-              ...(degraded ? {} : {
-                score: infraResult.score ?? 0,
-                critical: bySeverity('critical'),
-                high: bySeverity('high'),
-                medium: bySeverity('medium'),
-                low: bySeverity('low'),
-                total: infraFailed.length,
-              }),
-              // The command is built from the ABSOLUTE path through
-              // `citationTarget`, not from `displayDir`. Two reasons, and both
-              // produce a wrong command if ignored:
-              //
-              //   - `citationTarget('~/.openclaw')` returns `'~/.openclaw'`.
-              //     `~` is not shell-inert (#340 took it off that list because
-              //     `rm ~/evil.txt` acted on $HOME), so it gets quoted — and a
-              //     quoted tilde does not expand. The pasted command would look
-              //     right and resolve to a literal `~` directory.
-              //   - a home directory containing a quote or a space is spliced
-              //     into a command the report tells the user to RUN, which is
-              //     the injection class #339/#343 closed. `citationTarget`
-              //     quotes it; a display escape would not make it runnable.
-              //
-              // `dir` above stays the `~` form: it is read, not pasted.
-              //
-              // `citationPath`, not `citationTarget`: the latter substitutes
-              // `<dir>` for an unnameable path, and `<dir>` in a printed command
-              // is shell redirection. Null means "no truthful command exists",
-              // and the renderer says that instead of emitting a broken one.
-              scanCommand: (() => {
-                const cited = citationPath(infra.dir);
-                return cited === null ? null : `${CLI_PREFIX} secure ${cited}`;
-              })(),
-              ...(degraded ? { degraded: true } : {}),
-            });
-          } catch {
-            // The scan threw. Reporting nothing would be indistinguishable from
-            // "this runtime is not installed", so report the runtime with the
-            // failure stated and no numbers claimed.
-            degraded = true;
-            const displayDir = homeRelative(infra.dir);
-            const cited = citationPath(infra.dir);
-            // No numbers at all: the scan raised, so nothing was measured.
-            // Reporting zeros would read as "clean" to anyone scanning the
-            // JSON, which is the opposite of what happened.
-            posture.push({
-              name: infra.name,
-              dir: displayDir,
-              scanCommand: cited === null ? null : `${CLI_PREFIX} secure ${cited}`,
-              degraded: true,
-            });
-          }
-        }
+        // Detection only — the runtime is NOT scanned here.
+        //
+        // Reporting a score for a directory that is explicitly out of scope
+        // meant running a full scan whose result could only ever be a
+        // by-product: three review rounds each found a way for that number to
+        // come out flattering (an unreadable subdirectory, an unreadable file,
+        // a padded tree that exhausted the readability probe's bound), and each
+        // fix moved the hole one level over. Not producing a number removes the
+        // class rather than the latest instance of it.
+        //
+        // It also removes the cost: this used to walk a real `~/.openclaw` —
+        // 250 skills, 1780 findings — on every single `secure` run, to render
+        // two lines. Existence is a `statSync`.
+        const posture: MachinePostureEntry[] = detectAIInfrastructure(targetDir).map((infra) => {
+          const cited = citationPath(infra.dir);
+          return {
+            name: infra.name,
+            dir: homeRelative(infra.dir),
+            // `citationPath`, not `citationTarget`: the latter substitutes
+            // `<dir>` for an unnameable path, and `<dir>` pasted into a shell is
+            // a redirection. Null means "no truthful command exists" and the
+            // renderer says so instead of emitting a broken one.
+            scanCommand: cited === null ? null : `${CLI_PREFIX} secure ${cited}`,
+          };
+        });
         if (posture.length > 0) {
           result.machinePosture = posture;
         }
@@ -4649,41 +4552,6 @@ function assessRiskLevel(findings: SecurityFinding[]): { level: string; color: s
  * Detect AI infrastructure directories present on this machine.
  * Returns paths for environments that exist and are different from the primary scan target.
  */
-/**
- * True when every directory under `root` could be listed.
- *
- * A machine-posture score is only a measurement if the scan could actually see
- * the tree. `readdirSync` on the root alone misses the common shape — the
- * runtime readable, one subdirectory restricted — and the partial result then
- * reports a BETTER score than the full one, with no disclosure.
- *
- * Bounded by node count so the probe cannot become its own cost problem;
- * exhausting the bound means "found nothing unreadable in the part I looked
- * at", which is reported as readable rather than as degradation.
- */
-function isTreeFullyReadable(root: string, maxNodes = 5000): boolean {
-  const fs = require('fs');
-  const path = require('path');
-  const queue: string[] = [root];
-  let seen = 0;
-  while (queue.length > 0 && seen < maxNodes) {
-    const dir = queue.shift() as string;
-    seen++;
-    let entries: Array<{ name: string; isDirectory(): boolean; isSymbolicLink(): boolean }>;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return false;
-    }
-    for (const e of entries) {
-      // Do not follow symlinks: a link out of the tree is not this runtime's
-      // readability, and following one invites a cycle.
-      if (e.isDirectory() && !e.isSymbolicLink()) queue.push(path.join(dir, e.name));
-    }
-  }
-  return true;
-}
-
 /**
  * A path shown relative to `$HOME`, for reading rather than pasting.
  *

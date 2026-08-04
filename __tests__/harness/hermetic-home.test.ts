@@ -102,7 +102,7 @@ function homeDerived(hermetic: boolean): {
   /** $HOME findings that reached the target's own list. Must always be empty now. */
   taggedFindings: Array<{ name?: string; file?: string }>;
   /** $HOME runtimes summarized on the advisory channel. Empty iff $HOME was not read. */
-  posture: Array<{ name: string; total: number }>;
+  posture: Array<{ name: string }>;
   /** The target's own score, so a merge can be caught by the number it moves. */
   score: number;
   findingCount: number;
@@ -167,11 +167,12 @@ describe('the suite never reads the developer home directory', () => {
     'non-vacuity: with the flag off, $HOME infrastructure IS read and reported',
     () => {
       const off = homeDerived(false);
-      // The flag has something to suppress. Assert on the count too — a
-      // present-but-empty array would mean the $HOME scan ran and found nothing,
-      // which would make the "on" case below pass for the wrong reason.
+      // The flag has something to suppress: with it off, the $HOME runtime is
+      // detected and named. There is no count to assert on — the section
+      // publishes no numbers by design — so the observable is the entry itself,
+      // identified by the vendor it names.
       expect(off.posture.length).toBeGreaterThan(0);
-      expect(off.posture.some(p => p.total > 0)).toBe(true);
+      expect(off.posture.map(p => p.name)).toContain('OpenClaw');
     },
     180_000,
   );

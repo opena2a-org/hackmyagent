@@ -142,8 +142,12 @@ describe('machine posture is reported, never scored', () => {
     // project says it never trusts alone were blind to the same expressions.
     const { out } = scanText(target(), homeWithRuntime());
     expect(out).toContain('Machine Posture');
-    expect(out).toContain("Outside this scan's target");
-    expect(out).toContain('Not included in the score above');
+    expect(out).toContain("outside this scan's target");
+    expect(out).toContain('Not scanned here');
+    expect(out).toContain('not included in the score above');
+    // No number is rendered for the runtime — the class of "flattering score
+    // produced by a partial scan" is removed rather than re-bounded.
+    expect(out).not.toMatch(/on its own terms/);
     expect(out).toMatch(/OpenClaw/);
     expect(out).toMatch(/Scan it:.*secure /);
   });
@@ -206,10 +210,9 @@ describe('machine posture is reported, never scored', () => {
       (m: { name: string }) => m.name === 'OpenClaw',
     );
     expect(openclaw).toBeDefined();
-    // Reported on its OWN terms: the runtime is bad, so its own score is bad —
-    // while the target above stayed clean.
-    expect(openclaw.critical + openclaw.high).toBeGreaterThan(0);
-    expect(openclaw.total).toBeGreaterThan(0);
+    // No number is published: the section is a pointer, not a measurement.
+    expect(openclaw.score).toBeUndefined();
+    expect(openclaw.total).toBeUndefined();
     // Home-relative for READING, never the absolute path.
     expect(openclaw.dir.startsWith('~/')).toBe(true);
     // No dead ends: the citation must be a command that scans that scope.
@@ -305,52 +308,29 @@ describe('machine posture is reported, never scored', () => {
     expect(openclaw).toBeDefined();
   });
 
-  it.runIf(canRun())('an unreadable runtime is disclosed, not scored as if measured', () => {
-    // chmod 000 produced `69/100, 2 findings` where a readable runtime produced
-    // `37/100, 13 findings` — the failure made the number look BETTER, under a
-    // line reading "on its own terms".
-    const home = homeWithRuntime();
-    chmodSync(join(home, '.openclaw'), 0o000);
-    try {
-      const { data } = scan(target(), home);
-      const openclaw = (data.machinePosture || []).find(
-        (m: { name: string }) => m.name === 'OpenClaw',
-      );
-      // Asserted unconditionally. Wrapping this in `if (openclaw)` made the
-      // test pass with ZERO assertions executed whenever the runtime stopped
-      // being reported — and "vanished entirely, indistinguishable from not
-      // installed" is precisely the failure the catch block exists to prevent.
-      expect(openclaw, 'an unreadable runtime must still be reported').toBeDefined();
-      expect(openclaw.degraded).toBe(true);
-      // And it must publish no number: a partial scan's score is flattering by
-      // construction, so a CI consumer reading `.score` would get the figure
-      // the failure produced.
-      expect(openclaw.score).toBeUndefined();
-      expect(openclaw.total).toBeUndefined();
-    } finally {
-      chmodSync(join(home, '.openclaw'), 0o755);
-    }
-  });
 
-  it.runIf(canRun())('a PARTIALLY readable runtime is degraded too, not just a locked root', () => {
-    // The probe used to be top-level only, which has the same blind spot one
-    // level down — and `~/.openclaw` at 0755 with a restricted `sandboxes/` is
-    // the more likely real-world shape. Measured before the fix: `69/100 on its
-    // own terms` with no flag at all, against `37/100` readable.
-    const home = homeWithRuntime();
-    const sub = join(home, '.openclaw', 'sandboxes');
-    chmodSync(sub, 0o000);
-    try {
-      const { data } = scan(target(), home);
-      const openclaw = (data.machinePosture || []).find(
-        (m: { name: string }) => m.name === 'OpenClaw',
-      );
-      expect(openclaw).toBeDefined();
-      expect(openclaw.degraded).toBe(true);
-      expect(openclaw.score).toBeUndefined();
-    } finally {
-      chmodSync(sub, 0o755);
+
+  it.runIf(canRun())('--fail-below is a real CI gate: same verdict on any machine, both formats', () => {
+    // NOTHING in the suite passed --fail-below, despite it being a fixed bug in
+    // this release. A mutation that penalized the score ONLY when --fail-below
+    // was set therefore passed every guard in the repo while reproducing the
+    // headline defect verbatim: 98/exit 0 on a bare $HOME, 83/exit 1 with a
+    // populated one, on identical code.
+    const dir = target();
+    const full = homeWithRuntime();
+    const bare = homeWithoutRuntime();
+
+    for (const args of [['--fail-below', '90'], ['--json', '--fail-below', '90']]) {
+      const a = run(dir, full, args);
+      const b = run(dir, bare, args);
+      expect(a.status, `exit differed by $HOME for ${args.join(' ')}`).toBe(b.status);
     }
+
+    // And the threshold genuinely bites in both formats, so the equality above
+    // is not just "always 0".
+    expect(run(dir, bare, ['--fail-below', '100']).status).toBe(1);
+    expect(run(dir, bare, ['--json', '--fail-below', '100']).status).toBe(1);
+    expect(run(dir, bare, ['--json', '--fail-below', '10']).status).toBe(0);
   });
 
   it.runIf(canRun())('--no-machine-posture suppresses the section without touching the target score', () => {
