@@ -147,12 +147,45 @@ export function requireBenignConsensus(
 export function redactSecretsForNanoMind(content: string): string {
   let redacted = content;
 
-  // API keys
+  // API keys.
+  //
+  // The invariant is COVERAGE, not equality: this list must redact every shape
+  // `CANONICAL_CREDENTIAL_PATTERNS` in the semantic compiler can DETECT, and it
+  // may redact more. A shape detected but not redacted is the worst of both —
+  // the scanner proves the secret is real, then forwards it to the daemon —
+  // whereas redacting something that was not a credential costs only a mangled
+  // token in an advisory prompt. `pinned-credential-shapes.test.ts` asserts
+  // that direction. (`glpat-` is deliberately here and NOT in the detector.)
+  //
+  // These rules are deliberately NOT left-anchored, unlike the detector's.
+  // Anchoring is an FP control, and the two sides want opposite defaults: a
+  // false positive here is a mangled token, a false negative is a leaked
+  // secret. Anchoring also broke adjacent tokens — `ghp_<36>ghp_<36>` redacted
+  // the first and left the second verbatim, because the replacement consumed
+  // the boundary the next match needed.
+  //
+  // Order matters here in a way it does not in the detector: `sk-proj-` and
+  // `sk-ant-api` must be replaced BEFORE the generic `sk-` rule, or a project
+  // key would be reported under the legacy label. The legacy rule's
+  // alphanumeric-only class already excludes both, and the ordering makes that
+  // independent of the class staying that way.
   redacted = redacted.replace(/sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/g, '[REDACTED_ANTHROPIC_KEY]');
-  redacted = redacted.replace(/sk-proj-[a-zA-Z0-9]{20,}/g, '[REDACTED_OPENAI_KEY]');
+  redacted = redacted.replace(/sk-proj-[a-zA-Z0-9_-]{20,}/g, '[REDACTED_OPENAI_KEY]');
+  redacted = redacted.replace(/sk-[a-zA-Z0-9]{48,}/g, '[REDACTED_OPENAI_KEY]');
   redacted = redacted.replace(/AKIA[0-9A-Z]{16}/g, '[REDACTED_AWS_KEY]');
   redacted = redacted.replace(/ghp_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_TOKEN]');
+  redacted = redacted.replace(/gho_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_TOKEN]');
+  redacted = redacted.replace(/ghs_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_TOKEN]');
+  redacted = redacted.replace(/ghu_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_TOKEN]');
+  redacted = redacted.replace(/github_pat_[a-zA-Z0-9_]{60,}/g, '[REDACTED_GITHUB_TOKEN]');
   redacted = redacted.replace(/glpat-[a-zA-Z0-9_-]{20,}/g, '[REDACTED_GITLAB_TOKEN]');
+  redacted = redacted.replace(/hf_[a-zA-Z0-9]{34,}/g, '[REDACTED_HUGGINGFACE_TOKEN]');
+  redacted = redacted.replace(/npm_[a-zA-Z0-9]{36}/g, '[REDACTED_NPM_TOKEN]');
+  redacted = redacted.replace(/sk_live_[0-9a-zA-Z]{24,}/g, '[REDACTED_STRIPE_KEY]');
+  redacted = redacted.replace(/sk_test_[0-9a-zA-Z]{24,}/g, '[REDACTED_STRIPE_KEY]');
+  redacted = redacted.replace(/SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/g, '[REDACTED_SENDGRID_KEY]');
+  redacted = redacted.replace(/AIza[0-9A-Za-z_-]{35}/g, '[REDACTED_GOOGLE_KEY]');
+  redacted = redacted.replace(/xox[baprs]-[a-zA-Z0-9-]{10,}/g, '[REDACTED_SLACK_TOKEN]');
 
   // Generic secret patterns
   redacted = redacted.replace(/-----BEGIN [A-Z ]+ KEY-----[\s\S]*?-----END [A-Z ]+ KEY-----/g, '[REDACTED_PRIVATE_KEY]');

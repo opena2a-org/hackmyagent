@@ -1,20 +1,28 @@
 // The suite's hermeticity contract, stated once.
 //
-// `secure` merges findings from the AI-infrastructure directories that exist in
-// $HOME into the result for whatever target it was given (`detectAIInfrastructure`
-// in src/cli.ts). Deliberate in the field, corrosive in a test suite: it makes
-// every spawn test a function of the machine running it. Five files failed on
-// merged main locally while CI was green for exactly this reason — a two-file
-// fixture picked up 1780 findings from a populated ~/.openclaw, which truncated
-// JSON past the default spawnSync maxBuffer and moved verdicts off the fixture.
+// `secure` scans the AI-infrastructure directories that exist in $HOME
+// (`detectAIInfrastructure` in src/cli.ts) whatever target it was given.
+// Deliberate in the field, corrosive in a test suite: it makes every spawn test
+// a function of the machine running it. Five files failed on merged main locally
+// while CI was green for exactly this reason — a two-file fixture picked up 1780
+// findings from a populated ~/.openclaw, which truncated JSON past the default
+// spawnSync maxBuffer and moved verdicts off the fixture.
 //
 // Both halves are pinned here against a synthetic $HOME, so this proves the same
 // thing on a laptop with a real ~/.openclaw and on a bare CI runner:
 //
-//   flag off -> the infra merge fires        (without this, the "on" case is vacuous)
+//   flag off -> the $HOME scan fires         (without this, the "on" case is vacuous)
 //   flag on  -> nothing in the report came from $HOME
 //
 // plus the default itself, which is the whole job of vitest.setup.ts.
+//
+// The OBSERVABLE changed in 0.25.2 and this file changed with it. $HOME findings
+// used to be merged into `findings` and scored; they are now summarized on
+// `machinePosture` and never scored ([CHIEF-CA 2026-08-03]). The hermeticity
+// contract is unchanged — what the flag suppresses is the same $HOME read — so
+// the non-vacuity probe now watches `machinePosture` instead of tagged findings.
+// Watching only the old signal would have left this gate permanently green and
+// therefore unable to fail: the merge it looked for no longer exists.
 
 import { describe, it, expect, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -26,8 +34,30 @@ const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
 const canRun = () => existsSync(CLI);
 
-/** How the merge labels a finding it pulled out of $HOME. */
-const INFRA_TAG = /^\[(OpenClaw|NemoClaw|OpenShell|Moltbot|ClawdBot)\]/;
+/**
+ * A finding is $HOME-derived when its FILE is under the fixture home — not when
+ * its name carries a vendor tag.
+ *
+ * The tag test was the original probe and it is now unfalsifiable: the
+ * `[<Vendor>] ` prefix was applied by the merge that 0.25.2 removed, so nothing
+ * in `src/` produces it and the filter returns `[]` whatever the code does.
+ * Proven by mutation — re-merging $HOME findings untagged left all four tests in
+ * this file green, including the one whose stated job is "$HOME never reaches
+ * the target findings list". A gate that cannot fail is not a gate.
+ *
+ * The path test survives the rename because it keys on where the finding came
+ * from rather than on how a since-deleted code path labelled it.
+ */
+function fromHome(
+  findings: Array<{ name?: string; file?: string }>,
+  home: string,
+): Array<{ name?: string; file?: string }> {
+  const marker = /(^|[/\\])\.(openclaw|nemoclaw|openshell|moltbot|clawdbot)([/\\]|$)/i;
+  return findings.filter(f => {
+    const hay = `${f.file ?? ''} ${f.name ?? ''}`;
+    return hay.includes(home) || marker.test(hay);
+  });
+}
 
 // Every temp dir this file makes, so none of them survive the run. A suite
 // that diagnoses $TMPDIR pollution has no business adding to it.
@@ -67,9 +97,18 @@ function benignTarget(): string {
   return dir;
 }
 
-/** Findings the scan of `target` pulled out of `home`. */
-function infraFindings(hermetic: boolean): Array<{ name?: string; file?: string }> {
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: fakeHome() };
+/** Everything the scan of `target` pulled out of `home`, by either channel. */
+function homeDerived(hermetic: boolean): {
+  /** $HOME findings that reached the target's own list. Must always be empty now. */
+  taggedFindings: Array<{ name?: string; file?: string }>;
+  /** $HOME runtimes summarized on the advisory channel. Empty iff $HOME was not read. */
+  posture: Array<{ name: string }>;
+  /** The target's own score, so a merge can be caught by the number it moves. */
+  score: number;
+  findingCount: number;
+} {
+  const home = fakeHome();
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
   // The suite default has to be cleared, not just left unset, for the off case.
   if (hermetic) env.OPENA2A_CORPUS_DETERMINISTIC = '1';
   else delete env.OPENA2A_CORPUS_DETERMINISTIC;
@@ -77,8 +116,8 @@ function infraFindings(hermetic: boolean): Array<{ name?: string; file?: string 
   const r = spawnSync('node', [CLI, 'secure', benignTarget(), '--json', '--ci'], {
     encoding: 'utf8',
     timeout: 120_000,
-    // The un-hermetic case is deliberately the large one. A default 1 MB cap
-    // truncates it and JSON.parse fails with a misleading syntax error.
+    // The un-hermetic case was historically the large one. Kept generous: a
+    // default 1 MB cap truncates and JSON.parse fails with a misleading error.
     maxBuffer: 64 * 1024 * 1024,
     env,
   });
@@ -93,7 +132,12 @@ function infraFindings(hermetic: boolean): Array<{ name?: string; file?: string 
     );
   }
   const data = JSON.parse(out);
-  return (data.findings || []).filter((f: { name?: string }) => INFRA_TAG.test(f.name || ''));
+  return {
+    taggedFindings: fromHome(data.findings || [], home),
+    posture: data.machinePosture || [],
+    score: data.score,
+    findingCount: (data.findings || []).length,
+  };
 }
 
 describe('the suite never reads the developer home directory', () => {
@@ -120,17 +164,46 @@ describe('the suite never reads the developer home directory', () => {
   });
 
   it.runIf(canRun())(
-    'non-vacuity: with the flag off, $HOME infrastructure IS merged in',
+    'non-vacuity: with the flag off, $HOME infrastructure IS read and reported',
     () => {
-      expect(infraFindings(false).length).toBeGreaterThan(0);
+      const off = homeDerived(false);
+      // The flag has something to suppress: with it off, the $HOME runtime is
+      // detected and named. There is no count to assert on — the section
+      // publishes no numbers by design — so the observable is the entry itself,
+      // identified by the vendor it names.
+      expect(off.posture.length).toBeGreaterThan(0);
+      expect(off.posture.map(p => p.name)).toContain('OpenClaw');
     },
     180_000,
   );
 
   it.runIf(canRun())(
-    'with the flag on, no finding in the report came from $HOME',
+    'with the flag on, nothing in the report came from $HOME',
     () => {
-      expect(infraFindings(true)).toEqual([]);
+      const on = homeDerived(true);
+      expect(on.posture).toEqual([]);
+      expect(on.taggedFindings).toEqual([]);
+    },
+    180_000,
+  );
+
+  it.runIf(canRun())(
+    'even with the flag off, $HOME never reaches the target findings list',
+    () => {
+      // The flag governs whether $HOME is READ. It is not what keeps $HOME out
+      // of the target's score — that is unconditional, and this pins it so a
+      // future change cannot restore the merge behind an unset flag.
+      //
+      // THREE independent observables, because the first two are each defeatable
+      // on their own: a merge that carries relative paths evades the path
+      // filter, and a merge that skips `applyScore` leaves the score untouched.
+      // The finding COUNT is what no untagged, unscored merge can hide.
+      const off = homeDerived(false);
+      const on = homeDerived(true);
+
+      expect(off.taggedFindings).toEqual([]);
+      expect(off.score).toBe(on.score);
+      expect(off.findingCount).toBe(on.findingCount);
     },
     180_000,
   );

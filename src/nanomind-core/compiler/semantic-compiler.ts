@@ -945,16 +945,81 @@ interface CanonicalCredentialHit {
  * the surrounding context is source code. Each pattern targets a real-world
  * secret format with low false-positive rate on arbitrary text.
  */
+/**
+ * Left anchor, applied to EVERY pattern below.
+ *
+ * A vendor prefix glued to the tail of an identifier is not that vendor's key.
+ * Without this, `sk-[a-zA-Z0-9]{48,}` matches the tail of `disk-<sha256>` —
+ * a sha256 is 64 hex characters, so `disk-`, `task-`, `mask-`, `risk-` and
+ * `desk-` followed by a hash all became CRITICAL "Hardcoded Secret Detected"
+ * and exited 1 on infrastructure code containing no credential at all.
+ * `SG\.…` matched inside `MSG.INCIDENT_ESCALATION_QU.HIGH_PRIORITY_…` for the
+ * same reason — the very string `src/types/credential-format.ts` records as
+ * having been positively identified as a credential once already.
+ *
+ * NOT `\b`: `\b` treats `_` as a word character, so `____sk-ant-api03-<key>`
+ * has no boundary before `sk` and a real credential glued to underscore filler
+ * would be dropped. `(?<![A-Za-z0-9])` matches everywhere `\b` does and also
+ * after filler, so it is strictly wider. Same constant and same reasoning as
+ * `VENDOR_PREFIX_LEFT_ANCHOR` in `src/types/credential-format.ts`, which this
+ * list is supposed to mirror and had silently diverged from.
+ */
+const LEFT_ANCHOR = '(?<![A-Za-z0-9])';
+
+/** Build an anchored, global pattern from a bare vendor shape. */
+const vendor = (shape: string) => new RegExp(LEFT_ANCHOR + shape, 'g');
+
 const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
-  { label: 'Anthropic API key', regex: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/g },
-  { label: 'OpenAI project key', regex: /sk-proj-[a-zA-Z0-9_-]{20,}/g },
-  { label: 'AWS access key', regex: /AKIA[0-9A-Z]{16}/g },
-  { label: 'GitHub personal access token', regex: /ghp_[a-zA-Z0-9]{36}/g },
-  { label: 'GitHub OAuth token', regex: /gho_[a-zA-Z0-9]{36}/g },
-  { label: 'GitHub app token', regex: /ghs_[a-zA-Z0-9]{36}/g },
-  { label: 'Slack bot token', regex: /xox[baprs]-[a-zA-Z0-9-]{10,}/g },
-  { label: 'Google API key', regex: /AIza[0-9A-Za-z_-]{35}/g },
-  { label: 'Stripe live key', regex: /sk_live_[0-9a-zA-Z]{24,}/g },
+  { label: 'Anthropic API key', regex: vendor(String.raw`sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}`) },
+  { label: 'OpenAI project key', regex: vendor(String.raw`sk-proj-[a-zA-Z0-9_-]{20,}`) },
+  // OpenAI's PRE-project key format, and the one still issued to older accounts.
+  //
+  // THE ONLY SHAPE THIS RELEASE ADDS. Its absence is what let `scan` return
+  // 98/100 exit 0 on a source file holding a hardcoded `sk-` key while the
+  // byte-identical fixture using a `sk-proj-` key returned 69/100 exit 1.
+  // `scan` is the CI gate, so the miss was shape-dependent silence on the exact
+  // thing the command exists to catch.
+  //
+  // A first draft of this fix added eight shapes on the theory that the real
+  // defect was drift from `VENDOR_PREFIX_ALTERNATIVES`. Two adversarial review
+  // rounds showed that expansion was the problem, not the fix: it produced a
+  // false-positive class on ordinary identifiers and, in the attempt to bound
+  // it, a quadratic scan on attacker-supplied file content. The remaining
+  // shapes are being re-added deliberately and one at a time, each with a
+  // bounded pattern and a ReDoS measurement, on `fix/credential-fp-siblings`
+  // (#352/#353) — not here.
+  //
+  // 48 consecutive ALPHANUMERICS is the documented legacy shape and is what
+  // keeps this from colliding with its siblings: `sk-proj-` and `sk-ant-api03-`
+  // both break the character class at their first hyphen (4 and 3 chars in),
+  // so neither can be captured here and re-reported under the wrong label.
+  { label: 'OpenAI legacy key', regex: vendor(String.raw`sk-[a-zA-Z0-9]{48,}`) },
+  { label: 'AWS access key', regex: vendor(String.raw`AKIA[0-9A-Z]{16}`) },
+  { label: 'GitHub personal access token', regex: vendor(String.raw`ghp_[a-zA-Z0-9]{36}`) },
+  { label: 'GitHub OAuth token', regex: vendor(String.raw`gho_[a-zA-Z0-9]{36}`) },
+  { label: 'GitHub app token', regex: vendor(String.raw`ghs_[a-zA-Z0-9]{36}`) },
+  { label: 'Slack bot token', regex: vendor(String.raw`xox[baprs]-[a-zA-Z0-9-]{10,}`) },
+  { label: 'Google API key', regex: vendor(String.raw`AIza[0-9A-Za-z_-]{35}`) },
+  { label: 'Stripe live key', regex: vendor(String.raw`sk_live_[0-9a-zA-Z]{24,}`) },
+  // GitLab is DELIBERATELY ABSENT from the verdict path. Its token body class
+  // admits `-` and `_`, so `glpat-` plus any hyphenated identifier of 20+
+  // characters matches, and no cheap predicate separates the two: an entropy
+  // lookahead (`(?=[a-z_-]*[A-Z0-9])`) still passed
+  // `glpat-shared-linux-docker-runner-1` and `glpat-XXXXXXXXXXXXXXXXXXXX` —
+  // GitLab's own docs placeholder — while introducing a QUADRATIC scan on
+  // attacker-supplied file content (measured 0ms -> 651ms at 60 KB,
+  // 1ms -> 40s at 480 KB, against a 10 MB file cap). A denial of service in a
+  // security scanner is worse than the false negative it was closing, and
+  // GitLab detection was never part of the defect this release fixes.
+  //
+  // The static credential lists in `scanner.ts` still carry `glpat-`, so
+  // `protect` and `--fix` are unaffected. Re-adding it here needs a bounded
+  // pattern and a ReDoS measurement, not another lookahead.
+  // `SG.<22-char id>.<43-char secret>`, both segments at FIXED widths. The
+  // widths are load-bearing: written loosely this matches any dotted identifier
+  // with two long segments (`MSG.INCIDENT_ESCALATION_QUEUE.HIGH_PRIORITY_ROUTE`
+  // was positively identified as a credential once already — see the note in
+  // src/types/credential-format.ts). Do not relax them.
   { label: 'PEM private key', regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PRIVATE)[A-Z ]*KEY-----/g },
 ];
 
@@ -1003,6 +1068,28 @@ const NAME_GATED_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = 
  *   - Test fixtures containing `FAKE`, `EXAMPLE`, `PLACEHOLDER`, `DUMMY`,
  *     `SAMPLE`, `TEST`, `XXX`, `YOUR_` markers in the surrounding window.
  */
+/**
+ * Test-only accessor for the canonical scan. Exported so
+ * `__tests__/nanomind-core/pinned-credential-shapes.test.ts` can assert the
+ * detector and the daemon-bound redactor cover the same shapes; asserting that
+ * through a full CLI spawn could not distinguish "not detected" from "detected
+ * and then filtered", which is the distinction that matters here.
+ */
+export function scanCanonicalCredentialFormatsForTest(content: string): CanonicalCredentialHit[] {
+  return scanCanonicalCredentialFormats(content);
+}
+
+/**
+ * Test-only: the labels this detector knows about.
+ *
+ * Exported so the shape test can DERIVE its expected set instead of keeping a
+ * hand-maintained copy. The defect this module was fixed for was two lists
+ * drifting apart; a test with its own third list would have reproduced it.
+ */
+export function canonicalCredentialLabelsForTest(): string[] {
+  return CANONICAL_CREDENTIAL_PATTERNS.map(p => p.label);
+}
+
 function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit[] {
   const hits: CanonicalCredentialHit[] = [];
 

@@ -11,6 +11,7 @@ export type {
   FixResult,
   SecurityFinding,
   ScanResult,
+  MachinePostureSummary,
   Severity,
 } from './security-check';
 
