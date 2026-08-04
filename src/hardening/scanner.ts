@@ -2110,7 +2110,18 @@ export class HardeningScanner {
     if (!isQuick) {
     try {
       const structural = new StructuralAnalyzer();
-      const structuralFindings = await structural.analyze(targetDir);
+      // #298 — Layer 2 now discovers artifacts below the scan root, and
+      // `createBackup` (line ~1827) has already copied `CLAUDE.md`,
+      // `config.json` and `.claude/settings.json` into
+      // `.hackmyagent-backup/<stamp>/` by the time this runs. Without this
+      // predicate a `--fix` run reports every semantic finding twice, once for
+      // the live file and once for its own backup. Passed as `isOwnBackupDir`
+      // rather than a directory NAME: a name is a suppression token the
+      // scanned tree can plant (#305/#309), while the identity check excludes
+      // THIS RUN's backup and nothing else.
+      const structuralFindings = await structural.analyze(targetDir, {
+        isExcludedDir: (dir) => this.isOwnBackupDir(dir),
+      });
       const converted = toSecurityFindings(structuralFindings);
       findings.push(...converted);
       layer2Count = converted.length;
@@ -2123,7 +2134,11 @@ export class HardeningScanner {
     if ((isDeepScan || options.deep) && process.env.ANTHROPIC_API_KEY) {
       try {
         const structural = new StructuralAnalyzer();
-        const files = await structural.discoverFiles(targetDir);
+        // Same exclusion as Layer 2 above, and it costs money here: every
+        // duplicated backup copy would be a billed LLM call.
+        const files = await structural.discoverFiles(targetDir, {
+          isExcludedDir: (dir) => this.isOwnBackupDir(dir),
+        });
         const llm = new LLMAnalyzer({
           apiKey: process.env.ANTHROPIC_API_KEY,
           onProgress: options.onProgress,
