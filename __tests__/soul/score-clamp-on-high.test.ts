@@ -20,11 +20,16 @@
  * directly so the contract is locked in regardless of which findings
  * upstream code adds.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SoulScanner } from '../../src/soul/scanner';
+import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+
+// #285 — this suite spawns the built CLI. Without this it would happily
+// measure a binary older than `src/` and report a pass.
+beforeAll(assertDistFreshIfPresent);
 
 function tmpDirWithSoul(content: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'scan-soul-clamp-'));

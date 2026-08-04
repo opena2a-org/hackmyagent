@@ -54,4 +54,25 @@ export function assertDistFresh(): void {
   }
 }
 
+/**
+ * Freshness without changing whether the suite RUNS.
+ *
+ * Most spawn suites gate themselves on `existsSync(dist/cli.js)` and skip when
+ * it is absent, so `assertDistFresh` cannot be dropped into them wholesale — it
+ * throws on a missing build and would convert a deliberate skip into a failure
+ * in any environment that has not built.
+ *
+ * The staleness hole is the defect, not the skip. This keeps each suite's
+ * existing decision about whether to run and only refuses the case that
+ * silently reports a false pass: a build that EXISTS and is older than `src/`.
+ *
+ * Measured while writing this: 31 of the 35 suites that spawn `dist/cli.js`
+ * had no freshness check at all, so an edit to `src/` left them exercising the
+ * previous binary and passing.
+ */
+export function assertDistFreshIfPresent(): void {
+  if (!existsSync(CLI)) return;
+  assertDistFresh();
+}
+
 export { CLI as BUILT_CLI };

@@ -38,6 +38,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import {
   unescapedRenderSites,
+  unquotedCommandSites,
   commandsThatRenderPaths,
   reportSurfaceFiles,
   NOT_A_REPORT_SURFACE,
@@ -192,5 +193,89 @@ describe('the command classification agrees with what the commands print', () =>
     // `src/scanner/detect.ts`, `src/check/**` and `src/wild/index.ts`, where
     // there is no `.command(…)` for the call to be attributed to.
     expect(rendersElsewhere).toEqual(['check', 'detect', 'wild']);
+  });
+});
+
+/**
+ * The same property, asked of every command citation rather than of every
+ * printer (#273).
+ *
+ * The gate above walks arguments to `console.log` and friends, so it can only
+ * ask about a module that PRINTS. The sites #273 reported do not print: they
+ * build a finding's `fix:` string, or return an array of disclosure lines, and
+ * something else renders them later as `f.fix`. That crosses a module boundary
+ * AND a name change, both of which `render-source.ts` documents as blind spots
+ * — which is why the printer gate was green while sixteen sites were live.
+ *
+ * Measured on `6a5c1db`, scanning a tree containing
+ * `.claude/skills/my skill$(id)/SKILL.md`:
+ *
+ *     Verify: hackmyagent secure .claude/skills/my skill$(id)
+ *
+ * The space retargets the command at a path that does not exist; `$(id)` runs
+ * on paste. `rm ${relativePath}` on the ClawHavoc findings was the same defect
+ * on a deletion command.
+ */
+describe('every command citation quotes its operands (#273)', () => {
+  it('reads the report surface at all', () => {
+    // Same non-vacuity floor as above: an emptiness assertion over a list that
+    // stopped being produced passes for the wrong reason.
+    expect(reportSurfaceFiles(REPO_ROOT).length).toBeGreaterThan(100);
+  });
+
+  it('finds no unquoted interpolation in a command-argument position', () => {
+    const sites = unquotedCommandSites(REPO_ROOT);
+    const rendered = sites
+      .map((s) => `  ${s.file}:${s.line}  ${s.name}\n      in: ${s.code}`)
+      .join('\n');
+    expect(
+      sites,
+      `${sites.length} command citation(s) splice a value in unquoted. A path or `
+      + 'name in a command the reader is invited to paste must go through '
+      + '`citationPath`/`citationTarget` (or `commandNaming`, which omits the '
+      + `command when the value cannot be named truthfully):\n${rendered}`,
+    ).toEqual([]);
+  });
+
+  it('would catch a raw interpolation, so the assertion above can fail', () => {
+    // The gate's own red-proof. `toEqual([])` over a detector that silently
+    // matches nothing is the failure mode this whole file was written about, so
+    // the detector is shown finding a planted defect rather than trusted to.
+    //
+    // The probe goes in a THROWAWAY root, never in this repo's `src/`. The
+    // first version wrote `src/__gate_probe__.ts` and deleted it in a `finally`,
+    // which is correct in isolation and wrong under vitest: files run in
+    // parallel workers, so for the moment that probe existed it was a `.ts` file
+    // newer than `dist/`, and `assertDistFresh` in a spawn suite running
+    // concurrently failed with "dist/cli.js is STALE". A test must not mutate
+    // the tree another test is measuring.
+    const { mkdtempSync, mkdirSync, writeFileSync } = require('node:fs') as typeof import('node:fs');
+    const { tmpdir } = require('node:os') as typeof import('node:os');
+    const root = mkdtempSync(path.join(tmpdir(), 'hma-gate-probe-'));
+    mkdirSync(path.join(root, 'src'));
+    writeFileSync(
+      path.join(root, 'src', 'probe.ts'),
+      'export function probe(targetDir: string): string {\n'
+      + '  return `hackmyagent secure ${targetDir}`;\n}\n',
+    );
+    const hit = unquotedCommandSites(root).find((s) => s.file.endsWith('probe.ts'));
+    expect(hit, 'the gate did not flag a deliberately raw citation').toBeDefined();
+    expect(hit?.name).toBe('targetDir');
+  });
+
+  it('accepts the same probe once it is a citation', () => {
+    // The other direction: the gate must not simply flag everything, or the
+    // assertion above would pass on a detector that is always positive.
+    const { mkdtempSync, mkdirSync, writeFileSync } = require('node:fs') as typeof import('node:fs');
+    const { tmpdir } = require('node:os') as typeof import('node:os');
+    const root = mkdtempSync(path.join(tmpdir(), 'hma-gate-probe-ok-'));
+    mkdirSync(path.join(root, 'src'));
+    writeFileSync(
+      path.join(root, 'src', 'probe.ts'),
+      "import { citationTarget } from './shell-quote';\n"
+      + 'export function probe(targetDir: string): string {\n'
+      + '  return `hackmyagent secure ${citationTarget(targetDir)}`;\n}\n',
+    );
+    expect(unquotedCommandSites(root)).toEqual([]);
   });
 });

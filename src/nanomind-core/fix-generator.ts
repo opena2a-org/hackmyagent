@@ -16,6 +16,7 @@
  * and a VERIFY command. No dead ends.
  */
 
+import { citationTarget } from '../ui/shell-quote.js';
 import type { SecurityAST, ArtifactType, Capability, Constraint } from './types.js';
 import type { ASTFinding } from './analyzers/capability-analyzer.js';
 
@@ -153,16 +154,15 @@ function fixCapabilityIssue(finding: ASTFinding, ast: SecurityAST, projectConstr
       }
     }
   } else if (finding.attackClass === 'CAPABILITY-ABUSE') {
-    const dir = ast.artifactPath ? ast.artifactPath.split('/').slice(0, -1).join('/') || '.' : '.';
     const hasSoulCoverage = (projectConstraints?.length ?? 0) > 0 || ast.artifactType === 'soul';
     if (hasSoulCoverage) {
       // SOUL.md exists — governance is in place but specific tool capabilities still need
       // explicit restrictions in the config itself.
       parts.push(`opena2a mcp audit — inventory each server's available tools, then restrict "allowedTools" in ${file} to only what's needed. Removing wildcard access eliminates the capability-abuse surface.`);
     } else if (ast.artifactType === 'soul' || ast.artifactType === 'system_prompt') {
-      parts.push(`hackmyagent harden-soul ${dir} — adds missing capability constraints to SOUL.md for all high-risk capabilities detected.`);
+      parts.push(`hackmyagent harden-soul ${citationTarget(artifactDir(ast))} — adds missing capability constraints to SOUL.md for all high-risk capabilities detected.`);
     } else {
-      parts.push(`hackmyagent harden-soul ${dir} — generates a SOUL.md governance file with constraints covering all high-risk capabilities in ${file}.`);
+      parts.push(`hackmyagent harden-soul ${citationTarget(artifactDir(ast))} — generates a SOUL.md governance file with constraints covering all high-risk capabilities in ${file}.`);
     }
   } else if (finding.attackClass === 'CAPABILITY-CREEP') {
     // Capability creep: text grants more than manifest declares
@@ -631,8 +631,25 @@ function generateGuidance(finding: ASTFinding, ast: SecurityAST, projectConstrai
 // ============================================================================
 
 function verifyCommand(ast: SecurityAST): string {
-  const dir = ast.artifactPath ? ast.artifactPath.split('/').slice(0, -1).join('/') || '.' : '.';
-  return `Verify: hackmyagent secure ${dir}`;
+  return `Verify: hackmyagent secure ${citationTarget(artifactDir(ast))}`;
+}
+
+/**
+ * The artifact's directory, quoted for a command citation (#273).
+ *
+ * `artifactPath` is a scanned path, so it carries whatever the tree contained.
+ * Measured on `6a5c1db` with a skill under `.claude/skills/my skill$(id)/`,
+ * this function produced
+ *
+ *     Verify: hackmyagent secure .claude/skills/my skill$(id)
+ *
+ * where the space retargets the command and `$(id)` is a live substitution.
+ * `citationTarget` rather than `commandNaming` because this is a scan target:
+ * `<dir>` remains a correct instruction, where omitting the Verify line would
+ * leave the finding with no way to check it.
+ */
+function artifactDir(ast: SecurityAST): string {
+  return ast.artifactPath ? ast.artifactPath.split('/').slice(0, -1).join('/') || '.' : '.';
 }
 
 /**

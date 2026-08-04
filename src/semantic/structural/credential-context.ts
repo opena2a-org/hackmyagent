@@ -11,6 +11,7 @@
 import type { SemanticFinding, AnalysisFile } from '../types';
 import type { GitContext } from './git-context';
 import { isVisualFiller } from '../../types/credential-format.js';
+import { commandNaming } from '../../ui/shell-quote';
 
 /**
  * How much of a value must survive the drawn runs, for the call sites that
@@ -273,13 +274,21 @@ function envHighOverrideWording(
   if (resolved.hardlinked) {
     return {
       rationale: `${filePath} shares its inode with another path on disk (hardlinked). The other link may be tracked elsewhere in this repo, so the credential could be in version control under a different filename.`,
-      recommendation: `Find the other hardlinked path with: find . -inum $(stat -f '%i' ${filePath} 2>/dev/null || stat -c '%i' ${filePath}). Verify whether any of those paths are tracked, rotate the credential, and migrate to opena2a protect.`,
+      recommendation: (
+        commandNaming(
+          filePath,
+          (q) => `Find the other hardlinked path with: find . -inum $(stat -f '%i' ${q} 2>/dev/null || stat -c '%i' ${q}).`,
+        ) ?? 'Find the other hardlinked path by inode, using the file named above (its name cannot be shown truthfully in a command).'
+      ) + ' Verify whether any of those paths are tracked, rotate the credential, and migrate to opena2a protect.',
     };
   }
   if (resolved.outOfTree) {
     return {
       rationale: `${filePath} is a symlink pointing outside this repo. The credential bytes live in a file this repo's git cannot inspect; treat as exposed until verified by checking the target's own repo (if any).`,
-      recommendation: `Inspect the link target with: readlink ${filePath}. Verify whether the target is tracked in its own repository, rotate the credential, and migrate to opena2a protect.`,
+      recommendation: (
+        commandNaming(filePath, (q) => `Inspect the link target with: readlink ${q}.`)
+        ?? 'Inspect the link target of the file named above (its name cannot be shown truthfully in a command).'
+      ) + ' Verify whether the target is tracked in its own repository, rotate the credential, and migrate to opena2a protect.',
     };
   }
   return undefined;

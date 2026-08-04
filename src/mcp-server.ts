@@ -124,6 +124,69 @@ function formatFindingsForLLM(findings: SecurityFinding[]): string {
   return lines.join('\n');
 }
 
+/**
+ * The text the `hackmyagent_scan` MCP tool returns.
+ *
+ * #285 — extracted so the PREDICATE is reachable from a test. `startMcpServer`
+ * builds its handlers inside a closure that needs a transport, so nothing in
+ * the suite ever executed them: measured on `9180999`, replacing
+ * `countsAgainstScore(f)` here with `!f.passed` and rebuilding left the whole
+ * suite green at 219 files / 2876 tests. That is the same "testable as a
+ * function" move #350 made for the telemetry success policy, for the same
+ * reason.
+ *
+ * The predicate has to be `countsAgainstScore`, not `!f.passed`. Twelve checks
+ * report `passed: <check>Fixed`, so a fix flips `passed` to true the moment it
+ * is applied; when the verification pass then DISPROVES it
+ * (`fixed: true, fixVerified: false`) the naive test reads it as a pass and
+ * the host LLM is told the issue is resolved while it is outstanding.
+ */
+export function buildScanToolText(result: {
+  score: number;
+  maxScore: number;
+  findings: SecurityFinding[];
+  semanticAnalysis?: { layer2Findings: number };
+}): string {
+  const issues = result.findings.filter((f) => countsAgainstScore(f));
+  const fixed = result.findings.filter((f) => f.fixed);
+
+  let summary = `Score: ${result.score}/${result.maxScore} | ${issues.length} issue${issues.length !== 1 ? 's' : ''} found`;
+  if (fixed.length > 0) {
+    summary += ` | ${fixed.length} fixed`;
+  }
+  if (result.semanticAnalysis) {
+    summary += ` | Structural: ${result.semanticAnalysis.layer2Findings} findings`;
+  }
+
+  return `${summary}\n\n${formatFindingsForLLM(issues)}`;
+}
+
+/**
+ * The Layer-1 findings the `hackmyagent_deep_scan` MCP tool hands to the host
+ * LLM.
+ *
+ * #285 — this filtered on `!f.passed`, so a fix the verification pass had
+ * DISPROVED was omitted from the deep-scan payload entirely. The host LLM was
+ * told nothing about an outstanding issue because HMA had attempted a fix for
+ * it and the attempt failed, which is the M29 defect (`registry/publish.ts`)
+ * in a second consumer.
+ */
+export function buildDeepScanLayer1(findings: SecurityFinding[]): Array<{
+  checkId: string;
+  severity: string;
+  file?: string;
+  message: string;
+}> {
+  return findings
+    .filter((f) => countsAgainstScore(f))
+    .map((f) => ({
+      checkId: f.checkId,
+      severity: f.severity,
+      file: f.file,
+      message: f.message,
+    }));
+}
+
 export async function startMcpServer(): Promise<void> {
   const server = new Server(
     { name: 'hackmyagent', version: VERSION },
@@ -148,22 +211,11 @@ export async function startMcpServer(): Promise<void> {
           const scanner = new HardeningScanner();
           const result = await scanner.scan({ targetDir: dir, autoFix: fix, ignore });
 
-          const issues = result.findings.filter((f) => countsAgainstScore(f));
-          const fixed = result.findings.filter((f) => f.fixed);
-
-          let summary = `Score: ${result.score}/${result.maxScore} | ${issues.length} issue${issues.length !== 1 ? 's' : ''} found`;
-          if (fixed.length > 0) {
-            summary += ` | ${fixed.length} fixed`;
-          }
-          if (result.semanticAnalysis) {
-            summary += ` | Structural: ${result.semanticAnalysis.layer2Findings} findings`;
-          }
-
           return {
             content: [
               {
                 type: 'text',
-                text: `${summary}\n\n${formatFindingsForLLM(issues)}`,
+                text: buildScanToolText(result),
               },
             ],
           };
@@ -182,14 +234,7 @@ export async function startMcpServer(): Promise<void> {
           const structuralFindings = await structural.analyze(dir);
 
           // Build deep scan result with analysis guidance
-          const layer1Findings = result.findings
-            .filter((f) => !f.passed)
-            .map((f) => ({
-              checkId: f.checkId,
-              severity: f.severity,
-              file: f.file,
-              message: f.message,
-            }));
+          const layer1Findings = buildDeepScanLayer1(result.findings);
 
           const deepResult = buildDeepScanResult(
             layer1Findings,

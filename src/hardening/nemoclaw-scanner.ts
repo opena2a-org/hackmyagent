@@ -11,6 +11,7 @@ import { execSync } from 'child_process';
 import { statSync, readdirSync, readFileSync, existsSync } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { commandNaming } from '../ui/shell-quote';
 import type { SecurityFinding, Severity } from './security-check';
 
 // ---------------------------------------------------------------------------
@@ -520,7 +521,11 @@ export class NemoClawScanner {
                   file,
                   line: i + 1,
                   fixable: true,
-                  fix: `Remove the line from ${file} or clear history with: history -c && rm ${file}`,
+                  // #273 — `rm ${file}` unquoted, on a shell-history path.
+                  // The prose half already names the file, so a path that
+                  // cannot be cited loses the command and keeps the advice.
+                  fix: commandNaming(file, (q) => `Remove the line from ${q} or clear history with: history -c && rm ${q}`)
+                    ?? 'Remove the credential line from the shell-history file named in this finding, or clear the history. Its name cannot be shown truthfully in a shell command, so no runnable citation is offered.',
                   attackClass: 'CRED-HARVEST',
                 },
               ),

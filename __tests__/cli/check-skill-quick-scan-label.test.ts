@@ -15,11 +15,16 @@
  * Mirrors the gate pattern in `__tests__/checker/check-not-found-json.test.ts`.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { assertDistFreshIfPresent } from "../helpers/dist-freshness";
+
+// #285 — this suite spawns the built CLI. Without this it would happily
+// measure a binary older than `src/` and report a pass.
+beforeAll(assertDistFreshIfPresent);
 
 const REPO_ROOT = join(__dirname, "..", "..");
 const CLI = join(REPO_ROOT, "dist", "cli.js");

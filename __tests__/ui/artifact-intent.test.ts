@@ -18,7 +18,7 @@
 //     benign SOUL, and the corroborated label still prints on the malicious
 //     one, so the fix cannot degenerate into blanket suppression.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -28,6 +28,11 @@ import {
   rawIntentDisclosureLines,
   type ArtifactIntent,
 } from '../../src/ui/artifact-intent';
+import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+
+// #285 — this suite spawns the built CLI. Without this it would happily
+// measure a binary older than `src/` and report a pass.
+beforeAll(assertDistFreshIfPresent);
 
 const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');

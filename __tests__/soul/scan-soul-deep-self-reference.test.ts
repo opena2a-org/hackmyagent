@@ -101,17 +101,26 @@ describe('scan-soul scope disclosure (#251 + #260)', () => {
 describe('scan-soul --deep progress counter (#260)', () => {
   const CLI_SOURCE = readFileSync(join(__dirname, '..', '..', 'src', 'cli.ts'), 'utf8');
 
-  it('is gated to an interactive, non-machine-readable run', () => {
-    // TTY-only and never under --json / --ci, so machine-consumed output and
-    // the corpus golden harness stay byte-stable. Same gate as the `wild`
-    // counter (#253). Asserted against the source because the contract IS
-    // the gate — a behavioral test would need a live backend and a PTY.
+  it('hands every input of the gate to the predicate that decides it', () => {
+    // #285 — this used to grep the inline five-term boolean and assert each
+    // term appeared in it. The comment justifying that read: "a behavioral
+    // test would need a live backend and a PTY." That is no longer true. The
+    // gate is `shouldShowDeepProgress` in `src/ui/progress-gate.ts`, and its
+    // behaviour — including deny-dominance over every combination — is
+    // asserted for real in `__tests__/ui/fix-summary-and-progress-gate.test.ts`
+    // with no backend and no PTY.
+    //
+    // What is left for the source to prove is the WIRING: that `cli.ts`
+    // actually asks, and asks with all five inputs. A perfect predicate wired
+    // to four of them is the #260 shape — a good unit layer whose only
+    // consumer is unguarded.
     const start = CLI_SOURCE.indexOf('const showDeepProgress');
     expect(start, 'showDeepProgress gate not found — did it move?').toBeGreaterThan(-1);
-    const gate = CLI_SOURCE.slice(start, start + 320);
+    const callSite = CLI_SOURCE.slice(start, start + 320);
 
-    for (const condition of ['options.deep', '!options.json', 'globalCiMode', '!options.ci', 'process.stderr.isTTY']) {
-      expect(gate, `progress counter must be gated on ${condition}`).toContain(condition);
+    expect(callSite, 'the gate must delegate to the tested predicate').toContain('shouldShowDeepProgress');
+    for (const input of ['options.deep', 'options.json', 'options.ci', 'globalCiMode', 'process.stderr.isTTY']) {
+      expect(callSite, `${input} must be passed to the gate`).toContain(input);
     }
   });
 

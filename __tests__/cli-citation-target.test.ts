@@ -17,7 +17,7 @@
  * rewrite layer rather than at the ~50 call sites (enumerated by script:
  * `opena2a protect .` alone appears ~25 times in several spellings).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -27,6 +27,11 @@ import {
   setCitationTarget,
   __resetCitationTargetForTests,
 } from '../src/cli-prefix';
+import { assertDistFreshIfPresent } from './helpers/dist-freshness';
+
+// #285 — this suite spawns the built CLI. Without this it would happily
+// measure a binary older than `src/` and report a pass.
+beforeAll(assertDistFreshIfPresent);
 
 describe('#293 citation target completion', () => {
   beforeEach(() => __resetCitationTargetForTests());

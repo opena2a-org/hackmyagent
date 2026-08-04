@@ -23,7 +23,15 @@ import {
   validateCapabilities,
 } from './skill-capability-validator';
 import { clampScoreToVerdictBand, countsAgainstScore } from '../ui/verdict-band';
-import { shellQuote, citationTarget } from '../ui/shell-quote';
+import { shellQuote, citationTarget, citationPaths, commandNaming } from '../ui/shell-quote';
+import {
+  isPathWithinDirectory as containIsPathWithinDirectory,
+  resolveInsideTree as containResolveInsideTree,
+  describeResolveRefusal,
+  type ResolveOutcome,
+  type ResolveRefusal,
+} from './contain';
+import { GOVERNANCE_FILES } from '../soul/governance-files';
 
 /**
  * Backup manifest format version. v1 (pre-0.25.1) wrote `createdFiles` as a
@@ -150,29 +158,10 @@ export interface RollbackReport {
   backupRemovalFailed?: { path: string; reason: string };
 }
 
-/**
- * Why `resolveInsideTree` would not hand back a path to act on.
- *
- * #347.4 — one sentence used to be printed for every one of these. "Its
- * destination does not resolve to a location inside the scanned directory" was
- * shown for a dangling symlink, for an EACCES on the parent, and for a `..`:
- * three causes, and it is true of one of them. A user who reads it about an
- * EACCES goes looking for a traversal that is not there.
- *
- * The refusals are the same as before — this names them.
- */
-type ResolveRefusal =
-  | 'escapes-tree'
-  | 'parent-unresolvable'
-  | 'parent-outside-tree'
-  | 'leaf-is-link'
-  | 'leaf-link-dangling'
-  | 'leaf-link-outside-tree'
-  | 'leaf-unexaminable';
-
-type ResolveOutcome =
-  | { ok: true; path: string }
-  | { ok: false; cause: ResolveRefusal };
+// `ResolveRefusal` / `ResolveOutcome` / `resolveInsideTree` moved to
+// `./contain` (#270). The write side needs the identical containment property
+// and had none, and two implementations of "is this path inside the tree" is
+// exactly how that asymmetry arose.
 
 /** Why one manifest entry could not be put back. */
 type RestoreRefusal =
@@ -1171,6 +1160,41 @@ const MAX_LINE_LENGTH = 10000; // 10KB max line length for regex safety
 const shellEscape = shellQuote;
 
 /**
+ * `rm <path>` for a file this scanner wants removed, quoted (#273).
+ *
+ * These `fix:` strings are DATA — built here, rendered from `src/cli.ts` much
+ * later as `f.fix` — so the source gate, which follows taint one level inside a
+ * single file, never saw them. Unquoted, a skill at `.claude/skills/my
+ * skill$(id)/SKILL.md` produced `rm .claude/skills/my skill$(id)/SKILL.md`:
+ * three arguments, one of them a live command substitution, on a command whose
+ * whole job is deletion.
+ *
+ * When the path cannot be shown truthfully there is no command, per the rule in
+ * `shell-quote.ts`: the finding already names the file in its `file` field, and
+ * a `rm` naming bytes the reader cannot see deletes the wrong thing. The prose
+ * says what to do and why no command came with it.
+ */
+/**
+ * `chmod 600 <files…>` with every operand quoted (#273).
+ *
+ * A list, so it fails as a list: if any one name cannot be shown truthfully the
+ * whole command is withheld, because a `chmod` that silently drops one file
+ * reports a remedy it did not offer. The names stay on the finding's
+ * `details.files`, which is where the reader gets them.
+ */
+function chmodFix(files: readonly string[]): string {
+  const cited = citationPaths(files);
+  return cited === null
+    ? 'Set these files to mode 600. At least one name cannot be shown truthfully in a shell command, so no runnable citation is offered — the full list is on this finding.'
+    : `chmod 600 ${cited}`;
+}
+
+function removeFileFix(relativePath: string, why: string): string {
+  return commandNaming(relativePath, (p) => `rm ${p}`)
+    ?? `${why} Remove the file named in this finding. Its name contains characters that cannot be shown truthfully in a shell command, so no runnable citation is offered — delete it from a file manager, or quote the name yourself.`;
+}
+
+/**
  * Detect whether a SKILL.md content has any of the malice signals listed in
  * issue #135. A skill that's just missing hygiene metadata (no version, no
  * publisher, no installed_hash) is a hygiene gap — MEDIUM. The same gap on
@@ -1572,18 +1596,25 @@ export class HardeningScanner {
     '.env.local',
     '.gitignore',
     '.env.example',
-    'CLAUDE.md',
     '.cursor/mcp.json',
     '.vscode/mcp.json',
     '.claude/settings.json',
     'package.json',
     'openclaw.json',
     'moltbot.json',
-    // Governance file. `secure --fix` runs harden-soul, which either creates
-    // SOUL.md or appends sections to an existing one; without it here, an
-    // existing SOUL.md was modified with no backup to restore from and a
-    // generated one was never tracked for removal (#262).
-    'SOUL.md',
+    // Governance artifacts. `secure --fix` runs harden-soul, which either
+    // creates the governance file or appends sections to an existing one;
+    // without them here, an existing one was modified with no backup to restore
+    // from and a generated one was never tracked for removal (#262).
+    //
+    // #271 — DERIVED, not hand-copied. This list carried `SOUL.md` and
+    // `CLAUDE.md` while `hardenSoul` targets whatever `findGovernanceFile()`
+    // returns from `GOVERNANCE_FILES`, so the other eight were modified with no
+    // manifest entry. Measured on merged main: `.cursorrules` 113 -> 19055
+    // bytes, absent from the manifest, `rollback` printing `[+] Rollback
+    // complete` at exit 0. A second constant that must track the first forever
+    // is the defect, so there is one list and both sides read it.
+    ...GOVERNANCE_FILES,
     // AI infrastructure files (research gap checks)
     'docker-compose.yml',
     'docker-compose.yaml',
@@ -1600,9 +1631,7 @@ export class HardeningScanner {
    * Validate that a file path is within the target directory (no path traversal)
    */
   private isPathWithinDirectory(filePath: string, directory: string): boolean {
-    const normalizedFile = path.resolve(filePath);
-    const normalizedDir = path.resolve(directory);
-    return normalizedFile.startsWith(normalizedDir + path.sep) || normalizedFile === normalizedDir;
+    return containIsPathWithinDirectory(filePath, directory);
   }
 
   /**
@@ -2081,7 +2110,18 @@ export class HardeningScanner {
     if (!isQuick) {
     try {
       const structural = new StructuralAnalyzer();
-      const structuralFindings = await structural.analyze(targetDir);
+      // #298 — Layer 2 now discovers artifacts below the scan root, and
+      // `createBackup` (line ~1827) has already copied `CLAUDE.md`,
+      // `config.json` and `.claude/settings.json` into
+      // `.hackmyagent-backup/<stamp>/` by the time this runs. Without this
+      // predicate a `--fix` run reports every semantic finding twice, once for
+      // the live file and once for its own backup. Passed as `isOwnBackupDir`
+      // rather than a directory NAME: a name is a suppression token the
+      // scanned tree can plant (#305/#309), while the identity check excludes
+      // THIS RUN's backup and nothing else.
+      const structuralFindings = await structural.analyze(targetDir, {
+        isExcludedDir: (dir) => this.isOwnBackupDir(dir),
+      });
       const converted = toSecurityFindings(structuralFindings);
       findings.push(...converted);
       layer2Count = converted.length;
@@ -2094,7 +2134,11 @@ export class HardeningScanner {
     if ((isDeepScan || options.deep) && process.env.ANTHROPIC_API_KEY) {
       try {
         const structural = new StructuralAnalyzer();
-        const files = await structural.discoverFiles(targetDir);
+        // Same exclusion as Layer 2 above, and it costs money here: every
+        // duplicated backup copy would be a billed LLM call.
+        const files = await structural.discoverFiles(targetDir, {
+          isExcludedDir: (dir) => this.isOwnBackupDir(dir),
+        });
         const llm = new LLMAnalyzer({
           apiKey: process.env.ANTHROPIC_API_KEY,
           onProgress: options.onProgress,
@@ -2201,12 +2245,30 @@ export class HardeningScanner {
         category: 'hardening',
         severity: 'medium',
         passed: false,
-        message: `${failed.length} auto-fix write${failed.length === 1 ? '' : 's'} failed (${codes}): ${failed.map(f => f.rel).join(', ')}`,
+        // One line per file, carrying the REASON in words (#347.4). The code
+        // alone was all that reached the user, and a code is not a sentence: a
+        // reader who saw `FIX-WRITE-UNCONTAINED` next to guidance about
+        // read-only mounts went looking for a permissions problem that was not
+        // there. `resolveFixWriteTarget` already phrases each refusal; this
+        // stops it dying inside the scanner.
+        message: `${failed.length} auto-fix write${failed.length === 1 ? '' : 's'} failed (${codes}): `
+          + failed.map(f => `${f.rel} — ${f.message}`).join('; '),
         file: failed[0].rel,
         fixable: false,
-        fix: `Make the file writable, then re-run: ${this.cliName} secure --fix`,
+        // The remedy depends on the cause. Making a file writable does nothing
+        // for a link that leaves the tree, and telling a user to do it is the
+        // dead-end citation the per-finding protocol exists to forbid.
+        fix: failed.every(f => f.code.startsWith('FIX-WRITE-'))
+          ? `Point the listed path at a file inside the scanned directory, then re-run: ${this.cliName} secure --fix`
+          : `Make the file writable, then re-run: ${this.cliName} secure --fix`,
         guidance:
-          'The issue these fixes address is still present on disk. A write can fail because the file is read-only or immutable, the filesystem is mounted read-only, the volume is full, or a security policy denies it. Findings for those files are reported as unfixed, so the score reflects the tree as it actually is.',
+          'The issue these fixes address is still present on disk. Each file above says why its '
+          + 'write did not land. A write is refused outright when its destination would leave the '
+          + 'scanned directory — a symbolic link pointing outside it is the common case, and '
+          + 'following it would modify a file you did not ask HackMyAgent to touch. A write can '
+          + 'also fail because the file is read-only or immutable, the filesystem is mounted '
+          + 'read-only, the volume is full, or a security policy denies it. Findings for those '
+          + 'files are reported as unfixed, so the score reflects the tree as it actually is.',
       });
     }
 
@@ -3553,6 +3615,130 @@ export class HardeningScanner {
   }
 
   /**
+   * Take a backup for a mutation that happens OUTSIDE `scan()` (#271).
+   *
+   * Standalone `harden-soul` rewrites a governance file — measured at
+   * 113 -> 19055 bytes — and took no backup at all, so there was nothing for
+   * `rollback` to restore. `rollback` then read whatever manifest a previous
+   * `secure --fix` had left and printed `[+] Rollback complete` at exit 0,
+   * having never heard of the file that changed.
+   *
+   * Every other mutation in the product is gated on a recoverable copy. This is
+   * the same guarantee for the one command that reached the filesystem without
+   * going through `scan()`.
+   *
+   * Returns the backup directory, or null when no backup could be taken — and a
+   * null must abandon the write, exactly as `scan()` skips fixing when
+   * `createBackup` throws. Applying a fix with nothing to roll back to is the
+   * outcome this whole mechanism exists to prevent.
+   */
+  async beginExternalBackup(targetDir: string): Promise<string | null> {
+    try {
+      const backupPath = await this.createBackup(targetDir);
+      if (!this.lastBackupIdent) return null;
+      this.backupContext = {
+        backupDir: backupPath,
+        backupIdent: this.lastBackupIdent,
+        targetDir,
+        covered: new Set(this.lastBackupCovered),
+      };
+      return backupPath;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The guard `secure --fix` hands to `hardenSoul` (#271).
+   *
+   * `harden-soul` runs AFTER `scan()` returns, from the CLI, on this same
+   * instance — the run's backup context is still live, which is what lets the
+   * governance write be gated by the same recoverability rule as every fix
+   * write inside the scan.
+   *
+   * Returns false when no recoverable copy could be made, and `hardenSoul` then
+   * declines the write rather than modifying a file `rollback` cannot put back.
+   * Before this, `BACKUP_FILES` carried a hand-copied subset of the governance
+   * names and the other eight were modified with no manifest entry at all.
+   */
+  async ensureGovernanceBackup(targetDir: string, relPath: string): Promise<boolean> {
+    return this.ensureBackupCovers(path.join(targetDir, relPath));
+  }
+
+  /**
+   * Where a fix write will actually land, or null when it must not happen.
+   *
+   * Returns the RESOLVED destination so every later gate and the write itself
+   * agree on one path. A refusal is recorded in `fixWriteFailures` with its own
+   * cause, so the user is told the fix did not land and why — an unfixed
+   * finding whose remedy is the command that just silently declined is the
+   * outcome #327 spent a round removing.
+   *
+   * With no backup context there is no tree to contain against and nothing has
+   * made a recoverable copy, so the path is handed back unchanged and
+   * `ensureBackupCovers` refuses it below under BACKUP-UNCOVERED. That is the
+   * pre-existing behaviour for that case and this must not quietly restate it
+   * as a containment failure.
+   */
+  private async resolveFixWriteTarget(requestedPath: string): Promise<string | null> {
+    const ctx = this.backupContext;
+    if (!ctx) return requestedPath;
+
+    const rel = this.toTargetRelativePath(requestedPath, ctx.targetDir);
+    if (rel === null) {
+      this.fixWriteFailures.push({
+        file: requestedPath,
+        code: 'FIX-WRITE-ESCAPES-TREE',
+        message: 'not written: its path points outside the scanned directory',
+      });
+      return null;
+    }
+
+    let targetReal: string;
+    try {
+      targetReal = await fs.realpath(ctx.targetDir);
+    } catch {
+      this.fixWriteFailures.push({
+        file: requestedPath,
+        code: 'FIX-WRITE-TARGET-UNRESOLVABLE',
+        message: 'not written: the scanned directory could not be resolved, so '
+          + 'HackMyAgent cannot tell whether this write would stay inside it',
+      });
+      return null;
+    }
+
+    const dest = await containResolveInsideTree(targetReal, rel, { followLeafLink: true });
+    if (!dest.ok) {
+      this.fixWriteFailures.push({
+        file: requestedPath,
+        code: 'FIX-WRITE-UNCONTAINED',
+        message: `not written: ${describeResolveRefusal(dest.cause)}`,
+      });
+      return null;
+    }
+
+    // Decide on REAL paths, hand back the caller's SPELLING.
+    //
+    // `dest.path` is anchored on `realpath(targetDir)` while everything
+    // downstream — `ensureBackupCovers`, `toTargetRelativePath`, the manifest
+    // key, `isInsideArchiveBase` — is anchored on `ctx.targetDir` as the caller
+    // spelled it. Returning the resolved path directly mixes the two frames,
+    // and on any host where the scan root has a symlinked ancestor the two
+    // disagree for every file. macOS is that host by default: `/var` is a link
+    // to `/private/var`, so a scan under `mkdtemp()` produced
+    // `path.relative('/var/…/repo', '/private/var/…/repo/shared/x')` =
+    // `../../../../../../private/var/…`, which reads as an escape, and every
+    // fix write in a temp tree was refused as BACKUP-UNCOVERED.
+    //
+    // Re-anchoring is safe precisely because the containment DECISION was
+    // already made above, on resolved paths: `targetReal` and `ctx.targetDir`
+    // name the same directory, so the two spellings name the same file. This
+    // returns where to write, not whether to.
+    const relFromReal = path.relative(targetReal, dest.path);
+    return relFromReal ? path.join(ctx.targetDir, relFromReal) : ctx.targetDir;
+  }
+
+  /**
    * Apply a fix write. Returns whether it landed; never throws.
    *
    * Every auto-fix write used to be a bare `await fs.writeFile` sitting
@@ -3570,7 +3756,33 @@ export class HardeningScanner {
    * fix and lets the check report what is actually true: the issue is still
    * there, and the fix did not land.
    */
-  private async applyFixWrite(filePath: string, content: string): Promise<boolean> {
+  private async applyFixWrite(requestedPath: string, content: string): Promise<boolean> {
+    // #270 — CONTAIN THE DESTINATION FIRST, and act on what comes back.
+    //
+    // Everything below this block — the archive identity probes, the backup
+    // coverage guarantee, the write itself — used to operate on the caller's
+    // spelling. `toTargetRelativePath` is purely lexical, so a symlinked leaf
+    // sitting inside the tree passed every one of those gates and `fs.writeFile`
+    // then followed it wherever it pointed. Measured on merged main: a repo
+    // shipping `.gitignore -> ../shared.gitignore` had the out-of-tree file
+    // rewritten 21 -> 85 bytes, exit 0, "Fixed 1 issue (1 verified)".
+    //
+    // `rollback` has refused to restore through a link that leaves the tree
+    // since #351. The write side following one anywhere was the asymmetry, so
+    // both sides now ask `resolveInsideTree` the same question with the same
+    // `followLeafLink: true` semantics: follow an in-tree link (an ordinary
+    // dotfile-sharing layout, which #327 established must keep working), refuse
+    // one that leaves.
+    //
+    // Resolving BEFORE the gates rather than after is deliberate. A link is a
+    // way to make a path be spelled one thing and mean another, and every gate
+    // below decides something about what the write will HIT — so each one has to
+    // see the destination, not the spelling. Resolving after would re-open
+    // #304's defect (the guard protected a path that was not the one written) in
+    // a new place.
+    const filePath = await this.resolveFixWriteTarget(requestedPath);
+    if (filePath === null) return false;
+
     // #314 — never rewrite a backup archive, HMA's own or a previous run's.
     // #300/#304 gate RECOVERABILITY: they guarantee a copy exists before a
     // write. They do not stop `--fix` from redacting the archive the user
@@ -3701,15 +3913,25 @@ export class HardeningScanner {
             // `fixed: true` with "Changed permissions to 600" on a file that
             // was still world-readable, and nothing anywhere said the write
             // had failed.
-            try {
-              await fs.chmod(filePath, 0o600);
-            } catch (err) {
-              const e = err as NodeJS.ErrnoException;
-              this.fixWriteFailures.push({
-                file: filePath,
-                code: e?.code || (err instanceof Error ? err.name : 'UnknownError'),
-                message: err instanceof Error ? err.message : String(err),
-              });
+            //
+            // #270 — contained like every other mutation. `chmod` follows
+            // symlinks, so `secrets.json -> ~/.ssh/id_rsa` in a scanned repo
+            // re-moded a file outside the tree. This is the same class as the
+            // fix writes and it is not reached through `applyFixWrite`, so the
+            // sweep has to name it explicitly rather than assume the chokepoint
+            // covers everything that mutates the filesystem.
+            const modePath = await this.resolveFixWriteTarget(filePath);
+            if (modePath !== null) {
+              try {
+                await fs.chmod(modePath, 0o600);
+              } catch (err) {
+                const e = err as NodeJS.ErrnoException;
+                this.fixWriteFailures.push({
+                  file: filePath,
+                  code: e?.code || (err instanceof Error ? err.name : 'UnknownError'),
+                  message: err instanceof Error ? err.message : String(err),
+                });
+              }
             }
           }
         }
@@ -3739,7 +3961,7 @@ export class HardeningScanner {
       // flag, read-only mount, restrictive MAC policy) and verification
       // proved the file is still world-readable. Names only the files that
       // are still failing, because the re-scan recomputes this list.
-      manualFix: passed ? undefined : `chmod 600 ${permissionIssues.join(' ')}`,
+      manualFix: passed ? undefined : chmodFix(permissionIssues),
       fixMessage: autoFix && !passed ? 'Changed permissions to 600' : undefined,
       details: passed ? undefined : { files: permissionIssues },
       guidance: 'Overly broad file permissions let any user on the system read sensitive config files that may contain credentials or API keys.',
@@ -4893,7 +5115,9 @@ dist/
         message: `Private key files found: ${foundKeys.slice(0, 5).join(', ')}${foundKeys.length > 5 ? ` (+${foundKeys.length - 5} more)` : ''} - move to secure location`,
         file: foundKeys[0],
         fixable: false,
-        fix: `Move the key outside the repository or into a secrets manager. If it was ever committed, rotate it, then run: git rm --cached ${foundKeys[0]}`,
+        fix: 'Move the key outside the repository or into a secrets manager. If it was ever committed, rotate it, then run: '
+          + (commandNaming(foundKeys[0], (q) => `git rm --cached ${q}`)
+            ?? 'git rm --cached on the file named above (its name cannot be shown truthfully in a command).'),
         details: { files: foundKeys },
         guidance: 'Private key files (.pem, .key) in a project directory are easily committed to git. Once pushed, the keys are compromised and must be rotated.',
       });
@@ -8037,96 +8261,20 @@ dist/
   }
 
   /**
-   * Resolve a manifest-supplied relative path to a real location inside the
-   * tree, or null when it does not stay there.
+   * Resolve a relative path to a real location inside the tree, or say why it
+   * does not stay there. See `./contain` for the whole argument.
    *
-   * The manifest comes out of the scanned tree, so every path in it is attacker
-   * data (#312). A lexical containment check on the JOINED path is not enough
-   * (#318): it decides where the string points, not where the filesystem sends
-   * it, and a symlinked directory component sends it anywhere. So:
-   *
-   *   - the `..` cases are refused first, with no syscall spent on them;
-   *   - the destination's PARENT is resolved and required to be inside the tree,
-   *     which is what catches a symlinked component;
-   *   - the LEAF is handled per caller, because the two callers are asking
-   *     different questions. See `followLeafLink`.
-   *
-   * #327 — the leaf used to be refused outright whenever it was a symlink, for
-   * every caller. That broke an ordinary dotfile-sharing layout with no attacker
-   * involved: `--fix` writes THROUGH a symlinked config (`ensureBackupCovers`
-   * says so explicitly), so the file was backed up and redacted and then could
-   * not be restored. Refusing to follow on the way back what was followed on the
-   * way in is not a containment property, it is an asymmetry.
-   *
-   *   - `followLeafLink: true` (restore) resolves the link and requires the
-   *     TARGET to be inside the tree. An out-of-tree target is still refused —
-   *     that is #318's harm — and the returned path is the resolved one, so the
-   *     copy lands where the check looked.
-   *   - `followLeafLink: false` (unlink, probe) keeps the refusal. HMA never
-   *     CREATES a symlink, so a link standing where a generated file should be
-   *     is not the thing HMA generated, and deleting what it points at would be
-   *     #318 with the arrow reversed.
-   *
-   * Returns the path to ACT on — never the caller's spelling. Three separate
-   * resolutions of one string (`realpath` here, then `lstat`/`copyFile` at the
-   * call site) are not atomic against a tree changing underneath them; that is
-   * outside the static-tree threat model the rest of this file assumes, and only
-   * a descriptor (`open` + `fstat`) would close it.
+   * Delegates rather than implements: the fix-write side needs this exact
+   * property (#270) and `SoulScanner.hardenSoul` needs it too, and a second
+   * copy of "is this path inside the tree" is what let the write side and the
+   * restore side disagree for four rounds.
    */
   private async resolveInsideTree(
     targetReal: string,
     rel: string,
     opts: { followLeafLink: boolean },
   ): Promise<ResolveOutcome> {
-    const joined = path.join(targetReal, rel);
-    if (!this.isPathWithinDirectory(joined, targetReal)) {
-      return { ok: false, cause: 'escapes-tree' };
-    }
-
-    let parentReal: string;
-    try {
-      parentReal = await fs.realpath(path.dirname(joined));
-    } catch {
-      // parent gone: nothing to restore into, nothing to delete
-      return { ok: false, cause: 'parent-unresolvable' };
-    }
-    if (!this.isPathWithinDirectory(parentReal, targetReal)) {
-      return { ok: false, cause: 'parent-outside-tree' };
-    }
-
-    const resolved = path.join(parentReal, path.basename(joined));
-    try {
-      const st = await fs.lstat(resolved);
-      if (st.isSymbolicLink()) {
-        if (!opts.followLeafLink) return { ok: false, cause: 'leaf-is-link' };
-        // Where the link actually goes, decided by the filesystem. A dangling
-        // link resolves to nothing and is refused: `createBackup` could not have
-        // copied through it either, so there is nothing to restore.
-        let linkReal: string;
-        try {
-          linkReal = await fs.realpath(resolved);
-        } catch {
-          return { ok: false, cause: 'leaf-link-dangling' };
-        }
-        return this.isPathWithinDirectory(linkReal, targetReal)
-          ? { ok: true, path: linkReal }
-          : { ok: false, cause: 'leaf-link-outside-tree' };
-      }
-    } catch (err) {
-      // ENOENT is the only failure that PROVES the leaf is not a symlink:
-      // nothing is there. Absence is expected and fine — restoring a file the
-      // user deleted is the point, and the created-file loops treat absence as
-      // "nothing to do" themselves.
-      //
-      // Any other errno (EACCES on the parent, ELOOP, EIO) proves nothing, and
-      // "I could not check whether this is a symlink" must not become "it is
-      // not one" — that is #313's inference in a new place. Refuse instead: the
-      // entry is reported as not restored, which is recoverable.
-      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-        return { ok: false, cause: 'leaf-unexaminable' };
-      }
-    }
-    return { ok: true, path: resolved };
+    return containResolveInsideTree(targetReal, rel, opts);
   }
 
   /**
@@ -9096,7 +9244,8 @@ dist/
             message: `Skill name "${skillBasename}" is similar to popular skill "${popular}" (potential typosquatting)`,
             file: relativePath,
             fixable: false,
-            fix: `hackmyagent check ${relativePath}`,
+            fix: commandNaming(relativePath, (q) => `hackmyagent check ${q}`)
+              ?? 'Inspect the file named in this finding by hand — its name cannot be shown truthfully in a shell command.',
             guidance: 'Typosquatting uses names similar to popular skills to trick users into installing malicious versions. Verify the skill source and rename if unintentional.',
           });
           break; // One typosquatting finding per skill file
@@ -10763,7 +10912,8 @@ dist/
             : 'Skill lacks publisher metadata - cannot verify source',
         file: relativePath,
         fixable: false,
-        fix: `hackmyagent check ${relativePath}`,
+        fix: commandNaming(relativePath, (q) => `hackmyagent check ${q}`)
+              ?? 'Inspect the file named in this finding by hand — its name cannot be shown truthfully in a shell command.',
         guidance: 'Unverified publishers cannot be trusted. Add publisher: and publisher_verified: true to skill frontmatter after DNS TXT record verification.',
       });
 
@@ -10818,7 +10968,7 @@ dist/
           message: `Skill matches known malicious pattern: "${matchedPattern}"`,
           file: relativePath,
           fixable: false,
-          fix: `rm ${relativePath}`,
+          fix: removeFileFix(relativePath, 'This skill matches a known ClawHavoc pattern.'),
           guidance: 'This skill matches known malicious patterns from the ClawHavoc campaign. Remove immediately and audit any systems it had access to.',
         });
       }
@@ -10856,7 +11006,7 @@ dist/
             message: `Known C2 IP address found: ${ip}`,
             file: relativePath,
             fixable: false,
-            fix: `rm ${relativePath}`,
+            fix: removeFileFix(relativePath, 'This skill contains a known ClawHavoc C2 IP address.'),
             guidance: 'This skill contains a known ClawHavoc command-and-control IP address. Remove immediately and check network logs for connections to this IP.',
           });
           break;
@@ -10876,7 +11026,7 @@ dist/
             message: `Known malware filename referenced: "${filename}"`,
             file: relativePath,
             fixable: false,
-            fix: `rm ${relativePath}`,
+            fix: removeFileFix(relativePath, 'This skill references a known ClawHavoc malware payload filename.'),
             guidance: 'This skill references a known ClawHavoc malware payload filename. Remove and scan for other indicators of compromise.',
           });
           break;

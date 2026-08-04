@@ -10,6 +10,8 @@
  * label logic itself in every CI run.
  */
 
+import { citationTarget } from './shell-quote';
+
 export interface QuickScanContext {
   /** Target string emitted in the follow-up line — path or name as the user typed it. */
   fullAuditTarget: string;
@@ -70,8 +72,11 @@ export function quickScanScopeDisclosure(opts: {
   /** Target string as the user typed it. */
   fullAuditTarget: string;
 }): QuickScanScopeDisclosure {
-  const { staticCount, semanticCount, fullAuditTarget } = opts;
+  const { staticCount, semanticCount } = opts;
   const unevaluated = QUICK_SCAN_UNEVALUATED_CATEGORIES.join(', ');
+  // #273 — `secure <target>` is a command to paste, and the target arrives as
+  // the user typed it.
+  const fullAuditTarget = citationTarget(opts.fullAuditTarget);
 
   return {
     // Lead with what ran, then state plainly what did not. The suite size
@@ -123,7 +128,7 @@ export function quickScanFollowupText(quickScan: QuickScanContext): string {
   // and omitting them is what let #200 read as a minor coverage note
   // rather than the reason not to trust the verdict.
   return (
-    `Run \`secure ${quickScan.fullAuditTarget}\` for the full audit ` +
+    `Run \`secure ${citationTarget(quickScan.fullAuditTarget)}\` for the full audit ` +
     `(adds ${QUICK_SCAN_UNEVALUATED_CATEGORIES.join(', ')}).`
   );
 }

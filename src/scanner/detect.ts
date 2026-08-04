@@ -16,8 +16,9 @@ import * as os from 'node:os';
 import { SoulScanner } from '../soul';
 import type { SoulScanResult } from '../soul';
 import { clampScoreToVerdictBand, clampDisclosure, isFailDirection } from '../ui/verdict-band';
-import { citationTarget as safeCitationTarget } from '../ui/shell-quote';
-import { escapePathForDisplay } from '../ui/display-safe';
+import { citationTarget as safeCitationTarget, citationPath } from '../ui/shell-quote';
+import { escapePathForDisplay, escapeForDisplay } from '../ui/display-safe';
+import { findPermissionGrant } from './permission-grant';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -56,6 +57,15 @@ export interface AiConfigFile {
   tool: string;
   risk: RiskLevel;
   details: string;
+  /**
+   * Where in the file the risk was established, and what said so (#299).
+   *
+   * Present exactly when `risk` is not `low`. `text` is the matched line,
+   * redacted and length-capped, and is populated for a permission grant only —
+   * the credential branch reports the KEY it matched and never the value, so
+   * the report cannot become the place a secret gets copied to.
+   */
+  evidence?: { line: number; token: string; text?: string };
 }
 
 export interface IdentitySummary {
@@ -91,6 +101,16 @@ export interface Finding {
    * one case where adding controls does not move the number.
    */
   code?: 'GOV-VIOLATION' | 'GOV-PROFILE-MARKER';
+  /**
+   * A command that reproduces the exact trigger this finding cites (#299).
+   *
+   * Optional because most of `detect`'s findings are about a whole tree — "two
+   * agents are ungoverned" has no line to point at, and the house rule is that
+   * no Verify beats a Verify that returns something else
+   * (`src/ui/verify-command.ts`). It is populated wherever a finding names a
+   * `file:line`, and the renderer prints it directly under `Fix:`.
+   */
+  verify?: string;
 }
 
 export interface DetectResult {
@@ -443,6 +463,34 @@ export function scanMcpServers(targetDir: string): DetectedMcpServer[] {
 // AI config file discovery
 // ---------------------------------------------------------------------------
 
+/**
+ * A credential assignment inside an AI config file.
+ *
+ * Unchanged from the inline version it replaces — hoisted so the line that
+ * matched can be located as well as tested for (#299), and so the two config
+ * risk levels are established by two named rules rather than by two anonymous
+ * literals in a branch.
+ */
+const CREDENTIAL_IN_CONFIG = /(api[_-]?key|secret|token|password)\s*[:=]\s*["']?[a-zA-Z0-9_-]{20,}/i;
+
+/**
+ * The first line matching `pattern`, reported as the KEY that matched rather
+ * than the value.
+ *
+ * The value is the credential. A finding that quoted it would print a live
+ * secret to the terminal and into any log capturing the run, so the report
+ * carries the location and the key name and stops there — `text` is left unset
+ * and the renderer has nothing to quote.
+ */
+function firstMatchLine(content: string, pattern: RegExp): { line: number; token: string } | undefined {
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const m = pattern.exec(lines[i]);
+    if (m) return { line: i + 1, token: m[1] ?? m[0] };
+  }
+  return undefined;
+}
+
 export function scanAiConfigs(targetDir: string): AiConfigFile[] {
   const configs: AiConfigFile[] = [];
 
@@ -456,22 +504,28 @@ export function scanAiConfigs(targetDir: string): AiConfigFile[] {
 
       let details = `${pattern.tool} configuration`;
       let risk: RiskLevel = 'low';
+      let evidence: AiConfigFile['evidence'];
 
       try {
         const content = fs.readFileSync(fullPath, 'utf-8');
-        const hasApiKey = /(?:api[_-]?key|secret|token|password)\s*[:=]\s*["']?[a-zA-Z0-9_-]{20,}/i.test(content);
-        const hasPermissions = /(?:allow|permit|grant|unrestricted|all\s+bash)/i.test(content);
+        const credential = firstMatchLine(content, CREDENTIAL_IN_CONFIG);
+        // Only one of the two is reported, and the credential outranks the
+        // grant — so the grant scan is skipped rather than computed and
+        // discarded.
+        const grant = credential ? undefined : findPermissionGrant(content);
 
-        if (hasApiKey) {
+        if (credential) {
           risk = 'critical';
           details = `${pattern.tool} config contains credential references`;
-        } else if (hasPermissions) {
+          evidence = credential;
+        } else if (grant) {
           risk = 'high';
           details = `${pattern.tool} config grants broad permissions`;
+          evidence = { line: grant.line, token: grant.token, text: grant.text };
         }
       } catch { /* file unreadable */ }
 
-      configs.push({ file, tool: pattern.tool, risk, details });
+      configs.push({ file, tool: pattern.tool, risk, details, evidence });
     }
   }
 
@@ -800,6 +854,66 @@ export function governanceActionAvailable(
   return governanceCause(findings, governanceRaw) !== null;
 }
 
+/**
+ * A scanned string as it should appear inside report prose, in quotes (#299).
+ *
+ * The value comes out of the user's tree, so it is display-escaped before it
+ * reaches a line — a `.cursorrules` carrying an ESC byte or a bidi override
+ * could otherwise repaint the report around it, which is #324 with a new
+ * source. Quoting is plain `"` because this is prose to read, not a command to
+ * paste; nothing here is spliced into a shell.
+ */
+function quoted(s: string): string {
+  const escaped = escapeForDisplay(s);
+  // A structured grant already arrives quoted — the token that matched in
+  // `.claude/settings.json` is literally `"Bash(*)"`, and wrapping it again
+  // printed `""Bash(*)""`.
+  return /^".*"$/s.test(escaped) ? escaped : `"${escaped}"`;
+}
+
+/**
+ * `<file>:<line> — matched "<phrase>"`, the shape the house finding standard
+ * asks for (#299), plus a count of any further files with the same problem.
+ *
+ * Falls back to the old filename list when a config carries no evidence, which
+ * is unreachable for the two callers (both filter on a non-`low` risk, and risk
+ * is only raised alongside evidence) and is here so the renderer degrades to
+ * the previous output rather than to `undefined:undefined` if that ever stops
+ * being true.
+ */
+function configEvidenceDetail(configs: readonly AiConfigFile[]): string {
+  const head = configs[0];
+  if (!head?.evidence) return configs.map((cc) => cc.file).join(', ');
+  const where = `${escapePathForDisplay(head.file)}:${head.evidence.line}`;
+  // The TOKEN, not the line. The claim is "this phrase grants broad
+  // permissions", so the phrase is what the finding has to show; the whole line
+  // is what the Verify command prints, and it stays on `evidence.text` for a
+  // `--json` consumer that wants it without re-reading the file.
+  const what = head.evidence.token;
+  const rest = configs.length - 1;
+  const more = rest > 0 ? ` (+${rest} more config file${rest > 1 ? 's' : ''})` : '';
+  return `${where} — matched ${quoted(what)}${more}`;
+}
+
+/**
+ * `sed -n '<line>p' <file>` for a cited config, or undefined when the path
+ * cannot be named truthfully.
+ *
+ * Deliberately not `generateVerifyCommand()`: that helper quotes through
+ * `shellEscapePath`, which predates `citationPath` and does not make a leading
+ * `-` an operand — and the path here is `scanDirectory` joined to the config
+ * name, so the user-controlled half can be anything. The emitted form is
+ * identical so the two surfaces read the same; unifying `generateVerifyCommand`
+ * onto `citationPath` touches five analyzers and their pinned tests, so it is
+ * its own change rather than a rider on this one.
+ */
+function configVerifyCommand(scanDirectory: string, config: AiConfigFile | undefined): string | undefined {
+  if (!config?.evidence) return undefined;
+  const quotedPath = citationPath(path.join(scanDirectory, config.file));
+  if (!quotedPath) return undefined;
+  return `sed -n '${config.evidence.line}p' ${quotedPath}`;
+}
+
 function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScanResult): Finding[] {
   const findings: Finding[] = [];
   const target = citationTarget(result.scanDirectory);
@@ -963,26 +1077,37 @@ function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScan
       severity: 'critical',
       category: 'config',
       title: 'AI config files contain credential references',
-      detail: criticalConfigs.map((cc) => cc.file).join(', '),
+      detail: configEvidenceDetail(criticalConfigs),
       whyItMatters:
         'API keys or tokens appear to be stored directly in these configuration files. '
         + 'Anyone with repository access can see and use these credentials.',
       remediation: `opena2a protect ${target}  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.`,
+      verify: configVerifyCommand(result.scanDirectory, criticalConfigs[0]),
     });
   }
 
   // Broad permissions in AI configs
+  //
+  // #299 — the detail, the fix and the Verify all name the phrase that
+  // triggered this. The previous version named the FILE and cited `scan-soul`,
+  // which measures governance conformance and cannot tell anyone which
+  // permission to remove: a reader who ran it got a different report about a
+  // different question, which is a topic change rather than a remedy.
   const highConfigs = result.aiConfigs.filter((c) => c.risk === 'high');
   if (highConfigs.length > 0) {
+    const cited = highConfigs[0];
     findings.push({
       severity: 'high',
       category: 'config',
       title: 'AI config files grant broad permissions',
-      detail: highConfigs.map((cc) => cc.file).join(', '),
+      detail: configEvidenceDetail(highConfigs),
       whyItMatters:
         'These configs allow AI agents to perform a wide range of actions without restrictions. '
         + 'Broad permissions increase risk if an agent behaves unexpectedly.',
-      remediation: `hackmyagent scan-soul ${target}`,
+      remediation: cited.evidence
+        ? `Narrow ${escapePathForDisplay(cited.file)}:${cited.evidence.line} — replace ${quoted(cited.evidence.token)} with the specific commands or paths this agent needs`
+        : `hackmyagent scan-soul ${target}`,
+      verify: configVerifyCommand(result.scanDirectory, cited),
     });
   }
 
@@ -1174,6 +1299,7 @@ function formatText(result: DetectResult, verbose: boolean, rawTargetDir: string
       if (f.detail) lines.push(`  ${pipe} ${c.dim}${f.detail}${R}`);
       if (f.whyItMatters) lines.push(`  ${pipe} ${f.whyItMatters}`);
       if (f.remediation) lines.push(`  ${pipe} ${c.cyan}Fix:${R} ${cyan(f.remediation)}`);
+      if (f.verify) lines.push(`  ${pipe} ${c.dim}Verify:${R} ${dim(f.verify)}`);
     }
     const remaining = result.findings.length - shown;
     if (remaining > 0) {
@@ -1319,10 +1445,15 @@ function formatText(result: DetectResult, verbose: boolean, rawTargetDir: string
     for (const config of configsToShow) {
       const fileCol = config.file.padEnd(maxName + 2);
       lines.push(`  ${fileCol}${config.tool}`);
+      // #299 — the same specificity the finding now carries. "Grants broad
+      // permissions to AI agents in this project" was printed under the
+      // filename of a document whose text RESTRICTED the agent, and a reader
+      // had nothing to check it against.
+      const at = config.evidence ? dim(` line ${config.evidence.line}: `) + quoted(config.evidence.token) : '';
       if (config.risk === 'critical') {
-        lines.push(`    ${yellow('Contains hardcoded credentials')} ${dim('—')} ${cyan('opena2a protect .')}`);
+        lines.push(`    ${yellow('Contains hardcoded credentials')}${at} ${dim('—')} ${cyan('opena2a protect .')}`);
       } else if (config.risk === 'high') {
-        lines.push(`    ${yellow('Grants broad permissions to AI agents in this project')}`);
+        lines.push(`    ${yellow('Grants broad permissions')}${at}`);
       }
     }
     if (!verbose && result.aiConfigs.length > noteworthyConfigs.length) {
