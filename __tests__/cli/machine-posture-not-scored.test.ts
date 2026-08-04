@@ -19,11 +19,16 @@
 // and asserts it produces high/critical findings before relying on it. A machine
 // with no OpenClaw installed cannot silently turn this into a no-op.
 
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, symlinkSync, chmodSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+
+// This suite spawns the built CLI. Without a freshness check it would silently
+// measure a binary older than `src/` and report a pass.
+beforeAll(assertDistFreshIfPresent);
 
 const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
