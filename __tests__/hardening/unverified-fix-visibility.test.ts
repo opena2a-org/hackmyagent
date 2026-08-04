@@ -35,7 +35,7 @@
 // telemetry, the ASP report and the machine formats then agree by
 // construction.
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll } from 'vitest';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { initThrowawayRepo } from '../helpers/throwaway-repo';
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
@@ -43,6 +43,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
 import { countsAgainstScore } from '../../src/ui/verdict-band';
+import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+
+// #285 — this suite spawns the built CLI. Without this it would happily
+// measure a binary older than `src/` and report a pass.
+beforeAll(assertDistFreshIfPresent);
 
 const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');

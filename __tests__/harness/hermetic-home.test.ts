@@ -16,11 +16,16 @@
 //
 // plus the default itself, which is the whole job of vitest.setup.ts.
 
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+
+// #285 — this suite spawns the built CLI. Without this it would happily
+// measure a binary older than `src/` and report a pass.
+beforeAll(assertDistFreshIfPresent);
 
 const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');

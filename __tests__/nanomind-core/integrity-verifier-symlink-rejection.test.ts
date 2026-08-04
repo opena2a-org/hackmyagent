@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest';
 import {
   mkdtempSync,
   mkdirSync,
@@ -16,6 +16,11 @@ import {
   verifyAll,
   type IntegrityManifest,
 } from '../../src/nanomind-core/security/integrity-verifier';
+import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+
+// #285 — this suite spawns the built CLI. Without this it would happily
+// measure a binary older than `src/` and report a pass.
+beforeAll(assertDistFreshIfPresent);
 
 /**
  * Defends against a post-install file-replacement attack where an attacker

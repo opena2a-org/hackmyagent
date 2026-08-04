@@ -12,7 +12,7 @@
  *   5. Rejects structurally invalid + oversized ATX before contacting the broker.
  *   6. Sanitizes ANSI escapes in user-supplied grant references.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as http from 'node:http';
 import * as fs from 'node:fs';
@@ -20,6 +20,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { trustAapGate } from '../../src/aap';
+import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+
+// #285 — this suite spawns the built CLI. Without this it would happily
+// measure a binary older than `src/` and report a pass.
+beforeAll(assertDistFreshIfPresent);
 
 const CLI_BIN = path.join(__dirname, '..', '..', 'dist', 'cli.js');
 

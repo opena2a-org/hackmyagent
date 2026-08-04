@@ -9,10 +9,15 @@
  * A script doing `hackmyagent --version` (capturing stdout) must get exactly
  * one clean line, with the privacy disclosure still surfaced via stderr.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+
+// #285 — this suite spawns the built CLI. Without this it would happily
+// measure a binary older than `src/` and report a pass.
+beforeAll(assertDistFreshIfPresent);
 
 const CLI_PATH = resolve(__dirname, '../../dist/cli.js');
 const STRIP_ANSI = /\x1b\[[0-9;]*m/g;

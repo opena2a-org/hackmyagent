@@ -15,7 +15,7 @@
 // changes the verdict or exit code, and preserves the pre-clamp value as
 // `rawScore` so it adds information rather than destroying it.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -27,6 +27,11 @@ import {
   clampScoreToVerdictBand,
   isFailDirection,
 } from '../../src/ui/verdict-band';
+import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+
+// #285 — this suite spawns the built CLI. Without this it would happily
+// measure a binary older than `src/` and report a pass.
+beforeAll(assertDistFreshIfPresent);
 
 const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');

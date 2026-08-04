@@ -10,11 +10,16 @@
  *   - rebrandCommandCitations rewrites verb pairs but never the bare package
  *     name, install commands, paths, URLs, or MCP tool ids.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { rebrandCommandCitations, resolveCliPrefix } from '../src/cli-prefix';
+import { assertDistFreshIfPresent } from './helpers/dist-freshness';
+
+// #285 — this suite spawns the built CLI. Without this it would happily
+// measure a binary older than `src/` and report a pass.
+beforeAll(assertDistFreshIfPresent);
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const CLI_PATH = path.join(REPO_ROOT, 'dist', 'cli.js');

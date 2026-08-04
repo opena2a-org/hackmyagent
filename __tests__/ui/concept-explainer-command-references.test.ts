@@ -17,10 +17,15 @@
  * stale-string drift in oasb-1.ts / asff.ts / opt-in.ts that predates
  * #163.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+
+// #285 — this suite spawns the built CLI. Without this it would happily
+// measure a binary older than `src/` and report a pass.
+beforeAll(assertDistFreshIfPresent);
 
 const REPO_ROOT = path.resolve(__dirname, '../..');
 const CLI_PATH = path.join(REPO_ROOT, 'dist', 'cli.js');
