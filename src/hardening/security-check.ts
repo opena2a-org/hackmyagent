@@ -156,6 +156,34 @@ export interface ScanResult {
     llmCost?: number;
     cachedResults?: number;
   };
+  /**
+   * Summaries of AI runtimes installed on this machine but OUTSIDE the scan
+   * target (`~/.openclaw`, `~/.nemoclaw`, ...).
+   *
+   * [CHIEF-CA 2026-08-03] Reported, never scored. Nothing here has ever been
+   * counted in `findings`, `score`, or the exit code — a directory-scoped
+   * score has to mean the directory, or `--fail-below` is not a CI gate.
+   * Consumers that aggregate `findings` get the target's findings only.
+   */
+  machinePosture?: MachinePostureSummary[];
+}
+
+/**
+ * One auto-detected AI runtime outside the scan target: the SUMMARY of scanning
+ * it, not its findings. A real `~/.openclaw` measured 1780 findings — enumerating
+ * them into a target-scoped report buries the target's own.
+ */
+export interface MachinePostureSummary {
+  /** Vendor label, e.g. `OpenClaw`. */
+  name: string;
+  /** Home-relative display path (`~/.openclaw`). Never the absolute path. */
+  dir: string;
+  /**
+   * Runnable command that scans this scope properly, or `null` when no correct
+   * command can name the path — a home directory carrying a control byte has no
+   * truthful citation, and the `<dir>` placeholder is shell redirection.
+   */
+  scanCommand: string | null;
 }
 
 /**

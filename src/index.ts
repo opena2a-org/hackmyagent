@@ -41,7 +41,7 @@ export type {
 
 // Hardening module
 export { HardeningScanner, calculateSecurityScore } from './hardening';
-export type { ScanOptions, SecurityFinding, Severity } from './hardening';
+export type { ScanOptions, SecurityFinding, Severity, MachinePostureSummary } from './hardening';
 
 // Context Lifecycle Scanner (Stage 0-1)
 export { scanAssembly, toLifecycleResult } from './lifecycle';

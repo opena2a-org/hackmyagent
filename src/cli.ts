@@ -14,6 +14,7 @@ import {
   type RiskLevel,
   type Severity,
   type SecurityFinding,
+  type MachinePostureSummary,
   type ExternalFinding,
   type FindingSeverity,
   // Benchmark imports
@@ -714,6 +715,13 @@ function displayCheckFindings(
 // Unified check display — one function for all target types (0.17.0)
 // ---------------------------------------------------------------------------
 
+/**
+ * One auto-detected AI runtime living outside the scan target — the summary of
+ * scanning it, NOT its findings. Single definition, shared with `ScanResult`,
+ * so the rendered section and the JSON field can never drift apart.
+ */
+type MachinePostureEntry = MachinePostureSummary;
+
 interface UnifiedCheckDisplayOptions {
   name: string;
   sourceLabel?: string;
@@ -783,6 +791,16 @@ interface UnifiedCheckDisplayOptions {
     modelVersion: string;
     policy: 'abstention-gated';
   }>;
+  /**
+   * Machine-wide AI-runtime posture (`~/.openclaw`, `~/.nemoclaw`, ...).
+   *
+   * Advisory channel, same contract as `analystEscalations`: rendered in its
+   * own labelled section, never merged into `findings`, never counted toward
+   * the target score or the exit code. A directory-scoped score has to mean the
+   * directory, or `--fail-below` is not a CI gate — the same commit scores 98
+   * on a runner and 0 on a laptop with an AI runtime installed. [CHIEF-CA]
+   */
+  machinePosture?: MachinePostureEntry[];
   /** When set, this path is used in Next Steps hints instead of `name`. Use for local directory targets (e.g., `secure`). */
   nextStepsTarget?: string;
   /**
@@ -1859,6 +1877,50 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     if (hiddenAbstains > 0) {
       console.log(`  ${colors.dim}${hiddenAbstains} uncertain analyst verdict${hiddenAbstains === 1 ? '' : 's'} (model hedged or gave no usable class) not shown.${RESET()}`);
       console.log(`  ${colors.dim}Inspect with --verbose, or programmatically via --json analystEscalations.${RESET()}`);
+      console.log();
+    }
+  }
+
+  // ── Machine posture ─────────────────────────────────────────────────
+  // AI runtimes installed on this machine but OUTSIDE the scan target. Same
+  // advisory contract as the escalations above: reported, never scored. The
+  // section states the scope explicitly, because the whole defect this fixes
+  // was a machine-wide number wearing a directory-scoped label.
+  const machinePosture = opts.machinePosture ?? [];
+  if (machinePosture.length > 0) {
+    divider('Machine Posture');
+    console.log(`  ${colors.dim}AI runtimes installed on this machine, outside this scan's target.${RESET()}`);
+    console.log(`  ${colors.dim}Not scanned here, and not included in the score above, the findings above, or the exit code.${RESET()}`);
+    console.log();
+    // The loop variable is `entry` ON PURPOSE, and an earlier version of this
+    // block called it `runtime` for a reason that was wrong.
+    //
+    // `render-source.ts` decides whether a printed expression is path-bearing
+    // by NAME: for `x.y` where `y` is not path-like it falls back to testing
+    // `x`, and `entry` is on that list while `runtime` is not. Renaming the
+    // variable therefore removed this block — the only new render site in the
+    // change — from the static gate entirely. Verified by mutation: with the
+    // `Scan it:` escape deleted, `render-source-gate` FAILS under `entry` and
+    // PASSES under `runtime`. That is a rename-workaround, which this project's
+    // own taxonomy classifies as a suspicious fix.
+    //
+    // The numeric field is hoisted into a plainly-named local instead, because
+    // a count is genuinely not a path and the gate cannot know that from a
+    // property name. Escaping a string that needed no escaping is a no-op; a
+    // render site the gate cannot see is not.
+    for (const entry of machinePosture) {
+      // Escapes are applied INSIDE the print call, never hoisted into a local:
+      // the static gate inspects printer arguments, so a path routed through an
+      // intermediate whose name is not path-like becomes invisible to it.
+      console.log(
+        `  ${colors.white}${escapeForDisplay(entry.name)}${RESET()}`
+        + `  ${colors.dim}${escapePathForDisplay(entry.dir)}${RESET()}`,
+      );
+      if (entry.scanCommand !== null) {
+        console.log(`  ${colors.cyan}Scan it:${RESET()} ${escapeForDisplay(entry.scanCommand)}`);
+      } else {
+        console.log(`  ${colors.dim}The path above is an escaped rendering, so no pasteable command can name it. Scan it by its real path.${RESET()}`);
+      }
       console.log();
     }
   }
@@ -3480,7 +3542,8 @@ Examples:
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
   .option('--ci', 'CI mode: suppress interactive prompts, exit non-zero on findings')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; nanomind?: boolean; analm?: boolean; scanDepth?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean }) => {
+  .option('--no-machine-posture', 'Skip the advisory scan of AI runtimes installed outside the target (~/.openclaw, ~/.nemoclaw)')
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; nanomind?: boolean; analm?: boolean; scanDepth?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean; machinePosture?: boolean }) => {
     try {
       const originalTarget = require("path").resolve(directory);
       let targetDir = originalTarget;
@@ -3712,34 +3775,67 @@ Examples:
         scanner.applyScore(result, forScore);
       }
 
-      // AI Infrastructure auto-detection — scan NemoClaw, OpenClaw, etc. if present
-      // Infrastructure scans run transparently alongside the primary scan.
-      // No separate vendor-specific commands needed.
+      // AI Infrastructure auto-detection — scan NemoClaw, OpenClaw, etc. if present.
       //
-      // Skipped under OPENA2A_CORPUS_DETERMINISTIC=1 (the corpus release-smoke
-      // harness) so a developer's real ~/.nemoclaw / ~/.openclaw cannot leak
-      // machine state into fixture scores — the flag the harness already sets
-      // is now genuinely hermetic, not just accidentally so on clean CI runners.
-      if (process.env.OPENA2A_CORPUS_DETERMINISTIC !== '1') {
-        const infraDirs = detectAIInfrastructure(targetDir);
-        for (const infra of infraDirs) {
-          try {
-            const infraScanner = new HardeningScanner();
-            const infraResult = await infraScanner.scan({ targetDir: infra.dir, autoFix: false });
-            const infraFailed = (infraResult.findings || []).filter((f: SecurityFinding) => !f.passed);
-            if (infraFailed.length > 0 && result.findings) {
-              // Tag findings with infrastructure source and merge
-              const tagged = infraFailed.map((f: SecurityFinding) => ({
-                ...f,
-                name: `[${infra.name}] ${f.name}`,
-                file: f.file ? `${infra.dir.replace(require('os').homedir(), '~')}/${f.file}` : infra.dir,
-              }));
-              result.findings = [...(result.findings as SecurityFinding[]), ...tagged] as typeof result.findings;
-              // Recalculate score with infrastructure findings included
-              const allForScore = (result.findings || []).filter((f: any) => countsAgainstScore(f));
-              scanner.applyScore(result, allForScore);
-            }
-          } catch { /* Infrastructure scan failures are non-fatal */ }
+      // [CHIEF-CA 2026-08-03] These runtimes live in $HOME, OUTSIDE the scan
+      // target. Their findings are REPORTED but never SCORED: they do not enter
+      // `result.findings`, do not reach `applyScore`, and do not set the exit
+      // code. They are summarized on `result.machinePosture` instead.
+      //
+      // This block used to name-prefix them `[<Vendor>]`, push them into
+      // `result.findings`, and re-run `applyScore` over the merged list. On a
+      // machine with a real `~/.openclaw`, `secure <empty dir>` measured
+      // **0/100 with 1782 findings** — 1780 of them from 250 SKILL.md files
+      // under `~/.openclaw/sandboxes/` — where the same directory scored 98/100
+      // with 1 finding under a sandboxed HOME. That made `--fail-below` useless
+      // as a CI gate (identical code, different verdict per machine), buried the
+      // target's own finding under unrelated ones, and silently read $HOME
+      // during what the user asked to be a directory scan.
+      //
+      // Skipped entirely under OPENA2A_CORPUS_DETERMINISTIC=1 (the corpus
+      // release-smoke harness), under --no-machine-posture, and for any output
+      // mode that cannot present the result.
+      //
+      // Only `text` (the section below) and `json` (the `machinePosture` field)
+      // carry it. Under `--format sarif|html|asff` and under `--benchmark`, the
+      // scan ran and its result was dropped on the floor — which on a real
+      // `~/.openclaw` is a 1780-finding walk producing nothing, and leaves the
+      // third defect this fix names ("read $HOME without saying so") in place
+      // for four of five output modes. Not scanning is both the honest answer
+      // and the fast one.
+      const posturePresentable = (format === 'text' || format === 'json') && !options.benchmark;
+      if (
+        process.env.OPENA2A_CORPUS_DETERMINISTIC !== '1'
+        && options.machinePosture !== false
+        && posturePresentable
+      ) {
+        // Detection only — the runtime is NOT scanned here.
+        //
+        // Reporting a score for a directory that is explicitly out of scope
+        // meant running a full scan whose result could only ever be a
+        // by-product: three review rounds each found a way for that number to
+        // come out flattering (an unreadable subdirectory, an unreadable file,
+        // a padded tree that exhausted the readability probe's bound), and each
+        // fix moved the hole one level over. Not producing a number removes the
+        // class rather than the latest instance of it.
+        //
+        // It also removes the cost: this used to walk a real `~/.openclaw` —
+        // 250 skills, 1780 findings — on every single `secure` run, to render
+        // two lines. Existence is a `statSync`.
+        const posture: MachinePostureEntry[] = detectAIInfrastructure(targetDir).map((infra) => {
+          const cited = citationPath(infra.dir);
+          return {
+            name: infra.name,
+            dir: homeRelative(infra.dir),
+            // `citationPath`, not `citationTarget`: the latter substitutes
+            // `<dir>` for an unnameable path, and `<dir>` pasted into a shell is
+            // a redirection. Null means "no truthful command exists" and the
+            // renderer says so instead of emitting a broken one.
+            scanCommand: cited === null ? null : `${CLI_PREFIX} secure ${cited}`,
+          };
+        });
+        if (posture.length > 0) {
+          result.machinePosture = posture;
         }
       }
 
@@ -3972,6 +4068,16 @@ Examples:
         }
         // Community contribution (non-blocking, runs in JSON mode too)
         await handleContribution(options.contribute, targetDir, result.findings, scanDurationMs, options.registryUrl, format);
+        // `--fail-below` is honored here, not only on the text path. It returns
+        // before the check near the end of the action, so `--json --fail-below 99`
+        // exited 0 on a score of 98 while the same run without `--json` exited 1.
+        // CI is precisely where a threshold is used and precisely where `--json`
+        // is used, so the flag was inert exactly where it matters.
+        if (failBelow !== undefined && result.score < failBelow) {
+          console.error(`Score ${result.score} is below threshold ${failBelow}`);
+          process.exitCode = 1;
+          return;
+        }
         const critHigh = result.findings.filter((f: SecurityFinding) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) await finishWithFindings(1);
         return;
@@ -4149,6 +4255,7 @@ Examples:
           ? nmResult.analystEscalations
           : undefined,
         artifactSummaries: nmResult.artifactSummaries,
+        machinePosture: result.machinePosture,
         nextStepsTarget: directory,
       });
 
@@ -4539,12 +4646,67 @@ function assessRiskLevel(findings: SecurityFinding[]): { level: string; color: s
  * Detect AI infrastructure directories present on this machine.
  * Returns paths for environments that exist and are different from the primary scan target.
  */
+/**
+ * A path shown relative to `$HOME`, for reading rather than pasting.
+ *
+ * Only rewrites on a SEPARATOR boundary. Slicing by `home.length` alone turned
+ * `/.openclaw` into `~.openclaw` when `$HOME` was `/` (a container default),
+ * which is neither the real path nor a tilde path, and also broke the
+ * `startsWith('~/')` contract the machine-posture entries are asserted against.
+ */
+function homeRelative(dir: string): string {
+  const os = require('os');
+  const path = require('path');
+  const home = os.homedir();
+  if (dir === home) return '~';
+  const withSep = home.endsWith(path.sep) ? home : home + path.sep;
+  return dir.startsWith(withSep) ? `~${path.sep}${dir.slice(withSep.length)}` : dir;
+}
+
 function detectAIInfrastructure(primaryTarget: string): Array<{ name: string; dir: string }> {
   const os = require('os');
   const path = require('path');
   const fs = require('fs');
   const home = os.homedir();
-  const primary = path.resolve(primaryTarget);
+
+  // Compare REAL paths, not lexical ones. `path.resolve` normalizes `.`/`..`
+  // and makes a path absolute; it does not follow symlinks, so a link in the
+  // scanned tree pointing at `~/.openclaw` resolved to the link's own path and
+  // compared unequal to the runtime it actually is.
+  const realOrResolved = (p: string): string => {
+    try { return fs.realpathSync.native(p); } catch { return path.resolve(p); }
+  };
+  const primary = realOrResolved(primaryTarget);
+
+  /** True when `a` IS `b` or lives underneath it. Separator-bounded, so
+   *  `.openclaw-backup` is not inside `.openclaw`. */
+  const contains = (a: string, b: string): boolean => {
+    if (a === b) return true;
+    const rel = path.relative(a, b);
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  };
+
+  /**
+   * True when the runtime and the target OVERLAP in either direction.
+   *
+   * Both directions matter, and each was wrong in its own release:
+   *
+   *   - runtime inside target (`secure ~`): the runtime's findings are in the
+   *     target's findings, score and exit code — correctly, they are inside it —
+   *     so a section announcing "Outside this scan's target … not included in
+   *     the score above" is false, and the directory is scanned twice.
+   *   - target inside runtime (`secure ~/.openclaw/sandboxes`): identical
+   *     falsehood, reached by inverting the nesting. This is a natural
+   *     invocation — the tool itself prints `Scan it: hackmyagent secure
+   *     ~/.openclaw`, and a user who then narrows to a subdirectory lands here.
+   *
+   * Overlap in EITHER direction means the runtime is not "outside this scan's
+   * target", so it does not belong in a section that says it is.
+   */
+  const overlapsTarget = (dir: string): boolean => {
+    const real = realOrResolved(dir);
+    return contains(primary, real) || contains(real, primary);
+  };
 
   const candidates: Array<{ name: string; dir: string }> = [
     { name: 'NemoClaw', dir: path.join(home, '.nemoclaw') },
@@ -4556,7 +4718,11 @@ function detectAIInfrastructure(primaryTarget: string): Array<{ name: string; di
 
   return candidates.filter(c => {
     try {
-      return path.resolve(c.dir) !== primary && fs.existsSync(c.dir) && fs.statSync(c.dir).isDirectory();
+      if (!fs.existsSync(c.dir) || !fs.statSync(c.dir).isDirectory()) return false;
+      // Overlapping the target in either direction: the primary scan already
+      // covers the shared part, and those findings count toward the target's
+      // score because they genuinely are part of the target.
+      return !overlapsTarget(c.dir);
     } catch {
       return false;
     }
