@@ -94,6 +94,31 @@ export function countsAgainstScore(f: {
   return !f.fixed;
 }
 
+/**
+ * Whether a finding stays in the report list after a re-filter.
+ *
+ * The list this gates is the one `countsAgainstScore` is then applied to, so
+ * the two predicates are a pair and the ONLY property that matters between
+ * them is: anything that counts against the score must survive to be counted.
+ * Drop it here and the score is computed from a list the finding was already
+ * removed from — #259, where a GIT-002 HIGH clamped the score to 69 and then
+ * appeared in no finding block, no category summary and no verdict.
+ *
+ * `f.fixed` is the load-bearing half. Twelve checks report
+ * `passed: <check>Fixed`, flipping `passed` true the moment a fix is applied;
+ * the verification pass then sets `fixVerified: false` without resetting
+ * `passed`. On `!f.passed` alone every one of those disappears.
+ *
+ * #285 — this rule existed as five identical inline copies in `src/cli.ts`
+ * (the `secure` path plus the four NanoMind merge blocks). Measured on
+ * `d9e4ee1`: mutating the four NanoMind copies to `!f.passed` and rebuilding
+ * left the suite green at 221 files / 2886 tests, because only the `secure`
+ * copy was reachable from a test. One rule, one place, one guard.
+ */
+export function retainForVerdict(f: { passed?: boolean; fixed?: boolean }): boolean {
+  return !f.passed || Boolean(f.fixed);
+}
+
 export function isFailDirection(
   findings: readonly {
     severity?: string;
