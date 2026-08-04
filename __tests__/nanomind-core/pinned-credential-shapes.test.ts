@@ -1,22 +1,23 @@
-// Regression: every credential shape the scanner DETECTS is also REDACTED, and
-// the legacy OpenAI shape is one of them.
+// Regression: the legacy OpenAI key shape is detected, and every shape the
+// detector can find is also redacted before content reaches the NanoMind daemon.
 //
 // `opena2a scan` / `hackmyagent secure` returned 98/100 exit 0 on a source file
 // holding a hardcoded legacy `sk-` key, while a byte-identical fixture using a
 // `sk-proj-` key returned 69/100 exit 1. `scan` is the CI gate — the miss was
 // shape-dependent silence on exactly what the command exists to catch.
 //
-// Root cause was list drift: `CANONICAL_CREDENTIAL_PATTERNS` (the verdict path)
-// had fallen eight shapes behind `VENDOR_PREFIX_ALTERNATIVES`, the module that
-// declares itself the single source of truth. Fixing only `sk-` would have left
-// the other seven.
+// SCOPE. This release adds ONE detector shape: `sk-[a-zA-Z0-9]{48,}`. A first
+// draft added eight, on the theory that the defect was drift from
+// `VENDOR_PREFIX_ALTERNATIVES`; two adversarial rounds showed the expansion was
+// itself the problem — a false-positive class on ordinary identifiers, and a
+// quadratic scan introduced while trying to bound it. The rest are being
+// re-added one at a time on `fix/credential-fp-siblings` (#352/#353).
 //
-// Two properties are pinned, and they pull in opposite directions on purpose:
-//   - DETECTION: each shape produces a credential hit (a false negative here is
-//     a silent CI pass on a committed key).
-//   - REDACTION: each shape is stripped before content reaches the NanoMind
-//     daemon (a gap here means the scanner proves a secret is real and then
-//     forwards it — strictly worse than not detecting it).
+// The invariant between the two lists is COVERAGE, not equality: the redactor
+// must strip everything the detector can find, and may strip more. A shape
+// detected but not redacted means the scanner proves a secret is real and then
+// forwards it — strictly worse than not detecting it. The reverse costs only a
+// mangled token in an advisory prompt, so the redactor keeps the wider list.
 //
 // Every value below is synthetic, generated from a fixed non-secret alphabet.
 // None is or ever was a live credential.
@@ -31,27 +32,40 @@ import {
 /** Synthetic filler: alphanumeric, no placeholder markers the FP filters strip. */
 const fill = (n: number) => 'Ab3Cd4Ef5Gh6Ij7Kl8Mn9Op0Qr1St2Uv3Wx4Yz5Ab6Cd7Ef8Gh9Ij0Kl1Mn2Op3'.repeat(3).slice(0, n);
 
+/** Shapes the detector reports. Must ALSO be redacted. */
 const SHAPES: Array<{ label: string; value: string }> = [
   { label: 'OpenAI legacy key', value: `sk-${fill(48)}` },
   { label: 'OpenAI project key', value: `sk-proj-${fill(48)}` },
   { label: 'Anthropic API key', value: `sk-ant-api03-${fill(40)}` },
   // Composed, never written literally: an `AKIA` + 16 upper-alnum literal in a
   // committed file is the shape GitHub push protection blocks on, and this file
-  // would be pushed to a public repo. Every other value here is composed for the
-  // same reason. See reference_github_push_protection_secret_fixtures.
+  // would be pushed to a public repo. See
+  // reference_github_push_protection_secret_fixtures.
   { label: 'AWS access key', value: 'AKIA' + 'ABCDEFGHIJKLMNOP' },
   { label: 'GitHub personal access token', value: `ghp_${fill(36)}` },
   { label: 'GitHub OAuth token', value: `gho_${fill(36)}` },
   { label: 'GitHub app token', value: `ghs_${fill(36)}` },
+  { label: 'Stripe live key', value: `sk_live_${fill(24)}` },
+  { label: 'Google API key', value: `AIza${fill(35)}` },
+  { label: 'Slack bot token', value: `xoxb-${fill(12)}-${fill(12)}-${fill(24)}` },
+];
+
+/**
+ * Shapes the REDACTOR covers but the detector deliberately does not.
+ *
+ * Redaction is defence-in-depth on the daemon boundary and carries no verdict
+ * risk, so it keeps the wider list while the detector is held to the one shape
+ * this release fixes. These must never appear in the detector without a bounded
+ * pattern and a ReDoS measurement — that is what #352/#353 are for.
+ */
+const REDACT_ONLY: Array<{ label: string; value: string }> = [
   { label: 'GitHub user-to-server token', value: `ghu_${fill(36)}` },
   { label: 'GitHub fine-grained token', value: `github_pat_${fill(22)}_${fill(59)}` },
   { label: 'HuggingFace token', value: `hf_${fill(34)}` },
   { label: 'npm access token', value: `npm_${fill(36)}` },
-  { label: 'Stripe live key', value: `sk_live_${fill(24)}` },
   { label: 'Stripe test key', value: `sk_test_${fill(24)}` },
   { label: 'SendGrid API key', value: `SG.${fill(22)}.${fill(43)}` },
-  { label: 'Google API key', value: `AIza${fill(35)}` },
-  { label: 'Slack bot token', value: `xoxb-${fill(12)}-${fill(12)}-${fill(24)}` },
+  { label: 'GitLab personal access token', value: `glpat-${fill(20)}` },
 ];
 
 /** Realistic carrier: a source line, which is the context `scan` reads. */
@@ -80,7 +94,7 @@ describe('credential shapes: detected and redacted, never one without the other'
   });
 
   describe('redaction', () => {
-    for (const { label, value } of SHAPES) {
+    for (const { label, value } of [...SHAPES, ...REDACT_ONLY]) {
       it(`${label} never survives into daemon-bound content`, () => {
         // Both carriers: the assignment form AND the form the generic
         // name-based rule cannot see.

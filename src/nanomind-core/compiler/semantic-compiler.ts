@@ -973,10 +973,21 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   { label: 'Anthropic API key', regex: vendor(String.raw`sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}`) },
   { label: 'OpenAI project key', regex: vendor(String.raw`sk-proj-[a-zA-Z0-9_-]{20,}`) },
   // OpenAI's PRE-project key format, and the one still issued to older accounts.
-  // Its absence here is what let `scan` return 98/100 exit 0 on a source file
-  // holding a hardcoded `sk-` key while the byte-identical fixture using a
-  // `sk-proj-` key returned 69/100 exit 1. `scan` is the CI gate, so the miss
-  // was shape-dependent silence on the exact thing the command exists to catch.
+  //
+  // THE ONLY SHAPE THIS RELEASE ADDS. Its absence is what let `scan` return
+  // 98/100 exit 0 on a source file holding a hardcoded `sk-` key while the
+  // byte-identical fixture using a `sk-proj-` key returned 69/100 exit 1.
+  // `scan` is the CI gate, so the miss was shape-dependent silence on the exact
+  // thing the command exists to catch.
+  //
+  // A first draft of this fix added eight shapes on the theory that the real
+  // defect was drift from `VENDOR_PREFIX_ALTERNATIVES`. Two adversarial review
+  // rounds showed that expansion was the problem, not the fix: it produced a
+  // false-positive class on ordinary identifiers and, in the attempt to bound
+  // it, a quadratic scan on attacker-supplied file content. The remaining
+  // shapes are being re-added deliberately and one at a time, each with a
+  // bounded pattern and a ReDoS measurement, on `fix/credential-fp-siblings`
+  // (#352/#353) — not here.
   //
   // 48 consecutive ALPHANUMERICS is the documented legacy shape and is what
   // keeps this from colliding with its siblings: `sk-proj-` and `sk-ant-api03-`
@@ -987,20 +998,9 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   { label: 'GitHub personal access token', regex: vendor(String.raw`ghp_[a-zA-Z0-9]{36}`) },
   { label: 'GitHub OAuth token', regex: vendor(String.raw`gho_[a-zA-Z0-9]{36}`) },
   { label: 'GitHub app token', regex: vendor(String.raw`ghs_[a-zA-Z0-9]{36}`) },
-  // Same GitHub token family, same fixed width. `ghu_` was the only sibling
-  // absent — a user-to-server token is exactly as usable as the three above.
-  { label: 'GitHub user-to-server token', regex: vendor(String.raw`ghu_[a-zA-Z0-9]{36}`) },
-  // Fine-grained PAT: `github_pat_` + 22-char id + `_` + 59-char secret. Bounded
-  // low so a future width change still matches, but high enough (60) that no
-  // ordinary identifier reaches it.
-  { label: 'GitHub fine-grained token', regex: vendor(String.raw`github_pat_[a-zA-Z0-9_]{60,}`) },
   { label: 'Slack bot token', regex: vendor(String.raw`xox[baprs]-[a-zA-Z0-9-]{10,}`) },
   { label: 'Google API key', regex: vendor(String.raw`AIza[0-9A-Za-z_-]{35}`) },
   { label: 'Stripe live key', regex: vendor(String.raw`sk_live_[0-9a-zA-Z]{24,}`) },
-  // Test keys are not harmless: they read a live Stripe account's test data and
-  // are routinely committed by the same mistake that commits the live one.
-  { label: 'Stripe test key', regex: vendor(String.raw`sk_test_[0-9a-zA-Z]{24,}`) },
-  { label: 'HuggingFace token', regex: vendor(String.raw`hf_[a-zA-Z0-9]{34,}`) },
   // GitLab is DELIBERATELY ABSENT from the verdict path. Its token body class
   // admits `-` and `_`, so `glpat-` plus any hyphenated identifier of 20+
   // characters matches, and no cheap predicate separates the two: an entropy
@@ -1015,13 +1015,11 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   // The static credential lists in `scanner.ts` still carry `glpat-`, so
   // `protect` and `--fix` are unaffected. Re-adding it here needs a bounded
   // pattern and a ReDoS measurement, not another lookahead.
-  { label: 'npm access token', regex: vendor(String.raw`npm_[a-zA-Z0-9]{36}`) },
   // `SG.<22-char id>.<43-char secret>`, both segments at FIXED widths. The
   // widths are load-bearing: written loosely this matches any dotted identifier
   // with two long segments (`MSG.INCIDENT_ESCALATION_QUEUE.HIGH_PRIORITY_ROUTE`
   // was positively identified as a credential once already — see the note in
   // src/types/credential-format.ts). Do not relax them.
-  { label: 'SendGrid API key', regex: vendor(String.raw`SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}`) },
   { label: 'PEM private key', regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PRIVATE)[A-Z ]*KEY-----/g },
 ];
 
