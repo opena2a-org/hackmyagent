@@ -242,6 +242,10 @@ All notable changes to HackMyAgent are documented in this file.
 
 - **`__tests__/docs/release-smoke-paths.test.ts`** — gates the checklist against its own rot: every repo-relative path it names must exist, the §0.5 fixtures the later steps depend on must actually be defined with a loud failure guard, the workspace-only `test/hma` spelling cannot return as a repo-relative target, and no step may read an exit code through a pipe (`cmd | head; echo $?` reports `head`'s status, not the CLI's). Each assertion was mutation-verified: reintroducing a piped exit read, deleting the fixture guard, and pointing a step at a nonexistent in-repo path each turn it red.
 
+### Known issues
+
+- **#367 — multi-part fix text renders a literal `\n` instead of a line break.** New in this release, and a rendering defect only: every command in the affected text is present and correct, so nothing is a dead end. `fix-generator.ts` assembles fix text by joining parts on a real newline, and 0.25.2 grew the number of parts, so several fix strings became multi-line where 0.25.1 emitted one line. `escapeForDisplay` maps `0x0a` to the two characters `\n` and the render sites apply it to the whole composed string — deliberately, per the contract at `ui/display-safe.ts:146`. So the escaping did not change; the text it is applied to did. Measured on `check getsentry/sentry-mcp`: 6 occurrences on 0.25.2, 0 on 0.25.1. Narrow — it needs the multi-part branch (MCP config, absent governance, credential findings) and shows 0 occurrences on all four malicious corpus fixtures and on local directory scans. Not fixed here because the obvious repair is wrong: exempting `0x0a` from the escape table, or splitting on it before escaping, reintroduces #334, where a scanned artifact carrying a real newline in a path can forge line structure inside the report describing it. The fix is to escape the interpolated values at composition time and stop escaping the composed string, which is a change to the layer #330/#334/#345 hardened and wants its own release.
+
 ## [0.25.1] - 2026-07-27
 
 ### Security
