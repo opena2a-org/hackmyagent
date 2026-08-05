@@ -287,8 +287,19 @@ export class TMEClassifier {
   private async loadOnnx(): Promise<void> {
     try {
       const ort = require('onnxruntime-node');
-      // Before `create`, because that is what triggers the enumeration.
-      if (ort.env) ort.env.logLevel = 'error';
+      // Before `create`, because that is what triggers the enumeration — and
+      // in its OWN try, because the catch below disables neural inference for
+      // the whole run. `env.logLevel` is a plain settable property today; if a
+      // future onnxruntime makes it getter-only, this assignment throws under
+      // strict mode, and without this boundary that would quietly drop every
+      // scan back to vocabulary scoring to silence a log line. A noisy logger
+      // is worth less than the classifier.
+      try {
+        if (ort.env) ort.env.logLevel = 'error';
+      } catch {
+        // Severity stays at the onnxruntime default; the session option below
+        // is the other half and is set independently.
+      }
       this.onnxSession = await ort.InferenceSession.create(this.modelPath, {
         logSeverityLevel: TMEClassifier.ORT_SEVERITY_ERROR,
       });

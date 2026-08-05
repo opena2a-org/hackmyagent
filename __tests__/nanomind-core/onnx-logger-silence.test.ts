@@ -13,9 +13,12 @@
  * into the middle of a scan, about a condition the reader cannot act on.
  *
  * That is how it was found: six failures in `report-render-safety.test.ts` on
- * `ubuntu-latest`, all `expected 2 to be +0`, on the six commands that load the
- * model — while macOS ran the same 226 files green. Every one of the nine
- * warning lines in that run carried exactly two control bytes, both ESC.
+ * `ubuntu-latest`, all `expected 2 to be +0`, while macOS ran the same 226
+ * files green. What ties them together, measured from the two job logs:
+ * ubuntu emitted nine of these warning lines and macOS emitted none; every one
+ * of the nine carried exactly two control bytes, both ESC, which is the count
+ * those failures reported; and eight of the nine fall inside the window in
+ * which that suite was executing.
  *
  * WHAT THIS TEST CAN AND CANNOT DO. It reads the source and proves the
  * severity is CONFIGURED, at every session-creation site, including ones added
