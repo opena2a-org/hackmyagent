@@ -2355,8 +2355,11 @@ export class HardeningScanner {
       //
       // BE HONEST ABOUT THIS GATE: it does not gate. `covered` is seeded from
       // `existingFiles` PLUS `absentAtBackup` (`:8244`), and `absentAtBackup` is
-      // the list of static candidates that do NOT exist, so `covered.size` is ~22
-      // on an empty directory and this is effectively unconditional. Every
+      // the list of static candidates that do NOT exist, so `covered.size` is 34
+      // on an empty directory — the full `BACKUP_FILES.length` — and this is
+      // therefore effectively unconditional. (An earlier draft of this comment
+      // said "~22", read off a regex that split the list on commas inside its own
+      // comments. Measured: 34.) Every
       // `secure --fix` now runs a second full scan, where before it ran one only
       // when a fix had landed. That is a cost regression, not a wrong number, and
       // the honest gate — "did the archive actually receive a copy" — needs
@@ -2380,19 +2383,38 @@ export class HardeningScanner {
         // score only agreed because the #259 clamp floored both to 69, and `--json`
         // published the contradiction as `rawScore` regardless.
         //
-        // `deep` is passed through faithfully rather than clamped: a `--fix --deep`
-        // that verified at standard depth would announce a number missing the
-        // archive's Layer-3 findings that the next `--deep` produces. It costs a
-        // second LLM pass when ANTHROPIC_API_KEY is set, which is the price of the
-        // announced number being the one that comes back.
+        // `deep` is deliberately NOT threaded, and `scanDepth` is capped below it.
+        //
+        // Threading it was tried and reverted the same day. Layer 3 (`:2162`) fires
+        // on `options.deep` and puts file CONTENT on the wire to the Anthropic API.
+        // Its archive exclusion (`:2167`) is `isOwnBackupDir`, which returns false
+        // whenever there is no `backupContext` (`:3699`) — and this verify scanner
+        // is a fresh instance that has none. So a threaded `deep` walked Layer 3
+        // into the archive this run had just written and transmitted the only
+        // remaining PLAINTEXT copies of the credentials the same run had redacted
+        // out of the live files. Measured: 2 LLM payloads before, 4 after, the two
+        // extra ones carrying the token bytes.
+        //
+        // A `--deep` user consents to their live files being analysed. Re-sending a
+        // secret AFTER removing it, out of an artifact presented as a local rollback
+        // aid, is a different bargain and was not one this tool disclosed. Cost was
+        // never the reason to avoid it; that is.
+        //
+        // The price is real and is disclosed instead of hidden: on a `--fix --deep`
+        // with an API key set, the announced score does not include Layer-3 findings
+        // inside the archive, so it can read higher than the next `--deep` scan.
+        // Layer 1 and Layer 2 archive findings — every credential detector among
+        // them — are still counted, so the number is not the pre-#374 number.
+        // Tracked as #386; the transmission hole itself is #385, and a plain
+        // `secure --deep` still walks any archive in the tree because of it.
+        const verifyDepth: ScanDepth = scanDepth === 'deep' ? 'standard' : scanDepth;
         const verifyScanner = new HardeningScanner();
         const verifyResult = await verifyScanner.scan({
           targetDir,
           autoFix: false,
           ignore: ignoredChecks.size > 0 ? [...ignoredChecks] : [],
           cliName: this.cliName,
-          scanDepth,
-          deep: options.deep,
+          scanDepth: verifyDepth,
           ignorePaths: options.ignorePaths,
           isNpmPackage: options.isNpmPackage,
         });
@@ -2585,16 +2607,27 @@ export class HardeningScanner {
           // exists to close.
           if (await this.isInsideOwnBackup(path.resolve(targetDir, f.file)) !== 'yes') continue;
           const key = `${f.checkId} ${f.file}`;
-          // The config walk excludes the archive but `keyFiles` / `namedSensitive`
-          // deliberately do not, so some archive findings are ALREADY in this
-          // run's list. Adopting them again would double-count them — but SKIPPING
-          // them silently was worse than double-counting in one direction: the
-          // finding stayed unflagged, and `scoreExcludingOwnArchive` (`:949`)
-          // derives the live-tree number by dropping flagged findings, so an
-          // archive copy counted as live tree. The report then told the user those
-          // points do NOT come back when the archive goes, which is the inverse of
-          // what that line exists to say. Flag it where it already sits; adopt only
-          // what is genuinely new.
+          // If a finding is already in this run's list, adopting it again would
+          // double-count it. Skipping it silently would be worse in the other
+          // direction: it would stay unflagged, and `scoreExcludingOwnArchive`
+          // (`:949`) derives the live-tree number by DROPPING flagged findings, so
+          // an archive copy would count as live tree and the report would tell the
+          // user those points do not come back when the archive goes — the inverse
+          // of what that line exists to say. So flag it where it already sits, and
+          // adopt only what is genuinely new.
+          //
+          // NO PRODUCER REACHES THIS BRANCH TODAY, and an earlier version of this
+          // comment claimed one did — that `keyFiles`/`namedSensitive` do not
+          // exclude the archive, so some archive findings are already in the list.
+          // That is false: `SENSITIVE_NAMES` and `keyFiles` feed `presentSensitive`
+          // into GIT-001/GIT-002's `details.files`, and those findings carry the
+          // CONSTANT `.gitignore` as their `file`. Nothing sets a finding's `file`
+          // to a path inside this run's own archive. Verified three ways: an
+          // instrumented full suite (229 files, 0 hits), a kitchen-sink fixture of
+          // every sensitive name and `BACKUP_FILES` shape (35 findings, 17 flagged,
+          // 0 hits), and reverting this branch entirely (all 5 suite tests still
+          // pass). It is kept as the correct behaviour for the day the Layer-2
+          // wiring changes — which nothing guards (#382) — not because it fires.
           const held = alreadyHeld.get(key);
           if (held) { held.inOwnArchive = true; continue; }
           alreadyHeld.set(key, f);
