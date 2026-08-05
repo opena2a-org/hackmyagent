@@ -25,10 +25,11 @@
 // close it. The over-correction guard still matters most: every malicious
 // fixture in the corpus carries a Secretless block dense with "never" and
 // "NEVER", so a file-scoped negation test would silence all of them.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import {
   findPermissionGrant,
   redactLikelySecrets,
@@ -37,6 +38,11 @@ import {
   NEGATION_REACH_WORDS,
 } from '../../src/scanner/permission-grant';
 import { scanAiConfigs } from '../../src/scanner/detect';
+import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+
+// This suite spawns the built CLI to assert over RENDERED output, so a stale
+// `dist/` would measure the previous build. #285's harness gate requires this.
+beforeAll(assertDistFreshIfPresent);
 
 const SETTINGS = '.claude/settings.json';
 
@@ -806,6 +812,36 @@ describe('scanAiConfigs carries the evidence through (#299)', () => {
     const found = scanAiConfigs(scanned).find((c) => c.evidence);
     expect(found, 'the same block inside a scanned file IS reported').toBeDefined();
     expect(found!.evidence!.fix).toContain('--dangerously-skip-permissions');
+  });
+
+  // `line` became optional, and one surface read it directly rather than
+  // through the helper that formats it: the AI-Config-Files section rendered
+  // `Grants broad permissions line undefined: "Read(…)"`. The unit tests could
+  // not see it because they assert on the grant object, not on what is printed.
+  //
+  // So this asserts over the RENDERED output of the real binary, which covers
+  // every surface at once — the finding, the detail line, the remediation, the
+  // Verify, and the summary sections — rather than the ones someone remembered.
+  it('prints no "undefined" anywhere, with or without a citable line', () => {
+    const cli = path.join(__dirname, '..', '..', 'dist', 'cli.js');
+    if (!fs.existsSync(cli)) throw new Error('dist/cli.js missing — run `npm run build` before this suite');
+
+    for (const [name, doc] of [
+      // A deny key, so no line is citable.
+      ['withheld', { permissions: { allow: ['Bash(*)'], deny: ['Read(./.env)'] } }],
+      // No restriction key, so the exact line is cited.
+      ['cited', { permissions: { allow: ['Bash(*)'] } }],
+    ] as const) {
+      const dir = fixture({ '.claude/settings.json': JSON.stringify(doc, null, 2) });
+      const out = execFileSync(process.execPath, [cli, 'detect', dir, '--ci'], {
+        encoding: 'utf-8',
+        env: { ...process.env, HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')), NO_COLOR: '1' },
+      });
+      expect(out, `${name}: the grant is reported`).toContain('Grants broad permissions');
+      expect(out, `${name}: a report surface stringified an absent value`).not.toContain('undefined');
+      expect(out).not.toContain('null');
+      expect(out).not.toContain('NaN');
+    }
   });
 
   it('rates a restrictive CLAUDE.md low, with no evidence', () => {

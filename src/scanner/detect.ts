@@ -1480,7 +1480,13 @@ function formatText(result: DetectResult, verbose: boolean, rawTargetDir: string
       // permissions to AI agents in this project" was printed under the
       // filename of a document whose text RESTRICTED the agent, and a reader
       // had nothing to check it against.
-      const at = config.evidence ? dim(` line ${config.evidence.line}: `) + quoted(config.evidence.token) : '';
+      // The line is OPTIONAL — a structured config that also declares a
+      // restriction key gets no line, because locating an entry by text on such
+      // a file can return the deny entry. Interpolating it unguarded printed
+      // `line undefined:` here, which is the one surface that reads the field
+      // directly rather than through `configEvidenceDetail`.
+      const where = config.evidence?.line === undefined ? '' : ` line ${config.evidence.line}`;
+      const at = config.evidence ? dim(`${where}: `) + quoted(config.evidence.token) : '';
       if (config.risk === 'critical') {
         lines.push(`    ${yellow('Contains hardcoded credentials')}${at} ${dim('—')} ${cyan('opena2a protect .')}`);
       } else if (config.risk === 'high') {
