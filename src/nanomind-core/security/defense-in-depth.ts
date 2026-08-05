@@ -144,7 +144,16 @@ export function requireBenignConsensus(
  * Even if the daemon is compromised, it cannot exfiltrate credentials
  * because it never received them.
  */
-export function redactSecretsForNanoMind(content: string): string {
+/**
+ * Redact only values that carry a recognizable CREDENTIAL SHAPE — a vendor
+ * prefix, a key block, a connection string. Every rule here is anchored to a
+ * shape, so it cannot destroy ordinary prose.
+ *
+ * Shared by both boundaries below so the shape list cannot drift between them.
+ * A shape the compiler's detectors can report MUST appear here; see
+ * `pinned-credential-shapes.test.ts`, which iterates BOTH detector lists.
+ */
+export function redactCredentialShapes(content: string): string {
   let redacted = content;
 
   // API keys.
@@ -187,17 +196,81 @@ export function redactSecretsForNanoMind(content: string): string {
   redacted = redacted.replace(/AIza[0-9A-Za-z_-]{35}/g, '[REDACTED_GOOGLE_KEY]');
   redacted = redacted.replace(/xox[baprs]-[a-zA-Z0-9-]{10,}/g, '[REDACTED_SLACK_TOKEN]');
 
-  // Generic secret patterns
+  // AWS secret access key. The compiler's SECOND detector list
+  // (`NAME_GATED_CREDENTIAL_PATTERNS`) reports this shape, so the coverage
+  // invariant requires it here — its absence left a detected 40-character
+  // secret rendering 33 characters into text, JSON, HTML and SARIF.
+  //
+  // The name anchor below MIRRORS the detector's anchor deliberately, and the
+  // first attempt at this rule shows why that is not optional: it matched only
+  // a literal `aws_secret_access_key`, while the detector also fires on
+  // `secretAccessKey`, `awsSecretKey` and `secret_access_key`. All three were
+  // detected and left verbatim, leaking the FULL 40 characters whenever the
+  // value was unquoted — a narrower redactor than detector is the same drift
+  // this rule exists to close, just one level down.
+  //
+  // The value class is intentionally WIDER than the detector's (`=` padding,
+  // `{40,}` rather than exactly 40): over-redaction here costs a mangled
+  // token, under-redaction leaks a live secret. Quotes stay optional because
+  // the detector makes them optional; the generic name-gated rule below
+  // requires quotes and therefore cannot cover the bare form.
+  redacted = redacted.replace(
+    /((?:aws.{0,16}?(?:secret|private).{0,16}?key|secret[_\s.-]?access[_\s.-]?key)["'\s]*[:=]+>?\s*["']?)([A-Za-z0-9/+=]{40,})/gi,
+    '$1[REDACTED_AWS_SECRET]',
+  );
+
+  // Private key blocks. The header alone is enough: the detector fires on
+  // `-----BEGIN … KEY-----` without requiring the closing marker, and a
+  // truncated or single-line block would otherwise stay verbatim.
   redacted = redacted.replace(/-----BEGIN [A-Z ]+ KEY-----[\s\S]*?-----END [A-Z ]+ KEY-----/g, '[REDACTED_PRIVATE_KEY]');
-  redacted = redacted.replace(/(?:password|secret|token|key)\s*[=:]\s*['"][^'"]{8,}['"]/gi, (match) => {
-    const prefix = match.split(/[=:]/)[0];
-    return `${prefix}=[REDACTED]`;
-  });
 
   // Connection strings
   redacted = redacted.replace(/(?:postgres|mysql|mongodb|redis):\/\/[^\s'"]+/gi, '[REDACTED_CONNECTION_STRING]');
 
   return redacted;
+}
+
+/**
+ * Daemon boundary. Shapes, plus an aggressive name-gated rule that redacts ANY
+ * sufficiently long quoted value assigned to a password/secret/token/key
+ * identifier, whether or not it looks like a credential.
+ *
+ * The over-breadth is deliberate HERE and only here: the output is an advisory
+ * prompt, so a false positive costs a mangled token while a false negative
+ * hands NanoMind a live secret.
+ */
+export function redactSecretsForNanoMind(content: string): string {
+  return redactCredentialShapes(content).replace(
+    /(?:password|secret|token|key)\s*[=:]\s*['"][^'"]{8,}['"]/gi,
+    (match) => `${match.split(/[=:]/)[0]}=[REDACTED]`,
+  );
+}
+
+/**
+ * Report boundary — for text that is rendered back to the USER (findings,
+ * fix text, declared purpose).
+ *
+ * Same shapes, but the name-gated rule only fires on a value that could
+ * plausibly BE a secret: no whitespace. That single condition is what
+ * separates the two boundaries.
+ *
+ * Applying the daemon rule here was a measured regression. `key = "example
+ * fixture value for tests only"` became `key=[REDACTED]`, destroying the
+ * words `isTestOrDocContext` reads and flipping a scan from 98/exit-0 to
+ * 69/exit-1; `token: "finance reporting analytics pipeline summaries"`
+ * collapsed the word count `checkScopeMismatch` gates on from 6 to 1 and
+ * silently dropped AST-SCOPE-001 — a check whose stated job is catching
+ * capabilities hidden behind a benign-sounding purpose. Redacting prose the
+ * user wrote is not a free trade here: it changes what the scanner reports.
+ *
+ * A real secret has no spaces, so the whitespace test keeps `password =
+ * "hunter2xyz"` redacted while leaving prose intact.
+ */
+export function redactSecretsForReport(content: string): string {
+  return redactCredentialShapes(content).replace(
+    /(?:password|secret|token|key)\s*[=:]\s*['"]([^'"\s]{8,})['"]/gi,
+    (match) => `${match.split(/[=:]/)[0]}=[REDACTED]`,
+  );
 }
 
 // ============================================================================

@@ -24,6 +24,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import { parseArtifact } from '../ingestion/artifact-parser.js';
 import { sanitizeForNanoMind } from '../ingestion/input-sanitizer.js';
+import { redactSecretsForReport } from '../security/defense-in-depth.js';
 import { getTMEClassifier } from '../inference/tme-classifier.js';
 import { TMENeuralClassifier } from '../inference/tme-neural.js';
 import { buildAnalysisView } from './source-code-preprocessor.js';
@@ -104,6 +105,24 @@ export class SemanticCompiler {
     const declaredCapabilities = extractDeclaredCapabilities(content, parsed.type, parsed.frontmatter);
     const declaredConstraints = extractDeclaredConstraints(content);
     const declaredDataAccess = extractDataAccessPatterns(analysisContent, declaredCapabilities, parsed.type);
+    // `declaredPurpose` is free text lifted verbatim out of the SCANNED
+    // ARTIFACT — for a source file with no frontmatter, it is that file's
+    // first non-comment line. When that line assigns an API key, the purpose
+    // IS the credential, and at least nine call sites interpolate this field
+    // into user-visible strings (fix-generator's CRED-EXPOSURE text, the
+    // scope and capability analyzers' messages, the SOUL scaffold's `name:`,
+    // the AST validator's evidence). 0.25.2 shipped 46 of a 49-character key
+    // into stdout, `--json`, and the `-f html` "shareable compliance report"
+    // through the first of those; 0.25.1 emitted none of it.
+    //
+    // Redaction lives INSIDE `extractDeclaredPurpose`, on both of its return
+    // paths and before its 200-char slice — one guarantee point rather than
+    // eleven presentation-site wrappers, so a future consumer of this field
+    // cannot forget to wrap itself. It uses the REPORT boundary
+    // (`redactSecretsForReport`), not the daemon one: the daemon variant
+    // also redacts any long quoted value assigned to a key/token/secret
+    // identifier, which destroys ordinary prose and measurably changed what
+    // the scanner reported.
     const declaredPurpose = extractDeclaredPurpose(content, parsed.frontmatter);
 
     // Step 5: NanoMind inference (intent + inferred capabilities)
@@ -349,8 +368,15 @@ export class SemanticCompiler {
 // ============================================================================
 
 function extractDeclaredPurpose(content: string, frontmatter?: Record<string, unknown>): string {
+  // Redaction happens on BOTH return paths below, and BEFORE the 200-char
+  // slice. Order matters: slicing first can cut a secret that straddles the
+  // boundary down to a fragment shorter than a pattern's minimum length, so
+  // the redactor stops matching while the detector — which reads the full
+  // content — still reports the finding. That combination leaves a partial
+  // secret in a field the rest of this file treats as already clean.
+
   // From YAML frontmatter
-  if (frontmatter?.description) return String(frontmatter.description);
+  if (frontmatter?.description) return redactSecretsForReport(String(frontmatter.description));
 
   // From first paragraph. Skip comment lines (line comments, block
   // comment bodies, shebangs) so that a doc comment saying "this is a
@@ -373,7 +399,7 @@ function extractDeclaredPurpose(content: string, frontmatter?: Record<string, un
       continue;
     }
     if (line.length > 20) {
-      return line.slice(0, 200);
+      return redactSecretsForReport(line).slice(0, 200);
     }
   }
   return 'Unknown purpose';
@@ -1087,7 +1113,19 @@ export function scanCanonicalCredentialFormatsForTest(content: string): Canonica
  * drifting apart; a test with its own third list would have reproduced it.
  */
 export function canonicalCredentialLabelsForTest(): string[] {
-  return CANONICAL_CREDENTIAL_PATTERNS.map(p => p.label);
+  // BOTH detector lists, not just the canonical one. `scanCanonicalCredentialFormats`
+  // runs each of them and either can produce a finding, so the redactor's coverage
+  // invariant is only meaningful when it is asserted against both.
+  //
+  // This returned one list for a while, which made `NAME_GATED_CREDENTIAL_PATTERNS`
+  // structurally invisible to the guard test: the AWS secret access key was detected,
+  // never redacted, and rendered 33 of 40 characters into user-facing output with the
+  // invariant test green. A list a test derives its own expectations from cannot be
+  // the same list the code under test consults, unless it is all of them.
+  return [
+    ...CANONICAL_CREDENTIAL_PATTERNS.map(p => p.label),
+    ...NAME_GATED_CREDENTIAL_PATTERNS.map(p => p.label),
+  ];
 }
 
 function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit[] {

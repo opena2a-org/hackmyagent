@@ -48,6 +48,20 @@ const SHAPES: Array<{ label: string; value: string }> = [
   { label: 'Stripe live key', value: `sk_live_${fill(24)}` },
   { label: 'Google API key', value: `AIza${fill(35)}` },
   { label: 'Slack bot token', value: `xoxb-${fill(12)}-${fill(12)}-${fill(24)}` },
+  // From NAME_GATED_CREDENTIAL_PATTERNS, the detector's SECOND list. It was
+  // invisible to the coverage assertion below while that derived its expected
+  // set from the canonical list alone — so this shape was detected, never
+  // redacted, and rendered 33 of its 40 characters into user-facing output.
+  // The name anchor is part of the shape: the value alone is just base64.
+  { label: 'AWS secret access key', value: `aws_secret_access_key = ${fill(40)}` },
+  // A complete block. The header-only case — detector fires on `-----BEGIN …
+  // KEY-----` alone, redactor requires the closing marker — is a KNOWN GAP,
+  // carved out of the coverage assertion below rather than papered over. See
+  // that carve-out for why the obvious fix was reverted.
+  {
+    label: 'PEM private key',
+    value: `-----BEGIN RSA PRIVATE KEY-----${fill(40)}-----END RSA PRIVATE KEY-----`,
+  },
 ];
 
 /**
@@ -195,6 +209,19 @@ describe('credential shapes: detected and redacted, never one without the other'
     // keeps its own hand-maintained list. Deriving the expected set from the
     // detector means a newly added shape with no case here fails by
     // construction rather than passing unnoticed.
+    // `canonicalCredentialLabelsForTest` now returns BOTH detector lists —
+    // the canonical one AND the name-gated one. Deriving the expected set from
+    // a single list is what made the AWS secret access key invisible here
+    // while it was detected and rendered into user-facing output.
+    //
+    // `PEM private key` stays carved out, and the carve-out is the honest
+    // record of a real gap rather than a convenience: the detector fires on a
+    // `-----BEGIN … KEY-----` header alone, the redactor needs the closing
+    // marker, so a truncated block is detected and left verbatim. Redacting
+    // from the header to end of line closes it and was reverted — it ate the
+    // prose after the header, destroying the test/doc-context words the
+    // credential analyzer reads and flipping a scan 98/exit-0 -> 69/exit-1.
+    // A rule bounded to the key material would let this carve-out go.
     const covered = new Set(SHAPES.map(s => s.label));
     const known = new Set(canonicalCredentialLabelsForTest());
     const uncovered = [...known].filter(l => !covered.has(l) && l !== 'PEM private key');
