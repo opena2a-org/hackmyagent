@@ -254,10 +254,55 @@ export class TMEClassifier {
     }
   }
 
+  /**
+   * ERROR. Not the onnxruntime default, which is WARNING.
+   *
+   * onnxruntime's logger is NATIVE: it writes to stderr itself, in ANSI
+   * colour, and neither `NO_COLOR` nor anything in HackMyAgent's rendering
+   * layer is between it and the terminal. On Linux, creating a session makes
+   * it enumerate PCI devices, and on a host whose `/sys/devices` topology it
+   * cannot parse — every `ubuntu-latest` GitHub runner, whose paths look like
+   * `/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/…` — it
+   * emits:
+   *
+   *   ESC[0;93m… [W:onnxruntime:onnxruntime-node, device_discovery.cc:133
+   *   GetPciBusId] Skipping pci_bus_id for PCI path at "…"ESC[m
+   *
+   * Two raw ESC bytes, spliced into the middle of a security report, about a
+   * condition that is not the user's problem and that they cannot act on.
+   *
+   * It surfaced as six failures in `report-render-safety.test.ts` on
+   * `ubuntu-latest` — that suite reads the CLI's stdout AND stderr and refuses
+   * any raw control byte, which is correct and stays exactly as strict. Every
+   * one of the nine warning lines in that run carried exactly two control
+   * bytes, both ESC, which is the `expected 2 to be +0` those failures
+   * reported. macOS emits none of them, which is why 226 files were green on
+   * every developer machine here.
+   *
+   * Set on BOTH the environment and the session: which of the two governs
+   * device discovery is not documented, and the second one is free.
+   */
+  private static readonly ORT_SEVERITY_ERROR = 3;
+
   private async loadOnnx(): Promise<void> {
     try {
       const ort = require('onnxruntime-node');
-      this.onnxSession = await ort.InferenceSession.create(this.modelPath);
+      // Before `create`, because that is what triggers the enumeration — and
+      // in its OWN try, because the catch below disables neural inference for
+      // the whole run. `env.logLevel` is a plain settable property today; if a
+      // future onnxruntime makes it getter-only, this assignment throws under
+      // strict mode, and without this boundary that would quietly drop every
+      // scan back to vocabulary scoring to silence a log line. A noisy logger
+      // is worth less than the classifier.
+      try {
+        if (ort.env) ort.env.logLevel = 'error';
+      } catch {
+        // Severity stays at the onnxruntime default; the session option below
+        // is the other half and is set independently.
+      }
+      this.onnxSession = await ort.InferenceSession.create(this.modelPath, {
+        logSeverityLevel: TMEClassifier.ORT_SEVERITY_ERROR,
+      });
       this.onnxReady = true;
     } catch {
       this.useOnnx = false;

@@ -121,14 +121,86 @@ export const COMMAND_CLASSIFICATION: Record<string, 'renders-paths' | string> = 
  * Everything else below 0x20, plus DEL, could only have come from a path.
  */
 export function assertNoRawControlBytes(out: string, label: string): void {
-  const offenders = [...out].filter((ch) => {
-    const c = ch.codePointAt(0) ?? 0;
-    return (c < 0x20 && c !== 0x0a && c !== 0x09) || c === 0x7f;
-  });
+  const offenders = locateRawControlBytes(out);
   expect(
     offenders.length,
-    `${label}: a raw control character from the scanned tree reached the terminal`,
+    `${label}: a raw control character from the scanned tree reached the terminal`
+    + `\n${describeOffenders(out, offenders)}`,
   ).toBe(0);
+}
+
+/** Every offending codepoint, with its offset, in order. */
+export function locateRawControlBytes(out: string): Array<{ index: number; code: number }> {
+  const found: Array<{ index: number; code: number }> = [];
+  for (let i = 0; i < out.length; i += 1) {
+    const c = out.codePointAt(i) ?? 0;
+    if ((c < 0x20 && c !== 0x0a && c !== 0x09) || c === 0x7f) found.push({ index: i, code: c });
+  }
+  return found;
+}
+
+/**
+ * Say WHICH byte and WHERE, because `expected 2 to be +0` is a dead end.
+ *
+ * This assertion failed six times on `ubuntu-latest` and the message gave a
+ * count and nothing else — no codepoint, no offset, no surrounding text — so
+ * the only way to learn anything was to push a branch and add this. The
+ * offender is not always HackMyAgent's: a native dependency that logs in
+ * colour writes ESC to the same stderr, and a count cannot tell the two apart.
+ *
+ * The context window is escaped, so nothing here re-emits the very control
+ * byte the assertion exists to keep off a terminal.
+ *
+ * `JSON.stringify` ALONE is not that escape, which is worth stating because
+ * the first version of this claimed it was. It escapes C0 — everything below
+ * 0x20 — and stops: DEL (0x7f) passes through raw, and DEL is one of the 31
+ * codepoints this very assertion flags. So a filename carrying a DEL would
+ * have made the diagnostic print the byte it was reporting. C1 (0x80–0x9f)
+ * passes through raw too, and 0x9b is a single-byte CSI that a terminal acts
+ * on exactly like `ESC [`. Both ranges are escaped here explicitly.
+ */
+function describeOffenders(
+  out: string,
+  offenders: ReadonlyArray<{ index: number; code: number }>,
+  limit = 5,
+): string {
+  if (offenders.length === 0) return '';
+  const lines = offenders.slice(0, limit).map(({ index, code }) => {
+    const hex = `U+${code.toString(16).toUpperCase().padStart(4, '0')}`;
+    const context = escapeForMessage(out.slice(Math.max(0, index - 60), index + 60));
+    return `  ${hex} at offset ${index}, in: ${context}`;
+  });
+  if (offenders.length > limit) lines.push(`  …and ${offenders.length - limit} more`);
+  return lines.join('\n');
+}
+
+/**
+ * A quoted rendering of a fragment with no byte a terminal acts on.
+ *
+ * `JSON.stringify` first, so quotes and backslashes are handled and C0 becomes
+ * `\uXXXX`; then DEL and C1, which it leaves raw, escaped the same way. The
+ * order matters — escaping first would leave the introduced backslashes to be
+ * doubled by `stringify`, and the message would read `\\u001b`.
+ */
+/** DEL. `JSON.stringify` escapes C0 and stops exactly one byte short of it. */
+const DEL = 0x7f;
+/** End of C1. 0x9b inside this range is a single-byte CSI, i.e. `ESC [`. */
+const C1_END = 0x9f;
+
+export function escapeForMessage(fragment: string): string {
+  // Compared NUMERICALLY rather than matched by a character class. Per this
+  // file's header a literal control byte in source is invisible in the diff
+  // that would review it, and a class written with escapes is one careless
+  // copy-paste away from becoming exactly that — which happened twice while
+  // this function was being written.
+  return [...JSON.stringify(fragment)]
+    .map((ch) => {
+      const c = ch.charCodeAt(0);
+      return c >= DEL && c <= C1_END
+        ? `\\u${c.toString(16).padStart(4, '0')}`
+        : ch;
+    })
+    .join('');
 }
 
 /** Property 1b — an injected newline did not split a rendered line. */
@@ -248,6 +320,23 @@ function assertOneWord(
 
 /** The shells this run actually exercised, for a non-vacuity assertion. */
 export const SHELLS_TESTED = SHELLS;
+
+/**
+ * Whether zsh exists on this machine at all.
+ *
+ * The zsh round trip is the one that catches EQUALS expansion (`rm =python3`
+ * resolving to a command path), so a run that skips it covers less than a run
+ * that does not — and the assertion that guards it must not be deleted just
+ * because a machine lacks the shell.
+ *
+ * Splitting "zsh was not exercised" from "zsh is not installed" keeps that
+ * guard sharp where it can fire: on any machine WITH zsh, failing to exercise
+ * it is still a hard failure. On a machine without it — the Linux CI runner —
+ * the coverage gap is real but is a property of the runner, not a regression
+ * in the citation logic, and failing there only trains people to ignore the
+ * job. `test-matrix.yml` runs macOS too, so zsh is exercised on every PR.
+ */
+export const ZSH_AVAILABLE = SHELLS.includes('zsh');
 
 /** All of it, for one command's output. */
 export function assertRenderSafe(
