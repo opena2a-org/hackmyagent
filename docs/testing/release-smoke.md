@@ -218,7 +218,7 @@ unset OPENA2A_TELEMETRY
 | 5.3 | `node dist/cli.js telemetry off` | Prints `Telemetry disabled for hackmyagent.` |
 | 5.4 | `node dist/cli.js telemetry on` | Re-enables persistently |
 | 5.5 | `OPENA2A_TELEMETRY=off node dist/cli.js telemetry status` | Shows `state: off` (env wins over file) |
-| 5.6 | `OPENA2A_TELEMETRY_DEBUG=print node dist/cli.js secure "$CLEAN" 2>&1 \| grep opena2a:telemetry` | Shows JSON payload with `tool: "hackmyagent"`, `event: "command"`, `name: "secure"`, `success: true`, `duration_ms: <int>`. No PII fields (no file paths, no scan results, no credentials). |
+| 5.6 | `OPENA2A_TELEMETRY_DEBUG=print node dist/cli.js secure "$BAD" 2>&1 \| grep opena2a:telemetry` | Shows JSON payload with `tool: "hackmyagent"`, `event: "command"`, `name: "secure"`, `success: true`, `duration_ms: <int>`. No PII fields (no file paths, no scan results, no credentials). |
 | 5.7 | `node dist/cli.js secure "$BAD"` (with unreachable URL) | Command completes. Telemetry timeout must not delay the command by more than 2 s. |
 
 `OPENA2A_TELEMETRY_URL` and `OPENA2A_TELEMETRY_DEBUG` are implemented in the
@@ -226,18 +226,20 @@ unset OPENA2A_TELEMETRY
 alone will wrongly suggest they do not exist. They work — 5.6 emits exactly the
 allowlisted fields.
 
-**5.6 must target `"$CLEAN"`, not a fixture with findings — and that is a bug,
-not a preference.** Tracked as **#297**: the scan commands call
-`process.exit(1)` when they find something, which skips the Commander
-`postAction` hook that fires `tele.track()`. So text, SARIF and HTML mode emit
-no telemetry at all on a findings-bearing scan; only `--json` does (it sets
-`process.exitCode = 1` and returns instead). Until #297 lands, pointing 5.6 at
-`"$BAD"` produces empty output that looks like "no PII" but actually means "no
-event". Re-point this row at `"$BAD"` once #297 is fixed.
+**5.6 targets `"$BAD"` on purpose — a findings-bearing scan is the path that
+used to report nothing.** Tracked as **#297**, fixed in 0.25.2: the scan
+commands used to call `process.exit(1)` when they found something, which
+skipped the Commander `postAction` hook that fires `tele.track()`, so text,
+SARIF and HTML mode emitted no telemetry at all on a findings-bearing scan and
+only `--json` did. `finishWithFindings` is now the single ending for all five
+branches. Measured on 0.25.2: text mode on `"$BAD"` emits exactly 1 event
+carrying `success: true`. Empty output here is now a REGRESSION, not the old
+known issue — it means a branch has gone back to hard-exiting. Guarded by
+`__tests__/cli/telemetry-on-findings.test.ts`.
 
 | # | Command | Expected |
 |---|---|---|
-| 5.8 | `OPENA2A_TELEMETRY_DEBUG=print node dist/cli.js secure "$BAD" --json 2>&1 >/dev/null \| grep -c opena2a:telemetry` | `1`. This is the one findings-bearing path that still reports. If it ever prints `0`, the `--json` branch has regressed onto `process.exit()` too and telemetry is fully blind. |
+| 5.8 | `OPENA2A_TELEMETRY_DEBUG=print node dist/cli.js secure "$BAD" --json 2>&1 >/dev/null \| grep -c opena2a:telemetry` | `1`. `--json` was the only findings-bearing path that reported before #297 landed; it must keep reporting alongside 5.6. If either 5.6 or 5.8 prints `0`, that branch has regressed onto `process.exit()` and telemetry is blind on it. |
 
 Fail the release if:
 - Version line omits the telemetry disclosure
