@@ -169,7 +169,15 @@ describe.runIf(darwin)('the whole fix-write class, not just one check', { timeou
 
       expect(readFileSync(target, 'utf8'), 'the fixture became writable').toBe(c.body);
 
-      const hitAfter = after.findings.filter(f => f.checkId.startsWith(c.expect));
+      // #374 — the `--fix` run also reports what it archived, and the archive
+      // holds a copy of this same unwritable file, so it fires the same check.
+      // The property here is "the LIVE file's finding survived a failed write",
+      // so the archived copy is excluded by its flag rather than by loosening
+      // the comparison to `toBeGreaterThanOrEqual`, which would also pass if the
+      // live finding were erased and only the archived one remained.
+      const hitAfter = after.findings.filter(
+        f => f.checkId.startsWith(c.expect) && !f.inOwnArchive,
+      );
       expect(hitAfter.length, `${c.name} was erased by a failed fix write`).toBe(hitBefore.length);
       expect(hitAfter.every(f => !f.passed), `${c.name} claims passed for an unwritten fix`).toBe(true);
       expect(after.score, `${c.name}: failed --fix scored better than no --fix`)

@@ -62,15 +62,50 @@ describe('#298 the semantic walk skips this run\'s own backup', () => {
     const semantic = result.findings.filter((f) => /^SEM-/.test(f.checkId) && !f.passed);
     expect(semantic.length, 'the semantic layer produced nothing to double-count').toBeGreaterThan(0);
 
+    // #374 REVERSED the assertion that stood here, so the reason is recorded
+    // rather than the expectation quietly flipped.
+    //
+    // This used to require `inBackup` to be empty: the `--fix` run must report
+    // nothing inside the archive it had just created. That was measured as the
+    // difference between 5 and 9 SEM findings and a score of 35 vs 27, and read
+    // as HMA penalising the user for its own artifact.
+    //
+    // The number was right; the attribution was wrong. Re-measured on this
+    // build, on this fixture: a PLAIN rescan of the same tree — a code path
+    // #374 does not touch — reports the same three archive copies and scores
+    // 39, identical to what `--fix` now announces. Reporting the archive is the
+    // deliberate #305/#309/#341 decision (`scanner.ts:4769`): excluding by
+    // location hands a scanned tree a suppression token, and after a `--fix`
+    // the archive holds the only remaining plaintext copy of the secret.
+    //
+    // So the exemption asserted here was never protecting the user from a
+    // duplicate count — every later scan charged it anyway. It was the reason
+    // `--fix` announced 69 while the next scan said 59 (#374). What replaces it
+    // is the property that actually matters: the fix run and the scan that
+    // follows it must describe the SAME tree.
+    const rescan = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
+    const rescanSemantic = rescan.findings.filter((f) => /^SEM-/.test(f.checkId) && !f.passed);
+    const key = (f: { checkId: string; file?: string; line?: number }) =>
+      `${f.checkId}|${f.file}|${f.line ?? ''}`;
+    expect(
+      semantic.map(key).sort(),
+      'the --fix run and the scan immediately after it disagree about the semantic '
+      + 'findings in the tree, so their scores cannot agree either (#374)',
+    ).toEqual(rescanSemantic.map(key).sort());
+
+    // Non-vacuity for the comparison above: the archive copies must genuinely be
+    // in there, or this is comparing two empty sets.
     const inBackup = semantic.filter((f) => (f.file ?? '').includes('.hackmyagent-backup'));
     expect(
-      inBackup.map((f) => `${f.checkId} ${f.file}`),
-      'HMA reported findings against its own backup copies',
-    ).toEqual([]);
+      inBackup.length,
+      'the archive contributed no semantic finding, so nothing is being compared',
+    ).toBeGreaterThan(0);
 
-    // The duplication is the user-visible harm: the same checkId against the
-    // same artifact, once live and once backed up.
-    const keys = semantic.map((f) => `${f.checkId}|${f.file}|${f.line ?? ''}`);
-    expect(keys, 'a semantic finding was reported twice').toEqual([...new Set(keys)]);
+    // The #298 property that survives, and the one the Layer 2 exclusion plus
+    // the #374 adoption dedupe both still have to hold: an artifact is reported
+    // ONCE. The live file and its archived copy are two different files and are
+    // each reported once; the same file must never appear twice.
+    const keys = semantic.map(key);
+    expect(keys, 'a semantic finding was reported twice for the same file').toEqual([...new Set(keys)]);
   });
 });

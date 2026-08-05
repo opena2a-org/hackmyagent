@@ -222,6 +222,25 @@ describe('H-7: no published surface computes a composite without the clamp', () 
         if (trimmed.startsWith('*') || trimmed.startsWith('//') || line.includes('import')) return;
         // Skip the declaration itself — it is the function being guarded.
         if (/^(export\s+)?function\s+calculateSecurityScore/.test(trimmed)) return;
+        // Skip the one-line primitive accessor `calculateScore()`. Its documented
+        // job is to hand back the RAW composite, so it is the one site that must
+        // NOT clamp; it is not a publishing surface. Both of its callers —
+        // `scan()` and `applyScore()` — are swept by this same loop and each
+        // clamps, so nothing is exempted downstream of here.
+        //
+        // Made explicit by #374. Until then this site passed only because
+        // `applyScore`'s clamp happened to sit inside the 25-line window: adding
+        // five lines to `applyScore`'s signature pushed it out and the sweep
+        // reported the accessor as an unclamped surface. Proximity to a clamp in
+        // the NEXT function is not the property this test means to assert.
+        // Anchored on the enclosing declaration so it cannot be widened into a
+        // hole by any other bare call in the file.
+        if (
+          /^return calculateSecurityScore\(findings\);$/.test(trimmed)
+          && lines
+            .slice(Math.max(0, i - 6), i)
+            .some((l) => /calculateScore\(findings: SecurityFinding\[\]\)/.test(l))
+        ) return;
         const window = stripComments(lines.slice(i, i + LOOKAHEAD).join('\n'));
         if (window.includes('clampScoreToVerdictBand')) return;
         offenders.push(`${rel.join('/')}:${i + 1}: ${trimmed}`);
