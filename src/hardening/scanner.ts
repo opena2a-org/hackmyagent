@@ -929,6 +929,34 @@ export function calculateSecurityScore(findings: Array<{ passed?: boolean; fixed
 }
 
 /**
+ * The composite this findings set would produce if the archive the current
+ * `--fix` run created were not in the tree — the score of the live tree.
+ *
+ * #374. `undefined` when no finding is flagged `inOwnArchive`, which is the
+ * normal case: a detect-only scan, a `--dry-run`, a `--fix` whose archive
+ * turned out to hold nothing scoreable. Returning `undefined` rather than the
+ * unchanged score keeps "there is no second number" distinguishable from "the
+ * second number happens to be equal", so the report cannot print a delta line
+ * claiming a 0-point archive.
+ *
+ * Takes the SAME array the headline score is computed from and applies the same
+ * clamp, so the pair is always two views of one evidence set. Subtracting a
+ * finding can only lower `weightedSum`, so this is >= the headline score.
+ */
+export function scoreExcludingOwnArchive(
+  findings: SecurityFinding[],
+): number | undefined {
+  if (!findings.some(f => f.inOwnArchive)) return undefined;
+  const liveTree = findings.filter(f => !f.inOwnArchive);
+  const { score: raw } = calculateSecurityScore(liveTree);
+  // Clamped through the same #259 band as the headline. Without this a live
+  // tree with one surviving HIGH would advertise an unclamped 89 next to a
+  // clamped headline, and the delta would read as the archive's cost when 20
+  // of it was the clamp coming off.
+  return clampScoreToVerdictBand(raw, liveTree).score;
+}
+
+/**
  * Check if a finding applies to the given project type based on the
  * CHECK_PROJECT_TYPES map. Exported so CLI can filter findings after
  * NanoMind merge.
@@ -2313,7 +2341,21 @@ export class HardeningScanner {
     let reportFixVerification = false;
     if (shouldFix) {
       const fixedFindings = findings.filter(f => f.fixed && f.file);
-      if (fixedFindings.length > 0) {
+      // #374 — this scan has a second job. It is a context-free scan of the
+      // post-fix tree, which makes it the only thing in the run that knows what
+      // the user's NEXT scan will score: `backupContext` exists only inside a
+      // `--fix` run, so the archive this run created is excluded here and
+      // included by every later scan (deliberately — `:4769`). Both numbers came
+      // from this run, and they described different trees.
+      //
+      // So it runs whenever this run left copies in its archive, not only when
+      // a fix landed: a `--fix` that repaired nothing still archives its backup
+      // candidates up front, and its score still has to be the one that comes
+      // back. Gated on `covered.size` rather than run unconditionally because an
+      // archive holding nothing but its own manifest cannot move the score, and
+      // a second full scan of a large tree is not free.
+      const archiveHoldsCopies = (this.backupContext?.covered.size ?? 0) > 0;
+      if (fixedFindings.length > 0 || archiveHoldsCopies) {
         // Re-run a targeted scan (no fix, just detect) to verify
         const verifyScanner = new HardeningScanner();
         const verifyResult = await verifyScanner.scan({
@@ -2471,6 +2513,55 @@ export class HardeningScanner {
         // fixes confirmed" above "Attempted 1 fix, none confirmed". Both go
         // to the same reader, who is left deciding which number is wrong.
         reportFixVerification = fixedFindings.length > 0;
+
+        // #374 — adopt the findings this scan produced inside THIS RUN's own
+        // archive, so the score is computed over the tree the next scan sees.
+        //
+        // This is deliberately NOT the other repair. Excluding the archive from
+        // scoring would hand any scanned tree a suppression token and would
+        // reopen #305/#309/#341; `isOwnBackupDir`, `resolveArchiveBase` and the
+        // walk exclusion are all untouched here, and a pre-existing archive is
+        // still an ordinary reported finding. What changes is only WHICH TREE the
+        // announced number describes. The archived copy of a credential is real,
+        // so it counts — it just has to count in both numbers, not one.
+        //
+        // Safe against the rewrite hazard the exclusion exists for: this runs
+        // after every fix write has already happened, so nothing here can send
+        // `--fix` back into its own backup.
+        //
+        // Scoped to archive-located findings, not "every finding the verify scan
+        // has and we do not". A finding whose `file` attribution SHIFTED between
+        // the two scans — the PERM-001 head-shift this block already deals with
+        // above — looks novel under a (checkId, file) key, and adopting it would
+        // count one issue twice and penalise the score for a repair that landed.
+        // Keyed with a space: a checkId is `[A-Z0-9-]+` and never contains one,
+        // so the first space splits the pair unambiguously however the path is
+        // spelled. (A NUL separator is the conventional choice and is what this
+        // was first written with — it is also a raw control byte in source,
+        // invisible in every diff, which `render-source-gate` rightly rejects.)
+        const alreadyHeld = new Set<string>();
+        for (const f of findings) {
+          if (f.file) alreadyHeld.add(`${f.checkId} ${f.file}`);
+        }
+        const adopted: SecurityFinding[] = [];
+        for (const f of verifyResult.findings) {
+          if (!f.file) continue;
+          const key = `${f.checkId} ${f.file}`;
+          // The config walk excludes the archive but `keyFiles` / `namedSensitive`
+          // deliberately do not, so some archive findings are ALREADY in this
+          // run's list. Adopting them again would double-count them.
+          if (alreadyHeld.has(key)) continue;
+          // Identity, not spelling (#317) — and only a proven `yes`. `unknown`
+          // means an ancestor the filesystem would not describe, which is not
+          // evidence that a path is ours; treating it as ours would let the
+          // shifted-attribution case back in through the one door this filter
+          // exists to close.
+          if (await this.isInsideOwnBackup(path.resolve(targetDir, f.file)) !== 'yes') continue;
+          alreadyHeld.add(key);
+          f.inOwnArchive = true;
+          adopted.push(f);
+        }
+        findings.push(...adopted);
       }
     }
 
@@ -2537,6 +2628,12 @@ export class HardeningScanner {
     // same shape as the scan-soul #206/#251 clamp.
     const { score, clamped: scoreClamped } = clampScoreToVerdictBand(rawScore, filteredFindings);
 
+    // #374 — the live-tree view of the SAME findings set. `score` above is the
+    // number the next scan will produce; this is what the tree is worth once the
+    // archived copy is rotated and deleted, and the report names it so a
+    // post-fix number that went DOWN is attributable rather than mysterious.
+    const scoreExcludingArchive = scoreExcludingOwnArchive(filteredFindings);
+
     // In dry-run mode, mark fixable failed findings with wouldFix
     if (dryRun && autoFix) {
       for (const finding of filteredFindings) {
@@ -2587,6 +2684,7 @@ export class HardeningScanner {
       score,
       rawScore,
       scoreClamped,
+      scoreExcludingOwnArchive: scoreExcludingArchive,
       maxScore,
       backupPath,
       dryRun: dryRun && autoFix ? true : undefined,
@@ -7773,7 +7871,12 @@ dist/
    * can never be computed off different evidence.
    */
   applyScore(
-    result: { score: number; rawScore?: number; scoreClamped?: boolean },
+    result: {
+      score: number;
+      rawScore?: number;
+      scoreClamped?: boolean;
+      scoreExcludingOwnArchive?: number;
+    },
     findings: SecurityFinding[],
   ): void {
     const { score: rawScore } = this.calculateScore(findings);
@@ -7781,6 +7884,12 @@ dist/
     result.score = score;
     result.rawScore = rawScore;
     result.scoreClamped = clamped;
+    // #374 — re-derived here, from the same array, for the same reason the clamp
+    // is: a merge that adds or drops findings moves both numbers, and a stale
+    // live-tree figure beside a fresh headline would advertise a delta neither
+    // number supports. Assigned unconditionally so it can also go back to
+    // `undefined` when a re-filter removes the last archive finding.
+    result.scoreExcludingOwnArchive = scoreExcludingOwnArchive(findings);
   }
 
   /**

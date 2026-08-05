@@ -282,13 +282,28 @@ describe('backup directory identity', () => {
       const { cp } = await import('node:fs/promises');
       await cp(dir, fixDir, { recursive: true });
       const fixed = await new HardeningScanner().scan({ targetDir: fixDir, autoFix: true });
-      const fixCount = fixed.findings.filter((f) => f.checkId === 'CRED-001').length;
+      // #374 — this run reports the copy in its OWN archive too, so the count is
+      // taken over everything that is not that. Excluding by the flag, not by
+      // subtracting one: if a pre-seeded stamp were adopted, its credential would
+      // vanish from this same list, which is the defect being measured. A count
+      // that allowed one extra finding would hide an adoption by one.
+      const fixCount = fixed.findings.filter(
+        (f) => f.checkId === 'CRED-001' && !f.inOwnArchive,
+      ).length;
 
       expect(
         fixCount,
         'a pre-seeded stamp directory was adopted as this run\'s backup, so its '
         + 'credential was silently dropped under --fix',
       ).toBe(detectCount);
+
+      // Non-vacuity for the exclusion above: this run really did archive a copy
+      // and really did attribute it to itself. Without this, a build where
+      // `inOwnArchive` is never set would satisfy the count for the wrong reason.
+      expect(
+        fixed.findings.filter((f) => f.checkId === 'CRED-001' && f.inOwnArchive).length,
+        'this run\'s own archive was never attributed, so the filter above excluded nothing',
+      ).toBeGreaterThan(0);
 
       // And every seeded copy still holds its original bytes.
       for (const stamp of seeded) {
@@ -351,14 +366,53 @@ describe('backup directory identity', () => {
       );
       expect(copies.length, 'no backup copy was made at all').toBeGreaterThan(0);
 
+      // #374 CHANGED THE OBSERVABLE HERE, and the property is unchanged.
+      //
+      // This used to assert `cred.length === 1`: the copy `--fix` had just made
+      // must not be reported, because recognising it is what identity is for.
+      // Since #374 the copy IS reported — every later scan of that tree reports
+      // it, and the `--fix` run exempting itself is what made it announce a score
+      // its own next scan contradicted.
+      //
+      // So "did identity resolve?" needs an observable that survives the copy
+      // being reported, and there is a better one than a count: the copy is
+      // ATTRIBUTED to this run. That attribution runs through
+      // `isInsideOwnBackup` -> `sameIdentity`, and on this fixture the lexical
+      // shortcut cannot fire — the walk spells paths with the link while
+      // `backupContext.backupDir` is spelled with the real path — so the flag is
+      // reachable ONLY via `dev`+`ino`. Replacing `sameIdentity` with
+      // `return false` turns this assertion red, which is the exact mutation the
+      // docstring above says every other suite in this file survives.
+      const archived = cred.filter((f) => f.inOwnArchive);
+      const live = cred.filter((f) => !f.inOwnArchive);
+
       expect(
-        cred.length,
-        'the copy `--fix` had just made was reported as a second exposure: the run '
-        + 'did not recognise its own backup through a path spelled differently, which '
-        + 'is what filesystem identity is for',
+        archived.length,
+        'the copy `--fix` had just made was reported WITHOUT being recognised as '
+        + 'this run\'s own: the run did not identify its own backup through a path '
+        + 'spelled differently, which is what filesystem identity is for',
+      ).toBeGreaterThan(0);
+      for (const f of archived) {
+        // Case-folded deliberately: this fixture pre-creates the archive base as
+        // `.HACKMYAGENT-BACKUP` so a case-insensitive filesystem adopts it at
+        // that spelling. Asserting the lowercase form here would fail for the
+        // very reason the fixture exists, and asserting a spelling at all is the
+        // habit this whole file replaced with identity — so this is a sanity
+        // check on the flag's target, not the identity assertion itself.
+        expect(
+          (f.file ?? '').toLowerCase(),
+          'a finding was attributed to the archive but is not in it',
+        ).toContain('.hackmyagent-backup');
+      }
+
+      // And the live file is still reported exactly once, on its own path — the
+      // half of the original assertion that is unaffected.
+      expect(
+        live.length,
+        'the live file\'s credential is no longer reported exactly once',
       ).toBe(1);
       expect(
-        cred[0].file,
+        live[0].file,
         'the reported credential is the backup copy rather than the live file',
       ).toBe('config.json');
     } finally {

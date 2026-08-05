@@ -735,6 +735,16 @@ interface UnifiedCheckDisplayOptions {
     rawScore?: number;
     /** True when `score < rawScore` because the verdict is fail-direction (#259). */
     scoreClamped?: boolean;
+    /**
+     * What `score` would be without the archive this `--fix` run created (#374).
+     * Set only on a `--fix` run whose own archive contributed a finding.
+     */
+    scoreExcludingOwnArchive?: number;
+    /**
+     * Where that archive is, so the delta line can name the cost rather than
+     * assert it. Absolute path; rendered escaped.
+     */
+    ownArchivePath?: string;
   };
   registry?: RegistryTrustData | null;
   verbose?: boolean;
@@ -931,6 +941,14 @@ function shortenPath(filePath: string): string {
   if (parts.length <= 2) return filePath;
   return parts.slice(-2).join('/');
 }
+
+// #374 note on the two finding-header renderers below (`Top Issues` and the
+// normal findings list): both choose between `f.file` and `shortenPath(f.file)`
+// INLINE rather than through a helper, and both escape on the line that prints.
+// A helper would read better and would defeat `render-source-gate`, which proves
+// the escape is applied by reading the printing line — it cannot see through an
+// indirection, and a guard that has to trust a helper's name proves nothing
+// (#324). The duplication is deliberate and is two lines.
 
 // ── Shared visual helpers (scan-soul, harden-soul, explain share this style) ─
 const UI_METER_WIDTH = 20;
@@ -1267,6 +1285,34 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       // anchored on the narrow-matrix numeric score.)
       console.log(`  ${colors.cyan}${colors.bold}${quickScanFollowupText(quickScan)}${RESET()}`);
     }
+    // #374 — a `--fix` run can now print a score LOWER than the one before it
+    // ran, and that has to be attributable on the spot. The score is the number
+    // the next scan will produce, which includes the archive `--fix` just wrote;
+    // that archive holds the pre-fix copy of the very credential the run
+    // redacted. Unexplained, a number that went down reads as the remediation
+    // having made the tree worse. So name the live-tree figure and where the
+    // difference sits, framed as recoverable rather than as a deduction.
+    const liveTreeScore = localScan?.scoreExcludingOwnArchive;
+    if (liveTreeScore !== undefined) {
+      const archiveCount = (localScan?.findings ?? []).filter((f) => f.inOwnArchive).length;
+      const noun = `${archiveCount} finding${archiveCount === 1 ? '' : 's'}`;
+      // #324/#339 — the archive path is derived from the scanned target, so it
+      // is scanned-tree data on a rendered line.
+      const where = localScan?.ownArchivePath
+        ? ` at ${escapePathForDisplay(localScan.ownArchivePath)}`
+        : '';
+      const delta = liveTreeScore - score;
+      // `delta` cannot be negative — dropping findings only ever lowers the
+      // weighted sum — but it CAN be 0 when the archived findings are diminished
+      // by the per-check cap. Claiming a "0-point difference" would be a number
+      // with nothing behind it, so that case names the archive and stops.
+      if (delta > 0) {
+        console.log(`  ${colors.cyan}Live tree:${RESET()} ${liveTreeScore}/100 ${colors.dim}— the ${delta}-point difference is ${noun} inside the backup this run created${where}${RESET()}`);
+      } else {
+        console.log(`  ${colors.dim}${noun} above sit inside the backup this run created${where}${RESET()}`);
+      }
+      console.log(`  ${colors.dim}Those are the pre-fix copies, kept so \`${CLI_PREFIX} rollback\` can undo this run. Rotate what was exposed, then delete that directory once you no longer need to roll back.${RESET()}`);
+    }
   } else if (registry?.found) {
     const normalized = normalizeTrustVerdict(registry.verdict);
     let verdictText: string;
@@ -1499,7 +1545,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       // the list (issue #134).
       const topFindings = [...failed].sort(compareFindingsByTier).slice(0, 3);
       for (const f of topFindings) {
-        const shortFile = f.file ? escapePathForDisplay(shortenPath(f.file)) : '';
+        // #374 — a finding inside the archive `--fix` just created needs its FULL
+                // relative path. `shortenPath` keeps the last two segments, so
+                // `.hackmyagent-backup/<stamp>/.claude/settings.json` collapses to
+                // `.claude/settings.json` — the live file, which that run just redacted —
+                // and the two render under one header, distinguishable only by `Verify:`.
+                const shortFile = f.file
+                  ? escapePathForDisplay(f.inOwnArchive ? f.file : shortenPath(f.file))
+                  : '';
         const loc = shortFile + (f.line ? `:${f.line}` : '');
         const borderColor = SEVERITY_DISPLAY[f.severity].color();
         console.log();
@@ -1535,7 +1588,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         // #324 — the finding header, the guidance and the fix all interpolate a
         // path that came from the scanned tree. A newline in one split the
         // location line and truncated the fix command mid-quote.
-        const shortFile = f.file ? escapePathForDisplay(shortenPath(f.file)) : '';
+        // #374 — a finding inside the archive `--fix` just created needs its FULL
+                // relative path. `shortenPath` keeps the last two segments, so
+                // `.hackmyagent-backup/<stamp>/.claude/settings.json` collapses to
+                // `.claude/settings.json` — the live file, which that run just redacted —
+                // and the two render under one header, distinguishable only by `Verify:`.
+                const shortFile = f.file
+                  ? escapePathForDisplay(f.inOwnArchive ? f.file : shortenPath(f.file))
+                  : '';
         const loc = shortFile + (f.line ? `:${f.line}` : '');
         const borderColor = SEVERITY_DISPLAY[f.severity].color();
         console.log();
@@ -4227,6 +4287,11 @@ Examples:
           score: result.score,
           rawScore: result.rawScore,
           scoreClamped: result.scoreClamped,
+          // #374 — the live-tree companion to `score`, and the directory the
+          // difference is in. Both undefined on every run that did not create an
+          // archive, which is every run except `--fix`.
+          scoreExcludingOwnArchive: result.scoreExcludingOwnArchive,
+          ownArchivePath: result.backupPath,
           maxScore: result.maxScore,
           // A fix the verification pass could not confirm stays in the
           // findings list, so the verdict is built from the same evidence as

@@ -58,6 +58,22 @@ export interface SecurityFinding {
   fixVerified?: boolean;
   /** Set in dry-run mode to indicate this would be fixed */
   wouldFix?: boolean;
+  /**
+   * This finding sits inside the archive THIS `--fix` run created
+   * (`.hackmyagent-backup/<stamp>/`), proven by `dev`+`ino` identity.
+   *
+   * #374 — it counts against the score exactly like any other finding, because
+   * the archive really does hold a plaintext copy of the credential and every
+   * later scan will report it (that inclusion is the deliberate #305/#309/#341
+   * decision, restated at `scanner.ts:4769`). The flag exists so the report can
+   * ATTRIBUTE the difference between the score and the score the tree would
+   * have without the archive — not to exempt anything.
+   *
+   * Set only for the current run's own archive. A pre-existing archive, or a
+   * directory elsewhere in the tree merely named `.hackmyagent-backup`, is an
+   * ordinary finding and is never flagged.
+   */
+  inOwnArchive?: boolean;
   /** File path where the issue was found (relative to scan directory) */
   file?: string;
   /** Line number in the file where the issue was found */
@@ -141,6 +157,29 @@ export interface ScanResult {
   rawScore?: number;
   /** True when `score < rawScore` because the verdict is fail-direction (#259). */
   scoreClamped?: boolean;
+  /**
+   * What `score` would be if the archive this `--fix` run just created were not
+   * there — i.e. the score of the user's live tree.
+   *
+   * #374 — `--fix` used to announce a score computed with its own archive
+   * excluded, while every later scan computed one including it. Measured on a
+   * three-file fixture: `--fix` announced 69 and the immediate rescan said 59,
+   * with nothing changed in between. The two numbers described different trees
+   * and could not agree, and the one the user saw again was never the one they
+   * were told.
+   *
+   * `score` is now always the number the next scan will produce, so this field
+   * carries the OTHER number rather than replacing it: the report headlines
+   * `score` and names this one as what the tree is worth once the archived copy
+   * is rotated and deleted. Present only on a run that created a non-empty
+   * archive AND whose archive contributed at least one finding; `undefined`
+   * otherwise, so `undefined` never has to be read as "same as score".
+   *
+   * Derived from the same findings array `score` is, at every one of the eight
+   * points the CLI re-settles the score (`applyScore`), so the two can never be
+   * computed off different evidence.
+   */
+  scoreExcludingOwnArchive?: number;
   /** Path to backup directory (only set when autoFix is true and not dryRun) */
   backupPath?: string;
   /** True if this was a dry-run (no changes made) */

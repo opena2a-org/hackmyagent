@@ -119,12 +119,25 @@ describe('#292 config-shaped credential detection below the scan root', () => {
     expect(cred.map((f) => f.file)).not.toContain('config/README.md');
   });
 
-  it('does not double-report the backup THIS RUN just created', async () => {
-    // `createBackup` runs before every check, so without an exclusion the same
-    // run reports the credential twice: once in the live file and once in the
-    // copy HMA made microseconds earlier. The exclusion is `backupContext
-    // .backupDir` — a path HMA chose this run, which nothing in the scanned
-    // tree can name (#309).
+  it('reports the backup THIS RUN created exactly once, and exactly as the next scan does', async () => {
+    // `createBackup` runs before every check, so the same run sees the credential
+    // in the live file and in the copy HMA made microseconds earlier.
+    //
+    // #374 REVERSED what this asserted, so the reason is recorded rather than the
+    // expectation quietly flipped. It used to require that the run report NOTHING
+    // inside its own archive, on the theory that the copy was a duplicate.
+    //
+    // The copy is not a duplicate: `--fix` redacts the live file, so the archive
+    // holds the ONLY remaining plaintext copy of the secret — the same reasoning
+    // #309 recorded for a pre-existing archive, one directory over. And measured
+    // on this build, a plain rescan of the post-fix tree reports that copy and
+    // scores it. The exemption asserted here therefore hid nothing from the user;
+    // it only made `--fix` announce a number its own next scan contradicted
+    // (measured 69 vs 59, #374).
+    //
+    // What replaces it: the copy is reported ONCE — the anti-double-count
+    // property this test was really protecting — and the run's score describes
+    // the same tree the next scan will.
     //
     // The fixture deliberately does NOT pre-seed a backup: the archive under
     // test has to be one this run produced, or the test is measuring the
@@ -138,16 +151,33 @@ describe('#292 config-shaped credential detection below the scan root', () => {
       const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
       const cred = result.findings.filter((f) => f.checkId === 'CRED-001');
 
-      // Non-vacuity: the live original must fire, or "no backup findings" is
+      // Non-vacuity: the live original must fire, or every assertion below is
       // just "the walk found nothing anywhere".
       expect(
         cred.some((f) => f.file === 'config.json'),
         'the live config never fired; this test is measuring nothing',
       ).toBe(true);
+
+      const archived = cred.filter((f) => f.file?.includes('.hackmyagent-backup'));
       expect(
-        cred.filter((f) => f.file?.includes('.hackmyagent-backup')),
-        'the run reported the copy it had just made itself',
-      ).toEqual([]);
+        archived.length,
+        'the plaintext copy `--fix` left in its own archive was not reported, so the '
+        + 'score it announced describes a tree the next scan will not see (#374)',
+      ).toBe(1);
+      // Attributed as ours, which is what lets the report name it as the delta
+      // and tell the user those points come back when the archive goes.
+      expect(archived[0].inOwnArchive, 'this run\'s own archive was not attributed to it').toBe(true);
+
+      // The anti-double-count property, kept: one file, one finding.
+      const keys = cred.map((f) => `${f.checkId}|${f.file}|${f.line ?? ''}`);
+      expect(keys, 'a credential was reported twice for the same file').toEqual([...new Set(keys)]);
+
+      // And the number is the one that comes back.
+      const rescan = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
+      expect(
+        result.score,
+        `--fix announced ${result.score}, the rescan says ${rescan.score} (#374)`,
+      ).toBe(rescan.score);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
