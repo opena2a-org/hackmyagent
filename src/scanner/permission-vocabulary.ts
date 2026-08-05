@@ -666,114 +666,37 @@ export function walkConfigForGrants(
  * was shared.
  */
 /**
- * Does this parsed document contain a restriction key ANYWHERE?
+ * There is NO line locator here, and that is the design.
  *
- * This is what makes a line citation safe to emit at all, and the argument is
- * one sentence: if the document declares no key `PRUNED_KEYS` covers, then no
- * line of the file is inside a restriction subtree, so no citation can land in
- * one. The caller drops the line number entirely when this returns true.
+ * A citation for a structured config used to be found by searching the raw text
+ * for the offending entry. That cannot be made safe, and the reason is the same
+ * one this whole module exists for: `allow` and `deny` hold textually IDENTICAL
+ * values, so the text does not carry the polarity — only the structure does, and
+ * a text search has no structure. Three attempts are recorded rather than
+ * repeated:
  *
- * That is a deliberately blunt instrument, chosen after two attempts at a sharp
- * one. `locateGrantLine` below is a TEXT SEARCH and cannot be made safe on a
- * file that holds both keys — the values are identical, so only structure tells
- * them apart, and structure is exactly what a text search does not have. The
- * sharp version (enclosure by indentation, plus the nearest key to the left
- * within a line) was written, measured, and reverted: it was quadratic in line
- * length, allocated per line, and still cited a deny entry on plainly formatted
- * JSON. See `todo/roadmap/hma-grant-citation-position-tracking.md`.
+ * 1. Search from the grant key's line. Beaten by an earlier bounded `allow`
+ *    key, by a `// allow:` comment, and by a JSON-escaped key.
+ * 2. A containment guard over enclosure and in-line key tokens. Closed those,
+ *    and was quadratic in line length (`detect` 52.5s on a 200KB config), held
+ *    one array per line (fatal OOM in `secure` at 3.8MB), and still cited a deny
+ *    entry when an array element was indented less than its own key.
+ * 3. Emit a line only when the document declares no restriction key at all.
+ *    The premise is about the FILE; the implementation could only answer for
+ *    the first 13 levels of the PARSED object, while the text search it gated
+ *    had no depth bound — so a `deny` nested deeper, or reached through a YAML
+ *    alias that poisoned the visited set, put the citation back on the deny
+ *    line.
  *
- * So: a precise line where precision is provably free, and no line at all where
- * it is not.
+ * Each attempt was smaller and sharper than the last and each still failed, so
+ * the answer is not a fourth: a structured finding names the FILE, and the
+ * reader gets the entry, why it is a grant, and what to replace it with. The
+ * prose half keeps its line, because a prose match has no key to be wrong about
+ * — the line cited is the line the pattern matched.
  *
- * MEASURED COST, because the first draft of this comment guessed and guessed
- * wrong. Across the 36 real `.claude/settings*.json` on the author's machine,
- * 12 are flagged and only **2** keep a precise line — the other 10 declare a
- * `deny` or `ask` key. So this is not a rare trade paid by curated files; it is
- * the common case, and the reader of a flagged file usually gets the file name,
- * the entry, the reason, the fix, and `cat` as the Verify. That is the price of
- * never pointing at a restriction, and it is the reason the position-tracking
- * parse is filed as the real fix rather than as a nice-to-have.
- *
- * Descends everywhere, including into restriction subtrees — the walk prunes
- * those, this must not, because finding one is the entire question. Carries the
- * same depth bound and visited set as the walk, for the same reason: YAML
- * aliases resolve to shared references.
+ * The real fix gives the grant its own offset from the parse. It is #379, which
+ * carries the acceptance criteria all three attempts produced.
  */
-export function documentHasRestrictionKey(
-  doc: unknown,
-  depth = 0,
-  seen: Set<object> = new Set(),
-): boolean {
-  if (depth > 12 || doc === null || typeof doc !== 'object') return false;
-  if (seen.has(doc)) return false;
-  seen.add(doc);
-
-  if (Array.isArray(doc)) {
-    return doc.some((item) => documentHasRestrictionKey(item, depth + 1, seen));
-  }
-  for (const [rawKey, value] of Object.entries(doc as Record<string, unknown>)) {
-    if (PRUNED_KEYS.has(normKey(rawKey))) return true;
-    if (documentHasRestrictionKey(value, depth + 1, seen)) return true;
-  }
-  return false;
-}
-
-// KNOWN DEFECT, and the reason the caller gates on
-// `documentHasRestrictionKey` before using this at all — see
-// `todo/roadmap/hma-grant-citation-position-tracking.md`.
-//
-// The anchor below does NOT close the deny-line citation. Three constructions
-// walk past it: a JSON-escaped `allow` key (which falls into the
-// `keyIndex === -1` branch and restores the whole-file search verbatim), a
-// `// allow:` comment above the deny list, and an earlier bounded `allow` key.
-// All three can cite a DENY entry, printing `replace "Read(**/*.key)"` against
-// the rule that stops an agent reading private keys.
-//
-// A containment guard was written to close it — enclosure by indentation plus
-// the nearest key named to the left within a line — and REVERTED. It closed
-// those three constructions and introduced worse: a global unanchored key-token
-// regex that is quadratic in line length (`detect` 52s on a 200KB config, where
-// the base is 0.29s, reachable through `secure`, which has no size cap), a
-// retained per-line array that puts `secure` into a fatal out-of-memory abort
-// on a 3.8MB settings file, and it STILL cited a deny entry when an array
-// element is indented less than its own key — plainly-formatted JSON.
-//
-// That is the same denial-of-service class this very branch reverted a
-// redaction change for, so the pre-registered rule fired: a CRITICAL introduced
-// by this session's own work is reverted, not patched. The correct fix is the
-// position-tracking parse, where the grant carries its own offset and no text
-// search is involved. It is a larger change than this branch is scoped for.
-export function locateGrantLine(lines: readonly string[], grant: UnboundedGrant): number {
-  // The key's line first, and the entry is only ever looked for AT OR AFTER it.
-  //
-  // Searching the whole file was a defect of exactly the kind this module
-  // exists to remove. `allow` and `deny` hold textually identical strings, so
-  // on
-  //
-  //     "deny":  ["Read(**/*.key)"],
-  //     "allow": ["Read(**/*.key)"]
-  //
-  // a whole-file search returns the DENY line, and the finding then prints
-  // "replace Read(**/*.key)" against the rule that stops the agent reading
-  // private keys — the precise harm, reintroduced through the citation rather
-  // than through the classification, and printed directly under the sentence
-  // promising that deny entries are never reported.
-  const keyPattern = new RegExp(`["']?${escapeRe(grant.key)}["']?\\s*:`);
-  const keyIndex = lines.findIndex((l) => keyPattern.test(l));
-  const from = keyIndex === -1 ? 0 : keyIndex;
-  for (const needle of [grant.entry, JSON.stringify(grant.entry).slice(1, -1)]) {
-    if (!needle) continue;
-    for (let i = from; i < lines.length; i++) {
-      if (lines[i].includes(needle)) return i + 1;
-    }
-  }
-  // A synthesised entry (`defaultMode: acceptEdits`) or an escaped one never
-  // appears literally; the key's own line is a true citation for both.
-  return keyIndex === -1 ? 0 : keyIndex + 1;
-}
-function escapeRe(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 /** The string entries of a value that may be one string or a list of them. */
 function asStringList(value: unknown): string[] {

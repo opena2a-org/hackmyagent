@@ -59,8 +59,6 @@ import {
   classifyPermissionEntry,
   walkConfigForGrants,
   makeGrant,
-  locateGrantLine,
-  documentHasRestrictionKey,
   redactLikelySecrets,
   type UnboundedGrant,
 } from './permission-vocabulary';
@@ -348,13 +346,11 @@ export function findPermissionGrant(content: string, file: string): PermissionGr
     // to the reader.
     const grant = walkConfigForGrants(doc, proseAllowEntry);
     if (!grant) return undefined;
-    // A line ONLY where no restriction key exists to mis-cite. See
-    // `PermissionGrant.line` and `documentHasRestrictionKey`.
-    const line = documentHasRestrictionKey(doc) ? 0 : locateGrantLine(lines, grant);
+    // NO line. A structured config names the file only — see the note above
+    // `asStringList` in `permission-vocabulary.ts` for why a text search cannot
+    // be made safe here, and what the real fix is.
     return {
-      line: line > 0 ? line : undefined,
       token: forReport(grant.entry.trim(), MAX_TOKEN),
-      text: line > 0 ? forReport((lines[line - 1] ?? '').trim(), MAX_TEXT) : undefined,
       // Both arrive redacted and escaped from `makeGrant`, so only the cap is
       // left. `reason` was uncapped, and it interpolates the entry — an entry
       // is as long as the scanned file chooses to make it.

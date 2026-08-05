@@ -879,10 +879,16 @@ describe('CLAUDE-002 and detect agree on the same settings file (#363)', () => {
   // finds nothing and the finding renders with no line number, which is the
   // house rule this check would then be violating. `detect` cited `:2` for the
   // same file; both now use one locator, which falls back to the key's line.
-  it('cites a line for a settings-level grant, not just the file', async () => {
+  // No line, by design — see the note in `permission-vocabulary.ts`. `f17f6ac`
+  // rendered CLAUDE-002 without one too, so this is not a regression against
+  // what shipped; what changed is that it is now deliberate and documented.
+  it('reports a settings-level grant against the file, with no line', async () => {
     await settingsFixture({ permissions: { defaultMode: 'acceptEdits' } });
     const finding = await claude002();
-    expect(finding?.line).toBeGreaterThan(0);
+    expect(finding).toBeDefined();
+    expect(finding!.line).toBeUndefined();
+    expect(finding!.file).toBe(path.join('.claude', 'settings.json'));
+    expect(finding!.fix).toContain('"default"');
   });
 
   // The renderer rewrites a leading path inside a fix string, which turned
@@ -1016,11 +1022,14 @@ describe('CLAUDE-002 and detect agree on the same settings file (#363)', () => {
     expect(finding!.fix).toBeTruthy();
   });
 
-  it('cites the offending entry and a line, not just the file', async () => {
+  // The ENTRY is what carries the specificity now, and it has to name the
+  // offending one out of a list where the others are fine.
+  it('names the offending entry out of a mixed allow list', async () => {
     await settingsFixture({ permissions: { allow: ['Bash(npm test)', 'Bash(*:*)'] } });
     const finding = await claude002();
     expect(finding?.description).toContain('Bash(*:*)');
-    expect(finding?.line).toBeGreaterThan(0);
+    expect(finding?.description, 'the narrow entry is not what is being flagged')
+      .not.toContain('"Bash(npm test)"');
     // A dead end is a finding whose fix does not name what to do instead.
     expect(finding?.fix).toContain('Bash(npm test)');
   });

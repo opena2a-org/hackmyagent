@@ -81,13 +81,16 @@ describe('structured config is parsed, and the key decides (#364)', () => {
     expect(findPermissionGrant(doc, SETTINGS)).toBeUndefined();
   });
 
-  // No restriction key anywhere, so the line is provably safe and is emitted.
-  it('cites the wildcard entry at its own line, not the key above it', () => {
+  // A structured finding names the ENTRY and the file, never a line. Three
+  // attempts to locate a line by text are recorded in the vocabulary module;
+  // each was smaller than the last and each still put a citation on a deny
+  // entry. The entry is what the reader acts on, and it is exact.
+  it('names the offending entry, and cites no line', () => {
     const doc = settings({ permissions: { allow: ['Bash(npm test)', 'Bash(*)'] } });
     const grant = findPermissionGrant(doc, SETTINGS);
-    expect(grant!.line).toBeGreaterThan(0);
-    expect(doc.split('\n')[grant!.line! - 1]).toContain('Bash(*)');
     expect(grant!.token).toBe('Bash(*)');
+    expect(grant!.line).toBeUndefined();
+    expect(grant!.text).toBeUndefined();
   });
 
   // …and the SAME file with a deny key present gets no line at all, however
@@ -111,23 +114,17 @@ describe('structured config is parsed, and the key decides (#364)', () => {
 
   // The escape class no text rule can reach: valid JSON, parses to `Bash(*)`,
   // and contains no `*` anywhere in the file.
-  it('sees through a JSON unicode escape, and still cites a line', () => {
+  it('sees through a JSON unicode escape', () => {
     const doc = '{\n  "permissions": {\n    "allow": ["Bash(\\u002a)"]\n  }\n}';
     expect(doc).not.toContain('*');
-    const grant = findPermissionGrant(doc, SETTINGS);
-    expect(grant?.token).toBe('Bash(*)');
-    expect(grant!.line).toBeGreaterThan(0);
+    expect(findPermissionGrant(doc, SETTINGS)?.token).toBe('Bash(*)');
   });
 
   it('reads unquoted YAML list items', () => {
-    const withDeny = 'permissions:\n  allow:\n    - Bash(*)\n  deny:\n    - Read(*.key)\n';
-    const grant = findPermissionGrant(withDeny, '.aider.conf.yml');
+    const doc = 'permissions:\n  allow:\n    - Bash(*)\n  deny:\n    - Read(*.key)\n';
+    const grant = findPermissionGrant(doc, '.aider.conf.yml');
     expect(grant?.token).toBe('Bash(*)');
-    // A deny key is present, so no line — see the citation contract above.
     expect(grant!.line).toBeUndefined();
-    // Without one, the YAML line is cited exactly.
-    const noDeny = 'permissions:\n  allow:\n    - Bash(*)\n';
-    expect(findPermissionGrant(noDeny, '.aider.conf.yml')!.line).toBe(3);
   });
 
   it('tolerates the comments and trailing commas editors write into settings files', () => {
@@ -501,12 +498,25 @@ describe('the prose matcher stays linear on a hostile line', () => {
 });
 
 describe('the quoted output never carries a credential (#299)', () => {
-  it('redacts a key that shares a line with a grant', () => {
-    const line = '{"permissions":{"allow":["Bash(*)"]},"apiKey":"sk-ant-api03-NOTREAL-000000000000"}';
-    const grant = findPermissionGrant(line, SETTINGS);
+  // The PROSE half still carries `text` — it is the matched line — so this is
+  // where the line-level redaction is provable. A structured finding has no
+  // line and therefore no line text to leak.
+  it('redacts a key that shares a line with a prose grant', () => {
+    const doc = 'Give the agent unrestricted access. apiKey=sk-ant-api03-NOTREAL-000000000000\n';
+    const grant = findPermissionGrant(doc, 'CLAUDE.md');
     expect(grant).toBeDefined();
     expect(grant!.text).not.toContain('NOTREAL');
     expect(grant!.text).toContain('[redacted]');
+  });
+
+  it('carries no line text at all for a structured config', () => {
+    const line = '{"permissions":{"allow":["Bash(*)"]},"apiKey":"sk-ant-api03-NOTREAL-000000000000"}';
+    const grant = findPermissionGrant(line, SETTINGS);
+    expect(grant).toBeDefined();
+    expect(grant!.text, 'a structured finding must not quote a file line').toBeUndefined();
+    for (const field of [grant!.token, grant!.reason, grant!.fix]) {
+      expect(field ?? '').not.toContain('NOTREAL');
+    }
   });
 
   // `token` is printed by all three renderers AND interpolated into the Fix
@@ -523,7 +533,7 @@ describe('the quoted output never carries a credential (#299)', () => {
     expect(grant).toBeDefined();
     expect(grant!.token).not.toContain('NOTREAL');
     expect(grant!.fix).not.toContain('NOTREAL');
-    expect(grant!.text).not.toContain('NOTREAL');
+    expect(grant!.reason ?? '').not.toContain('NOTREAL');
   });
 
   // A scanned config is untrusted input, and the entry now reaches three new
@@ -730,32 +740,44 @@ describe('the citation contract holds across generated configs (#364)', () => {
     expect(bad.length, bad.length ? `first:\n${bad[0].text}` : '').toBe(0);
   });
 
-  it('withholds the line whenever a restriction key is present', () => {
-    const leaked = CASES.filter((c) => {
-      const g = findPermissionGrant(c.text, SETTINGS);
-      return c.hasDeny && g?.line !== undefined;
-    });
+  // The TOTAL form, which is the point of the final design: no structured
+  // config carries a line, so there is no premise about nesting depth, aliases
+  // or indentation left for an input to defeat. The three attempts that DID
+  // carry a premise each shipped a defect.
+  it('no structured config carries a line, whatever it contains', () => {
+    const leaked = CASES.filter((c) => findPermissionGrant(c.text, SETTINGS)?.line !== undefined);
     expect(leaked.length, leaked.length ? `first:\n${leaked[0].text}` : '').toBe(0);
   });
 
-  // The other half: withholding must not become the default. Where there is no
-  // restriction key AND the entry appears literally, the exact line is still
-  // cited — otherwise this contract would be satisfied by never citing at all.
-  //
-  // The excluded combination is honest rather than swept up: an escaped VALUE
-  // under an escaped KEY leaves nothing to find in the raw text, so there is no
-  // line to cite and the finding carries the file alone.
-  it('still cites the exact line when no restriction key is present', () => {
-    const citable = CASES.filter((c) => !c.hasDeny && !c.escapedValue);
-    expect(citable.length).toBeGreaterThan(150);
-    const missing = citable.filter((c) => findPermissionGrant(c.text, SETTINGS)?.line === undefined);
-    expect(missing.length, missing.length ? `first:\n${missing[0].text}` : '').toBe(0);
-    // …and the line it cites really does carry the entry.
-    const wrongLine = citable.filter((c) => {
-      const g = findPermissionGrant(c.text, SETTINGS);
-      return !c.text.split('\n')[g!.line! - 1].includes(ENTRY);
-    });
-    expect(wrongLine.length).toBe(0);
+  // The two shapes an adversarial review used to defeat the previous gate,
+  // which answered "is there a restriction key" over the first 13 levels of the
+  // PARSED object while the text search it gated read the whole FILE.
+  it('holds on the shapes that defeated the depth-bounded gate', () => {
+    // (a) a deny nested past the depth bound, plus an escaped allow value so
+    //     the only literal match in the file is the deny entry.
+    let inner = '{"deny": ["Read(**/*.key)"]}';
+    for (let i = 0; i < 13; i++) inner = `{"k${i}":${inner}}`;
+    const deep = `{\n  "permissions": {\n    "allow": ["Read(**/*.ke\\u0079)"]\n  },\n  "nest": ${inner}\n}`;
+    const a = findPermissionGrant(deep, SETTINGS);
+    expect(a, 'the allow entry is still classified').toBeDefined();
+    expect(a!.line, 'cited a line on a file whose deny sits past the depth bound').toBeUndefined();
+
+    // (b) a YAML alias that reaches a deny through a shorter path than the one
+    //     that first visited it — the visited-set poisoning case.
+    const chain = Array.from({ length: 10 }, (_, i) => `${'  '.repeat(i + 1)}k${i}:`).join('\n');
+    const yamlDoc = `permissions:\n  allow:\n    - Read(*.key)\nnested:\n${chain}\n`
+      + `${'  '.repeat(11)}anchored: &anc\n${'  '.repeat(12)}deny:\n${'  '.repeat(13)}- Read(*.key)\n`
+      + 'top: *anc\n';
+    const b = findPermissionGrant(yamlDoc, '.aider.conf.yml');
+    if (b) expect(b.line, 'cited a line on an aliased-deny document').toBeUndefined();
+  });
+
+  // The other half of the contract, now that no structured finding carries a
+  // line: the ENTRY must still be exact on every one of them, or "cite the file
+  // only" would just be a way of saying less about more.
+  it('names the exact offending entry on every generated config', () => {
+    const wrong = CASES.filter((c) => findPermissionGrant(c.text, SETTINGS)?.token !== ENTRY);
+    expect(wrong.length, wrong.length ? `first:\n${wrong[0].text}` : '').toBe(0);
   });
 });
 
@@ -773,7 +795,6 @@ describe('the bypass flag is still found in structured config (#364)', () => {
   ])('finds it in %s', (_name, file, doc) => {
     const grant = findPermissionGrant(doc, file);
     expect(grant, `${file} carries the broadest grant in the ecosystem`).toBeDefined();
-    expect(grant!.line).toBeGreaterThan(0);
     expect(grant!.fix).toContain('--dangerously-skip-permissions');
   });
 
