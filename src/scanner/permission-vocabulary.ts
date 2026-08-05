@@ -665,189 +665,60 @@ export function walkConfigForGrants(
  * invented one. `CLAUDE-002` rendered a HIGH with no line number before this
  * was shared.
  */
+// KNOWN DEFECT, RECORDED RATHER THAN PATCHED — see
+// `todo/roadmap/hma-grant-citation-position-tracking.md`.
+//
+// The anchor below does NOT close the deny-line citation. Three constructions
+// walk past it: a JSON-escaped `allow` key (which falls into the
+// `keyIndex === -1` branch and restores the whole-file search verbatim), a
+// `// allow:` comment above the deny list, and an earlier bounded `allow` key.
+// All three can cite a DENY entry, printing `replace "Read(**/*.key)"` against
+// the rule that stops an agent reading private keys.
+//
+// A containment guard was written to close it — enclosure by indentation plus
+// the nearest key named to the left within a line — and REVERTED. It closed
+// those three constructions and introduced worse: a global unanchored key-token
+// regex that is quadratic in line length (`detect` 52s on a 200KB config, where
+// the base is 0.29s, reachable through `secure`, which has no size cap), a
+// retained per-line array that puts `secure` into a fatal out-of-memory abort
+// on a 3.8MB settings file, and it STILL cited a deny entry when an array
+// element is indented less than its own key — plainly-formatted JSON.
+//
+// That is the same denial-of-service class this very branch reverted a
+// redaction change for, so the pre-registered rule fired: a CRITICAL introduced
+// by this session's own work is reverted, not patched. The correct fix is the
+// position-tracking parse, where the grant carries its own offset and no text
+// search is involved. It is a larger change than this branch is scoped for.
 export function locateGrantLine(lines: readonly string[], grant: UnboundedGrant): number {
-  const enclosing = enclosingKeys(lines);
-  const ownKey = normKey(grant.key);
-  const needles = [grant.entry, JSON.stringify(grant.entry).slice(1, -1)].filter(Boolean);
-
-  const openLine = (i: number): boolean => !enclosing[i].some((k) => PRUNED_KEYS.has(k));
-
-  const find = (needle: string, requireOwnKey: boolean): number => {
-    for (let i = 0; i < lines.length; i++) {
-      if (requireOwnKey && !enclosing[i].includes(ownKey)) continue;
-      if (!openLine(i)) continue;
-      const line = lines[i];
-      if (!line.includes(needle)) continue;
-      // Every occurrence on the line, against that line's key tokens —
-      // computed once and consumed by a moving pointer, so a hostile line
-      // carrying many occurrences stays linear rather than quadratic.
-      const tokens = keyTokens(line);
-      let t = 0;
-      for (let at = line.indexOf(needle); at !== -1; at = line.indexOf(needle, at + 1)) {
-        while (t < tokens.length && tokens[t].at < at) t++;
-        if (!isPruned(t > 0 ? tokens[t - 1].key : undefined)) return i + 1;
-      }
-    }
-    return 0;
-  };
-
-  // The entry, on a line the grant's OWN key encloses. This is the ordinary
-  // case and it is exact.
-  for (const needle of needles) {
-    const found = find(needle, true);
-    if (found) return found;
-  }
-  // The entry anywhere no restriction key covers. Reached when the key is
-  // spelled in a way the raw text does not carry — a JSON-escaped `allow`
-  // parses to `allow` and appears as `\u0061llow` — where the enclosure test is
-  // still what decides, so an identical entry sitting in a `deny` list cannot
-  // win the search.
-  for (const needle of needles) {
-    const found = find(needle, false);
-    if (found) return found;
-  }
-  // A synthesised entry (`defaultMode: acceptEdits`) never appears literally.
-  // The key's own line is a true citation for it.
-  for (let i = 0; i < lines.length; i++) {
-    if (openLine(i) && declaredKey(lines[i]) === ownKey) return i + 1;
-  }
-  return 0;
-}
-
-// ---------------------------------------------------------------------------
-// Where a citation is allowed to land
-// ---------------------------------------------------------------------------
-//
-// The classifier refuses to READ a deny list. The citation has to refuse to
-// POINT at one, and that is a separate problem with a separate failure:
-//
-//     "deny":  ["Read(**/*.key)"],
-//     "allow": ["Read(**/*.key)"]
-//
-// Both keys hold the identical string, so a text search for the offending
-// entry returns whichever comes first — and the finding then prints
-// `replace "Read(**/*.key)"` against the rule that stops the agent reading
-// private keys, one line under guidance promising deny entries are never
-// reported. The harm arrives through the evidence rather than through the
-// classification.
-//
-// Anchoring the search at the grant key's first line does not close it. Three
-// constructions walk past that anchor: a JSON-escaped `allow` key, which no
-// text pattern matches; a `// allow:` comment sitting above the deny list; and
-// an earlier BOUNDED `allow` whose line the anchor finds instead. Each leaves
-// the search starting before a deny list that holds the same string.
-//
-// So the anchor is replaced by a rule about the DESTINATION, which does not
-// care how the search got there: a citation may never land inside a subtree
-// `PRUNED_KEYS` covers. Two things establish that, one per axis —
-//
-//   * `enclosingKeys` — which keys enclose each LINE, from indentation and
-//     bracket closers, so a multi-line `deny` block covers its entries;
-//   * `keyGoverning` — the nearest key named to the LEFT of the match within
-//     its own line, so `{"deny":["Bash(*)"],"allow":["Bash(*)"]}` on one line
-//     still separates into two halves.
-//
-// Both decode escapes with `JSON.parse` rather than reading the raw spelling,
-// because `"\u0064eny"` is the key `deny` to every consumer that matters and a
-// scanned file chooses its own spelling.
-//
-// This is a guard, not a parser: it can reject a candidate line, never invent
-// one, and when it rejects every candidate the caller falls back to line 1
-// rather than to a wrong line. Two residuals are known and recorded rather
-// than papered over: a config minified onto a single line has one citable
-// line and gets it, and a `deny` key written inside a quoted VALUE is read as
-// a real key, which costs precision in the safe direction.
-
-/**
- * The three spellings a key can take, as ONE fragment.
- *
- * Shared between the two patterns below so their capture groups cannot drift
- * apart — and they did: `KEY_DECL` was written with a leading `(\s*)` capture,
- * which pushed its key groups to 2/3/4 while `KEY_TOKEN`'s stayed at 1/2/3.
- * One reader served both, so every in-line key resolved to the empty string
- * and `{"deny":[…],"allow":[…]}` on a single line stopped separating.
- */
-const KEY_SPELLINGS = String.raw`(?:"((?:\\.|[^"\\])*)"|'([^']*)'|([A-Za-z_$][A-Za-z0-9_$.-]*))\s*:`;
-
-/** A key DECLARED at the head of a line — the only thing that opens a block. */
-const KEY_DECL = new RegExp(`^\\s*(?:-\\s+)?${KEY_SPELLINGS}`);
-
-/** Every `key:` token in a line, wherever it sits. */
-const KEY_TOKEN = new RegExp(KEY_SPELLINGS, 'g');
-
-/** A line that opens nothing and closes nothing: blank, or only a comment. */
-const INERT_LINE = /^\s*(?:$|\/\/|\/\*|\*|#)/;
-
-/** A line whose first character closes a JSON container. */
-const CLOSER_LINE = /^\s*[\]}]/;
-
-/**
- * The key a `KEY_DECL`/`KEY_TOKEN` match names, normalised, escapes decoded.
- *
- * `JSON.parse` does the decoding rather than a local unescaper, so this agrees
- * with the parser that produced the grant instead of approximating it.
- */
-function matchedKey(m: RegExpExecArray): string {
-  if (m[1] !== undefined) {
-    try {
-      return normKey(JSON.parse(`"${m[1]}"`) as string);
-    } catch {
-      return normKey(m[1]);
+  // The key's line first, and the entry is only ever looked for AT OR AFTER it.
+  //
+  // Searching the whole file was a defect of exactly the kind this module
+  // exists to remove. `allow` and `deny` hold textually identical strings, so
+  // on
+  //
+  //     "deny":  ["Read(**/*.key)"],
+  //     "allow": ["Read(**/*.key)"]
+  //
+  // a whole-file search returns the DENY line, and the finding then prints
+  // "replace Read(**/*.key)" against the rule that stops the agent reading
+  // private keys — the precise harm, reintroduced through the citation rather
+  // than through the classification, and printed directly under the sentence
+  // promising that deny entries are never reported.
+  const keyPattern = new RegExp(`["']?${escapeRe(grant.key)}["']?\\s*:`);
+  const keyIndex = lines.findIndex((l) => keyPattern.test(l));
+  const from = keyIndex === -1 ? 0 : keyIndex;
+  for (const needle of [grant.entry, JSON.stringify(grant.entry).slice(1, -1)]) {
+    if (!needle) continue;
+    for (let i = from; i < lines.length; i++) {
+      if (lines[i].includes(needle)) return i + 1;
     }
   }
-  return normKey(m[2] ?? m[3] ?? '');
+  // A synthesised entry (`defaultMode: acceptEdits`) or an escaped one never
+  // appears literally; the key's own line is a true citation for both.
+  return keyIndex === -1 ? 0 : keyIndex + 1;
 }
-
-function isPruned(key: string | undefined): boolean {
-  return key !== undefined && PRUNED_KEYS.has(key);
-}
-
-/** The key this line declares, or undefined. */
-function declaredKey(line: string): string | undefined {
-  const m = KEY_DECL.exec(line);
-  return m ? matchedKey(m) : undefined;
-}
-
-/** Every key named on this line, in order, with the offset it starts at. */
-function keyTokens(line: string): { at: number; key: string }[] {
-  KEY_TOKEN.lastIndex = 0;
-  const out: { at: number; key: string }[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = KEY_TOKEN.exec(line)) !== null) {
-    out.push({ at: m.index, key: matchedKey(m) });
-    // A zero-length match cannot happen here (every alternative consumes at
-    // least the colon), but a global regex that failed to advance would spin.
-    if (KEY_TOKEN.lastIndex === m.index) KEY_TOKEN.lastIndex++;
-  }
-  return out;
-}
-
-/**
- * For each line, the keys enclosing it, innermost last.
- *
- * Indentation-driven, which is what both formats have in common. Only a key
- * line or a bracket closer may pop a key at its OWN indent: a YAML sequence
- * item, or a JSON array element written at its key's indent, is INSIDE that key
- * and popping there would hand a `deny` entry a citable line. Blank and
- * comment-only lines change nothing — a blank line inside a `deny` block used
- * to pop the whole stack, which is exactly the wrong direction.
- */
-function enclosingKeys(lines: readonly string[]): string[][] {
-  const out: string[][] = [];
-  const stack: { key: string; indent: number }[] = [];
-  for (const line of lines) {
-    if (INERT_LINE.test(line)) {
-      out.push(stack.map((s) => s.key));
-      continue;
-    }
-    const indent = line.length - line.trimStart().length;
-    const decl = KEY_DECL.exec(line);
-    const flush = decl !== null || CLOSER_LINE.test(line) ? indent : indent + 1;
-    while (stack.length > 0 && stack[stack.length - 1].indent >= flush) stack.pop();
-    if (decl) stack.push({ key: matchedKey(decl), indent });
-    out.push(stack.map((s) => s.key));
-  }
-  return out;
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /** The string entries of a value that may be one string or a list of them. */
