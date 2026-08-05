@@ -65,7 +65,7 @@ export interface AiConfigFile {
    * the credential branch reports the KEY it matched and never the value, so
    * the report cannot become the place a secret gets copied to.
    */
-  evidence?: { line: number; token: string; text?: string };
+  evidence?: { line: number; token: string; text?: string; reason?: string; fix?: string };
 }
 
 export interface IdentitySummary {
@@ -512,7 +512,10 @@ export function scanAiConfigs(targetDir: string): AiConfigFile[] {
         // Only one of the two is reported, and the credential outranks the
         // grant — so the grant scan is skipped rather than computed and
         // discarded.
-        const grant = credential ? undefined : findPermissionGrant(content);
+        // `file` selects the parsed half from the prose half (#364), so it is
+        // the config's own name rather than the absolute path: the extension is
+        // all that is read, and a temp-dir prefix has no business in it.
+        const grant = credential ? undefined : findPermissionGrant(content, file);
 
         if (credential) {
           risk = 'critical';
@@ -521,7 +524,13 @@ export function scanAiConfigs(targetDir: string): AiConfigFile[] {
         } else if (grant) {
           risk = 'high';
           details = `${pattern.tool} config grants broad permissions`;
-          evidence = { line: grant.line, token: grant.token, text: grant.text };
+          evidence = {
+            line: grant.line,
+            token: grant.token,
+            text: grant.text,
+            reason: grant.reason,
+            fix: grant.fix,
+          };
         }
       } catch { /* file unreadable */ }
 
@@ -892,7 +901,12 @@ function configEvidenceDetail(configs: readonly AiConfigFile[]): string {
   const what = head.evidence.token;
   const rest = configs.length - 1;
   const more = rest > 0 ? ` (+${rest} more config file${rest > 1 ? 's' : ''})` : '';
-  return `${where} — matched ${quoted(what)}${more}`;
+  // "matched" is the honest verb for the prose half and the wrong one for the
+  // parsed half — nothing was matched there, the permission key was read (#364).
+  // The reason says which of the two produced this and why it is a grant.
+  const why = head.evidence.reason ? ` ${head.evidence.reason}` : '';
+  const verb = head.evidence.reason ? '' : 'matched ';
+  return `${where} — ${verb}${quoted(what)}${why}${more}`;
 }
 
 /**
@@ -1104,8 +1118,15 @@ function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScan
       whyItMatters:
         'These configs allow AI agents to perform a wide range of actions without restrictions. '
         + 'Broad permissions increase risk if an agent behaves unexpectedly.',
+      // The fix comes from the vocabulary that classified the entry, because
+      // the generic sentence is wrong for half of them: "replace it with the
+      // specific commands or paths this agent needs" is a dead end against
+      // `defaultMode: acceptEdits`, which takes neither a command nor a path.
       remediation: cited.evidence
-        ? `Narrow ${escapePathForDisplay(cited.file)}:${cited.evidence.line} — replace ${quoted(cited.evidence.token)} with the specific commands or paths this agent needs`
+        ? `Narrow ${escapePathForDisplay(cited.file)}:${cited.evidence.line} — ${
+          cited.evidence.fix
+            ?? `replace ${quoted(cited.evidence.token)} with the specific commands or paths this agent needs`
+        }`
         : `hackmyagent scan-soul ${target}`,
       verify: configVerifyCommand(result.scanDirectory, cited),
     });

@@ -1,5 +1,5 @@
 /**
- * What "this AI config grants broad permissions" is allowed to mean (#299).
+ * What "this AI config grants broad permissions" is allowed to mean (#299, #364).
  *
  * The finding this feeds used to be a bare word test over the whole file:
  *
@@ -13,72 +13,121 @@
  * was reported `HIGH — AI config files grant broad permissions`. The document
  * asserts the opposite of the finding, and governance documents are where the
  * words "allow" and "permit" live, so the rule fired hardest on exactly the
- * files whose presence is the good outcome. That is not a weak finding, it is a
- * false one, and it is the 0.22.0 release-blocker shape a second time.
+ * files whose presence is the good outcome (#299).
  *
- * The replacement asks for a GRANT rather than a permissive vocabulary, and it
- * reports WHERE. Two things follow from that and both matter:
+ * That was replaced by a rule asking for a GRANT rather than a permissive
+ * vocabulary — still matching text, over the whole file. #364 is why that could
+ * not work for structured config, and the reason is not a tuning problem:
  *
- * 1. **A grant is a construction, not a word.** `allow` is a direction-free
- *    verb — a sentence is only a grant when what is being allowed is broad
- *    (`any`, `all`, `unrestricted`, `full`). `no restrictions` and
- *    `never refuse` are grants that begin with a negative word, so they are
- *    matched as phrases rather than assembled from a negation rule.
+ *   **`allow` and `deny` values are textually identical.** Only the key tells
+ *   them apart, and a deny list is *supposed* to be full of wildcards.
  *
- * 2. **Negation is scoped to the sentence, never to the file.** Every malicious
- *    fixture in `~/.opena2a/corpus/repo/malicious/kitchen-sink` carries a
- *    Secretless block dense with "never" and "NEVER" — `never read, write, or
- *    reference`, `Never hardcode credentials`. A file-level "does this document
- *    contain a negation" guard would suppress all four of them. The guard
- *    therefore looks only between the start of the containing sentence and the
- *    start of the match.
+ * So a text rule aimed at permission entries is aimed at the deny list too, and
+ * the remediation it prints — "replace `Read(*.key)` with the specific paths
+ * this agent needs" — tells the reader to delete the rule that stops an agent
+ * reading private keys. Measured on the shipped `56263f9`, before any change
+ * here, `{"permissions":{"deny":["Read(*.key)","Bash(*)"]}}` already reported
+ * HIGH: the `.` inside `Read(*.key)` opens a new "sentence", so the negation
+ * guard never saw the word `deny`.
  *
- * `without` is deliberately NOT a negation token: it is the head of several
- * grant phrases (`without restriction`, `without safety checks`), and reading
- * it as a negation would suppress the clearest grants in the corpus.
+ * ## The split
  *
- * Coverage is anchored on real fixtures rather than on imagination. Every
- * pattern below matches a line in a corpus fixture or in the issue's
- * reproduction; a speculative `run (any|all) …` pattern was drafted and dropped
- * because it added no corpus coverage and matched ordinary prose such as
- * "run all commands from the repo root". `__tests__/scanner/permission-grant.test.ts`
- * pins both directions.
+ * **Structured files are parsed.** `.json`, `.yml` and `.yaml` configs go to
+ * `walkConfigForGrants`, which descends only into keys that grant and prunes
+ * `deny` without looking inside it. Parsing also closes an escape class no text
+ * rule reaches: `"Bash(*)"` is valid JSON containing no `*`.
+ *
+ * **Prose files are matched, and only for prose constructions.** `CLAUDE.md`,
+ * `.cursorrules`, `.windsurfrules` and `.github/copilot-instructions.md` carry
+ * no schema, so text is the only option there. Permission-entry patterns are
+ * NOT applied to them: without a key, `"Read(*.key)"` in a document could as
+ * easily be a deny rule being documented as a grant being made.
+ *
+ * This half is a heuristic over text the scanned file controls, and that is
+ * worth saying plainly rather than implying otherwise: a sentence can be
+ * written to defeat it. The negation guard must GOVERN the match — same clause,
+ * and close enough to bind it — which narrows the off switch without closing
+ * it. What makes the structured half sound is that a VALUE cannot mean its own
+ * opposite, because its key already carries the polarity. Prose has no key.
+ *
+ * `__tests__/scanner/permission-grant.test.ts` and
+ * `__tests__/scanner/permission-vocabulary.test.ts` pin both directions.
  */
+import * as yaml from 'js-yaml';
+import { escapeForDisplay } from '../ui/display-safe';
+import {
+  classifyPermissionEntry,
+  walkConfigForGrants,
+  makeGrant,
+  locateGrantLine,
+  type UnboundedGrant,
+} from './permission-vocabulary';
 
 /** Where a config file grants broad permissions, and what said so. */
 export interface PermissionGrant {
   /** 1-indexed line within the config file. */
   line: number;
-  /** The phrase that matched, exactly as it appears in the file. */
+  /**
+   * The phrase or permission entry that matched, redacted and display-escaped.
+   *
+   * Both halves of that are load-bearing. The value comes out of the scanned
+   * file and every renderer prints it, so a raw terminal control sequence in a
+   * `CLAUDE.md` line or an allow entry would rewrite the reader's screen.
+   */
   token: string;
-  /** The whole matched line, trimmed and length-capped, for the report. */
+  /** The whole matched line, trimmed, redacted, escaped and length-capped. */
   text: string;
+  /** Why it is a grant, as one clause. Absent for prose, which quotes itself. */
+  reason?: string;
+  /**
+   * What to replace it with, naming a concrete alternative.
+   *
+   * Absent for prose: a sentence in a `CLAUDE.md` has no mechanical
+   * replacement, and inventing one would be worse than quoting the sentence and
+   * letting the author rewrite it.
+   */
+  fix?: string;
 }
 
 /** Longest line this will quote back into a report. */
 const MAX_TEXT = 120;
 
-/**
- * Constructions that actually hand an agent broad authority.
- *
- * Ordered structured-first so a JSON grant is cited at its wildcard rather than
- * at a prose sentence elsewhere in the same file.
- */
-const GRANT_PATTERNS: RegExp[] = [
-  // ── Structured config: a permission entry whose VALUE is unbounded ──────
-  //
-  // The key alone is not the signal. `"allow": ["Bash(npm test)"]` is a
-  // restriction — it is the narrowing that makes the rest denied — and flagging
-  // it HIGH is the same error as flagging restrictive prose. What matters is a
-  // wildcard reaching the value.
-  /"[A-Za-z]+\(\s*\*\s*\)"/,
-  /\ballow(?:ed)?(?:Tools|Commands|Hosts)?\b\s*[:=]\s*\[?\s*["']?\*/i,
-  /\bauto[_-]?approve\b\s*[:=]\s*(?:true|["']?(?:all|\*)["']?)/i,
-  /\b(?:bypass|skip)[_-]?permissions?\b\s*[:=]\s*true/i,
-  /--dangerously-skip-permissions\b/,
-  /\bpermissions?\b\s*[:=]\s*["']?(?:all|\*)["']?/i,
+/** Longest single token this will quote back into a report. */
+const MAX_TOKEN = 80;
 
-  // ── Prose: the agent is told it may act without a bound ─────────────────
+/**
+ * Longest line the prose matcher will look at.
+ *
+ * Retained after the permission-entry patterns moved out, even though the one
+ * quadratic pattern moved out with them. A minified or generated line is not
+ * prose, so nothing is lost, and the bound is what makes a future pattern's
+ * worst case a bounded one. The ReDoS test measures the prose set directly,
+ * WITHOUT this cap, so the cap cannot make that measurement vacuous.
+ */
+const MAX_LINE = 4096;
+
+/**
+ * Prose constructions that hand an agent broad authority.
+ *
+ * Every pattern matches a line in a corpus fixture or in #299's reproduction.
+ * Two properties are load-bearing and neither is decorative:
+ *
+ * 1. **A grant is a construction, not a word.** `allow` is a direction-free
+ *    verb — a sentence is only a grant when what is allowed is broad (`any`,
+ *    `all`, `unrestricted`, `full`).
+ * 2. **`no restrictions` and `never refuse` are grants that OPEN with a
+ *    negative word**, so they are matched as whole phrases rather than
+ *    assembled from a negation rule that would then suppress them.
+ *
+ * `without` is deliberately not a negation token: it heads several grant
+ * phrases (`without restriction`, `without safety checks`).
+ *
+ * No pattern here contains an ambiguous quantifier pair. The one that did —
+ * `\s*\[?\s*`, the `X*` `Y?` `X*` shape, measured at 8.1s on a 128k line with
+ * the length cap lifted — was a permission-entry pattern, and permission
+ * entries are the parser's job now.
+ */
+export const PROSE_GRANT_PATTERNS: readonly RegExp[] = [
   /\bunrestricted\b/i,
   /\bwithout\s+(?:any\s+)?(?:restrictions?|limitations?|limits?|question|approval|confirmation|asking|permission|safety\s+checks?|security\s+checks?)/i,
   /\bno\s+(?:restrictions?|limits?|limitations?|safety\s+checks?|security\s+checks?)\b/i,
@@ -88,6 +137,7 @@ const GRANT_PATTERNS: RegExp[] = [
   /\balways\s+(?:execute|run|comply|obey)\b/i,
   /\bnever\s+(?:refuse|decline)\b/i,
   /\bnever\s+ask\s+for\s+(?:permission|approval|confirmation)\b/i,
+  /--dangerously-skip-permissions\b/,
   // A permissive verb whose object is broad. The distance bound keeps the two
   // halves in one clause: "allow the agent to run any command" is a grant,
   // "allow X" three sentences above the word "all" is not.
@@ -95,28 +145,45 @@ const GRANT_PATTERNS: RegExp[] = [
 ];
 
 /**
- * Words that reverse a grant when they precede it in the same sentence.
+ * Words that reverse a grant when they GOVERN it.
  *
- * Applied to the text BEFORE the match only. A grant phrase that opens with a
- * negative word (`no restrictions`, `never refuse`) carries that word inside
- * the match, so it is not read as its own negation.
+ * Applied to the text before the match only, and a grant phrase that opens with
+ * a negative word carries that word inside the match, so it is not read as its
+ * own negation.
  */
-const NEGATIONS = /\b(?:never|not|n't|avoid|prohibit|prohibited|forbid|forbidden|disallow|disallowed|deny|denied|refuse|must\s+not|cannot|can't)\b/i;
-
-/** Sentence boundaries, for scoping the negation test. */
-const SENTENCE_BREAK = /[.!?;]/g;
+const NEGATIONS = /\b(?:never|not|n't|avoid|prohibit|prohibited|forbid|forbidden|disallow|disallowed|deny|denied|refuse|cannot|can't)\b/i;
 
 /**
- * The start of the sentence containing `index` within `line`.
+ * Clause boundaries, for scoping the negation test.
  *
- * Markdown bullets and JSON lines frequently carry no terminator at all, in
- * which case the sentence is the line.
+ * `:` is here and `,` is not, and that pair is what separates the two shapes a
+ * bare sentence scope cannot tell apart:
+ *
+ *   "Do not, under any circumstances, grant full access."  -> restriction
+ *   "Do not worry: the agent has unrestricted access."     -> grant
+ *
+ * A colon introduces a new assertion, so a negation before it does not reach
+ * past it. A comma does not, so a negation still governs across one.
  */
-function sentenceStart(line: string, index: number): number {
-  SENTENCE_BREAK.lastIndex = 0;
+const CLAUSE_BREAK = /[.!?;:]/g;
+
+/**
+ * How many words a negation may sit before a match and still govern it.
+ *
+ * Measured rather than chosen: `__tests__/scanner/permission-grant.test.ts`
+ * mutates it in both directions and pins real fixtures on each side. It cannot
+ * be made sound — prose in a scanned file is attacker-controlled, and any
+ * distance is a distance an attacker can pad past. It narrows the off switch;
+ * the structured path is what closes it.
+ */
+export const NEGATION_REACH_WORDS = 6;
+
+/** The start of the clause containing `index` within `line`. */
+function clauseStart(line: string, index: number): number {
+  CLAUSE_BREAK.lastIndex = 0;
   let start = 0;
   let m: RegExpExecArray | null;
-  while ((m = SENTENCE_BREAK.exec(line)) !== null) {
+  while ((m = CLAUSE_BREAK.exec(line)) !== null) {
     if (m.index >= index) break;
     start = m.index + 1;
   }
@@ -124,47 +191,170 @@ function sentenceStart(line: string, index: number): number {
 }
 
 /**
- * The first genuine broad-permission grant in `content`, or undefined.
+ * Does a negation in `before` govern a match that follows it?
  *
- * Scans line by line so the finding can cite `file:line` and quote the phrase
- * that triggered it — the specificity half of #299. Returns the FIRST grant
- * rather than all of them: the finding names one place to look, and a reader
- * who fixes it re-runs the scan.
+ * `before` is already clause-scoped by the caller; this adds the distance
+ * bound, counted in words so that padding costs the attacker something visible.
  */
-export function findPermissionGrant(content: string): PermissionGrant | undefined {
-  const lines = content.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.length > 4096) continue; // minified or generated; not prose
-    for (const pattern of GRANT_PATTERNS) {
-      const m = pattern.exec(line);
-      if (!m) continue;
-      const before = line.slice(sentenceStart(line, m.index), m.index);
-      if (NEGATIONS.test(before)) continue;
-      return {
-        line: i + 1,
-        token: m[0].trim(),
-        text: capped(redactLikelySecrets(line.trim())),
-      };
-    }
+function negationGoverns(before: string): boolean {
+  const words = before.split(/\s+/).filter(Boolean);
+  return NEGATIONS.test(words.slice(-NEGATION_REACH_WORDS).join(' '));
+}
+
+/** The first prose grant on `line`, or undefined. Exported for the ReDoS probe. */
+export function matchProseGrant(line: string): { token: string; index: number } | undefined {
+  for (const pattern of PROSE_GRANT_PATTERNS) {
+    const m = pattern.exec(line);
+    if (!m) continue;
+    if (negationGoverns(line.slice(clauseStart(line, m.index), m.index))) continue;
+    return { token: m[0].trim(), index: m.index };
   }
   return undefined;
 }
 
-function capped(s: string): string {
-  return s.length > MAX_TEXT ? `${s.slice(0, MAX_TEXT - 1)}…` : s;
+// ---------------------------------------------------------------------------
+// Format routing
+// ---------------------------------------------------------------------------
+
+/**
+ * Is `file` a config this can parse?
+ *
+ * Extension-driven rather than name-driven, so a new config family in
+ * `AI_CONFIG_PATTERNS` gets the right half without a second list to keep in
+ * sync. `.js`/`.ts` configs (`langchain.config.js`) are code, not data, and
+ * take the prose path — which is also what keeps `arr.map(x => x * 2)` from
+ * ever being read as a permission entry.
+ */
+function structuredFormat(file: string): 'json' | 'yaml' | undefined {
+  const lower = file.toLowerCase();
+  if (lower.endsWith('.json')) return 'json';
+  if (lower.endsWith('.yml') || lower.endsWith('.yaml')) return 'yaml';
+  return undefined;
 }
 
 /**
- * Mask credential-shaped runs before a scanned line is quoted into a report.
+ * Parse a structured config, or give up.
  *
- * Quoting the matched line is what makes the finding verifiable, and the line
- * comes out of the user's tree — so a config that puts a grant and a key on one
- * line (`{"allow": ["Bash(*)"], "apiKey": "sk-…"}`) would otherwise print the
- * key to the terminal and into any CI log capturing it. A security tool must not
- * be the thing that copies a secret somewhere new.
+ * Giving up is deliberate. Falling back to text matching on a file that failed
+ * to parse would reach the defect this module exists to remove, by the simple
+ * route of writing invalid JSON — and a config that does not parse does not
+ * load in the tool it configures either, so the grant it appears to make is not
+ * live. The JSONC retry exists because editors write `//` comments and trailing
+ * commas into settings files that the tools themselves accept.
+ */
+function parseStructured(content: string, format: 'json' | 'yaml'): unknown {
+  if (format === 'yaml') {
+    try { return yaml.load(content, { json: true }); } catch { return undefined; }
+  }
+  try { return JSON.parse(content); } catch { /* fall through to the JSONC retry */ }
+  try { return JSON.parse(stripJsonComments(content)); } catch { return undefined; }
+}
+
+/** Remove `//` and block comments and trailing commas, respecting string literals. */
+function stripJsonComments(s: string): string {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inString) {
+      out += c;
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') { inString = true; out += c; continue; }
+    if (c === '/' && s[i + 1] === '/') { while (i < s.length && s[i] !== '\n') i++; out += '\n'; continue; }
+    if (c === '/' && s[i + 1] === '*') { i += 2; while (i < s.length && !(s[i] === '*' && s[i + 1] === '/')) i++; i++; continue; }
+    out += c;
+  }
+  return out.replace(/,(\s*[}\]])/g, '$1');
+}
+
+/**
+ * The first genuine broad-permission grant in `content`, or undefined.
  *
- * Deliberately local and small. It is a guard on one quoted line, not a
+ * `file` selects the half: parsed for `.json`/`.yml`/`.yaml`, prose for
+ * everything else. It is required rather than optional because a default would
+ * silently put structured config back on the prose path, which is the bug.
+ */
+export function findPermissionGrant(content: string, file: string): PermissionGrant | undefined {
+  const lines = content.split('\n');
+  const format = structuredFormat(file);
+
+  if (format) {
+    const doc = parseStructured(content, format);
+    if (doc === undefined) return undefined;
+    // An allow-list entry that is not permission syntax still sits under a key
+    // that proves it is not a deny, so the author's own prose is read there.
+    // `"Bash - Allow all bash commands without approval"` is a real entry in a
+    // real settings file: it grants nothing to the tool, and states everything
+    // to the reader.
+    const grant = walkConfigForGrants(doc, (entry, key) => {
+      const m = matchProseGrant(entry);
+      return m
+        ? makeGrant(
+          entry,
+          `states a grant ("${m.token}") and is not valid permission syntax, so it grants nothing to the tool either`,
+          `replace "${entry}" with the scoped entries you meant, e.g. "Bash(npm test)" or "Read(src/**)"`,
+          key,
+        )
+        : undefined;
+    });
+    if (!grant) return undefined;
+    const line = locateGrantLine(lines, grant) || 1;
+    return {
+      line,
+      token: forReport(grant.entry.trim(), MAX_TOKEN),
+      text: forReport((lines[line - 1] ?? '').trim(), MAX_TEXT),
+      reason: grant.reason,
+      fix: capped(redactLikelySecrets(grant.fix), MAX_TEXT), // already escaped by makeGrant
+    };
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.length > MAX_LINE) continue; // minified or generated; not prose
+    const m = matchProseGrant(line);
+    if (!m) continue;
+    return {
+      line: i + 1,
+      token: forReport(m.token, MAX_TOKEN),
+      text: forReport(line.trim(), MAX_TEXT),
+    };
+  }
+  return undefined;
+}
+
+/** Re-exported so a caller needs one import for the shared vocabulary. */
+export { classifyPermissionEntry, walkConfigForGrants };
+
+/**
+ * Redact, escape, then cap — in that order, for every value quoted back.
+ *
+ * Order matters: capping first could split a credential and leave half of it
+ * visible, and escaping first would let the escape expansion push the real text
+ * past the cap.
+ */
+function forReport(s: string, max: number): string {
+  return capped(escapeForDisplay(redactLikelySecrets(s)), max);
+}
+
+function capped(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/**
+ * Mask credential-shaped runs before a scanned value is quoted into a report.
+ *
+ * Applied to `token` as well as `text`, which it was not before. `token` is
+ * printed by all three renderers AND interpolated into the Fix line, and a
+ * permission entry can carry a secret — `Bash(curl -H "Authorization: Bearer
+ * sk-…" *)` is a legal allow entry. Redacting only the surrounding line left
+ * the key in the one field that gets quoted back three times.
+ *
+ * Deliberately local and small. It is a guard on quoted output, not a
  * credential scanner — `src/hardening/scanner.ts` owns that job, and reaching
  * into it (or into the NanoMind redactor) to reuse a regex would couple this
  * report to a detector that answers a different question.

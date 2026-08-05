@@ -32,6 +32,10 @@ import {
   type ResolveRefusal,
 } from './contain';
 import { GOVERNANCE_FILES } from '../soul/governance-files';
+// One vocabulary with `detect`'s permission-grant rule (#363, #364), so the two
+// commands cannot disagree in direction on the same `.claude/settings.json`.
+import { walkConfigForGrants, locateGrantLine } from '../scanner/permission-vocabulary';
+import { escapeForDisplay } from '../ui/display-safe';
 
 /**
  * Backup manifest format version. v1 (pre-0.25.1) wrote `createdFiles` as a
@@ -4613,45 +4617,67 @@ dist/
     const claudeSettingsPath = path.join(targetDir, '.claude', 'settings.json');
 
     let claudeSettings: Record<string, unknown> | null = null;
+    let claudeSettingsLines: string[] = [];
     try {
       const content = await fs.readFile(claudeSettingsPath, 'utf-8');
       claudeSettings = JSON.parse(content);
+      claudeSettingsLines = content.split('\n');
     } catch {}
 
     // CLAUDE-002: Check for overly permissive allowed commands
-    let hasOverlyPermissive = false;
-    const permissions = claudeSettings?.permissions as { allow?: string[] } | undefined;
-    if (permissions?.allow) {
-      for (const perm of permissions.allow) {
-        if (perm.includes('(*)') || perm === 'Bash(*)' || perm === 'Read(*)' || perm === 'Write(*)') {
-          hasOverlyPermissive = true;
-          break;
-        }
-      }
-    }
+    //
+    // #363 — this used to be `perm.includes('(*)') || perm === 'Bash(*)' || …`,
+    // which misses every documented wildcard spelling but one: `Bash(*:*)` does
+    // not contain the substring `(*)`, and neither do `mcp__*`, `Read(//**)`,
+    // `WebFetch(domain:*)`, a bare tool name, or `defaultMode:
+    // "bypassPermissions"`, which turns permissions off wholesale. `secure` is
+    // the CI gate, so the command most users run was the one that missed this
+    // while `detect` reported HIGH on the same file.
+    //
+    // It now shares ONE vocabulary with `detect` (#364,
+    // `src/scanner/permission-vocabulary.ts`) so the next spelling is added
+    // once and the two commands cannot disagree in direction again. The walk
+    // reads permission KEYS and never descends into `deny` — a deny list is
+    // supposed to be full of wildcards, and reading one as a grant is how the
+    // remediation ends up telling the reader to delete `Read(*.key)`.
+    const overlyPermissive = claudeSettings ? walkConfigForGrants(claudeSettings) : undefined;
 
     // Only report if overly permissive
-    if (hasOverlyPermissive) {
+    if (overlyPermissive) {
+      // The SHARED locator, not a local `indexOf`. A settings-level grant is
+      // synthesised — `defaultMode: acceptEdits` is not a substring of
+      // `"defaultMode": "acceptEdits"` — so a plain substring search returned
+      // nothing and this rendered a HIGH with no line number at all, while
+      // `detect` cited `:2` for the same file.
+      const line = locateGrantLine(claudeSettingsLines, overlyPermissive);
       findings.push({
         checkId: 'CLAUDE-002',
         name: 'Overly Permissive Permissions',
-        description: 'Settings allow unrestricted tool access',
+        // `entry` is raw by contract (the line locator matches it against the
+        // file), so it is escaped HERE, at the point it becomes report text.
+        // `reason` and `fix` arrive escaped from the vocabulary.
+        description: `Settings allow unrestricted tool access: "${escapeForDisplay(overlyPermissive.entry)}" ${overlyPermissive.reason}`,
         category: 'claude-code',
         severity: 'high',
         passed: false,
         message: 'Scope permissions to specific paths',
         file: '.claude/settings.json',
+        line: line > 0 ? line : undefined,
         fixable: false,
-        fix: 'Replace Bash(*) with Bash(npm test) and Read(*) with Read(/src/**) in .claude/settings.json',
-        guidance: 'Wildcard permissions give the AI unrestricted shell, read, or write access. Scope each permission to the specific commands and paths your workflow needs.',
+        fix: overlyPermissive.fix,
+        guidance: 'Wildcard permissions give the AI unrestricted shell, read, or write access. Scope each permission to the specific commands and paths your workflow needs. Entries in the deny list are restrictions and are never reported here.',
       });
     }
 
     // CLAUDE-003: Check for dangerous Bash patterns
     let hasDangerousBash = false;
     const dangerousPatterns = ['rm -rf', 'rm -r', 'chmod 777', 'curl | sh', 'wget | sh', 'sudo'];
-    if (permissions?.allow) {
+    // `permissions.allow` only. `deny` carries these same strings by design —
+    // `Bash(rm -rf *)` in a deny list is the rule that STOPS the agent doing it.
+    const permissions = claudeSettings?.permissions as { allow?: string[] } | undefined;
+    if (Array.isArray(permissions?.allow)) {
       for (const perm of permissions.allow) {
+        if (typeof perm !== 'string') continue;
         if (perm.startsWith('Bash(')) {
           for (const dangerous of dangerousPatterns) {
             if (perm.includes(dangerous)) {

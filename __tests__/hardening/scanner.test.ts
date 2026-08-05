@@ -820,6 +820,118 @@ describe('Claude Code additional checks', () => {
   });
 });
 
+// CLAUDE-002 decided the wildcard question with
+// `perm.includes('(*)') || perm === 'Bash(*)' || …`, which misses every
+// documented spelling but one — `Bash(*:*)` does not contain the substring
+// `(*)`, its characters are `(`, `*`, `:`, `*`, `)`. That predicate is
+// byte-identical in v0.25.1, so it is a long-standing gap and not a regression.
+//
+// What made it P1 is that `secure` is the CI gate and the command the
+// quick-start, the `?` advisor and the NL matcher all recommend, while `detect`
+// reported HIGH on the same file: a cross-command direction disagreement.
+// Both now read one vocabulary (#363, #364).
+describe('CLAUDE-002 and detect agree on the same settings file (#363)', () => {
+  let scanner: HardeningScanner;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    scanner = new HardeningScanner();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-claude002-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  async function settingsFixture(doc: unknown): Promise<void> {
+    await fs.mkdir(path.join(tempDir, '.claude'), { recursive: true });
+    await fs.writeFile(path.join(tempDir, '.claude', 'settings.json'), JSON.stringify(doc, null, 2));
+  }
+
+  async function claude002() {
+    const result = await scanner.scan({ targetDir: tempDir });
+    return result.findings.find((f) => f.checkId === 'CLAUDE-002');
+  }
+
+  it.each([
+    ['Bash(*:*)', 'the published any-command-any-argument spelling'],
+    ['mcp__*', 'every MCP server'],
+    ['Read(//**)', 'a doubled root'],
+    ['Read(/**)', 'the filesystem root'],
+    ['WebFetch(domain:*)', 'any host'],
+    ['Bash(sudo *)', 'root with any argument'],
+    ['Read', 'a bare tool name'],
+    ['*', 'every tool'],
+  ])('fires on %j (%s)', async (entry) => {
+    await settingsFixture({ permissions: { allow: [entry] } });
+    expect(await claude002()).toBeDefined();
+  });
+
+  it('fires on defaultMode: bypassPermissions, which no wildcard rule can see', async () => {
+    await settingsFixture({ permissions: { defaultMode: 'bypassPermissions' } });
+    const finding = await claude002();
+    expect(finding).toBeDefined();
+    expect(finding?.fix).toContain('"default"');
+  });
+
+  // A settings-level grant is synthesised — `defaultMode: acceptEdits` is not a
+  // substring of `"defaultMode": "acceptEdits"` — so a plain substring search
+  // finds nothing and the finding renders with no line number, which is the
+  // house rule this check would then be violating. `detect` cited `:2` for the
+  // same file; both now use one locator, which falls back to the key's line.
+  it('cites a line for a settings-level grant, not just the file', async () => {
+    await settingsFixture({ permissions: { defaultMode: 'acceptEdits' } });
+    const finding = await claude002();
+    expect(finding?.line).toBeGreaterThan(0);
+  });
+
+  // The renderer rewrites a leading path inside a fix string, which turned
+  // `In .claude/settings.json:3, replace …` into `Fix: :3, replace …`. The
+  // location already has its own line, so the fix carries the action only.
+  it('does not repeat the path inside the fix line', async () => {
+    await settingsFixture({ permissions: { allow: ['Bash(*:*)'] } });
+    const finding = await claude002();
+    expect(finding?.fix).not.toContain('.claude/settings.json');
+    expect(finding?.fix).toMatch(/^[a-z]/);
+  });
+
+  // The regression that a green gate missed: a deny list is supposed to be full
+  // of wildcards, and reading one as a grant produces a remediation that tells
+  // the reader to delete the rule protecting their private keys.
+  it('stays silent on a settings file whose only content is a deny list', async () => {
+    await settingsFixture({
+      permissions: { deny: ['Read(*.key)', 'Read(*.env)', 'Bash(rm -rf *)', 'Bash(*)', '*'] },
+    });
+    expect(await claude002()).toBeUndefined();
+  });
+
+  // Real entries, read out of `.claude/settings*.json` files on disk. 31 of the
+  // 148 measured allow entries are colon-prefix Bash spellings that Claude Code
+  // writes itself; flagging one re-opens #299.
+  it('stays silent on a real narrow allow list', async () => {
+    await settingsFixture({
+      permissions: {
+        allow: [
+          'Bash(npm test)', 'Bash(ls:*)', 'Bash(find:*)', 'Bash(git add:*)',
+          'Bash(git commit:*)', 'Read(src/**)', 'WebFetch(domain:example.com)',
+          'mcp__github__get_issue',
+        ],
+        deny: ['Read(*.key)'],
+      },
+    });
+    expect(await claude002()).toBeUndefined();
+  });
+
+  it('cites the offending entry and a line, not just the file', async () => {
+    await settingsFixture({ permissions: { allow: ['Bash(npm test)', 'Bash(*:*)'] } });
+    const finding = await claude002();
+    expect(finding?.description).toContain('Bash(*:*)');
+    expect(finding?.line).toBeGreaterThan(0);
+    // A dead end is a finding whose fix does not name what to do instead.
+    expect(finding?.fix).toContain('Bash(npm test)');
+  });
+});
+
 // TODO: These tests need scanner updates to include file paths
 // Temporarily skipped - core functionality is working
 describe.skip('Cursor configuration checks', () => {
