@@ -4,6 +4,26 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`detect` and `secure` reported a `deny` list as a grant, and the remediation told the reader to delete it (#364, #363).** A config whose entire content is a deny list — nothing granted anywhere in it — reported HIGH. Measured on `ba2aac8`, the rendered finding was `.claude/settings.json:1 — matched "Bash(*)"` under the heading `AI config files grant broad permissions`, with `Fix: Narrow .claude/settings.json:1 — replace "Bash(*)" with the specific commands or paths this agent needs`. `Bash(*)` there is a *deny* entry. Following that remediation removes a restriction and widens the agent's authority, which is the opposite of what the finding asks for.
+
+  `allow` and `deny` hold textually IDENTICAL values. Only the key tells them apart, and a deny list is *supposed* to be full of wildcards: across the real `.claude/settings*.json` files on the author's machine, 376 of 454 deny entries contain a `*`. A text rule pointed at permission entries is therefore pointed mostly at the restrictions.
+
+  Structured config is now parsed and the key decides. An entry is evaluated only under a key known to grant, and a prune stops a grant key nested underneath a deny key, which is the one shape that reaches past the first layer. **Deny is never weighed, not even to soften a finding** — a deny list the scanned file controls would be an off switch the attacker writes, the shape #305/#309 already rejected. Parsing also closes an escape class no text rule reaches, where a JSON unicode escape parses to a value the raw file does not contain. Prose keeps text matching, because a prose match has no key to be wrong about.
+
+  Measured against the same real configs, comparing this build to the previous one: three files are newly flagged and none lost a finding. All three additions are true positives — a bare `Read` with no scope, a `Bash(bash:*)` with no command-name bound, and `enableAllProjectMcpServers: true`, which trusts every MCP server a project declares with no prompt.
+
+- **`secure`'s `CLAUDE-002` and `detect` could disagree in direction on the same file (#363).** `CLAUDE-002` tested `perm.includes('(*)')` while `detect` matched text, so a file whose only content was `Bash(*:*)` produced a HIGH from one command and `no security issues found` from the other. Both now call one shared vocabulary, so the next spelling is added once rather than twice.
+
+### Changed
+
+- **A permission finding on a structured config now names the FILE, with no line number (#364).** This is a real reduction in precision and is worth stating plainly rather than burying. The citation used to be found by searching the raw text for the offending entry, and that cannot be made safe for the same reason the fix above exists: the text does not carry the polarity, only the structure does, and a text search has no structure.
+
+  Three attempts are recorded in `src/scanner/permission-vocabulary.ts` rather than repeated. Searching from the grant key's line was beaten by an earlier bounded `allow` key, by a `// allow:` comment, and by a JSON-escaped key. A containment guard over enclosure and in-line key tokens closed those, but was quadratic in line length, held one array per line and aborted `secure` on a 3.8MB file, and still cited a deny entry whenever an array element was indented less than its own key. Emitting a line only when the document declared no restriction key at all had a premise about the whole file but an implementation that could answer only for the first 13 levels of the parsed object, while the text search it gated had no depth bound at all.
+
+  Each attempt was smaller and sharper than the last and each still cited a deny entry, so the answer is not a fourth heuristic. The reader still gets the entry, why it is a grant, and what to replace it with. **#379** restores a precise citation by giving the grant its own offset from the parse, and carries the acceptance criteria all three failures produced. The prose half keeps its line, because the line cited is the line the pattern matched.
+
 ## [0.25.2] - 2026-08-05
 
 ### Fixed
