@@ -1,0 +1,62 @@
+name: Test matrix
+
+# Runs the full suite on PRs, on BOTH platforms.
+#
+# Why this exists: until now `release.yml` was the only workflow that ran
+# `npm test`, and it triggers on `v*` tags. Under Trusted Publishing the tag
+# push IS the publish event, so the suite's first execution on Linux was also
+# the release — and 0.25.2 failed there with 12 failures across 3 files that
+# every developer machine reported green, because they are all macOS.
+#
+# A suite that only ever runs on one platform is a suite that certifies one
+# platform. This job makes the other one visible at PR time instead of at
+# publish time.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    # NON-BLOCKING FOR NOW, deliberately, and this must not become permanent.
+    #
+    # Linux currently has known failures that predate this workflow and are
+    # NOT caused by it (see the tracking issue). Making the job blocking today
+    # would wedge every unrelated PR behind them; making it silent would repeat
+    # the mistake that let them reach a tag push unseen. So it reports on every
+    # PR and blocks nothing, until the tracked failures land.
+    #
+    # Flip `continue-on-error` to false in the same PR that closes the last of
+    # them. Do not extend this exemption to new failures — a red Linux job on a
+    # PR that made it red is a defect in that PR.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - name: Corpus release smoke
+        # The corpus lives outside the repo, so this only runs where it exists.
+        run: |
+          if [ -d "$HOME/.opena2a/corpus" ]; then
+            npm run release-smoke:corpus
+          else
+            echo "corpus not present on this runner; skipped"
+          fi

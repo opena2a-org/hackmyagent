@@ -249,6 +249,23 @@ function assertOneWord(
 /** The shells this run actually exercised, for a non-vacuity assertion. */
 export const SHELLS_TESTED = SHELLS;
 
+/**
+ * Whether zsh exists on this machine at all.
+ *
+ * The zsh round trip is the one that catches EQUALS expansion (`rm =python3`
+ * resolving to a command path), so a run that skips it covers less than a run
+ * that does not — and the assertion that guards it must not be deleted just
+ * because a machine lacks the shell.
+ *
+ * Splitting "zsh was not exercised" from "zsh is not installed" keeps that
+ * guard sharp where it can fire: on any machine WITH zsh, failing to exercise
+ * it is still a hard failure. On a machine without it — the Linux CI runner —
+ * the coverage gap is real but is a property of the runner, not a regression
+ * in the citation logic, and failing there only trains people to ignore the
+ * job. `test-matrix.yml` runs macOS too, so zsh is exercised on every PR.
+ */
+export const ZSH_AVAILABLE = SHELLS.includes('zsh');
+
 /** All of it, for one command's output. */
 export function assertRenderSafe(
   out: string,

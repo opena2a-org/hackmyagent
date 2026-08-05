@@ -27,11 +27,36 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir, tmpdir as tmpdirSync } from 'node:os';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
 
 /** Synthesised at runtime — never a literal in the source tree. */
+/**
+ * Whether THIS filesystem folds case, probed rather than inferred.
+ *
+ * `process.platform === 'darwin'` is the wrong test twice over: macOS can be
+ * formatted case-sensitive, and a Linux box can mount a case-insensitive
+ * volume. The two cases below describe a directory that is reachable under two
+ * spellings, which is a property of the filesystem under `tmpdir()`, so that is
+ * what gets measured.
+ */
+const CASE_INSENSITIVE_FS = (() => {
+  const probe = mkdtempSync(path.join(tmpdirSync(), 'hma-case-probe-'));
+  try {
+    writeFileSync(path.join(probe, 'CaseProbe'), 'x');
+    return existsSync(path.join(probe, 'caseprobe'));
+  } catch {
+    // A probe that cannot run must not silently enable the tests it gates —
+    // it would report a pass the assertion did not earn on the very platform
+    // the gate exists for.
+    return false;
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+})();
+
 const FAKE_GH_TOKEN = `ghp_${'a'.repeat(36)}`;
 
 const ARCHIVE_STAMP = '2026-01-01-000000';
@@ -464,7 +489,7 @@ describe('#326 archive citations claim no provenance and delete nothing', () => 
    * spelling rather than for the ones that happen to case-fold, and it needs
    * nothing inside the directory to be true.
    */
-  it('still refuses to rewrite the tree\'s own backup base under a case variant', async () => {
+  it.skipIf(!CASE_INSENSITIVE_FS)('still refuses to rewrite the tree\'s own backup base under a case variant', async () => {
     const archive = path.join(dir, '.HACKMYAGENT-BACKUP', ARCHIVE_STAMP);
     await mkdir(archive, { recursive: true });
     const body = JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n';
@@ -492,11 +517,24 @@ describe('#326 archive citations claim no provenance and delete nothing', () => 
   /**
    * #323 — the fixtures in this file were all case-exact. Recognition of an
    * archive by NAME governs the write refusal, and on a case-insensitive
-   * filesystem `.HACKMYAGENT-BACKUP` is the same directory (#317). Folding case
-   * can only refuse MORE writes, so this holds on a case-sensitive filesystem
-   * too: the name is matched, the archive is not rewritten.
+   * filesystem `.HACKMYAGENT-BACKUP` is the same directory (#317).
+   *
+   * The previous sentence here claimed "this holds on a case-sensitive
+   * filesystem too: the name is matched, the archive is not rewritten." That
+   * was wrong, and it was wrong in a comment rather than in an assertion, so
+   * nothing caught it until the suite first ran on Linux — during a release tag
+   * push, because `release.yml` was the only workflow running `npm test`.
+   *
+   * Recognition resolves `<target>/.hackmyagent-backup`. On a case-sensitive
+   * filesystem that path does not exist when the directory is spelled
+   * `.HACKMYAGENT-BACKUP`, so the name is NOT matched and the archive IS
+   * rewritten. The scenario stays theoretical there — the tool only ever
+   * creates the lowercase spelling, so a differently-cased archive is a
+   * directory the user renamed by hand — but the property genuinely does not
+   * hold, and the honest record is a skip plus this note, not a comment
+   * asserting the opposite.
    */
-  it('refuses to rewrite an archive whose name differs only in case', async () => {
+  it.skipIf(!CASE_INSENSITIVE_FS)('refuses to rewrite an archive whose name differs only in case', async () => {
     const archive = path.join(dir, '.HACKMYAGENT-BACKUP', ARCHIVE_STAMP);
     await mkdir(archive, { recursive: true });
     await writeFile(
