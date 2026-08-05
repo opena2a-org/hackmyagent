@@ -4,7 +4,7 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
-## [0.25.2] - 2026-08-03
+## [0.25.2] - 2026-08-05
 
 ### Fixed
 
@@ -241,10 +241,6 @@ All notable changes to HackMyAgent are documented in this file.
 - **`__tests__/scanner/governance-cross-surface.test.ts`** — two fixtures added for #303: a document that passes every control and then subverts one, and governance carried in a `CLAUDE.md` rather than a `SOUL.md`. The four original fixtures could not have caught #303 — one fails its critical controls, another passes everything, and none is a document that passes its controls and then works against them. Both new fixtures are built from the tool's own `harden-soul` output so the controls are genuinely present. The two host-dependent assertions call `ctx.skip()` rather than returning, so a machine with no AI processes reports SKIPPED instead of a green tick over an assertion that never ran.
 
 - **`__tests__/docs/release-smoke-paths.test.ts`** — gates the checklist against its own rot: every repo-relative path it names must exist, the §0.5 fixtures the later steps depend on must actually be defined with a loud failure guard, the workspace-only `test/hma` spelling cannot return as a repo-relative target, and no step may read an exit code through a pipe (`cmd | head; echo $?` reports `head`'s status, not the CLI's). Each assertion was mutation-verified: reintroducing a piped exit read, deleting the fixture guard, and pointing a step at a nonexistent in-repo path each turn it red.
-
-### Known issues
-
-- **#297 — telemetry is dropped on every findings-bearing scan except `--json`.** The scan commands call `process.exit(1)` when they find something, which skips the Commander `postAction` hook that fires `tele.track()`; text, SARIF and HTML mode therefore emit no telemetry at all on a scan with findings, while `--json` (which sets `process.exitCode = 1` and returns) does. Usage telemetry is consequently biased toward clean scans, and `successFromExitCode(1) === true` — written precisely to record "findings detected, the command did its job" — is unreachable from the default text path. Found while repairing §5.6, whose broken target had been masking it with empty output. Not fixed here: swapping `process.exit(1)` for `process.exitCode = 1` interacts with the stdout-truncation behaviour noted at `src/cli.ts:116` and with open-handle drain, so it wants a deliberate decision. §5.6 targets `$CLEAN` until it lands, and a new §5.8 pins the one path that still reports.
 
 ## [0.25.1] - 2026-07-27
 
