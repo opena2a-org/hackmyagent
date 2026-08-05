@@ -41,7 +41,7 @@
  * nothing here trips GitHub push protection or a secret scanner.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, mkdir, writeFile, rm, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, readdir, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
@@ -123,6 +123,26 @@ describe('#374 the score --fix announces is the score the next scan produces', (
           .toContain('.hackmyagent-backup');
       }
 
+      // No archive-located finding may be left UNFLAGGED. `scoreExcludingOwnArchive`
+      // is derived by dropping flagged findings, so an unflagged archive copy is
+      // counted as live tree, and the report then tells the user those points do
+      // not come back when the archive goes — the inverse of what the line says.
+      // The adoption loop used to `continue` past any finding the main scan already
+      // held, dropping the flag with it.
+      //
+      // NOTE ON WHAT THIS DOES AND DOES NOT PROVE: on the current tree the main
+      // scan's Layer-2 walk excludes the archive, so no such finding arrives and
+      // this passes on the pre-fix code too. It pins the invariant; it does not
+      // red-proof the repair. The wiring it depends on — Layer 2 being handed
+      // `isOwnBackupDir` — has no guard of its own (#382).
+      const unflagged = fixed.findings.filter(
+        (f) => (f.file ?? '').includes('.hackmyagent-backup') && !f.inOwnArchive,
+      );
+      expect(
+        unflagged.map((f) => `${f.checkId} ${f.file}`),
+        'an archive-located finding is not flagged, so the live-tree score counts it as live tree',
+      ).toEqual([]);
+
       // The second number exists and is a real number, not a copy of the first.
       expect(fixed.scoreExcludingOwnArchive, 'the live-tree score was never computed').toBeDefined();
       // Dropping findings can only lower the weighted sum, so the live tree can
@@ -159,6 +179,77 @@ describe('#374 the score --fix announces is the score the next scan produces', (
       expect(detectOnly.score, 'the fixture scored clean; nothing is being measured').toBeLessThan(100);
       expect(detectOnly.scoreExcludingOwnArchive).toBeUndefined();
       expect(detectOnly.findings.some((f) => f.inOwnArchive)).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Direction 3 — the same property at a NON-DEFAULT scan depth.
+   *
+   * The first fix for #374 built the verify scan's options from scratch, so it
+   * inherited neither `scanDepth` nor `deep` and always ran at `standard`. Its
+   * findings are adopted into the run's score, so `--fix --scan-depth quick`
+   * announced a number carrying Layer-2 findings that `isQuick` (`scanner.ts:2138`)
+   * means the user's next quick scan can never report. #374, through a second door.
+   *
+   * Asserts `rawScore` and not only `score`. Measured on the pre-fix build with
+   * this fixture: announced rawScore 72, immediate quick rescan 85 — while the
+   * DISPLAYED score was 69 both times, because the #259 clamp floored both to the
+   * same value. A test that pinned only `score` would have passed on the broken
+   * build and proved nothing.
+   */
+  it('announced score equals the next scan at the SAME depth the run used', async () => {
+    // `.cursor/mcp.json` is doing specific work: it is in `BACKUP_FILES`, so a
+    // `--fix` archives it, AND it is a Layer-2 surface, so only a standard-depth
+    // scan reports the token in it. `.mcp.json` is NOT a backup candidate and
+    // `secrets.json` is not a Layer-2 credential surface — neither reproduces this
+    // alone. `secrets.json` is here world-readable so PERM-001, which quick depth
+    // does detect, gives the quick run a fix to perform.
+    const dir = await mkdtemp(path.join(tmpdir(), 'hma-374-depth-'));
+    try {
+      await mkdir(path.join(dir, '.cursor'), { recursive: true });
+      await writeFile(path.join(dir, 'package.json'), '{"name":"f","version":"1.0.0"}\n');
+      await writeFile(path.join(dir, '.gitignore'), 'node_modules/\n');
+      await writeFile(
+        path.join(dir, '.cursor', 'mcp.json'),
+        JSON.stringify({
+          mcpServers: { gh: { command: 'npx', args: ['-y', 'srv'], env: { GITHUB_PERSONAL_ACCESS_TOKEN: FAKE_GH_TOKEN } } },
+        }) + '\n',
+      );
+      const secrets = path.join(dir, 'secrets.json');
+      await writeFile(secrets, JSON.stringify({ note: 'no credential here' }) + '\n');
+      await chmod(secrets, 0o644);
+
+      const fixed = await new HardeningScanner().scan({ targetDir: dir, autoFix: true, scanDepth: 'quick' });
+      const rescan = await new HardeningScanner().scan({ targetDir: dir, autoFix: false, scanDepth: 'quick' });
+
+      // ── Non-vacuity ──
+      const stamps = await readdir(path.join(dir, '.hackmyagent-backup')).catch(() => [] as string[]);
+      expect(stamps.length, 'no archive was created, so this run never exercised the defect').toBeGreaterThan(0);
+      // The fixture only tests anything if it is genuinely depth-sensitive: the
+      // archive must hold something STANDARD depth reports and QUICK does not.
+      // Without this, a quick/quick agreement is trivially true and the test would
+      // keep passing if the depth mismatch came back.
+      const deeper = await new HardeningScanner().scan({ targetDir: dir, autoFix: false, scanDepth: 'standard' });
+      const archived = (r: { findings: { file?: string; checkId?: string }[] }) =>
+        r.findings.filter((f) => (f.file ?? '').includes('.hackmyagent-backup'));
+      expect(
+        archived(deeper).length,
+        'standard depth reported nothing inside the archive; the fixture is no longer depth-sensitive '
+        + 'and this test cannot detect the defect it exists for',
+      ).toBeGreaterThan(archived(rescan).length);
+      expect(fixed.rawScore, 'rawScore is unset, so the assertion below would compare undefined to undefined').toBeDefined();
+      expect(rescan.rawScore).toBeDefined();
+
+      // ── The property, on the unclamped number ──
+      expect(
+        fixed.rawScore,
+        `--fix --scan-depth quick announced rawScore ${fixed.rawScore} and the immediately-following `
+        + `quick rescan said ${rescan.rawScore}. The verify scan is not running at the depth the run used, `
+        + `so the announced score counts findings the user's next scan cannot produce (#374)`,
+      ).toBe(rescan.rawScore);
+      expect(fixed.score, 'the displayed scores disagree as well').toBe(rescan.score);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

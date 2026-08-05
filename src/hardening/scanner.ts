@@ -2351,18 +2351,50 @@ export class HardeningScanner {
       // So it runs whenever this run left copies in its archive, not only when
       // a fix landed: a `--fix` that repaired nothing still archives its backup
       // candidates up front, and its score still has to be the one that comes
-      // back. Gated on `covered.size` rather than run unconditionally because an
-      // archive holding nothing but its own manifest cannot move the score, and
-      // a second full scan of a large tree is not free.
+      // back.
+      //
+      // BE HONEST ABOUT THIS GATE: it does not gate. `covered` is seeded from
+      // `existingFiles` PLUS `absentAtBackup` (`:8244`), and `absentAtBackup` is
+      // the list of static candidates that do NOT exist, so `covered.size` is ~22
+      // on an empty directory and this is effectively unconditional. Every
+      // `secure --fix` now runs a second full scan, where before it ran one only
+      // when a fix had landed. That is a cost regression, not a wrong number, and
+      // the honest gate — "did the archive actually receive a copy" — needs
+      // `manifest.existingFiles` plumbed onto `backupContext`, which is backup
+      // bookkeeping this codebase has broken repeatedly (#300, #313, #327, #329).
+      // Not worth doing in a release whose point is that a number is trustworthy.
+      // Filed as #381.
       const archiveHoldsCopies = (this.backupContext?.covered.size ?? 0) > 0;
       if (fixedFindings.length > 0 || archiveHoldsCopies) {
-        // Re-run a targeted scan (no fix, just detect) to verify
+        // Re-run a targeted scan (no fix, just detect) to verify.
+        //
+        // This scan has to be the NEXT SCAN, not merely another scan. Its findings
+        // are adopted into this run's score below, so every option that decides
+        // which checks run has to come from the run it is standing in for.
+        // Building the options fresh here inherited none of them, and the default
+        // is `standard`: a `--fix --scan-depth quick` run therefore adopted Layer-2
+        // findings from its own archive that `isQuick` (`:2138`) means the user's
+        // next quick scan can never report. Measured on a fixture whose archived
+        // `.cursor/mcp.json` holds a token: announced rawScore 72, immediate quick
+        // rescan 85. That is #374 exactly, through a second door — the displayed
+        // score only agreed because the #259 clamp floored both to 69, and `--json`
+        // published the contradiction as `rawScore` regardless.
+        //
+        // `deep` is passed through faithfully rather than clamped: a `--fix --deep`
+        // that verified at standard depth would announce a number missing the
+        // archive's Layer-3 findings that the next `--deep` produces. It costs a
+        // second LLM pass when ANTHROPIC_API_KEY is set, which is the price of the
+        // announced number being the one that comes back.
         const verifyScanner = new HardeningScanner();
         const verifyResult = await verifyScanner.scan({
           targetDir,
           autoFix: false,
           ignore: ignoredChecks.size > 0 ? [...ignoredChecks] : [],
           cliName: this.cliName,
+          scanDepth,
+          deep: options.deep,
+          ignorePaths: options.ignorePaths,
+          isNpmPackage: options.isNpmPackage,
         });
 
         // A finding's `file` is one stand-in for what can be a multi-file
@@ -2539,25 +2571,33 @@ export class HardeningScanner {
         // spelled. (A NUL separator is the conventional choice and is what this
         // was first written with — it is also a raw control byte in source,
         // invisible in every diff, which `render-source-gate` rightly rejects.)
-        const alreadyHeld = new Set<string>();
+        const alreadyHeld = new Map<string, SecurityFinding>();
         for (const f of findings) {
-          if (f.file) alreadyHeld.add(`${f.checkId} ${f.file}`);
+          if (f.file) alreadyHeld.set(`${f.checkId} ${f.file}`, f);
         }
         const adopted: SecurityFinding[] = [];
         for (const f of verifyResult.findings) {
           if (!f.file) continue;
-          const key = `${f.checkId} ${f.file}`;
-          // The config walk excludes the archive but `keyFiles` / `namedSensitive`
-          // deliberately do not, so some archive findings are ALREADY in this
-          // run's list. Adopting them again would double-count them.
-          if (alreadyHeld.has(key)) continue;
           // Identity, not spelling (#317) — and only a proven `yes`. `unknown`
           // means an ancestor the filesystem would not describe, which is not
           // evidence that a path is ours; treating it as ours would let the
           // shifted-attribution case back in through the one door this filter
           // exists to close.
           if (await this.isInsideOwnBackup(path.resolve(targetDir, f.file)) !== 'yes') continue;
-          alreadyHeld.add(key);
+          const key = `${f.checkId} ${f.file}`;
+          // The config walk excludes the archive but `keyFiles` / `namedSensitive`
+          // deliberately do not, so some archive findings are ALREADY in this
+          // run's list. Adopting them again would double-count them — but SKIPPING
+          // them silently was worse than double-counting in one direction: the
+          // finding stayed unflagged, and `scoreExcludingOwnArchive` (`:949`)
+          // derives the live-tree number by dropping flagged findings, so an
+          // archive copy counted as live tree. The report then told the user those
+          // points do NOT come back when the archive goes, which is the inverse of
+          // what that line exists to say. Flag it where it already sits; adopt only
+          // what is genuinely new.
+          const held = alreadyHeld.get(key);
+          if (held) { held.inOwnArchive = true; continue; }
+          alreadyHeld.set(key, f);
           f.inOwnArchive = true;
           adopted.push(f);
         }

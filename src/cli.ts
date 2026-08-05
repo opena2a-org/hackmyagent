@@ -1309,7 +1309,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       if (delta > 0) {
         console.log(`  ${colors.cyan}Live tree:${RESET()} ${liveTreeScore}/100 ${colors.dim}— the ${delta}-point difference is ${noun} inside the backup this run created${where}${RESET()}`);
       } else {
-        console.log(`  ${colors.dim}${noun} above sit inside the backup this run created${where}${RESET()}`);
+        console.log(`  ${colors.dim}${noun} above ${archiveCount === 1 ? 'sits' : 'sit'} inside the backup this run created${where}${RESET()}`);
       }
       console.log(`  ${colors.dim}Those are the pre-fix copies, kept so \`${CLI_PREFIX} rollback\` can undo this run. Rotate what was exposed, then delete that directory once you no longer need to roll back.${RESET()}`);
     }
