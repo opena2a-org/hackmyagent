@@ -1287,11 +1287,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     }
     // #374 — a `--fix` run can now print a score LOWER than the one before it
     // ran, and that has to be attributable on the spot. The score is the number
-    // the next scan will produce, which includes the archive `--fix` just wrote;
-    // that archive holds the pre-fix copy of the very credential the run
-    // redacted. Unexplained, a number that went down reads as the remediation
-    // having made the tree worse. So name the live-tree figure and where the
-    // difference sits, framed as recoverable rather than as a deduction.
+    // the next scan AT THE SAME DEPTH will produce, which includes the archive
+    // `--fix` just wrote; that archive holds the pre-fix copy of the very
+    // credential the run redacted. (`--deep` is the one exception: the verify scan
+    // is capped at `standard` so it cannot send this run's archive to the LLM, so
+    // Layer-3 archive findings are missing from this number — #385/#386.)
+    // Unexplained, a number that went down reads as the remediation having made
+    // the tree worse. So name the live-tree figure and where the difference sits,
+    // framed as recoverable rather than as a deduction.
     const liveTreeScore = localScan?.scoreExcludingOwnArchive;
     if (liveTreeScore !== undefined) {
       const archiveCount = (localScan?.findings ?? []).filter((f) => f.inOwnArchive).length;

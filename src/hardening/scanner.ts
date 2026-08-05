@@ -2387,9 +2387,9 @@ export class HardeningScanner {
         //
         // Threading it was tried and reverted the same day. Layer 3 (`:2162`) fires
         // on `options.deep` and puts file CONTENT on the wire to the Anthropic API.
-        // Its archive exclusion (`:2167`) is `isOwnBackupDir`, which returns false
-        // whenever there is no `backupContext` (`:3699`) — and this verify scanner
-        // is a fresh instance that has none. So a threaded `deep` walked Layer 3
+        // Its archive exclusion is `isOwnBackupDir`, whose FIRST STATEMENT returns
+        // false whenever there is no `backupContext` — and this verify scanner is a
+        // fresh instance that has none. So a threaded `deep` walked Layer 3
         // into the archive this run had just written and transmitted the only
         // remaining PLAINTEXT copies of the credentials the same run had redacted
         // out of the live files. Measured: 2 LLM payloads before, 4 after, the two
@@ -2702,9 +2702,12 @@ export class HardeningScanner {
     const { score, clamped: scoreClamped } = clampScoreToVerdictBand(rawScore, filteredFindings);
 
     // #374 — the live-tree view of the SAME findings set. `score` above is the
-    // number the next scan will produce; this is what the tree is worth once the
-    // archived copy is rotated and deleted, and the report names it so a
-    // post-fix number that went DOWN is attributable rather than mysterious.
+    // number the next scan at the SAME DEPTH will produce — exactly so for `quick`
+    // and `standard`, and with one documented exception for `--deep`, where the
+    // verify scan is capped at `standard` so it cannot transmit this run's archive
+    // to the LLM (#385/#386). This is what the tree is worth once the archived copy
+    // is rotated and deleted, and the report names it so a post-fix number that
+    // went DOWN is attributable rather than mysterious.
     const scoreExcludingArchive = scoreExcludingOwnArchive(filteredFindings);
 
     // In dry-run mode, mark fixable failed findings with wouldFix

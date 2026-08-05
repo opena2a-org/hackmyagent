@@ -2,8 +2,8 @@
  * The post-fix verify scan must never run Layer 3.
  *
  * Layer 3 sends file CONTENT to the Anthropic API. It excludes the run's own
- * archive via `isOwnBackupDir`, which returns `false` whenever there is no
- * `backupContext` (`scanner.ts:3699`) — and the verify scan is a deliberately
+ * archive via `isOwnBackupDir`, whose first statement returns `false` whenever
+ * there is no `backupContext` — and the verify scan is a deliberately
  * context-free `new HardeningScanner()`, because being context-free is the whole
  * point: it has to see the tree the way the user's next scan will.
  *
@@ -33,8 +33,22 @@ vi.mock('../../src/semantic', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/semantic')>();
   class SpyLLMAnalyzer {
     constructor(_opts: unknown) {}
-    async analyze(files: { path?: string; filePath?: string }[]) {
-      transmitted.push((files ?? []).map((f) => f.path ?? f.filePath ?? String(f)));
+    // Reads `path` and NOTHING ELSE. An earlier version fell back through
+    // `?? f.filePath ?? String(f)`, which is a vacuity sink: rename `AnalysisFile.path`
+    // and every entry silently becomes "[object Object]", the archive filter matches
+    // nothing, and this security test goes green while measuring nothing. Proven by
+    // mutation — swapping the mapper for `() => 'X'` left the whole test passing.
+    // Throwing here instead means the shape changing is a loud failure.
+    async analyze(files: { path: string }[]) {
+      transmitted.push((files ?? []).map((f) => {
+        if (typeof f?.path !== 'string') {
+          throw new Error(
+            `AnalysisFile.path is not a string (got ${typeof f?.path}). The spy can no longer see `
+            + 'which files are transmitted, so this test cannot prove the archive is excluded.',
+          );
+        }
+        return f.path;
+      }));
       return { findings: [], cost: 0, cachedResults: 0 };
     }
   }
