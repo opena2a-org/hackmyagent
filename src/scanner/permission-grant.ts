@@ -60,6 +60,7 @@ import {
   walkConfigForGrants,
   makeGrant,
   locateGrantLine,
+  redactLikelySecrets,
   type UnboundedGrant,
 } from './permission-vocabulary';
 
@@ -336,8 +337,11 @@ export function findPermissionGrant(content: string, file: string): PermissionGr
       line,
       token: forReport(grant.entry.trim(), MAX_TOKEN),
       text: forReport((lines[line - 1] ?? '').trim(), MAX_TEXT),
-      reason: grant.reason,
-      fix: capped(redactLikelySecrets(grant.fix), MAX_TEXT), // already escaped by makeGrant
+      // Both arrive redacted and escaped from `makeGrant`, so only the cap is
+      // left. `reason` was uncapped, and it interpolates the entry — an entry
+      // is as long as the scanned file chooses to make it.
+      reason: capped(grant.reason, MAX_TEXT),
+      fix: capped(grant.fix, MAX_TEXT),
     };
   }
 
@@ -374,31 +378,13 @@ function capped(s: string, max: number): string {
 }
 
 /**
- * Mask credential-shaped runs before a scanned value is quoted into a report.
+ * Re-exported, not defined here.
  *
- * Applied to `token` as well as `text`, which it was not before. `token` is
- * printed by all three renderers AND interpolated into the Fix line, and a
- * permission entry can carry a secret — `Bash(curl -H "Authorization: Bearer
- * sk-…" *)` is a legal allow entry. Redacting only the surrounding line left
- * the key in the one field that gets quoted back three times.
- *
- * Deliberately local and small. It is a guard on quoted output, not a
- * credential scanner — `src/hardening/scanner.ts` owns that job, and reaching
- * into it (or into the NanoMind redactor) to reuse a regex would couple this
- * report to a detector that answers a different question.
+ * It moved to `permission-vocabulary.ts` because the grant's own `reason` and
+ * `fix` are built there and have to be redacted at construction: they
+ * interpolate scanned text, and the report was printing the redacted copy and
+ * the raw one in the same sentence. Applied to `token` as well as `text` — a
+ * permission entry can carry a secret, and `token` is printed by all three
+ * renderers AND interpolated into the Fix line.
  */
-export function redactLikelySecrets(s: string): string {
-  return s
-    .replace(
-      // `Bearer`/`Basic`/`Token` sit BETWEEN the key and the secret, and an
-      // earlier version required the secret to start immediately after the
-      // separator — so `Authorization: Bearer eyJhbGci…` matched nothing and a
-      // JWT reached `token`, `text` and the Fix line intact.
-      /\b(api[_-]?key|apikey|secret|token|password|passwd|pwd|authorization)(\s*[:=]\s*["']?(?:bearer|basic|token)?\s*)([A-Za-z0-9_\-.+/]{12,})/gi,
-      (_all, key: string, sep: string) => `${key}${sep}[redacted]`,
-    )
-    .replace(/\b(sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[baprs]-|AKIA)[A-Za-z0-9_\-]{8,}/g, '$1[redacted]')
-    // A JWT is self-identifying: three base64url runs separated by dots, with a
-    // header that always begins `eyJ`. No key name is needed to recognise one.
-    .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g, '[redacted-jwt]');
-}
+export { redactLikelySecrets };

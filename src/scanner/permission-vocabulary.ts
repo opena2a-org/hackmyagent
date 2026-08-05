@@ -163,16 +163,35 @@ function isUnboundedPath(spec: string): boolean {
   const meta = trimmed.search(GLOB_META);
   const prefix = meta === -1 ? trimmed : trimmed.slice(0, meta);
   if (meta === -1) return ROOT_PREFIXES.has(prefix);
-  // A literal file extension bounds a glob as surely as a directory prefix
-  // does. `Edit(**/*.md)` reaches every directory but only markdown, and the
-  // replacement this would otherwise recommend — `Edit(src/**)` — grants every
-  // file type under `src/`, which is WIDER than what it replaced. Recommending
-  // a wider grant than the one being flagged is worse than saying nothing.
-  const ext = /\.([A-Za-z0-9]+)$/.exec(trimmed);
-  if (ext) return false;
   // A prefix of only slashes or `~` is the root, however many slashes it has.
   if (/^[/\\]*$/.test(prefix) || /^~[/\\]*$/.test(prefix)) return true;
   return ROOT_PREFIXES.has(prefix);
+}
+
+// A replacement for an unbounded path spec that is NARROWER than what it
+// replaces.
+//
+// Written as line comments because the globs it has to name contain `**/`,
+// which would close a block comment.
+//
+// This exists because of the wrong fix for a real complaint. `Edit(**/*.md)`
+// reaches every directory, so it IS unbounded by prefix and the finding is
+// correct — but the generic advice printed against it was `Edit(src/**)`,
+// which grants every file type under `src/` and is WIDER than the entry being
+// flagged. The first attempt at that complaint declared any literal file
+// extension a bound and returned `false` from `isUnboundedPath`, which
+// silenced `Read(**/*.key)`, `Read(**/.env)` and `Write(**/*.env)` in an ALLOW
+// list — deferring them to "the check that owns sensitivity", which the
+// reviewer then proved does not exist anywhere in `secure`. Nothing reported
+// them at all.
+//
+// So the classification stands and the SUGGESTION is what changes: keep the
+// author's own glob and put a directory in front of it. `**/*.md` becomes
+// `src/**/*.md`, a strict subset of what it replaces, for every spec this is
+// reached with.
+function narrowedPath(spec: string): string {
+  const rest = spec.trim().replace(/^[~.]*[/\\]+/, '');
+  return rest === '' || /^[.~]+$/.test(rest) ? 'src/**' : `src/${rest}`;
 }
 
 /**
@@ -289,8 +308,14 @@ export function classifyPermissionEntry(
   const narrow = `replace "${raw}" with "${example(m[1])}" or another entry the prefix bounds`;
 
   if (PATH_TOOLS.has(tool)) {
+    // The author's own glob with a directory in front of it, never the generic
+    // `Tool(src/**)` — see `narrowedPath`. A remediation wider than the entry
+    // it replaces is worse than none.
     return isUnboundedPath(spec)
-      ? grant(`grants ${m[1]} over paths no prefix bounds`, narrow)
+      ? grant(
+        `grants ${m[1]} over paths no prefix bounds`,
+        `replace "${raw}" with "${m[1]}(${narrowedPath(spec)})" or another entry a directory prefix bounds`,
+      )
       : undefined;
   }
   if (COMMAND_TOOLS.has(tool)) {
@@ -337,7 +362,63 @@ export function isPermissionSyntax(entry: string): boolean {
  * because the caller locates it back in the file to cite a line.
  */
 export function makeGrant(entry: string, reason: string, fix: string, key: string): UnboundedGrant {
-  return { entry, reason: escapeForDisplay(reason), fix: escapeForDisplay(fix), key };
+  return { entry, reason: forGrantText(reason), fix: forGrantText(fix), key };
+}
+
+/**
+ * Redact, then escape, for every value quoted out of a scanned config.
+ *
+ * Escaping alone was not enough and the gap was visible in the output: the
+ * report printed the redacted copy and the raw one in the same sentence —
+ * `"allow AKIA[redacted] any" states a grant ("allow AKIA<the rest of it>
+ * any")` — because `reason` and `fix` interpolate scanned text and only the
+ * outer fields were redacted. That is #365's harm, "stop the scanner copying
+ * credentials into its own reports", reappearing one field over.
+ *
+ * Order is redact-then-escape, matching `forReport`: escaping first would let
+ * an escape expansion break up a credential run and leave it unredacted.
+ */
+function forGrantText(s: string): string {
+  return escapeForDisplay(redactLikelySecrets(s));
+}
+
+/**
+ * Mask credential-shaped runs before a scanned value is quoted into a report.
+ *
+ * Lives here rather than in `permission-grant.ts` because BOTH modules quote
+ * scanned text: the grant's own `reason` and `fix` are built here, and
+ * `permission-grant.ts` re-exports this for the fields it builds. A permission
+ * entry can carry a secret — `Bash(curl -H "Authorization: Bearer sk-…" *)` is
+ * a legal allow entry — so every field that quotes one passes through here.
+ *
+ * Deliberately local and small. It is a guard on quoted output, not a
+ * credential scanner — `src/hardening/scanner.ts` owns that job, and reaching
+ * into it (or into the NanoMind redactor) to reuse a regex would couple this
+ * report to a detector that answers a different question.
+ */
+export function redactLikelySecrets(s: string): string {
+  return s
+    .replace(
+      // The separator is `\s*` `[:=]` `\s*` `["']?` and nothing else, because
+      // every optional atom added between the two `\s*` runs makes this pair
+      // AMBIGUOUS and the match quadratic. A `(?:bearer|basic|token)?` group
+      // was added here to reach `Authorization: Bearer <opaque>`, and it took
+      // `detect` from 0.25s to 51s on a 200KB config — a larger denial of
+      // service than the one the same commit removed, and reachable through
+      // `secure`, which has no size cap in front of this at all.
+      //
+      // So the scheme word is deliberately NOT stepped over. An opaque bearer
+      // token — no `sk-` prefix, no JWT dots — is a KNOWN GAP, filed rather
+      // than closed here; a JWT is caught below by its own shape.
+      // `__tests__/scanner/permission-grant.test.ts` gates every regex in this
+      // module and in `permission-grant.ts` against the ambiguous pair.
+      /\b(api[_-]?key|apikey|secret|token|password|passwd|pwd|authorization)(\s*[:=]\s*["']?)([A-Za-z0-9_\-.+/]{12,})/gi,
+      (_all, key: string, sep: string) => `${key}${sep}[redacted]`,
+    )
+    .replace(/\b(sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[baprs]-|AKIA)[A-Za-z0-9_\-]{8,}/g, '$1[redacted]')
+    // A JWT is self-identifying: three base64url runs separated by dots, with a
+    // header that always begins `eyJ`. No key name is needed to recognise one.
+    .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g, '[redacted-jwt]');
 }
 
 /** Normalise a key for comparison: case and separators vary across schemas. */
@@ -369,13 +450,21 @@ const PRUNED_KEYS = new Set([
  * Grant keys whose entries are Claude-Code PERMISSION syntax, where a bare tool
  * name is the unscoped spelling of that tool.
  *
- * `autoApprove`, `alwaysAllow` and `allowedTools` are deliberately NOT here.
- * Their entries are MCP TOOL NAMES, and the official MCP fetch server's tool is
- * literally called `fetch` — reading that as bare `WebFetch` produced a HIGH
- * whose remediation, `fetch(domain:example.com)`, is not valid in any MCP
- * schema. A finding whose fix does not exist is a dead end.
+ * `autoApprove` and `alwaysAllow` are deliberately NOT here. Their entries are
+ * MCP TOOL NAMES, and the official MCP fetch server's tool is literally called
+ * `fetch` — reading that as bare `WebFetch` produced a HIGH whose remediation,
+ * `fetch(domain:example.com)`, is not valid in any MCP schema. A finding whose
+ * fix does not exist is a dead end.
+ *
+ * `allowedTools`, `allowlist` and `allowedCommands` ARE here, and excluding
+ * them with the MCP pair was the same mistake in the other direction:
+ * `allowedTools` is Claude Code's own key and takes `Bash`, `Read`, so
+ * `{"allowedTools":["Bash","Read","Write"]}` — three unscoped grants — went
+ * silent.
  */
-const PERMISSION_SYNTAX_KEYS = new Set(['allow', 'allowed', 'permissions'].map(normKey));
+const PERMISSION_SYNTAX_KEYS = new Set([
+  'allow', 'allowed', 'allowedtools', 'allowedcommands', 'allowlist', 'permissions',
+].map(normKey));
 
 /**
  * Keys whose value is a list (or one) of permission entries.
@@ -419,6 +508,46 @@ const PERMISSIVE_MODES = new Map<string, string>([
   ['dontask', 'accepts every tool call without asking'],
   ['auto', 'accepts every tool call without asking'],
 ]);
+
+/**
+ * Keys whose string values are a command line or its argument vector.
+ *
+ * These are read for one thing only — a wholesale-bypass FLAG — and never as
+ * permission entries. That distinction is the point: `hooks[].command` holds a
+ * shell command, not a `Tool(spec)` entry, so classifying it as a permission
+ * would be reading a manifest as a grant.
+ *
+ * Why it exists at all: `--dangerously-skip-permissions` is the broadest
+ * documented grant in the ecosystem, and moving structured config off the text
+ * path silently dropped it. Base `50b2b18` matched the flag anywhere in the
+ * file and so caught all three real shapes — `hooks[].command`,
+ * `mcpServers.*.args`, and `.aider.conf.yml` `extra-args` — while the parsed
+ * path reached none of them, because no GRANT key names a command. The flag
+ * stays in `PROSE_GRANT_PATTERNS` for schemaless files; this is its structured
+ * half.
+ */
+const COMMAND_VALUE_KEYS = new Set([
+  'command', 'cmd', 'args', 'argv', 'arguments', 'extraargs', 'flags', 'run',
+].map(normKey));
+
+/**
+ * Flags that turn the permission system off wholesale, whatever carries them.
+ *
+ * A token match, not a substring one, so `--dangerously-skip-permissions-off`
+ * is not read as the flag it is not.
+ */
+const DANGEROUS_FLAGS = new Set(['--dangerously-skip-permissions']);
+
+/** The bypass flag `s` passes as an argv token, in its CANONICAL spelling. */
+function dangerousFlag(s: string): string | undefined {
+  for (const token of s.split(/[\s=]+/)) {
+    const canonical = token.toLowerCase();
+    // The canonical spelling is returned rather than the token, so a scanned
+    // file cannot choose the casing of the text this puts in a report.
+    if (DANGEROUS_FLAGS.has(canonical)) return canonical;
+  }
+  return undefined;
+}
 
 /** Keys whose entries are directories added to the agent's reachable scope. */
 const DIRECTORY_KEYS = new Set(['additionaldirectories', 'additionaldirs', 'workspacefolders'].map(normKey));
@@ -479,6 +608,22 @@ export function walkConfigForGrants(
       }
     }
 
+    if (COMMAND_VALUE_KEYS.has(key)) {
+      for (const arg of asStringList(value)) {
+        const flag = dangerousFlag(arg);
+        if (flag) {
+          return makeGrant(
+            arg,
+            'runs every tool call without a permission prompt',
+            `remove "${flag}" from "${rawKey}" in this file`,
+            rawKey,
+          );
+        }
+      }
+      // No `continue`: a command key can hold nested structure too, and the
+      // walk below is what reaches it.
+    }
+
     if (DIRECTORY_KEYS.has(key)) {
       for (const dir of asStringList(value)) {
         if (isUnboundedPath(dir)) {
@@ -521,36 +666,188 @@ export function walkConfigForGrants(
  * was shared.
  */
 export function locateGrantLine(lines: readonly string[], grant: UnboundedGrant): number {
-  // The key's line first, and the entry is only ever looked for AT OR AFTER it.
-  //
-  // Searching the whole file was a defect of exactly the kind this module
-  // exists to remove. `allow` and `deny` hold textually identical strings, so
-  // on
-  //
-  //     "deny":  ["Read(**/*.key)"],
-  //     "allow": ["Read(**/*.key)"]
-  //
-  // a whole-file search returns the DENY line, and the finding then prints
-  // "replace Read(**/*.key)" against the rule that stops the agent reading
-  // private keys — the precise harm, reintroduced through the citation rather
-  // than through the classification, and printed directly under the sentence
-  // promising that deny entries are never reported.
-  const keyPattern = new RegExp(`["']?${escapeRe(grant.key)}["']?\\s*:`);
-  const keyIndex = lines.findIndex((l) => keyPattern.test(l));
-  const from = keyIndex === -1 ? 0 : keyIndex;
-  for (const needle of [grant.entry, JSON.stringify(grant.entry).slice(1, -1)]) {
-    if (!needle) continue;
-    for (let i = from; i < lines.length; i++) {
-      if (lines[i].includes(needle)) return i + 1;
+  const enclosing = enclosingKeys(lines);
+  const ownKey = normKey(grant.key);
+  const needles = [grant.entry, JSON.stringify(grant.entry).slice(1, -1)].filter(Boolean);
+
+  const openLine = (i: number): boolean => !enclosing[i].some((k) => PRUNED_KEYS.has(k));
+
+  const find = (needle: string, requireOwnKey: boolean): number => {
+    for (let i = 0; i < lines.length; i++) {
+      if (requireOwnKey && !enclosing[i].includes(ownKey)) continue;
+      if (!openLine(i)) continue;
+      const line = lines[i];
+      if (!line.includes(needle)) continue;
+      // Every occurrence on the line, against that line's key tokens —
+      // computed once and consumed by a moving pointer, so a hostile line
+      // carrying many occurrences stays linear rather than quadratic.
+      const tokens = keyTokens(line);
+      let t = 0;
+      for (let at = line.indexOf(needle); at !== -1; at = line.indexOf(needle, at + 1)) {
+        while (t < tokens.length && tokens[t].at < at) t++;
+        if (!isPruned(t > 0 ? tokens[t - 1].key : undefined)) return i + 1;
+      }
     }
+    return 0;
+  };
+
+  // The entry, on a line the grant's OWN key encloses. This is the ordinary
+  // case and it is exact.
+  for (const needle of needles) {
+    const found = find(needle, true);
+    if (found) return found;
   }
-  // A synthesised entry (`defaultMode: acceptEdits`) or an escaped one never
-  // appears literally; the key's own line is a true citation for both.
-  return keyIndex === -1 ? 0 : keyIndex + 1;
+  // The entry anywhere no restriction key covers. Reached when the key is
+  // spelled in a way the raw text does not carry — a JSON-escaped `allow`
+  // parses to `allow` and appears as `\u0061llow` — where the enclosure test is
+  // still what decides, so an identical entry sitting in a `deny` list cannot
+  // win the search.
+  for (const needle of needles) {
+    const found = find(needle, false);
+    if (found) return found;
+  }
+  // A synthesised entry (`defaultMode: acceptEdits`) never appears literally.
+  // The key's own line is a true citation for it.
+  for (let i = 0; i < lines.length; i++) {
+    if (openLine(i) && declaredKey(lines[i]) === ownKey) return i + 1;
+  }
+  return 0;
 }
 
-function escapeRe(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// ---------------------------------------------------------------------------
+// Where a citation is allowed to land
+// ---------------------------------------------------------------------------
+//
+// The classifier refuses to READ a deny list. The citation has to refuse to
+// POINT at one, and that is a separate problem with a separate failure:
+//
+//     "deny":  ["Read(**/*.key)"],
+//     "allow": ["Read(**/*.key)"]
+//
+// Both keys hold the identical string, so a text search for the offending
+// entry returns whichever comes first — and the finding then prints
+// `replace "Read(**/*.key)"` against the rule that stops the agent reading
+// private keys, one line under guidance promising deny entries are never
+// reported. The harm arrives through the evidence rather than through the
+// classification.
+//
+// Anchoring the search at the grant key's first line does not close it. Three
+// constructions walk past that anchor: a JSON-escaped `allow` key, which no
+// text pattern matches; a `// allow:` comment sitting above the deny list; and
+// an earlier BOUNDED `allow` whose line the anchor finds instead. Each leaves
+// the search starting before a deny list that holds the same string.
+//
+// So the anchor is replaced by a rule about the DESTINATION, which does not
+// care how the search got there: a citation may never land inside a subtree
+// `PRUNED_KEYS` covers. Two things establish that, one per axis —
+//
+//   * `enclosingKeys` — which keys enclose each LINE, from indentation and
+//     bracket closers, so a multi-line `deny` block covers its entries;
+//   * `keyGoverning` — the nearest key named to the LEFT of the match within
+//     its own line, so `{"deny":["Bash(*)"],"allow":["Bash(*)"]}` on one line
+//     still separates into two halves.
+//
+// Both decode escapes with `JSON.parse` rather than reading the raw spelling,
+// because `"\u0064eny"` is the key `deny` to every consumer that matters and a
+// scanned file chooses its own spelling.
+//
+// This is a guard, not a parser: it can reject a candidate line, never invent
+// one, and when it rejects every candidate the caller falls back to line 1
+// rather than to a wrong line. Two residuals are known and recorded rather
+// than papered over: a config minified onto a single line has one citable
+// line and gets it, and a `deny` key written inside a quoted VALUE is read as
+// a real key, which costs precision in the safe direction.
+
+/**
+ * The three spellings a key can take, as ONE fragment.
+ *
+ * Shared between the two patterns below so their capture groups cannot drift
+ * apart — and they did: `KEY_DECL` was written with a leading `(\s*)` capture,
+ * which pushed its key groups to 2/3/4 while `KEY_TOKEN`'s stayed at 1/2/3.
+ * One reader served both, so every in-line key resolved to the empty string
+ * and `{"deny":[…],"allow":[…]}` on a single line stopped separating.
+ */
+const KEY_SPELLINGS = String.raw`(?:"((?:\\.|[^"\\])*)"|'([^']*)'|([A-Za-z_$][A-Za-z0-9_$.-]*))\s*:`;
+
+/** A key DECLARED at the head of a line — the only thing that opens a block. */
+const KEY_DECL = new RegExp(`^\\s*(?:-\\s+)?${KEY_SPELLINGS}`);
+
+/** Every `key:` token in a line, wherever it sits. */
+const KEY_TOKEN = new RegExp(KEY_SPELLINGS, 'g');
+
+/** A line that opens nothing and closes nothing: blank, or only a comment. */
+const INERT_LINE = /^\s*(?:$|\/\/|\/\*|\*|#)/;
+
+/** A line whose first character closes a JSON container. */
+const CLOSER_LINE = /^\s*[\]}]/;
+
+/**
+ * The key a `KEY_DECL`/`KEY_TOKEN` match names, normalised, escapes decoded.
+ *
+ * `JSON.parse` does the decoding rather than a local unescaper, so this agrees
+ * with the parser that produced the grant instead of approximating it.
+ */
+function matchedKey(m: RegExpExecArray): string {
+  if (m[1] !== undefined) {
+    try {
+      return normKey(JSON.parse(`"${m[1]}"`) as string);
+    } catch {
+      return normKey(m[1]);
+    }
+  }
+  return normKey(m[2] ?? m[3] ?? '');
+}
+
+function isPruned(key: string | undefined): boolean {
+  return key !== undefined && PRUNED_KEYS.has(key);
+}
+
+/** The key this line declares, or undefined. */
+function declaredKey(line: string): string | undefined {
+  const m = KEY_DECL.exec(line);
+  return m ? matchedKey(m) : undefined;
+}
+
+/** Every key named on this line, in order, with the offset it starts at. */
+function keyTokens(line: string): { at: number; key: string }[] {
+  KEY_TOKEN.lastIndex = 0;
+  const out: { at: number; key: string }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = KEY_TOKEN.exec(line)) !== null) {
+    out.push({ at: m.index, key: matchedKey(m) });
+    // A zero-length match cannot happen here (every alternative consumes at
+    // least the colon), but a global regex that failed to advance would spin.
+    if (KEY_TOKEN.lastIndex === m.index) KEY_TOKEN.lastIndex++;
+  }
+  return out;
+}
+
+/**
+ * For each line, the keys enclosing it, innermost last.
+ *
+ * Indentation-driven, which is what both formats have in common. Only a key
+ * line or a bracket closer may pop a key at its OWN indent: a YAML sequence
+ * item, or a JSON array element written at its key's indent, is INSIDE that key
+ * and popping there would hand a `deny` entry a citable line. Blank and
+ * comment-only lines change nothing — a blank line inside a `deny` block used
+ * to pop the whole stack, which is exactly the wrong direction.
+ */
+function enclosingKeys(lines: readonly string[]): string[][] {
+  const out: string[][] = [];
+  const stack: { key: string; indent: number }[] = [];
+  for (const line of lines) {
+    if (INERT_LINE.test(line)) {
+      out.push(stack.map((s) => s.key));
+      continue;
+    }
+    const indent = line.length - line.trimStart().length;
+    const decl = KEY_DECL.exec(line);
+    const flush = decl !== null || CLOSER_LINE.test(line) ? indent : indent + 1;
+    while (stack.length > 0 && stack[stack.length - 1].indent >= flush) stack.pop();
+    if (decl) stack.push({ key: matchedKey(decl), indent });
+    out.push(stack.map((s) => s.key));
+  }
+  return out;
 }
 
 /** The string entries of a value that may be one string or a list of them. */

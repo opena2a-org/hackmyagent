@@ -4620,34 +4620,31 @@ dist/
     const findings: SecurityFinding[] = [];
     const claudeSettingsPath = path.join(targetDir, '.claude', 'settings.json');
 
-    // Both settings files, parsed the way `detect` parses them (#363).
+    // `.claude/settings.json`, parsed the way `detect` parses it (#363).
     //
-    // Three ways this used to disagree with `detect` on the same tree, all of
-    // them leaving `secure` — the CI gate — as the one that missed: bare
+    // Two ways this used to disagree with `detect` on the same file, both
+    // leaving `secure` — the CI gate — as the one that missed: bare
     // `JSON.parse` choked on the `//` comments and trailing commas that Claude
-    // Code itself accepts; `settings.local.json` was never read at all; and a
-    // prose allow entry was invisible without the callback `detect` passes.
+    // Code itself accepts, and a prose allow entry was invisible without the
+    // callback `detect` passes.
+    //
+    // ONE file, deliberately. A loop that also read `settings.local.json` and
+    // reassigned this variable was tried and reverted: `CLAUDE-003` reads the
+    // same variable, so adding a gitignored `settings.local.json` SILENCED a
+    // CRITICAL `sudo` + `rm -rf` finding on `settings.json` and downgraded the
+    // verdict. Covering a second file has to give each file its own read, not
+    // share one slot between two checks; it is filed as its own issue rather
+    // than bolted on here.
     let claudeSettings: unknown = null;
     let claudeSettingsLines: string[] = [];
-    let claudeSettingsFile = path.join('.claude', 'settings.json');
-    for (const name of ['settings.json', 'settings.local.json']) {
-      try {
-        const content = await fs.readFile(path.join(targetDir, '.claude', name), 'utf-8');
-        const parsed = parseAiConfig(content, name);
-        if (parsed === undefined) continue;
-        if (walkConfigForGrants(parsed, proseAllowEntry)) {
-          claudeSettings = parsed;
-          claudeSettingsLines = content.split('\n');
-          claudeSettingsFile = path.join('.claude', name);
-          break;
-        }
-        if (claudeSettings === null) {
-          claudeSettings = parsed;
-          claudeSettingsLines = content.split('\n');
-          claudeSettingsFile = path.join('.claude', name);
-        }
-      } catch {}
-    }
+    try {
+      const content = await fs.readFile(claudeSettingsPath, 'utf-8');
+      const parsed = parseAiConfig(content, 'settings.json');
+      if (parsed !== undefined) {
+        claudeSettings = parsed;
+        claudeSettingsLines = content.split('\n');
+      }
+    } catch {}
 
     // CLAUDE-002: Check for overly permissive allowed commands
     //
@@ -4685,12 +4682,12 @@ dist/
         // a credential — `Bash(* -H "x-api-key: sk-…")` is a legal allow entry —
         // and this description lands in CI logs. It was previously the one
         // surface that skipped `redactLikelySecrets` entirely.
-        description: `Settings allow unrestricted tool access: "${forFinding(overlyPermissive.entry)}" ${overlyPermissive.reason}`,
+        description: `Settings allow unrestricted tool access: "${forFinding(overlyPermissive.entry)}" ${forFinding(overlyPermissive.reason)}`,
         category: 'claude-code',
         severity: 'high',
         passed: false,
         message: 'Scope permissions to specific paths',
-        file: claudeSettingsFile,
+        file: path.join('.claude', 'settings.json'),
         // Line 1 rather than none: the renderer builds `Verify:` from file:line,
         // so an absent line silently drops the Verify command as well.
         line: line > 0 ? line : 1,

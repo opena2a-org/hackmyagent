@@ -940,15 +940,39 @@ describe('CLAUDE-002 and detect agree on the same settings file (#363)', () => {
     expect(await claude002()).toBeDefined();
   });
 
-  it('reads .claude/settings.local.json, which it never opened before', async () => {
-    await fs.mkdir(path.join(tempDir, '.claude'), { recursive: true });
+  // A loop that ALSO read `settings.local.json` was written here and reverted.
+  // It reassigned the one `claudeSettings` variable, and `CLAUDE-003` reads
+  // that same variable — so adding a gitignored local override made a CRITICAL
+  // finding on `settings.json` disappear. A scanner whose coverage can be
+  // switched off by adding a file is worse than one with a known gap, because
+  // the gap is documented and the off switch is not.
+  //
+  // The gap: only `.claude/settings.json` is read. Filed as its own issue,
+  // where each file gets its OWN read rather than sharing a slot.
+  it('a local override cannot silence a critical finding in settings.json', async () => {
+    await settingsFixture({ permissions: { allow: ['Bash(sudo rm -rf /)'] } });
+    const before = (await scanner.scan({ targetDir: tempDir })).findings
+      .find((f) => f.checkId === 'CLAUDE-003');
+    expect(before, 'the sudo + rm -rf grant is CRITICAL on its own').toBeDefined();
+    expect(before!.severity).toBe('critical');
+
+    // The local file must itself carry a grant: that is what made the reverted
+    // loop take its `break` branch and REASSIGN the shared variable. A local
+    // file with nothing in it left the variable alone and the defect hidden.
     await fs.writeFile(
       path.join(tempDir, '.claude', 'settings.local.json'),
       JSON.stringify({ permissions: { allow: ['Bash(*)'] } }, null, 2),
     );
+    const after = (await scanner.scan({ targetDir: tempDir })).findings
+      .find((f) => f.checkId === 'CLAUDE-003');
+    expect(after, 'a gitignored local file silenced a CRITICAL finding').toBeDefined();
+    expect(after!.severity).toBe('critical');
+  });
+
+  it('reports the file it actually read', async () => {
+    await settingsFixture({ permissions: { allow: ['Bash(*)'] } });
     const finding = await claude002();
-    expect(finding).toBeDefined();
-    expect(finding?.file).toContain('settings.local.json');
+    expect(finding?.file).toBe(path.join('.claude', 'settings.json'));
   });
 
   // This description lands in CI logs, and a permission entry can carry a

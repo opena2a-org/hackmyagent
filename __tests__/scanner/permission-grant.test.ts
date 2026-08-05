@@ -333,22 +333,133 @@ describe('the prose matcher stays linear on a hostile line', () => {
     expect(elapsed).toBeLessThan(500);
   });
 
-  // This guard was itself vacuous on the first pass: it was written as
-  // `/\\s\*\\?\[.\]?\?\\s\*/`, which makes the backslash optional and then demands a
-  // literal `?`, so it missed `\s*\[?\s*` — the exact removed pattern it names.
-  // Re-adding that pattern left the suite green. It is now proved against the
-  // removed pattern directly, so it cannot pass while blind to it.
-  const AMBIGUOUS_PAIR = /\\[sSwWdD]\*(?:\\.|\[[^\]]*\]|\(\?:[^)]*\)|[^\\[(*+?{])[?*]\\[sSwWdD]\*/;
+  // This guard has now been wrong in two directions, and both were shipped.
+  //
+  // First it was vacuous: written as `/\\s\*\\?\[.\]?\?\\s\*/`, which makes the
+  // backslash optional and then demands a literal `?`, it could not see
+  // `\s*\[?\s*` — the exact pattern it was named for. Re-adding that pattern
+  // left the suite green.
+  //
+  // Then it was too NARROW in two ways at once. It required exactly ONE
+  // optional atom between the two `\s*` runs, and it was applied only to
+  // `PROSE_GRANT_PATTERNS` — so the `(?:bearer|basic|token)?` group added to
+  // `redactLikelySecrets`, which has TWO optional atoms and is not a prose
+  // pattern, was invisible to it twice over. That group took `detect` from
+  // 0.25s to 51s on a 200KB config, a bigger denial of service than the one
+  // the same commit removed.
+  //
+  // So: one or more optional atoms, and pointed at EVERY pattern in both
+  // modules, read out of their source rather than out of a list a future
+  // pattern can be added without joining.
+  const OPT_ATOM = String.raw`(?:\\.|\[[^\]]*\]|\((?:\?:)?[^)]*\)|[^\\[(*+?{])[?*]`;
+  const AMBIGUOUS_PAIR = new RegExp(String.raw`\\[sSwWdD][*+](?:${OPT_ATOM})+\\[sSwWdD][*+]`);
 
-  it('detects the ambiguous quantifier pair in the pattern that was removed', () => {
-    const removed = /\ballow(?:ed)?(?:Tools|Commands|Hosts)?\b\s*[:=]\s*\[?\s*["']?\*/i;
-    expect(AMBIGUOUS_PAIR.test(removed.source), 'the guard cannot see the shape it exists for').toBe(true);
+  /**
+   * Every regex literal and `String.raw` fragment in a TypeScript source.
+   *
+   * Comments and ordinary strings are skipped, because both modules DISCUSS
+   * these patterns in prose and a comment quoting a quadratic shape is not a
+   * quadratic shape. Backtick fragments are collected because a pattern
+   * assembled with `new RegExp` is still a pattern — `KEY_SPELLINGS` is shared
+   * between two of them.
+   */
+  function patternsIn(src: string): string[] {
+    const found: string[] = [];
+    let i = 0;
+    while (i < src.length) {
+      const c = src[i];
+      if (c === '/' && src[i + 1] === '/') { while (i < src.length && src[i] !== '\n') i++; continue; }
+      if (c === '/' && src[i + 1] === '*') {
+        i += 2;
+        while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++;
+        i += 2;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === '`') {
+        const quote = c;
+        const from = ++i;
+        while (i < src.length && src[i] !== quote) i += src[i] === '\\' ? 2 : 1;
+        if (quote === '`') found.push(src.slice(from, i));
+        i++;
+        continue;
+      }
+      if (c === '/') {
+        const from = ++i;
+        let inClass = false;
+        while (i < src.length && (inClass || src[i] !== '/')) {
+          if (src[i] === '\\') i++;
+          else if (src[i] === '[') inClass = true;
+          else if (src[i] === ']') inClass = false;
+          i++;
+        }
+        found.push(src.slice(from, i));
+        i++;
+        continue;
+      }
+      i++;
+    }
+    return found;
+  }
+
+  const MODULES = ['permission-grant.ts', 'permission-vocabulary.ts'];
+  const sources = MODULES.map((name) => ({
+    name,
+    patterns: patternsIn(fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'scanner', name), 'utf-8')),
+  }));
+
+  it('detects the ambiguous quantifier pair in both patterns that were removed', () => {
+    // The prose pattern removed in the first pass: one optional atom.
+    const removedProse = /\ballow(?:ed)?(?:Tools|Commands|Hosts)?\b\s*[:=]\s*\[?\s*["']?\*/i;
+    // The redaction group removed in this one: TWO optional atoms, which the
+    // narrower guard could not see.
+    const removedBearer = String.raw`\b(api[_-]?key|authorization)(\s*[:=]\s*["']?(?:bearer|basic|token)?\s*)([A-Za-z0-9]{12,})`;
+    expect(AMBIGUOUS_PAIR.test(removedProse.source), 'blind to the one-atom shape').toBe(true);
+    expect(AMBIGUOUS_PAIR.test(removedBearer), 'blind to the two-atom shape').toBe(true);
+  });
+
+  // The extractor is the part that can silently measure nothing, so it is
+  // proved on a source that CONTAINS the quadratic pattern before it is trusted
+  // on sources that must not.
+  it('the extractor finds a quadratic pattern planted in a source', () => {
+    const planted = [
+      '// a comment mentioning \\s*\\[?\\s* which must NOT count',
+      "const decoy = 'a string with \\\\s*\\\\[?\\\\s* in it';",
+      'const real = /\\ballow\\s*\\[?\\s*["\']?\\*/i;',
+    ].join('\n');
+    const patterns = patternsIn(planted);
+    expect(patterns.some((p) => AMBIGUOUS_PAIR.test(p)), 'the planted pattern was not found').toBe(true);
+    expect(patterns.length, 'the comment or the string was read as a pattern').toBe(1);
+  });
+
+  it.each(MODULES)('%s has at least a dozen patterns to check', (name) => {
+    const module = sources.find((s) => s.name === name)!;
+    // Non-vacuity: a broken extractor returning nothing would otherwise pass
+    // the assertion below silently.
+    expect(module.patterns.length).toBeGreaterThan(11);
+  });
+
+  it.each(MODULES)('no pattern in %s carries the ambiguous quantifier pair', (name) => {
+    const module = sources.find((s) => s.name === name)!;
+    for (const p of module.patterns) {
+      expect(AMBIGUOUS_PAIR.test(p), `${name}: /${p}/ contains an X* Y? X* run`).toBe(false);
+    }
   });
 
   it('no prose pattern carries the ambiguous quantifier pair', () => {
     for (const p of PROSE_GRANT_PATTERNS) {
       expect(AMBIGUOUS_PAIR.test(p.source), `${p} contains an X* Y? X* run`).toBe(false);
     }
+  });
+
+  // The measurement, not just the structural guard. `redactLikelySecrets` is
+  // reached from `secure` with NO size cap in front of it, so the shape has to
+  // be measured on a value the size a config can really be.
+  it('redacts a 200KB value in bounded time', () => {
+    const hostile = `authorization:${' '.repeat(200_000)}x`;
+    const started = performance.now();
+    redactLikelySecrets(hostile);
+    // 51s with the bearer group present; linear without it.
+    expect(performance.now() - started).toBeLessThan(500);
   });
 
   it('still skips a line too long to be prose', () => {
@@ -420,13 +531,26 @@ describe('the quoted output never carries a credential (#299)', () => {
     expect(redactLikelySecrets(jwt)).toBe('[redacted-jwt]');
   });
 
-  // An OPAQUE bearer token has no self-identifying shape — no `sk-` prefix, no
-  // JWT dots — so only the key rule can reach it, and only if that rule steps
-  // over the word `Bearer` sitting between the key and the secret.
-  it('redacts an opaque bearer token, which no prefix or shape rule can see', () => {
+  // A KNOWN GAP, recorded rather than closed, because the fix cost more than
+  // the miss. An OPAQUE bearer token has no self-identifying shape — no `sk-`
+  // prefix, no JWT dots — so only the key rule can reach it, and only by
+  // stepping over the word `Bearer` between the key and the secret. The
+  // `(?:bearer|basic|token)?` group that did that made the separator an
+  // ambiguous quantifier pair and took `detect` from 0.25s to 51s on a 200KB
+  // config, reachable through `secure` with no size cap at all. It also leaked
+  // a prefix of any secret beginning `token`: `token: token[redacted]`.
+  //
+  // So the scheme word is not stepped over, and this pins WHERE the line is,
+  // so a future attempt has to move it deliberately rather than by accident.
+  it('does not reach an opaque bearer token (recorded gap, not a regression)', () => {
     const opaque = 'Authorization: Bearer AQICAHhOpaqueOpaqueOpaque0000';
-    expect(redactLikelySecrets(opaque)).not.toContain('OpaqueOpaque');
-    expect(redactLikelySecrets(opaque)).toContain('[redacted]');
+    expect(redactLikelySecrets(opaque)).toContain('OpaqueOpaque');
+    // The two shapes that DO carry their own identity are still caught, and
+    // they are what a real allow entry carries.
+    expect(redactLikelySecrets('Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.PAYLOADPAYLOAD.SIG0'))
+      .not.toContain('PAYLOADPAYLOAD');
+    expect(redactLikelySecrets('Authorization: sk-ant-api03-NOTREAL-000000000000'))
+      .not.toContain('NOTREAL');
   });
 
   it.each([
@@ -441,6 +565,247 @@ describe('the quoted output never carries a credential (#299)', () => {
     const s = '- unrestricted shell execution';
     expect(redactLikelySecrets(s)).toBe(s);
   });
+
+  // #365 is the parent commit — "stop the scanner copying credentials into its
+  // own reports" — and this reopened it one field over. `makeGrant` escaped but
+  // never redacted, and the prose branch interpolates up to 40 characters of
+  // matched text, so the output carried the redacted copy and the raw one in
+  // one sentence:
+  //
+  //   "allow AKIA[redacted] any" states a grant ("allow AKIAFAKE… any")
+  it('redacts the credential inside reason and fix, not only around them', () => {
+    const doc = settings({
+      permissions: { allow: ['allow AKIAFAKEFAKEFAKE0000 any command'] },
+    });
+    const grant = findPermissionGrant(doc, SETTINGS);
+    expect(grant).toBeDefined();
+    for (const [name, field] of Object.entries(grant!)) {
+      if (typeof field !== 'string') continue;
+      expect(field, `${name} carried the credential`).not.toContain('FAKEFAKE');
+    }
+    expect(grant!.reason, 'the prose branch is what produced this').toContain('states a grant');
+  });
+
+  // `reason` interpolates scanned text — the TOOL NAME, which the entry shape
+  // does not bound — and it was the one report field with no cap at all. The
+  // entry below is chosen so the reason itself is long: a long ARGUMENT would
+  // leave `reason` short and the test would measure nothing.
+  it('caps every field it hands to the report', () => {
+    const doc = settings({ permissions: { allow: [`${'T'.repeat(4000)}(*)`] } });
+    const grant = findPermissionGrant(doc, SETTINGS);
+    expect(grant).toBeDefined();
+    expect(grant!.reason, 'the reason must carry the long tool name').toContain('TTT');
+    for (const field of [grant!.token, grant!.text, grant!.reason, grant!.fix]) {
+      expect((field ?? '').length).toBeLessThanOrEqual(120);
+    }
+  });
+});
+
+// The classification refusing to read a deny list is half of it; the CITATION
+// has to refuse to point at one. `permission-vocabulary.test.ts` pins the
+// locator directly — these are the same shapes end to end, through the parser.
+describe('the cited line is never a deny line (#364)', () => {
+  it.each([
+    [
+      'a multi-line deny block',
+      [
+        '{',
+        '  "permissions": {',
+        '    "deny": [',
+        '      "Read(**/*.key)"',
+        '    ],',
+        '    "allow": [',
+        '      "Read(**/*.key)"',
+        '    ]',
+        '  }',
+        '}',
+      ].join('\n'),
+      7,
+    ],
+    [
+      'a comment naming the grant key',
+      [
+        '{',
+        '  // allow: everything below this line is denied',
+        '  "permissions": {',
+        '    "deny": ["Read(**/*.key)"],',
+        '    "allow": ["Read(**/*.key)"]',
+        '  }',
+        '}',
+      ].join('\n'),
+      5,
+    ],
+    [
+      'an earlier bounded allow key',
+      [
+        '{',
+        '  "permissions": {',
+        '    "allow": ["Read(src/**)"],',
+        '    "deny": ["Read(**/*.key)"],',
+        '    "extra": { "allow": ["Read(**/*.key)"] }',
+        '  }',
+        '}',
+      ].join('\n'),
+      5,
+    ],
+    [
+      'a JSON-escaped allow key',
+      [
+        '{',
+        '  "permissions": {',
+        '    "deny": ["Read(**/*.key)"],',
+        '    "\\u0061llow": ["Read(**/*.key)"]',
+        '  }',
+        '}',
+      ].join('\n'),
+      4,
+    ],
+  ])('cites the allow line, not the deny line, with %s', (_name, doc, line) => {
+    const grant = findPermissionGrant(doc, SETTINGS);
+    expect(grant, 'the allow entry is still classified as a grant').toBeDefined();
+    expect(grant!.line).toBe(line);
+    // The quoted line is the evidence a reader acts on. If it is the deny
+    // line, the Fix says to delete the rule protecting private keys.
+    expect(grant!.text).not.toContain('deny');
+  });
+});
+
+// The hand-written cases above are the constructions someone thought of. This
+// is the same claim asked of every combination of the choices a scanned file
+// gets to make: indentation, key spelling, key order, inline versus block
+// arrays, an escaped VALUE, blank lines and comments inside the deny block, and
+// YAML sequences at their key's own indent.
+//
+// The generator records which line indices it put the deny block on, so "did
+// the citation land inside a restriction" is answered from the CONSTRUCTION,
+// not from the code under test.
+describe('no generated config cites a deny line (#364)', () => {
+  const ENTRY = 'Bash(*)';
+
+  function corpus(): { text: string; denyLines: Set<number>; file: string }[] {
+    const out: { text: string; denyLines: Set<number>; file: string }[] = [];
+    const DENY_KEYS = ['"deny"', '"\\u0064eny"', '"denyList"', '"blockedTools"', '"ask"'];
+    const ALLOW_KEYS = ['"allow"', '"\\u0061llow"', '"allowedTools"', '"allowlist"'];
+    const NOISE = [[], [''], ['// a note about allow: everything'], ['', '// allow:']];
+
+    for (const ind of ['  ', '    ', '\t', '']) {
+      for (const denyKey of DENY_KEYS) {
+        for (const allowKey of ALLOW_KEYS) {
+          for (const order of ['deny-first', 'allow-first']) {
+            // The escaped value is the one that forces the widened search: the
+            // parsed entry is `Bash(*)` and the allow line does not contain it.
+            for (const allowVal of [ENTRY, 'Bash(\\u002a)']) {
+              for (const noise of NOISE) {
+                for (const inlineDeny of [false, true]) {
+                  for (const inlineAllow of [false, true]) {
+                    const lines: string[] = [];
+                    const denyLines = new Set<number>();
+                    const push = (t: string, isDeny = false) => {
+                      if (isDeny) denyLines.add(lines.length);
+                      lines.push(t);
+                    };
+                    const emitDeny = () => {
+                      if (inlineDeny) return push(`${ind}${ind}${denyKey}: ["${ENTRY}"],`, true);
+                      push(`${ind}${ind}${denyKey}: [`, true);
+                      for (const n of noise) push(`${ind}${ind}${ind}${n}`, true);
+                      push(`${ind}${ind}${ind}"${ENTRY}"`, true);
+                      push(`${ind}${ind}],`, true);
+                    };
+                    const emitAllow = (last: boolean) => {
+                      const tail = last ? '' : ',';
+                      if (inlineAllow) return push(`${ind}${ind}${allowKey}: ["${allowVal}"]${tail}`);
+                      push(`${ind}${ind}${allowKey}: [`);
+                      push(`${ind}${ind}${ind}"${allowVal}"`);
+                      push(`${ind}${ind}]${tail}`);
+                    };
+                    push('{');
+                    push(`${ind}"permissions": {`);
+                    if (order === 'deny-first') { emitDeny(); emitAllow(true); } else { emitAllow(false); emitDeny(); }
+                    lines[lines.length - 1] = lines[lines.length - 1].replace(/,\s*$/, '');
+                    push(`${ind}}`);
+                    push('}');
+                    out.push({ text: lines.join('\n'), denyLines, file: SETTINGS });
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    // YAML, including a sequence written at its key's own indent.
+    for (const ind of ['  ', '    ']) {
+      for (const order of ['deny-first', 'allow-first']) {
+        for (const seqAtKeyIndent of [false, true]) {
+          const lines: string[] = [];
+          const denyLines = new Set<number>();
+          const push = (t: string, isDeny = false) => {
+            if (isDeny) denyLines.add(lines.length);
+            lines.push(t);
+          };
+          const itemInd = seqAtKeyIndent ? ind : `${ind}  `;
+          const emitDeny = () => { push(`${ind}deny:`, true); push(`${itemInd}- ${ENTRY}`, true); };
+          const emitAllow = () => { push(`${ind}allow:`); push(`${itemInd}- ${ENTRY}`); };
+          push('permissions:');
+          if (order === 'deny-first') { emitDeny(); emitAllow(); } else { emitAllow(); emitDeny(); }
+          out.push({ text: lines.join('\n'), denyLines, file: '.claude/settings.yml' });
+        }
+      }
+    }
+    return out;
+  }
+
+  const CASES = corpus();
+
+  // Non-vacuity, and it is the important half. A corpus that carries no hazard
+  // would pass the assertion below against any locator at all. The naive
+  // whole-file search — which is what shipped — must fail on this same corpus,
+  // and fail often, or the corpus is not testing anything.
+  it('the corpus really does carry the hazard', () => {
+    const naive = CASES.filter((c) => {
+      const i = c.text.split('\n').findIndex((l) => l.includes(ENTRY));
+      return i !== -1 && c.denyLines.has(i);
+    }).length;
+    expect(CASES.length).toBeGreaterThan(5000);
+    expect(naive, 'a whole-file locator must land in a deny block here').toBeGreaterThan(1000);
+  });
+
+  it('every generated config is still classified as a grant', () => {
+    const silent = CASES.filter((c) => !findPermissionGrant(c.text, c.file));
+    // Going quiet would pass the citation assertion for the wrong reason.
+    expect(silent.length, `${silent.length} configs went silent`).toBe(0);
+  });
+
+  it('no citation lands inside a deny region', () => {
+    const violations = CASES.filter((c) => {
+      const grant = findPermissionGrant(c.text, c.file);
+      return grant !== undefined && c.denyLines.has(grant.line - 1);
+    });
+    expect(violations.length, violations.length ? `first:\n${violations[0].text}` : '').toBe(0);
+  });
+});
+
+// `--dangerously-skip-permissions` is the broadest documented grant there is,
+// and it lived only in `PROSE_GRANT_PATTERNS` — which structured files stopped
+// reaching. Base `50b2b18` caught all three of these by matching the raw file.
+describe('the bypass flag is still found in structured config (#364)', () => {
+  // The shapes are named by the file they REALLY occur in. `mcpServers` is a
+  // key inside `.claude/settings.json` here, not `.mcp.json` — see the recorded
+  // gap below, which is why that distinction is worth spelling out.
+  it.each([
+    ['a hook command', SETTINGS, settings({ hooks: [{ command: 'claude --dangerously-skip-permissions' }] })],
+    ['an mcpServers argv', SETTINGS, settings({ mcpServers: { x: { command: 'claude', args: ['--dangerously-skip-permissions'] } } })],
+    ['an aider extra-args list', '.aider.conf.yml', 'extra-args:\n  - --dangerously-skip-permissions\n'],
+  ])('finds it in %s', (_name, file, doc) => {
+    const grant = findPermissionGrant(doc, file);
+    expect(grant, `${file} carries the broadest grant in the ecosystem`).toBeDefined();
+    expect(grant!.line).toBeGreaterThan(0);
+    expect(grant!.fix).toContain('--dangerously-skip-permissions');
+  });
+
+  it('still finds it in prose, which is where it always worked', () => {
+    expect(findPermissionGrant('Run claude --dangerously-skip-permissions\n', 'CLAUDE.md')).toBeDefined();
+  });
 });
 
 describe('scanAiConfigs carries the evidence through (#299)', () => {
@@ -453,6 +818,27 @@ describe('scanAiConfigs carries the evidence through (#299)', () => {
     }
     return dir;
   }
+
+  // A RECORDED GAP, pinned so it is visible rather than assumed closed.
+  //
+  // `scanAiConfigs` walks `AI_CONFIG_PATTERNS`, and `.mcp.json` is not in it —
+  // on this branch or on `f17f6ac`. So a bypass flag in a standalone `.mcp.json`
+  // reaches neither command, while the identical `mcpServers` block INSIDE
+  // `.claude/settings.json` is reported by both. The classifier handles the
+  // content either way; what is missing is the filename. Pre-existing, filed
+  // separately: widening the scanned-file set is its own change with its own
+  // false-positive surface, and this branch is deliberately not that change.
+  it('does not read a standalone .mcp.json — recorded gap, not a claim of coverage', () => {
+    const server = { mcpServers: { x: { command: 'claude', args: ['--dangerously-skip-permissions'] } } };
+    // Identical content, two filenames. Only the scanned one is reported.
+    const unscanned = fixture({ '.mcp.json': JSON.stringify(server, null, 2) });
+    expect(scanAiConfigs(unscanned).some((c) => c.evidence)).toBe(false);
+
+    const scanned = fixture({ '.claude/settings.json': JSON.stringify(server, null, 2) });
+    const found = scanAiConfigs(scanned).find((c) => c.evidence);
+    expect(found, 'the same block inside a scanned file IS reported').toBeDefined();
+    expect(found!.evidence!.fix).toContain('--dangerously-skip-permissions');
+  });
 
   it('rates a restrictive CLAUDE.md low, with no evidence', () => {
     const dir = fixture({
