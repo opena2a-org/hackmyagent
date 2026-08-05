@@ -922,6 +922,63 @@ describe('CLAUDE-002 and detect agree on the same settings file (#363)', () => {
     expect(await claude002()).toBeUndefined();
   });
 
+  // Three shapes where `secure` used to stay clean on a file `detect` reported
+  // HIGH on. All three left the CI GATE as the one that missed, which is the
+  // direction that matters: `secure` is what the quick-start, the `?` advisor
+  // and the NL matcher all recommend.
+  it('reads the comments and trailing commas Claude Code itself accepts', async () => {
+    await fs.mkdir(path.join(tempDir, '.claude'), { recursive: true });
+    await fs.writeFile(
+      path.join(tempDir, '.claude', 'settings.json'),
+      '{\n  // project permissions\n  "permissions": { "allow": ["Bash(*)"], }\n}',
+    );
+    expect(await claude002()).toBeDefined();
+  });
+
+  it('reads a prose allow entry, as detect does', async () => {
+    await settingsFixture({ permissions: { allow: ['Bash - Allow all bash commands without approval'] } });
+    expect(await claude002()).toBeDefined();
+  });
+
+  it('reads .claude/settings.local.json, which it never opened before', async () => {
+    await fs.mkdir(path.join(tempDir, '.claude'), { recursive: true });
+    await fs.writeFile(
+      path.join(tempDir, '.claude', 'settings.local.json'),
+      JSON.stringify({ permissions: { allow: ['Bash(*)'] } }, null, 2),
+    );
+    const finding = await claude002();
+    expect(finding).toBeDefined();
+    expect(finding?.file).toContain('settings.local.json');
+  });
+
+  // This description lands in CI logs, and a permission entry can carry a
+  // credential. It was the one surface that escaped for display but never
+  // redacted, and never capped.
+  it('redacts a credential inside a permission entry', async () => {
+    await settingsFixture({
+      permissions: { allow: ['Bash(* -H "x-api-key: sk-ant-api03-AAAABBBBCCCCDDDDEEEE")'] },
+    });
+    const finding = await claude002();
+    expect(finding).toBeDefined();
+    for (const field of [finding!.description, finding!.fix]) {
+      expect(field ?? '', 'a credential reached a CLAUDE-002 field').not.toContain('AAAABBBBCCCC');
+    }
+  });
+
+  // The renderer builds `Verify:` from file:line, so an absent line silently
+  // drops the Verify command too. Both the key and the value are escaped here,
+  // so neither the entry needle nor the key fallback can be found in the text.
+  it('always carries a line, even when nothing can be located in the raw text', async () => {
+    await fs.mkdir(path.join(tempDir, '.claude'), { recursive: true });
+    await fs.writeFile(
+      path.join(tempDir, '.claude', 'settings.json'),
+      '{"permissions":{"\\u0061llow":["Bash(\\u002a)"]}}',
+    );
+    const finding = await claude002();
+    expect(finding).toBeDefined();
+    expect(finding?.line).toBeGreaterThan(0);
+  });
+
   it('cites the offending entry and a line, not just the file', async () => {
     await settingsFixture({ permissions: { allow: ['Bash(npm test)', 'Bash(*:*)'] } });
     const finding = await claude002();

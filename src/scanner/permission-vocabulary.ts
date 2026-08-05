@@ -163,6 +163,13 @@ function isUnboundedPath(spec: string): boolean {
   const meta = trimmed.search(GLOB_META);
   const prefix = meta === -1 ? trimmed : trimmed.slice(0, meta);
   if (meta === -1) return ROOT_PREFIXES.has(prefix);
+  // A literal file extension bounds a glob as surely as a directory prefix
+  // does. `Edit(**/*.md)` reaches every directory but only markdown, and the
+  // replacement this would otherwise recommend — `Edit(src/**)` — grants every
+  // file type under `src/`, which is WIDER than what it replaced. Recommending
+  // a wider grant than the one being flagged is worse than saying nothing.
+  const ext = /\.([A-Za-z0-9]+)$/.exec(trimmed);
+  if (ext) return false;
   // A prefix of only slashes or `~` is the root, however many slashes it has.
   if (/^[/\\]*$/.test(prefix) || /^~[/\\]*$/.test(prefix)) return true;
   return ROOT_PREFIXES.has(prefix);
@@ -225,7 +232,11 @@ function isUnboundedScheme(spec: string): boolean {
  * — this function has no way to tell an allow entry from a deny entry, which is
  * the entire lesson of #364.
  */
-export function classifyPermissionEntry(entry: string, key = 'allow'): UnboundedGrant | undefined {
+export function classifyPermissionEntry(
+  entry: string,
+  key = 'allow',
+  bareToolCounts = true,
+): UnboundedGrant | undefined {
   const raw = entry.trim();
   if (raw === '') return undefined;
 
@@ -261,7 +272,8 @@ export function classifyPermissionEntry(entry: string, key = 'allow'): Unbounded
   const bare = BARE_TOOL.exec(raw);
   if (bare) {
     const tool = bare[1].toLowerCase();
-    const scoped = PATH_TOOLS.has(tool) || COMMAND_TOOLS.has(tool) || DOMAIN_TOOLS.has(tool);
+    const scoped = bareToolCounts
+      && (PATH_TOOLS.has(tool) || COMMAND_TOOLS.has(tool) || DOMAIN_TOOLS.has(tool));
     return scoped
       ? grant(
         `grants every use of ${bare[1]}, with no scope at all`,
@@ -354,6 +366,18 @@ const PRUNED_KEYS = new Set([
 ].map(normKey));
 
 /**
+ * Grant keys whose entries are Claude-Code PERMISSION syntax, where a bare tool
+ * name is the unscoped spelling of that tool.
+ *
+ * `autoApprove`, `alwaysAllow` and `allowedTools` are deliberately NOT here.
+ * Their entries are MCP TOOL NAMES, and the official MCP fetch server's tool is
+ * literally called `fetch` — reading that as bare `WebFetch` produced a HIGH
+ * whose remediation, `fetch(domain:example.com)`, is not valid in any MCP
+ * schema. A finding whose fix does not exist is a dead end.
+ */
+const PERMISSION_SYNTAX_KEYS = new Set(['allow', 'allowed', 'permissions'].map(normKey));
+
+/**
  * Keys whose value is a list (or one) of permission entries.
  *
  * `tools` is deliberately absent. A `tools` array is a manifest at least as
@@ -365,12 +389,28 @@ const GRANT_LIST_KEYS = new Set([
   'allowlist', 'autoapprove', 'alwaysallow', 'permissions',
 ].map(normKey));
 
-/** Keys that grant wholesale when they are boolean `true`. */
-const BOOLEAN_GRANT_KEYS = new Set([
-  'dangerouslyskippermissions', 'bypasspermissions', 'skippermissions',
-  'enableallprojectmcpservers', 'autoapprove', 'alwaysallow', 'autoapproveall',
-  'disablepermissions', 'yolo',
-].map(normKey));
+/**
+ * Keys that grant wholesale when they are boolean `true`, and what each one
+ * actually does.
+ *
+ * Per-key rather than one shared sentence, because the shared sentence was
+ * false for at least one of them: `enableAllProjectMcpServers` approves the
+ * project's MCP SERVERS without the trust prompt — tool calls from them still
+ * go through `permissions`. Saying it "runs every tool call without a
+ * permission prompt" overstates what the setting does, and a security finding
+ * that overstates is one a reader learns to discount.
+ */
+const BOOLEAN_GRANT_KEYS = new Map<string, string>([
+  ['dangerouslyskippermissions', 'runs every tool call without a permission prompt'],
+  ['bypasspermissions', 'runs every tool call without a permission prompt'],
+  ['skippermissions', 'runs every tool call without a permission prompt'],
+  ['disablepermissions', 'runs every tool call without a permission prompt'],
+  ['yolo', 'runs every tool call without a permission prompt'],
+  ['autoapprove', 'approves every request without asking'],
+  ['autoapproveall', 'approves every request without asking'],
+  ['alwaysallow', 'approves every request without asking'],
+  ['enableallprojectmcpservers', 'trusts every MCP server the project declares, with no prompt'],
+].map(([k, v]) => [normKey(k), v] as [string, string]));
 
 /** `defaultMode` values that turn the permission prompt off. */
 const PERMISSIVE_MODES = new Map<string, string>([
@@ -403,12 +443,21 @@ export function walkConfigForGrants(
   doc: unknown,
   onProseEntry?: (entry: string, key: string) => UnboundedGrant | undefined,
   depth = 0,
+  seen: Set<object> = new Set(),
 ): UnboundedGrant | undefined {
   if (depth > 12 || doc === null || typeof doc !== 'object') return undefined;
+  // YAML aliases resolve to SHARED references, not copies, so a 471-byte file
+  // can describe an object graph with millions of paths through it — measured
+  // at 28 seconds for a nine-deep alias chain, against a 1MB file cap that
+  // cannot see it. The depth bound alone does not help: it bounds depth, and
+  // this is breadth. Re-visiting a node cannot change the answer, so skipping
+  // it collapses the walk back to linear in the number of distinct nodes.
+  if (seen.has(doc)) return undefined;
+  seen.add(doc);
 
   if (Array.isArray(doc)) {
     for (const item of doc) {
-      const found = walkConfigForGrants(item, onProseEntry, depth + 1);
+      const found = walkConfigForGrants(item, onProseEntry, depth + 1, seen);
       if (found) return found;
     }
     return undefined;
@@ -418,8 +467,9 @@ export function walkConfigForGrants(
     const key = normKey(rawKey);
     if (PRUNED_KEYS.has(key)) continue; // never evaluated, for any purpose
 
-    if (BOOLEAN_GRANT_KEYS.has(key) && value === true) {
-      return makeGrant(`${rawKey}: true`, 'runs every tool call without a permission prompt', `set "${rawKey}" to false in this file, or remove the key`, rawKey);
+    const booleanReason = BOOLEAN_GRANT_KEYS.get(key);
+    if (booleanReason && value === true) {
+      return makeGrant(`${rawKey}: true`, booleanReason, `set "${rawKey}" to false in this file, or remove the key`, rawKey);
     }
 
     if (key === normKey('defaultMode') && typeof value === 'string') {
@@ -445,14 +495,14 @@ export function walkConfigForGrants(
           return makeGrant(entry, 'grants every tool without restriction', `replace "${entry}" with one scoped entry per tool the agent needs (e.g. "Bash(npm test)", "Read(src/**)")`, rawKey);
         }
         const found = isPermissionSyntax(entry)
-          ? classifyPermissionEntry(entry, rawKey)
+          ? classifyPermissionEntry(entry, rawKey, PERMISSION_SYNTAX_KEYS.has(key))
           : onProseEntry?.(entry, rawKey);
         if (found) return found;
       }
       // `permissions` is also the object that HOLDS allow/deny, so keep walking.
     }
 
-    const found = walkConfigForGrants(value, onProseEntry, depth + 1);
+    const found = walkConfigForGrants(value, onProseEntry, depth + 1, seen);
     if (found) return found;
   }
   return undefined;
@@ -471,13 +521,31 @@ export function walkConfigForGrants(
  * was shared.
  */
 export function locateGrantLine(lines: readonly string[], grant: UnboundedGrant): number {
-  for (const needle of [grant.entry, JSON.stringify(grant.entry).slice(1, -1)]) {
-    if (!needle) continue;
-    const i = lines.findIndex((l) => l.includes(needle));
-    if (i !== -1) return i + 1;
-  }
+  // The key's line first, and the entry is only ever looked for AT OR AFTER it.
+  //
+  // Searching the whole file was a defect of exactly the kind this module
+  // exists to remove. `allow` and `deny` hold textually identical strings, so
+  // on
+  //
+  //     "deny":  ["Read(**/*.key)"],
+  //     "allow": ["Read(**/*.key)"]
+  //
+  // a whole-file search returns the DENY line, and the finding then prints
+  // "replace Read(**/*.key)" against the rule that stops the agent reading
+  // private keys — the precise harm, reintroduced through the citation rather
+  // than through the classification, and printed directly under the sentence
+  // promising that deny entries are never reported.
   const keyPattern = new RegExp(`["']?${escapeRe(grant.key)}["']?\\s*:`);
   const keyIndex = lines.findIndex((l) => keyPattern.test(l));
+  const from = keyIndex === -1 ? 0 : keyIndex;
+  for (const needle of [grant.entry, JSON.stringify(grant.entry).slice(1, -1)]) {
+    if (!needle) continue;
+    for (let i = from; i < lines.length; i++) {
+      if (lines[i].includes(needle)) return i + 1;
+    }
+  }
+  // A synthesised entry (`defaultMode: acceptEdits`) or an escaped one never
+  // appears literally; the key's own line is a true citation for both.
   return keyIndex === -1 ? 0 : keyIndex + 1;
 }
 
@@ -488,6 +556,8 @@ function escapeRe(s: string): string {
 /** The string entries of a value that may be one string or a list of them. */
 function asStringList(value: unknown): string[] {
   if (typeof value === 'string') return [value];
-  if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string');
+  // Flattened: `allow: [["Bash(*)"]]` loses its key context once the recursive
+  // walk descends into the inner array, so the entries are collected here.
+  if (Array.isArray(value)) return value.flat(4).filter((v): v is string => typeof v === 'string');
   return [];
 }

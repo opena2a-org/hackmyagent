@@ -48,12 +48,20 @@ describe('a deny entry is never a grant (#364)', () => {
     expect(walkConfigForGrants(settings)).toBeUndefined();
   });
 
-  it.each(['deny', 'denied', 'denyList', 'disallow', 'blockedTools', 'ignore', 'ask'])(
-    'prunes %s without evaluating it',
-    (key) => {
-      expect(walkConfigForGrants({ permissions: { [key]: ['Bash(*)', '*'] } })).toBeUndefined();
-    },
-  );
+  // NESTED, deliberately. The flat shape `{deny: ['Bash(*)']}` passes with the
+  // prune list entirely DELETED — `deny` is not a grant key, so the grant-key
+  // allowlist alone keeps it quiet, and the test measured nothing about the
+  // prune it was named for. Only the nested shape reaches past that layer, so
+  // only the nested shape pins each spelling.
+  it.each([
+    'deny', 'denied', 'denyList', 'disallow', 'disallowed', 'disallowedTools',
+    'block', 'blocked', 'blocklist', 'blockedTools', 'forbid', 'forbidden',
+    'never', 'exclude', 'excluded', 'ignore', 'ignored', 'reject', 'rejected', 'ask',
+  ])('prunes %s without evaluating what is under it', (key) => {
+    expect(walkConfigForGrants({ [key]: ['Bash(*)', '*'] })).toBeUndefined();
+    expect(walkConfigForGrants({ [key]: { allow: ['Bash(*)'] } })).toBeUndefined();
+    expect(walkConfigForGrants({ rules: { [key]: { allowedTools: ['*'] } } })).toBeUndefined();
+  });
 
   // Two layers keep deny entries out, and this pins the second one.
   //
@@ -113,7 +121,9 @@ describe('the bound is tool-specific, so the colon rule cannot be (#364)', () =>
   it.each([
     ['Read(src/**)', false], ['Read(./src/**)', false], ['Read(package.json)', false],
     ['Read(**)', true], ['Read(/**)', true], ['Read(//**)', true], ['Read(~/**)', true],
-    ['Read(*)', true], ['Read(*.key)', true], ['Write(/**)', true], ['Glob(**)', true],
+    ['Read(*)', true], ['Write(/**)', true], ['Glob(**)', true],
+    // Extension-bounded, so bounded — see the note below.
+    ['Read(*.key)', false],
   ])('path %s unbounded=%s', (entry, unbounded) => {
     expect(Boolean(classifyPermissionEntry(entry))).toBe(unbounded);
   });
@@ -229,6 +239,76 @@ describe('spellings that were silent before this landed (#363, #364)', () => {
     // permission key, and reading it as one is how a scanner starts reporting
     // findings on ordinary configuration.
     expect(walkConfigForGrants({ env: { AUTO_APPROVE: 'true' } })).toBeUndefined();
+  });
+});
+
+describe('defects an adversarial review found, each pinned (#364)', () => {
+  // A 471-byte YAML alias chain hung `detect` for 28 seconds. js-yaml resolves
+  // aliases to SHARED references, so a tiny document describes an object graph
+  // with exponentially many paths, and the depth cap bounds depth rather than
+  // breadth. Re-visiting a node cannot change the answer.
+  it('walks a shared-reference graph once, not once per path', () => {
+    let level: unknown = { leaf: 'x' };
+    for (let d = 0; d < 10; d++) {
+      const shared = level;
+      level = { a: shared, b: shared, c: shared, d: shared, e: shared, f: shared };
+    }
+    const started = performance.now();
+    expect(walkConfigForGrants({ permissions: { allow: ['Bash(npm test)'] }, blob: level })).toBeUndefined();
+    // Exponential: 28s measured at nine levels. Linear: single-digit ms.
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  // `alwaysAllow`/`autoApprove` hold MCP TOOL names, not permission syntax, and
+  // the official MCP fetch server's tool is literally called `fetch`. Reading
+  // it as bare `WebFetch` produced a HIGH whose fix — `fetch(domain:example.com)`
+  // — is not valid in any MCP schema.
+  it('does not read an MCP tool name as a bare tool grant', () => {
+    const continueConfig = {
+      mcpServers: { fetch: { command: 'uvx', args: ['mcp-server-fetch'], alwaysAllow: ['fetch'] } },
+    };
+    expect(walkConfigForGrants(continueConfig)).toBeUndefined();
+    expect(walkConfigForGrants({ autoApprove: ['read', 'write', 'list_directory'] })).toBeUndefined();
+    expect(walkConfigForGrants({ allowlist: ['read', 'grep', 'ls'] })).toBeUndefined();
+    // A wildcard under those keys is still a wildcard, whatever the schema.
+    expect(walkConfigForGrants({ mcpServers: { x: { alwaysAllow: ['*'] } } })).toBeDefined();
+  });
+
+  // A literal extension bounds a glob. The replacement previously recommended
+  // for `Edit(**/*.md)` was `Edit(src/**)`, which grants every file type under
+  // `src/` — wider than the entry it was flagging.
+  it.each(['Edit(**/*.md)', 'Read(**/*.ts)', 'Glob(*.json)'])(
+    'treats the file extension in %j as a bound',
+    (entry) => expect(classifyPermissionEntry(entry)).toBeUndefined(),
+  );
+
+  it('still flags a path glob with no extension and no prefix', () => {
+    expect(classifyPermissionEntry('Read(**)')).toBeDefined();
+    expect(classifyPermissionEntry('Read(/**)')).toBeDefined();
+  });
+
+  // The sharp edge of the extension rule, stated rather than hidden:
+  // `Read(*.key)` in an ALLOW list now stays quiet here. It is extension-bounded
+  // like `Edit(**/*.md)`, and this check answers "how broad is this grant", not
+  // "how sensitive is what it reaches". A private-key allowlist is a credential
+  // question for a different check. In the wild `Read(*.key)` is a DENY entry —
+  // it is one of the 389 wildcard deny entries measured across 36 real files —
+  // and reporting deny entries is the defect this whole module exists to remove.
+  it('leaves an extension-bounded entry to the check that owns sensitivity', () => {
+    expect(classifyPermissionEntry('Read(*.key)')).toBeUndefined();
+  });
+
+  // The shared reason string was factually wrong for this key: it approves MCP
+  // SERVERS without the trust prompt; tool calls still go through permissions.
+  it('describes each boolean grant by what it actually does', () => {
+    const mcp = walkConfigForGrants({ enableAllProjectMcpServers: true });
+    expect(mcp?.reason).toContain('MCP server');
+    expect(mcp?.reason).not.toContain('every tool call');
+    expect(walkConfigForGrants({ dangerouslySkipPermissions: true })?.reason).toContain('every tool call');
+  });
+
+  it('collects entries out of a nested array under a grant key', () => {
+    expect(walkConfigForGrants({ permissions: { allow: [['Bash(*)']] } })).toBeDefined();
   });
 });
 

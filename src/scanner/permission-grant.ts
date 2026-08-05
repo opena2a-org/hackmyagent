@@ -90,10 +90,10 @@ export interface PermissionGrant {
 }
 
 /** Longest line this will quote back into a report. */
-const MAX_TEXT = 120;
+export const MAX_TEXT = 120;
 
 /** Longest single token this will quote back into a report. */
-const MAX_TOKEN = 80;
+export const MAX_TOKEN = 80;
 
 /**
  * Longest line the prose matcher will look at.
@@ -242,7 +242,11 @@ function structuredFormat(file: string): 'json' | 'yaml' | undefined {
  * live. The JSONC retry exists because editors write `//` comments and trailing
  * commas into settings files that the tools themselves accept.
  */
-function parseStructured(content: string, format: 'json' | 'yaml'): unknown {
+function parseStructured(rawContent: string, format: 'json' | 'yaml'): unknown {
+  // A UTF-8 BOM is invisible, common on Windows-authored files, and makes
+  // `JSON.parse` throw — which under the give-up rule below means total
+  // silence on a file that loads fine everywhere else.
+  const content = rawContent.charCodeAt(0) === 0xfeff ? rawContent.slice(1) : rawContent;
   if (format === 'yaml') {
     try { return yaml.load(content, { json: true }); } catch { return undefined; }
   }
@@ -279,6 +283,40 @@ function stripJsonComments(s: string): string {
  * everything else. It is required rather than optional because a default would
  * silently put structured config back on the prose path, which is the bug.
  */
+/**
+ * Parse an AI config by filename, or undefined when it is not structured or
+ * does not parse.
+ *
+ * Exported because `secure`'s `CLAUDE-002` must parse the SAME way `detect`
+ * does. It used bare `JSON.parse`, so a `//` comment or trailing comma — which
+ * Claude Code itself accepts — made the CI gate silent on a file `detect`
+ * reported HIGH on (#363).
+ */
+export function parseAiConfig(content: string, file: string): unknown {
+  const format = structuredFormat(file);
+  return format ? parseStructured(content, format) : undefined;
+}
+
+/**
+ * Read an allow-list entry that is not permission syntax as the author's own
+ * statement of intent.
+ *
+ * Exported for the same reason as `parseAiConfig`: without it, `secure` was
+ * blind to `"allow": ["Bash - Allow all bash commands without approval"]` while
+ * `detect` reported it.
+ */
+export function proseAllowEntry(entry: string, key: string): UnboundedGrant | undefined {
+  const m = matchProseGrant(entry);
+  return m
+    ? makeGrant(
+      entry,
+      `states a grant ("${m.token}") and is not valid permission syntax, so it grants nothing to the tool either`,
+      `replace "${entry}" with the scoped entries you meant, e.g. "Bash(npm test)" or "Read(src/**)"`,
+      key,
+    )
+    : undefined;
+}
+
 export function findPermissionGrant(content: string, file: string): PermissionGrant | undefined {
   const lines = content.split('\n');
   const format = structuredFormat(file);
@@ -291,17 +329,7 @@ export function findPermissionGrant(content: string, file: string): PermissionGr
     // `"Bash - Allow all bash commands without approval"` is a real entry in a
     // real settings file: it grants nothing to the tool, and states everything
     // to the reader.
-    const grant = walkConfigForGrants(doc, (entry, key) => {
-      const m = matchProseGrant(entry);
-      return m
-        ? makeGrant(
-          entry,
-          `states a grant ("${m.token}") and is not valid permission syntax, so it grants nothing to the tool either`,
-          `replace "${entry}" with the scoped entries you meant, e.g. "Bash(npm test)" or "Read(src/**)"`,
-          key,
-        )
-        : undefined;
-    });
+    const grant = walkConfigForGrants(doc, proseAllowEntry);
     if (!grant) return undefined;
     const line = locateGrantLine(lines, grant) || 1;
     return {
@@ -337,7 +365,7 @@ export { classifyPermissionEntry, walkConfigForGrants };
  * visible, and escaping first would let the escape expansion push the real text
  * past the cap.
  */
-function forReport(s: string, max: number): string {
+export function forReport(s: string, max: number): string {
   return capped(escapeForDisplay(redactLikelySecrets(s)), max);
 }
 
@@ -362,8 +390,15 @@ function capped(s: string, max: number): string {
 export function redactLikelySecrets(s: string): string {
   return s
     .replace(
-      /\b(api[_-]?key|apikey|secret|token|password|passwd|pwd|authorization)(\s*[:=]\s*["']?)([A-Za-z0-9_\-.+/]{12,})/gi,
+      // `Bearer`/`Basic`/`Token` sit BETWEEN the key and the secret, and an
+      // earlier version required the secret to start immediately after the
+      // separator — so `Authorization: Bearer eyJhbGci…` matched nothing and a
+      // JWT reached `token`, `text` and the Fix line intact.
+      /\b(api[_-]?key|apikey|secret|token|password|passwd|pwd|authorization)(\s*[:=]\s*["']?(?:bearer|basic|token)?\s*)([A-Za-z0-9_\-.+/]{12,})/gi,
       (_all, key: string, sep: string) => `${key}${sep}[redacted]`,
     )
-    .replace(/\b(sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[baprs]-|AKIA)[A-Za-z0-9_\-]{8,}/g, '$1[redacted]');
+    .replace(/\b(sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[baprs]-|AKIA)[A-Za-z0-9_\-]{8,}/g, '$1[redacted]')
+    // A JWT is self-identifying: three base64url runs separated by dots, with a
+    // header that always begins `eyJ`. No key name is needed to recognise one.
+    .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g, '[redacted-jwt]');
 }

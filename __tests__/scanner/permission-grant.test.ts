@@ -107,6 +107,13 @@ describe('structured config is parsed, and the key decides (#364)', () => {
   // Deliberate: falling back to text on a parse failure reaches the defect this
   // module exists to remove, by the route of writing invalid JSON. A config
   // that does not parse does not load in the tool it configures either.
+  // A UTF-8 BOM is invisible and makes `JSON.parse` throw, which under the
+  // give-up rule means total silence on a file that loads fine everywhere else.
+  it('reads a settings file that opens with a UTF-8 byte order mark', () => {
+    const doc = String.fromCodePoint(0xfeff) + settings({ permissions: { allow: ['Bash(*)'] } });
+    expect(findPermissionGrant(doc, SETTINGS)?.token).toBe('Bash(*)');
+  });
+
   it('reports nothing on a structured file that does not parse', () => {
     expect(findPermissionGrant('{"permissions": {"allow": ["Bash(*)"', SETTINGS)).toBeUndefined();
   });
@@ -124,6 +131,31 @@ describe('structured config is parsed, and the key decides (#364)', () => {
     const grant = findPermissionGrant(doc, SETTINGS);
     expect(grant?.token).toBe('Bash - Allow all bash commands without approval');
     expect(grant!.reason).toContain('grants nothing to the tool');
+  });
+
+  // The citation, not the classification. `allow` and `deny` hold the identical
+  // string here, so a whole-file search for the entry returns the DENY line —
+  // and the finding then prints "replace Read(**/*.key)" against the rule that
+  // stops the agent reading private keys, one line under a guidance sentence
+  // promising deny entries are never reported.
+  it('never cites a deny line as the evidence for an allow-list grant', () => {
+    const doc = settings({
+      permissions: {
+        // The same string under both keys — the shape that makes a whole-file
+        // search return the wrong one. `Bash(*)` rather than the reviewer's
+        // `Read(**/*.key)`, which is extension-bounded and so no longer
+        // classifies at all; the locator defect needs an entry that does.
+        deny: ['Read(./.env)', 'Bash(*)', 'Bash(curl:*)'],
+        allow: ['Bash(*)'],
+      },
+    });
+    const grant = findPermissionGrant(doc, SETTINGS);
+    expect(grant).toBeDefined();
+    const lines = doc.split('\n');
+    const denyAt = lines.findIndex((l) => l.includes('"deny"'));
+    const allowAt = lines.findIndex((l) => l.includes('"allow"'));
+    expect(grant!.line).toBeGreaterThan(allowAt);
+    expect(grant!.line, 'cited a line inside the deny list').toBeGreaterThan(denyAt + 1);
   });
 
   it('does not read the same prose out of a deny list', () => {
@@ -301,9 +333,21 @@ describe('the prose matcher stays linear on a hostile line', () => {
     expect(elapsed).toBeLessThan(500);
   });
 
+  // This guard was itself vacuous on the first pass: it was written as
+  // `/\\s\*\\?\[.\]?\?\\s\*/`, which makes the backslash optional and then demands a
+  // literal `?`, so it missed `\s*\[?\s*` — the exact removed pattern it names.
+  // Re-adding that pattern left the suite green. It is now proved against the
+  // removed pattern directly, so it cannot pass while blind to it.
+  const AMBIGUOUS_PAIR = /\\[sSwWdD]\*(?:\\.|\[[^\]]*\]|\(\?:[^)]*\)|[^\\[(*+?{])[?*]\\[sSwWdD]\*/;
+
+  it('detects the ambiguous quantifier pair in the pattern that was removed', () => {
+    const removed = /\ballow(?:ed)?(?:Tools|Commands|Hosts)?\b\s*[:=]\s*\[?\s*["']?\*/i;
+    expect(AMBIGUOUS_PAIR.test(removed.source), 'the guard cannot see the shape it exists for').toBe(true);
+  });
+
   it('no prose pattern carries the ambiguous quantifier pair', () => {
     for (const p of PROSE_GRANT_PATTERNS) {
-      expect(p.source, `${p} contains an X* Y? X* run`).not.toMatch(/\\s\*\\?\[.\]?\?\\s\*/);
+      expect(AMBIGUOUS_PAIR.test(p.source), `${p} contains an X* Y? X* run`).toBe(false);
     }
   });
 
@@ -359,6 +403,30 @@ describe('the quoted output never carries a credential (#299)', () => {
       expect(RAW_CONTROL.test(field ?? ''), 'a report field carried a raw control character')
         .toBe(false);
     }
+  });
+
+  // `Bearer` sits between the key and the secret, so a rule anchored straight
+  // after the separator matched nothing and a JWT reached `token`, `text` and
+  // the Fix line intact. The old test set used `sk-…`, which the prefix rule
+  // already caught — it confirmed the regex rather than probing the class.
+  it('redacts a bearer token and a bare JWT', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.PAYLOADPAYLOADPAYLOAD.SIGNATURE';
+    const doc = settings({ permissions: { allow: [`Bash(* --header "Authorization: Bearer ${jwt}")`] } });
+    const grant = findPermissionGrant(doc, SETTINGS);
+    expect(grant).toBeDefined();
+    for (const field of [grant!.token, grant!.text, grant!.fix]) {
+      expect(field ?? '', 'a bearer token reached a report field').not.toContain('PAYLOADPAYLOAD');
+    }
+    expect(redactLikelySecrets(jwt)).toBe('[redacted-jwt]');
+  });
+
+  // An OPAQUE bearer token has no self-identifying shape — no `sk-` prefix, no
+  // JWT dots — so only the key rule can reach it, and only if that rule steps
+  // over the word `Bearer` sitting between the key and the secret.
+  it('redacts an opaque bearer token, which no prefix or shape rule can see', () => {
+    const opaque = 'Authorization: Bearer AQICAHhOpaqueOpaqueOpaque0000';
+    expect(redactLikelySecrets(opaque)).not.toContain('OpaqueOpaque');
+    expect(redactLikelySecrets(opaque)).toContain('[redacted]');
   });
 
   it.each([

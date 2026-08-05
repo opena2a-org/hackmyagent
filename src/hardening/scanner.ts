@@ -35,6 +35,10 @@ import { GOVERNANCE_FILES } from '../soul/governance-files';
 // One vocabulary with `detect`'s permission-grant rule (#363, #364), so the two
 // commands cannot disagree in direction on the same `.claude/settings.json`.
 import { walkConfigForGrants, locateGrantLine } from '../scanner/permission-vocabulary';
+import { parseAiConfig, proseAllowEntry, forReport, MAX_TEXT } from '../scanner/permission-grant';
+
+/** Redact, escape and cap a value out of a scanned config before quoting it. */
+const forFinding = (s: string): string => forReport(s, MAX_TEXT);
 import { escapeForDisplay } from '../ui/display-safe';
 
 /**
@@ -4616,13 +4620,34 @@ dist/
     const findings: SecurityFinding[] = [];
     const claudeSettingsPath = path.join(targetDir, '.claude', 'settings.json');
 
-    let claudeSettings: Record<string, unknown> | null = null;
+    // Both settings files, parsed the way `detect` parses them (#363).
+    //
+    // Three ways this used to disagree with `detect` on the same tree, all of
+    // them leaving `secure` — the CI gate — as the one that missed: bare
+    // `JSON.parse` choked on the `//` comments and trailing commas that Claude
+    // Code itself accepts; `settings.local.json` was never read at all; and a
+    // prose allow entry was invisible without the callback `detect` passes.
+    let claudeSettings: unknown = null;
     let claudeSettingsLines: string[] = [];
-    try {
-      const content = await fs.readFile(claudeSettingsPath, 'utf-8');
-      claudeSettings = JSON.parse(content);
-      claudeSettingsLines = content.split('\n');
-    } catch {}
+    let claudeSettingsFile = path.join('.claude', 'settings.json');
+    for (const name of ['settings.json', 'settings.local.json']) {
+      try {
+        const content = await fs.readFile(path.join(targetDir, '.claude', name), 'utf-8');
+        const parsed = parseAiConfig(content, name);
+        if (parsed === undefined) continue;
+        if (walkConfigForGrants(parsed, proseAllowEntry)) {
+          claudeSettings = parsed;
+          claudeSettingsLines = content.split('\n');
+          claudeSettingsFile = path.join('.claude', name);
+          break;
+        }
+        if (claudeSettings === null) {
+          claudeSettings = parsed;
+          claudeSettingsLines = content.split('\n');
+          claudeSettingsFile = path.join('.claude', name);
+        }
+      } catch {}
+    }
 
     // CLAUDE-002: Check for overly permissive allowed commands
     //
@@ -4640,7 +4665,7 @@ dist/
     // reads permission KEYS and never descends into `deny` — a deny list is
     // supposed to be full of wildcards, and reading one as a grant is how the
     // remediation ends up telling the reader to delete `Read(*.key)`.
-    const overlyPermissive = claudeSettings ? walkConfigForGrants(claudeSettings) : undefined;
+    const overlyPermissive = claudeSettings ? walkConfigForGrants(claudeSettings, proseAllowEntry) : undefined;
 
     // Only report if overly permissive
     if (overlyPermissive) {
@@ -4656,15 +4681,21 @@ dist/
         // `entry` is raw by contract (the line locator matches it against the
         // file), so it is escaped HERE, at the point it becomes report text.
         // `reason` and `fix` arrive escaped from the vocabulary.
-        description: `Settings allow unrestricted tool access: "${escapeForDisplay(overlyPermissive.entry)}" ${overlyPermissive.reason}`,
+        // Redacted AND capped, not merely escaped. A permission entry can carry
+        // a credential — `Bash(* -H "x-api-key: sk-…")` is a legal allow entry —
+        // and this description lands in CI logs. It was previously the one
+        // surface that skipped `redactLikelySecrets` entirely.
+        description: `Settings allow unrestricted tool access: "${forFinding(overlyPermissive.entry)}" ${overlyPermissive.reason}`,
         category: 'claude-code',
         severity: 'high',
         passed: false,
         message: 'Scope permissions to specific paths',
-        file: '.claude/settings.json',
-        line: line > 0 ? line : undefined,
+        file: claudeSettingsFile,
+        // Line 1 rather than none: the renderer builds `Verify:` from file:line,
+        // so an absent line silently drops the Verify command as well.
+        line: line > 0 ? line : 1,
         fixable: false,
-        fix: overlyPermissive.fix,
+        fix: forFinding(overlyPermissive.fix),
         guidance: 'Wildcard permissions give the AI unrestricted shell, read, or write access. Scope each permission to the specific commands and paths your workflow needs. Entries in the deny list are restrictions and are never reported here.',
       });
     }
@@ -4674,7 +4705,7 @@ dist/
     const dangerousPatterns = ['rm -rf', 'rm -r', 'chmod 777', 'curl | sh', 'wget | sh', 'sudo'];
     // `permissions.allow` only. `deny` carries these same strings by design —
     // `Bash(rm -rf *)` in a deny list is the rule that STOPS the agent doing it.
-    const permissions = claudeSettings?.permissions as { allow?: string[] } | undefined;
+    const permissions = (claudeSettings as { permissions?: { allow?: string[] } } | null)?.permissions;
     if (Array.isArray(permissions?.allow)) {
       for (const perm of permissions.allow) {
         if (typeof perm !== 'string') continue;
