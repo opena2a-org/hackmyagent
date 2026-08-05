@@ -34,7 +34,7 @@ import {
 import { GOVERNANCE_FILES } from '../soul/governance-files';
 // One vocabulary with `detect`'s permission-grant rule (#363, #364), so the two
 // commands cannot disagree in direction on the same `.claude/settings.json`.
-import { walkConfigForGrants, locateGrantLine } from '../scanner/permission-vocabulary';
+import { walkConfigForGrants, locateGrantLine, documentHasRestrictionKey } from '../scanner/permission-vocabulary';
 import { parseAiConfig, proseAllowEntry, forReport, MAX_TEXT } from '../scanner/permission-grant';
 
 /** Redact, escape and cap a value out of a scanned config before quoting it. */
@@ -4671,7 +4671,14 @@ dist/
       // `"defaultMode": "acceptEdits"` — so a plain substring search returned
       // nothing and this rendered a HIGH with no line number at all, while
       // `detect` cited `:2` for the same file.
-      const line = locateGrantLine(claudeSettingsLines, overlyPermissive);
+      // A line ONLY where no restriction key exists to mis-cite. On a file
+      // that declares one, `locateGrantLine` is a text search over values
+      // `allow` and `deny` hold identically, so it can return the DENY line —
+      // and this finding's own guidance promises the opposite. Without a line
+      // the renderer emits no `Verify:`, which is what `f17f6ac` did here.
+      const line = documentHasRestrictionKey(claudeSettings)
+        ? 0
+        : locateGrantLine(claudeSettingsLines, overlyPermissive);
       findings.push({
         checkId: 'CLAUDE-002',
         name: 'Overly Permissive Permissions',
@@ -4688,9 +4695,7 @@ dist/
         passed: false,
         message: 'Scope permissions to specific paths',
         file: path.join('.claude', 'settings.json'),
-        // Line 1 rather than none: the renderer builds `Verify:` from file:line,
-        // so an absent line silently drops the Verify command as well.
-        line: line > 0 ? line : 1,
+        line: line > 0 ? line : undefined,
         fixable: false,
         fix: forFinding(overlyPermissive.fix),
         guidance: 'Wildcard permissions give the AI unrestricted shell, read, or write access. Scope each permission to the specific commands and paths your workflow needs. Entries in the deny list are restrictions and are never reported here.',

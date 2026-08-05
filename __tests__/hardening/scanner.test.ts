@@ -989,10 +989,11 @@ describe('CLAUDE-002 and detect agree on the same settings file (#363)', () => {
     }
   });
 
-  // The renderer builds `Verify:` from file:line, so an absent line silently
-  // drops the Verify command too. Both the key and the value are escaped here,
-  // so neither the entry needle nor the key fallback can be found in the text.
-  it('always carries a line, even when nothing can be located in the raw text', async () => {
+  // Both the key and the value are escaped here, so neither the entry needle
+  // nor the key fallback can be found in the raw text — and there is no
+  // restriction key, so a line is still safe to look for. The finding is
+  // reported either way; the line is best effort.
+  it('reports the grant when nothing can be located in the raw text', async () => {
     await fs.mkdir(path.join(tempDir, '.claude'), { recursive: true });
     await fs.writeFile(
       path.join(tempDir, '.claude', 'settings.json'),
@@ -1000,7 +1001,19 @@ describe('CLAUDE-002 and detect agree on the same settings file (#363)', () => {
     );
     const finding = await claude002();
     expect(finding).toBeDefined();
-    expect(finding?.line).toBeGreaterThan(0);
+    expect(finding!.severity).toBe('high');
+  });
+
+  // The citation contract, on the `secure` side. A file holding a restriction
+  // key gets no line — so no `Verify:`, which is what `f17f6ac` already did
+  // here — and the description still names the entry and why it is a grant.
+  it('withholds the line on a settings file that declares a deny list', async () => {
+    await settingsFixture({ permissions: { allow: ['Bash(*)'], deny: ['Read(./.env)'] } });
+    const finding = await claude002();
+    expect(finding).toBeDefined();
+    expect(finding!.line, 'a line was cited on a file holding a deny list').toBeUndefined();
+    expect(finding!.description).toContain('Bash(*)');
+    expect(finding!.fix).toBeTruthy();
   });
 
   it('cites the offending entry and a line, not just the file', async () => {

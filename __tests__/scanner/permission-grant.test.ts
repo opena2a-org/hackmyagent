@@ -75,11 +75,32 @@ describe('structured config is parsed, and the key decides (#364)', () => {
     expect(findPermissionGrant(doc, SETTINGS)).toBeUndefined();
   });
 
+  // No restriction key anywhere, so the line is provably safe and is emitted.
   it('cites the wildcard entry at its own line, not the key above it', () => {
-    const doc = settings({ permissions: { allow: ['Bash(npm test)', 'Bash(*)'], deny: [] } });
+    const doc = settings({ permissions: { allow: ['Bash(npm test)', 'Bash(*)'] } });
     const grant = findPermissionGrant(doc, SETTINGS);
-    expect(doc.split('\n')[grant!.line - 1]).toContain('Bash(*)');
+    expect(grant!.line).toBeGreaterThan(0);
+    expect(doc.split('\n')[grant!.line! - 1]).toContain('Bash(*)');
     expect(grant!.token).toBe('Bash(*)');
+  });
+
+  // …and the SAME file with a deny key present gets no line at all, however
+  // empty that key is. The rule is deliberately blunt — any restriction key
+  // anywhere — because two attempts at a sharp one both shipped a defect, the
+  // second worse than the first. The entry, the reason and the fix are
+  // unchanged; only the line and its `Verify:` are withheld.
+  it.each([
+    ['an empty deny list', { allow: ['Bash(*)'], deny: [] }],
+    ['a populated deny list', { allow: ['Bash(*)'], deny: ['Read(./.env)'] }],
+    ['an ask list', { allow: ['Bash(*)'], ask: ['Bash(rm:*)'] }],
+  ])('withholds the line when the file declares %s', (_name, permissions) => {
+    const grant = findPermissionGrant(settings({ permissions }), SETTINGS);
+    expect(grant, 'the grant is still reported').toBeDefined();
+    expect(grant!.token).toBe('Bash(*)');
+    expect(grant!.reason).toBeTruthy();
+    expect(grant!.fix).toBeTruthy();
+    expect(grant!.line, 'a line was cited on a file holding a restriction key').toBeUndefined();
+    expect(grant!.text).toBeUndefined();
   });
 
   // The escape class no text rule can reach: valid JSON, parses to `Bash(*)`,
@@ -93,10 +114,14 @@ describe('structured config is parsed, and the key decides (#364)', () => {
   });
 
   it('reads unquoted YAML list items', () => {
-    const doc = 'permissions:\n  allow:\n    - Bash(*)\n  deny:\n    - Read(*.key)\n';
-    const grant = findPermissionGrant(doc, '.aider.conf.yml');
+    const withDeny = 'permissions:\n  allow:\n    - Bash(*)\n  deny:\n    - Read(*.key)\n';
+    const grant = findPermissionGrant(withDeny, '.aider.conf.yml');
     expect(grant?.token).toBe('Bash(*)');
-    expect(grant!.line).toBe(3);
+    // A deny key is present, so no line — see the citation contract above.
+    expect(grant!.line).toBeUndefined();
+    // Without one, the YAML line is cited exactly.
+    const noDeny = 'permissions:\n  allow:\n    - Bash(*)\n';
+    expect(findPermissionGrant(noDeny, '.aider.conf.yml')!.line).toBe(3);
   });
 
   it('tolerates the comments and trailing commas editors write into settings files', () => {
@@ -151,11 +176,12 @@ describe('structured config is parsed, and the key decides (#364)', () => {
     });
     const grant = findPermissionGrant(doc, SETTINGS);
     expect(grant).toBeDefined();
-    const lines = doc.split('\n');
-    const denyAt = lines.findIndex((l) => l.includes('"deny"'));
-    const allowAt = lines.findIndex((l) => l.includes('"allow"'));
-    expect(grant!.line).toBeGreaterThan(allowAt);
-    expect(grant!.line, 'cited a line inside the deny list').toBeGreaterThan(denyAt + 1);
+    // The strongest form of "never cites a deny line": on a file that holds
+    // one, no line is cited at all. A text search cannot tell the two apart —
+    // the values are identical and only structure separates them — so the
+    // citation is withheld rather than guessed.
+    expect(grant!.line, 'cited a line on a file holding a deny list').toBeUndefined();
+    expect(grant!.token).toBe('Bash(*)');
   });
 
   it('does not read the same prose out of a deny list', () => {
@@ -598,6 +624,132 @@ describe('the quoted output never carries a credential (#299)', () => {
     for (const field of [grant!.token, grant!.text, grant!.reason, grant!.fix]) {
       expect((field ?? '').length).toBeLessThanOrEqual(120);
     }
+  });
+});
+
+// The citation contract, asked of generated configs rather than of the shapes
+// someone thought of.
+//
+// A previous version of this corpus varied seven axes and PINNED the eighth —
+// the indent of the array ENTRY, always written deeper than its key. It was
+// 5,130 cases and green, and an adversarial reviewer re-ran the same generator
+// with that one axis free and found 60% of it violated the property the test is
+// named for: an element indented less than its key popped the enclosing key off
+// the guard's stack. A generated corpus is only as strong as its narrowest axis,
+// and a green result hides which axis was pinned. Entry indent is FREE here, and
+// listed first so the next reader can see what is varied.
+describe('the citation contract holds across generated configs (#364)', () => {
+  const ENTRY = 'Bash(*)';
+  const ENTRY_INDENTS = ['', ' ', '  ', '      ', '\t'];      // the axis that was pinned
+  const KEY_INDENTS = ['  ', '    ', '\t', ''];
+  const DENY_KEYS = ['"deny"', '"\\u0064eny"', '"denyList"', '"blockedTools"', '"ask"'];
+  const ALLOW_KEYS = ['"allow"', '"\\u0061llow"', '"allowedTools"', '"allowlist"'];
+
+  /** `{ text, denyLines, hasDeny }`, with the deny lines known by construction. */
+  function build(o: {
+    entryInd: string; keyInd: string; denyKey: string | null; allowKey: string;
+    denyFirst: boolean; escapedValue: boolean; noise: string[];
+  }) {
+    const lines: string[] = [];
+    const denyLines = new Set<number>();
+    const push = (t: string, isDeny = false) => {
+      if (isDeny) denyLines.add(lines.length);
+      lines.push(t);
+    };
+    const emitDeny = () => {
+      if (!o.denyKey) return;
+      push(`${o.keyInd}${o.keyInd}${o.denyKey}: [`, true);
+      for (const n of o.noise) push(`${o.entryInd}${n}`, true);
+      push(`${o.entryInd}"${ENTRY}"`, true);
+      push(`${o.keyInd}${o.keyInd}],`, true);
+    };
+    const emitAllow = () => {
+      push(`${o.keyInd}${o.keyInd}${o.allowKey}: [`);
+      push(`${o.entryInd}"${o.escapedValue ? 'Bash(\\u002a)' : ENTRY}"`);
+      push(`${o.keyInd}${o.keyInd}],`);
+    };
+    push('{');
+    push(`${o.keyInd}"permissions": {`);
+    if (o.denyFirst) { emitDeny(); emitAllow(); } else { emitAllow(); emitDeny(); }
+    lines[lines.length - 1] = lines[lines.length - 1].replace(/,\s*$/, '');
+    push(`${o.keyInd}}`);
+    push('}');
+    return { text: lines.join('\n'), denyLines, hasDeny: o.denyKey !== null, escapedValue: o.escapedValue };
+  }
+
+  const CASES = (() => {
+    const out: ReturnType<typeof build>[] = [];
+    for (const entryInd of ENTRY_INDENTS) {
+      for (const keyInd of KEY_INDENTS) {
+        for (const denyKey of [...DENY_KEYS, null]) {
+          for (const allowKey of ALLOW_KEYS) {
+            for (const denyFirst of [true, false]) {
+              for (const escapedValue of [false, true]) {
+                for (const noise of [[], [''], ['// allow: everything']]) {
+                  out.push(build({ entryInd, keyInd, denyKey, allowKey, denyFirst, escapedValue, noise }));
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    return out;
+  })();
+
+  it('the corpus carries the hazard, and covers both sides of the contract', () => {
+    expect(CASES.length).toBeGreaterThan(2000);
+    expect(CASES.filter((c) => c.hasDeny).length).toBeGreaterThan(1000);
+    expect(CASES.filter((c) => !c.hasDeny).length).toBeGreaterThan(300);
+    // Non-vacuity: the whole-file search this replaces lands in a deny block
+    // often on this same corpus. Without this the assertions below would pass
+    // against a corpus that never posed the question.
+    const naive = CASES.filter((c) => {
+      const i = c.text.split('\n').findIndex((l) => l.includes(ENTRY));
+      return i !== -1 && c.denyLines.has(i);
+    }).length;
+    expect(naive, 'a whole-file locator must land in a deny block here').toBeGreaterThan(500);
+  });
+
+  it('every generated config is still classified as a grant', () => {
+    const silent = CASES.filter((c) => !findPermissionGrant(c.text, SETTINGS));
+    expect(silent.length, `${silent.length} configs went silent`).toBe(0);
+  });
+
+  it('no cited line is ever inside a deny region', () => {
+    const bad = CASES.filter((c) => {
+      const g = findPermissionGrant(c.text, SETTINGS);
+      return g?.line !== undefined && c.denyLines.has(g.line - 1);
+    });
+    expect(bad.length, bad.length ? `first:\n${bad[0].text}` : '').toBe(0);
+  });
+
+  it('withholds the line whenever a restriction key is present', () => {
+    const leaked = CASES.filter((c) => {
+      const g = findPermissionGrant(c.text, SETTINGS);
+      return c.hasDeny && g?.line !== undefined;
+    });
+    expect(leaked.length, leaked.length ? `first:\n${leaked[0].text}` : '').toBe(0);
+  });
+
+  // The other half: withholding must not become the default. Where there is no
+  // restriction key AND the entry appears literally, the exact line is still
+  // cited — otherwise this contract would be satisfied by never citing at all.
+  //
+  // The excluded combination is honest rather than swept up: an escaped VALUE
+  // under an escaped KEY leaves nothing to find in the raw text, so there is no
+  // line to cite and the finding carries the file alone.
+  it('still cites the exact line when no restriction key is present', () => {
+    const citable = CASES.filter((c) => !c.hasDeny && !c.escapedValue);
+    expect(citable.length).toBeGreaterThan(150);
+    const missing = citable.filter((c) => findPermissionGrant(c.text, SETTINGS)?.line === undefined);
+    expect(missing.length, missing.length ? `first:\n${missing[0].text}` : '').toBe(0);
+    // …and the line it cites really does carry the entry.
+    const wrongLine = citable.filter((c) => {
+      const g = findPermissionGrant(c.text, SETTINGS);
+      return !c.text.split('\n')[g!.line! - 1].includes(ENTRY);
+    });
+    expect(wrongLine.length).toBe(0);
   });
 });
 

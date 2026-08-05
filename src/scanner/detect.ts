@@ -65,7 +65,7 @@ export interface AiConfigFile {
    * the credential branch reports the KEY it matched and never the value, so
    * the report cannot become the place a secret gets copied to.
    */
-  evidence?: { line: number; token: string; text?: string; reason?: string; fix?: string };
+  evidence?: { line?: number; token: string; text?: string; reason?: string; fix?: string };
 }
 
 export interface IdentitySummary {
@@ -893,7 +893,11 @@ function quoted(s: string): string {
 function configEvidenceDetail(configs: readonly AiConfigFile[]): string {
   const head = configs[0];
   if (!head?.evidence) return configs.map((cc) => cc.file).join(', ');
-  const where = `${escapePathForDisplay(head.file)}:${head.evidence.line}`;
+  // `:line` only when the detector could cite one safely — a structured
+  // config that also declares a restriction key gets the file alone, because
+  // locating an entry by text there can land on the DENY line.
+  const at = head.evidence.line === undefined ? '' : `:${head.evidence.line}`;
+  const where = `${escapePathForDisplay(head.file)}${at}`;
   // The TOKEN, not the line. The claim is "this phrase grants broad
   // permissions", so the phrase is what the finding has to show; the whole line
   // is what the Verify command prints, and it stays on `evidence.text` for a
@@ -925,7 +929,13 @@ function configVerifyCommand(scanDirectory: string, config: AiConfigFile | undef
   if (!config?.evidence) return undefined;
   const quotedPath = citationPath(path.join(scanDirectory, config.file));
   if (!quotedPath) return undefined;
-  return `sed -n '${config.evidence.line}p' ${quotedPath}`;
+  // No line means no `sed`. `cat` is the honest substitute: it carries no
+  // scanned text into the command — so it cannot copy a credential out of a
+  // permission entry into a line the reader is invited to run — and the
+  // finding already names the entry to look for.
+  return config.evidence.line === undefined
+    ? `cat ${quotedPath}`
+    : `sed -n '${config.evidence.line}p' ${quotedPath}`;
 }
 
 function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScanResult): Finding[] {
@@ -1123,7 +1133,7 @@ function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScan
       // specific commands or paths this agent needs" is a dead end against
       // `defaultMode: acceptEdits`, which takes neither a command nor a path.
       remediation: cited.evidence
-        ? `Narrow ${escapePathForDisplay(cited.file)}:${cited.evidence.line} — ${
+        ? `Narrow ${escapePathForDisplay(cited.file)}${cited.evidence.line === undefined ? '' : `:${cited.evidence.line}`} — ${
           cited.evidence.fix
             ?? `replace ${quoted(cited.evidence.token)} with the specific commands or paths this agent needs`
         }`

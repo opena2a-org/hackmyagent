@@ -665,7 +665,61 @@ export function walkConfigForGrants(
  * invented one. `CLAUDE-002` rendered a HIGH with no line number before this
  * was shared.
  */
-// KNOWN DEFECT, RECORDED RATHER THAN PATCHED — see
+/**
+ * Does this parsed document contain a restriction key ANYWHERE?
+ *
+ * This is what makes a line citation safe to emit at all, and the argument is
+ * one sentence: if the document declares no key `PRUNED_KEYS` covers, then no
+ * line of the file is inside a restriction subtree, so no citation can land in
+ * one. The caller drops the line number entirely when this returns true.
+ *
+ * That is a deliberately blunt instrument, chosen after two attempts at a sharp
+ * one. `locateGrantLine` below is a TEXT SEARCH and cannot be made safe on a
+ * file that holds both keys — the values are identical, so only structure tells
+ * them apart, and structure is exactly what a text search does not have. The
+ * sharp version (enclosure by indentation, plus the nearest key to the left
+ * within a line) was written, measured, and reverted: it was quadratic in line
+ * length, allocated per line, and still cited a deny entry on plainly formatted
+ * JSON. See `todo/roadmap/hma-grant-citation-position-tracking.md`.
+ *
+ * So: a precise line where precision is provably free, and no line at all where
+ * it is not.
+ *
+ * MEASURED COST, because the first draft of this comment guessed and guessed
+ * wrong. Across the 36 real `.claude/settings*.json` on the author's machine,
+ * 12 are flagged and only **2** keep a precise line — the other 10 declare a
+ * `deny` or `ask` key. So this is not a rare trade paid by curated files; it is
+ * the common case, and the reader of a flagged file usually gets the file name,
+ * the entry, the reason, the fix, and `cat` as the Verify. That is the price of
+ * never pointing at a restriction, and it is the reason the position-tracking
+ * parse is filed as the real fix rather than as a nice-to-have.
+ *
+ * Descends everywhere, including into restriction subtrees — the walk prunes
+ * those, this must not, because finding one is the entire question. Carries the
+ * same depth bound and visited set as the walk, for the same reason: YAML
+ * aliases resolve to shared references.
+ */
+export function documentHasRestrictionKey(
+  doc: unknown,
+  depth = 0,
+  seen: Set<object> = new Set(),
+): boolean {
+  if (depth > 12 || doc === null || typeof doc !== 'object') return false;
+  if (seen.has(doc)) return false;
+  seen.add(doc);
+
+  if (Array.isArray(doc)) {
+    return doc.some((item) => documentHasRestrictionKey(item, depth + 1, seen));
+  }
+  for (const [rawKey, value] of Object.entries(doc as Record<string, unknown>)) {
+    if (PRUNED_KEYS.has(normKey(rawKey))) return true;
+    if (documentHasRestrictionKey(value, depth + 1, seen)) return true;
+  }
+  return false;
+}
+
+// KNOWN DEFECT, and the reason the caller gates on
+// `documentHasRestrictionKey` before using this at all — see
 // `todo/roadmap/hma-grant-citation-position-tracking.md`.
 //
 // The anchor below does NOT close the deny-line citation. Three constructions

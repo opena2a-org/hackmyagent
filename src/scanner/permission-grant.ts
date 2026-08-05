@@ -60,14 +60,30 @@ import {
   walkConfigForGrants,
   makeGrant,
   locateGrantLine,
+  documentHasRestrictionKey,
   redactLikelySecrets,
   type UnboundedGrant,
 } from './permission-vocabulary';
 
 /** Where a config file grants broad permissions, and what said so. */
 export interface PermissionGrant {
-  /** 1-indexed line within the config file. */
-  line: number;
+  /**
+   * 1-indexed line within the config file, when one can be cited SAFELY.
+   *
+   * Absent for a structured config that also declares a restriction key. The
+   * two keys hold textually identical values, so locating an entry by text on
+   * such a file can return the DENY line — and the finding then prints
+   * `replace "Read(**` + `/*.key)"` against the rule that stops an agent
+   * reading private keys. Two attempts to make the text search structure-aware
+   * failed, the second worse than the first, so the citation is now emitted
+   * only where it is provably safe: a document with no restriction key anywhere
+   * has no restriction subtree for a citation to land in.
+   *
+   * The reader still gets the entry, the reason and the fix. What they lose on
+   * a file with a deny list is the line number and, through it, the `Verify:`
+   * command — which is what `f17f6ac` already did on the `secure` side.
+   */
+  line?: number;
   /**
    * The phrase or permission entry that matched, redacted and display-escaped.
    *
@@ -76,8 +92,8 @@ export interface PermissionGrant {
    * `CLAUDE.md` line or an allow entry would rewrite the reader's screen.
    */
   token: string;
-  /** The whole matched line, trimmed, redacted, escaped and length-capped. */
-  text: string;
+  /** The whole cited line, trimmed, redacted, escaped and capped. Absent with `line`. */
+  text?: string;
   /** Why it is a grant, as one clause. Absent for prose, which quotes itself. */
   reason?: string;
   /**
@@ -332,11 +348,13 @@ export function findPermissionGrant(content: string, file: string): PermissionGr
     // to the reader.
     const grant = walkConfigForGrants(doc, proseAllowEntry);
     if (!grant) return undefined;
-    const line = locateGrantLine(lines, grant) || 1;
+    // A line ONLY where no restriction key exists to mis-cite. See
+    // `PermissionGrant.line` and `documentHasRestrictionKey`.
+    const line = documentHasRestrictionKey(doc) ? 0 : locateGrantLine(lines, grant);
     return {
-      line,
+      line: line > 0 ? line : undefined,
       token: forReport(grant.entry.trim(), MAX_TOKEN),
-      text: forReport((lines[line - 1] ?? '').trim(), MAX_TEXT),
+      text: line > 0 ? forReport((lines[line - 1] ?? '').trim(), MAX_TEXT) : undefined,
       // Both arrive redacted and escaped from `makeGrant`, so only the cap is
       // left. `reason` was uncapped, and it interpolates the entry — an entry
       // is as long as the scanned file chooses to make it.
