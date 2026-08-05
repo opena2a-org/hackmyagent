@@ -31,18 +31,23 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    # NON-BLOCKING FOR NOW, deliberately, and this must not become permanent.
+    # BLOCKING. This job was `continue-on-error: true` for the three commits it
+    # took to close the failures that predated it, and that exemption is now
+    # spent. Both platforms are green: 225 files passed, 3 skipped, on each.
     #
-    # Linux currently has known failures that predate this workflow and are
-    # NOT caused by it (see the tracking issue). Making the job blocking today
-    # would wedge every unrelated PR behind them; making it silent would repeat
-    # the mistake that let them reach a tag push unseen. So it reports on every
-    # PR and blocks nothing, until the tracked failures land.
+    # Do not reinstate it for a new failure. A red Linux job on a PR that made
+    # it red is a defect in that PR, and the entire reason this workflow exists
+    # is that `release.yml` was the only thing running `npm test` — so the
+    # suite's first execution on Linux was a tag push, which under Trusted
+    # Publishing IS the publish event.
     #
-    # Flip `continue-on-error` to false in the same PR that closes the last of
-    # them. Do not extend this exemption to new failures — a red Linux job on a
-    # PR that made it red is a defect in that PR.
-    continue-on-error: true
+    # Two suites are deliberately narrower on Linux, both gated on a runtime
+    # probe rather than on `process.platform` where that was possible:
+    # `backup-archive-integrity` (2 cases needing a case-folding filesystem)
+    # and `fix-write-failure-integrity` (11 cases whose failure injection is
+    # `chflags uchg`, which is BSD-only). macOS runs both, so each property
+    # still fails somewhere.
+    continue-on-error: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
