@@ -9014,7 +9014,20 @@ program
       console.log(`  Data access:       ${dataAccess}`);
       console.log(`  Governance ment.:  ${governance}`);
       console.log(`  Modal statements:  ${modalCount}  (shape only — not counted as defenses)`);
-      console.log(`  Surfaces mapped:   ${surfaceCount}${surfaceCategories ? ` (${surfaceCategories})` : ''}\n`);
+      console.log(`  Surfaces mapped:   ${surfaceCount}${surfaceCategories ? ` (${surfaceCategories})` : ''}`);
+
+      // Name each surface, not just the count. A bare "Surfaces mapped: 4" is a
+      // dead end — the reader cannot act on a number, and it is exactly the kind
+      // of value an artifact can move without anyone noticing (#369). These
+      // strings interpolate text out of the SCANNED FILE, so every one goes
+      // through escapeForDisplay: a newline in an artifact would otherwise split
+      // the line and forge output structure, and an ESC sequence would rewrite
+      // the report describing it.
+      for (const entry of result.target.vulnerabilitySurface) {
+        console.log(`    - ${escapeForDisplay(entry.surface)}`);
+        console.log(`      ${escapeForDisplay(entry.exploitApproach)}`);
+      }
+      console.log();
 
       console.log(`  Payloads generated: ${result.evaluation.generated}`);
       console.log(`  Payloads executed:  ${result.evaluation.executed}`);
