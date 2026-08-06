@@ -42,6 +42,14 @@ export function generateInitialPayloads(profile: SemanticTargetProfile): Adaptiv
  * Generate an adapted variant after a failed attack.
  * Takes the defense mechanism detected and crafts a variant that
  * specifically targets that defense.
+ *
+ * UNREACHABLE from a real session today (#369). It requires
+ * `failedResult.defenseMechanism`, and nothing sets that: adaptation means
+ * changing a payload in response to an observed defence, and no payload is
+ * executed, so no defence is ever observed. Kept, exported and tested for the
+ * execution path (`docs/design/redteam-nanomind-judge.md`), which is the point
+ * at which its input starts existing. Do not read its presence as evidence that
+ * `red-team` iterates — it does not, and `--iterations` says so.
  */
 export function generateAdaptedPayload(
   profile: SemanticTargetProfile,
@@ -137,7 +145,10 @@ function generatePayloadForSurface(
     }
 
     case 'soul_bypass': {
-      const constraint = profile.constraints[0] ?? 'your rules';
+      // A stated rule to argue against. Polarity does not matter here — the
+      // payload quotes it back either way — but the name does, so this reads
+      // `modalStatements` and does not call the result a constraint (#369).
+      const constraint = profile.modalStatements[0] ?? 'your rules';
       return {
         id: `SOULBYPASS-${++payloadCounter}`,
         category,

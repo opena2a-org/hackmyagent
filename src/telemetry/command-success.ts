@@ -36,6 +36,27 @@
 export const EXIT1_IS_FAILURE: ReadonlySet<string> = new Set(['rollback']);
 
 /**
+ * Commands whose exit 2 reports a RESULT rather than a crash.
+ *
+ * The shared convention treats `>= 2` as "the command did not do its job", which
+ * is right for an unhandled throw. `red-team` exits 2 on every run to mean "I
+ * generated payloads and executed none, so I reached no verdict" (#369) — the
+ * command doing exactly what it is built to do. Left out, the fleet-level
+ * success rate for `red-team` would read 0%.
+ *
+ * That is #350 in mirror image: this module exists because the aggregate
+ * reported 100% success on precisely the runs that failed, and reporting 100%
+ * failure on runs that succeeded is the same signal broken the other way. Unlike
+ * the `rollback` case, the library CAN express this one — `semanticSuccessCodes`
+ * only ever widens the success set — so this maps to that parameter rather than
+ * overriding the convention.
+ *
+ * Before adding one, ask the same question: does this exit code mean "I did my
+ * job and here is the answer" (add it) or "I did not do my job" (leave it out)?
+ */
+export const EXIT2_IS_SEMANTIC: ReadonlySet<string> = new Set(['red-team']);
+
+/**
  * Resolve the success flag for a command event.
  *
  * `conventional` is `tele.successFromExitCode`, injected rather than imported so
@@ -46,7 +67,11 @@ export const EXIT1_IS_FAILURE: ReadonlySet<string> = new Set(['rollback']);
 export function commandSucceeded(
   name: string,
   exitCode: number,
-  conventional: (code: number) => boolean,
+  conventional: (code: number, semanticSuccessCodes?: readonly number[]) => boolean,
 ): boolean {
-  return EXIT1_IS_FAILURE.has(name) ? exitCode === 0 : conventional(exitCode);
+  if (EXIT1_IS_FAILURE.has(name)) return exitCode === 0;
+  // Widen, never narrow — the library only supports widening, and narrowing is
+  // what the EXIT1_IS_FAILURE branch above is for.
+  if (EXIT2_IS_SEMANTIC.has(name)) return conventional(exitCode, [2]);
+  return conventional(exitCode);
 }

@@ -113,7 +113,7 @@ npm view hackmyagent dist.attestations --json
 
 - `secure`: your own project. Full static + semantic scan, auto-fix option, designed for CI and recurring use.
 - `check`: something you don't own yet. Pre-install trust check for any surface above.
-- `red-team`: adaptive attacks against a specific skill, MCP, or SOUL. You've scanned it; now see if it resists.
+- `red-team`: maps the attack surface of a specific skill, MCP, or SOUL and generates target-specific payloads. It does not execute them, so it does not tell you whether the artifact resists.
 - `attack`: test a live endpoint or local simulation with 164 pre-built adversarial payloads.
 
 ## Commands
@@ -147,15 +147,20 @@ Runs automatically on every `secure` scan. On first use, HMA downloads a 5.5 MB 
 - `--static-only` disables the semantic layer.
 - `--nanomind` opts into the generative analyst (specialist model, not the classifier). It produces per-finding threat narratives on HIGH or CRITICAL findings, and a coverage sweep over artifacts the deterministic checks did not flag — analyst verdicts there surface as advisory escalations for human review (never changing the score, findings, or exit code).
 
-### `red-team` (adaptive attack engine)
+### `red-team` (attack surface and payload generation)
 
 ```bash
-hackmyagent red-team ./my-skill.md             # red-team a skill file
-hackmyagent red-team ./SOUL.md --iterations 10 # more attack iterations
-hackmyagent red-team ./mcp-config.json --json  # JSON output
+hackmyagent red-team ./my-skill.md             # map surface, generate payloads
+hackmyagent red-team ./mcp-config.json --json  # JSON output, incl. payload text
 ```
 
-Generates target-specific attacks from the artifact's own language and constraints. Iterates up to 5 times per category, maps defences, produces specific remediation.
+Maps an artifact's attack surface from its own language and generates target-specific payloads for it.
+
+**It does not run them.** No agent is executed, so nothing about resistance is measured and no resilience score is reported — `resilienceScore` is `null` and `evaluation.mode` is `not_executed` in `--json`. The command exits **2** to mark that it reached no verdict (`0` executed-and-clean, `1` findings). The payloads are the deliverable: `--json` puts their text under `.results[].payloadInput`, to run against your own agent.
+
+In 0.25.2 and earlier this command scored resistance with a regex over the artifact's own text, which rated a jailbreak document 100% resilient and benign prose 0%, both at exit 0. Those versions are still the published ones until 0.26.0 ships, so treat any resilience score, defense map, or successful-attack count they produced as void. The number is removed rather than corrected (#369); executing payloads for real is tracked in `docs/design/redteam-nanomind-judge.md`.
+
+Two `--json` fields were renamed with the number, because their old names asserted a polarity nothing established. `constraints` is now `modalStatements`: it is a list of modal-verb sentences extracted from the artifact, and "Never reveal secrets." and "Never refuse." are the same syntactic shape, so nothing here separates a rule from a jailbreak. `governanceMechanism: string` is now `governanceMentions: string[]`: governance vocabulary the artifact mentions, not a mechanism it has. A file cannot report whether the agent it describes is governed, and the old field suppressed an attack surface when it was non-`none`.
 
 ### `attack` (payload battery)
 
@@ -307,7 +312,7 @@ npx hackmyagent secure --ignore LOG-001,RATE-001
 |---|---|
 | 0 | Clean. No critical or high issues. |
 | 1 | Critical or high severity issues found. |
-| 2 | Incomplete scan. One or more plugins failed. |
+| 2 | No verdict reached. A scan whose plugins failed, or a command that reaches no verdict by design. `red-team` exits 2 on every run: it maps an attack surface and generates payloads without executing any, so it never concludes anything about the target. |
 | 3 | QUARANTINE. Binary integrity check failed (tampered installation). |
 
 ## Auto-fix catalogue

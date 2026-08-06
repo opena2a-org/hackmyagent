@@ -96,12 +96,23 @@ export function exportSimulationTraining(
 /**
  * Export attack session results as training data.
  * Successful attacks -> malicious behavior. Failed attacks -> defense patterns.
+ *
+ * Writes NOTHING for a session that executed no payloads (#369). `input` here is
+ * the target's observed response; without a run there is none, and the templated
+ * stand-in this used to write is what put 1,001 synthetic self-labeled rows into
+ * the corpus before the 2026-06-01 audit. The corpus file is only opened when
+ * there is a real observation to append.
  */
 export function exportAttackTraining(session: AttackSessionResult): number {
+  if (session.evaluation.mode !== 'executed') return 0;
+
   initTrainingPipeline();
   let count = 0;
 
   for (const result of session.results) {
+    // No observation, no row.
+    if (!result.observedBehavior) continue;
+
     if (result.outcome === 'SUCCESS') {
       appendPair({
         input: result.observedBehavior,
