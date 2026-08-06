@@ -22,6 +22,8 @@
 // corpus, and this must never touch the real one.
 
 import { describe, it, expect, beforeAll } from 'vitest';
+import { successFromExitCode } from '@opena2a/telemetry';
+import { commandSucceeded, EXIT2_IS_SEMANTIC } from '../../src/telemetry/command-success';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -162,5 +164,40 @@ describe.runIf(canRunSpawn())('#369 red-team CLI never reports an unmeasured all
     expect(parsed.evaluation.mode).toBe('not_executed');
     expect(parsed.evaluation.executed).toBe(0);
     expect(res.status).toBe(2);
+  });
+
+  it('every EXIT2_IS_SEMANTIC name is a command that really exits 2', () => {
+    // The telemetry rule is a bare string matched against `actionCommand.name()`
+    // (`src/cli.ts`), and the unit test for it can only compare that string to
+    // another copy of itself. This closes the loop by INVOKING each name and
+    // reading the exit code the process actually returns.
+    //
+    // It fails on a rename, measured rather than assumed: with the set mutated
+    // to `['redteam']` and dist rebuilt, this assertion reported `expected 1 to
+    // be 2` — an unrecognised subcommand exits 1, so a stale entry cannot read
+    // as the semantic 2.
+    //
+    // A `<name> --help` probe was tried first and rejected: `red-team --help`
+    // and `redteam --help` BOTH exit 0, so it cannot tell a registered command
+    // from an invented one. Only the real run discriminates.
+    expect(EXIT2_IS_SEMANTIC.size).toBeGreaterThan(0);
+
+    for (const name of EXIT2_IS_SEMANTIC) {
+      const dir = mkdtempSync(join(tmpdir(), 'hma-rt369-name-'));
+      const home = mkdtempSync(join(tmpdir(), 'hma-rt369-namehome-'));
+      const target = join(dir, 'jailbreak.md');
+      writeFileSync(target, JAILBREAK);
+
+      const res = spawnSync(process.execPath, [CLI, name, target], {
+        encoding: 'utf-8',
+        env: { ...process.env, HOME: home, NO_COLOR: '1' },
+      });
+
+      expect(res.status, `\`${name}\` is listed as exiting 2 semantically`).toBe(2);
+      expect(
+        commandSucceeded(name, res.status ?? -1, successFromExitCode),
+        `\`${name}\`'s real exit code must reach telemetry as a success`,
+      ).toBe(true);
+    }
   });
 });
