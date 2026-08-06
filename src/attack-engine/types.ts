@@ -28,8 +28,19 @@ export interface SemanticTargetProfile {
    * attacker text. Treat this as attack surface, never as evidence of a defence.
    */
   modalStatements: string[];
-  /** How governance is enforced */
-  governanceMechanism: string;
+  /**
+   * Governance vocabulary the artifact MENTIONS (`soul.md`, `system prompt`,
+   * `runtime check`). Empty when none appear.
+   *
+   * Mentions, never enforcement. This was `governanceMechanism: string`, a
+   * single answer derived from a text match on the scanned file, and the surface
+   * builder suppressed the `instruction_override` surface whenever it was not
+   * `'none'` — so a jailbreak demanding "your system prompt" was read as HAVING
+   * one, and mapped fewer attack surfaces than benign prose (#369, second pass).
+   * A file cannot report whether the agent it describes is governed. Treat an
+   * entry here as something an attacker knows to aim at, not as a defence.
+   */
+  governanceMentions: string[];
   /** Data types the target regularly touches */
   dataAccessPatterns: string[];
   /** Specific vulnerability surface identified by NanoMind */
@@ -110,8 +121,14 @@ export interface AttackResult {
    * execution path the payloads ARE the deliverable — the thing a user can run
    * against their own agent by hand.
    *
-   * Derived from the scanned artifact, so it is untrusted text. Safe in JSON;
-   * anything rendering it to a terminal must escape it first.
+   * Derived from the scanned artifact, so it is untrusted text. Anything
+   * rendering it to a terminal must escape it first — `escapeForDisplay`.
+   *
+   * NOT automatically safe in `--json`: `JSON.stringify` escapes C0 and quotes
+   * but passes C1 (U+0080-U+009F, of which U+009B is CSI) and DEL through as raw
+   * bytes, which `src/ui/display-safe.ts` classifies as display hazards. That is
+   * a property of every `--json` surface in this CLI rather than of this field,
+   * and is not addressed here — but do not read "it is JSON" as "it is escaped".
    */
   payloadInput: string;
   outcome: AttackOutcome;
@@ -208,17 +225,35 @@ export interface AttackSessionResult {
   results: AttackResult[];
   /** Provenance of every outcome in `results`. Read this before trusting a count. */
   evaluation: AttackEvaluation;
-  /** Total payloads generated */
+  /**
+   * Total payloads generated. Always a real count — generation did happen.
+   *
+   * Contrast `successCount` / `partialCount` / `vulnerabilities` below, which
+   * describe a run that did not.
+   */
   totalPayloads: number;
-  /** Total successful attacks */
+  /**
+   * Attacks observed to succeed. `0` while `evaluation.mode` is `not_executed`,
+   * where it means "none were attempted" and NOT "none got through".
+   *
+   * `resilienceScore` is `null` for exactly this reason and these three fields
+   * cannot be, because a count and a list have no honest empty-but-unmeasured
+   * value. `evaluation.mode` is the one that carries it — a consumer branching
+   * on `vulnerabilities.length === 0` alone reads an unconditional all-clear on
+   * every artifact. Check `evaluation.mode === 'executed'` first.
+   */
   successCount: number;
-  /** Total partial successes */
+  /** Partial successes observed. Same caveat as `successCount`. */
   partialCount: number;
   /** Defense map discovered */
   defenseMap: DefenseMap;
   /** Duration of the full attack session */
   durationMs: number;
-  /** Vulnerabilities found with specific remediation */
+  /**
+   * Vulnerabilities CONFIRMED by an executed attack, with specific remediation.
+   * Empty while `evaluation.mode` is `not_executed` — nothing was confirmed
+   * because nothing ran, which is not the same as nothing being there.
+   */
   vulnerabilities: VulnerabilityFinding[];
 }
 

@@ -113,7 +113,7 @@ npm view hackmyagent dist.attestations --json
 
 - `secure`: your own project. Full static + semantic scan, auto-fix option, designed for CI and recurring use.
 - `check`: something you don't own yet. Pre-install trust check for any surface above.
-- `red-team`: adaptive attacks against a specific skill, MCP, or SOUL. You've scanned it; now see if it resists.
+- `red-team`: maps the attack surface of a specific skill, MCP, or SOUL and generates target-specific payloads. It does not execute them, so it does not tell you whether the artifact resists.
 - `attack`: test a live endpoint or local simulation with 164 pre-built adversarial payloads.
 
 ## Commands
@@ -147,15 +147,18 @@ Runs automatically on every `secure` scan. On first use, HMA downloads a 5.5 MB 
 - `--static-only` disables the semantic layer.
 - `--nanomind` opts into the generative analyst (specialist model, not the classifier). It produces per-finding threat narratives on HIGH or CRITICAL findings, and a coverage sweep over artifacts the deterministic checks did not flag — analyst verdicts there surface as advisory escalations for human review (never changing the score, findings, or exit code).
 
-### `red-team` (adaptive attack engine)
+### `red-team` (attack surface and payload generation)
 
 ```bash
-hackmyagent red-team ./my-skill.md             # red-team a skill file
-hackmyagent red-team ./SOUL.md --iterations 10 # more attack iterations
-hackmyagent red-team ./mcp-config.json --json  # JSON output
+hackmyagent red-team ./my-skill.md             # map surface, generate payloads
+hackmyagent red-team ./mcp-config.json --json  # JSON output, incl. payload text
 ```
 
-Generates target-specific attacks from the artifact's own language and constraints. Iterates up to 5 times per category, maps defences, produces specific remediation.
+Maps an artifact's attack surface from its own language and generates target-specific payloads for it.
+
+**It does not run them.** No agent is executed, so nothing about resistance is measured and no resilience score is reported — `resilienceScore` is `null` and `evaluation.mode` is `not_executed` in `--json`. The command exits **2** to mark that it reached no verdict (`0` executed-and-clean, `1` findings). The payloads are the deliverable: `--json` puts their text under `.results[].payloadInput`, to run against your own agent.
+
+Until 0.25.2 this command scored resistance with a regex over the artifact's own text, which rated a jailbreak document 100% resilient and benign prose 0%. That number is removed rather than corrected (#369); executing payloads for real is tracked in `docs/design/redteam-nanomind-judge.md`.
 
 ### `attack` (payload battery)
 

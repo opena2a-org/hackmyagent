@@ -8995,8 +8995,14 @@ program
       // render boundary regardless of what the producer promises. This is also
       // what `render-source-gate` enforces, and satisfying it beats exempting it.
       const dataAccess = escapeForDisplay(result.target.dataAccessPatterns.join(', ') || 'none detected');
+      // "mentions" and never "Governance: soul". The old line reported a
+      // mechanism, which read as "this agent is governed" — a reassurance the
+      // artifact itself wrote, and one a jailbreak earns just by demanding a
+      // system prompt (#369, second pass).
       const governance = escapeForDisplay(
-        result.target.governanceMechanism === 'none' ? 'none detected' : result.target.governanceMechanism,
+        result.target.governanceMentions.length > 0
+          ? `${result.target.governanceMentions.join(', ')} (mentioned, not verified)`
+          : 'no governance vocabulary present',
       );
       const modalCount = result.target.modalStatements.length;
       const surfaceCount = result.target.vulnerabilitySurface.length;
@@ -9006,7 +9012,7 @@ program
 
       console.log(`Attack surface (static, from the artifact's own text):`);
       console.log(`  Data access:       ${dataAccess}`);
-      console.log(`  Governance:        ${governance}`);
+      console.log(`  Governance ment.:  ${governance}`);
       console.log(`  Modal statements:  ${modalCount}  (shape only — not counted as defenses)`);
       console.log(`  Surfaces mapped:   ${surfaceCount}${surfaceCategories ? ` (${surfaceCategories})` : ''}\n`);
 
@@ -9085,7 +9091,12 @@ program
     // document that tells an agent to execute arbitrary shell commands passed
     // (#369, same contract class as #390/#373/#371).
     //   0  executed, nothing found
-    //   1  findings
+    //   1  findings — and, already, an unreadable target (the `process.exit(1)`
+    //      paths above for ENOENT and a directory with no conventional artifact).
+    //      Today that overlap is harmless because `vulnerabilities` is always
+    //      empty, so 1 only ever means "could not read the target". It stops
+    //      being harmless the moment the execution path lands and 1 gets a second
+    //      meaning, so the error paths need their own code before then.
     //   2  reached no verdict (nothing executed)
     if (result.evaluation.mode !== 'executed') {
       await finishWithFindings(2);

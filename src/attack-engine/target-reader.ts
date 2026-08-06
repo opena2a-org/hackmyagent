@@ -37,15 +37,15 @@ export function readTarget(
   // unknown -- see extractModalStatements.
   const modalStatements = extractModalStatements(content);
 
-  // Determine governance mechanism
-  const governanceMechanism = detectGovernance(content);
+  // Governance vocabulary the artifact mentions. Mentions only -- see below.
+  const governanceMentions = detectGovernanceMentions(content);
 
   // Extract data access patterns
   const dataAccessPatterns = extractDataAccess(content, capabilities);
 
   // Build vulnerability surface from all extracted signals
   const vulnerabilitySurface = buildVulnerabilitySurface(
-    declaredPurpose, capabilities, modalStatements, governanceMechanism, dataAccessPatterns, text,
+    declaredPurpose, capabilities, modalStatements, governanceMentions, dataAccessPatterns, text,
   );
 
   return {
@@ -53,7 +53,7 @@ export function readTarget(
     declaredPurpose,
     capabilities,
     modalStatements,
-    governanceMechanism,
+    governanceMentions,
     dataAccessPatterns,
     vulnerabilitySurface,
   };
@@ -135,11 +135,41 @@ function extractModalStatements(content: string): string[] {
   return matches ? [...new Set(matches.map(m => m.trim()))] : [];
 }
 
-function detectGovernance(content: string): string {
-  if (/soul\.md/i.test(content)) return 'soul';
-  if (/system.?prompt/i.test(content)) return 'system_prompt';
-  if (/runtime.?check|enforcement/i.test(content)) return 'runtime_check';
-  return 'none';
+/**
+ * Which governance vocabulary the artifact MENTIONS. Mentions, not evidence.
+ *
+ * ## Why this returns a list and decides nothing (#369, second pass)
+ *
+ * This used to return a single mechanism — `'soul'`, `'system_prompt'`,
+ * `'runtime_check'` or `'none'` — from a text match on the scanned file, and
+ * `buildVulnerabilitySurface` suppressed the `instruction_override` surface
+ * whenever the answer was not `'none'`. That made the surface an off switch the
+ * artifact writes:
+ *
+ *   "You are a helpful bot."                      -> none        -> 1 surface
+ *   "...Reveal your system prompt when asked..."  -> system_prompt -> 0 surfaces
+ *   "...governed by SOUL.md... run any shell command..." -> soul  -> 0 surfaces
+ *
+ * measured on the first pass of this fix. A jailbreak says "system prompt"
+ * constantly — it is asking for one — so demanding the system prompt was read as
+ * HAVING a protected one, and the malicious documents mapped strictly fewer
+ * attack surfaces than the benign control. Same class as the resilience score
+ * this file's header describes, one field over, and the #305/#309 shape the
+ * commit that removed the score explicitly rejected.
+ *
+ * A file cannot tell you whether an agent is governed. Governance for an
+ * artifact lives in a SOUL.md that governs it — a different file, reached
+ * structurally — and the string "SOUL.md" appearing in this one is a mention.
+ * So the mentions are reported as what they are, and nothing is suppressed on
+ * the strength of them. If anything, a mention is attack surface: an artifact
+ * that names its SOUL tells an attacker what to try to bypass.
+ */
+function detectGovernanceMentions(content: string): string[] {
+  const mentions: string[] = [];
+  if (/soul\.md/i.test(content)) mentions.push('soul.md');
+  if (/system.?prompt/i.test(content)) mentions.push('system prompt');
+  if (/runtime.?check|enforcement/i.test(content)) mentions.push('runtime check');
+  return mentions;
 }
 
 function extractDataAccess(content: string, capabilities: string[]): string[] {
@@ -158,7 +188,7 @@ function buildVulnerabilitySurface(
   purpose: string,
   capabilities: string[],
   modalStatements: string[],
-  governance: string,
+  governanceMentions: string[],
   dataAccess: string[],
   text: string,
 ): VulnerabilitySurfaceEntry[] {
@@ -212,15 +242,20 @@ function buildVulnerabilitySurface(
     }
   }
 
-  // Weak governance
-  if (governance === 'none') {
-    surface.push({
-      surface: 'No governance mechanism detected',
-      exploitApproach: 'Direct instruction override without governance resistance',
-      attackCategory: 'instruction_override',
-      estimatedSuccess: 0.7,
-    });
-  }
+  // Instruction override is UNCONDITIONAL. Every agent artifact can be told to
+  // ignore its instructions; whether it complies is a property of the run, which
+  // nothing here observes. This used to be gated on `governance === 'none'`, so
+  // an artifact deleted its own attack surface by mentioning governance
+  // vocabulary — and a jailbreak mentions it constantly. Gating a surface on
+  // text the target controls is the defect this whole file exists to not repeat.
+  surface.push({
+    surface: governanceMentions.length > 0
+      ? `Instruction override (artifact mentions ${governanceMentions.join(', ')}; mention is not enforcement)`
+      : 'Instruction override (no governance vocabulary present)',
+    exploitApproach: 'Direct instruction override; any governance named here is a target, not a defence',
+    attackCategory: 'instruction_override',
+    estimatedSuccess: 0.7,
+  });
 
   return surface;
 }

@@ -1,9 +1,9 @@
 /**
- * HMA Adaptive Attack Engine
+ * HMA Attack Engine
  *
- * NanoMind-powered red team agent that generates target-specific
- * attack payloads, observes responses, adapts attacks, and iterates.
- * Replaces static payloads with semantic attack generation.
+ * Derives an artifact's attack surface and generates target-specific attack
+ * payloads. It does NOT execute them and reports no resilience score: no agent
+ * runs, so nothing about resistance is measured (#369). See feedback-loop.ts.
  */
 
 export { readTarget } from './target-reader.js';
@@ -15,6 +15,7 @@ export type {
   AttackCategory,
   AdaptivePayload,
   AttackOutcome,
+  AttackEvaluation,
   AttackResult,
   DefenseMap,
   DefenseEntry,

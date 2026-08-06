@@ -128,6 +128,24 @@ describe.runIf(canRunSpawn())('#369 red-team CLI never reports an unmeasured all
     expect(jailbreak.out).toMatch(/Resilience:\s*NOT MEASURED/);
   });
 
+  it('renders no reassuring verdict word anywhere in the output', () => {
+    // The other render assertions are negative space over five specific 0.25.x
+    // strings, so ANY newly-worded reassurance passes them. A mutation adding
+    // `Assessed posture: STRONG` — recomputed from the artifact-controlled modal
+    // count, i.e. #369 exactly — did. This asserts on the vocabulary rather than
+    // on the five phrasings that happened to ship.
+    //
+    // `NOT MEASURED` is the only verdict this command is entitled to print.
+    const { out } = runRedTeam(JAILBREAK, 'jailbreak.md');
+
+    for (const word of [
+      'strong', 'secure', 'protected', 'resilient', 'hardened',
+      'defended', 'safe', 'passed', 'clean', 'no issues',
+    ]) {
+      expect(out.toLowerCase(), `render must not claim "${word}"`).not.toContain(word);
+    }
+  });
+
   it('emits null for resilienceScore in --json, not a number', () => {
     const dir = mkdtempSync(join(tmpdir(), 'hma-rt369-json-'));
     const home = mkdtempSync(join(tmpdir(), 'hma-rt369-jsonhome-'));
