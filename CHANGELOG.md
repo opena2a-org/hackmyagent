@@ -2,7 +2,30 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
-## [Unreleased]
+## [0.26.0] - 2026-08-06
+
+### Breaking
+
+- **`red-team` no longer reports a resilience score, and it exits 2 on every run.** The
+  score it used to print was inverted by construction — a jailbreak document scored 100%
+  resilient and benign prose scored 0% — and no attack was ever executed. **Any resilience
+  score, `All defenses held` line, or `Strong defenses:` line produced by 0.25.2 or any
+  earlier version is void and carries no signal.** The affected range is **0.11.14 through
+  0.25.2** — the whole published life of the command, which did not exist before 0.11.14.
+  Verified by execution on both sides: `0.11.13` answers `unknown command 'red-team'`,
+  `0.11.14` prints `Resilience score: 100%` and `All defenses held` at exit 0 over a
+  jailbreak artifact. A CI job that ran `red-team`
+  and gated on its exit code was passing over every artifact, including jailbreaks; it will
+  now fail until the execution path lands. There is no flag to restore the old behaviour —
+  a switch that returns exit 0 is a switch that returns the defect. Detail under **Fixed**.
+
+- **`--json` contract changes on `red-team`.** `SemanticTargetProfile.constraints` is
+  renamed `modalStatements`; `governanceMechanism: string` becomes
+  `governanceMentions: string[]`; `resilienceScore` is now `number | null` and is always
+  `null`; `evaluation.mode` is `"not_executed"`. `AttackResult` gains `payloadInput`,
+  which carries the generated payload text — with no execution path, those payloads are
+  the command's deliverable. Consumers must branch on `null` rather than coerce it: `0`
+  is the value that caused the harm.
 
 ### Security
 
@@ -120,6 +143,63 @@ All notable changes to HackMyAgent are documented in this file.
   Each attempt was smaller and sharper than the last and each still cited a deny entry, so the answer is not a fourth heuristic. The reader still gets the entry, why it is a grant, and what to replace it with. **#379** restores a precise citation by giving the grant its own offset from the parse, and carries the acceptance criteria all three failures produced. The prose half keeps its line, because the line cited is the line the pattern matched.
 
 ### Known issues
+
+**The `red-team` closure above is scoped to `red-team`.** Two other commands still
+report a pass over a run that measured nothing, and both are live in this release.
+Neither is introduced by 0.26.0: both reproduce on the published 0.25.2, and each is
+older than that.
+
+- **`attack` reports `SECURE` for a target it never reached (#406).** A run against a
+  closed port scores the target `0/100 (SECURE)` and exits 0. Nothing connected.
+  Copied from this build:
+
+  ```
+  $ hackmyagent attack http://127.0.0.1:59999/nope --timeout 3000
+  Risk Score: 0/100 (SECURE)
+  ...
+  Attacks: 111 total | 0 successful | 0 blocked | 111 inconclusive
+  $ echo $?
+  0
+  ```
+
+  Every one of the 111 results carries `Error: fetch failed` as its evidence. The text
+  output states nowhere that the target was unreachable. In `--json` the transport
+  error appears only inside `results[].evidence`; the top level still reads
+  `"riskScore": 0` and `"riskRating": "secure"`, and no field in either channel
+  reports whether the target ever responded. A `SECURE` verdict from this command
+  means "no attack was observed to succeed", which includes the case where no attack
+  was delivered.
+
+  Until this is fixed, confirm the target answers before reading the verdict, and
+  treat `summary.inconclusive` equal to `summary.total` in `--json` as "nothing was
+  measured" rather than as a pass. Measured identical on 0.26.0 and on published
+  0.25.2. The same verdict at exit 0 also reproduces on 0.8.0 (2026-03-02), the first
+  release carrying `attack`, where the run was 49 payloads rather than 111.
+
+- **`check --json` cannot fail (#373), and does not disclose its scope (#388).**
+  Adding `--json` turns a failing scan into a passing exit code. Against any local
+  target that produces critical findings, `check <target>` prints them and exits 1,
+  while `check <target> --json` reports the same findings, including
+  `"risk": "critical"`, and exits 0. Measured on a skill artifact carrying an
+  exfiltration pattern: 4 critical and 1 high, exit 1 in text and exit 0 in JSON. A CI
+  job running `check --json` has never been able to fail on findings.
+
+  The payload also carries no scope field. `check` on a local path is a quick scan,
+  and the text output says so four separate ways, including
+  `310 static not run (quick scan)`. None of that reaches `--json`, so a JSON consumer
+  cannot tell a clean result from an unrun one.
+
+  Until this is fixed, gate on the `risk` and `critical` fields in the payload rather
+  than on the exit code, and run `secure <target>` when the full static suite is
+  needed. Reproduces on published 0.25.2 and back to 0.12.7 (2026-04-01); on 0.12.7
+  the same target reports `"critical": 3` at exit 0, so detection has moved since and
+  the exit code has not.
+
+- **Three commands print advice citing flags that are not registered (#372).** `wild`
+  says to use `--model`, `fix-all` says to use `--uninstall`, and the Registry
+  rate-limit error says to use `--skip-registry`. All three return
+  `error: unknown option`. Verified on 0.26.0 and on published 0.25.2. There is no
+  substitute flag to reach for: for the rate limit, wait and re-run.
 
 - **3 of the advertised 310 static checks have no caller.** `CODEINJ-001`,
   `TMPPATH-001` and `ENVLEAK-001` are implemented and counted in the suite
