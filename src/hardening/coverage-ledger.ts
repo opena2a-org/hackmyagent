@@ -10,7 +10,7 @@
  *   Categories  credentials, MCP, network, injection, ... + 16 more  (all clear)
  *   Verdict     No security issues detected. This library looks safe to use.
  *
- * Measured on a 528-file copy of a real repo carrying a planted
+ * Measured on a 529-file copy of a real repo carrying a planted
  * `sk-ant-api03-...` key, an `AKIAIOSFODNN7EXAMPLE`, and a
  * `curl … | sh`: byte-identical output, `100/100`. That is not a missed
  * detection — it is a false assurance line, and it is worse than silence
@@ -58,6 +58,7 @@ export interface CheckExecution {
   completed: boolean;
   /** Distinct paths inside the target this method read the CONTENTS of. */
   filesRead: number;
+
   /** Distinct paths inside the target it inspected without reading (stat/readdir). */
   pathsInspected: number;
   /** Set when the orchestration skipped the method outright. */
@@ -89,6 +90,16 @@ export interface CategoryCoverage {
   filesRead: number;
   /** Why it is `not-examined` / `truncated`. Empty when `examined`. */
   reason?: string;
+  /**
+   * True only when the checks were OBSERVED to look and find nothing — they
+   * inspected paths inside the target and no file of their kind was there.
+   *
+   * A consumer may treat this as benign; every other `not-examined` category
+   * is a coverage GAP. The distinction is carried as a flag rather than left
+   * for the caller to recover by matching on `reason`, so a reworded sentence
+   * cannot silently reclassify a gap as an absence.
+   */
+  observedAbsent?: boolean;
 }
 
 /**
@@ -99,9 +110,9 @@ export interface CategoryCoverage {
  * measured. A wrong entry here mis-files evidence; it cannot manufacture it.
  *
  * `__tests__/hardening/coverage-honesty.test.ts` holds this
- * honest in two directions: every prefix named here must exist in
- * `TAXONOMY_MAP`, and every `check*` method reached by the orchestration must
- * appear here. A method added without a registration fails that test rather
+ * honest in two directions: every prefix named here must map to a category
+ * the renderer knows, and every `check*` method reached by the orchestration
+ * must appear here. A method added without a registration fails that test rather
  * than silently reporting its category as never examined.
  */
 export const CHECK_METHOD_PREFIXES: Readonly<Record<string, readonly string[]>> = {
@@ -191,16 +202,14 @@ export const UNREACHABLE_PREFIXES: readonly string[] = ['CODEINJ', 'TMPPATH', 'E
  *
  * The semantic pass is not a `check*` method — it runs in the scanner bridge
  * over the artifacts it compiled — so its evidence enters the rollup through
- * `SummarizeOptions.semantic` rather than through an execution record. This
- * list is what that evidence is credited to.
+ * `SummarizeOptions.semantic` rather than through an execution record.
  *
  * Derived from the emission sites, not from `TAXONOMY_MAP`: the taxonomy holds
- * only 14 semantic IDs while the analyzers emit 15 distinct families, so
- * taking the taxonomy as the source would have silently dropped AST-CAP,
- * AST-CODE, AST-CRED, AST-GOV, AST-HEARTBEAT, AST-INJECT, AST-MANIP,
- * AST-PERSIST and AST-PROMPT from the coverage claim. The registration test
- * re-derives this list from `src/nanomind-core/` and `src/semantic/` and fails
- * on drift.
+ * 13 semantic IDs while the analyzers emit 15 distinct families, so taking the
+ * taxonomy as the source would silently drop AST-CAP, AST-CODE, AST-CRED,
+ * AST-GOV, AST-HEARTBEAT, AST-INJECT, AST-MANIP, AST-PERSIST, AST-PROMPT and
+ * SEM-MCP from the coverage claim. `coverage-honesty.test.ts` re-derives this
+ * list from `src/nanomind-core/` and `src/semantic/` and fails on drift.
  */
 export const SEMANTIC_PREFIXES: readonly string[] = [
   'AST-CAP', 'AST-CODE', 'AST-CRED', 'AST-EXFIL', 'AST-GOV', 'AST-HEARTBEAT',
@@ -209,13 +218,54 @@ export const SEMANTIC_PREFIXES: readonly string[] = [
 ];
 
 /**
+ * Which categories a COMPILED ARTIFACT of each type is evidence for.
+ *
+ * The semantic layer used to credit all 15 families above from a single
+ * boolean — `artifactsCompiled > 0`. That is a claim read off a hand-written
+ * list, which is the very thing this module exists to stop: on a repo with no
+ * MCP config at all, four MCP checks each read nothing and the category still
+ * reported `examined`, sourced only to `nanomind-semantic`.
+ *
+ * So the credit is now measured from the artifact TYPES the run actually
+ * compiled. Source files carry the analyzers that read any code; an
+ * artifact-specific category (MCP, skill, governance, A2A) is credited only
+ * when an artifact of that kind was really compiled. An unknown type credits
+ * nothing, which is the fail-closed direction.
+ */
+const ARTIFACT_TYPE_CATEGORIES: Readonly<Record<string, readonly string[]>> = {
+  // Source code is what the generic AST analyzers read.
+  source_code: ['credentials', 'injection', 'prompt', 'capabilities', 'sandbox', 'network'],
+  // Artifact-specific surfaces: present only if such an artifact was compiled.
+  mcp_config: ['MCP', 'capabilities'],
+  skill: ['skill', 'capabilities', 'prompt'],
+  soul: ['governance', 'prompt'],
+  agent_config: ['governance', 'capabilities'],
+  system_prompt: ['prompt', 'governance'],
+  a2a_card: ['A2A', 'identity'],
+  heartbeat: ['heartbeat'],
+};
+
+/** Categories the compiled artifact types are evidence for. Measured input. */
+export function categoriesForArtifactTypes(types: readonly string[]): string[] {
+  const out = new Set<string>();
+  // Fail closed on a malformed caller: credit nothing rather than throw, so a
+  // bad input can never be the reason a coverage claim is missing OR inflated.
+  if (!Array.isArray(types)) return [];
+  for (const t of types) {
+    for (const c of ARTIFACT_TYPE_CATEGORIES[t] ?? []) out.add(c);
+  }
+  return [...out];
+}
+
+/**
  * Category label for a check-ID prefix.
  *
  * Mirrors `CATEGORY_MAP` in `@opena2a/cli-ui`'s observations renderer so the
  * ledger speaks the same vocabulary the Categories line prints. Kept in step
- * by `__tests__/hardening/coverage-honesty.test.ts`, which
- * imports `ALL_CATEGORY_LABELS` from the renderer and asserts every label
- * this table produces is one the renderer knows.
+ * by `__tests__/hardening/coverage-honesty.test.ts`, which imports
+ * `ALL_CATEGORY_LABELS` from the renderer and asserts the two vocabularies
+ * match in BOTH directions — a rename on either side silently deletes a
+ * category from the report, and nothing else would signal it.
  */
 const PREFIX_TO_CATEGORY: Readonly<Record<string, string>> = {
   CRED: 'credentials', 'AST-CRED': 'credentials', WEBCRED: 'credentials',
@@ -262,6 +312,9 @@ const PREFIX_TO_CATEGORY: Readonly<Record<string, string>> = {
   AUTH: 'auth', TOOL: 'auth', API: 'auth', AITOOL: 'auth',
   GIT: 'git hygiene',
 };
+
+/** Every category label the ledger can speak about. */
+const ALL_CATEGORIES = new Set(Object.values(PREFIX_TO_CATEGORY));
 
 /** Category label for a check-ID prefix, or null when unmapped. */
 export function categoryForPrefix(prefix: string): string | null {
@@ -438,6 +491,32 @@ export class CoverageLedger {
   }
 
   /**
+   * Distinct files read per category, computed from the ledger's own path
+   * sets so a file two checks both read counts once.
+   *
+   * Returns COUNTS, never paths. The paths stay inside this object: a scan of
+   * a single file normalises its target into a temp directory, and emitting
+   * the read list put that directory's generated name into `--json` — the
+   * exact leak `secure-single-file-normalization` exists to prevent. A count
+   * carries the coverage information without carrying the filenames.
+   */
+  categoryFileCounts(): Record<string, number> {
+    const byCategory = new Map<string, Set<string>>();
+    for (const [method, paths] of this.readsByMethod) {
+      for (const prefix of CHECK_METHOD_PREFIXES[method] ?? []) {
+        const category = PREFIX_TO_CATEGORY[prefix];
+        if (!category) continue;
+        let set = byCategory.get(category);
+        if (!set) { set = new Set<string>(); byCategory.set(category, set); }
+        for (const p of paths) set.add(p);
+      }
+    }
+    const out: Record<string, number> = {};
+    for (const [category, set] of byCategory) out[category] = set.size;
+    return out;
+  }
+
+  /**
    * Roll the raw records up into per-category states.
    *
    * `semanticPrefixes` carries the AST/SEM layer's evidence, which is
@@ -451,8 +530,12 @@ export class CoverageLedger {
 
 /** Extra evidence from layers that are not `check*` methods. */
 export interface SummarizeOptions {
-  /** Prefixes the semantic layer examined, with its compiled-artifact count. */
-  semantic?: { prefixes: string[]; artifactsCompiled: number };
+  /**
+   * What the semantic layer compiled: the artifact TYPES it produced, and how
+   * many artifacts. Types are measured per run; the count alone is not
+   * evidence about any particular category.
+   */
+  semantic?: { artifactTypes: string[]; artifactsCompiled: number };
   /**
    * Check IDs of findings this scan actually reported.
    *
@@ -465,6 +548,14 @@ export interface SummarizeOptions {
    * is the defect this ledger exists to remove, so findings are counted.
    */
   observedCheckIds?: readonly string[];
+  /**
+   * Distinct files read per category, from `CoverageLedger.categoryFileCounts()`.
+   *
+   * Supplied instead of per-record path lists so no filename ever reaches a
+   * serialized surface. Absent, `filesRead` falls back to the largest single
+   * method's count, which under-reports rather than over-reports.
+   */
+  filesReadByCategory?: Readonly<Record<string, number>>;
 }
 
 /**
@@ -512,6 +603,11 @@ export function summarizeCoverage(
   // is examined by `stat`, not by reading). Understating is the only safe
   // direction for a coverage claim, so it is the one taken. `pathsInspected`
   // stays in the `--json` record, where it informs without asserting.
+  // Per-category totals come from the ledger's distinct counts. Summing the
+  // per-method `filesRead` instead double-counts every file two checks both
+  // read, and produced category totals larger than the whole tree.
+  const distinct = opts?.filesReadByCategory;
+  const fallback = new Map<string, number>();
   for (const rec of executions) {
     if (!rec.completed || rec.filesRead === 0) continue;
     for (const prefix of rec.prefixes) {
@@ -520,8 +616,12 @@ export function summarizeCoverage(
       const c = bucket(category);
       c.state = 'examined';
       c.methods.push(rec.method);
-      c.filesRead += rec.filesRead;
+      fallback.set(category, Math.max(fallback.get(category) ?? 0, rec.filesRead));
     }
+  }
+  for (const c of byCategory.values()) {
+    if (c.state !== 'examined') continue;
+    c.filesRead = distinct?.[c.category] ?? fallback.get(c.category) ?? 0;
   }
 
   // A reported finding proves its category was examined, whatever the read
@@ -540,13 +640,14 @@ export function summarizeCoverage(
   }
 
   if (opts?.semantic && opts.semantic.artifactsCompiled > 0) {
-    for (const prefix of opts.semantic.prefixes) {
-      const category = PREFIX_TO_CATEGORY[prefix];
-      if (!category) continue;
+    for (const category of categoriesForArtifactTypes(opts.semantic.artifactTypes)) {
+      if (!byCategory.has(category) && !ALL_CATEGORIES.has(category)) continue;
       const c = bucket(category);
       c.state = 'examined';
-      c.methods.push('nanomind-semantic');
-      c.filesRead += opts.semantic.artifactsCompiled;
+      if (!c.methods.includes('nanomind-semantic')) c.methods.push('nanomind-semantic');
+      // Not summed into filesRead: the compiled artifacts are the same files
+      // the static checks already counted, and adding them again is what made
+      // a per-category total exceed the size of the tree.
     }
   }
 
@@ -568,18 +669,25 @@ export function summarizeCoverage(
   for (const c of byCategory.values()) {
     if (c.state !== 'not-examined') continue;
     const methods = methodsForCategory(c.category);
-    const skipped = methods.map(m => byMethod.get(m)).filter(r => r?.skipReason);
-    const unreachable = UNREACHABLE_PREFIXES.some(
-      p => PREFIX_TO_CATEGORY[p] === c.category,
-    ) && methods.length === 0;
+    const records = methods.map(m => byMethod.get(m));
+    const skipped = records.filter(r => r?.skipReason);
     if (skipped.length > 0) {
       c.reason = skipped[0]!.skipReason;
-    } else if (unreachable) {
-      c.reason = 'the check for this category has no caller in the scan (unreachable)';
     } else if (methods.length === 0) {
       c.reason = 'no check in this category ran';
+    } else if (records.some(r => r?.completed && r.pathsInspected > 0)) {
+      c.observedAbsent = true;
+      // The checks looked — they stat'd or listed paths inside the target —
+      // and found no file of their kind. That is a genuine absence.
+      c.reason = 'checks ran and found no file of this kind in the target';
     } else {
-      c.reason = 'checks ran but found no file of this kind in the target';
+      // Nothing was read AND nothing was even inspected, so there is no
+      // evidence these checks touched the target at all. Reporting that as
+      // "no such surface here" would convert an instrumentation hole into
+      // reassurance: `checkContextLifecycle` delegates to a module that reads
+      // through an untracked `fs`, so it read 177 files and recorded none.
+      // Absence has to be observed, not inferred from silence.
+      c.reason = 'no evidence these checks inspected the target';
     }
   }
 

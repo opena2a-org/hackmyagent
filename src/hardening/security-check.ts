@@ -211,7 +211,7 @@ export interface ScanResult {
    * Before this existed, the Observations block derived its coverage claim
    * from `TAXONOMY_MAP` — the configured check set — so `310 static · 0
    * skipped · (all clear)` was printed identically whether the checks ran
-   * against the tree or not. Measured on a 528-file repo carrying a planted
+   * against the tree or not. Measured on a 529-file repo carrying a planted
    * credential and a `curl … | sh`, the output was byte-identical to the
    * unplanted tree's. Every field here is evidence from the run.
    */
@@ -222,6 +222,8 @@ export interface ScanResult {
     executions: CoverageCheckExecution[];
     /** Caps that stopped a layer short of the whole tree. */
     truncations: CoverageTruncationRecord[];
+    /** Distinct files read per category. Counts only — never filenames. */
+    filesReadByCategory?: Record<string, number>;
   };
 }
 

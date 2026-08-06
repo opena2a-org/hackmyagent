@@ -16,7 +16,12 @@
  *   attention window.
  */
 
-import * as fs from 'fs/promises';
+// Tracked `fs` so the reads this module performs on behalf of
+// `checkContextLifecycle` are attributed to the coverage ledger. Reading
+// through the untracked namespace made the lifecycle category report
+// `filesRead: 0` after reading 177 files, which the renderer then showed as
+// 'no such surface here' — an instrumentation hole rendered as reassurance.
+import { fs } from '../hardening/tracked-fs';
 import * as path from 'path';
 import type {
   SecurityFinding,

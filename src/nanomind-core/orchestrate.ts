@@ -51,7 +51,7 @@ export interface OrchestrationResult {
   /**
    * True when `compiledArtifacts` is the 200-file cap rather than a count of
    * the tree. The CLI prints this number as "N files analyzed", so without
-   * the flag a capped 528-file repo and a complete 200-file one render
+   * the flag a capped 529-file repo and a complete 200-file one render
    * identically.
    */
   compileSetTruncated: boolean;

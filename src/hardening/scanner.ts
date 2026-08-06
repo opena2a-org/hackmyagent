@@ -2830,6 +2830,9 @@ export class HardeningScanner {
         filesExamined: this.coverage.filesExamined,
         executions: this.coverage.records,
         truncations: this.coverage.caps,
+        // Counts, never paths — a single-file scan normalises its target into
+        // a generated temp directory, and emitting read paths leaked that name.
+        filesReadByCategory: this.coverage.categoryFileCounts(),
       },
     };
   }

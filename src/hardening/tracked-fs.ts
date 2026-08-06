@@ -1,7 +1,7 @@
 /**
  * `fs/promises` namespace with read attribution for the coverage ledger.
  *
- * The scanner reads the target through 153 separate `fs.readFile` call sites
+ * The scanner reads the target through 151 separate `fs.readFile` call sites
  * plus a spread of `stat` / `readdir` / `access` calls. Instrumenting each one
  * would be fail-OPEN: a site missed in the sweep would let its check claim
  * coverage it never had, which is the exact defect the ledger exists to fix.

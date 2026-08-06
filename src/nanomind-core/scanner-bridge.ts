@@ -139,7 +139,7 @@ export interface NanoMindScanResult {
    *
    * The display layer prints `compiledArtifacts` as "N files analyzed". On a
    * tree larger than the cap that N IS the cap, and printing it unqualified is
-   * what let a 528-file repo report "200 files analyzed" beside "(all clear)".
+   * what let a 529-file repo report "200 files analyzed" beside "(all clear)".
    */
   compileSetTruncated: boolean;
 }

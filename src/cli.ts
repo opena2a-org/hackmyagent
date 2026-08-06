@@ -145,6 +145,7 @@ import { getTaxonomyMap, getCheckCounts } from './hardening/taxonomy';
 import {
   summarizeCoverage,
   SEMANTIC_PREFIXES,
+  CHECK_METHOD_PREFIXES,
   UNREACHABLE_PREFIXES,
   type CategoryCoverage,
 } from './hardening/coverage-ledger';
@@ -1248,14 +1249,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   if (nanomindScan) {
     // `compiledArtifacts` is the semantic layer's compile count, and that
     // layer stops at a 200-file cap. Printed bare as "200 files analyzed" it
-    // reads as the size of the scan; on a 528-file repo it was the cap, and
+    // reads as the size of the scan; on a 529-file repo it was the cap, and
     // adding a file to the tree did not move it. Name it as a cap when it is
     // one, and prefer the measured read count when the ledger has it.
     if (nanomindScan.compileSetTruncated) {
       const read = localScan?.coverage?.filesExamined;
       meta.push(
         read !== undefined
-          ? `${read} files read · semantic capped at ${nanomindScan.compiledArtifacts}`
+          ? `${read} file${read === 1 ? '' : 's'} read · semantic capped at ${nanomindScan.compiledArtifacts}`
           : `semantic capped at ${nanomindScan.compiledArtifacts} files`,
       );
     } else {
@@ -1403,11 +1404,20 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
               ]
             : localScan.coverage.truncations,
           {
+            // Artifact TYPES the run compiled — measured, unlike the old
+            // blanket credit which upgraded 15 category families from the
+            // single fact that some artifact somewhere compiled.
             ...(semanticCount > 0
-              ? { semantic: { prefixes: [...SEMANTIC_PREFIXES], artifactsCompiled: semanticCount } }
+              ? {
+                  semantic: {
+                    artifactTypes: (opts.artifactSummaries ?? []).map(a => a.type),
+                    artifactsCompiled: semanticCount,
+                  },
+                }
               : {}),
             // A reported finding proves its category was examined.
             observedCheckIds: failed.map(f => f.checkId).filter(Boolean),
+            filesReadByCategory: localScan.coverage.filesReadByCategory,
           },
         )
       : undefined;
@@ -1423,8 +1433,10 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // fixed here. A cap, a depth skip, or a check with no caller ARE gaps:
     // there was something to look at and the scan did not look. Only the
     // second kind qualifies the verdict.
-    const isAbsentSurface = (c: CategoryCoverage): boolean =>
-      (c.reason ?? '').includes('no file of this kind');
+    // Flag, not a string match: the ledger sets `observedAbsent` only when a
+    // check was seen to look and find nothing. Sniffing the reason text would
+    // reclassify a gap as benign the moment the sentence is reworded.
+    const isAbsentSurface = (c: CategoryCoverage): boolean => c.observedAbsent === true;
     const notExaminedAbsent = notExamined.filter(isAbsentSurface);
     const notExaminedGaps = notExamined.filter(c => !isAbsentSurface(c));
     // HMA-2: prefer registry.packageType (authoritative) over the local
@@ -1452,7 +1464,8 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       : null;
     // A category can only be reported CLEAR if a check in it actually read a
     // file inside the target. `buildCategorySummaries` seeds all 25 labels
-    // `clear: true` from the taxonomy before it looks at a single finding, so
+    // `clear: true` from the renderer's own ALL_CATEGORY_LABELS before it
+    // looks at a single finding, so
     // on its own it reports "clear" for categories the run never examined.
     // Measured on a 529-file repo carrying a planted credential: 13 of the 25
     // were never examined, and all 25 printed under "(all clear)".
@@ -1578,7 +1591,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // stopped at 200". Say which one it is.
     if (nanomindScan?.compileSetTruncated && localScan?.coverage) {
       surfacesLine.value +=
-        ` (semantic pass capped at ${semanticCount}; ${localScan.coverage.filesExamined} files read in total)`;
+        ` (semantic pass capped at ${semanticCount}; ${localScan.coverage.filesExamined} file${localScan.coverage.filesExamined === 1 ? '' : 's'} read in total)`;
       surfacesLine.tone = 'warning';
     }
 
@@ -1616,9 +1629,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     if (coverageCategories && localScan?.coverage) {
       const execs = localScan.coverage.executions;
       const ran = execs.filter(e => e.completed).length;
+      // Denominator is the REGISTERED check set, not the records that happen
+      // to exist. Sizing it from `executions.length` made a check that never
+      // registered vanish from both halves, so the ratio always read `N of N`
+      // and could not express a missing check at all.
+      const registered = Object.keys(CHECK_METHOD_PREFIXES).length;
       const parts = [
         `${staticCount} static declared`,
-        `${ran} of ${execs.length} check groups ran`,
+        `${ran} of ${registered} check groups ran`,
       ];
       if (UNREACHABLE_PREFIXES.length > 0) {
         parts.push(`${UNREACHABLE_PREFIXES.length} unreachable`);
@@ -1650,8 +1668,8 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         `  ${colors.dim}${'Coverage'.padEnd(LABEL_WIDTH, ' ')}${RESET()}${covTone}${tally.join(' · ')}${RESET()}`,
       );
 
-      // Name them. `Not examined` is exactly LABEL_WIDTH, so padEnd would
-      // leave no separator and the label would run into the value.
+      // Name them on their own lines. Labels stay under LABEL_WIDTH so
+      // padEnd always leaves a separator before the value.
       const nameLine = (label: string, cats: CategoryCoverage[], tone: string): void => {
         if (cats.length === 0) return;
         const shown = verbose ? cats : cats.slice(0, 8);
@@ -4356,15 +4374,19 @@ Examples:
                   ...(nmResult.compiledArtifacts > 0
                     ? {
                         semantic: {
-                          prefixes: [...SEMANTIC_PREFIXES],
+                          artifactTypes: (nmResult.artifactSummaries ?? []).map(a => a.type),
                           artifactsCompiled: nmResult.compiledArtifacts,
                         },
                       }
                     : {}),
+                  // Same predicate the rendered block uses, so the text and
+                  // the JSON cannot disagree about which categories a finding
+                  // proves were examined.
                   observedCheckIds: result.findings
-                    .filter(f => !f.passed)
+                    .filter(f => countsAgainstScore(f))
                     .map(f => f.checkId)
                     .filter(Boolean),
+                  filesReadByCategory: result.coverage.filesReadByCategory,
                 },
               ),
               // Checks whose implementation exists but has no caller, so they

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { HardeningScanner } from '../../src/hardening/scanner';
@@ -77,13 +77,19 @@ async function scanWithCoverage(dir: string) {
     truncations,
     {
       ...(nm.compiledArtifacts > 0
-        ? { semantic: { prefixes: [...SEMANTIC_PREFIXES], artifactsCompiled: nm.compiledArtifacts } }
+        ? {
+            semantic: {
+              artifactTypes: nm.artifactSummaries.map(a => a.type),
+              artifactsCompiled: nm.compiledArtifacts,
+            },
+          }
         : {}),
       // Both layers: the static scan's findings AND the semantic pass's. The
       // CLI feeds the merged `failed` list, so the helper must too — passing
       // only the semantic half would file `git hygiene` as unexamined while
       // `GIT-001` sits in the same report.
       observedCheckIds: allFailed.map(f => f.checkId),
+      filesReadByCategory: result.coverage?.filesReadByCategory,
     },
   );
   return { result, nm, categories, allFailed };
@@ -277,3 +283,156 @@ describe('secure coverage honesty', () => {
     });
   });
 });
+
+/**
+ * Guards the claims the module comments make about their own guards.
+ *
+ * An adversarial review found three of them false: the ledger↔renderer
+ * vocabulary was validated against itself, `SEMANTIC_PREFIXES` was documented
+ * as drift-checked and was not, and the unwrapped-call test matched only one
+ * spelling of an unwrapped call. Each of those is a comment asserting a
+ * property nothing measured.
+ */
+describe('the guards the comments claim actually exist', () => {
+  const scannerSrc = readFileSync(
+    join(__dirname, '../../src/hardening/scanner.ts'),
+    'utf-8',
+  );
+
+  it('speaks exactly the renderer vocabulary, in both directions', async () => {
+    const { ALL_CATEGORY_LABELS } = await import('@opena2a/cli-ui');
+    const renderer = new Set<string>(ALL_CATEGORY_LABELS);
+    const ledger = new Set<string>(
+      Object.values(CHECK_METHOD_PREFIXES)
+        .flatMap(ps => ps.map(categoryForPrefix))
+        .filter((c): c is string => c !== null),
+    );
+    // Ledger -> renderer: a label the renderer does not know is a category
+    // that silently disappears from the Categories line.
+    expect([...ledger].filter(c => !renderer.has(c))).toEqual([]);
+    // Renderer -> ledger: a renderer label the ledger cannot speak about can
+    // never be reported as examined, so it would read as permanently missing.
+    const semantic = new Set(
+      SEMANTIC_PREFIXES.map(categoryForPrefix).filter((c): c is string => c !== null),
+    );
+    const speakable = new Set([...ledger, ...semantic]);
+    expect([...renderer].filter(c => !speakable.has(c))).toEqual([]);
+  });
+
+  it('keeps SEMANTIC_PREFIXES in step with the analyzers that emit them', () => {
+    // Re-derived from the emission sites, which is what the comment claims.
+    const roots = ['../../src/nanomind-core', '../../src/semantic'];
+    const seen = new Set<string>();
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) { walk(full); continue; }
+        if (!entry.name.endsWith('.ts')) continue;
+        for (const m of readFileSync(full, 'utf-8').matchAll(
+          /['"`]((?:AST|SEM)-[A-Z]+)-\d+['"`]/g,
+        )) seen.add(m[1]);
+      }
+    };
+    for (const r of roots) walk(join(__dirname, r));
+    expect(seen.size).toBeGreaterThan(0);
+    const declared = new Set(SEMANTIC_PREFIXES);
+    expect([...seen].filter(p => !declared.has(p)).sort()).toEqual([]);
+  });
+
+  /**
+   * The previous version matched only the literal `await this.checkX(`
+   * spelling, so `await Promise.resolve(this.checkX(...))` slipped past it and
+   * all tests stayed green while the check ran outside the ledger.
+   */
+  it('catches an orchestrated check called by any spelling outside the ledger', () => {
+    const start = scannerSrc.indexOf('// Run all checks');
+    const end = scannerSrc.indexOf('// end of standard/deep checks');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const region = scannerSrc.slice(start, end);
+
+    // Every mention of a check method in the orchestration must be the one
+    // inside a `coverage.run('name', () => this.name(` construct.
+    const wrapped = new Set(
+      [...region.matchAll(/this\.coverage\.run\('(\w+)',\s*\(\)\s*=>\s*this\.\1\(/g)]
+        .map(m => m[1]),
+    );
+    const mentioned = [...region.matchAll(/this\.(check\w+)\(/g)].map(m => m[1]);
+    const outside = [...new Set(mentioned)].filter(m => !wrapped.has(m));
+    expect(outside, 'check methods invoked outside the coverage ledger').toEqual([]);
+    expect(wrapped.size).toBeGreaterThan(50);
+  });
+});
+
+describe('coverage numbers cannot exceed what was measured', () => {
+  let dir: string;
+  let scan: Awaited<ReturnType<typeof scanWithCoverage>>;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'hma-cov-num-'));
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    for (let i = 0; i < 12; i++) {
+      writeFileSync(join(dir, 'src', `m${i}.js`), FILLER);
+    }
+    scan = await scanWithCoverage(dir);
+  }, 300_000);
+
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  /**
+   * Per-category totals used to be a SUM across the methods of a category, so
+   * a file two checks both read counted twice and `credentials.filesRead`
+   * reached 7 on a 3-file tree — the same "number that cannot be true" the
+   * read attribution was fixed to avoid.
+   */
+  it('never reports a category reading more files than the scan read', () => {
+    const total = scan.result.coverage!.filesExamined;
+    expect(total).toBeGreaterThan(0);
+    for (const c of scan.categories) {
+      expect(c.filesRead, `${c.category} read ${c.filesRead} of ${total}`)
+        .toBeLessThanOrEqual(total);
+    }
+  });
+
+  /**
+   * The semantic layer used to upgrade all 15 of its category families from
+   * the single fact that some artifact compiled, so a repo with no MCP config
+   * reported `MCP: examined` sourced only to `nanomind-semantic`.
+   */
+  it('credits a semantic category only when a matching artifact compiled', () => {
+    const types = new Set(scan.nm.artifactSummaries.map(a => a.type));
+    expect(types.has('mcp_config')).toBe(false); // fixture has no MCP config
+    const mcp = scan.categories.find(c => c.category === 'MCP');
+    expect(mcp).toBeDefined();
+    expect(
+      mcp!.methods.includes('nanomind-semantic'),
+      'MCP credited to the semantic layer with no MCP artifact compiled',
+    ).toBe(false);
+  });
+
+  /**
+   * An un-attributed read must never render as "no such surface here": that
+   * turns an instrumentation hole into reassurance and drops it from the
+   * verdict gate. Absence has to be observed.
+   */
+  it('marks absence only where a check was seen to look', () => {
+    for (const c of scan.categories) {
+      if (!c.observedAbsent) continue;
+      const looked = methodsSeen(scan, c.category).some(
+        r => r.completed && r.pathsInspected > 0,
+      );
+      expect(looked, `${c.category} claims observed absence without inspecting`).toBe(true);
+    }
+  });
+});
+
+/** Execution records for the methods registered to a category. */
+function methodsSeen(
+  scan: Awaited<ReturnType<typeof scanWithCoverage>>,
+  category: string,
+) {
+  const wanted = Object.entries(CHECK_METHOD_PREFIXES)
+    .filter(([, ps]) => ps.some(p => categoryForPrefix(p) === category))
+    .map(([m]) => m);
+  return (scan.result.coverage?.executions ?? []).filter(e => wanted.includes(e.method));
+}
