@@ -1,0 +1,81 @@
+name: Dependency audit
+
+# Fails a PR when the resolved dependency tree carries a high or critical
+# advisory.
+#
+# Why this exists: the `overrides` block in package.json has now been used
+# twice to drive `npm audit` to zero — #184, then `bd6b519` ("resolve all 6
+# open dependency advisories, 10 audit entries -> 0"). Both times the floor
+# was written as `^<the version installed that day>`: `ip-address` at
+# `^10.1.1`, `fast-uri` at `^3.1.4`. A caret range's LOWER bound is what the
+# lockfile settles on, so each fix froze the tree at the exact version the
+# next advisory was published against, and the same packages came back — 5
+# Dependabot alerts, 2 of them high.
+#
+# Nothing in CI noticed either time. `release.yml`, `test-matrix.yml`,
+# `parity-gate.yml` and `pr-review.yml` never ran `npm audit`, so a PR could
+# merge, and a tag could publish, with known-high advisories in the lock. The
+# alerts sat on the default branch until someone happened to read them.
+#
+# So the durable half of that fix is this job, not the version bumps. Raising
+# a floor closes today's advisory; this closes the path by which the next one
+# goes unnoticed.
+#
+# Threshold is `high` on purpose. Gating on `moderate` would make any newly
+# published moderate advisory — against a dependency the PR did not touch, on
+# code that may not even load — block unrelated work, and an unwaivable false
+# critical costs more than a miss. Moderate findings are still printed below,
+# and Dependabot still files them.
+#
+# Note the honest cost of this gate: `npm audit` queries a live advisory
+# database, so a PR can go red for something its own diff did not introduce.
+# That is intended. A new high advisory against a shipped CLI's dependency
+# tree should stop the line, and the fix is to raise the floor to the patched
+# version rather than to make this job advisory.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          # No `cache: npm` on purpose — nothing is installed below, so there
+          # is no download to cache.
+      # `--package-lock-only` audits the committed lockfile directly. Two
+      # reasons it is preferred over `npm ci` followed by an audit:
+      #
+      # 1. It installs nothing, so no dependency's install script executes.
+      #    This job runs on `pull_request`, which includes pull requests from
+      #    forks, and a job that runs `npm ci` on a fork's branch executes
+      #    whatever that branch put in a `postinstall`. An audit needs no
+      #    installed tree, so it should not create that surface — least of all
+      #    in the CI of a tool whose subject is supply-chain risk.
+      # 2. It audits the versions the repo actually pins rather than a tree
+      #    resolved fresh on the runner, which is the thing being gated.
+      #
+      # Verified equivalent to the `npm ci` form before being adopted: on the
+      # pre-fix lockfile it reports the same 3 high + 1 moderate and exits 1,
+      # and on this one it reports none and exits 0.
+
+      # Informational, never fails: the full picture including moderate and
+      # low, so a reviewer can see what is accumulating below the threshold.
+      - name: Full advisory report (informational)
+        run: npm audit --package-lock-only || true
+
+      # The gate.
+      - name: Fail on high or critical advisories
+        run: npm audit --package-lock-only --audit-level=high
