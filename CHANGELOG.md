@@ -10,8 +10,11 @@ All notable changes to HackMyAgent are documented in this file.
   score it used to print was inverted by construction — a jailbreak document scored 100%
   resilient and benign prose scored 0% — and no attack was ever executed. **Any resilience
   score, `All defenses held` line, or `Strong defenses:` line produced by 0.25.2 or any
-  earlier version is void and carries no signal.** The affected range is v0.2.24 through
-  0.25.2, effectively the whole published life of the command. A CI job that ran `red-team`
+  earlier version is void and carries no signal.** The affected range is **0.11.14 through
+  0.25.2** — the whole published life of the command, which did not exist before 0.11.14.
+  Verified by execution on both sides: `0.11.13` answers `unknown command 'red-team'`,
+  `0.11.14` prints `Resilience score: 100%` and `All defenses held` at exit 0 over a
+  jailbreak artifact. A CI job that ran `red-team`
   and gated on its exit code was passing over every artifact, including jailbreaks; it will
   now fail until the execution path lands. There is no flag to restore the old behaviour —
   a switch that returns exit 0 is a switch that returns the defect. Detail under **Fixed**.
