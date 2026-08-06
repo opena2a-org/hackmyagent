@@ -65,7 +65,7 @@ export interface AiConfigFile {
    * the credential branch reports the KEY it matched and never the value, so
    * the report cannot become the place a secret gets copied to.
    */
-  evidence?: { line: number; token: string; text?: string };
+  evidence?: { line?: number; token: string; text?: string; reason?: string; fix?: string };
 }
 
 export interface IdentitySummary {
@@ -512,7 +512,10 @@ export function scanAiConfigs(targetDir: string): AiConfigFile[] {
         // Only one of the two is reported, and the credential outranks the
         // grant — so the grant scan is skipped rather than computed and
         // discarded.
-        const grant = credential ? undefined : findPermissionGrant(content);
+        // `file` selects the parsed half from the prose half (#364), so it is
+        // the config's own name rather than the absolute path: the extension is
+        // all that is read, and a temp-dir prefix has no business in it.
+        const grant = credential ? undefined : findPermissionGrant(content, file);
 
         if (credential) {
           risk = 'critical';
@@ -521,7 +524,13 @@ export function scanAiConfigs(targetDir: string): AiConfigFile[] {
         } else if (grant) {
           risk = 'high';
           details = `${pattern.tool} config grants broad permissions`;
-          evidence = { line: grant.line, token: grant.token, text: grant.text };
+          evidence = {
+            line: grant.line,
+            token: grant.token,
+            text: grant.text,
+            reason: grant.reason,
+            fix: grant.fix,
+          };
         }
       } catch { /* file unreadable */ }
 
@@ -884,7 +893,11 @@ function quoted(s: string): string {
 function configEvidenceDetail(configs: readonly AiConfigFile[]): string {
   const head = configs[0];
   if (!head?.evidence) return configs.map((cc) => cc.file).join(', ');
-  const where = `${escapePathForDisplay(head.file)}:${head.evidence.line}`;
+  // `:line` only when the detector could cite one safely — a structured
+  // config that also declares a restriction key gets the file alone, because
+  // locating an entry by text there can land on the DENY line.
+  const at = head.evidence.line === undefined ? '' : `:${head.evidence.line}`;
+  const where = `${escapePathForDisplay(head.file)}${at}`;
   // The TOKEN, not the line. The claim is "this phrase grants broad
   // permissions", so the phrase is what the finding has to show; the whole line
   // is what the Verify command prints, and it stays on `evidence.text` for a
@@ -892,7 +905,12 @@ function configEvidenceDetail(configs: readonly AiConfigFile[]): string {
   const what = head.evidence.token;
   const rest = configs.length - 1;
   const more = rest > 0 ? ` (+${rest} more config file${rest > 1 ? 's' : ''})` : '';
-  return `${where} — matched ${quoted(what)}${more}`;
+  // "matched" is the honest verb for the prose half and the wrong one for the
+  // parsed half — nothing was matched there, the permission key was read (#364).
+  // The reason says which of the two produced this and why it is a grant.
+  const why = head.evidence.reason ? ` ${head.evidence.reason}` : '';
+  const verb = head.evidence.reason ? '' : 'matched ';
+  return `${where} — ${verb}${quoted(what)}${why}${more}`;
 }
 
 /**
@@ -911,7 +929,13 @@ function configVerifyCommand(scanDirectory: string, config: AiConfigFile | undef
   if (!config?.evidence) return undefined;
   const quotedPath = citationPath(path.join(scanDirectory, config.file));
   if (!quotedPath) return undefined;
-  return `sed -n '${config.evidence.line}p' ${quotedPath}`;
+  // No line means no `sed`. `cat` is the honest substitute: it carries no
+  // scanned text into the command — so it cannot copy a credential out of a
+  // permission entry into a line the reader is invited to run — and the
+  // finding already names the entry to look for.
+  return config.evidence.line === undefined
+    ? `cat ${quotedPath}`
+    : `sed -n '${config.evidence.line}p' ${quotedPath}`;
 }
 
 function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScanResult): Finding[] {
@@ -1104,8 +1128,15 @@ function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScan
       whyItMatters:
         'These configs allow AI agents to perform a wide range of actions without restrictions. '
         + 'Broad permissions increase risk if an agent behaves unexpectedly.',
+      // The fix comes from the vocabulary that classified the entry, because
+      // the generic sentence is wrong for half of them: "replace it with the
+      // specific commands or paths this agent needs" is a dead end against
+      // `defaultMode: acceptEdits`, which takes neither a command nor a path.
       remediation: cited.evidence
-        ? `Narrow ${escapePathForDisplay(cited.file)}:${cited.evidence.line} — replace ${quoted(cited.evidence.token)} with the specific commands or paths this agent needs`
+        ? `Narrow ${escapePathForDisplay(cited.file)}${cited.evidence.line === undefined ? '' : `:${cited.evidence.line}`} — ${
+          cited.evidence.fix
+            ?? `replace ${quoted(cited.evidence.token)} with the specific commands or paths this agent needs`
+        }`
         : `hackmyagent scan-soul ${target}`,
       verify: configVerifyCommand(result.scanDirectory, cited),
     });
@@ -1449,7 +1480,13 @@ function formatText(result: DetectResult, verbose: boolean, rawTargetDir: string
       // permissions to AI agents in this project" was printed under the
       // filename of a document whose text RESTRICTED the agent, and a reader
       // had nothing to check it against.
-      const at = config.evidence ? dim(` line ${config.evidence.line}: `) + quoted(config.evidence.token) : '';
+      // The line is OPTIONAL — a structured config that also declares a
+      // restriction key gets no line, because locating an entry by text on such
+      // a file can return the deny entry. Interpolating it unguarded printed
+      // `line undefined:` here, which is the one surface that reads the field
+      // directly rather than through `configEvidenceDetail`.
+      const where = config.evidence?.line === undefined ? '' : ` line ${config.evidence.line}`;
+      const at = config.evidence ? dim(`${where}: `) + quoted(config.evidence.token) : '';
       if (config.risk === 'critical') {
         lines.push(`    ${yellow('Contains hardcoded credentials')}${at} ${dim('—')} ${cyan('opena2a protect .')}`);
       } else if (config.risk === 'high') {
