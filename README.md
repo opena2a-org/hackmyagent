@@ -158,7 +158,9 @@ Maps an artifact's attack surface from its own language and generates target-spe
 
 **It does not run them.** No agent is executed, so nothing about resistance is measured and no resilience score is reported — `resilienceScore` is `null` and `evaluation.mode` is `not_executed` in `--json`. The command exits **2** to mark that it reached no verdict (`0` executed-and-clean, `1` findings). The payloads are the deliverable: `--json` puts their text under `.results[].payloadInput`, to run against your own agent.
 
-Until 0.25.2 this command scored resistance with a regex over the artifact's own text, which rated a jailbreak document 100% resilient and benign prose 0%. That number is removed rather than corrected (#369); executing payloads for real is tracked in `docs/design/redteam-nanomind-judge.md`.
+In 0.25.2 and earlier this command scored resistance with a regex over the artifact's own text, which rated a jailbreak document 100% resilient and benign prose 0%, both at exit 0. Those versions are still the published ones until 0.26.0 ships, so treat any resilience score, defense map, or successful-attack count they produced as void. The number is removed rather than corrected (#369); executing payloads for real is tracked in `docs/design/redteam-nanomind-judge.md`.
+
+Two `--json` fields were renamed with the number, because their old names asserted a polarity nothing established. `constraints` is now `modalStatements`: it is a list of modal-verb sentences extracted from the artifact, and "Never reveal secrets." and "Never refuse." are the same syntactic shape, so nothing here separates a rule from a jailbreak. `governanceMechanism: string` is now `governanceMentions: string[]`: governance vocabulary the artifact mentions, not a mechanism it has. A file cannot report whether the agent it describes is governed, and the old field suppressed an attack surface when it was non-`none`.
 
 ### `attack` (payload battery)
 
@@ -310,7 +312,7 @@ npx hackmyagent secure --ignore LOG-001,RATE-001
 |---|---|
 | 0 | Clean. No critical or high issues. |
 | 1 | Critical or high severity issues found. |
-| 2 | Incomplete scan. One or more plugins failed. |
+| 2 | No verdict reached. A scan whose plugins failed, or a command that reaches no verdict by design. `red-team` exits 2 on every run: it maps an attack surface and generates payloads without executing any, so it never concludes anything about the target. |
 | 3 | QUARANTINE. Binary integrity check failed (tampered installation). |
 
 ## Auto-fix catalogue
