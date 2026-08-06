@@ -144,6 +144,63 @@ All notable changes to HackMyAgent are documented in this file.
 
 ### Known issues
 
+**The `red-team` closure above is scoped to `red-team`.** Two other commands still
+report a pass over a run that measured nothing, and both are live in this release.
+Neither is introduced by 0.26.0: both reproduce on the published 0.25.2, and each is
+older than that.
+
+- **`attack` reports `SECURE` for a target it never reached (#406).** A run against a
+  closed port scores the target `0/100 (SECURE)` and exits 0. Nothing connected.
+  Copied from this build:
+
+  ```
+  $ hackmyagent attack http://127.0.0.1:59999/nope --timeout 3000
+  Risk Score: 0/100 (SECURE)
+  ...
+  Attacks: 111 total | 0 successful | 0 blocked | 111 inconclusive
+  $ echo $?
+  0
+  ```
+
+  Every one of the 111 results carries `Error: fetch failed` as its evidence. The text
+  output states nowhere that the target was unreachable. In `--json` the transport
+  error appears only inside `results[].evidence`; the top level still reads
+  `"riskScore": 0` and `"riskRating": "secure"`, and no field in either channel
+  reports whether the target ever responded. A `SECURE` verdict from this command
+  means "no attack was observed to succeed", which includes the case where no attack
+  was delivered.
+
+  Until this is fixed, confirm the target answers before reading the verdict, and
+  treat `summary.inconclusive` equal to `summary.total` in `--json` as "nothing was
+  measured" rather than as a pass. Measured identical on 0.26.0 and on published
+  0.25.2. The same verdict at exit 0 also reproduces on 0.8.0 (2026-03-02), the first
+  release carrying `attack`, where the run was 49 payloads rather than 111.
+
+- **`check --json` cannot fail (#373), and does not disclose its scope (#388).**
+  Adding `--json` turns a failing scan into a passing exit code. Against any local
+  target that produces critical findings, `check <target>` prints them and exits 1,
+  while `check <target> --json` reports the same findings, including
+  `"risk": "critical"`, and exits 0. Measured on a skill artifact carrying an
+  exfiltration pattern: 4 critical and 1 high, exit 1 in text and exit 0 in JSON. A CI
+  job running `check --json` has never been able to fail on findings.
+
+  The payload also carries no scope field. `check` on a local path is a quick scan,
+  and the text output says so four separate ways, including
+  `310 static not run (quick scan)`. None of that reaches `--json`, so a JSON consumer
+  cannot tell a clean result from an unrun one.
+
+  Until this is fixed, gate on the `risk` and `critical` fields in the payload rather
+  than on the exit code, and run `secure <target>` when the full static suite is
+  needed. Reproduces on published 0.25.2 and back to 0.12.7 (2026-04-01); on 0.12.7
+  the same target reports `"critical": 3` at exit 0, so detection has moved since and
+  the exit code has not.
+
+- **Three commands print advice citing flags that are not registered (#372).** `wild`
+  says to use `--model`, `fix-all` says to use `--uninstall`, and the Registry
+  rate-limit error says to use `--skip-registry`. All three return
+  `error: unknown option`. Verified on 0.26.0 and on published 0.25.2. There is no
+  substitute flag to reach for: for the rate limit, wait and re-run.
+
 - **3 of the advertised 310 static checks have no caller.** `CODEINJ-001`,
   `TMPPATH-001` and `ENVLEAK-001` are implemented and counted in the suite
   size, but nothing in the scan invokes them, so they can never fire. They are
