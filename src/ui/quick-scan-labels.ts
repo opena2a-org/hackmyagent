@@ -132,3 +132,18 @@ export function quickScanFollowupText(quickScan: QuickScanContext): string {
     `(adds ${QUICK_SCAN_UNEVALUATED_CATEGORIES.join(', ')}).`
   );
 }
+
+/**
+ * Left-hand labels the Observations block prints, and the column they sit in.
+ *
+ * A label of exactly `OBSERVATION_LABEL_WIDTH` leaves no separator after
+ * `padEnd` and runs straight into its value — `Not examinedA2A, CVE, …`
+ * shipped that way twice during one change. `observation-labels.test.ts`
+ * holds every entry strictly under the width so a third spelling cannot.
+ */
+export const OBSERVATION_LABEL_WIDTH = 12;
+
+export const OBSERVATION_LABELS = {
+  unexamined: 'Unexamined',
+  coverage: 'Coverage',
+} as const;

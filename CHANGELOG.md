@@ -34,6 +34,59 @@ All notable changes to HackMyAgent are documented in this file.
 
 - **`secure`'s `CLAUDE-002` and `detect` could disagree in direction on the same file (#363).** `CLAUDE-002` tested `perm.includes('(*)')` while `detect` matched text, so a file whose only content was `Bash(*:*)` produced a HIGH from one command and `no security issues found` from the other. Both now call one shared vocabulary, so the next spelling is added once rather than twice.
 
+- **`secure` reported categories clear that it never examined.** On a 529-file
+  repo carrying a hardcoded `sk-ant-api03-…` key, an `AKIAIOSFODNN7EXAMPLE` and
+  a `curl … | sh`, the scan printed `100/100`, `310 static · 200 semantic · 0
+  skipped`, `Categories credentials, MCP, network, … (all clear)` and `No
+  security issues detected. This library looks safe to use.` — byte-identical
+  to the same tree with nothing planted in it.
+
+  Not a missed detection: a false assurance line, and worse than silence
+  because it invites the reader to record a pass. `secure` is what our own
+  pre-push gate runs, so every gated repo was getting it.
+
+  The cause was that the claim came from configuration, not from the run.
+  `310 static` counts the keys of the taxonomy; the category list seeded all
+  25 labels `clear: true` before reading a single finding; and `0 skipped` was
+  printed whenever no skip list was supplied, which was always. None of the
+  three consults anything that executed.
+
+  Coverage is now **measured**. A runtime ledger records which check methods
+  ran and which files inside the target each one actually read, and the
+  Observations block and `--json` are derived from that. Three states per
+  category: `examined` (a check in it read a file, or reported a finding),
+  `partial` (checks ran but a cap stopped them short of the tree), and
+  `unexamined` (the checks read no file of that kind here). On the repo above,
+  8 of 25 categories were examined and 4 were partial — all 25 had been
+  printed as clear.
+
+  What the report does NOT do is guess why a category read nothing. An earlier
+  cut split "the surface is absent" from "the read was not attributed" by
+  inference, and it was wrong in both directions: checks that probe exact
+  filenames never succeed on a repo that lacks them, so a real absence could
+  not be recognised and every ordinary repo grew a warning; and a directory
+  listing by an unrelated check in the same category flipped the flag on
+  evidence that said nothing about the surface. Only a cap that actually fired
+  or a check the scan explicitly skipped qualifies the verdict.
+
+  The ledger **fails closed**: every category starts `not examined` and only
+  positive runtime evidence upgrades it, so instrumentation that is missing or
+  bypassed understates coverage and can never overstate it.
+
+  Two numbers stopped being caps wearing the label of measurements. The
+  headline `N files analyzed` was the semantic layer's 200-file compile cap,
+  so a 529-file tree and a complete 200-file one printed identically and
+  adding a file did not move the count; it now reads
+  `488 files read · semantic capped at 200` when the cap fires. And a clean
+  result over incomplete coverage no longer says "looks safe to use" — it says
+  what was not covered.
+
+  `--json` gains a `coverage` inventory: `filesExamined`, per-method execution
+  records, the caps that fired, the per-category rollup, and
+  `unreachableCheckPrefixes`. Before this, `--json` carried findings only, so a
+  caller could not tell "ran 310 checks and found nothing" from "ran the checks
+  that cannot fire here".
+
 ### Changed
 
 - **A permission finding on a structured config now names the FILE, with no line number (#364).** This is a real reduction in precision and is worth stating plainly rather than burying. The citation used to be found by searching the raw text for the offending entry, and that cannot be made safe for the same reason the fix above exists: the text does not carry the polarity, only the structure does, and a text search has no structure.
@@ -41,6 +94,20 @@ All notable changes to HackMyAgent are documented in this file.
   Three attempts are recorded in `src/scanner/permission-vocabulary.ts` rather than repeated. Searching from the grant key's line was beaten by an earlier bounded `allow` key, by a `// allow:` comment, and by a JSON-escaped key. A containment guard over enclosure and in-line key tokens closed those, but was quadratic in line length, held one array per line and aborted `secure` on a 3.8MB file, and still cited a deny entry whenever an array element was indented less than its own key. Emitting a line only when the document declared no restriction key at all had a premise about the whole file but an implementation that could answer only for the first 13 levels of the parsed object, while the text search it gated had no depth bound at all.
 
   Each attempt was smaller and sharper than the last and each still cited a deny entry, so the answer is not a fourth heuristic. The reader still gets the entry, why it is a grant, and what to replace it with. **#379** restores a precise citation by giving the grant its own offset from the parse, and carries the acceptance criteria all three failures produced. The prose half keeps its line, because the line cited is the line the pattern matched.
+
+### Known issues
+
+- **3 of the advertised 310 static checks have no caller.** `CODEINJ-001`,
+  `TMPPATH-001` and `ENVLEAK-001` are implemented and counted in the suite
+  size, but nothing in the scan invokes them, so they can never fire. They are
+  named in `--json` as `unreachableCheckPrefixes` rather than left for the
+  reader to infer. Wiring them in changes the false-positive surface and is
+  tracked separately.
+- **`.mjs` and `.cjs` files are invisible to the semantic layer.** They are
+  absent from its extension set, so a hardcoded credential in `lib/foo.mjs` is
+  not flagged while the identical bytes in `lib/foo.js` fire `AST-CRED-001`.
+  Tracked separately; widening the set is a detection change with its own
+  false-positive surface, not part of this coverage fix.
 
 ## [0.25.2] - 2026-08-05
 

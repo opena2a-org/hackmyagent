@@ -205,6 +205,45 @@ export interface ScanResult {
    * Consumers that aggregate `findings` get the target's findings only.
    */
   machinePosture?: MachinePostureSummary[];
+  /**
+   * What this scan ACTUALLY examined, measured at runtime.
+   *
+   * Before this existed, the Observations block derived its coverage claim
+   * from `TAXONOMY_MAP` — the configured check set — so `310 static · 0
+   * skipped · (all clear)` was printed identically whether the checks ran
+   * against the tree or not. Measured on a 529-file repo carrying a planted
+   * credential and a `curl … | sh`, the output was byte-identical to the
+   * unplanted tree's. Every field here is evidence from the run.
+   */
+  coverage?: {
+    /** Distinct files inside the target whose contents the scan read. */
+    filesExamined: number;
+    /** Per-check-method execution records. */
+    executions: CoverageCheckExecution[];
+    /** Caps that stopped a layer short of the whole tree. */
+    truncations: CoverageTruncationRecord[];
+    /** Distinct files read per category. Counts only — never filenames. */
+    filesReadByCategory?: Record<string, number>;
+  };
+}
+
+/** One check method's execution record. Mirrors `CheckExecution`. */
+export interface CoverageCheckExecution {
+  method: string;
+  prefixes: string[];
+  completed: boolean;
+  filesRead: number;
+  pathsInspected: number;
+  skipReason?: string;
+  error?: string;
+}
+
+/** One cap that stopped a layer short. Mirrors `CoverageTruncation`. */
+export interface CoverageTruncationRecord {
+  layer: string;
+  cap: number;
+  prefixes: string[];
+  reason: string;
 }
 
 /**
