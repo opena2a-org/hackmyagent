@@ -48,6 +48,13 @@ export interface OrchestrationResult {
   mergedFindings: SecurityFinding[];
   nanomindUsed: boolean;
   compiledArtifacts: number;
+  /**
+   * True when `compiledArtifacts` is the 200-file cap rather than a count of
+   * the tree. The CLI prints this number as "N files analyzed", so without
+   * the flag a capped 528-file repo and a complete 200-file one render
+   * identically.
+   */
+  compileSetTruncated: boolean;
   /** Compact per-artifact summaries (skills / MCPs / SOULs / A2A cards).
    *  Empty when NanoMind is unavailable or only source code was scanned. */
   artifactSummaries: ArtifactSummary[];
@@ -148,6 +155,10 @@ export async function orchestrateNanoMind(
       mergedFindings: [...existingFindings],
       nanomindUsed: false,
       compiledArtifacts: 0,
+      // The semantic pass did not run at all, so nothing was capped. `false`
+      // here means "not truncated", not "complete" — `compiledArtifacts: 0`
+      // already says the layer contributed no coverage.
+      compileSetTruncated: false,
       artifactSummaries: [],
       newSemanticFindings: 0,
       integrityStatus: 'SKIPPED',
@@ -196,6 +207,7 @@ export async function orchestrateNanoMind(
       mergedFindings: nmResult.mergedFindings,
       nanomindUsed: nmResult.nanomindAvailable,
       compiledArtifacts: nmResult.compiledArtifacts,
+      compileSetTruncated: nmResult.compileSetTruncated,
       artifactSummaries: nmResult.artifactSummaries,
       newSemanticFindings: newFindings,
       integrityStatus: nmResult.integrityStatus,
@@ -328,6 +340,10 @@ export async function orchestrateNanoMind(
       mergedFindings: [...existingFindings],
       nanomindUsed: false,
       compiledArtifacts: 0,
+      // The semantic pass did not run at all, so nothing was capped. `false`
+      // here means "not truncated", not "complete" — `compiledArtifacts: 0`
+      // already says the layer contributed no coverage.
+      compileSetTruncated: false,
       artifactSummaries: [],
       newSemanticFindings: 0,
       integrityStatus: 'UNAVAILABLE',

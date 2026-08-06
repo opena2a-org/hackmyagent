@@ -133,6 +133,15 @@ export interface NanoMindScanResult {
   nanomindAvailable: boolean;
   /** Every compiled artifact, for the --nanomind analyst coverage sweep. */
   coverageCandidates: CoverageCandidate[];
+  /**
+   * True when the compile set hit `MAX_FILES_PER_SCAN` (200), so the semantic
+   * layer saw the first 200 files in walk order and nothing after them.
+   *
+   * The display layer prints `compiledArtifacts` as "N files analyzed". On a
+   * tree larger than the cap that N IS the cap, and printing it unqualified is
+   * what let a 528-file repo report "200 files analyzed" beside "(all clear)".
+   */
+  compileSetTruncated: boolean;
 }
 
 /**
@@ -162,6 +171,7 @@ export async function runNanoMindScan(
       artifactSummaries: [],
       nanomindAvailable: false,
       coverageCandidates: [],
+      compileSetTruncated: false,
     };
   }
 
@@ -172,7 +182,8 @@ export async function runNanoMindScan(
   // Step 3: Discover security-relevant files. Sweep-only documents (.html/.txt)
   // come back separately: they skip the structural pipeline entirely and are
   // appended to coverageCandidates after the compile loop (Step 4b).
-  const { compileFiles: files, sweepOnlyFiles } = await discoverFiles(targetDir);
+  const { compileFiles: files, sweepOnlyFiles, truncated: compileSetTruncated } =
+    await discoverFiles(targetDir);
 
   // Step 3b: Load project-level constraints from SOUL.md / CLAUDE.md / .opena2a/policy.*
   // When a governance file exists in the project root, its constraints cover every sibling
@@ -319,6 +330,7 @@ export async function runNanoMindScan(
     artifactSummaries,
     nanomindAvailable: nanomindUsedAtLeastOnce || useNanoMind,
     coverageCandidates,
+    compileSetTruncated,
   };
 }
 
@@ -438,6 +450,16 @@ interface DiscoveredFiles {
   /** Sweep-only files (SWEEP_ONLY_EXTENSIONS): coverage-sweep candidates the
    *  structural pipeline never touches. */
   sweepOnlyFiles: string[];
+  /**
+   * True when `MAX_FILES_PER_SCAN` stopped the walk before it ran out of tree.
+   *
+   * The walk is depth-first in `readdir` order, so on a repo larger than the
+   * cap the files that get compiled are simply the first 200 encountered and
+   * everything after is invisible to this layer. Without this flag the caller
+   * cannot tell `200 files analyzed` (a cap) from `200 files analyzed` (a
+   * whole small repo), and it printed both the same way.
+   */
+  truncated: boolean;
 }
 
 async function discoverFiles(dir: string): Promise<DiscoveredFiles> {
@@ -457,15 +479,24 @@ async function discoverFiles(dir: string): Promise<DiscoveredFiles> {
       // so a multi-GB lone file can't OOM the reader and a 0-byte file is
       // skipped exactly as in a directory scan.
       const ok = await isWithinSizeLimit(dir);
-      return { compileFiles: ok ? [dir] : [], sweepOnlyFiles: [] };
+      return { compileFiles: ok ? [dir] : [], sweepOnlyFiles: [], truncated: false };
     }
   } catch {
-    return { compileFiles: results, sweepOnlyFiles: sweepOnly }; // path vanished between resolve and scan
+    // path vanished between resolve and scan
+    return { compileFiles: results, sweepOnlyFiles: sweepOnly, truncated: false };
   }
   await walkDir(dir, results, sweepOnly, 0);
+  // `walkDir` returns the moment the compile set reaches the cap, so reaching
+  // it means the walk ended on the cap rather than on running out of tree.
+  // Reported conservatively: a repo holding exactly `MAX_FILES_PER_SCAN`
+  // eligible files is flagged truncated even though nothing was dropped. That
+  // direction understates coverage, which is the only safe direction for a
+  // coverage claim to be wrong in.
+  const truncated = results.length >= MAX_FILES_PER_SCAN;
   return {
     compileFiles: results.slice(0, MAX_FILES_PER_SCAN),
     sweepOnlyFiles: sweepOnly.slice(0, MAX_FILES_PER_SCAN),
+    truncated,
   };
 }
 

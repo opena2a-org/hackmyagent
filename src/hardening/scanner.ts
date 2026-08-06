@@ -3,7 +3,11 @@
  * Scans for security issues and optionally auto-fixes them
  */
 
-import * as fs from 'fs/promises';
+// `fs/promises` with read attribution for the coverage ledger. Wrapping the
+// namespace once is what lets all 153 read sites report what they examined
+// without a per-call-site sweep — a sweep would be fail-OPEN, and a site
+// missed in it would claim coverage it never had. See `tracked-fs.ts`.
+import { fs } from './tracked-fs';
 // `realpath.native` exists only on the callback and sync APIs, and the backup
 // root needs it: the JS implementation does not canonicalize case (#334).
 import * as fsSync from 'fs';
@@ -40,6 +44,13 @@ import { parseAiConfig, proseAllowEntry, forReport, MAX_TEXT } from '../scanner/
 /** Redact, escape and cap a value out of a scanned config before quoting it. */
 const forFinding = (s: string): string => forReport(s, MAX_TEXT);
 import { escapeForDisplay } from '../ui/display-safe';
+import {
+  CoverageLedger,
+  withActiveLedger,
+  type CategoryCoverage,
+  type CheckExecution,
+  type CoverageTruncation,
+} from './coverage-ledger';
 
 /**
  * Backup manifest format version. v1 (pre-0.25.1) wrote `createdFiles` as a
@@ -1555,6 +1566,14 @@ export function stampSequenceField(seq: number, attempt: number): string {
 
 export class HardeningScanner {
   private cliName = 'hackmyagent';
+  /**
+   * Coverage ledger for the current `scan()`. Replaced per run.
+   *
+   * Initialised to a ledger rooted at a path nothing resolves inside, so a
+   * check invoked outside `scan()` records against a throwaway rather than
+   * crashing or, worse, banking evidence onto the previous run's ledger.
+   */
+  private coverage: CoverageLedger = new CoverageLedger(path.join(path.sep, 'hackmyagent-no-active-scan'));
   /** Fix writes that did not land this run. Reset per `scan()`. */
   private fixWriteFailures: { file: string; code: string; message: string }[] = [];
   /**
@@ -1807,7 +1826,21 @@ export class HardeningScanner {
     });
   }
 
+  /**
+   * Install a fresh coverage ledger for this run, then scan.
+   *
+   * The ledger is per-run and the install is scoped: a nested scan (the verify
+   * pass a `--fix` performs through its own scanner instance) collects onto
+   * its own ledger and restores this one on the way out, so neither run banks
+   * the other's evidence.
+   */
   async scan(options: ScanOptions): Promise<ScanResult> {
+    const ledger = new CoverageLedger(options.targetDir);
+    this.coverage = ledger;
+    return withActiveLedger(ledger, () => this.scanInner(options));
+  }
+
+  private async scanInner(options: ScanOptions): Promise<ScanResult> {
     const { targetDir, autoFix = false, dryRun = false, ignore = [], cliName = 'hackmyagent' } = options;
     this.cliName = cliName;
     // Per-run, so a reused scanner instance cannot report a previous run's
@@ -1898,245 +1931,255 @@ export class HardeningScanner {
     const findings: SecurityFinding[] = [];
 
     // Credential exposure checks
-    const credFindings = await this.checkCredentialExposure(targetDir, shouldFix);
+    const credFindings = await this.coverage.run('checkCredentialExposure', () => this.checkCredentialExposure(targetDir, shouldFix));
     findings.push(...credFindings);
 
     // CLAUDE.md specific checks
-    const claudeFindings = await this.checkClaudeMd(targetDir, shouldFix);
+    const claudeFindings = await this.coverage.run('checkClaudeMd', () => this.checkClaudeMd(targetDir, shouldFix));
     findings.push(...claudeFindings);
 
     // MCP configuration checks
-    const mcpFindings = await this.checkMcpConfig(targetDir, shouldFix);
+    const mcpFindings = await this.coverage.run('checkMcpConfig', () => this.checkMcpConfig(targetDir, shouldFix));
     findings.push(...mcpFindings);
 
     // File permission checks
-    const permFindings = await this.checkFilePermissions(targetDir, shouldFix);
+    const permFindings = await this.coverage.run('checkFilePermissions', () => this.checkFilePermissions(targetDir, shouldFix));
     findings.push(...permFindings);
 
     // Git security checks (skip for downloaded npm packages — not a source repo)
     if (!options.isNpmPackage) {
-      const gitFindings = await this.checkGitSecurity(targetDir, shouldFix);
+      const gitFindings = await this.coverage.run('checkGitSecurity', () => this.checkGitSecurity(targetDir, shouldFix));
       findings.push(...gitFindings);
+    } else {
+      this.coverage.skip('checkGitSecurity', 'target is a downloaded npm package, not a source repo');
     }
 
     // Network security checks
-    const netFindings = await this.checkNetworkSecurity(targetDir, shouldFix);
+    const netFindings = await this.coverage.run('checkNetworkSecurity', () => this.checkNetworkSecurity(targetDir, shouldFix));
     findings.push(...netFindings);
 
     // --- Standard and Deep checks (skipped in quick mode) ---
     if (!isQuick) {
     // Additional MCP checks
-    const mcpAdvFindings = await this.checkMcpAdvanced(targetDir, shouldFix);
+    const mcpAdvFindings = await this.coverage.run('checkMcpAdvanced', () => this.checkMcpAdvanced(targetDir, shouldFix));
     findings.push(...mcpAdvFindings);
 
     // Claude Code advanced checks
-    const claudeAdvFindings = await this.checkClaudeAdvanced(targetDir, shouldFix);
+    const claudeAdvFindings = await this.coverage.run('checkClaudeAdvanced', () => this.checkClaudeAdvanced(targetDir, shouldFix));
     findings.push(...claudeAdvFindings);
 
     // Cursor configuration checks
-    const cursorFindings = await this.checkCursorConfig(targetDir, shouldFix);
+    const cursorFindings = await this.coverage.run('checkCursorConfig', () => this.checkCursorConfig(targetDir, shouldFix));
     findings.push(...cursorFindings);
 
     // VSCode configuration checks
-    const vscodeFindings = await this.checkVscodeConfig(targetDir, shouldFix);
+    const vscodeFindings = await this.coverage.run('checkVscodeConfig', () => this.checkVscodeConfig(targetDir, shouldFix));
     findings.push(...vscodeFindings);
 
     // Additional credential checks
-    const credAdvFindings = await this.checkCredentialsAdvanced(targetDir, shouldFix);
+    const credAdvFindings = await this.coverage.run('checkCredentialsAdvanced', () => this.checkCredentialsAdvanced(targetDir, shouldFix));
     findings.push(...credAdvFindings);
 
     // Additional permission checks
-    const permAdvFindings = await this.checkPermissionsAdvanced(targetDir, shouldFix);
+    const permAdvFindings = await this.coverage.run('checkPermissionsAdvanced', () => this.checkPermissionsAdvanced(targetDir, shouldFix));
     findings.push(...permAdvFindings);
 
     // Environment and config checks
-    const envFindings = await this.checkEnvironmentSecurity(targetDir, shouldFix);
+    const envFindings = await this.coverage.run('checkEnvironmentSecurity', () => this.checkEnvironmentSecurity(targetDir, shouldFix));
     findings.push(...envFindings);
 
     // Logging and audit checks
-    const logFindings = await this.checkLoggingSecurity(targetDir, shouldFix);
+    const logFindings = await this.coverage.run('checkLoggingSecurity', () => this.checkLoggingSecurity(targetDir, shouldFix));
     findings.push(...logFindings);
 
     // Dependency checks
-    const depFindings = await this.checkDependencySecurity(targetDir, shouldFix);
+    const depFindings = await this.coverage.run('checkDependencySecurity', () => this.checkDependencySecurity(targetDir, shouldFix));
     findings.push(...depFindings);
 
     // Session and auth checks
-    const authFindings = await this.checkAuthSecurity(targetDir, shouldFix);
+    const authFindings = await this.coverage.run('checkAuthSecurity', () => this.checkAuthSecurity(targetDir, shouldFix));
     findings.push(...authFindings);
 
     // Process and runtime checks
-    const procFindings = await this.checkProcessSecurity(targetDir, shouldFix);
+    const procFindings = await this.coverage.run('checkProcessSecurity', () => this.checkProcessSecurity(targetDir, shouldFix));
     findings.push(...procFindings);
 
     // Additional Claude checks
-    const claude3Findings = await this.checkClaudeExtended(targetDir, shouldFix);
+    const claude3Findings = await this.coverage.run('checkClaudeExtended', () => this.checkClaudeExtended(targetDir, shouldFix));
     findings.push(...claude3Findings);
 
     // Additional MCP checks
-    const mcp2Findings = await this.checkMcpExtended(targetDir, shouldFix);
+    const mcp2Findings = await this.coverage.run('checkMcpExtended', () => this.checkMcpExtended(targetDir, shouldFix));
     findings.push(...mcp2Findings);
 
     // Additional network checks
-    const net2Findings = await this.checkNetworkExtended(targetDir, shouldFix);
+    const net2Findings = await this.coverage.run('checkNetworkExtended', () => this.checkNetworkExtended(targetDir, shouldFix));
     findings.push(...net2Findings);
 
     // Input/output security checks
-    const ioFindings = await this.checkIOSecurity(targetDir, shouldFix);
+    const ioFindings = await this.coverage.run('checkIOSecurity', () => this.checkIOSecurity(targetDir, shouldFix));
     findings.push(...ioFindings);
 
     // API security checks
-    const apiFindings = await this.checkAPISecurity(targetDir, shouldFix);
+    const apiFindings = await this.coverage.run('checkAPISecurity', () => this.checkAPISecurity(targetDir, shouldFix));
     findings.push(...apiFindings);
 
     // Secret management checks
-    const secretFindings = await this.checkSecretManagement(targetDir, shouldFix);
+    const secretFindings = await this.coverage.run('checkSecretManagement', () => this.checkSecretManagement(targetDir, shouldFix));
     findings.push(...secretFindings);
 
     // Prompt injection defense checks
-    const promptFindings = await this.checkPromptSecurity(targetDir, shouldFix);
+    const promptFindings = await this.coverage.run('checkPromptSecurity', () => this.checkPromptSecurity(targetDir, shouldFix));
     findings.push(...promptFindings);
 
     // Input validation checks
-    const injFindings = await this.checkInputValidation(targetDir, shouldFix);
+    const injFindings = await this.coverage.run('checkInputValidation', () => this.checkInputValidation(targetDir, shouldFix));
     findings.push(...injFindings);
 
     // Rate limiting checks
-    const rateFindings = await this.checkRateLimiting(targetDir, shouldFix);
+    const rateFindings = await this.coverage.run('checkRateLimiting', () => this.checkRateLimiting(targetDir, shouldFix));
     findings.push(...rateFindings);
 
     // Session security checks
-    const sessionFindings = await this.checkSessionSecurity(targetDir, shouldFix);
+    const sessionFindings = await this.coverage.run('checkSessionSecurity', () => this.checkSessionSecurity(targetDir, shouldFix));
     findings.push(...sessionFindings);
 
     // Encryption checks
-    const encryptFindings = await this.checkEncryption(targetDir, shouldFix);
+    const encryptFindings = await this.coverage.run('checkEncryption', () => this.checkEncryption(targetDir, shouldFix));
     findings.push(...encryptFindings);
 
     // Audit trail checks
-    const auditFindings = await this.checkAuditTrail(targetDir, shouldFix);
+    const auditFindings = await this.coverage.run('checkAuditTrail', () => this.checkAuditTrail(targetDir, shouldFix));
     findings.push(...auditFindings);
 
     // Sandboxing checks
-    const sandboxFindings = await this.checkSandboxing(targetDir, shouldFix);
+    const sandboxFindings = await this.coverage.run('checkSandboxing', () => this.checkSandboxing(targetDir, shouldFix));
     findings.push(...sandboxFindings);
 
     // Tool boundary checks
-    const toolFindings = await this.checkToolBoundaries(targetDir, shouldFix);
+    const toolFindings = await this.coverage.run('checkToolBoundaries', () => this.checkToolBoundaries(targetDir, shouldFix));
     findings.push(...toolFindings);
 
     // OpenClaw skill checks
-    const skillFindings = await this.checkOpenclawSkills(targetDir, shouldFix);
+    const skillFindings = await this.coverage.run('checkOpenclawSkills', () => this.checkOpenclawSkills(targetDir, shouldFix));
     findings.push(...skillFindings);
 
     // OpenClaw heartbeat checks
-    const heartbeatFindings = await this.checkOpenclawHeartbeat(targetDir, shouldFix);
+    const heartbeatFindings = await this.coverage.run('checkOpenclawHeartbeat', () => this.checkOpenclawHeartbeat(targetDir, shouldFix));
     findings.push(...heartbeatFindings);
 
     // OpenClaw gateway checks
-    const gatewayFindings = await this.checkOpenclawGateway(targetDir, shouldFix);
+    const gatewayFindings = await this.coverage.run('checkOpenclawGateway', () => this.checkOpenclawGateway(targetDir, shouldFix));
     findings.push(...gatewayFindings);
 
     // OpenClaw config checks
-    const configFindings = await this.checkOpenclawConfig(targetDir, shouldFix);
+    const configFindings = await this.coverage.run('checkOpenclawConfig', () => this.checkOpenclawConfig(targetDir, shouldFix));
     findings.push(...configFindings);
 
     // OpenClaw supply chain checks
-    const supplyFindings = await this.checkOpenclawSupplyChain(targetDir, shouldFix);
+    const supplyFindings = await this.coverage.run('checkOpenclawSupplyChain', () => this.checkOpenclawSupplyChain(targetDir, shouldFix));
     findings.push(...supplyFindings);
 
     // OpenClaw CVE-specific checks
-    const cveFindings = await this.checkOpenclawCVE(targetDir, shouldFix);
+    const cveFindings = await this.coverage.run('checkOpenclawCVE', () => this.checkOpenclawCVE(targetDir, shouldFix));
     findings.push(...cveFindings);
 
     // Unicode steganography checks (GlassWorm detection)
-    const unicodeStegoFindings = await this.checkUnicodeSteganography(targetDir, shouldFix);
+    const unicodeStegoFindings = await this.coverage.run('checkUnicodeSteganography', () => this.checkUnicodeSteganography(targetDir, shouldFix));
     findings.push(...unicodeStegoFindings);
 
     // Memory/context poisoning checks
-    const memFindings = await this.checkMemoryPoisoning(targetDir, shouldFix);
+    const memFindings = await this.coverage.run('checkMemoryPoisoning', () => this.checkMemoryPoisoning(targetDir, shouldFix));
     findings.push(...memFindings);
 
     // RAG poisoning checks
-    const ragFindings = await this.checkRAGPoisoning(targetDir, shouldFix);
+    const ragFindings = await this.coverage.run('checkRAGPoisoning', () => this.checkRAGPoisoning(targetDir, shouldFix));
     findings.push(...ragFindings);
 
     // Agent identity checks
-    const aimFindings = await this.checkAgentIdentity(targetDir, shouldFix);
+    const aimFindings = await this.coverage.run('checkAgentIdentity', () => this.checkAgentIdentity(targetDir, shouldFix));
     findings.push(...aimFindings);
 
     // Agent DNA integrity checks
-    const dnaFindings = await this.checkAgentDNA(targetDir, shouldFix);
+    const dnaFindings = await this.coverage.run('checkAgentDNA', () => this.checkAgentDNA(targetDir, shouldFix));
     findings.push(...dnaFindings);
 
     // Skill memory manipulation checks
-    const skillMemFindings = await this.checkSkillMemory(targetDir, shouldFix);
+    const skillMemFindings = await this.coverage.run('checkSkillMemory', () => this.checkSkillMemory(targetDir, shouldFix));
     findings.push(...skillMemFindings);
 
     // NemoClaw codebase pattern checks
-    const nemoFindings = await this.checkNemoClawPatterns(targetDir, shouldFix);
+    const nemoFindings = await this.coverage.run('checkNemoClawPatterns', () => this.checkNemoClawPatterns(targetDir, shouldFix));
     findings.push(...nemoFindings);
 
     // AI infrastructure exposure checks (research gap coverage)
-    const llmFindings = await this.checkLLMExposure(targetDir, shouldFix);
+    const llmFindings = await this.coverage.run('checkLLMExposure', () => this.checkLLMExposure(targetDir, shouldFix));
     findings.push(...llmFindings);
 
-    const aiToolFindings = await this.checkAIToolExposure(targetDir, shouldFix);
+    const aiToolFindings = await this.coverage.run('checkAIToolExposure', () => this.checkAIToolExposure(targetDir, shouldFix));
     findings.push(...aiToolFindings);
 
-    const a2aFindings = await this.checkA2AExposure(targetDir, shouldFix);
+    const a2aFindings = await this.coverage.run('checkA2AExposure', () => this.checkA2AExposure(targetDir, shouldFix));
     findings.push(...a2aFindings);
 
-    const mcpDiscoveryFindings = await this.checkMCPDiscovery(targetDir, shouldFix);
+    const mcpDiscoveryFindings = await this.coverage.run('checkMCPDiscovery', () => this.checkMCPDiscovery(targetDir, shouldFix));
     findings.push(...mcpDiscoveryFindings);
 
-    const webCredFindings = await this.checkWebServedCredentials(targetDir, shouldFix);
+    const webCredFindings = await this.coverage.run('checkWebServedCredentials', () => this.checkWebServedCredentials(targetDir, shouldFix));
     findings.push(...webCredFindings);
 
     // Code injection, supply chain, and operational security checks
     // NOTE: CODEINJ-001 removed — deduplicated with NEMO-005 (same detection)
 
-    const installFindings = await this.checkInstallScripts(targetDir, shouldFix);
+    const installFindings = await this.coverage.run('checkInstallScripts', () => this.checkInstallScripts(targetDir, shouldFix));
     findings.push(...installFindings);
 
-    const cliPassFindings = await this.checkCLICredentialPassthrough(targetDir, shouldFix);
+    const cliPassFindings = await this.coverage.run('checkCLICredentialPassthrough', () => this.checkCLICredentialPassthrough(targetDir, shouldFix));
     findings.push(...cliPassFindings);
 
-    const integrityFindings = await this.checkIntegrityBypass(targetDir, shouldFix);
+    const integrityFindings = await this.coverage.run('checkIntegrityBypass', () => this.checkIntegrityBypass(targetDir, shouldFix));
     findings.push(...integrityFindings);
 
-    const toctouFindings = await this.checkTOCTOU(targetDir, shouldFix);
+    const toctouFindings = await this.coverage.run('checkTOCTOU', () => this.checkTOCTOU(targetDir, shouldFix));
     findings.push(...toctouFindings);
 
     // NOTE: TMPPATH-001 removed — deduplicated with NEMO-006 (same detection)
 
-    const dockerInjFindings = await this.checkDockerInjection(targetDir, shouldFix);
+    const dockerInjFindings = await this.coverage.run('checkDockerInjection', () => this.checkDockerInjection(targetDir, shouldFix));
     findings.push(...dockerInjFindings);
 
     // NOTE: ENVLEAK-001 removed — deduplicated with NEMO-007 (same detection)
 
-    const sandboxMsgFindings = await this.checkSandboxMessaging(targetDir, shouldFix);
+    const sandboxMsgFindings = await this.coverage.run('checkSandboxMessaging', () => this.checkSandboxMessaging(targetDir, shouldFix));
     findings.push(...sandboxMsgFindings);
 
-    const webExposeFindings = await this.checkWebExposedFiles(targetDir, shouldFix);
+    const webExposeFindings = await this.coverage.run('checkWebExposedFiles', () => this.checkWebExposedFiles(targetDir, shouldFix));
     findings.push(...webExposeFindings);
 
-    const soulOverrideFindings = await this.checkSoulOverride(targetDir, shouldFix);
+    const soulOverrideFindings = await this.coverage.run('checkSoulOverride', () => this.checkSoulOverride(targetDir, shouldFix));
     findings.push(...soulOverrideFindings);
 
-    const soulGovFindings = await this.checkSoulGovernanceGaps(targetDir);
+    const soulGovFindings = await this.coverage.run('checkSoulGovernanceGaps', () => this.checkSoulGovernanceGaps(targetDir));
     findings.push(...soulGovFindings);
 
-    const memSanitizeFindings = await this.checkMemoryStoreSanitization(targetDir, shouldFix);
+    const memSanitizeFindings = await this.coverage.run('checkMemoryStoreSanitization', () => this.checkMemoryStoreSanitization(targetDir, shouldFix));
     findings.push(...memSanitizeFindings);
 
-    const agentCredFindings = await this.checkAgentCredentialProtection(targetDir, shouldFix);
+    const agentCredFindings = await this.coverage.run('checkAgentCredentialProtection', () => this.checkAgentCredentialProtection(targetDir, shouldFix));
     findings.push(...agentCredFindings);
 
     // Context lifecycle assembly checks (Stage 1)
-    const lifecycleFindings = await this.checkContextLifecycle(targetDir, options);
+    const lifecycleFindings = await this.coverage.run('checkContextLifecycle', () => this.checkContextLifecycle(targetDir, options));
     findings.push(...lifecycleFindings);
     } // end of standard/deep checks
+
+    // A quick scan runs 6 of the 61 orchestrated checks. Record the other 55
+    // as skipped so their categories report `not examined` with the depth as
+    // the reason, instead of inheriting the fail-closed default's vaguer
+    // "no check in this category ran".
+    if (isQuick) {
+      this.coverage.skipUnrun('scan depth is `quick` — standard and deep checks did not run');
+    }
 
     // Layer 2: Structural analysis (standard and deep only)
     let layer2Count = 0;
@@ -2780,6 +2823,14 @@ export class HardeningScanner {
         llmCost,
         cachedResults,
       } : undefined,
+      // What this run actually examined, measured rather than configured.
+      // The renderer derives the Categories / Checks lines from this, so a
+      // category with no executed check can no longer print as clear.
+      coverage: {
+        filesExamined: this.coverage.filesExamined,
+        executions: this.coverage.records,
+        truncations: this.coverage.caps,
+      },
     };
   }
 
@@ -12666,6 +12717,24 @@ dist/
     const cappedTsJs = tsJsFiles.slice(0, maxFiles);
     const cappedPy = pyFiles.slice(0, maxFiles);
     const cappedYaml = yamlFiles.slice(0, maxFiles);
+
+    // A cap that fires means a clean NEMO result covers only the files that
+    // were reached, not the tree. Reported so the category prints `partial`
+    // rather than clear — the number was a cap, and a cap presented as a
+    // measurement is what made `200 files analyzed` read as completeness.
+    const nemoDropped =
+      Math.max(0, shFiles.length - cappedSh.length) +
+      Math.max(0, tsJsFiles.length - cappedTsJs.length) +
+      Math.max(0, pyFiles.length - cappedPy.length) +
+      Math.max(0, yamlFiles.length - cappedYaml.length);
+    if (nemoDropped > 0) {
+      this.coverage.truncate({
+        layer: 'nemo-source',
+        cap: maxFiles,
+        prefixes: ['NEMO'],
+        reason: `capped at ${maxFiles} files per extension — ${nemoDropped} source file${nemoDropped === 1 ? '' : 's'} not read`,
+      });
+    }
 
     // ---------- NEMO-001: Curl-pipe install without checksum ----------
     let nemo001Found = false;

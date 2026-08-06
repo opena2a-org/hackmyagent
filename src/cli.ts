@@ -142,6 +142,13 @@ async function finishWithFindings(code: number): Promise<void> {
 // Per-invocation start times keyed by subcommand name (preAction → postAction).
 const telemetryStartedAt = new Map<string, number>();
 import { getTaxonomyMap, getCheckCounts } from './hardening/taxonomy';
+import {
+  summarizeCoverage,
+  SEMANTIC_PREFIXES,
+  UNREACHABLE_PREFIXES,
+  type CategoryCoverage,
+} from './hardening/coverage-ledger';
+import type { ScanResult } from './hardening/security-check';
 import { compareFindingsByTier } from './ui/finding-tier';
 import {
   scoreLineLabel,
@@ -745,12 +752,16 @@ interface UnifiedCheckDisplayOptions {
      * assert it. Absolute path; rendered escaped.
      */
     ownArchivePath?: string;
+    /** What the scan actually examined, measured at runtime. */
+    coverage?: ScanResult['coverage'];
   };
   registry?: RegistryTrustData | null;
   verbose?: boolean;
   version?: string;
   nanomindScan?: {
     compiledArtifacts: number;
+    /** True when the semantic compile set hit its 200-file cap. */
+    compileSetTruncated?: boolean;
     findings: Array<{ severity: string; checkId?: string; description?: string; name?: string; message?: string; fix?: string; guidance?: string; file?: string; line?: number; passed?: boolean; attackClass?: string; category?: string }>;
   };
   /** Per-artifact summaries for the Observations block. Skill/MCP/SOUL/A2A
@@ -1234,7 +1245,23 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   const meta: string[] = [typeLabel];
   if (version) meta.unshift(`v${version}`);
   if (sourceLabel) meta.push(sourceLabel);
-  if (nanomindScan) meta.push(`${nanomindScan.compiledArtifacts} files analyzed`);
+  if (nanomindScan) {
+    // `compiledArtifacts` is the semantic layer's compile count, and that
+    // layer stops at a 200-file cap. Printed bare as "200 files analyzed" it
+    // reads as the size of the scan; on a 528-file repo it was the cap, and
+    // adding a file to the tree did not move it. Name it as a cap when it is
+    // one, and prefer the measured read count when the ledger has it.
+    if (nanomindScan.compileSetTruncated) {
+      const read = localScan?.coverage?.filesExamined;
+      meta.push(
+        read !== undefined
+          ? `${read} files read · semantic capped at ${nanomindScan.compiledArtifacts}`
+          : `semantic capped at ${nanomindScan.compiledArtifacts} files`,
+      );
+    } else {
+      meta.push(`${nanomindScan.compiledArtifacts} files analyzed`);
+    }
+  }
   if (localScan?.filesScanned) meta.push(`${localScan.filesScanned} files scanned`);
 
   console.log();
@@ -1347,6 +1374,59 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     const staticCount = getCheckCounts().static;
     const semanticCount = nanomindScan?.compiledArtifacts ?? 0;
     const filesScanned = localScan?.filesScanned;
+
+    // Measured coverage for this run. `undefined` when the caller supplied no
+    // ledger (the `check` quick-scan path, and any embedder calling the
+    // display helper directly) — in that case the lines below fall back to
+    // their previous behaviour rather than assert a coverage claim built from
+    // nothing.
+    const coverageCategories = localScan?.coverage
+      ? summarizeCoverage(
+          localScan.coverage.executions,
+          // A capped semantic pass truncates every category it credits. This
+          // is the case that matters most: the semantic layer is the only one
+          // that reads arbitrary source, so when its 200-file walk stops
+          // early, `credentials` is examined for the files it reached and
+          // blind to the rest — and a planted key in file 201 goes unseen
+          // while the category still reports clear. Registering the cap here
+          // is what turns those categories into `partial`.
+          nanomindScan?.compileSetTruncated
+            ? [
+                ...localScan.coverage.truncations,
+                {
+                  layer: 'semantic',
+                  cap: semanticCount,
+                  prefixes: [...SEMANTIC_PREFIXES],
+                  reason:
+                    `semantic pass capped at ${semanticCount} files — source beyond the cap was not compiled`,
+                },
+              ]
+            : localScan.coverage.truncations,
+          {
+            ...(semanticCount > 0
+              ? { semantic: { prefixes: [...SEMANTIC_PREFIXES], artifactsCompiled: semanticCount } }
+              : {}),
+            // A reported finding proves its category was examined.
+            observedCheckIds: failed.map(f => f.checkId).filter(Boolean),
+          },
+        )
+      : undefined;
+    // Categories with no executed check. These are what used to print inside
+    // "(all clear)"; they now print as `not examined`, each with its reason.
+    const notExamined = (coverageCategories ?? []).filter(c => c.state === 'not-examined');
+    // Categories a cap stopped short of the whole tree.
+    const partiallyExamined = (coverageCategories ?? []).filter(c => c.state === 'truncated');
+
+    // Not every unexamined category is a gap. A repo with no MCP config has
+    // nothing for the MCP checks to read, and saying so is information, not a
+    // warning — flagging it would be the shame-shaped inverse of the bug being
+    // fixed here. A cap, a depth skip, or a check with no caller ARE gaps:
+    // there was something to look at and the scan did not look. Only the
+    // second kind qualifies the verdict.
+    const isAbsentSurface = (c: CategoryCoverage): boolean =>
+      (c.reason ?? '').includes('no file of this kind');
+    const notExaminedAbsent = notExamined.filter(isAbsentSurface);
+    const notExaminedGaps = notExamined.filter(c => !isAbsentSurface(c));
     // HMA-2: prefer registry.packageType (authoritative) over the local
     // project-type heuristic. Fixes "Surfaces: cli" (HMA local heuristic)
     // disagreeing with "library" (ai-trust → registry packageType) on
@@ -1370,9 +1450,27 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           fullAuditTarget: quickScan.fullAuditTarget,
         })
       : null;
+    // A category can only be reported CLEAR if a check in it actually read a
+    // file inside the target. `buildCategorySummaries` seeds all 25 labels
+    // `clear: true` from the taxonomy before it looks at a single finding, so
+    // on its own it reports "clear" for categories the run never examined.
+    // Measured on a 529-file repo carrying a planted credential: 13 of the 25
+    // were never examined, and all 25 printed under "(all clear)".
+    //
+    // The clear buckets are therefore filtered down to the categories the
+    // ledger measured as examined. Buckets WITH findings are never filtered —
+    // a finding is itself proof the category was examined, and dropping one
+    // would hide a real result.
+    const coverageByCategory = new Map(
+      (coverageCategories ?? []).map(c => [c.category, c]),
+    );
     const categorySummaries = quickScanDisclosure
       ? allCategorySummaries.filter(c => !c.clear)
-      : allCategorySummaries;
+      : coverageCategories
+        ? allCategorySummaries.filter(
+            c => !c.clear || coverageByCategory.get(c.name)?.state === 'examined',
+          )
+        : allCategorySummaries;
     const verdictLine = buildVerdict(
       { critical, high, medium, low },
       { kind, filesScanned, remote: opts.remote === true },
@@ -1399,6 +1497,20 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     const { artifacts: reconciledArtifacts, suppressed: suppressedIntents } =
       reconcileArtifactIntents(opts.artifactSummaries ?? [], failed);
 
+    // The renderer prints `0 skipped` whenever it is handed no skip list, and
+    // hackmyagent never handed it one — so `0 skipped` was emitted on every
+    // scan regardless of what ran. Feeding it the measured not-examined
+    // categories makes the number the truth instead of a constant.
+    //
+    // Verbose lists them all; the default view names the first four and counts
+    // the rest, so the line stays legible. Every entry carries its reason —
+    // a bare `not examined` list is a dead end.
+    // The renderer's `skipped` channel formats every entry inline, so passing
+    // 17 categories produced a 500-character Checks line. The count and the
+    // detail are therefore split: the Checks line below is rewritten with the
+    // true totals, and the names go on their own line and into `--json`. No
+    // truncated list is ever handed to the renderer — it derives its number
+    // from the array length, so a short list would print a short count.
     const { lines, artifactLines } = renderObservationsBlock({
       surfaces: { kind, filesScanned, artifactsCompiled: semanticCount, remote: opts.remote === true },
       checks: { staticCount, semanticCount },
@@ -1459,9 +1571,109 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       }
     }
 
+    // The Surfaces line prints `compiledArtifacts` as "N semantic artifacts",
+    // and the header above prints the same number as "N files analyzed". When
+    // the semantic walk hit its 200-file cap that number IS the cap, so
+    // unqualified it reads as "we looked at 200 files" when it means "we
+    // stopped at 200". Say which one it is.
+    if (nanomindScan?.compileSetTruncated && localScan?.coverage) {
+      surfacesLine.value +=
+        ` (semantic pass capped at ${semanticCount}; ${localScan.coverage.filesExamined} files read in total)`;
+      surfacesLine.tone = 'warning';
+    }
+
+    // A clean result over incomplete coverage is not a clean bill of health.
+    // `buildVerdict` says "No security issues detected. This library looks
+    // safe to use." whenever the findings list is empty — it has no way to
+    // know the run never looked at 8 categories and stopped 300 files short.
+    // Measured: that exact sentence printed over a planted `sk-ant-api03-`
+    // key. Same treatment as the #200 quick-scan disclosure: name the gap and
+    // drop the green tone, since green is what made it read as an all-clear.
+    if (
+      coverageCategories &&
+      totalFindings === 0 &&
+      (notExaminedGaps.length > 0 || partiallyExamined.length > 0)
+    ) {
+      const gaps: string[] = [];
+      if (partiallyExamined.length > 0) {
+        gaps.push(`${partiallyExamined.length} stopped at a file cap`);
+      }
+      if (notExaminedGaps.length > 0) {
+        gaps.push(`${notExaminedGaps.length} did not run`);
+      }
+      verdictDisplay.value =
+        `No issues in what was examined — but ${gaps.join(' and ')}. ` +
+        `This is not a clean bill of health for the whole target.`;
+      verdictDisplay.tone = 'warning';
+    }
+
+    // Rewrite the Checks line from what RAN. The renderer sizes it from
+    // `getCheckCounts()`, i.e. the configured taxonomy, so `310 static · 0
+    // skipped` was printed identically whether the checks reached the tree or
+    // not. `310` stays on the line — the reader needs it to size the gap —
+    // but it is now labelled as the declared suite and stood next to the
+    // number that actually executed.
+    if (coverageCategories && localScan?.coverage) {
+      const execs = localScan.coverage.executions;
+      const ran = execs.filter(e => e.completed).length;
+      const parts = [
+        `${staticCount} static declared`,
+        `${ran} of ${execs.length} check groups ran`,
+      ];
+      if (UNREACHABLE_PREFIXES.length > 0) {
+        parts.push(`${UNREACHABLE_PREFIXES.length} unreachable`);
+      }
+      parts.push(`${semanticCount} semantic (NanoMind AST)`);
+      // Labelled by layer: the semantic count above is the compile set, and
+      // an unlabelled smaller number beside it reads as a contradiction.
+      parts.push(`${localScan.coverage.filesExamined} file${localScan.coverage.filesExamined === 1 ? '' : 's'} read by static checks`);
+      checksLine.value = parts.join(' · ');
+    }
+
     for (const line of [surfacesLine, checksLine]) {
       const labelPad = line.label.padEnd(LABEL_WIDTH, ' ');
       console.log(`  ${colors.dim}${labelPad}${RESET()}${toneColor(line.tone)}${line.value}${RESET()}`);
+    }
+
+    // The coverage tally, then the names. This is what the "(all clear)" tail
+    // used to swallow: on a 529-file repo, 17 of the 25 categories sat inside
+    // "(all clear)" having either examined nothing or stopped at a file cap.
+    if (coverageCategories) {
+      const examinedCount = coverageCategories.filter(c => c.state === 'examined').length;
+      const tally = [`${examinedCount} of ${coverageCategories.length} categories fully examined`];
+      if (partiallyExamined.length > 0) tally.push(`${partiallyExamined.length} partial (file cap)`);
+      if (notExaminedGaps.length > 0) tally.push(`${notExaminedGaps.length} did not run`);
+      if (notExaminedAbsent.length > 0) tally.push(`${notExaminedAbsent.length} no such surface here`);
+      // Yellow only for real gaps. An absent surface is information.
+      const covTone = notExaminedGaps.length > 0 || partiallyExamined.length > 0 ? colors.yellow : colors.dim;
+      console.log(
+        `  ${colors.dim}${'Coverage'.padEnd(LABEL_WIDTH, ' ')}${RESET()}${covTone}${tally.join(' · ')}${RESET()}`,
+      );
+
+      // Name them. `Not examined` is exactly LABEL_WIDTH, so padEnd would
+      // leave no separator and the label would run into the value.
+      const nameLine = (label: string, cats: CategoryCoverage[], tone: string): void => {
+        if (cats.length === 0) return;
+        const shown = verbose ? cats : cats.slice(0, 8);
+        const hidden = cats.length - shown.length;
+        const more = hidden > 0 ? ` + ${hidden} more (--verbose)` : '';
+        console.log(
+          `  ${colors.dim}${label.padEnd(LABEL_WIDTH, ' ')}${RESET()}` +
+          `${tone}${shown.map(c => c.category).join(', ')}${more}${RESET()}`,
+        );
+      };
+      // The real gaps get their own line and the warning colour; absent
+      // surfaces get a separate, quieter one so the two are never conflated.
+      nameLine('Did not run', notExaminedGaps, colors.yellow);
+      nameLine('Not present', notExaminedAbsent, colors.dim);
+      // One reason per category under verbose — the lines above name WHAT was
+      // not covered, this says WHY, so neither is a dead end.
+      if (verbose) {
+        for (const c of [...notExamined, ...partiallyExamined]) {
+          const tag = c.state === 'truncated' ? `${c.category} (partial)` : c.category;
+          console.log(`  ${' '.repeat(LABEL_WIDTH)}${colors.dim}${tag} — ${c.reason ?? 'not examined'}${RESET()}`);
+        }
+      }
     }
 
     if (artifactLines.length > 0) {
@@ -4116,8 +4328,55 @@ Examples:
           }
         }
 
+        // Coverage inventory. `--json` used to carry findings ONLY, so a
+        // caller could not tell "ran 310 checks and found nothing" from "ran
+        // the checks that cannot fire here" — which makes the rule that a
+        // clean result with no evidence of instrumentation is an unrun check
+        // unenforceable by any automated gate. The rollup is emitted
+        // alongside the raw records so a consumer gets the same category
+        // states the CLI renders without reimplementing them.
+        const jsonCoverage = result.coverage
+          ? {
+              ...result.coverage,
+              categories: summarizeCoverage(
+                result.coverage.executions,
+                nmResult.compileSetTruncated
+                  ? [
+                      ...result.coverage.truncations,
+                      {
+                        layer: 'semantic',
+                        cap: nmResult.compiledArtifacts,
+                        prefixes: [...SEMANTIC_PREFIXES],
+                        reason:
+                          `semantic pass capped at ${nmResult.compiledArtifacts} files — source beyond the cap was not compiled`,
+                      },
+                    ]
+                  : result.coverage.truncations,
+                {
+                  ...(nmResult.compiledArtifacts > 0
+                    ? {
+                        semantic: {
+                          prefixes: [...SEMANTIC_PREFIXES],
+                          artifactsCompiled: nmResult.compiledArtifacts,
+                        },
+                      }
+                    : {}),
+                  observedCheckIds: result.findings
+                    .filter(f => !f.passed)
+                    .map(f => f.checkId)
+                    .filter(Boolean),
+                },
+              ),
+              // Checks whose implementation exists but has no caller, so they
+              // are counted in the advertised suite and can never fire.
+              unreachableCheckPrefixes: [...UNREACHABLE_PREFIXES],
+              semanticCompileSetTruncated: nmResult.compileSetTruncated === true,
+            }
+          : undefined;
+
         const jsonBase = {
           ...result,
+          ...(jsonCoverage ? { coverage: jsonCoverage } : {}),
           ...(nmResult.analystFindings?.length ? { analystFindings: nmResult.analystFindings } : {}),
           ...(nmResult.analystEscalations?.length ? { analystEscalations: nmResult.analystEscalations } : {}),
           ...(nmResult.coverageSweep ? { coverageSweep: nmResult.coverageSweep } : {}),
@@ -4303,6 +4562,11 @@ Examples:
           // `Verdict  Usable with caveats.` — the #259 incoherence again,
           // with the number and the words swapped.
           findings: result.findings.filter((f) => !f.fixed || f.fixVerified === false),
+          // Measured coverage for this run. Without it the Observations block
+          // falls back to deriving its claim from the configured check set,
+          // which is what printed "(all clear)" over categories nothing
+          // examined.
+          coverage: result.coverage,
         },
         // Without this, the Observations "Checks" line renders "0 semantic"
         // even though the pre-scan status reports N artifacts compiled.
@@ -4311,6 +4575,8 @@ Examples:
         // Observations block can count semantic checks separately.
         nanomindScan: nmResult.compiledArtifacts > 0 ? {
           compiledArtifacts: nmResult.compiledArtifacts,
+          // Whether that count is a measurement or the 200-file cap.
+          compileSetTruncated: nmResult.compileSetTruncated,
           findings: [],
         } : undefined,
         verbose: !!options.verbose,
