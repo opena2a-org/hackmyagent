@@ -118,6 +118,54 @@ function resetMarker(): void {
   writeFileSync(markerFile!, '');
 }
 
+// --- Outbound-request recording, for the #195 gate (hackmyagent#397) --------
+//
+// The `#195` case used to gate on a 5-second wall clock. That number was a
+// proxy for "no PyPI download happened", and a bad one: roughly two thirds of
+// it was a live Registry round trip (`queryRegistry` -> https://api.oa2a.org,
+// 5s client timeout), so the test measured the Registry's latency far more
+// than it measured the behaviour under test, and went red on a slow link.
+//
+// The property is now measured directly. A `--require` preload records the
+// host of every request the spawned CLI attempts, and the assertions read that
+// log. Nothing is timed.
+//
+// Note for anyone extending this: a PATH-injected `pip` shim would NOT work
+// here. HackMyAgent never spawns `pip` — `checkPyPiPackage` reaches PyPI
+// through global `fetch`, and the only subprocesses on that path are `tar` and
+// `unzip`, both below the `--no-scan` short-circuit. A `pip` shim would record
+// nothing and its marker assertion would pass vacuously forever.
+const NET_RECORDER = join(__dirname, '..', 'helpers', 'net-recorder.cjs');
+let netDir: string | undefined;
+let netMarker: string | undefined;
+
+beforeAll(() => {
+  if (!canRunSpawn()) return;
+  netDir = mkdtempSync(join(tmpdir(), 'hma-net-rec-'));
+  netMarker = join(netDir, 'hosts.log');
+  writeFileSync(netMarker, '');
+});
+
+afterAll(() => {
+  if (netDir) rmSync(netDir, { recursive: true, force: true });
+});
+
+function netEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, HMA_TEST_NET_MARKER: netMarker! };
+}
+
+function resetNetMarker(): void {
+  writeFileSync(netMarker!, '');
+}
+
+function recordedHosts(): string[] {
+  if (!netMarker || !existsSync(netMarker)) return [];
+  return readFileSync(netMarker, 'utf8')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
 function canRunNpmShimSpawn(): boolean {
   return canRunSpawn() && resolveRealNpm() !== undefined;
 }
@@ -269,23 +317,51 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
     expect(parsed.errorHint).toBe(`Verify the URL: https://github.com/${target}`);
   });
 
-  it.runIf(canRunSpawn())('#195: pip:<missing> --no-scan honors --no-scan (no PyPI download), emits ecosystem:pypi not-found', () => {
+  it.runIf(canRunSpawn())('#195: pip:<missing> --no-scan honors --no-scan (no PyPI request), emits ecosystem:pypi not-found', () => {
     // Closes hackmyagent#195: prior to the fix, `--no-scan` was silently
-    // dropped for pip:/pypi: targets — every check pip:<pkg> --no-scan
-    // would still hit PyPI for the metadata + tarball download. The
-    // 5-second timeout below is the regression gate: a real PyPI
-    // download + scan on a typical package easily exceeds it. A bare
-    // not-found early-return completes in <500ms.
+    // dropped for pip:/pypi: targets — every check pip:<pkg> --no-scan would
+    // still hit PyPI for the metadata + tarball download.
+    //
+    // Two independent halves, neither of them timed (hackmyagent#397):
+    //
+    //   Routing.  Exit 2 is reachable from exactly one place — the `--no-scan`
+    //   + Registry-miss short-circuit. Drop `--no-scan` again and the run
+    //   fetches pypi.org/pypi/<name>/json, takes the 404 branch, and exits 1.
+    //   So the exit code alone separates fixed from regressed.
+    //
+    //   No download.  Asserted against the recorded host list rather than a
+    //   clock. This also covers a regression the wall clock could not have
+    //   caught in principle: a PyPI fetch reintroduced ABOVE the short-circuit
+    //   would still exit 2, and on a fast link would still have come in under
+    //   five seconds.
     const bareName = 'opena2a-fixture-pypi-nonexistent-xyz-do-not-publish-20260525';
-    const start = Date.now();
-    const res = spawnSync('node', [CLI, 'check', `pip:${bareName}`, '--no-scan', '--json', '--ci'], {
-      encoding: 'utf8',
-      timeout: 5_000,
-    });
-    const elapsedMs = Date.now() - start;
+    resetNetMarker();
+    const res = spawnSync(
+      'node',
+      ['--require', NET_RECORDER, CLI, 'check', `pip:${bareName}`, '--no-scan', '--json', '--ci'],
+      {
+        encoding: 'utf8',
+        // Generous on purpose. Duration is no longer part of the assertion, so
+        // this is only a hang guard — a slow Registry must not fail the test.
+        timeout: 30_000,
+        env: netEnv(),
+      },
+    );
 
     expect(res.status).toBe(2);
-    expect(elapsedMs).toBeLessThan(5_000);
+
+    const hosts = recordedHosts();
+
+    // In-run non-vacuity. `not.toContain` passes trivially against an empty
+    // list, so a preload that silently stopped loading — renamed env var, a
+    // Node change to `fetch`, a lost `--require` — would read as "no PyPI
+    // request" and this gate would quietly stop gating. The Registry lookup
+    // runs unconditionally on this path, so its host must be present in the
+    // very run whose absence-claim the next two assertions rest on.
+    expect(hosts).toContain('api.oa2a.org');
+
+    expect(hosts).not.toContain('pypi.org');
+    expect(hosts).not.toContain('files.pythonhosted.org');
 
     const stdout = (res.stdout || '').trim();
     expect(stdout.length).toBeGreaterThan(0);
@@ -296,5 +372,28 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
     expect(parsed.ecosystem).toBe('pypi');
     expect(typeof parsed.error).toBe('string');
     expect(parsed.error.length).toBeGreaterThan(0);
+  });
+
+  it.runIf(canRunSpawn())('#397 control: the recorder does observe the PyPI request the #195 gate rules out', () => {
+    // The control for the assertion above. `expect(hosts).not.toContain('pypi.org')`
+    // is only meaningful if a pypi.org request WOULD have shown up in that list,
+    // and the in-run `api.oa2a.org` check proves the recorder is alive but not
+    // that it can see this particular request. This runs the same command with
+    // `--no-scan` removed — the one path that fetches PyPI metadata
+    // unconditionally — and asserts the host is recorded.
+    //
+    // Offline-safe, and deliberately so: the recorder logs at the call site
+    // before dispatch, so this asserts the request was attempted, not that it
+    // succeeded. Nothing here is asserted about the exit code or the output,
+    // because the point is only that the instrumentation can see PyPI.
+    const bareName = 'opena2a-fixture-pypi-nonexistent-xyz-do-not-publish-20260525';
+    resetNetMarker();
+    spawnSync(
+      'node',
+      ['--require', NET_RECORDER, CLI, 'check', `pip:${bareName}`, '--json', '--ci'],
+      { encoding: 'utf8', timeout: 30_000, env: netEnv() },
+    );
+
+    expect(recordedHosts()).toContain('pypi.org');
   });
 });
