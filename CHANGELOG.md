@@ -56,9 +56,18 @@ All notable changes to HackMyAgent are documented in this file.
   Observations block and `--json` are derived from that. Three states per
   category: `examined` (a check in it read a file, or reported a finding),
   `partial` (checks ran but a cap stopped them short of the tree), and
-  `not examined`. On the repo above, 8 of 25 categories were fully examined,
-  10 were partial and 7 had no such surface present — all 25 had been printed
-  as clear.
+  `unexamined` (the checks read no file of that kind here). On the repo above,
+  8 of 25 categories were examined and 4 were partial — all 25 had been
+  printed as clear.
+
+  What the report does NOT do is guess why a category read nothing. An earlier
+  cut split "the surface is absent" from "the read was not attributed" by
+  inference, and it was wrong in both directions: checks that probe exact
+  filenames never succeed on a repo that lacks them, so a real absence could
+  not be recognised and every ordinary repo grew a warning; and a directory
+  listing by an unrelated check in the same category flipped the flag on
+  evidence that said nothing about the surface. Only a cap that actually fired
+  or a check the scan explicitly skipped qualifies the verdict.
 
   The ledger **fails closed**: every category starts `not examined` and only
   positive runtime evidence upgrades it, so instrumentation that is missing or

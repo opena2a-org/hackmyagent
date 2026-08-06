@@ -76,14 +76,6 @@ async function scanWithCoverage(dir: string) {
     result.coverage?.executions ?? [],
     truncations,
     {
-      ...(nm.compiledArtifacts > 0
-        ? {
-            semantic: {
-              artifactTypes: nm.artifactSummaries.map(a => a.type),
-              artifactsCompiled: nm.compiledArtifacts,
-            },
-          }
-        : {}),
       // Both layers: the static scan's findings AND the semantic pass's. The
       // CLI feeds the merged `failed` list, so the helper must too — passing
       // only the semantic half would file `git hygiene` as unexamined while
@@ -345,8 +337,10 @@ describe('the guards the comments claim actually exist', () => {
    * all tests stayed green while the check ran outside the ledger.
    */
   it('catches an orchestrated check called by any spelling outside the ledger', () => {
-    const start = scannerSrc.indexOf('// Run all checks');
-    const end = scannerSrc.indexOf('// end of standard/deep checks');
+    // The WHOLE scanInner body, not the comment-marked block: a helper
+    // defined just outside the markers would otherwise be invisible to this.
+    const start = scannerSrc.indexOf('private async scanInner(');
+    const end = scannerSrc.indexOf('\n  private async detectPlatform(');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const region = scannerSrc.slice(start, end);
@@ -357,10 +351,20 @@ describe('the guards the comments claim actually exist', () => {
       [...region.matchAll(/this\.coverage\.run\('(\w+)',\s*\(\)\s*=>\s*this\.\1\(/g)]
         .map(m => m[1]),
     );
-    const mentioned = [...region.matchAll(/this\.(check\w+)\(/g)].map(m => m[1]);
+    // Both `this.checkX(` and the bracket form `this['checkX']`.
+    const mentioned = [
+      ...[...region.matchAll(/this\.(check\w+)\(/g)].map(m => m[1]),
+      ...[...region.matchAll(/this\[['"`](check\w+)['"`]\]/g)].map(m => m[1]),
+    ];
     const outside = [...new Set(mentioned)].filter(m => !wrapped.has(m));
     expect(outside, 'check methods invoked outside the coverage ledger').toEqual([]);
     expect(wrapped.size).toBeGreaterThan(50);
+    // Every REGISTERED method must be one the orchestration actually wraps, so
+    // a check that quietly stops being called is caught too.
+    expect(
+      Object.keys(CHECK_METHOD_PREFIXES).filter(m => !wrapped.has(m)),
+      'registered checks the orchestration never runs through the ledger',
+    ).toEqual([]);
   });
 });
 
@@ -395,33 +399,30 @@ describe('coverage numbers cannot exceed what was measured', () => {
   });
 
   /**
-   * The semantic layer used to upgrade all 15 of its category families from
-   * the single fact that some artifact compiled, so a repo with no MCP config
-   * reported `MCP: examined` sourced only to `nanomind-semantic`.
+   * Every `examined` must trace to a check that completed and read a file, or
+   * to a reported finding. Two earlier cuts credited categories from the
+   * semantic layer instead — first all 15 families from one boolean, then from
+   * artifact types the display layer had already filtered — and both produced
+   * `examined` with `filesRead: 0` and no owning method.
    */
-  it('credits a semantic category only when a matching artifact compiled', () => {
-    const types = new Set(scan.nm.artifactSummaries.map(a => a.type));
-    expect(types.has('mcp_config')).toBe(false); // fixture has no MCP config
-    const mcp = scan.categories.find(c => c.category === 'MCP');
-    expect(mcp).toBeDefined();
-    expect(
-      mcp!.methods.includes('nanomind-semantic'),
-      'MCP credited to the semantic layer with no MCP artifact compiled',
-    ).toBe(false);
-  });
-
-  /**
-   * An un-attributed read must never render as "no such surface here": that
-   * turns an instrumentation hole into reassurance and drops it from the
-   * verdict gate. Absence has to be observed.
-   */
-  it('marks absence only where a check was seen to look', () => {
+  it('traces every examined category to a completed check or a finding', () => {
+    const byMethod = new Map(
+      (scan.result.coverage?.executions ?? []).map(e => [e.method, e]),
+    );
     for (const c of scan.categories) {
-      if (!c.observedAbsent) continue;
-      const looked = methodsSeen(scan, c.category).some(
-        r => r.completed && r.pathsInspected > 0,
-      );
-      expect(looked, `${c.category} claims observed absence without inspecting`).toBe(true);
+      if (c.state !== 'examined') continue;
+      const real = c.methods.filter(m => m !== 'reported-finding');
+      for (const m of real) {
+        const rec = byMethod.get(m);
+        expect(rec, `${c.category} credits unknown method ${m}`).toBeDefined();
+        expect(rec!.completed, `${c.category} credits incomplete ${m}`).toBe(true);
+        expect(rec!.filesRead, `${c.category} credits ${m} which read nothing`)
+          .toBeGreaterThan(0);
+      }
+      expect(
+        real.length > 0 || c.methods.includes('reported-finding'),
+        `${c.category} is examined with no owning evidence`,
+      ).toBe(true);
     }
   });
 });

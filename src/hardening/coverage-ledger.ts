@@ -90,16 +90,6 @@ export interface CategoryCoverage {
   filesRead: number;
   /** Why it is `not-examined` / `truncated`. Empty when `examined`. */
   reason?: string;
-  /**
-   * True only when the checks were OBSERVED to look and find nothing — they
-   * inspected paths inside the target and no file of their kind was there.
-   *
-   * A consumer may treat this as benign; every other `not-examined` category
-   * is a coverage GAP. The distinction is carried as a flag rather than left
-   * for the caller to recover by matching on `reason`, so a reworded sentence
-   * cannot silently reclassify a gap as an absence.
-   */
-  observedAbsent?: boolean;
 }
 
 /**
@@ -217,45 +207,6 @@ export const SEMANTIC_PREFIXES: readonly string[] = [
   'SEM-CRED', 'SEM-INST', 'SEM-MCP', 'SEM-PERM',
 ];
 
-/**
- * Which categories a COMPILED ARTIFACT of each type is evidence for.
- *
- * The semantic layer used to credit all 15 families above from a single
- * boolean — `artifactsCompiled > 0`. That is a claim read off a hand-written
- * list, which is the very thing this module exists to stop: on a repo with no
- * MCP config at all, four MCP checks each read nothing and the category still
- * reported `examined`, sourced only to `nanomind-semantic`.
- *
- * So the credit is now measured from the artifact TYPES the run actually
- * compiled. Source files carry the analyzers that read any code; an
- * artifact-specific category (MCP, skill, governance, A2A) is credited only
- * when an artifact of that kind was really compiled. An unknown type credits
- * nothing, which is the fail-closed direction.
- */
-const ARTIFACT_TYPE_CATEGORIES: Readonly<Record<string, readonly string[]>> = {
-  // Source code is what the generic AST analyzers read.
-  source_code: ['credentials', 'injection', 'prompt', 'capabilities', 'sandbox', 'network'],
-  // Artifact-specific surfaces: present only if such an artifact was compiled.
-  mcp_config: ['MCP', 'capabilities'],
-  skill: ['skill', 'capabilities', 'prompt'],
-  soul: ['governance', 'prompt'],
-  agent_config: ['governance', 'capabilities'],
-  system_prompt: ['prompt', 'governance'],
-  a2a_card: ['A2A', 'identity'],
-  heartbeat: ['heartbeat'],
-};
-
-/** Categories the compiled artifact types are evidence for. Measured input. */
-export function categoriesForArtifactTypes(types: readonly string[]): string[] {
-  const out = new Set<string>();
-  // Fail closed on a malformed caller: credit nothing rather than throw, so a
-  // bad input can never be the reason a coverage claim is missing OR inflated.
-  if (!Array.isArray(types)) return [];
-  for (const t of types) {
-    for (const c of ARTIFACT_TYPE_CATEGORIES[t] ?? []) out.add(c);
-  }
-  return [...out];
-}
 
 /**
  * Category label for a check-ID prefix.
@@ -503,6 +454,10 @@ export class CoverageLedger {
   categoryFileCounts(): Record<string, number> {
     const byCategory = new Map<string, Set<string>>();
     for (const [method, paths] of this.readsByMethod) {
+      // A check that threw cannot vouch for what it covered, and `summarize`
+      // already omits it from `methods`; crediting its reads here would have
+      // the count disagree with the method list beside it.
+      if (!this.executions.get(method)?.completed) continue;
       for (const prefix of CHECK_METHOD_PREFIXES[method] ?? []) {
         const category = PREFIX_TO_CATEGORY[prefix];
         if (!category) continue;
@@ -530,12 +485,6 @@ export class CoverageLedger {
 
 /** Extra evidence from layers that are not `check*` methods. */
 export interface SummarizeOptions {
-  /**
-   * What the semantic layer compiled: the artifact TYPES it produced, and how
-   * many artifacts. Types are measured per run; the count alone is not
-   * evidence about any particular category.
-   */
-  semantic?: { artifactTypes: string[]; artifactsCompiled: number };
   /**
    * Check IDs of findings this scan actually reported.
    *
@@ -639,18 +588,6 @@ export function summarizeCoverage(
     }
   }
 
-  if (opts?.semantic && opts.semantic.artifactsCompiled > 0) {
-    for (const category of categoriesForArtifactTypes(opts.semantic.artifactTypes)) {
-      if (!byCategory.has(category) && !ALL_CATEGORIES.has(category)) continue;
-      const c = bucket(category);
-      c.state = 'examined';
-      if (!c.methods.includes('nanomind-semantic')) c.methods.push('nanomind-semantic');
-      // Not summed into filesRead: the compiled artifacts are the same files
-      // the static checks already counted, and adding them again is what made
-      // a per-category total exceed the size of the tree.
-    }
-  }
-
   // A cap downgrades an examined category to truncated: the checks ran, but a
   // clear result only covers the part of the tree they reached.
   for (const t of truncations) {
@@ -675,19 +612,19 @@ export function summarizeCoverage(
       c.reason = skipped[0]!.skipReason;
     } else if (methods.length === 0) {
       c.reason = 'no check in this category ran';
-    } else if (records.some(r => r?.completed && r.pathsInspected > 0)) {
-      c.observedAbsent = true;
-      // The checks looked — they stat'd or listed paths inside the target —
-      // and found no file of their kind. That is a genuine absence.
-      c.reason = 'checks ran and found no file of this kind in the target';
     } else {
-      // Nothing was read AND nothing was even inspected, so there is no
-      // evidence these checks touched the target at all. Reporting that as
-      // "no such surface here" would convert an instrumentation hole into
-      // reassurance: `checkContextLifecycle` delegates to a module that reads
-      // through an untracked `fs`, so it read 177 files and recorded none.
-      // Absence has to be observed, not inferred from silence.
-      c.reason = 'no evidence these checks inspected the target';
+      // Deliberately ONE reason, stating only what was measured: these checks
+      // read no file here. Whether that is because the surface is absent or
+      // because the read was not attributed is NOT inferred.
+      //
+      // An earlier cut split the two on `pathsInspected > 0`. Both directions
+      // were wrong. Checks that probe exact filenames never succeed on a repo
+      // without them, so a genuine absence could not be recognised and every
+      // ordinary repo grew a warning; and a `readdir` of the target root by an
+      // unrelated check in the same category flipped the flag on evidence that
+      // said nothing about the surface. An inference that fails in both
+      // directions is not worth the sentence it prints.
+      c.reason = 'these checks read no file of this kind in the target';
     }
   }
 

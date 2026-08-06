@@ -146,6 +146,7 @@ import {
   summarizeCoverage,
   SEMANTIC_PREFIXES,
   CHECK_METHOD_PREFIXES,
+  categoryForPrefix,
   UNREACHABLE_PREFIXES,
   type CategoryCoverage,
 } from './hardening/coverage-ledger';
@@ -156,6 +157,8 @@ import {
   shouldRenderPathForward,
   quickScanFollowupText,
   quickScanScopeDisclosure,
+  OBSERVATION_LABELS,
+  OBSERVATION_LABEL_WIDTH,
 } from './ui/quick-scan-labels';
 import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifact-intent';
 import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, retainForVerdict } from './ui/verdict-band';
@@ -1404,17 +1407,6 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
               ]
             : localScan.coverage.truncations,
           {
-            // Artifact TYPES the run compiled — measured, unlike the old
-            // blanket credit which upgraded 15 category families from the
-            // single fact that some artifact somewhere compiled.
-            ...(semanticCount > 0
-              ? {
-                  semantic: {
-                    artifactTypes: (opts.artifactSummaries ?? []).map(a => a.type),
-                    artifactsCompiled: semanticCount,
-                  },
-                }
-              : {}),
             // A reported finding proves its category was examined.
             observedCheckIds: failed.map(f => f.checkId).filter(Boolean),
             filesReadByCategory: localScan.coverage.filesReadByCategory,
@@ -1427,18 +1419,19 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // Categories a cap stopped short of the whole tree.
     const partiallyExamined = (coverageCategories ?? []).filter(c => c.state === 'truncated');
 
-    // Not every unexamined category is a gap. A repo with no MCP config has
-    // nothing for the MCP checks to read, and saying so is information, not a
-    // warning — flagging it would be the shame-shaped inverse of the bug being
-    // fixed here. A cap, a depth skip, or a check with no caller ARE gaps:
-    // there was something to look at and the scan did not look. Only the
-    // second kind qualifies the verdict.
-    // Flag, not a string match: the ledger sets `observedAbsent` only when a
-    // check was seen to look and find nothing. Sniffing the reason text would
-    // reclassify a gap as benign the moment the sentence is reworded.
-    const isAbsentSurface = (c: CategoryCoverage): boolean => c.observedAbsent === true;
-    const notExaminedAbsent = notExamined.filter(isAbsentSurface);
-    const notExaminedGaps = notExamined.filter(c => !isAbsentSurface(c));
+    // What qualifies the verdict is only ever POSITIVELY measured: a cap that
+    // fired, or a check the orchestration explicitly skipped. A category that
+    // simply read nothing is reported in the inventory but does not warn —
+    // a repo with no MCP config has nothing for the MCP checks to read, and
+    // flagging that would be the shame-shaped inverse of the bug being fixed
+    // here. Two earlier cuts tried to tell "absent" from "not attributed" by
+    // inference; both were wrong in both directions, so neither claim is made.
+    const explicitlySkipped = (coverageCategories ?? []).filter(c =>
+      (localScan?.coverage?.executions ?? []).some(
+        e => e.skipReason && (CHECK_METHOD_PREFIXES[e.method] ?? [])
+          .some(p => categoryForPrefix(p) === c.category),
+      ),
+    );
     // HMA-2: prefer registry.packageType (authoritative) over the local
     // project-type heuristic. Fixes "Surfaces: cli" (HMA local heuristic)
     // disagreeing with "library" (ai-trust → registry packageType) on
@@ -1552,7 +1545,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       return '';
     };
     // 11-char label width fits "Categories" + 1 space separator.
-    const LABEL_WIDTH = 12;
+    const LABEL_WIDTH = OBSERVATION_LABEL_WIDTH;
 
     // Emit Surfaces + Checks, then Artifacts block (if any), then
     // Categories + Verdict. Artifacts go between Checks and Categories
@@ -1605,14 +1598,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     if (
       coverageCategories &&
       totalFindings === 0 &&
-      (notExaminedGaps.length > 0 || partiallyExamined.length > 0)
+      (explicitlySkipped.length > 0 || partiallyExamined.length > 0)
     ) {
       const gaps: string[] = [];
       if (partiallyExamined.length > 0) {
         gaps.push(`${partiallyExamined.length} stopped at a file cap`);
       }
-      if (notExaminedGaps.length > 0) {
-        gaps.push(`${notExaminedGaps.length} did not run`);
+      if (explicitlySkipped.length > 0) {
+        gaps.push(`${explicitlySkipped.length} were skipped by this scan depth`);
       }
       verdictDisplay.value =
         `No issues in what was examined — but ${gaps.join(' and ')}. ` +
@@ -1658,32 +1651,30 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // "(all clear)" having either examined nothing or stopped at a file cap.
     if (coverageCategories) {
       const examinedCount = coverageCategories.filter(c => c.state === 'examined').length;
-      const tally = [`${examinedCount} of ${coverageCategories.length} categories fully examined`];
+      const tally = [`${examinedCount} of ${coverageCategories.length} categories examined`];
       if (partiallyExamined.length > 0) tally.push(`${partiallyExamined.length} partial (file cap)`);
-      if (notExaminedGaps.length > 0) tally.push(`${notExaminedGaps.length} did not run`);
-      if (notExaminedAbsent.length > 0) tally.push(`${notExaminedAbsent.length} no such surface here`);
-      // Yellow only for real gaps. An absent surface is information.
-      const covTone = notExaminedGaps.length > 0 || partiallyExamined.length > 0 ? colors.yellow : colors.dim;
+      if (notExamined.length > 0) tally.push(`${notExamined.length} unexamined (read no file)`);
+      // Yellow only for a measured shortfall: a cap that fired or a skip.
+      const covTone = partiallyExamined.length > 0 || explicitlySkipped.length > 0
+        ? colors.yellow : colors.dim;
       console.log(
-        `  ${colors.dim}${'Coverage'.padEnd(LABEL_WIDTH, ' ')}${RESET()}${covTone}${tally.join(' · ')}${RESET()}`,
+        `  ${colors.dim}${OBSERVATION_LABELS.coverage.padEnd(LABEL_WIDTH, ' ')}${RESET()}${covTone}${tally.join(' · ')}${RESET()}`,
       );
 
-      // Name them on their own lines. Labels stay under LABEL_WIDTH so
-      // padEnd always leaves a separator before the value.
-      const nameLine = (label: string, cats: CategoryCoverage[], tone: string): void => {
-        if (cats.length === 0) return;
-        const shown = verbose ? cats : cats.slice(0, 8);
-        const hidden = cats.length - shown.length;
+      // Labels come from OBSERVATION_LABELS, which a test holds under
+      // LABEL_WIDTH. A label of exactly LABEL_WIDTH leaves no separator and
+      // runs into the value — it shipped twice as `Not examinedA2A, …`.
+      // One line, one claim: these categories read no file. No colour-coded
+      // guess about whether that means the surface is absent.
+      if (notExamined.length > 0) {
+        const shown = verbose ? notExamined : notExamined.slice(0, 8);
+        const hidden = notExamined.length - shown.length;
         const more = hidden > 0 ? ` + ${hidden} more (--verbose)` : '';
         console.log(
-          `  ${colors.dim}${label.padEnd(LABEL_WIDTH, ' ')}${RESET()}` +
-          `${tone}${shown.map(c => c.category).join(', ')}${more}${RESET()}`,
+          `  ${colors.dim}${OBSERVATION_LABELS.unexamined.padEnd(LABEL_WIDTH, ' ')}${RESET()}` +
+          `${colors.dim}${shown.map(c => c.category).join(', ')}${more}${RESET()}`,
         );
-      };
-      // The real gaps get their own line and the warning colour; absent
-      // surfaces get a separate, quieter one so the two are never conflated.
-      nameLine('Did not run', notExaminedGaps, colors.yellow);
-      nameLine('Not present', notExaminedAbsent, colors.dim);
+      }
       // One reason per category under verbose — the lines above name WHAT was
       // not covered, this says WHY, so neither is a dead end.
       if (verbose) {
@@ -4371,14 +4362,6 @@ Examples:
                     ]
                   : result.coverage.truncations,
                 {
-                  ...(nmResult.compiledArtifacts > 0
-                    ? {
-                        semantic: {
-                          artifactTypes: (nmResult.artifactSummaries ?? []).map(a => a.type),
-                          artifactsCompiled: nmResult.compiledArtifacts,
-                        },
-                      }
-                    : {}),
                   // Same predicate the rendered block uses, so the text and
                   // the JSON cannot disagree about which categories a finding
                   // proves were examined.
