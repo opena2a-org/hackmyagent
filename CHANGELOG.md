@@ -2,7 +2,27 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
-## [Unreleased]
+## [0.26.0] - 2026-08-06
+
+### Breaking
+
+- **`red-team` no longer reports a resilience score, and it exits 2 on every run.** The
+  score it used to print was inverted by construction — a jailbreak document scored 100%
+  resilient and benign prose scored 0% — and no attack was ever executed. **Any resilience
+  score, `All defenses held` line, or `Strong defenses:` line produced by 0.25.2 or any
+  earlier version is void and carries no signal.** The affected range is v0.2.24 through
+  0.25.2, effectively the whole published life of the command. A CI job that ran `red-team`
+  and gated on its exit code was passing over every artifact, including jailbreaks; it will
+  now fail until the execution path lands. There is no flag to restore the old behaviour —
+  a switch that returns exit 0 is a switch that returns the defect. Detail under **Fixed**.
+
+- **`--json` contract changes on `red-team`.** `SemanticTargetProfile.constraints` is
+  renamed `modalStatements`; `governanceMechanism: string` becomes
+  `governanceMentions: string[]`; `resilienceScore` is now `number | null` and is always
+  `null`; `evaluation.mode` is `"not_executed"`. `AttackResult` gains `payloadInput`,
+  which carries the generated payload text — with no execution path, those payloads are
+  the command's deliverable. Consumers must branch on `null` rather than coerce it: `0`
+  is the value that caused the harm.
 
 ### Security
 
