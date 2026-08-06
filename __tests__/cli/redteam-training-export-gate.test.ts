@@ -64,7 +64,19 @@ describe('red-team training-export gate (audit 2026-06-01)', () => {
     expect(r.stdout).not.toMatch(/exported to NanoMind corpus/i);
   });
 
-  it('--export-training writes UNSANITIZED pairs and says so', () => {
+  // Updated by #369. This used to assert that `--export-training` DID write
+  // pairs, because "this unconstrained skill deterministically yields attack
+  // pairs" — but the pairs it yielded were synthetic. A pair's `input` was a
+  // templated `Skill complied with <category> attack: ...` sentence describing a
+  // run that never happened, and the assertion below was requiring the tool to
+  // manufacture them. Nothing is executed, so there is nothing to export, and
+  // the opt-in flag now says that instead of silently writing zero rows.
+  //
+  // When the execution path lands (docs/design/redteam-nanomind-judge.md), this
+  // becomes a real export test again — against observed responses, through the
+  // sanitizer. Until then the strongest correct assertion is that the corpus file
+  // is never created at all, on either path.
+  it('--export-training writes nothing while no payload is executed, and says why', () => {
     if (!canRunSpawn()) return;
     const home = mkdtempSync(join(tmpdir(), 'hma-redteam-home-'));
     const skillPath = join(home, 'SKILL.md');
@@ -73,12 +85,13 @@ describe('red-team training-export gate (audit 2026-06-01)', () => {
     const r = runRedTeam(['--export-training', skillPath], home);
     const corpus = join(home, '.opena2a', 'training-data', 'labeled-pairs.jsonl');
 
-    // This unconstrained skill deterministically yields attack pairs, so the
-    // opt-in path must write to the isolated corpus and flag the data as
-    // unsanitized (never the old "exported to NanoMind corpus" wording).
-    expect(r.stdout).toMatch(/UNSANITIZED training pairs/i);
+    expect(r.stdout).toMatch(/Nothing exported/i);
+    expect(r.stdout).toMatch(/no payload was executed/i);
+    expect(r.stdout).not.toMatch(/UNSANITIZED training pairs/i);
     expect(r.stdout).not.toMatch(/exported to NanoMind corpus/i);
-    expect(existsSync(corpus)).toBe(true);
-    expect(readFileSync(corpus, 'utf-8').trim().length).toBeGreaterThan(0);
+
+    // Not merely empty — never created. `exportAttackTraining` returns before
+    // `initTrainingPipeline()`, so an opt-in run does not even mkdir ~/.opena2a.
+    expect(existsSync(corpus)).toBe(false);
   });
 });

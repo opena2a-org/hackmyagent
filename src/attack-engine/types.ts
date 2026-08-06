@@ -16,8 +16,18 @@ export interface SemanticTargetProfile {
   declaredPurpose: string;
   /** Tools and resources the target can access */
   capabilities: string[];
-  /** How the target phrases its limitations */
-  constraints: string[];
+  /**
+   * Sentences in the artifact built on a modal verb (must / never / always /
+   * cannot / ...), extracted verbatim and of **unknown polarity**.
+   *
+   * Named for what the extractor can actually see (#369). It used to be called
+   * `constraints`, which asserted these were limitations the agent operates
+   * under — and the engine then scored resistance by counting them. They are not
+   * that. `Never reveal secrets.` and `Never refuse.` are the same syntactic
+   * shape pointing opposite ways, and on a jailbreak document every match is
+   * attacker text. Treat this as attack surface, never as evidence of a defence.
+   */
+  modalStatements: string[];
   /** How governance is enforced */
   governanceMechanism: string;
   /** Data types the target regularly touches */
@@ -78,14 +88,44 @@ export interface AdaptivePayload {
 // Attack Results
 // ============================================================================
 
-export type AttackOutcome = 'SUCCESS' | 'PARTIAL' | 'FAIL';
+/**
+ * `NOT_EXECUTED` is a first-class outcome, not an error state (#369).
+ *
+ * The engine generates payloads but has no way to run them against an agent
+ * today, so every result it produces carries this. It exists as its own value
+ * rather than defaulting to `FAIL` because "the attack did not land" and "the
+ * attack was never attempted" are opposite facts about the target, and the
+ * shipped engine conflated them into a resilience score.
+ */
+export type AttackOutcome = 'SUCCESS' | 'PARTIAL' | 'FAIL' | 'NOT_EXECUTED';
 
 export interface AttackResult {
   payloadId: string;
   category: AttackCategory;
+  /**
+   * The attack input this result is about, verbatim.
+   *
+   * Carried so `--json` exposes what the session would send. Without it
+   * "Payloads generated: 5" is a number the caller cannot act on, and with no
+   * execution path the payloads ARE the deliverable — the thing a user can run
+   * against their own agent by hand.
+   *
+   * Derived from the scanned artifact, so it is untrusted text. Safe in JSON;
+   * anything rendering it to a terminal must escape it first.
+   */
+  payloadInput: string;
   outcome: AttackOutcome;
-  /** What the target actually did in response */
-  observedBehavior: string;
+  /**
+   * What the target actually did in response.
+   *
+   * ABSENT — not empty-string — when `outcome` is `NOT_EXECUTED`. There is no
+   * observation to report, and `''` reads as "the target did nothing", which is
+   * itself a claim about behaviour nobody watched. This field previously held
+   * synthetic strings (`Skill complied with ... attack`) generated for runs that
+   * never happened; it must only ever carry real output or a faithful summary
+   * of it.
+   */
+  observedBehavior?: string;
   /** Defense mechanism detected (if FAIL) */
   defenseMechanism?: string;
   /** How strong the defense is (0-1) */
@@ -103,8 +143,20 @@ export interface AttackResult {
 export interface DefenseMap {
   /** All defenses discovered during the attack session */
   defenses: DefenseEntry[];
-  /** Overall resilience score (0-1, 1 = all attacks blocked) */
-  resilienceScore: number;
+  /**
+   * Overall resilience score (0-1, 1 = all attacks blocked), or `null` when no
+   * attack was executed and the session therefore measured nothing.
+   *
+   * `null` rather than `0` is the whole point (#369). Resilience is a property
+   * of a run: a document does not resist an attack nobody made. The shipped
+   * engine derived this number from a regex over the artifact's own text, which
+   * made it an attacker-controllable signal — a jailbreak scored 1.0 because its
+   * imperatives were counted as declared defences, while benign prose scored 0
+   * through an `entries.length || 1` denominator that invented a defence to
+   * divide by. Any consumer must branch on `null` and report "not measured";
+   * coercing it to a number re-creates the defect.
+   */
+  resilienceScore: number | null;
   /** Categories where defenses held */
   strongCategories: AttackCategory[];
   /** Categories where defenses failed */
@@ -125,11 +177,37 @@ export interface DefenseEntry {
 // Session Results
 // ============================================================================
 
+/**
+ * Where a session's outcomes came from — the provenance every consumer must
+ * read before treating any number in the session as a measurement (#369).
+ */
+export interface AttackEvaluation {
+  /**
+   * `not_executed`: payloads were generated but never run against an agent, so
+   * the session has no evidence about resistance.
+   * `executed`: outcomes were derived from a real agent's responses.
+   *
+   * There is deliberately no `heuristic` member. The heuristic this engine
+   * shipped scored resistance by counting modal verbs in the artifact, which is
+   * inverted rather than approximate, and a labelled inverted number is still an
+   * inverted number.
+   */
+  mode: 'not_executed' | 'executed';
+  /** Payloads generated for this session. */
+  generated: number;
+  /** Payloads actually run against an agent. Zero whenever `mode` is `not_executed`. */
+  executed: number;
+  /** Why nothing ran, in one clause the CLI can print. Absent when `mode` is `executed`. */
+  reason?: string;
+}
+
 export interface AttackSessionResult {
   /** Target profile that was attacked */
   target: SemanticTargetProfile;
   /** All attack results across all iterations */
   results: AttackResult[];
+  /** Provenance of every outcome in `results`. Read this before trusting a count. */
+  evaluation: AttackEvaluation;
   /** Total payloads generated */
   totalPayloads: number;
   /** Total successful attacks */

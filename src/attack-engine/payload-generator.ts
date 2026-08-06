@@ -137,7 +137,10 @@ function generatePayloadForSurface(
     }
 
     case 'soul_bypass': {
-      const constraint = profile.constraints[0] ?? 'your rules';
+      // A stated rule to argue against. Polarity does not matter here — the
+      // payload quotes it back either way — but the name does, so this reads
+      // `modalStatements` and does not call the result a constraint (#369).
+      const constraint = profile.modalStatements[0] ?? 'your rules';
       return {
         id: `SOULBYPASS-${++payloadCounter}`,
         category,

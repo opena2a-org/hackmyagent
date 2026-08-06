@@ -8916,13 +8916,16 @@ program
     }
   });
 
-// red-team command: adaptive attack engine (constraint heuristic today;
-// NanoMind-judged evaluation tracked in docs/design/redteam-nanomind-judge.md)
+// red-team command: derives an artifact's attack surface and generates the
+// payloads a session would use. It does NOT execute them and reports no
+// resilience score — see src/attack-engine/feedback-loop.ts and #369 for why a
+// number here was worse than no number. Execution is tracked in
+// docs/design/redteam-nanomind-judge.md.
 program
   .command('red-team')
   .argument('<target>', 'Path to artifact to red-team (skill, SOUL.md, MCP config, system prompt)')
-  .description('Run an adaptive attack session against an artifact. Generates target-specific payloads from the artifact, evaluates resistance, and maps defenses. (NanoMind-judged evaluation is in progress — see docs/design/redteam-nanomind-judge.md; the current engine uses a constraint heuristic.)')
-  .option('--iterations <n>', 'Max attack iterations per category', '5')
+  .description('Map an artifact\'s attack surface and generate target-specific attack payloads. Does NOT execute them: no agent is run, so resistance is not measured and no resilience score is reported (see docs/design/redteam-nanomind-judge.md). Exits 2 to mark the unmeasured result.')
+  .option('--iterations <n>', 'Reserved for the execution path; inert today (iteration adapts a payload to an observed defense, and nothing is observed)', '5')
   .option('--json', 'Output results as JSON')
   .option('--export-training', 'Append results to the local training corpus (~/.opena2a/training-data). Off by default; exported pairs are UNSANITIZED and must pass the training sanitizer before any NanoMind training use.')
   .action(async (target: string, options: { iterations?: string; json?: boolean; exportTraining?: boolean }) => {
@@ -8968,9 +8971,11 @@ program
     const name = target.split('/').pop() ?? 'unknown';
 
     if (!options.json) {
-      console.log(`\nAdaptive Attack Engine`);
-      console.log(`Target: ${name} (${artifactType})`);
-      console.log(`Max iterations: ${options.iterations ?? 5} per category\n`);
+      // Was "Adaptive Attack Engine". Nothing adapts: adaptation means changing
+      // a payload in response to an observed defence, and nothing is observed.
+      // The banner was the same capability claim as the resilience score (#369).
+      console.log(`\nAttack Surface & Payload Generation`);
+      console.log(`Target: ${escapePathForDisplay(name)} (${artifactType})\n`);
     }
 
     const result = await runAttackSession(content, artifactType, name, {
@@ -8980,22 +8985,69 @@ program
     if (options.json) {
       console.log(JSON.stringify(result, null, 2));
     } else {
-      console.log(`Results:`);
-      console.log(`  Payloads generated: ${result.totalPayloads}`);
-      console.log(`  Successful attacks: ${result.successCount}`);
-      console.log(`  Partial successes:  ${result.partialCount}`);
-      console.log(`  Resilience score:   ${(result.defenseMap.resilienceScore * 100).toFixed(0)}%`);
+      // Every value below is escaped before it reaches a console.log, even
+      // though each currently comes from a fixed vocabulary rather than from the
+      // scanned file: `dataAccessPatterns` are members of the extractor's own
+      // `dataTypes` allowlist, `governanceMechanism` is one of four literals, and
+      // the categories are the `AttackCategory` union. Those are invariants of
+      // code that lives elsewhere and can change without anyone rereading this
+      // block, and the target is untrusted input — so the escape happens at the
+      // render boundary regardless of what the producer promises. This is also
+      // what `render-source-gate` enforces, and satisfying it beats exempting it.
+      const dataAccess = escapeForDisplay(result.target.dataAccessPatterns.join(', ') || 'none detected');
+      const governance = escapeForDisplay(
+        result.target.governanceMechanism === 'none' ? 'none detected' : result.target.governanceMechanism,
+      );
+      const modalCount = result.target.modalStatements.length;
+      const surfaceCount = result.target.vulnerabilitySurface.length;
+      const surfaceCategories = escapeForDisplay(
+        [...new Set(result.target.vulnerabilitySurface.map(s => s.attackCategory))].join(', '),
+      );
+
+      console.log(`Attack surface (static, from the artifact's own text):`);
+      console.log(`  Data access:       ${dataAccess}`);
+      console.log(`  Governance:        ${governance}`);
+      console.log(`  Modal statements:  ${modalCount}  (shape only — not counted as defenses)`);
+      console.log(`  Surfaces mapped:   ${surfaceCount}${surfaceCategories ? ` (${surfaceCategories})` : ''}\n`);
+
+      console.log(`  Payloads generated: ${result.evaluation.generated}`);
+      console.log(`  Payloads executed:  ${result.evaluation.executed}`);
       console.log(`  Duration:           ${result.durationMs}ms\n`);
 
-      if (result.vulnerabilities.length > 0) {
+      if (result.defenseMap.resilienceScore === null) {
+        // The load-bearing line. This command previously printed a percentage
+        // and "All defenses held" for a document it never ran anything against,
+        // scoring a jailbreak at 100% and benign prose at 0% (#369). Where a
+        // layer reached no verdict it says so — the same rule as the artifact
+        // intent line (#252/#200) — and never reports the reassuring end of a
+        // scale it did not measure.
+        console.log(`  Resilience:  NOT MEASURED`);
+        console.log(`  No agent was executed${result.evaluation.reason ? ` — ${result.evaluation.reason}` : ''}.`);
+        console.log(`  Resilience is a property of a run, so this command reached no`);
+        console.log(`  verdict on it. The payloads above are generated, not results.\n`);
+        // The path forward is the payloads themselves — the one thing this
+        // command genuinely produced. It deliberately does NOT cite `secure` or
+        // `scan-soul` as "the static verdict on this artifact": measured
+        // 2026-08-05, `secure` scores the #369 jailbreak fixture 98/100 "Usable
+        // with caveats" both as a lone file and inside a directory, and only
+        // reaches `malicious` (68/100) when the file is named `SKILL.md`, because
+        // artifact discovery is filename-driven. `scan-soul` ranks it 4/100
+        // against the benign control's 0/100. Sending a user from an honest
+        // "not measured" to a misleading all-clear would reproduce #369 one
+        // command over.
+        console.log(`  To run them against your agent yourself:`);
+        console.log(`    ${CLI_PREFIX} red-team ${citationTarget(target)} --json`);
+        console.log(`  Payload text is under .results[].payloadInput\n`);
+      } else if (result.vulnerabilities.length > 0) {
         console.log(`Vulnerabilities Found:`);
         for (const vuln of result.vulnerabilities) {
-          console.log(`  [${vuln.severity.toUpperCase()}] ${vuln.title}`);
-          console.log(`    ${vuln.description}`);
-          console.log(`    Fix: ${vuln.remediation}\n`);
+          console.log(`  [${vuln.severity.toUpperCase()}] ${escapeForDisplay(vuln.title)}`);
+          console.log(`    ${escapeForDisplay(vuln.description)}`);
+          console.log(`    Fix: ${escapeForDisplay(vuln.remediation)}\n`);
         }
       } else {
-        console.log(`No vulnerabilities found. All defenses held.\n`);
+        console.log(`  Resilience:  ${(result.defenseMap.resilienceScore * 100).toFixed(0)}%`);
+        console.log(`  ${result.evaluation.executed} payloads executed, none succeeded.\n`);
       }
 
       if (result.defenseMap.strongCategories.length > 0) {
@@ -9017,8 +9069,28 @@ program
       const trainingCount = exportAttackTraining(result);
       if (!options.json && trainingCount > 0) {
         console.log(`\n${trainingCount} UNSANITIZED training pairs appended to ${require('node:os').homedir()}/.opena2a/training-data.`);
-        console.log(`Warning: these are heuristic, self-labeled pairs. Run the training sanitizer before any NanoMind training use.`);
+        console.log(`Warning: these are self-labeled pairs. Run the training sanitizer before any NanoMind training use.`);
+      } else if (!options.json) {
+        // A flag that silently does nothing is a dead end, so say why rather
+        // than leaving the user to infer it. Zero here is correct, not a
+        // failure: a training pair's input is the target's observed response,
+        // and nothing was executed.
+        console.log(`\nNothing exported: a training pair records an observed response, and no payload was executed.`);
       }
+    }
+
+    // The exit code has to carry the verdict, because the score no longer can.
+    // This previously exited 0 in every direction — including 0% resilience with
+    // four HIGH "confirmed" vulnerabilities — so a CI job running red-team over a
+    // document that tells an agent to execute arbitrary shell commands passed
+    // (#369, same contract class as #390/#373/#371).
+    //   0  executed, nothing found
+    //   1  findings
+    //   2  reached no verdict (nothing executed)
+    if (result.evaluation.mode !== 'executed') {
+      await finishWithFindings(2);
+    } else if (result.vulnerabilities.length > 0) {
+      await finishWithFindings(1);
     }
   });
 
