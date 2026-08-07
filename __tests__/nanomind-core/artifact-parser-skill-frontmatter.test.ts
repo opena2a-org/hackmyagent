@@ -62,6 +62,34 @@ describe('#410 skill classifier: frontmatter must be anchored to the start of th
       expect(classifyArtifactType(doc, 'docs/authoring-skills.md')).not.toBe('skill');
     });
 
+    it('TWO horizontal rules with a "capabilities:" line between them', () => {
+      // The shape that actually forces `^` to mean start-of-file. With a single rule the
+      // block regex finds no closing fence and returns null whether or not it carries `m`,
+      // so a one-rule fixture cannot tell the two spellings apart: restoring the `m` flag
+      // leaves every other test in this file green. A document whose two rules bracket a
+      // `capabilities:` line is a complete frontmatter block to a multiline `^`, and prose
+      // between two rules is ordinary Markdown.
+      const doc = [
+        '# Skill manifest reference',
+        '',
+        'Every manifest key, in the order the loader reads them.',
+        '',
+        '---',
+        '',
+        'capabilities:',
+        '',
+        '- `read_files` — read from the workspace',
+        '- `run_shell` — run a command',
+        '',
+        '---',
+        '',
+        '## See also',
+        '',
+      ].join('\n');
+
+      expect(classifyArtifactType(doc, 'docs/manifest-reference.md')).not.toBe('skill');
+    });
+
     it('horizontal rule followed by an indented "capabilities:" in a sample signature', () => {
       const doc = [
         '# API Reference',
@@ -115,6 +143,39 @@ describe('#410 skill classifier: frontmatter must be anchored to the start of th
       expect(classifyArtifactType('', 'deploy.skill.md')).toBe('skill');
       expect(classifyArtifactType('no frontmatter at all', 'a/b/SKILL.md')).toBe('skill');
       expect(classifyArtifactType('no frontmatter at all', 'a/b/deploy.skill.md')).toBe('skill');
+    });
+  });
+
+  describe('the signature stays linear on hostile content', () => {
+    // parseArtifact's default maxArtifactSize. It only APPENDS an error — nothing truncates
+    // or skips the content — so a file this size reaches the signature either way.
+    const ONE_MB = 1024 * 1024;
+
+    it('classifies 1 MB of repeated fence lines in well under a second', () => {
+      // The replaced regex was quadratic on exactly this input. Its `m` flag gave `^---` a
+      // start position at every one of the 262,144 line starts, and from each one the lazy
+      // body scanned to EOF for a `capabilities:` line that never comes. The leading-block
+      // helper is anchored with no `m`, so it has one start position.
+      //
+      // Measured on the same machine, same payload: 4,960 ms before the fix, 0.1 ms after.
+      // The bound sits between the two, so it fails on the old regex rather than merely
+      // passing on the new one.
+      const hostile = '---\n'.repeat(ONE_MB / 4);
+
+      const started = performance.now();
+      const type = classifyArtifactType(hostile, 'docs/hostile.md');
+      const elapsed = performance.now() - started;
+
+      expect(type).not.toBe('skill');
+      expect(elapsed, `1 MB of fence lines took ${elapsed.toFixed(0)} ms`).toBeLessThan(2000);
+    });
+
+    it('still runs the frontmatter test at 1 MB, so the timing fixture above is not short-circuited', () => {
+      // Without this, a future size guard that skipped classification for large files would
+      // make the timing assertion above pass while measuring nothing.
+      const bigSkill = ['---', 'name: big', 'capabilities: [read_files]', '---', '', 'x'.repeat(ONE_MB)].join('\n');
+
+      expect(classifyArtifactType(bigSkill, 'docs/big-skill.md')).toBe('skill');
     });
   });
 });
