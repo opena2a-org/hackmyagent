@@ -121,6 +121,25 @@ All notable changes to HackMyAgent are documented in this file.
 
   Pinned in both directions: it fails on published `0.26.1` and passes on this build.
 
+### Security
+
+- **`scan-soul` exits 1 when the governance file it found conforms to nothing (half of
+  #390).** It reported `Governance 0/100` at exit 0, and `scan-soul --ci exits 0 at 0/100`
+  is named in that issue's title. Measured on `9bd2888`, a `SOUL.md` reading `name: demo`:
+  `0/100` at exit 0 on text, `--ci` and `--json`; now exit 1 on all three.
+
+  Two conditions, and the second matters: a governance file must have been **found**, and
+  its score must be 0. Gating on the score alone failed every repository that simply has no
+  `SOUL.md` — including this one. "There is nothing here to grade" is not "this governance
+  is broken".
+
+  It gates on `score === 0`, not on `conformance === 'none'` the way `secure -b oasb-2`
+  does. A `SOUL.md` declaring a narrow profile and covering a few of its 19 applicable
+  controls scores 14/100 with conformance `none`; failing that would be a policy change
+  about acceptable governance rather than a fix for an exit code that ignored its own
+  output. `--fail-below` remains the flag for a stricter floor, and #390 stays open for
+  whoever decides where that line belongs.
+
 ### Known issues
 
 - **`npm install hackmyagent` still reports 3 high advisories, all of them the same one.**
@@ -154,7 +173,13 @@ All notable changes to HackMyAgent are documented in this file.
   verdict change above; each is pre-existing and none is a regression from it.
 
   - `secure <empty dir>` prints `98/100` at exit 0 while its own coverage ledger says
-    `0 files read by static checks`. `check <empty dir>` reports `NOT MEASURED` at exit 2
+    `0 files read by static checks`. **Still open (#438).** A fix was built and reverted:
+    gating on files-read only moves the threshold from 0 files to 1 — a directory holding a
+    single random blob still scored `98/100` — and `secure --fix` writes a `.gitignore`,
+    re-reads it, and then scores itself `100/100`, satisfying its own gate by writing into
+    the target. `secure` also has five output channels (`text`, `--json`, `sarif`, `html`,
+    `asff`) and a `--fail-below` arm that each return separately, so a single gate in the
+    text arm left four of them at exit 0. See #438 for the full measurement. `check <empty dir>` reports `NOT MEASURED` at exit 2
     on the same tree, so the two commands disagree about the same directory. `secure` is
     the flagship scoring command and routing it through the same derivation is its own
     change.
