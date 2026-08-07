@@ -302,6 +302,64 @@ rather than claimed as closed.
 
 ### Known issues
 
+The release walkthrough for this version ran a fresh-user pass and a correctness pass against
+the built artifact. Everything below **reproduces identically on published `0.26.1`** — none
+is a regression from this release, and each was measured on both versions rather than
+assumed. They are listed because several are the same defect class this release is about, and
+a release that announces "a verdict requires a measurement" cannot be silent about the places
+that still do not.
+
+**Verdicts that a run did not measure, in the channels this release did not reach:**
+
+- **`scan --json` exits 0 while `scan` exits 1 on the identical scan** (#445). The JSON body
+  reports 6 critical and 1 high; the exit code says success. `scan` is the only command with
+  this divergence — every other command's text and JSON forms agree. A CI job piping the
+  machine-readable format never fails.
+- **`secure --ignore <check>` raises the score and flips the gate green** (#450). Ignoring one
+  check moved a tree from `69/100` at exit 1 to `98/100` at exit 0, and the credential verdict
+  disappeared from the output. The report still prints `61 of 61 check groups ran`, and names
+  no suppressed check anywhere. `--ignore` is documented for CI use.
+- **`scan-soul` prints `Level HARDENED` at `100/100` on the tier path while 3 of 9 domains and
+  43 of 72 controls went unevaluated** (#451), with no `Scope` line. The profile path handles
+  this correctly — it clamps the score, names the skipped domains and raises
+  `SOUL-PROFILE-MISMATCH`. The tier path never got the equivalent guard.
+- **`secure --deep` rates the `SOUL.md` that `harden-soul` generated `MALICIOUS` (95%)** while
+  `scan-soul` rates the same file `100/100 HARDENED` (#446). A three-line README rates
+  `SUSPICIOUS`. Those labels reach no findings block, carry no `file:line`, no `Verify:` and no
+  `Fix:`, and do not move the score.
+- **`attack` withholds the verdict on a refused connection but still sends all 111 payloads**
+  (#444). The liveness probe added here catches an unresolvable host, not a refused one. See
+  the measured table under `Security` above.
+
+**False positives that can decide a verdict:**
+
+- **`check` cannot distinguish a benign MCP config from a malicious one** (#449). Both corpus
+  fixtures score exactly `69/100`. `AST-SCOPE-001 "Full Wildcard Tool Access"` (CRITICAL) fires
+  on configs containing no wildcard, cites the server-key line rather than any tools
+  declaration, and is not cleared by the explicit allowlist its own fix text recommends. It
+  reports `Do not depend on this package as-is` for Sentry's official MCP server. `secure`
+  discriminates correctly on the same fixtures (98 vs 43); this is specific to `check`.
+- **`check` tells a new user not to depend on Flask or Django** (#447). Flask's
+  `PYTHONSTARTUP` handling in `flask shell` is reported as unsafe deserialization; a vendored
+  Unicode regex library's codepoint tables are reported as invisible-codepoint steganography.
+  `check` is the first command in the README's quick start.
+- **`scan` reports 6 CRITICAL config-exposure findings against any host answering 200 on every
+  path** (#448). The evidence field says `HTTP 200 at <path>` and the response is never
+  inspected, so an SPA with a catch-all route — the default for most frameworks — fails.
+
+**Standards conformance:**
+
+- **SARIF output does not validate against SARIF 2.1.0** (#452). `tool.driver.rules` is emitted
+  once per result rather than once per rule, so a repeated checkId produces duplicate
+  descriptors and violates `uniqueItems` (117 rules, 50 unique). It validates only when every
+  check fires at most once, which is why small fixtures did not catch it. The `$schema` URI
+  also 404s (#394), and no result carries a `ruleIndex`. The docs advertise this format for
+  the GitHub Security tab.
+
+Two carried from before and unchanged: **#438** (`secure` prints a score over zero coverage)
+and **#439** (`attack` scores three response formats over an unreadable body). Both had a fix
+built and reverted rather than shipped half-done; the reasoning is on each issue.
+
 - **`npm install hackmyagent` still reports 3 high advisories, all of them the same one.**
   `adm-zip <0.6.0` (GHSA-xcpc-8h2w-3j85), reached only through `onnxruntime-node`, which
   this tool needs for local NanoMind inference. There is no version that resolves clean:
