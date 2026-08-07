@@ -47,6 +47,19 @@ export interface PrintedFlag {
  * Executables whose flags belong to them. A segment naming one of these is
  * quoting another tool's command line, not ours.
  *
+ * `ai-trust` was on this list and came off with #432. Being on it made the
+ * gate skip four printed lines — `ai-trust check <name> --scan-if-missing`,
+ * `ai-trust audit <file> --scan-missing` — which were dead ends for every
+ * reader: a dependency does not put its `bin` on a consumer's PATH, so the
+ * suggestion never ran for anyone who installed only `hackmyagent`. Removing
+ * the runtime dependency made that unambiguous, and the citations now name
+ * `check` and `trust`, which this tool registers itself.
+ *
+ * The entries that remain are cited through a runner that does resolve them
+ * (`npx opena2a-cli protect .`) or are genuinely another tool's command line.
+ * Adding a name here suppresses a real class of defect, so it needs the same
+ * justification: the reader can run it as printed.
+ *
  * Program names that are also ordinary English words are deliberately NOT on
  * this list — `go`, `find`, `ls`, `ps`, `gh`, `az`, `ag`, `helm`. With them on
  * it, "If you go further, use `--x`" and "To find more, use `--x`" were both
@@ -57,7 +70,7 @@ export interface PrintedFlag {
  * silently skips is indistinguishable from a guard that passes.
  */
 const FOREIGN_EXECUTABLE =
-  /\b(npm|npx|pnpm|yarn|pip|pip3|pipx|python|python3|node|deno|bun|cargo|git|curl|wget|docker|podman|kubectl|aws|gcloud|terraform|grep|rg|sed|awk|tar|unzip|ssh|scp|openssl|gpg|chmod|chown|snyk|semgrep|trivy|gitleaks|glab|brew|apt|apt-get|yum|dnf|jq|yq|shasum|sha256sum|systemctl|journalctl|arp-guard|ai-trust|opena2a|secretless|secretless-ai)\b/;
+  /\b(npm|npx|pnpm|yarn|pip|pip3|pipx|python|python3|node|deno|bun|cargo|git|curl|wget|docker|podman|kubectl|aws|gcloud|terraform|grep|rg|sed|awk|tar|unzip|ssh|scp|openssl|gpg|chmod|chown|snyk|semgrep|trivy|gitleaks|glab|brew|apt|apt-get|yum|dnf|jq|yq|shasum|sha256sum|systemctl|journalctl|arp-guard|opena2a|secretless|secretless-ai)\b/;
 
 /** Call shapes whose string arguments reach a user. */
 const PRINT_CALL =

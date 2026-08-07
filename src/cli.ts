@@ -183,7 +183,7 @@ import { shouldShowDeepProgress } from './ui/progress-gate';
 import { generateVerifyCommand } from './ui/verify-command';
 import { commandSucceeded } from './telemetry/command-success';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
-import { shellQuote, citationPath, citationTarget } from './ui/shell-quote';
+import { shellQuote, citationPath, citationTarget, commandNaming } from './ui/shell-quote';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
 import type { ConceptId } from './types/finding-evidence';
 import { trustAapGate } from './aap';
@@ -8255,7 +8255,13 @@ Examples:
   });
 
 // ---------------------------------------------------------------------------
-// trust — Trust verification via OpenA2A Registry (powered by ai-trust)
+// trust — Trust verification via the OpenA2A Registry.
+//
+// This talks to the Registry directly. The `ai-trust` dependency that used to
+// sit in package.json was never the mechanism here — nothing imported it — and
+// it came off with #432, so "powered by ai-trust" was wrong even while it was
+// declared. Anything a reader would install that CLI for is served by this
+// command, `trust --audit <file>`, and `check <package>`.
 // ---------------------------------------------------------------------------
 
 const REGISTRY_DEFAULT_URL = 'https://api.oa2a.org';
@@ -8387,16 +8393,24 @@ function formatTrustScanAge(lastScannedAt?: string): string | null {
 
 function formatTrustCheck(answer: TrustAnswer): string {
   if (!answer.found) {
+    // `answer.name` is the name a registry response came back with, so it is
+    // spliced through `commandNaming` rather than into the template: a name
+    // carrying a display hazard yields `undefined` and the citation is dropped
+    // instead of printing a command that would act on something else. The name
+    // is already on the line above, so the reader is not left without a
+    // subject — and the whole-project scan below is a path forward either way.
+    const scanIt = commandNaming(answer.name, (cited) => npxCitation(`check ${cited}`));
     return [
       '',
       `  ${answer.name}`,
       `  ${colors.dim}Type: ${answer.packageType || 'unknown'}${colors.reset}`,
       `  ${colors.dim}Status: Not found in registry${colors.reset}`,
+      ...(scanIt
+        ? ['', '  To scan it locally:', `    ${colors.cyan}${scanIt}${colors.reset}`]
+        : []),
       '',
-      '  To scan it locally:',
-      `    ${colors.cyan}ai-trust check ${answer.name} --scan-if-missing${colors.reset}`,
-      '',
-      '  Or scan your full project:',
+      // "Or" only reads as an alternative when there is a first option above.
+      scanIt ? '  Or scan your full project:' : '  Scan your full project:',
       `    ${colors.cyan}${npxCitation('secure .')}${colors.reset}`,
       '',
     ].join('\n');
@@ -8529,11 +8543,10 @@ function formatTrustBatch(
   // Next steps
   lines.push('');
   if (notFound.length > 0) {
-    lines.push(`  ${colors.dim}Scan unknown packages: ai-trust audit <file> --scan-missing${colors.reset}`);
-    lines.push(`  ${colors.dim}Or individually: ai-trust check <name> --scan-if-missing${colors.reset}`);
+    lines.push(`  ${colors.dim}Scan unknown packages: ${npxCitation('check <name>')}${colors.reset}`);
   }
   if (belowThreshold.length > 0) {
-    lines.push(`  ${colors.dim}Inspect flagged packages: ai-trust check <name>${colors.reset}`);
+    lines.push(`  ${colors.dim}Inspect flagged packages: ${npxCitation('trust <name>')}${colors.reset}`);
   }
   lines.push(`  ${colors.dim}Full project security scan: ${npxCitation('secure .')}${colors.reset}`);
 
