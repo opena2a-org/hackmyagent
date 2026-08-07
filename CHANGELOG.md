@@ -2,7 +2,32 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
-## [Unreleased]
+## [0.27.0] - 2026-08-07
+
+Four changes here can turn a green pipeline red, and they are the reason to read this
+entry before upgrading. Each one is a case where an earlier version reported a security
+verdict it had not measured, so the pipeline was green because the tool was quiet, not
+because the target was safe. The detail for every row is under `Security` and `Fixed`
+below.
+
+| What changes | 0.26.1 | 0.27.0 |
+|---|---|---|
+| A command that scanned nothing | a mix of exit 0, 1 and 2, sometimes with a score | `NOT MEASURED` at **exit 2** — no score, no risk band |
+| `detect` on a machine running an ungoverned AI agent | exit 0 | **exit 1** (`hackmyagent harden-soul <dir>` clears it) |
+| `--fail-below` on a benchmark run | replaced the default gate, so `--fail-below 0` held a `Not Passing` tree green | adds a score floor; the default gate still applies |
+| A project that logs a credential | scored higher — `LOG-002` matched and two filters dropped it | **scores lower**; the finding reaches the output and the score |
+
+Exit `2` is non-zero on purpose. A CI job that asked for a security verdict and got "I
+could not reach the target" has not been told the target is safe.
+
+This is a `0.x` release, so a `^0.26.1` range does not resolve to it and no one is upgraded
+without choosing to. Pipelines that install `hackmyagent@latest` or run it through `npx`
+will pick it up on the next run; the four rows above are what to expect when they do.
+
+The measurement gate does not yet reach every command. `secure`, `wild` and the two
+`secure -b oasb-*` arms still print a score over zero coverage, and `attack` still does for
+three response formats. That is recorded honestly under `Fixed` and in `Known issues`
+rather than claimed as closed.
 
 ### Security
 
