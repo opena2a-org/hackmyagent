@@ -88,6 +88,7 @@ export {
   getPayloadsByIntensity,
   parseCustomPayloads,
   shouldFail,
+  attackExitCode,
   MCP_EXPLOITATION_PAYLOADS,
   A2A_ATTACK_PAYLOADS,
   MEMORY_WEAPONIZATION_PAYLOADS,

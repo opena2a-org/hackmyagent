@@ -13,16 +13,44 @@ import { buildCheckOutput } from '@opena2a/check-core';
  * a future edit to a check path cannot silently drop the channel again.
  */
 
+/**
+ * Every `buildCheckOutput({ ... })` argument in a source file, delimited by
+ * brace balance rather than by indentation.
+ *
+ * The previous matcher was `/buildCheckOutput\(\{[\s\S]*?\n {6}\}\)\)/g` — it
+ * anchored on a closing brace at exactly six spaces followed by `))`. Wrapping
+ * the three call sites to add `coverage` (#416) indented them by two and
+ * changed the tail from `))` to `}),`, and the guard responded by matching
+ * two sites instead of three and passing on the two. A source gate that goes
+ * quiet when the source is reformatted is not a gate; counting braces is
+ * indentation-independent and cannot silently narrow its own scope.
+ */
+function buildCheckOutputArgs(source: string): string[] {
+  const blocks: string[] = [];
+  const marker = 'buildCheckOutput({';
+  for (let i = source.indexOf(marker); i !== -1; i = source.indexOf(marker, i + 1)) {
+    let depth = 0;
+    for (let j = i + marker.length - 1; j < source.length; j++) {
+      if (source[j] === '{') depth++;
+      else if (source[j] === '}') {
+        depth--;
+        if (depth === 0) { blocks.push(source.slice(i, j + 1)); break; }
+      }
+    }
+  }
+  return blocks;
+}
+
 describe('check --json escalation wiring (check-core 0.3.0 adoption)', () => {
   it('every buildCheckOutput scan block in cli.ts passes analystEscalations + coverageSweep', () => {
     // Static wiring guard (deterministic, no network, no spawn): find each
     // buildCheckOutput call site and assert its scan{} block carries both
     // advisory fields. Same pattern as the concept-explainer reference test.
     const cli = readFileSync(join(__dirname, '..', '..', 'src', 'cli.ts'), 'utf8');
-    const sites = [...cli.matchAll(/buildCheckOutput\(\{[\s\S]*?\n {6}\}\)\)/g)];
+    const sites = buildCheckOutputArgs(cli);
     expect(sites.length).toBeGreaterThanOrEqual(3); // github, pypi, npm paths
     for (const site of sites) {
-      const block = site[0];
+      const block = site;
       expect(block, `buildCheckOutput site missing analystEscalations:\n${block}`).toContain(
         'analystEscalations',
       );
@@ -30,6 +58,28 @@ describe('check --json escalation wiring (check-core 0.3.0 adoption)', () => {
         'coverageSweep',
       );
     }
+  });
+
+  it('the site matcher finds a call site whatever its indentation', () => {
+    // Red-proof for the matcher itself. The bug it replaces was invisible
+    // because the guard still passed on a subset; this asserts the count, and
+    // asserts it survives the reformatting that broke the regex.
+    const flat = 'writeJsonStdout(buildCheckOutput({ name: "a", scan: {} }));';
+    const nested = [
+      '      writeJsonStdout({',
+      '        ...buildCheckOutput({',
+      '          name: "b",',
+      '          scan: { findings: [] },',
+      '        }),',
+      '        coverage: coverageJson(v),',
+      '      });',
+    ].join('\n');
+    expect(buildCheckOutputArgs(flat)).toHaveLength(1);
+    expect(buildCheckOutputArgs(nested)).toHaveLength(1);
+    expect(buildCheckOutputArgs(`${flat}\n${nested}`)).toHaveLength(2);
+    expect(buildCheckOutputArgs('no call sites here')).toHaveLength(0);
+    // And it captures the whole argument, not a prefix of it.
+    expect(buildCheckOutputArgs(nested)[0]).toContain('findings');
   });
 
   it('pinned check-core emits the advisory fields after analystFindings, before narrative', () => {

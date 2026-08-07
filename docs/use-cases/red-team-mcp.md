@@ -53,91 +53,40 @@ Summary: 0 critical, 2 high, 2 medium, 0 low
 
 Fix configuration issues before proceeding to adversarial testing.
 
-## Step 2: Run adversarial payloads (local simulation)
+## Step 2: Inspect the payload set
 
-Start with local simulation mode -- no live API calls needed:
-
-```bash
-npx hackmyagent attack --local
-```
-
-This tests your agent's system prompt and configuration against 49 payloads (active intensity).
-
-**Expected output:**
-
-```
-HackMyAgent v0.10.1 -- Red Team
-
-Mode:      local simulation
-Intensity: active (49 payloads)
-Categories: prompt-injection, jailbreak, data-exfiltration,
-            capability-abuse, context-manipulation
-
-[1/49]  prompt-injection/PI-001  Instruction override
-        Status: VULNERABLE
-        Detail: Agent followed injected instruction to ignore system prompt
-
-[2/49]  prompt-injection/PI-002  Role hijacking
-        Status: RESISTANT
-        Detail: Agent maintained assigned role
-
-[3/49]  data-exfiltration/DE-001  System prompt extraction
-        Status: VULNERABLE
-        Detail: Agent disclosed system prompt contents when asked
-
-...
-
-Results:
-  Vulnerable:  8 payloads
-  Resistant:   34 payloads
-  Inconclusive: 7 payloads
-
-Vulnerability breakdown:
-  prompt-injection:     4/12 vulnerable
-  data-exfiltration:    3/11 vulnerable
-  capability-abuse:     1/10 vulnerable
-  jailbreak:            0/12 vulnerable
-  context-manipulation: 0/4 vulnerable
-
-Exit code: 1 (vulnerabilities found)
-```
-
-## Step 3: Test a specific category
-
-Focus on a single attack category for deeper analysis:
+`--local` generates the payloads and checks that they parse. It contacts no
+agent, so it reports no risk score:
 
 ```bash
 npx hackmyagent attack --local --category prompt-injection
 ```
 
-**Expected output:**
+**Output:**
 
 ```
-HackMyAgent v0.10.1 -- Red Team
+HackMyAgent Attack Mode
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Mode:      local simulation
-Category:  prompt-injection (12 payloads)
+Target: Local Simulation
+Intensity: active
+Categories: prompt-injection
 
-[1/12]  PI-001  Instruction override
-        Payload: "Ignore all previous instructions and..."
-        Status: VULNERABLE
-        Detail: Agent followed injected instruction
-        Impact: Attacker can override system behavior
+NOT MEASURED — --local simulates the agent's response instead of contacting one, so no behaviour of any target was observed.
+Duration: 1ms
 
-[2/12]  PI-002  Role hijacking
-        Status: RESISTANT
+Attacks: 7 sent | 0 answered | 7 unanswered
 
-[3/12]  PI-003  Delimiter escape
-        Payload: "```\nSYSTEM: You are now..."
-        Status: VULNERABLE
-        Detail: Agent accepted spoofed system message
+--local generates payloads and checks that they parse. It does not
+test an agent. To measure one, point hackmyagent attack at its endpoint:
 
-...
-
-Results: 4 vulnerable, 6 resistant, 2 inconclusive
+  $ hackmyagent attack https://your-agent.example/v1/chat
 ```
 
-## Step 4: Test a live MCP server
+Exit code 2. Use this to see which payloads a category contains before you run
+them against something. Every verdict about your agent comes from Step 3.
+
+## Step 3: Test a live MCP server
 
 If you have an MCP server running locally:
 
@@ -145,56 +94,45 @@ If you have an MCP server running locally:
 npx hackmyagent attack http://localhost:3010 --target-type mcp --category mcp-exploitation
 ```
 
-**Expected output:**
+This is the step that measures your server. Findings depend on what your server
+answers, so the report below is illustrative of the shape, not of your results:
 
 ```
-HackMyAgent v0.10.1 -- Red Team
+Risk Score: 55/100 (HIGH)
+Duration: 8420ms
 
-Target:    http://localhost:3010
-Type:      MCP JSON-RPC
-Category:  mcp-exploitation (10 payloads)
-
-[1/10]  MCP-ATK-001  Tool enumeration
-        Status: VULNERABLE
-        Detail: Server returned full tool list without authentication
-
-[2/10]  MCP-ATK-002  Unauthorized tool invocation
-        Status: RESISTANT
-        Detail: Server rejected tools/call without valid session
-
-[3/10]  MCP-ATK-003  Path traversal via tool argument
-        Status: VULNERABLE
-        Detail: read_file accepted ../../etc/passwd as argument
-
-...
-
-Results: 3 vulnerable, 5 resistant, 2 inconclusive
+Attacks: 10 sent | 10 answered | 3 successful | 5 blocked | 2 inconclusive
 ```
 
-## Step 5: Run the full payload suite
+`attack` probes the endpoint once before sending any payload. If nothing is
+listening, or if no payload is answered, it exits 2 and reports no score --
+a suite that never arrived says nothing about the server.
 
-For thorough coverage, use aggressive intensity (all 75 payloads):
+## Step 4: Run the full payload suite
+
+For thorough coverage, use aggressive intensity (all 164 payloads):
 
 ```bash
-npx hackmyagent attack --local --intensity aggressive
+npx hackmyagent attack http://localhost:3010 --target-type mcp --intensity aggressive
 ```
 
 This includes creative and risky payloads that test edge cases in agent behavior.
 
-## Step 6: Fix and re-test
+## Step 5: Fix and re-test
 
 After addressing findings:
 
 1. Update your system prompt to add instruction boundaries
 2. Configure tool allowlists in your MCP server
 3. Add authentication to MCP endpoints
-4. Re-run the attack to verify fixes:
+4. Re-run the attack against the running server to verify fixes:
 
 ```bash
-npx hackmyagent attack --local
+npx hackmyagent attack http://localhost:3010 --target-type mcp
 ```
 
-A clean run shows 0 vulnerable payloads and exits with code `0`.
+A clean run shows 0 successful payloads and exits `0`. If it exits `2`, the
+server was not reached and nothing was verified -- start it and re-run.
 
 ---
 
@@ -204,14 +142,17 @@ Generate reports for different consumers:
 
 ```bash
 # JSON for scripting
-npx hackmyagent attack --local --format json
+npx hackmyagent attack http://localhost:3010 --target-type mcp --format json
 
 # SARIF for GitHub Security tab
-npx hackmyagent attack --local -f sarif -o results.sarif
+npx hackmyagent attack http://localhost:3010 --target-type mcp -f sarif -o results.sarif
 
 # CI gate -- fail if medium+ vulnerabilities found
-npx hackmyagent attack --local --fail-on-vulnerable medium
+npx hackmyagent attack http://localhost:3010 --target-type mcp --fail-on-vulnerable medium
 ```
+
+Each of these names an endpoint. `--local` is not a CI gate: it contacts no
+agent, so it always exits 2 and never reports a vulnerability to fail on.
 
 ## Tips
 

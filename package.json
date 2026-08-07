@@ -34,7 +34,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "clean": "rm -rf dist",
-    "release-smoke:corpus": "tsx scripts/release-smoke-corpus.ts"
+    "release-smoke:corpus": "tsx scripts/release-smoke-corpus.ts",
+    "audit:consumer": "node scripts/audit-consumer-resolution.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
@@ -49,7 +50,6 @@
     "@opena2a/registry-client": "0.2.0",
     "@opena2a/shared": "^0.1.0",
     "@opena2a/telemetry": "0.3.0",
-    "ai-trust": "^0.2.6",
     "commander": "^12.0.0",
     "js-yaml": "^4.3.1",
     "onnxruntime-node": "^1.27.0"

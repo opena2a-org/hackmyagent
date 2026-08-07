@@ -41,11 +41,23 @@ HMA uses exit codes to signal scan results:
 
 | Code | Meaning | CI behavior |
 |------|---------|-------------|
-| `0` | No critical or high issues found | Pipeline passes |
-| `1` | Critical or high severity issues found | Pipeline fails |
-| `2` | Scan incomplete -- one or more plugins failed | Pipeline fails |
+| `0` | The target was measured, and no critical or high issue was found | Pipeline passes |
+| `1` | The target was measured, and a critical or high issue was found | Pipeline fails |
+| `2` | The target was **not measured** -- no result is reported | Pipeline fails |
 
 Any critical or high finding causes exit code `1`, which fails the GitHub Actions step by default.
+
+`--fail-below N` **adds** a score floor. It does not replace the default gate: a
+benchmark whose rating is `Not Passing` or `Needs Improvement`, or whose OASB-2
+conformance is `NONE`, exits 1 whether or not you pass the flag. Before 0.27.0
+`--fail-below 0` silently switched that gate off, so a pipeline could print
+`Rating: Not Passing` and go green.
+
+Exit `2` means HMA could not look at the target, so it reports no score and no
+risk level. Causes: the path or package does not exist, the endpoint under
+`attack` was unreachable, no payload was answered, `attack --local` was used
+(which contacts no agent), or a scan plugin failed. It is non-zero on purpose --
+"I could not tell you" must not be read by a pipeline as "it is safe".
 
 ## JSON output format
 
@@ -116,11 +128,21 @@ Findings appear under your repository's Security > Code scanning alerts.
 Add adversarial testing alongside static scans:
 
 ```yaml
-      - name: Red team (local simulation)
-        run: npx hackmyagent attack --local --fail-on-vulnerable medium --format json > attack-report.json
+      - name: Red team
+        run: npx hackmyagent attack "$AGENT_ENDPOINT" --fail-on-vulnerable medium --format json > attack-report.json
+        env:
+          AGENT_ENDPOINT: ${{ secrets.AGENT_ENDPOINT }}
 ```
 
 The `--fail-on-vulnerable medium` flag fails the step if any medium-or-higher vulnerabilities are found.
+
+`attack` needs a running agent to test. It probes the endpoint before sending
+any payload, and exits `2` without a score if the endpoint is unreachable or if
+no payload is answered -- a suite that never arrived tells you nothing about the
+agent, so it reports nothing.
+
+Do not use `--local` as a CI gate. It generates payloads and checks that they
+parse; it contacts no agent, so it has no behavior to score and always exits `2`.
 
 ## OASB benchmark compliance gate
 
@@ -167,9 +189,11 @@ jobs:
         with:
           sarif_file: results.sarif
 
-      # Red team testing
+      # Red team testing (needs a running agent; exits 2 if unreachable)
       - name: Red team
-        run: npx hackmyagent attack --local --fail-on-vulnerable medium --ci
+        run: npx hackmyagent attack "$AGENT_ENDPOINT" --fail-on-vulnerable medium
+        env:
+          AGENT_ENDPOINT: ${{ secrets.AGENT_ENDPOINT }}
 
       # OASB compliance
       - name: OASB-1 compliance

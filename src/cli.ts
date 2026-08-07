@@ -38,7 +38,7 @@ import {
   ATTACK_CATEGORIES,
   PAYLOAD_STATS,
   parseCustomPayloads,
-  shouldFail,
+  attackExitCode,
   type AttackCategory,
   type AttackIntensity,
   type AttackTarget,
@@ -152,10 +152,60 @@ async function finishWithFindings(code: number): Promise<void> {
 async function settleCheckVerdict(verdict: CheckVerdict): Promise<void> {
   if (verdict.exitCode !== 0) await finishWithFindings(verdict.exitCode);
 }
+
+/**
+ * The `coverage` object a not-found target reports.
+ *
+ * #416/#417 — the not-found arms emitted no `coverage` key at all, so
+ * `jq -e '.coverage.measured'` returned null on exactly the case the key
+ * exists to describe.
+ *
+ * Covers the six download/clone not-found emitters. The registry-only arms
+ * (`--no-scan`, skill-identifier lookup) still emit no coverage — see the note
+ * on `coverageJson`.
+ */
+function notFoundCoverage(target: string, ecosystem: string) {
+  return coverageJson(unmeasured(
+    'target-not-found',
+    `${escapeForDisplay(target)} was not found on ${escapeForDisplay(ecosystem)}, so nothing was scanned.`,
+  ));
+}
+
+/**
+ * The verdict for a downloaded remote target — npm, PyPI, GitHub, raw URL.
+ *
+ * #416 — these four paths derived a risk band from severity counts alone and
+ * emitted no coverage on `--json`, so a consumer could not tell a package
+ * whose files were read and found clean from a download that produced an
+ * empty tree. `filesExamined` is counted by the scanner's coverage ledger
+ * during the run, so zero here means the scan read nothing and the band is
+ * withheld rather than reported as `low`.
+ */
+function remoteCheckVerdict(
+  result: { coverage?: { filesExamined: number } },
+  counts: { critical: number; high: number },
+  displayTarget: string,
+): CheckVerdict {
+  const filesExamined = result.coverage?.filesExamined ?? 0;
+  return deriveCheckVerdict(
+    counts,
+    fullCoverage(filesExamined, 'file'),
+    'nothing-to-examine',
+    `No file was read from ${escapeForDisplay(displayTarget)}, so no risk level can be reported for it.`,
+  );
+}
 // Per-invocation start times keyed by subcommand name (preAction → postAction).
 const telemetryStartedAt = new Map<string, number>();
 import { getTaxonomyMap, getCheckCounts } from './hardening/taxonomy';
-import { deriveCheckVerdict, type CheckVerdict } from './check/verdict';
+import {
+  deriveCheckVerdict,
+  unmeasured,
+  fullCoverage,
+  coverageJson,
+  unmeasuredBanner,
+  EXIT_UNMEASURED,
+  type CheckVerdict,
+} from './check/verdict';
 import { quickScanCoverage } from './check/quick-scan-coverage';
 import {
   summarizeCoverage,
@@ -184,7 +234,7 @@ import { shouldShowDeepProgress } from './ui/progress-gate';
 import { generateVerifyCommand } from './ui/verify-command';
 import { commandSucceeded } from './telemetry/command-success';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
-import { shellQuote, citationPath, citationTarget } from './ui/shell-quote';
+import { shellQuote, citationPath, citationTarget, commandNaming } from './ui/shell-quote';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
 import type { ConceptId } from './types/finding-evidence';
 import { trustAapGate } from './aap';
@@ -399,7 +449,8 @@ Accepts:
 Output includes: verdict, security score, findings with fix commands, registry trust context, and path forward for recovery.
 
 Risk levels: low, medium, high, critical
-Exit code 1 if high/critical risk detected.
+Exit code 0 if measured and low/medium, 1 if measured and high/critical,
+2 if the target could not be measured (missing path, package not found).
 
 Examples:
   $ ${CLI_PREFIX} check @sentry/mcp-server
@@ -470,11 +521,53 @@ Examples:
 
       // Detect local file/directory paths - run NanoMind scan instead of registry lookup
       const { statSync } = await import('node:fs');
-      const { resolve, dirname } = await import('node:path');
+      const { resolve, dirname, isAbsolute } = await import('node:path');
       const resolved = resolve(skill);
       let resolvedStat: ReturnType<typeof statSync> | undefined;
-      try { resolvedStat = statSync(resolved); } catch { /* not a local path */ }
+      let statError: NodeJS.ErrnoException | undefined;
+      try { resolvedStat = statSync(resolved); } catch (e) { statError = e as NodeJS.ErrnoException; }
       const isLocalPath = resolvedStat?.isFile() || resolvedStat?.isDirectory();
+
+      // #417 — a target the user spelled as a filesystem path and that is not
+      // there must say so. It used to fall through every remaining dispatch
+      // arm into the registry lookup, which synthesized an unverified
+      // publisher and printed `MEDIUM RISK` at exit 0 — with `--json`
+      // asserting `"revocation":{"revoked":false}` about a thing that was
+      // never on disk. A missing target is not a medium-risk target.
+      //
+      // The precondition is deliberately narrow: only spellings that can mean
+      // nothing but a path. `@publisher/skill`, `org/repo` and bare npm names
+      // all contain separators and all still dispatch as before.
+      const spelledAsPath = isAbsolute(skill)
+        || skill.startsWith('./') || skill.startsWith('../')
+        || skill.startsWith('.\\') || skill.startsWith('..\\')
+        || skill.startsWith('~/');
+      if (!isLocalPath && spelledAsPath) {
+        const notFound = statError?.code === 'ENOENT';
+        const verdict = unmeasured(
+          notFound ? 'target-not-found' : 'target-unreadable',
+          notFound
+            ? `${escapePathForDisplay(skill)} does not exist, so nothing was scanned.`
+            : `${escapePathForDisplay(skill)} could not be read (${escapeForDisplay(statError?.code ?? 'unknown error')}), so nothing was scanned.`,
+        );
+        await settleCheckVerdict(verdict);
+        if (options.json) {
+          writeJsonStdout({
+            hackmyagentVersion: VERSION,
+            target: skill,
+            type: 'local-path',
+            coverage: coverageJson(verdict),
+          });
+        } else {
+          console.error(unmeasuredBanner(verdict));
+          // `commandNaming` returns undefined for a target that cannot be put
+          // into a runnable command truthfully; omit the line rather than
+          // print one that would act on a different path (#273).
+          const verify = commandNaming(skill, cited => `  Verify: ls -ld ${cited}`);
+          if (verify) console.error(verify);
+        }
+        return;
+      }
 
       if (isLocalPath && resolvedStat) {
         // Local path: run NanoMind semantic analysis directly. This is a
@@ -505,11 +598,17 @@ Examples:
         // #373 — one derivation, above the channel branch. `risk` and the exit
         // code come out of the same call, so no renderer can report one and
         // exit the other.
-        const verdict = deriveCheckVerdict({
-          critical: critical.length,
-          high: high.length,
-          issues: issues.length,
-        });
+        //
+        // The `coverage` argument is what makes the band honest as well as
+        // consistent: `compiledArtifacts` is counted from the run, so a quick
+        // scan that compiled nothing reports "not measured" instead of the
+        // `low` band that zero findings over zero artifacts used to produce.
+        const verdict = deriveCheckVerdict(
+          { critical: critical.length, high: high.length, issues: issues.length },
+          fullCoverage(nmResult.compiledArtifacts, 'artifact'),
+          'nothing-to-examine',
+          `${escapePathForDisplay(resolved)} holds no artifact this scan can read, so no risk level can be reported.`,
+        );
         await settleCheckVerdict(verdict);
 
         if (options.json) {
@@ -521,18 +620,35 @@ Examples:
             findings: issues.length,
             critical: critical.length,
             high: high.length,
-            risk: verdict.risk,
+            risk: verdict.measured ? verdict.risk : null,
+            measured: verdict.measured,
             // #388 — the machine channel discloses the same reduced scope the
             // text channel does, on the key `secure --json` already uses.
-            coverage: quickScanCoverage({
-              compiledArtifacts: nmResult.compiledArtifacts,
-              compileSetTruncated: nmResult.compileSetTruncated,
-              observedCheckIds: issues.map((f: any) => f.checkId),
-              staticCheckCount: CHECK_COUNTS.static,
-              fullAuditTarget: skill,
-            }),
+            // #416 — plus the measurement the verdict was derived from, so a
+            // consumer can tell "clean" from "never looked" without prose.
+            //
+            // `coverageJson` is spread FIRST so `measured`/`examined`/`unit`
+            // sit at the same depth here as on every other path. Nesting them
+            // under a `measurement` sub-key made this the one payload where
+            // `.coverage.measured` was undefined — three shapes for one
+            // documented contract.
+            coverage: {
+              ...quickScanCoverage({
+                compiledArtifacts: nmResult.compiledArtifacts,
+                compileSetTruncated: nmResult.compileSetTruncated,
+                observedCheckIds: issues.map((f: any) => f.checkId),
+                staticCheckCount: CHECK_COUNTS.static,
+                fullAuditTarget: skill,
+              }),
+              ...coverageJson(verdict),
+            },
             details: issues,
           });
+          return;
+        }
+
+        if (!verdict.measured) {
+          console.error(unmeasuredBanner(verdict));
           return;
         }
 
@@ -590,16 +706,22 @@ Examples:
             if (!isScoped) {
               const errorHint = `Verify the URL: https://www.npmjs.com/package/${skill}`;
               if (options.json) {
-                writeJsonStdout(buildNotFoundOutput({
-                  name: skill,
-                  ecosystem: 'npm',
-                  error: `Package "${skill}" not found on npm.`,
-                  errorHint,
-                }));
+                writeJsonStdout({
+                  ...buildNotFoundOutput({
+                    name: skill,
+                    ecosystem: 'npm',
+                    error: `Package "${skill}" not found on npm.`,
+                    errorHint,
+                  }),
+                  coverage: notFoundCoverage(skill, 'npm'),
+                });
               } else {
                 printNotFoundBlock({ pkg: skill, ecosystem: 'npm', errorHint });
               }
-              process.exit(1);
+              // A package that does not exist was not measured. Exit 1 here
+              // said "scanned, and it is high risk" about a name that was
+              // never fetched — the same conflation as #417's missing path.
+              process.exit(EXIT_UNMEASURED);
             }
             // Scoped name — fall through to skill check
             if (!options.json && !globalCiMode) {
@@ -3936,7 +4058,7 @@ Examples:
   .option('--aws-account-id <id>', 'AWS account ID for ASFF format')
   .option('--aws-region <region>', 'AWS region for ASFF format')
   .option('-o, --output <file>', 'Write output to file instead of stdout')
-  .option('--fail-below <percent>', 'Exit 1 if compliance below threshold (0-100)')
+  .option('--fail-below <percent>', 'ADDITIONALLY exit 1 if compliance is below this threshold (0-100). Does not disable the default non-compliance gate')
   .option('-v, --verbose', 'Show all checks including passed ones')
   .option('-b, --benchmark <name>', 'Run benchmark compliance check (e.g., oasb-1)')
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
@@ -4363,10 +4485,34 @@ Examples:
           process.stdout.write('\n');
         }
 
+        // #371 — the composite path had no default gate at all, so
+        // `secure -b oasb-2` exited 0 at `Conformance: NONE` while
+        // `secure -b oasb-1` exited 1 on the same tree. The stricter benchmark
+        // was the one that passed CI, which is the wrong way round and is the
+        // defect; `--help` already promised "non-compliant in benchmark mode",
+        // so the promise was right and the code was missing.
+        //
+        // `none` is the only conformance level OASB-2 defines as not
+        // conforming. Gating on the composite SCORE instead would let a high
+        // infrastructure score carry a governance failure over the line, which
+        // is the averaging that made 27/100 look survivable.
+        //
+        // Checked BEFORE `--fail-below` and independently of it. The first cut
+        // wrote `failBelow === undefined &&`, which meant `--fail-below 0` —
+        // the flag a CI user is most likely to set, and the one that reads as
+        // "add a score floor" — silently switched the conformance gate off and
+        // restored the exact averaging the paragraph above rejects.
+        const conformanceFails = govResult.conformance === 'none';
+        if (conformanceFails) {
+          console.error(
+            `OASB-2 conformance is NONE. Exiting 1 per "non-compliant in benchmark mode".`,
+          );
+        }
         if (failBelow !== undefined && compositeScore < failBelow) {
           console.error(`Composite score ${compositeScore} is below threshold ${failBelow}`);
           process.exit(1);
         }
+        if (conformanceFails) process.exit(1);
         return;
       }
 
@@ -4409,16 +4555,28 @@ Examples:
           }
         }
 
+        // #440 — the non-compliance gate is checked FIRST and independently of
+        // `--fail-below`, the same way the composite arm above does it.
+        //
+        // It used to read `failBelow === undefined && …`, so `--fail-below 0`
+        // switched it off: the command printed `Rating: Not Passing` and exited
+        // 0. That flag reads as "add a score floor", it is a plausible thing to
+        // write while ramping a threshold in CI, and turning it on quietly
+        // removed the only gate the benchmark had. `--fail-below` adds a
+        // condition; it does not replace one.
+        const ratingFails = benchmarkResult.rating === 'Not Passing'
+          || benchmarkResult.rating === 'Needs Improvement';
+        if (ratingFails) {
+          console.error(`Benchmark rating is ${benchmarkResult.rating}. Exiting 1 per "non-compliant in benchmark mode".`);
+        }
+
         // Check fail threshold
         if (failBelow !== undefined && benchmarkResult.compliance < failBelow) {
           console.error(`Compliance ${benchmarkResult.compliance}% is below threshold ${failBelow}%`);
           process.exit(1);
         }
 
-        // Exit with non-zero if failing or needs improvement (default behavior)
-        if (failBelow === undefined && (benchmarkResult.rating === 'Not Passing' || benchmarkResult.rating === 'Needs Improvement')) {
-          process.exit(1);
-        }
+        if (ratingFails) process.exit(1);
         return;
       }
 
@@ -5274,16 +5432,34 @@ Examples:
       // critical/high issues found"; the `--json` branch returned before the
       // statement that kept it, measured `text=1 json=0` on the same target.
       // Settled here, above the channel branch.
-      await settleCheckVerdict(deriveCheckVerdict({
-        critical: issues.filter((f: SecurityFinding) => f.severity === 'critical').length,
-        high: issues.filter((f: SecurityFinding) => f.severity === 'high').length,
-        issues: issues.length,
-      }));
+      // The verdict is settled above the channel branch AND its unmeasured
+      // arm short-circuits the renderers, the same as every other site. The
+      // first cut settled the exit code here and let both renderers run, so
+      // `secure-openclaw <empty dir>` exited 2 while printing
+      // "Risk Level: None · No OpenClaw-specific issues found" — recreating
+      // exactly the exit-code-disagrees-with-the-page defect (#373) that the
+      // commit above it cites.
+      // Coverage unit is CHECKS EVALUATED, not files read. These commands'
+      // findings include absence checks (`GIT-001 Missing .gitignore`) that
+      // read no file, so a files-read count reported zero coverage for a run
+      // that had evaluated its whole suite and withheld a real finding.
+      const ocVerdict = deriveCheckVerdict(
+        {
+          critical: issues.filter((f: SecurityFinding) => f.severity === 'critical').length,
+          high: issues.filter((f: SecurityFinding) => f.severity === 'high').length,
+          issues: issues.length,
+        },
+        fullCoverage(allOpenClawFindings.length, 'check'),
+        'nothing-to-examine',
+        `No OpenClaw check could be evaluated against ${escapePathForDisplay(targetDir)}.`,
+      );
+      await settleCheckVerdict(ocVerdict);
 
       if (options.json) {
         const jsonOutput = {
           target: targetDir,
-          riskLevel: assessRiskLevel(issues).level,
+          riskLevel: ocVerdict.measured ? assessRiskLevel(issues).level : null,
+          coverage: coverageJson(ocVerdict),
           totalChecks: allOpenClawFindings.length,
           issues: issues.length,
           fixed: fixedFindings.length,
@@ -5291,6 +5467,11 @@ Examples:
           findings: allOpenClawFindings,
         };
         writeJsonStdout(jsonOutput);
+        return;
+      }
+
+      if (!ocVerdict.measured) {
+        console.error(unmeasuredBanner(ocVerdict));
         return;
       }
 
@@ -5505,22 +5686,38 @@ Examples:
 
       // #373, same class as `check` and `secure-openclaw`. Measured
       // `text=1 json=0` on the same target before this line existed.
-      await settleCheckVerdict(deriveCheckVerdict({
-        critical: issues.filter((f: SecurityFinding) => f.severity === 'critical').length,
-        high: issues.filter((f: SecurityFinding) => f.severity === 'high').length,
-        issues: issues.length,
-      }));
+      // Settled above the channel branch, and its unmeasured arm short-circuits
+      // both renderers — see the equivalent comment in `secure-openclaw`.
+      // Checks evaluated, not files read — see the equivalent note in
+      // `secure-openclaw`.
+      const ncVerdict = deriveCheckVerdict(
+        {
+          critical: issues.filter((f: SecurityFinding) => f.severity === 'critical').length,
+          high: issues.filter((f: SecurityFinding) => f.severity === 'high').length,
+          issues: issues.length,
+        },
+        fullCoverage(mergedFindings.length, 'check'),
+        'nothing-to-examine',
+        `No NemoClaw check could be evaluated against ${escapePathForDisplay(targetDir)}.`,
+      );
+      await settleCheckVerdict(ncVerdict);
 
       if (options.json) {
         const jsonOutput = {
           target: targetDir,
-          riskLevel: assessNemoClawRiskLevel(issues).level,
+          riskLevel: ncVerdict.measured ? assessNemoClawRiskLevel(issues).level : null,
+          coverage: coverageJson(ncVerdict),
           totalChecks: mergedFindings.length,
           issues: issues.length,
           passed: passedFindings.length,
           findings: mergedFindings,
         };
         writeJsonStdout(jsonOutput);
+        return;
+      }
+
+      if (!ncVerdict.measured) {
+        console.error(unmeasuredBanner(ncVerdict));
         return;
       }
 
@@ -5992,7 +6189,17 @@ Target types:
   api         OpenAI/Anthropic chat completions (default)
   mcp         MCP JSON-RPC server (tools/call, tools/list)
   a2a         A2A agent messaging endpoint (/a2a/message)
-  local       Local simulation (no API calls)
+  local       Payload generation only — see below
+
+--local does NOT test an agent. It generates and parses payloads against a
+simulated response, so it reports no risk score: there is no agent behaviour to
+score. Point ${CLI_PREFIX} attack at an endpoint to measure one.
+
+Exit codes:
+  0  the target answered and no payload the policy fails on succeeded
+  1  the target answered and a payload the policy fails on succeeded
+  2  NOT MEASURED — the target was unreachable, or no payload was answered.
+     No risk score is reported, under any --fail-on-vulnerable policy.
 
 Examples:
   $ ${CLI_PREFIX} attack https://api.example.com/v1/chat
@@ -6008,7 +6215,7 @@ Examples:
   .argument('[target]', 'API endpoint to test (or use --local for simulation)')
   .option('-i, --intensity <level>', 'Attack intensity: passive, active, aggressive', 'active')
   .option('-c, --category <categories>', 'Comma-separated categories to test')
-  .option('--local', 'Run in local simulation mode (no actual API calls)')
+  .option('--local', 'Generate payloads only — no agent is contacted, so no risk score is reported')
   .option('-t, --target-type <type>', 'Target type: api, mcp, a2a, local', 'api')
   .option('--api-format <format>', 'API format: openai, anthropic, mcp-jsonrpc, a2a, custom', 'openai')
   .option('--model <model>', 'Model to test (for API targets)')
@@ -6208,7 +6415,12 @@ Examples:
       let output: string;
       switch (format) {
         case 'json':
-          output = JSON.stringify(report, null, 2);
+          // Same `coverage` shape `check` and `detect` emit, so one `jq` query
+          // answers "was this measured" across all three. Without it `attack`
+          // was the odd one out: a consumer had to read `riskRating` for the
+          // string 'unmeasured', and the pre-existing `riskScore: 0` beside it
+          // reads as a clean result.
+          output = JSON.stringify({ ...report, coverage: coverageJson(report.verdict) }, null, 2);
           break;
         case 'sarif':
           output = generateAttackSarif(report);
@@ -6232,7 +6444,19 @@ Examples:
       }
 
       // Registry reporting: only when explicitly requested via --version-id (CI) or --registry-report
-      const shouldReport = targetType !== 'local' && (options.versionId || options.registryReport);
+      //
+      // #406 — and never for a run that measured nothing. This path posts the
+      // report whole, so before the liveness precondition existed an
+      // unreachable endpoint contributed `riskScore: 0, riskRating: "secure"`
+      // to the Registry, turning a CLI defect into a data-integrity defect in
+      // the trust graph. `unmeasured` is honest but it is still not an
+      // observation of the target, and the Registry stores observations.
+      const shouldReport = targetType !== 'local'
+        && report.verdict.measured
+        && (options.versionId || options.registryReport);
+      if (!report.verdict.measured && (options.versionId || options.registryReport) && format === 'text') {
+        console.log('\nRegistry: not reported — this run measured nothing about the target.');
+      }
       if (shouldReport) {
         try {
           const core = await import('./index');
@@ -6279,6 +6503,12 @@ Examples:
         if (format === 'text') {
           console.log('\nPublish skipped: only available for live target scans.');
         }
+      } else if (options.publish && !report.verdict.measured) {
+        // #406 — same rule as the reporting path above. A run that reached no
+        // verdict has nothing to publish about the target.
+        if (format === 'text') {
+          console.log('\nPublish skipped: this run measured nothing about the target.');
+        }
       } else if (options.publish && targetType !== 'local') {
         try {
           const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
@@ -6307,9 +6537,11 @@ Examples:
         }
       }
 
-      // Exit with non-zero based on fail policy
-      if (shouldFail(report, options.failOnVulnerable as FailPolicy)) {
-        process.exit(1);
+      // Exit with non-zero based on fail policy, or 2 when the run could not
+      // measure the target under any policy (#406, #430).
+      const attackCode = attackExitCode(report, options.failOnVulnerable as FailPolicy);
+      if (attackCode !== 0) {
+        process.exit(attackCode);
       }
     } catch (error) {
       console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
@@ -6325,15 +6557,43 @@ function printAttackReport(report: AttackReport, verbose: boolean): void {
     'medium': colors.yellow,
     'low': colors.green,
     'secure': colors.green,
+    'unmeasured': colors.yellow,
   };
+
+  // #406/#430 — an unmeasured run prints no score at all. Printing `0/100`
+  // beside the word NOT MEASURED would still leave a number on the page for a
+  // reader to remember, and 0 is the most reassuring number there is.
+  if (!report.verdict.measured) {
+    console.log(`${colors.yellow}${unmeasuredBanner(report.verdict)}${RESET()}`);
+    console.log(`Duration: ${report.duration}ms`);
+    console.log();
+    console.log(`Attacks: ${report.summary.total} sent | ${report.summary.answered} answered | ${report.summary.unanswered} unanswered`);
+    console.log();
+    if (report.verdict.reason === 'simulation-only') {
+      console.log(`--local generates payloads and checks that they parse. It does not`);
+      console.log(`test an agent. To measure one, point ${CLI_PREFIX} attack at its endpoint:`);
+      console.log();
+      console.log(`  $ ${CLI_PREFIX} attack https://your-agent.example/v1/chat`);
+    } else {
+      console.log(`Verify the target is up, then re-run:`);
+      console.log();
+      console.log(`  $ curl -sS -o /dev/null -w '%{http_code}\\n' ${citationTarget(report.probedUrl ?? report.target)}`);
+    }
+    console.log();
+    return;
+  }
 
   // Summary
   console.log(`Risk Score: ${riskColors[report.riskRating]}${report.riskScore}/100 (${report.riskRating.toUpperCase()})${RESET()}`);
   console.log(`Duration: ${report.duration}ms`);
   console.log();
 
-  // Attack summary
-  console.log(`Attacks: ${report.summary.total} total | ${colors.red}${report.summary.successful} successful${RESET()} | ${colors.green}${report.summary.blocked} blocked${RESET()} | ${report.summary.inconclusive} inconclusive`);
+  // Attack summary. `answered` leads, because every number after it is a
+  // proportion of it — a run that answered 4 of 111 is not a 111-payload run.
+  console.log(`Attacks: ${report.summary.total} sent | ${report.summary.answered} answered | ${colors.red}${report.summary.successful} successful${RESET()} | ${colors.green}${report.summary.blocked} blocked${RESET()} | ${report.summary.inconclusive} inconclusive`);
+  if (report.summary.unanswered > 0) {
+    console.log(`${colors.yellow}${report.summary.unanswered} payload(s) got no answer and are not represented in the score.${RESET()}`);
+  }
   console.log();
 
   // Category breakdown
@@ -6456,12 +6716,16 @@ function generateAttackHtmlReport(report: AttackReport): string {
   };
   const grade = getGrade(report.riskScore);
 
+  // `unmeasured` is amber, never green. A colour is a claim, and the green a
+  // reader takes from a 0/100 report is the same green a genuinely blocked
+  // suite earns (#406).
   const ratingColor: Record<AttackReport['riskRating'], string> = {
     'critical': '#ef4444',
     'high': '#f97316',
     'medium': '#eab308',
     'low': '#22c55e',
     'secure': '#22c55e',
+    'unmeasured': '#eab308',
   };
 
   const ratingBg: Record<AttackReport['riskRating'], string> = {
@@ -6470,6 +6734,7 @@ function generateAttackHtmlReport(report: AttackReport): string {
     'medium': 'rgba(234, 179, 8, 0.15)',
     'low': 'rgba(34, 197, 94, 0.15)',
     'secure': 'rgba(34, 197, 94, 0.15)',
+    'unmeasured': 'rgba(234, 179, 8, 0.15)',
   };
 
   // SVG icons
@@ -7766,6 +8031,46 @@ Examples:
       }
       const soulScanDurationMs = Date.now() - soulScanStartMs;
 
+      // #390 — the other half. `detect` was fixed in #437; `scan-soul` still
+      // exited 0 at `Governance 0/100`, which this issue's own title names as
+      // the defect (`scan-soul --ci exits 0 at 0/100`).
+      //
+      // Settled HERE, above the output-channel branch, for the reason #373
+      // exists: written at the end of the action it sits after the `--json`
+      // arm returns, so text exits 1 and `--json` exits 0 on the same file.
+      //
+      // TWO conditions, and the second is not optional:
+      //
+      //  - a governance file was actually found. Without it, every repo that
+      //    simply has no SOUL.md scores 0 and would fail — measured on this
+      //    repo itself, and on any directory holding a single README. "There
+      //    is nothing here to grade" is not "this governance is broken", and
+      //    reporting it as a finding on stderr describes a failed file that
+      //    does not exist.
+      //  - the score is 0: not one applicable control detected, so the file
+      //    that IS there conforms to nothing.
+      //
+      // Deliberately NOT `conformance === 'none'`, which is what
+      // `secure -b oasb-2` gates on (#371). This repo's own "clean
+      // conversational fixture" scores 14/100 with conformance `none` — a
+      // narrow declared profile covering a few of 19 applicable controls.
+      // Failing that would be a policy change about acceptable governance,
+      // not a fix for an exit code that ignored its own output, and
+      // `--fail-below` is already the flag for a stricter floor. The two
+      // commands therefore still differ between 1 and 99; that is recorded on
+      // #390 rather than settled here by a side effect.
+      if (result.file && result.score === 0) {
+        // Escaped into a named const first: the render-source gate follows
+        // taint one level, and an escape buried in a ternary inside a template
+        // literal reads to it as a raw path.
+        const zeroScoreFile = escapePathForDisplay(require('path').basename(result.file));
+        process.stderr.write(
+          `Governance score is 0/100: no applicable OASB-2 control was detected in ${zeroScoreFile}. `
+          + `Run \`${CLI_PREFIX} harden-soul\` to generate the missing sections.\n`,
+        );
+        await finishWithFindings(1);
+      }
+
       // JSON output
       if (options.json) {
         // Run publish in JSON mode and include result in output
@@ -8351,7 +8656,13 @@ Examples:
   });
 
 // ---------------------------------------------------------------------------
-// trust — Trust verification via OpenA2A Registry (powered by ai-trust)
+// trust — Trust verification via the OpenA2A Registry.
+//
+// This talks to the Registry directly. The `ai-trust` dependency that used to
+// sit in package.json was never the mechanism here — nothing imported it — and
+// it came off with #432, so "powered by ai-trust" was wrong even while it was
+// declared. Anything a reader would install that CLI for is served by this
+// command, `trust --audit <file>`, and `check <package>`.
 // ---------------------------------------------------------------------------
 
 const REGISTRY_DEFAULT_URL = 'https://api.oa2a.org';
@@ -8483,16 +8794,24 @@ function formatTrustScanAge(lastScannedAt?: string): string | null {
 
 function formatTrustCheck(answer: TrustAnswer): string {
   if (!answer.found) {
+    // `answer.name` is the name a registry response came back with, so it is
+    // spliced through `commandNaming` rather than into the template: a name
+    // carrying a display hazard yields `undefined` and the citation is dropped
+    // instead of printing a command that would act on something else. The name
+    // is already on the line above, so the reader is not left without a
+    // subject — and the whole-project scan below is a path forward either way.
+    const scanIt = commandNaming(answer.name, (cited) => npxCitation(`check ${cited}`));
     return [
       '',
       `  ${answer.name}`,
       `  ${colors.dim}Type: ${answer.packageType || 'unknown'}${colors.reset}`,
       `  ${colors.dim}Status: Not found in registry${colors.reset}`,
+      ...(scanIt
+        ? ['', '  To scan it locally:', `    ${colors.cyan}${scanIt}${colors.reset}`]
+        : []),
       '',
-      '  To scan it locally:',
-      `    ${colors.cyan}ai-trust check ${answer.name} --scan-if-missing${colors.reset}`,
-      '',
-      '  Or scan your full project:',
+      // "Or" only reads as an alternative when there is a first option above.
+      scanIt ? '  Or scan your full project:' : '  Scan your full project:',
       `    ${colors.cyan}${npxCitation('secure .')}${colors.reset}`,
       '',
     ].join('\n');
@@ -8625,11 +8944,10 @@ function formatTrustBatch(
   // Next steps
   lines.push('');
   if (notFound.length > 0) {
-    lines.push(`  ${colors.dim}Scan unknown packages: ai-trust audit <file> --scan-missing${colors.reset}`);
-    lines.push(`  ${colors.dim}Or individually: ai-trust check <name> --scan-if-missing${colors.reset}`);
+    lines.push(`  ${colors.dim}Scan unknown packages: ${npxCitation('check <name>')}${colors.reset}`);
   }
   if (belowThreshold.length > 0) {
-    lines.push(`  ${colors.dim}Inspect flagged packages: ai-trust check <name>${colors.reset}`);
+    lines.push(`  ${colors.dim}Inspect flagged packages: ${npxCitation('trust <name>')}${colors.reset}`);
   }
   lines.push(`  ${colors.dim}Full project security scan: ${npxCitation('secure .')}${colors.reset}`);
 
@@ -9430,6 +9748,12 @@ Scans your machine and the current project directory for:
   - SOUL.md governance files and capability policies
 
 Reports a governance score and actionable findings for CISOs and security engineers.
+
+Exit codes:
+  0  scanned, and no high or critical finding
+  1  scanned, and at least one high or critical finding
+  2  NOT MEASURED — no AI agent, MCP server, AI config or governance file
+     was found to examine, so no governance posture is reported.
 
 The machine-wide discovery (running assistants, MCP servers, machine-level
 configs) ALWAYS runs; the directory argument only sets which project tree is
@@ -10612,16 +10936,19 @@ async function checkGitHubRepo(
     // intended not-found JSON, leaving stdout empty.
     const errorHint = `Verify the URL: https://github.com/${displayName}`;
     if (options.json) {
-      writeJsonStdout(buildNotFoundOutput({
-        name: displayName,
-        ecosystem: 'github',
-        error: `Repository "${displayName}" not found in the OpenA2A Registry.`,
-        errorHint,
-      }));
+      writeJsonStdout({
+        ...buildNotFoundOutput({
+          name: displayName,
+          ecosystem: 'github',
+          error: `Repository "${displayName}" not found in the OpenA2A Registry.`,
+          errorHint,
+        }),
+        coverage: notFoundCoverage(displayName, 'the OpenA2A Registry'),
+      });
     } else {
       printNotFoundBlock({ pkg: displayName, ecosystem: 'github', errorHint });
     }
-    process.exitCode = 1;
+    process.exitCode = EXIT_UNMEASURED;
     return;
   }
 
@@ -10694,23 +11021,33 @@ async function checkGitHubRepo(
     const registryData = await registryPromise;
 
     // #373 — settle before the channel branch, not after the renderer.
-    await settleCheckVerdict(deriveCheckVerdict({ critical: critical.length, high: high.length }));
+    // #416 — over the files the clone actually had read.
+    const verdict = remoteCheckVerdict(result, { critical: critical.length, high: high.length }, displayName);
+    await settleCheckVerdict(verdict);
 
     if (options.json) {
-      writeJsonStdout(buildCheckOutput({
-        name: displayName,
-        type: 'github-repo',
-        scan: {
-          projectType: result.projectType,
-          score: result.score,
-          maxScore: result.maxScore,
-          findings: result.findings,
-          analystFindings,
-          analystEscalations,
-          coverageSweep,
-        },
-        registry: registryData,
-      }));
+      writeJsonStdout({
+        ...buildCheckOutput({
+          name: displayName,
+          type: 'github-repo',
+          scan: {
+            projectType: result.projectType,
+            score: result.score,
+            maxScore: result.maxScore,
+            findings: result.findings,
+            analystFindings,
+            analystEscalations,
+            coverageSweep,
+          },
+          registry: registryData,
+        }),
+        coverage: coverageJson(verdict),
+      });
+      return;
+    }
+
+    if (!verdict.measured) {
+      console.error(unmeasuredBanner(verdict));
       return;
     }
 
@@ -10773,12 +11110,15 @@ async function checkGitHubRepo(
     if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
       const errorHint = `Verify the URL: https://github.com/${displayName}`;
       if (options.json) {
-        writeJsonStdout(buildNotFoundOutput({
-          name: displayName,
-          ecosystem: 'github',
-          error: `Repository "${displayName}" not found on GitHub.`,
-          errorHint,
-        }));
+        writeJsonStdout({
+          ...buildNotFoundOutput({
+            name: displayName,
+            ecosystem: 'github',
+            error: `Repository "${displayName}" not found on GitHub.`,
+            errorHint,
+          }),
+          coverage: notFoundCoverage(displayName, 'GitHub'),
+        });
       } else {
         printNotFoundBlock({
           pkg: displayName,
@@ -10794,7 +11134,10 @@ async function checkGitHubRepo(
     } else {
       console.error(`Error: ${escapeForDisplay(String(message))}`);
     }
-    process.exitCode = 1;
+    // Every branch of this catch is a clone that did not happen: not found,
+    // timed out, or failed some other way. None of them scanned the repo, so
+    // none of them can report a risk band, so all three are 2.
+    process.exitCode = EXIT_UNMEASURED;
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -10871,15 +11214,18 @@ async function checkPyPiPackage(
     // --no-scan with no Registry hit: emit a not-found block in the same
     // shape as the PyPI 404 path below, then return without scanning.
     if (options.json) {
-      writeJsonStdout(buildNotFoundOutput({
-        name,
-        ecosystem: 'pypi',
-        error: `Package "${name}" not found in the OpenA2A Registry.`,
-      }));
+      writeJsonStdout({
+        ...buildNotFoundOutput({
+          name,
+          ecosystem: 'pypi',
+          error: `Package "${name}" not found in the OpenA2A Registry.`,
+        }),
+        coverage: notFoundCoverage(name, 'the OpenA2A Registry'),
+      });
     } else {
       printNotFoundBlock({ pkg: name, ecosystem: 'pypi' });
     }
-    process.exitCode = 2;
+    process.exitCode = EXIT_UNMEASURED;
     return;
   }
 
@@ -10900,11 +11246,14 @@ async function checkPyPiPackage(
     if (!metaRes.ok) {
       if (metaRes.status === 404) {
         if (options.json) {
-          writeJsonStdout(buildNotFoundOutput({
-            name,
-            ecosystem: 'pypi',
-            error: `Package "${name}" not found on PyPI.`,
-          }));
+          writeJsonStdout({
+            ...buildNotFoundOutput({
+              name,
+              ecosystem: 'pypi',
+              error: `Package "${name}" not found on PyPI.`,
+            }),
+            coverage: notFoundCoverage(name, 'PyPI'),
+          });
         } else {
           printNotFoundBlock({ pkg: name, ecosystem: 'pypi' });
         }
@@ -10914,7 +11263,10 @@ async function checkPyPiPackage(
       // Set exit code and return so `finally` can clean up tempDir (was already
       // allocated above). process.exit() would skip the cleanup and orphan the
       // /tmp/hma-check-pypi-* directory.
-      process.exitCode = 1;
+      //
+      // Both branches end without a scan — a 404 and a 500 are equally "we did
+      // not measure this package", which is 2 and not 1.
+      process.exitCode = EXIT_UNMEASURED;
       return;
     }
 
@@ -10999,24 +11351,34 @@ async function checkPyPiPackage(
     const registryData = await registryPromise;
 
     // #373 — settle before the channel branch, not after the renderer.
-    await settleCheckVerdict(deriveCheckVerdict({ critical: critical.length, high: high.length }));
+    // #416 — over the files the download actually had read.
+    const verdict = remoteCheckVerdict(result, { critical: critical.length, high: high.length }, name);
+    await settleCheckVerdict(verdict);
 
     if (options.json) {
-      writeJsonStdout(buildCheckOutput({
-        name,
-        type: 'pypi-package',
-        scan: {
-          projectType: result.projectType,
-          score: result.score,
-          maxScore: result.maxScore,
-          findings: result.findings,
-          analystFindings,
-          analystEscalations,
-          coverageSweep,
-          version: meta.info.version,
-        },
-        registry: registryData,
-      }));
+      writeJsonStdout({
+        ...buildCheckOutput({
+          name,
+          type: 'pypi-package',
+          scan: {
+            projectType: result.projectType,
+            score: result.score,
+            maxScore: result.maxScore,
+            findings: result.findings,
+            analystFindings,
+            analystEscalations,
+            coverageSweep,
+            version: meta.info.version,
+          },
+          registry: registryData,
+        }),
+        coverage: coverageJson(verdict),
+      });
+      return;
+    }
+
+    if (!verdict.measured) {
+      console.error(unmeasuredBanner(verdict));
       return;
     }
 
@@ -11202,7 +11564,9 @@ async function checkRawUrl(
     const low = failed.filter(f => f.severity === 'low');
 
     // #373 — settle before the channel branch, not after the renderer.
-    await settleCheckVerdict(deriveCheckVerdict({ critical: critical.length, high: high.length }));
+    // #416 — over the files the fetch actually had read.
+    const verdict = remoteCheckVerdict(result, { critical: critical.length, high: high.length }, displayName);
+    await settleCheckVerdict(verdict);
 
     if (options.json) {
       const jsonOut: Record<string, any> = {
@@ -11214,11 +11578,17 @@ async function checkRawUrl(
         score: result.score,
         maxScore: result.maxScore,
         findings: result.findings,
+        coverage: coverageJson(verdict),
       };
       if (analystFindings?.length) jsonOut.analystFindings = analystFindings;
       if (analystEscalations?.length) jsonOut.analystEscalations = analystEscalations;
       if (coverageSweep !== undefined) jsonOut.coverageSweep = coverageSweep;
       writeJsonStdout(jsonOut);
+      return;
+    }
+
+    if (!verdict.measured) {
+      console.error(unmeasuredBanner(verdict));
       return;
     }
 
@@ -11380,23 +11750,33 @@ async function checkNpmPackage(
     const registryData = await registryPromise;
 
     // #373 — settle before the channel branch, not after the renderer.
-    await settleCheckVerdict(deriveCheckVerdict({ critical: critical.length, high: high.length }));
+    // #416 — over the files the download actually had read.
+    const verdict = remoteCheckVerdict(result, { critical: critical.length, high: high.length }, name);
+    await settleCheckVerdict(verdict);
 
     if (options.json) {
-      writeJsonStdout(buildCheckOutput({
-        name,
-        type: 'npm-package',
-        scan: {
-          projectType: result.projectType,
-          score: result.score,
-          maxScore: result.maxScore,
-          findings: result.findings,
-          analystFindings,
-          analystEscalations,
-          coverageSweep,
-        },
-        registry: registryData,
-      }));
+      writeJsonStdout({
+        ...buildCheckOutput({
+          name,
+          type: 'npm-package',
+          scan: {
+            projectType: result.projectType,
+            score: result.score,
+            maxScore: result.maxScore,
+            findings: result.findings,
+            analystFindings,
+            analystEscalations,
+            coverageSweep,
+          },
+          registry: registryData,
+        }),
+        coverage: coverageJson(verdict),
+      });
+      return;
+    }
+
+    if (!verdict.measured) {
+      console.error(unmeasuredBanner(verdict));
       return;
     }
 
@@ -11465,13 +11845,16 @@ async function checkNpmPackage(
       const translated = translateDownloadError(name, message);
       if (translated && (translated.errorHint || translated.suggestions)) {
         if (options.json) {
-          writeJsonStdout(buildNotFoundOutput({
-            name,
-            ecosystem: 'npm',
-            error: translated.errorHint,
-            errorHint: translated.errorHint,
-            suggestions: translated.suggestions,
-          }));
+          writeJsonStdout({
+            ...buildNotFoundOutput({
+              name,
+              ecosystem: 'npm',
+              error: translated.errorHint,
+              errorHint: translated.errorHint,
+              suggestions: translated.suggestions,
+            }),
+            coverage: notFoundCoverage(name, 'npm'),
+          });
         } else {
           printNotFoundBlock({
             pkg: name,
@@ -11484,7 +11867,10 @@ async function checkNpmPackage(
         console.error(`Error: ${escapeForDisplay(String(message))}`);
       }
     }
-    process.exitCode = 1;
+    // The download failed, so the package was never scanned. 2, not 1 — 1
+    // would tell a CI consumer the package is high risk when what happened is
+    // that a typo'd name was never fetched.
+    process.exitCode = EXIT_UNMEASURED;
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

@@ -3,6 +3,8 @@
  * Adversarial security testing for AI agents
  */
 
+import type { CheckVerdict } from '../check/verdict';
+
 export type AttackCategory =
   | 'prompt-injection'       // PI - Manipulate agent behavior via input
   | 'jailbreak'              // JB - Bypass safety guardrails
@@ -62,6 +64,21 @@ export interface AttackResult {
   payload: AttackPayload;
   /** Target that was tested */
   target: string;
+  /**
+   * Whether a real agent answered this payload.
+   *
+   * #406 — `success: false, blocked: false` was carrying two different
+   * meanings: "the agent replied and the reply matched nothing" and "the
+   * payload never arrived". Both counted as `inconclusive`, and the risk score
+   * read only `successful`, so 111 sockets that refused connection scored
+   * `0/100 (SECURE)`. This field separates them at the point of measurement
+   * rather than letting a later stage infer it from the evidence string.
+   *
+   * False for a transport error, and false in `--local` simulation, where
+   * nothing is contacted at all and the analyzer would otherwise be scoring
+   * HackMyAgent's own placeholder sentence (#430).
+   */
+  answered: boolean;
   /** Whether the attack succeeded */
   success: boolean;
   /** Whether the attack was explicitly blocked */
@@ -81,6 +98,12 @@ export interface AttackResult {
 export interface AttackReport {
   /** Target that was tested */
   target: string;
+  /**
+   * The URL payloads were actually sent to. Differs from `target` for `a2a`,
+   * where `/a2a/message` is appended — the "verify the target is up" hint
+   * printed the bare `target` and so named a URL the run never used.
+   */
+  probedUrl?: string;
   /** Target type */
   targetType: 'api' | 'mcp' | 'a2a' | 'local';
   /** Attack intensity used */
@@ -96,6 +119,10 @@ export interface AttackReport {
   /** Summary statistics */
   summary: {
     total: number;
+    /** Payloads a real agent answered. `total - answered` never reached one. */
+    answered: number;
+    /** Payloads that were sent and got no answer: transport errors. */
+    unanswered: number;
     successful: number;
     blocked: number;
     inconclusive: number;
@@ -104,10 +131,19 @@ export interface AttackReport {
   };
   /** Individual results */
   results: AttackResult[];
-  /** Overall risk score (0-100) */
+  /**
+   * The verdict and the evidence it rests on, in one value.
+   *
+   * `riskScore` / `riskRating` below are populated ONLY when
+   * `verdict.measured` is true. Read the verdict, not the numbers: an
+   * unmeasured run leaves them at 0 / `'unmeasured'`, and 0 there means
+   * "nothing was answered", not "nothing got through".
+   */
+  verdict: CheckVerdict;
+  /** Overall risk score (0-100). Meaningless unless `verdict.measured`. */
   riskScore: number;
-  /** Overall risk rating */
-  riskRating: 'critical' | 'high' | 'medium' | 'low' | 'secure';
+  /** Overall risk rating. `'unmeasured'` when no agent answered. */
+  riskRating: 'critical' | 'high' | 'medium' | 'low' | 'secure' | 'unmeasured';
 }
 
 export interface AttackTarget {

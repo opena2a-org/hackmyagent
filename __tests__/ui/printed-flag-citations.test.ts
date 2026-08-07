@@ -33,8 +33,10 @@ import path from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
 import {
   collectPrintedFlags,
+  collectMarkdownFlags,
   commandRegions,
   printedFlagsInSource,
+  printedFlagsInMarkdown,
 } from '../helpers/printed-flag-citations';
 
 beforeAll(assertDistFreshIfPresent);
@@ -152,6 +154,99 @@ describe('#372 the walker sees what it claims to see', () => {
     const hit = planted.find((f) => f.flag === '--not-a-real-flag');
     expect(hit, 'the walker missed a flag inside a template literal in an array push').toBeDefined();
     expect(hit!.command, 'the walker did not attribute the flag to the command named beside it').toBe('secure');
+  });
+
+  it('reads README.md and docs/, not only src/', () => {
+    // #434 — `docs/use-cases/openclaw-security.md:61` cited `check --sign`,
+    // unregistered, and #372's gate did not miss it: markdown has no string
+    // literals, so no walker read the file. Non-vacuity first: the markdown
+    // half must find real citations, because [] passes the dead-flag rule.
+    const md = collectMarkdownFlags({ repoRoot: REPO_ROOT, verbs });
+    expect(md.length, 'the markdown extractor found no cited flags at all').toBeGreaterThan(10);
+    expect(new Set(md.map((f) => f.file)).size, 'only one markdown file was read').toBeGreaterThan(1);
+    // And the combined walk is strictly larger than the source-only walk.
+    expect(collectPrintedFlags({ repoRoot: REPO_ROOT, verbs }).length).toBeGreaterThan(md.length);
+  });
+
+  it('catches a dead citation planted in markdown', () => {
+    // The plant, in each of the two shapes documentation uses.
+    const fenced = printedFlagsInMarkdown({
+      src: ['Run it:', '', '```bash', '$ hackmyagent secure . --not-a-real-flag', '```'].join('\n'),
+      file: 'planted.md',
+      verbs,
+    });
+    expect(fenced.find((f) => f.flag === '--not-a-real-flag')?.command).toBe('secure');
+
+    const inline = printedFlagsInMarkdown({
+      src: 'Use `hackmyagent check ./x --not-a-real-flag` to verify.',
+      file: 'planted.md',
+      verbs,
+    });
+    expect(inline.find((f) => f.flag === '--not-a-real-flag')?.command).toBe('check');
+  });
+
+  it('does not read markdown prose as an invocation', () => {
+    // The over-correction direction. A hyphenated phrase in a sentence, and a
+    // flag belonging to another program in a pipeline, must not be attributed
+    // to this CLI — that is the misattribution the segment rule in the source
+    // walker exists to prevent, and the markdown walker must not reintroduce it.
+    const prose = [
+      'The scan is fully self-contained -- no data leaves your machine.',
+      '',
+      '```bash',
+      'npm audit --json | jq .',
+      'git diff --stat',
+      '```',
+    ].join('\n');
+    expect(printedFlagsInMarkdown({ src: prose, file: 'planted.md', verbs })).toEqual([]);
+  });
+
+  it('does not let a flag leak across invocations on ONE line', () => {
+    // Adversarial review finding: a line holds several invocations
+    // (`a && b`, `a; b`, `a | b`) and taking every flag after the FIRST verb
+    // attributed the second command's flags to the first. That is a false
+    // citation the gate would then report against the wrong command.
+    for (const sep of ['&&', ';', '|']) {
+      const line = `hackmyagent check ./x ${sep} hackmyagent attack --totally-bogus-flag`;
+      const found = printedFlagsInMarkdown({ src: `\`${line}\``, file: 'planted.md', verbs });
+      const hit = found.find((f) => f.flag === '--totally-bogus-flag');
+      expect(hit, `separator ${sep}: the flag was not found at all`).toBeDefined();
+      expect(hit!.command, `separator ${sep}: attributed to the wrong command`).toBe('attack');
+    }
+  });
+
+  it('reads every code-block form markdown actually uses', () => {
+    // Review finding: only ``` fences were read, so ~~~ fences, indented
+    // blocks and a versioned `npx hackmyagent@latest` launcher were all
+    // invisible — a dead citation in any of them would pass the gate.
+    const cases: Array<[string, string]> = [
+      ['tilde fence', '~~~bash\nhackmyagent check --totally-bogus-flag\n~~~'],
+      ['indented block', 'Run it:\n\n    hackmyagent check --totally-bogus-flag\n'],
+      ['versioned npx', '`npx hackmyagent@latest check --totally-bogus-flag`'],
+      ['bunx launcher', '`bunx hackmyagent check --totally-bogus-flag`'],
+    ];
+    for (const [label, src] of cases) {
+      const found = printedFlagsInMarkdown({ src, file: 'planted.md', verbs });
+      expect(
+        found.find((f) => f.flag === '--totally-bogus-flag')?.command,
+        `${label}: the walker did not read this code form`,
+      ).toBe('check');
+    }
+  });
+
+  it('does not let a flag leak across lines of one fenced block', () => {
+    // A fenced block holds many invocations. Reading the block as one segment
+    // would attribute every flag in it to the first command named.
+    const block = [
+      '```bash',
+      'hackmyagent secure . --fix',
+      'hackmyagent detect --json',
+      '```',
+    ].join('\n');
+    const found = printedFlagsInMarkdown({ src: block, file: 'planted.md', verbs });
+    expect(found.find((f) => f.flag === '--fix')?.command).toBe('secure');
+    expect(found.find((f) => f.flag === '--json')?.command).toBe('detect');
+    expect(found.filter((f) => f.command === 'secure').map((f) => f.flag)).toEqual(['--fix']);
   });
 
   it('attributes a bare flag to the command that prints it', () => {

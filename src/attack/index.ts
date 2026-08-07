@@ -5,7 +5,7 @@
 
 export { AttackScanner } from './scanner';
 export { parseCustomPayloads } from './custom-payloads';
-export { shouldFail } from './fail-policy';
+export { shouldFail, attackExitCode } from './fail-policy';
 export type { FailPolicy } from './fail-policy';
 
 export {

@@ -6,6 +6,185 @@ All notable changes to HackMyAgent are documented in this file.
 
 ### Security
 
+- **A verdict now requires a measurement, and six commands stopped reporting one without
+  it.** Every row below was measured on published `0.26.1` and on this build, same
+  machine, same targets:
+
+  ```
+                                          0.26.1                    this build
+  attack <unreachable endpoint>           0/100 (SECURE)   exit 0    NOT MEASURED  exit 2
+  attack --local <jailbreak prompt>       2/100 (LOW)      exit 0    NOT MEASURED  exit 2
+  attack --local <hardened prompt>        2/100 (LOW)      exit 0    NOT MEASURED  exit 2
+  attack --local <empty file>             2/100 (LOW)      exit 0    NOT MEASURED  exit 2
+  check <path that does not exist>        MEDIUM RISK      exit 0    NOT MEASURED  exit 2
+  check <package that does not exist>     not found        exit 1    not found     exit 2
+  secure -b oasb-2  (Conformance: NONE)                    exit 0                  exit 1
+  detect  (1 high-severity issue found)                    exit 0                  exit 1
+  check --json  (npm, PyPI, GitHub, URL)  no coverage key            coverage: {…}
+  ```
+
+  These were filed as six issues and they are one defect. A risk band is a claim about a
+  target, and each of these commands could make the claim with no evidence behind it. The
+  fix is not six patches but a type in which the claim cannot be spelled without the
+  evidence: `src/check/verdict.ts` now returns either a measured verdict carrying a
+  mandatory `coverage`, or an unmeasured one that has no `risk` field at all. Reading a
+  risk band without first proving the run measured something is a compile error, and
+  deriving one over zero examined units returns "not measured" instead.
+
+  Exit `2` means the target was not measured — no score and no risk level are reported. It
+  is non-zero on purpose: a CI job that asked for a security verdict and got "I could not
+  reach the target" has not been told the target is safe. `red-team` already exited 2 on
+  this reasoning; `attack --local` now does too, for the same reason.
+
+- **`attack` probes the target once before sending the suite.** An unreachable endpoint
+  used to be discovered 111 times, once per payload, in a `catch` whose result the scorer
+  could not tell apart from a blocked attack — 111 refused connections scored as 111
+  defences held. The liveness precondition sits above the scorer, so the same run now
+  costs one request instead of the whole battery: measured at 111 seconds before, ~1
+  second after.
+
+- **`attack --local` reports no risk score, because it never measured one.** It returned
+  the same `2/100 (LOW)` for a jailbreak prompt, a hardened prompt and an empty file, and
+  the number moved with `--intensity` and never with the target. `simulateLocal` returns a
+  fixed sentence and the analyzer was scoring HackMyAgent's own placeholder text. `--local`
+  generates payloads and checks that they parse; it contacts no agent, so it has no
+  behaviour to score.
+
+- **`check` says a missing target is missing.** A path spelled as a path and not present
+  fell through every dispatch arm into the registry lookup, which synthesized a publisher
+  record and printed `MEDIUM RISK`, with `--json` asserting `"revocation":{"revoked":false}`
+  about a thing that was never on disk. Every no-scan path — missing path, unknown npm or
+  PyPI package, a clone that failed — now reports 2 rather than the mix of 0, 1 and 2 those
+  six sites had drifted into.
+
+- **`secure -b oasb-2` fails on a non-conforming tree.** It exited 0 at
+  `Conformance: NONE` while `secure -b oasb-1` exited 1 on the same tree, so the stricter
+  benchmark was the one that passed CI. `--help` already promised "non-compliant in
+  benchmark mode"; the promise was right and the gate was missing.
+
+
+- **`scan-soul` exits 1 when the governance file it found conforms to nothing (half of
+  #390).** It reported `Governance 0/100` at exit 0, and `scan-soul --ci exits 0 at 0/100`
+  is named in that issue's title. Measured on `9bd2888`, a `SOUL.md` reading `name: demo`:
+  `0/100` at exit 0 on text, `--ci` and `--json`; now exit 1 on all three.
+
+  Two conditions, and the second matters: a governance file must have been **found**, and
+  its score must be 0. Gating on the score alone failed every repository that simply has no
+  `SOUL.md` — including this one. "There is nothing here to grade" is not "this governance
+  is broken".
+
+  It gates on `score === 0`, not on `conformance === 'none'` the way `secure -b oasb-2`
+  does. A `SOUL.md` declaring a narrow profile and covering a few of its 19 applicable
+  controls scores 14/100 with conformance `none`; failing that would be a policy change
+  about acceptable governance rather than a fix for an exit code that ignored its own
+  output. `--fail-below` remains the flag for a stricter floor, and #390 stays open for
+  whoever decides where that line belongs.
+
+### Fixed
+
+- **`docs/` and `README.md` are now walked for dead flag citations.** #372's gate reads
+  string literals in `src/`, and markdown has none, so a `Fix:` line citing
+  `hackmyagent check --sign` — an option `check` does not register — sat in
+  `docs/use-cases/openclaw-security.md` unseen. Widening the walker rather than fixing the
+  instance immediately found a second one: `docs/use-cases/ci-pipeline.md` cited
+  `attack --ci`, also unregistered. Both fixed.
+
+- **`detect` now exits 1 on any machine running an ungoverned AI agent.** That is the
+  point of #390, and it is a behaviour change for anyone running `detect` in CI: a
+  developer laptop with Claude Code or Ollama running and no `SOUL.md` reports
+  `2 AI agents running without governance` at HIGH, which is now a non-zero exit rather
+  than a line of text. `hackmyagent harden-soul <dir>` clears it.
+
+- **`docs/use-cases/red-team-mcp.md` no longer shows output the tool has never produced.**
+  It documented `attack --local` as testing "your agent's system prompt and configuration",
+  with per-payload `VULNERABLE` / `RESISTANT` verdicts, a category breakdown and
+  `Exit code: 1 (vulnerabilities found)`. `--local` contacts no agent and has never
+  produced any of that. The live-endpoint workflow is now the one the document teaches.
+
+- **Installing HackMyAgent no longer resolves a second, nine-month-old copy of itself, and
+  drops one of the four high advisories a consumer inherited.** Measured on a fresh
+  `npm init -y` tree, published `0.26.1` versus this build:
+
+  ```
+                                 0.26.1   this build
+  npm audit --audit-level=high   4 high   3 high
+  nested hackmyagent             0.17.11  none
+  ```
+
+  `hackmyagent` declared a runtime dependency on `ai-trust`, which depends back on
+  `hackmyagent@0.17.11`. Every consumer resolved that copy, and its deprecation notice —
+  describing defects in a version they never asked for and could not easily tell they were
+  not running — was the first screen after install. The dependency was never imported:
+  there was no `require`, no `import` and no subprocess call to it anywhere in `src/`. The
+  Registry lookups behind `trust` were already this tool's own code.
+
+  HackMyAgent is standalone. Nothing an `ai-trust` user wants is behind a second install:
+  `hackmyagent trust <package>` is the registry lookup, `hackmyagent trust --audit <file>`
+  audits a dependency file, and `hackmyagent check <package>` scans one.
+
+- **The dependency audit gate now measures the tree a consumer resolves, not this repo's
+  lockfile.** The gate added in 0.26.0 ran `npm audit --package-lock-only` here and
+  reported `0`. That number was correct and it was not the number a user got, because the
+  `overrides` block that produced it is not published — npm applies `overrides` only to the
+  tree that declares them, so the artifact being audited was never the artifact being
+  shipped. 0.26.0 added that gate because "nothing in CI would have caught either
+  recurrence"; this was the same blind spot one level out, and the gate could not see it.
+
+  `npm run audit:consumer` packs the repo, resolves the tarball as a dependency of an empty
+  scratch package, and audits that. It fails on any high or critical advisory not named in
+  an explicit allowlist, on an allowlist entry that no longer matches or has passed its
+  review date, and on any nested copy of `hackmyagent` at any version. It installs nothing
+  and runs no package's scripts, so it is safe on pull requests from forks for the same
+  reason the original job is.
+
+  Pinned in both directions: it fails on published `0.26.1` and passes on this build.
+
+
+- **Four printed lines told the reader to run a CLI that installing this tool does not give
+  them.** `trust` and `trust --audit` cited `ai-trust check <name> --scan-if-missing` and
+  `ai-trust audit <file> --scan-missing`. A dependency does not put its `bin` on a
+  consumer's PATH, so those never ran for anyone who installed only `hackmyagent` — they
+  were dead ends before the dependency was removed and unambiguous ones after. They now
+  cite `check` and `trust`, which this tool registers.
+
+  The #372 gate did not catch them because `ai-trust` was on its foreign-executable skip
+  list, which exists for command lines that genuinely belong to another tool. It came off
+  that list, so the gate now covers this class.
+
+
+- **The measurement gate does not yet reach `secure`, three `attack` response formats, or
+  the registry-only `check --json` paths.** All three were measured during review of the
+  verdict change above; each is pre-existing and none is a regression from it.
+
+  - `secure <empty dir>` prints `98/100` at exit 0 while its own coverage ledger says
+    `0 files read by static checks`. **Still open (#438).** A fix was built and reverted:
+    gating on files-read only moves the threshold from 0 files to 1 — a directory holding a
+    single random blob still scored `98/100` — and `secure --fix` writes a `.gitignore`,
+    re-reads it, and then scores itself `100/100`, satisfying its own gate by writing into
+    the target. `secure` also has five output channels (`text`, `--json`, `sarif`, `html`,
+    `asff`) and a `--fail-below` arm that each return separately, so a single gate in the
+    text arm left four of them at exit 0. See #438 for the full measurement. `check <empty dir>` reports `NOT MEASURED` at exit 2
+    on the same tree, so the two commands disagree about the same directory. `secure` is
+    the flagship scoring command and routing it through the same derivation is its own
+    change.
+  - `attack` can still report `0/100 (SECURE)` for `-t a2a`, `-t mcp` and
+    `--api-format custom`. A first attempt at this (#439) was reverted before shipping:
+    restricting extraction to a fixed set of key names turned a loud false positive into
+    a **silent false negative** — seven realistic response shapes, including a body
+    leaking `sk-live-…` under `--api-format custom`, went from `100/100 CRITICAL` to
+    `NOT MEASURED` with no flag to recover. For a scanner that is the worse direction.
+    The remaining detail: The empty-body gate keys on the response text being blank, and
+    only the `openai` and `anthropic` extractors can return blank — the other three end
+    in `JSON.stringify(data)`, so an endpoint answering every payload with
+    `{"error":"unauthorized"}` is scored rather than withheld. The default `openai`
+    format is fixed; these three are not.
+  - ~~`secure -b oasb-1 --fail-below 0` exits 0 on a `Not Passing` rating.~~ **Fixed
+    (#440).** `--fail-below` adds a score floor and no longer replaces the default
+    non-compliance gate on any benchmark arm. Note the behaviour change: a tree that was
+    already `Not Passing` and was being held green by `--fail-below` now fails.
+  - `check --json` emits no `coverage` object on the registry-only paths (`--no-scan`,
+    skill-identifier lookup). The downloaded and not-found paths carry it.
+
 - **`secure` reported `logging` as clear while holding a HIGH finding it had already
   made.** `LOG-002` read `server.js`, matched `console.log(password` in it, and pushed a
   failed HIGH. The run then printed:
@@ -79,6 +258,20 @@ All notable changes to HackMyAgent are documented in this file.
   `secure --json` gains `coverage.suppressedFailures` (each silenced detection's identity,
   never a path or a message) and `coverage.unevidencedFailures` (the count above).
 
+### Known issues
+
+- **`npm install hackmyagent` still reports 3 high advisories, all of them the same one.**
+  `adm-zip <0.6.0` (GHSA-xcpc-8h2w-3j85), reached only through `onnxruntime-node`, which
+  this tool needs for local NanoMind inference. There is no version that resolves clean:
+  `onnxruntime-node@1.27.0` is the latest release and pins `adm-zip: ^0.5.16`, while the
+  patched release is `0.6.0` — outside that caret — and an `overrides` entry here does not
+  reach anyone who installs this package. The extract path carrying the advisory runs in
+  `onnxruntime-node`'s postinstall when it downloads execution-provider binaries; the base
+  package ships those binaries, so that script exits before requiring `adm-zip` on a
+  default install. Recorded with its reasoning and a review date in
+  `scripts/audit-consumer-resolution.mjs`, and the gate fails if it is still waived after
+  that date.
+
 ## [0.26.1] - 2026-08-07
 
 ### Security
@@ -140,6 +333,71 @@ All notable changes to HackMyAgent are documented in this file.
   already carries a correct set elsewhere. Individual checks therefore still skip parts of
   a tree. Tracked in [#414](https://github.com/opena2a-org/hackmyagent/issues/414); #412
   fixed the compile-set gate only.
+
+- **The defect class this release is mostly about is not closed.** #373 fixed `check
+  --json`, `secure-openclaw` and `secure-nemoclaw`. The same shape — *a verdict, or an
+  exit code, that does not depend on whether anything was actually measured* — is still
+  live in the commands below. Every one was measured on this build **and reproduces
+  identically on 0.26.0**, so none is new here; they are listed because staying silent
+  about the rest of a class while announcing three fixes to it would misrepresent what
+  upgrading gets you. All are scheduled to **0.27.0**.
+
+  | command | measured | tracked |
+  |---|---|---|
+  | `attack <unreachable-host>` | `Risk Score: 0/100 (SECURE)` at **exit 0**, all 111 attacks inconclusive, every `evidence` field `Error: fetch failed` | [#406](https://github.com/opena2a-org/hackmyagent/issues/406) |
+  | `attack --local` | `2/100 (LOW)` for a jailbreak prompt, a hardened prompt **and an empty string** — the score moves with `--intensity`, not with the target | [#430](https://github.com/opena2a-org/hackmyagent/issues/430) |
+  | `check <path-that-does-not-exist>` | `MEDIUM RISK` at **exit 0**, `--json` asserting `"revocation":{"revoked":false}` about an artifact that is not there | [#417](https://github.com/opena2a-org/hackmyagent/issues/417) |
+  | `secure <dir> -b oasb-2` | **exit 0** at `Conformance: NONE`, while the same directory exits 1 without `-b` and with `-b oasb-1`. `secure --help` promises exit 1 "or non-compliant in benchmark mode" | [#371](https://github.com/opena2a-org/hackmyagent/issues/371) |
+  | `check <remote target> --json` | the four network paths still carry no `coverage` object, so #388's disclosure is local-only | [#416](https://github.com/opena2a-org/hackmyagent/issues/416) |
+
+  Reproductions are in each issue. If you gate CI on any of these, gate on the text
+  channel or on `--fail-below` until 0.27.0 lands.
+
+- **Two auto-fix paths write sensitive bytes onto a git-tracked path.** Both reproduce
+  identically on 0.26.0. Scheduled to **0.27.0**.
+
+  - `secure --fix` moves the original file into `.hackmyagent-backup/`, and the
+    `.gitignore` it generates in the same run does not exclude that directory — so the
+    remediation for "credential in config" leaves the credential where `git add .` will
+    stage it. ([#389](https://github.com/opena2a-org/hackmyagent/issues/389))
+  - `fix-all` writes `.opena2a/credvault/store.key` beside the `secrets.enc` it decrypts,
+    with no `.gitignore` written at all, so the ciphertext and its key stage together. It
+    also creates no backup, so `rollback` cannot undo it despite the quick-start
+    advertising "auto-fix with rollback".
+    ([#431](https://github.com/opena2a-org/hackmyagent/issues/431))
+
+  Until 0.27.0: add `.hackmyagent-backup/` and `.opena2a/` to `.gitignore` yourself before
+  running either command in a repository, and prefer `--dry-run` first.
+
+- **Installing this package still reports 4 high advisories, and our own audit gate cannot
+  see them.** Measured on a fresh `npm init -y` tree, and identical on 0.26.0:
+
+  ```
+  $ npm install hackmyagent@0.26.1 && npm audit --audit-level=high
+  4 high severity vulnerabilities
+
+  hackmyagent -> ai-trust -> hackmyagent@0.17.11 -> onnxruntime-node -> adm-zip
+  ```
+
+  `ai-trust` pulls a nine-month-old copy of this package, which carries the vulnerable
+  `adm-zip` (crafted ZIP triggers a 4GB allocation). The `Dependency audit` workflow this
+  project added in 0.26.0 reports **0** — correctly, because it audits *this repo's*
+  lockfile, where `overrides` pins `adm-zip`. **`overrides` are not published**, so the
+  tree we audit is not the tree you install. Being explicit about it here rather than
+  letting the green badge stand for something it does not cover.
+  ([#432](https://github.com/opena2a-org/hackmyagent/issues/432))
+
+- **The exit-code contract differs per command and is not stated anywhere.** `secure`
+  exits 1 on a HIGH finding; `detect` prints `1 high-severity issue found` —
+  `HIGH  2 AI agents running without governance`, governance `12/100` — and exits **0**.
+  Reproduces on 0.26.0. ([#390](https://github.com/opena2a-org/hackmyagent/issues/390))
+
+  On `scan-soul` specifically, the measurement is narrower than #390's title suggests, so
+  to be exact: `scan-soul --ci` **does** exit 1 on a low-scoring governance file (measured
+  `4/100` -> exit 1). The case that exits 0 is a directory with **no `SOUL.md` at all**,
+  which scores `0/100` and passes `--ci` — the 0 there means nothing was evaluated, not
+  that something was evaluated and scored zero. That is the same
+  verdict-without-measurement shape as the table above.
 
 ### Fixed
 

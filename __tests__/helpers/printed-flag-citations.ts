@@ -47,6 +47,19 @@ export interface PrintedFlag {
  * Executables whose flags belong to them. A segment naming one of these is
  * quoting another tool's command line, not ours.
  *
+ * `ai-trust` was on this list and came off with #432. Being on it made the
+ * gate skip four printed lines — `ai-trust check <name> --scan-if-missing`,
+ * `ai-trust audit <file> --scan-missing` — which were dead ends for every
+ * reader: a dependency does not put its `bin` on a consumer's PATH, so the
+ * suggestion never ran for anyone who installed only `hackmyagent`. Removing
+ * the runtime dependency made that unambiguous, and the citations now name
+ * `check` and `trust`, which this tool registers itself.
+ *
+ * The entries that remain are cited through a runner that does resolve them
+ * (`npx opena2a-cli protect .`) or are genuinely another tool's command line.
+ * Adding a name here suppresses a real class of defect, so it needs the same
+ * justification: the reader can run it as printed.
+ *
  * Program names that are also ordinary English words are deliberately NOT on
  * this list — `go`, `find`, `ls`, `ps`, `gh`, `az`, `ag`, `helm`. With them on
  * it, "If you go further, use `--x`" and "To find more, use `--x`" were both
@@ -57,7 +70,7 @@ export interface PrintedFlag {
  * silently skips is indistinguishable from a guard that passes.
  */
 const FOREIGN_EXECUTABLE =
-  /\b(npm|npx|pnpm|yarn|pip|pip3|pipx|python|python3|node|deno|bun|cargo|git|curl|wget|docker|podman|kubectl|aws|gcloud|terraform|grep|rg|sed|awk|tar|unzip|ssh|scp|openssl|gpg|chmod|chown|snyk|semgrep|trivy|gitleaks|glab|brew|apt|apt-get|yum|dnf|jq|yq|shasum|sha256sum|systemctl|journalctl|arp-guard|ai-trust|opena2a|secretless|secretless-ai)\b/;
+  /\b(npm|npx|pnpm|yarn|pip|pip3|pipx|python|python3|node|deno|bun|cargo|git|curl|wget|docker|podman|kubectl|aws|gcloud|terraform|grep|rg|sed|awk|tar|unzip|ssh|scp|openssl|gpg|chmod|chown|snyk|semgrep|trivy|gitleaks|glab|brew|apt|apt-get|yum|dnf|jq|yq|shasum|sha256sum|systemctl|journalctl|arp-guard|opena2a|secretless|secretless-ai)\b/;
 
 /** Call shapes whose string arguments reach a user. */
 const PRINT_CALL =
@@ -278,6 +291,119 @@ export function printedFlagsInSource(opts: {
   return found;
 }
 
+/** Every `.md` file under `dir`, excluding anything generated or vendored. */
+function markdownFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) out.push(...markdownFiles(p));
+    else if (e.name.endsWith('.md')) out.push(p);
+  }
+  return out;
+}
+
+/**
+ * Walk one markdown file for flags cited against this CLI.
+ *
+ * #434 — `docs/use-cases/openclaw-security.md:61` showed a sample report whose
+ * `Fix:` line cited `hackmyagent check --sign`, an option `check` does not
+ * register. #372's gate did not miss it: that gate's scope is string literals
+ * in `src/`, and the scope was accurate. Markdown has no string literals, so
+ * the same class of dead citation lives in a file no walker read.
+ *
+ * This is the widening #432 already made for the executable skip list, applied
+ * to the file set: the fix worth making closes the class, not the instance.
+ *
+ * Only code — fenced blocks and inline spans — is read. Prose that happens to
+ * contain a hyphenated phrase is not an invocation, and reading it would
+ * reproduce the "loaded from secure, immutable sources" misattribution that
+ * the segment rule above exists to prevent.
+ */
+export function printedFlagsInMarkdown(opts: {
+  src: string;
+  file: string;
+  verbs: ReadonlySet<string>;
+}): PrintedFlag[] {
+  const { src, file: rel, verbs } = opts;
+  const found: PrintedFlag[] = [];
+
+  const lineStarts: number[] = [0];
+  for (let k = 0; k < src.length; k++) if (src[k] === '\n') lineStarts.push(k + 1);
+  const lineOf = (off: number) => {
+    let lo = 0; let hi = lineStarts.length - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (lineStarts[mid] <= off) lo = mid; else hi = mid - 1; }
+    return lo;
+  };
+
+  // Code regions: fenced blocks, then inline spans. Offsets are kept so a
+  // finding reports the line the reader would open.
+  const regions: Array<{ body: string; start: number }> = [];
+  // ``` and ~~~ are both fences in CommonMark; reading only the first left
+  // every ~~~ block unwalked.
+  for (const m of src.matchAll(/(?:```|~~~)[^\n]*\n([\s\S]*?)(?:```|~~~)/g)) {
+    regions.push({ body: m[1], start: m.index! + m[0].indexOf('\n') + 1 });
+  }
+  // Indented code blocks (four spaces) are the third form, and README files in
+  // this tree use them. Consecutive indented lines are one region.
+  for (const m of src.matchAll(/(?:^|\n)((?: {4}|\t)[^\n]*(?:\n(?: {4}|\t)[^\n]*)*)/g)) {
+    regions.push({ body: m[1], start: m.index! + m[0].indexOf(m[1]) });
+  }
+  for (const m of src.matchAll(/`([^`\n]+)`/g)) {
+    regions.push({ body: m[1], start: m.index! + 1 });
+  }
+
+  for (const region of regions) {
+    // One invocation per line, and a line can hold SEVERAL — `a && b`, `a; b`,
+    // `a | b`. Scanning a line once and taking every flag after the first verb
+    // attributed the second command's flags to the first, so
+    // `hackmyagent check ./x && hackmyagent attack --bogus` reported `--bogus`
+    // against `check`. Every invocation on the line is matched, and each owns
+    // only the flags up to where the next one starts.
+    let cursor = 0;
+    for (const rawLine of region.body.split('\n')) {
+      const lineStart = region.start + cursor;
+      cursor += rawLine.length + 1;
+
+      // Strip a shell prompt so `$ hackmyagent check --json` reads the same as
+      // the bare form.
+      const line = rawLine.replace(/^\s*\$\s*/, '');
+      const invocations = [...line.matchAll(
+        // `npx hackmyagent@latest` and `pnpm dlx hackmyagent` are the same
+        // invocation with a different launcher; a version suffix is not a
+        // different tool.
+        /(?:^|[\s|;&(])(?:(?:npx|pnpm dlx|bunx)\s+)?(?:hackmyagent|hma)(?:@[\w.\-]+)?\s+([a-z][a-z0-9-]*)/g,
+      )];
+
+      for (let i = 0; i < invocations.length; i++) {
+        const invocation = invocations[i];
+        const verb = invocation[1];
+        if (!verbs.has(verb)) continue;
+
+        // Flags after this verb and before the NEXT invocation. A flag before
+        // the verb belongs to another program in a pipeline.
+        const from = invocation.index! + invocation[0].length;
+        const to = invocations[i + 1]?.index ?? line.length;
+        const tail = line.slice(from, to);
+
+        for (const fm of tail.matchAll(/(?:^|\s)(--[a-z][a-z0-9-]+)/g)) {
+          const at = from + fm.index! + fm[0].indexOf('--');
+          const lineIdx = lineOf(lineStart + at);
+          found.push({
+            file: rel,
+            line: lineIdx + 1,
+            flag: fm[1],
+            command: verb,
+            inferred: false,
+            text: src.slice(lineStarts[lineIdx], lineStarts[lineIdx + 1] ?? src.length).trim().slice(0, 160),
+          });
+        }
+      }
+    }
+  }
+  return found;
+}
+
 export function collectPrintedFlags(opts: {
   repoRoot: string;
   /** Commands the Commander program registers. */
@@ -297,6 +423,33 @@ export function collectPrintedFlags(opts: {
       file: rel,
       verbs,
       marks: rel === cliRel ? marks : undefined,
+    }));
+  }
+  found.push(...collectMarkdownFlags(opts));
+  return found;
+}
+
+/**
+ * The documentation half of the same walk: `README.md` and everything under
+ * `docs/`. Separate entry point so a suite can report the two scopes apart
+ * while the assertion over them stays one rule (#434).
+ */
+export function collectMarkdownFlags(opts: {
+  repoRoot: string;
+  verbs: ReadonlySet<string>;
+}): PrintedFlag[] {
+  const { repoRoot, verbs } = opts;
+  const files: string[] = [];
+  const readme = path.join(repoRoot, 'README.md');
+  try { readFileSync(readme); files.push(readme); } catch { /* no README */ }
+  try { files.push(...markdownFiles(path.join(repoRoot, 'docs'))); } catch { /* no docs/ */ }
+
+  const found: PrintedFlag[] = [];
+  for (const file of files) {
+    found.push(...printedFlagsInMarkdown({
+      src: readFileSync(file, 'utf8'),
+      file: path.relative(repoRoot, file),
+      verbs,
     }));
   }
   return found;

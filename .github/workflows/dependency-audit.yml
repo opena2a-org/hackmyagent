@@ -79,3 +79,30 @@ jobs:
       # The gate.
       - name: Fail on high or critical advisories
         run: npm audit --package-lock-only --audit-level=high
+
+  # #432 — the job above audits this repo's lockfile, where `overrides` pins
+  # `adm-zip`. It reported 0 while `npm install hackmyagent@0.26.1` gave a user
+  # 4 high advisories and a nested `hackmyagent@0.17.11`, because `overrides`
+  # are not published: the artifact we audit is not the artifact we ship.
+  #
+  # This job resolves the tree a consumer gets and gates on that. Kept separate
+  # rather than folded into `audit` so the two numbers stay legible as the two
+  # different measurements they are — a reviewer seeing "0 here, 3 there" should
+  # be able to tell which tree each one describes.
+  #
+  # Fork-safe on the same terms as the job above: the script packs and resolves
+  # with `--ignore-scripts` and `--package-lock-only`, so no dependency's
+  # install script runs and nothing is fetched into an executable position.
+  consumer-audit:
+    name: Consumer resolution audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          # No `cache: npm`, and no `npm ci`: the script uses only node builtins
+          # and the npm CLI, and `npm pack` does not need `dist/` present to
+          # resolve a dependency set.
+      - name: Audit the tree a consumer resolves
+        run: npm run audit:consumer

@@ -12,7 +12,7 @@ Set TypingSpeed 50ms
 Set Padding 15
 
 Hide
-Type "cd /Users/ecolibria/workspace/opena2a-org/test/hma && clear"
+Type "cd ${HMA_DEMO_DIR:-./test/hma} && clear"
 Enter
 Sleep 500ms
 Show

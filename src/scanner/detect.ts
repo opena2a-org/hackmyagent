@@ -19,6 +19,7 @@ import { clampScoreToVerdictBand, clampDisclosure, isFailDirection } from '../ui
 import { citationTarget as safeCitationTarget, citationPath } from '../ui/shell-quote';
 import { escapePathForDisplay, escapeForDisplay } from '../ui/display-safe';
 import { findPermissionGrant } from './permission-grant';
+import { deriveCheckVerdict, fullCoverage, unmeasuredBanner, coverageJson, unmeasured, EXIT_UNMEASURED } from '../check/verdict';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -349,7 +350,22 @@ function classifyMcpRisk(capabilities: string[], transport: string): RiskLevel {
 // Process scanning
 // ---------------------------------------------------------------------------
 
+/**
+ * Set when the last `scanProcesses()` call could not read the process list.
+ *
+ * Module-scoped rather than a return-shape change because `scanProcesses` is
+ * exported and called from tests and other surfaces; the caller that needs it
+ * reads it immediately after the call, on the same synchronous path.
+ */
+let processScanFailed = false;
+
+/** Whether the last `scanProcesses()` call failed to read the process list. */
+export function didProcessScanFail(): boolean {
+  return processScanFailed;
+}
+
 export function scanProcesses(psOutput?: string): DetectedAgent[] {
+  processScanFailed = false;
   let output: string;
   if (psOutput !== undefined) {
     output = psOutput;
@@ -357,6 +373,12 @@ export function scanProcesses(psOutput?: string): DetectedAgent[] {
     try {
       output = execSync('ps aux', { encoding: 'utf-8', timeout: 5000 });
     } catch {
+      // The process surface could not be read. Returning `[]` here is
+      // indistinguishable from "looked and found nothing", and a caller that
+      // counts this as an examined surface reports a measured PASS over a
+      // surface it never saw — the exact pathology `Coverage` exists to
+      // prevent. `processScanFailed` is how the caller tells the difference.
+      processScanFailed = true;
       return [];
     }
   }
@@ -1581,8 +1603,17 @@ export async function detect(options: DetectOptions): Promise<number> {
   try {
     fs.accessSync(dir, fs.constants.R_OK);
   } catch {
-    process.stderr.write(`Cannot access directory: ${escapePathForDisplay(dir)}\n`);
-    return 1;
+    // Unreadable target: nothing was examined, so this is 2 and not 1. Exit 1
+    // here would tell a CI consumer `detect` found a high-severity issue in a
+    // directory it could not open. This is the only path that reaches the
+    // unmeasured arm.
+    process.stderr.write(
+      `${unmeasuredBanner(unmeasured(
+        'target-unreadable',
+        `${escapePathForDisplay(dir)} could not be read, so nothing was scanned.`,
+      ))}\n`,
+    );
+    return EXIT_UNMEASURED;
   }
 
   const agents     = scanProcesses();
@@ -1678,10 +1709,66 @@ export async function detect(options: DetectOptions): Promise<number> {
   result.summary.governanceClamped = governanceClamped;
   result.summary.recoverablePoints = deductions;
 
+  // #390 — `detect` printed `1 high-severity issue found` and returned 0, so
+  // no CI job could ever fail on a shadow-AI finding. The exit code comes from
+  // the same derivation `check` uses, over the same severity counts the
+  // verdict line is rendered from, so the two cannot disagree.
+  //
+  // Derived ABOVE the output-channel branch for the same reason `check`
+  // settles there (#373): a `return` inside a renderer must not be able to
+  // change the exit code.
+  //
+  // The coverage unit is the number of DISCOVERY PASSES that ran, not the
+  // number of things they found.
+  //
+  // The first cut summed `agents.length + mcpServers.length + aiConfigs.length`
+  // — a count of findings wearing a coverage label. On a host with no AI
+  // tooling every term is 0, so the honest answer "I examined four surfaces and
+  // found nothing" would have been reported as `NOT MEASURED` at exit 2, which
+  // collapses "clean" into "cannot tell" and makes `detect` useless as the
+  // no-shadow-AI CI gate it is for. The comment claimed the opposite of what
+  // the expression did.
+  //
+  // COUNTED, not asserted. A constant here was a second bug of the same class
+  // as the one it replaced: `scanProcesses` swallows an `execSync('ps aux')`
+  // failure and returns `[]`, so on a host without `procps` the constant
+  // reported `4 of 4 surfaces examined` and a measured PASS over a surface the
+  // run never saw. Measured with `PATH=/nonexistent`: exit 0 and coverage
+  // byte-identical to a healthy run. That is fail-open, and the whole point of
+  // `Coverage` is that every field is counted at runtime from the run itself.
+  const surfaces = [
+    { name: 'processes', examined: !didProcessScanFail() },
+    { name: 'mcp servers', examined: true },
+    { name: 'identity', examined: true },
+    { name: 'ai configs', examined: true },
+    { name: 'governance', examined: true },
+  ];
+  const examinedSurfaces = surfaces.filter((s) => s.examined).length;
+  const unread = surfaces.filter((s) => !s.examined).map((s) => s.name);
+  const verdict = deriveCheckVerdict(
+    {
+      critical: result.findings.filter((f) => f.severity === 'critical').length,
+      high: result.findings.filter((f) => f.severity === 'high').length,
+      issues: result.findings.length,
+    },
+    { examined: examinedSurfaces, total: surfaces.length, unit: 'surface' },
+  );
+  // A partial read is not an unmeasured run — the other surfaces did produce a
+  // verdict — but it must be said out loud, or a reader takes the clean lines
+  // for a complete answer.
+  if (unread.length > 0 && options.format !== 'json') {
+    process.stderr.write(
+      `Not examined: ${unread.join(', ')}. This report does not cover ${unread.length === 1 ? 'it' : 'them'}.\n`,
+    );
+  }
+
   if (options.format === 'json') {
-    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    // The machine channel carries the measurement the exit code was derived
+    // from, so a consumer never has to infer it from the finding count.
+    process.stdout.write(JSON.stringify({ ...result, coverage: coverageJson(verdict) }, null, 2) + '\n');
   } else {
     process.stdout.write(formatText(result, options.verbose ?? false, dir) + '\n');
+    if (!verdict.measured) process.stderr.write(`${unmeasuredBanner(verdict)}\n`);
   }
 
   if (options.exportCsv) {
@@ -1690,5 +1777,5 @@ export async function detect(options: DetectOptions): Promise<number> {
     process.stdout.write(`Asset inventory: ${options.exportCsv}\n`);
   }
 
-  return 0;
+  return verdict.exitCode;
 }

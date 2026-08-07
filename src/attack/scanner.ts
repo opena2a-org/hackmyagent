@@ -14,6 +14,8 @@ import {
   ATTACK_CATEGORIES,
 } from './types';
 import { getPayloads, getPayloadById, ALL_PAYLOADS } from './payloads';
+import { deriveCheckVerdict, unmeasured, type UnmeasuredVerdict } from '../check/verdict';
+import { escapeForDisplay } from '../ui/display-safe';
 
 export class AttackScanner {
   private options: AttackOptions;
@@ -34,9 +36,112 @@ export class AttackScanner {
   /**
    * Run attack suite against target
    */
+  /**
+   * Liveness precondition. Sits ABOVE the scorer, not inside it.
+   *
+   * #406 — an unreachable endpoint used to be discovered 111 times, once per
+   * payload, in a `catch` whose result the scorer could not distinguish from a
+   * blocked attack. Probing once first means the user is told the target is
+   * unreachable in a second instead of after the full suite, and the run that
+   * would have produced a meaningless score does not happen at all.
+   *
+   * Deliberately not a `HEAD`: an agent endpoint that 405s a HEAD is live, and
+   * a probe that calls that dead would be a false negative on a real target.
+   * Any completed TCP+TLS exchange counts as reachable, whatever the status —
+   * this answers "is something there", and the payloads answer the rest.
+   *
+   * **It vetoes the run only on a DEFINITIVE negative.** A precondition that
+   * can veto a whole measurement must be certain, because its failure mode is
+   * indistinguishable from a real outage: a stub answering its first request in
+   * 3 s and the rest in 10 ms was reported unreachable under `--timeout 1000`
+   * while the suite it skipped scored the target 100/100 CRITICAL. So a
+   * timeout, an abort, or any error that is not a refused connection or an
+   * unresolvable name returns `inconclusive` and the suite runs anyway. The
+   * measurement gate below is the real guarantee; this is only the fast path.
+   *
+   * It probes the URL the PAYLOADS will use, not `target.url`. For `-t a2a`
+   * those differ — payloads go to `<url>/a2a/message` — and probing the bare
+   * root called a live A2A agent unreachable, again skipping a suite that
+   * scored it CRITICAL.
+   */
+  async probeLiveness(
+    target: AttackTarget,
+    timeout: number,
+  ): Promise<{ reachable: true } | { reachable: false; detail: string } | { inconclusive: true }> {
+    const url = this.payloadUrl(target);
+    let request: { body: string; headers: Record<string, string> };
+    try {
+      // Building the request is OUR work, not the target's. Attributing a bad
+      // `--header` to the endpoint printed "not reachable" beside a `curl`
+      // command that succeeds against it.
+      request = {
+        body: JSON.stringify(this.buildApiRequestBody('ping', target)),
+        headers: { 'Content-Type': 'application/json', ...target.headers },
+      };
+    } catch {
+      return { inconclusive: true };
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: request.headers,
+        body: request.body,
+        signal: controller.signal,
+      });
+      // The probe reads the status, never the payload — but an unread body
+      // holds its socket open in undici, and this runs immediately before a
+      // suite that opens up to 164 more connections to the same host. Cancel
+      // releases it now rather than at GC.
+      await response.body?.cancel().catch(() => { /* already closed */ });
+      return { reachable: true };
+    } catch (error) {
+      const cause = (error as { cause?: { code?: string } })?.cause;
+      const code = cause?.code ?? (error as NodeJS.ErrnoException)?.code;
+      // The only two answers that mean "nothing is listening there", as
+      // opposed to "it did not answer THIS request quickly enough".
+      const definitelyDown = code === 'ECONNREFUSED' || code === 'ENOTFOUND';
+      if (!definitelyDown) return { inconclusive: true };
+      return {
+        reachable: false,
+        detail: `${escapeForDisplay(url)} is not reachable (${escapeForDisplay(code)}), so no payload was sent and no risk level can be reported.`,
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * The URL a payload of this target type is actually sent to. Shared by the
+   * probe and `sendA2ARequest` so the two cannot address different endpoints.
+   */
+  private payloadUrl(target: AttackTarget): string {
+    if (target.type === 'a2a') {
+      return target.url.endsWith('/a2a/message')
+        ? target.url
+        : target.url.replace(/\/?$/, '/a2a/message');
+    }
+    return target.url;
+  }
+
   async scan(target: AttackTarget, options?: Partial<AttackOptions>): Promise<AttackReport> {
     const opts = { ...this.options, ...options, target };
     const startTime = new Date();
+
+    // Liveness first, so an unreachable target costs one request rather than
+    // the whole suite — and so it can never be scored (#406).
+    if (target.type !== 'local' && target.url) {
+      const liveness = await this.probeLiveness(target, opts.timeout || 30000);
+      if ('reachable' in liveness && !liveness.reachable) {
+        const endTime = new Date();
+        return this.buildReport(
+          target, [], [], opts.intensity, startTime, endTime,
+          unmeasured('target-unreachable', liveness.detail),
+        );
+      }
+    }
 
     // Get payloads to run (custom > payloadIds > categories/intensity)
     let payloads: AttackPayload[];
@@ -113,16 +218,36 @@ export class AttackScanner {
           break;
       }
 
+      // `--local` contacts nothing. `simulateLocal` returns a fixed sentence,
+      // so analyzing it measures this tool's own placeholder text and not the
+      // target — which is why a jailbreak prompt, a hardened prompt and an
+      // empty file all scored 2/100 (#430). Record it as unanswered so the
+      // same gate that catches an unreachable endpoint catches this too.
+      //
+      // An empty body is not an answer either. `extractResponseText` returns
+      // '' when the shape does not match — which is what an auth-rejecting
+      // gateway returns for every payload — and counting that as answered left
+      // `0/100 (SECURE)` at exit 0 reachable for 28 of 28 empty replies, the
+      // exact headline symptom of #406. `UnmeasuredReason.no-response` is
+      // documented as "requests completed but not one produced an analyzable
+      // answer"; this is the line that makes that state reachable.
+      const answered = target.type !== 'local' && response.trim().length > 0;
+
       // Analyze response
       const analysis = this.analyzeResponse(payload, response);
 
       return {
         payload,
         target: target.url || 'local',
-        success: analysis.success,
-        blocked: analysis.blocked,
-        confidence: analysis.confidence,
-        evidence: analysis.evidence,
+        answered,
+        success: answered && analysis.success,
+        blocked: answered && analysis.blocked,
+        confidence: answered ? analysis.confidence : 0,
+        evidence: answered
+          ? analysis.evidence
+          : target.type === 'local'
+            ? 'Not answered: --local simulates a response rather than contacting an agent'
+            : 'Not answered: the target returned an empty body, so there was nothing to analyze',
         response: response.slice(0, 500), // Truncate for storage
         duration: Date.now() - startTime,
         timestamp: new Date(),
@@ -131,6 +256,7 @@ export class AttackScanner {
       return {
         payload,
         target: target.url || 'local',
+        answered: false,
         success: false,
         blocked: false,
         confidence: 0,
@@ -357,9 +483,10 @@ export class AttackScanner {
       };
 
       // A2A message endpoint is typically /a2a/message
-      const url = target.url.endsWith('/a2a/message')
-        ? target.url
-        : target.url.replace(/\/?$/, '/a2a/message');
+      // Via the shared helper, so this and the liveness probe cannot address
+      // different endpoints — two copies of this expression is what let the
+      // probe call a live A2A agent unreachable.
+      const url = this.payloadUrl(target);
 
       const response = await fetch(url, {
         method: 'POST',
@@ -513,11 +640,18 @@ export class AttackScanner {
     categories: AttackCategory[],
     intensity: AttackOptions['intensity'],
     startTime: Date,
-    endTime: Date
+    endTime: Date,
+    /** Set by the liveness precondition, which knows why the run never ran. */
+    preconditionFailure?: UnmeasuredVerdict,
   ): AttackReport {
+    const answered = results.filter(r => r.answered);
     const successful = results.filter(r => r.success);
     const blocked = results.filter(r => r.blocked);
-    const inconclusive = results.filter(r => !r.success && !r.blocked);
+    // Inconclusive now means what it says: an agent answered and the answer
+    // matched neither a success nor a block indicator. A payload that never
+    // got an answer is counted as unanswered, not as an inconclusive result
+    // over which a `secure` rating could be averaged (#406).
+    const inconclusive = results.filter(r => r.answered && !r.success && !r.blocked);
 
     // Count by severity
     const bySeverity: Record<AttackSeverity, number> = {
@@ -556,8 +690,29 @@ export class AttackScanner {
     // Calculate risk score (0-100)
     const riskScore = this.calculateRiskScore(successful);
 
+    // The verdict is derived from what the run measured, not from the score.
+    // `answered` is the coverage unit for an attack run: a payload an agent
+    // replied to is one observation of that agent's behaviour, and a payload
+    // that never arrived is none. With zero answers `deriveCheckVerdict`
+    // withholds the band, which is what turns `0/100 (SECURE)` at exit 0 into
+    // `NOT MEASURED` at exit 2 for an unreachable endpoint (#406) and for
+    // `--local` (#430).
+    const verdict = preconditionFailure ?? deriveCheckVerdict(
+      {
+        critical: bySeverity.critical,
+        high: bySeverity.high,
+        issues: successful.length,
+      },
+      { examined: answered.length, total: results.length, unit: 'payload' },
+      target.type === 'local' ? 'simulation-only' : 'no-response',
+      target.type === 'local'
+        ? '--local simulates the agent\'s response instead of contacting one, so no behaviour of any target was observed.'
+        : `No payload reached ${escapeForDisplay(target.url || 'the target')}: ${results.length} sent, 0 answered.`,
+    );
+
     return {
       target: target.url || 'local',
+      probedUrl: target.type === 'local' ? undefined : this.payloadUrl(target),
       targetType: target.type,
       intensity: intensity || 'active',
       categories,
@@ -566,6 +721,8 @@ export class AttackScanner {
       duration: endTime.getTime() - startTime.getTime(),
       summary: {
         total: results.length,
+        answered: answered.length,
+        unanswered: results.length - answered.length,
         successful: successful.length,
         blocked: blocked.length,
         inconclusive: inconclusive.length,
@@ -573,8 +730,9 @@ export class AttackScanner {
         byCategory,
       },
       results,
-      riskScore,
-      riskRating: this.getRiskRating(riskScore),
+      verdict,
+      riskScore: verdict.measured ? riskScore : 0,
+      riskRating: verdict.measured ? this.getRiskRating(riskScore) : 'unmeasured',
     };
   }
 
