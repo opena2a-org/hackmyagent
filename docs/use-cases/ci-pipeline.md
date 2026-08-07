@@ -47,6 +47,12 @@ HMA uses exit codes to signal scan results:
 
 Any critical or high finding causes exit code `1`, which fails the GitHub Actions step by default.
 
+`--fail-below N` **adds** a score floor. It does not replace the default gate: a
+benchmark whose rating is `Not Passing` or `Needs Improvement`, or whose OASB-2
+conformance is `NONE`, exits 1 whether or not you pass the flag. Before 0.27.0
+`--fail-below 0` silently switched that gate off, so a pipeline could print
+`Rating: Not Passing` and go green.
+
 Exit `2` means HMA could not look at the target, so it reports no score and no
 risk level. Causes: the path or package does not exist, the endpoint under
 `attack` was unreachable, no payload was answered, `attack --local` was used

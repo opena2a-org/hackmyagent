@@ -3962,7 +3962,7 @@ Examples:
   .option('--aws-account-id <id>', 'AWS account ID for ASFF format')
   .option('--aws-region <region>', 'AWS region for ASFF format')
   .option('-o, --output <file>', 'Write output to file instead of stdout')
-  .option('--fail-below <percent>', 'Exit 1 if compliance below threshold (0-100)')
+  .option('--fail-below <percent>', 'ADDITIONALLY exit 1 if compliance is below this threshold (0-100). Does not disable the default non-compliance gate')
   .option('-v, --verbose', 'Show all checks including passed ones')
   .option('-b, --benchmark <name>', 'Run benchmark compliance check (e.g., oasb-1)')
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
@@ -4459,16 +4459,28 @@ Examples:
           }
         }
 
+        // #440 — the non-compliance gate is checked FIRST and independently of
+        // `--fail-below`, the same way the composite arm above does it.
+        //
+        // It used to read `failBelow === undefined && …`, so `--fail-below 0`
+        // switched it off: the command printed `Rating: Not Passing` and exited
+        // 0. That flag reads as "add a score floor", it is a plausible thing to
+        // write while ramping a threshold in CI, and turning it on quietly
+        // removed the only gate the benchmark had. `--fail-below` adds a
+        // condition; it does not replace one.
+        const ratingFails = benchmarkResult.rating === 'Not Passing'
+          || benchmarkResult.rating === 'Needs Improvement';
+        if (ratingFails) {
+          console.error(`Benchmark rating is ${benchmarkResult.rating}. Exiting 1 per "non-compliant in benchmark mode".`);
+        }
+
         // Check fail threshold
         if (failBelow !== undefined && benchmarkResult.compliance < failBelow) {
           console.error(`Compliance ${benchmarkResult.compliance}% is below threshold ${failBelow}%`);
           process.exit(1);
         }
 
-        // Exit with non-zero if failing or needs improvement (default behavior)
-        if (failBelow === undefined && (benchmarkResult.rating === 'Not Passing' || benchmarkResult.rating === 'Needs Improvement')) {
-          process.exit(1);
-        }
+        if (ratingFails) process.exit(1);
         return;
       }
 

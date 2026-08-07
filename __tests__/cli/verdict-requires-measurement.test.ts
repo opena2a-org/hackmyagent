@@ -420,6 +420,78 @@ describe('#417 check says a missing target is missing', () => {
   });
 });
 
+describe('#440 no benchmark gate can be switched off by a score flag', () => {
+  it('-b oasb-1 fails on a Not Passing rating with and without --fail-below', () => {
+    // Same shape as #371, in the arm the first sweep stopped short of.
+    // `--fail-below 0` printed `Rating: Not Passing` and exited 0.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-oasb1-'));
+    fs.writeFileSync(path.join(dir, 'README.md'), '# demo\n');
+    for (const extra of [[], ['--fail-below', '0'], ['--fail-below', '1']]) {
+      const { status, out } = run(['secure', dir, '-b', 'oasb-1', ...extra]);
+      expect(out).toMatch(/Rating:\s+(Not Passing|Needs Improvement)/);
+      expect(status, `with ${extra.join(' ') || '(no flag)'}: a failing rating must exit 1`).toBe(1);
+    }
+  }, 600_000);
+
+  it('no absent-failBelow test guards a gate, in any of its spellings', () => {
+    // "A score flag disables this gate" has now shipped twice, so it is worth a
+    // source guard as well as the behavioural test above.
+    //
+    // The first version of this guard matched one spelling on one line, and an
+    // adversarial reviewer wrote the same defect five other ways that all
+    // sailed through — including `!failBelow &&` (which is worse than the
+    // original, since it also fires on a legitimate `--fail-below 0`) and the
+    // multi-line form this file's own code uses. Newlines are collapsed before
+    // matching, and every spelling below is covered.
+    //
+    // This is still a source gate and proves only what it matches: a defect
+    // written through a renamed local (`const floor = failBelow`) is invisible
+    // to it. The exit-code test above is the real guarantee; this one catches
+    // the shape early and names it.
+    const cli = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'cli.ts'), 'utf8');
+    const code = cli
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*'))
+      .join('\n')
+      .replace(/\s+/g, ' ');
+
+    const spellings: Array<[string, RegExp]> = [
+      ['failBelow === undefined &&', /failBelow === undefined &&/],
+      ['failBelow == null &&', /failBelow ==+ null &&/],
+      ['!failBelow &&', /![a-zA-Z]*failBelow &&/],
+      ["typeof failBelow === 'undefined' &&", /typeof failBelow === ['"]undefined['"] &&/],
+      ['failBelow === undefined ?', /failBelow === undefined \?/],
+    ];
+    const found = spellings.filter(([, re]) => re.test(code)).map(([label]) => label);
+    expect(found, 'a --fail-below value must never switch a gate off').toEqual([]);
+  });
+
+  it('the guard above actually fires on each spelling it claims to cover', () => {
+    // Non-vacuity. `toEqual([])` is also what a guard that matches nothing
+    // reports, which is exactly how the first version passed while missing
+    // five of six spellings.
+    const spellings = [
+      'if (failBelow === undefined && ratingFails) process.exit(1);',
+      'if (failBelow == null && ratingFails) process.exit(1);',
+      'if (!failBelow && ratingFails) process.exit(1);',
+      "if (typeof failBelow === 'undefined' && ratingFails) process.exit(1);",
+      'const x = failBelow === undefined ? a : b;',
+      'if (failBelow === undefined\n  && ratingFails) process.exit(1);',
+    ];
+    const res = [
+      /failBelow === undefined &&/, /failBelow ==+ null &&/, /![a-zA-Z]*failBelow &&/,
+      /typeof failBelow === ['"]undefined['"] &&/, /failBelow === undefined \?/,
+    ];
+    for (const planted of spellings) {
+      const collapsed = planted.replace(/\s+/g, ' ');
+      expect(
+        res.some((re) => re.test(collapsed)),
+        `the guard does not catch: ${planted}`,
+      ).toBe(true);
+    }
+  });
+});
+
 describe('#371 the OASB-2 conformance gate cannot be switched off by a score flag', () => {
   it('fails on Conformance NONE with and without --fail-below', () => {
     // Adversarial review finding: the gate was written

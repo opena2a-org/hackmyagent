@@ -131,7 +131,7 @@ hackmyagent secure --json                     # JSON output for CI
 hackmyagent secure --ci                       # non-interactive, exit non-zero on findings
 hackmyagent secure --publish                  # push anonymised results to the OpenA2A Registry
 hackmyagent secure -b oasb-1                  # OASB-1 benchmark (L1, L2, L3)
-hackmyagent secure -b oasb-1 --fail-below 70  # CI gate
+hackmyagent secure -b oasb-1 --fail-below 70  # CI gate (adds a floor; the rating gate still applies)
 hackmyagent secure --nanomind                 # AI analyst: per-finding narratives + coverage escalations
 ```
 
