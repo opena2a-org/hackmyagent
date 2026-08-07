@@ -2,7 +2,7 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
-## [Unreleased]
+## [0.26.1] - 2026-08-07
 
 ### Security
 
@@ -32,6 +32,29 @@ All notable changes to HackMyAgent are documented in this file.
   subset of your tree while presenting itself as complete. Re-run `hackmyagent secure` and
   treat any new findings as pre-existing exposure that was invisible, not as new risk.
   ([#412](https://github.com/opena2a-org/hackmyagent/issues/412))
+
+- **A quadratic regex ran over scanned file contents, so a file HackMyAgent was pointed
+  at could stall it (#410).** The `skill` type signature tested
+  `/^---\n[\s\S]*?capabilities:\s*\n/m` against whole file contents. The `m` flag gave
+  `^---` a start position at every line start, and from each one the lazy body scanned to
+  EOF for a `capabilities:` line that never comes. Measured on one machine, 1 MB of
+  repeated fence lines took **4,960 ms before and 0.1 ms after**; at 4 MB, **84.7 s
+  against 0.5 ms**. Nothing truncates the input first — `parseArtifact` appends an error
+  past `maxArtifactSize` and runs the signature anyway — so a file that size reaches the
+  classifier. The input is whatever tree you scan, which on any CI runner processing
+  untrusted contributions is attacker-controlled.
+
+- **The `js-yaml` floor moves to the patched `4.3.1`.** GHSA-5p4m-2wfm-xmqj, quadratic CPU
+  in `!!omap` resolution, high severity, affects 4.0.0 through 4.3.0; the lockfile sat on
+  4.3.0. The advisory was published between 2026-08-06T12:38Z (audit green on `main`) and
+  2026-08-07T01:08Z (audit red), on a lockfile nothing had touched in between — so the
+  `Dependency audit` gate added one release ago did the job it was installed for. The
+  floor is `^4.3.1`, the patched version, not a caret at the version installed today,
+  which is the mistake the 0.26.0 override work was cleaning up: a caret range's lower
+  bound is where the lockfile settles. `js-yaml` is direct and also deduped under
+  `@opena2a/aim-core`, `@opena2a/aim-sdk` and the `hackmyagent` copy inside `ai-trust`, so
+  one bump covers all four. `npm audit --package-lock-only --audit-level=high` goes from
+  1 high to 0. ([#422](https://github.com/opena2a-org/hackmyagent/issues/422))
 
 ### Known issues
 
@@ -107,6 +130,28 @@ of the change.
   exist, and the `wild` and `nanomind status` notes name the command their flag belongs
   to.
 
+- **Documentation was classified as an executable skill and drew CRITICAL findings on
+  placeholder URLs and illustrative SQL (#410).** The same `m` flag as above made the
+  `skill` signature mean "a `---` line anywhere, then a line ending in `capabilities:`
+  anywhere later". In Markdown `---` is a horizontal rule and `capabilities:` matches
+  ordinary prose, so a docs-only file was routed through the skill analyzers and could
+  take a repo to **Not safe to ship**. Measured on the reported reproduction,
+  `sdk/python/docs/MCP_INTEGRATION.md`: **69/100 "Not safe to ship" with 2 false CRITICALs
+  becomes 98/100 "Usable with caveats"**.
+
+  The same regex was wrong in the other direction too, which the issue did not cover: it
+  required a newline immediately after the colon, so the inline form
+  `capabilities: [read_files, run_shell]` never matched, and its `\n` literal never
+  matched CRLF frontmatter. **Both were silent false negatives on genuine skills.**
+
+  Classification now reads the leading frontmatter block and looks for a top-level
+  `capabilities` key in it, and `parseArtifact` shares the same helper so the file carries
+  one notion of "leading frontmatter" rather than two spellings. Detection is unchanged on
+  real skills, checked in both directions against the malicious corpus fixture: `SKILL.md`
+  by path stays 30/100 with 5 CRITICAL/HIGH, and the same content under a non-skill
+  filename with a real `capabilities:` key still classifies as a skill and still fails.
+  ([#410](https://github.com/opena2a-org/hackmyagent/issues/410))
+
 ### Tests
 
 - **A channel-parity gate driven by the Commander registry.** It reads the `--json`
@@ -129,6 +174,21 @@ of the change.
   a synthetic dead citation must be caught — including one hidden behind an English word
   that is also a program name, which an earlier draft of the skip list swallowed — while
   `npm audit --audit-level=high` and CSS custom properties must not be.
+
+- **Mutation testing found the #410 headline property untested, and the fixtures could not
+  tell the two spellings apart.** Restoring the `m` flag on the frontmatter extractor —
+  reintroducing the exact defect the fix closes — left every test green. Each fixture
+  carried a single `---` rule, and a document with one rule has no closing fence, so the
+  extractor returns `null` whether or not `^` is multiline. A document whose **two** rules
+  bracket a line beginning `capabilities:` can distinguish them: to a multiline `^` that is
+  a complete frontmatter block, and prose between two rules is ordinary Markdown. That
+  fixture fails on the parent commit, passes here, and kills the mutant.
+
+  A second test pins linearity, and its bound is chosen to fail on the old regex rather
+  than merely pass on the new one: the 2,000 ms threshold sits between the two measured
+  values (4,960 ms before, 0.1 ms after at 1 MB). A companion test asserts the 1 MB fixture
+  still reaches the frontmatter branch, so a future size guard cannot quietly make the
+  timing assertion measure nothing.
 
 ## [0.26.0] - 2026-08-06
 
