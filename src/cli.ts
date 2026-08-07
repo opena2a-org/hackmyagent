@@ -7935,6 +7935,46 @@ Examples:
       }
       const soulScanDurationMs = Date.now() - soulScanStartMs;
 
+      // #390 — the other half. `detect` was fixed in #437; `scan-soul` still
+      // exited 0 at `Governance 0/100`, which this issue's own title names as
+      // the defect (`scan-soul --ci exits 0 at 0/100`).
+      //
+      // Settled HERE, above the output-channel branch, for the reason #373
+      // exists: written at the end of the action it sits after the `--json`
+      // arm returns, so text exits 1 and `--json` exits 0 on the same file.
+      //
+      // TWO conditions, and the second is not optional:
+      //
+      //  - a governance file was actually found. Without it, every repo that
+      //    simply has no SOUL.md scores 0 and would fail — measured on this
+      //    repo itself, and on any directory holding a single README. "There
+      //    is nothing here to grade" is not "this governance is broken", and
+      //    reporting it as a finding on stderr describes a failed file that
+      //    does not exist.
+      //  - the score is 0: not one applicable control detected, so the file
+      //    that IS there conforms to nothing.
+      //
+      // Deliberately NOT `conformance === 'none'`, which is what
+      // `secure -b oasb-2` gates on (#371). This repo's own "clean
+      // conversational fixture" scores 14/100 with conformance `none` — a
+      // narrow declared profile covering a few of 19 applicable controls.
+      // Failing that would be a policy change about acceptable governance,
+      // not a fix for an exit code that ignored its own output, and
+      // `--fail-below` is already the flag for a stricter floor. The two
+      // commands therefore still differ between 1 and 99; that is recorded on
+      // #390 rather than settled here by a side effect.
+      if (result.file && result.score === 0) {
+        // Escaped into a named const first: the render-source gate follows
+        // taint one level, and an escape buried in a ternary inside a template
+        // literal reads to it as a raw path.
+        const zeroScoreFile = escapePathForDisplay(require('path').basename(result.file));
+        process.stderr.write(
+          `Governance score is 0/100: no applicable OASB-2 control was detected in ${zeroScoreFile}. `
+          + `Run \`${CLI_PREFIX} harden-soul\` to generate the missing sections.\n`,
+        );
+        await finishWithFindings(1);
+      }
+
       // JSON output
       if (options.json) {
         // Run publish in JSON mode and include result in output
