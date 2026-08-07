@@ -148,6 +148,27 @@ All notable changes to HackMyAgent are documented in this file.
   list, which exists for command lines that genuinely belong to another tool. It came off
   that list, so the gate now covers this class.
 
+
+- **The measurement gate does not yet reach `secure`, three `attack` response formats, or
+  the registry-only `check --json` paths.** All three were measured during review of the
+  verdict change above; each is pre-existing and none is a regression from it.
+
+  - `secure <empty dir>` prints `98/100` at exit 0 while its own coverage ledger says
+    `0 files read by static checks`. `check <empty dir>` reports `NOT MEASURED` at exit 2
+    on the same tree, so the two commands disagree about the same directory. `secure` is
+    the flagship scoring command and routing it through the same derivation is its own
+    change.
+  - `attack` can still report `0/100 (SECURE)` for `-t a2a`, `-t mcp` and
+    `--api-format custom`. The empty-body gate keys on the response text being blank, and
+    only the `openai` and `anthropic` extractors can return blank — the other three end
+    in `JSON.stringify(data)`, so an endpoint answering every payload with
+    `{"error":"unauthorized"}` is scored rather than withheld. The default `openai`
+    format is fixed; these three are not.
+  - `secure -b oasb-1 --fail-below 0` exits 0 on a `Not Passing` rating, by the same
+    `failBelow === undefined &&` construct that was fixed for `-b oasb-2`.
+  - `check --json` emits no `coverage` object on the registry-only paths (`--no-scan`,
+    skill-identifier lookup). The downloaded and not-found paths carry it.
+
 ## [0.26.1] - 2026-08-07
 
 ### Security
