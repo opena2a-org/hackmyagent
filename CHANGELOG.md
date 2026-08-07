@@ -41,6 +41,95 @@ All notable changes to HackMyAgent are documented in this file.
   a tree. Tracked in [#414](https://github.com/opena2a-org/hackmyagent/issues/414); #412
   fixed the compile-set gate only.
 
+### Fixed
+
+The three findings disclosed as known issues in 0.26.0 are closed here. Each turned out
+to have live instances beyond the one that was reported, and the sweeps are the substance
+of the change.
+
+- **`check --json` could not fail, and neither could `secure-openclaw --json` or
+  `secure-nemoclaw --json` (#373).** `check ./bad` exited 1 on four CRITICAL findings;
+  `check ./bad --json` exited 0 on the same bytes while its own payload reported
+  `"risk": "critical"`, `"critical": 4`. `check` has no `--ci` flag, so `--json` **is**
+  the CI integration path for it: no automated consumer of `check` has been able to fail
+  on findings since 0.12.7 (2026-04-01). `check --help` promises "Exit code 1 if
+  high/critical risk detected"; only the text renderer kept it.
+
+  The cause was that rendering and exiting were the same code path in one branch and not
+  the other — `if (options.json) { …; return; }` returned before the statement that set
+  the exit code. `deriveCheckVerdict` now produces the `risk` and the exit code together
+  and every path settles it above the output branch, so a `return` inside a renderer
+  cannot skip it.
+
+  **Two commands beyond the report.** The issue named `check`'s local-path branch. The
+  same shape was on all five `check` target paths (local, GitHub, PyPI, raw URL, npm),
+  and the new registry-driven parity test then found `secure-openclaw` and
+  `secure-nemoclaw` red on the identical defect. Both promise "Exit code 1 if
+  critical/high issues found" in their own `--help`, and both exited 0 under `--json` on
+  a target that exits 1 without it. Nobody had filed either.
+
+  `check`'s local path also moves off `process.exit(1)`, which terminated the process
+  before the telemetry hook could fire.
+
+- **`check --json` disclosed no scope, on a payload whose text equivalent discloses it
+  four ways (#388).** `check <dir>` runs the semantic artifact matrix and not the static
+  check suite. The text channel says so in the score line (`Quick scan`), the checks line
+  (`310 static not run (quick scan)`), the follow-up (`Run \`secure …\` for the full
+  audit`) and the clean verdict (`This did NOT evaluate …`). The `--json` payload said
+  none of it, so `{"risk":"low"}` from a quick scan and `{"risk":"low"}` from a full
+  audit were indistinguishable to a caller.
+
+  The payload now carries `coverage` — the same key and the same `CategoryCoverage`
+  vocabulary `secure --json` already emits, so a consumer has one shape to read rather
+  than two. The values are derived, not asserted: the rollup runs over an **empty**
+  execution ledger, which is the literal truth, and a category reports `examined` only
+  where the run actually produced a finding. `mode: "quick-scan"` and `staticChecksNotRun`
+  distinguish it from a full audit's coverage on the same key.
+
+- **28 strings cited flags that do not exist; four of them are printed (#372).** Each of
+  the four printed a command a user could paste and get `error: unknown option`:
+
+  | printed by | said | reality |
+  |---|---|---|
+  | `wild` | "use `--model` to pipe page content through an LLM" | `--model` is on `attack`, not `wild` |
+  | `fix-all` | "Uninstall with: `… fix-all <dir> --uninstall`" | never a registered option, and `fix-all` writes no backup, so `rollback` cannot undo it either |
+  | registry rate-limit | "use `--skip-registry`" | the flag is `--no-registry` |
+  | `nanomind status` | "Use `--nanomind` with any scan command" | named no command to run it on |
+
+  The other 24 are the `audit` field of the OASB-1 control catalog, every one of them
+  reading `Run: hackmyagent secure --check <IDS>` where `--check` is not an option on
+  `secure`. **That field has no renderer in this build** — it is shipped dead data, not
+  printed output — so these are fixed because they would be wrong the moment the field
+  is rendered, not because a user is reading them today. They now cite
+  `secure --verbose` with the check IDs named.
+
+  The `fix-all` note names the directory it wrote instead of a command that does not
+  exist, and the `wild` and `nanomind status` notes name the command their flag belongs
+  to.
+
+### Tests
+
+- **A channel-parity gate driven by the Commander registry.** It reads the `--json`
+  registrations out of `src/cli.ts` and requires every one of them to be classified —
+  either with a runnable local invocation, or with the reason it has none — so a command
+  added later is covered without anyone remembering to add it. It asserts both directions
+  (a failing target exits non-zero in both channels, a clean target exits 0 in both) and
+  holds `check`'s four network target paths by the structural invariant that the verdict
+  is settled before the payload is rendered. This is what found the two extra commands
+  above: written against `check` alone it would have passed on the 0.26.0 build.
+
+- **A printed-flag citation gate covering every string literal under `src/`.** The
+  existing `#163` gate was scoped to the concept-explainer registry and passed with three
+  dead citations live. This one walks string literals — a `console.log(` grep is
+  insufficient, because `--uninstall` sat in a template literal inside an array push — and
+  attributes each flag to a command, because a global "does this flag exist anywhere"
+  check is insufficient too: `--model` and `--uninstall` are both registered on other
+  commands. Widening it is what surfaced the 24 OASB strings and the `nanomind status`
+  line, none of which any issue had named. It carries its own plants, in both directions:
+  a synthetic dead citation must be caught — including one hidden behind an English word
+  that is also a program name, which an earlier draft of the skip list swallowed — while
+  `npm audit --audit-level=high` and CSS custom properties must not be.
+
 ## [0.26.0] - 2026-08-06
 
 ### Breaking
