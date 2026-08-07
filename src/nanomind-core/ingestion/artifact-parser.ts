@@ -35,6 +35,32 @@ export interface ParsedArtifact {
 // Artifact Type Detection
 // ============================================================================
 
+/**
+ * Extract the LEADING YAML frontmatter block, or null when the file does not open with one.
+ *
+ * Deliberately NOT `/m`: `^` must mean start-of-file here. A `---` further down a Markdown
+ * document is a horizontal rule, not a frontmatter fence (#410). Tolerates CRLF and trailing
+ * spaces on the fences.
+ */
+function extractLeadingFrontmatter(content: string): string | null {
+  const match = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(content);
+  return match ? match[1] : null;
+}
+
+/**
+ * True when the leading frontmatter declares a top-level `capabilities` key.
+ *
+ * `m` IS correct on the inner test and was wrong on the outer one: the string being searched
+ * is already bounded to the frontmatter block, so `^` can only reach frontmatter lines. Only
+ * unindented keys count -- an indented `capabilities:` is a nested field or a code sample.
+ * Matching the key alone (not `key` + newline) accepts both the block form and the inline
+ * form `capabilities: [read_files, run_shell]`.
+ */
+function declaresCapabilities(content: string): boolean {
+  const frontmatter = extractLeadingFrontmatter(content);
+  return frontmatter !== null && /^capabilities[ \t]*:/m.test(frontmatter);
+}
+
 const TYPE_SIGNATURES: Array<{ test: (content: string, path?: string) => boolean; type: ArtifactType }> = [
   // Source code: recognized source extensions.
   //
@@ -50,11 +76,21 @@ const TYPE_SIGNATURES: Array<{ test: (content: string, path?: string) => boolean
     test: (_, path) => /\.(ts|tsx|js|jsx|mjs|cjs|py|pyi|go|rs|java|rb)$/.test(path ?? ''),
     type: 'source_code',
   },
-  // Skills: SKILL.md, *.skill.md, or YAML frontmatter with capabilities
+  // Skills: SKILL.md, *.skill.md, or LEADING YAML frontmatter declaring capabilities.
+  //
+  // IMPORTANT: the frontmatter test must read the leading block, not the raw document.
+  // This previously used `/^---\n[\s\S]*?capabilities:\s*\n/m`, whose `m` flag made `^`
+  // match at every line start -- so it really meant "a `---` line anywhere, then a line
+  // ending in `capabilities:` anywhere later". In Markdown `---` is a horizontal rule and
+  // `capabilities:` matches ordinary prose, so documentation classified as an executable
+  // skill and drew CRITICAL findings from the skill analyzers on placeholder URLs and
+  // sample SQL (#410). The same regex also MISSED real skills: it required a newline
+  // immediately after the colon, so the inline form `capabilities: [a, b]` never matched,
+  // and its `\n` literal never matched CRLF frontmatter.
   {
     test: (content, path) =>
       (path?.endsWith('SKILL.md') || path?.endsWith('.skill.md') || false) ||
-      /^---\n[\s\S]*?capabilities:\s*\n/m.test(content),
+      declaresCapabilities(content),
     type: 'skill',
   },
   // MCP config: known basenames (mcp.json, .mcp.json, mcpServers.json)
@@ -167,10 +203,11 @@ export function parseArtifact(
 
   // Extract YAML frontmatter
   let frontmatter: Record<string, unknown> | undefined;
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-  if (fmMatch) {
+  // Same notion of "leading frontmatter" the skill classifier uses -- one spelling, not two.
+  const fmBlock = extractLeadingFrontmatter(content);
+  if (fmBlock !== null) {
     try {
-      frontmatter = parseSimpleYAML(fmMatch[1]);
+      frontmatter = parseSimpleYAML(fmBlock);
     } catch {
       // Invalid frontmatter is not an error -- artifact may still be valid
     }
