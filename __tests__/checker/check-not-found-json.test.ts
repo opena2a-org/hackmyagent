@@ -249,7 +249,11 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
     });
 
     expectShimServedPack(bareName);
-    expect(res.status).toBe(1);
+    // #417 — a package that does not exist was not measured. This asserted 1,
+    // which told a CI consumer "scanned, and high risk" about a name that was
+    // never fetched; the PyPI arm of this same suite already asserted 2. Every
+    // no-scan path is 2 now.
+    expect(res.status).toBe(2);
     const stdout = (res.stdout || '').trim();
     expect(stdout.length).toBeGreaterThan(0);
 
@@ -271,7 +275,11 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
     });
 
     expectShimServedPack(bareName);
-    expect(res.status).toBe(1);
+    // #417 — a package that does not exist was not measured. This asserted 1,
+    // which told a CI consumer "scanned, and high risk" about a name that was
+    // never fetched; the PyPI arm of this same suite already asserted 2. Every
+    // no-scan path is 2 now.
+    expect(res.status).toBe(2);
     const stdout = (res.stdout || '').trim();
     expect(stdout.length).toBeGreaterThan(0);
     expect(res.stderr || '').not.toContain('Invalid skill identifier');
@@ -293,7 +301,11 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
     });
 
     expectShimServedPack(bareName);
-    expect(res.status).toBe(1);
+    // #417 — a package that does not exist was not measured. This asserted 1,
+    // which told a CI consumer "scanned, and high risk" about a name that was
+    // never fetched; the PyPI arm of this same suite already asserted 2. Every
+    // no-scan path is 2 now.
+    expect(res.status).toBe(2);
     const stderr = res.stderr || '';
     expect(stderr).not.toContain('Invalid skill identifier');
     expect(stderr).toContain(`Verify the URL: https://www.npmjs.com/package/${bareName}`);
@@ -306,7 +318,11 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
       timeout: 30_000,
     });
 
-    expect(res.status).toBe(1);
+    // #417 — a package that does not exist was not measured. This asserted 1,
+    // which told a CI consumer "scanned, and high risk" about a name that was
+    // never fetched; the PyPI arm of this same suite already asserted 2. Every
+    // no-scan path is 2 now.
+    expect(res.status).toBe(2);
     const stdout = (res.stdout || '').trim();
     expect(stdout.length).toBeGreaterThan(0);
 

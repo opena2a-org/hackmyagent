@@ -6,6 +6,77 @@ All notable changes to HackMyAgent are documented in this file.
 
 ### Security
 
+- **A verdict now requires a measurement, and six commands stopped reporting one without
+  it.** Every row below was measured on published `0.26.1` and on this build, same
+  machine, same targets:
+
+  ```
+                                          0.26.1                    this build
+  attack <unreachable endpoint>           0/100 (SECURE)   exit 0    NOT MEASURED  exit 2
+  attack --local <jailbreak prompt>       2/100 (LOW)      exit 0    NOT MEASURED  exit 2
+  attack --local <hardened prompt>        2/100 (LOW)      exit 0    NOT MEASURED  exit 2
+  attack --local <empty file>             2/100 (LOW)      exit 0    NOT MEASURED  exit 2
+  check <path that does not exist>        MEDIUM RISK      exit 0    NOT MEASURED  exit 2
+  check <package that does not exist>     not found        exit 1    not found     exit 2
+  secure -b oasb-2  (Conformance: NONE)                    exit 0                  exit 1
+  detect  (1 high-severity issue found)                    exit 0                  exit 1
+  check --json  (npm, PyPI, GitHub, URL)  no coverage key            coverage: {…}
+  ```
+
+  These were filed as six issues and they are one defect. A risk band is a claim about a
+  target, and each of these commands could make the claim with no evidence behind it. The
+  fix is not six patches but a type in which the claim cannot be spelled without the
+  evidence: `src/check/verdict.ts` now returns either a measured verdict carrying a
+  mandatory `coverage`, or an unmeasured one that has no `risk` field at all. Reading a
+  risk band without first proving the run measured something is a compile error, and
+  deriving one over zero examined units returns "not measured" instead.
+
+  Exit `2` means the target was not measured — no score and no risk level are reported. It
+  is non-zero on purpose: a CI job that asked for a security verdict and got "I could not
+  reach the target" has not been told the target is safe. `red-team` already exited 2 on
+  this reasoning; `attack --local` now does too, for the same reason.
+
+- **`attack` probes the target once before sending the suite.** An unreachable endpoint
+  used to be discovered 111 times, once per payload, in a `catch` whose result the scorer
+  could not tell apart from a blocked attack — 111 refused connections scored as 111
+  defences held. The liveness precondition sits above the scorer, so the same run now
+  costs one request instead of the whole battery: measured at 111 seconds before, ~1
+  second after.
+
+- **`attack --local` reports no risk score, because it never measured one.** It returned
+  the same `2/100 (LOW)` for a jailbreak prompt, a hardened prompt and an empty file, and
+  the number moved with `--intensity` and never with the target. `simulateLocal` returns a
+  fixed sentence and the analyzer was scoring HackMyAgent's own placeholder text. `--local`
+  generates payloads and checks that they parse; it contacts no agent, so it has no
+  behaviour to score.
+
+- **`check` says a missing target is missing.** A path spelled as a path and not present
+  fell through every dispatch arm into the registry lookup, which synthesized a publisher
+  record and printed `MEDIUM RISK`, with `--json` asserting `"revocation":{"revoked":false}`
+  about a thing that was never on disk. Every no-scan path — missing path, unknown npm or
+  PyPI package, a clone that failed — now reports 2 rather than the mix of 0, 1 and 2 those
+  six sites had drifted into.
+
+- **`secure -b oasb-2` fails on a non-conforming tree.** It exited 0 at
+  `Conformance: NONE` while `secure -b oasb-1` exited 1 on the same tree, so the stricter
+  benchmark was the one that passed CI. `--help` already promised "non-compliant in
+  benchmark mode"; the promise was right and the gate was missing.
+
+### Fixed
+
+- **`docs/` and `README.md` are now walked for dead flag citations.** #372's gate reads
+  string literals in `src/`, and markdown has none, so a `Fix:` line citing
+  `hackmyagent check --sign` — an option `check` does not register — sat in
+  `docs/use-cases/openclaw-security.md` unseen. Widening the walker rather than fixing the
+  instance immediately found a second one: `docs/use-cases/ci-pipeline.md` cited
+  `attack --ci`, also unregistered. Both fixed.
+
+- **`docs/use-cases/red-team-mcp.md` no longer shows output the tool has never produced.**
+  It documented `attack --local` as testing "your agent's system prompt and configuration",
+  with per-payload `VULNERABLE` / `RESISTANT` verdicts, a category breakdown and
+  `Exit code: 1 (vulnerabilities found)`. `--local` contacts no agent and has never
+  produced any of that. The live-endpoint workflow is now the one the document teaches.
+
 - **Installing HackMyAgent no longer resolves a second, nine-month-old copy of itself, and
   drops one of the four high advisories a consumer inherited.** Measured on a fresh
   `npm init -y` tree, published `0.26.1` versus this build:

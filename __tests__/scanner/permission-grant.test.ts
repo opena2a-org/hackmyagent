@@ -29,7 +29,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   findPermissionGrant,
   redactLikelySecrets,
@@ -854,10 +854,16 @@ describe('scanAiConfigs carries the evidence through (#299)', () => {
       ['cited', { permissions: { allow: ['Bash(*)'] } }],
     ] as const) {
       const dir = fixture({ '.claude/settings.json': JSON.stringify(doc, null, 2) });
-      const out = execFileSync(process.execPath, [cli, 'detect', dir, '--ci'], {
+      // `spawnSync`, not `execFileSync`: since #390 `detect` exits 1 when it
+      // reports a high finding, and this fixture is built to produce one, so
+      // `execFileSync` threw before it could assert on the output it exists to
+      // assert on. The exit code is pinned below rather than tolerated.
+      const res = spawnSync(process.execPath, [cli, 'detect', dir, '--ci'], {
         encoding: 'utf-8',
         env: { ...process.env, HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')), NO_COLOR: '1' },
       });
+      const out = `${res.stdout ?? ''}${res.stderr ?? ''}`;
+      expect(res.status, `${name}: a HIGH finding must fail the run (#390)`).toBe(1);
       expect(out, `${name}: the grant is reported`).toContain('Grants broad permissions');
       expect(out, `${name}: a report surface stringified an absent value`).not.toContain('undefined');
       expect(out).not.toContain('null');

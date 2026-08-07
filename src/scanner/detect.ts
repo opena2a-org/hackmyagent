@@ -19,6 +19,7 @@ import { clampScoreToVerdictBand, clampDisclosure, isFailDirection } from '../ui
 import { citationTarget as safeCitationTarget, citationPath } from '../ui/shell-quote';
 import { escapePathForDisplay, escapeForDisplay } from '../ui/display-safe';
 import { findPermissionGrant } from './permission-grant';
+import { deriveCheckVerdict, fullCoverage, unmeasuredBanner, coverageJson } from '../check/verdict';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1678,10 +1679,41 @@ export async function detect(options: DetectOptions): Promise<number> {
   result.summary.governanceClamped = governanceClamped;
   result.summary.recoverablePoints = deductions;
 
+  // #390 — `detect` printed `1 high-severity issue found` and returned 0, so
+  // no CI job could ever fail on a shadow-AI finding. The exit code comes from
+  // the same derivation `check` uses, over the same severity counts the
+  // verdict line is rendered from, so the two cannot disagree.
+  //
+  // Derived ABOVE the output-channel branch for the same reason `check`
+  // settles there (#373): a `return` inside a renderer must not be able to
+  // change the exit code.
+  //
+  // The coverage unit is the surfaces this run inspected. Machine-wide
+  // discovery always runs, so a tree with no AI tooling still examined
+  // something and gets a measured, passing verdict — the honest answer there
+  // is "nothing found", not "could not tell". Zero is reachable only when the
+  // scan itself found no surface to look at.
+  const surfacesExamined =
+    result.agents.length + result.mcpServers.length + result.aiConfigs.length
+    + (soul.file ? 1 : 0);
+  const verdict = deriveCheckVerdict(
+    {
+      critical: result.findings.filter((f) => f.severity === 'critical').length,
+      high: result.findings.filter((f) => f.severity === 'high').length,
+      issues: result.findings.length,
+    },
+    fullCoverage(surfacesExamined, 'surface'),
+    'nothing-to-examine',
+    `No AI agent, MCP server, AI config or governance file was found on this machine or under ${escapePathForDisplay(dir)}, so no governance posture can be reported.`,
+  );
+
   if (options.format === 'json') {
-    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    // The machine channel carries the measurement the exit code was derived
+    // from, so a consumer never has to infer it from the finding count.
+    process.stdout.write(JSON.stringify({ ...result, coverage: coverageJson(verdict) }, null, 2) + '\n');
   } else {
     process.stdout.write(formatText(result, options.verbose ?? false, dir) + '\n');
+    if (!verdict.measured) process.stderr.write(`${unmeasuredBanner(verdict)}\n`);
   }
 
   if (options.exportCsv) {
@@ -1690,5 +1722,5 @@ export async function detect(options: DetectOptions): Promise<number> {
     process.stdout.write(`Asset inventory: ${options.exportCsv}\n`);
   }
 
-  return 0;
+  return verdict.exitCode;
 }

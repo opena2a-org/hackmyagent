@@ -291,6 +291,97 @@ export function printedFlagsInSource(opts: {
   return found;
 }
 
+/** Every `.md` file under `dir`, excluding anything generated or vendored. */
+function markdownFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) out.push(...markdownFiles(p));
+    else if (e.name.endsWith('.md')) out.push(p);
+  }
+  return out;
+}
+
+/**
+ * Walk one markdown file for flags cited against this CLI.
+ *
+ * #434 — `docs/use-cases/openclaw-security.md:61` showed a sample report whose
+ * `Fix:` line cited `hackmyagent check --sign`, an option `check` does not
+ * register. #372's gate did not miss it: that gate's scope is string literals
+ * in `src/`, and the scope was accurate. Markdown has no string literals, so
+ * the same class of dead citation lives in a file no walker read.
+ *
+ * This is the widening #432 already made for the executable skip list, applied
+ * to the file set: the fix worth making closes the class, not the instance.
+ *
+ * Only code — fenced blocks and inline spans — is read. Prose that happens to
+ * contain a hyphenated phrase is not an invocation, and reading it would
+ * reproduce the "loaded from secure, immutable sources" misattribution that
+ * the segment rule above exists to prevent.
+ */
+export function printedFlagsInMarkdown(opts: {
+  src: string;
+  file: string;
+  verbs: ReadonlySet<string>;
+}): PrintedFlag[] {
+  const { src, file: rel, verbs } = opts;
+  const found: PrintedFlag[] = [];
+
+  const lineStarts: number[] = [0];
+  for (let k = 0; k < src.length; k++) if (src[k] === '\n') lineStarts.push(k + 1);
+  const lineOf = (off: number) => {
+    let lo = 0; let hi = lineStarts.length - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (lineStarts[mid] <= off) lo = mid; else hi = mid - 1; }
+    return lo;
+  };
+
+  // Code regions: fenced blocks, then inline spans. Offsets are kept so a
+  // finding reports the line the reader would open.
+  const regions: Array<{ body: string; start: number }> = [];
+  for (const m of src.matchAll(/```[^\n]*\n([\s\S]*?)```/g)) {
+    regions.push({ body: m[1], start: m.index! + m[0].indexOf('\n') + 1 });
+  }
+  for (const m of src.matchAll(/`([^`\n]+)`/g)) {
+    regions.push({ body: m[1], start: m.index! + 1 });
+  }
+
+  for (const region of regions) {
+    // One invocation per line: a fenced block holds many, and flags must not
+    // leak across them the way they would if the whole block were one segment.
+    let cursor = 0;
+    for (const rawLine of region.body.split('\n')) {
+      const lineStart = region.start + cursor;
+      cursor += rawLine.length + 1;
+
+      // Strip a shell prompt so `$ hackmyagent check --json` reads the same as
+      // the bare form.
+      const line = rawLine.replace(/^\s*\$\s*/, '');
+      const invocation = /(?:^|[\s|;&(])(?:hackmyagent|hma|npx\s+hackmyagent)\s+([a-z][a-z0-9-]*)/.exec(line);
+      if (!invocation) continue;
+      const verb = invocation[1];
+      if (!verbs.has(verb)) continue;
+
+      // Flags after the verb only. A flag before it belongs to another program
+      // in a pipeline.
+      const tail = line.slice(invocation.index + invocation[0].length);
+      for (const fm of tail.matchAll(/(?:^|\s)(--[a-z][a-z0-9-]+)/g)) {
+        const at = invocation.index + invocation[0].length + fm.index! + fm[0].indexOf('--');
+        const lineIdx = lineOf(lineStart + at);
+        found.push({
+          file: rel,
+          line: lineIdx + 1,
+          flag: fm[1],
+          command: verb,
+          inferred: false,
+          text: src.slice(lineStarts[lineIdx], lineStarts[lineIdx + 1] ?? src.length).trim().slice(0, 160),
+        });
+      }
+    }
+  }
+  return found;
+}
+
 export function collectPrintedFlags(opts: {
   repoRoot: string;
   /** Commands the Commander program registers. */
@@ -310,6 +401,33 @@ export function collectPrintedFlags(opts: {
       file: rel,
       verbs,
       marks: rel === cliRel ? marks : undefined,
+    }));
+  }
+  found.push(...collectMarkdownFlags(opts));
+  return found;
+}
+
+/**
+ * The documentation half of the same walk: `README.md` and everything under
+ * `docs/`. Separate entry point so a suite can report the two scopes apart
+ * while the assertion over them stays one rule (#434).
+ */
+export function collectMarkdownFlags(opts: {
+  repoRoot: string;
+  verbs: ReadonlySet<string>;
+}): PrintedFlag[] {
+  const { repoRoot, verbs } = opts;
+  const files: string[] = [];
+  const readme = path.join(repoRoot, 'README.md');
+  try { readFileSync(readme); files.push(readme); } catch { /* no README */ }
+  try { files.push(...markdownFiles(path.join(repoRoot, 'docs'))); } catch { /* no docs/ */ }
+
+  const found: PrintedFlag[] = [];
+  for (const file of files) {
+    found.push(...printedFlagsInMarkdown({
+      src: readFileSync(file, 'utf8'),
+      file: path.relative(repoRoot, file),
+      verbs,
     }));
   }
   return found;
