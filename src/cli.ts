@@ -139,9 +139,22 @@ async function finishWithFindings(code: number): Promise<void> {
   await recordTelemetry(code);
   process.exitCode = code;
 }
+
+/**
+ * Settle a `check` verdict's exit code. Called ABOVE the output-channel
+ * branch on every `check` target path, so no renderer — and no `return`
+ * inside one — can change it. See `src/check/verdict.ts` for why (#373).
+ *
+ * A clean verdict is left at Node's default 0 rather than assigned, so this
+ * cannot clear an exit code some earlier failure already set.
+ */
+async function settleCheckVerdict(verdict: CheckVerdict): Promise<void> {
+  if (verdict.exitCode !== 0) await finishWithFindings(verdict.exitCode);
+}
 // Per-invocation start times keyed by subcommand name (preAction → postAction).
 const telemetryStartedAt = new Map<string, number>();
 import { getTaxonomyMap, getCheckCounts } from './hardening/taxonomy';
+import { deriveCheckVerdict, type CheckVerdict } from './check/verdict';
 import {
   summarizeCoverage,
   SEMANTIC_PREFIXES,
@@ -487,6 +500,16 @@ Examples:
         const critical = issues.filter((f: any) => f.severity === 'critical');
         const high = issues.filter((f: any) => f.severity === 'high');
 
+        // #373 — one derivation, above the channel branch. `risk` and the exit
+        // code come out of the same call, so no renderer can report one and
+        // exit the other.
+        const verdict = deriveCheckVerdict({
+          critical: critical.length,
+          high: high.length,
+          issues: issues.length,
+        });
+        await settleCheckVerdict(verdict);
+
         if (options.json) {
           writeJsonStdout({
             path: resolved,
@@ -496,7 +519,7 @@ Examples:
             findings: issues.length,
             critical: critical.length,
             high: high.length,
-            risk: critical.length > 0 ? 'critical' : high.length > 0 ? 'high' : issues.length > 0 ? 'medium' : 'low',
+            risk: verdict.risk,
             details: issues,
           });
           return;
@@ -517,8 +540,9 @@ Examples:
           quickScan: { fullAuditTarget: skill },
         });
 
-        const risk = critical.length > 0 ? 'critical' : high.length > 0 ? 'high' : issues.length > 0 ? 'medium' : 'low';
-        if (risk === 'critical' || risk === 'high') process.exit(1);
+        // Exit code already settled above. This path used `process.exit(1)`
+        // here, which also skipped the telemetry `postAction` hook — the same
+        // hard-exit bias `finishWithFindings` was written to remove.
         return;
       }
 
@@ -5140,6 +5164,16 @@ Examples:
       const fixedFindings = allOpenClawFindings.filter((f) => f.fixed);
       const passedFindings = allOpenClawFindings.filter((f) => f.passed);
 
+      // #373, same class as `check`. `--help` above promises "Exit code 1 if
+      // critical/high issues found"; the `--json` branch returned before the
+      // statement that kept it, measured `text=1 json=0` on the same target.
+      // Settled here, above the channel branch.
+      await settleCheckVerdict(deriveCheckVerdict({
+        critical: issues.filter((f: SecurityFinding) => f.severity === 'critical').length,
+        high: issues.filter((f: SecurityFinding) => f.severity === 'high').length,
+        issues: issues.length,
+      }));
+
       if (options.json) {
         const jsonOutput = {
           target: targetDir,
@@ -5222,13 +5256,7 @@ Examples:
       console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
       console.log(`Run '${CLI_PREFIX} secure' for a full security scan.\n`);
 
-      // Exit with non-zero if critical/high issues remain
-      const criticalOrHigh = issues.filter(
-        (f: SecurityFinding) => f.severity === 'critical' || f.severity === 'high'
-      );
-      if (criticalOrHigh.length > 0) {
-        process.exit(1);
-      }
+      // Exit code settled above, before the `--json` branch.
     } catch (error) {
       console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       process.exit(1);
@@ -5369,6 +5397,14 @@ Examples:
       const issues = mergedFindings.filter((f: SecurityFinding) => !f.passed);
       const passedFindings = mergedFindings.filter((f: SecurityFinding) => f.passed);
 
+      // #373, same class as `check` and `secure-openclaw`. Measured
+      // `text=1 json=0` on the same target before this line existed.
+      await settleCheckVerdict(deriveCheckVerdict({
+        critical: issues.filter((f: SecurityFinding) => f.severity === 'critical').length,
+        high: issues.filter((f: SecurityFinding) => f.severity === 'high').length,
+        issues: issues.length,
+      }));
+
       if (options.json) {
         const jsonOutput = {
           target: targetDir,
@@ -5439,13 +5475,7 @@ Examples:
       console.log(`Run '${CLI_PREFIX} secure-openclaw' for OpenClaw-specific checks.`);
       console.log(`Run '${CLI_PREFIX} secure' for a full security scan.\n`);
 
-      // Exit with non-zero if critical/high issues remain
-      const criticalOrHigh = issues.filter(
-        (f: SecurityFinding) => f.severity === 'critical' || f.severity === 'high'
-      );
-      if (criticalOrHigh.length > 0) {
-        process.exit(1);
-      }
+      // Exit code settled above, before the `--json` branch.
     } catch (error) {
       console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       process.exit(1);
@@ -10542,6 +10572,9 @@ async function checkGitHubRepo(
     // any output so --json can include registry fields (F1).
     const registryData = await registryPromise;
 
+    // #373 — settle before the channel branch, not after the renderer.
+    await settleCheckVerdict(deriveCheckVerdict({ critical: critical.length, high: high.length }));
+
     if (options.json) {
       writeJsonStdout(buildCheckOutput({
         name: displayName,
@@ -10609,14 +10642,11 @@ async function checkGitHubRepo(
       }
     }
 
-    if (critical.length > 0 || high.length > 0) {
-      // Set exit code and return so the `finally` block can clean up tempDir.
-      // process.exit() is synchronous and terminates immediately, leaving
-      // /tmp/hma-check-gh-* directories orphaned and eventually ENOSPC'ing
-      // the scanner container. See `finally { await rm(tempDir, ...) }` below.
-      process.exitCode = 1;
-      return;
-    }
+    // Exit code settled above, before the `--json` branch. It is set on
+    // `process.exitCode` rather than by `process.exit()` so the `finally`
+    // block can clean up tempDir — a hard exit is synchronous and leaves
+    // /tmp/hma-check-gh-* directories orphaned, which eventually ENOSPC'd the
+    // scanner container. See `finally { await rm(tempDir, ...) }` below.
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
@@ -10847,6 +10877,9 @@ async function checkPyPiPackage(
     // Bare-name query key, matching the Registry's PyPI storage convention.
     const registryData = await registryPromise;
 
+    // #373 — settle before the channel branch, not after the renderer.
+    await settleCheckVerdict(deriveCheckVerdict({ critical: critical.length, high: high.length }));
+
     if (options.json) {
       writeJsonStdout(buildCheckOutput({
         name,
@@ -10882,10 +10915,7 @@ async function checkPyPiPackage(
       artifactSummaries,
     });
 
-    if (critical.length > 0 || high.length > 0) {
-      process.exitCode = 1;
-      return;
-    }
+    // Exit code settled above, before the `--json` branch.
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('not found on PyPI')) {
@@ -11050,6 +11080,9 @@ async function checkRawUrl(
     const medium = failed.filter(f => f.severity === 'medium');
     const low = failed.filter(f => f.severity === 'low');
 
+    // #373 — settle before the channel branch, not after the renderer.
+    await settleCheckVerdict(deriveCheckVerdict({ critical: critical.length, high: high.length }));
+
     if (options.json) {
       const jsonOut: Record<string, any> = {
         name: displayName,
@@ -11092,10 +11125,7 @@ async function checkRawUrl(
       }
     }
 
-    if (critical.length > 0 || high.length > 0) {
-      process.exitCode = 1;
-      return;
-    }
+    // Exit code settled above, before the `--json` branch.
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
@@ -11228,6 +11258,9 @@ async function checkNpmPackage(
     // any output so --json can include registry fields (F1).
     const registryData = await registryPromise;
 
+    // #373 — settle before the channel branch, not after the renderer.
+    await settleCheckVerdict(deriveCheckVerdict({ critical: critical.length, high: high.length }));
+
     if (options.json) {
       writeJsonStdout(buildCheckOutput({
         name,
@@ -11295,10 +11328,7 @@ async function checkNpmPackage(
       }
     }
 
-    if (critical.length > 0 || high.length > 0) {
-      process.exitCode = 1;
-      return;
-    }
+    // Exit code settled above, before the `--json` branch.
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     // Clean npm error messages
