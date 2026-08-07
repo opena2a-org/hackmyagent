@@ -235,7 +235,7 @@ export class RegistryClient {
       }
 
       if (response.status === 429) {
-        console.error('Registry: rate limited. Try again in a few minutes, or use --skip-registry to skip registry checks.');
+        console.error('Registry: rate limited. Try again in a few minutes, or use --no-registry to skip registry checks.');
         return null;
       }
 
