@@ -165,14 +165,22 @@ Two `--json` fields were renamed with the number, because their old names assert
 ### `attack` (payload battery)
 
 ```bash
-hackmyagent attack --local                                             # local simulation
-hackmyagent attack --local --system-prompt "You are helpful"           # with custom system prompt
 hackmyagent attack https://api.example.com/v1/chat                     # test a live endpoint
-hackmyagent attack --local --category prompt-injection                 # single category
+hackmyagent attack https://api.example.com --category prompt-injection # single category
 hackmyagent attack https://api.example.com --fail-on-vulnerable medium # CI gate
+hackmyagent attack --local                                             # generate payloads only
+hackmyagent attack --local --system-prompt "You are helpful"           # with custom system prompt
 ```
 
 164 payloads across 16 categories. Intensity tiers: `passive` (28 payloads, observation only), `active` (111 payloads, default), `aggressive` (164 payloads, includes creative or risky probes).
+
+`attack` needs a running agent. It probes the endpoint once before sending any
+payload and exits 2 without a score if nothing is there, so an unreachable
+target costs one request instead of the whole suite.
+
+`--local` generates payloads and checks that they parse. It contacts no agent,
+so it reports no risk score and exits 2 — the same as `red-team`. Use it to
+inspect the payload set, not as a CI gate.
 
 Only test systems you own or have written authorisation to test.
 
@@ -294,7 +302,7 @@ jobs:
 SARIF for the GitHub Security tab:
 
 ```yaml
-- run: npx hackmyagent attack --local -f sarif -o results.sarif --fail-on-vulnerable medium
+- run: npx hackmyagent attack "$AGENT_ENDPOINT" -f sarif -o results.sarif --fail-on-vulnerable medium
 - uses: github/codeql-action/upload-sarif@v3
   with: { sarif_file: results.sarif }
 ```
@@ -313,10 +321,13 @@ npx hackmyagent secure --ignore LOG-001,RATE-001
 
 | Code | Meaning |
 |---|---|
-| 0 | Clean. No critical or high issues. |
-| 1 | Critical or high severity issues found. |
-| 2 | No verdict reached. A scan whose plugins failed, or a command that reaches no verdict by design. `red-team` exits 2 on every run: it maps an attack surface and generates payloads without executing any, so it never concludes anything about the target. |
+| 0 | Measured. No critical or high issues. |
+| 1 | Measured. Critical or high severity issues found. |
+| 2 | **Not measured.** No score and no risk level are reported. The target does not exist (`check <missing path>`, an unknown package), was unreachable, answered no payload, or the command reaches no verdict by design. `red-team` and `attack --local` exit 2 on every run: both generate payloads without executing any against an agent, so neither concludes anything about the target. A scan whose plugins failed is also 2. |
 | 3 | QUARANTINE. Binary integrity check failed (tampered installation). |
+
+Exit 2 is non-zero on purpose. A CI job that asked for a security verdict and
+got "I could not reach the target" has not been told the target is safe.
 
 ## Auto-fix catalogue
 

@@ -300,27 +300,60 @@ describe('AttackScanner', () => {
       expect(report.summary.byCategory['jailbreak']).toHaveProperty('successful');
     });
 
-    it('calculates risk rating correctly', async () => {
+    // #430 — this used to assert the score/rating consistency of a LOCAL run,
+    // and passed, because `simulateLocal` returns a fixed sentence and the
+    // analyzer scored it. The rating was internally consistent with a number
+    // that measured HackMyAgent's own placeholder text. A local run reports no
+    // rating at all now, so the consistency rule is asserted where a rating
+    // exists — over a report whose results came from an answered target.
+    it('reports no rating for a local run, because nothing was measured', async () => {
       const scanner = new AttackScanner({ delay: 0 });
       const report = await scanner.scan(
         { url: '', type: 'local' },
         { categories: ['prompt-injection'], intensity: 'passive', delay: 0 }
       );
 
-      // Risk rating should be one of the valid values
-      expect(['critical', 'high', 'medium', 'low', 'secure']).toContain(report.riskRating);
+      expect(report.verdict.measured).toBe(false);
+      expect(report.riskRating).toBe('unmeasured');
+      expect(report.riskScore).toBe(0);
+      // Payloads were still generated and sent through the analyzer path —
+      // this is a measurement gate, not a short circuit that skips the work.
+      expect(report.summary.total).toBeGreaterThan(0);
+      expect(report.summary.answered).toBe(0);
+      expect(report.summary.unanswered).toBe(report.summary.total);
+    });
 
-      // Score and rating should be consistent
-      if (report.riskScore >= 70) {
-        expect(report.riskRating).toBe('critical');
-      } else if (report.riskScore >= 50) {
-        expect(report.riskRating).toBe('high');
-      } else if (report.riskScore >= 25) {
-        expect(report.riskRating).toBe('medium');
-      } else if (report.riskScore > 0) {
-        expect(report.riskRating).toBe('low');
+    it('score and rating stay consistent when a target does answer', async () => {
+      // The other direction, so the gate above cannot be satisfied by a
+      // scanner that never rates anything. Every result is marked answered, as
+      // a live endpoint's would be, and the banding rule must then hold.
+      const scanner = new AttackScanner({ delay: 0 });
+      const report = await scanner.scan(
+        { url: '', type: 'local' },
+        { categories: ['prompt-injection'], intensity: 'passive', delay: 0 }
+      );
+      const answered = { ...report, results: report.results.map(r => ({ ...r, answered: true })) };
+      const rebuilt = (scanner as any).buildReport(
+        { url: 'https://agent.example/v1', type: 'api' },
+        answered.results,
+        report.categories,
+        report.intensity,
+        report.startTime,
+        report.endTime,
+      );
+
+      expect(rebuilt.verdict.measured).toBe(true);
+      expect(['critical', 'high', 'medium', 'low', 'secure']).toContain(rebuilt.riskRating);
+      if (rebuilt.riskScore >= 70) {
+        expect(rebuilt.riskRating).toBe('critical');
+      } else if (rebuilt.riskScore >= 50) {
+        expect(rebuilt.riskRating).toBe('high');
+      } else if (rebuilt.riskScore >= 25) {
+        expect(rebuilt.riskRating).toBe('medium');
+      } else if (rebuilt.riskScore > 0) {
+        expect(rebuilt.riskRating).toBe('low');
       } else {
-        expect(report.riskRating).toBe('secure');
+        expect(rebuilt.riskRating).toBe('secure');
       }
     });
 

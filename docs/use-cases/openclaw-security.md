@@ -58,7 +58,7 @@ Checks:  310 across 69 categories (34 OpenClaw-specific)
 
   MEDIUM    SKILL-001    Unsigned skill package
             Found: skills/data-fetcher/ has no signature
-            Fix:   Sign with hackmyagent check --sign
+            Fix:   Sign with hackmyagent fix-all --with-aim
 
   LOW       CONFIG-003   Debug mode enabled
             Found: debug: true in gateway.yaml
