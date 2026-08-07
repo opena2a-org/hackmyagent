@@ -269,7 +269,10 @@ ARP also runs as an HTTP reverse proxy for inspecting OpenAI API, MCP, and A2A p
 
 ## CI/CD integration
 
-All commands support `--json` and `--ci` flags.
+`secure` and `scan-soul` take `--ci` for non-interactive, byte-stable output. Most
+scanning commands take `--json` — `check`, `secure`, `attack`, `scan`, `fix-all`,
+`scan-soul`, `harden-soul`, `red-team`, `wild`, `detect`, `trust` — and adding it never
+changes the exit code: a command that exits 1 on findings exits 1 in both channels.
 
 ```yaml
 name: Agent Security
