@@ -48,9 +48,23 @@ import { queueClassificationStat } from '../telemetry/nanomind-telemetry.js';
  * classifier will set type to 'unknown' for non-matching content, and
  * analyzers simply produce no findings for unknowns.
  */
-const SECURITY_RELEVANT_EXTENSIONS = new Set([
+export const SECURITY_RELEVANT_EXTENSIONS = new Set([
   '.md', '.json', '.yaml', '.yml', '.toml',
-  '.ts', '.js', '.py', '.go', '.rs',
+  // #412 — `.mjs`/`.cjs` were missing, so `secure` did not read ES-module or
+  // CommonJS JavaScript AT ALL. An identical credential scored 69/100 in
+  // `config.js` and a clean 98/100 in `config.mjs`, at the repo root and nested
+  // alike: an extension gate, not a directory one. `.mjs` is the standard
+  // extension for Node tooling — build, release and verification scripts — which
+  // is exactly where connection strings and tokens collect. One private repo in
+  // this org had 26 tracked `.mjs` files, none of them scanned.
+  //
+  // The miss was worse than a gap, because the run still reported `61 of 61
+  // check groups ran` and a confident score, so "clean" and "never opened" were
+  // indistinguishable and a pre-push gate passed a file nothing had read.
+  //
+  // `.jsx`/`.tsx` are deliberately included with them: same language, same
+  // credential risk, same omission waiting to be found.
+  '.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx', '.py', '.go', '.rs',
   '.env', '.cfg', '.ini', '.conf',
 ]);
 
