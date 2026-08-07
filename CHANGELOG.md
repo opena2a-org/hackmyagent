@@ -64,6 +64,71 @@ All notable changes to HackMyAgent are documented in this file.
   a tree. Tracked in [#414](https://github.com/opena2a-org/hackmyagent/issues/414); #412
   fixed the compile-set gate only.
 
+- **The defect class this release is mostly about is not closed.** #373 fixed `check
+  --json`, `secure-openclaw` and `secure-nemoclaw`. The same shape — *a verdict, or an
+  exit code, that does not depend on whether anything was actually measured* — is still
+  live in the commands below. Every one was measured on this build **and reproduces
+  identically on 0.26.0**, so none is new here; they are listed because staying silent
+  about the rest of a class while announcing three fixes to it would misrepresent what
+  upgrading gets you. All are scheduled to **0.27.0**.
+
+  | command | measured | tracked |
+  |---|---|---|
+  | `attack <unreachable-host>` | `Risk Score: 0/100 (SECURE)` at **exit 0**, all 111 attacks inconclusive, every `evidence` field `Error: fetch failed` | [#406](https://github.com/opena2a-org/hackmyagent/issues/406) |
+  | `attack --local` | `2/100 (LOW)` for a jailbreak prompt, a hardened prompt **and an empty string** — the score moves with `--intensity`, not with the target | [#430](https://github.com/opena2a-org/hackmyagent/issues/430) |
+  | `check <path-that-does-not-exist>` | `MEDIUM RISK` at **exit 0**, `--json` asserting `"revocation":{"revoked":false}` about an artifact that is not there | [#417](https://github.com/opena2a-org/hackmyagent/issues/417) |
+  | `secure <dir> -b oasb-2` | **exit 0** at `Conformance: NONE`, while the same directory exits 1 without `-b` and with `-b oasb-1`. `secure --help` promises exit 1 "or non-compliant in benchmark mode" | [#371](https://github.com/opena2a-org/hackmyagent/issues/371) |
+  | `check <remote target> --json` | the four network paths still carry no `coverage` object, so #388's disclosure is local-only | [#416](https://github.com/opena2a-org/hackmyagent/issues/416) |
+
+  Reproductions are in each issue. If you gate CI on any of these, gate on the text
+  channel or on `--fail-below` until 0.27.0 lands.
+
+- **Two auto-fix paths write sensitive bytes onto a git-tracked path.** Both reproduce
+  identically on 0.26.0. Scheduled to **0.27.0**.
+
+  - `secure --fix` moves the original file into `.hackmyagent-backup/`, and the
+    `.gitignore` it generates in the same run does not exclude that directory — so the
+    remediation for "credential in config" leaves the credential where `git add .` will
+    stage it. ([#389](https://github.com/opena2a-org/hackmyagent/issues/389))
+  - `fix-all` writes `.opena2a/credvault/store.key` beside the `secrets.enc` it decrypts,
+    with no `.gitignore` written at all, so the ciphertext and its key stage together. It
+    also creates no backup, so `rollback` cannot undo it despite the quick-start
+    advertising "auto-fix with rollback".
+    ([#431](https://github.com/opena2a-org/hackmyagent/issues/431))
+
+  Until 0.27.0: add `.hackmyagent-backup/` and `.opena2a/` to `.gitignore` yourself before
+  running either command in a repository, and prefer `--dry-run` first.
+
+- **Installing this package still reports 4 high advisories, and our own audit gate cannot
+  see them.** Measured on a fresh `npm init -y` tree, and identical on 0.26.0:
+
+  ```
+  $ npm install hackmyagent@0.26.1 && npm audit --audit-level=high
+  4 high severity vulnerabilities
+
+  hackmyagent -> ai-trust -> hackmyagent@0.17.11 -> onnxruntime-node -> adm-zip
+  ```
+
+  `ai-trust` pulls a nine-month-old copy of this package, which carries the vulnerable
+  `adm-zip` (crafted ZIP triggers a 4GB allocation). The `Dependency audit` workflow this
+  project added in 0.26.0 reports **0** — correctly, because it audits *this repo's*
+  lockfile, where `overrides` pins `adm-zip`. **`overrides` are not published**, so the
+  tree we audit is not the tree you install. Being explicit about it here rather than
+  letting the green badge stand for something it does not cover.
+  ([#432](https://github.com/opena2a-org/hackmyagent/issues/432))
+
+- **The exit-code contract differs per command and is not stated anywhere.** `secure`
+  exits 1 on a HIGH finding; `detect` prints `1 high-severity issue found` —
+  `HIGH  2 AI agents running without governance`, governance `12/100` — and exits **0**.
+  Reproduces on 0.26.0. ([#390](https://github.com/opena2a-org/hackmyagent/issues/390))
+
+  On `scan-soul` specifically, the measurement is narrower than #390's title suggests, so
+  to be exact: `scan-soul --ci` **does** exit 1 on a low-scoring governance file (measured
+  `4/100` -> exit 1). The case that exits 0 is a directory with **no `SOUL.md` at all**,
+  which scores `0/100` and passes `--ci` — the 0 there means nothing was evaluated, not
+  that something was evaluated and scored zero. That is the same
+  verdict-without-measurement shape as the table above.
+
 ### Fixed
 
 The three findings disclosed as known issues in 0.26.0 are closed here. Each turned out
