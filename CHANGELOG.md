@@ -2,6 +2,45 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [Unreleased]
+
+### Security
+
+- **`secure` now reads `.mjs`, `.cjs`, `.jsx` and `.tsx`. It previously did not read them
+  at all.** `SECURITY_RELEVANT_EXTENSIONS` listed `.ts` and `.js` but neither ES-module nor
+  CommonJS JavaScript, so those files never entered the compile set and no analyzer ever
+  saw them. One identical high-entropy credential, only the path varying:
+
+  ```
+  config.js          69/100  CRITICAL reported
+  config.mjs         98/100  nothing reported
+  config.cjs         98/100  nothing reported
+  src/config.mjs     98/100  nothing reported
+  ```
+
+  An extension gate, not a directory one. `.mjs` is the standard extension for Node
+  tooling — build, release and verification scripts — which is exactly where connection
+  strings and tokens collect.
+
+  The miss was worse than a plain gap: the run still reported `61 of 61 check groups ran`
+  and a file count, so a clean score was indistinguishable from a scanned-and-clean one,
+  and a pre-push gate could report PASS for a file the scanner had never opened.
+
+  **Expect scores to move on upgrade.** A project with credentials or other findings in
+  `.mjs`/`.cjs` files will now score LOWER than it did on 0.26.0 and earlier. That is the
+  fix working — those findings were always there, and the previous score was measuring a
+  subset of your tree while presenting itself as complete. Re-run `hackmyagent secure` and
+  treat any new findings as pre-existing exposure that was invisible, not as new risk.
+  ([#412](https://github.com/opena2a-org/hackmyagent/issues/412))
+
+### Known issues
+
+- The same class of narrow extension enumeration exists in roughly 44 places in
+  `src/hardening/scanner.ts`, several of them the same `.ts`/`.js` pair, while that file
+  already carries a correct set elsewhere. Individual checks therefore still skip parts of
+  a tree. Tracked in [#414](https://github.com/opena2a-org/hackmyagent/issues/414); #412
+  fixed the compile-set gate only.
+
 ## [0.26.0] - 2026-08-06
 
 ### Breaking
