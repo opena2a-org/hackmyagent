@@ -159,13 +159,20 @@ All notable changes to HackMyAgent are documented in this file.
     the flagship scoring command and routing it through the same derivation is its own
     change.
   - `attack` can still report `0/100 (SECURE)` for `-t a2a`, `-t mcp` and
-    `--api-format custom`. The empty-body gate keys on the response text being blank, and
+    `--api-format custom`. A first attempt at this (#439) was reverted before shipping:
+    restricting extraction to a fixed set of key names turned a loud false positive into
+    a **silent false negative** — seven realistic response shapes, including a body
+    leaking `sk-live-…` under `--api-format custom`, went from `100/100 CRITICAL` to
+    `NOT MEASURED` with no flag to recover. For a scanner that is the worse direction.
+    The remaining detail: The empty-body gate keys on the response text being blank, and
     only the `openai` and `anthropic` extractors can return blank — the other three end
     in `JSON.stringify(data)`, so an endpoint answering every payload with
     `{"error":"unauthorized"}` is scored rather than withheld. The default `openai`
     format is fixed; these three are not.
-  - `secure -b oasb-1 --fail-below 0` exits 0 on a `Not Passing` rating, by the same
-    `failBelow === undefined &&` construct that was fixed for `-b oasb-2`.
+  - ~~`secure -b oasb-1 --fail-below 0` exits 0 on a `Not Passing` rating.~~ **Fixed
+    (#440).** `--fail-below` adds a score floor and no longer replaces the default
+    non-compliance gate on any benchmark arm. Note the behaviour change: a tree that was
+    already `Not Passing` and was being held green by `--fail-below` now fails.
   - `check --json` emits no `coverage` object on the registry-only paths (`--no-scan`,
     skill-identifier lookup). The downloaded and not-found paths carry it.
 
