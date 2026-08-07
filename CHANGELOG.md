@@ -71,6 +71,12 @@ All notable changes to HackMyAgent are documented in this file.
   instance immediately found a second one: `docs/use-cases/ci-pipeline.md` cited
   `attack --ci`, also unregistered. Both fixed.
 
+- **`detect` now exits 1 on any machine running an ungoverned AI agent.** That is the
+  point of #390, and it is a behaviour change for anyone running `detect` in CI: a
+  developer laptop with Claude Code or Ollama running and no `SOUL.md` reports
+  `2 AI agents running without governance` at HIGH, which is now a non-zero exit rather
+  than a line of text. `hackmyagent harden-soul <dir>` clears it.
+
 - **`docs/use-cases/red-team-mcp.md` no longer shows output the tool has never produced.**
   It documented `attack --local` as testing "your agent's system prompt and configuration",
   with per-payload `VULNERABLE` / `RESISTANT` verdicts, a category breakdown and
