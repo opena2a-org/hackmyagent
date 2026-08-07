@@ -157,8 +157,11 @@ async function settleCheckVerdict(verdict: CheckVerdict): Promise<void> {
  *
  * #416/#417 — the not-found arms emitted no `coverage` key at all, so
  * `jq -e '.coverage.measured'` returned null on exactly the case the key
- * exists to describe. `measured` is present and boolean on every `check --json`
- * payload now, found or not.
+ * exists to describe.
+ *
+ * Covers the six download/clone not-found emitters. The registry-only arms
+ * (`--no-scan`, skill-identifier lookup) still emit no coverage — see the note
+ * on `coverageJson`.
  */
 function notFoundCoverage(target: string, ecosystem: string) {
   return coverageJson(unmeasured(
@@ -5328,10 +5331,20 @@ Examples:
       // "Risk Level: None · No OpenClaw-specific issues found" — recreating
       // exactly the exit-code-disagrees-with-the-page defect (#373) that the
       // commit above it cites.
-      const ocVerdict = remoteCheckVerdict(result, {
-        critical: issues.filter((f: SecurityFinding) => f.severity === 'critical').length,
-        high: issues.filter((f: SecurityFinding) => f.severity === 'high').length,
-      }, targetDir);
+      // Coverage unit is CHECKS EVALUATED, not files read. These commands'
+      // findings include absence checks (`GIT-001 Missing .gitignore`) that
+      // read no file, so a files-read count reported zero coverage for a run
+      // that had evaluated its whole suite and withheld a real finding.
+      const ocVerdict = deriveCheckVerdict(
+        {
+          critical: issues.filter((f: SecurityFinding) => f.severity === 'critical').length,
+          high: issues.filter((f: SecurityFinding) => f.severity === 'high').length,
+          issues: issues.length,
+        },
+        fullCoverage(allOpenClawFindings.length, 'check'),
+        'nothing-to-examine',
+        `No OpenClaw check could be evaluated against ${escapePathForDisplay(targetDir)}.`,
+      );
       await settleCheckVerdict(ocVerdict);
 
       if (options.json) {
@@ -5567,10 +5580,18 @@ Examples:
       // `text=1 json=0` on the same target before this line existed.
       // Settled above the channel branch, and its unmeasured arm short-circuits
       // both renderers — see the equivalent comment in `secure-openclaw`.
-      const ncVerdict = remoteCheckVerdict(result, {
-        critical: issues.filter((f: SecurityFinding) => f.severity === 'critical').length,
-        high: issues.filter((f: SecurityFinding) => f.severity === 'high').length,
-      }, targetDir);
+      // Checks evaluated, not files read — see the equivalent note in
+      // `secure-openclaw`.
+      const ncVerdict = deriveCheckVerdict(
+        {
+          critical: issues.filter((f: SecurityFinding) => f.severity === 'critical').length,
+          high: issues.filter((f: SecurityFinding) => f.severity === 'high').length,
+          issues: issues.length,
+        },
+        fullCoverage(mergedFindings.length, 'check'),
+        'nothing-to-examine',
+        `No NemoClaw check could be evaluated against ${escapePathForDisplay(targetDir)}.`,
+      );
       await settleCheckVerdict(ncVerdict);
 
       if (options.json) {
@@ -6448,7 +6469,7 @@ function printAttackReport(report: AttackReport, verbose: boolean): void {
     } else {
       console.log(`Verify the target is up, then re-run:`);
       console.log();
-      console.log(`  $ curl -sS -o /dev/null -w '%{http_code}\\n' ${citationTarget(report.target)}`);
+      console.log(`  $ curl -sS -o /dev/null -w '%{http_code}\\n' ${citationTarget(report.probedUrl ?? report.target)}`);
     }
     console.log();
     return;

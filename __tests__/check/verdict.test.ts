@@ -163,6 +163,25 @@ describe('#406/#430 a band cannot be derived over an empty measurement', () => {
     expect(v.measured).toBe(false);
   });
 
+  it('has no "but we found something" escape hatch', () => {
+    // A second-round fix added one — treating any finding as proof the run
+    // examined the target — and it punched a hole through the guarantee this
+    // file exists to make: a caller with a broken coverage counter would have
+    // its band restored by the very findings whose provenance was in doubt.
+    //
+    // The real defect that motivated it was a wrong coverage UNIT at one call
+    // site (files-read for a suite whose checks fire on a file's absence), not
+    // a wrong gate. This pins the gate so the hole is not reopened.
+    for (const counts of [
+      { critical: 9, high: 0, issues: 9 },
+      { critical: 0, high: 9, issues: 9 },
+      { critical: 0, high: 0, issues: 9 },
+    ]) {
+      const v = deriveCheckVerdict(counts, fullCoverage(0, 'file'));
+      expect(v.measured, `${JSON.stringify(counts)} over 0 coverage must stay unmeasured`).toBe(false);
+    }
+  });
+
   it('one examined unit is enough — the gate is emptiness, not a quorum', () => {
     // The opposite direction. A gate that demanded "enough" coverage would
     // silently withhold verdicts on small but real targets, which is a

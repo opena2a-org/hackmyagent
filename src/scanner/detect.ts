@@ -350,7 +350,22 @@ function classifyMcpRisk(capabilities: string[], transport: string): RiskLevel {
 // Process scanning
 // ---------------------------------------------------------------------------
 
+/**
+ * Set when the last `scanProcesses()` call could not read the process list.
+ *
+ * Module-scoped rather than a return-shape change because `scanProcesses` is
+ * exported and called from tests and other surfaces; the caller that needs it
+ * reads it immediately after the call, on the same synchronous path.
+ */
+let processScanFailed = false;
+
+/** Whether the last `scanProcesses()` call failed to read the process list. */
+export function didProcessScanFail(): boolean {
+  return processScanFailed;
+}
+
 export function scanProcesses(psOutput?: string): DetectedAgent[] {
+  processScanFailed = false;
   let output: string;
   if (psOutput !== undefined) {
     output = psOutput;
@@ -358,6 +373,12 @@ export function scanProcesses(psOutput?: string): DetectedAgent[] {
     try {
       output = execSync('ps aux', { encoding: 'utf-8', timeout: 5000 });
     } catch {
+      // The process surface could not be read. Returning `[]` here is
+      // indistinguishable from "looked and found nothing", and a caller that
+      // counts this as an examined surface reports a measured PASS over a
+      // surface it never saw — the exact pathology `Coverage` exists to
+      // prevent. `processScanFailed` is how the caller tells the difference.
+      processScanFailed = true;
       return [];
     }
   }
@@ -1708,22 +1729,38 @@ export async function detect(options: DetectOptions): Promise<number> {
   // no-shadow-AI CI gate it is for. The comment claimed the opposite of what
   // the expression did.
   //
-  // These four passes are unconditional (see the calls above), so this is 4 on
-  // every run that got here — which is correct: `detect` genuinely did examine
-  // four surfaces. The unmeasured arm is reachable only via the early return
-  // above, when the target directory cannot be read at all.
-  const SURFACES_EXAMINED = 4;
-  // No empty-reason argument: with a constant, non-zero coverage this cannot
-  // take the unmeasured arm, and passing a reason that can never be reported
-  // would be a claim no code path can keep.
+  // COUNTED, not asserted. A constant here was a second bug of the same class
+  // as the one it replaced: `scanProcesses` swallows an `execSync('ps aux')`
+  // failure and returns `[]`, so on a host without `procps` the constant
+  // reported `4 of 4 surfaces examined` and a measured PASS over a surface the
+  // run never saw. Measured with `PATH=/nonexistent`: exit 0 and coverage
+  // byte-identical to a healthy run. That is fail-open, and the whole point of
+  // `Coverage` is that every field is counted at runtime from the run itself.
+  const surfaces = [
+    { name: 'processes', examined: !didProcessScanFail() },
+    { name: 'mcp servers', examined: true },
+    { name: 'identity', examined: true },
+    { name: 'ai configs', examined: true },
+    { name: 'governance', examined: true },
+  ];
+  const examinedSurfaces = surfaces.filter((s) => s.examined).length;
+  const unread = surfaces.filter((s) => !s.examined).map((s) => s.name);
   const verdict = deriveCheckVerdict(
     {
       critical: result.findings.filter((f) => f.severity === 'critical').length,
       high: result.findings.filter((f) => f.severity === 'high').length,
       issues: result.findings.length,
     },
-    fullCoverage(SURFACES_EXAMINED, 'surface'),
+    { examined: examinedSurfaces, total: surfaces.length, unit: 'surface' },
   );
+  // A partial read is not an unmeasured run — the other surfaces did produce a
+  // verdict — but it must be said out loud, or a reader takes the clean lines
+  // for a complete answer.
+  if (unread.length > 0 && options.format !== 'json') {
+    process.stderr.write(
+      `Not examined: ${unread.join(', ')}. This report does not cover ${unread.length === 1 ? 'it' : 'them'}.\n`,
+    );
+  }
 
   if (options.format === 'json') {
     // The machine channel carries the measurement the exit code was derived

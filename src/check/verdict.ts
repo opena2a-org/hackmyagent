@@ -181,6 +181,22 @@ export function unmeasured(
  * between that and a clean bill of health is the entire defect class. Callers
  * that want the band anyway have to change this function and say why.
  */
+/**
+ * **Pick a `coverage.unit` that the caller's checks actually produce.**
+ *
+ * The gate below is deliberately absolute: zero examined units yields no band,
+ * with no escape hatch for "but we found something". An earlier fix added one
+ * — treating any finding as proof the run examined the target — and it
+ * punched a hole straight through the guarantee this file exists to make.
+ *
+ * The real defect it was chasing was a wrong UNIT, not a wrong gate:
+ * `secure-openclaw` counted files-read, but `GIT-001 Missing .gitignore` fires
+ * on a file's ABSENCE and reads nothing, so a run that had genuinely evaluated
+ * its whole suite reported zero coverage and its finding was withheld. The fix
+ * is to count checks evaluated there, which is what that command's coverage
+ * actually is. If a call site's findings can outnumber its coverage, the unit
+ * is wrong — do not relax this function.
+ */
 export function deriveCheckVerdict(
   counts: CheckSeverityCounts,
   coverage: Coverage,
@@ -224,18 +240,20 @@ export function deriveCheckVerdict(
  * The `coverage` object every machine channel emits, so `--json` consumers can
  * tell "clean" from "never looked" without parsing prose.
  *
- * ONE shape, on every path that emits it, measured or not: `measured` is
- * always present and always a boolean, so `jq -e '.coverage.measured'` is a
- * contract a consumer can rely on. The first cut of this emitted three
- * different shapes — `measured` absent on the local-scan path, the whole
- * `coverage` key absent on every not-found path — which is the case the key
- * exists for.
+ * Wherever it IS emitted the shape is identical, measured or not: `measured`
+ * present and boolean, so `jq -e '.coverage.measured'` answers. The first cut
+ * emitted three different shapes — `measured` nested under a sub-key on the
+ * local-scan path, and no `coverage` key at all on the not-found paths, which
+ * are the paths the key exists for.
  *
- * Emitted by `check` (local, remote and not-found arms), `attack`, `detect`
- * and the two deprecated `secure-*` commands. NOT by `secure`, which still
- * derives its own score without a measurement gate — that is a known gap, not
- * a claim this function makes. An earlier version of this comment asserted
- * four commands shared it and cannot drift; two of the four did not call it.
+ * **It is not yet on every `check --json` path.** Emitted by: `check`'s
+ * local-scan, downloaded-remote and not-found arms, `attack`, `detect`, and
+ * the two deprecated `secure-*` commands. NOT emitted by the registry-only
+ * arms (`--no-scan`, the skill-identifier lookup, the rich-block path) or by
+ * `secure`. Those still report a `risk` with no measurement beside it; see
+ * hackmyagent#417's remaining scope. Two earlier versions of this comment
+ * claimed complete coverage — do not restore that wording without measuring
+ * every emitter first.
  *
  * It also no longer flattens the unmeasured arm to `0/0 unit`: `attempted`
  * carries what the run tried, so "0 of 111 payloads answered" survives.

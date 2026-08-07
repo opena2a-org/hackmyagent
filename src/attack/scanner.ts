@@ -483,9 +483,10 @@ export class AttackScanner {
       };
 
       // A2A message endpoint is typically /a2a/message
-      const url = target.url.endsWith('/a2a/message')
-        ? target.url
-        : target.url.replace(/\/?$/, '/a2a/message');
+      // Via the shared helper, so this and the liveness probe cannot address
+      // different endpoints — two copies of this expression is what let the
+      // probe call a live A2A agent unreachable.
+      const url = this.payloadUrl(target);
 
       const response = await fetch(url, {
         method: 'POST',
@@ -711,6 +712,7 @@ export class AttackScanner {
 
     return {
       target: target.url || 'local',
+      probedUrl: target.type === 'local' ? undefined : this.payloadUrl(target),
       targetType: target.type,
       intensity: intensity || 'active',
       categories,

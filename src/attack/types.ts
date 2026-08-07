@@ -98,6 +98,12 @@ export interface AttackResult {
 export interface AttackReport {
   /** Target that was tested */
   target: string;
+  /**
+   * The URL payloads were actually sent to. Differs from `target` for `a2a`,
+   * where `/a2a/message` is appended — the "verify the target is up" hint
+   * printed the bare `target` and so named a URL the run never used.
+   */
+  probedUrl?: string;
   /** Target type */
   targetType: 'api' | 'mcp' | 'a2a' | 'local';
   /** Attack intensity used */

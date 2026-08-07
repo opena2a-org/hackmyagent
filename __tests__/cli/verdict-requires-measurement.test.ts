@@ -450,6 +450,47 @@ describe('#390 detect exits on what it reports', () => {
     expect(status).toBe(1);
   });
 
+  it('a surface it could not read is counted as unread, not as examined', () => {
+    // Second-round adversarial finding, and a defect INTRODUCED by the first
+    // round's fix for this issue. `scanProcesses` swallows an `execSync('ps
+    // aux')` failure and returns [], so a hardcoded `SURFACES_EXAMINED = 4`
+    // reported `4 of 4 examined` on a host without `procps` — a measured PASS
+    // over a surface the run never saw, byte-identical to a healthy run.
+    //
+    // Runs the CLI with a PATH holding only `node`, so `ps` genuinely cannot
+    // be found. That is a real missing binary, not an injected fake.
+    const nodeDir = path.dirname(process.execPath);
+    const emptyBin = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-nops-'));
+    fs.symlinkSync(process.execPath, path.join(emptyBin, 'node'));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-detect-'));
+    fs.writeFileSync(path.join(dir, 'README.md'), '# demo\n');
+
+    const withoutPs = spawnSync(process.execPath, [CLI, 'detect', dir, '--ci', '--json'], {
+      encoding: 'utf-8',
+      env: { PATH: emptyBin, HOME: home, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off' },
+    });
+    const degraded = JSON.parse((withoutPs.stdout || '').slice((withoutPs.stdout || '').indexOf('{')));
+
+    // The control: the same command with a working PATH must examine MORE.
+    const withPs = spawnSync(process.execPath, [CLI, 'detect', dir, '--ci', '--json'], {
+      encoding: 'utf-8',
+      env: { PATH: `${nodeDir}:/usr/bin:/bin`, HOME: home, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off' },
+    });
+    const healthy = JSON.parse((withPs.stdout || '').slice((withPs.stdout || '').indexOf('{')));
+
+    expect(degraded.coverage.examined).toBeLessThan(healthy.coverage.examined);
+    expect(degraded.coverage.examined).toBeLessThan(degraded.coverage.total);
+    expect(healthy.coverage.examined).toBe(healthy.coverage.total);
+    // And the text channel says which surface is missing, so a reader does not
+    // take the clean lines for a complete answer.
+    const text = spawnSync(process.execPath, [CLI, 'detect', dir, '--ci'], {
+      encoding: 'utf-8',
+      env: { PATH: emptyBin, HOME: home, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off' },
+    });
+    expect(`${text.stdout ?? ''}${text.stderr ?? ''}`).toContain('Not examined: processes');
+  }, 300_000);
+
   it('the exit code follows the report on both channels', () => {
     // #373's rule, applied to `detect`: the derivation is above the channel
     // branch, so `--json` and text cannot disagree.
