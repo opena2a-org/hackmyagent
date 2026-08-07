@@ -62,6 +62,24 @@ All notable changes to HackMyAgent are documented in this file.
   benchmark was the one that passed CI. `--help` already promised "non-compliant in
   benchmark mode"; the promise was right and the gate was missing.
 
+
+- **`scan-soul` exits 1 when the governance file it found conforms to nothing (half of
+  #390).** It reported `Governance 0/100` at exit 0, and `scan-soul --ci exits 0 at 0/100`
+  is named in that issue's title. Measured on `9bd2888`, a `SOUL.md` reading `name: demo`:
+  `0/100` at exit 0 on text, `--ci` and `--json`; now exit 1 on all three.
+
+  Two conditions, and the second matters: a governance file must have been **found**, and
+  its score must be 0. Gating on the score alone failed every repository that simply has no
+  `SOUL.md` — including this one. "There is nothing here to grade" is not "this governance
+  is broken".
+
+  It gates on `score === 0`, not on `conformance === 'none'` the way `secure -b oasb-2`
+  does. A `SOUL.md` declaring a narrow profile and covering a few of its 19 applicable
+  controls scores 14/100 with conformance `none`; failing that would be a policy change
+  about acceptable governance rather than a fix for an exit code that ignored its own
+  output. `--fail-below` remains the flag for a stricter floor, and #390 stays open for
+  whoever decides where that line belongs.
+
 ### Fixed
 
 - **`docs/` and `README.md` are now walked for dead flag citations.** #372's gate reads
@@ -121,40 +139,6 @@ All notable changes to HackMyAgent are documented in this file.
 
   Pinned in both directions: it fails on published `0.26.1` and passes on this build.
 
-### Security
-
-- **`scan-soul` exits 1 when the governance file it found conforms to nothing (half of
-  #390).** It reported `Governance 0/100` at exit 0, and `scan-soul --ci exits 0 at 0/100`
-  is named in that issue's title. Measured on `9bd2888`, a `SOUL.md` reading `name: demo`:
-  `0/100` at exit 0 on text, `--ci` and `--json`; now exit 1 on all three.
-
-  Two conditions, and the second matters: a governance file must have been **found**, and
-  its score must be 0. Gating on the score alone failed every repository that simply has no
-  `SOUL.md` — including this one. "There is nothing here to grade" is not "this governance
-  is broken".
-
-  It gates on `score === 0`, not on `conformance === 'none'` the way `secure -b oasb-2`
-  does. A `SOUL.md` declaring a narrow profile and covering a few of its 19 applicable
-  controls scores 14/100 with conformance `none`; failing that would be a policy change
-  about acceptable governance rather than a fix for an exit code that ignored its own
-  output. `--fail-below` remains the flag for a stricter floor, and #390 stays open for
-  whoever decides where that line belongs.
-
-### Known issues
-
-- **`npm install hackmyagent` still reports 3 high advisories, all of them the same one.**
-  `adm-zip <0.6.0` (GHSA-xcpc-8h2w-3j85), reached only through `onnxruntime-node`, which
-  this tool needs for local NanoMind inference. There is no version that resolves clean:
-  `onnxruntime-node@1.27.0` is the latest release and pins `adm-zip: ^0.5.16`, while the
-  patched release is `0.6.0` — outside that caret — and an `overrides` entry here does not
-  reach anyone who installs this package. The extract path carrying the advisory runs in
-  `onnxruntime-node`'s postinstall when it downloads execution-provider binaries; the base
-  package ships those binaries, so that script exits before requiring `adm-zip` on a
-  default install. Recorded with its reasoning and a review date in
-  `scripts/audit-consumer-resolution.mjs`, and the gate fails if it is still waived after
-  that date.
-
-### Fixed
 
 - **Four printed lines told the reader to run a CLI that installing this tool does not give
   them.** `trust` and `trust --audit` cited `ai-trust check <name> --scan-if-missing` and
@@ -200,6 +184,93 @@ All notable changes to HackMyAgent are documented in this file.
     already `Not Passing` and was being held green by `--fail-below` now fails.
   - `check --json` emits no `coverage` object on the registry-only paths (`--no-scan`,
     skill-identifier lookup). The downloaded and not-found paths carry it.
+
+- **`secure` reported `logging` as clear while holding a HIGH finding it had already
+  made.** `LOG-002` read `server.js`, matched `console.log(password` in it, and pushed a
+  failed HIGH. The run then printed:
+
+  ```
+  Security    98/100
+  Checks      … 61 of 61 check groups ran … 2 files read by static checks
+  Categories  git hygiene (1 low) · 16 others clear
+  ```
+
+  Two separate filters dropped it, and fixing either alone left it invisible. The check
+  never recorded WHICH file it matched, and findings without a file path are filtered out
+  as generic advice — so the detection reached neither the output nor the score on any
+  project type. Separately, the whole `LOG-` group was scoped to webapp/api/mcp projects,
+  which removed it from `allFindings` on a library as well.
+
+  `LOG-002` now carries the file and line it matched, and is scoped to every project type:
+  code that logs a password is wrong in a library exactly as much as in an API. The same
+  fixture now reports `Sensitive Data in Logs in server.js:1` and scores 69, identically
+  whether it is detected as a library or an API.
+
+  Bringing the check back into the score made its pattern load-bearing for the first time,
+  so it was tightened at the same time. It no longer fires on an identifier that merely
+  starts with the keyword (`console.log(tokenCount)`), nor on the pattern inside a comment
+  or a string — a comment recording that the bug was removed used to be enough to fail a
+  project. The reported line is counted on the original text rather than a lowercased copy,
+  which is not length-preserving and let a file shift the line number in its own finding.
+
+  **That boundary also narrows detection, in a direction worth knowing.** The check matches
+  the four spellings it always did and now requires the identifier to end there, so
+  `console.log(secretKey)` and `console.log(passwords)` are NOT flagged, and neither are
+  `console.error(password)`, `console.log( password )`, or a match on a line long enough to
+  hit the string-literal walker's iteration cap. None of these reached the output before
+  either — the finding was being dropped for every input — so nothing regresses against
+  0.26.0, but the check is a narrow literal matcher and should not be read as coverage of
+  logged credentials in general. Tracked with the wider class in #426.
+
+  **Expect scores to move on upgrade.** A project containing a logged credential will score
+  LOWER than it did on 0.26.0. The finding was always there; it was never shown.
+
+- **The run now says how many checks failed without being shown.** This is the reason the
+  finding above was invisible rather than merely wrong: a scan that silences a failed check
+  and then prints `61 of 61 check groups ran` and a list of clear categories is
+  indistinguishable from a scan that found nothing.
+
+  On a clean three-file library (`package.json`, `.gitignore`, `index.js`):
+
+  ```
+  Coverage    17 of 25 categories examined · 8 unexamined (read no file) · 45 checks reported an absent mitigation (not shown)
+  ```
+
+  Most silenced checks report the ABSENCE of a mitigation rather than a discovery — "no
+  rate limiting detected" on a library with no HTTP server. That library carries 45 of
+  them, two nominally critical. They are counted, never named per category: they found
+  nothing, so they do not make a `clear` claim false, and listing them by category would be
+  a wall of categories the reader cannot act on.
+
+  A check that MATCHED something and was dropped anyway — because the check does not apply
+  to the detected project type — is different, and that category is now named on an
+  `Unresolved` line instead of being counted as clear. This is not hypothetical: an
+  ordinary library carrying an `mcp.json` that binds a server to `0.0.0.0` scores 98/100
+  with a CRITICAL `NET-001` matched and discarded, because `NET-` is scoped to
+  webapp/api. The finding is still not shown — that is a separate problem, tracked in
+  #426 — but the category no longer claims to be clear:
+
+  ```
+  Unresolved  network
+  Categories  git hygiene (1 low) · 17 others clear
+  ```
+
+  `secure --json` gains `coverage.suppressedFailures` (each silenced detection's identity,
+  never a path or a message) and `coverage.unevidencedFailures` (the count above).
+
+### Known issues
+
+- **`npm install hackmyagent` still reports 3 high advisories, all of them the same one.**
+  `adm-zip <0.6.0` (GHSA-xcpc-8h2w-3j85), reached only through `onnxruntime-node`, which
+  this tool needs for local NanoMind inference. There is no version that resolves clean:
+  `onnxruntime-node@1.27.0` is the latest release and pins `adm-zip: ^0.5.16`, while the
+  patched release is `0.6.0` — outside that caret — and an `overrides` entry here does not
+  reach anyone who installs this package. The extract path carrying the advisory runs in
+  `onnxruntime-node`'s postinstall when it downloads execution-provider binaries; the base
+  package ships those binaries, so that script exits before requiring `adm-zip` on a
+  default install. Recorded with its reasoning and a review date in
+  `scripts/audit-consumer-resolution.mjs`, and the gate fails if it is still waived after
+  that date.
 
 ## [0.26.1] - 2026-08-07
 

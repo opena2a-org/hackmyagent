@@ -146,4 +146,9 @@ export const OBSERVATION_LABEL_WIDTH = 12;
 export const OBSERVATION_LABELS = {
   unexamined: 'Unexamined',
   coverage: 'Coverage',
+  // #421 — categories that ran a check which did not pass, where the result
+  // was not shown because it carried no evidence to point at. Neither `clear`
+  // nor a finding. Without a name for that third state, withdrawing the
+  // `clear` claim would just leave an unexplained gap in the tally.
+  unresolved: 'Unresolved',
 } as const;
