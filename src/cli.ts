@@ -155,6 +155,7 @@ async function settleCheckVerdict(verdict: CheckVerdict): Promise<void> {
 const telemetryStartedAt = new Map<string, number>();
 import { getTaxonomyMap, getCheckCounts } from './hardening/taxonomy';
 import { deriveCheckVerdict, type CheckVerdict } from './check/verdict';
+import { quickScanCoverage } from './check/quick-scan-coverage';
 import {
   summarizeCoverage,
   SEMANTIC_PREFIXES,
@@ -520,6 +521,15 @@ Examples:
             critical: critical.length,
             high: high.length,
             risk: verdict.risk,
+            // #388 — the machine channel discloses the same reduced scope the
+            // text channel does, on the key `secure --json` already uses.
+            coverage: quickScanCoverage({
+              compiledArtifacts: nmResult.compiledArtifacts,
+              compileSetTruncated: nmResult.compileSetTruncated,
+              observedCheckIds: issues.map((f: any) => f.checkId),
+              staticCheckCount: CHECK_COUNTS.static,
+              fullAuditTarget: citationTarget(skill),
+            }),
             details: issues,
           });
           return;
