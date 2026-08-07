@@ -2,6 +2,75 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [Unreleased]
+
+### Security
+
+- **Installing HackMyAgent no longer resolves a second, nine-month-old copy of itself, and
+  drops one of the four high advisories a consumer inherited.** Measured on a fresh
+  `npm init -y` tree, published `0.26.1` versus this build:
+
+  ```
+                                 0.26.1   this build
+  npm audit --audit-level=high   4 high   3 high
+  nested hackmyagent             0.17.11  none
+  ```
+
+  `hackmyagent` declared a runtime dependency on `ai-trust`, which depends back on
+  `hackmyagent@0.17.11`. Every consumer resolved that copy, and its deprecation notice —
+  describing defects in a version they never asked for and could not easily tell they were
+  not running — was the first screen after install. The dependency was never imported:
+  there was no `require`, no `import` and no subprocess call to it anywhere in `src/`. The
+  Registry lookups behind `trust` were already this tool's own code.
+
+  HackMyAgent is standalone. Nothing an `ai-trust` user wants is behind a second install:
+  `hackmyagent trust <package>` is the registry lookup, `hackmyagent trust --audit <file>`
+  audits a dependency file, and `hackmyagent check <package>` scans one.
+
+- **The dependency audit gate now measures the tree a consumer resolves, not this repo's
+  lockfile.** The gate added in 0.26.0 ran `npm audit --package-lock-only` here and
+  reported `0`. That number was correct and it was not the number a user got, because the
+  `overrides` block that produced it is not published — npm applies `overrides` only to the
+  tree that declares them, so the artifact being audited was never the artifact being
+  shipped. 0.26.0 added that gate because "nothing in CI would have caught either
+  recurrence"; this was the same blind spot one level out, and the gate could not see it.
+
+  `npm run audit:consumer` packs the repo, resolves the tarball as a dependency of an empty
+  scratch package, and audits that. It fails on any high or critical advisory not named in
+  an explicit allowlist, on an allowlist entry that no longer matches or has passed its
+  review date, and on any nested copy of `hackmyagent` at any version. It installs nothing
+  and runs no package's scripts, so it is safe on pull requests from forks for the same
+  reason the original job is.
+
+  Pinned in both directions: it fails on published `0.26.1` and passes on this build.
+
+### Known issues
+
+- **`npm install hackmyagent` still reports 3 high advisories, all of them the same one.**
+  `adm-zip <0.6.0` (GHSA-xcpc-8h2w-3j85), reached only through `onnxruntime-node`, which
+  this tool needs for local NanoMind inference. There is no version that resolves clean:
+  `onnxruntime-node@1.27.0` is the latest release and pins `adm-zip: ^0.5.16`, while the
+  patched release is `0.6.0` — outside that caret — and an `overrides` entry here does not
+  reach anyone who installs this package. The extract path carrying the advisory runs in
+  `onnxruntime-node`'s postinstall when it downloads execution-provider binaries; the base
+  package ships those binaries, so that script exits before requiring `adm-zip` on a
+  default install. Recorded with its reasoning and a review date in
+  `scripts/audit-consumer-resolution.mjs`, and the gate fails if it is still waived after
+  that date.
+
+### Fixed
+
+- **Four printed lines told the reader to run a CLI that installing this tool does not give
+  them.** `trust` and `trust --audit` cited `ai-trust check <name> --scan-if-missing` and
+  `ai-trust audit <file> --scan-missing`. A dependency does not put its `bin` on a
+  consumer's PATH, so those never ran for anyone who installed only `hackmyagent` — they
+  were dead ends before the dependency was removed and unambiguous ones after. They now
+  cite `check` and `trust`, which this tool registers.
+
+  The #372 gate did not catch them because `ai-trust` was on its foreign-executable skip
+  list, which exists for command lines that genuinely belong to another tool. It came off
+  that list, so the gate now covers this class.
+
 ## [0.26.1] - 2026-08-07
 
 ### Security
