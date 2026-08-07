@@ -64,9 +64,26 @@ rather than claimed as closed.
 - **`attack` probes the target once before sending the suite.** An unreachable endpoint
   used to be discovered 111 times, once per payload, in a `catch` whose result the scorer
   could not tell apart from a blocked attack — 111 refused connections scored as 111
-  defences held. The liveness precondition sits above the scorer, so the same run now
-  costs one request instead of the whole battery: measured at 111 seconds before, ~1
-  second after.
+  defences held. The liveness precondition sits above the scorer, so an endpoint that
+  fails to resolve now costs one request instead of the whole battery.
+
+  Both shapes measured against published `0.26.1`, same machine:
+
+  ```
+                              0.26.1                          0.27.0
+  host does not resolve       0/100 (SECURE)  exit 0   112s    NOT MEASURED  exit 2    0s
+  connection refused          0/100 (SECURE)  exit 0   111s    NOT MEASURED  exit 2  112s
+  ```
+
+  **The verdict is withheld in both shapes; only the DNS shape got faster.** The probe
+  catches `ENOTFOUND` before any payload is sent. A refused connection is not caught by
+  it — the run still sends all 111 payloads and takes about as long as it did on
+  `0.26.1` — and the verdict is withheld by a second gate downstream, which counts how
+  many payloads were answered and reports `NOT MEASURED — No payload reached <url>: 111
+  sent, 0 answered.` The safety property is the same either way and it is the one that
+  matters here: neither shape can report `SECURE` any more. The cost is not the same, and
+  a CI job pointed at a refused port still waits about two minutes to be told nothing was
+  measured. Tracked in #444.
 
 - **`attack --local` reports no risk score, because it never measured one.** It returned
   the same `2/100 (LOW)` for a jailbreak prompt, a hardened prompt and an empty file, and
