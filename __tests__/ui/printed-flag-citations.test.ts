@@ -201,6 +201,39 @@ describe('#372 the walker sees what it claims to see', () => {
     expect(printedFlagsInMarkdown({ src: prose, file: 'planted.md', verbs })).toEqual([]);
   });
 
+  it('does not let a flag leak across invocations on ONE line', () => {
+    // Adversarial review finding: a line holds several invocations
+    // (`a && b`, `a; b`, `a | b`) and taking every flag after the FIRST verb
+    // attributed the second command's flags to the first. That is a false
+    // citation the gate would then report against the wrong command.
+    for (const sep of ['&&', ';', '|']) {
+      const line = `hackmyagent check ./x ${sep} hackmyagent attack --totally-bogus-flag`;
+      const found = printedFlagsInMarkdown({ src: `\`${line}\``, file: 'planted.md', verbs });
+      const hit = found.find((f) => f.flag === '--totally-bogus-flag');
+      expect(hit, `separator ${sep}: the flag was not found at all`).toBeDefined();
+      expect(hit!.command, `separator ${sep}: attributed to the wrong command`).toBe('attack');
+    }
+  });
+
+  it('reads every code-block form markdown actually uses', () => {
+    // Review finding: only ``` fences were read, so ~~~ fences, indented
+    // blocks and a versioned `npx hackmyagent@latest` launcher were all
+    // invisible — a dead citation in any of them would pass the gate.
+    const cases: Array<[string, string]> = [
+      ['tilde fence', '~~~bash\nhackmyagent check --totally-bogus-flag\n~~~'],
+      ['indented block', 'Run it:\n\n    hackmyagent check --totally-bogus-flag\n'],
+      ['versioned npx', '`npx hackmyagent@latest check --totally-bogus-flag`'],
+      ['bunx launcher', '`bunx hackmyagent check --totally-bogus-flag`'],
+    ];
+    for (const [label, src] of cases) {
+      const found = printedFlagsInMarkdown({ src, file: 'planted.md', verbs });
+      expect(
+        found.find((f) => f.flag === '--totally-bogus-flag')?.command,
+        `${label}: the walker did not read this code form`,
+      ).toBe('check');
+    }
+  });
+
   it('does not let a flag leak across lines of one fenced block', () => {
     // A fenced block holds many invocations. Reading the block as one segment
     // would attribute every flag in it to the first command named.

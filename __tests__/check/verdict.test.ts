@@ -183,8 +183,27 @@ describe('#406/#430 a band cannot be derived over an empty measurement', () => {
       measured: false,
       reason: 'target-unreachable',
       detail: 'nothing answered',
+      attempted: { examined: 0, total: 0, unit: 'payload' },
       exitCode: EXIT_UNMEASURED,
     });
+  });
+
+  it('keeps what was attempted, so 0-of-111 is distinguishable from 0-of-0', () => {
+    // Adversarial review finding: the unmeasured arm carried no coverage, so
+    // `coverageJson` flattened every unmeasured run to `0/0 unit`. A suite that
+    // sent 111 payloads and had none answered then serialized identically to a
+    // run that never started, under a unit no caller used.
+    const sent111 = deriveCheckVerdict(
+      { critical: 0, high: 0 },
+      { examined: 0, total: 111, unit: 'payload' },
+      'no-response',
+      'nothing answered',
+    );
+    const neverStarted = unmeasured('target-unreachable', 'nothing was sent');
+
+    expect(coverageJson(sent111)).toMatchObject({ measured: false, examined: 0, total: 111, unit: 'payload' });
+    expect(coverageJson(neverStarted)).toMatchObject({ measured: false, examined: 0, total: 0 });
+    expect(coverageJson(sent111)).not.toEqual(coverageJson(neverStarted));
   });
 });
 

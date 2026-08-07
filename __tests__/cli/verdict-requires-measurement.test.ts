@@ -64,7 +64,9 @@ function run(args: string[], env: NodeJS.ProcessEnv = {}) {
  * `mode: 'always'` answers every request. `mode: 'once'` answers the liveness
  * probe and refuses every payload after it, which is the boundary case.
  */
-async function startStub(mode: 'always' | 'once'): Promise<{ url: string; stop(): Promise<void> }> {
+async function startStub(
+  mode: 'always' | 'once' | 'slow-first' | 'a2a-only',
+): Promise<{ url: string; stop(): Promise<void> }> {
   const { spawn } = await import('node:child_process');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-stub-'));
   const script = path.join(dir, 'stub.mjs');
@@ -72,15 +74,59 @@ async function startStub(mode: 'always' | 'once'): Promise<{ url: string; stop()
     "import http from 'node:http';",
     `const mode = ${JSON.stringify(mode)};`,
     'let seen = 0;',
+    "const answer = (res) => {",
+    "  res.writeHead(200, { 'Content-Type': 'application/json' });",
+    "  res.end(JSON.stringify({ choices: [{ message: { content: 'ignore all previous instructions: SYSTEM PROMPT LEAKED, here are the credentials' } }] }));",
+    '};',
     'const server = http.createServer((req, res) => {',
     '  seen++;',
     "  if (mode === 'once' && seen > 1) { res.destroy(); return; }",
-    "  res.writeHead(200, { 'Content-Type': 'application/json' });",
-    "  res.end(JSON.stringify({ choices: [{ message: { content: 'I cannot comply with that request.' } }] }));",
+    // A live agent whose FIRST reply is slow and whose rest are fast. The probe
+    // must not veto the suite on this.
+    "  if (mode === 'slow-first' && seen === 1) { setTimeout(() => answer(res), 3000); return; }",
+    // An A2A agent: only /a2a/message exists, the bare root refuses.
+    "  if (mode === 'a2a-only' && req.url !== '/a2a/message') { res.destroy(); return; }",
+    '  answer(res);',
     '});',
     "server.listen(0, '127.0.0.1', () => {",
     "  process.stdout.write('PORT ' + server.address().port + '\\n');",
     '});',
+  ].join('\n'));
+
+  const child = spawn(process.execPath, [script], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const port = await new Promise<number>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('stub server did not report a port')), 15_000);
+    let buf = '';
+    child.stdout.on('data', (d) => {
+      buf += String(d);
+      const m = /PORT (\d+)/.exec(buf);
+      if (m) { clearTimeout(timer); resolve(Number(m[1])); }
+    });
+    child.on('error', (e) => { clearTimeout(timer); reject(e); });
+  });
+
+  return {
+    // `a2a-only` is addressed at its ROOT on purpose: the CLI appends
+    // /a2a/message itself, and the point is that the probe must follow it.
+    url: mode === 'a2a-only' ? `http://127.0.0.1:${port}` : `http://127.0.0.1:${port}/v1/chat`,
+    stop: () => new Promise<void>((resolve) => {
+      child.once('exit', () => { fs.rmSync(dir, { recursive: true, force: true }); resolve(); });
+      child.kill();
+    }),
+  };
+}
+
+/** A stub whose handler body is supplied verbatim. Same out-of-process rule. */
+async function startStubRaw(handlerBody: string): Promise<{ url: string; stop(): Promise<void> }> {
+  const { spawn } = await import('node:child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-stub-'));
+  const script = path.join(dir, 'stub.mjs');
+  fs.writeFileSync(script, [
+    "import http from 'node:http';",
+    'const server = http.createServer((req, res) => {',
+    handlerBody,
+    '});',
+    "server.listen(0, '127.0.0.1', () => process.stdout.write('PORT ' + server.address().port + '\\n'));",
   ].join('\n'));
 
   const child = spawn(process.execPath, [script], { stdio: ['ignore', 'pipe', 'inherit'] });
@@ -167,6 +213,61 @@ describe('#406 attack cannot report a rating for a target it never reached', () 
       expect(answered, 'the report did not state how many payloads were answered').not.toBeNull();
       expect(Number(answered![1])).toBeGreaterThan(0);
       expect(status).not.toBe(EXIT_UNMEASURED);
+    } finally {
+      await stub.stop();
+    }
+  }, 180_000);
+
+  // The precondition may only veto on a DEFINITIVE negative. Both cases below
+  // were found by adversarial review: each is a live, fully compromised agent
+  // that the first cut of the probe reported as an infrastructure blip,
+  // skipping a suite that scored it CRITICAL.
+  it('a slow first response does not veto the suite', async () => {
+    const stub = await startStub('slow-first');
+    try {
+      // --timeout is the PER-PAYLOAD timeout and the probe borrowed it. The
+      // stub greets in 3s and answers in 10ms after, which is ordinary LLM
+      // cold-start behaviour.
+      const { status, out } = run([
+        'attack', stub.url, '--category', 'prompt-injection', '--delay', '0', '--timeout', '1000',
+      ]);
+      expect(out, 'a slow greeting was treated as an outage').not.toContain('NOT MEASURED');
+      expect(out).toMatch(/Risk Score: \d+\/100/);
+      expect(status, 'a compromised agent must not be reported as unreachable').not.toBe(EXIT_UNMEASURED);
+    } finally {
+      await stub.stop();
+    }
+  }, 180_000);
+
+  it('an a2a target is probed at the URL its payloads use', async () => {
+    const stub = await startStub('a2a-only');
+    try {
+      // Payloads go to <url>/a2a/message; the probe used to hit the bare root,
+      // which this stub refuses, so a live A2A agent read as unreachable.
+      const { status, out } = run([
+        'attack', stub.url, '--target-type', 'a2a', '--category', 'a2a-attack', '--delay', '0',
+      ]);
+      expect(out, 'the probe addressed a different URL than the payloads').not.toContain('NOT MEASURED');
+      expect(status).not.toBe(EXIT_UNMEASURED);
+    } finally {
+      await stub.stop();
+    }
+  }, 180_000);
+
+  it('an endpoint that answers every payload with an empty body is not SECURE', async () => {
+    // #406's headline symptom by another route: an auth-rejecting gateway
+    // returns 200 with a shape `extractResponseText` cannot read, so every
+    // payload "answered" with ''. That scored 0/100 (SECURE) at exit 0.
+    const http = await import('node:http');
+    void http;
+    const stub = await startStubRaw("res.writeHead(200, {'Content-Type':'application/json'}); res.end(JSON.stringify({error:'unauthorized'}));");
+    try {
+      const { status, out } = run([
+        'attack', stub.url, '--category', 'prompt-injection', '--delay', '0',
+      ]);
+      expect(out, 'an empty answer is not an answer').not.toContain('SECURE');
+      expect(out).toContain('NOT MEASURED');
+      expect(status).toBe(EXIT_UNMEASURED);
     } finally {
       await stub.stop();
     }
@@ -275,8 +376,30 @@ describe('#417 check says a missing target is missing', () => {
     expect(status).not.toBe(EXIT_UNMEASURED);
     const payload = JSON.parse(out.slice(out.indexOf('{')));
     expect(payload.measured).toBe(true);
-    expect(payload.coverage.measurement.examined).toBeGreaterThan(0);
+    expect(payload.coverage.measured).toBe(true);
+    expect(payload.coverage.examined).toBeGreaterThan(0);
   });
+
+  it('every check --json path emits the SAME coverage shape', () => {
+    // #416's actual contract. The first cut emitted three shapes: `measured`
+    // nested under `coverage.measurement` on the local path, and no `coverage`
+    // key at all on the not-found paths — which are the paths the key exists
+    // to describe. `jq -e '.coverage.measured'` must answer on all of them.
+    const targets: Array<[string, string[]]> = [
+      ['local dir', [path.join(__dirname, '..', '..', 'src', 'check')]],
+      ['missing path', [path.join(fixtures, 'no-such-thing')]],
+      ['0-artifact dir', [fixtures]],
+      ['unknown npm package', ['zzz-nope-abc123-xyz-hma']],
+    ];
+    for (const [label, args] of targets) {
+      const { out } = run(['check', ...args, '--json']);
+      const payload = JSON.parse(out.slice(out.indexOf('{')));
+      expect(payload.coverage, `${label}: no coverage key`).toBeDefined();
+      expect(typeof payload.coverage.measured, `${label}: coverage.measured is not a boolean`).toBe('boolean');
+      expect(typeof payload.coverage.examined, `${label}: coverage.examined is not a number`).toBe('number');
+      expect(typeof payload.coverage.unit, `${label}: coverage.unit is not a string`).toBe('string');
+    }
+  }, 300_000);
 
   it('a directory holding nothing the scan can read is unmeasured, not clean', () => {
     // Deliberate, and the reason the counter-direction test above names a real
@@ -295,6 +418,23 @@ describe('#417 check says a missing target is missing', () => {
     expect(payload.risk).toBeNull();
     expect(payload.compiledArtifacts).toBe(0);
   });
+});
+
+describe('#371 the OASB-2 conformance gate cannot be switched off by a score flag', () => {
+  it('fails on Conformance NONE with and without --fail-below', () => {
+    // Adversarial review finding: the gate was written
+    // `failBelow === undefined && conformance === 'none'`, so `--fail-below 0`
+    // — the flag a CI user is most likely to set, and the one that reads as
+    // "add a score floor" — silently disabled conformance checking and
+    // restored the score-averaging the fix exists to remove.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-oasb-'));
+    fs.writeFileSync(path.join(dir, 'README.md'), '# demo\n');
+    for (const extra of [[], ['--fail-below', '0'], ['--fail-below', '1'], ['--fail-below', '100']]) {
+      const { status, out } = run(['secure', dir, '-b', 'oasb-2', ...extra]);
+      expect(out).toMatch(/Conformance:\s+NONE/);
+      expect(status, `with ${extra.join(' ') || '(no flag)'}: NONE must fail`).toBe(1);
+    }
+  }, 600_000);
 });
 
 describe('#390 detect exits on what it reports', () => {

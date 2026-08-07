@@ -153,6 +153,21 @@ async function settleCheckVerdict(verdict: CheckVerdict): Promise<void> {
 }
 
 /**
+ * The `coverage` object a not-found target reports.
+ *
+ * #416/#417 — the not-found arms emitted no `coverage` key at all, so
+ * `jq -e '.coverage.measured'` returned null on exactly the case the key
+ * exists to describe. `measured` is present and boolean on every `check --json`
+ * payload now, found or not.
+ */
+function notFoundCoverage(target: string, ecosystem: string) {
+  return coverageJson(unmeasured(
+    'target-not-found',
+    `${escapeForDisplay(target)} was not found on ${escapeForDisplay(ecosystem)}, so nothing was scanned.`,
+  ));
+}
+
+/**
  * The verdict for a downloaded remote target — npm, PyPI, GitHub, raw URL.
  *
  * #416 — these four paths derived a risk band from severity counts alone and
@@ -607,6 +622,12 @@ Examples:
             // text channel does, on the key `secure --json` already uses.
             // #416 — plus the measurement the verdict was derived from, so a
             // consumer can tell "clean" from "never looked" without prose.
+            //
+            // `coverageJson` is spread FIRST so `measured`/`examined`/`unit`
+            // sit at the same depth here as on every other path. Nesting them
+            // under a `measurement` sub-key made this the one payload where
+            // `.coverage.measured` was undefined — three shapes for one
+            // documented contract.
             coverage: {
               ...quickScanCoverage({
                 compiledArtifacts: nmResult.compiledArtifacts,
@@ -615,7 +636,7 @@ Examples:
                 staticCheckCount: CHECK_COUNTS.static,
                 fullAuditTarget: skill,
               }),
-              measurement: coverageJson(verdict),
+              ...coverageJson(verdict),
             },
             details: issues,
           });
@@ -681,12 +702,15 @@ Examples:
             if (!isScoped) {
               const errorHint = `Verify the URL: https://www.npmjs.com/package/${skill}`;
               if (options.json) {
-                writeJsonStdout(buildNotFoundOutput({
-                  name: skill,
-                  ecosystem: 'npm',
-                  error: `Package "${skill}" not found on npm.`,
-                  errorHint,
-                }));
+                writeJsonStdout({
+                  ...buildNotFoundOutput({
+                    name: skill,
+                    ecosystem: 'npm',
+                    error: `Package "${skill}" not found on npm.`,
+                    errorHint,
+                  }),
+                  coverage: notFoundCoverage(skill, 'npm'),
+                });
               } else {
                 printNotFoundBlock({ pkg: skill, ecosystem: 'npm', errorHint });
               }
@@ -4362,11 +4386,6 @@ Examples:
           process.stdout.write('\n');
         }
 
-        if (failBelow !== undefined && compositeScore < failBelow) {
-          console.error(`Composite score ${compositeScore} is below threshold ${failBelow}`);
-          process.exit(1);
-        }
-
         // #371 — the composite path had no default gate at all, so
         // `secure -b oasb-2` exited 0 at `Conformance: NONE` while
         // `secure -b oasb-1` exited 1 on the same tree. The stricter benchmark
@@ -4378,12 +4397,23 @@ Examples:
         // conforming. Gating on the composite SCORE instead would let a high
         // infrastructure score carry a governance failure over the line, which
         // is the averaging that made 27/100 look survivable.
-        if (failBelow === undefined && govResult.conformance === 'none') {
+        //
+        // Checked BEFORE `--fail-below` and independently of it. The first cut
+        // wrote `failBelow === undefined &&`, which meant `--fail-below 0` —
+        // the flag a CI user is most likely to set, and the one that reads as
+        // "add a score floor" — silently switched the conformance gate off and
+        // restored the exact averaging the paragraph above rejects.
+        const conformanceFails = govResult.conformance === 'none';
+        if (conformanceFails) {
           console.error(
             `OASB-2 conformance is NONE. Exiting 1 per "non-compliant in benchmark mode".`,
           );
+        }
+        if (failBelow !== undefined && compositeScore < failBelow) {
+          console.error(`Composite score ${compositeScore} is below threshold ${failBelow}`);
           process.exit(1);
         }
+        if (conformanceFails) process.exit(1);
         return;
       }
 
@@ -5291,15 +5321,24 @@ Examples:
       // critical/high issues found"; the `--json` branch returned before the
       // statement that kept it, measured `text=1 json=0` on the same target.
       // Settled here, above the channel branch.
-      await settleCheckVerdict(remoteCheckVerdict(result, {
+      // The verdict is settled above the channel branch AND its unmeasured
+      // arm short-circuits the renderers, the same as every other site. The
+      // first cut settled the exit code here and let both renderers run, so
+      // `secure-openclaw <empty dir>` exited 2 while printing
+      // "Risk Level: None · No OpenClaw-specific issues found" — recreating
+      // exactly the exit-code-disagrees-with-the-page defect (#373) that the
+      // commit above it cites.
+      const ocVerdict = remoteCheckVerdict(result, {
         critical: issues.filter((f: SecurityFinding) => f.severity === 'critical').length,
         high: issues.filter((f: SecurityFinding) => f.severity === 'high').length,
-      }, targetDir));
+      }, targetDir);
+      await settleCheckVerdict(ocVerdict);
 
       if (options.json) {
         const jsonOutput = {
           target: targetDir,
-          riskLevel: assessRiskLevel(issues).level,
+          riskLevel: ocVerdict.measured ? assessRiskLevel(issues).level : null,
+          coverage: coverageJson(ocVerdict),
           totalChecks: allOpenClawFindings.length,
           issues: issues.length,
           fixed: fixedFindings.length,
@@ -5307,6 +5346,11 @@ Examples:
           findings: allOpenClawFindings,
         };
         writeJsonStdout(jsonOutput);
+        return;
+      }
+
+      if (!ocVerdict.measured) {
+        console.error(unmeasuredBanner(ocVerdict));
         return;
       }
 
@@ -5521,21 +5565,30 @@ Examples:
 
       // #373, same class as `check` and `secure-openclaw`. Measured
       // `text=1 json=0` on the same target before this line existed.
-      await settleCheckVerdict(remoteCheckVerdict(result, {
+      // Settled above the channel branch, and its unmeasured arm short-circuits
+      // both renderers — see the equivalent comment in `secure-openclaw`.
+      const ncVerdict = remoteCheckVerdict(result, {
         critical: issues.filter((f: SecurityFinding) => f.severity === 'critical').length,
         high: issues.filter((f: SecurityFinding) => f.severity === 'high').length,
-      }, targetDir));
+      }, targetDir);
+      await settleCheckVerdict(ncVerdict);
 
       if (options.json) {
         const jsonOutput = {
           target: targetDir,
-          riskLevel: assessNemoClawRiskLevel(issues).level,
+          riskLevel: ncVerdict.measured ? assessNemoClawRiskLevel(issues).level : null,
+          coverage: coverageJson(ncVerdict),
           totalChecks: mergedFindings.length,
           issues: issues.length,
           passed: passedFindings.length,
           findings: mergedFindings,
         };
         writeJsonStdout(jsonOutput);
+        return;
+      }
+
+      if (!ncVerdict.measured) {
+        console.error(unmeasuredBanner(ncVerdict));
         return;
       }
 
@@ -6233,7 +6286,12 @@ Examples:
       let output: string;
       switch (format) {
         case 'json':
-          output = JSON.stringify(report, null, 2);
+          // Same `coverage` shape `check` and `detect` emit, so one `jq` query
+          // answers "was this measured" across all three. Without it `attack`
+          // was the odd one out: a consumer had to read `riskRating` for the
+          // string 'unmeasured', and the pre-existing `riskScore: 0` beside it
+          // reads as a clean result.
+          output = JSON.stringify({ ...report, coverage: coverageJson(report.verdict) }, null, 2);
           break;
         case 'sarif':
           output = generateAttackSarif(report);
@@ -10709,12 +10767,15 @@ async function checkGitHubRepo(
     // intended not-found JSON, leaving stdout empty.
     const errorHint = `Verify the URL: https://github.com/${displayName}`;
     if (options.json) {
-      writeJsonStdout(buildNotFoundOutput({
-        name: displayName,
-        ecosystem: 'github',
-        error: `Repository "${displayName}" not found in the OpenA2A Registry.`,
-        errorHint,
-      }));
+      writeJsonStdout({
+        ...buildNotFoundOutput({
+          name: displayName,
+          ecosystem: 'github',
+          error: `Repository "${displayName}" not found in the OpenA2A Registry.`,
+          errorHint,
+        }),
+        coverage: notFoundCoverage(displayName, 'the OpenA2A Registry'),
+      });
     } else {
       printNotFoundBlock({ pkg: displayName, ecosystem: 'github', errorHint });
     }
@@ -10880,12 +10941,15 @@ async function checkGitHubRepo(
     if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
       const errorHint = `Verify the URL: https://github.com/${displayName}`;
       if (options.json) {
-        writeJsonStdout(buildNotFoundOutput({
-          name: displayName,
-          ecosystem: 'github',
-          error: `Repository "${displayName}" not found on GitHub.`,
-          errorHint,
-        }));
+        writeJsonStdout({
+          ...buildNotFoundOutput({
+            name: displayName,
+            ecosystem: 'github',
+            error: `Repository "${displayName}" not found on GitHub.`,
+            errorHint,
+          }),
+          coverage: notFoundCoverage(displayName, 'GitHub'),
+        });
       } else {
         printNotFoundBlock({
           pkg: displayName,
@@ -10981,15 +11045,18 @@ async function checkPyPiPackage(
     // --no-scan with no Registry hit: emit a not-found block in the same
     // shape as the PyPI 404 path below, then return without scanning.
     if (options.json) {
-      writeJsonStdout(buildNotFoundOutput({
-        name,
-        ecosystem: 'pypi',
-        error: `Package "${name}" not found in the OpenA2A Registry.`,
-      }));
+      writeJsonStdout({
+        ...buildNotFoundOutput({
+          name,
+          ecosystem: 'pypi',
+          error: `Package "${name}" not found in the OpenA2A Registry.`,
+        }),
+        coverage: notFoundCoverage(name, 'the OpenA2A Registry'),
+      });
     } else {
       printNotFoundBlock({ pkg: name, ecosystem: 'pypi' });
     }
-    process.exitCode = 2;
+    process.exitCode = EXIT_UNMEASURED;
     return;
   }
 
@@ -11010,11 +11077,14 @@ async function checkPyPiPackage(
     if (!metaRes.ok) {
       if (metaRes.status === 404) {
         if (options.json) {
-          writeJsonStdout(buildNotFoundOutput({
-            name,
-            ecosystem: 'pypi',
-            error: `Package "${name}" not found on PyPI.`,
-          }));
+          writeJsonStdout({
+            ...buildNotFoundOutput({
+              name,
+              ecosystem: 'pypi',
+              error: `Package "${name}" not found on PyPI.`,
+            }),
+            coverage: notFoundCoverage(name, 'PyPI'),
+          });
         } else {
           printNotFoundBlock({ pkg: name, ecosystem: 'pypi' });
         }
@@ -11606,13 +11676,16 @@ async function checkNpmPackage(
       const translated = translateDownloadError(name, message);
       if (translated && (translated.errorHint || translated.suggestions)) {
         if (options.json) {
-          writeJsonStdout(buildNotFoundOutput({
-            name,
-            ecosystem: 'npm',
-            error: translated.errorHint,
-            errorHint: translated.errorHint,
-            suggestions: translated.suggestions,
-          }));
+          writeJsonStdout({
+            ...buildNotFoundOutput({
+              name,
+              ecosystem: 'npm',
+              error: translated.errorHint,
+              errorHint: translated.errorHint,
+              suggestions: translated.suggestions,
+            }),
+            coverage: notFoundCoverage(name, 'npm'),
+          });
         } else {
           printNotFoundBlock({
             pkg: name,

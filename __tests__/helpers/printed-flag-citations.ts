@@ -339,16 +339,27 @@ export function printedFlagsInMarkdown(opts: {
   // Code regions: fenced blocks, then inline spans. Offsets are kept so a
   // finding reports the line the reader would open.
   const regions: Array<{ body: string; start: number }> = [];
-  for (const m of src.matchAll(/```[^\n]*\n([\s\S]*?)```/g)) {
+  // ``` and ~~~ are both fences in CommonMark; reading only the first left
+  // every ~~~ block unwalked.
+  for (const m of src.matchAll(/(?:```|~~~)[^\n]*\n([\s\S]*?)(?:```|~~~)/g)) {
     regions.push({ body: m[1], start: m.index! + m[0].indexOf('\n') + 1 });
+  }
+  // Indented code blocks (four spaces) are the third form, and README files in
+  // this tree use them. Consecutive indented lines are one region.
+  for (const m of src.matchAll(/(?:^|\n)((?: {4}|\t)[^\n]*(?:\n(?: {4}|\t)[^\n]*)*)/g)) {
+    regions.push({ body: m[1], start: m.index! + m[0].indexOf(m[1]) });
   }
   for (const m of src.matchAll(/`([^`\n]+)`/g)) {
     regions.push({ body: m[1], start: m.index! + 1 });
   }
 
   for (const region of regions) {
-    // One invocation per line: a fenced block holds many, and flags must not
-    // leak across them the way they would if the whole block were one segment.
+    // One invocation per line, and a line can hold SEVERAL — `a && b`, `a; b`,
+    // `a | b`. Scanning a line once and taking every flag after the first verb
+    // attributed the second command's flags to the first, so
+    // `hackmyagent check ./x && hackmyagent attack --bogus` reported `--bogus`
+    // against `check`. Every invocation on the line is matched, and each owns
+    // only the flags up to where the next one starts.
     let cursor = 0;
     for (const rawLine of region.body.split('\n')) {
       const lineStart = region.start + cursor;
@@ -357,25 +368,36 @@ export function printedFlagsInMarkdown(opts: {
       // Strip a shell prompt so `$ hackmyagent check --json` reads the same as
       // the bare form.
       const line = rawLine.replace(/^\s*\$\s*/, '');
-      const invocation = /(?:^|[\s|;&(])(?:hackmyagent|hma|npx\s+hackmyagent)\s+([a-z][a-z0-9-]*)/.exec(line);
-      if (!invocation) continue;
-      const verb = invocation[1];
-      if (!verbs.has(verb)) continue;
+      const invocations = [...line.matchAll(
+        // `npx hackmyagent@latest` and `pnpm dlx hackmyagent` are the same
+        // invocation with a different launcher; a version suffix is not a
+        // different tool.
+        /(?:^|[\s|;&(])(?:(?:npx|pnpm dlx|bunx)\s+)?(?:hackmyagent|hma)(?:@[\w.\-]+)?\s+([a-z][a-z0-9-]*)/g,
+      )];
 
-      // Flags after the verb only. A flag before it belongs to another program
-      // in a pipeline.
-      const tail = line.slice(invocation.index + invocation[0].length);
-      for (const fm of tail.matchAll(/(?:^|\s)(--[a-z][a-z0-9-]+)/g)) {
-        const at = invocation.index + invocation[0].length + fm.index! + fm[0].indexOf('--');
-        const lineIdx = lineOf(lineStart + at);
-        found.push({
-          file: rel,
-          line: lineIdx + 1,
-          flag: fm[1],
-          command: verb,
-          inferred: false,
-          text: src.slice(lineStarts[lineIdx], lineStarts[lineIdx + 1] ?? src.length).trim().slice(0, 160),
-        });
+      for (let i = 0; i < invocations.length; i++) {
+        const invocation = invocations[i];
+        const verb = invocation[1];
+        if (!verbs.has(verb)) continue;
+
+        // Flags after this verb and before the NEXT invocation. A flag before
+        // the verb belongs to another program in a pipeline.
+        const from = invocation.index! + invocation[0].length;
+        const to = invocations[i + 1]?.index ?? line.length;
+        const tail = line.slice(from, to);
+
+        for (const fm of tail.matchAll(/(?:^|\s)(--[a-z][a-z0-9-]+)/g)) {
+          const at = from + fm.index! + fm[0].indexOf('--');
+          const lineIdx = lineOf(lineStart + at);
+          found.push({
+            file: rel,
+            line: lineIdx + 1,
+            flag: fm[1],
+            command: verb,
+            inferred: false,
+            text: src.slice(lineStarts[lineIdx], lineStarts[lineIdx + 1] ?? src.length).trim().slice(0, 160),
+          });
+        }
       }
     }
   }

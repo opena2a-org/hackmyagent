@@ -19,7 +19,7 @@ import { clampScoreToVerdictBand, clampDisclosure, isFailDirection } from '../ui
 import { citationTarget as safeCitationTarget, citationPath } from '../ui/shell-quote';
 import { escapePathForDisplay, escapeForDisplay } from '../ui/display-safe';
 import { findPermissionGrant } from './permission-grant';
-import { deriveCheckVerdict, fullCoverage, unmeasuredBanner, coverageJson } from '../check/verdict';
+import { deriveCheckVerdict, fullCoverage, unmeasuredBanner, coverageJson, unmeasured, EXIT_UNMEASURED } from '../check/verdict';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1582,8 +1582,17 @@ export async function detect(options: DetectOptions): Promise<number> {
   try {
     fs.accessSync(dir, fs.constants.R_OK);
   } catch {
-    process.stderr.write(`Cannot access directory: ${escapePathForDisplay(dir)}\n`);
-    return 1;
+    // Unreadable target: nothing was examined, so this is 2 and not 1. Exit 1
+    // here would tell a CI consumer `detect` found a high-severity issue in a
+    // directory it could not open. This is the only path that reaches the
+    // unmeasured arm.
+    process.stderr.write(
+      `${unmeasuredBanner(unmeasured(
+        'target-unreadable',
+        `${escapePathForDisplay(dir)} could not be read, so nothing was scanned.`,
+      ))}\n`,
+    );
+    return EXIT_UNMEASURED;
   }
 
   const agents     = scanProcesses();
@@ -1688,23 +1697,32 @@ export async function detect(options: DetectOptions): Promise<number> {
   // settles there (#373): a `return` inside a renderer must not be able to
   // change the exit code.
   //
-  // The coverage unit is the surfaces this run inspected. Machine-wide
-  // discovery always runs, so a tree with no AI tooling still examined
-  // something and gets a measured, passing verdict — the honest answer there
-  // is "nothing found", not "could not tell". Zero is reachable only when the
-  // scan itself found no surface to look at.
-  const surfacesExamined =
-    result.agents.length + result.mcpServers.length + result.aiConfigs.length
-    + (soul.file ? 1 : 0);
+  // The coverage unit is the number of DISCOVERY PASSES that ran, not the
+  // number of things they found.
+  //
+  // The first cut summed `agents.length + mcpServers.length + aiConfigs.length`
+  // — a count of findings wearing a coverage label. On a host with no AI
+  // tooling every term is 0, so the honest answer "I examined four surfaces and
+  // found nothing" would have been reported as `NOT MEASURED` at exit 2, which
+  // collapses "clean" into "cannot tell" and makes `detect` useless as the
+  // no-shadow-AI CI gate it is for. The comment claimed the opposite of what
+  // the expression did.
+  //
+  // These four passes are unconditional (see the calls above), so this is 4 on
+  // every run that got here — which is correct: `detect` genuinely did examine
+  // four surfaces. The unmeasured arm is reachable only via the early return
+  // above, when the target directory cannot be read at all.
+  const SURFACES_EXAMINED = 4;
+  // No empty-reason argument: with a constant, non-zero coverage this cannot
+  // take the unmeasured arm, and passing a reason that can never be reported
+  // would be a claim no code path can keep.
   const verdict = deriveCheckVerdict(
     {
       critical: result.findings.filter((f) => f.severity === 'critical').length,
       high: result.findings.filter((f) => f.severity === 'high').length,
       issues: result.findings.length,
     },
-    fullCoverage(surfacesExamined, 'surface'),
-    'nothing-to-examine',
-    `No AI agent, MCP server, AI config or governance file was found on this machine or under ${escapePathForDisplay(dir)}, so no governance posture can be reported.`,
+    fullCoverage(SURFACES_EXAMINED, 'surface'),
   );
 
   if (options.format === 'json') {

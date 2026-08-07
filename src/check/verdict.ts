@@ -136,6 +136,16 @@ export interface UnmeasuredVerdict {
    * Callers pass an already-escaped string when it embeds a path or a URL.
    */
   readonly detail: string;
+  /**
+   * What the run TRIED to examine, when it got that far. `examined` is 0 by
+   * definition on this arm; `total` and `unit` are the information that would
+   * otherwise be lost.
+   *
+   * Without this, a run that sent 111 payloads and had none answered
+   * serialized as `{examined: 0, total: 0, unit: 'unit'}` — indistinguishable
+   * from a run that never started, and reporting a unit no caller used.
+   */
+  readonly attempted?: Coverage;
   readonly exitCode: typeof EXIT_UNMEASURED;
 }
 
@@ -152,8 +162,12 @@ export function fullCoverage(examined: number, unit: string): Coverage {
 }
 
 /** A run that could not measure. The only way to build the unmeasured arm. */
-export function unmeasured(reason: UnmeasuredReason, detail: string): UnmeasuredVerdict {
-  return { measured: false, reason, detail, exitCode: EXIT_UNMEASURED };
+export function unmeasured(
+  reason: UnmeasuredReason,
+  detail: string,
+  attempted?: Coverage,
+): UnmeasuredVerdict {
+  return { measured: false, reason, detail, attempted, exitCode: EXIT_UNMEASURED };
 }
 
 /**
@@ -183,6 +197,9 @@ export function deriveCheckVerdict(
       emptyReason,
       emptyDetail
         ?? `No ${coverage.unit} was examined, so no risk level can be reported for this target.`,
+      // Carry what was attempted. "0 of 111 payloads answered" and "0 of 0"
+      // are different facts and a consumer needs to tell them apart.
+      coverage,
     );
   }
 
@@ -205,8 +222,23 @@ export function deriveCheckVerdict(
 
 /**
  * The `coverage` object every machine channel emits, so `--json` consumers can
- * tell "clean" from "never looked" without parsing prose. Shared by `check`,
- * `attack`, `secure` and `detect` so the four cannot drift.
+ * tell "clean" from "never looked" without parsing prose.
+ *
+ * ONE shape, on every path that emits it, measured or not: `measured` is
+ * always present and always a boolean, so `jq -e '.coverage.measured'` is a
+ * contract a consumer can rely on. The first cut of this emitted three
+ * different shapes — `measured` absent on the local-scan path, the whole
+ * `coverage` key absent on every not-found path — which is the case the key
+ * exists for.
+ *
+ * Emitted by `check` (local, remote and not-found arms), `attack`, `detect`
+ * and the two deprecated `secure-*` commands. NOT by `secure`, which still
+ * derives its own score without a measurement gate — that is a known gap, not
+ * a claim this function makes. An earlier version of this comment asserted
+ * four commands shared it and cannot drift; two of the four did not call it.
+ *
+ * It also no longer flattens the unmeasured arm to `0/0 unit`: `attempted`
+ * carries what the run tried, so "0 of 111 payloads answered" survives.
  */
 export function coverageJson(verdict: CheckVerdict): {
   measured: boolean;
@@ -216,16 +248,15 @@ export function coverageJson(verdict: CheckVerdict): {
   reason?: UnmeasuredReason;
   detail?: string;
 } {
-  return verdict.measured
-    ? { measured: true, ...verdict.coverage }
-    : {
-      measured: false,
-      examined: 0,
-      total: 0,
-      unit: 'unit',
-      reason: verdict.reason,
-      detail: verdict.detail,
-    };
+  if (verdict.measured) return { measured: true, ...verdict.coverage };
+  return {
+    measured: false,
+    examined: 0,
+    total: verdict.attempted?.total ?? 0,
+    unit: verdict.attempted?.unit ?? 'unit',
+    reason: verdict.reason,
+    detail: verdict.detail,
+  };
 }
 
 /** One sentence for the text channel. Empty string when the run measured. */

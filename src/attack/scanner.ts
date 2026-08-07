@@ -49,18 +49,46 @@ export class AttackScanner {
    * a probe that calls that dead would be a false negative on a real target.
    * Any completed TCP+TLS exchange counts as reachable, whatever the status —
    * this answers "is something there", and the payloads answer the rest.
+   *
+   * **It vetoes the run only on a DEFINITIVE negative.** A precondition that
+   * can veto a whole measurement must be certain, because its failure mode is
+   * indistinguishable from a real outage: a stub answering its first request in
+   * 3 s and the rest in 10 ms was reported unreachable under `--timeout 1000`
+   * while the suite it skipped scored the target 100/100 CRITICAL. So a
+   * timeout, an abort, or any error that is not a refused connection or an
+   * unresolvable name returns `inconclusive` and the suite runs anyway. The
+   * measurement gate below is the real guarantee; this is only the fast path.
+   *
+   * It probes the URL the PAYLOADS will use, not `target.url`. For `-t a2a`
+   * those differ — payloads go to `<url>/a2a/message` — and probing the bare
+   * root called a live A2A agent unreachable, again skipping a suite that
+   * scored it CRITICAL.
    */
   async probeLiveness(
     target: AttackTarget,
     timeout: number,
-  ): Promise<{ reachable: true } | { reachable: false; detail: string }> {
+  ): Promise<{ reachable: true } | { reachable: false; detail: string } | { inconclusive: true }> {
+    const url = this.payloadUrl(target);
+    let request: { body: string; headers: Record<string, string> };
+    try {
+      // Building the request is OUR work, not the target's. Attributing a bad
+      // `--header` to the endpoint printed "not reachable" beside a `curl`
+      // command that succeeds against it.
+      request = {
+        body: JSON.stringify(this.buildApiRequestBody('ping', target)),
+        headers: { 'Content-Type': 'application/json', ...target.headers },
+      };
+    } catch {
+      return { inconclusive: true };
+    }
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
     try {
-      const response = await fetch(target.url, {
+      const response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...target.headers },
-        body: JSON.stringify(this.buildApiRequestBody('ping', target)),
+        headers: request.headers,
+        body: request.body,
         signal: controller.signal,
       });
       // The probe reads the status, never the payload — but an unread body
@@ -70,16 +98,32 @@ export class AttackScanner {
       await response.body?.cancel().catch(() => { /* already closed */ });
       return { reachable: true };
     } catch (error) {
-      const reason = error instanceof Error && error.name === 'AbortError'
-        ? `no response within ${timeout}ms`
-        : error instanceof Error ? error.message : 'unknown error';
+      const cause = (error as { cause?: { code?: string } })?.cause;
+      const code = cause?.code ?? (error as NodeJS.ErrnoException)?.code;
+      // The only two answers that mean "nothing is listening there", as
+      // opposed to "it did not answer THIS request quickly enough".
+      const definitelyDown = code === 'ECONNREFUSED' || code === 'ENOTFOUND';
+      if (!definitelyDown) return { inconclusive: true };
       return {
         reachable: false,
-        detail: `${escapeForDisplay(target.url)} is not reachable (${escapeForDisplay(reason)}), so no payload was sent and no risk level can be reported.`,
+        detail: `${escapeForDisplay(url)} is not reachable (${escapeForDisplay(code)}), so no payload was sent and no risk level can be reported.`,
       };
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * The URL a payload of this target type is actually sent to. Shared by the
+   * probe and `sendA2ARequest` so the two cannot address different endpoints.
+   */
+  private payloadUrl(target: AttackTarget): string {
+    if (target.type === 'a2a') {
+      return target.url.endsWith('/a2a/message')
+        ? target.url
+        : target.url.replace(/\/?$/, '/a2a/message');
+    }
+    return target.url;
   }
 
   async scan(target: AttackTarget, options?: Partial<AttackOptions>): Promise<AttackReport> {
@@ -90,7 +134,7 @@ export class AttackScanner {
     // the whole suite — and so it can never be scored (#406).
     if (target.type !== 'local' && target.url) {
       const liveness = await this.probeLiveness(target, opts.timeout || 30000);
-      if (!liveness.reachable) {
+      if ('reachable' in liveness && !liveness.reachable) {
         const endTime = new Date();
         return this.buildReport(
           target, [], [], opts.intensity, startTime, endTime,
@@ -179,7 +223,15 @@ export class AttackScanner {
       // target — which is why a jailbreak prompt, a hardened prompt and an
       // empty file all scored 2/100 (#430). Record it as unanswered so the
       // same gate that catches an unreachable endpoint catches this too.
-      const answered = target.type !== 'local';
+      //
+      // An empty body is not an answer either. `extractResponseText` returns
+      // '' when the shape does not match — which is what an auth-rejecting
+      // gateway returns for every payload — and counting that as answered left
+      // `0/100 (SECURE)` at exit 0 reachable for 28 of 28 empty replies, the
+      // exact headline symptom of #406. `UnmeasuredReason.no-response` is
+      // documented as "requests completed but not one produced an analyzable
+      // answer"; this is the line that makes that state reachable.
+      const answered = target.type !== 'local' && response.trim().length > 0;
 
       // Analyze response
       const analysis = this.analyzeResponse(payload, response);
@@ -193,7 +245,9 @@ export class AttackScanner {
         confidence: answered ? analysis.confidence : 0,
         evidence: answered
           ? analysis.evidence
-          : 'Not answered: --local simulates a response rather than contacting an agent',
+          : target.type === 'local'
+            ? 'Not answered: --local simulates a response rather than contacting an agent'
+            : 'Not answered: the target returned an empty body, so there was nothing to analyze',
         response: response.slice(0, 500), // Truncate for storage
         duration: Date.now() - startTime,
         timestamp: new Date(),
