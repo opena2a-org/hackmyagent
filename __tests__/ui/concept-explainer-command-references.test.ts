@@ -10,12 +10,18 @@
  * explainer pointed users at a dead-end command. This test gates the
  * registry so a future explainer can never cite a non-existent command.
  *
- * Scope is intentionally narrow: only the concept-explainer registry.
- * Broader cross-reference of finding-fix strings (`fix:` / `audit:` /
- * docstring `Usage:` blocks) is tracked separately — see follow-up
- * issue. Adding those here would entangle this gate with pre-existing
- * stale-string drift in oasb-1.ts / asff.ts / opt-in.ts that predates
- * #163.
+ * Scope is the concept-explainer registry, and that narrowness is why #372
+ * happened: this suite passed while three printed strings elsewhere cited
+ * flags that did not exist, because none of them were explainers. The rest of
+ * the rule — every printed string, attributed per command — is
+ * `__tests__/ui/printed-flag-citations.test.ts`, which supersedes the
+ * "tracked separately" note this docstring used to carry. It found the OASB
+ * remediation drift referenced here (24 strings citing `secure --check`)
+ * rather than leaving it excluded.
+ *
+ * Kept as its own suite: it asserts the explainer registry specifically, and
+ * the `scan-soul --explain` regression at the bottom is a named fact rather
+ * than one row in a sweep.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';

@@ -528,7 +528,7 @@ Examples:
               compileSetTruncated: nmResult.compileSetTruncated,
               observedCheckIds: issues.map((f: any) => f.checkId),
               staticCheckCount: CHECK_COUNTS.static,
-              fullAuditTarget: citationTarget(skill),
+              fullAuditTarget: skill,
             }),
             details: issues,
           });
@@ -7413,9 +7413,21 @@ Examples:
             console.log(
               `${colors.cyan}Note:${RESET()} Plugin data stored in ${escapePathForDisplay(targetDir)}/.opena2a/`
             );
-            console.log(
-              `      Uninstall with: ${CLI_PREFIX} fix-all ${citationTarget(directory || '.')} --uninstall\n`
-            );
+            // `fix-all --uninstall` was never a registered option and
+            // `fix-all` writes no backup, so `rollback` cannot undo it
+            // either. The instruction names the directory it just wrote
+            // instead of a command that does not exist (#372).
+            //
+            // A path the reader is invited to paste goes through
+            // `citationPath`, and its null — a path that cannot be shown
+            // truthfully — omits the command rather than printing an `rm -rf`
+            // whose operand is not the directory the reader sees. The line
+            // above already names the location, which is what makes dropping
+            // this one safe.
+            const dataDir = citationPath(`${targetDir}/.opena2a`);
+            if (dataDir) {
+              console.log(`      Remove it with: rm -rf ${dataDir}\n`);
+            }
           }
         }
 
@@ -9301,8 +9313,9 @@ function printWildReport(report: WildScanReport): void {
   console.log(`${colors.dim}Duration:${colors.reset} ${(report.duration / 1000).toFixed(1)}s`);
 
   console.log(`\n${colors.dim}Note: This score reflects the attack surface coverage of the target`);
-  console.log(`site. To test your actual agent's resilience, use --model to pipe`);
-  console.log(`page content through an LLM. For static config scanning, use:${colors.reset}`);
+  console.log(`site. To test your actual agent's resilience, run`);
+  console.log(`${CLI_PREFIX} attack <endpoint> --model <model> to pipe page content`);
+  console.log(`through an LLM. For static config scanning, use:${colors.reset}`);
   console.log(`  ${colors.cyan}${npxCitation('secure')}${colors.reset}`);
 }
 
@@ -9621,7 +9634,9 @@ nanomindCmd
       console.log(`  Requests:  ${d.requestsServed}`);
       console.log(`  Gate:      ${probeState} (probe label ${d.gateProbe.label ?? 'null'}, expected ${d.gateProbe.expected})`);
       console.log('');
-      console.log('Use --nanomind with any scan command for AI-powered analysis.');
+      // Names the command rather than leaving the flag unattached: `--nanomind`
+    // is registered on the scan commands, not on `status` (#372).
+    console.log(`Use \`${CLI_PREFIX} secure --nanomind\` for AI-powered analysis.`);
       console.log(`  Example: ${CLI_PREFIX} secure ./my-agent --nanomind`);
     } else if (status.daemon && !status.daemon.ok) {
       console.log(`  Daemon:    ${colors.yellow}degraded${RESET()} (${status.daemon.daemonState})`);

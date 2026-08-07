@@ -30,6 +30,7 @@ import {
   type CategoryCoverage,
   type CoverageTruncation,
 } from '../hardening/coverage-ledger';
+import { citationTarget } from '../ui/shell-quote';
 
 export interface QuickScanCoverage {
   /** Discriminates this from `secure`'s full-suite coverage on the same key. */
@@ -75,7 +76,13 @@ export function quickScanCoverage(input: {
   observedCheckIds: readonly string[];
   /** `getCheckCounts().static` — the advertised suite this run skipped. */
   staticCheckCount: number;
-  /** Target for the follow-up command, as the user typed it. */
+  /**
+   * Target for the follow-up command, as the user typed it. Quoted here
+   * rather than by the caller: `fullAuditCommand` is a line the reader is
+   * invited to paste, so the citation contract belongs to the module that
+   * builds it. `__tests__/cli/render-source-gate.test.ts` (#273) enforces
+   * that, and caught this exact string spliced in raw.
+   */
   fullAuditTarget: string;
 }): QuickScanCoverage {
   const truncations: CoverageTruncation[] = input.compileSetTruncated
@@ -98,6 +105,6 @@ export function quickScanCoverage(input: {
       observedCheckIds: input.observedCheckIds.filter(Boolean),
       filesReadByCategory: {},
     }),
-    fullAuditCommand: `secure ${input.fullAuditTarget}`,
+    fullAuditCommand: `secure ${citationTarget(input.fullAuditTarget)}`,
   };
 }
