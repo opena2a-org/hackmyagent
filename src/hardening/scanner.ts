@@ -259,7 +259,18 @@ const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
   'INJ-': ['webapp', 'api'], // SQL injection, input validation
   'ENCRYPT-': ['webapp', 'api'], // Encryption, password hashing
 
-  // Logging/audit - servers and MCP
+  // Logging/audit - servers and MCP.
+  //
+  // ORDER IS LOAD-BEARING. `findingAppliesTo` takes the FIRST key that matches,
+  // so `LOG-002` must stay ABOVE `LOG-` or it silently falls back to the group
+  // and stops applying outside webapp/api/mcp. Held by
+  // `check-project-types-order.test.ts`.
+  //
+  // The LOG- group is advice ("consider structured logging"), which is why it
+  // is scoped to server-shaped projects. LOG-002 is NOT advice: it matches
+  // sensitive data in a log call in code that was read. Code that logs a
+  // password is wrong in a library exactly as much as in an API (#421).
+  'LOG-002': ['all'],
   'LOG-': ['webapp', 'api', 'mcp'],
   'AUDIT-': ['webapp', 'api'],
 
@@ -284,7 +295,7 @@ const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
   // Agent DNA integrity checks
   'DNA-': ['all'],
   // Skill memory manipulation checks
-  'SKILL-MEM-': ['openclaw', 'mcp'],
+  'SKILL-MEM-': ['openclaw', 'mcp'], // dead entry: the SKILL- group is declared first and wins
   // NemoClaw/sandbox static analysis checks
   'NEMO-': ['all'],
 
@@ -303,7 +314,7 @@ const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
   'TMPPATH-': ['all'], // Hardcoded /tmp path attacks
   'DOCKERINJ-': ['all'], // Docker exec with variable injection
   'ENVLEAK-': ['all'], // Environment variable leakage to child processes
-  'SANDBOX-005': ['openclaw', 'mcp'], // Messaging API pre-allowed in sandbox
+  'SANDBOX-005': ['openclaw', 'mcp'], // Messaging API pre-allowed in sandbox (dead entry: the SANDBOX- group is declared first and wins)
   'WEBEXPOSE-': ['all'], // Sensitive files in web-served directories
   'AGENT-CRED-': ['all'], // Missing credential protection in system prompts
   'SOUL-OVERRIDE-': ['all'], // Skill content overriding SOUL.md
@@ -981,6 +992,20 @@ export function scoreExcludingOwnArchive(
  * NanoMind merge.
  */
 export function findingAppliesTo(finding: SecurityFinding, projectType: ProjectType): boolean {
+  // FIRST match in declaration order. A full check ID overrides the group it
+  // sits in by being DECLARED BEFORE it — `check-project-types-order.test.ts`
+  // holds that ordering, because nothing else does.
+  //
+  // Resolving the LONGEST key instead would remove the order dependency and is
+  // what the map's "prefix OR full ID" wording implies. It was tried and
+  // reverted: two entries in the map are narrower than the group they sit in
+  // and had never taken effect, so making them live SUBTRACTED project types.
+  // `SANDBOX-005` — a HIGH file-and-line detection for a messaging API
+  // pre-allowed in a sandbox policy — silently stopped applying to `webapp`
+  // and `api`. Widening those entries instead put a HIGH false positive on
+  // every clean library. Changing this resolution order is a detection change
+  // for the whole map and needs its own corpus; it is not a side effect of
+  // fixing one check.
   for (const [prefix, types] of Object.entries(CHECK_PROJECT_TYPES)) {
     if (finding.checkId.startsWith(prefix)) {
       if (types.includes('all')) return true;
@@ -2719,6 +2744,54 @@ export class HardeningScanner {
       return true;
     });
 
+    // #421 — which FAILED findings did the scanner silence on its own?
+    //
+    // Derived as a separate pass over the same inputs rather than folded into
+    // the filter above, so the filter's behaviour is unchanged by inspection.
+    // A finding counts here only if it failed, did not survive, and was not
+    // suppressed at the USER's request — `--ignore` and `.hmaignore` are
+    // disclosed through `ignored`, and re-reporting them would punish the user
+    // for a choice they made.
+    //
+    // What remains splits in two, and the split matters more than the total:
+    //
+    //  - WITH a file: the check matched something in the tree and the finding
+    //    was dropped anyway, because its prefix is out of scope for the
+    //    detected project type. That is a real detection, hidden. It is the
+    //    only kind that may withdraw a category's `clear`.
+    //  - WITHOUT a file: the check reported the ABSENCE of a mitigation and
+    //    has nothing to point at — "no rate limiting detected" on a library
+    //    with no HTTP server. A clean three-file library carries ~45 of these,
+    //    2 of them nominally critical. Nothing was found, so `clear` is not
+    //    made false by them, and surfacing them by category would be a wall of
+    //    FUD with no path forward. Counted, not named.
+    const survived = new Set<SecurityFinding>(filteredFindings);
+    const suppressedFailures: Array<{
+      checkId: string;
+      name: string;
+      category: string;
+      severity: string;
+    }> = [];
+    let unevidencedFailures = 0;
+    for (const f of findings) {
+      if (f.passed && !f.fixed) continue;
+      if (survived.has(f)) continue;
+      if (ignoredChecks.has(f.checkId.toUpperCase())) continue;
+      if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) continue;
+      if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) continue;
+      if (!f.file) {
+        unevidencedFailures++;
+        continue;
+      }
+      // Identity only. No `file`, no `message` — see the field's contract.
+      suppressedFailures.push({
+        checkId: f.checkId,
+        name: f.name,
+        category: f.category,
+        severity: f.severity,
+      });
+    }
+
     // Deliberately carries no counts. This line used to read "Fix
     // verification: 1/2 fixes confirmed" four lines above the CLI's
     // "Attempted 1 fix, none confirmed" — two denominators for one run,
@@ -2833,6 +2906,8 @@ export class HardeningScanner {
         // Counts, never paths — a single-file scan normalises its target into
         // a generated temp directory, and emitting read paths leaked that name.
         filesReadByCategory: this.coverage.categoryFileCounts(),
+        suppressedFailures,
+        unevidencedFailures,
       },
     };
   }
@@ -3072,21 +3147,15 @@ export class HardeningScanner {
   }
 
   /**
-   * Check if a finding applies to the given project type
+   * Check if a finding applies to the given project type.
+   *
+   * Delegates to the exported `findingAppliesTo` so the scanner's own filter
+   * and the CLI's post-NanoMind-merge filter cannot drift apart. They were two
+   * separate copies of the same loop; the copies agreed by luck, and only one
+   * of them would have been fixed (#421).
    */
   findingAppliesTo(finding: SecurityFinding, projectType: ProjectType): boolean {
-    // Find the matching rule based on check ID prefix
-    for (const [prefix, types] of Object.entries(CHECK_PROJECT_TYPES)) {
-      if (finding.checkId.startsWith(prefix)) {
-        // Check if 'all' is in the types array
-        if (types.includes('all')) {
-          return true;
-        }
-        return types.includes(projectType);
-      }
-    }
-    // Default: applies to all if no rule found
-    return true;
+    return findingAppliesTo(finding, projectType);
   }
 
   private async checkCredentialExposure(
@@ -5711,25 +5780,76 @@ dist/
     });
 
     // LOG-002: Check for sensitive data in log patterns
-    let sensitiveInLogs = false;
-    const logPatterns = ['console.log(password', 'console.log(apiKey', 'console.log(secret', 'console.log(token'];
+    //
+    // #421 — this check MATCHES on file content, so it is evidence-based, not
+    // advice. It must carry the path it matched: `filteredFindings` drops every
+    // finding without a `file` ("concrete findings, not generic advice"), so a
+    // pathless LOG-002 was scored and displayed as though it had never fired.
+    // Recording the path is what makes the detection reach the output at all.
+    // Matches the same four spellings the literal list did
+    // (`console.log(password|apiKey|secret|token`), case-insensitively, with
+    // two corrections:
+    //
+    //  - Applied to the ORIGINAL text. The previous form searched a
+    //    `toLowerCase()` copy and reported an offset from it. `toLowerCase` is
+    //    not length-preserving (U+0130 lowercases to two code units), so a
+    //    file could shift its own reported line number — the finding fired
+    //    while its `Verify:` command pointed at an innocent line.
+    //  - A trailing identifier boundary. Without it `console.log(token` also
+    //    matched `console.log(tokenCount)`, which is ordinary code. That never
+    //    surfaced only because the finding was being dropped; resurrecting it
+    //    without the boundary would ship the false positive.
+    //
+    // Literal prefix, a four-way literal alternation and a lookahead: no
+    // nested quantifier, so it stays linear on untrusted input.
+    const sensitiveLogCall = /console\.log\((?:password|apikey|secret|token)(?![A-Za-z0-9_$])/i;
+
+    const sensitiveLogFiles: string[] = [];
+    let sensitiveLogFile: string | undefined;
+    let sensitiveLogLine: number | undefined;
 
     try {
       const files = await fs.readdir(targetDir);
       for (const file of files) {
+        // Extension list deliberately UNCHANGED here — widening it is #414,
+        // which is blocked on this fix precisely because a widened read
+        // produced no observable change while the finding was being dropped.
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
-            for (const pattern of logPatterns) {
-              if (content.toLowerCase().includes(pattern.toLowerCase())) {
-                sensitiveInLogs = true;
+            // Walked line by line rather than split into an array: the content
+            // is an untrusted file and `split('\n')` holds one string per line
+            // live. This also yields the line number and the within-line offset
+            // directly, which is what the string/comment test needs.
+            let lineStart = 0;
+            let lineNo = 1;
+            while (lineStart <= content.length) {
+              let nl = content.indexOf('\n', lineStart);
+              if (nl === -1) nl = content.length;
+              const lineText = content.slice(lineStart, nl);
+              const m = sensitiveLogCall.exec(lineText);
+              // A match inside a string literal or a comment is text, not a
+              // log call — `// console.log(password) - removed` and a help
+              // string quoting the bad pattern are both documentation. Reuses
+              // the helper NEMO-009 already applies for exactly this.
+              if (m && !isMatchInsideStringLiteral(lineText, m.index)) {
+                sensitiveLogFiles.push(file);
+                if (sensitiveLogFile === undefined) {
+                  sensitiveLogFile = file;
+                  sensitiveLogLine = lineNo;
+                }
                 break;
               }
+              if (nl === content.length) break;
+              lineStart = nl + 1;
+              lineNo++;
             }
           } catch {}
         }
       }
     } catch {}
+
+    const sensitiveInLogs = sensitiveLogFile !== undefined;
 
     findings.push({
       checkId: 'LOG-002',
@@ -5741,6 +5861,20 @@ dist/
       message: sensitiveInLogs
         ? 'Code may be logging sensitive data - review console.log statements'
         : 'No obvious sensitive data logging patterns found',
+      // Only set when the check actually matched. A passed LOG-002 stays
+      // pathless: it has no evidence to point at.
+      file: sensitiveLogFile,
+      // Cited ONLY when a single file matched. `.hmaignore` can re-point a
+      // multi-file finding onto a surviving path (#280, `retainAfterPathSuppression`)
+      // and that re-point moves `file` without moving `line` — so a line from
+      // the ignored file would be printed against the surviving one, and
+      // `Verify: sed -n '5p' z.js` would print nothing. No line is better than
+      // a line that sends the reader somewhere the match is not.
+      line: sensitiveLogFiles.length === 1 ? sensitiveLogLine : undefined,
+      // EVERY matching file, not just the cited one. `.hmaignore` suppression
+      // keys on all covered paths (#280), so listing one path here would let a
+      // single ignored file delete a finding that also covers un-ignored ones.
+      ...(sensitiveLogFiles.length > 0 ? { details: { files: sensitiveLogFiles } } : {}),
       fixable: false,
       guidance: 'Passwords, API keys, and tokens logged to console or files persist in log aggregators and crash reports, where they can be harvested by anyone with log access.',
     });

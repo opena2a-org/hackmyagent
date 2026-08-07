@@ -2,6 +2,83 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [Unreleased]
+
+### Security
+
+- **`secure` reported `logging` as clear while holding a HIGH finding it had already
+  made.** `LOG-002` read `server.js`, matched `console.log(password` in it, and pushed a
+  failed HIGH. The run then printed:
+
+  ```
+  Security    98/100
+  Checks      … 61 of 61 check groups ran … 2 files read by static checks
+  Categories  git hygiene (1 low) · 16 others clear
+  ```
+
+  Two separate filters dropped it, and fixing either alone left it invisible. The check
+  never recorded WHICH file it matched, and findings without a file path are filtered out
+  as generic advice — so the detection reached neither the output nor the score on any
+  project type. Separately, the whole `LOG-` group was scoped to webapp/api/mcp projects,
+  which removed it from `allFindings` on a library as well.
+
+  `LOG-002` now carries the file and line it matched, and is scoped to every project type:
+  code that logs a password is wrong in a library exactly as much as in an API. The same
+  fixture now reports `Sensitive Data in Logs in server.js:1` and scores 69, identically
+  whether it is detected as a library or an API.
+
+  Bringing the check back into the score made its pattern load-bearing for the first time,
+  so it was tightened at the same time. It no longer fires on an identifier that merely
+  starts with the keyword (`console.log(tokenCount)`), nor on the pattern inside a comment
+  or a string — a comment recording that the bug was removed used to be enough to fail a
+  project. The reported line is counted on the original text rather than a lowercased copy,
+  which is not length-preserving and let a file shift the line number in its own finding.
+
+  **That boundary also narrows detection, in a direction worth knowing.** The check matches
+  the four spellings it always did and now requires the identifier to end there, so
+  `console.log(secretKey)` and `console.log(passwords)` are NOT flagged, and neither are
+  `console.error(password)`, `console.log( password )`, or a match on a line long enough to
+  hit the string-literal walker's iteration cap. None of these reached the output before
+  either — the finding was being dropped for every input — so nothing regresses against
+  0.26.0, but the check is a narrow literal matcher and should not be read as coverage of
+  logged credentials in general. Tracked with the wider class in #426.
+
+  **Expect scores to move on upgrade.** A project containing a logged credential will score
+  LOWER than it did on 0.26.0. The finding was always there; it was never shown.
+
+- **The run now says how many checks failed without being shown.** This is the reason the
+  finding above was invisible rather than merely wrong: a scan that silences a failed check
+  and then prints `61 of 61 check groups ran` and a list of clear categories is
+  indistinguishable from a scan that found nothing.
+
+  On a clean three-file library (`package.json`, `.gitignore`, `index.js`):
+
+  ```
+  Coverage    17 of 25 categories examined · 8 unexamined (read no file) · 45 checks reported an absent mitigation (not shown)
+  ```
+
+  Most silenced checks report the ABSENCE of a mitigation rather than a discovery — "no
+  rate limiting detected" on a library with no HTTP server. That library carries 45 of
+  them, two nominally critical. They are counted, never named per category: they found
+  nothing, so they do not make a `clear` claim false, and listing them by category would be
+  a wall of categories the reader cannot act on.
+
+  A check that MATCHED something and was dropped anyway — because the check does not apply
+  to the detected project type — is different, and that category is now named on an
+  `Unresolved` line instead of being counted as clear. This is not hypothetical: an
+  ordinary library carrying an `mcp.json` that binds a server to `0.0.0.0` scores 98/100
+  with a CRITICAL `NET-001` matched and discarded, because `NET-` is scoped to
+  webapp/api. The finding is still not shown — that is a separate problem, tracked in
+  #426 — but the category no longer claims to be clear:
+
+  ```
+  Unresolved  network
+  Categories  git hygiene (1 low) · 17 others clear
+  ```
+
+  `secure --json` gains `coverage.suppressedFailures` (each silenced detection's identity,
+  never a path or a message) and `coverage.unevidencedFailures` (the count above).
+
 ## [0.26.1] - 2026-08-07
 
 ### Security

@@ -54,6 +54,7 @@ import {
   type SoulLevel,
 } from './index';
 import { resolveAndLogMcpShorthand } from './resolve-mcp';
+import { suppressedCategoryLabels, unresolvedCategoryNames } from './ui/unresolved-categories';
 import { WildScanner, type WildScanReport } from './wild';
 import { buildCheckOutput, buildNotFoundOutput, mapScanStatusForMeter, translateDownloadError } from '@opena2a/check-core';
 import {
@@ -1504,13 +1505,61 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     const coverageByCategory = new Map(
       (coverageCategories ?? []).map(c => [c.category, c]),
     );
+    // #421 — being EXAMINED is necessary for a `clear` claim but not
+    // sufficient. A check can match something in the tree and still be dropped
+    // before it reaches `findings`, because its prefix is out of scope for the
+    // detected project type. The category then prints as clear, which is the
+    // same lie the coverage work above set out to remove: `LOG-002` matched
+    // `console.log(password` in a scanned file and `logging` was reported clear
+    // at 98/100.
+    //
+    // Scoped to detections that carried EVIDENCE. The scanner also drops failed
+    // checks that had nothing to point at — an absent mitigation rather than a
+    // discovery, ~45 of them on a clean three-file library — and those do not
+    // make `clear` false, because nothing was found. Withdrawing `clear` for
+    // them would replace a false reassurance with a wall of categories the user
+    // cannot act on. They are counted in `coverage.unevidencedFailures`.
+    //
+    // Such a category is dropped from the clear bucket rather than promoted to
+    // a finding: the scanner decided not to show that finding, and second-
+    // guessing it here would print a result with no detail behind it. Silence
+    // is the honest position — the same treatment `not-examined` already gets.
+    //
+    // Classified with `buildCategorySummaries` — the SAME function the real
+    // findings go through above — so the two sets are bucketed by one
+    // classifier and cannot drift into different category vocabularies. A map
+    // keyed by the finding's own `category` would have been a silent no-op:
+    // `LOG-*` findings carry `category: 'logging'` and render under `audit`.
+    const suppressedLabels = suppressedCategoryLabels(
+      localScan?.coverage?.suppressedFailures ?? [],
+    );
+    const holdsSuppressedFailure = (category: string): boolean =>
+      suppressedLabels.has(category);
+    // `suppressedFailures` rides on `coverage`, so without coverage the set is
+    // empty and the clear bucket is unchanged — the `Unresolved` line below
+    // also only renders under `coverageCategories`, and the two must agree or
+    // a category would be withdrawn with nothing naming it.
     const categorySummaries = quickScanDisclosure
       ? allCategorySummaries.filter(c => !c.clear)
       : coverageCategories
         ? allCategorySummaries.filter(
-            c => !c.clear || coverageByCategory.get(c.name)?.state === 'examined',
+            c => !c.clear || (
+              coverageByCategory.get(c.name)?.state === 'examined' &&
+              !holdsSuppressedFailure(c.name)
+            ),
           )
         : allCategorySummaries;
+    // The categories the rule above just took OUT of the clear bucket. Named on
+    // their own line so the tally stays accountable: dropping them silently
+    // would trade a false `clear` for an unexplained gap, which is the same
+    // kind of unreadable output in a quieter register.
+    const unresolvedCategories = unresolvedCategoryNames(
+      allCategorySummaries,
+      // No coverage ledger means the disclosure line below cannot render, so
+      // nothing may be withdrawn either.
+      name => Boolean(coverageCategories) && coverageByCategory.get(name)?.state === 'examined',
+      suppressedLabels,
+    );
     const verdictLine = buildVerdict(
       { critical, high, medium, low },
       { kind, filesScanned, remote: opts.remote === true },
@@ -1632,7 +1681,8 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     if (
       coverageCategories &&
       totalFindings === 0 &&
-      (explicitlySkipped.length > 0 || partiallyExamined.length > 0)
+      (explicitlySkipped.length > 0 || partiallyExamined.length > 0 ||
+        unresolvedCategories.length > 0)
     ) {
       const gaps: string[] = [];
       if (partiallyExamined.length > 0) {
@@ -1640,6 +1690,15 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       }
       if (explicitlySkipped.length > 0) {
         gaps.push(`${explicitlySkipped.length} were skipped by this scan depth`);
+      }
+      // #421 — a category whose check matched and was then scoped out is the
+      // sharpest version of this: "looks safe to use" printed directly above an
+      // `Unresolved` line naming a category where something DID match is the
+      // contradiction this whole change exists to remove.
+      if (unresolvedCategories.length > 0) {
+        gaps.push(
+          `${unresolvedCategories.length} had a check match that does not apply to a ${kind} project`,
+        );
       }
       verdictDisplay.value =
         `No issues in what was examined — but ${gaps.join(' and ')}. ` +
@@ -1688,6 +1747,17 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       const tally = [`${examinedCount} of ${coverageCategories.length} categories examined`];
       if (partiallyExamined.length > 0) tally.push(`${partiallyExamined.length} partial (file cap)`);
       if (notExamined.length > 0) tally.push(`${notExamined.length} unexamined (read no file)`);
+      // #421 — checks that did not pass and had nothing to point at, so they
+      // were not shown. Reported as a COUNT and never per category: they are
+      // absent mitigations ("no rate limiting detected" on a library with no
+      // HTTP server), not discoveries, so naming categories would read as an
+      // accusation the reader cannot act on. A clean three-file library
+      // carries ~45. Disclosing the volume is what stops `clear` being read as
+      // "every check passed", which is the claim it was never making.
+      const unevidenced = localScan?.coverage?.unevidencedFailures ?? 0;
+      if (unevidenced > 0) {
+        tally.push(`${unevidenced} checks reported an absent mitigation (not shown)`);
+      }
       // Yellow only for a measured shortfall: a cap that fired or a skip.
       const covTone = partiallyExamined.length > 0 || explicitlySkipped.length > 0
         ? colors.yellow : colors.dim;
@@ -1710,11 +1780,37 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         );
       }
       // One reason per category under verbose — the lines above name WHAT was
-      // not covered, this says WHY, so neither is a dead end.
+      // not covered, this says WHY, so neither is a dead end. These lines are
+      // indented rather than labelled, so they attach visually to whatever
+      // precedes them: they must stay directly under `Unexamined`, the line
+      // they explain, and BEFORE any further labelled line.
       if (verbose) {
         for (const c of [...notExamined, ...partiallyExamined]) {
           const tag = c.state === 'truncated' ? `${c.category} (partial)` : c.category;
           console.log(`  ${' '.repeat(LABEL_WIDTH)}${colors.dim}${tag} — ${c.reason ?? 'not examined'}${RESET()}`);
+        }
+      }
+      // #421 — the third state, between `clear` and a finding: a check in this
+      // category MATCHED something in the target, and its finding was dropped
+      // because the check is out of scope for this project type. One line, one
+      // claim, same shape as `Unexamined` above. Naming them is what keeps the
+      // withdrawn `clear` from reading as a silent omission.
+      if (unresolvedCategories.length > 0) {
+        const shown = verbose ? unresolvedCategories : unresolvedCategories.slice(0, 8);
+        const hidden = unresolvedCategories.length - shown.length;
+        const more = hidden > 0 ? ` + ${hidden} more (--verbose)` : '';
+        console.log(
+          `  ${colors.dim}${OBSERVATION_LABELS.unresolved.padEnd(LABEL_WIDTH, ' ')}${RESET()}` +
+          `${colors.dim}${shown.join(', ')}${more}${RESET()}`,
+        );
+        // Every named category carries a reason, so the line is not a dead end.
+        if (verbose) {
+          for (const name of unresolvedCategories) {
+            console.log(
+              `  ${' '.repeat(LABEL_WIDTH)}${colors.dim}${name} — a check here matched, ` +
+              `but does not apply to a ${kind} project, so its finding was not reported${RESET()}`,
+            );
+          }
         }
       }
     }

@@ -224,6 +224,55 @@ export interface ScanResult {
     truncations: CoverageTruncationRecord[];
     /** Distinct files read per category. Counts only — never filenames. */
     filesReadByCategory?: Record<string, number>;
+    /**
+     * FAILED checks that MATCHED something in the tree and were dropped from
+     * `findings` anyway, because the check's prefix is out of scope for the
+     * detected project type.
+     *
+     * Evidence-bearing only: every entry corresponds to a finding that carried
+     * a file. Failed checks with nothing to point at — "no rate limiting
+     * detected" on a library with no HTTP server — are counted in
+     * `unevidencedFailures` instead, because they report an absence rather
+     * than a discovery and do not make a `clear` claim false.
+     *
+     * Exists so the renderer cannot report a category `clear` while that
+     * category holds a real detection nobody was shown (#421). `clear` is a
+     * claim of "examined and found nothing"; a hidden match makes it false.
+     * This is the same contract as the coverage object itself, one layer
+     * deeper: that stopped an UNEXAMINED category printing clear, this stops
+     * an examined-but-silenced one.
+     *
+     * Carries the check's own identity ONLY — no file paths and no messages,
+     * so it keeps the "never emit read paths" discipline of the fields above.
+     * These are the identity fields the renderer's category classifier reads
+     * (it also reads `passed`, which the consumer supplies as `false`), which
+     * is the point: the consumer classifies these through the SAME function it
+     * classifies real findings with, so the two cannot drift into different
+     * category vocabularies. (`LOG-*` findings carry `category: 'logging'` but
+     * render under the label `audit` — a set keyed by the raw category would
+     * silently never match.)
+     *
+     * Findings the USER suppressed (`--ignore`, `.hmaignore`) are deliberately
+     * absent: that suppression was requested, and is already disclosed
+     * through `ignored`.
+     */
+    suppressedFailures?: Array<{
+      checkId: string;
+      name: string;
+      category: string;
+      severity: string;
+    }>;
+    /**
+     * Count of failed checks that produced no evidence — an absent mitigation
+     * rather than a discovery — and were therefore not shown.
+     *
+     * A count and not a list on purpose. These are dominated by checks that
+     * cannot pass on a project shape that does not need them (`SQL Injection
+     * Protection` on a library with no database), so naming them per category
+     * would read as an accusation with no path forward. The number exists so
+     * the volume is visible and can be attacked at the check level later.
+     */
+    unevidencedFailures?: number;
   };
 }
 
