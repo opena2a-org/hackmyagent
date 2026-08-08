@@ -4,6 +4,59 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+**`UNICODE-STEGO-002` no longer reports CRITICAL on code that defends against the attack
+it names (#469).** This lowers findings rather than raising them, so it can turn a red
+pipeline green.
+
+The check fired when a file contained `.codePointAt(` anywhere and a variation-selector or
+tag-range hex literal anywhere. There is no AST, no scope and no dataflow between the two,
+so they could be thousands of lines apart and unrelated. The decoder half of GlassWorm
+reconstitutes a string from codepoints, and code that only reads codepoints — a sanitiser,
+a linter, a width calculator, a range table — never does. But `String.fromCodePoint` /
+`fromCharCode` was only one input to an exemption whose other input was a regex over the
+file PATH, which this scanner's own comment calls an attacker-controllable weak signal. So
+defensive code fired unless it happened to be named like an analyzer, and renaming a file
+was enough to bypass the check.
+
+Measured on first-class source files, not `node_modules`:
+
+| file | 0.27.0 | now |
+|---|---|---|
+| `consola` `dist/index.mjs` | CRITICAL | clean |
+| `graphemer` `lib/Graphemer.js` | CRITICAL | clean |
+| our own `stego-analyzer.ts` copied to `util-helper.ts` | CRITICAL | clean |
+| a log sanitiser's hazard-range table | CRITICAL | clean |
+| a test that builds a payload and asserts a sanitiser escapes it | CRITICAL | MEDIUM |
+
+No true positive was lost. The canonical decoder fixtures still fire, and the corroborated
+cases below are graded higher than before, not lower.
+
+Three changes, all in the `UNICODE-STEGO-002` block:
+
+- **String reconstitution is now a required conjunct of the finding**, not an input to an
+  exemption. That makes the filename exemption unreachable — it could only be true when
+  reconstitution was absent, which can no longer reach the branch — so it is deleted rather
+  than left as dead code guarding a live bypass. The file path is no longer consulted.
+- **CRITICAL now requires corroboration.** A decoder pattern is evidence of capability, not
+  of malice. Corroboration is an execution sink in the same file, so a decoded string can
+  reach `eval`/`Function`, or `UNICODE-STEGO-001` firing on the same file, so the invisible
+  payload a decoder would decode is actually present. Both are read from the file being
+  scanned, so severity never depends on the order the tree is walked in. Uncorroborated is
+  reported at MEDIUM with the evidence intact — it is downgraded, never dropped.
+- **The reported line is the earlier of the two signals.** It used to report the first
+  `.codePointAt(`, but the discriminating token is the range literal, which usually sits in
+  a table above the loop that reads it. One downstream consumer was pointed at line 168 when
+  the cause was line 139. The message now names both lines.
+
+Known gap, tracked in #467 and asserted as an explicit zero in the suite so that closing it
+fails a test: a decoder that spells the same range in decimal (`917760`) instead of hex
+(`0xE0100`) is still undetected, even though it reconstitutes and executes. Widening the
+literal pattern would reopen the false-positive class this closes; the discriminator belongs
+in the AST analyzer, gated on #424. The same "fires on its own countermeasure" shape in
+`UNICODE-STEGO-005` is #468, filed rather than fixed here.
+
 ### Security
 
 **`--ignore` and `.hmaignore` no longer change the score or the exit code (#450).**

@@ -12807,48 +12807,89 @@ dist/
       const lines = content.split('\n');
       let hasCodePointAt = false;
       let hasHexLiteral = false;
-      let decoderLine = 1;
+      let codePointAtLine = 0;
+      let hexLiteralLine = 0;
 
       const hexPattern = /0x(?:FE0[0-9A-Fa-f]|fe0[0-9a-f]|E010[0-9A-Fa-f]|e010[0-9a-f]|E01[0-9A-Ea-e][0-9A-Fa-f]|e01[0-9a-e][0-9a-f])/;
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         if (line.length > MAX_LINE_LENGTH) continue;
-        if (line.includes('.codePointAt(')) {
+        if (!hasCodePointAt && line.includes('.codePointAt(')) {
           hasCodePointAt = true;
-          if (!decoderLine || decoderLine === 1) decoderLine = i + 1;
+          codePointAtLine = i + 1;
         }
-        if (hexPattern.test(line)) {
+        if (!hasHexLiteral && hexPattern.test(line)) {
           hasHexLiteral = true;
+          hexLiteralLine = i + 1;
         }
       }
 
-      // Skip only if this is security detection code. Three conditions, ALL required:
-      //   1. File path indicates analyzer/scanner (attacker-controllable, weak signal)
-      //   2. Hex literals appear in range-comparison context, not assignments (weak signal)
-      //   3. No String.fromCodePoint/fromCharCode CALL — the decoder half of GlassWorm
-      //      reconstitutes a string from codepoints; detection code only inspects them.
-      //      This is the strong signal that prevents filename-based bypass.
+      // The decoder half of GlassWorm RECONSTITUTES a string from codepoints. Code
+      // that only inspects codepoints — a scanner, a sanitiser, a linter, a range
+      // table — never does. So reconstitution is a REQUIRED conjunct of the finding
+      // rather than one input to a filename-keyed exemption.
+      //
+      // It used to be the third condition of an `isDetectionCode` skip whose other
+      // two conditions were a range-comparison regex and a regex over the file PATH,
+      // which this file's own comment called an attacker-controllable weak signal.
+      // Two consequences, both measured: the check fired on any sanitiser that named
+      // the ranges it defends against (precision 0/7 on real-world code, `consola`
+      // and `graphemer` among the false positives), and our own stego analyzer was
+      // held clean only by its filename, so copying it to another name self-flagged.
+      // Requiring reconstitution makes that skip unreachable — it could only be true
+      // when reconstitution was absent, which now cannot reach this branch — so it
+      // is deleted rather than left as dead code guarding a live bypass.
       const hasStringReconstitution = /String\.from(?:CodePoint|CharCode)\s*\(/.test(content);
-      const isDetectionCode =
-        !hasStringReconstitution &&
-        /(?:>=|<=|===|!==)\s*0x(?:FE0|E010)/i.test(content) &&
-        /(?:analyz|detect|scan|check|inspect|enhanc|stego)/i.test(relativePath);
 
-      if (hasCodePointAt && hasHexLiteral && !isDetectionCode) {
+      // Severity. A decoder pattern is evidence of CAPABILITY, not of malice, so on
+      // its own it is a lead to follow rather than a stop-the-line finding. Critical
+      // requires corroboration, and both corroborators are read from THIS file so a
+      // finding's severity never depends on the order the tree is walked in:
+      //   1. an execution sink here, so a decoded string can reach eval/Function;
+      //   2. UNICODE-STEGO-001 fired here, so the invisible payload that a decoder
+      //      would decode is actually present in the same file.
+      // Neither holds for a test that builds a payload and asserts a sanitiser
+      // escapes it. That is a correct DEFENCE against this technique, and a check
+      // that grades a defence as the attack fires hardest on the people doing the
+      // right thing.
+      const hasExecutionSink =
+        /(?:^|[^\w.$])eval\s*\(/.test(content) ||
+        /(?:^|[^\w.$])(?:new\s+)?Function\s*\(/.test(content);
+      const corroborated = hasExecutionSink || hasAnyInvisible;
+
+      if (hasCodePointAt && hasHexLiteral && hasStringReconstitution) {
+        // Report the EARLIER of the two signals. Reporting the first `.codePointAt(`
+        // sent readers to the wrong line whenever the range literal that actually
+        // discriminates the finding sat above it.
+        const reportedLine = Math.min(codePointAtLine, hexLiteralLine);
+        const corroboration = hasExecutionSink
+          ? 'an execution sink (eval/Function) in the same file'
+          : hasAnyInvisible
+            ? 'invisible codepoints present in the same file (UNICODE-STEGO-001)'
+            : null;
+
         findings.push({
           checkId: 'UNICODE-STEGO-002',
           name: 'GlassWorm Decoder Pattern Detected',
-          description: 'Source file contains .codePointAt() usage combined with Unicode variation selector or tag character hex literals - this is the decoder half of a GlassWorm attack',
+          description: corroboration
+            ? 'Source file reconstitutes strings from Unicode variation selector or tag character codepoints AND carries corroborating evidence - this is the decoder half of a GlassWorm attack'
+            : 'Source file reconstitutes strings from Unicode variation selector or tag character codepoints. This is the shape of a GlassWorm decoder, but nothing in the file corroborates intent - no execution sink and no invisible codepoints present',
           category: 'unicode-stego',
-          severity: 'critical',
+          severity: corroborated ? 'critical' : 'medium',
           passed: false,
-          message: `Found GlassWorm decoder pattern (.codePointAt + hex range literals) in ${relativePath}`,
+          message: corroboration
+            ? `Found GlassWorm decoder pattern in ${relativePath} (codepoint range literal at line ${hexLiteralLine}, .codePointAt at line ${codePointAtLine}), corroborated by ${corroboration}`
+            : `Found GlassWorm decoder shape in ${relativePath} (codepoint range literal at line ${hexLiteralLine}, .codePointAt at line ${codePointAtLine}), uncorroborated`,
           file: relativePath,
-          line: decoderLine,
+          line: reportedLine,
           fixable: false,
-          fix: 'Review the file for suspicious .codePointAt() logic that decodes hidden data from variation selectors (0xFE00-0xFE0F) or tag characters (0xE0100-0xE01EF). Remove the decoder function.',
-          guidance: 'The GlassWorm attack encodes malicious payloads in invisible Unicode characters and uses .codePointAt() to decode them at runtime. This is the decoder half of the attack.',
+          fix: corroboration
+            ? `sed -n '${Math.max(1, reportedLine - 5)},${reportedLine + 20}p' ${shellEscape(relativePath)}   # trace the reconstituted string to its sink and remove the decoder`
+            : `sed -n '${Math.max(1, reportedLine - 5)},${reportedLine + 20}p' ${shellEscape(relativePath)}   # confirm this decodes for inspection, not for execution`,
+          guidance: corroboration
+            ? 'The GlassWorm attack hides a payload in invisible Unicode characters and uses .codePointAt() plus String.fromCodePoint to rebuild it at runtime. This file does that AND carries corroborating evidence, so treat it as live until traced.'
+            : 'This file rebuilds strings from codepoints in the variation selector or tag range. Sanitisers, linters and tests for this attack legitimately do the same thing, which is why this is reported as a lead rather than a verdict: no decoded value reaches eval or Function here, and no invisible codepoints are present in the file. Confirm the reconstituted value is inspected rather than executed.',
         });
       }
 

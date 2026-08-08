@@ -277,19 +277,24 @@ describe('UNICODE-STEGO checks', () => {
       const stego002 = findings.filter((f) => f.checkId === 'UNICODE-STEGO-002');
 
       expect(stego002.length).toBeGreaterThanOrEqual(1);
-      expect(stego002[0].severity).toBe('critical');
+      // Uncorroborated: this fixture reconstitutes, but nothing here executes the
+      // result and the file carries no invisible codepoints. Capability, not malice.
+      // The corroborated cases are pinned in the corroboration block below.
+      expect(stego002[0].severity).toBe('medium');
       expect(stego002[0].passed).toBe(false);
       expect(stego002[0].file).toBe('decoder.js');
-      expect(stego002[0].message).toContain('GlassWorm decoder pattern');
+      expect(stego002[0].message).toContain('GlassWorm decoder shape');
     });
 
     it('detects .codePointAt() with tag character hex literals', async () => {
       const content = [
         'function decode(s) {',
+        '  const out = [];',
         '  for (let i = 0; i < s.length; i++) {',
         '    const cp = s.codePointAt(i);',
-        '    if (cp >= 0xE0100) { return cp; }',
+        '    if (cp >= 0xE0100) { out.push(cp - 0xE0100); }',
         '  }',
+        '  return String.fromCodePoint(...out);',
         '}',
       ].join('\n');
       await fs.writeFile(path.join(tempDir, 'decoder-tags.ts'), content);
@@ -299,6 +304,37 @@ describe('UNICODE-STEGO checks', () => {
 
       expect(stego002.length).toBeGreaterThanOrEqual(1);
       expect(stego002[0].file).toBe('decoder-tags.ts');
+    });
+
+    // The fixture above used to end `if (cp >= 0xE0100) { return cp; }` with no
+    // reconstitution at all, and asserted the check fired on it. That is inspector
+    // shaped code, not a decoder, and asserting a finding on it was asserting the
+    // false-positive class this check has now been narrowed to exclude. The positive
+    // case above keeps the tag-range coverage by reconstituting for real; this
+    // negative pins the behaviour that replaced it, so the change is under test in
+    // both directions rather than deleted.
+    it('does not flag tag-range code that reads codepoints without reconstituting', async () => {
+      const content = [
+        'function classify(s) {',
+        '  for (let i = 0; i < s.length; i++) {',
+        '    const cp = s.codePointAt(i);',
+        '    if (cp >= 0xE0100) { return cp; }',
+        '  }',
+        '}',
+      ].join('\n');
+      // The filename must not carry an exemption keyword. Named `inspector-tags.ts`
+      // this test passed against the PRE-FIX scanner as well, because "inspect" hit
+      // the old path regex — a negative case that would have proved nothing.
+      const fixtureName = 'tag-range-reader.ts';
+      expect(fixtureName).not.toMatch(/analyz|detect|scan|check|inspect|enhanc|stego/i);
+      await fs.writeFile(path.join(tempDir, fixtureName), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego002 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === fixtureName
+      );
+
+      expect(stego002.length).toBe(0);
     });
 
     it('does not flag .codePointAt() without suspicious hex literals', async () => {
@@ -316,6 +352,237 @@ describe('UNICODE-STEGO checks', () => {
       );
 
       expect(stego002.length).toBe(0);
+    });
+  });
+
+  /**
+   * UNICODE-STEGO-002 fired on defensive code: a log sanitiser, in three repositories
+   * at once, i.e. on the countermeasure to the attack the check is named after.
+   * Measured precision on real-world code was 0/7 and the only true positives ever
+   * observed were fixtures written for this check.
+   *
+   * The root cause was that reconstitution — String.fromCodePoint/fromCharCode, the
+   * decoder half of GlassWorm — was only one input to an exemption whose other input
+   * was a regex over the file PATH. Code that inspects codepoints without rebuilding
+   * a string from them therefore fired unless it was lucky enough to be named like an
+   * analyzer. Every fixture below is red-proofed against the pre-fix scanner: each
+   * negative case fired before this change.
+   */
+  describe('UNICODE-STEGO-002: reconstitution is required, and severity is corroborated', () => {
+    it('does not flag a log sanitiser that names the ranges it defends against', async () => {
+      // Excerpt taken verbatim from csnp/cypres scripts/lib/log-safe.mjs, the file
+      // that gate-blocked three repositories. The range table and safeLog are the
+      // two things the check reads.
+      const content = [
+        'const HAZARD_RANGES = [',
+        '  [0x0000, 0x001f], // Cc: C0 controls, including NUL, ESC, CR and LF',
+        '  [0x007f, 0x009f], // Cc: DEL, then C1. U+009B is a one-character CSI',
+        '  [0x00ad, 0x00ad], // Cf: SOFT HYPHEN',
+        '  [0x180b, 0x180f], // DI: Mongolian free variation selectors, MVS and FVS4',
+        '  [0x200b, 0x200f], // Cf: zero width space, non-joiner, joiner, LRM, RLM',
+        '  [0xfe00, 0xfe0f], // DI: VARIATION SELECTOR-1 to -16',
+        '  [0xfeff, 0xfeff], // Cf: ZERO WIDTH NO-BREAK SPACE, the BOM',
+        '  [0xe0100, 0xe01ef], // DI: VARIATION SELECTOR-17 to -256',
+        '];',
+        '',
+        'export const isLogHazard = (cp) => {',
+        '  for (const [lo, hi] of HAZARD_RANGES) if (cp >= lo && cp <= hi) return true;',
+        '  return false;',
+        '};',
+        '',
+        'export function safeLog(value) {',
+        '  let out = "";',
+        '  for (const ch of String(value ?? "")) {',
+        '    const cp = ch.codePointAt(0);',
+        '    out += isLogHazard(cp) ? "<U+" + cp.toString(16).toUpperCase() + ">" : ch;',
+        '  }',
+        '  return out;',
+        '}',
+      ].join('\n');
+
+      // Fixture integrity: this fixture is only a regression test while it still
+      // carries the two tokens the check reads and lacks the one it now requires.
+      // Without these three assertions the fixture could drift into passing for the
+      // wrong reason and the regression would go silent.
+      expect(content).toContain('0xfe00');
+      expect(content).toContain('.codePointAt(');
+      expect(content).not.toMatch(/String\.from(?:CodePoint|CharCode)\s*\(/);
+
+      await fs.writeFile(path.join(tempDir, 'log-safe.mjs'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego002 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'log-safe.mjs'
+      );
+
+      expect(stego002.length).toBe(0);
+    });
+
+    it('does not flag a logging library whose two tokens are hundreds of lines apart', async () => {
+      // The check sets two file-global booleans with no AST, no scope and no
+      // dataflow, so any file containing both tokens anywhere fired. `consola` and
+      // `graphemer` are both real-world false positives of exactly this shape;
+      // graphemer's two tokens sit roughly 9,000 lines apart.
+      const head = ['export function formatWidth(str) {', '  return str.codePointAt(0);', '}'];
+      const filler = Array.from({ length: 400 }, (_, i) => `// unrelated line ${i}`);
+      const tail = ['const VARIATION_SELECTOR_START = 0xFE00;', 'export { VARIATION_SELECTOR_START };'];
+      const content = [...head, ...filler, ...tail].join('\n');
+      await fs.writeFile(path.join(tempDir, 'logger.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego002 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'logger.js'
+      );
+
+      expect(stego002.length).toBe(0);
+    });
+
+    it('does not flag a detection analyzer renamed away from an analyzer filename', async () => {
+      // Before this change our own stego analyzer was held clean only by the path
+      // regex, which this scanner's own comment called an attacker-controllable weak
+      // signal. Copied to a neutral filename it self-flagged. The filename is no
+      // longer consulted at all, so the bypass is gone rather than relocated.
+      const content = [
+        'export function findHiddenCodepoints(source: string): number[] {',
+        '  const hits: number[] = [];',
+        '  for (let i = 0; i < source.length; i++) {',
+        '    const cp = source.codePointAt(i)!;',
+        '    if (cp >= 0xFE00 && cp <= 0xFE0F) hits.push(cp);',
+        '    if (cp >= 0xE0100 && cp <= 0xE01EF) hits.push(cp);',
+        '  }',
+        '  return hits;',
+        '}',
+      ].join('\n');
+      expect(content).not.toMatch(/analyz|detect|scan|check|inspect|enhanc|stego/i);
+      await fs.writeFile(path.join(tempDir, 'util-helper.ts'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego002 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'util-helper.ts'
+      );
+
+      expect(stego002.length).toBe(0);
+    });
+
+    it('KNOWN GAP: the decimal spelling of a working decoder is not detected', async () => {
+      // Tracked, not fixed here. The hex pattern is a spelling test, so a decoder
+      // that writes 917760 instead of 0xE0100 evades it while doing strictly more
+      // than any fixture that fires: it reconstitutes AND executes. The signature
+      // therefore selects for honest spelling, which correlates with defensive code.
+      // Closing it belongs with the AST work, not with a wider regex, because a
+      // wider regex reopens the false-positive class this change closed.
+      // Upstream: hackmyagent#467.
+      const content = [
+        'function decode(input) {',
+        '  const out = [];',
+        '  for (let i = 0; i < input.length; i++) {',
+        '    const cp = input.codePointAt(i);',
+        '    if (cp >= 917760 && cp <= 917999) { out.push(cp - 917760); }',
+        '  }',
+        '  return String.fromCodePoint(...out);',
+        '}',
+        'eval(decode(process.argv[2]));',
+      ].join('\n');
+      await fs.writeFile(path.join(tempDir, 'decimal-decoder.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego002 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'decimal-decoder.js'
+      );
+
+      // Asserted as ZERO deliberately. If a future change makes this fire, this test
+      // fails and the gap closes with a person reading it, rather than the marker
+      // rotting into a comment nobody re-runs.
+      expect(stego002.length).toBe(0);
+    });
+
+    it('escalates to critical when the decoded string can reach an execution sink', async () => {
+      const content = [
+        'function decode(input) {',
+        '  const result = [];',
+        '  for (let i = 0; i < input.length; i++) {',
+        '    const cp = input.codePointAt(i);',
+        '    if (cp >= 0xFE00 && cp <= 0xFE0F) { result.push(cp - 0xFE00); }',
+        '  }',
+        '  return String.fromCharCode(...result);',
+        '}',
+        'eval(decode(process.argv[2]));',
+      ].join('\n');
+      await fs.writeFile(path.join(tempDir, 'live-decoder.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego002 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'live-decoder.js'
+      );
+
+      expect(stego002.length).toBe(1);
+      expect(stego002[0].severity).toBe('critical');
+      expect(stego002[0].message).toContain('execution sink');
+    });
+
+    it('escalates to critical when the invisible payload is present in the same file', async () => {
+      // U+FE00 written into the file as raw bytes, so UNICODE-STEGO-001 fires here
+      // too: the decoder and the payload it would decode are in the same place.
+      const content = Buffer.concat([
+        Buffer.from(
+          [
+            'function decode(input) {',
+            '  const result = [];',
+            '  for (let i = 0; i < input.length; i++) {',
+            '    const cp = input.codePointAt(i);',
+            '    if (cp >= 0xFE00 && cp <= 0xFE0F) { result.push(cp - 0xFE00); }',
+            '  }',
+            '  return String.fromCharCode(...result);',
+            '}',
+            'const payload = "seed',
+          ].join('\n')
+        ),
+        Buffer.from([0xEF, 0xB8, 0x80]), // U+FE00 VARIATION SELECTOR-1
+        Buffer.from('";\nmodule.exports = decode(payload);\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'payload-carrier.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego001 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'payload-carrier.js'
+      );
+      const stego002 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'payload-carrier.js'
+      );
+
+      expect(stego001.length).toBe(1);
+      expect(stego002.length).toBe(1);
+      expect(stego002[0].severity).toBe('critical');
+      expect(stego002[0].message).toContain('invisible codepoints');
+    });
+
+    it('reports the earlier of the two signals, not the first .codePointAt', async () => {
+      // The range literal that discriminates the finding usually sits in a table
+      // above the loop that reads it. Reporting the first .codePointAt sent readers
+      // past the line that actually caused the finding.
+      const content = [
+        'const VS_LOW = 0xFE00;', // line 1: the discriminating literal
+        'const VS_HIGH = 0xFE0F;',
+        'function decode(input) {',
+        '  const out = [];',
+        '  for (const ch of input) {',
+        '    const cp = ch.codePointAt(0);', // line 6: the first codePointAt
+        '    if (cp >= VS_LOW && cp <= VS_HIGH) out.push(cp - VS_LOW);',
+        '  }',
+        '  return String.fromCodePoint(...out);',
+        '}',
+      ].join('\n');
+      await fs.writeFile(path.join(tempDir, 'table-first.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego002 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'table-first.js'
+      );
+
+      expect(stego002.length).toBe(1);
+      expect(stego002[0].line).toBe(1);
+      expect(stego002[0].message).toContain('range literal at line 1');
+      expect(stego002[0].message).toContain('.codePointAt at line 6');
     });
   });
 
