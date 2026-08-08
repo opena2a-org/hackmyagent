@@ -136,13 +136,19 @@ function checkWildcardToolAccess(ast: SecurityAST, artifactContent?: string): AS
   // a wildcard that is really written in the file, at the line that really
   // holds it.
   //
-  // KNOWN GAP, measured rather than assumed (#470). Those carriers do
-  // NOT cover one shape: a server that declares no tool key AND whose own
+  // KNOWN GAP in `check`, measured rather than assumed (#470). Those carriers
+  // do NOT cover one shape: a server that declares no tool key AND whose own
   // arguments grant an unbounded filesystem root (`/`, `~`, `/Users`), with no
   // credential and no dangerous command in the file. `check` scores such a
   // config 96/100 "Usable with caveats", exit 0; the pre-#449 build scored it
-  // 69 off the fabricated wildcard. This change makes that one case worse, and
-  // it is disclosed in the CHANGELOG rather than left for a user to discover.
+  // 69 off the fabricated wildcard. This change makes that one case worse in
+  // the quick scan, and it is disclosed in the CHANGELOG rather than left for
+  // a user to discover.
+  //
+  // It is a `check` gap only. `secure` reports `SEM-MCP-001` CRITICAL on the
+  // same tree — 69/100, exit 1 — identically before and after this change,
+  // while still scoring the benign fixture 98/100 clean. Do not restate this
+  // gap as "nothing catches it"; the full audit path does.
   //
   // It is deliberately not patched here by re-grading the capability 'high'.
   // That was built and measured: it restores the score, but the finding it

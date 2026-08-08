@@ -124,13 +124,18 @@ each finding still cites its own server rather than collapsing onto the first on
 | `corpus/mcp/malicious/shell-rce-mcp` | 69/100 | 69/100, cited at `mcp.json:15` not `:3` |
 | `corpus/repo/malicious/kitchen-sink` | 45/100 | 45/100, findings unchanged |
 
-**Known gap, disclosed rather than discovered later.** There is now one shape that scores
-better than it should: an MCP server that declares no tool key **and** whose own arguments
-grant an unbounded filesystem root (`/`, `~`, `/Users`), with no credential and no dangerous
-command anywhere in the file. Before this change it collected the fabricated CRITICAL and
-scored 69/100; it now scores **96/100, "Usable with caveats", exit 0**. No corpus fixture has
-that shape — it had to be constructed to find it — and a tree that also carries credentials
-or a dangerous command is still caught on that evidence. Tracked as #470.
+**Known gap in `check`, disclosed rather than discovered later.** One shape now scores better
+than it should in the quick scan: an MCP server that declares no tool key **and** whose own
+arguments grant an unbounded filesystem root (`/`, `~`, `/Users`), with no credential and no
+dangerous command anywhere in the file. `check` scored it 69/100 before this change, off the
+fabricated wildcard, and scores it **96/100, "Usable with caveats", exit 0** after.
+
+This is limited to `check`. **`secure` is unaffected** — it reports `SEM-MCP-001 CRITICAL` on
+that same tree, 69/100, exit 1, identically before and after this change, and still scores the
+benign fixture 98/100 with no critical. So the full audit path keeps the finding, and no
+corpus fixture has the shape in the first place; it had to be constructed to find it. A tree
+that also carries credentials or a dangerous command is caught by `check` too, on that
+evidence. Tracked as #470.
 
 The obvious patch for it was built and reverted: re-grading such a server as high-risk does
 restore the score, but the finding it routes through is the purpose-mismatch analyzer, which
