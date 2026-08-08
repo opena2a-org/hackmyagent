@@ -292,4 +292,49 @@ describe('AST-SCOPE-001 discriminates on the tools declaration (#449)', () => {
       expect(found[0].line).toBe(lineOf(content, '"allowedTools": ["*"]'));
     });
   });
+
+  describe('evidence lookup stays linear in the file size', () => {
+    /**
+     * Reading `tools` alongside `allowedTools` (the #449 fix) multiplies how
+     * many tools reach the evidence lookup: 800 servers x 40 tools went from
+     * 801 declared capabilities to 32,001. The original lookup built a
+     * `new RegExp` per tool and scanned from index 0, which made the compile
+     * quadratic in the file size.
+     *
+     * `check <package>` compiles configs out of downloaded third-party trees,
+     * so this file is attacker-controlled and a quadratic here is a scanner
+     * hang, not a slow test.
+     *
+     * The bound is pinned from BOTH sides, measured on this fixture:
+     *   with the fix     ~222 ms   (and ~201 ms on the pre-#449 compiler)
+     *   without the fix ~7067 ms
+     * 3000 ms sits between them — >13x headroom over the fixed path so it does
+     * not flake on a loaded machine, and >2x under the regression so removing
+     * the anchoring fails it. A bound above ~7s, or a fixture small enough for
+     * the quadratic to stay under it, would assert nothing.
+     */
+    it('compiles a 1.2MB config of many multi-tool servers without going quadratic', async () => {
+      const servers: Record<string, unknown> = {};
+      for (let i = 0; i < 800; i++) {
+        servers[`noise-${i}`] = {
+          command: 'npx',
+          tools: Array.from({ length: 40 }, (_, j) => `tool_${i}_${j}_padpadpadpadpad`),
+        };
+      }
+      servers['zz-wild'] = { command: 'npx', tools: ['*'] };
+      const content = JSON.stringify({ mcpServers: servers }, null, 2);
+
+      // Guard the fixture itself: if it stops being large, or stops producing
+      // the capability volume that drives the cost, the timing below silently
+      // stops measuring anything.
+      expect(content.length).toBeGreaterThan(1_000_000);
+
+      const started = Date.now();
+      const result = await compiler.compile(content, 'mcp.json');
+      const elapsed = Date.now() - started;
+
+      expect(result.ast.declaredCapabilities.length).toBeGreaterThan(30_000);
+      expect(elapsed).toBeLessThan(3000);
+    });
+  });
 });

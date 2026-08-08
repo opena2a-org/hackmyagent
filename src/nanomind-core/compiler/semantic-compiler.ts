@@ -549,6 +549,23 @@ function extractDeclaredCapabilities(
           continue;
         }
 
+        // Evidence lookups are anchored at this server's own declaration and
+        // must stay O(span), not O(file), per tool.
+        //
+        // Reading `tools` as well as `allowedTools` multiplies how many tools
+        // reach this loop — a config of 800 servers with 40 tools each went
+        // from 801 capabilities to 32,001. With a per-tool `new RegExp` scanned
+        // from index 0, that measured 209ms -> 7,067ms at 1.2MB and grew
+        // quadratically (114s at 5MB). `check <package>` scans downloaded
+        // third-party trees, so that file is attacker-controlled: it is a
+        // scanner hang, not a slow test. Anchoring at `from` and using
+        // `indexOf` keeps the total proportional to the file, because a tool
+        // literal sits inside the server object that declares it.
+        const from = serverMatch?.index ?? 0;
+        // `g` + explicit lastIndex rather than `content.slice(from)`, which
+        // allocated a copy of the remainder for every wildcard server.
+        const wildcardRe = /"(?:allowedTools|tools)"\s*:\s*\[[^\]]*"\*"[^\]]*\]/g;
+
         for (const tool of declaredTools) {
           // Prefer the specific tool's quoted span when present (e.g. `"shell"`
           // inside an allowedTools array). Fall back to the server declaration
@@ -558,14 +575,12 @@ function extractDeclaredCapabilities(
             // Cite the line that actually holds the wildcard rather than the
             // server key. Anchored at this server's declaration so a later
             // server's wildcard cannot be attributed to this one.
-            const from = serverMatch?.index ?? 0;
-            const wildcardDecl = content
-              .slice(from)
-              .match(/"(?:allowedTools|tools)"\s*:\s*\[[^\]]*"\*"[^\]]*\]/);
+            wildcardRe.lastIndex = from;
+            const wildcardDecl = wildcardRe.exec(content);
             if (wildcardDecl) evidence = wildcardDecl[0];
           } else {
-            const toolMatch = content.match(new RegExp(`"${escapeRegex(tool)}"`));
-            if (toolMatch) evidence = toolMatch[0];
+            const needle = `"${tool}"`;
+            if (content.indexOf(needle, from) !== -1) evidence = needle;
           }
           caps.push({
             name: `mcp.${name}.${tool}`,
