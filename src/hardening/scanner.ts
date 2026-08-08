@@ -26,7 +26,7 @@ import {
   inferActualCapabilities,
   validateCapabilities,
 } from './skill-capability-validator';
-import { clampScoreToVerdictBand, countsAgainstScore } from '../ui/verdict-band';
+import { clampScoreToVerdictBand, countsAgainstScore, expandSuppressed, retainForVerdict, summarizeSuppressed } from '../ui/verdict-band';
 import { shellQuote, citationTarget, citationPaths, commandNaming } from '../ui/shell-quote';
 import {
   isPathWithinDirectory as containIsPathWithinDirectory,
@@ -1016,6 +1016,36 @@ export function findingAppliesTo(finding: SecurityFinding, projectType: ProjectT
 }
 
 /**
+ * Whether a finding would be REPORTED to the user at all.
+ *
+ * The one definition of the reported set, because there being two is what #457
+ * was. `scanInner` gates its findings on exactly these three conditions
+ * (`!f.fixed && f.passed`, `!f.file`, `!findingAppliesTo`) before it decides
+ * what a suppression withheld, and five CLI call sites re-spell the same three
+ * conditions after `reapplyIgnoreFilters`. `reapplyIgnoreFilters` itself did
+ * not, so it recorded findings the user was never going to see as
+ * "suppressed" — and #450 adds a suppressed finding's penalty back at every
+ * gate. The result was a suppression that INVENTED a penalty: on a bare `mcp`
+ * project, one `.hmaignore` line reading `!SANDBOX-002` moved the score from
+ * 98/100 exit 0 to 69/100 exit 1, for a finding that scores nothing when it is
+ * not suppressed.
+ *
+ * A suppression may only ever subtract from the report. Anything that is not
+ * reportable cannot be withheld, so it cannot be disclosed as withheld and its
+ * penalty cannot be added back.
+ *
+ * Callers pass `projectType` rather than reading it off the scanner because
+ * `reapplyIgnoreFilters` runs on a merged array whose project type belongs to
+ * the CLI's `result`, not to the scanner instance.
+ */
+export function isReportableFinding(
+  f: { passed?: boolean; fixed?: boolean; file?: string; checkId: string },
+  projectType: ProjectType,
+): boolean {
+  return retainForVerdict(f) && Boolean(f.file) && findingAppliesTo(f as SecurityFinding, projectType);
+}
+
+/**
  * Drop failed findings that are pathless AND do not apply to the current
  * project type (issue #131 / #130). A check that fires `passed: false`
  * without `file` evidence on a project type the check is not meant for
@@ -1762,27 +1792,106 @@ export class HardeningScanner {
   /**
    * Re-apply .hmaignore filters to a set of findings.
    * Call this after NanoMind merge overwrites result.findings with unfiltered data.
+   *
+   * `projectType` is required, not optional, and that is deliberate (#457). It
+   * only feeds `isReportableFinding`, so a caller that omitted it would still
+   * compile, still run, and still record unreportable findings as suppressed —
+   * the defect this parameter exists to close, restored silently. Making it
+   * required turns every un-migrated call site into a compile error instead.
    */
   async reapplyIgnoreFilters(
     findings: SecurityFinding[],
     targetDir: string,
+    projectType: ProjectType,
     additionalIgnorePaths?: string[],
   ): Promise<SecurityFinding[]> {
     const hmaIgnore = await this.loadHmaIgnore(targetDir);
     const allIgnoredPaths = [...hmaIgnore.paths, ...(additionalIgnorePaths || [])];
     const suppressedCheckPatterns = hmaIgnore.checkIds;
 
+    // Reset FIRST, and on the no-op path too: a reused scanner instance must not
+    // let the previous target's scope narrowing be disclosed against this one.
+    this.lastOutOfScope = [];
+    this.lastSuppressed = [];
+
     if (allIgnoredPaths.length === 0 && suppressedCheckPatterns.length === 0) {
       return findings;
     }
 
-    return findings.filter(f => {
-      if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) return false;
-      // #280 — keys on every covered path, not just `f.file`.
-      if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) return false;
-      return true;
-    });
+    // #450 — the same split `scanInner` makes, for the same reasons. A check-ID
+    // rule is MARKED and kept, because this runs after the NanoMind merge on the
+    // very array the CLI recomputes the score from, so returning a shortened
+    // array re-created the laundering the scan path had just stopped doing. A
+    // path rule is a scope change and leaves the array, with the summary parked
+    // on `lastOutOfScope` for the caller to disclose. Callers render with
+    // `isDisplayed()`.
+    const pathExcluded: SecurityFinding[] = [];
+    const checkSuppressed: SecurityFinding[] = [];
+    for (const f of findings) {
+      // Already out of scope from the scan pass. It must be re-collected, not
+      // skipped: `nmResult.mergedFindings` is rebuilt from `allFindings`, which
+      // holds the SAME objects `scanInner` marked, so an early `continue` here
+      // let every path-excluded finding ride back into the scored array. That
+      // put HMA's own 65 excluded fixture findings on both the `Scope` line and
+      // the `Suppressed` line while still scoring them 0/100 — the marking was
+      // idempotent, the filtering was not.
+      if (f.suppressedBy === 'hmaignore-path') { pathExcluded.push(f); continue; }
+      if (f.suppressed) { checkSuppressed.push(f); continue; }
+      if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) {
+        f.suppressed = true;
+        f.suppressedBy = 'hmaignore-check';
+        checkSuppressed.push(f);
+      } else if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) {
+        // #280 — keys on every covered path, not just `f.file`.
+        f.suppressed = true;
+        f.suppressedBy = 'hmaignore-path';
+        pathExcluded.push(f);
+      }
+    }
+    // #457 — the DISCLOSURE is gated on what would have been reported; the
+    // REMOVAL below is not. Two different questions, and conflating them is what
+    // the defect was.
+    //
+    // A suppression can only ever subtract from the report. `scanInner` settles
+    // that by filtering to the reportable set BEFORE it splits suppressed from
+    // kept (see the `filteredFindings` filter and the loop under it); this
+    // method runs on a post-merge array and never did, so a pathless finding —
+    // one the user was never going to see, and which scores nothing when left
+    // alone — was recorded as suppressed, and #450 adds a suppressed finding's
+    // penalty back at every gate. Measured on a bare `mcp` project: a one-line
+    // `.hmaignore` reading `!SANDBOX-002` moved it from 98/100 exit 0 to
+    // 69/100 exit 1. Suppression INVENTED the penalty, which is #450's own
+    // defect in mirror image and would have taught users that asking for a
+    // quieter report costs score.
+    //
+    // The removal is deliberately left alone. Narrowing it too would push
+    // unreportable findings back into the returned array, and the one caller
+    // that does not re-filter (`secure-openclaw`, `cli.ts`) would start listing
+    // and scoring them — trading this defect for a new one on another path.
+    const reportable = (f: SecurityFinding) => isReportableFinding(f, projectType);
+    this.lastOutOfScope = summarizeSuppressed(pathExcluded.filter(reportable));
+    this.lastSuppressed = summarizeSuppressed(checkSuppressed.filter(reportable));
+    if (pathExcluded.length === 0 && checkSuppressed.length === 0) return findings;
+    const removed = new Set([...pathExcluded, ...checkSuppressed]);
+    return findings.filter((f) => !removed.has(f));
   }
+
+  /**
+   * Scope narrowing from the most recent `reapplyIgnoreFilters` call, so the
+   * caller can disclose it (#450). Identity only — see `summarizeSuppressed`.
+   *
+   * Per-call, and reset on every call including the no-op one, so a reused
+   * scanner instance cannot let one target's `.hmaignore` describe the next
+   * target's scan.
+   */
+  lastOutOfScope: ReturnType<typeof summarizeSuppressed> = [];
+
+  /**
+   * Check IDs an `.hmaignore` `!CHECK-ID` rule suppressed in the most recent
+   * `reapplyIgnoreFilters` call (#450). Their penalties must be added back at
+   * every score and gate the caller derives afterwards.
+   */
+  lastSuppressed: ReturnType<typeof summarizeSuppressed> = [];
 
   /**
    * Every path a finding speaks for.
@@ -2718,7 +2827,12 @@ export class HardeningScanner {
     // 1. Only failed checks (passed: false)
     // 2. Only checks with a file path (concrete findings, not generic advice)
     // 3. Only checks that apply to this project type (e.g., no SQL checks on MCP servers)
-    // 4. Filter out ignored checks
+    //
+    // What the USER suppressed is handled separately, below: those findings are
+    // MARKED and kept, not dropped (#450). The three suppression predicates used
+    // to sit in this filter, and because the score is computed from whatever
+    // survives it, naming a check on the command line removed that check's
+    // penalties and RAISED the score.
     let filteredFindings = findings.filter((f) => {
       // Keep fixed findings (so users can see what was fixed)
       // Otherwise, only show failed checks
@@ -2730,19 +2844,77 @@ export class HardeningScanner {
       // Only show checks relevant to this project type
       if (!this.findingAppliesTo(f, projectType)) return false;
 
-      // Filter out ignored checks (from --ignore flag)
-      if (ignoredChecks.has(f.checkId.toUpperCase())) return false;
-
-      // Filter out check IDs suppressed via .hmaignore (supports wildcards)
-      if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) return false;
-
-      // Filter out paths matching .hmaignore.
-      // #280 — a multi-file finding survives while ANY covered path is
-      // un-ignored, and is re-pointed onto a survivor rather than deleted.
-      if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) return false;
-
       return true;
     });
+
+    // #450 — user suppression, and the line between the two kinds of it.
+    //
+    // SUPPRESSING A CHECK ID is not a scope change. The check ran over the whole
+    // tree and matched something; removing it removes a penalty. That is what
+    // made `--ignore CONFIG-004` move `corpus/repo/buggy/leaky-env-example` from
+    // 69/100 exit 1 to 98/100 exit 0 with the credential verdict gone and nothing
+    // in the output naming the suppression. These are MARKED and kept, so the
+    // score, the verdict band and every channel's exit code still see them, and
+    // only the renderer drops them from the list.
+    //
+    // EXCLUDING A PATH is a scope change, and is scored as one. `test-fixtures/`
+    // in an `.hmaignore` means "this part of the tree is not my product", which
+    // is the same statement as scanning a subdirectory, and a smaller target
+    // honestly scores differently. Treating it as a penalty to keep was measured
+    // and rejected: it took HMA's own repo from 100/100 to 0/100 with 25 critical,
+    // every one of them in deliberately-vulnerable fixtures that are excluded
+    // from the published package. A number that is useless is not more honest
+    // than a number that is scoped, PROVIDED the scope is disclosed — and the
+    // disclosure is the half that was missing before, not the arithmetic.
+    // `scan-soul`'s profile path is the precedent: skipped domains leave the
+    // denominator and are named on a `Scope` line.
+    //
+    // So: path exclusions leave the scored set and are reported as scope;
+    // check-ID suppressions stay in it and are reported as suppression.
+    const pathExcluded: SecurityFinding[] = [];
+    for (const f of filteredFindings) {
+      if (ignoredChecks.has(f.checkId.toUpperCase())) {
+        f.suppressed = true;
+        f.suppressedBy = 'ignore-flag';
+      } else if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) {
+        f.suppressed = true;
+        f.suppressedBy = 'hmaignore-check';
+      } else if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) {
+        // #280's re-pointing behaviour is preserved: `retainAfterPathSuppression`
+        // returns true for a multi-file finding while ANY covered path survives,
+        // and has already re-pointed `file` onto a survivor by the time it does.
+        // Only a finding whose every covered path is ignored reaches here, so a
+        // partial ignore still keeps its finding and still scores — which is the
+        // #280 rule, unchanged.
+        f.suppressed = true;
+        f.suppressedBy = 'hmaignore-path';
+        pathExcluded.push(f);
+      }
+    }
+    // Both kinds leave `findings`; they differ in what happens to the SCORE.
+    //
+    // The first cut of this fix kept check-ID-suppressed findings in the array
+    // so that every scoring and exit path would inherit the correction for free.
+    // That was measured and rejected. `findings` is not read only by renderers
+    // and scorers: it also drives the `--fix` governance auto-fix, the Registry
+    // publish payload, `allFindings` in `--json`, and the openclaw and nemoclaw
+    // report paths. Leaving suppressed entries in it made `secure --fix --ignore
+    // X` WRITE a SOUL.md for the suppressed check, and made `--json` ship the
+    // suppressed finding's `evidence.lines[].content` — a plaintext credential —
+    // two keys away from a disclosure record built to exclude exactly that. The
+    // claimed failure mode, "a display site that forgets to filter is loud and
+    // safe", was wrong: a forgotten site writes to disk and publishes to a
+    // registry.
+    //
+    // So `findings` keeps its old meaning, every one of those consumers is
+    // unchanged from 0.27.0, and the correction is applied where the defect
+    // actually is — the score and the gate, via `suppressed`, which
+    // `scoreWithSuppressed` adds back.
+    const suppressed = summarizeSuppressed(
+      filteredFindings.filter((f) => f.suppressedBy && f.suppressedBy !== 'hmaignore-path'),
+    );
+    const outOfScope = summarizeSuppressed(pathExcluded);
+    filteredFindings = filteredFindings.filter((f) => !f.suppressed);
 
     // #421 — which FAILED findings did the scanner silence on its own?
     //
@@ -2808,8 +2980,19 @@ export class HardeningScanner {
       options.onProgress('Verifying applied fixes...');
     }
 
-    // Calculate score (only on applicable, non-ignored findings)
-    const { score: rawScore, maxScore } = this.calculateScore(filteredFindings);
+    // #450 — the scored set is the reported findings PLUS the penalties of the
+    // check IDs the caller suppressed. Suppressing a check is a display choice;
+    // it does not make the tree safer, and before this it moved
+    // `corpus/repo/buggy/leaky-env-example` from 69/100 exit 1 to 98/100 exit 0.
+    // Path exclusions are NOT here: those are a scope statement and are reported
+    // separately on `outOfScope`.
+    const scoredFindings = [
+      ...filteredFindings,
+      ...(expandSuppressed(suppressed) as unknown as SecurityFinding[]),
+    ];
+
+    // Calculate score (only on applicable findings, plus suppressed penalties)
+    const { score: rawScore, maxScore } = this.calculateScore(scoredFindings);
 
     // #259 governance floor. A SOUL-only governance subversion barely dents
     // the infra-weighted composite, so `secure` on the malicious
@@ -2823,7 +3006,7 @@ export class HardeningScanner {
     // fix would leave every programmatic consumer reading 76. `rawScore` is
     // preserved, so this adds information rather than destroying it — the
     // same shape as the scan-soul #206/#251 clamp.
-    const { score, clamped: scoreClamped } = clampScoreToVerdictBand(rawScore, filteredFindings);
+    const { score, clamped: scoreClamped } = clampScoreToVerdictBand(rawScore, scoredFindings);
 
     // #374 — the live-tree view of the SAME findings set. `score` above is the
     // number the next scan at the SAME DEPTH will produce — exactly so for `quick`
@@ -2890,6 +3073,15 @@ export class HardeningScanner {
       dryRun: dryRun && autoFix ? true : undefined,
       atomicFix,
       ignored: ignoredChecks.size > 0 ? Array.from(ignoredChecks) : undefined,
+      // #450 — findings an `.hmaignore` path rule put out of scope. They are NOT
+      // in `findings` and NOT in the score, and this is the only record that the
+      // scan was narrowed, so it is what makes the narrowing non-silent.
+      outOfScope: outOfScope.length > 0 ? outOfScope : undefined,
+      // #450 — the check IDs the caller suppressed. NOT in `findings` (that
+      // array feeds --fix, publish and every report format), but their
+      // penalties ARE in `score`, and every later re-score must add them back
+      // via `expandSuppressed` or the laundering returns.
+      suppressed: suppressed.length > 0 ? suppressed : undefined,
       semanticAnalysis: (layer2Count > 0 || layer3Count > 0) ? {
         layer2Findings: layer2Count,
         layer3Findings: layer3Count,
@@ -3156,6 +3348,17 @@ export class HardeningScanner {
    */
   findingAppliesTo(finding: SecurityFinding, projectType: ProjectType): boolean {
     return findingAppliesTo(finding, projectType);
+  }
+
+  /**
+   * Whether a finding would be reported at all — the same three conditions
+   * `scanInner` gates on, exposed for the same reason `findingAppliesTo` is
+   * (#457). Five CLI call sites had re-spelled this predicate by hand and
+   * `reapplyIgnoreFilters` had not, so the suppression accounting disagreed with
+   * the display set about what a suppression could possibly withhold.
+   */
+  isReportableFinding(finding: SecurityFinding, projectType: ProjectType): boolean {
+    return isReportableFinding(finding, projectType);
   }
 
   private async checkCredentialExposure(

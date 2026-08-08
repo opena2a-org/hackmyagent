@@ -2,6 +2,101 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [Unreleased]
+
+### Security
+
+**`--ignore` and `.hmaignore` no longer change the score or the exit code (#450).**
+This can turn a green pipeline red, and it is the reason to read this entry before
+upgrading.
+
+Suppression removed a check's penalties rather than narrowing the scan's scope, so
+declining to look at a check made the tree score better. Measured on
+`corpus/repo/buggy/leaky-env-example`, identical on published 0.26.1 and 0.27.0:
+
+| invocation | score | exit | verdict |
+|---|---|---|---|
+| `secure --ci` | 69/100 | 1 | Not safe to ship. Plaintext API Keys |
+| `secure --ci --ignore CONFIG-004` | 98/100 | 0 | Usable with caveats |
+
+Nothing in the second report named the suppression: grepping the whole run for
+`ignor|suppress|excluded|skipped` matched only the literal string `.gitignore`, and
+`61 of 61 check groups ran` printed identically with 0, 1 and 5 checks suppressed. Any
+pipeline could be made green by naming the check that was failing it, and the resulting
+report read as a clean scan rather than a suppressed one.
+
+The `--ignore` flag and an `.hmaignore` `!CHECK-ID` rule are the same statement — "do not
+tell me about this check" — and both reached this. Both are closed, in `secure` and in
+`check`.
+
+An `.hmaignore` **path** rule is a different statement and is treated differently. It says
+"this part of the tree is not my product", which is the same statement as scanning a
+subdirectory, and a smaller target honestly scores differently. Those findings leave the
+scored set as before — but they are no longer allowed to leave it silently, which is the
+half that was missing. `secure` on HackMyAgent's own repo reported `100/100 · No security
+issues found` in 0.27.0 while an `.hmaignore` held back 65 findings, 26 of them critical,
+and named none of it anywhere in the output. It now prints:
+
+```
+Scope       65 findings excluded by .hmaignore path rules (26 critical, 15 high, 24 medium)
+            Out of scope, so not scored and not in the exit code. The score above
+            describes the tree minus those paths.
+```
+
+What changes:
+
+- A check-ID-suppressed finding is **withheld from the findings list** and still counted
+  in the score, the verdict band and the exit code.
+- A path-excluded finding leaves the scored set and is reported on a `Scope` line with a
+  severity breakdown, in text and as `outOfScope` in `--json`.
+- Every suppressed check ID is named on a `Suppressed` line in text output and in a
+  `suppressed` array in `--json`, with what it would have reported. The disclosure
+  carries identity only — no evidence, no path — so a suppressed credential finding
+  does not ship a second copy of the credential.
+- The `Checks` line now carries a count that moves: `... · 1 finding suppressed by the
+  caller`. The `61 of 61 check groups ran` counter is deliberately unchanged, because
+  the group does run when one of its check IDs is suppressed.
+- `--json` `findings` keeps its old contract and lists only what you asked to see.
+
+**A suppressed check costs exactly what it would have cost unsuppressed — no more, no
+less.** Not every failed check is scored: a check that reports an absent mitigation and
+has nothing to point at ("configure containers to run as non-root", on a project with no
+Dockerfile) has always been dropped before the score, on every tree, whether or not you
+suppress it. Suppressing one of those must therefore change nothing. An earlier cut of
+this fix added them back, so an `.hmaignore` line reading `!SANDBOX-002` took a clean
+project from 98/100 exit 0 to 69/100 exit 1 with no finding to show for it. Suppression
+is a display choice in both directions, and that is now pinned by a test that fails in
+either.
+
+**If your `.hmaignore` suppresses whole check families by wildcard, delete those rules
+and re-run.** We did. HackMyAgent's own `.hmaignore` carried seven — `!SANDBOX-*`,
+`!TOOL-*`, `!PROMPT-*`, `!LOG-*`, `!ENV-*`, `!SEC-*`, `!AUTH-*` — with a note that MCP
+infrastructure checks do not apply to a local CLI scanner. Deleting all seven changes
+this repo's score by nothing, because the checks behind them report absent mitigations
+with no file to point at and were never scored. What the rules did do is silence
+`LOG-002`. With them in place, 0.27.0 reported `100/100 · No security issues found ·
+exit 0` on a tree containing `console.log(password)` at a named file and line; with them
+removed, the same build reported `69/100 · exit 1` and named the file. A wildcard over a
+check family is an undated waiver of every check that family will ever contain,
+including the ones added after you wrote it — and it erases the record of the checks
+that PASS as well as the ones that fail, so it removes your ability to prove a negative.
+
+Note that `.hmaignore` takes **one pattern per line**. Seven rules written on a single
+space-separated line parse as one pattern that can never match, and silently suppress
+nothing.
+
+**To let a build pass over findings you have accepted, use `--fail-below <score>`.** A
+threshold in your pipeline configuration is auditable; a quietly missing finding is not.
+Note that `--fail-below` does not override the critical/high rule, so after this change
+nothing turns `secure` green on a tree carrying a critical or high finding. If that
+blocks a legitimate workflow, say so on #450 — an explicit, disclosed waiver flag is the
+open question, not a reason to keep the silent one.
+
+**Known gap:** `--ignore` is not yet honoured by `secure --benchmark`. On an OASB run a
+suppressed check still leaves the compliance denominator, so it can move the compliance
+percentage, the rating and the exit code. The `--ignore` help text says so, and the
+benchmark path is tracked separately.
+
 ## [0.27.0] - 2026-08-07
 
 Four changes here can turn a green pipeline red, and they are the reason to read this

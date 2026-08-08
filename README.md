@@ -126,7 +126,7 @@ hackmyagent secure --fix                      # auto-fix issues with rollback
 hackmyagent secure --fix --dry-run            # preview fixes
 hackmyagent secure --deep                     # full behavioural simulation (20 probes)
 hackmyagent secure --static-only              # static checks only, faster
-hackmyagent secure --ignore CRED-001,GIT-002  # skip specific check IDs
+hackmyagent secure --ignore CRED-001,GIT-002  # leave check IDs out of the findings list
 hackmyagent secure --json                     # JSON output for CI
 hackmyagent secure --ci                       # non-interactive, exit non-zero on findings
 hackmyagent secure --publish                  # push anonymised results to the OpenA2A Registry
@@ -314,6 +314,16 @@ Pre-commit hook:
 # .git/hooks/pre-commit
 npx hackmyagent secure --ignore LOG-001,RATE-001
 ```
+
+Suppressing a **check** (`--ignore CRED-001`, or `!CRED-001` in `.hmaignore`)
+changes what the report lists, not what it measures: it is still scored, still
+in the verdict, still in the exit code, and named on a `Suppressed` line. Use
+`--fail-below <score>` to let a build pass over findings you have accepted — a
+threshold in your pipeline config is auditable, a missing finding is not.
+
+Excluding a **path** (`test-fixtures/` in `.hmaignore`) is a scope statement:
+those paths leave the score and the exit code, as if you had not scanned them.
+Always disclosed on a `Scope` line and as `outOfScope` in `--json`.
 
 </details>
 

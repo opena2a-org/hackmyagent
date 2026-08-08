@@ -38,7 +38,7 @@ async function scan(ignoreBody?: string) {
   try {
     const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
     const perm = result.findings.find((f) => f.checkId === 'PERM-001' && !f.passed);
-    return { score: result.score, perm };
+    return { score: result.score, perm, outOfScope: result.outOfScope };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -92,5 +92,39 @@ describe('#280 .hmaignore must not delete a multi-file finding', () => {
     const bare = await scan();
     const full = await scan('secrets.json\n.env\n');
     expect(full.score).toBeGreaterThan(bare.score);
+  });
+
+  // #450 — the half of this that WAS missing. A path rule may narrow the scope,
+  // and the two assertions above say it does. It may not narrow it silently:
+  // published 0.27.0 reported `100/100 · No security issues found` on HMA's own
+  // repo while its `.hmaignore` held back 65 findings, 13 of them critical, and
+  // named none of it anywhere in the output.
+  it('discloses what the path rule put out of scope', async () => {
+    const dir = await fixture('secrets.json\n.env\n');
+    try {
+      const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
+      expect(result.outOfScope, 'scope was narrowed with no record of it').toBeDefined();
+      const perm = result.outOfScope!.find((r) => r.checkId === 'PERM-001');
+      expect(perm).toBeDefined();
+      expect(perm!.severity).toBeTruthy();
+      expect(perm!.suppressedBy).toBe('hmaignore-path');
+      // Identity only — the disclosure must not become a second copy of the
+      // evidence it is describing.
+      expect(Object.keys(perm!).sort()).toEqual(
+        ['category', 'checkId', 'count', 'name', 'severity', 'suppressedBy'].sort(),
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports no scope narrowing when there is none', async () => {
+    const dir = await fixture();
+    try {
+      const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
+      expect(result.outOfScope).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

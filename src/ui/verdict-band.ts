@@ -119,6 +119,124 @@ export function retainForVerdict(f: { passed?: boolean; fixed?: boolean }): bool
   return !f.passed || Boolean(f.fixed);
 }
 
+/**
+ * Turn a suppression summary back into findings the scorer and the gate can
+ * count (#450).
+ *
+ * A check-ID suppression is a display choice, not a security fact, so the
+ * penalty has to survive it. But the finding itself must NOT survive in
+ * `ScanResult.findings`: that array also drives the `--fix` governance auto-fix,
+ * the Registry publish payload, `allFindings` in `--json`, and the openclaw and
+ * nemoclaw report paths. Leaving suppressed entries in it made
+ * `secure --fix --ignore X` write a `SOUL.md` for the suppressed check and made
+ * `--json` ship the suppressed finding's plaintext `evidence.lines[].content`.
+ *
+ * So the finding leaves, and this brings back exactly the part the score is
+ * entitled to: severity, category and checkId, which is the whole of what
+ * `calculateSecurityScore` reads. `count` is expanded rather than summed so the
+ * per-checkId cap (`MAX_FINDINGS_PER_CHECK`) applies identically to a suppressed
+ * finding and a reported one — collapsing to one stub would quietly discount
+ * the second and third instance.
+ *
+ * The stubs carry no `file`, no `message` and no `evidence`, so nothing that
+ * consumes them can leak what the finding was about.
+ */
+export function expandSuppressed(
+  summary: readonly { checkId: string; name: string; category: string; severity: string; count: number }[] | undefined,
+): Array<{ checkId: string; name: string; category: string; severity: string; passed: false; suppressed: true }> {
+  if (!summary?.length) return [];
+  const out: Array<{ checkId: string; name: string; category: string; severity: string; passed: false; suppressed: true }> = [];
+  for (const row of summary) {
+    for (let i = 0; i < row.count; i++) {
+      out.push({
+        checkId: row.checkId,
+        name: row.name,
+        // Carried, not blanked. `calculateSecurityScore` applies the 0.4
+        // governance weight on EITHER the category or an `AST-GOV*`-style
+        // checkId prefix, so dropping the category would score a suppressed
+        // governance finding at full weight — a suppression that made the score
+        // WORSE than reporting it, which is the same class of defect in mirror
+        // image.
+        category: row.category,
+        severity: row.severity,
+        passed: false,
+        suppressed: true,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Whether a finding is shown in the rendered findings list.
+ *
+ * #450 — the counterpart to `countsAgainstScore`, and deliberately the ONLY
+ * predicate that differs from it. A finding the user suppressed (`--ignore`, an
+ * `.hmaignore` check-ID pattern, an `.hmaignore` path pattern) is not listed,
+ * but it is still scored, still sets the verdict band, and still decides the
+ * exit code. Before this split there was one array for both jobs, so suppressing
+ * a check removed its penalties: naming one check moved the leaky-env corpus
+ * fixture from 69/100 exit 1 to 98/100 exit 0.
+ *
+ * The pairing rule from `retainForVerdict` inverts here and that is the point:
+ * anything that counts against the score must still be COUNTED, and may be
+ * un-listed. A display site that forgets this predicate shows a suppressed
+ * finding, which is visible and harmless. A scoring site that applies it
+ * launders the score, which is neither. If you are reaching for this function
+ * outside a renderer, you probably want `countsAgainstScore`.
+ */
+export function isDisplayed(f: { suppressed?: boolean }): boolean {
+  return !f.suppressed;
+}
+
+/**
+ * The suppression disclosure, folded to one row per checkId.
+ *
+ * Identity only — `checkId`, `name`, `severity`, `count`, and which channel
+ * asked. No `file`, no `message`, no evidence: #370 has `secure --json` emitting
+ * plaintext credentials in `evidence.lines[].content`, and a disclosure record
+ * for a suppressed credential finding must not become a second copy of it.
+ */
+export function summarizeSuppressed(
+  findings: readonly {
+    checkId?: string;
+    name?: string;
+    category?: string;
+    severity?: string;
+    suppressed?: boolean;
+    suppressedBy?: string;
+    passed?: boolean;
+    fixed?: boolean;
+    fixVerified?: boolean;
+  }[],
+): Array<{ checkId: string; name: string; category: string; severity: string; count: number; suppressedBy: string }> {
+  const rows = new Map<string, { checkId: string; name: string; category: string; severity: string; count: number; suppressedBy: string }>();
+  for (const f of findings) {
+    // Only findings that would otherwise have been reported. A suppressed
+    // check that passed was never going to appear, and announcing it as
+    // "suppressed" would overstate what the flag cost the reader.
+    if (!f.suppressed || !countsAgainstScore(f)) continue;
+    const checkId = f.checkId || '_unknown_';
+    const existing = rows.get(checkId);
+    if (existing) {
+      existing.count += 1;
+      continue;
+    }
+    rows.set(checkId, {
+      checkId,
+      name: f.name || checkId,
+      category: f.category || '',
+      severity: f.severity || 'info',
+      count: 1,
+      suppressedBy: f.suppressedBy || 'ignore-flag',
+    });
+  }
+  const order: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+  return [...rows.values()].sort(
+    (a, b) => (order[a.severity] ?? 5) - (order[b.severity] ?? 5) || a.checkId.localeCompare(b.checkId),
+  );
+}
+
 export function isFailDirection(
   findings: readonly {
     severity?: string;
