@@ -71,6 +71,13 @@ export function quickScanScopeDisclosure(opts: {
   semanticCount: number;
   /** Target string as the user typed it. */
   fullAuditTarget: string;
+  /**
+   * #456 — how much of the analyzer suite examined the compiled set, already
+   * phrased. `check` overwrites the Checks line that `secure` qualifies, so
+   * without this the qualifier reached `secure` only and the same
+   * `N semantic (NanoMind AST)` string stayed bare on this path.
+   */
+  familyQualifier?: string;
 }): QuickScanScopeDisclosure {
   const { staticCount, semanticCount } = opts;
   const unevaluated = QUICK_SCAN_UNEVALUATED_CATEGORIES.join(', ');
@@ -81,7 +88,9 @@ export function quickScanScopeDisclosure(opts: {
   return {
     // Lead with what ran, then state plainly what did not. The suite size
     // is still cited so the reader can size the gap.
-    checks: `${semanticCount} semantic (NanoMind AST) · ${staticCount} static not run (quick scan)`,
+    checks:
+      `${semanticCount} semantic (NanoMind AST${opts.familyQualifier ? `, ${opts.familyQualifier}` : ''})` +
+      ` · ${staticCount} static not run (quick scan)`,
     categories: `semantic artifact matrix only  (${staticCount} static checks not evaluated)`,
     categoriesSuffix: `  · ${staticCount} static checks not evaluated`,
     cleanVerdict:

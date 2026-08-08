@@ -18,6 +18,7 @@ import type { ASTFinding } from './capability-analyzer.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
 import { findLineFromString } from '../../types/text-position.js';
+import { isNonAgentProjectType } from './family-coverage.js';
 
 // ============================================================================
 // Public API
@@ -45,7 +46,7 @@ export function analyzePrompt(
 
   // SDKs and libraries don't have system prompts, instruction hierarchies,
   // or trust boundaries. Prompt security checks only apply to agents.
-  if (projectType === 'sdk' || projectType === 'library') {
+  if (isNonAgentProjectType(projectType)) {
     return [];
   }
 

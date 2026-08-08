@@ -15,6 +15,7 @@
 
 import type { SecurityAST, Capability, Constraint, RiskSurface } from '../types.js';
 import type { ProjectType } from '../../hardening/security-check.js';
+import { isNonAgentProjectType } from './family-coverage.js';
 
 // ============================================================================
 // Finding Type (compatible with HMA SecurityFinding)
@@ -76,7 +77,10 @@ function isAgentLevelArtifact(ast: SecurityAST): boolean {
 export function analyzeCapabilities(ast: SecurityAST, projectType?: ProjectType, projectConstraints?: Constraint[]): ASTFinding[] {
   const findings: ASTFinding[] = [];
   const isSDK = projectType === 'sdk';
-  const isLibOrSDK = isSDK || projectType === 'library';
+  // Same predicate the governance, scope and prompt families use, and the same
+  // one the semantic coverage disclosure reads (#456). It was a fourth private
+  // copy of `sdk || library`; a gate with two definitions is a gate that drifts.
+  const isLibOrSDK = isNonAgentProjectType(projectType);
 
   // Check 1: Undeclared capabilities (inferred but not declared)
   findings.push(...checkUndeclaredCapabilities(ast));
