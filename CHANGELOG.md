@@ -10,52 +10,87 @@ All notable changes to HackMyAgent are documented in this file.
 it names (#469).** This lowers findings rather than raising them, so it can turn a red
 pipeline green.
 
-The check fired when a file contained `.codePointAt(` anywhere and a variation-selector or
-tag-range hex literal anywhere. There is no AST, no scope and no dataflow between the two,
-so they could be thousands of lines apart and unrelated. The decoder half of GlassWorm
-reconstitutes a string from codepoints, and code that only reads codepoints — a sanitiser,
-a linter, a width calculator, a range table — never does. But `String.fromCodePoint` /
-`fromCharCode` was only one input to an exemption whose other input was a regex over the
-file PATH, which this scanner's own comment calls an attacker-controllable weak signal. So
-defensive code fired unless it happened to be named like an analyzer, and renaming a file
-was enough to bypass the check.
+The check fired at CRITICAL when a file contained `.codePointAt(` anywhere and a
+variation-selector or tag-range hex literal anywhere. There is no AST, no scope and no
+dataflow between the two, so they could be thousands of lines apart and unrelated. A
+sanitiser, a linter, a width calculator or a range table all carry both tokens, so all of
+them failed pipelines. Measured precision on real-world code was 0/7, and the only true
+positives ever observed were fixtures written for this check.
 
-Measured on first-class source files, not `node_modules`:
+The one thing that held a file clean was an exemption keyed on a regex over the file PATH
+(`/analyz|detect|scan|check|inspect|enhanc|stego/i`), which this scanner's own comment
+calls an attacker-controllable weak signal. Our own stego analyzer was clean only because
+of its filename: copying it to `util-helper.ts` self-flagged at CRITICAL.
 
-| file | 0.27.0 | now |
-|---|---|---|
-| `consola` `dist/index.mjs` | CRITICAL | clean |
-| `graphemer` `lib/Graphemer.js` | CRITICAL | clean |
-| our own `stego-analyzer.ts` copied to `util-helper.ts` | CRITICAL | clean |
-| a log sanitiser's hazard-range table | CRITICAL | clean |
-| a test that builds a payload and asserts a sanitiser escapes it | CRITICAL | MEDIUM |
+Two changes, both in the `UNICODE-STEGO-002` block:
 
-No true positive was lost. The canonical decoder fixtures still fire, and the corroborated
-cases below are graded higher than before, not lower.
-
-Three changes, all in the `UNICODE-STEGO-002` block:
-
-- **String reconstitution is now a required conjunct of the finding**, not an input to an
-  exemption. That makes the filename exemption unreachable — it could only be true when
-  reconstitution was absent, which can no longer reach the branch — so it is deleted rather
-  than left as dead code guarding a live bypass. The file path is no longer consulted.
+- **The file path is no longer consulted at all.** The exemption is deleted, not narrowed.
+  Renaming a file now changes no verdict in either direction, so the bypass is gone rather
+  than relocated. This is pinned by a test that scans identical bytes under two filenames,
+  one carrying an old exemption keyword and one not, and asserts the severities match.
 - **CRITICAL now requires corroboration.** A decoder pattern is evidence of capability, not
   of malice. Corroboration is an execution sink in the same file, so a decoded string can
   reach `eval`/`Function`, or `UNICODE-STEGO-001` firing on the same file, so the invisible
   payload a decoder would decode is actually present. Both are read from the file being
   scanned, so severity never depends on the order the tree is walked in. Uncorroborated is
-  reported at MEDIUM with the evidence intact — it is downgraded, never dropped.
+  reported at MEDIUM with the evidence intact — it is downgraded, never dropped, and MEDIUM
+  does not fail a pipeline.
+
+Measured on first-class source files, not `node_modules`:
+
+| file | 0.27.0 | now |
+|---|---|---|
+| our own `stego-analyzer.ts` copied to `util-helper.ts` | CRITICAL | MEDIUM |
+| a log sanitiser's hazard-range table | CRITICAL | MEDIUM |
+| a test that builds a payload and asserts a sanitiser escapes it | CRITICAL | MEDIUM |
+| a decoder that reconstitutes a tag-range payload and `eval`s it | CRITICAL | CRITICAL |
+
+**No true positive was lost, and this was measured rather than assumed.** Ten spellings of
+a working decoder — `.map(String.fromCodePoint)`, `Array.from(out, ...)`, an alias, a
+destructured `{ fromCharCode }`, `String['fromCodePoint']`, `Reflect.apply`,
+`Buffer.from(out).toString()`, `new TextDecoder().decode()`, a `JSON.parse('"\uXXXX"')`
+round trip, and an indexed alphabet table — are each pinned by a test asserting they still
+report CRITICAL.
+
+That list exists because an earlier cut of this fix made string reconstitution a REQUIRED
+conjunct of the finding, on the reasoning that only a decoder rebuilds a string from
+codepoints. The reasoning is sound and the implementation was not: it tested for
+`String.from(CodePoint|CharCode)(` specifically, and all ten spellings above evade that
+regex while doing exactly what it describes. Measured against 0.27.0, that cut reported
+**nothing at all** on all ten. The attacker chooses the spelling, so the spelling cannot be
+the gate. Narrowing on semantics rather than spelling needs dataflow, which is #424's AST
+analyzer.
+
 - **The reported line is the earlier of the two signals.** It used to report the first
   `.codePointAt(`, but the discriminating token is the range literal, which usually sits in
   a table above the loop that reads it. One downstream consumer was pointed at line 168 when
-  the cause was line 139. The message now names both lines.
+  the cause was line 139. The message now names both lines. Note the consequence: neither
+  token detection strips comments, so on a file whose licence or doc header mentions a range
+  literal, the cited line is that header rather than the decoder.
 
-Known gap, tracked in #467 and asserted as an explicit zero in the suite so that closing it
-fails a test: a decoder that spells the same range in decimal (`917760`) instead of hex
-(`0xE0100`) is still undetected, even though it reconstitutes and executes. Widening the
-literal pattern would reopen the false-positive class this closes; the discriminator belongs
-in the AST analyzer, gated on #424. The same "fires on its own countermeasure" shape in
-`UNICODE-STEGO-005` is #468, filed rather than fixed here.
+**What this does not fix**, measured and stated here rather than discovered later. All of
+these are pre-existing, none is made worse by this change, and each is filed:
+
+- A decoder that spells the range in decimal (`917760`) instead of hex (`0xE0100`) is
+  undetected, even though it reconstitutes and executes. #467, asserted as an explicit zero
+  in the suite so that closing it fails a test. The discriminator belongs in the AST
+  analyzer, gated on #424; a wider literal pattern is another spelling rule.
+- Corroboration recognises `eval(` and `Function(` and no other sink. A decoder whose
+  payload reaches `vm.runInThisContext`, `child_process.exec`, a dynamic `import()`, the
+  `AsyncFunction` constructor or `globalThis.eval` is reported at MEDIUM rather than
+  CRITICAL. It is still reported.
+- Neither corroborator strips comments or string literals, so a file whose only `eval(` is
+  a comment advising against `eval` is corroborated by that comment. A log sanitiser
+  carrying such a note is CRITICAL. This behaves identically on 0.27.0 and on this release.
+- `UNICODE-STEGO-001` does not scan for variation selectors in `.md`/`.txt`, so an
+  identical payload beside an identical decoder corroborates in a `.js` file and does not
+  in a `.md` file, even though the payload is present in both.
+- A decoder minified onto a single line longer than the scanner's line cap is invisible to
+  this check, on this release and on every previous one.
+
+The same "fires on its own countermeasure" shape in `UNICODE-STEGO-005` is #468. Two
+`UNICODE-STEGO-002` CRITICALs on HackMyAgent's own test suite, caused by decoder fixtures
+held in string literals, are also pre-existing and unfixed.
 
 ### Security
 

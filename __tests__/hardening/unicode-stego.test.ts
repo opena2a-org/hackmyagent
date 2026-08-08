@@ -313,7 +313,7 @@ describe('UNICODE-STEGO checks', () => {
     // case above keeps the tag-range coverage by reconstituting for real; this
     // negative pins the behaviour that replaced it, so the change is under test in
     // both directions rather than deleted.
-    it('does not flag tag-range code that reads codepoints without reconstituting', async () => {
+    it('does not BLOCK on tag-range code that reads codepoints without reconstituting', async () => {
       const content = [
         'function classify(s) {',
         '  for (let i = 0; i < s.length; i++) {',
@@ -334,7 +334,14 @@ describe('UNICODE-STEGO checks', () => {
         (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === fixtureName
       );
 
-      expect(stego002.length).toBe(0);
+      // It is still REPORTED — suppressing it entirely is what dropped 15 working
+      // decoders. It is reported at a severity that does not fail a pipeline, and
+      // the wording must not claim the file reconstitutes anything, because it does not.
+      expect(stego002.length).toBe(1);
+      expect(stego002[0].severity).toBe('medium');
+      expect(['critical', 'high']).not.toContain(stego002[0].severity);
+      expect(stego002[0].description).toContain('reads Unicode variation selector');
+      expect(stego002[0].description).not.toContain('reconstitutes');
     });
 
     it('does not flag .codePointAt() without suspicious hex literals', async () => {
@@ -356,20 +363,30 @@ describe('UNICODE-STEGO checks', () => {
   });
 
   /**
-   * UNICODE-STEGO-002 fired on defensive code: a log sanitiser, in three repositories
-   * at once, i.e. on the countermeasure to the attack the check is named after.
-   * Measured precision on real-world code was 0/7 and the only true positives ever
-   * observed were fixtures written for this check.
+   * UNICODE-STEGO-002 fired at CRITICAL on defensive code: a log sanitiser, in three
+   * repositories at once, i.e. on the countermeasure to the attack the check is named
+   * after. Measured precision on real-world code was 0/7 and the only true positives
+   * ever observed were fixtures written for this check.
    *
-   * The root cause was that reconstitution — String.fromCodePoint/fromCharCode, the
-   * decoder half of GlassWorm — was only one input to an exemption whose other input
-   * was a regex over the file PATH. Code that inspects codepoints without rebuilding
-   * a string from them therefore fired unless it was lucky enough to be named like an
-   * analyzer. Every fixture below is red-proofed against the pre-fix scanner: each
-   * negative case fired before this change.
+   * Two things were wrong and only one of them was the severity. The check consulted a
+   * regex over the file PATH, so a rename changed the verdict; that is deleted and the
+   * path is no longer read. And an uncorroborated decoder SHAPE was graded CRITICAL,
+   * which is what failed the pipelines; that is now MEDIUM unless an execution sink or
+   * UNICODE-STEGO-001 corroborates it in the same file.
+   *
+   * What is deliberately NOT done here is gating the finding on string reconstitution.
+   * That was tried for one commit and measured to drop 15 working decoders to no
+   * finding at all, because it tests one SPELLING of reconstitution and the attacker
+   * picks the spelling. See the "recovered spellings" block below, which pins those
+   * cases so the gate cannot come back silently.
+   *
+   * Red-proof status is stated per test rather than as a blanket claim, because a
+   * blanket claim was made here once and was false: the KNOWN GAP decimal case passes
+   * identically against pre-fix code, so it asserts a gap and proves nothing about
+   * this change.
    */
-  describe('UNICODE-STEGO-002: reconstitution is required, and severity is corroborated', () => {
-    it('does not flag a log sanitiser that names the ranges it defends against', async () => {
+  describe('UNICODE-STEGO-002: the path is not read, and severity is corroborated', () => {
+    it('does not BLOCK a log sanitiser that names the ranges it defends against', async () => {
       // Excerpt taken verbatim from csnp/cypres scripts/lib/log-safe.mjs, the file
       // that gate-blocked three repositories. The range table and safeLog are the
       // two things the check reads.
@@ -401,12 +418,14 @@ describe('UNICODE-STEGO checks', () => {
       ].join('\n');
 
       // Fixture integrity: this fixture is only a regression test while it still
-      // carries the two tokens the check reads and lacks the one it now requires.
-      // Without these three assertions the fixture could drift into passing for the
-      // wrong reason and the regression would go silent.
+      // carries the two tokens the check reads. Without these the fixture could drift
+      // into passing for the wrong reason and the regression would go silent.
       expect(content).toContain('0xfe00');
       expect(content).toContain('.codePointAt(');
-      expect(content).not.toMatch(/String\.from(?:CodePoint|CharCode)\s*\(/);
+      // It also carries no execution sink and no invisible codepoints, which is what
+      // makes it UNcorroborated. Asserted so the fixture cannot drift into being
+      // corroborated and turn this into a test of something else.
+      expect(content).not.toMatch(/(?:^|[^\w.$])(?:eval|(?:new\s+)?Function)\s*\(/);
 
       await fs.writeFile(path.join(tempDir, 'log-safe.mjs'), content);
 
@@ -415,10 +434,17 @@ describe('UNICODE-STEGO checks', () => {
         (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'log-safe.mjs'
       );
 
-      expect(stego002.length).toBe(0);
+      // The point of the fix is that this stops FAILING a pipeline, not that it stops
+      // being reported. Reporting it costs a line of output; suppressing it cost 15
+      // working decoders. `src/check/verdict.ts` blocks on critical or high only.
+      expect(stego002.length).toBe(1);
+      expect(stego002[0].severity).toBe('medium');
+      expect(['critical', 'high']).not.toContain(stego002[0].severity);
+      expect(stego002[0].message).toContain('uncorroborated');
+      expect(stego002[0].description).not.toContain('reconstitutes');
     });
 
-    it('does not flag a logging library whose two tokens are hundreds of lines apart', async () => {
+    it('does not BLOCK a logging library whose two tokens are hundreds of lines apart', async () => {
       // The check sets two file-global booleans with no AST, no scope and no
       // dataflow, so any file containing both tokens anywhere fired. `consola` and
       // `graphemer` are both real-world false positives of exactly this shape;
@@ -434,10 +460,12 @@ describe('UNICODE-STEGO checks', () => {
         (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'logger.js'
       );
 
-      expect(stego002.length).toBe(0);
+      expect(stego002.length).toBe(1);
+      expect(stego002[0].severity).toBe('medium');
+      expect(['critical', 'high']).not.toContain(stego002[0].severity);
     });
 
-    it('does not flag a detection analyzer renamed away from an analyzer filename', async () => {
+    it('grades a detection analyzer identically under any filename', async () => {
       // Before this change our own stego analyzer was held clean only by the path
       // regex, which this scanner's own comment called an attacker-controllable weak
       // signal. Copied to a neutral filename it self-flagged. The filename is no
@@ -454,14 +482,31 @@ describe('UNICODE-STEGO checks', () => {
         '}',
       ].join('\n');
       expect(content).not.toMatch(/analyz|detect|scan|check|inspect|enhanc|stego/i);
-      await fs.writeFile(path.join(tempDir, 'util-helper.ts'), content);
+
+      // The property is that the PATH does not change the verdict, so assert it
+      // directly: identical bytes under two filenames, one of which carries an old
+      // exemption keyword and one of which does not. A single-filename fixture could
+      // only ever show the verdict, never that the filename stopped mattering.
+      const neutralName = 'util-helper.ts';
+      const exemptName = 'stego-analyzer.ts';
+      expect(neutralName).not.toMatch(/analyz|detect|scan|check|inspect|enhanc|stego/i);
+      expect(exemptName).toMatch(/analyz|detect|scan|check|inspect|enhanc|stego/i);
+      await fs.writeFile(path.join(tempDir, neutralName), content);
+      await fs.writeFile(path.join(tempDir, exemptName), content);
 
       const findings = await scanForUnicodeStego();
-      const stego002 = findings.filter(
-        (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'util-helper.ts'
+      const neutral = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === neutralName
+      );
+      const exempt = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === exemptName
       );
 
-      expect(stego002.length).toBe(0);
+      expect(neutral.length).toBe(1);
+      expect(exempt.length).toBe(1);
+      expect(neutral[0].severity).toBe(exempt[0].severity);
+      expect(neutral[0].severity).toBe('medium');
+      expect(['critical', 'high']).not.toContain(neutral[0].severity);
     });
 
     it('KNOWN GAP: the decimal spelling of a working decoder is not detected', async () => {
@@ -583,6 +628,90 @@ describe('UNICODE-STEGO checks', () => {
       expect(stego002[0].line).toBe(1);
       expect(stego002[0].message).toContain('range literal at line 1');
       expect(stego002[0].message).toContain('.codePointAt at line 6');
+    });
+  });
+
+  /**
+   * Every case below reconstitutes a tag-range payload and passes it to `eval`, and
+   * every one of them was reported CRITICAL by 0.27.0 and by this build. Between the
+   * two, commit 963ddea gated the finding on `String.from(CodePoint|CharCode)\s*\(`
+   * and every case below reported NOTHING AT ALL. That gate is reverted, and these
+   * exist so it cannot return without turning this file red.
+   *
+   * Red-proof target is 963ddea, NOT the base release: against the base these pass
+   * (the base fires on everything in this shape), so a base red-proof would prove
+   * nothing here. Stated rather than implied, because a blanket red-proof claim was
+   * made in this file once and was false.
+   *
+   * The list is deliberately longer than the three spellings that were first noticed.
+   * A gap list naming only the spellings someone happened to try is a gap list that
+   * gets rediscovered.
+   */
+  describe('UNICODE-STEGO-002: reconstitution spelling does not gate the finding', () => {
+    const READER = [
+      'function extract(s) {',
+      '  const out = [];',
+      '  for (let i = 0; i < s.length; i++) {',
+      '    const cp = s.codePointAt(i);',
+      '    if (cp >= 0xE0100 && cp <= 0xE01EF) out.push(cp - 0xE0100);',
+      '  }',
+    ];
+
+    const SPELLINGS: Array<[string, string]> = [
+      ['mapped-reference', "  return out.map(String.fromCodePoint).join('');"],
+      ['array-from', "  return Array.from(out, String.fromCodePoint).join('');"],
+      ['bracket-access', "  return String['fromCodePoint'](...out);"],
+      ['aliased-binding', '  const rebuild = String.fromCodePoint;\n  return rebuild(...out);'],
+      ['destructured', '  const { fromCharCode } = String;\n  return fromCharCode(...out);'],
+      ['reflect-apply', '  return Reflect.apply(String.fromCodePoint, String, out);'],
+      ['buffer-from', "  return Buffer.from(out).toString('utf-8');"],
+      ['text-decoder', '  return new TextDecoder().decode(Uint8Array.from(out));'],
+      ['json-unicode-escape', '  return JSON.parse(\'"\' + out.map(c => "\\\\u" + c.toString(16).padStart(4, "0")).join("") + \'"\');'],
+      ['indexed-alphabet', "  const A = 'abcdefghijklmnopqrstuvwxyz';\n  return out.map(c => A[c % 26]).join('');"],
+    ];
+
+    for (const [label, rebuildLine] of SPELLINGS) {
+      it(`still detects a decoder that reconstitutes via ${label}`, async () => {
+        const content = [...READER, rebuildLine, '}', 'eval(extract(process.argv[2]));'].join('\n');
+        const fixtureName = `decoder-${label}.js`;
+
+        // Fixture integrity. Both tokens the check reads must be present, or this
+        // stops measuring the gate and starts measuring the candidate test.
+        expect(content).toContain('.codePointAt(');
+        expect(content).toMatch(/0xE010/);
+        // And the filename must not carry an old exemption keyword, so a pass can
+        // never be explained by the path regex that used to exist.
+        expect(fixtureName).not.toMatch(/analyz|detect|scan|check|inspect|enhanc|stego/i);
+
+        await fs.writeFile(path.join(tempDir, fixtureName), content);
+
+        const findings = await scanForUnicodeStego();
+        const stego002 = findings.filter(
+          (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === fixtureName
+        );
+
+        expect(stego002.length).toBe(1);
+        // Corroborated by the eval sink, so this is the top severity, not a lead.
+        expect(stego002[0].severity).toBe('critical');
+        expect(stego002[0].message).toContain('execution sink');
+      });
+    }
+
+    it('pins that the reverted gate would have silenced every one of these', () => {
+      // The exact predicate 963ddea used, kept as data so this is measured against the
+      // real regex rather than asserted from memory. I first wrote 7 here from memory
+      // and the suite corrected me to 10, which is the whole argument in miniature:
+      // nobody can enumerate the spellings of an expression by eye.
+      const REVERTED_GATE = /String\.from(?:CodePoint|CharCode)\s*\(/;
+      const silenced = SPELLINGS.filter(([, line]) => !REVERTED_GATE.test(line));
+      expect(silenced.length).toBe(10);
+      expect(silenced.length).toBe(SPELLINGS.length);
+
+      // Non-vacuity control. If the gate regex were simply broken and matched nothing,
+      // the assertion above would pass for the wrong reason. The canonical spelling
+      // MUST match it, or this test is measuring nothing.
+      expect(REVERTED_GATE.test('  return String.fromCodePoint(...out);')).toBe(true);
+      expect(REVERTED_GATE.test('  return String.fromCharCode(...out);')).toBe(true);
     });
   });
 

@@ -12825,21 +12825,27 @@ dist/
         }
       }
 
-      // The decoder half of GlassWorm RECONSTITUTES a string from codepoints. Code
-      // that only inspects codepoints — a scanner, a sanitiser, a linter, a range
-      // table — never does. So reconstitution is a REQUIRED conjunct of the finding
-      // rather than one input to a filename-keyed exemption.
+      // This check used to consult a regex over the file PATH
+      // (`/analyz|detect|scan|check|inspect|enhanc|stego/i`), which this file's own
+      // comment called an attacker-controllable weak signal. Measured consequences:
+      // precision 0/7 on real-world code, and our own stego analyzer was held clean
+      // only by its filename, so copying it to another name self-flagged. The path is
+      // no longer consulted at all, and renaming a file no longer changes any verdict.
       //
-      // It used to be the third condition of an `isDetectionCode` skip whose other
-      // two conditions were a range-comparison regex and a regex over the file PATH,
-      // which this file's own comment called an attacker-controllable weak signal.
-      // Two consequences, both measured: the check fired on any sanitiser that named
-      // the ranges it defends against (precision 0/7 on real-world code, `consola`
-      // and `graphemer` among the false positives), and our own stego analyzer was
-      // held clean only by its filename, so copying it to another name self-flagged.
-      // Requiring reconstitution makes that skip unreachable — it could only be true
-      // when reconstitution was absent, which now cannot reach this branch — so it
-      // is deleted rather than left as dead code guarding a live bypass.
+      // Reconstitution — String.fromCodePoint/fromCharCode, the decoder half of
+      // GlassWorm — is EVIDENCE ABOUT THE FILE, not a gate on the finding. It was a
+      // required conjunct for one commit and that was wrong: a required conjunct on
+      // one SPELLING is a rule about that spelling, not about the class. Measured
+      // against the previous release, requiring it dropped 15 working decoders to no
+      // finding at all — `.map(String.fromCodePoint)`, `Array.from(out, ...)`, an
+      // alias, a destructured `{ fromCharCode }`, `String['fromCodePoint']`,
+      // `Reflect.apply`, `Buffer.from(out).toString()`, `new TextDecoder().decode()`,
+      // a `JSON.parse('"\\uXXXX"')` round trip and an indexed alphabet table — every
+      // one of which reconstituted a tag-range payload and passed it to a sink. The
+      // attacker picks the spelling, so the spelling cannot be the gate. What the
+      // signal is good for is describing the file accurately, so it selects the
+      // wording below and nothing else. Narrowing on semantics rather than spelling
+      // needs dataflow, which is #424's AST analyzer, not another regex.
       const hasStringReconstitution = /String\.from(?:CodePoint|CharCode)\s*\(/.test(content);
 
       // Severity. A decoder pattern is evidence of CAPABILITY, not of malice, so on
@@ -12858,7 +12864,7 @@ dist/
         /(?:^|[^\w.$])(?:new\s+)?Function\s*\(/.test(content);
       const corroborated = hasExecutionSink || hasAnyInvisible;
 
-      if (hasCodePointAt && hasHexLiteral && hasStringReconstitution) {
+      if (hasCodePointAt && hasHexLiteral) {
         // Report the EARLIER of the two signals. Reporting the first `.codePointAt(`
         // sent readers to the wrong line whenever the range literal that actually
         // discriminates the finding sat above it.
@@ -12868,13 +12874,19 @@ dist/
           : hasAnyInvisible
             ? 'invisible codepoints present in the same file (UNICODE-STEGO-001)'
             : null;
+        // Say what was actually observed. A file that only READS codepoints must not
+        // be described as reconstituting them; that sentence would be false about the
+        // file, and a reader who checks it would find the check lying about evidence.
+        const act = hasStringReconstitution
+          ? 'reconstitutes strings from'
+          : 'reads';
 
         findings.push({
           checkId: 'UNICODE-STEGO-002',
           name: 'GlassWorm Decoder Pattern Detected',
           description: corroboration
-            ? 'Source file reconstitutes strings from Unicode variation selector or tag character codepoints AND carries corroborating evidence - this is the decoder half of a GlassWorm attack'
-            : 'Source file reconstitutes strings from Unicode variation selector or tag character codepoints. This is the shape of a GlassWorm decoder, but nothing in the file corroborates intent - no execution sink and no invisible codepoints present',
+            ? `Source file ${act} Unicode variation selector or tag character codepoints AND carries corroborating evidence - this is the decoder half of a GlassWorm attack`
+            : `Source file ${act} Unicode variation selector or tag character codepoints. This is the shape of a GlassWorm decoder, but nothing in the file corroborates intent - no execution sink and no invisible codepoints present`,
           category: 'unicode-stego',
           severity: corroborated ? 'critical' : 'medium',
           passed: false,
@@ -12888,8 +12900,8 @@ dist/
             ? `sed -n '${Math.max(1, reportedLine - 5)},${reportedLine + 20}p' ${shellEscape(relativePath)}   # trace the reconstituted string to its sink and remove the decoder`
             : `sed -n '${Math.max(1, reportedLine - 5)},${reportedLine + 20}p' ${shellEscape(relativePath)}   # confirm this decodes for inspection, not for execution`,
           guidance: corroboration
-            ? 'The GlassWorm attack hides a payload in invisible Unicode characters and uses .codePointAt() plus String.fromCodePoint to rebuild it at runtime. This file does that AND carries corroborating evidence, so treat it as live until traced.'
-            : 'This file rebuilds strings from codepoints in the variation selector or tag range. Sanitisers, linters and tests for this attack legitimately do the same thing, which is why this is reported as a lead rather than a verdict: no decoded value reaches eval or Function here, and no invisible codepoints are present in the file. Confirm the reconstituted value is inspected rather than executed.',
+            ? `The GlassWorm attack hides a payload in invisible Unicode characters and rebuilds it at runtime from their codepoints. This file ${act} those codepoints AND carries corroborating evidence, so treat it as live until traced. Follow the value from the range literal to whatever consumes it.`
+            : `This file ${act} codepoints in the variation selector or tag range. Sanitisers, linters, width calculators and tests for this attack all legitimately do the same thing, which is why this is a lead rather than a verdict: no decoded value reaches eval or Function here, and no invisible codepoints are present in the file. Confirm the value is inspected rather than executed. Note that reconstitution can be spelled many ways (an alias, a destructured binding, .map, Buffer.from, TextDecoder), so its absence from the message is not proof the file does not rebuild a string.`,
         });
       }
 

@@ -2884,12 +2884,18 @@ describe('OpenClaw gateway auto-fix', () => {
     });
   });
 
-  describe('UNICODE-STEGO-002: GlassWorm Decoder — detection code exemption', () => {
-    it('does not flag analysis code that uses .codePointAt() only for counting (no fromCodePoint)', async () => {
-      // Regression for FP on src/semantic/nanomind-enhancer.ts:
-      // Detection code uses .codePointAt() to CHECK ranges and COUNT occurrences.
-      // A GlassWorm decoder needs fromCodePoint/fromCharCode to reconstitute the hidden payload.
-      // Without that output step, codePointAt + hex literals is just analysis, not decoding.
+  describe('UNICODE-STEGO-002: GlassWorm Decoder — analysis code is not blocking', () => {
+    it('does not BLOCK on analysis code that uses .codePointAt() only for counting', async () => {
+      // Regression for FP on src/semantic/nanomind-enhancer.ts. Detection code uses
+      // .codePointAt() to CHECK ranges and COUNT occurrences, and does not reconstitute.
+      //
+      // This used to assert the finding was ABSENT, on the theory that reconstitution
+      // is what separates a decoder from analysis. Both halves of that were wrong. The
+      // absence came from an exemption keyed on the file PATH — note this fixture is
+      // named `unicode-analyzer.ts`, which is why it was exempt — and gating on
+      // reconstitution instead was measured to drop 10 working decoder spellings to no
+      // finding at all. So the finding is reported, and what changed is that an
+      // uncorroborated decoder SHAPE no longer fails a pipeline.
       const detectionCode = [
         'function analyzeUnicodeContext(content: string) {',
         '  const codepoints = [...content].map(c => c.codePointAt(0)!);',
@@ -2908,7 +2914,13 @@ describe('OpenClaw gateway auto-fix', () => {
 
       const result = await scanner.scan({ targetDir: tempDir });
       const stego002 = result.findings.find(f => f.checkId === 'UNICODE-STEGO-002');
-      expect(stego002, 'Analysis code without fromCodePoint must not be flagged as GlassWorm decoder').toBeUndefined();
+      expect(stego002, 'analysis code should still be reported as a lead').toBeDefined();
+      expect(
+        stego002!.severity,
+        'analysis code must not fail a pipeline: verdict.ts blocks on critical or high'
+      ).toBe('medium');
+      expect(['critical', 'high']).not.toContain(stego002!.severity);
+      expect(stego002!.description).not.toContain('reconstitutes');
     });
 
     it('still flags actual GlassWorm decoder that uses fromCodePoint to reconstitute payload', async () => {
