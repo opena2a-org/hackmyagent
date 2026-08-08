@@ -235,6 +235,47 @@ describe('AST-SCOPE-001 discriminates on the tools declaration (#449)', () => {
       });
     }
 
+    it('a malformed allowedTools does not shadow a well-formed tools wildcard', async () => {
+      // The two keys are unioned, not ranked. Taking the first key present let
+      // `"allowedTools": null` hide `"tools": ["*"]` and score 100/100 exit 0 —
+      // worse than the defect that change was fixing, because an empty list
+      // also drops the server from the AST entirely.
+      for (const bad of ['null', 'false', '0', '{}', '"read_file"']) {
+        const content = [
+          '{',
+          '  "mcpServers": {',
+          '    "evil": {',
+          '      "command": "sh",',
+          `      "allowedTools": ${bad},`,
+          '      "tools": ["*"]',
+          '    }',
+          '  }',
+          '}',
+          '',
+        ].join('\n');
+        const found = await wildcardFindings(content);
+        expect(found, `allowedTools: ${bad} must not shadow tools: ["*"]`).toHaveLength(1);
+        expect(found[0].severity).toBe('critical');
+      }
+    });
+
+    it('a value that cannot name a tool reads as an absent key, not an empty allowlist', async () => {
+      // `null` alone must land on the documented MCP-default branch, not on
+      // "declares zero tools" — the latter removes the server from the AST and
+      // scores BETTER than the ecosystem default, which is fail-open.
+      const content = [
+        '{',
+        '  "mcpServers": {',
+        '    "svc": { "command": "npx", "allowedTools": null }',
+        '  }',
+        '}',
+        '',
+      ].join('\n');
+      expect(await wildcardFindings(content)).toEqual([]);
+      const { ast } = await compiler.compile(content, 'mcp.json');
+      expect(ast.declaredCapabilities.find(c => c.name === 'mcp.svc')).toBeDefined();
+    });
+
     it('negative control: a malformed key with no wildcard stays silent', async () => {
       // Proves the rule above keys on the wildcard, not merely on the key
       // being malformed — otherwise it would fire on every odd config.
@@ -297,7 +338,40 @@ describe('AST-SCOPE-001 discriminates on the tools declaration (#449)', () => {
       const found = await wildcardFindings(content);
       expect(found).toHaveLength(1);
       expect(found[0].severity).toBe('critical');
-      expect(found[0].line).toBe(lineOf(content, '"permissions"'));
+      // The `"tools"` array, not the `"permissions"` key that contains it —
+      // `"permissions"` is not unique in an MCP config (a server can be named
+      // that), so the citation anchors on the array holding the wildcard.
+      expect(found[0].line).toBe(lineOf(content, '"tools": ["*"]'));
+    });
+
+    it('cites the line holding the wildcard even when a SERVER is named "permissions"', async () => {
+      // `"permissions"` is not unique in an MCP config. Matching its first
+      // occurrence cited a server's narrow `["read_file"]` allowlist as the
+      // evidence for a CRITICAL — a wildcard finding pointing at a line that
+      // holds no wildcard, which is this issue's own defect on a new path.
+      const content = [
+        '{',
+        '  "mcpServers": {',
+        '    "permissions": {',
+        '      "command": "sh",',
+        '      "allowedTools": ["read_file"]',
+        '    }',
+        '  },',
+        '  "permissions": {',
+        '    "tools": ["*"]',
+        '  }',
+        '}',
+        '',
+      ].join('\n');
+      const found = await wildcardFindings(content);
+      expect(found).toHaveLength(1);
+      expect(found[0].line).toBe(lineOf(content, '"tools": ["*"]'));
+      expect(found[0].line).not.toBe(lineOf(content, '"allowedTools": ["read_file"]'));
+
+      // And the two sources must not collide onto one capability name.
+      const { ast } = await compiler.compile(content, 'mcp.json');
+      const names = ast.declaredCapabilities.map(c => c.name);
+      expect(new Set(names).size).toBe(names.length);
     });
 
     it('negative control: a narrow permissions.tools list produces no wildcard finding', async () => {

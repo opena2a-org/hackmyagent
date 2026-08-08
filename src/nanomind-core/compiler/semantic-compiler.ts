@@ -419,16 +419,20 @@ function extractDeclaredPurpose(content: string, frontmatter?: Record<string, un
  *   "allowedTools": null         -> []      (present, declares nothing)
  *   (no key)                     -> undefined
  *
- * `null` maps to an empty list rather than `undefined` so it cannot re-enter
- * the default branch: the author wrote the key, so they are not relying on the
- * default, and an empty allowlist is the safe reading.
+ * A value that cannot express a tool list at all (`null`, `false`, `0`) maps
+ * back to `undefined` — "this key declares nothing" — rather than to an empty
+ * list. An empty list is not neutral here: it removes the server from the AST
+ * entirely, which scores BETTER than the ecosystem default and is fail-open.
+ * Real MCP hosts treat a null as an absent key, so absent is also the honest
+ * reading.
  */
 function normalizeToolDeclaration(value: unknown): string[] | undefined {
-  if (value === undefined) return undefined;
+  if (value === undefined || value === null) return undefined;
   if (Array.isArray(value)) return value.filter((t): t is string => typeof t === 'string');
   if (typeof value === 'string') return [value];
-  if (value !== null && typeof value === 'object') return Object.keys(value);
-  return [];
+  if (typeof value === 'object') return Object.keys(value);
+  // number / boolean — a declaration that cannot name a tool.
+  return undefined;
 }
 
 function extractDeclaredCapabilities(
@@ -514,10 +518,21 @@ function extractDeclaredCapabilities(
         // both write the wildcard into the file; treating a non-array as
         // absent scored them 96/100 exit 0 while the pre-#449 build scored 69
         // and failed — a one-character evasion of the very check this change
-        // is about. `declaredValue` is the first tool key PRESENT, whatever
-        // its shape; only a genuinely missing key reaches the default branch.
-        const declaredValue = s.allowedTools !== undefined ? s.allowedTools : s.tools;
-        const declaredTools = normalizeToolDeclaration(declaredValue);
+        // is about.
+        //
+        // The two keys are UNIONED rather than ranked. An earlier version took
+        // the first key present, and that let a malformed `allowedTools`
+        // shadow a well-formed one: `{"allowedTools": null, "tools": ["*"]}`
+        // scored 100/100 exit 0 — worse than the defect it was fixing, because
+        // an empty list also removes the server from the AST entirely. There is
+        // no correct precedence between two keys that mean the same thing, so
+        // there is no precedence: a wildcard written under either key fires.
+        const fromAllowed = normalizeToolDeclaration(s.allowedTools);
+        const fromTools = normalizeToolDeclaration(s.tools);
+        const declaredTools =
+          fromAllowed === undefined && fromTools === undefined
+            ? undefined
+            : [...new Set([...(fromAllowed ?? []), ...(fromTools ?? [])])];
 
         if (declaredTools === undefined) {
           // Server-level only: the AST still knows the server exists and that
@@ -627,8 +642,22 @@ function extractDeclaredCapabilities(
       const configPermissions = normalizeToolDeclaration(
         (config?.permissions as Record<string, unknown> | undefined)?.tools,
       );
+      // Computed ONCE. It is loop-invariant, and inside the loop it was
+      // super-linear on the tool count: 30,000 config-level tools took 7,494ms
+      // against 51ms at base. Same hazard as the per-server lookup above, on
+      // the path added to fix it.
+      //
+      // Anchored on the `"tools"` array itself rather than on `"permissions"`,
+      // because `"permissions"` is not unique: a SERVER may be named
+      // `permissions`, and matching the first occurrence cited that server's
+      // narrow `["read_file"]` allowlist as the evidence for a CRITICAL — a
+      // wildcard finding pointing at a line holding no wildcard, which is the
+      // defect this whole issue is about, reappearing on a new path.
+      const permBlock = content.match(
+        /"permissions"\s*:\s*\{(?:[^{}]|\{[^{}]*\})*?"tools"\s*:\s*(\[[^\]]*\])/,
+      );
+      const permEvidence = permBlock?.[1];
       for (const tool of configPermissions ?? []) {
-        const permDecl = content.match(/"permissions"\s*:\s*\{[^}]*\}/);
         caps.push({
           // NOT `mcp.*.${tool}`. `checkWildcardToolAccess` selects on
           // `name.includes('*')`, so putting a `*` in the server segment makes
@@ -636,12 +665,16 @@ function extractDeclaredCapabilities(
           // `"tools": ["read_file"]`. That is this issue's own defect
           // (a name asserting a wildcard the file does not contain),
           // reintroduced by naming. The negative control below pins it.
-          name: `mcp.permissions.${tool}`,
+          // `config-permissions`, not `permissions`: a SERVER may legitimately
+          // be named `permissions`, and `mcp.permissions.*` from both sources
+          // produced two capabilities with an identical name, which
+          // checkScopePurposeMismatch then deduped down to one.
+          name: `mcp.config-permissions.${tool}`,
           scope: 'all servers',
           declared: true,
           inferred: false,
           riskLevel: tool === '*' ? 'high' : 'medium',
-          evidence: permDecl?.[0],
+          evidence: permEvidence,
         });
       }
     } catch { /* not valid JSON */ }
