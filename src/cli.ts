@@ -4852,7 +4852,12 @@ Examples:
 
       // Handle SARIF/HTML/ASP for non-benchmark mode
       if (format === 'sarif') {
-        const output = generateScanSarif(result.findings, targetDir);
+        // #450 — the DISPLAY set. These three report formats are renderings, so
+        // a check-ID suppression withholds from them exactly as it does from the
+        // terminal; the `critHigh` exit computation a few lines down deliberately
+        // still reads the full `result.findings`, so the report narrows and the
+        // gate does not.
+        const output = generateScanSarif(result.findings.filter(isDisplayed), targetDir);
         if (options.output) {
           require('fs').writeFileSync(options.output, output);
           console.error(`Report written to ${options.output}`);
@@ -4865,7 +4870,13 @@ Examples:
       }
 
       if (format === 'html') {
-        const output = generateScanHtmlReport(result, targetDir);
+        // #450 — same as the SARIF arm. `result` is passed whole here, so the
+        // display set is substituted onto a shallow copy rather than mutating
+        // the object the exit computation below still reads.
+        const output = generateScanHtmlReport(
+          { ...result, findings: result.findings.filter(isDisplayed) },
+          targetDir,
+        );
         if (options.output) {
           require('fs').writeFileSync(options.output, output);
           console.error(`Report written to ${options.output}`);
@@ -4879,7 +4890,8 @@ Examples:
 
       if (format === 'asff') {
         const { toASSF } = await import('./output/asff.js');
-        const output = toASSF(result.findings as any, {
+        // #450 — same as the SARIF arm.
+        const output = toASSF(result.findings.filter(isDisplayed) as any, {
           awsAccountId: (options as any).awsAccountId,
           awsRegion: (options as any).awsRegion,
           targetDir,

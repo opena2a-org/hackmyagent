@@ -340,6 +340,41 @@ describe('#450 — user suppression narrows the list, never the score', () => {
       expect(JSON.stringify(ignored.body.suppressed)).not.toContain(syntheticKey());
     }, 240_000);
 
+    // Every report format is a RENDERING, so a check-ID suppression must
+    // withhold from it — and none of them may take the finding out of the gate.
+    // Found by hand, not by test: the first cut of this fix filtered only the
+    // terminal renderer, so `--format sarif|html|asff` still listed the
+    // suppressed finding and `--ignore` visibly stopped working in exactly the
+    // three formats a CI job uploads.
+    it.each(['sarif', 'html', 'asff'])(
+      '--format %s withholds a suppressed finding but keeps the exit code',
+      (format) => {
+        if (!hasBuild) return;
+        const run = (args: string[]) => {
+          try {
+            return { exitCode: 0, out: execFileSync('node', [CLI_PATH, ...args], {
+              encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
+            }) };
+          } catch (err: any) {
+            if (typeof err?.status === 'number' && err.stdout) {
+              return { exitCode: err.status, out: err.stdout.toString() };
+            }
+            throw err;
+          }
+        };
+
+        const plain = run(['secure', dir, '--format', format]);
+        // Non-vacuity: the format must actually name the check when nothing is
+        // suppressed, or "absent after --ignore" proves nothing.
+        expect(plain.out).toContain(target);
+
+        const ignored = run(['secure', dir, '--format', format, '--ignore', target]);
+        expect(ignored.out).not.toContain(target);
+        expect(ignored.exitCode).toBe(plain.exitCode);
+      },
+      240_000,
+    );
+
     // `check` reached the same laundering through `.hmaignore` on a separate
     // code path with its own hand-rolled filter, and `check` is the first
     // command in the README's quick start. Its verdict, risk band and exit code

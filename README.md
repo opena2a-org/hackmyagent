@@ -315,19 +315,15 @@ Pre-commit hook:
 npx hackmyagent secure --ignore LOG-001,RATE-001
 ```
 
-`--ignore CHECK-ID`, and an `.hmaignore` `!CHECK-ID` rule, control what the
-report **lists** — not what it measures. A suppressed check is still scored,
-still reaches the verdict, and still sets the exit code; every suppressed check
-ID is named on a `Suppressed` line and in `--json`. To let a build pass over
-findings you have accepted, set an explicit floor with `--fail-below <score>` —
-a threshold in your pipeline configuration is auditable in a way a quietly
-missing finding is not.
+Suppressing a **check** (`--ignore CRED-001`, or `!CRED-001` in `.hmaignore`)
+changes what the report lists, not what it measures: it is still scored, still
+in the verdict, still in the exit code, and named on a `Suppressed` line. Use
+`--fail-below <score>` to let a build pass over findings you have accepted — a
+threshold in your pipeline config is auditable, a missing finding is not.
 
-An `.hmaignore` **path** rule (`test-fixtures/`) is a scope statement, not a
-suppression: those paths leave the score and the exit code, exactly as if you
-had not scanned them. That narrowing is always disclosed on a `Scope` line with
-a severity breakdown, and as `outOfScope` in `--json`, so a scoped score can
-never be mistaken for a whole-tree one.
+Excluding a **path** (`test-fixtures/` in `.hmaignore`) is a scope statement:
+those paths leave the score and the exit code, as if you had not scanned them.
+Always disclosed on a `Scope` line and as `outOfScope` in `--json`.
 
 </details>
 
