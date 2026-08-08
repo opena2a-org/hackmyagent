@@ -202,69 +202,137 @@ describe('AST-SCOPE-001 discriminates on the tools declaration (#449)', () => {
     });
   });
 
-  describe('skill `## Permissions` wildcards (#449, exposed by the corpus gate)', () => {
-    // This surface compiled to ZERO capabilities, so AST-SCOPE-001 could never
-    // fire from a skill however broad its grants. The gap was masked: the
-    // kitchen-sink corpus expectation it should satisfy was being met by the
-    // MCP branch's synthesized wildcard, from a different file that contained
-    // no wildcard at all.
-    const SKILL_WITH_WILDCARDS = [
-      '# deploy-to-prod',
-      '',
-      'Skill for automated production deployments.',
-      '',
-      '## Permissions',
-      '- filesystem:/',
-      '- shell:*',
-      '- network:*',
-      '',
-    ].join('\n');
+  describe('a declared-but-malformed tool key is not an absent one (#449)', () => {
+    // The default branch exists for a server that omits the tool key, which is
+    // the MCP ecosystem default. A key that is PRESENT but not an array is a
+    // third state: the author wrote a declaration, and if it spells `*` the
+    // wildcard is in the file. Collapsing it into "absent" scored these
+    // 96/100 exit 0 while the pre-#449 build scored 69 and failed — a
+    // one-character evasion of the check this issue is about.
+    const shapes: Array<[string, string]> = [
+      ['string', '"allowedTools": "*"'],
+      ['object keyed by tool name', '"tools": {"*": {}}'],
+      ['string under tools', '"tools": "*"'],
+    ];
 
-    const SKILL_NARROW = [
-      '# reader',
-      '',
-      'Reads documentation.',
-      '',
-      '## Permissions',
-      '- filesystem:./docs',
-      '',
-    ].join('\n');
-
-    async function skillFindings(content: string) {
-      const result = await compiler.compile(content, 'deploy.skill.md');
-      expect(result.ast.artifactType).toBe('skill');
-      return analyzeScope(result.ast, passVerifier, undefined, content).filter(
-        f => f.checkId === 'AST-SCOPE-001' && /Wildcard/i.test(f.name),
-      );
+    for (const [label, decl] of shapes) {
+      it(`a wildcard declared as a ${label} is still caught`, async () => {
+        const content = [
+          '{',
+          '  "mcpServers": {',
+          '    "evil": {',
+          '      "command": "sh",',
+          `      ${decl}`,
+          '    }',
+          '  }',
+          '}',
+          '',
+        ].join('\n');
+        const found = await wildcardFindings(content);
+        expect(found).toHaveLength(1);
+        expect(found[0].severity).toBe('critical');
+        expect(found[0].message).toContain('evil');
+      });
     }
 
-    it('a skill declaring shell:* and network:* is caught', async () => {
-      const found = await skillFindings(SKILL_WITH_WILDCARDS);
-      expect(found.length).toBe(2);
-      // Domain-scoped, so PARTIAL (high) — not full unrestricted access.
-      // This is the severity the corpus manifest expects.
-      for (const f of found) {
-        expect(f.name).toBe('Partial Wildcard Tool Access');
-        expect(f.severity).toBe('high');
-      }
-      expect(found.map(f => f.message).join(' ')).toContain('shell:*');
-      expect(found.map(f => f.message).join(' ')).toContain('network:*');
+    it('negative control: a malformed key with no wildcard stays silent', async () => {
+      // Proves the rule above keys on the wildcard, not merely on the key
+      // being malformed — otherwise it would fire on every odd config.
+      const content = [
+        '{',
+        '  "mcpServers": {',
+        '    "tidy": {',
+        '      "command": "npx",',
+        '      "allowedTools": "read_file"',
+        '    }',
+        '  }',
+        '}',
+        '',
+      ].join('\n');
+      expect(await wildcardFindings(content)).toEqual([]);
     });
 
-    it('each wildcard cites its own permission line', async () => {
-      const found = await skillFindings(SKILL_WITH_WILDCARDS);
-      const shell = found.find(f => f.message.includes('shell:*'));
-      expect(shell?.line).toBe(lineOf(SKILL_WITH_WILDCARDS, 'shell:*'));
-      const net = found.find(f => f.message.includes('network:*'));
-      expect(net?.line).toBe(lineOf(SKILL_WITH_WILDCARDS, 'network:*'));
+    it('negative control: a genuinely absent key stays silent', async () => {
+      // The whole point of #449. This must not regress while fixing the above.
+      const content = [
+        '{',
+        '  "mcpServers": {',
+        '    "default": { "command": "npx", "args": ["-y", "server"] }',
+        '  }',
+        '}',
+        '',
+      ].join('\n');
+      expect(await wildcardFindings(content)).toEqual([]);
+    });
+  });
+
+  describe('config-level `permissions.tools` (#449)', () => {
+    // `repo/malicious/kitchen-sink/mcp.json` declares this at the top level and
+    // the compiler never read it. The omission was invisible because the
+    // synthesized per-server wildcard fired on the file anyway; removing the
+    // fabrication took it from 69/100 exit 1 to 96/100 exit 0 with a wildcard
+    // written verbatim in the file.
+    it('a top-level permissions.tools wildcard is caught', async () => {
+      const content = [
+        '{',
+        '  "mcpServers": {',
+        '    "fs": { "command": "npx", "args": ["-y", "server-filesystem", "./docs"] }',
+        '  },',
+        '  "permissions": {',
+        '    "tools": ["*"]',
+        '  }',
+        '}',
+        '',
+      ].join('\n');
+      const found = await wildcardFindings(content);
+      expect(found).toHaveLength(1);
+      expect(found[0].severity).toBe('critical');
+      expect(found[0].line).toBe(lineOf(content, '"permissions"'));
     });
 
-    it('negative control: a narrow filesystem grant produces no wildcard finding', async () => {
-      // `filesystem:./docs` must stay clean. It also guards the substring trap
-      // that made `assessCapabilityRisk` read "file<system>" as a system
-      // capability and grade a read-only grant critical.
-      expect(SKILL_NARROW).not.toContain('*');
-      expect(await skillFindings(SKILL_NARROW)).toEqual([]);
+    it('negative control: a narrow permissions.tools list produces no wildcard finding', async () => {
+      const content = [
+        '{',
+        '  "mcpServers": {',
+        '    "fs": { "command": "npx", "args": ["-y", "server-filesystem", "./docs"] }',
+        '  },',
+        '  "permissions": {',
+        '    "tools": ["read_file"]',
+        '  }',
+        '}',
+        '',
+      ].join('\n');
+      expect(await wildcardFindings(content)).toEqual([]);
+    });
+  });
+
+  describe('identical wildcard spans do not collapse onto one line (#449)', () => {
+    it('two servers each declaring ["*"] cite their own lines', async () => {
+      // Evidence is a string and the consumer re-derives the line with
+      // findLineFromString, which returns the FIRST occurrence. When both
+      // servers declare byte-identical wildcard text, citing that text sent
+      // both findings to the same line — the pre-#449 build got this right by
+      // citing the unique server key. So a non-unique span falls back.
+      const content = [
+        '{',
+        '  "mcpServers": {',
+        '    "alpha": {',
+        '      "allowedTools": ["*"]',
+        '    },',
+        '    "bravo": {',
+        '      "allowedTools": ["*"]',
+        '    }',
+        '  }',
+        '}',
+        '',
+      ].join('\n');
+      const found = await wildcardFindings(content);
+      expect(found).toHaveLength(2);
+      const alpha = found.find(f => f.message.includes('alpha'));
+      const bravo = found.find(f => f.message.includes('bravo'));
+      expect(alpha?.line).toBe(lineOf(content, '"alpha"'));
+      expect(bravo?.line).toBe(lineOf(content, '"bravo"'));
+      expect(alpha?.line).not.toBe(bravo?.line);
     });
   });
 

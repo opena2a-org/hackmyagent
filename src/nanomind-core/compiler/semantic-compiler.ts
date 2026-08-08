@@ -405,6 +405,32 @@ function extractDeclaredPurpose(content: string, frontmatter?: Record<string, un
   return 'Unknown purpose';
 }
 
+/**
+ * Normalise an MCP server's tool declaration to a list of tool names.
+ *
+ * #449 — returns `undefined` ONLY when no tool key is present at all, which is
+ * the MCP ecosystem default and deliberately produces no wildcard finding. A
+ * key that is present but malformed is still a declaration, and if it spells
+ * `*` anywhere it is a wildcard the file really contains:
+ *
+ *   "allowedTools": "*"          -> ['*']   (string, not array)
+ *   "tools": {"*": {}}           -> ['*']   (object keyed by tool name)
+ *   "allowedTools": ["read"]     -> ['read']
+ *   "allowedTools": null         -> []      (present, declares nothing)
+ *   (no key)                     -> undefined
+ *
+ * `null` maps to an empty list rather than `undefined` so it cannot re-enter
+ * the default branch: the author wrote the key, so they are not relying on the
+ * default, and an empty allowlist is the safe reading.
+ */
+function normalizeToolDeclaration(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (Array.isArray(value)) return value.filter((t): t is string => typeof t === 'string');
+  if (typeof value === 'string') return [value];
+  if (value !== null && typeof value === 'object') return Object.keys(value);
+  return [];
+}
+
 function extractDeclaredCapabilities(
   content: string,
   type: ArtifactType,
@@ -425,59 +451,32 @@ function extractDeclaredCapabilities(
     }
   }
 
-  // From a skill's `## Permissions` bullet list.
+  // A skill's `## Permissions` bullet list is NOT read here, and #471 tracks
+  // that gap rather than this branch closing it.
   //
-  // #449 — this surface produced NO capabilities at all, so `AST-SCOPE-001`
-  // could never fire from a skill no matter what it declared. A skill reading
+  // The gap is real: the surface produces no capabilities, so `AST-SCOPE-001`
+  // cannot fire from a skill however broad its grants, and the
+  // `repo/malicious/kitchen-sink` expectation naming skills was being met
+  // accidentally by the MCP branch's synthesized `['*']` — a wildcard credited
+  // to a file that contained none. Removing the fabrication exposed it.
   //
-  //   ## Permissions
-  //   - filesystem:/
-  //   - shell:*
-  //   - network:*
+  // An implementation was written here and removed after review measured what
+  // it did to real skills. Markdown permission lists are not a parseable
+  // grammar the way a JSON tool array is, and the attempt: raised a CRITICAL
+  // "equivalent of running as root" on `- logs: /var/log/*.*` in a benign
+  // log-rotation skill (63/100, "Not safe to ship"); missed most legitimate
+  // spellings, including `## Permissions Required`, numbered lists, and any
+  // trailing comment (`- shell: * # for build`), each a one-token bypass;
+  // captured non-permission bullets such as `- Contact: security@example.com`
+  // as declared capabilities; read fenced markdown EXAMPLES as real grants;
+  // resolved no line number at all for the spaced spelling `- shell: *`, so
+  // its findings carried no Verify command; and rebuilt the same
+  // attacker-controlled quadratic this branch fixed for MCP — 40k permission
+  // bullets in a downloaded SKILL.md took 27.5s.
   //
-  // compiled to zero `declaredCapabilities`. The gap was invisible because the
-  // `repo/malicious/kitchen-sink` corpus expectation it should satisfy
-  // ("AST-SCOPE-001, high, scope-violation patterns across skills") was being
-  // met accidentally by the MCP branch's synthesized `['*']` — a wildcard from
-  // a different file that contained no wildcard. Removing that fabrication
-  // exposed this, which is the corpus gate doing its job.
-  //
-  // The declared `domain:value` spelling is preserved in the capability name on
-  // purpose. `shell:*` grants every tool within one domain, which is what
-  // `checkWildcardToolAccess` grades as a PARTIAL wildcard (high) rather than a
-  // full one (critical) — the honest reading, and the severity the corpus
-  // manifest expects. Rewriting it to `shell.*` would trip `endsWith('.*')` and
-  // over-report it as unrestricted access to everything.
-  if (type === 'skill') {
-    // The terminator is "next heading, or end of input". Written as
-    // `$(?![\s\S])` because JavaScript has no `\Z` — it parses as a literal
-    // `Z`, so the section only closed on files that happened to have another
-    // heading after Permissions. Every corpus skill does, which is exactly why
-    // a unit test with the block at end-of-file was needed to see it.
-    const permsSection = content.match(
-      /^#{1,6}\s*permissions\s*$([\s\S]*?)(?=^#{1,6}\s|$(?![\s\S]))/im,
-    );
-    if (permsSection) {
-      const bullet = /^\s*[-*]\s*([A-Za-z][\w-]*)\s*:\s*(\S+)\s*$/gm;
-      let m: RegExpExecArray | null;
-      while ((m = bullet.exec(permsSection[1])) !== null) {
-        const [, domain, value] = m;
-        const name = `${domain}:${value}`;
-        caps.push({
-          name,
-          scope: domain,
-          declared: true,
-          inferred: false,
-          // Set explicitly rather than through `assessCapabilityRisk`, whose
-          // substring match reads "file<system>" as a system capability and
-          // would grade a read-only filesystem grant critical.
-          riskLevel: value.includes('*') ? 'high' : 'medium',
-          // Verbatim so findLineFromString resolves the permission's own line.
-          evidence: name,
-        });
-      }
-    }
-  }
+  // A check that fires hardest on the people writing ordinary skills is the
+  // defect #449 is about, pointed at a new surface. It needs a corpus and a
+  // grammar, not a regex pair bolted onto a false-positive fix.
 
   // From MCP config tool declarations
   if (type === 'mcp_config') {
@@ -509,9 +508,16 @@ function extractDeclaredCapabilities(
         // the malicious corpus fixture actually uses, so honouring only
         // `allowedTools` would swap this false positive for a false negative on
         // the one fixture that must stay caught.
-        const declaredTools =
-          (Array.isArray(s.allowedTools) ? (s.allowedTools as string[]) : undefined) ??
-          (Array.isArray(s.tools) ? (s.tools as string[]) : undefined);
+        //
+        // "Declared but not an array" is a THIRD state and must not collapse
+        // into "absent". `{"allowedTools": "*"}` and `{"tools": {"*": {}}}`
+        // both write the wildcard into the file; treating a non-array as
+        // absent scored them 96/100 exit 0 while the pre-#449 build scored 69
+        // and failed — a one-character evasion of the very check this change
+        // is about. `declaredValue` is the first tool key PRESENT, whatever
+        // its shape; only a genuinely missing key reaches the default branch.
+        const declaredValue = s.allowedTools !== undefined ? s.allowedTools : s.tools;
+        const declaredTools = normalizeToolDeclaration(declaredValue);
 
         if (declaredTools === undefined) {
           // Server-level only: the AST still knows the server exists and that
@@ -573,11 +579,27 @@ function extractDeclaredCapabilities(
           let evidence = serverEvidence;
           if (tool === '*') {
             // Cite the line that actually holds the wildcard rather than the
-            // server key. Anchored at this server's declaration so a later
-            // server's wildcard cannot be attributed to this one.
+            // server key, but ONLY when that citation can be resolved back to
+            // this server.
+            //
+            // Evidence is a STRING, and the consumer re-derives the line with
+            // `findLineFromString`, which returns the first occurrence. So an
+            // evidence span that is not unique in the file resolves to whoever
+            // wrote it first: two servers each declaring `"allowedTools":
+            // ["*"]` both cited line 5, and the pre-#449 build got this right
+            // (3 and 7) precisely because it cited the unique server key.
+            // Anchoring the SEARCH at `from` cannot fix that — it selects the
+            // text, and the offset is then thrown away.
+            //
+            // So the wildcard span is used only when it appears exactly once;
+            // otherwise fall back to the server key, which is unique by
+            // construction. Single-wildcard configs — the common case, and the
+            // one in the issue — still cite the wildcard's own line.
             wildcardRe.lastIndex = from;
             const wildcardDecl = wildcardRe.exec(content);
-            if (wildcardDecl) evidence = wildcardDecl[0];
+            if (wildcardDecl && content.indexOf(wildcardDecl[0]) === content.lastIndexOf(wildcardDecl[0])) {
+              evidence = wildcardDecl[0];
+            }
           } else {
             const needle = `"${tool}"`;
             if (content.indexOf(needle, from) !== -1) evidence = needle;
@@ -591,6 +613,36 @@ function extractDeclaredCapabilities(
             evidence,
           });
         }
+      }
+
+      // A config-level `"permissions": {"tools": [...]}` block, which grants
+      // across every server rather than within one.
+      //
+      // #449 — this was never read, and the omission was invisible because the
+      // synthesized per-server `['*']` fired on these files anyway. Removing
+      // the fabrication exposed it: `repo/malicious/kitchen-sink/mcp.json`
+      // declares `"permissions": {"tools": ["*"]}` at the top level, and
+      // without this it went from 69/100 exit 1 to 96/100 exit 0 — a wildcard
+      // written verbatim in the file, reported by nothing.
+      const configPermissions = normalizeToolDeclaration(
+        (config?.permissions as Record<string, unknown> | undefined)?.tools,
+      );
+      for (const tool of configPermissions ?? []) {
+        const permDecl = content.match(/"permissions"\s*:\s*\{[^}]*\}/);
+        caps.push({
+          // NOT `mcp.*.${tool}`. `checkWildcardToolAccess` selects on
+          // `name.includes('*')`, so putting a `*` in the server segment makes
+          // every config-level permission a wildcard finding — including
+          // `"tools": ["read_file"]`. That is this issue's own defect
+          // (a name asserting a wildcard the file does not contain),
+          // reintroduced by naming. The negative control below pins it.
+          name: `mcp.permissions.${tool}`,
+          scope: 'all servers',
+          declared: true,
+          inferred: false,
+          riskLevel: tool === '*' ? 'high' : 'medium',
+          evidence: permDecl?.[0],
+        });
       }
     } catch { /* not valid JSON */ }
   }

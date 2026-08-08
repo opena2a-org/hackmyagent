@@ -111,19 +111,18 @@ synthesized entry became a CRITICAL "Full Wildcard Tool Access" citing the serve
 should have handled the case became unreachable â€” it was gated on there being no full
 wildcard, which the synthesized one made impossible.
 
-An absent tool declaration is now treated as the MCP default it is, and `tools` is read
-alongside `allowedTools`, so a config that declares its wildcard under either key is still
-caught. A real wildcard is reported at the line that actually holds it.
+An absent tool declaration is now treated as the MCP default it is. A wildcard that is
+really written in the file is still caught wherever it is declared: under `allowedTools` or
+`tools`, as an array, a bare string (`"allowedTools": "*"`) or an object keyed by tool name,
+and in a config-level `"permissions": {"tools": ["*"]}` block. A real wildcard is reported at
+the line that actually holds it, and when two servers declare byte-identical wildcard text
+each finding still cites its own server rather than collapsing onto the first one's line.
 
 | `check --no-registry` | before | after |
 |---|---|---|
 | `corpus/mcp/benign/readonly-fs-mcp` | 69/100 | **96/100** |
 | `corpus/mcp/malicious/shell-rce-mcp` | 69/100 | 69/100, cited at `mcp.json:15` not `:3` |
-
-Removing the fabricated wildcard exposed a real false negative it had been masking: a
-skill's `## Permissions` list compiled to no capabilities at all, so `AST-SCOPE-001` could
-never fire from a skill however broad its grants. Skill permissions are now extracted, with
-`shell:*` graded a domain-scoped partial wildcard rather than unrestricted access.
+| `corpus/repo/malicious/kitchen-sink` | 45/100 | 45/100, findings unchanged |
 
 **Known gap, disclosed rather than discovered later.** There is now one shape that scores
 better than it should: an MCP server that declares no tool key **and** whose own arguments
@@ -139,6 +138,18 @@ reports `"mcp.filesystem" does not match purpose ""args": ["-y", "@modelcontextâ
 the "purpose" is a JSON fragment scraped out of the config being scanned. Trading a
 fabricated critical for an incoherent high is not an improvement. The replacement will be a
 check that says what it means.
+
+**Skills still do not contribute scope findings, and that is now tracked as #471.** A skill's
+`## Permissions` list compiles to no capabilities, so `AST-SCOPE-001` cannot fire from a
+skill however broad its grants. Removing the fabricated MCP wildcard exposed this, because
+the wildcard had been standing in for it. An implementation shipped in an earlier draft of
+this change and was removed before release: measured against ordinary skills it raised a
+CRITICAL "equivalent of running as root" on `- logs: /var/log/*.*` in a log-rotation skill,
+missed most legitimate spellings (`## Permissions Required`, numbered lists, and any trailing
+comment such as `- shell: * # for build`, each a one-token bypass), read fenced markdown
+examples as real grants, and produced findings with no line number and therefore no verify
+command. A check that fires hardest on people writing ordinary skills is the defect this
+entry is about, aimed at a new surface. It needs a grammar and a corpus, not a regex pair.
 
 ## [0.27.0] - 2026-08-07
 
