@@ -425,6 +425,60 @@ function extractDeclaredCapabilities(
     }
   }
 
+  // From a skill's `## Permissions` bullet list.
+  //
+  // #449 — this surface produced NO capabilities at all, so `AST-SCOPE-001`
+  // could never fire from a skill no matter what it declared. A skill reading
+  //
+  //   ## Permissions
+  //   - filesystem:/
+  //   - shell:*
+  //   - network:*
+  //
+  // compiled to zero `declaredCapabilities`. The gap was invisible because the
+  // `repo/malicious/kitchen-sink` corpus expectation it should satisfy
+  // ("AST-SCOPE-001, high, scope-violation patterns across skills") was being
+  // met accidentally by the MCP branch's synthesized `['*']` — a wildcard from
+  // a different file that contained no wildcard. Removing that fabrication
+  // exposed this, which is the corpus gate doing its job.
+  //
+  // The declared `domain:value` spelling is preserved in the capability name on
+  // purpose. `shell:*` grants every tool within one domain, which is what
+  // `checkWildcardToolAccess` grades as a PARTIAL wildcard (high) rather than a
+  // full one (critical) — the honest reading, and the severity the corpus
+  // manifest expects. Rewriting it to `shell.*` would trip `endsWith('.*')` and
+  // over-report it as unrestricted access to everything.
+  if (type === 'skill') {
+    // The terminator is "next heading, or end of input". Written as
+    // `$(?![\s\S])` because JavaScript has no `\Z` — it parses as a literal
+    // `Z`, so the section only closed on files that happened to have another
+    // heading after Permissions. Every corpus skill does, which is exactly why
+    // a unit test with the block at end-of-file was needed to see it.
+    const permsSection = content.match(
+      /^#{1,6}\s*permissions\s*$([\s\S]*?)(?=^#{1,6}\s|$(?![\s\S]))/im,
+    );
+    if (permsSection) {
+      const bullet = /^\s*[-*]\s*([A-Za-z][\w-]*)\s*:\s*(\S+)\s*$/gm;
+      let m: RegExpExecArray | null;
+      while ((m = bullet.exec(permsSection[1])) !== null) {
+        const [, domain, value] = m;
+        const name = `${domain}:${value}`;
+        caps.push({
+          name,
+          scope: domain,
+          declared: true,
+          inferred: false,
+          // Set explicitly rather than through `assessCapabilityRisk`, whose
+          // substring match reads "file<system>" as a system capability and
+          // would grade a read-only filesystem grant critical.
+          riskLevel: value.includes('*') ? 'high' : 'medium',
+          // Verbatim so findLineFromString resolves the permission's own line.
+          evidence: name,
+        });
+      }
+    }
+  }
+
   // From MCP config tool declarations
   if (type === 'mcp_config') {
     try {
@@ -432,7 +486,6 @@ function extractDeclaredCapabilities(
       const servers = config.mcpServers ?? {};
       for (const [name, server] of Object.entries(servers)) {
         const s = server as Record<string, unknown>;
-        const tools = (s.allowedTools as string[]) ?? ['*'];
         // Locate the server's JSON declaration in original content for a
         // verbatim evidence span. JSON.parse loses position info, so emit
         // sites can't derive a line number without re-scanning content.
@@ -440,12 +493,72 @@ function extractDeclaredCapabilities(
         const serverDeclRe = new RegExp(`"${escapeRegex(name)}"\\s*:`);
         const serverMatch = content.match(serverDeclRe);
         const serverEvidence = serverMatch?.[0];
-        for (const tool of tools) {
+
+        // #449 — an ABSENT tool declaration is the MCP default, not a declared
+        // wildcard, and compiling it to `['*']` made the two indistinguishable.
+        // Every consumer downstream reads the capability NAME, so a synthesized
+        // `mcp.<server>.*` is asserted as a wildcard that is not in the file:
+        // `scope-analyzer` raised CRITICAL "Full Wildcard Tool Access" citing
+        // the server-key line, `capability-analyzer` inherited `riskLevel:
+        // 'high'` and added a MEDIUM, and the honestly-worded "Implicit
+        // Wildcard" branch became unreachable. Benign and malicious MCP corpus
+        // fixtures both scored exactly 69/100 — a CRITICAL whose output does
+        // not vary with its input.
+        //
+        // `tools` is read alongside `allowedTools` deliberately. It is the key
+        // the malicious corpus fixture actually uses, so honouring only
+        // `allowedTools` would swap this false positive for a false negative on
+        // the one fixture that must stay caught.
+        const declaredTools =
+          (Array.isArray(s.allowedTools) ? (s.allowedTools as string[]) : undefined) ??
+          (Array.isArray(s.tools) ? (s.tools as string[]) : undefined);
+
+        if (declaredTools === undefined) {
+          // Server-level only: the AST still knows the server exists and that
+          // its grant is unbounded, but the NAME no longer asserts a `*` that
+          // is not in the file.
+          //
+          // `riskLevel` is 'medium', and that was measured rather than picked.
+          // The purpose-mismatch analyzers (`AST-SCOPE-003`,
+          // `capability-analyzer`'s `checkScopeMismatch`) select on
+          // `riskLevel === 'high' || 'critical'`, so 'high' here fires a
+          // purpose-mismatch finding on any config that merely omits the key —
+          // it put the benign `mcp/benign/readonly-fs-mcp` fixture at 91/100
+          // against a 95-100 band and dropped a bare default config to 69 with
+          // a fail-direction verdict. That is the same false positive this
+          // issue is about, relocated from AST-SCOPE-001 to AST-SCOPE-003.
+          //
+          // Omitting the key is the ecosystem default and is not by itself
+          // evidence of risk. Where a tree really is dangerous, the risk is
+          // carried by evidence that survives this: the skill permission
+          // wildcards above, dangerous command and argument detection, and the
+          // credential checks.
+          caps.push({
+            name: `mcp.${name}`,
+            scope: name,
+            declared: true,
+            inferred: false,
+            riskLevel: 'medium',
+            evidence: serverEvidence,
+          });
+          continue;
+        }
+
+        for (const tool of declaredTools) {
           // Prefer the specific tool's quoted span when present (e.g. `"shell"`
           // inside an allowedTools array). Fall back to the server declaration
-          // span for wildcards or when the literal isn't found.
+          // span when the literal isn't found.
           let evidence = serverEvidence;
-          if (tool !== '*') {
+          if (tool === '*') {
+            // Cite the line that actually holds the wildcard rather than the
+            // server key. Anchored at this server's declaration so a later
+            // server's wildcard cannot be attributed to this one.
+            const from = serverMatch?.index ?? 0;
+            const wildcardDecl = content
+              .slice(from)
+              .match(/"(?:allowedTools|tools)"\s*:\s*\[[^\]]*"\*"[^\]]*\]/);
+            if (wildcardDecl) evidence = wildcardDecl[0];
+          } else {
             const toolMatch = content.match(new RegExp(`"${escapeRegex(tool)}"`));
             if (toolMatch) evidence = toolMatch[0];
           }

@@ -113,43 +113,28 @@ function checkWildcardToolAccess(ast: SecurityAST, artifactContent?: string): AS
     });
   }
 
-  // Also flag MCP configs where no allowedTools is specified (implicit wildcard)
-  if (ast.artifactType === 'mcp_config') {
-    const mcpCaps = ast.declaredCapabilities.filter(c => c.name.startsWith('mcp.'));
-    // If there are MCP capabilities but none have explicit tool names (all are server-level)
-    const hasOnlyServerLevel = mcpCaps.length > 0 && mcpCaps.every(c => {
-      const parts = c.name.split('.');
-      return parts.length <= 2; // "mcp.servername" without a tool name
-    });
-
-    if (hasOnlyServerLevel && fullWildcards.length === 0) {
-      // MCP server declared without explicit tool restrictions
-      for (const cap of mcpCaps) {
-        findings.push({
-          checkId: 'AST-SCOPE-001',
-          name: 'Implicit Wildcard MCP Access',
-          description:
-            `MCP server "${cap.scope}" is configured without an explicit tool allowlist. ` +
-            'When no allowedTools is specified, all tools on the server are accessible.',
-          category: 'Scope Security',
-          severity: 'high',
-          passed: false,
-          message: `Implicit wildcard: MCP server ${cap.scope}`,
-          fixable: false,
-          file: ast.artifactPath,
-          line: findLineFromString(artifactContent, cap.evidence),
-          fix:
-            `Add an explicit "allowedTools" list to the "${cap.scope}" server config in mcp.json. ` +
-            'Run `opena2a mcp audit` to inventory available tools, then restrict to the minimum needed.',
-          guidance:
-            'MCP servers can expose dangerous tools (file system, shell execution). ' +
-            'Always restrict access to a named allowlist.',
-          attackClass: 'SCOPE-WILDCARD',
-          confidence: 0.8,
-        });
-      }
-    }
-  }
+  // #449 — there is deliberately NO finding for a server that simply omits its
+  // tool declaration.
+  //
+  // An "Implicit Wildcard MCP Access" HIGH used to sit here, gated on
+  // `fullWildcards.length === 0`. It was unreachable: the compiler synthesized
+  // `['*']` for exactly the configs it targeted, so `fullWildcards` was never
+  // empty and the branch could not run. What users actually got was the
+  // CRITICAL above, asserting a wildcard the file did not contain.
+  //
+  // It is not restored now that the compiler no longer synthesizes, because
+  // omitting the key is the MCP ecosystem default — Sentry's official server
+  // omits it — and a check that fires on the default has no discriminating
+  // power. That is the defect this issue is about: benign and malicious corpus
+  // fixtures both scored exactly 69/100. A CRITICAL whose output does not vary
+  // with its input is a constant, not a measurement.
+  //
+  // The real risk in an unrestricted server is what the server can DO, and that
+  // is measured where the evidence is: dangerous command and argument
+  // detection, `AST-SCOPE-003` unconstrained high-risk capabilities, and the
+  // credential checks. The malicious fixture stays caught by those on its own
+  // evidence, which is the point — this check now reports only a wildcard that
+  // is really written in the file, at the line that really holds it.
 
   return findings;
 }

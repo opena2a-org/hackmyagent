@@ -240,7 +240,12 @@ describe('extractDeclaredCapabilities — verbatim evidence (#151)', () => {
     expect(exec?.evidence).toBe('"execute"');
   });
 
-  it('MCP JSON: wildcard tool falls back to server declaration span', async () => {
+  it('MCP JSON: wildcard tool resolves to the wildcard declaration span', async () => {
+    // #449 amended this. It previously asserted the evidence fell back to the
+    // server-key span (`"everything":`), which is what made the CRITICAL
+    // "Full Wildcard Tool Access" finding cite a line holding no wildcard.
+    // The #151 contract is unchanged and still asserted below: evidence must
+    // be a verbatim substring of the artifact. What changed is WHICH span.
     const content = JSON.stringify(
       { mcpServers: { everything: { allowedTools: ['*'] } } },
       null,
@@ -252,8 +257,18 @@ describe('extractDeclaredCapabilities — verbatim evidence (#151)', () => {
     );
     expect(wild).toBeDefined();
     expect(wild?.evidence).toBeDefined();
+    // #151: verbatim substring, so findLineFromString's indexOf can resolve it.
     expect(content.includes(wild!.evidence!)).toBe(true);
-    expect(wild!.evidence).toContain('"everything"');
+    // #449: the span carries the wildcard itself, not the server key.
+    expect(wild!.evidence).toContain('allowedTools');
+    expect(wild!.evidence).toContain('"*"');
+    expect(wild!.evidence).not.toContain('"everything"');
+    // And it resolves to the line that actually holds the declaration.
+    const lines = content.split('\n');
+    const declLine = lines.findIndex(l => l.includes('"allowedTools"')) + 1;
+    const evidenceLine =
+      content.slice(0, content.indexOf(wild!.evidence!)).split('\n').length;
+    expect(evidenceLine).toBe(declLine);
   });
 
   it('Natural-language declarations: cap.evidence is the matched verb-phrase', async () => {
