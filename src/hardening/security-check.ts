@@ -19,6 +19,14 @@ export type Severity = 'critical' | 'high' | 'medium' | 'low';
  */
 export type ProjectType = 'cli' | 'library' | 'sdk' | 'webapp' | 'api' | 'mcp' | 'openclaw' | 'all';
 
+/**
+ * Which route the caller used to ask for a finding to be left out of the
+ * report (#450). Named rather than a bare string so the disclosure can say
+ * which knob was turned, and so a fourth channel cannot be added without
+ * touching this union.
+ */
+export type SuppressionChannel = 'ignore-flag' | 'hmaignore-check' | 'hmaignore-path';
+
 export interface SecurityCheck {
   id: string;
   name: string;
@@ -74,6 +82,30 @@ export interface SecurityFinding {
    * ordinary finding and is never flagged.
    */
   inOwnArchive?: boolean;
+  /**
+   * The USER asked for this finding to be left out of the report — `--ignore`,
+   * an `.hmaignore` check-ID pattern, or an `.hmaignore` path pattern.
+   *
+   * #450. It is MARKED, not removed. A suppressed finding still counts toward
+   * `score`, `rawScore`, the verdict band and the exit code; it is dropped from
+   * the rendered findings LIST and disclosed by name on a `Suppressed` line.
+   * Declining to look at a check may not make a tree score better than looking
+   * at it, and before this flag existed it did: one `--ignore` moved
+   * `corpus/repo/buggy/leaky-env-example` from 69/100 exit 1 to 98/100 exit 0
+   * with the credential verdict gone and nothing in the output naming the
+   * suppression.
+   *
+   * Marking rather than filtering is deliberate. Every score and exit path in
+   * this codebase keys off `countsAgainstScore` (`src/ui/verdict-band.ts`),
+   * which is documented there as the single predicate behind both the score and
+   * the fail direction — so leaving these findings in the array makes all five
+   * output channels honest without five separate repairs, and inverts the
+   * failure mode: a display site that forgets to filter shows a suppressed
+   * finding (loud, safe) instead of laundering the score (silent, not).
+   */
+  suppressed?: boolean;
+  /** Which suppression channel asked for it. Set whenever `suppressed` is. */
+  suppressedBy?: SuppressionChannel;
   /** File path where the issue was found (relative to scan directory) */
   file?: string;
   /** Line number in the file where the issue was found */

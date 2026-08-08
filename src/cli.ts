@@ -215,7 +215,7 @@ import {
   UNREACHABLE_PREFIXES,
   type CategoryCoverage,
 } from './hardening/coverage-ledger';
-import type { ScanResult } from './hardening/security-check';
+import type { ScanResult, SuppressionChannel } from './hardening/security-check';
 import { compareFindingsByTier } from './ui/finding-tier';
 import {
   scoreLineLabel,
@@ -226,7 +226,7 @@ import {
   OBSERVATION_LABEL_WIDTH,
 } from './ui/quick-scan-labels';
 import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifact-intent';
-import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, retainForVerdict } from './ui/verdict-band';
+import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, isDisplayed, retainForVerdict, summarizeSuppressed } from './ui/verdict-band';
 import { shouldPrintVersionFooter } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { fixSummaryLine } from './ui/fix-summary';
@@ -584,14 +584,28 @@ Examples:
         // Apply .hmaignore filtering (paths + check IDs)
         const { loadHmaIgnore: loadIgnore, isPathIgnored: pathIgnored, isCheckIgnored: checkIgnored } = await import('./hardening/scanner.js');
         const skillIgnoreRules = await loadIgnore(targetDir);
-        let skillFindings = nmResult.mergedFindings;
+        const skillFindings = nmResult.mergedFindings;
+        // #450 — marks, does not delete. This is the last of the four places
+        // user suppression was applied by deleting the finding, and the verdict
+        // and exit code below are derived from what survives, so deleting here
+        // laundered `check` the same way `--ignore` laundered `secure`.
         if (skillIgnoreRules.paths.length > 0 || skillIgnoreRules.checkIds.length > 0) {
-          skillFindings = skillFindings.filter((f: any) =>
-            !(f.file && pathIgnored(f.file, skillIgnoreRules.paths)) &&
-            !checkIgnored(f.checkId, skillIgnoreRules.checkIds));
+          for (const f of skillFindings as any[]) {
+            if (f.suppressed) continue;
+            if (checkIgnored(f.checkId, skillIgnoreRules.checkIds)) {
+              f.suppressed = true;
+              f.suppressedBy = 'hmaignore-check';
+            } else if (f.file && pathIgnored(f.file, skillIgnoreRules.paths)) {
+              f.suppressed = true;
+              f.suppressedBy = 'hmaignore-path';
+            }
+          }
         }
 
         const issues = skillFindings.filter((f: any) => !f.passed);
+        // What the caller asked to see. `issues` stays whole so the verdict,
+        // the risk band and the exit code are decided on the full evidence.
+        const shownIssues = issues.filter(isDisplayed);
         const critical = issues.filter((f: any) => f.severity === 'critical');
         const high = issues.filter((f: any) => f.severity === 'high');
 
@@ -642,7 +656,14 @@ Examples:
               }),
               ...coverageJson(verdict),
             },
-            details: issues,
+            // #450 — the withheld findings are disclosed by identity beside the
+            // list rather than left in it, so a suppressed credential finding
+            // does not ship a second copy of its evidence (#370). `findings`,
+            // `critical`, `high` and `risk` above are the full-evidence numbers.
+            details: shownIssues,
+            ...(summarizeSuppressed(issues).length > 0
+              ? { suppressed: summarizeSuppressed(issues) }
+              : {}),
           });
           return;
         }
@@ -923,7 +944,7 @@ interface UnifiedCheckDisplayOptions {
     compiledArtifacts: number;
     /** True when the semantic compile set hit its 200-file cap. */
     compileSetTruncated?: boolean;
-    findings: Array<{ severity: string; checkId?: string; description?: string; name?: string; message?: string; fix?: string; guidance?: string; file?: string; line?: number; passed?: boolean; attackClass?: string; category?: string }>;
+    findings: Array<{ severity: string; checkId?: string; description?: string; name?: string; message?: string; fix?: string; guidance?: string; file?: string; line?: number; passed?: boolean; attackClass?: string; category?: string; suppressed?: boolean; suppressedBy?: SuppressionChannel }>;
   };
   /** Per-artifact summaries for the Observations block. Skill/MCP/SOUL/A2A
    *  detected and compiled by the semantic compiler. Shape mirrors
@@ -1372,6 +1393,12 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       fix: f.fix,
       guidance: f.guidance,
       attackClass: f.attackClass,
+      // #450 — this mapping enumerates the fields it carries, so a flag added
+      // upstream is dropped here by default. The suppression mark has to
+      // survive or `listed` below cannot withhold anything on this branch, and
+      // `--ignore`/`.hmaignore` would visibly stop working in `check`.
+      suppressed: f.suppressed,
+      suppressedBy: f.suppressedBy,
     }));
     // Use the canonical scoring formula (exponential decay + 0.4x governance weight)
     const scoreResult = calculateSecurityScore(issues);
@@ -1400,6 +1427,12 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   }
 
   const totalFindings = critical + high + medium + low;
+
+  // #450 — what the caller asked to have left out of the list, folded to one
+  // row per checkId, worst severity first. Derived from `failed` rather than
+  // from the raw findings so it can only ever name a finding that WOULD have
+  // been reported; a suppressed check that passed is not a cost to disclose.
+  const suppressedRows = summarizeSuppressed(failed);
 
   // ── Header ──────────────────────────────────────────────────────────
   const typeLabel = (registry?.packageType || projectType || 'unknown').replace(/_/g, ' ');
@@ -1853,12 +1886,47 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       // Labelled by layer: the semantic count above is the compile set, and
       // an unlabelled smaller number beside it reads as a contradiction.
       parts.push(`${localScan.coverage.filesExamined} file${localScan.coverage.filesExamined === 1 ? '' : 's'} read by static checks`);
+      // #450 — the one number on this line that moves when the caller
+      // suppresses something. `61 of 61 check groups ran` printed identically
+      // with 0, 1 and 5 checks suppressed, and a number that cannot vary is not
+      // a measurement. It is not the group counter that varies, and deliberately
+      // so: `--ignore` takes check IDs while a group holds a whole prefix
+      // family, so `checkOpenclawConfig` really does run when CONFIG-004 alone
+      // is suppressed and printing `60 of 61` would be a new false statement in
+      // the other direction.
+      if (suppressedRows.length > 0) {
+        const suppressedTotal = suppressedRows.reduce((n, r) => n + r.count, 0);
+        parts.push(`${suppressedTotal} finding${suppressedTotal === 1 ? '' : 's'} suppressed by the caller`);
+      }
       checksLine.value = parts.join(' · ');
     }
 
     for (const line of [surfacesLine, checksLine]) {
       const labelPad = line.label.padEnd(LABEL_WIDTH, ' ');
       console.log(`  ${colors.dim}${labelPad}${RESET()}${toneColor(line.tone)}${line.value}${RESET()}`);
+    }
+
+    // #450 — every suppressed checkId, by name, with what it would have
+    // reported. `--ignore` used to leave no trace at all: grepping the whole
+    // output for `ignor|suppress|excluded|skipped` matched only the literal
+    // string `.gitignore`, so a reviewer handed the report had no way to know a
+    // CRITICAL credential finding had been withheld. Rendered whether or not
+    // anything else is printed, and never collapsed into a bare count.
+    if (suppressedRows.length > 0) {
+      const labelPad = 'Suppressed'.padEnd(LABEL_WIDTH, ' ');
+      const named = suppressedRows
+        .map((r) => `${r.checkId} (${r.severity}${r.count > 1 ? ` x${r.count}` : ''})`)
+        .join(' · ');
+      console.log(
+        `  ${colors.dim}${labelPad}${RESET()}${colors.yellow}${named}${RESET()}`,
+      );
+      const worst = suppressedRows[0];
+      console.log(
+        `  ${colors.dim}${''.padEnd(LABEL_WIDTH, ' ')}` +
+        `Withheld from the list at your request. Still scored, still in the verdict, ` +
+        `still in the exit code — ${worst.checkId} would have reported ` +
+        `${worst.severity} ${worst.name}.${RESET()}`,
+      );
     }
 
     // The coverage tally, then the names. This is what the "(all clear)" tail
@@ -1966,6 +2034,15 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   }
 
   // ── Findings ────────────────────────────────────────────────────────
+  //
+  // #450 — `listed` is the ONLY set a user suppression narrows, and this block
+  // is the only place it is used. The severity pills above it, the category
+  // summaries, the verdict, the score and the exit code all read `failed`,
+  // which still holds every suppressed finding. So `--ignore CONFIG-004` on the
+  // leaky-env fixture now prints `1 critical` and `69/100 Not safe to ship`
+  // with the finding itself withheld and named on the Suppressed line, instead
+  // of the 98/100 clean bill it used to produce.
+  const listed = failed.filter(isDisplayed);
   if (failed.length > 0) {
     // Severity summary as colored pills
     const summaryParts: string[] = [];
@@ -1988,7 +2065,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // High-count mode: group by category when > 20 findings
     if (totalFindings > 20 && !verbose) {
       const groups = new Map<string, { critical: number; high: number; medium: number; low: number; files: Set<string> }>();
-      for (const f of failed) {
+      for (const f of listed) {
         const key = f.category || f.name || 'Other';
         if (!groups.has(key)) groups.set(key, { critical: 0, high: 0, medium: 0, low: 0, files: new Set() });
         const g = groups.get(key)!;
@@ -2019,7 +2096,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       // Sort by attack-class tier first, then severity. Stops benign hygiene
       // HIGHs from masking active-malice / governance HIGHs at the top of
       // the list (issue #134).
-      const topFindings = [...failed].sort(compareFindingsByTier).slice(0, 3);
+      const topFindings = [...listed].sort(compareFindingsByTier).slice(0, 3);
       for (const f of topFindings) {
         // #374 — a finding inside the archive `--fix` just created needs its FULL
                 // relative path. `shortenPath` keeps the last two segments, so
@@ -2052,15 +2129,15 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       // Normal mode: individual findings sorted by attack-class tier first
       // (active malice > capability/governance > missing-defense > hygiene >
       // project), then severity inside each tier. Issue #134.
-      failed.sort(compareFindingsByTier);
+      listed.sort(compareFindingsByTier);
       const skipped = new Set<number>();
       let shown = 0;
-      const limit = verbose ? failed.length : 10;
+      const limit = verbose ? listed.length : 10;
 
-      for (let i = 0; i < failed.length; i++) {
+      for (let i = 0; i < listed.length; i++) {
         if (shown >= limit) break;
         if (skipped.has(i)) continue;
-        const f = failed[i];
+        const f = listed[i];
         // #324 — the finding header, the guidance and the fix all interpolate a
         // path that came from the scanned tree. A newline in one split the
         // location line and truncated the fix command mid-quote.
@@ -2099,9 +2176,9 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           const dir = f.file?.split('/').slice(0, -1).join('/') || '';
           const artifactName = f.file ? (f.file.split('/').pop() ?? '') : '';
           let similarCount = 0;
-          for (let j = i + 1; j < failed.length; j++) {
+          for (let j = i + 1; j < listed.length; j++) {
             if (skipped.has(j)) continue;
-            const other = failed[j];
+            const other = listed[j];
             if (other.name === f.name) {
               const otherDir = other.file?.split('/').slice(0, -1).join('/') || '';
               if (otherDir === dir) { skipped.add(j); similarCount++; }
@@ -2114,10 +2191,12 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           }
         }
       }
-      const remaining = failed.length - shown - skipped.size;
+      const remaining = listed.length - shown - skipped.size;
       if (remaining > 0) {
         // Name what's hidden so the user knows whether to --verbose
-        const hiddenFindings = failed.filter((_, idx) => idx >= shown && !skipped.has(idx));
+        // (findings the USER suppressed are not "hidden" in this sense — they
+        // are disclosed on their own line and `--verbose` will not show them)
+        const hiddenFindings = listed.filter((_, idx) => idx >= shown && !skipped.has(idx));
         const hiddenNames = hiddenFindings.slice(0, 2).map(f => f.name || f.category || f.severity).join(', ');
         const hiddenCtx = hiddenNames ? ` (${hiddenNames})` : '';
         console.log(`\n  ${colors.dim}+ ${remaining} more finding${remaining > 1 ? 's' : ''}${hiddenCtx}  (run with --verbose to see all)${RESET()}`);
@@ -4052,7 +4131,7 @@ Examples:
   .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
   .option('--fix', 'Automatically fix issues where possible')
   .option('--dry-run', 'Preview fixes without applying them (use with --fix)')
-  .option('--ignore <checks>', 'Comma-separated check IDs to skip (e.g., CRED-001,GIT-002)')
+  .option('--ignore <checks>', 'Comma-separated check IDs to leave out of the findings list (e.g., CRED-001,GIT-002). Suppressed checks are still scored and still set the exit code; use --fail-below for a score floor')
   .option('--json', 'Output as JSON (deprecated: use --format json)')
   .option('-f, --format <format>', 'Output format: text, json, sarif, html, asff (default: text)', 'text')
   .option('--aws-account-id <id>', 'AWS account ID for ASFF format')
@@ -4298,12 +4377,21 @@ Examples:
           ) as typeof result.findings;
         }
         // Re-apply CLI --ignore list (reapplyIgnoreFilters only covers .hmaignore file rules)
+        //
+        // #450 — marks, does not remove. This block ran between the NanoMind
+        // merge and `applyScore` two lines below, so a `--ignore` argument
+        // deleted findings from the array the score is recomputed from. Fixing
+        // the scan path alone left the laundering fully intact here.
         if (ignoreList.length > 0) {
           const ignoreSet = new Set(ignoreList.map((id: string) => id.toUpperCase()));
-          result.findings = (result.findings || []).filter((f: any) => !ignoreSet.has(f.checkId.toUpperCase())) as typeof result.findings;
-          if (result.allFindings) {
-            result.allFindings = result.allFindings.filter((f: any) => !ignoreSet.has(f.checkId.toUpperCase()));
-          }
+          const mark = (f: any) => {
+            if (!f.suppressed && ignoreSet.has(f.checkId.toUpperCase())) {
+              f.suppressed = true;
+              f.suppressedBy = 'ignore-flag';
+            }
+          };
+          (result.findings || []).forEach(mark);
+          (result.allFindings || []).forEach(mark);
         }
         // Recalculate score from filtered findings (score was set pre-NanoMind)
         // findings already filtered by project type above, so just exclude passed/fixed
@@ -4667,8 +4755,20 @@ Examples:
             }
           : undefined;
 
+        // #450 — `findings` keeps its old contract (what the caller asked to
+        // see), and the suppression is disclosed beside it rather than by
+        // leaving the withheld entries in. Two reasons not to just emit them:
+        // a consumer that counts `findings.length` would see a number that
+        // contradicts the flag it passed, and #370 has these entries carrying
+        // plaintext credentials in `evidence.lines[].content`, so a disclosure
+        // record for a suppressed credential finding must not become a second
+        // copy of the credential. `score`, `rawScore` and the exit code are
+        // computed from the FULL set and are unaffected by this narrowing.
+        const suppressedJson = summarizeSuppressed(result.findings);
         const jsonBase = {
           ...result,
+          findings: result.findings.filter(isDisplayed),
+          ...(suppressedJson.length > 0 ? { suppressed: suppressedJson } : {}),
           ...(jsonCoverage ? { coverage: jsonCoverage } : {}),
           ...(nmResult.analystFindings?.length ? { analystFindings: nmResult.analystFindings } : {}),
           ...(nmResult.analystEscalations?.length ? { analystEscalations: nmResult.analystEscalations } : {}),

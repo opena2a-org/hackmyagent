@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { HardeningScanner, ScanOptions, envBodyContainsSecrets } from '../../src/hardening/scanner';
 import type { SecurityFinding, ScanResult, ProjectType } from '../../src/hardening/security-check';
+import { isDisplayed } from '../../src/ui/verdict-band';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -1799,6 +1800,15 @@ describe('Ignore checks', () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
+  // #450 — these four cases used to read `findings.some(id) === false`, i.e.
+  // they asserted that suppression DELETES the finding, which is the behaviour
+  // that let `--ignore` raise the score and flip the exit code. The contract is
+  // now: suppressed findings stay in `findings` (scored, verdict, exit code) and
+  // are marked so the renderer can withhold them. `isDisplayed` is the display
+  // set, and it is the only thing suppression narrows. Full case coverage lives
+  // in `__tests__/hardening/ignore-suppression-scope.test.ts`.
+  const displayed = (r: { findings: SecurityFinding[] }) => r.findings.filter(isDisplayed);
+
   it('ignores specific check IDs', async () => {
     // Create file with exposed credential
     await fs.writeFile(
@@ -1810,12 +1820,18 @@ describe('Ignore checks', () => {
     const resultWithCheck = await scanner.scan({ targetDir: tempDir });
     expect(resultWithCheck.findings.some((f) => f.checkId === 'CRED-001')).toBe(true);
 
-    // Scan with ignore - should NOT find CRED-001
+    // Scan with ignore - CRED-001 is withheld from the list...
     const resultIgnored = await scanner.scan({
       targetDir: tempDir,
       ignore: ['CRED-001'],
     });
-    expect(resultIgnored.findings.some((f) => f.checkId === 'CRED-001')).toBe(false);
+    expect(displayed(resultIgnored).some((f) => f.checkId === 'CRED-001')).toBe(false);
+    // ...and still counted, marked with the channel that withheld it.
+    const held = resultIgnored.findings.filter((f) => f.checkId === 'CRED-001');
+    expect(held.length).toBeGreaterThan(0);
+    expect(held.every((f) => f.suppressed === true)).toBe(true);
+    expect(held.every((f) => f.suppressedBy === 'ignore-flag')).toBe(true);
+    expect(resultIgnored.score).toBe(resultWithCheck.score);
   });
 
   it('ignore is case-insensitive', async () => {
@@ -1829,7 +1845,8 @@ describe('Ignore checks', () => {
       ignore: ['cred-001'], // lowercase
     });
 
-    expect(result.findings.some((f) => f.checkId === 'CRED-001')).toBe(false);
+    expect(displayed(result).some((f) => f.checkId === 'CRED-001')).toBe(false);
+    expect(result.findings.some((f) => f.checkId === 'CRED-001' && f.suppressed)).toBe(true);
   });
 
   it('returns list of ignored checks in result', async () => {
@@ -1854,12 +1871,15 @@ describe('Ignore checks', () => {
       ignore: ['CRED-001', 'GIT-001', 'GIT-002'],
     });
 
-    expect(result.findings.some((f) => f.checkId === 'CRED-001')).toBe(false);
-    expect(result.findings.some((f) => f.checkId === 'GIT-001')).toBe(false);
-    expect(result.findings.some((f) => f.checkId === 'GIT-002')).toBe(false);
+    for (const id of ['CRED-001', 'GIT-001', 'GIT-002']) {
+      expect(displayed(result).some((f) => f.checkId === id)).toBe(false);
+    }
+    // Nothing the caller did not name is withheld.
+    const namedIds = new Set(['CRED-001', 'GIT-001', 'GIT-002']);
+    expect(result.findings.filter((f) => f.suppressed && !namedIds.has(f.checkId))).toEqual([]);
   });
 
-  it('score calculation excludes ignored checks', async () => {
+  it('score calculation does NOT exclude ignored checks', async () => {
     await fs.writeFile(
       path.join(tempDir, 'config.json'),
       JSON.stringify({ apiKey: 'sk-ant-api03-secretkey1234567890def' })
@@ -1868,14 +1888,19 @@ describe('Ignore checks', () => {
     // Without ignore
     const resultFull = await scanner.scan({ targetDir: tempDir });
 
-    // With ignore (ignoring critical check means fewer findings)
+    // With ignore
     const resultIgnored = await scanner.scan({
       targetDir: tempDir,
       ignore: ['CRED-001'],
     });
 
-    // Should have fewer findings when ignoring a check
-    expect(resultIgnored.findings.length).toBeLessThan(resultFull.findings.length);
+    // #450 — this assertion is inverted from what it used to be, and the
+    // inversion IS the fix. Declining to look at a check cannot make the tree
+    // score better than looking at it. The list shrinks; the number does not
+    // move.
+    expect(resultIgnored.score).toBe(resultFull.score);
+    expect(resultIgnored.findings.length).toBe(resultFull.findings.length);
+    expect(displayed(resultIgnored).length).toBeLessThan(displayed(resultFull).length);
   });
 });
 

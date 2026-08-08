@@ -1776,12 +1776,22 @@ export class HardeningScanner {
       return findings;
     }
 
-    return findings.filter(f => {
-      if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) return false;
-      // #280 — keys on every covered path, not just `f.file`.
-      if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) return false;
-      return true;
-    });
+    // #450 — marks, does not remove. This runs after the NanoMind merge, on a
+    // findings array the CLI then recomputes the score from, so returning a
+    // shortened array here re-created the laundering the scan path had just
+    // stopped doing. Callers render with `isDisplayed()`.
+    for (const f of findings) {
+      if (f.suppressed) continue;
+      if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) {
+        f.suppressed = true;
+        f.suppressedBy = 'hmaignore-check';
+      } else if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) {
+        // #280 — keys on every covered path, not just `f.file`.
+        f.suppressed = true;
+        f.suppressedBy = 'hmaignore-path';
+      }
+    }
+    return findings;
   }
 
   /**
@@ -2718,7 +2728,12 @@ export class HardeningScanner {
     // 1. Only failed checks (passed: false)
     // 2. Only checks with a file path (concrete findings, not generic advice)
     // 3. Only checks that apply to this project type (e.g., no SQL checks on MCP servers)
-    // 4. Filter out ignored checks
+    //
+    // What the USER suppressed is handled separately, below: those findings are
+    // MARKED and kept, not dropped (#450). The three suppression predicates used
+    // to sit in this filter, and because the score is computed from whatever
+    // survives it, naming a check on the command line removed that check's
+    // penalties and RAISED the score.
     let filteredFindings = findings.filter((f) => {
       // Keep fixed findings (so users can see what was fixed)
       // Otherwise, only show failed checks
@@ -2730,19 +2745,38 @@ export class HardeningScanner {
       // Only show checks relevant to this project type
       if (!this.findingAppliesTo(f, projectType)) return false;
 
-      // Filter out ignored checks (from --ignore flag)
-      if (ignoredChecks.has(f.checkId.toUpperCase())) return false;
-
-      // Filter out check IDs suppressed via .hmaignore (supports wildcards)
-      if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) return false;
-
-      // Filter out paths matching .hmaignore.
-      // #280 — a multi-file finding survives while ANY covered path is
-      // un-ignored, and is re-pointed onto a survivor rather than deleted.
-      if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) return false;
-
       return true;
     });
+
+    // #450 — user suppression, applied as a MARK.
+    //
+    // `--ignore`, an `.hmaignore` check-ID pattern and an `.hmaignore` path
+    // pattern are three routes to one behaviour, and all three laundered the
+    // score identically before this: 69/100 exit 1 -> 98/100 exit 0 on
+    // `corpus/repo/buggy/leaky-env-example`, with no mention of the suppression
+    // anywhere in the output. The issue named only the flag; the other two were
+    // never reported and were the same bug.
+    //
+    // Marked findings stay in `filteredFindings`, so the score below, the
+    // verdict band, and every channel's exit computation see them. The renderer
+    // is what drops them from the list. See `SecurityFinding.suppressed` for why
+    // this direction of failure is the safe one.
+    for (const f of filteredFindings) {
+      if (ignoredChecks.has(f.checkId.toUpperCase())) {
+        f.suppressed = true;
+        f.suppressedBy = 'ignore-flag';
+      } else if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) {
+        f.suppressed = true;
+        f.suppressedBy = 'hmaignore-check';
+      } else if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) {
+        // #280's re-pointing behaviour is preserved: `retainAfterPathSuppression`
+        // returns true for a multi-file finding while ANY covered path survives,
+        // and has already re-pointed `file` onto a survivor by the time it does.
+        // Only a finding whose every covered path is ignored reaches here.
+        f.suppressed = true;
+        f.suppressedBy = 'hmaignore-path';
+      }
+    }
 
     // #421 — which FAILED findings did the scanner silence on its own?
     //

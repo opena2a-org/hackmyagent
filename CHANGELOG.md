@@ -2,6 +2,53 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [Unreleased]
+
+### Security
+
+**`--ignore` and `.hmaignore` no longer change the score or the exit code (#450).**
+This can turn a green pipeline red, and it is the reason to read this entry before
+upgrading.
+
+Suppression removed a check's penalties rather than narrowing the scan's scope, so
+declining to look at a check made the tree score better. Measured on
+`corpus/repo/buggy/leaky-env-example`, identical on published 0.26.1 and 0.27.0:
+
+| invocation | score | exit | verdict |
+|---|---|---|---|
+| `secure --ci` | 69/100 | 1 | Not safe to ship. Plaintext API Keys |
+| `secure --ci --ignore CONFIG-004` | 98/100 | 0 | Usable with caveats |
+
+Nothing in the second report named the suppression: grepping the whole run for
+`ignor|suppress|excluded|skipped` matched only the literal string `.gitignore`, and
+`61 of 61 check groups ran` printed identically with 0, 1 and 5 checks suppressed. Any
+pipeline could be made green by naming the check that was failing it, and the resulting
+report read as a clean scan rather than a suppressed one.
+
+Three routes reached this, not one. The issue reports the `--ignore` flag; an
+`.hmaignore` check-ID pattern and an `.hmaignore` path pattern hit the same filter and
+laundered identically. All three are closed, in `secure` and in `check`.
+
+What changes:
+
+- A suppressed finding is **withheld from the findings list** and still counted in the
+  score, the verdict band and the exit code.
+- Every suppressed check ID is named on a `Suppressed` line in text output and in a
+  `suppressed` array in `--json`, with what it would have reported. The disclosure
+  carries identity only — no evidence, no path — so a suppressed credential finding
+  does not ship a second copy of the credential.
+- The `Checks` line now carries a count that moves: `... · 1 finding suppressed by the
+  caller`. The `61 of 61 check groups ran` counter is deliberately unchanged, because
+  the group does run when one of its check IDs is suppressed.
+- `--json` `findings` keeps its old contract and lists only what you asked to see.
+
+**To let a build pass over findings you have accepted, use `--fail-below <score>`.** A
+threshold in your pipeline configuration is auditable; a quietly missing finding is not.
+Note that `--fail-below` does not override the critical/high rule, so after this change
+nothing turns `secure` green on a tree carrying a critical or high finding. If that
+blocks a legitimate workflow, say so on #450 — an explicit, disclosed waiver flag is the
+open question, not a reason to keep the silent one.
+
 ## [0.27.0] - 2026-08-07
 
 Four changes here can turn a green pipeline red, and they are the reason to read this

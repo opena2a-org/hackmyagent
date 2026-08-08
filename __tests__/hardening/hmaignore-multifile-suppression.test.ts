@@ -20,6 +20,7 @@ import { mkdtemp, writeFile, chmod, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
+import { isDisplayed } from '../../src/ui/verdict-band';
 
 /** Two world-readable sensitive files, so PERM-001 is genuinely multi-file. */
 async function fixture(ignoreBody?: string) {
@@ -38,7 +39,12 @@ async function scan(ignoreBody?: string) {
   try {
     const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
     const perm = result.findings.find((f) => f.checkId === 'PERM-001' && !f.passed);
-    return { score: result.score, perm };
+    // #450 — `perm` is now the SCORED view. `shown` is what the report lists,
+    // and the two differ exactly when the user suppressed the finding.
+    const shown = result.findings.find(
+      (f) => f.checkId === 'PERM-001' && !f.passed && isDisplayed(f),
+    );
+    return { score: result.score, perm, shown };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -84,13 +90,23 @@ describe('#280 .hmaignore must not delete a multi-file finding', () => {
   it('still suppresses when EVERY covered path is ignored', async () => {
     // The legitimate case must keep working, or the fix has just disabled
     // .hmaignore for multi-file findings.
-    const { perm } = await scan('secrets.json\n.env\n');
-    expect(perm).toBeUndefined();
+    const { perm, shown } = await scan('secrets.json\n.env\n');
+    // #450 — "suppressed" now means withheld from the LIST, not deleted.
+    expect(shown).toBeUndefined();
+    expect(perm).toBeDefined();
+    expect(perm!.suppressed).toBe(true);
+    expect(perm!.suppressedBy).toBe('hmaignore-path');
   });
 
-  it('suppressing everything scores better than suppressing nothing', async () => {
+  it('suppressing everything does NOT score better than suppressing nothing', async () => {
     const bare = await scan();
     const full = await scan('secrets.json\n.env\n');
-    expect(full.score).toBeGreaterThan(bare.score);
+    // #450 — inverted, and the inversion is the fix. #280 already established
+    // that suppressing SOME covered paths must not raise the score (three tests
+    // up); this case was the hole left in that rule, and it was the whole of
+    // `--ignore`'s behaviour reached through a different channel. Both files are
+    // still 0644 in both runs, so a higher number here describes a tree that
+    // does not exist.
+    expect(full.score).toBe(bare.score);
   });
 });
