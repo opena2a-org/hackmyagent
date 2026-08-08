@@ -26,7 +26,7 @@ import {
   inferActualCapabilities,
   validateCapabilities,
 } from './skill-capability-validator';
-import { clampScoreToVerdictBand, countsAgainstScore, summarizeSuppressed } from '../ui/verdict-band';
+import { clampScoreToVerdictBand, countsAgainstScore, expandSuppressed, summarizeSuppressed } from '../ui/verdict-band';
 import { shellQuote, citationTarget, citationPaths, commandNaming } from '../ui/shell-quote';
 import {
   isPathWithinDirectory as containIsPathWithinDirectory,
@@ -1775,6 +1775,7 @@ export class HardeningScanner {
     // Reset FIRST, and on the no-op path too: a reused scanner instance must not
     // let the previous target's scope narrowing be disclosed against this one.
     this.lastOutOfScope = [];
+    this.lastSuppressed = [];
 
     if (allIgnoredPaths.length === 0 && suppressedCheckPatterns.length === 0) {
       return findings;
@@ -1788,6 +1789,7 @@ export class HardeningScanner {
     // on `lastOutOfScope` for the caller to disclose. Callers render with
     // `isDisplayed()`.
     const pathExcluded: SecurityFinding[] = [];
+    const checkSuppressed: SecurityFinding[] = [];
     for (const f of findings) {
       // Already out of scope from the scan pass. It must be re-collected, not
       // skipped: `nmResult.mergedFindings` is rebuilt from `allFindings`, which
@@ -1797,11 +1799,11 @@ export class HardeningScanner {
       // the `Suppressed` line while still scoring them 0/100 — the marking was
       // idempotent, the filtering was not.
       if (f.suppressedBy === 'hmaignore-path') { pathExcluded.push(f); continue; }
-      // Marked by a check-ID channel: stays in the array and keeps counting.
-      if (f.suppressed) continue;
+      if (f.suppressed) { checkSuppressed.push(f); continue; }
       if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) {
         f.suppressed = true;
         f.suppressedBy = 'hmaignore-check';
+        checkSuppressed.push(f);
       } else if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) {
         // #280 — keys on every covered path, not just `f.file`.
         f.suppressed = true;
@@ -1810,9 +1812,10 @@ export class HardeningScanner {
       }
     }
     this.lastOutOfScope = summarizeSuppressed(pathExcluded);
-    if (pathExcluded.length === 0) return findings;
-    const excluded = new Set(pathExcluded);
-    return findings.filter((f) => !excluded.has(f));
+    this.lastSuppressed = summarizeSuppressed(checkSuppressed);
+    if (pathExcluded.length === 0 && checkSuppressed.length === 0) return findings;
+    const removed = new Set([...pathExcluded, ...checkSuppressed]);
+    return findings.filter((f) => !removed.has(f));
   }
 
   /**
@@ -1824,6 +1827,13 @@ export class HardeningScanner {
    * target's scan.
    */
   lastOutOfScope: ReturnType<typeof summarizeSuppressed> = [];
+
+  /**
+   * Check IDs an `.hmaignore` `!CHECK-ID` rule suppressed in the most recent
+   * `reapplyIgnoreFilters` call (#450). Their penalties must be added back at
+   * every score and gate the caller derives afterwards.
+   */
+  lastSuppressed: ReturnType<typeof summarizeSuppressed> = [];
 
   /**
    * Every path a finding speaks for.
@@ -2823,14 +2833,30 @@ export class HardeningScanner {
         pathExcluded.push(f);
       }
     }
-    // Out of scope, so out of the scored set. Summarised first: once they leave
-    // the array this is the only record that they existed, and the report must
-    // not be able to narrow scope silently.
+    // Both kinds leave `findings`; they differ in what happens to the SCORE.
+    //
+    // The first cut of this fix kept check-ID-suppressed findings in the array
+    // so that every scoring and exit path would inherit the correction for free.
+    // That was measured and rejected. `findings` is not read only by renderers
+    // and scorers: it also drives the `--fix` governance auto-fix, the Registry
+    // publish payload, `allFindings` in `--json`, and the openclaw and nemoclaw
+    // report paths. Leaving suppressed entries in it made `secure --fix --ignore
+    // X` WRITE a SOUL.md for the suppressed check, and made `--json` ship the
+    // suppressed finding's `evidence.lines[].content` — a plaintext credential —
+    // two keys away from a disclosure record built to exclude exactly that. The
+    // claimed failure mode, "a display site that forgets to filter is loud and
+    // safe", was wrong: a forgotten site writes to disk and publishes to a
+    // registry.
+    //
+    // So `findings` keeps its old meaning, every one of those consumers is
+    // unchanged from 0.27.0, and the correction is applied where the defect
+    // actually is — the score and the gate, via `suppressed`, which
+    // `scoreWithSuppressed` adds back.
+    const suppressed = summarizeSuppressed(
+      filteredFindings.filter((f) => f.suppressedBy && f.suppressedBy !== 'hmaignore-path'),
+    );
     const outOfScope = summarizeSuppressed(pathExcluded);
-    if (pathExcluded.length > 0) {
-      const excluded = new Set(pathExcluded);
-      filteredFindings = filteredFindings.filter((f) => !excluded.has(f));
-    }
+    filteredFindings = filteredFindings.filter((f) => !f.suppressed);
 
     // #421 — which FAILED findings did the scanner silence on its own?
     //
@@ -2896,8 +2922,19 @@ export class HardeningScanner {
       options.onProgress('Verifying applied fixes...');
     }
 
-    // Calculate score (only on applicable, non-ignored findings)
-    const { score: rawScore, maxScore } = this.calculateScore(filteredFindings);
+    // #450 — the scored set is the reported findings PLUS the penalties of the
+    // check IDs the caller suppressed. Suppressing a check is a display choice;
+    // it does not make the tree safer, and before this it moved
+    // `corpus/repo/buggy/leaky-env-example` from 69/100 exit 1 to 98/100 exit 0.
+    // Path exclusions are NOT here: those are a scope statement and are reported
+    // separately on `outOfScope`.
+    const scoredFindings = [
+      ...filteredFindings,
+      ...(expandSuppressed(suppressed) as unknown as SecurityFinding[]),
+    ];
+
+    // Calculate score (only on applicable findings, plus suppressed penalties)
+    const { score: rawScore, maxScore } = this.calculateScore(scoredFindings);
 
     // #259 governance floor. A SOUL-only governance subversion barely dents
     // the infra-weighted composite, so `secure` on the malicious
@@ -2911,7 +2948,7 @@ export class HardeningScanner {
     // fix would leave every programmatic consumer reading 76. `rawScore` is
     // preserved, so this adds information rather than destroying it — the
     // same shape as the scan-soul #206/#251 clamp.
-    const { score, clamped: scoreClamped } = clampScoreToVerdictBand(rawScore, filteredFindings);
+    const { score, clamped: scoreClamped } = clampScoreToVerdictBand(rawScore, scoredFindings);
 
     // #374 — the live-tree view of the SAME findings set. `score` above is the
     // number the next scan at the SAME DEPTH will produce — exactly so for `quick`
@@ -2982,6 +3019,11 @@ export class HardeningScanner {
       // in `findings` and NOT in the score, and this is the only record that the
       // scan was narrowed, so it is what makes the narrowing non-silent.
       outOfScope: outOfScope.length > 0 ? outOfScope : undefined,
+      // #450 — the check IDs the caller suppressed. NOT in `findings` (that
+      // array feeds --fix, publish and every report format), but their
+      // penalties ARE in `score`, and every later re-score must add them back
+      // via `expandSuppressed` or the laundering returns.
+      suppressed: suppressed.length > 0 ? suppressed : undefined,
       semanticAnalysis: (layer2Count > 0 || layer3Count > 0) ? {
         layer2Findings: layer2Count,
         layer3Findings: layer3Count,

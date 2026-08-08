@@ -136,6 +136,24 @@ async function recordTelemetry(exitCode: number): Promise<void> {
  * exists and why #344 moved `rollback` off `process.exit` after measuring a
  * report cut at ~15% of its length on a pipe.
  */
+/**
+ * The set an exit code is allowed to be derived from (#450).
+ *
+ * `result.findings` is what the caller asked to SEE. A check ID they suppressed
+ * is not in it — deliberately, because that array also feeds the `--fix`
+ * governance auto-fix, the Registry publish payload and every report format —
+ * but its penalty still counts, so every gate has to add it back.
+ *
+ * `secure` settles its exit code in five places, one per output channel, each
+ * with its own `return` (#438's shape). Until that becomes one settlement point
+ * this helper is what keeps the five honest: any channel that filters
+ * `result.findings` directly is laundering, and `--ignore CONFIG-004` moved the
+ * leaky-env corpus fixture from exit 1 to exit 0 through exactly that gap.
+ */
+function gateSet(result: { findings?: unknown[]; suppressed?: ScanResult['suppressed'] }): any[] {
+  return [...(result.findings ?? []), ...expandSuppressed(result.suppressed)] as any[];
+}
+
 async function finishWithFindings(code: number): Promise<void> {
   await recordTelemetry(code);
   process.exitCode = code;
@@ -226,7 +244,7 @@ import {
   OBSERVATION_LABEL_WIDTH,
 } from './ui/quick-scan-labels';
 import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifact-intent';
-import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, isDisplayed, retainForVerdict, summarizeSuppressed } from './ui/verdict-band';
+import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, expandSuppressed, retainForVerdict, summarizeSuppressed } from './ui/verdict-band';
 import { shouldPrintVersionFooter } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { fixSummaryLine } from './ui/fix-summary';
@@ -584,30 +602,39 @@ Examples:
         // Apply .hmaignore filtering (paths + check IDs)
         const { loadHmaIgnore: loadIgnore, isPathIgnored: pathIgnored, isCheckIgnored: checkIgnored } = await import('./hardening/scanner.js');
         const skillIgnoreRules = await loadIgnore(targetDir);
+        // #450 — one of the hand-rolled copies of the suppression rule. The
+        // findings still LEAVE the reported set, exactly as before; what changes
+        // is that a check-ID suppression no longer takes its penalty out of the
+        // risk band and the exit code with it. A path rule does, because that is
+        // a scope statement — see `scanner.ts` for why the two differ.
         const skillFindings = nmResult.mergedFindings;
-        // #450 — marks, does not delete. This is the last of the four places
-        // user suppression was applied by deleting the finding, and the verdict
-        // and exit code below are derived from what survives, so deleting here
-        // laundered `check` the same way `--ignore` laundered `secure`.
+        const skillSuppressedRaw: any[] = [];
+        const skillOutOfScopeRaw: any[] = [];
         if (skillIgnoreRules.paths.length > 0 || skillIgnoreRules.checkIds.length > 0) {
           for (const f of skillFindings as any[]) {
-            if (f.suppressed) continue;
             if (checkIgnored(f.checkId, skillIgnoreRules.checkIds)) {
-              f.suppressed = true;
-              f.suppressedBy = 'hmaignore-check';
+              skillSuppressedRaw.push({ ...f, suppressed: true, suppressedBy: 'hmaignore-check' });
             } else if (f.file && pathIgnored(f.file, skillIgnoreRules.paths)) {
-              f.suppressed = true;
-              f.suppressedBy = 'hmaignore-path';
+              skillOutOfScopeRaw.push({ ...f, suppressed: true, suppressedBy: 'hmaignore-path' });
             }
           }
         }
+        const skillSuppressed = summarizeSuppressed(skillSuppressedRaw);
+        const skillOutOfScope = summarizeSuppressed(skillOutOfScopeRaw);
+        const withheld = new Set<string>([
+          ...skillSuppressedRaw.map((f) => `${f.checkId}\u0000${f.file ?? ''}`),
+          ...skillOutOfScopeRaw.map((f) => `${f.checkId}\u0000${f.file ?? ''}`),
+        ]);
 
-        const issues = skillFindings.filter((f: any) => !f.passed);
-        // What the caller asked to see. `issues` stays whole so the verdict,
-        // the risk band and the exit code are decided on the full evidence.
-        const shownIssues = issues.filter(isDisplayed);
-        const critical = issues.filter((f: any) => f.severity === 'critical');
-        const high = issues.filter((f: any) => f.severity === 'high');
+        const issues = skillFindings.filter(
+          (f: any) => !f.passed && !withheld.has(`${f.checkId}\u0000${f.file ?? ''}`),
+        );
+        // The gate counts the reported findings PLUS the suppressed penalties.
+        // Without the second half, `check` on a repo carrying its own
+        // `.hmaignore` reported `100/100 · low · exit 0` over five criticals.
+        const gated = [...issues, ...expandSuppressed(skillSuppressed)];
+        const critical = gated.filter((f: any) => f.severity === 'critical');
+        const high = gated.filter((f: any) => f.severity === 'high');
 
         // #373 — one derivation, above the channel branch. `risk` and the exit
         // code come out of the same call, so no renderer can report one and
@@ -618,7 +645,7 @@ Examples:
         // scan that compiled nothing reports "not measured" instead of the
         // `low` band that zero findings over zero artifacts used to produce.
         const verdict = deriveCheckVerdict(
-          { critical: critical.length, high: high.length, issues: issues.length },
+          { critical: critical.length, high: high.length, issues: gated.length },
           fullCoverage(nmResult.compiledArtifacts, 'artifact'),
           'nothing-to-examine',
           `${escapePathForDisplay(resolved)} holds no artifact this scan can read, so no risk level can be reported.`,
@@ -631,7 +658,10 @@ Examples:
             type: 'local-scan',
             nanomindUsed: nmResult.nanomindUsed,
             compiledArtifacts: nmResult.compiledArtifacts,
-            findings: issues.length,
+            // #450 — the GATED count, so it agrees with `critical`, `high` and
+            // `risk` beside it. `details` below is the list, and that is what a
+            // check-ID suppression narrows.
+            findings: gated.length,
             critical: critical.length,
             high: high.length,
             risk: verdict.measured ? verdict.risk : null,
@@ -650,20 +680,19 @@ Examples:
               ...quickScanCoverage({
                 compiledArtifacts: nmResult.compiledArtifacts,
                 compileSetTruncated: nmResult.compileSetTruncated,
-                observedCheckIds: issues.map((f: any) => f.checkId),
+                observedCheckIds: gated.map((f: any) => f.checkId),
                 staticCheckCount: CHECK_COUNTS.static,
                 fullAuditTarget: skill,
               }),
               ...coverageJson(verdict),
             },
-            // #450 — the withheld findings are disclosed by identity beside the
-            // list rather than left in it, so a suppressed credential finding
-            // does not ship a second copy of its evidence (#370). `findings`,
-            // `critical`, `high` and `risk` above are the full-evidence numbers.
-            details: shownIssues,
-            ...(summarizeSuppressed(issues).length > 0
-              ? { suppressed: summarizeSuppressed(issues) }
-              : {}),
+            // #450 — `details` lists only what the caller asked to see, so a
+            // suppressed credential finding does not ship a second copy of its
+            // evidence (#370). `findings`, `critical`, `high` and `risk` above
+            // count the suppressed penalties; the two summaries say so.
+            details: issues,
+            ...(skillSuppressed.length > 0 ? { suppressed: skillSuppressed } : {}),
+            ...(skillOutOfScope.length > 0 ? { outOfScope: skillOutOfScope } : {}),
           });
           return;
         }
@@ -681,6 +710,8 @@ Examples:
             findings: issues as any[],
           },
           artifactSummaries: nmResult.artifactSummaries,
+          suppressed: skillSuppressed.length > 0 ? skillSuppressed : undefined,
+          outOfScope: skillOutOfScope.length > 0 ? skillOutOfScope : undefined,
           verbose: !!options.verbose,
           usedAnalm: resolveNanomindFlag(options),
           analystFindings: nmResult.analystFindings,
@@ -920,12 +951,6 @@ interface UnifiedCheckDisplayOptions {
     maxScore: number;
     findings: SecurityFinding[];
     filesScanned?: number;
-    /**
-     * Findings an `.hmaignore` path rule put out of scope (#450). Not in
-     * `findings` and not in `score`, so this is the only thing that lets the
-     * report say the scan was narrowed.
-     */
-    outOfScope?: ScanResult['outOfScope'];
     /** Pre-clamp composite, when the #259 verdict-band clamp lowered `score`. */
     rawScore?: number;
     /** True when `score < rawScore` because the verdict is fail-direction (#259). */
@@ -950,13 +975,28 @@ interface UnifiedCheckDisplayOptions {
     compiledArtifacts: number;
     /** True when the semantic compile set hit its 200-file cap. */
     compileSetTruncated?: boolean;
-    findings: Array<{ severity: string; checkId?: string; description?: string; name?: string; message?: string; fix?: string; guidance?: string; file?: string; line?: number; passed?: boolean; attackClass?: string; category?: string; suppressed?: boolean; suppressedBy?: SuppressionChannel }>;
+    findings: Array<{ severity: string; checkId?: string; description?: string; name?: string; message?: string; fix?: string; guidance?: string; file?: string; line?: number; passed?: boolean; attackClass?: string; category?: string }>;
   };
   /** Per-artifact summaries for the Observations block. Skill/MCP/SOUL/A2A
    *  detected and compiled by the semantic compiler. Shape mirrors
    *  `ArtifactSummary` from nanomind-core/scanner-bridge. Top-level field
    *  (not nested under nanomindScan) so both `check` and `secure` paths
    *  populate it uniformly. */
+  /**
+   * Findings an `.hmaignore` PATH rule put out of scope (#450). Not in
+   * `findings` and not in the score, so this is the only thing that lets the
+   * report say the scan was narrowed at all.
+   *
+   * Top-level, not nested under `localScan`, for the same reason
+   * `artifactSummaries` is: `secure` and the `check` paths must disclose a
+   * narrowed scope identically, and `check`'s skill path has no `localScan`.
+   */
+  outOfScope?: ScanResult['outOfScope'];
+  /**
+   * Check IDs the caller suppressed (#450). Not in `findings`; their penalties
+   * are already in the score. Top-level for the same reason as `outOfScope`.
+   */
+  suppressed?: ScanResult['suppressed'];
   artifactSummaries?: Array<{
     path: string;
     type: string;
@@ -1354,6 +1394,17 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
 
   // ── Compute findings ────────────────────────────────────────────────
   let failed: SecurityFinding[] = [];
+  /**
+   * What the VERDICT and the severity counts are computed from (#450).
+   *
+   * Defaults to `failed` and differs from it only when the caller suppressed a
+   * check ID: the suppressed penalties are added back so the words, the number
+   * and the exit code cannot disagree, while the findings list below still
+   * shows only what the caller asked for. The stubs carry a `name` and a
+   * `checkId` but no `file`, so the verdict can say WHAT still counts against
+   * the tree without naming the path the caller asked to have withheld.
+   */
+  let verdictInput: Array<{ severity: string; name?: string; checkId?: string; file?: string; line?: number }> = [];
   let score = 0;
   let maxScore = 100;
   let critical = 0, high = 0, medium = 0, low = 0;
@@ -1375,16 +1426,29 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     failed = localScan.findings.filter(f => countsAgainstScore(f));
     score = localScan.score;
     maxScore = localScan.maxScore;
-    critical = failed.filter(f => f.severity === 'critical').length;
-    high = failed.filter(f => f.severity === 'high').length;
-    medium = failed.filter(f => f.severity === 'medium').length;
-    low = failed.filter(f => f.severity === 'low').length;
+    // #450 — the counts, the verdict and the score describe the whole tree; the
+    // findings LIST describes what the caller asked to see. A check ID they
+    // suppressed is absent from `failed` on purpose, so its severity is added
+    // back here. Without this the report printed `69/100 (fail-direction)` and
+    // exit 1 directly above `Verdict  Usable with caveats` — the #259
+    // incoherence, reintroduced through the suppression channel.
+    const gatedFailed = [...failed, ...(expandSuppressed(opts.suppressed) as any[])];
+    critical = gatedFailed.filter(f => f.severity === 'critical').length;
+    high = gatedFailed.filter(f => f.severity === 'high').length;
+    medium = gatedFailed.filter(f => f.severity === 'medium').length;
+    low = gatedFailed.filter(f => f.severity === 'low').length;
+    verdictInput = gatedFailed;
   } else if (nanomindScan) {
     const issues = nanomindScan.findings.filter(f => !f.passed);
-    critical = issues.filter(f => f.severity === 'critical').length;
-    high = issues.filter(f => f.severity === 'high').length;
-    medium = issues.filter(f => f.severity === 'medium').length;
-    low = issues.filter(f => f.severity === 'low').length;
+    // #450 — same add-back as the localScan branch: `check`'s skill path has an
+    // `.hmaignore` suppression channel of its own, and its risk band must not
+    // move because the caller quietened the list.
+    const gatedIssues = [...issues, ...(expandSuppressed(opts.suppressed) as any[])];
+    critical = gatedIssues.filter(f => f.severity === 'critical').length;
+    high = gatedIssues.filter(f => f.severity === 'high').length;
+    medium = gatedIssues.filter(f => f.severity === 'medium').length;
+    low = gatedIssues.filter(f => f.severity === 'low').length;
+    verdictInput = gatedIssues as any;
     failed = issues.map(f => ({
       checkId: f.checkId || '',
       name: f.name || f.description || '',
@@ -1399,12 +1463,6 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       fix: f.fix,
       guidance: f.guidance,
       attackClass: f.attackClass,
-      // #450 — this mapping enumerates the fields it carries, so a flag added
-      // upstream is dropped here by default. The suppression mark has to
-      // survive or `listed` below cannot withhold anything on this branch, and
-      // `--ignore`/`.hmaignore` would visibly stop working in `check`.
-      suppressed: f.suppressed,
-      suppressedBy: f.suppressedBy,
     }));
     // Use the canonical scoring formula (exponential decay + 0.4x governance weight)
     const scoreResult = calculateSecurityScore(issues);
@@ -1432,18 +1490,23 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     maxScore = 100;
   }
 
+  // Branches with no suppression channel (registry-only) verdict on what they
+  // found. Assigning here rather than defaulting inside `buildVerdict` keeps the
+  // "one input, one verdict" property visible at the call site.
+  if (verdictInput.length === 0) verdictInput = failed as any;
+
   const totalFindings = critical + high + medium + low;
 
-  // #450 — what the caller asked to have left out of the list, folded to one
-  // row per checkId, worst severity first. Derived from `failed` rather than
-  // from the raw findings so it can only ever name a finding that WOULD have
-  // been reported; a suppressed check that passed is not a cost to disclose.
-  const suppressedRows = summarizeSuppressed(failed);
+  // #450 — what the caller suppressed, and what a path rule put out of scope.
+  // Both come from the scan result rather than from `failed`: the findings
+  // themselves are no longer in that array, deliberately, so these summaries are
+  // the only record either narrowing happened.
+  const suppressedRows = opts.suppressed ?? [];
 
   // #450 — scope narrowing, which is a different statement from suppression and
   // gets a different line. These findings are already gone from `failed`, so
   // this array is the only evidence the scan was narrowed at all.
-  const outOfScopeRows = localScan?.outOfScope ?? [];
+  const outOfScopeRows = opts.outOfScope ?? [];
 
   // ── Header ──────────────────────────────────────────────────────────
   const typeLabel = (registry?.packageType || projectType || 'unknown').replace(/_/g, ' ');
@@ -1645,7 +1708,10 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // Dropping the clear buckets stops the renderer emitting an
     // "(all clear)" / "N others clear" tail over checks that never ran;
     // the scope note applied below states what was skipped instead.
-    const allCategorySummaries = buildCategorySummaries(failed);
+    // #450 — the GATED set. A category whose only finding the caller suppressed
+    // was printing as `clear`, which is the tool's most consequential word used
+    // over a critical that still counts against the score and the exit code.
+    const allCategorySummaries = buildCategorySummaries(verdictInput as any);
     const quickScanDisclosure = quickScan
       ? quickScanScopeDisclosure({
           staticCount,
@@ -1729,7 +1795,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     const verdictLine = buildVerdict(
       { critical, high, medium, low },
       { kind, filesScanned, remote: opts.remote === true },
-      failed.map(f => ({
+      verdictInput.map(f => ({
         severity: f.severity as 'critical' | 'high' | 'medium' | 'low',
         name: f.name,
         checkId: f.checkId,
@@ -2079,14 +2145,6 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
 
   // ── Findings ────────────────────────────────────────────────────────
   //
-  // #450 — `listed` is the ONLY set a user suppression narrows, and this block
-  // is the only place it is used. The severity pills above it, the category
-  // summaries, the verdict, the score and the exit code all read `failed`,
-  // which still holds every suppressed finding. So `--ignore CONFIG-004` on the
-  // leaky-env fixture now prints `1 critical` and `69/100 Not safe to ship`
-  // with the finding itself withheld and named on the Suppressed line, instead
-  // of the 98/100 clean bill it used to produce.
-  const listed = failed.filter(isDisplayed);
   if (failed.length > 0) {
     // Severity summary as colored pills
     const summaryParts: string[] = [];
@@ -2109,7 +2167,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // High-count mode: group by category when > 20 findings
     if (totalFindings > 20 && !verbose) {
       const groups = new Map<string, { critical: number; high: number; medium: number; low: number; files: Set<string> }>();
-      for (const f of listed) {
+      for (const f of failed) {
         const key = f.category || f.name || 'Other';
         if (!groups.has(key)) groups.set(key, { critical: 0, high: 0, medium: 0, low: 0, files: new Set() });
         const g = groups.get(key)!;
@@ -2140,7 +2198,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       // Sort by attack-class tier first, then severity. Stops benign hygiene
       // HIGHs from masking active-malice / governance HIGHs at the top of
       // the list (issue #134).
-      const topFindings = [...listed].sort(compareFindingsByTier).slice(0, 3);
+      const topFindings = [...failed].sort(compareFindingsByTier).slice(0, 3);
       for (const f of topFindings) {
         // #374 — a finding inside the archive `--fix` just created needs its FULL
                 // relative path. `shortenPath` keeps the last two segments, so
@@ -2173,15 +2231,15 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       // Normal mode: individual findings sorted by attack-class tier first
       // (active malice > capability/governance > missing-defense > hygiene >
       // project), then severity inside each tier. Issue #134.
-      listed.sort(compareFindingsByTier);
+      failed.sort(compareFindingsByTier);
       const skipped = new Set<number>();
       let shown = 0;
-      const limit = verbose ? listed.length : 10;
+      const limit = verbose ? failed.length : 10;
 
-      for (let i = 0; i < listed.length; i++) {
+      for (let i = 0; i < failed.length; i++) {
         if (shown >= limit) break;
         if (skipped.has(i)) continue;
-        const f = listed[i];
+        const f = failed[i];
         // #324 — the finding header, the guidance and the fix all interpolate a
         // path that came from the scanned tree. A newline in one split the
         // location line and truncated the fix command mid-quote.
@@ -2220,9 +2278,9 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           const dir = f.file?.split('/').slice(0, -1).join('/') || '';
           const artifactName = f.file ? (f.file.split('/').pop() ?? '') : '';
           let similarCount = 0;
-          for (let j = i + 1; j < listed.length; j++) {
+          for (let j = i + 1; j < failed.length; j++) {
             if (skipped.has(j)) continue;
-            const other = listed[j];
+            const other = failed[j];
             if (other.name === f.name) {
               const otherDir = other.file?.split('/').slice(0, -1).join('/') || '';
               if (otherDir === dir) { skipped.add(j); similarCount++; }
@@ -2235,12 +2293,10 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           }
         }
       }
-      const remaining = listed.length - shown - skipped.size;
+      const remaining = failed.length - shown - skipped.size;
       if (remaining > 0) {
         // Name what's hidden so the user knows whether to --verbose
-        // (findings the USER suppressed are not "hidden" in this sense — they
-        // are disclosed on their own line and `--verbose` will not show them)
-        const hiddenFindings = listed.filter((_, idx) => idx >= shown && !skipped.has(idx));
+        const hiddenFindings = failed.filter((_, idx) => idx >= shown && !skipped.has(idx));
         const hiddenNames = hiddenFindings.slice(0, 2).map(f => f.name || f.category || f.severity).join(', ');
         const hiddenCtx = hiddenNames ? ` (${hiddenNames})` : '';
         console.log(`\n  ${colors.dim}+ ${remaining} more finding${remaining > 1 ? 's' : ''}${hiddenCtx}  (run with --verbose to see all)${RESET()}`);
@@ -4401,13 +4457,19 @@ Examples:
         // Re-apply all filters after NanoMind merge (merge uses allFindings which is unfiltered)
         const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir);
         // #450 — the semantic layer produces findings the scan pass never saw,
-        // so this call can put paths out of scope that `scanInner` did not. Take
-        // the wider of the two records rather than the later one, or a narrowing
+        // so this call can narrow scope where `scanInner` did not. Take the
+        // wider of the two records rather than the later one, or a narrowing
         // disclosed by the static pass disappears from the report the moment the
         // semantic pass runs.
         if (scanner.lastOutOfScope.length > (result.outOfScope?.length ?? 0)) {
           result.outOfScope = scanner.lastOutOfScope;
         }
+        // REPLACED, not merged. `nmResult.mergedFindings` is rebuilt from
+        // `allFindings`, which still holds every finding `scanInner` suppressed,
+        // so this pass re-derives the whole suppression set from the post-merge
+        // array. Accumulating instead counted each suppressed finding twice and
+        // printed `CONFIG-004 (critical x2)` for a single occurrence.
+        result.suppressed = scanner.lastSuppressed.length > 0 ? scanner.lastSuppressed : undefined;
         if (result.allFindings) {
           result.allFindings = refiltered as typeof result.allFindings;
         }
@@ -4430,24 +4492,39 @@ Examples:
         }
         // Re-apply CLI --ignore list (reapplyIgnoreFilters only covers .hmaignore file rules)
         //
-        // #450 — marks, does not remove. This block ran between the NanoMind
-        // merge and `applyScore` two lines below, so a `--ignore` argument
-        // deleted findings from the array the score is recomputed from. Fixing
-        // the scan path alone left the laundering fully intact here.
+        // #450 — the findings still leave, and their penalties do not. This
+        // block sits between the NanoMind merge and `applyScore` two lines
+        // below, so before the fix a `--ignore` argument deleted findings from
+        // the array the score is recomputed from and the score went UP. Now the
+        // suppressed set is recorded on `result.suppressed` and added back at
+        // every point a score or a gate is derived.
         if (ignoreList.length > 0) {
           const ignoreSet = new Set(ignoreList.map((id: string) => id.toUpperCase()));
-          const mark = (f: any) => {
-            if (!f.suppressed && ignoreSet.has(f.checkId.toUpperCase())) {
-              f.suppressed = true;
-              f.suppressedBy = 'ignore-flag';
-            }
-          };
-          (result.findings || []).forEach(mark);
-          (result.allFindings || []).forEach(mark);
+          const hit = (f: any) => ignoreSet.has(f.checkId.toUpperCase());
+          const newlySuppressed = (result.findings || []).filter(hit);
+          if (newlySuppressed.length > 0) {
+            // Merged by expanding the EXISTING rows back out and re-summarising
+            // the union, so a check suppressed by both `.hmaignore` and
+            // `--ignore` is counted once, not twice.
+            result.suppressed = summarizeSuppressed([
+              ...expandSuppressed(result.suppressed).map((r) => ({ ...r, suppressedBy: 'hmaignore-check' })),
+              ...newlySuppressed
+                .filter((f: any) => !(result.suppressed ?? []).some((r) => r.checkId === f.checkId))
+                .map((f: any) => ({ ...f, suppressed: true, suppressedBy: 'ignore-flag' })),
+            ]);
+          }
+          result.findings = (result.findings || []).filter((f: any) => !hit(f)) as typeof result.findings;
+          if (result.allFindings) {
+            result.allFindings = result.allFindings.filter((f: any) => !hit(f));
+          }
         }
         // Recalculate score from filtered findings (score was set pre-NanoMind)
         // findings already filtered by project type above, so just exclude passed/fixed
-        const forScore = (result.findings || []).filter((f: any) => countsAgainstScore(f));
+        // #450 — plus the suppressed penalties, or this re-score undoes the fix.
+        const forScore = [
+          ...(result.findings || []).filter((f: any) => countsAgainstScore(f)),
+          ...expandSuppressed(result.suppressed),
+        ] as any;
         scanner.applyScore(result, forScore);
       }
 
@@ -4807,20 +4884,12 @@ Examples:
             }
           : undefined;
 
-        // #450 — `findings` keeps its old contract (what the caller asked to
-        // see), and the suppression is disclosed beside it rather than by
-        // leaving the withheld entries in. Two reasons not to just emit them:
-        // a consumer that counts `findings.length` would see a number that
-        // contradicts the flag it passed, and #370 has these entries carrying
-        // plaintext credentials in `evidence.lines[].content`, so a disclosure
-        // record for a suppressed credential finding must not become a second
-        // copy of the credential. `score`, `rawScore` and the exit code are
-        // computed from the FULL set and are unaffected by this narrowing.
-        const suppressedJson = summarizeSuppressed(result.findings);
+        // #450 — `result.suppressed` and `result.outOfScope` ride along via the
+        // spread. `findings` and `allFindings` carry only what the caller asked
+        // to see, exactly as in 0.27.0, so no suppressed finding's
+        // `evidence.lines[].content` reaches the payload.
         const jsonBase = {
           ...result,
-          findings: result.findings.filter(isDisplayed),
-          ...(suppressedJson.length > 0 ? { suppressed: suppressedJson } : {}),
           ...(jsonCoverage ? { coverage: jsonCoverage } : {}),
           ...(nmResult.analystFindings?.length ? { analystFindings: nmResult.analystFindings } : {}),
           ...(nmResult.analystEscalations?.length ? { analystEscalations: nmResult.analystEscalations } : {}),
@@ -4845,53 +4914,41 @@ Examples:
           process.exitCode = 1;
           return;
         }
-        const critHigh = result.findings.filter((f: SecurityFinding) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
+        const critHigh = gateSet(result).filter((f: any) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) await finishWithFindings(1);
         return;
       }
 
       // Handle SARIF/HTML/ASP for non-benchmark mode
       if (format === 'sarif') {
-        // #450 — the DISPLAY set. These three report formats are renderings, so
-        // a check-ID suppression withholds from them exactly as it does from the
-        // terminal; the `critHigh` exit computation a few lines down deliberately
-        // still reads the full `result.findings`, so the report narrows and the
-        // gate does not.
-        const output = generateScanSarif(result.findings.filter(isDisplayed), targetDir);
+        const output = generateScanSarif(result.findings, targetDir);
         if (options.output) {
           require('fs').writeFileSync(options.output, output);
           console.error(`Report written to ${options.output}`);
         } else {
           writeLargeStdout(output + '\n');
         }
-        const critHigh = result.findings.filter((f: SecurityFinding) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
+        const critHigh = gateSet(result).filter((f: any) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) await finishWithFindings(1);
         return;
       }
 
       if (format === 'html') {
-        // #450 — same as the SARIF arm. `result` is passed whole here, so the
-        // display set is substituted onto a shallow copy rather than mutating
-        // the object the exit computation below still reads.
-        const output = generateScanHtmlReport(
-          { ...result, findings: result.findings.filter(isDisplayed) },
-          targetDir,
-        );
+        const output = generateScanHtmlReport(result, targetDir);
         if (options.output) {
           require('fs').writeFileSync(options.output, output);
           console.error(`Report written to ${options.output}`);
         } else {
           console.log(output);
         }
-        const critHigh = result.findings.filter((f: SecurityFinding) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
+        const critHigh = gateSet(result).filter((f: any) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) await finishWithFindings(1);
         return;
       }
 
       if (format === 'asff') {
         const { toASSF } = await import('./output/asff.js');
-        // #450 — same as the SARIF arm.
-        const output = toASSF(result.findings.filter(isDisplayed) as any, {
+        const output = toASSF(result.findings as any, {
           awsAccountId: (options as any).awsAccountId,
           awsRegion: (options as any).awsRegion,
           targetDir,
@@ -4903,13 +4960,18 @@ Examples:
         } else {
           console.log(output);
         }
-        const critHigh = result.findings.filter((f: SecurityFinding) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
+        const critHigh = gateSet(result).filter((f: any) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) await finishWithFindings(1);
         return;
       }
 
       // Filter to only show failed findings (issues)
+      // What the report LISTS. A suppressed check ID is not here — see
+      // `gateSet` for the set the exit code is derived from instead.
       const issues = result.findings.filter((f) => countsAgainstScore(f));
+      // #450 — the same findings plus the suppressed penalties. `--ignore` may
+      // quieten the report; it may not decide the exit code.
+      const gatedIssues = gateSet(result).filter((f: any) => countsAgainstScore(f));
       const fixedFindings = result.findings.filter((f) => f.fixed);
 
       // Governance auto-fix: when --fix is active and governance findings exist, run harden-soul
@@ -5002,6 +5064,12 @@ Examples:
         name: secureDisplayName,
         version: secureDisplayVersion ?? undefined,
         projectType: result.projectType,
+        // #450 — the two narrowings, carried so the report can name them.
+        // Without this the scan is narrowed invisibly: 0.27.0 printed
+        // `100/100 · No security issues found` on this repo while an
+        // `.hmaignore` held back 65 findings, 26 of them critical.
+        outOfScope: result.outOfScope,
+        suppressed: result.suppressed,
         localScan: {
           score: result.score,
           rawScore: result.rawScore,
@@ -5019,11 +5087,7 @@ Examples:
           // `Verdict  Usable with caveats.` — the #259 incoherence again,
           // with the number and the words swapped.
           findings: result.findings.filter((f) => !f.fixed || f.fixVerified === false),
-          // #450 — carried to the renderer so the `Scope` line can name what an
-          // `.hmaignore` path rule held back. Without it the narrowing is
-          // invisible: 0.27.0 printed `100/100 · No security issues found` on
-          // this repo over 65 withheld findings, 13 of them critical.
-          outOfScope: result.outOfScope,
+
           // Measured coverage for this run. Without it the Observations block
           // falls back to deriving its claim from the configured check set,
           // which is what printed "(all clear)" over categories nothing
@@ -5316,11 +5380,11 @@ Examples:
       }
 
       // Exit with non-zero if critical/high issues remain (or any issues in --ci mode)
-      if (options.ci && issues.length > 0) {
+      if (options.ci && gatedIssues.length > 0) {
         return finishWithFindings(1);
       }
-      const criticalOrHigh = issues.filter(
-        (f: SecurityFinding) => f.severity === 'critical' || f.severity === 'high'
+      const criticalOrHigh = gatedIssues.filter(
+        (f: any) => f.severity === 'critical' || f.severity === 'high'
       );
       if (criticalOrHigh.length > 0) {
         return finishWithFindings(1);

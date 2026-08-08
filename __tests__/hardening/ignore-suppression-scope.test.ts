@@ -61,7 +61,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
 import type { SecurityFinding } from '../../src/hardening/security-check';
-import { isDisplayed, summarizeSuppressed } from '../../src/ui/verdict-band';
+import { summarizeSuppressed } from '../../src/ui/verdict-band';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -92,18 +92,26 @@ async function makeFixture(): Promise<string> {
   return dir;
 }
 
-type Run = { score: number; findings: SecurityFinding[] };
+type Run = {
+  score: number;
+  findings: SecurityFinding[];
+  suppressed?: { checkId: string; name: string; category: string; severity: string; count: number; suppressedBy: string }[];
+  outOfScope?: Run['suppressed'];
+};
 
 async function scan(dir: string, ignore: string[] = []): Promise<Run> {
   const scanner = new HardeningScanner();
   const result = await scanner.scan({ targetDir: dir, ignore, cliName: 'hackmyagent' });
-  return { score: result.score, findings: result.findings as SecurityFinding[] };
+  return {
+    score: result.score,
+    findings: result.findings as SecurityFinding[],
+    suppressed: result.suppressed,
+    outOfScope: result.outOfScope,
+  };
 }
 
 /** The check IDs a run would report, ignoring suppression state. */
 const idsOf = (r: Run) => [...new Set(r.findings.map((f) => f.checkId))].sort();
-const displayedIdsOf = (r: Run) =>
-  [...new Set(r.findings.filter(isDisplayed).map((f) => f.checkId))].sort();
 
 describe('#450 — user suppression narrows the list, never the score', () => {
   let dir: string;
@@ -132,7 +140,7 @@ describe('#450 — user suppression narrows the list, never the score', () => {
     expect(target).not.toBe('');
     expect(baseline.findings.length).toBeGreaterThan(0);
     expect(baseline.score).toBeLessThan(100);
-    expect(baseline.findings.every((f) => !f.suppressed)).toBe(true);
+    expect(baseline.suppressed).toBeUndefined();
   });
 
   describe('channel 1 — the --ignore flag', () => {
@@ -141,38 +149,36 @@ describe('#450 — user suppression narrows the list, never the score', () => {
       expect(suppressed.score).toBe(baseline.score);
     });
 
-    it('marks the finding instead of dropping it', async () => {
+    it('takes the finding out of the list and records it by identity', async () => {
       const suppressed = await scan(dir, [target]);
-      // Still in the scored array...
-      expect(idsOf(suppressed)).toEqual(idsOf(baseline));
-      const marked = suppressed.findings.filter((f) => f.checkId === target);
-      expect(marked.length).toBeGreaterThan(0);
-      expect(marked.every((f) => f.suppressed === true)).toBe(true);
-      expect(marked.every((f) => f.suppressedBy === 'ignore-flag')).toBe(true);
+      // Gone from the reported set — that array also feeds `--fix`, the
+      // Registry publish payload and every report format, so it must not
+      // linger there (see `expandSuppressed`).
+      expect(idsOf(suppressed)).not.toContain(target);
+      expect(idsOf(suppressed)).toEqual(idsOf(baseline).filter((id) => id !== target));
+      // ...and accounted for.
+      expect(suppressed.suppressed).toEqual([
+        expect.objectContaining({ checkId: target, suppressedBy: 'ignore-flag' }),
+      ]);
     });
 
-    // Direction 2. `--ignore` must still be worth passing.
-    it('removes the finding from the DISPLAY set and touches nothing else', async () => {
+    // Direction 2. `--ignore` must still be worth passing, and must not reach
+    // anything the caller did not name.
+    it('withholds only what was named', async () => {
       const suppressed = await scan(dir, [target]);
-      expect(displayedIdsOf(suppressed)).not.toContain(target);
-      expect(displayedIdsOf(suppressed)).toEqual(
-        idsOf(baseline).filter((id) => id !== target),
-      );
-      // Absence direction: nothing the caller did not name is marked.
-      const collateral = suppressed.findings.filter(
-        (f) => f.checkId !== target && f.suppressed,
-      );
+      const collateral = (suppressed.suppressed ?? []).filter((r) => r.checkId !== target);
       expect(collateral).toEqual([]);
     });
 
     it('is case-insensitive on the check ID, and an unknown ID suppresses nothing', async () => {
       const lower = await scan(dir, [target.toLowerCase()]);
-      expect(lower.findings.some((f) => f.checkId === target && f.suppressed)).toBe(true);
+      expect(lower.suppressed?.some((r) => r.checkId === target)).toBe(true);
+      expect(lower.score).toBe(baseline.score);
 
       const unknown = await scan(dir, ['NOT-A-REAL-CHECK-999']);
       expect(unknown.score).toBe(baseline.score);
-      expect(unknown.findings.some((f) => f.suppressed)).toBe(false);
-      expect(displayedIdsOf(unknown)).toEqual(idsOf(baseline));
+      expect(unknown.suppressed).toBeUndefined();
+      expect(idsOf(unknown)).toEqual(idsOf(baseline));
     });
   });
 
@@ -183,10 +189,10 @@ describe('#450 — user suppression narrows the list, never the score', () => {
         await writeFile(path.join(hDir, '.hmaignore'), `!${target}\n`);
         const suppressed = await scan(hDir);
         expect(suppressed.score).toBe(baseline.score);
-        const marked = suppressed.findings.filter((f) => f.checkId === target);
-        expect(marked.length).toBeGreaterThan(0);
-        expect(marked.every((f) => f.suppressedBy === 'hmaignore-check')).toBe(true);
-        expect(displayedIdsOf(suppressed)).not.toContain(target);
+        expect(idsOf(suppressed)).not.toContain(target);
+        expect(suppressed.suppressed).toEqual([
+          expect.objectContaining({ checkId: target, suppressedBy: 'hmaignore-check' }),
+        ]);
       } finally {
         await rm(hDir, { recursive: true, force: true });
       }
@@ -256,32 +262,32 @@ describe('#450 — user suppression narrows the list, never the score', () => {
   describe('the disclosure record', () => {
     it('carries identity only — never evidence, a path, or a message', async () => {
       const suppressed = await scan(dir, [target]);
-      const rows = summarizeSuppressed(suppressed.findings);
+      const rows = suppressed.suppressed ?? [];
       expect(rows.length).toBe(1);
       const [row] = rows;
       expect(row.checkId).toBe(target);
       expect(row.count).toBeGreaterThan(0);
       expect(Object.keys(row).sort()).toEqual(
-        ['checkId', 'count', 'name', 'severity', 'suppressedBy'].sort(),
+        ['category', 'checkId', 'count', 'name', 'severity', 'suppressedBy'].sort(),
       );
       // #370 — the suppressed finding's own evidence must not ride along.
       expect(JSON.stringify(row)).not.toContain(syntheticKey());
       expect(JSON.stringify(row)).not.toContain(SECRET_FILE);
     });
 
-    it('is empty when nothing was suppressed', () => {
-      expect(summarizeSuppressed(baseline.findings)).toEqual([]);
+    it('is absent when nothing was suppressed', () => {
+      expect(baseline.suppressed).toBeUndefined();
     });
 
     it('orders worst-first and collapses repeats of one check', () => {
       const rows = summarizeSuppressed([
-        { checkId: 'B-002', name: 'b', severity: 'low', suppressed: true, passed: false },
-        { checkId: 'A-001', name: 'a', severity: 'critical', suppressed: true, passed: false },
-        { checkId: 'B-002', name: 'b', severity: 'low', suppressed: true, passed: false },
+        { checkId: 'B-002', name: 'b', category: 'x', severity: 'low', suppressed: true, passed: false },
+        { checkId: 'A-001', name: 'a', category: 'x', severity: 'critical', suppressed: true, passed: false },
+        { checkId: 'B-002', name: 'b', category: 'x', severity: 'low', suppressed: true, passed: false },
         // Not suppressed — must not appear.
-        { checkId: 'C-003', name: 'c', severity: 'high', passed: false },
+        { checkId: 'C-003', name: 'c', category: 'x', severity: 'high', passed: false },
         // Suppressed but passing — nothing was withheld from the reader.
-        { checkId: 'D-004', name: 'd', severity: 'high', suppressed: true, passed: true },
+        { checkId: 'D-004', name: 'd', category: 'x', severity: 'high', suppressed: true, passed: true },
       ]);
       expect(rows.map((r) => r.checkId)).toEqual(['A-001', 'B-002']);
       expect(rows.find((r) => r.checkId === 'B-002')?.count).toBe(2);

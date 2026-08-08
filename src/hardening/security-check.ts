@@ -235,7 +235,22 @@ export interface ScanResult {
    * tree and matched, so it stays in `findings` marked `suppressed` and keeps
    * counting.
    */
-  outOfScope?: Array<{ checkId: string; name: string; severity: string; count: number; suppressedBy: string }>;
+  outOfScope?: Array<{ checkId: string; name: string; category: string; severity: string; count: number; suppressedBy: string }>;
+  /**
+   * Check IDs the caller suppressed with `--ignore` or an `.hmaignore`
+   * `!CHECK-ID` rule (#450).
+   *
+   * NOT in `findings`, because that array is also the input to the `--fix`
+   * governance auto-fix, the Registry publish payload, `allFindings` in
+   * `--json`, and every report format — leaving suppressed entries in it made
+   * `secure --fix --ignore X` write a `SOUL.md` for the suppressed check and
+   * made `--json` ship the finding's plaintext credential evidence.
+   *
+   * Their penalties ARE in `score`, and any code that re-derives a score, a
+   * verdict band or an exit code from `findings` must add them back with
+   * `expandSuppressed` or the laundering this field exists to stop comes back.
+   */
+  suppressed?: Array<{ checkId: string; name: string; category: string; severity: string; count: number; suppressedBy: string }>;
   /** Semantic analysis summary (Layer 2 + Layer 3) */
   semanticAnalysis?: {
     layer2Findings: number;

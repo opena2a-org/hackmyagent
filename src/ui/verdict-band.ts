@@ -120,6 +120,54 @@ export function retainForVerdict(f: { passed?: boolean; fixed?: boolean }): bool
 }
 
 /**
+ * Turn a suppression summary back into findings the scorer and the gate can
+ * count (#450).
+ *
+ * A check-ID suppression is a display choice, not a security fact, so the
+ * penalty has to survive it. But the finding itself must NOT survive in
+ * `ScanResult.findings`: that array also drives the `--fix` governance auto-fix,
+ * the Registry publish payload, `allFindings` in `--json`, and the openclaw and
+ * nemoclaw report paths. Leaving suppressed entries in it made
+ * `secure --fix --ignore X` write a `SOUL.md` for the suppressed check and made
+ * `--json` ship the suppressed finding's plaintext `evidence.lines[].content`.
+ *
+ * So the finding leaves, and this brings back exactly the part the score is
+ * entitled to: severity, category and checkId, which is the whole of what
+ * `calculateSecurityScore` reads. `count` is expanded rather than summed so the
+ * per-checkId cap (`MAX_FINDINGS_PER_CHECK`) applies identically to a suppressed
+ * finding and a reported one — collapsing to one stub would quietly discount
+ * the second and third instance.
+ *
+ * The stubs carry no `file`, no `message` and no `evidence`, so nothing that
+ * consumes them can leak what the finding was about.
+ */
+export function expandSuppressed(
+  summary: readonly { checkId: string; name: string; category: string; severity: string; count: number }[] | undefined,
+): Array<{ checkId: string; name: string; category: string; severity: string; passed: false; suppressed: true }> {
+  if (!summary?.length) return [];
+  const out: Array<{ checkId: string; name: string; category: string; severity: string; passed: false; suppressed: true }> = [];
+  for (const row of summary) {
+    for (let i = 0; i < row.count; i++) {
+      out.push({
+        checkId: row.checkId,
+        name: row.name,
+        // Carried, not blanked. `calculateSecurityScore` applies the 0.4
+        // governance weight on EITHER the category or an `AST-GOV*`-style
+        // checkId prefix, so dropping the category would score a suppressed
+        // governance finding at full weight — a suppression that made the score
+        // WORSE than reporting it, which is the same class of defect in mirror
+        // image.
+        category: row.category,
+        severity: row.severity,
+        passed: false,
+        suppressed: true,
+      });
+    }
+  }
+  return out;
+}
+
+/**
  * Whether a finding is shown in the rendered findings list.
  *
  * #450 — the counterpart to `countsAgainstScore`, and deliberately the ONLY
@@ -153,6 +201,7 @@ export function summarizeSuppressed(
   findings: readonly {
     checkId?: string;
     name?: string;
+    category?: string;
     severity?: string;
     suppressed?: boolean;
     suppressedBy?: string;
@@ -160,8 +209,8 @@ export function summarizeSuppressed(
     fixed?: boolean;
     fixVerified?: boolean;
   }[],
-): Array<{ checkId: string; name: string; severity: string; count: number; suppressedBy: string }> {
-  const rows = new Map<string, { checkId: string; name: string; severity: string; count: number; suppressedBy: string }>();
+): Array<{ checkId: string; name: string; category: string; severity: string; count: number; suppressedBy: string }> {
+  const rows = new Map<string, { checkId: string; name: string; category: string; severity: string; count: number; suppressedBy: string }>();
   for (const f of findings) {
     // Only findings that would otherwise have been reported. A suppressed
     // check that passed was never going to appear, and announcing it as
@@ -176,6 +225,7 @@ export function summarizeSuppressed(
     rows.set(checkId, {
       checkId,
       name: f.name || checkId,
+      category: f.category || '',
       severity: f.severity || 'info',
       count: 1,
       suppressedBy: f.suppressedBy || 'ignore-flag',

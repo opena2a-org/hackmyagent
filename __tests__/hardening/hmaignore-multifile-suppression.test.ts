@@ -111,7 +111,7 @@ describe('#280 .hmaignore must not delete a multi-file finding', () => {
       // Identity only — the disclosure must not become a second copy of the
       // evidence it is describing.
       expect(Object.keys(perm!).sort()).toEqual(
-        ['checkId', 'count', 'name', 'severity', 'suppressedBy'].sort(),
+        ['category', 'checkId', 'count', 'name', 'severity', 'suppressedBy'].sort(),
       );
     } finally {
       await rm(dir, { recursive: true, force: true });

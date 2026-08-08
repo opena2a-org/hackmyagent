@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { HardeningScanner, ScanOptions, envBodyContainsSecrets } from '../../src/hardening/scanner';
 import type { SecurityFinding, ScanResult, ProjectType } from '../../src/hardening/security-check';
-import { isDisplayed } from '../../src/ui/verdict-band';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -1800,14 +1799,13 @@ describe('Ignore checks', () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  // #450 — these four cases used to read `findings.some(id) === false`, i.e.
-  // they asserted that suppression DELETES the finding, which is the behaviour
-  // that let `--ignore` raise the score and flip the exit code. The contract is
-  // now: suppressed findings stay in `findings` (scored, verdict, exit code) and
-  // are marked so the renderer can withhold them. `isDisplayed` is the display
-  // set, and it is the only thing suppression narrows. Full case coverage lives
-  // in `__tests__/hardening/ignore-suppression-scope.test.ts`.
-  const displayed = (r: { findings: SecurityFinding[] }) => r.findings.filter(isDisplayed);
+  // #450 — the finding still LEAVES `findings`, as it always did: that array
+  // also feeds `--fix`, the Registry publish payload and every report format,
+  // and keeping suppressed entries in it made `secure --fix --ignore X` write
+  // files for the suppressed check. What changed is that its PENALTY no longer
+  // leaves with it — the score and the exit code add it back from
+  // `result.suppressed`. Full case coverage lives in
+  // `__tests__/hardening/ignore-suppression-scope.test.ts`.
 
   it('ignores specific check IDs', async () => {
     // Create file with exposed credential
@@ -1825,12 +1823,12 @@ describe('Ignore checks', () => {
       targetDir: tempDir,
       ignore: ['CRED-001'],
     });
-    expect(displayed(resultIgnored).some((f) => f.checkId === 'CRED-001')).toBe(false);
-    // ...and still counted, marked with the channel that withheld it.
-    const held = resultIgnored.findings.filter((f) => f.checkId === 'CRED-001');
-    expect(held.length).toBeGreaterThan(0);
-    expect(held.every((f) => f.suppressed === true)).toBe(true);
-    expect(held.every((f) => f.suppressedBy === 'ignore-flag')).toBe(true);
+    expect(resultIgnored.findings.some((f) => f.checkId === 'CRED-001')).toBe(false);
+    // ...disclosed by identity...
+    expect(resultIgnored.suppressed).toEqual([
+      expect.objectContaining({ checkId: 'CRED-001', suppressedBy: 'ignore-flag' }),
+    ]);
+    // ...and its penalty still counted.
     expect(resultIgnored.score).toBe(resultWithCheck.score);
   });
 
@@ -1845,8 +1843,8 @@ describe('Ignore checks', () => {
       ignore: ['cred-001'], // lowercase
     });
 
-    expect(displayed(result).some((f) => f.checkId === 'CRED-001')).toBe(false);
-    expect(result.findings.some((f) => f.checkId === 'CRED-001' && f.suppressed)).toBe(true);
+    expect(result.findings.some((f) => f.checkId === 'CRED-001')).toBe(false);
+    expect(result.suppressed?.some((r) => r.checkId === 'CRED-001')).toBe(true);
   });
 
   it('returns list of ignored checks in result', async () => {
@@ -1872,11 +1870,11 @@ describe('Ignore checks', () => {
     });
 
     for (const id of ['CRED-001', 'GIT-001', 'GIT-002']) {
-      expect(displayed(result).some((f) => f.checkId === id)).toBe(false);
+      expect(result.findings.some((f) => f.checkId === id)).toBe(false);
     }
     // Nothing the caller did not name is withheld.
     const namedIds = new Set(['CRED-001', 'GIT-001', 'GIT-002']);
-    expect(result.findings.filter((f) => f.suppressed && !namedIds.has(f.checkId))).toEqual([]);
+    expect((result.suppressed ?? []).filter((r) => !namedIds.has(r.checkId))).toEqual([]);
   });
 
   it('score calculation does NOT exclude ignored checks', async () => {
@@ -1899,8 +1897,11 @@ describe('Ignore checks', () => {
     // score better than looking at it. The list shrinks; the number does not
     // move.
     expect(resultIgnored.score).toBe(resultFull.score);
-    expect(resultIgnored.findings.length).toBe(resultFull.findings.length);
-    expect(displayed(resultIgnored).length).toBeLessThan(displayed(resultFull).length);
+    // The list shrinks...
+    expect(resultIgnored.findings.length).toBeLessThan(resultFull.findings.length);
+    // ...and the difference is accounted for, not lost.
+    const suppressedTotal = (resultIgnored.suppressed ?? []).reduce((n, r) => n + r.count, 0);
+    expect(resultFull.findings.length - resultIgnored.findings.length).toBe(suppressedTotal);
   });
 });
 
