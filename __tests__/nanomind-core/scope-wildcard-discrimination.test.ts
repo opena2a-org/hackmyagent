@@ -252,7 +252,7 @@ describe('AST-SCOPE-001 discriminates on the tools declaration (#449)', () => {
       expect(await wildcardFindings(content)).toEqual([]);
     });
 
-    it('negative control: a genuinely absent key stays silent', async () => {
+    it('negative control: a genuinely absent key stays silent, and still compiles', async () => {
       // The whole point of #449. This must not regress while fixing the above.
       const content = [
         '{',
@@ -263,6 +263,16 @@ describe('AST-SCOPE-001 discriminates on the tools declaration (#449)', () => {
         '',
       ].join('\n');
       expect(await wildcardFindings(content)).toEqual([]);
+
+      // "No finding" is not enough on its own, and a mutation proved it: break
+      // the keyless branch and the loop iterates `undefined`, the surrounding
+      // `catch` swallows the TypeError, and EVERY capability disappears — which
+      // an absence-only assertion reads as success. So assert positively that
+      // the server is still compiled, at the risk level the design argues for.
+      const { ast } = await compiler.compile(content, 'mcp.json');
+      const server = ast.declaredCapabilities.find(c => c.name === 'mcp.default');
+      expect(server).toBeDefined();
+      expect(server?.riskLevel).toBe('medium');
     });
   });
 
