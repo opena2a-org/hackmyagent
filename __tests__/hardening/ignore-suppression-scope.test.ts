@@ -92,6 +92,21 @@ async function makeFixture(): Promise<string> {
   return dir;
 }
 
+/**
+ * The same shape with nothing to report. Every "a suppressed finding still
+ * exits 1" assertion needs this alongside it: without a tree the channel
+ * returns 0 for, a channel wedged at exit 1 would satisfy them all.
+ */
+async function makeCleanFixture(): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), 'hma-450-clean-'));
+  await writeFile(
+    path.join(dir, 'package.json'),
+    JSON.stringify({ name: 'clean-fixture', version: '1.0.0' }, null, 2),
+  );
+  await writeFile(path.join(dir, '.gitignore'), 'node_modules\n.env\n');
+  return dir;
+}
+
 type Run = {
   score: number;
   findings: SecurityFinding[];
@@ -321,6 +336,25 @@ describe('#450 — user suppression narrows the list, never the score', () => {
       }
     };
 
+    /** The default channel: no `--json`, no `--format`. stdout and stderr together. */
+    const runText = (args: string[]): { exitCode: number; out: string } => {
+      try {
+        return {
+          exitCode: 0,
+          out: execFileSync('node', [CLI_PATH, ...args], {
+            encoding: 'utf-8',
+            maxBuffer: 64 * 1024 * 1024,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          }),
+        };
+      } catch (err: any) {
+        if (typeof err?.status === 'number' && err.stdout !== null) {
+          return { exitCode: err.status, out: err.stdout.toString() + (err.stderr?.toString() ?? '') };
+        }
+        throw err;
+      }
+    };
+
     it('dist/cli.js exists (run `npm run build` if missing)', () => {
       expect(hasBuild).toBe(true);
     });
@@ -380,6 +414,108 @@ describe('#450 — user suppression narrows the list, never the score', () => {
       },
       240_000,
     );
+
+    /**
+     * The DEFAULT channel — `hackmyagent secure .` with no format flag at all.
+     *
+     * Every CLI case above asserts through `--json` or `--format`, and the text
+     * path has its own exit-code block at the end of `secure` in `src/cli.ts`.
+     * Found by mutation, not by review: reverting that block's `gatedIssues`
+     * back to the post-suppression `issues` leaves the entire suite green — the
+     * json twin on the same tree still exits 1 — while the primary command's
+     * primary output goes back to exiting 0 on a suppressed critical. That is
+     * #450 fully restored on the path most users are actually on.
+     *
+     * Three claims, because the first alone is satisfiable by a channel wedged
+     * at 1 or by a suppression that never engaged:
+     *   1. a suppressed critical still exits 1;
+     *   2. a tree with nothing to report exits 0 through the same channel; and
+     *   3. the suppression did engage here — the finding left the list and the
+     *      run says so in its own output.
+     */
+    it('the default text channel keeps the exit code a suppression withheld from the list', async () => {
+      if (!hasBuild) return;
+      const tDir = await makeFixture();
+      const cleanDir = await makeCleanFixture();
+      try {
+        const plain = runText(['secure', tDir]);
+        // Non-vacuity: there is an exit code to lose.
+        expect(plain.exitCode).toBe(1);
+        expect(plain.out).not.toContain('Suppressed');
+
+        // Claim 2, the control. Without it a channel stuck at 1 passes claim 1.
+        const clean = runText(['secure', cleanDir]);
+        expect(clean.exitCode).toBe(0);
+
+        await writeFile(path.join(tDir, '.hmaignore'), `!${target}\n`);
+        const ignored = runText(['secure', tDir]);
+
+        // Claim 1 — the mutation this test exists for.
+        expect(ignored.exitCode).toBe(1);
+
+        // Claim 3, both halves. The disclosure names the check...
+        expect(ignored.out).toContain('Suppressed');
+        expect(ignored.out).toContain(target);
+        // ...and the finding is no longer LISTED. The listing card is the only
+        // place the severity is upper-cased next to the name; the disclosure
+        // line renders it lower-case, so this discriminates the two.
+        const worst = baseline.findings.find((f) => f.checkId === target)!;
+        const card = new RegExp(
+          `${worst.severity.toUpperCase()}\\s+${worst.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+        );
+        expect(plain.out).toMatch(card);
+        expect(ignored.out).not.toMatch(card);
+      } finally {
+        await rm(tDir, { recursive: true, force: true });
+        await rm(cleanDir, { recursive: true, force: true });
+      }
+    }, 300_000);
+
+    /**
+     * The `!*` shape — a suppression that empties the list completely. The case
+     * above leaves an un-suppressed low behind, so the renderer still has a
+     * report to draw; here it has nothing, and the exit code is the only thing
+     * left carrying the critical. #457 is what happens when this boundary is
+     * wrong in the other direction.
+     *
+     * Note the invocation has no `--ci`, deliberately. `--ci` is stripped from
+     * `process.argv` globally (`src/cli.ts`, the `globalCiMode` block) before
+     * Commander parses, so `options.ci` inside `secure` is always undefined and
+     * the `if (options.ci && gatedIssues.length > 0)` half of that exit block
+     * never executes — #454. Pre-existing and unchanged from 0.27.0 (published
+     * 0.27.0 also exits 0 on a low-only tree under `--ci`), so writing `--ci`
+     * here would assert nothing about the flag and would quietly imply it works.
+     */
+    it('a suppression that empties the list entirely still keeps the exit code', async () => {
+      if (!hasBuild) return;
+      const tDir = await makeFixture();
+      const cleanDir = await makeCleanFixture();
+      try {
+        // Derived from the CLI's own output, not from the scanner-level
+        // `baseline`: the two sets agree today, but the CLI merges NanoMind
+        // findings afterwards, so a scanner-derived list would silently stop
+        // being "everything" the moment those diverge — and this case is only
+        // meaningful while it suppresses every last one.
+        const before = runJson(['secure', tDir, '--json']);
+        const reported = [...new Set(before.body.findings.map((f: any) => f.checkId as string))];
+        expect(reported.length).toBeGreaterThan(0);
+
+        const clean = runText(['secure', cleanDir]);
+        expect(clean.exitCode).toBe(0);
+
+        await writeFile(path.join(tDir, '.hmaignore'), reported.map((id) => `!${id}`).join('\n') + '\n');
+        const silenced = runText(['secure', tDir]);
+
+        // Nothing is left in the list at all — and the gate holds anyway.
+        expect(silenced.exitCode).toBe(1);
+        const json = runJson(['secure', tDir, '--json']);
+        expect(json.body.findings).toEqual([]);
+        expect((json.body.suppressed ?? []).map((s: any) => s.checkId).sort()).toEqual([...reported].sort());
+      } finally {
+        await rm(tDir, { recursive: true, force: true });
+        await rm(cleanDir, { recursive: true, force: true });
+      }
+    }, 300_000);
 
     // `check` reached the same laundering through `.hmaignore` on a separate
     // code path with its own hand-rolled filter, and `check` is the first
