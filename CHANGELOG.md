@@ -99,7 +99,10 @@ these are pre-existing, none is made worse by this change, and each is filed:
   because its path matched the exemption, CRITICAL here, corroborated by an `eval(` inside a
   comment explaining how the scanner avoids matching `eval(` in comments. Removing a bypass
   shows you what it was hiding, and what it was hiding is that this signature is weak enough
-  to match our own source. Tracked with #468, which is the same shape in
+  to match our own source. Our own repository still scores 100/100 because `.hmaignore`
+  excludes `src/hardening/` by path, and that exclusion is now printed on the `Scope` line
+  rather than being silent — so if you scan our source yourself you will see the CRITICAL we
+  do not score. Tracked with #468, which is the same shape in
   `UNICODE-STEGO-005`. The fix for both is to evaluate corroboration against code with
   comments and string literals removed, which is a change we are not making inside a patch
   release on this path.
