@@ -2,7 +2,32 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
-## [Unreleased]
+## [0.27.0] - 2026-08-07
+
+Four changes here can turn a green pipeline red, and they are the reason to read this
+entry before upgrading. Each one is a case where an earlier version reported a security
+verdict it had not measured, so the pipeline was green because the tool was quiet, not
+because the target was safe. The detail for every row is under `Security` and `Fixed`
+below.
+
+| What changes | 0.26.1 | 0.27.0 |
+|---|---|---|
+| A command that scanned nothing | a mix of exit 0, 1 and 2, sometimes with a score | `NOT MEASURED` at **exit 2** — no score, no risk band |
+| `detect` on a machine running an ungoverned AI agent | exit 0 | **exit 1** (`hackmyagent harden-soul <dir>` clears it) |
+| `--fail-below` on a benchmark run | replaced the default gate, so `--fail-below 0` held a `Not Passing` tree green | adds a score floor; the default gate still applies |
+| A project that logs a credential | scored higher — `LOG-002` matched and two filters dropped it | **scores lower**; the finding reaches the output and the score |
+
+Exit `2` is non-zero on purpose. A CI job that asked for a security verdict and got "I
+could not reach the target" has not been told the target is safe.
+
+This is a `0.x` release, so a `^0.26.1` range does not resolve to it and no one is upgraded
+without choosing to. Pipelines that install `hackmyagent@latest` or run it through `npx`
+will pick it up on the next run; the four rows above are what to expect when they do.
+
+The measurement gate does not yet reach every command. `secure`, `wild` and the two
+`secure -b oasb-*` arms still print a score over zero coverage, and `attack` still does for
+three response formats. That is recorded honestly under `Fixed` and in `Known issues`
+rather than claimed as closed.
 
 ### Security
 
@@ -39,9 +64,26 @@ All notable changes to HackMyAgent are documented in this file.
 - **`attack` probes the target once before sending the suite.** An unreachable endpoint
   used to be discovered 111 times, once per payload, in a `catch` whose result the scorer
   could not tell apart from a blocked attack — 111 refused connections scored as 111
-  defences held. The liveness precondition sits above the scorer, so the same run now
-  costs one request instead of the whole battery: measured at 111 seconds before, ~1
-  second after.
+  defences held. The liveness precondition sits above the scorer, so an endpoint that
+  fails to resolve now costs one request instead of the whole battery.
+
+  Both shapes measured against published `0.26.1`, same machine:
+
+  ```
+                              0.26.1                          0.27.0
+  host does not resolve       0/100 (SECURE)  exit 0   112s    NOT MEASURED  exit 2    0s
+  connection refused          0/100 (SECURE)  exit 0   111s    NOT MEASURED  exit 2  112s
+  ```
+
+  **The verdict is withheld in both shapes; only the DNS shape got faster.** The probe
+  catches `ENOTFOUND` before any payload is sent. A refused connection is not caught by
+  it — the run still sends all 111 payloads and takes about as long as it did on
+  `0.26.1` — and the verdict is withheld by a second gate downstream, which counts how
+  many payloads were answered and reports `NOT MEASURED — No payload reached <url>: 111
+  sent, 0 answered.` The safety property is the same either way and it is the one that
+  matters here: neither shape can report `SECURE` any more. The cost is not the same, and
+  a CI job pointed at a refused port still waits about two minutes to be told nothing was
+  measured. Tracked in #444.
 
 - **`attack --local` reports no risk score, because it never measured one.** It returned
   the same `2/100 (LOW)` for a jailbreak prompt, a hardened prompt and an empty file, and
@@ -259,6 +301,64 @@ All notable changes to HackMyAgent are documented in this file.
   never a path or a message) and `coverage.unevidencedFailures` (the count above).
 
 ### Known issues
+
+The release walkthrough for this version ran a fresh-user pass and a correctness pass against
+the built artifact. Everything below **reproduces identically on published `0.26.1`** — none
+is a regression from this release, and each was measured on both versions rather than
+assumed. They are listed because several are the same defect class this release is about, and
+a release that announces "a verdict requires a measurement" cannot be silent about the places
+that still do not.
+
+**Verdicts that a run did not measure, in the channels this release did not reach:**
+
+- **`scan --json` exits 0 while `scan` exits 1 on the identical scan** (#445). The JSON body
+  reports 6 critical and 1 high; the exit code says success. `scan` is the only command with
+  this divergence — every other command's text and JSON forms agree. A CI job piping the
+  machine-readable format never fails.
+- **`secure --ignore <check>` raises the score and flips the gate green** (#450). Ignoring one
+  check moved a tree from `69/100` at exit 1 to `98/100` at exit 0, and the credential verdict
+  disappeared from the output. The report still prints `61 of 61 check groups ran`, and names
+  no suppressed check anywhere. `--ignore` is documented for CI use.
+- **`scan-soul` prints `Level HARDENED` at `100/100` on the tier path while 3 of 9 domains and
+  43 of 72 controls went unevaluated** (#451), with no `Scope` line. The profile path handles
+  this correctly — it clamps the score, names the skipped domains and raises
+  `SOUL-PROFILE-MISMATCH`. The tier path never got the equivalent guard.
+- **`secure --deep` rates the `SOUL.md` that `harden-soul` generated `MALICIOUS` (95%)** while
+  `scan-soul` rates the same file `100/100 HARDENED` (#446). A three-line README rates
+  `SUSPICIOUS`. Those labels reach no findings block, carry no `file:line`, no `Verify:` and no
+  `Fix:`, and do not move the score.
+- **`attack` withholds the verdict on a refused connection but still sends all 111 payloads**
+  (#444). The liveness probe added here catches an unresolvable host, not a refused one. See
+  the measured table under `Security` above.
+
+**False positives that can decide a verdict:**
+
+- **`check` cannot distinguish a benign MCP config from a malicious one** (#449). Both corpus
+  fixtures score exactly `69/100`. `AST-SCOPE-001 "Full Wildcard Tool Access"` (CRITICAL) fires
+  on configs containing no wildcard, cites the server-key line rather than any tools
+  declaration, and is not cleared by the explicit allowlist its own fix text recommends. It
+  reports `Do not depend on this package as-is` for Sentry's official MCP server. `secure`
+  discriminates correctly on the same fixtures (98 vs 43); this is specific to `check`.
+- **`check` tells a new user not to depend on Flask or Django** (#447). Flask's
+  `PYTHONSTARTUP` handling in `flask shell` is reported as unsafe deserialization; a vendored
+  Unicode regex library's codepoint tables are reported as invisible-codepoint steganography.
+  `check` is the first command in the README's quick start.
+- **`scan` reports 6 CRITICAL config-exposure findings against any host answering 200 on every
+  path** (#448). The evidence field says `HTTP 200 at <path>` and the response is never
+  inspected, so an SPA with a catch-all route — the default for most frameworks — fails.
+
+**Standards conformance:**
+
+- **SARIF output does not validate against SARIF 2.1.0** (#452). `tool.driver.rules` is emitted
+  once per result rather than once per rule, so a repeated checkId produces duplicate
+  descriptors and violates `uniqueItems` (117 rules, 50 unique). It validates only when every
+  check fires at most once, which is why small fixtures did not catch it. The `$schema` URI
+  also 404s (#394), and no result carries a `ruleIndex`. The docs advertise this format for
+  the GitHub Security tab.
+
+Two carried from before and unchanged: **#438** (`secure` prints a score over zero coverage)
+and **#439** (`attack` scores three response formats over an unreadable body). Both had a fix
+built and reverted rather than shipped half-done; the reasoning is on each issue.
 
 - **`npm install hackmyagent` still reports 3 high advisories, all of them the same one.**
   `adm-zip <0.6.0` (GHSA-xcpc-8h2w-3j85), reached only through `onnxruntime-node`, which
