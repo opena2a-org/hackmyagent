@@ -1465,7 +1465,17 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       attackClass: f.attackClass,
     }));
     // Use the canonical scoring formula (exponential decay + 0.4x governance weight)
-    const scoreResult = calculateSecurityScore(issues);
+    //
+    // #457 — `gatedIssues`, not `issues`. The counts, the verdict and the exit
+    // code moved to the gated set 22 lines above and this did not, so a fully
+    // suppressed quick scan printed a green `Quick scan 100/100` directly above
+    // `2 critical issues found` and `Not safe to ship`. Worse than the number
+    // being wrong: `issues` is EMPTY when everything is suppressed, so
+    // `isFailDirection([])` is false and the #259 clamp — the mechanism that
+    // exists to stop exactly this green-band-over-a-fail-verdict pairing —
+    // never fired, and the disclosure that says the score was capped went
+    // missing with it.
+    const scoreResult = calculateSecurityScore(gatedIssues);
     maxScore = scoreResult.maxScore;
     // #259, quick-scan path. This is the one composite the eight
     // post-`scan()` `applyScore()` sites never reach — the quick scan never
@@ -1481,7 +1491,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // Same rule, same helper: a fail-direction verdict floors the number out
     // of the good band, never raises it, and never touches the findings or
     // the exit code. The pre-clamp value is kept for the disclosure below.
-    const quickClamp = clampScoreToVerdictBand(scoreResult.score, issues);
+    const quickClamp = clampScoreToVerdictBand(scoreResult.score, gatedIssues);
     score = quickClamp.score;
     nanomindRawScore = scoreResult.score;
     nanomindScoreClamped = quickClamp.clamped;
@@ -4231,7 +4241,15 @@ Examples:
   .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
   .option('--fix', 'Automatically fix issues where possible')
   .option('--dry-run', 'Preview fixes without applying them (use with --fix)')
-  .option('--ignore <checks>', 'Comma-separated check IDs to leave out of the findings list (e.g., CRED-001,GIT-002). Suppressed checks are still scored and still set the exit code; use --fail-below for a score floor')
+  // #457 — the qualifier is not padding. The unqualified sentence ("suppressed
+  // checks are still scored and still set the exit code") is true of this
+  // command and false of `-b`: on the OASB benchmark a suppressed check leaves
+  // the compliance denominator, so `--ignore` moved a fixture from
+  // `32% Not Passing exit 1` to `100% Certified exit 0`. Shipping the
+  // unqualified claim in `--help` would make the tool assert something a user
+  // can falsify in one command. The benchmark path is tracked separately; until
+  // it is fixed the promise is scoped to where it holds.
+  .option('--ignore <checks>', 'Comma-separated check IDs to leave out of the findings list (e.g., CRED-001,GIT-002). Suppressed checks are still scored and still set the exit code for this command; use --fail-below for a score floor. Not yet honoured by --benchmark')
   .option('--json', 'Output as JSON (deprecated: use --format json)')
   .option('-f, --format <format>', 'Output format: text, json, sarif, html, asff (default: text)', 'text')
   .option('--aws-account-id <id>', 'AWS account ID for ASFF format')
@@ -4455,7 +4473,7 @@ Examples:
 
       {
         // Re-apply all filters after NanoMind merge (merge uses allFindings which is unfiltered)
-        const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir);
+        const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir, result.projectType || 'library');
         // #450 — the semantic layer produces findings the scan pass never saw,
         // so this call can narrow scope where `scanInner` did not. Take the
         // wider of the two records rather than the later one, or a narrowing
@@ -4487,7 +4505,7 @@ Examples:
           // recomputed from a list the unverified fix had been removed from.
           const projectType = result.projectType || 'library';
           result.findings = refiltered.filter((f: any) =>
-            retainForVerdict(f) && f.file && scanner.findingAppliesTo(f, projectType)
+            scanner.isReportableFinding(f, projectType)
           ) as typeof result.findings;
         }
         // Re-apply CLI --ignore list (reapplyIgnoreFilters only covers .hmaignore file rules)
@@ -5649,7 +5667,7 @@ Examples:
         const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
         const nmResult = await orchestrateNanoMind(targetDir, result.findings, { silent: !!options.json, projectType: result.projectType });
         // Re-apply .hmaignore filters and recalculate score after NanoMind merge
-        const hRefiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir);
+        const hRefiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir, result.projectType || 'library');
         result.findings = hRefiltered as typeof result.findings;
         const hForScore = hRefiltered.filter((f: any) => countsAgainstScore(f));
         scanner.applyScore(result, hForScore);
@@ -11221,10 +11239,10 @@ async function checkGitHubRepo(
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(repoDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
-      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, repoDir);
+      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, repoDir, result.projectType || 'library');
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
-        retainForVerdict(f) && f.file && scanner.findingAppliesTo(f, projectType)
+        scanner.isReportableFinding(f, projectType)
       ) as typeof result.findings;
       scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
@@ -11555,10 +11573,10 @@ async function checkPyPiPackage(
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(extractDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
-      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, extractDir);
+      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, extractDir, result.projectType || 'library');
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
-        retainForVerdict(f) && f.file && scanner.findingAppliesTo(f, projectType)
+        scanner.isReportableFinding(f, projectType)
       ) as typeof result.findings;
       scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
@@ -11768,10 +11786,10 @@ async function checkRawUrl(
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(scanDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
-      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, scanDir);
+      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, scanDir, result.projectType || 'library');
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
-        retainForVerdict(f) && f.file && scanner.findingAppliesTo(f, projectType)
+        scanner.isReportableFinding(f, projectType)
       ) as typeof result.findings;
       scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
@@ -11952,10 +11970,10 @@ async function checkNpmPackage(
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(packageDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
-      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, packageDir);
+      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, packageDir, result.projectType || 'library');
       const projectType = result.projectType || 'library';
       result.findings = refiltered.filter((f: any) =>
-        retainForVerdict(f) && f.file && scanner.findingAppliesTo(f, projectType)
+        scanner.isReportableFinding(f, projectType)
       ) as typeof result.findings;
       scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;

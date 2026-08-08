@@ -419,3 +419,129 @@ describe('#450 — user suppression narrows the list, never the score', () => {
     }, 240_000);
   });
 });
+
+/**
+ * #457 — the mirror image of #450, introduced by #450's own fix.
+ *
+ * #450 made a check-ID suppression display-only: the finding leaves
+ * `result.findings` and its penalty is carried on `result.suppressed`, added
+ * back by `expandSuppressed` at every gate. That is only sound while the
+ * suppressed set is a SUBSET of what would have been reported.
+ *
+ * It was not. `scanInner` filters to the reportable set — failed-or-fixed, has a
+ * file, applies to the project type — BEFORE it splits suppressed from kept, so
+ * a pathless finding is never recorded as suppressed there. `reapplyIgnoreFilters`
+ * runs on the post-NanoMind array and had no such gate, so it recorded findings
+ * the user was never going to see, and the gate then charged for them.
+ *
+ * Measured on a bare `mcp` project, published 0.27.0 vs the #450 branch:
+ *
+ *     .hmaignore            0.27.0      #450 branch     after this fix
+ *     (absent)              98 exit 0   98 exit 0       98 exit 0
+ *     !SANDBOX-002          98 exit 0   69 exit 1       98 exit 0
+ *
+ * A single line asking for a quieter report cost 29 points and flipped the gate,
+ * for a finding that scores nothing when it is left alone. That teaches exactly
+ * the wrong lesson — it makes asking for less noise look like an admission — and
+ * it is the same defect as #450 with the sign reversed.
+ *
+ * The `mcp` project type is load-bearing: `CHECK_PROJECT_TYPES` maps
+ * `SANDBOX-`/`TOOL-`/`PROMPT-` to it, so these checks run, fail, and stay
+ * pathless. On a `library` the same rules select nothing and the case is vacuous.
+ */
+describe('#457 — a suppression may narrow the report, never invent a penalty', () => {
+  /**
+   * A project that detects as `mcp` (the `@modelcontextprotocol/sdk` dependency
+   * is what does it) and is otherwise clean. Its SANDBOX/TOOL/PROMPT checks all
+   * fail pathlessly — there is no Dockerfile and no mcp.json to point at — and
+   * none of them is reported or scored.
+   */
+  async function makeMcpFixture(hmaignore?: string): Promise<string> {
+    const dir = await mkdtemp(path.join(tmpdir(), 'hma-457-'));
+    await writeFile(
+      path.join(dir, 'package.json'),
+      JSON.stringify(
+        { name: 'unreportable-fixture', version: '1.0.0', dependencies: { '@modelcontextprotocol/sdk': '^1.0.0' } },
+        null,
+        2,
+      ),
+    );
+    if (hmaignore !== undefined) await writeFile(path.join(dir, '.hmaignore'), hmaignore);
+    return dir;
+  }
+
+  const runJson = (args: string[]): { exitCode: number; body: any } => {
+    try {
+      const out = execFileSync('node', [CLI_PATH, ...args], {
+        encoding: 'utf-8',
+        maxBuffer: 64 * 1024 * 1024,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      return { exitCode: 0, body: JSON.parse(out) };
+    } catch (err: any) {
+      if (typeof err?.status === 'number' && err.stdout) {
+        return { exitCode: err.status, body: JSON.parse(err.stdout.toString()) };
+      }
+      throw err;
+    }
+  };
+
+  const hasBuild = existsSync(CLI_PATH);
+  let plainDir = '';
+  let suppressedDir = '';
+  let familyDir = '';
+
+  beforeAll(async () => {
+    assertDistFreshIfPresent();
+    plainDir = await makeMcpFixture();
+    suppressedDir = await makeMcpFixture('!SANDBOX-002\n');
+    familyDir = await makeMcpFixture('!SANDBOX-*\n!TOOL-*\n!PROMPT-*\n');
+  }, 120_000);
+
+  afterAll(async () => {
+    for (const d of [plainDir, suppressedDir, familyDir]) {
+      if (d) await rm(d, { recursive: true, force: true });
+    }
+  });
+
+  // Guards the two cases below. If SANDBOX-002 ever stops firing pathlessly on
+  // this fixture — the check gains file attribution, or the project-type map
+  // changes — both assertions become "98 === 98" over nothing and would pass
+  // against a fully restored defect.
+  it('the fixture has an unreportable finding to suppress (guards this block)', () => {
+    if (!hasBuild) return;
+    const plain = runJson(['secure', plainDir, '--json']);
+    const all = plain.body.allFindings ?? [];
+    const victim = all.find((f: any) => f.checkId === 'SANDBOX-002');
+    expect(plain.body.projectType).toBe('mcp');
+    // It fails...
+    expect(victim).toBeDefined();
+    expect(victim.passed).toBe(false);
+    expect(victim.file ?? null).toBeNull();
+    // ...and is reported nowhere and scored not at all.
+    expect(plain.body.findings.map((f: any) => f.checkId)).not.toContain('SANDBOX-002');
+    expect(plain.body.suppressed ?? []).toEqual([]);
+  });
+
+  it('an .hmaignore check-ID rule over an unreportable finding moves neither the score nor the exit code', () => {
+    if (!hasBuild) return;
+    const plain = runJson(['secure', plainDir, '--json']);
+    const suppressed = runJson(['secure', suppressedDir, '--json']);
+
+    expect(suppressed.body.score).toBe(plain.body.score);
+    expect(suppressed.exitCode).toBe(plain.exitCode);
+    // Nothing was withheld, so nothing may be disclosed as withheld either — a
+    // `Suppressed` line here would be a second lie in the reader's favour.
+    expect(suppressed.body.suppressed ?? []).toEqual([]);
+  });
+
+  it('and the same holds for a whole suppressed family', () => {
+    if (!hasBuild) return;
+    const plain = runJson(['secure', plainDir, '--json']);
+    const suppressed = runJson(['secure', familyDir, '--json']);
+
+    expect(suppressed.body.score).toBe(plain.body.score);
+    expect(suppressed.exitCode).toBe(plain.exitCode);
+    expect(suppressed.body.suppressed ?? []).toEqual([]);
+  });
+});

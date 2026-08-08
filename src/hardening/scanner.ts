@@ -26,7 +26,7 @@ import {
   inferActualCapabilities,
   validateCapabilities,
 } from './skill-capability-validator';
-import { clampScoreToVerdictBand, countsAgainstScore, expandSuppressed, summarizeSuppressed } from '../ui/verdict-band';
+import { clampScoreToVerdictBand, countsAgainstScore, expandSuppressed, retainForVerdict, summarizeSuppressed } from '../ui/verdict-band';
 import { shellQuote, citationTarget, citationPaths, commandNaming } from '../ui/shell-quote';
 import {
   isPathWithinDirectory as containIsPathWithinDirectory,
@@ -1016,6 +1016,36 @@ export function findingAppliesTo(finding: SecurityFinding, projectType: ProjectT
 }
 
 /**
+ * Whether a finding would be REPORTED to the user at all.
+ *
+ * The one definition of the reported set, because there being two is what #457
+ * was. `scanInner` gates its findings on exactly these three conditions
+ * (`!f.fixed && f.passed`, `!f.file`, `!findingAppliesTo`) before it decides
+ * what a suppression withheld, and five CLI call sites re-spell the same three
+ * conditions after `reapplyIgnoreFilters`. `reapplyIgnoreFilters` itself did
+ * not, so it recorded findings the user was never going to see as
+ * "suppressed" — and #450 adds a suppressed finding's penalty back at every
+ * gate. The result was a suppression that INVENTED a penalty: on a bare `mcp`
+ * project, one `.hmaignore` line reading `!SANDBOX-002` moved the score from
+ * 98/100 exit 0 to 69/100 exit 1, for a finding that scores nothing when it is
+ * not suppressed.
+ *
+ * A suppression may only ever subtract from the report. Anything that is not
+ * reportable cannot be withheld, so it cannot be disclosed as withheld and its
+ * penalty cannot be added back.
+ *
+ * Callers pass `projectType` rather than reading it off the scanner because
+ * `reapplyIgnoreFilters` runs on a merged array whose project type belongs to
+ * the CLI's `result`, not to the scanner instance.
+ */
+export function isReportableFinding(
+  f: { passed?: boolean; fixed?: boolean; file?: string; checkId: string },
+  projectType: ProjectType,
+): boolean {
+  return retainForVerdict(f) && Boolean(f.file) && findingAppliesTo(f as SecurityFinding, projectType);
+}
+
+/**
  * Drop failed findings that are pathless AND do not apply to the current
  * project type (issue #131 / #130). A check that fires `passed: false`
  * without `file` evidence on a project type the check is not meant for
@@ -1762,10 +1792,17 @@ export class HardeningScanner {
   /**
    * Re-apply .hmaignore filters to a set of findings.
    * Call this after NanoMind merge overwrites result.findings with unfiltered data.
+   *
+   * `projectType` is required, not optional, and that is deliberate (#457). It
+   * only feeds `isReportableFinding`, so a caller that omitted it would still
+   * compile, still run, and still record unreportable findings as suppressed —
+   * the defect this parameter exists to close, restored silently. Making it
+   * required turns every un-migrated call site into a compile error instead.
    */
   async reapplyIgnoreFilters(
     findings: SecurityFinding[],
     targetDir: string,
+    projectType: ProjectType,
     additionalIgnorePaths?: string[],
   ): Promise<SecurityFinding[]> {
     const hmaIgnore = await this.loadHmaIgnore(targetDir);
@@ -1811,8 +1848,29 @@ export class HardeningScanner {
         pathExcluded.push(f);
       }
     }
-    this.lastOutOfScope = summarizeSuppressed(pathExcluded);
-    this.lastSuppressed = summarizeSuppressed(checkSuppressed);
+    // #457 — the DISCLOSURE is gated on what would have been reported; the
+    // REMOVAL below is not. Two different questions, and conflating them is what
+    // the defect was.
+    //
+    // A suppression can only ever subtract from the report. `scanInner` settles
+    // that by filtering to the reportable set BEFORE it splits suppressed from
+    // kept (see the `filteredFindings` filter and the loop under it); this
+    // method runs on a post-merge array and never did, so a pathless finding —
+    // one the user was never going to see, and which scores nothing when left
+    // alone — was recorded as suppressed, and #450 adds a suppressed finding's
+    // penalty back at every gate. Measured on a bare `mcp` project: a one-line
+    // `.hmaignore` reading `!SANDBOX-002` moved it from 98/100 exit 0 to
+    // 69/100 exit 1. Suppression INVENTED the penalty, which is #450's own
+    // defect in mirror image and would have taught users that asking for a
+    // quieter report costs score.
+    //
+    // The removal is deliberately left alone. Narrowing it too would push
+    // unreportable findings back into the returned array, and the one caller
+    // that does not re-filter (`secure-openclaw`, `cli.ts`) would start listing
+    // and scoring them — trading this defect for a new one on another path.
+    const reportable = (f: SecurityFinding) => isReportableFinding(f, projectType);
+    this.lastOutOfScope = summarizeSuppressed(pathExcluded.filter(reportable));
+    this.lastSuppressed = summarizeSuppressed(checkSuppressed.filter(reportable));
     if (pathExcluded.length === 0 && checkSuppressed.length === 0) return findings;
     const removed = new Set([...pathExcluded, ...checkSuppressed]);
     return findings.filter((f) => !removed.has(f));
@@ -3290,6 +3348,17 @@ export class HardeningScanner {
    */
   findingAppliesTo(finding: SecurityFinding, projectType: ProjectType): boolean {
     return findingAppliesTo(finding, projectType);
+  }
+
+  /**
+   * Whether a finding would be reported at all — the same three conditions
+   * `scanInner` gates on, exposed for the same reason `findingAppliesTo` is
+   * (#457). Five CLI call sites had re-spelled this predicate by hand and
+   * `reapplyIgnoreFilters` had not, so the suppression accounting disagreed with
+   * the display set about what a suppression could possibly withhold.
+   */
+  isReportableFinding(finding: SecurityFinding, projectType: ProjectType): boolean {
+    return isReportableFinding(finding, projectType);
   }
 
   private async checkCredentialExposure(
