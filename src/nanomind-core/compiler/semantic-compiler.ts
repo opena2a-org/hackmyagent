@@ -426,6 +426,84 @@ function extractDeclaredPurpose(content: string, frontmatter?: Record<string, un
  * Real MCP hosts treat a null as an absent key, so absent is also the honest
  * reading.
  */
+/**
+ * Find the verbatim text of a TOP-LEVEL key's value in a JSON document.
+ *
+ * #449 — needed because `JSON.parse` throws away positions, and every
+ * regex attempt at recovering them for `"permissions"` was wrong in a
+ * different way. `"permissions"` is not unique in an MCP config: a SERVER may
+ * be named `permissions`, or carry its own nested `permissions` object, and
+ * anchoring on the first occurrence cited that server's narrow
+ * `["read_file"]` allowlist as the evidence for a CRITICAL claiming
+ * unrestricted access. Anchoring on the inner `"tools"` array instead made the
+ * evidence the 5-character string `["*"]`, which collides with any server
+ * declaring the same. And a `[^{}]*` body matched only one level of nesting,
+ * so a deeper block produced no evidence and shipped a CRITICAL with no
+ * `file:line` at all.
+ *
+ * A depth-aware scan has none of those failure modes: it tracks string state
+ * and brace/bracket depth, so it can only ever return the value of a key at
+ * depth 1. Returns undefined when the key is absent at the top level.
+ */
+function findTopLevelValueText(content: string, key: string): string | undefined {
+  const needle = `"${key}"`;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < content.length; i++) {
+    const ch = content[i];
+
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+
+    if (ch === '"') {
+      // A key is only THIS key if it sits at depth 1 and is followed by `:`.
+      if (depth === 1 && content.startsWith(needle, i)) {
+        let j = i + needle.length;
+        while (j < content.length && /\s/.test(content[j])) j++;
+        if (content[j] === ':') {
+          j++;
+          while (j < content.length && /\s/.test(content[j])) j++;
+          const start = j;
+          let vDepth = 0;
+          let vInString = false;
+          let vEscaped = false;
+          for (; j < content.length; j++) {
+            const c = content[j];
+            if (vInString) {
+              if (vEscaped) vEscaped = false;
+              else if (c === '\\') vEscaped = true;
+              else if (c === '"') vInString = false;
+              continue;
+            }
+            if (c === '"') vInString = true;
+            else if (c === '{' || c === '[') vDepth++;
+            else if (c === '}' || c === ']') {
+              vDepth--;
+              if (vDepth === 0) return content.slice(start, j + 1);
+              if (vDepth < 0) return undefined; // value was a scalar
+            } else if (vDepth === 0 && (c === ',' || c === '}')) {
+              return content.slice(start, j);
+            }
+          }
+          return undefined;
+        }
+      }
+      inString = true;
+      continue;
+    }
+
+    if (ch === '{' || ch === '[') depth++;
+    else if (ch === '}' || ch === ']') depth--;
+  }
+  return undefined;
+}
+
 function normalizeToolDeclaration(value: unknown): string[] | undefined {
   if (value === undefined || value === null) return undefined;
   if (Array.isArray(value)) return value.filter((t): t is string => typeof t === 'string');
@@ -630,45 +708,30 @@ function extractDeclaredCapabilities(
         }
       }
 
-      // A config-level `"permissions": {"tools": [...]}` block, which grants
-      // across every server rather than within one.
+      // A config-level `"permissions": {"tools": [...]}` block grants across
+      // every server rather than within one.
       //
-      // #449 — this was never read, and the omission was invisible because the
-      // synthesized per-server `['*']` fired on these files anyway. Removing
-      // the fabrication exposed it: `repo/malicious/kitchen-sink/mcp.json`
-      // declares `"permissions": {"tools": ["*"]}` at the top level, and
-      // without this it went from 69/100 exit 1 to 96/100 exit 0 — a wildcard
-      // written verbatim in the file, reported by nothing.
+      // #449 — never read, and the omission was invisible because the
+      // synthesized per-server `['*']` fired on these files anyway.
+      // `repo/malicious/kitchen-sink/mcp.json` declares one at its top level,
+      // and without this the tree went from 69/100 exit 1 to 96/100 exit 0
+      // with a wildcard written verbatim in the file.
+      const permissionsText = findTopLevelValueText(content, 'permissions');
       const configPermissions = normalizeToolDeclaration(
         (config?.permissions as Record<string, unknown> | undefined)?.tools,
       );
-      // Computed ONCE. It is loop-invariant, and inside the loop it was
-      // super-linear on the tool count: 30,000 config-level tools took 7,494ms
-      // against 51ms at base. Same hazard as the per-server lookup above, on
-      // the path added to fix it.
-      //
-      // Anchored on the `"tools"` array itself rather than on `"permissions"`,
-      // because `"permissions"` is not unique: a SERVER may be named
-      // `permissions`, and matching the first occurrence cited that server's
-      // narrow `["read_file"]` allowlist as the evidence for a CRITICAL — a
-      // wildcard finding pointing at a line holding no wildcard, which is the
-      // defect this whole issue is about, reappearing on a new path.
-      const permBlock = content.match(
-        /"permissions"\s*:\s*\{(?:[^{}]|\{[^{}]*\})*?"tools"\s*:\s*(\[[^\]]*\])/,
-      );
-      const permEvidence = permBlock?.[1];
+      // Computed ONCE: it is loop-invariant, and inside the loop it made this
+      // path super-linear on the tool count (30,000 tools took 8.2s).
+      const permEvidence =
+        permissionsText && content.indexOf(permissionsText) === content.lastIndexOf(permissionsText)
+          ? permissionsText
+          : undefined;
       for (const tool of configPermissions ?? []) {
         caps.push({
-          // NOT `mcp.*.${tool}`. `checkWildcardToolAccess` selects on
-          // `name.includes('*')`, so putting a `*` in the server segment makes
-          // every config-level permission a wildcard finding — including
-          // `"tools": ["read_file"]`. That is this issue's own defect
-          // (a name asserting a wildcard the file does not contain),
-          // reintroduced by naming. The negative control below pins it.
           // `config-permissions`, not `permissions`: a SERVER may legitimately
-          // be named `permissions`, and `mcp.permissions.*` from both sources
-          // produced two capabilities with an identical name, which
-          // checkScopePurposeMismatch then deduped down to one.
+          // be named `permissions`, and the same name from both sources
+          // produced two capabilities that the purpose-mismatch analyzer then
+          // deduped down to one.
           name: `mcp.config-permissions.${tool}`,
           scope: 'all servers',
           declared: true,

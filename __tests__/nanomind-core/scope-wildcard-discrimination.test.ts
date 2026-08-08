@@ -259,21 +259,50 @@ describe('AST-SCOPE-001 discriminates on the tools declaration (#449)', () => {
       }
     });
 
-    it('a value that cannot name a tool reads as an absent key, not an empty allowlist', async () => {
-      // `null` alone must land on the documented MCP-default branch, not on
-      // "declares zero tools" — the latter removes the server from the AST and
-      // scores BETTER than the ecosystem default, which is fail-open.
+    it('a wildcard declared under BOTH keys reports once, not twice', async () => {
+      // The union is deduplicated. Without that, overlapping declarations
+      // produce one finding per spelling: `{"allowedTools":["read","*"],
+      // "tools":["*","read"]}` yielded two identical CRITICALs. Mutation found
+      // this — the dedup was load-bearing and nothing pinned it.
       const content = [
         '{',
         '  "mcpServers": {',
-        '    "svc": { "command": "npx", "allowedTools": null }',
+        '    "evil": {',
+        '      "allowedTools": ["read_file", "*"],',
+        '      "tools": ["*", "read_file"]',
+        '    }',
         '  }',
         '}',
         '',
       ].join('\n');
-      expect(await wildcardFindings(content)).toEqual([]);
-      const { ast } = await compiler.compile(content, 'mcp.json');
-      expect(ast.declaredCapabilities.find(c => c.name === 'mcp.svc')).toBeDefined();
+      const found = await wildcardFindings(content);
+      expect(found).toHaveLength(1);
+      expect(found[0].severity).toBe('critical');
+    });
+
+    it('a value that cannot name a tool reads as an absent key, not an empty allowlist', async () => {
+      // `null` alone must land on the documented MCP-default branch, not on
+      // "declares zero tools" — the latter removes the server from the AST and
+      // scores BETTER than the ecosystem default, which is fail-open.
+      // Every non-nameable shape, not just `null`: mutation showed a test using
+      // `null` alone leaves the `false`/number half revertible in silence,
+      // which puts `{"allowedTools": false}` back to 100/100 exit 0.
+      for (const bad of ['null', 'false', '0']) {
+        const content = [
+          '{',
+          '  "mcpServers": {',
+          `    "svc": { "command": "npx", "allowedTools": ${bad} }`,
+          '  }',
+          '}',
+          '',
+        ].join('\n');
+        expect(await wildcardFindings(content), `allowedTools: ${bad}`).toEqual([]);
+        const { ast } = await compiler.compile(content, 'mcp.json');
+        expect(
+          ast.declaredCapabilities.find(c => c.name === 'mcp.svc'),
+          `allowedTools: ${bad} must still compile the server, not drop it`,
+        ).toBeDefined();
+      }
     });
 
     it('negative control: a malformed key with no wildcard stays silent', async () => {
@@ -318,46 +347,32 @@ describe('AST-SCOPE-001 discriminates on the tools declaration (#449)', () => {
   });
 
   describe('config-level `permissions.tools` (#449)', () => {
-    // `repo/malicious/kitchen-sink/mcp.json` declares this at the top level and
-    // the compiler never read it. The omission was invisible because the
-    // synthesized per-server wildcard fired on the file anyway; removing the
-    // fabrication took it from 69/100 exit 1 to 96/100 exit 0 with a wildcard
-    // written verbatim in the file.
-    it('a top-level permissions.tools wildcard is caught', async () => {
-      const content = [
-        '{',
-        '  "mcpServers": {',
-        '    "fs": { "command": "npx", "args": ["-y", "server-filesystem", "./docs"] }',
-        '  },',
-        '  "permissions": {',
-        '    "tools": ["*"]',
-        '  }',
-        '}',
-        '',
-      ].join('\n');
+    // `repo/malicious/kitchen-sink/mcp.json` declares this at its top level and
+    // the compiler never read it; the corpus manifest expects AST-SCOPE-001 on
+    // that tree, and before this it was met by the fabricated per-server
+    // wildcard. Detection is trivial from the parsed JSON — every defect here
+    // was in deriving a LINE, so these cases are all citation cases.
+    const configWildcard = (servers: string[]) =>
+      ['{', '  "mcpServers": {', ...servers, '  },', '  "permissions": {', '    "tools": ["*"]', '  }', '}', ''].join(
+        '\n',
+      );
+
+    it('a top-level permissions.tools wildcard is caught, citing the block', async () => {
+      const content = configWildcard(['    "fs": { "command": "npx" }']);
       const found = await wildcardFindings(content);
       expect(found).toHaveLength(1);
       expect(found[0].severity).toBe('critical');
-      // The `"tools"` array, not the `"permissions"` key that contains it —
-      // `"permissions"` is not unique in an MCP config (a server can be named
-      // that), so the citation anchors on the array holding the wildcard.
-      expect(found[0].line).toBe(lineOf(content, '"tools": ["*"]'));
+      expect(found[0].line).toBe(lineOf(content, '"permissions"'));
     });
 
-    it('cites the line holding the wildcard even when a SERVER is named "permissions"', async () => {
-      // `"permissions"` is not unique in an MCP config. Matching its first
-      // occurrence cited a server's narrow `["read_file"]` allowlist as the
-      // evidence for a CRITICAL — a wildcard finding pointing at a line that
-      // holds no wildcard, which is this issue's own defect on a new path.
+    it('a block nested more than one level deep still resolves a line', async () => {
+      // A `[^{}]*` body matched only one nesting level, so this shipped a
+      // CRITICAL with no file:line and therefore no Verify command.
       const content = [
         '{',
-        '  "mcpServers": {',
-        '    "permissions": {',
-        '      "command": "sh",',
-        '      "allowedTools": ["read_file"]',
-        '    }',
-        '  },',
+        '  "mcpServers": { "fs": { "command": "npx" } },',
         '  "permissions": {',
+        '    "meta": { "a": { "b": 1 } },',
         '    "tools": ["*"]',
         '  }',
         '}',
@@ -365,24 +380,84 @@ describe('AST-SCOPE-001 discriminates on the tools declaration (#449)', () => {
       ].join('\n');
       const found = await wildcardFindings(content);
       expect(found).toHaveLength(1);
-      expect(found[0].line).toBe(lineOf(content, '"tools": ["*"]'));
-      expect(found[0].line).not.toBe(lineOf(content, '"allowedTools": ["read_file"]'));
+      expect(found[0].line).toBeDefined();
+      expect(found[0].line).toBe(lineOf(content, '"permissions"'));
+    });
 
-      // And the two sources must not collide onto one capability name.
+    for (const [label, server] of [
+      ['a SERVER is named "permissions"', '    "permissions": { "command": "sh", "tools": ["read_file"] }'],
+      ['a server carries its own nested permissions', '    "svc": { "permissions": { "tools": ["read_file"] } }'],
+    ] as Array<[string, string]>) {
+      it(`cites the top-level block, not the narrow allowlist, when ${label}`, async () => {
+        // Anchoring on the first `"permissions"` cited a narrow ["read_file"]
+        // list as the evidence for a CRITICAL claiming unrestricted access —
+        // this issue's own defect on the path added to fix it.
+        const content = configWildcard([server]);
+        const found = await wildcardFindings(content);
+        expect(found).toHaveLength(1);
+        // The LAST `"permissions": {` — the top-level one. Taking the first is
+        // exactly the mistake the implementation made, so the assertion must
+        // not repeat it.
+        const lines = content.split('\n');
+        const topLevel = lines.length - 1 - [...lines].reverse().findIndex(l => l.includes('"permissions": {'));
+        expect(found[0].line).toBe(topLevel + 1);
+        expect(found[0].line).not.toBe(lineOf(content, '"read_file"'));
+      });
+    }
+
+    it('a server wildcard and a config wildcard get distinct names and distinct lines', async () => {
+      // The captured evidence must be unique per source. A 5-character `["*"]`
+      // span sent both findings to whichever line came first.
+      const content = configWildcard(['    "a": { "allowedTools": ["*"] }']);
+      const found = await wildcardFindings(content);
+      expect(found).toHaveLength(2);
+      const lines = found.map(f => f.line);
+      expect(new Set(lines).size).toBe(2);
+      expect(new Set(found.map(f => f.message)).size).toBe(2);
+    });
+
+    it('a server whose nested block is textually identical does not steal the citation', async () => {
+      // The evidence span is the block text. When a server carries a block with
+      // the SAME text, a first-occurrence line lookup resolves to the server's
+      // copy — so a non-unique span must not be cited at all. Without that
+      // gate this finding points into `mcpServers`.
+      // The inner blocks are written compactly so the two spans are
+      // byte-identical — the shape any minified or compact-formatted config
+      // produces. An earlier version of this test indented them differently,
+      // which made the spans distinct and the assertion unable to fire.
+      const content = [
+        '{',
+        '  "mcpServers": {',
+        '    "svc": { "permissions": {"tools":["*"]} }',
+        '  },',
+        '  "permissions": {"tools":["*"]}',
+        '}',
+        '',
+      ].join('\n');
+      const nestedLine = lineOf(content, '"svc"');
+      const found = await wildcardFindings(content);
+      const configFinding = found.find(f => f.message.includes('config-permissions'));
+      expect(configFinding).toBeDefined();
+      // Either the top-level line or none at all — never the server's copy.
+      expect(configFinding?.line).not.toBe(nestedLine);
+    });
+
+    it('does not collide with a server literally named "permissions"', async () => {
+      // Both sources named the capability `mcp.permissions.*`, which the
+      // purpose-mismatch analyzer then deduped down to one.
+      const content = configWildcard(['    "permissions": { "allowedTools": ["*"] }']);
       const { ast } = await compiler.compile(content, 'mcp.json');
       const names = ast.declaredCapabilities.map(c => c.name);
       expect(new Set(names).size).toBe(names.length);
+      expect(names).toContain('mcp.permissions.*');
+      expect(names).toContain('mcp.config-permissions.*');
     });
 
     it('negative control: a narrow permissions.tools list produces no wildcard finding', async () => {
       const content = [
         '{',
-        '  "mcpServers": {',
-        '    "fs": { "command": "npx", "args": ["-y", "server-filesystem", "./docs"] }',
-        '  },',
-        '  "permissions": {',
-        '    "tools": ["read_file"]',
-        '  }',
+        '  "mcpServers": { "fs": { "command": "npx" } },',
+        '  "permissions": { "tools": ["read_file"] }',
         '}',
         '',
       ].join('\n');
