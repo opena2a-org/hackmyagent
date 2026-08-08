@@ -129,12 +129,30 @@ function checkWildcardToolAccess(ast: SecurityAST, artifactContent?: string): AS
   // fixtures both scored exactly 69/100. A CRITICAL whose output does not vary
   // with its input is a constant, not a measurement.
   //
-  // The real risk in an unrestricted server is what the server can DO, and that
-  // is measured where the evidence is: dangerous command and argument
-  // detection, `AST-SCOPE-003` unconstrained high-risk capabilities, and the
-  // credential checks. The malicious fixture stays caught by those on its own
-  // evidence, which is the point — this check now reports only a wildcard that
-  // is really written in the file, at the line that really holds it.
+  // The real risk in an unrestricted server is what the server can DO, and
+  // that is measured where the evidence is: dangerous command and argument
+  // detection, and the credential checks. The malicious fixture stays caught by
+  // those on its own evidence, which is the point — this check now reports only
+  // a wildcard that is really written in the file, at the line that really
+  // holds it.
+  //
+  // KNOWN GAP, measured rather than assumed (#470). Those carriers do
+  // NOT cover one shape: a server that declares no tool key AND whose own
+  // arguments grant an unbounded filesystem root (`/`, `~`, `/Users`), with no
+  // credential and no dangerous command in the file. `check` scores such a
+  // config 96/100 "Usable with caveats", exit 0; the pre-#449 build scored it
+  // 69 off the fabricated wildcard. This change makes that one case worse, and
+  // it is disclosed in the CHANGELOG rather than left for a user to discover.
+  //
+  // It is deliberately not patched here by re-grading the capability 'high'.
+  // That was built and measured: it restores the score, but the finding it
+  // routes through is the purpose-mismatch analyzer, which reports
+  // `"mcp.filesystem" does not match purpose ""args": ["-y", "@modelcontext…"`
+  // — the "purpose" being a JSON fragment scraped from the config. Trading a
+  // fabricated CRITICAL for an incoherent HIGH is the same defect in a new
+  // costume. The correct fix is a check that says what it means, against a
+  // corpus that can support it; today the corpus holds 2 real fixtures of this
+  // shape and the signature bar is 3.
 
   return findings;
 }

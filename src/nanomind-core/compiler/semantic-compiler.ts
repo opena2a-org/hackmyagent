@@ -530,9 +530,14 @@ function extractDeclaredCapabilities(
           //
           // Omitting the key is the ecosystem default and is not by itself
           // evidence of risk. Where a tree really is dangerous, the risk is
-          // carried by evidence that survives this: the skill permission
-          // wildcards above, dangerous command and argument detection, and the
-          // credential checks.
+          // usually carried by evidence that survives this: the skill
+          // permission wildcards above, dangerous command and argument
+          // detection, and the credential checks.
+          //
+          // "Usually" is doing real work in that sentence — see the KNOWN GAP
+          // note in `scope-analyzer.ts`'s `checkWildcardToolAccess`. A keyless
+          // server whose args grant an unbounded root, with nothing else wrong
+          // in the file, is caught by none of them and now scores 96/100.
           caps.push({
             name: `mcp.${name}`,
             scope: name,

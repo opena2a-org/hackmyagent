@@ -97,6 +97,49 @@ suppressed check still leaves the compliance denominator, so it can move the com
 percentage, the rating and the exit code. The `--ignore` help text says so, and the
 benchmark path is tracked separately.
 
+### Fixed
+
+**`AST-SCOPE-001` no longer reports a wildcard the file does not contain (#449).**
+`check` scored a read-only filesystem MCP server and a shell-RCE MCP server at exactly the
+same 69/100, and told users "Do not depend on this package as-is" about configs holding no
+wildcard at all — including Sentry's official server.
+
+The cause was one line in the semantic compiler: a server that declared no tool key was
+compiled to a literal `['*']`. Every consumer downstream reads capability *names*, so that
+synthesized entry became a CRITICAL "Full Wildcard Tool Access" citing the server-key line
+(`"filesystem": {`), and the honestly-worded "Implicit Wildcard MCP Access" branch that
+should have handled the case became unreachable — it was gated on there being no full
+wildcard, which the synthesized one made impossible.
+
+An absent tool declaration is now treated as the MCP default it is, and `tools` is read
+alongside `allowedTools`, so a config that declares its wildcard under either key is still
+caught. A real wildcard is reported at the line that actually holds it.
+
+| `check --no-registry` | before | after |
+|---|---|---|
+| `corpus/mcp/benign/readonly-fs-mcp` | 69/100 | **96/100** |
+| `corpus/mcp/malicious/shell-rce-mcp` | 69/100 | 69/100, cited at `mcp.json:15` not `:3` |
+
+Removing the fabricated wildcard exposed a real false negative it had been masking: a
+skill's `## Permissions` list compiled to no capabilities at all, so `AST-SCOPE-001` could
+never fire from a skill however broad its grants. Skill permissions are now extracted, with
+`shell:*` graded a domain-scoped partial wildcard rather than unrestricted access.
+
+**Known gap, disclosed rather than discovered later.** There is now one shape that scores
+better than it should: an MCP server that declares no tool key **and** whose own arguments
+grant an unbounded filesystem root (`/`, `~`, `/Users`), with no credential and no dangerous
+command anywhere in the file. Before this change it collected the fabricated CRITICAL and
+scored 69/100; it now scores **96/100, "Usable with caveats", exit 0**. No corpus fixture has
+that shape — it had to be constructed to find it — and a tree that also carries credentials
+or a dangerous command is still caught on that evidence. Tracked as #470.
+
+The obvious patch for it was built and reverted: re-grading such a server as high-risk does
+restore the score, but the finding it routes through is the purpose-mismatch analyzer, which
+reports `"mcp.filesystem" does not match purpose ""args": ["-y", "@modelcontext…"` — where
+the "purpose" is a JSON fragment scraped out of the config being scanned. Trading a
+fabricated critical for an incoherent high is not an improvement. The replacement will be a
+check that says what it means.
+
 ## [0.27.0] - 2026-08-07
 
 Four changes here can turn a green pipeline red, and they are the reason to read this
