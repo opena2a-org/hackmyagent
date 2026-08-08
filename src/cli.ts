@@ -244,6 +244,8 @@ import {
   OBSERVATION_LABEL_WIDTH,
 } from './ui/quick-scan-labels';
 import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifact-intent';
+import { describeSemanticFamilyCoverage } from './ui/semantic-coverage-labels';
+import type { SemanticFamilyCoverage } from './nanomind-core/scanner-bridge.js';
 import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, expandSuppressed, retainForVerdict, summarizeSuppressed } from './ui/verdict-band';
 import { shouldPrintVersionFooter } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
@@ -685,6 +687,11 @@ Examples:
                 fullAuditTarget: skill,
               }),
               ...coverageJson(verdict),
+              // #456 — the same field `secure --json` carries. Without it a
+              // consumer told that absence cannot mean full coverage gets
+              // permanent absence on this path, which is the one contradiction
+              // the parity comment on the text path was written to rule out.
+              semanticFamilyCoverage: nmResult.semanticFamilyCoverage,
             },
             // #450 — `details` lists only what the caller asked to see, so a
             // suppressed credential finding does not ship a second copy of its
@@ -707,6 +714,10 @@ Examples:
           sourceLabel: 'local',
           nanomindScan: {
             compiledArtifacts: nmResult.compiledArtifacts,
+            // #456 — `check` discloses the analyzer-family shortfall on the
+            // same terms as `secure`. Two paths rendering the same compile
+            // count must not disagree about how much of the suite read it.
+            semanticFamilyCoverage: nmResult.semanticFamilyCoverage,
             findings: issues as any[],
           },
           artifactSummaries: nmResult.artifactSummaries,
@@ -975,6 +986,16 @@ interface UnifiedCheckDisplayOptions {
     compiledArtifacts: number;
     /** True when the semantic compile set hit its 200-file cap. */
     compileSetTruncated?: boolean;
+    /**
+     * #456 — which of the seven analyzer families examined the compiled set.
+     * `compiledArtifacts` counts files the compiler produced an AST for; this
+     * counts the families that then looked at them. On a non-agent artifact
+     * those differ, and the Surfaces line printed only the first while reading
+     * as the second. Optional: an embedder calling the display helper directly
+     * supplies no ledger, and in that case the line must stay silent rather
+     * than assert a coverage claim built from nothing.
+     */
+    semanticFamilyCoverage?: SemanticFamilyCoverage;
     findings: Array<{ severity: string; checkId?: string; description?: string; name?: string; message?: string; fix?: string; guidance?: string; file?: string; line?: number; passed?: boolean; attackClass?: string; category?: string }>;
   };
   /** Per-artifact summaries for the Observations block. Skill/MCP/SOUL/A2A
@@ -1722,10 +1743,17 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // was printing as `clear`, which is the tool's most consequential word used
     // over a critical that still counts against the score and the exit code.
     const allCategorySummaries = buildCategorySummaries(verdictInput as any);
+    // #456 — computed here rather than at its render site because BOTH the
+    // `secure` Checks line and `check`'s quick-scan replacement for it need the
+    // qualifier, and `check` builds its version of that line right below.
+    const familyDisclosure = describeSemanticFamilyCoverage(
+      nanomindScan?.semanticFamilyCoverage,
+    );
     const quickScanDisclosure = quickScan
       ? quickScanScopeDisclosure({
           staticCount,
           semanticCount,
+          familyQualifier: familyDisclosure?.checksQualifier,
           // #328 — spliced into `Run \`secure <target>\``, so it is a citation
           // and gets the citation treatment. Escaped at the renderer's INPUT,
           // like the verdict file and the artifact intents below.
@@ -1913,6 +1941,23 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       surfacesLine.tone = 'warning';
     }
 
+    // #456 — the same defect one layer down. The cap notice above qualifies HOW
+    // MANY files the semantic layer compiled; this qualifies how much of the
+    // analyzer suite then examined them. A `doc.md` classifies `unknown`, routes
+    // to the non-agent analyzers, and is read by 2 of the 7 families, so
+    // `1 semantic artifact` beside `98/100` told the reader the semantic layer
+    // looked and found nothing when four of its families never looked.
+    // Disclosure only: the count itself does NOT move — credential and stego
+    // analysis really did run, and understating that is its own dishonesty.
+    if (familyDisclosure) {
+      surfacesLine.value += familyDisclosure.surfacesSuffix;
+      // Tone only for the sharp case — an artifact no family read at all. See
+      // `earnsWarningTone`: a partial route is the scanner's normal design and
+      // colouring it would leave this line permanently yellow, diluting the
+      // file-cap warning that shares it.
+      if (familyDisclosure.earnsWarningTone) surfacesLine.tone = 'warning';
+    }
+
     // A clean result over incomplete coverage is not a clean bill of health.
     // `buildVerdict` says "No security issues detected. This library looks
     // safe to use." whenever the findings list is empty — it has no way to
@@ -1969,7 +2014,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       if (UNREACHABLE_PREFIXES.length > 0) {
         parts.push(`${UNREACHABLE_PREFIXES.length} unreachable`);
       }
-      parts.push(`${semanticCount} semantic (NanoMind AST)`);
+      // #456 — the compile count, qualified by how much of the analyzer suite
+      // reached it. Compact here on purpose: the Surfaces line above names
+      // which families were blind, and this line already carries six segments.
+      parts.push(
+        familyDisclosure
+          ? `${semanticCount} semantic (NanoMind AST, ${familyDisclosure.checksQualifier})`
+          : `${semanticCount} semantic (NanoMind AST)`,
+      );
       // Labelled by layer: the semantic count above is the compile set, and
       // an unlabelled smaller number beside it reads as a contradiction.
       parts.push(`${localScan.coverage.filesExamined} file${localScan.coverage.filesExamined === 1 ? '' : 's'} read by static checks`);
@@ -4899,6 +4951,17 @@ Examples:
               // are counted in the advertised suite and can never fire.
               unreachableCheckPrefixes: [...UNREACHABLE_PREFIXES],
               semanticCompileSetTruncated: nmResult.compileSetTruncated === true,
+              // #456 — the analyzer-family shortfall, so a CI consumer can gate
+              // on semantic depth instead of inferring it from a compile count.
+              // Always emitted, including when every artifact reached all seven
+              // families: a field that appears only on a shortfall cannot be
+              // distinguished from a missing field, and a consumer treating
+              // absence as full coverage would be right by accident rather than
+              // by measurement. `artifactsCompiled: 0` is the honest reading when
+              // the semantic layer did not run at all (`--static-only`), which is
+              // the same payload an empty tree produces — in both cases no
+              // artifact was examined by anything.
+              semanticFamilyCoverage: nmResult.semanticFamilyCoverage,
             }
           : undefined;
 
@@ -5121,6 +5184,9 @@ Examples:
           compiledArtifacts: nmResult.compiledArtifacts,
           // Whether that count is a measurement or the 200-file cap.
           compileSetTruncated: nmResult.compileSetTruncated,
+          // #456 — and how much of the analyzer suite examined what it did
+          // compile. The cap qualifies the numerator; this qualifies the depth.
+          semanticFamilyCoverage: nmResult.semanticFamilyCoverage,
           findings: [],
         } : undefined,
         verbose: !!options.verbose,

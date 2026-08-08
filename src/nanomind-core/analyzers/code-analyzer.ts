@@ -357,8 +357,13 @@ function checkPathTraversal(ast: SecurityAST): ASTFinding[] {
 
 /**
  * Determine if the artifact is a code artifact.
+ *
+ * Exported because it is this family's coverage gate: all three checks below
+ * early-return on it, so off this set `analyzeCode` examines nothing at all.
+ * The semantic coverage disclosure (#456) reads the same predicate rather than
+ * keeping a second copy that could drift from it.
  */
-function isCodeArtifact(ast: SecurityAST): boolean {
+export function isCodeArtifact(ast: SecurityAST): boolean {
   return (
     ast.artifactType === 'source_code' ||
     ast.artifactType === 'skill' ||

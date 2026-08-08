@@ -15,7 +15,8 @@
  */
 
 import type { SecurityFinding, ProjectType } from '../hardening/security-check.js';
-import type { NanoMindScanResult, ArtifactSummary, CoverageCandidate } from './scanner-bridge.js';
+import type { NanoMindScanResult, ArtifactSummary, CoverageCandidate, SemanticFamilyCoverage } from './scanner-bridge.js';
+import { ANALYZER_FAMILY_COUNT } from './analyzers/family-coverage.js';
 import type { AnalystResponse, ArtifactCoverageVerdict } from './inference/security-analyst.js';
 import { routeAnalystVerdict, combineVerdict } from './analyst-coverage.js';
 import { countsAgainstScore } from '../ui/verdict-band';
@@ -55,6 +56,12 @@ export interface OrchestrationResult {
    * identically.
    */
   compileSetTruncated: boolean;
+  /**
+   * #456 — which of the seven analyzer families examined the compiled set.
+   * `compiledArtifacts` is a compile count; this is the examination count that
+   * belongs beside it, and they differ on every non-agent artifact.
+   */
+  semanticFamilyCoverage: SemanticFamilyCoverage;
   /** Compact per-artifact summaries (skills / MCPs / SOULs / A2A cards).
    *  Empty when NanoMind is unavailable or only source code was scanned. */
   artifactSummaries: ArtifactSummary[];
@@ -159,6 +166,15 @@ export async function orchestrateNanoMind(
       // here means "not truncated", not "complete" — `compiledArtifacts: 0`
       // already says the layer contributed no coverage.
       compileSetTruncated: false,
+      // Nothing compiled, so no family examined anything. Reported as an
+      // explicit zero rather than omitted: an absent disclosure reads as
+      // "full coverage" to any consumer that treats the field as optional.
+      semanticFamilyCoverage: {
+        totalFamilies: ANALYZER_FAMILY_COUNT,
+        artifactsCompiled: 0,
+        fullyExamined: 0,
+        partial: [],
+      },
       artifactSummaries: [],
       newSemanticFindings: 0,
       integrityStatus: 'SKIPPED',
@@ -208,6 +224,7 @@ export async function orchestrateNanoMind(
       nanomindUsed: nmResult.nanomindAvailable,
       compiledArtifacts: nmResult.compiledArtifacts,
       compileSetTruncated: nmResult.compileSetTruncated,
+      semanticFamilyCoverage: nmResult.semanticFamilyCoverage,
       artifactSummaries: nmResult.artifactSummaries,
       newSemanticFindings: newFindings,
       integrityStatus: nmResult.integrityStatus,
@@ -344,6 +361,15 @@ export async function orchestrateNanoMind(
       // here means "not truncated", not "complete" — `compiledArtifacts: 0`
       // already says the layer contributed no coverage.
       compileSetTruncated: false,
+      // Nothing compiled, so no family examined anything. Reported as an
+      // explicit zero rather than omitted: an absent disclosure reads as
+      // "full coverage" to any consumer that treats the field as optional.
+      semanticFamilyCoverage: {
+        totalFamilies: ANALYZER_FAMILY_COUNT,
+        artifactsCompiled: 0,
+        fullyExamined: 0,
+        partial: [],
+      },
       artifactSummaries: [],
       newSemanticFindings: 0,
       integrityStatus: 'UNAVAILABLE',

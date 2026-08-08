@@ -32,6 +32,12 @@ import { analyzeScope } from './analyzers/scope-analyzer.js';
 import { analyzePrompt } from './analyzers/prompt-analyzer.js';
 import { analyzeCode } from './analyzers/code-analyzer.js';
 import { analyzeSteganography } from './analyzers/stego-analyzer.js';
+import {
+  ANALYZER_FAMILY_COUNT,
+  analyzerFamiliesExamined,
+  analyzerRouteFor,
+} from './analyzers/family-coverage.js';
+import type { AnalyzerFamily, AnalyzerRoute } from './analyzers/family-coverage.js';
 import { enrichFindings } from './fix-generator.js';
 import { enforceSeverityFloor, validateEnhancement } from './security/defense-in-depth.js';
 import type { SeverityLevel } from './security/defense-in-depth.js';
@@ -138,6 +144,52 @@ export interface CoverageCandidate {
   artifactType: string;
 }
 
+/**
+ * One distinct analyzer-family coverage class in the compiled set (#456).
+ *
+ * Grouped rather than per-artifact because within a single run the examined set
+ * is a function of (route, artifactType) and the project type is fixed, so a
+ * 200-file scan collapses to a handful of classes. Emitting 200 identical rows
+ * would bury the one fact a reader needs: which shapes were only partly read.
+ */
+export interface SemanticFamilyCoverageGroup {
+  artifactType: string;
+  /**
+   * The orchestration route these artifacts took. Carried because it separates
+   * the two reasons a family is blind — the route never invoked it, or it was
+   * invoked and its own gate stopped it — which a consumer cannot otherwise
+   * distinguish. `not_routed` means the artifact compiled and then left the loop
+   * before any analyzer returned — either the documentation/metadata skip, or an
+   * analyzer threw and its findings were discarded. A `skill` reported
+   * `not_routed` is the second case, never the first.
+   */
+  route: AnalyzerRoute;
+  /** The families that examined every artifact in this class. */
+  familiesExamined: AnalyzerFamily[];
+  /** How many compiled artifacts fell into this class. */
+  artifacts: number;
+  /** Up to three paths, so the reader can go and look. */
+  examplePaths: string[];
+}
+
+/**
+ * How much of the semantic analyzer suite actually reached the compiled set.
+ *
+ * `compiledArtifacts` is a compile count; this is the examination count beside
+ * it. They differ on every non-agent artifact, and the Surfaces line used to
+ * print only the first while reading as the second.
+ */
+export interface SemanticFamilyCoverage {
+  /** The denominator: families `runAllAnalyzers` runs. 7. */
+  totalFamilies: number;
+  /** Compiled artifacts accounted for here. Invariant: === compiledArtifacts. */
+  artifactsCompiled: number;
+  /** Artifacts examined by all `totalFamilies` families. */
+  fullyExamined: number;
+  /** Coverage classes short of the full suite, densest first. */
+  partial: SemanticFamilyCoverageGroup[];
+}
+
 export interface NanoMindScanResult {
   mergedFindings: SecurityFinding[];
   astFindings: ASTFinding[];
@@ -147,6 +199,11 @@ export interface NanoMindScanResult {
   nanomindAvailable: boolean;
   /** Every compiled artifact, for the --nanomind analyst coverage sweep. */
   coverageCandidates: CoverageCandidate[];
+  /**
+   * #456 — which analyzer families examined the compiled set. Disclosure only:
+   * no finding, no severity and no score depends on it.
+   */
+  semanticFamilyCoverage: SemanticFamilyCoverage;
   /**
    * True when the compile set hit `MAX_FILES_PER_SCAN` (200), so the semantic
    * layer saw the first 200 files in walk order and nothing after them.
@@ -185,6 +242,7 @@ export async function runNanoMindScan(
       artifactSummaries: [],
       nanomindAvailable: false,
       coverageCandidates: [],
+      semanticFamilyCoverage: emptyFamilyCoverage(),
       compileSetTruncated: false,
     };
   }
@@ -229,6 +287,19 @@ export async function runNanoMindScan(
   // only when the non-generative classifier (not the heuristic fallback)
   // classified the artifact, so the signal honestly means "the model said X".
   const intentByPath = new Map<string, NanoMindIntentSignal>();
+  // #456 — one row per COMPILED artifact, so the disclosure's denominator is
+  // the same number the Surfaces line prints. Each row starts at the honest
+  // worst case (`not_routed`, no family examined it) and is upgraded only once
+  // the analyzers RETURN. A file that compiles and then leaves the loop early —
+  // the documentation/metadata skip, or a throw from an analyzer — keeps the
+  // starting row rather than silently vanishing from the ledger while still
+  // counting toward `compiledArtifacts`.
+  const familyCoverageRows: Array<{
+    path: string;
+    artifactType: string;
+    route: AnalyzerRoute;
+    familiesExamined: AnalyzerFamily[];
+  }> = [];
   let compiledCount = 0;
   let nanomindUsedAtLeastOnce = false;
 
@@ -240,6 +311,13 @@ export async function runNanoMindScan(
       const result = await compiler.compile(content, relativePath);
       compiledCount++;
       coverageCandidates.push({ path: relativePath, artifactType: result.ast.artifactType });
+      const familyCoverage = {
+        path: relativePath,
+        artifactType: result.ast.artifactType,
+        route: 'not_routed' as AnalyzerRoute,
+        familiesExamined: [] as AnalyzerFamily[],
+      };
+      familyCoverageRows.push(familyCoverage);
 
       if (result.nanomindUsed) {
         nanomindUsedAtLeastOnce = true;
@@ -286,17 +364,13 @@ export async function runNanoMindScan(
       // - Everything else (docs, unknown, env_file, credential_file, ide configs):
       //   credential + code + stego only — governance/prompt/scope/capability are FPs
       const verifier = (ast: SecurityAST) => compiler.verifyAST(ast);
-      const agentTypes = new Set(['soul', 'skill', 'agent_config', 'a2a_card', 'mcp_config']);
-      // system_prompt is agent-like ONLY if it's an actual system prompt file,
-      // not a developer instruction file (CLAUDE.md, .cursorrules, .clinerules, .windsurfrules).
-      const pathLower = (result.ast.artifactPath ?? '').toLowerCase();
-      const isDevInstructionFile = result.ast.artifactType === 'system_prompt' && (
-        pathLower.includes('claude.md') || pathLower.includes('.cursorrules') ||
-        pathLower.includes('.clinerules') || pathLower.includes('.windsurfrules')
-      );
-      const isAgent = agentTypes.has(result.ast.artifactType) ||
-        (result.ast.artifactType === 'system_prompt' && !isDevInstructionFile);
-      const isSourceCode = result.ast.artifactType === 'source_code';
+      // #456 — one definition of the routing decision, shared with the coverage
+      // measurement so the disclosure cannot describe a different route than the
+      // one taken. It also carries the dev-instruction-file rule: CLAUDE.md and
+      // .cursorrules classify `system_prompt` but are NOT agent artifacts.
+      const route = analyzerRouteFor(result.ast);
+      const isAgent = route === 'agent';
+      const isSourceCode = route === 'source_code';
       // Pass project constraints to agent analyzers — but not for soul artifacts themselves
       // (they carry their own constraints) and not when the artifact IS the governance file.
       const isSoulArtifact = result.ast.artifactType === 'soul';
@@ -309,6 +383,21 @@ export async function runNanoMindScan(
           ? runCodeAnalyzers(result.ast, verifier, content)
           : runNonAgentAnalyzers(result.ast, verifier, content);
       allASTFindings.push(...findings);
+      // #456 — recorded only AFTER the analyzers returned. Assigning before the
+      // call would let a throw inside an analyzer discard every finding for this
+      // artifact while the ledger still claimed its families examined it:
+      // `assertASTIntegrity` throws `SecurityError` on a tamper-failed AST, and
+      // `enrichFindings` runs in the same `try`, so the `catch` below is not
+      // decorative. Invocation is not examination either: this route invokes
+      // `analyzeCode` for every non-agent artifact, and off `isCodeArtifact` all
+      // three of its checks return immediately, which is why an `unknown`
+      // document reaches two families and not the three its route names.
+      familyCoverage.route = route;
+      familyCoverage.familiesExamined = analyzerFamiliesExamined(
+        route,
+        result.ast,
+        projectType,
+      );
     } catch {
       // Skip files that fail to read or compile -- do not block the scan
       continue;
@@ -344,7 +433,77 @@ export async function runNanoMindScan(
     artifactSummaries,
     nanomindAvailable: nanomindUsedAtLeastOnce || useNanoMind,
     coverageCandidates,
+    semanticFamilyCoverage: rollUpFamilyCoverage(familyCoverageRows),
     compileSetTruncated,
+  };
+}
+
+/**
+ * Collapse the per-artifact family rows into the coverage classes the CLI and
+ * `--json` report (#456).
+ *
+ * Deliberately reports the SHORTFALL, never a percentage: "2 of 7 analyzer
+ * families" is checkable against the analyzers, whereas "29% semantic coverage"
+ * invites the reader to treat an unexamined artifact as mostly examined.
+ */
+export function rollUpFamilyCoverage(
+  rows: Array<{
+    path: string;
+    artifactType: string;
+    route: AnalyzerRoute;
+    familiesExamined: AnalyzerFamily[];
+  }>,
+): SemanticFamilyCoverage {
+  const groups = new Map<string, SemanticFamilyCoverageGroup>();
+  let fullyExamined = 0;
+
+  for (const row of rows) {
+    // The DISTINCT set, not the length: `['stego'] x 7` is not full coverage.
+    // Unreachable from the bridge (`ROUTE_FAMILIES` is duplicate-free and
+    // `filter` preserves that), but this function is exported, so an embedder
+    // can reach it and a false full-coverage claim is the one claim here that
+    // silences the disclosure entirely.
+    if (new Set(row.familiesExamined).size >= ANALYZER_FAMILY_COUNT) {
+      fullyExamined++;
+      continue;
+    }
+    // Key on the type AND the exact family set: two `unknown` files can differ
+    // when one of them is a README the doc skip routed past.
+    const key = `${row.artifactType}|${row.route}|${[...row.familiesExamined].sort().join(',')}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.artifacts++;
+      if (existing.examplePaths.length < 3) existing.examplePaths.push(row.path);
+      continue;
+    }
+    groups.set(key, {
+      artifactType: row.artifactType,
+      route: row.route,
+      familiesExamined: [...row.familiesExamined],
+      artifacts: 1,
+      examplePaths: [row.path],
+    });
+  }
+
+  return {
+    totalFamilies: ANALYZER_FAMILY_COUNT,
+    artifactsCompiled: rows.length,
+    fullyExamined,
+    // Densest class first, then the worst-covered, so the headline number the
+    // renderer takes is the one that describes most of the compiled set.
+    partial: [...groups.values()].sort(
+      (a, b) => b.artifacts - a.artifacts || a.familiesExamined.length - b.familiesExamined.length,
+    ),
+  };
+}
+
+/** The zero state: nothing compiled, so nothing to disclose. */
+function emptyFamilyCoverage(): SemanticFamilyCoverage {
+  return {
+    totalFamilies: ANALYZER_FAMILY_COUNT,
+    artifactsCompiled: 0,
+    fullyExamined: 0,
+    partial: [],
   };
 }
 

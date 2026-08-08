@@ -97,6 +97,63 @@ suppressed check still leaves the compliance denominator, so it can move the com
 percentage, the rating and the exit code. The `--ignore` help text says so, and the
 benchmark path is tracked separately.
 
+### Changed
+
+**The semantic coverage line now says how much of the analyzer suite actually read each
+artifact (#456).** Disclosure only: no new finding, no detection change, and no score,
+severity or exit code moves. Verified against the 12-fixture corpus, where every score,
+severity count and check ID is byte-identical to 0.27.0.
+
+`Surfaces` and `Checks` printed `1 semantic artifact` and `1 semantic (NanoMind AST)`.
+Both are counts of files the compiler produced an AST for, and both read as counts of
+files the semantic layer examined. On any non-agent artifact those are different numbers.
+A `doc.md` carrying `Ignore all previous instructions` and a `curl … | bash` classifies
+`unknown`, routes to the non-agent analyzers, and is read by two of the seven families —
+capability, governance, scope, prompt and code analysis never look at it. Beside `98/100`,
+`1 semantic artifact` told the reader the semantic layer looked and found nothing:
+
+```
+Surfaces    library · 1 semantic artifact · 2 of 7 analyzer families examined it
+            — capability, governance, scope, prompt and code analysis did not run
+Checks      310 static declared · 61 of 61 check groups ran · 3 unreachable · 1 semantic (NanoMind AST, 2 of 7 analyzer families) · 1 file read by static checks
+```
+
+The count itself does not move. Credential and steganography analysis really did run, and
+understating that would be its own dishonesty.
+
+This is the whole non-agent class, not one artifact type. `source_code` reaches the same
+two of seven through a different pair (credential and code, not steganography), and
+documentation or metadata files that the doc skip routes past — `README.md`,
+`package.json` — reach **none**, while still counting toward the artifact total. On
+HackMyAgent's own repo, `secure .` reports all 200 compiled artifacts reaching 0-2 of 7
+families, which you can reproduce against this checkout.
+
+`--json` carries the same measurement at `coverage.semanticFamilyCoverage`, per coverage
+class with the families examined, the orchestration route and example paths, so a pipeline
+can gate on semantic depth instead of inferring it from a compile count. The route is what
+separates the two reasons a family is blind: the route never invoked it, or it was invoked
+and its own gate stopped it. It is always emitted, including at full coverage — a field that
+appears only on a shortfall cannot be told apart from a missing field. With `--static-only`
+it reports `artifactsCompiled: 0`, the same payload an empty tree produces, which is the
+honest reading in both cases: no artifact was examined by anything.
+
+The qualifier is absent when every compiled artifact reached all seven families, and the
+line takes the warning colour only when some artifact was read by no family at all. A
+partial route is how the scanner is designed; colouring that would leave the line
+permanently yellow and dilute the file-cap warning beside it.
+
+**What "examined" claims, and what it does not.** The unit is the analyzer family, and the
+claim is that the family inspected the artifact's AST. It is deliberately not a claim about
+two narrower things, both of which predate this change and neither of which a family-level
+count can express. Capability analysis runs three of its checks only on non-library
+projects, so on an sdk or library project it examines an artifact with a narrower check set
+than it would elsewhere — the family still looked, and the static `Coverage` line is where
+check-level accounting lives. Steganography analysis reads the evidence spans and declared
+purpose the compiler produced rather than the file body, so on a long document it inspects a
+fraction of the bytes. Both are properties of the compiler and the check set, not of this
+measurement, and reporting either family as blind would understate coverage that really
+happened.
+
 ### Fixed
 
 **`AST-SCOPE-001` no longer reports a wildcard the file does not contain (#449).**
@@ -155,6 +212,7 @@ comment such as `- shell: * # for build`, each a one-token bypass), read fenced 
 examples as real grants, and produced findings with no line number and therefore no verify
 command. A check that fires hardest on people writing ordinary skills is the defect this
 entry is about, aimed at a new surface. It needs a grammar and a corpus, not a regex pair.
+
 
 ## [0.27.0] - 2026-08-07
 
