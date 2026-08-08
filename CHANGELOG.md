@@ -58,12 +58,44 @@ What changes:
   the group does run when one of its check IDs is suppressed.
 - `--json` `findings` keeps its old contract and lists only what you asked to see.
 
+**A suppressed check costs exactly what it would have cost unsuppressed — no more, no
+less.** Not every failed check is scored: a check that reports an absent mitigation and
+has nothing to point at ("configure containers to run as non-root", on a project with no
+Dockerfile) has always been dropped before the score, on every tree, whether or not you
+suppress it. Suppressing one of those must therefore change nothing. An earlier cut of
+this fix added them back, so an `.hmaignore` line reading `!SANDBOX-002` took a clean
+project from 98/100 exit 0 to 69/100 exit 1 with no finding to show for it. Suppression
+is a display choice in both directions, and that is now pinned by a test that fails in
+either.
+
+**If your `.hmaignore` suppresses whole check families by wildcard, delete those rules
+and re-run.** We did. HackMyAgent's own `.hmaignore` carried seven — `!SANDBOX-*`,
+`!TOOL-*`, `!PROMPT-*`, `!LOG-*`, `!ENV-*`, `!SEC-*`, `!AUTH-*` — with a note that MCP
+infrastructure checks do not apply to a local CLI scanner. Deleting all seven changes
+this repo's score by nothing, because the checks behind them report absent mitigations
+with no file to point at and were never scored. What the rules did do is silence
+`LOG-002`. With them in place, 0.27.0 reported `100/100 · No security issues found ·
+exit 0` on a tree containing `console.log(password)` at a named file and line; with them
+removed, the same build reported `69/100 · exit 1` and named the file. A wildcard over a
+check family is an undated waiver of every check that family will ever contain,
+including the ones added after you wrote it — and it erases the record of the checks
+that PASS as well as the ones that fail, so it removes your ability to prove a negative.
+
+Note that `.hmaignore` takes **one pattern per line**. Seven rules written on a single
+space-separated line parse as one pattern that can never match, and silently suppress
+nothing.
+
 **To let a build pass over findings you have accepted, use `--fail-below <score>`.** A
 threshold in your pipeline configuration is auditable; a quietly missing finding is not.
 Note that `--fail-below` does not override the critical/high rule, so after this change
 nothing turns `secure` green on a tree carrying a critical or high finding. If that
 blocks a legitimate workflow, say so on #450 — an explicit, disclosed waiver flag is the
 open question, not a reason to keep the silent one.
+
+**Known gap:** `--ignore` is not yet honoured by `secure --benchmark`. On an OASB run a
+suppressed check still leaves the compliance denominator, so it can move the compliance
+percentage, the rating and the exit code. The `--ignore` help text says so, and the
+benchmark path is tracked separately.
 
 ## [0.27.0] - 2026-08-07
 

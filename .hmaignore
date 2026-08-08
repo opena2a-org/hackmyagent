@@ -1,3 +1,10 @@
+# No check-ID rules. A line beginning with `!` suppresses a check or a check
+# family repo-wide, permanently and invisibly, and pre-waives checks that do not
+# exist yet. It is also the mechanism #455 describes as attacker-controllable on
+# download paths. Disposition of a specific finding belongs in the issue tracker,
+# not here. Path rules below are a scope statement and are disclosed on the
+# `Scope` line of every scan. `__tests__/hmaignore-scope-only.test.ts` enforces this.
+
 # Intentionally vulnerable test fixtures — git-only, excluded from scans and npm publish
 test-fixtures/
 test/
@@ -32,13 +39,3 @@ src/oasb/
 
 # Benchmark files contain intentional attack patterns for testing
 src/benchmarks/
-
-# HMA is a CLI tool that also exposes MCP tools. These MCP infrastructure
-# checks don't apply to a local CLI scanner.
-!SANDBOX-*
-!TOOL-*
-!PROMPT-*
-!LOG-*
-!ENV-*
-!SEC-*
-!AUTH-*
