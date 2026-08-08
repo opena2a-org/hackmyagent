@@ -12836,13 +12836,14 @@ dist/
       // GlassWorm — is EVIDENCE ABOUT THE FILE, not a gate on the finding. It was a
       // required conjunct for one commit and that was wrong: a required conjunct on
       // one SPELLING is a rule about that spelling, not about the class. Measured
-      // against the previous release, requiring it dropped 15 working decoders to no
-      // finding at all — `.map(String.fromCodePoint)`, `Array.from(out, ...)`, an
-      // alias, a destructured `{ fromCharCode }`, `String['fromCodePoint']`,
-      // `Reflect.apply`, `Buffer.from(out).toString()`, `new TextDecoder().decode()`,
-      // a `JSON.parse('"\\uXXXX"')` round trip and an indexed alphabet table — every
-      // one of which reconstituted a tag-range payload and passed it to a sink. The
-      // attacker picks the spelling, so the spelling cannot be the gate. What the
+      // against the previous release, requiring it dropped 10 working decoder
+      // spellings to no finding at all — `.map(String.fromCodePoint)`,
+      // `Array.from(out, ...)`, an alias, a destructured `{ fromCharCode }`,
+      // `String['fromCodePoint']`, `Reflect.apply`, `Buffer.from(out).toString()`,
+      // `new TextDecoder().decode()`, a `JSON.parse('"\\uXXXX"')` round trip and an
+      // indexed alphabet table — every one of which reconstituted a tag-range payload
+      // and passed it to a sink. Each is pinned by a test in unicode-stego.test.ts.
+      // The attacker picks the spelling, so the spelling cannot be the gate. What the
       // signal is good for is describing the file accurately, so it selects the
       // wording below and nothing else. Narrowing on semantics rather than spelling
       // needs dataflow, which is #424's AST analyzer, not another regex.
@@ -12897,7 +12898,7 @@ dist/
           line: reportedLine,
           fixable: false,
           fix: corroboration
-            ? `sed -n '${Math.max(1, reportedLine - 5)},${reportedLine + 20}p' ${shellEscape(relativePath)}   # trace the reconstituted string to its sink and remove the decoder`
+            ? `sed -n '${Math.max(1, reportedLine - 5)},${reportedLine + 20}p' ${shellEscape(relativePath)}   # trace this codepoint range to whatever consumes it, then remove the decoder`
             : `sed -n '${Math.max(1, reportedLine - 5)},${reportedLine + 20}p' ${shellEscape(relativePath)}   # confirm this decodes for inspection, not for execution`,
           guidance: corroboration
             ? `The GlassWorm attack hides a payload in invisible Unicode characters and rebuilds it at runtime from their codepoints. This file ${act} those codepoints AND carries corroborating evidence, so treat it as live until traced. Follow the value from the range literal to whatever consumes it.`

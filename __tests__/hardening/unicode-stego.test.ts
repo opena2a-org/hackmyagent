@@ -375,8 +375,8 @@ describe('UNICODE-STEGO checks', () => {
    * UNICODE-STEGO-001 corroborates it in the same file.
    *
    * What is deliberately NOT done here is gating the finding on string reconstitution.
-   * That was tried for one commit and measured to drop 15 working decoders to no
-   * finding at all, because it tests one SPELLING of reconstitution and the attacker
+   * That was tried for one commit and measured to drop 10 working decoder spellings to
+   * no finding at all, because it tests one SPELLING of reconstitution and the attacker
    * picks the spelling. See the "recovered spellings" block below, which pins those
    * cases so the gate cannot come back silently.
    *
@@ -422,10 +422,31 @@ describe('UNICODE-STEGO checks', () => {
       // into passing for the wrong reason and the regression would go silent.
       expect(content).toContain('0xfe00');
       expect(content).toContain('.codePointAt(');
-      // It also carries no execution sink and no invisible codepoints, which is what
-      // makes it UNcorroborated. Asserted so the fixture cannot drift into being
-      // corroborated and turn this into a test of something else.
+      // It also carries neither corroborator, which is what makes it UNcorroborated.
+      // BOTH are asserted so the fixture cannot drift into being corroborated and turn
+      // this into a test of something else. An earlier version of this comment claimed
+      // both and asserted only the sink.
       expect(content).not.toMatch(/(?:^|[^\w.$])(?:eval|(?:new\s+)?Function)\s*\(/);
+      // Written as escape sequences, never as literal characters: a fixture that
+      // asserts the ABSENCE of invisible codepoints must not contain any, or it trips
+      // UNICODE-STEGO-001 on this very file and corroborates what it denies. Ten raw
+      // codepoints were written here once by an editor that rendered the escapes.
+      const INVISIBLE = new RegExp(
+        '[' +
+          '\u200B-\u200D' +   // zero width space, non-joiner, joiner
+          '\u202A-\u202E' +   // bidi embedding and override
+          '\u2066-\u2069' +   // bidi isolates
+          '\uFE00-\uFE0F' +   // variation selectors 1-16
+          '\uFEFF' +             // BOM used mid-file
+        ']' +
+          '|[\u{E0100}-\u{E01EF}]',   // variation selectors 17-256
+        'u'
+      );
+      expect(INVISIBLE.test(content)).toBe(false);
+      // Non-vacuity control: a matcher that matched nothing would pass the line above
+      // for the wrong reason, which is how this class of assertion usually dies.
+      expect(INVISIBLE.test('a\u200Bb')).toBe(true);
+      expect(INVISIBLE.test('a\u{E0100}b')).toBe(true);
 
       await fs.writeFile(path.join(tempDir, 'log-safe.mjs'), content);
 

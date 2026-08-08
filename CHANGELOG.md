@@ -24,17 +24,26 @@ of its filename: copying it to `util-helper.ts` self-flagged at CRITICAL.
 
 Two changes, both in the `UNICODE-STEGO-002` block:
 
-- **The file path is no longer consulted at all.** The exemption is deleted, not narrowed.
-  Renaming a file now changes no verdict in either direction, so the bypass is gone rather
-  than relocated. This is pinned by a test that scans identical bytes under two filenames,
-  one carrying an old exemption keyword and one not, and asserts the severities match.
+- **The filename exemption is deleted, not narrowed.** No name can make this check skip a
+  file any more, so the rename bypass is gone. Pinned by a test that scans identical bytes
+  under two filenames, one carrying an old exemption keyword and one not, and asserts the
+  severities match. Stated precisely, because the general form is not true: the CORROBORATOR
+  still reads the path, since `UNICODE-STEGO-001` does not look for variation selectors in
+  `.md`/`.txt` or in files named `README`/`AUTHORS`/`LICENSE` and similar. A decoder whose
+  only corroboration is an embedded payload is therefore MEDIUM under one of those names and
+  CRITICAL under another. A decoder corroborated by an execution sink is CRITICAL under every
+  name. That asymmetry predates this release and is not fixed here.
 - **CRITICAL now requires corroboration.** A decoder pattern is evidence of capability, not
   of malice. Corroboration is an execution sink in the same file, so a decoded string can
   reach `eval`/`Function`, or `UNICODE-STEGO-001` firing on the same file, so the invisible
   payload a decoder would decode is actually present. Both are read from the file being
   scanned, so severity never depends on the order the tree is walked in. Uncorroborated is
-  reported at MEDIUM with the evidence intact — it is downgraded, never dropped, and MEDIUM
-  does not fail a pipeline.
+  reported at MEDIUM with the evidence intact — downgraded, never dropped.
+
+  **MEDIUM still costs 8 points of score.** It does not fail the default severity gate, which
+  is what unblocks defensive code, but `secure --fail-below <n>` compares the score, so a
+  build that pins a threshold close to its current score can still go red on a downgraded
+  finding. Check your threshold before upgrading if you use that flag.
 
 Measured on first-class source files, not `node_modules`:
 
@@ -45,7 +54,10 @@ Measured on first-class source files, not `node_modules`:
 | a test that builds a payload and asserts a sanitiser escapes it | CRITICAL | MEDIUM |
 | a decoder that reconstitutes a tag-range payload and `eval`s it | CRITICAL | CRITICAL |
 
-**No true positive was lost, and this was measured rather than assumed.** Ten spellings of
+**Nothing 0.27.0 reported stops being reported, and this was measured rather than assumed.**
+The condition is now strictly weaker than 0.27.0's, so every file that fired then fires now.
+What can move is SEVERITY: an uncorroborated finding is MEDIUM rather than CRITICAL, and that
+is the whole point. Ten spellings of
 a working decoder — `.map(String.fromCodePoint)`, `Array.from(out, ...)`, an alias, a
 destructured `{ fromCharCode }`, `String['fromCodePoint']`, `Reflect.apply`,
 `Buffer.from(out).toString()`, `new TextDecoder().decode()`, a `JSON.parse('"\uXXXX"')`
@@ -79,9 +91,18 @@ these are pre-existing, none is made worse by this change, and each is filed:
   payload reaches `vm.runInThisContext`, `child_process.exec`, a dynamic `import()`, the
   `AsyncFunction` constructor or `globalThis.eval` is reported at MEDIUM rather than
   CRITICAL. It is still reported.
-- Neither corroborator strips comments or string literals, so a file whose only `eval(` is
-  a comment advising against `eval` is corroborated by that comment. A log sanitiser
-  carrying such a note is CRITICAL. This behaves identically on 0.27.0 and on this release.
+- Neither corroborator strips comments or string literals, so a file whose only `eval(` is a
+  comment advising against `eval` is corroborated by that comment, and a log sanitiser
+  carrying such a note is CRITICAL. On a file that 0.27.0 already reported this is unchanged.
+  On a file 0.27.0 held clean by the deleted filename exemption it is a new CRITICAL, and
+  **HackMyAgent's own `src/hardening/scanner.ts` is exactly that case**: clean on 0.27.0
+  because its path matched the exemption, CRITICAL here, corroborated by an `eval(` inside a
+  comment explaining how the scanner avoids matching `eval(` in comments. Removing a bypass
+  shows you what it was hiding, and what it was hiding is that this signature is weak enough
+  to match our own source. Tracked with #468, which is the same shape in
+  `UNICODE-STEGO-005`. The fix for both is to evaluate corroboration against code with
+  comments and string literals removed, which is a change we are not making inside a patch
+  release on this path.
 - `UNICODE-STEGO-001` does not scan for variation selectors in `.md`/`.txt`, so an
   identical payload beside an identical decoder corroborates in a `.js` file and does not
   in a `.md` file, even though the payload is present in both.
