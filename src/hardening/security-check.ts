@@ -220,6 +220,22 @@ export interface ScanResult {
   atomicFix?: boolean;
   /** List of check IDs that were ignored */
   ignored?: string[];
+  /**
+   * Findings an `.hmaignore` PATH rule put out of scope (#450).
+   *
+   * Not in `findings`, not in `score`, not in the exit code — a path rule is a
+   * scope statement ("this part of the tree is not my product"), the same
+   * statement as scanning a subdirectory, and a smaller target honestly scores
+   * differently. This array is the only record that the scan was narrowed, so
+   * it is what stops the narrowing being silent, and every renderer is expected
+   * to surface it. Identity only, per `summarizeSuppressed`.
+   *
+   * Distinct from a check-ID suppression (`--ignore`, an `.hmaignore`
+   * `!CHECK-ID` line), which is NOT a scope change: the check ran over the whole
+   * tree and matched, so it stays in `findings` marked `suppressed` and keeps
+   * counting.
+   */
+  outOfScope?: Array<{ checkId: string; name: string; severity: string; count: number; suppressedBy: string }>;
   /** Semantic analysis summary (Layer 2 + Layer 3) */
   semanticAnalysis?: {
     layer2Findings: number;

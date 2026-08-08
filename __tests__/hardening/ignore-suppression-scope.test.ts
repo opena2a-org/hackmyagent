@@ -193,21 +193,60 @@ describe('#450 — user suppression narrows the list, never the score', () => {
     });
   });
 
-  describe('channel 3 — an .hmaignore path pattern', () => {
-    it('does not raise the score, and marks rather than drops', async () => {
+  // A path rule is NOT the same statement as a check-ID rule, and this suite
+  // originally treated them as one. `test-fixtures/` in an `.hmaignore` says
+  // "this part of the tree is not my product" — the same statement as scanning a
+  // subdirectory — and a smaller target honestly scores differently. Scoring
+  // path-excluded findings anyway was measured against HMA's own repo: 100/100
+  // became 0/100 with 25 critical, every one of them in deliberately-vulnerable
+  // fixtures the published package does not even contain.
+  //
+  // So the property here is not "the score cannot move". It is "the score cannot
+  // move SILENTLY". `outOfScope` is what makes that true, and it is the thing
+  // 0.27.0 had no equivalent of.
+  describe('channel 3 — an .hmaignore path pattern narrows scope, and says so', () => {
+    it('takes the finding out of the scored set and records it', async () => {
       const hDir = await makeFixture();
       try {
         await writeFile(path.join(hDir, '.hmaignore'), `${SECRET_FILE}\n`);
-        const suppressed = await scan(hDir);
-        expect(suppressed.score).toBe(baseline.score);
-        const marked = suppressed.findings.filter((f) => f.suppressed);
-        expect(marked.length).toBeGreaterThan(0);
-        expect(marked.every((f) => f.suppressedBy === 'hmaignore-path')).toBe(true);
-        // #280's re-pointing survives: a finding that still speaks for an
-        // un-ignored path is NOT suppressed by this channel.
-        for (const f of suppressed.findings.filter((x) => !x.suppressed)) {
-          expect(f.file).not.toBe(SECRET_FILE);
-        }
+        const scanner = new HardeningScanner();
+        const result = await scanner.scan({ targetDir: hDir, cliName: 'hackmyagent' });
+
+        // Out of the findings array entirely — not merely un-displayed.
+        expect(result.findings.some((f) => f.file === SECRET_FILE)).toBe(false);
+
+        // ...and impossible to do without leaving a record.
+        expect(result.outOfScope, 'scope narrowed with no record of it').toBeDefined();
+        const total = result.outOfScope!.reduce((n, r) => n + r.count, 0);
+        expect(total).toBeGreaterThan(0);
+        expect(result.outOfScope!.every((r) => r.suppressedBy === 'hmaignore-path')).toBe(true);
+      } finally {
+        await rm(hDir, { recursive: true, force: true });
+      }
+    });
+
+    it('the record carries identity only, never the evidence it describes', async () => {
+      const hDir = await makeFixture();
+      try {
+        await writeFile(path.join(hDir, '.hmaignore'), `${SECRET_FILE}\n`);
+        const scanner = new HardeningScanner();
+        const result = await scanner.scan({ targetDir: hDir, cliName: 'hackmyagent' });
+        const serialized = JSON.stringify(result.outOfScope ?? []);
+        expect(serialized).not.toContain(syntheticKey());
+        expect(serialized).not.toContain(SECRET_FILE);
+      } finally {
+        await rm(hDir, { recursive: true, force: true });
+      }
+    });
+
+    it('an unmatched path rule narrows nothing and records nothing', async () => {
+      const hDir = await makeFixture();
+      try {
+        await writeFile(path.join(hDir, '.hmaignore'), 'no-such-directory/\n');
+        const scanner = new HardeningScanner();
+        const result = await scanner.scan({ targetDir: hDir, cliName: 'hackmyagent' });
+        expect(result.outOfScope).toBeUndefined();
+        expect(result.score).toBe(baseline.score);
       } finally {
         await rm(hDir, { recursive: true, force: true });
       }

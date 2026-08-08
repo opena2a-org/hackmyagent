@@ -920,6 +920,12 @@ interface UnifiedCheckDisplayOptions {
     maxScore: number;
     findings: SecurityFinding[];
     filesScanned?: number;
+    /**
+     * Findings an `.hmaignore` path rule put out of scope (#450). Not in
+     * `findings` and not in `score`, so this is the only thing that lets the
+     * report say the scan was narrowed.
+     */
+    outOfScope?: ScanResult['outOfScope'];
     /** Pre-clamp composite, when the #259 verdict-band clamp lowered `score`. */
     rawScore?: number;
     /** True when `score < rawScore` because the verdict is fail-direction (#259). */
@@ -1434,6 +1440,11 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   // been reported; a suppressed check that passed is not a cost to disclose.
   const suppressedRows = summarizeSuppressed(failed);
 
+  // #450 — scope narrowing, which is a different statement from suppression and
+  // gets a different line. These findings are already gone from `failed`, so
+  // this array is the only evidence the scan was narrowed at all.
+  const outOfScopeRows = localScan?.outOfScope ?? [];
+
   // ── Header ──────────────────────────────────────────────────────────
   const typeLabel = (registry?.packageType || projectType || 'unknown').replace(/_/g, ' ');
   const meta: string[] = [typeLabel];
@@ -1898,6 +1909,10 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         const suppressedTotal = suppressedRows.reduce((n, r) => n + r.count, 0);
         parts.push(`${suppressedTotal} finding${suppressedTotal === 1 ? '' : 's'} suppressed by the caller`);
       }
+      if (outOfScopeRows.length > 0) {
+        const oosTotal = outOfScopeRows.reduce((n, r) => n + r.count, 0);
+        parts.push(`${oosTotal} finding${oosTotal === 1 ? '' : 's'} out of scope`);
+      }
       checksLine.value = parts.join(' · ');
     }
 
@@ -1912,6 +1927,35 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // string `.gitignore`, so a reviewer handed the report had no way to know a
     // CRITICAL credential finding had been withheld. Rendered whether or not
     // anything else is printed, and never collapsed into a bare count.
+    // #450 — an `.hmaignore` path rule narrowed the scan. The score is honest
+    // FOR THE SCOPE EVALUATED and says so here, which is the half that was
+    // missing: published 0.27.0 reported `100/100 · No security issues found` on
+    // this very repo while an `.hmaignore` held back 65 findings, 13 of them
+    // critical, and named none of it. Same shape as `scan-soul`'s `Scope` line.
+    if (outOfScopeRows.length > 0) {
+      const oosTotal = outOfScopeRows.reduce((n, r) => n + r.count, 0);
+      const bySeverity = new Map<string, number>();
+      for (const r of outOfScopeRows) {
+        bySeverity.set(r.severity, (bySeverity.get(r.severity) ?? 0) + r.count);
+      }
+      const sevSummary = ['critical', 'high', 'medium', 'low']
+        .filter((s) => bySeverity.has(s))
+        .map((s) => `${bySeverity.get(s)} ${s}`)
+        .join(', ');
+      const labelPad = 'Scope'.padEnd(LABEL_WIDTH, ' ');
+      const worstOos = bySeverity.has('critical') || bySeverity.has('high');
+      console.log(
+        `  ${colors.dim}${labelPad}${RESET()}${worstOos ? colors.yellow : colors.dim}` +
+        `${oosTotal} finding${oosTotal === 1 ? '' : 's'} excluded by .hmaignore path rules` +
+        `${sevSummary ? ` (${sevSummary})` : ''}${RESET()}`,
+      );
+      console.log(
+        `  ${colors.dim}${''.padEnd(LABEL_WIDTH, ' ')}` +
+        `Out of scope, so not scored and not in the exit code. ` +
+        `The score above describes the tree minus those paths.${RESET()}`,
+      );
+    }
+
     if (suppressedRows.length > 0) {
       const labelPad = 'Suppressed'.padEnd(LABEL_WIDTH, ' ');
       const named = suppressedRows
@@ -4356,6 +4400,14 @@ Examples:
       {
         // Re-apply all filters after NanoMind merge (merge uses allFindings which is unfiltered)
         const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir);
+        // #450 — the semantic layer produces findings the scan pass never saw,
+        // so this call can put paths out of scope that `scanInner` did not. Take
+        // the wider of the two records rather than the later one, or a narrowing
+        // disclosed by the static pass disappears from the report the moment the
+        // semantic pass runs.
+        if (scanner.lastOutOfScope.length > (result.outOfScope?.length ?? 0)) {
+          result.outOfScope = scanner.lastOutOfScope;
+        }
         if (result.allFindings) {
           result.allFindings = refiltered as typeof result.allFindings;
         }
@@ -4955,6 +5007,11 @@ Examples:
           // `Verdict  Usable with caveats.` — the #259 incoherence again,
           // with the number and the words swapped.
           findings: result.findings.filter((f) => !f.fixed || f.fixVerified === false),
+          // #450 — carried to the renderer so the `Scope` line can name what an
+          // `.hmaignore` path rule held back. Without it the narrowing is
+          // invisible: 0.27.0 printed `100/100 · No security issues found` on
+          // this repo over 65 withheld findings, 13 of them critical.
+          outOfScope: result.outOfScope,
           // Measured coverage for this run. Without it the Observations block
           // falls back to deriving its claim from the configured check set,
           // which is what printed "(all clear)" over categories nothing

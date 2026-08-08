@@ -26,7 +26,7 @@ import {
   inferActualCapabilities,
   validateCapabilities,
 } from './skill-capability-validator';
-import { clampScoreToVerdictBand, countsAgainstScore } from '../ui/verdict-band';
+import { clampScoreToVerdictBand, countsAgainstScore, summarizeSuppressed } from '../ui/verdict-band';
 import { shellQuote, citationTarget, citationPaths, commandNaming } from '../ui/shell-quote';
 import {
   isPathWithinDirectory as containIsPathWithinDirectory,
@@ -1772,15 +1772,32 @@ export class HardeningScanner {
     const allIgnoredPaths = [...hmaIgnore.paths, ...(additionalIgnorePaths || [])];
     const suppressedCheckPatterns = hmaIgnore.checkIds;
 
+    // Reset FIRST, and on the no-op path too: a reused scanner instance must not
+    // let the previous target's scope narrowing be disclosed against this one.
+    this.lastOutOfScope = [];
+
     if (allIgnoredPaths.length === 0 && suppressedCheckPatterns.length === 0) {
       return findings;
     }
 
-    // #450 — marks, does not remove. This runs after the NanoMind merge, on a
-    // findings array the CLI then recomputes the score from, so returning a
-    // shortened array here re-created the laundering the scan path had just
-    // stopped doing. Callers render with `isDisplayed()`.
+    // #450 — the same split `scanInner` makes, for the same reasons. A check-ID
+    // rule is MARKED and kept, because this runs after the NanoMind merge on the
+    // very array the CLI recomputes the score from, so returning a shortened
+    // array re-created the laundering the scan path had just stopped doing. A
+    // path rule is a scope change and leaves the array, with the summary parked
+    // on `lastOutOfScope` for the caller to disclose. Callers render with
+    // `isDisplayed()`.
+    const pathExcluded: SecurityFinding[] = [];
     for (const f of findings) {
+      // Already out of scope from the scan pass. It must be re-collected, not
+      // skipped: `nmResult.mergedFindings` is rebuilt from `allFindings`, which
+      // holds the SAME objects `scanInner` marked, so an early `continue` here
+      // let every path-excluded finding ride back into the scored array. That
+      // put HMA's own 65 excluded fixture findings on both the `Scope` line and
+      // the `Suppressed` line while still scoring them 0/100 — the marking was
+      // idempotent, the filtering was not.
+      if (f.suppressedBy === 'hmaignore-path') { pathExcluded.push(f); continue; }
+      // Marked by a check-ID channel: stays in the array and keeps counting.
       if (f.suppressed) continue;
       if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) {
         f.suppressed = true;
@@ -1789,10 +1806,24 @@ export class HardeningScanner {
         // #280 — keys on every covered path, not just `f.file`.
         f.suppressed = true;
         f.suppressedBy = 'hmaignore-path';
+        pathExcluded.push(f);
       }
     }
-    return findings;
+    this.lastOutOfScope = summarizeSuppressed(pathExcluded);
+    if (pathExcluded.length === 0) return findings;
+    const excluded = new Set(pathExcluded);
+    return findings.filter((f) => !excluded.has(f));
   }
+
+  /**
+   * Scope narrowing from the most recent `reapplyIgnoreFilters` call, so the
+   * caller can disclose it (#450). Identity only — see `summarizeSuppressed`.
+   *
+   * Per-call, and reset on every call including the no-op one, so a reused
+   * scanner instance cannot let one target's `.hmaignore` describe the next
+   * target's scan.
+   */
+  lastOutOfScope: ReturnType<typeof summarizeSuppressed> = [];
 
   /**
    * Every path a finding speaks for.
@@ -2748,19 +2779,31 @@ export class HardeningScanner {
       return true;
     });
 
-    // #450 — user suppression, applied as a MARK.
+    // #450 — user suppression, and the line between the two kinds of it.
     //
-    // `--ignore`, an `.hmaignore` check-ID pattern and an `.hmaignore` path
-    // pattern are three routes to one behaviour, and all three laundered the
-    // score identically before this: 69/100 exit 1 -> 98/100 exit 0 on
-    // `corpus/repo/buggy/leaky-env-example`, with no mention of the suppression
-    // anywhere in the output. The issue named only the flag; the other two were
-    // never reported and were the same bug.
+    // SUPPRESSING A CHECK ID is not a scope change. The check ran over the whole
+    // tree and matched something; removing it removes a penalty. That is what
+    // made `--ignore CONFIG-004` move `corpus/repo/buggy/leaky-env-example` from
+    // 69/100 exit 1 to 98/100 exit 0 with the credential verdict gone and nothing
+    // in the output naming the suppression. These are MARKED and kept, so the
+    // score, the verdict band and every channel's exit code still see them, and
+    // only the renderer drops them from the list.
     //
-    // Marked findings stay in `filteredFindings`, so the score below, the
-    // verdict band, and every channel's exit computation see them. The renderer
-    // is what drops them from the list. See `SecurityFinding.suppressed` for why
-    // this direction of failure is the safe one.
+    // EXCLUDING A PATH is a scope change, and is scored as one. `test-fixtures/`
+    // in an `.hmaignore` means "this part of the tree is not my product", which
+    // is the same statement as scanning a subdirectory, and a smaller target
+    // honestly scores differently. Treating it as a penalty to keep was measured
+    // and rejected: it took HMA's own repo from 100/100 to 0/100 with 25 critical,
+    // every one of them in deliberately-vulnerable fixtures that are excluded
+    // from the published package. A number that is useless is not more honest
+    // than a number that is scoped, PROVIDED the scope is disclosed — and the
+    // disclosure is the half that was missing before, not the arithmetic.
+    // `scan-soul`'s profile path is the precedent: skipped domains leave the
+    // denominator and are named on a `Scope` line.
+    //
+    // So: path exclusions leave the scored set and are reported as scope;
+    // check-ID suppressions stay in it and are reported as suppression.
+    const pathExcluded: SecurityFinding[] = [];
     for (const f of filteredFindings) {
       if (ignoredChecks.has(f.checkId.toUpperCase())) {
         f.suppressed = true;
@@ -2772,10 +2815,21 @@ export class HardeningScanner {
         // #280's re-pointing behaviour is preserved: `retainAfterPathSuppression`
         // returns true for a multi-file finding while ANY covered path survives,
         // and has already re-pointed `file` onto a survivor by the time it does.
-        // Only a finding whose every covered path is ignored reaches here.
+        // Only a finding whose every covered path is ignored reaches here, so a
+        // partial ignore still keeps its finding and still scores — which is the
+        // #280 rule, unchanged.
         f.suppressed = true;
         f.suppressedBy = 'hmaignore-path';
+        pathExcluded.push(f);
       }
+    }
+    // Out of scope, so out of the scored set. Summarised first: once they leave
+    // the array this is the only record that they existed, and the report must
+    // not be able to narrow scope silently.
+    const outOfScope = summarizeSuppressed(pathExcluded);
+    if (pathExcluded.length > 0) {
+      const excluded = new Set(pathExcluded);
+      filteredFindings = filteredFindings.filter((f) => !excluded.has(f));
     }
 
     // #421 — which FAILED findings did the scanner silence on its own?
@@ -2924,6 +2978,10 @@ export class HardeningScanner {
       dryRun: dryRun && autoFix ? true : undefined,
       atomicFix,
       ignored: ignoredChecks.size > 0 ? Array.from(ignoredChecks) : undefined,
+      // #450 — findings an `.hmaignore` path rule put out of scope. They are NOT
+      // in `findings` and NOT in the score, and this is the only record that the
+      // scan was narrowed, so it is what makes the narrowing non-silent.
+      outOfScope: outOfScope.length > 0 ? outOfScope : undefined,
       semanticAnalysis: (layer2Count > 0 || layer3Count > 0) ? {
         layer2Findings: layer2Count,
         layer3Findings: layer3Count,

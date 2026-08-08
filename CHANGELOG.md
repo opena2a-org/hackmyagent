@@ -25,14 +25,30 @@ Nothing in the second report named the suppression: grepping the whole run for
 pipeline could be made green by naming the check that was failing it, and the resulting
 report read as a clean scan rather than a suppressed one.
 
-Three routes reached this, not one. The issue reports the `--ignore` flag; an
-`.hmaignore` check-ID pattern and an `.hmaignore` path pattern hit the same filter and
-laundered identically. All three are closed, in `secure` and in `check`.
+The `--ignore` flag and an `.hmaignore` `!CHECK-ID` rule are the same statement — "do not
+tell me about this check" — and both reached this. Both are closed, in `secure` and in
+`check`.
+
+An `.hmaignore` **path** rule is a different statement and is treated differently. It says
+"this part of the tree is not my product", which is the same statement as scanning a
+subdirectory, and a smaller target honestly scores differently. Those findings leave the
+scored set as before — but they are no longer allowed to leave it silently, which is the
+half that was missing. `secure` on HackMyAgent's own repo reported `100/100 · No security
+issues found` in 0.27.0 while an `.hmaignore` held back 65 findings, 26 of them critical,
+and named none of it anywhere in the output. It now prints:
+
+```
+Scope       65 findings excluded by .hmaignore path rules (26 critical, 15 high, 24 medium)
+            Out of scope, so not scored and not in the exit code. The score above
+            describes the tree minus those paths.
+```
 
 What changes:
 
-- A suppressed finding is **withheld from the findings list** and still counted in the
-  score, the verdict band and the exit code.
+- A check-ID-suppressed finding is **withheld from the findings list** and still counted
+  in the score, the verdict band and the exit code.
+- A path-excluded finding leaves the scored set and is reported on a `Scope` line with a
+  severity breakdown, in text and as `outOfScope` in `--json`.
 - Every suppressed check ID is named on a `Suppressed` line in text output and in a
   `suppressed` array in `--json`, with what it would have reported. The disclosure
   carries identity only — no evidence, no path — so a suppressed credential finding
