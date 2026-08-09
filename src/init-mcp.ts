@@ -6,7 +6,24 @@
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
+import { rootTooBroad, describeRootRefusal } from './mcp/roots';
+
+/**
+ * The real path when it exists, the lexical one when it does not.
+ *
+ * The policy compares against a realpath'd home, so a root reached through a
+ * symlinked ancestor (`/tmp`, an external-volume home) has to be realpath'd
+ * here too or the two sides compare different strings for the same directory.
+ */
+function realpathSyncOrSelf(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return p;
+  }
+}
 
 interface McpConfig {
   mcpServers?: Record<string, {
@@ -91,8 +108,22 @@ function detectIde(targetDir: string): typeof IDE_CONFIGS[number] | null {
 export function initMcp(targetDir: string, forceTool?: string, roots: string[] = []): InitResult {
   // No `--root` means "the project you ran this in", which is still an explicit
   // human act naming a directory — unlike the server inheriting a cwd it was
-  // never told about. `mcp-serve` refuses a home directory or `/` either way.
+  // never told about.
   const resolvedRoots = (roots.length > 0 ? roots : [targetDir]).map((r) => path.resolve(r));
+
+  // The SAME policy `mcp-serve` enforces, applied here, because this is the
+  // command its refusal text sends people to. Writing a root the server will
+  // refuse produced "Added HackMyAgent MCP server" at exit 0 and then a client
+  // whose every tool call failed for the life of the install — the dead end
+  // that ruling was meant to close, reintroduced by the recovery path itself.
+  // Refusing at configuration time is the only point where the person is still
+  // present to fix it.
+  for (const real of resolvedRoots.map((r) => realpathSyncOrSelf(r))) {
+    const why = rootTooBroad(real, os.homedir());
+    if (why) {
+      throw new Error(describeRootRefusal({ kind: 'root-too-broad', root: real, why }));
+    }
+  }
   let ideConfig: typeof IDE_CONFIGS[number] | null = null;
 
   if (forceTool) {

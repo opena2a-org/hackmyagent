@@ -67,6 +67,20 @@ suppressed that file's findings permanently, at no API cost, printing `(cached)`
 After the fix all four payloads report the control's findings, the benign controls are
 unmoved (`54 → 54`, `69 → 69`), and the forged fixture scores `69/100` exit 1 again.
 
+**`secure --deep` exits 2 when it could not finish, instead of 0.** Reading the analyst's
+reply used to depend on how the model happened to format it. Measured on the same file,
+with the same credential and the same analyst verdict, changing only the formatting:
+a bare JSON array gave `69/100` exit 1, and the same answer with a sentence in front of it
+gave `93/100` exit 0. The reply is now read from any of the shapes models actually return
+— fenced or not, with prose around it, or wrapped in `{"findings": [...]}` — and if it
+still cannot be read, that file is reported as unanalyzed and the run exits **2**, the
+code this CLI already uses for "reached no verdict". `0` still means clean and `1` still
+means findings.
+
+Together with the `--ignore` change below, this release makes two runs fail that used to
+pass. Both are the same correction: a scan that did not measure something must not report
+it as clean. Neither is a new detection, and neither changes what the checks find.
+
 The same defect existed on the `scan-soul --deep` coverage path, where a passing verdict
 can only raise a control and never lower it. It is fixed the same way, and a hedged answer
 no longer counts as a pass — the check was `startsWith('YES')`, so "YES, but only
@@ -108,13 +122,30 @@ grant. Re-run:
 hackmyagent init-mcp --root /absolute/path/to/your/project
 ```
 
-`/` and a home directory are refused as roots. `hackmyagent_analyze_file` is removed and
-returns a pointer to `hackmyagent_deep_scan` for one release. The `fix` parameter is
-removed from the MCP surface entirely, including the code that read it: a filesystem write
-nobody confirmed, initiated by a model that may be acting on text it just read out of a
-file, is not something a security tool should offer. Fixes are applied from a terminal
-with `hackmyagent secure --fix`. A suppression list supplied through the MCP tool is now
-named in the response instead of applied silently.
+`/` and a home directory are refused as roots — by `init-mcp` as well as by `mcp-serve`,
+which is what the refusal text tells you to run. A path inside a root must also exist and
+be a directory: `scan` used to answer `Score: 98/100` for a directory that was never
+there.
+
+**Confinement covers what a scan discovers, not only the path you pass it.** A project
+can contain a symbolic link at a name the scanner looks for — `CLAUDE.md`, `.env`,
+`.mcp.json` — pointing anywhere on the machine. Confining the directory argument alone
+left those readable, and `deep_scan` returned their contents. Every artifact's real
+location must now be inside a granted root, and anything withheld is named in the
+response rather than dropped in silence.
+
+This applies to the MCP server, where the caller is a model. It is deliberately not
+applied to `hackmyagent secure` on the command line: there you chose the directory
+yourself, and a monorepo whose `.env` is a link to a shared file is a legitimate thing to
+scan.
+
+`hackmyagent_analyze_file` is removed and returns a pointer to `hackmyagent_deep_scan` for
+one release. The `fix` parameter is removed from the MCP surface: there is no write path
+behind it, and passing it now returns a note saying so rather than doing nothing quietly.
+A filesystem write nobody confirmed, initiated by a model that may be acting on text it
+just read out of a file, is not something a security tool should offer. Fixes are applied
+from a terminal with `hackmyagent secure --fix`. A suppression list supplied through the
+MCP tool is now named in the response instead of applied silently.
 
 **`--ignore` and `.hmaignore` no longer change the score or the exit code (#450).**
 This can turn a green pipeline red, and it is the reason to read this entry before

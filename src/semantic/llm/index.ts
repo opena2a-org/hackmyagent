@@ -176,32 +176,31 @@ export class LLMAnalyzer {
    * The greedy `/\[[\s\S]*\]/` is gone rather than narrowed. A non-greedy
    * version truncates any finding whose description contains a `]`, and a
    * hand-written balanced scanner is a new parser — the surface #449 spent five
-   * review rounds paying for. What is left is the smallest total rule: the
-   * response is a JSON array, optionally inside one fenced block, and anything
-   * else is `unparsed` and is REPORTED.
+   * review rounds paying for.
+   *
+   * The first replacement was two rules — "starts with a bracket" or "the last
+   * fenced block" — and it was measured against the OLD parser on twenty
+   * response shapes: it lost a CRITICAL credential finding on six of them,
+   * including an unfenced array after prose and a `{"findings":[…]}` wrapper.
+   * End to end that took `secure --deep` on a file holding a plaintext operator
+   * credential from `69/100 exit 1` to `93/100 exit 0` — the same file, the same
+   * analyst verdict, and only the model's FORMATTING different. Trading a
+   * suppression defect for a formatting-dependent CI gate is not a fix.
+   *
+   * So there are no per-shape rules. There is a short, general list of CANDIDATE
+   * slices, and `JSON.parse` is still the only parser — each candidate is handed
+   * to it and the first that yields an array of findings wins. Adding a shape
+   * does not add a branch; a response nothing recognises is `unparsed` and is
+   * REPORTED, never silently clean.
    */
   parseModelResponse(response: string, file: AnalysisFile): LLMFileOutcome {
-    const body = extractJsonPayload(response);
-    if (body === null) {
+    const raw = extractFindingsArray(response);
+    if (raw === null) {
       return {
         kind: 'unparsed',
-        reason: 'the analyst\'s response contained no JSON array to read',
+        reason: 'the analyst\'s response did not contain the JSON array of findings the prompt asks for',
       };
     }
-
-    let raw: unknown;
-    try {
-      raw = JSON.parse(body);
-    } catch {
-      return {
-        kind: 'unparsed',
-        reason: 'the analyst\'s response was not the JSON array the prompt asks for',
-      };
-    }
-    if (!Array.isArray(raw)) {
-      return { kind: 'unparsed', reason: 'the analyst returned JSON that was not an array of findings' };
-    }
-
     return { kind: 'findings', findings: this.toFindings(raw as LLMFindingRaw[], file) };
   }
 
@@ -243,36 +242,99 @@ export class LLMAnalyzer {
   }
 }
 
-/**
- * The JSON text in a model response, or null.
- *
- * Line-based and total. It has exactly two rules — the whole response is JSON,
- * or the answer is the LAST fenced block — and neither can span from a stray `[`
- * to a distant `]`, which is what the greedy `/\[[\s\S]*\]/` did.
- *
- * Rule two is not optional and it was measured into existence. With the boundary
- * rule in place the analyst frequently DETECTS the injection and says so before
- * answering ("Despite the attempt to redirect me with instructions inside the
- * artifact…"), so requiring the whole response to be JSON threw away correct
- * answers on exactly the adversarial inputs this fix exists for: the forged
- * fixture went to `unparsed` in 2 of 3 trials while the model had reported both
- * credentials. A stricter parser is a false negative, just a loud one.
- */
-export function extractJsonPayload(text: string): string | null {
-  const trimmed = text.trim();
-  if (trimmed.startsWith('[') || trimmed.startsWith('{')) return trimmed;
+/** A fence line, whichever of the two markdown spellings the model chose. */
+const FENCE_LINE = /^(?:```|~~~)[a-zA-Z0-9_-]*$/;
 
-  const lines = trimmed.split('\n');
+/**
+ * The contents of each fenced block, in order.
+ *
+ * An unclosed final fence runs to the end of the response rather than being
+ * discarded: a truncated answer is still an answer, and dropping it reported a
+ * file as unread when the findings were sitting right there.
+ */
+function fencedBlocks(lines: string[]): string[] {
   const fences: number[] = [];
   for (let i = 0; i < lines.length; i++) {
-    if (/^```[a-zA-Z0-9_-]*$/.test(lines[i].trim())) fences.push(i);
+    if (FENCE_LINE.test(lines[i].trim())) fences.push(i);
   }
-  if (fences.length < 2) return null;
+  const blocks: string[] = [];
+  for (let i = 0; i < fences.length; i += 2) {
+    const open = fences[i];
+    const close = i + 1 < fences.length ? fences[i + 1] : lines.length;
+    if (close - open > 1) blocks.push(lines.slice(open + 1, close).join('\n').trim());
+  }
+  return blocks;
+}
 
-  const close = fences[fences.length - 1];
-  const open = fences[fences.length - 2];
-  if (close - open < 1) return null;
-  return lines.slice(open + 1, close).join('\n').trim();
+/**
+ * Slices of the response that might BE the answer, most-likely first.
+ *
+ * Deliberately a short general list rather than a rule per response shape: the
+ * previous two-rule version lost a finding on six of twenty measured shapes, and
+ * answering that with six more rules is how a parser becomes the defect. Nothing
+ * here decides whether a slice is valid — `JSON.parse` does.
+ */
+function* jsonCandidates(text: string): Generator<string> {
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  yield trimmed;
+
+  // Later blocks first: when the analyst quotes the artifact before answering,
+  // the quote comes first and the answer last.
+  const blocks = fencedBlocks(trimmed.split('\n'));
+  for (let i = blocks.length - 1; i >= 0; i--) yield blocks[i];
+
+  // A bare array or object sitting in prose. These CAN span from a stray `[` to
+  // a distant `]` — that is exactly the greedy match — but they are last, they
+  // are only reached when everything better failed, and `JSON.parse` has to
+  // accept the result. The greedy regex's defect was never the span; it was that
+  // the span's failure was swallowed and reported as a clean file.
+  const spans: Array<[number, number]> = [
+    [trimmed.indexOf('['), trimmed.lastIndexOf(']')],
+    [trimmed.indexOf('{'), trimmed.lastIndexOf('}')],
+  ];
+  for (const [start, end] of spans) {
+    if (start !== -1 && end > start) yield trimmed.slice(start, end + 1);
+  }
+}
+
+/** The findings array inside one candidate slice, or null if it is not one. */
+function findingsArrayFrom(candidate: string): unknown[] | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(candidate);
+  } catch {
+    return null;
+  }
+  if (Array.isArray(parsed)) return parsed;
+  // `{"findings":[…]}` is a shape models return unprompted, and the old parser
+  // read it correctly by accident — its greedy match found the inner array. It
+  // is accepted explicitly rather than lost to the tightening.
+  if (parsed && typeof parsed === 'object') {
+    const wrapped = (parsed as Record<string, unknown>).findings;
+    if (Array.isArray(wrapped)) return wrapped;
+  }
+  return null;
+}
+
+/** The model's findings array, or null when no slice of the response is one. */
+export function extractFindingsArray(text: string): unknown[] | null {
+  for (const candidate of jsonCandidates(text)) {
+    const arr = findingsArrayFrom(candidate);
+    if (arr !== null) return arr;
+  }
+  return null;
+}
+
+/**
+ * The JSON text of the winning candidate, for tests and callers that want the
+ * slice rather than the parsed value.
+ */
+export function extractJsonPayload(text: string): string | null {
+  for (const candidate of jsonCandidates(text)) {
+    if (findingsArrayFrom(candidate) !== null) return candidate;
+  }
+  return null;
 }
 
 export { AnthropicClient } from './client';

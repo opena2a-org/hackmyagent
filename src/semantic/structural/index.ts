@@ -158,6 +158,20 @@ export class StructuralAnalyzer {
         const stat = await fs.stat(filePath);
         if (!stat.isFile()) return true;
 
+        // #463 — the read is where containment has to hold. `stat` and
+        // `readFile` both follow symlinks, so the name being inside the tree
+        // says nothing about where the BYTES come from.
+        if (opts.confineTo) {
+          const real = await fs.realpath(filePath);
+          const inside = opts.confineTo.roots.some(
+            (r) => real === r || real.startsWith(r.endsWith(path.sep) ? r : r + path.sep),
+          );
+          if (!inside) {
+            opts.confineTo.onWithheld?.(rel, real);
+            return true;
+          }
+        }
+
         const truncated = stat.size > MAX_FILE_SIZE;
         const content = await fs.readFile(filePath, 'utf-8');
         const finalContent = truncated

@@ -33,16 +33,40 @@ import * as os from 'os';
 import { promises as fs } from 'fs';
 import { resolveInsideTree, describeResolveRefusal, type ResolveRefusal } from '../hardening/contain';
 import { citationTarget, citationPaths } from '../ui/shell-quote';
+import { escapePathForDisplay } from '../ui/display-safe';
 
 /** Why a request was refused. Each one has a sentence in `describeRootRefusal`. */
 export type RootRefusal =
   | { kind: 'no-root-configured'; cwd: string }
   | { kind: 'root-too-broad'; root: string; why: 'filesystem-root' | 'home-directory' }
   | { kind: 'outside-roots'; requested: string; resolved: string; roots: string[] }
+  | { kind: 'not-a-directory'; requested: string; resolved: string; why: 'missing' | 'file' }
   | { kind: 'unresolvable'; requested: string; cause: ResolveRefusal };
 
 export type RootsOutcome = { ok: true; roots: string[] } | { ok: false; refusal: RootRefusal };
 export type PathOutcome = { ok: true; path: string } | { ok: false; refusal: RootRefusal };
+
+/**
+ * The root policy, in ONE place and synchronous.
+ *
+ * `mcp-serve` refused `/` and `$HOME` while `init-mcp` accepted them, so the
+ * command the refusal text sends people to wrote a config that could never
+ * work: exit 0, "Added HackMyAgent MCP server", and then every tool call in
+ * that client refused for the life of the install. README.md said the two were
+ * not accepted, directly beneath the `init-mcp --root` example that accepted
+ * them.
+ *
+ * It is synchronous because `initMcp` writes the config on a sync path, and a
+ * policy that existed only on the async side is exactly how the two came apart.
+ */
+export function rootTooBroad(
+  realRoot: string,
+  home: string,
+): 'filesystem-root' | 'home-directory' | null {
+  if (realRoot === path.parse(realRoot).root) return 'filesystem-root';
+  if (realRoot === path.resolve(home)) return 'home-directory';
+  return null;
+}
 
 /**
  * The roots this server session may act in, or the reason it has none.
@@ -63,17 +87,42 @@ export async function resolveRoots(
   }
 
   const roots: string[] = [];
+  const realHome = await realpathOrResolve(home);
   for (const candidate of cliRoots) {
     const real = await realpathOrResolve(path.resolve(cwd, candidate));
-    if (real === path.parse(real).root) {
-      return { ok: false, refusal: { kind: 'root-too-broad', root: real, why: 'filesystem-root' } };
-    }
-    if (real === (await realpathOrResolve(home))) {
-      return { ok: false, refusal: { kind: 'root-too-broad', root: real, why: 'home-directory' } };
+    const why = rootTooBroad(real, realHome);
+    if (why) {
+      return { ok: false, refusal: { kind: 'root-too-broad', root: real, why } };
     }
     roots.push(real);
   }
   return { ok: true, roots };
+}
+
+/**
+ * Containment says WHERE a path is. It does not say the path is there.
+ *
+ * `resolveInsideTree` resolves a destination's PARENT, so a name that does not
+ * exist inside the root passes containment — correctly, it is inside — and the
+ * scanner then reported on it. Measured: `scan {directory: "nope-not-a-real-dir"}`
+ * returned `Score: 98/100 | 1 issue found` and `benchmark` returned
+ * `83% compliance`, both `isError: undefined`, for a directory that was never
+ * there. A host model that mistypes a path was told the project passed.
+ *
+ * The CLI has always refused this (`Directory '...' does not exist.`); only the
+ * MCP surface answered. Every tool behind this helper takes a DIRECTORY, so the
+ * requirement lives here rather than three times in the handlers.
+ */
+async function confirmDirectory(resolved: string, requested: string): Promise<PathOutcome> {
+  try {
+    const st = await fs.stat(resolved);
+    if (!st.isDirectory()) {
+      return { ok: false, refusal: { kind: 'not-a-directory', requested, resolved, why: 'file' } };
+    }
+    return { ok: true, path: resolved };
+  } catch {
+    return { ok: false, refusal: { kind: 'not-a-directory', requested, resolved, why: 'missing' } };
+  }
 }
 
 /**
@@ -101,12 +150,21 @@ export async function resolveWithinRoots(roots: string[], requested: string): Pr
     // the allowed root. Over-correcting a containment fix until it refuses the
     // legitimate case is #270's recorded failure mode, not a new one.
     const normalized = path.normalize(rel);
-    if (normalized === '' || normalized === '.') return { ok: true, path: root };
+    if (normalized === '' || normalized === '.') return confirmDirectory(root, requested);
     // `followLeafLink: true` — a link inside the root that points inside the
-    // root is an ordinary file to read; one that points out is refused, which is
-    // the third of the three escape shapes measured on `c982b58`.
+    // root is an ordinary file to read; one that points out is refused. That
+    // closes the third escape shape measured on `c982b58` FOR THE PATH THE
+    // CALLER NAMES, which is all this function sees.
+    //
+    // It is not confinement over what a scan then DISCOVERS. This comment used
+    // to claim the escape shape outright, and the claim was false: the walk
+    // reads discovery basenames by joining them onto the target, so a link at
+    // `CLAUDE.md` or `.env` was read even though nobody ever passed its path
+    // here. That half lives in `DiscoveryOptions.confineTo`, which the MCP
+    // handlers pass and the CLI deliberately does not. Both halves are needed
+    // and neither implies the other.
     const outcome = await resolveInsideTree(root, rel, { followLeafLink: true });
-    if (outcome.ok) return { ok: true, path: outcome.path };
+    if (outcome.ok) return confirmDirectory(outcome.path, requested);
     lastCause = outcome.cause;
   }
 
@@ -147,7 +205,7 @@ export function describeRootRefusal(refusal: RootRefusal, cliName = 'hackmyagent
     case 'no-root-configured':
       return `No project root is configured for this MCP server.
 
-  Server working directory: ${refusal.cwd}
+  Server working directory: ${escapePathForDisplay(refusal.cwd)}
   Allowed roots:            none
 
 hackmyagent will not scan until it is told which directory it may read. The
@@ -163,7 +221,7 @@ Then restart your MCP client. Scanning also works with no MCP configuration:
   ${cliName} secure /absolute/path/to/your/project`;
 
     case 'root-too-broad':
-      return `Root not accepted: ${refusal.root}
+      return `Root not accepted: ${escapePathForDisplay(refusal.root)}
 
 hackmyagent does not accept ${
         refusal.why === 'filesystem-root' ? 'the filesystem root' : 'a home directory'
@@ -178,12 +236,27 @@ Name the project instead. From a terminal:
 
 --root is repeatable, so several projects can be granted individually.`;
 
+    case 'not-a-directory':
+      return `${
+        refusal.why === 'missing' ? 'No such directory.' : 'That path is a file, not a directory.'
+      }
+
+  Requested:   ${escapePathForDisplay(refusal.requested)}
+  Resolved to: ${escapePathForDisplay(refusal.resolved)}
+
+The path is inside an allowed root, so this is not a boundary refusal — there is
+simply nothing there to scan. hackmyagent will not report a score for a directory
+it did not read: a passing result for a path that does not exist would be a clean
+bill of health for nothing.
+
+Check the spelling, or list the directory first, then scan a real path.`;
+
     case 'outside-roots':
       return `Path outside the allowed root.
 
-  Requested:     ${refusal.requested}
-  Resolved to:   ${refusal.resolved}
-  Allowed roots: ${refusal.roots.join(', ')}
+  Requested:     ${escapePathForDisplay(refusal.requested)}
+  Resolved to:   ${escapePathForDisplay(refusal.resolved)}
+  Allowed roots: ${refusal.roots.map(escapePathForDisplay).join(', ')}
 
 The hackmyagent MCP server reads only inside the roots it was started with.
 Symlinks and ".." are resolved before this check, so a path that points outside a
@@ -205,7 +278,7 @@ To scan this path, either:
     case 'unresolvable':
       return `Path could not be used: ${describeResolveRefusal(refusal.cause)}.
 
-  Requested: ${refusal.requested}
+  Requested: ${escapePathForDisplay(refusal.requested)}
 
 This is not a report about the path's contents — hackmyagent did not read it.
 Check the path and try again, or scan from a terminal:

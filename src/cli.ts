@@ -154,6 +154,26 @@ function gateSet(result: { findings?: unknown[]; suppressed?: ScanResult['suppre
   return [...(result.findings ?? []), ...expandSuppressed(result.suppressed)] as any[];
 }
 
+/**
+ * True when Layer 3 sent a file for analysis and could not read an answer back.
+ *
+ * #462 — a `--deep` run that could not read the analyst's answer for a file has
+ * not completed a deep scan, and must not report a deep-scan PASS. Measured on
+ * the branch before this: the same fixture, the same plaintext operator
+ * credential and the same analyst verdict went from `69/100 exit 1` to
+ * `93/100 exit 0` purely because the model wrapped its reply in prose. A CI gate
+ * whose answer depends on the analyst's FORMATTING is not a gate.
+ *
+ * The severity of `SEM-LLM-NOT-ANALYZED` is deliberately left at medium (CISO):
+ * raising it would turn every transient API hiccup into a red pipeline, which
+ * makes an availability event look like a security verdict and is what pushes
+ * people to bypass the gate. The verdict channel says the true thing instead —
+ * this run did not finish — using the exit code this CLI already means it with.
+ */
+function deepScanIncomplete(result: { findings?: Array<{ checkId?: string }> }): boolean {
+  return (result.findings ?? []).some((f) => f.checkId === 'SEM-LLM-NOT-ANALYZED');
+}
+
 async function finishWithFindings(code: number): Promise<void> {
   await recordTelemetry(code);
   process.exitCode = code;
@@ -4997,6 +5017,7 @@ Examples:
         }
         const critHigh = gateSet(result).filter((f: any) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) await finishWithFindings(1);
+        else if (deepScanIncomplete(result)) await finishWithFindings(2);
         return;
       }
 
@@ -5011,6 +5032,7 @@ Examples:
         }
         const critHigh = gateSet(result).filter((f: any) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) await finishWithFindings(1);
+        else if (deepScanIncomplete(result)) await finishWithFindings(2);
         return;
       }
 
@@ -5024,6 +5046,7 @@ Examples:
         }
         const critHigh = gateSet(result).filter((f: any) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) await finishWithFindings(1);
+        else if (deepScanIncomplete(result)) await finishWithFindings(2);
         return;
       }
 
@@ -5043,6 +5066,7 @@ Examples:
         }
         const critHigh = gateSet(result).filter((f: any) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) await finishWithFindings(1);
+        else if (deepScanIncomplete(result)) await finishWithFindings(2);
         return;
       }
 
@@ -5472,6 +5496,13 @@ Examples:
       );
       if (criticalOrHigh.length > 0) {
         return finishWithFindings(1);
+      }
+      if (deepScanIncomplete(result)) {
+        console.error(
+          '\nDeep analysis did not complete for every file, so this run reached no deep-scan\n'
+          + 'verdict. The checks that ran are unaffected and are reported above. Exit code 2.',
+        );
+        return finishWithFindings(2);
       }
     } catch (error) {
       console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
@@ -8211,7 +8242,12 @@ Examples:
       console.log(`  Fixes are applied from a terminal: ${CLI_PREFIX} secure --fix <directory>\n`);
       console.log(`  Try: "Run a deep security scan on this project"\n`);
     } catch (error) {
-      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : String(error))}`);
+      // Escape per LINE, not across the whole message: the root refusals are
+      // multi-line by design and every path inside them is already display-escaped
+      // where it was interpolated. Escaping the whole string turned a refusal a
+      // person is meant to act on into one run of literal \n.
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`Error: ${msg.split('\n').map(escapeForDisplay).join('\n')}`);
       process.exit(1);
     }
   });

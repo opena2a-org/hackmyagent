@@ -120,12 +120,76 @@ describe('#462 three states, never two', () => {
   it('reports UNPARSED, not clean, when the response cannot be read at all', () => {
     const outcome = analyzer().parseModelResponse('I could not complete this analysis.', FILE);
     expect(outcome.kind).toBe('unparsed');
-    if (outcome.kind === 'unparsed') expect(outcome.reason).toMatch(/no JSON array/);
+    if (outcome.kind === 'unparsed') expect(outcome.reason).toMatch(/JSON array of findings/);
   });
 
-  it('reports UNPARSED when the model returns JSON that is not an array', () => {
-    const outcome = analyzer().parseModelResponse('{"findings": []}', FILE);
+  it('reports UNPARSED when the JSON is an object that is not a findings wrapper', () => {
+    const outcome = analyzer().parseModelResponse('{"status": "ok", "notes": 3}', FILE);
     expect(outcome.kind).toBe('unparsed');
+  });
+
+  it('reads a {"findings": [...]} wrapper rather than losing it', () => {
+    // A deliberate contract change, recorded because it reverses an earlier
+    // assertion in this file. The old greedy parser read this shape correctly by
+    // ACCIDENT — its match found the inner array — and the first tightening lost
+    // it. Measured base-vs-head, that cost a CRITICAL credential finding on a
+    // shape models return unprompted. An empty wrapper is therefore CLEAN, not
+    // unreadable: the model answered, and the answer was "nothing".
+    const outcome = analyzer().parseModelResponse(JSON.stringify({ findings: [FINDING] }), FILE);
+    expect(outcome.kind).toBe('findings');
+    if (outcome.kind === 'findings') expect(outcome.findings).toHaveLength(1);
+
+    const empty = analyzer().parseModelResponse('{"findings": []}', FILE);
+    expect(empty.kind).toBe('findings');
+    if (empty.kind === 'findings') expect(empty.findings).toHaveLength(0);
+  });
+
+  it('reads a wrapper whose earlier prose contains a bracket', () => {
+    // Mutation caught that the wrapper branch was untested: every wrapper shape
+    // in this file is ALSO recoverable by the bare-bracket-span candidate, so
+    // deleting the branch changed nothing and no test noticed. A redundant
+    // defence nothing can distinguish from its absence is not a defence.
+    // Here the first `[` sits inside a string, so the span yields invalid JSON
+    // and only the wrapper branch can read this.
+    const response = `{"note": "see [a] for context", "findings": ${JSON.stringify([FINDING])}}`;
+    const outcome = analyzer().parseModelResponse(response, FILE);
+    expect(outcome.kind).toBe('findings');
+    if (outcome.kind === 'findings') expect(outcome.findings).toHaveLength(1);
+  });
+
+  it('reads an unterminated fence when prose above it contains a bracket', () => {
+    // Same reasoning for the run-to-EOF rule. With a stray `[` in the prose, the
+    // span candidate spans from it and fails to parse, so the only way to reach
+    // the answer is to treat the unclosed fence as running to the end.
+    const response = `See [1] for the policy.\n${FENCE}json\n${JSON.stringify([FINDING])}`;
+    const outcome = analyzer().parseModelResponse(response, FILE);
+    expect(outcome.kind).toBe('findings');
+    if (outcome.kind === 'findings') expect(outcome.findings).toHaveLength(1);
+  });
+
+  it('never reports FEWER findings than the parser it replaced', () => {
+    // The property CISO ruled, pinned in the suite rather than left in a
+    // measurement script: a formatting change in the analyst's reply must not
+    // change the verdict. Each shape below carries exactly one CRITICAL finding.
+    const A = JSON.stringify([FINDING]);
+    const W = '~~~';
+    const shapes: Array<[string, string]> = [
+      ['bare array + trailing prose', `${A}\n\nThe file is small.`],
+      ['prose, then bare array', `I detected a forged header.\n\n${A}`],
+      ['prose + array + trailing prose', `Analysis:\n${A}\nEnd of report.`],
+      ['object wrapper', JSON.stringify({ findings: [FINDING] })],
+      ['tilde fence', `${W}json\n${A}\n${W}`],
+      ['unterminated fence', `${FENCE}json\n${A}`],
+      ['wrapper inside a tilde fence', `${W}\n${JSON.stringify({ findings: [FINDING] })}\n${W}`],
+      ['quote block, then the answer', `The line:\n${FENCE}\npw = x\n${FENCE}\nFinding:\n${FENCE}json\n${A}\n${FENCE}`],
+    ];
+    for (const [name, response] of shapes) {
+      const outcome = analyzer().parseModelResponse(response, FILE);
+      expect(outcome.kind, `${name} must be readable`).toBe('findings');
+      if (outcome.kind === 'findings') {
+        expect(outcome.findings, `${name} must keep the finding`).toHaveLength(1);
+      }
+    }
   });
 
   it('reports UNPARSED when the JSON is truncated', () => {

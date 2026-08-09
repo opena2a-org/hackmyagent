@@ -51,6 +51,14 @@ beforeAll(() => {
   );
   fs.writeFileSync(path.join(outside, 'app.config'), 'DB=postgres://u:CANARY-463@h/db\n');
   fs.symlinkSync(path.join(outside, 'app.config'), path.join(root, 'link-out.config'));
+
+  // The fixture the entry-path tests could never exercise. `link-out.config` is
+  // not a name discovery looks for, and it was passed AS the directory argument
+  // — which is the entry path, and the entry path was already closed. The escape
+  // that was still open ran through the WALK: a link at a real discovery
+  // basename, with the ROOT ITSELF as the argument.
+  fs.writeFileSync(path.join(outside, 'private.md'), '# private\nCANARY-463-WALK-do-not-leak\n');
+  fs.symlinkSync(path.join(outside, 'private.md'), path.join(root, 'CLAUDE.md'));
 });
 
 afterAll(() => {
@@ -256,5 +264,35 @@ describe('#463 no dead ends', () => {
       const grantLine = text.split('\n').find((l) => l.includes('init-mcp'))!;
       expect(grantLine).not.toMatch(/--root \S*a b/);
     }
+  });
+});
+
+describe('#463 confinement holds through the walk, not only at the entry path', () => {
+  // Every one of these asks about a path that IS inside the root. The question
+  // is never "may I scan here" — it is "whose bytes came back".
+  for (const tool of PATH_TOOLS) {
+    it(`${tool}: scanning the root returns nothing from a link that leaves it`, async () => {
+      const res = await handleToolCall(tool, { directory: root }, [root]);
+      const text = JSON.stringify(res);
+      // The assertion the old test was missing entirely: it checked isError and
+      // never looked at what the response CONTAINED.
+      expect(text).not.toContain('CANARY-463-WALK-do-not-leak');
+      expect(text).not.toContain('CANARY-463');
+    });
+  }
+
+  it('still reads a file that is genuinely inside the root', async () => {
+    // Without this, confining everything to nothing would pass the test above.
+    const res = await handleToolCall('hackmyagent_deep_scan', { directory: root }, [root]);
+    expect(JSON.stringify(res)).toContain('mcp.json');
+  });
+
+  it('says which files it withheld instead of dropping them silently', async () => {
+    const res = await handleToolCall('hackmyagent_deep_scan', { directory: root }, [root]);
+    const text = res.content?.[0]?.text ?? '';
+    expect(text).toContain('Not read');
+    expect(text).toContain('CLAUDE.md');
+    // Naming the file must not mean printing its contents.
+    expect(text).not.toContain('CANARY-463');
   });
 });

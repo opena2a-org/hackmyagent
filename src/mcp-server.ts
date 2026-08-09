@@ -279,9 +279,13 @@ export async function handleToolCall(
         const result = await scanner.scan({ targetDir: dir, ignore });
 
         const parts: string[] = [];
-        // The `fix` READ is gone, not just the schema property: models pass
-        // properties outside a schema routinely, and deleting the property alone
+        // The WRITE PATH is gone, not just the schema property: models pass
+        // properties outside a schema routinely, so deleting the property alone
         // would have left the write capability live and undocumented (CPO).
+        // `scan` above is called with no `autoFix`, so there is nothing here for
+        // a `fix` argument to reach. The flag is still READ, and only read, so
+        // that a caller who sends it is told it was declined — dropping it
+        // silently is the dead end the same ruling refused.
         if (args?.fix !== undefined) parts.push(fixRequestedNote(dir));
         // A model-supplied suppression list that does not appear in the output is
         // the score-laundering defect of #450 with a different caller (CISO).
@@ -305,10 +309,25 @@ export async function handleToolCall(
         const scanner = new HardeningScanner();
         const result = await scanner.scan({ targetDir: dir });
 
-          // Get structural findings and files
+          // Get structural findings and files.
+          //
+          // #463 — BOTH calls are confined, not just the first. `discoverFiles`
+          // feeds the file bodies into `buildDeepScanResult`, and `analyze`
+          // produces findings whose evidence quotes the same bytes; confining
+          // one and not the other closes half a class and lets us claim the
+          // whole one. Confining the ENTRY path alone was the original defect:
+          // `.env`, `CLAUDE.md` and `.mcp.json` symlinked out of a legitimately
+          // granted root all came back in this tool's result.
+          const withheld = new Map<string, string>();
+          const confine = {
+            confineTo: {
+              roots,
+              onWithheld: (rel: string, resolved: string) => withheld.set(rel, resolved),
+            },
+          };
           const structural = new StructuralAnalyzer();
-          const files = await structural.discoverFiles(dir);
-          const structuralFindings = await structural.analyze(dir);
+          const files = await structural.discoverFiles(dir, confine);
+          const structuralFindings = await structural.analyze(dir, confine);
 
           // Build deep scan result with analysis guidance
           const layer1Findings = buildDeepScanLayer1(result.findings);
@@ -319,20 +338,37 @@ export async function handleToolCall(
             files
           );
 
+          // Say what was not read. A file dropped in silence is indistinguishable
+          // from a file with nothing in it, which is the whole shape of #462.
+          const withheldNote = withheld.size === 0 ? '' :
+            `\n\nNot read (${withheld.size}): ${[...withheld.keys()].join(', ')}. `
+            + 'Each resolves outside this server\'s allowed roots — it is a link out of the '
+            + 'project. These files were NOT analyzed and nothing below covers them. To '
+            + 'include one, grant its real location its own root, or scan it from a terminal.';
+
           return {
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(deepResult, null, 2),
+                text: JSON.stringify(deepResult, null, 2) + withheldNote,
               },
             ],
           };
         }
 
       case 'hackmyagent_analyze_file': {
-        // Removed in 0.28.0 (#463). `deep_scan` returns the same class of content
-        // bounded by what HMA decided is security-relevant, instead of by whatever
-        // path the host model asked for. The stub is deleted in 0.29.0.
+        // Removed in 0.28.0 (#463). The stub is deleted in 0.29.0.
+        //
+        // The earlier rationale here said `deep_scan` returns the same class of
+        // content "bounded by what HMA decided is security-relevant, instead of
+        // by whatever path the host model asked for". That bounded the NAME. The
+        // attacker picks the TARGET: a link at any of those names pointed
+        // wherever they liked, and `deep_scan` read it. A removed capability may
+        // not be justified on a bound we do not have.
+        //
+        // What actually bounds it is `confineTo` on the deep_scan path above:
+        // every artifact's realpath must be inside a granted root, and anything
+        // withheld is named in the result.
         const { discoverableArtifactNames } = await import('./semantic/structural/index');
         return {
           content: [{ type: 'text', text: analyzeFileRemovalText(discoverableArtifactNames()) }],
