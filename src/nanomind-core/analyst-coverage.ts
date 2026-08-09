@@ -17,9 +17,22 @@
  *
  * This module is measurement-path only in P1. It is deliberately NOT wired into
  * `orchestrateNanoMind` / `scanner-bridge` — shipped `secure` behavior is
- * unchanged. Wiring an auto-verdict into the product is gated behind P3
- * (the per-sample structural+analyst policy comparison vs the published
- * 82.9% F1 / 1.16% FPR).
+ * unchanged. Wiring an auto-verdict into the product is gated behind P3, the
+ * per-sample structural+analyst policy comparison.
+ *
+ * That P3 gate USED to read "vs the published 82.9% F1 / 1.16% FPR". Those
+ * figures were withdrawn on 2026-08-09: the benign class of the corpus they
+ * were measured on was labeled by the scanner under test, via the rule
+ * `verdict=safe AND score >= 80` as reported by HackMyAgent itself, so every
+ * metric reading that class was fixed by the labeling rule before any scan ran.
+ * The gate cannot be a comparison against a number that does not exist.
+ *
+ * Until a baseline on a corpus we neither own nor labeled is available, the P3
+ * gate is UNDEFINED and no auto-verdict may be wired in on the strength of it.
+ * Recall survives the withdrawal (it reads only the malicious class, which
+ * excluded the self-labeled samples) but recall alone cannot gate an
+ * auto-verdict: the whole risk of auto-applying this analyst is false
+ * positives, and the false-positive figure is precisely the withdrawn one.
  */
 
 /** Routed analyst contribution to a per-artifact verdict. */
