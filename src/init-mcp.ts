@@ -12,6 +12,7 @@ interface McpConfig {
   mcpServers?: Record<string, {
     command: string;
     args: string[];
+    cwd?: string;
   }>;
 }
 
@@ -19,12 +20,33 @@ interface InitResult {
   tool: string;
   configPath: string;
   created: boolean;
+  /** An existing entry that was rewritten to carry roots (#463). */
+  updated: boolean;
+  roots: string[];
 }
 
-const HACKMYAGENT_MCP_CONFIG = {
-  command: 'npx',
-  args: ['-y', 'hackmyagent', 'mcp-serve'],
-};
+/**
+ * The server entry written into the client config.
+ *
+ * #463 — this used to be `npx -y hackmyagent mcp-serve` with no roots and no
+ * `cwd`, so the server's working directory was whatever the client happened to
+ * choose, commonly the user's home directory. Every root the server will accept
+ * is now named here explicitly, because `mcp-serve` no longer has an implicit
+ * one, and `cwd` is pinned so a relative path in a tool call resolves somewhere
+ * predictable.
+ */
+export function buildMcpServerEntry(roots: string[]): { command: string; args: string[]; cwd?: string } {
+  return {
+    command: 'npx',
+    args: ['-y', 'hackmyagent', 'mcp-serve', ...roots.flatMap((r) => ['--root', r])],
+    cwd: roots[0],
+  };
+}
+
+/** True when an existing entry predates roots, so re-running init-mcp must repair it. */
+export function entryNeedsRoots(entry: { args?: string[] } | undefined): boolean {
+  return !entry?.args?.includes('--root');
+}
 
 /** Config file locations, in detection priority order */
 const IDE_CONFIGS: Array<{
@@ -66,7 +88,11 @@ function detectIde(targetDir: string): typeof IDE_CONFIGS[number] | null {
   return null;
 }
 
-export function initMcp(targetDir: string, forceTool?: string): InitResult {
+export function initMcp(targetDir: string, forceTool?: string, roots: string[] = []): InitResult {
+  // No `--root` means "the project you ran this in", which is still an explicit
+  // human act naming a directory — unlike the server inheriting a cwd it was
+  // never told about. `mcp-serve` refuses a home directory or `/` either way.
+  const resolvedRoots = (roots.length > 0 ? roots : [targetDir]).map((r) => path.resolve(r));
   let ideConfig: typeof IDE_CONFIGS[number] | null = null;
 
   if (forceTool) {
@@ -103,20 +129,27 @@ export function initMcp(targetDir: string, forceTool?: string): InitResult {
     // ENOENT or parse error on missing/empty file: start with empty config
   }
 
-  // Check if already configured
-  if (config.mcpServers?.hackmyagent) {
+  const existing = config.mcpServers?.hackmyagent;
+
+  // An entry that already carries the roots the caller asked for is left alone.
+  // One that predates `--root`, or that names different roots, is REWRITTEN:
+  // #463's refusal text tells the user to run this command, so returning
+  // "already configured" and changing nothing would be a dead end inside the
+  // command that exists to unblock them.
+  if (existing && !entryNeedsRoots(existing) && roots.length === 0) {
     return {
       tool: ideConfig.name,
       configPath: ideConfig.configPath,
       created: false,
+      updated: false,
+      roots: existing.args.filter((a, i) => existing.args[i - 1] === '--root'),
     };
   }
 
-  // Add HackMyAgent MCP server
   if (!config.mcpServers) {
     config.mcpServers = {};
   }
-  config.mcpServers.hackmyagent = HACKMYAGENT_MCP_CONFIG;
+  config.mcpServers.hackmyagent = buildMcpServerEntry(resolvedRoots);
 
   // Write config
   fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + '\n');
@@ -124,6 +157,8 @@ export function initMcp(targetDir: string, forceTool?: string): InitResult {
   return {
     tool: ideConfig.name,
     configPath: ideConfig.configPath,
-    created: true,
+    created: !existing,
+    updated: Boolean(existing),
+    roots: resolvedRoots,
   };
 }

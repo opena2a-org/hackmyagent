@@ -7,7 +7,41 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync, execFileSync } from 'child_process';
+import { UNTRUSTED_DATA_RULE, newBoundaryId, wrapUntrusted } from '../semantic/llm/untrusted';
+
+/**
+ * Whether the deep layer said the control IS addressed.
+ *
+ * #462 — this was `result.trim().toUpperCase().startsWith('YES')`, which is
+ * fail-OPEN in a layer that can only move a control from failing to passing:
+ * any answer beginning with the letters Y-E-S upgraded it, including
+ * "YES, but only partially" and "Yes — see caveats". An exact match is the whole
+ * fix; there is no parsing to get wrong.
+ */
+export function isAffirmative(modelAnswer: string): boolean {
+  return modelAnswer.trim().toUpperCase().replace(/[.!]$/, '') === 'YES';
+}
+
+/**
+ * The prompt the deep coverage tier sends, exported so it is reachable from a
+ * test without a network call or an API key.
+ *
+ * That is the whole reason #462 shipped for nineteen minor versions: the only
+ * way to exercise this path was to have a live key, so nothing ever did.
+ */
+export function buildControlCoveragePrompt(
+  content: string,
+  def: { id: string; name: string; keywords: string[] },
+  boundaryId: string = newBoundaryId(),
+): string {
+  return `${UNTRUSTED_DATA_RULE}
+
+Does the governance text in the untrusted block below address the control "${def.name}" (${def.id})? This control checks for: ${def.keywords.slice(0, 3).join(', ')}.
+
+${wrapUntrusted(content.slice(0, 3000), boundaryId)}
+
+Answer with exactly one word, YES or NO.`;
+}
 import { DOMAIN_TEMPLATES } from './templates';
 import { GOVERNANCE_FILES } from './governance-files';
 import { resolveInsideTree, describeResolveRefusal } from '../hardening/contain';
@@ -1676,32 +1710,42 @@ export class SoulScanner {
       }
     } catch { /* NanoMind unavailable, fall through */ }
 
-    // Tier 2+3: LLM fallback for ambiguous cases
-    const prompt = `Does the following AI agent governance text address the control "${def.name}" (${def.id})? This control checks for: ${def.keywords.slice(0, 3).join(', ')}. Answer with YES or NO only.\n\n---\n${content.slice(0, 3000)}\n---`;
+    // Tier 2+3: LLM fallback for ambiguous cases.
+    //
+    // #462 — `content` is the artifact under analysis and it used to be
+    // interpolated between two `---` lines, which the artifact could simply
+    // emit. A forged second question plus a compliant document flipped a
+    // control from NO to YES in a direct probe, and this layer can only ever
+    // move a control from failing to PASSING (see the caller), so every
+    // successful injection here is a pure score increase.
+    const prompt = buildControlCoveragePrompt(content, def);
 
-    // Try claude CLI first
-    try {
-      const claudePath = execSync('which claude 2>/dev/null', { encoding: 'utf-8' }).trim();
-      if (claudePath) {
-        // Write prompt to a temp file to avoid shell escaping issues
-        const tmpFile = path.join(require('os').tmpdir(), `soul-deep-${Date.now()}.txt`);
-        fs.writeFileSync(tmpFile, prompt, 'utf-8');
-        try {
-          const promptContent = fs.readFileSync(tmpFile, 'utf-8');
-          const result = execFileSync(claudePath, ['--print', promptContent], {
-            encoding: 'utf-8',
-            timeout: 15000,
-            stdio: ['pipe', 'pipe', 'ignore'],
-          });
-          return result.trim().toUpperCase().startsWith('YES');
-        } finally {
-          try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
-        }
-      }
-    } catch {
-      // Fall through to API
-    }
-
+    // The `claude --print` tier is GONE, and it was removed rather than
+    // constrained (#462).
+    //
+    // CISO ruled that HackMyAgent must never shell out to an agent binary
+    // without constraining its tools on attacker-controlled text, "and if the
+    // installed version cannot be constrained by flags we can verify at
+    // runtime, HMA must not shell out to it at all and must fall back to the
+    // API tier." That conditional was then measured against the installed
+    // binary, and it resolves to "must not":
+    //
+    //   --allowedTools ''            not honoured — Bash still ran.
+    //   --permission-mode plan       not a constraint — Bash still ran, on the
+    //                                grounds that `echo` has no side effects.
+    //   --disallowedTools Bash …     Bash refused, and the agent ROUTED AROUND
+    //                                it through another executing tool; only an
+    //                                enumeration of every such tool held, and
+    //                                that registry is not ours to track.
+    //
+    // A denylist we cannot keep current is the weaker construction, and this
+    // path handed the user's own agent — with the user's own settings, allowlist
+    // and working directory — text taken straight out of a scanned repository.
+    //
+    // Consequence, disclosed in the CHANGELOG: without ANTHROPIC_API_KEY the
+    // deep tier no longer upgrades a control on a machine that has `claude`
+    // installed. Tier 1 (NanoMind, local) is unaffected. The failure direction
+    // is closed: no upgrade means a LOWER score, never a higher one.
     // Fallback: Anthropic API
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) return false;
@@ -1721,7 +1765,7 @@ export class SoulScanner {
         }),
       });
       const data = await response.json() as { content: Array<{ text: string }> };
-      return data.content[0]?.text?.trim().toUpperCase().startsWith('YES') ?? false;
+      return isAffirmative(data.content[0]?.text ?? '');
     } catch {
       return false;
     }

@@ -263,17 +263,60 @@ npm install -g opena2a-cli
 opena2a review
 ```
 
-## Runtime protection (ARP)
+## MCP server
 
-ARP monitors AI agents during execution with three intelligence layers: rule-based pattern matching (40+ patterns), statistical anomaly detection, and LLM-assisted assessment.
+HackMyAgent runs as an MCP server, so an AI coding assistant can scan the project it
+is working in.
 
 ```bash
-opena2a runtime init     # generate config
-opena2a runtime start    # start monitoring
-opena2a runtime status   # check status
+hackmyagent init-mcp --root /absolute/path/to/your/project
 ```
 
-ARP also runs as an HTTP reverse proxy for inspecting OpenAI API, MCP, and A2A protocol traffic. Configure via `opena2a runtime`.
+That writes the server into your client config (Claude Code, Cursor, VS Code) and
+restarts are picked up on the client's next launch. Then ask the assistant:
+"Run a deep security scan on this project."
+
+Three tools are exposed:
+
+| Tool | What it does |
+|---|---|
+| `hackmyagent_scan` | The full check suite. Read-only. |
+| `hackmyagent_deep_scan` | Pattern + structural analysis, plus the artifact contents for the assistant to reason over. |
+| `hackmyagent_benchmark` | OASB-1 compliance assessment at L1, L2 or L3. |
+
+**Roots.** The server reads only inside the directories it was started with, and
+there is no unconfined mode. `--root` is repeatable, so grant projects one at a
+time:
+
+```bash
+hackmyagent init-mcp --root ~/work/api --root ~/work/web
+```
+
+The filesystem root and your home directory are not accepted, because granting
+either hands every project and every credential file on the machine to whatever
+model is driving the session — the same thing HackMyAgent reports as `MCP-001`
+when it sees it in someone else's configuration. A path outside the roots is
+refused with the roots named and the command to grant one.
+
+**Fixes are terminal-only.** No MCP tool writes to your files. Findings carry
+their fix command and you run it yourself:
+
+```bash
+hackmyagent secure --fix .
+```
+
+Verify what the server is allowed to reach:
+
+```bash
+grep -A3 hackmyagent .claude/settings.json    # or .cursor/mcp.json, .vscode/mcp.json
+```
+
+## Runtime protection (ARP)
+
+ARP monitors agents during execution — rule-based patterns, statistical anomaly
+detection, and LLM-assisted assessment — and runs as an HTTP reverse proxy for
+OpenAI API, MCP and A2A traffic. It is driven from `opena2a runtime`
+([opena2a-cli](https://github.com/opena2a-org/opena2a)).
 
 ## CI/CD integration
 
@@ -296,24 +339,7 @@ jobs:
       - run: npx hackmyagent secure -b oasb-1 --fail-below 70
 ```
 
-<details>
-<summary>SARIF output and pre-commit hook</summary>
-
-SARIF for the GitHub Security tab:
-
-```yaml
-- run: npx hackmyagent attack "$AGENT_ENDPOINT" -f sarif -o results.sarif --fail-on-vulnerable medium
-- uses: github/codeql-action/upload-sarif@v3
-  with: { sarif_file: results.sarif }
-```
-
-Pre-commit hook:
-
-```bash
-#!/bin/sh
-# .git/hooks/pre-commit
-npx hackmyagent secure --ignore LOG-001,RATE-001
-```
+SARIF output and a pre-commit hook: [`docs/use-cases/ci-pipeline.md`](docs/use-cases/ci-pipeline.md).
 
 Suppressing a **check** (`--ignore CRED-001`, or `!CRED-001` in `.hmaignore`)
 changes what the report lists, not what it measures: it is still scored, still
@@ -324,8 +350,6 @@ threshold in your pipeline config is auditable, a missing finding is not.
 Excluding a **path** (`test-fixtures/` in `.hmaignore`) is a scope statement:
 those paths leave the score and the exit code, as if you had not scanned them.
 Always disclosed on a `Scope` line and as `outOfScope` in `--json`.
-
-</details>
 
 ## Exit codes
 
@@ -341,61 +365,20 @@ got "I could not reach the target" has not been told the target is safe.
 
 ## Auto-fix catalogue
 
-<details>
-<summary>Checks fixable with <code>--fix</code></summary>
-
-| Check | Issue | Auto-fix |
-|---|---|---|
-| CRED-001 | Exposed API keys | Replace with env-var reference |
-| GIT-001 | Missing .gitignore | Create with secure defaults |
-| GIT-002 | Incomplete .gitignore | Add missing patterns |
-| PERM-001 | Overly permissive files | Set restrictive permissions |
-| MCP-001 | Root filesystem access | Scope to project directory |
-| NET-001 | Bound to 0.0.0.0 | Bind to 127.0.0.1 |
-| GATEWAY-001 | Gateway bound to 0.0.0.0 | Bind to 127.0.0.1 |
-| GATEWAY-003 | Plaintext token | Replace with `${OPENCLAW_AUTH_TOKEN}` |
-| GATEWAY-004 | Approvals disabled | Enable approvals |
-| GATEWAY-005 | Sandbox disabled | Enable sandbox |
-
-Use `--dry-run` to preview changes. Backups live in `.hackmyagent-backup/`. Rollback with `hackmyagent rollback`.
-
-</details>
+`hackmyagent secure --fix` remediates ten checks; `--dry-run` previews the changes,
+backups live in `.hackmyagent-backup/`, and `hackmyagent rollback` reverts them. The
+table is in [`docs/SECURITY_CHECKS.md`](docs/SECURITY_CHECKS.md).
 
 ## Programmatic API
 
-```typescript
-import { HardeningScanner, AgentRuntimeProtection, AttackScanner } from 'hackmyagent';
-
-import {
-  SemanticCompiler,
-  analyzeCapabilities,
-  analyzeCredentials,
-  analyzeGovernance,
-  analyzeScope,
-  analyzePrompt,
-  analyzeCode,
-  getTMEClassifier,
-} from 'hackmyagent/nanomind-core';
-
-const compiler = new SemanticCompiler();
-const { ast } = await compiler.compile(skillContent, 'my-skill.skill.md');
-// ast.intentClassification: 'benign' | 'suspicious' | 'malicious'
-// ast.inferredCapabilities, ast.declaredConstraints, ast.inferredRiskSurface
-const findings = analyzeCapabilities(ast);
-```
-
+TypeScript entry points for the scanner, the runtime protection layer and the
+NanoMind semantic compiler: [`docs/PROGRAMMATIC_API.md`](docs/PROGRAMMATIC_API.md).
 Plugin authoring: [`docs/PLUGIN_API.md`](docs/PLUGIN_API.md).
 
 ## Use cases
 
-| Guide | Time |
-|---|---|
-| [Scan my agent](docs/use-cases/scan-my-agent.md) | 5 min |
-| [Red-team MCP servers](docs/use-cases/red-team-mcp.md) | 10 min |
-| [Secure OpenClaw](docs/use-cases/openclaw-security.md) | 10 min |
-| [CI/CD pipeline](docs/use-cases/ci-pipeline.md) | 5 min |
-
-Full index: [`docs/USE-CASES.md`](docs/USE-CASES.md).
+Step-by-step guides for scanning an agent, red-teaming an MCP server, securing
+OpenClaw and wiring a CI pipeline: [`docs/USE-CASES.md`](docs/USE-CASES.md).
 
 ## Contributing
 

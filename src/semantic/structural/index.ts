@@ -69,6 +69,19 @@ const FILE_DISCOVERY: Array<{ glob: string; type: FileType }> = [
   { glob: 'settings.json', type: 'config_file' },
 ];
 
+/**
+ * The artifacts `discoverFiles` will accept as a single-file target.
+ *
+ * Generated, never enumerated by hand. #463's replacement text for the removed
+ * `hackmyagent_analyze_file` has to tell the host model which files `deep_scan`
+ * accepts directly, and a hand-written list in a string rots the moment
+ * `FILE_DISCOVERY` gains an entry — which is how `.mcp.json` came to be missing
+ * from discovery in the first place.
+ */
+export function discoverableArtifactNames(): string[] {
+  return [...new Set(FILE_DISCOVERY.map((d) => path.basename(d.glob)))];
+}
+
 export class StructuralAnalyzer {
   private credentialAnalyzer = new CredentialContextAnalyzer();
   private mcpAnalyzer = new McpConfigAnalyzer();

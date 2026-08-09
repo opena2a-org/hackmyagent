@@ -8146,10 +8146,15 @@ Examples:
 program
   .command('mcp-serve')
   .description('Run HackMyAgent as an MCP server (stdio transport)')
-  .action(async () => {
+  .option(
+    '--root <dir>',
+    'Directory the MCP tools may read (repeatable). Required: the server has no implicit root, because the working directory it inherits is chosen by the MCP client and not by you. "/" and a home directory are not accepted.',
+    (value: string, previous: string[] = []) => [...previous, value],
+  )
+  .action(async (options: { root?: string[] }) => {
     try {
       const { startMcpServer } = await import('./mcp-server');
-      await startMcpServer();
+      await startMcpServer(options.root ?? []);
     } catch (error) {
       console.error(`Error starting MCP server: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
@@ -8170,27 +8175,40 @@ Once configured, ask your AI assistant:
 Examples:
   $ ${CLI_PREFIX} init-mcp
   $ ${CLI_PREFIX} init-mcp --tool cursor
-  $ ${CLI_PREFIX} init-mcp /path/to/project`)
+  $ ${CLI_PREFIX} init-mcp /path/to/project
+  $ ${CLI_PREFIX} init-mcp --root ~/work/api --root ~/work/web`)
   .argument('[directory]', 'Project directory (defaults to current directory)', '.')
   .option('-t, --tool <name>', 'Force specific tool: claude, cursor, vscode')
-  .action(async (directory: string, options: { tool?: string }) => {
+  .option(
+    '--root <dir>',
+    'Grant the MCP server access to this directory (repeatable). Written into the client config as `mcp-serve --root <dir>`. Omit to grant the project directory above.',
+    (value: string, previous: string[] = []) => [...previous, value],
+  )
+  .action(async (directory: string, options: { tool?: string; root?: string[] }) => {
     try {
       const targetDir = require("path").resolve(directory);
       const { initMcp } = await import('./init-mcp');
-      const result = initMcp(targetDir, options.tool);
+      const result = initMcp(targetDir, options.tool, options.root ?? []);
 
-      if (!result.created) {
-        console.log(`\n  HackMyAgent MCP server already configured in ${escapePathForDisplay(result.configPath)}\n`);
+      if (!result.created && !result.updated) {
+        console.log(`\n  HackMyAgent MCP server already configured in ${escapePathForDisplay(result.configPath)}`);
+        console.log(`  Roots: ${result.roots.map(escapePathForDisplay).join(', ')}\n`);
         return;
       }
 
       console.log(`\n  Detected: ${result.tool}\n`);
-      console.log(`  Added HackMyAgent MCP server to ${escapePathForDisplay(result.configPath)}\n`);
+      console.log(
+        result.updated
+          ? `  Updated the HackMyAgent MCP server in ${escapePathForDisplay(result.configPath)}\n`
+          : `  Added HackMyAgent MCP server to ${escapePathForDisplay(result.configPath)}\n`,
+      );
+      console.log(`  Roots it may read: ${result.roots.map(escapePathForDisplay).join(', ')}`);
+      console.log(`  Paths outside these are refused. Add more with --root, or scan from a terminal.\n`);
       console.log(`  Available tools in ${result.tool}:`);
-      console.log(`    hackmyagent_scan       — ${CHECK_COUNT} checks + structural analysis`);
+      console.log(`    hackmyagent_scan       — ${CHECK_COUNT} checks + structural analysis (read-only)`);
       console.log(`    hackmyagent_deep_scan  — Full analysis with LLM reasoning`);
-      console.log(`    hackmyagent_analyze_file — Analyze a single file`);
       console.log(`    hackmyagent_benchmark  — OASB-1 compliance assessment\n`);
+      console.log(`  Fixes are applied from a terminal: ${CLI_PREFIX} secure --fix <directory>\n`);
       console.log(`  Try: "Run a deep security scan on this project"\n`);
     } catch (error) {
       console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : String(error))}`);

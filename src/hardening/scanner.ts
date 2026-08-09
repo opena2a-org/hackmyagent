@@ -2362,6 +2362,28 @@ export class HardeningScanner {
         layer3Count = converted.length;
         llmCost = llmResult.cost;
         cachedResults = llmResult.cachedResults;
+
+        // #462 — a file Layer 3 could not read an answer for is REPORTED, not
+        // counted as examined. The old code returned `[]` for an unparseable
+        // response, so a scanned file that made the analyst's answer unreadable
+        // scored exactly like a file with nothing in it. Measured: content
+        // asking for a bracketed note after the JSON suppressed every finding in
+        // 4 trials of 4 while the analyst reported the credentials every time.
+        for (const missed of llmResult.unanalyzed) {
+          findings.push({
+            checkId: 'SEM-LLM-NOT-ANALYZED',
+            name: 'Deep analysis did not complete for this file',
+            description:
+              'Layer 3 sent this file for semantic analysis and did not get back a result it could read, so this file has NOT been analyzed for the credential shapes only Layer 3 detects.',
+            category: 'Credential Protection',
+            severity: 'medium',
+            passed: false,
+            message: `${missed.path} was not analyzed: ${missed.reason}. This is a gap in coverage, not a clean result — the checks that did run are unaffected.`,
+            fixable: false,
+            file: missed.path,
+            fix: `Re-run the deep scan: ${this.cliName} secure ${shellQuote(targetDir)} --deep. If it repeats on the same file, the file's own content may be interfering with the analysis; the other layers' findings for it still stand.`,
+          } as SecurityFinding);
+        }
       } catch {
         // LLM analysis failure is non-fatal — fall back to Layer 2 only
       }
