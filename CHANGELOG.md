@@ -34,14 +34,19 @@ An `.hmaignore` **path** rule is a different statement and is treated differentl
 subdirectory, and a smaller target honestly scores differently. Those findings leave the
 scored set as before — but they are no longer allowed to leave it silently, which is the
 half that was missing. `secure` on HackMyAgent's own repo reported `100/100 · No security
-issues found` in 0.27.0 while an `.hmaignore` held back 65 findings, 26 of them critical,
-and named none of it anywhere in the output. It now prints:
+issues found` in 0.27.0 while an `.hmaignore` held back dozens of findings, most of a
+severity that would have failed the run, and named none of it anywhere in the output. On this
+release, against this checkout, it prints:
 
 ```
-Scope       65 findings excluded by .hmaignore path rules (26 critical, 15 high, 24 medium)
+Scope       68 findings excluded by .hmaignore path rules (29 critical, 15 high, 24 medium)
             Out of scope, so not scored and not in the exit code. The score above
             describes the tree minus those paths.
 ```
+
+That count is a property of this tree at this tag, not a constant — it moves as the repo does,
+and two of those criticals are new in this release because `UNICODE-STEGO-002` stopped
+exempting files by name. Reproduce it with `hackmyagent secure . --ci` on this checkout.
 
 What changes:
 
@@ -213,6 +218,148 @@ examples as real grants, and produced findings with no line number and therefore
 command. A check that fires hardest on people writing ordinary skills is the defect this
 entry is about, aimed at a new surface. It needs a grammar and a corpus, not a regex pair.
 
+
+
+**`UNICODE-STEGO-002` no longer reports CRITICAL on code that defends against the attack
+it names (#469).** This lowers findings rather than raising them, so it can turn a red
+pipeline green.
+
+The check fired at CRITICAL when a file contained `.codePointAt(` anywhere and a
+variation-selector or tag-range hex literal anywhere. There is no AST, no scope and no
+dataflow between the two, so they could be thousands of lines apart and unrelated. A
+sanitiser, a linter, a width calculator or a range table all carry both tokens, so all of
+them failed pipelines. Measured precision on real-world code was 0/7, and the only true
+positives ever observed were fixtures written for this check.
+
+The one thing that held a file clean was an exemption keyed on a regex over the file PATH
+(`/analyz|detect|scan|check|inspect|enhanc|stego/i`), which this scanner's own comment
+calls an attacker-controllable weak signal. Our own stego analyzer was clean only because
+of its filename: copying it to `util-helper.ts` self-flagged at CRITICAL.
+
+Two changes, both in the `UNICODE-STEGO-002` block:
+
+- **The filename exemption is deleted, not narrowed.** No name can make this check skip a
+  file any more, so the rename bypass is gone. Pinned by a test that scans identical bytes
+  under two filenames, one carrying an old exemption keyword and one not, and asserts the
+  severities match. Stated precisely, because the general form is not true: the CORROBORATOR
+  still reads the path, since `UNICODE-STEGO-001` does not look for variation selectors in
+  `.md`/`.txt` or in files named `README`/`AUTHORS`/`LICENSE` and similar. A decoder whose
+  only corroboration is an embedded payload is therefore MEDIUM under one of those names and
+  CRITICAL under another. A decoder corroborated by an execution sink is CRITICAL under every
+  name. That asymmetry predates this release and is not fixed here.
+- **CRITICAL now requires corroboration.** A decoder pattern is evidence of capability, not
+  of malice. Corroboration is an execution sink in the same file, so a decoded string can
+  reach `eval`/`Function`, or `UNICODE-STEGO-001` firing on the same file, so the invisible
+  payload a decoder would decode is actually present. Both are read from the file being
+  scanned, so severity never depends on the order the tree is walked in. Uncorroborated is
+  reported at MEDIUM with the evidence intact — downgraded, never dropped.
+
+  **MEDIUM still costs 8 points of score.** It does not fail the default severity gate, which
+  is what unblocks defensive code, but `secure --fail-below <n>` compares the score, so a
+  build that pins a threshold close to its current score can still go red on a downgraded
+  finding. Check your threshold before upgrading if you use that flag.
+
+**Known gap, disclosed rather than discovered later: the corroborator recognises two spellings
+of an execution sink, so some real droppers are downgraded to MEDIUM and exit 0.** This is the
+one row where this change makes a pipeline quieter about something that deserved noise, and it
+is the reason to read this entry if you gate CI on the exit code.
+
+`hasExecutionSink` tests for a literal `eval(` or `Function(`. A decoder that reconstitutes a
+tag-range payload and executes it through anything else is no longer CRITICAL unless
+`UNICODE-STEGO-001` also fires on the same file. Measured, with fixtures that really do execute
+a hidden payload:
+
+| how the decoded string is executed | 0.27.0 | now |
+|---|---|---|
+| `eval(x)` | CRITICAL, exit 1 | CRITICAL, exit 1 |
+| `new Function(x)()` | CRITICAL, exit 1 | CRITICAL, exit 1 |
+| `vm.runInNewContext(x)` | CRITICAL, exit 1 | **MEDIUM, exit 0** |
+| `globalThis.eval(x)`, `(0,eval)(x)` | CRITICAL, exit 1 | **MEDIUM** |
+| `[].constructor.constructor(x)()` | CRITICAL, exit 1 | **MEDIUM, exit 0** |
+| `import('data:text/javascript,' + x)` | CRITICAL, exit 1 | **MEDIUM, exit 0** |
+| `child_process.exec(x)` | CRITICAL, exit 1 | **MEDIUM, exit 0** |
+
+The finding is still reported, at MEDIUM, with the same evidence and both signal lines — it is
+downgraded, not dropped — and the guidance text now says plainly which two spellings were
+checked instead of asserting that nothing reaches an executor. But an attacker who wants a
+green pipeline no longer has to disguise the decoder; writing `globalThis.eval` instead of
+`eval` is enough, and that is a cheaper evasion than the filename bypass this release removes.
+
+We are not closing it with a wider regex. That would be the same mistake as gating the finding
+on one spelling of reconstitution, one layer down, and the list above is not exhaustible by
+enumeration. Deciding whether a reconstituted string reaches an executor is dataflow, which is
+#424's AST analyzer. Tracked as #475.
+
+Measured on first-class source files, not `node_modules`:
+
+| file | 0.27.0 | now |
+|---|---|---|
+| our own `stego-analyzer.ts` copied to `util-helper.ts` | CRITICAL | MEDIUM |
+| a log sanitiser's hazard-range table | CRITICAL | MEDIUM |
+| a test that builds a payload and asserts a sanitiser escapes it | CRITICAL | MEDIUM |
+| a decoder that reconstitutes a tag-range payload and `eval`s it | CRITICAL | CRITICAL |
+
+**Nothing 0.27.0 reported stops being reported, and this was measured rather than assumed.**
+The condition is now strictly weaker than 0.27.0's, so every file that fired then fires now.
+What can move is SEVERITY: an uncorroborated finding is MEDIUM rather than CRITICAL, and that
+is the whole point. Ten spellings of
+a working decoder — `.map(String.fromCodePoint)`, `Array.from(out, ...)`, an alias, a
+destructured `{ fromCharCode }`, `String['fromCodePoint']`, `Reflect.apply`,
+`Buffer.from(out).toString()`, `new TextDecoder().decode()`, a `JSON.parse('"\uXXXX"')`
+round trip, and an indexed alphabet table — are each pinned by a test asserting they still
+report CRITICAL.
+
+That list exists because an earlier cut of this fix made string reconstitution a REQUIRED
+conjunct of the finding, on the reasoning that only a decoder rebuilds a string from
+codepoints. The reasoning is sound and the implementation was not: it tested for
+`String.from(CodePoint|CharCode)(` specifically, and all ten spellings above evade that
+regex while doing exactly what it describes. Measured against 0.27.0, that cut reported
+**nothing at all** on all ten. The attacker chooses the spelling, so the spelling cannot be
+the gate. Narrowing on semantics rather than spelling needs dataflow, which is #424's AST
+analyzer.
+
+- **The reported line is the earlier of the two signals.** It used to report the first
+  `.codePointAt(`, but the discriminating token is the range literal, which usually sits in
+  a table above the loop that reads it. One downstream consumer was pointed at line 168 when
+  the cause was line 139. The message now names both lines. Note the consequence: neither
+  token detection strips comments, so on a file whose licence or doc header mentions a range
+  literal, the cited line is that header rather than the decoder.
+
+**What this does not fix**, measured and stated here rather than discovered later. All of
+these are pre-existing, none is made worse by this change, and each is filed:
+
+- A decoder that spells the range in decimal (`917760`) instead of hex (`0xE0100`) is
+  undetected, even though it reconstitutes and executes. #467, asserted as an explicit zero
+  in the suite so that closing it fails a test. The discriminator belongs in the AST
+  analyzer, gated on #424; a wider literal pattern is another spelling rule.
+- Corroboration recognises `eval(` and `Function(` and no other sink. A decoder whose
+  payload reaches `vm.runInThisContext`, `child_process.exec`, a dynamic `import()`, the
+  `AsyncFunction` constructor or `globalThis.eval` is reported at MEDIUM rather than
+  CRITICAL. It is still reported.
+- Neither corroborator strips comments or string literals, so a file whose only `eval(` is a
+  comment advising against `eval` is corroborated by that comment, and a log sanitiser
+  carrying such a note is CRITICAL. On a file that 0.27.0 already reported this is unchanged.
+  On a file 0.27.0 held clean by the deleted filename exemption it is a new CRITICAL, and
+  **HackMyAgent's own `src/hardening/scanner.ts` is exactly that case**: clean on 0.27.0
+  because its path matched the exemption, CRITICAL here, corroborated by an `eval(` inside a
+  comment explaining how the scanner avoids matching `eval(` in comments. Removing a bypass
+  shows you what it was hiding, and what it was hiding is that this signature is weak enough
+  to match our own source. Our own repository still scores 100/100 because `.hmaignore`
+  excludes `src/hardening/` by path, and that exclusion is now printed on the `Scope` line
+  rather than being silent — so if you scan our source yourself you will see the CRITICAL we
+  do not score. Tracked with #468, which is the same shape in
+  `UNICODE-STEGO-005`. The fix for both is to evaluate corroboration against code with
+  comments and string literals removed, which is a change we are not making inside a patch
+  release on this path.
+- `UNICODE-STEGO-001` does not scan for variation selectors in `.md`/`.txt`, so an
+  identical payload beside an identical decoder corroborates in a `.js` file and does not
+  in a `.md` file, even though the payload is present in both.
+- A decoder minified onto a single line longer than the scanner's line cap is invisible to
+  this check, on this release and on every previous one.
+
+The same "fires on its own countermeasure" shape in `UNICODE-STEGO-005` is #468. Two
+`UNICODE-STEGO-002` CRITICALs on HackMyAgent's own test suite, caused by decoder fixtures
+held in string literals, are also pre-existing and unfixed.
 
 ## [0.27.0] - 2026-08-07
 
