@@ -135,7 +135,7 @@ hackmyagent secure -b oasb-1 --fail-below 70  # CI gate (adds a floor; the ratin
 hackmyagent secure --nanomind                 # AI analyst: per-finding narratives + coverage escalations
 ```
 
-Output shows an Observations block (surfaces, checks, categories, verdict) and a per-finding list. Every HIGH or CRITICAL finding has a `file:line` location and a runnable `Fix:` command.
+Output shows an Observations block (surfaces, checks, categories, verdict) and a per-finding list. Every HIGH or CRITICAL finding names the file it came from. Findings from a specific line — hardcoded credentials in source, for example — carry `file:line` and a runnable `Fix:` with a `Verify:` command. Findings about a file's overall configuration, such as an over-permissive `.claude/settings.json`, currently name the file without a line and describe the fix in prose rather than as a command ([#299](https://github.com/opena2a-org/hackmyagent/issues/299), [#368](https://github.com/opena2a-org/hackmyagent/issues/368)).
 
 ### NanoMind semantic analysis
 

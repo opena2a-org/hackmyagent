@@ -150,8 +150,11 @@ export async function resolveWithinRoots(roots: string[], requested: string): Pr
 
   let lastCause: ResolveRefusal = 'escapes-tree';
   let lastMissing: RootRefusal | null = null;
+  // Canonicalized ONCE, not per root: the answer does not depend on which root
+  // is being tried, and `realpath` is a syscall.
+  const absolute = path.isAbsolute(requested) ? await canonicalizeRequest(requested) : null;
   for (const root of roots) {
-    const rel = path.isAbsolute(requested) ? path.relative(root, requested) : requested;
+    const rel = absolute !== null ? path.relative(root, absolute) : requested;
 
     // The root ITSELF is the common case — `deep_scan {directory: "."}` and
     // `scan {directory: "<the root>"}` are what a host actually sends — and
@@ -329,6 +332,46 @@ function citedRootGrants(roots: string[], resolved: string, cliName: string): st
     .split(' ')
     .map((r) => `--root ${r}`)
     .join(' ');
+}
+
+/**
+ * The caller's absolute path, canonicalized the way a root already is.
+ *
+ * `resolveRoots` stores every root through `realpath`, so a root granted as
+ * `/tmp/proj` is held as `/private/tmp/proj` on macOS. Comparing the caller's
+ * raw spelling against that stored form made the server refuse THE ROOT IT WAS
+ * GRANTED: `path.relative('/private/tmp/proj', '/tmp/proj')` climbs out, so the
+ * root-itself case never fired and the walk saw a path leaving the tree. The
+ * refusal then printed `Resolved to` and `Allowed roots` as the SAME string
+ * while saying the path was outside, and told the user to grant a root they had
+ * already granted. `init-mcp` writes the spelling the user typed, so the
+ * documented setup produced exactly this. Only the non-canonical spelling
+ * failed, which is why `.` and `./sub` kept working and hid it.
+ *
+ * Both sides are canonicalized so there is ONE spelling to compare, rather than
+ * a second rule that recognises the other one. This does not widen containment:
+ * the tree walk still runs, and a link resolving outside a root still resolves
+ * outside it.
+ *
+ * `realpath` fails on a path that does not exist, so the deepest existing
+ * ancestor is resolved and the remainder re-appended — a missing path stays
+ * missing and is reported as missing, rather than being reported as outside.
+ */
+async function canonicalizeRequest(requested: string): Promise<string> {
+  const absolute = path.resolve(requested);
+  let prefix = absolute;
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      const real = await fs.realpath(prefix);
+      return tail.length === 0 ? real : path.join(real, ...[...tail].reverse());
+    } catch {
+      const parent = path.dirname(prefix);
+      if (parent === prefix) return absolute; // reached the filesystem root
+      tail.push(path.basename(prefix));
+      prefix = parent;
+    }
+  }
 }
 
 /** `realpath` when the path exists, the lexical resolution when it does not. */

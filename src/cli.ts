@@ -8763,7 +8763,10 @@ Examples:
       }
       if (options.deep) {
         if (result.deepAnalysisAvailable === false) {
-          console.log(`  ${colors.yellow}Deep analysis unavailable${RESET()} — set ANTHROPIC_API_KEY or install the claude CLI`);
+          // The `claude --print` tier this used to name was removed in 0.29.0,
+          // so telling anyone to install it is a dead end. Name only the thing
+          // that still works, and say what it costs them not to have it.
+          console.log(`  ${colors.yellow}Deep analysis unavailable${RESET()} — set ANTHROPIC_API_KEY to run it. Controls stay at their static verdict; the deep tier can only raise a control, never lower one, so the score is a floor.`);
         } else if (result.deepAnalysisResults && result.deepAnalysisResults.length > 0) {
           const llmUpgraded = result.deepAnalysisResults.filter((e) => e.llmPassed).length;
           console.log(`  ${colors.dim}Deep analysis: ${llmUpgraded} control${llmUpgraded === 1 ? '' : 's'} upgraded by ML semantic analysis${RESET()}`);
