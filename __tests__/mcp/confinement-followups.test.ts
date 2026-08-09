@@ -97,7 +97,7 @@ describe('#463 a repeatable --root is actually repeatable', () => {
 });
 
 describe('#463 one root policy means one ANSWER, not one function', () => {
-  it('agrees with mcp-serve on a mixed-case home directory', async () => {
+  it('agrees with mcp-serve on a mixed-case home directory', async (ctx) => {
     // `fs.realpathSync` is case-PRESERVING and `fs.promises.realpath` is
     // case-CANONICALISING. Sharing a predicate while resolving the path two
     // different ways still let init-mcp accept a root mcp-serve refuses, which is
@@ -105,6 +105,26 @@ describe('#463 one root policy means one ANSWER, not one function', () => {
     const home = homedir();
     const mixed = home.replace(/\/([a-z])/, (_m, c: string) => '/' + c.toUpperCase());
     if (mixed === home) return; // no lowercase segment to flip; nothing to prove here
+
+    // The defect only EXISTS on a case-insensitive filesystem, where a mixed-case
+    // spelling names the same directory. On a case-sensitive one (Linux CI) the
+    // mixed spelling names nothing, `realpath` raises ENOENT, and there is no
+    // second spelling for the two resolvers to disagree about. Detect that rather
+    // than assume the developer's filesystem: this test previously threw
+    // `ENOENT: realpath '/Home/runner'` on ubuntu-latest while passing on macOS.
+    let caseInsensitive: boolean;
+    try {
+      caseInsensitive = realpathSync.native(mixed) === realpathSync.native(home);
+    } catch {
+      caseInsensitive = false;
+    }
+    if (!caseInsensitive) {
+      // Skip LOUDLY. A bare `return` here would read as a pass on every
+      // case-sensitive platform, which is how a policy test stops measuring.
+      ctx.skip();
+      return;
+    }
+
     // The policy must reach the same verdict however the path is spelled.
     expect(rootTooBroad(realpathSync.native(mixed), realpathSync.native(home))).toBe('home-directory');
     expect(() => initMcp(root, undefined, [mixed])).toThrow(/Root not accepted/);
