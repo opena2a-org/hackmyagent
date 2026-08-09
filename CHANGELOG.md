@@ -4,6 +4,30 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-08-08
+
+Four changes, and they move pipelines in both directions. Two can turn a green pipeline red,
+two can turn a red one green, and the green-going ones are the ones to read carefully — a
+finding getting quieter deserves more scrutiny than a finding getting louder, not less.
+
+| What changes | 0.27.0 | 0.28.0 |
+|---|---|---|
+| `--ignore` or an `.hmaignore` `!CHECK-ID` rule | removed the check's penalties, so suppressing a failing check made the tree score better | **suppression no longer moves the score or the exit code**, and every suppressed ID is named in the output |
+| An `.hmaignore` **path** rule | findings left the scored set silently | still out of scope, but disclosed on a `Scope` line with a severity breakdown, and as `outOfScope` in `--json` |
+| An MCP server declaring no tool key | a fabricated `['*']` produced a CRITICAL "Full Wildcard Tool Access" citing the server-key line | treated as the MCP default it is; a benign read-only server goes **69/100 to 96/100** |
+| A file carrying `.codePointAt(` and a codepoint range literal | **CRITICAL**, on a filename-keyed exemption an attacker controls | **MEDIUM unless corroborated**, and no filename can make the check skip a file |
+
+Why this is a minor rather than a patch: `--json` gains three fields (`outOfScope`,
+`suppressed`, `coverage.semanticFamilyCoverage`), the text output gains `Scope` and
+`Suppressed` lines and a semantic-coverage qualifier, and scores move in both directions. This
+is a `0.x` release, so a `^0.27.0` range does not resolve to it and nobody is upgraded without
+choosing to. Pipelines on `@latest` or `npx` pick it up on the next run.
+
+**Read the `UNICODE-STEGO-002` entry under `Fixed` before upgrading if you gate CI on the exit
+code.** It lowers severities, and its corroborator recognises two spellings of an execution
+sink, so some real droppers now report MEDIUM and exit 0. That gap is measured, disclosed in
+that entry, and tracked as #475 rather than papered over.
+
 ### Security
 
 **`--ignore` and `.hmaignore` no longer change the score or the exit code (#450).**
