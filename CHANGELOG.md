@@ -241,6 +241,66 @@ just read out of a file, is not something a security tool should offer. Fixes ar
 from a terminal with `hackmyagent secure --fix`. A suppression list supplied through the
 MCP tool is now named in the response instead of applied silently.
 
+### Known issues
+
+The release walkthrough for this version installed the packed tarball as a fresh user and
+reached 22 top-level commands. Everything below was **measured on published `0.28.0` as
+well as on this build**, not asserted: each entry reproduces identically on `0.28.0`, so
+none is a regression from this release, and shipping this release leaves no user worse off
+than staying on `0.28.0` on any of these axes. It leaves them better off on the two the
+release is about.
+
+**The score and the exit code still do not always mean something.** This is the same
+defect class the last three releases have been about, so it is listed rather than left to
+a summary.
+
+- **An unreadable file is scored as if it were clean, and the score goes UP** (#438). A
+  `config.json` holding a plaintext admin password scores `69/100` with 2 findings and
+  exit 1. `chmod 000` on that same file, changing nothing else, scores `98/100` with 1
+  finding and **exit 0**. The word "unanalyzed" appears nowhere in the output. Measured on
+  `0.28.0` and on this build, byte-identical on both. The mechanism to do this right
+  already exists and fires for an unreadable *directory*; only individual files leak
+  through. This is the keystone of the honesty work: `secure` computes its score without
+  going through `deriveCheckVerdict`, so the coverage type that makes an uncounted verdict
+  unrepresentable never applies to it.
+- **`scan <host>:<port>` discards the port and calls a live server unreachable, exit 0**
+  (#487, filed by this walkthrough). Against a local server confirmed answering HTTP 200,
+  `scan 127.0.0.1:8907` prints `Target: 127.0.0.1:8907`, then `Open Ports: None detected`,
+  `[SCAN-UNREACHABLE]`, and exits 0. `scan 127.0.0.1 -p 8907` finds it. The target is
+  echoed back with the port, so nothing signals it was dropped.
+- **`wild --tier` is unvalidated** (#480). `--tier 99` and `--tier -1` scan zero pages and
+  report `85/100 (strong)` with exit 0. `--tier 5` scans and reports `0/100 (critical)`.
+  Scanning nothing produces the better grade.
+
+**`--fix` can make the tree less safe than it found it:**
+
+- **`secure --fix` writes plaintext credentials to a path it does not gitignore** (#389).
+  The same run appends `.env`, `secrets.json`, `*.pem` and `*.key` to `.gitignore`, and
+  omits `.hackmyagent-backup/`, which now holds readable copies of the credential files it
+  just remediated. `git check-ignore` does not match it; `git status` lists it as
+  untracked. Re-running `secure` then scans its own backup and lowers the score, so the
+  remediation loop reads as making things worse (#383).
+- **`fix-all` reports credentials clean where `secure` reports CRITICAL** (#477, second
+  carry). Same directory, same tool: `secure` finds `SEM-CRED-004` CRITICAL and
+  `SEM-CRED-001` HIGH; `fix-all` prints `Credential Protection  [+] No issues found`.
+  Direction disagreement between two analyzers on one artifact.
+
+**Carried from 0.28.0, still open:** #368, #390, #477, #478.
+
+**#368 and #390 are on their THIRD carry, which is one more than the release rule allows,
+and that is a decision rather than an oversight.** The rule is two carries, then the fix
+happens. Both were scheduled to this version by the `0.28.0` notes. This release was cut
+to close two vulnerabilities, one of which (#463) let the MCP server read and write any
+absolute path the host model named, and holding it to fix a missing `Verify:` line (#368)
+and an exit code (#390) would keep every user on a build that carries #463. A hold is only
+worth taking when the published artifact is safer than the candidate, and on these axes it
+is not: `0.28.0` carries #368 and #390 too, plus both vulnerabilities. They are scheduled
+to **0.30.0** and are the first work in it, ahead of features.
+
+Nothing here is discovered-and-hidden. Each entry names the issue, the reproduction is in
+the issue, and the reproduction was run against the published build before it was called
+pre-existing.
+
 
 ## [0.28.0] - 2026-08-08
 
