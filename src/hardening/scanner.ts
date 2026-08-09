@@ -12830,7 +12830,19 @@ dist/
       // comment called an attacker-controllable weak signal. Measured consequences:
       // precision 0/7 on real-world code, and our own stego analyzer was held clean
       // only by its filename, so copying it to another name self-flagged. The path is
-      // no longer consulted at all, and renaming a file no longer changes any verdict.
+      // no longer consulted BY THIS CHECK, so no filename can make it skip a file.
+      //
+      // It does NOT follow that a rename can no longer change a verdict, and an earlier
+      // draft of this comment claimed exactly that. The `hasAnyInvisible` corroborator
+      // below is UNICODE-STEGO-001's result, and that check is gated on `isDocFile`,
+      // which DOES read the path: it skips variation selectors in `.md`/`.txt` and in
+      // files whose basename begins README/CHANGELOG/CONTRIBUTING/AGENTS/CLAUDE/LICENSE/
+      // AUTHORS/HISTORY. So a decoder corroborated ONLY by an embedded payload is MEDIUM
+      // under one of those names and CRITICAL under another. Measured on byte-identical
+      // content: `payload-carrier.js` exits 1, `README-carrier.js` exits 0. A decoder
+      // corroborated by a recognised execution sink is CRITICAL under every name. That
+      // asymmetry predates this change, is disclosed in the release notes, and is not
+      // fixed here.
       //
       // Reconstitution — String.fromCodePoint/fromCharCode, the decoder half of
       // GlassWorm — is EVIDENCE ABOUT THE FILE, not a gate on the finding. It was a
@@ -12887,7 +12899,7 @@ dist/
           name: 'GlassWorm Decoder Pattern Detected',
           description: corroboration
             ? `Source file ${act} Unicode variation selector or tag character codepoints AND carries corroborating evidence - this is the decoder half of a GlassWorm attack`
-            : `Source file ${act} Unicode variation selector or tag character codepoints. This is the shape of a GlassWorm decoder, but nothing in the file corroborates intent - no execution sink and no invisible codepoints present`,
+            : `Source file ${act} Unicode variation selector or tag character codepoints. This is the shape of a GlassWorm decoder, but neither corroborator this check recognises is present - no literal eval( or Function( call, and no invisible codepoints`,
           category: 'unicode-stego',
           severity: corroborated ? 'critical' : 'medium',
           passed: false,
@@ -12902,7 +12914,7 @@ dist/
             : `sed -n '${Math.max(1, reportedLine - 5)},${reportedLine + 20}p' ${shellEscape(relativePath)}   # confirm this decodes for inspection, not for execution`,
           guidance: corroboration
             ? `The GlassWorm attack hides a payload in invisible Unicode characters and rebuilds it at runtime from their codepoints. This file ${act} those codepoints AND carries corroborating evidence, so treat it as live until traced. Follow the value from the range literal to whatever consumes it.`
-            : `This file ${act} codepoints in the variation selector or tag range. Sanitisers, linters, width calculators and tests for this attack all legitimately do the same thing, which is why this is a lead rather than a verdict: no decoded value reaches eval or Function here, and no invisible codepoints are present in the file. Confirm the value is inspected rather than executed. Note that reconstitution can be spelled many ways (an alias, a destructured binding, .map, Buffer.from, TextDecoder), so its absence from the message is not proof the file does not rebuild a string.`,
+            : `This file ${act} codepoints in the variation selector or tag range. Sanitisers, linters, width calculators and tests for this attack all legitimately do the same thing, which is why this is a lead rather than a verdict. What was actually checked, stated narrowly on purpose: no literal eval( or Function( call appears in this file, and UNICODE-STEGO-001 did not fire on it. Neither is a statement about the class. A decoded string can reach an executor through vm, child_process, a dynamic import(), a member expression such as globalThis.eval, or the Function constructor reached through a prototype chain, and this check recognises none of those - so read the file rather than trusting this line. Reconstitution likewise has many spellings (an alias, a destructured binding, .map, Buffer.from, TextDecoder), so its absence from the message above is not proof the file does not rebuild a string.`,
         });
       }
 

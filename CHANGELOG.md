@@ -34,14 +34,19 @@ An `.hmaignore` **path** rule is a different statement and is treated differentl
 subdirectory, and a smaller target honestly scores differently. Those findings leave the
 scored set as before — but they are no longer allowed to leave it silently, which is the
 half that was missing. `secure` on HackMyAgent's own repo reported `100/100 · No security
-issues found` in 0.27.0 while an `.hmaignore` held back 65 findings, 26 of them critical,
-and named none of it anywhere in the output. It now prints:
+issues found` in 0.27.0 while an `.hmaignore` held back dozens of findings, most of a
+severity that would have failed the run, and named none of it anywhere in the output. On this
+release, against this checkout, it prints:
 
 ```
-Scope       65 findings excluded by .hmaignore path rules (26 critical, 15 high, 24 medium)
+Scope       68 findings excluded by .hmaignore path rules (29 critical, 15 high, 24 medium)
             Out of scope, so not scored and not in the exit code. The score above
             describes the tree minus those paths.
 ```
+
+That count is a property of this tree at this tag, not a constant — it moves as the repo does,
+and two of those criticals are new in this release because `UNICODE-STEGO-002` stopped
+exempting files by name. Reproduce it with `hackmyagent secure . --ci` on this checkout.
 
 What changes:
 
@@ -253,6 +258,37 @@ Two changes, both in the `UNICODE-STEGO-002` block:
   is what unblocks defensive code, but `secure --fail-below <n>` compares the score, so a
   build that pins a threshold close to its current score can still go red on a downgraded
   finding. Check your threshold before upgrading if you use that flag.
+
+**Known gap, disclosed rather than discovered later: the corroborator recognises two spellings
+of an execution sink, so some real droppers are downgraded to MEDIUM and exit 0.** This is the
+one row where this change makes a pipeline quieter about something that deserved noise, and it
+is the reason to read this entry if you gate CI on the exit code.
+
+`hasExecutionSink` tests for a literal `eval(` or `Function(`. A decoder that reconstitutes a
+tag-range payload and executes it through anything else is no longer CRITICAL unless
+`UNICODE-STEGO-001` also fires on the same file. Measured, with fixtures that really do execute
+a hidden payload:
+
+| how the decoded string is executed | 0.27.0 | now |
+|---|---|---|
+| `eval(x)` | CRITICAL, exit 1 | CRITICAL, exit 1 |
+| `new Function(x)()` | CRITICAL, exit 1 | CRITICAL, exit 1 |
+| `vm.runInNewContext(x)` | CRITICAL, exit 1 | **MEDIUM, exit 0** |
+| `globalThis.eval(x)`, `(0,eval)(x)` | CRITICAL, exit 1 | **MEDIUM** |
+| `[].constructor.constructor(x)()` | CRITICAL, exit 1 | **MEDIUM, exit 0** |
+| `import('data:text/javascript,' + x)` | CRITICAL, exit 1 | **MEDIUM, exit 0** |
+| `child_process.exec(x)` | CRITICAL, exit 1 | **MEDIUM, exit 0** |
+
+The finding is still reported, at MEDIUM, with the same evidence and both signal lines — it is
+downgraded, not dropped — and the guidance text now says plainly which two spellings were
+checked instead of asserting that nothing reaches an executor. But an attacker who wants a
+green pipeline no longer has to disguise the decoder; writing `globalThis.eval` instead of
+`eval` is enough, and that is a cheaper evasion than the filename bypass this release removes.
+
+We are not closing it with a wider regex. That would be the same mistake as gating the finding
+on one spelling of reconstitution, one layer down, and the list above is not exhaustible by
+enumeration. Deciding whether a reconstituted string reaches an executor is dataflow, which is
+#424's AST analyzer. Tracked as #475.
 
 Measured on first-class source files, not `node_modules`:
 

@@ -586,6 +586,39 @@ describe('UNICODE-STEGO checks', () => {
       expect(stego002[0].message).toContain('execution sink');
     });
 
+    it('escalates to critical through the Function constructor, not only through eval', async () => {
+      // hasExecutionSink is a disjunction of two regexes and every other corroboration
+      // test in this file reaches it through the `eval(` arm, so the `Function(` arm
+      // shipped with no coverage at all. This pins the second arm on its own: the
+      // fixture contains no `eval(` anywhere, so a pass cannot be explained by the arm
+      // the other tests already exercise.
+      const content = [
+        'function decode(input) {',
+        '  const result = [];',
+        '  for (let i = 0; i < input.length; i++) {',
+        '    const cp = input.codePointAt(i);',
+        '    if (cp >= 0xFE00 && cp <= 0xFE0F) { result.push(cp - 0xFE00); }',
+        '  }',
+        '  return String.fromCharCode(...result);',
+        '}',
+        'new Function(decode(process.argv[2]))();',
+      ].join('\n');
+      // Fixture integrity: the OTHER arm must be absent, or this measures nothing new.
+      expect(content).not.toMatch(/(?:^|[^\w.$])eval\s*\(/);
+      expect(content).toContain('.codePointAt(');
+      expect(content).toMatch(/0xFE0/);
+      await fs.writeFile(path.join(tempDir, 'fn-ctor-decoder.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego002 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'fn-ctor-decoder.js'
+      );
+
+      expect(stego002.length).toBe(1);
+      expect(stego002[0].severity).toBe('critical');
+      expect(stego002[0].message).toContain('execution sink');
+    });
+
     it('escalates to critical when the invisible payload is present in the same file', async () => {
       // U+FE00 written into the file as raw bytes, so UNICODE-STEGO-001 fires here
       // too: the decoder and the payload it would decode are in the same place.
