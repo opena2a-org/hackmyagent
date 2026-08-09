@@ -338,19 +338,34 @@ export async function handleToolCall(
             files
           );
 
-          // Say what was not read. A file dropped in silence is indistinguishable
-          // from a file with nothing in it, which is the whole shape of #462.
-          const withheldNote = withheld.size === 0 ? '' :
-            `\n\nNot read (${withheld.size}): ${[...withheld.keys()].join(', ')}. `
-            + 'Each resolves outside this server\'s allowed roots — it is a link out of the '
-            + 'project. These files were NOT analyzed and nothing below covers them. To '
-            + 'include one, grant its real location its own root, or scan it from a terminal.';
+          // Say what was not read, INSIDE the JSON. Appending prose after
+          // `JSON.stringify` made the result unparseable for any client the
+          // moment something was withheld — i.e. precisely in the attack case,
+          // and with `isError` still undefined.
+          const notRead = [...withheld.keys()].sort().map((rel) => ({
+            path: rel,
+            reason: 'resolves outside this server\'s allowed roots — it is a link out of the project',
+          }));
 
           return {
             content: [
               {
                 type: 'text',
-                text: JSON.stringify(deepResult, null, 2) + withheldNote,
+                text: JSON.stringify(
+                  notRead.length > 0
+                    ? {
+                        ...deepResult,
+                        notRead,
+                        notReadNotice:
+                          `${notRead.length} file(s) were NOT read and nothing in this result `
+                          + 'covers their contents. Findings below may still REFERENCE such a '
+                          + 'file by name. To include one, grant its real location its own root, '
+                          + 'or scan it from a terminal.',
+                      }
+                    : deepResult,
+                  null,
+                  2,
+                ),
               },
             ],
           };

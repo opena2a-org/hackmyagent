@@ -67,19 +67,26 @@ suppressed that file's findings permanently, at no API cost, printing `(cached)`
 After the fix all four payloads report the control's findings, the benign controls are
 unmoved (`54 → 54`, `69 → 69`), and the forged fixture scores `69/100` exit 1 again.
 
-**`secure --deep` exits 2 when it could not finish, instead of 0.** Reading the analyst's
-reply used to depend on how the model happened to format it. Measured on the same file,
-with the same credential and the same analyst verdict, changing only the formatting:
-a bare JSON array gave `69/100` exit 1, and the same answer with a sentence in front of it
-gave `93/100` exit 0. The reply is now read from any of the shapes models actually return
-— fenced or not, with prose around it, or wrapped in `{"findings": [...]}` — and if it
-still cannot be read, that file is reported as unanalyzed and the run exits **2**, the
-code this CLI already uses for "reached no verdict". `0` still means clean and `1` still
-means findings.
+**`secure --deep` exits 2 when it could not finish, instead of 0.** A file whose analyst
+reply HackMyAgent cannot read is reported as unanalyzed, and the run now reaches no
+deep-scan verdict rather than a pass. `0` still means clean and `1` still means findings.
+
+The parser is deliberately narrow: it reads a bare JSON array or a fenced one, and nothing
+else. Replies wrapped in prose, or shaped as `{"findings": [...]}`, are NOT read — those
+files are reported as unanalyzed and the run exits 2. A broader parser was written and
+withdrawn before release: it read those shapes, and in doing so it let a JSON array planted
+in the scanned file, quoted back by the analyst after its real answer, become the verdict,
+and made any refusal containing a bracket read as clean. Losing a finding loudly is better
+than losing one silently, so the narrow reader ships and the gap is visible in the exit
+code. Widening it safely is tracked separately.
+
+The same exit code covers a deep scan cut short for other reasons — notably the daily
+Layer 3 budget being spent, which skips the remaining files. Those files are named, and the
+run exits 2 rather than reporting a clean tree it did not finish reading.
 
 Together with the `--ignore` change below, this release makes two runs fail that used to
-pass. Both are the same correction: a scan that did not measure something must not report
-it as clean. Neither is a new detection, and neither changes what the checks find.
+pass. Both are the same correction: a scan that did not measure something must not report it
+as clean. Neither is a new detection, and neither changes what the checks find.
 
 The same defect existed on the `scan-soul --deep` coverage path, where a passing verdict
 can only raise a control and never lower it. It is fixed the same way, and a hedged answer
@@ -130,9 +137,14 @@ there.
 **Confinement covers what a scan discovers, not only the path you pass it.** A project
 can contain a symbolic link at a name the scanner looks for — `CLAUDE.md`, `.env`,
 `.mcp.json` — pointing anywhere on the machine. Confining the directory argument alone
-left those readable, and `deep_scan` returned their contents. Every artifact's real
-location must now be inside a granted root, and anything withheld is named in the
-response rather than dropped in silence.
+left those readable, and `deep_scan` returned their contents.
+
+`deep_scan` no longer returns the CONTENTS of a file whose real location is outside a
+granted root, and it names what it withheld, in its JSON payload, rather than dropping it
+in silence. Be precise about what that does and does not cover: the pattern and structural
+layers still examine such a file, so a finding may still REFERENCE it by name and line
+number. The bytes stop; the derived observation does not. Narrowing that further is tracked
+separately.
 
 This applies to the MCP server, where the caller is a model. It is deliberately not
 applied to `hackmyagent secure` on the command line: there you chose the directory

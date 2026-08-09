@@ -290,8 +290,11 @@ describe('#463 confinement holds through the walk, not only at the entry path', 
   it('says which files it withheld instead of dropping them silently', async () => {
     const res = await handleToolCall('hackmyagent_deep_scan', { directory: root }, [root]);
     const text = res.content?.[0]?.text ?? '';
-    expect(text).toContain('Not read');
-    expect(text).toContain('CLAUDE.md');
+    // Inside the JSON, not appended after it: a note concatenated onto
+    // `JSON.stringify` made the payload unparseable for every client exactly
+    // when something was withheld.
+    const parsed = JSON.parse(text) as { notRead?: Array<{ path: string }> };
+    expect(parsed.notRead?.map((n) => n.path)).toContain('CLAUDE.md');
     // Naming the file must not mean printing its contents.
     expect(text).not.toContain('CANARY-463');
   });

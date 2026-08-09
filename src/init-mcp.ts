@@ -8,7 +8,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { rootTooBroad, describeRootRefusal } from './mcp/roots';
+import { rootTooBroad, describeRootRefusal, RootRefusalError } from './mcp/roots';
 
 /**
  * The real path when it exists, the lexical one when it does not.
@@ -19,7 +19,11 @@ import { rootTooBroad, describeRootRefusal } from './mcp/roots';
  */
 function realpathSyncOrSelf(p: string): string {
   try {
-    return fs.realpathSync(p);
+    // `.native` — the JS implementation is case-PRESERVING and the native one is
+    // case-CANONICALISING, and `roots.ts` uses the native one via fs.promises. On
+    // a case-insensitive filesystem that divergence let init-mcp accept
+    // `/Users/Ecolibria` while mcp-serve refused it: one predicate, two answers.
+    return fs.realpathSync.native(p);
   } catch {
     return p;
   }
@@ -119,9 +123,9 @@ export function initMcp(targetDir: string, forceTool?: string, roots: string[] =
   // Refusing at configuration time is the only point where the person is still
   // present to fix it.
   for (const real of resolvedRoots.map((r) => realpathSyncOrSelf(r))) {
-    const why = rootTooBroad(real, os.homedir());
+    const why = rootTooBroad(real, realpathSyncOrSelf(os.homedir()));
     if (why) {
-      throw new Error(describeRootRefusal({ kind: 'root-too-broad', root: real, why }));
+      throw new RootRefusalError(describeRootRefusal({ kind: 'root-too-broad', root: real, why }));
     }
   }
   let ideConfig: typeof IDE_CONFIGS[number] | null = null;

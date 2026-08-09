@@ -357,7 +357,7 @@ Always disclosed on a `Scope` line and as `outOfScope` in `--json`.
 |---|---|
 | 0 | Measured. No critical or high issues. |
 | 1 | Measured. Critical or high severity issues found. |
-| 2 | **Not measured.** No score and no risk level are reported. The target does not exist (`check <missing path>`, an unknown package), was unreachable, answered no payload, or the command reaches no verdict by design. `red-team` and `attack --local` exit 2 on every run: both generate payloads without executing any against an agent, so neither concludes anything about the target. A scan whose plugins failed is also 2. |
+| 2 | **Not measured.** For `red-team`, no score or risk level is reported. For `secure --deep`, the static results ARE reported and scored; the deep layer did not finish, so the run reaches no deep-scan verdict. The target does not exist (`check <missing path>`, an unknown package), was unreachable, answered no payload, or the command reaches no verdict by design. `red-team` and `attack --local` exit 2 on every run: both generate payloads without executing any against an agent, so neither concludes anything about the target. A scan whose plugins failed is also 2. |
 | 3 | QUARANTINE. Binary integrity check failed (tampered installation). |
 
 Exit 2 is non-zero on purpose. A CI job that asked for a security verdict and

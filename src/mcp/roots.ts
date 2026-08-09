@@ -43,6 +43,17 @@ export type RootRefusal =
   | { kind: 'not-a-directory'; requested: string; resolved: string; why: 'missing' | 'file' }
   | { kind: 'unresolvable'; requested: string; cause: ResolveRefusal };
 
+/**
+ * A refusal this tool AUTHORED, as opposed to one the operating system reported.
+ *
+ * The distinction is a display one and it is load-bearing. Our refusal text is
+ * multi-line by design and every path inside it is display-escaped where it was
+ * interpolated, so it can be printed as lines. Node's `fs` errors embed a raw
+ * path, so a directory named `proj\n  Roots it may read: /` forged a line that
+ * read like ours when the CLI escaped per line instead of per message.
+ */
+export class RootRefusalError extends Error {}
+
 export type RootsOutcome = { ok: true; roots: string[] } | { ok: false; refusal: RootRefusal };
 export type PathOutcome = { ok: true; path: string } | { ok: false; refusal: RootRefusal };
 
@@ -138,6 +149,7 @@ export async function resolveWithinRoots(roots: string[], requested: string): Pr
   }
 
   let lastCause: ResolveRefusal = 'escapes-tree';
+  let lastMissing: RootRefusal | null = null;
   for (const root of roots) {
     const rel = path.isAbsolute(requested) ? path.relative(root, requested) : requested;
 
@@ -150,7 +162,12 @@ export async function resolveWithinRoots(roots: string[], requested: string): Pr
     // the allowed root. Over-correcting a containment fix until it refuses the
     // legitimate case is #270's recorded failure mode, not a new one.
     const normalized = path.normalize(rel);
-    if (normalized === '' || normalized === '.') return confirmDirectory(root, requested);
+    if (normalized === '' || normalized === '.') {
+      const here = await confirmDirectory(root, requested);
+      if (here.ok) return here;
+      lastMissing = here.refusal;
+      continue;
+    }
     // `followLeafLink: true` — a link inside the root that points inside the
     // root is an ordinary file to read; one that points out is refused. That
     // closes the third escape shape measured on `c982b58` FOR THE PATH THE
@@ -164,7 +181,15 @@ export async function resolveWithinRoots(roots: string[], requested: string): Pr
     // handlers pass and the CLI deliberately does not. Both halves are needed
     // and neither implies the other.
     const outcome = await resolveInsideTree(root, rel, { followLeafLink: true });
-    if (outcome.ok) return confirmDirectory(outcome.path, requested);
+    if (outcome.ok) {
+      // `--root` is repeatable, so a name that is absent from THIS root may be
+      // present in the next one. Returning the refusal here made a directory
+      // that exists only in a later root unreachable.
+      const here = await confirmDirectory(outcome.path, requested);
+      if (here.ok) return here;
+      lastMissing = here.refusal;
+      continue;
+    }
     lastCause = outcome.cause;
   }
 
@@ -172,6 +197,9 @@ export async function resolveWithinRoots(roots: string[], requested: string): Pr
   // the roots and how to grant one. Anything else — a dangling link, an EACCES,
   // a missing parent — proved nothing about containment and says so instead.
   // #347.4's lesson: one sentence covering seven causes is true of one of them.
+  // A path that was INSIDE a root and simply absent is a different answer from
+  // one that left every root, and it is the more useful one.
+  if (lastMissing) return { ok: false, refusal: lastMissing };
   if (
     lastCause === 'escapes-tree' ||
     lastCause === 'parent-outside-tree' ||

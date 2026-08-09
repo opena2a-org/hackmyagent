@@ -170,8 +170,14 @@ function gateSet(result: { findings?: unknown[]; suppressed?: ScanResult['suppre
  * people to bypass the gate. The verdict channel says the true thing instead —
  * this run did not finish — using the exit code this CLI already means it with.
  */
-function deepScanIncomplete(result: { findings?: Array<{ checkId?: string }> }): boolean {
-  return (result.findings ?? []).some((f) => f.checkId === 'SEM-LLM-NOT-ANALYZED');
+function deepScanIncomplete(result: { findings?: unknown[]; suppressed?: ScanResult['suppressed'] }): boolean {
+  // `gateSet`, NOT `result.findings`. #450's whole point is that suppressing a
+  // check removes it from the report and not from the verdict; reading the
+  // filtered list here let `--ignore SEM-LLM-NOT-ANALYZED` turn an incomplete
+  // deep scan back into exit 0. Measured before the fix: suppressed entry
+  // present, score 93, exit 0 — the laundering this release closes elsewhere,
+  // reintroduced by the code that closes it.
+  return gateSet(result).some((f: any) => f?.checkId === 'SEM-LLM-NOT-ANALYZED');
 }
 
 async function finishWithFindings(code: number): Promise<void> {
@@ -274,6 +280,7 @@ import { shouldShowDeepProgress } from './ui/progress-gate';
 import { generateVerifyCommand } from './ui/verify-command';
 import { commandSucceeded } from './telemetry/command-success';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
+import { RootRefusalError } from './mcp/roots';
 import { shellQuote, citationPath, citationTarget, commandNaming } from './ui/shell-quote';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
 import type { ConceptId } from './types/finding-evidence';
@@ -8242,12 +8249,17 @@ Examples:
       console.log(`  Fixes are applied from a terminal: ${CLI_PREFIX} secure --fix <directory>\n`);
       console.log(`  Try: "Run a deep security scan on this project"\n`);
     } catch (error) {
-      // Escape per LINE, not across the whole message: the root refusals are
-      // multi-line by design and every path inside them is already display-escaped
-      // where it was interpolated. Escaping the whole string turned a refusal a
-      // person is meant to act on into one run of literal \n.
+      // Only OUR OWN refusal text prints as lines. It is multi-line by design and
+      // every path inside it is display-escaped where it was interpolated.
+      // Everything else goes through whole-message escaping, because Node's fs
+      // errors embed a raw path: a directory named `proj\n  Roots it may read: /`
+      // forged a line that read like ours when this escaped per line.
       const msg = error instanceof Error ? error.message : String(error);
-      console.error(`Error: ${msg.split('\n').map(escapeForDisplay).join('\n')}`);
+      console.error(
+        error instanceof RootRefusalError
+          ? `Error: ${msg}`
+          : `Error: ${escapeForDisplay(msg)}`,
+      );
       process.exit(1);
     }
   });
