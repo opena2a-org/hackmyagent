@@ -11,7 +11,16 @@ import * as crypto from 'crypto';
 
 export interface CacheEntry {
   hash: string;
-  response: string;
+  /**
+   * #462 — the PARSED result, not the raw response text.
+   *
+   * The raw text used to be written before the parse and re-parsed on every
+   * later run, so a response HMA could not read was replayed forever: one
+   * poisoned answer suppressed that file's findings on every subsequent scan, at
+   * no API cost, printing `(cached)`. A response that cannot be parsed now
+   * produces no cache entry at all.
+   */
+  findings: import('../types').SemanticFinding[];
   model: string;
   timestamp: string;
   inputTokens: number;

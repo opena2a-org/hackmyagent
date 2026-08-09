@@ -154,6 +154,32 @@ function gateSet(result: { findings?: unknown[]; suppressed?: ScanResult['suppre
   return [...(result.findings ?? []), ...expandSuppressed(result.suppressed)] as any[];
 }
 
+/**
+ * True when Layer 3 sent a file for analysis and could not read an answer back.
+ *
+ * #462 — a `--deep` run that could not read the analyst's answer for a file has
+ * not completed a deep scan, and must not report a deep-scan PASS. Measured on
+ * the branch before this: the same fixture, the same plaintext operator
+ * credential and the same analyst verdict went from `69/100 exit 1` to
+ * `93/100 exit 0` purely because the model wrapped its reply in prose. A CI gate
+ * whose answer depends on the analyst's FORMATTING is not a gate.
+ *
+ * The severity of `SEM-LLM-NOT-ANALYZED` is deliberately left at medium (CISO):
+ * raising it would turn every transient API hiccup into a red pipeline, which
+ * makes an availability event look like a security verdict and is what pushes
+ * people to bypass the gate. The verdict channel says the true thing instead —
+ * this run did not finish — using the exit code this CLI already means it with.
+ */
+function deepScanIncomplete(result: { findings?: unknown[]; suppressed?: ScanResult['suppressed'] }): boolean {
+  // `gateSet`, NOT `result.findings`. #450's whole point is that suppressing a
+  // check removes it from the report and not from the verdict; reading the
+  // filtered list here let `--ignore SEM-LLM-NOT-ANALYZED` turn an incomplete
+  // deep scan back into exit 0. Measured before the fix: suppressed entry
+  // present, score 93, exit 0 — the laundering this release closes elsewhere,
+  // reintroduced by the code that closes it.
+  return gateSet(result).some((f: any) => f?.checkId === 'SEM-LLM-NOT-ANALYZED');
+}
+
 async function finishWithFindings(code: number): Promise<void> {
   await recordTelemetry(code);
   process.exitCode = code;
@@ -254,6 +280,7 @@ import { shouldShowDeepProgress } from './ui/progress-gate';
 import { generateVerifyCommand } from './ui/verify-command';
 import { commandSucceeded } from './telemetry/command-success';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
+import { RootRefusalError } from './mcp/roots';
 import { shellQuote, citationPath, citationTarget, commandNaming } from './ui/shell-quote';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
 import type { ConceptId } from './types/finding-evidence';
@@ -4997,6 +5024,7 @@ Examples:
         }
         const critHigh = gateSet(result).filter((f: any) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) await finishWithFindings(1);
+        else if (deepScanIncomplete(result)) await finishWithFindings(2);
         return;
       }
 
@@ -5011,6 +5039,7 @@ Examples:
         }
         const critHigh = gateSet(result).filter((f: any) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) await finishWithFindings(1);
+        else if (deepScanIncomplete(result)) await finishWithFindings(2);
         return;
       }
 
@@ -5024,6 +5053,7 @@ Examples:
         }
         const critHigh = gateSet(result).filter((f: any) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) await finishWithFindings(1);
+        else if (deepScanIncomplete(result)) await finishWithFindings(2);
         return;
       }
 
@@ -5043,6 +5073,7 @@ Examples:
         }
         const critHigh = gateSet(result).filter((f: any) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) await finishWithFindings(1);
+        else if (deepScanIncomplete(result)) await finishWithFindings(2);
         return;
       }
 
@@ -5472,6 +5503,13 @@ Examples:
       );
       if (criticalOrHigh.length > 0) {
         return finishWithFindings(1);
+      }
+      if (deepScanIncomplete(result)) {
+        console.error(
+          '\nDeep analysis did not complete for every file, so this run reached no deep-scan\n'
+          + 'verdict. The checks that ran are unaffected and are reported above. Exit code 2.',
+        );
+        return finishWithFindings(2);
       }
     } catch (error) {
       console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
@@ -8146,10 +8184,15 @@ Examples:
 program
   .command('mcp-serve')
   .description('Run HackMyAgent as an MCP server (stdio transport)')
-  .action(async () => {
+  .option(
+    '--root <dir>',
+    'Directory the MCP tools may read (repeatable). Required: the server has no implicit root, because the working directory it inherits is chosen by the MCP client and not by you. "/" and a home directory are not accepted.',
+    (value: string, previous: string[] = []) => [...previous, value],
+  )
+  .action(async (options: { root?: string[] }) => {
     try {
       const { startMcpServer } = await import('./mcp-server');
-      await startMcpServer();
+      await startMcpServer(options.root ?? []);
     } catch (error) {
       console.error(`Error starting MCP server: ${error instanceof Error ? error.message : error}`);
       process.exit(1);
@@ -8170,30 +8213,53 @@ Once configured, ask your AI assistant:
 Examples:
   $ ${CLI_PREFIX} init-mcp
   $ ${CLI_PREFIX} init-mcp --tool cursor
-  $ ${CLI_PREFIX} init-mcp /path/to/project`)
+  $ ${CLI_PREFIX} init-mcp /path/to/project
+  $ ${CLI_PREFIX} init-mcp --root ~/work/api --root ~/work/web`)
   .argument('[directory]', 'Project directory (defaults to current directory)', '.')
   .option('-t, --tool <name>', 'Force specific tool: claude, cursor, vscode')
-  .action(async (directory: string, options: { tool?: string }) => {
+  .option(
+    '--root <dir>',
+    'Grant the MCP server access to this directory (repeatable). Written into the client config as `mcp-serve --root <dir>`. Omit to grant the project directory above.',
+    (value: string, previous: string[] = []) => [...previous, value],
+  )
+  .action(async (directory: string, options: { tool?: string; root?: string[] }) => {
     try {
       const targetDir = require("path").resolve(directory);
       const { initMcp } = await import('./init-mcp');
-      const result = initMcp(targetDir, options.tool);
+      const result = initMcp(targetDir, options.tool, options.root ?? []);
 
-      if (!result.created) {
-        console.log(`\n  HackMyAgent MCP server already configured in ${escapePathForDisplay(result.configPath)}\n`);
+      if (!result.created && !result.updated) {
+        console.log(`\n  HackMyAgent MCP server already configured in ${escapePathForDisplay(result.configPath)}`);
+        console.log(`  Roots: ${result.roots.map(escapePathForDisplay).join(', ')}\n`);
         return;
       }
 
       console.log(`\n  Detected: ${result.tool}\n`);
-      console.log(`  Added HackMyAgent MCP server to ${escapePathForDisplay(result.configPath)}\n`);
+      console.log(
+        result.updated
+          ? `  Updated the HackMyAgent MCP server in ${escapePathForDisplay(result.configPath)}\n`
+          : `  Added HackMyAgent MCP server to ${escapePathForDisplay(result.configPath)}\n`,
+      );
+      console.log(`  Roots it may read: ${result.roots.map(escapePathForDisplay).join(', ')}`);
+      console.log(`  Paths outside these are refused. Add more with --root, or scan from a terminal.\n`);
       console.log(`  Available tools in ${result.tool}:`);
-      console.log(`    hackmyagent_scan       — ${CHECK_COUNT} checks + structural analysis`);
+      console.log(`    hackmyagent_scan       — ${CHECK_COUNT} checks + structural analysis (read-only)`);
       console.log(`    hackmyagent_deep_scan  — Full analysis with LLM reasoning`);
-      console.log(`    hackmyagent_analyze_file — Analyze a single file`);
       console.log(`    hackmyagent_benchmark  — OASB-1 compliance assessment\n`);
+      console.log(`  Fixes are applied from a terminal: ${CLI_PREFIX} secure --fix <directory>\n`);
       console.log(`  Try: "Run a deep security scan on this project"\n`);
     } catch (error) {
-      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : String(error))}`);
+      // Only OUR OWN refusal text prints as lines. It is multi-line by design and
+      // every path inside it is display-escaped where it was interpolated.
+      // Everything else goes through whole-message escaping, because Node's fs
+      // errors embed a raw path: a directory named `proj\n  Roots it may read: /`
+      // forged a line that read like ours when this escaped per line.
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(
+        error instanceof RootRefusalError
+          ? `Error: ${msg}`
+          : `Error: ${escapeForDisplay(msg)}`,
+      );
       process.exit(1);
     }
   });
@@ -8697,7 +8763,10 @@ Examples:
       }
       if (options.deep) {
         if (result.deepAnalysisAvailable === false) {
-          console.log(`  ${colors.yellow}Deep analysis unavailable${RESET()} — set ANTHROPIC_API_KEY or install the claude CLI`);
+          // The `claude --print` tier this used to name was removed in 0.29.0,
+          // so telling anyone to install it is a dead end. Name only the thing
+          // that still works, and say what it costs them not to have it.
+          console.log(`  ${colors.yellow}Deep analysis unavailable${RESET()} — set ANTHROPIC_API_KEY to run it. Controls stay at their static verdict; the deep tier can only raise a control, never lower one, so the score is a floor.`);
         } else if (result.deepAnalysisResults && result.deepAnalysisResults.length > 0) {
           const llmUpgraded = result.deepAnalysisResults.filter((e) => e.llmPassed).length;
           console.log(`  ${colors.dim}Deep analysis: ${llmUpgraded} control${llmUpgraded === 1 ? '' : 's'} upgraded by ML semantic analysis${RESET()}`);

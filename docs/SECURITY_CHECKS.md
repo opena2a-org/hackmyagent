@@ -663,3 +663,22 @@ hackmyagent secure --ignore CRED-001,LOG-001
 ## Updating This Reference
 
 This document is maintained alongside the scanner implementation. Check IDs and descriptions should match the scanner source code in `src/hardening/scanner.ts`.
+
+## Auto-fix catalogue
+
+Checks `hackmyagent secure --fix` can remediate.
+
+| Check | Issue | Auto-fix |
+|---|---|---|
+| CRED-001 | Exposed API keys | Replace with env-var reference |
+| GIT-001 | Missing .gitignore | Create with secure defaults |
+| GIT-002 | Incomplete .gitignore | Add missing patterns |
+| PERM-001 | Overly permissive files | Set restrictive permissions |
+| MCP-001 | Root filesystem access | Scope to project directory |
+| NET-001 | Bound to 0.0.0.0 | Bind to 127.0.0.1 |
+| GATEWAY-001 | Gateway bound to 0.0.0.0 | Bind to 127.0.0.1 |
+| GATEWAY-003 | Plaintext token | Replace with `${OPENCLAW_AUTH_TOKEN}` |
+| GATEWAY-004 | Approvals disabled | Enable approvals |
+| GATEWAY-005 | Sandbox disabled | Enable sandbox |
+
+Use `--dry-run` to preview changes. Backups live in `.hackmyagent-backup/`. Rollback with `hackmyagent rollback`.

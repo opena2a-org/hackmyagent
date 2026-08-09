@@ -69,6 +69,19 @@ const FILE_DISCOVERY: Array<{ glob: string; type: FileType }> = [
   { glob: 'settings.json', type: 'config_file' },
 ];
 
+/**
+ * The artifacts `discoverFiles` will accept as a single-file target.
+ *
+ * Generated, never enumerated by hand. #463's replacement text for the removed
+ * `hackmyagent_analyze_file` has to tell the host model which files `deep_scan`
+ * accepts directly, and a hand-written list in a string rots the moment
+ * `FILE_DISCOVERY` gains an entry — which is how `.mcp.json` came to be missing
+ * from discovery in the first place.
+ */
+export function discoverableArtifactNames(): string[] {
+  return [...new Set(FILE_DISCOVERY.map((d) => path.basename(d.glob)))];
+}
+
 export class StructuralAnalyzer {
   private credentialAnalyzer = new CredentialContextAnalyzer();
   private mcpAnalyzer = new McpConfigAnalyzer();
@@ -144,6 +157,20 @@ export class StructuralAnalyzer {
       try {
         const stat = await fs.stat(filePath);
         if (!stat.isFile()) return true;
+
+        // #463 — the read is where containment has to hold. `stat` and
+        // `readFile` both follow symlinks, so the name being inside the tree
+        // says nothing about where the BYTES come from.
+        if (opts.confineTo) {
+          const real = await fs.realpath(filePath);
+          const inside = opts.confineTo.roots.some(
+            (r) => real === r || real.startsWith(r.endsWith(path.sep) ? r : r + path.sep),
+          );
+          if (!inside) {
+            opts.confineTo.onWithheld?.(rel, real);
+            return true;
+          }
+        }
 
         const truncated = stat.size > MAX_FILE_SIZE;
         const content = await fs.readFile(filePath, 'utf-8');

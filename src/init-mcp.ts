@@ -6,12 +6,34 @@
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
+import { rootTooBroad, describeRootRefusal, RootRefusalError } from './mcp/roots';
+
+/**
+ * The real path when it exists, the lexical one when it does not.
+ *
+ * The policy compares against a realpath'd home, so a root reached through a
+ * symlinked ancestor (`/tmp`, an external-volume home) has to be realpath'd
+ * here too or the two sides compare different strings for the same directory.
+ */
+function realpathSyncOrSelf(p: string): string {
+  try {
+    // `.native` — the JS implementation is case-PRESERVING and the native one is
+    // case-CANONICALISING, and `roots.ts` uses the native one via fs.promises. On
+    // a case-insensitive filesystem that divergence let init-mcp accept
+    // `/Users/Ecolibria` while mcp-serve refused it: one predicate, two answers.
+    return fs.realpathSync.native(p);
+  } catch {
+    return p;
+  }
+}
 
 interface McpConfig {
   mcpServers?: Record<string, {
     command: string;
     args: string[];
+    cwd?: string;
   }>;
 }
 
@@ -19,12 +41,33 @@ interface InitResult {
   tool: string;
   configPath: string;
   created: boolean;
+  /** An existing entry that was rewritten to carry roots (#463). */
+  updated: boolean;
+  roots: string[];
 }
 
-const HACKMYAGENT_MCP_CONFIG = {
-  command: 'npx',
-  args: ['-y', 'hackmyagent', 'mcp-serve'],
-};
+/**
+ * The server entry written into the client config.
+ *
+ * #463 — this used to be `npx -y hackmyagent mcp-serve` with no roots and no
+ * `cwd`, so the server's working directory was whatever the client happened to
+ * choose, commonly the user's home directory. Every root the server will accept
+ * is now named here explicitly, because `mcp-serve` no longer has an implicit
+ * one, and `cwd` is pinned so a relative path in a tool call resolves somewhere
+ * predictable.
+ */
+export function buildMcpServerEntry(roots: string[]): { command: string; args: string[]; cwd?: string } {
+  return {
+    command: 'npx',
+    args: ['-y', 'hackmyagent', 'mcp-serve', ...roots.flatMap((r) => ['--root', r])],
+    cwd: roots[0],
+  };
+}
+
+/** True when an existing entry predates roots, so re-running init-mcp must repair it. */
+export function entryNeedsRoots(entry: { args?: string[] } | undefined): boolean {
+  return !entry?.args?.includes('--root');
+}
 
 /** Config file locations, in detection priority order */
 const IDE_CONFIGS: Array<{
@@ -66,7 +109,25 @@ function detectIde(targetDir: string): typeof IDE_CONFIGS[number] | null {
   return null;
 }
 
-export function initMcp(targetDir: string, forceTool?: string): InitResult {
+export function initMcp(targetDir: string, forceTool?: string, roots: string[] = []): InitResult {
+  // No `--root` means "the project you ran this in", which is still an explicit
+  // human act naming a directory — unlike the server inheriting a cwd it was
+  // never told about.
+  const resolvedRoots = (roots.length > 0 ? roots : [targetDir]).map((r) => path.resolve(r));
+
+  // The SAME policy `mcp-serve` enforces, applied here, because this is the
+  // command its refusal text sends people to. Writing a root the server will
+  // refuse produced "Added HackMyAgent MCP server" at exit 0 and then a client
+  // whose every tool call failed for the life of the install — the dead end
+  // that ruling was meant to close, reintroduced by the recovery path itself.
+  // Refusing at configuration time is the only point where the person is still
+  // present to fix it.
+  for (const real of resolvedRoots.map((r) => realpathSyncOrSelf(r))) {
+    const why = rootTooBroad(real, realpathSyncOrSelf(os.homedir()));
+    if (why) {
+      throw new RootRefusalError(describeRootRefusal({ kind: 'root-too-broad', root: real, why }));
+    }
+  }
   let ideConfig: typeof IDE_CONFIGS[number] | null = null;
 
   if (forceTool) {
@@ -103,20 +164,27 @@ export function initMcp(targetDir: string, forceTool?: string): InitResult {
     // ENOENT or parse error on missing/empty file: start with empty config
   }
 
-  // Check if already configured
-  if (config.mcpServers?.hackmyagent) {
+  const existing = config.mcpServers?.hackmyagent;
+
+  // An entry that already carries the roots the caller asked for is left alone.
+  // One that predates `--root`, or that names different roots, is REWRITTEN:
+  // #463's refusal text tells the user to run this command, so returning
+  // "already configured" and changing nothing would be a dead end inside the
+  // command that exists to unblock them.
+  if (existing && !entryNeedsRoots(existing) && roots.length === 0) {
     return {
       tool: ideConfig.name,
       configPath: ideConfig.configPath,
       created: false,
+      updated: false,
+      roots: existing.args.filter((a, i) => existing.args[i - 1] === '--root'),
     };
   }
 
-  // Add HackMyAgent MCP server
   if (!config.mcpServers) {
     config.mcpServers = {};
   }
-  config.mcpServers.hackmyagent = HACKMYAGENT_MCP_CONFIG;
+  config.mcpServers.hackmyagent = buildMcpServerEntry(resolvedRoots);
 
   // Write config
   fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + '\n');
@@ -124,6 +192,8 @@ export function initMcp(targetDir: string, forceTool?: string): InitResult {
   return {
     tool: ideConfig.name,
     configPath: ideConfig.configPath,
-    created: true,
+    created: !existing,
+    updated: Boolean(existing),
+    roots: resolvedRoots,
   };
 }

@@ -437,6 +437,13 @@ const TAXONOMY_MAP: Record<string, string> = {
  * these IDs.
  */
 export const TAXONOMY_EXEMPT_CHECKIDS: ReadonlySet<string> = new Set([
+  // #462 — reports that Layer 3 sent a file for analysis and got back a result
+  // it could not read, so that file is NOT examined for the credential shapes
+  // only Layer 3 detects. A coverage statement about this run, in the same
+  // family as FIX-WRITE-FAILED below: it names an absence of measurement, not a
+  // threat, and any threat in the file is still reported by whichever other
+  // layer found it, carrying that layer's attack class.
+  'SEM-LLM-NOT-ANALYZED',
   'FIX-ERROR',
   // Reports that `--fix` was skipped because no backup could be taken, so the
   // run detected only. A fix-application status, not a threat.

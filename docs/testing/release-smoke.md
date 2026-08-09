@@ -252,8 +252,6 @@ Fail the release if:
 unset OPENA2A_TELEMETRY_URL   # restore after telemetry section
 ```
 
----
-
 ## 6. `--json` and `--ci` exit-code matrix (1 min)
 
 After every release that touches exit codes, the router, or JSON output shape:
@@ -284,6 +282,67 @@ node dist/cli.js check nonexistent-xyz-999999 --json > /tmp/smoke-404.json; echo
 behaviour — verified identical on published 0.24.0, 0.25.0 and 0.25.1 — and
 other tests assert it. The previous "exit 2" line in this checklist was the
 expectation that was wrong, not the code. Do not "fix" the CLI to match it.
+
+---
+
+## 6.5 Deep-scan verdict and MCP root confinement (4 min)
+
+New in 0.29.0. Both were shipped defects that no smoke step could have caught,
+which is why they are steps now rather than a note.
+
+**Exit 2 means the run reached no verdict.** `secure --deep` no longer reports a
+pass for a scan it could not finish. Drive Layer 3 with a stub so the check does
+not depend on a live model or a key:
+
+```bash
+cat > /tmp/smoke-stub.cjs <<'EOF'
+const S = process.env.HMA_SMOKE_REPLY;
+globalThis.fetch = async () => ({ ok: true, status: 200,
+  json: async () => ({ content: [{ type: 'text', text: S }],
+                       usage: { input_tokens: 10, output_tokens: 5 }, model: 'stub' }),
+  text: async () => '{}' });
+EOF
+
+# A readable reply carrying a CRITICAL -> exit 1
+HMA_SMOKE_REPLY='[{"line":1,"type":"Password","severity":"critical","description":"x","rationale":"y"}]' ANTHROPIC_API_KEY=stub NODE_OPTIONS="--require /tmp/smoke-stub.cjs"   node dist/cli.js secure "$BAD" --deep >/dev/null 2>&1; echo "readable: exit $?"     # expect 1
+
+# A reply that cannot be read -> exit 2, NOT 0
+HMA_SMOKE_REPLY='I am unable to complete this analysis.' ANTHROPIC_API_KEY=stub NODE_OPTIONS="--require /tmp/smoke-stub.cjs"   node dist/cli.js secure "$CLEAN" --deep 2>&1 | grep -c 'not analyzed'              # expect >= 1
+HMA_SMOKE_REPLY='I am unable to complete this analysis.' ANTHROPIC_API_KEY=stub NODE_OPTIONS="--require /tmp/smoke-stub.cjs"   node dist/cli.js secure "$CLEAN" --deep >/dev/null 2>&1; echo "unreadable: exit $?" # expect 2
+
+# --ignore must NOT launder it back to a pass
+HMA_SMOKE_REPLY='I am unable to complete this analysis.' ANTHROPIC_API_KEY=stub NODE_OPTIONS="--require /tmp/smoke-stub.cjs"   node dist/cli.js secure "$CLEAN" --deep --ignore SEM-LLM-NOT-ANALYZED >/dev/null 2>&1; echo "ignored: exit $?"  # expect 2
+```
+
+**A fresh fixture per case.** The Layer 3 cache is keyed on file CONTENT, so
+reusing one fixture across replies replays the first reply's parsed result and
+every later row silently measures nothing. That happened during the 0.29.0 gate.
+
+**MCP confinement runs through the WALK, not just the argument.** The escape that
+shipped was a link at a name discovery looks for, with the root itself as the
+argument — not a hostile path passed in:
+
+```bash
+B=$(mktemp -d); mkdir -p "$B/project" "$B/outside"
+printf 'AWS_SECRET_ACCESS_KEY=SMOKE_CANARY\n' > "$B/outside/real.env"
+ln -s "$B/outside/real.env" "$B/project/.env"
+printf '{}' > "$B/project/mcp.json"
+node -e '
+const {handleToolCall}=require("./dist/mcp-server.js");
+(async()=>{const r=await handleToolCall("hackmyagent_deep_scan",{directory:process.argv[1]},[process.argv[1]]);
+ const t=r.content[0].text;
+ if(/SMOKE_CANARY/.test(t)) throw new Error("LEAK: out-of-root bytes in the tool result");
+ const j=JSON.parse(t);                       // must still be valid JSON when withholding
+ if(!(j.notRead||[]).some(n=>n.path===".env")) throw new Error("withheld file not disclosed");
+ console.log("confined, disclosed, parseable");})()' "$B/project"
+rm -rf "$B"
+```
+
+Fail the release if: the unreadable reply exits 0, `--ignore` returns it to 0,
+the canary appears in the tool result, the result stops parsing as JSON, or a
+withheld file is dropped without being named.
+
+---
 
 ---
 

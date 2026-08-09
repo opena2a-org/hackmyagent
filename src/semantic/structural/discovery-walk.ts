@@ -63,6 +63,28 @@ export interface WalkResult {
 
 export interface WalkOptions {
   /**
+   * Confine every artifact READ to these roots (#463).
+   *
+   * Containment on the entry directory is not containment on what the walk
+   * finds inside it. `take()` joins a discovery basename onto the target and
+   * calls `fs.readFile`, which follows symlinks, so a repo shipping
+   * `CLAUDE.md -> ~/.aws/credentials` had that file's bytes read and handed to
+   * whoever asked. Measured through a real stdio MCP session against a
+   * legitimately granted root: `.env`, `CLAUDE.md` and `.mcp.json` symlinked out
+   * all came back in the tool result with `isError: undefined`.
+   *
+   * Absent, nothing is confined and the walk behaves as it always has — the CLI
+   * passes no roots, because a monorepo's `.env -> ../shared/.env` is a
+   * legitimate thing to scan and refusing it would be a silent detection loss.
+   * The MCP server passes its granted roots, where the caller is untrusted.
+   *
+   * `onWithheld` is not optional in spirit: a file dropped without a word is the
+   * score-laundering failure mode, where absence of a finding reads as absence
+   * of a problem.
+   */
+  confineTo?: { roots: string[]; onWithheld?: (rel: string, resolved: string) => void };
+
+  /**
    * Directories the caller has already accounted for and must not be read
    * again.
    *
