@@ -385,6 +385,54 @@ The same "fires on its own countermeasure" shape in `UNICODE-STEGO-005` is #468.
 `UNICODE-STEGO-002` CRITICALs on HackMyAgent's own test suite, caused by decoder fixtures
 held in string literals, are also pre-existing and unfixed.
 
+### Known issues
+
+The release walkthrough for this version installed the packed tarball as a fresh user and
+exercised 21 commands. Everything below **reproduces identically on published `0.27.0`** —
+none is a regression from this release, and each was measured on both versions rather than
+asserted. They are listed because two of them are the same defect class this release is
+about, and a release whose subject is "the score and the exit code must mean something"
+cannot be silent about the places where they still do not. **All four are scheduled for
+0.29.0**, and #368 and #390 are on their second carry, so they are fixed there rather than
+listed again.
+
+**The score does not respond to what is in the file:**
+
+- **Four hardcoded secrets in one file produce one finding and the same score as one secret**
+  (#478). `AST-CRED-003` reports a single instance naming only the first key, with
+  `instanceCount: null`. Removing three of the four moves the score by zero, which reads as
+  "my fix did not work". Each secret type is detected correctly in isolation, so this is
+  aggregation, not pattern coverage.
+- **The CRITICAL credential finding is less specific than the HIGH above it** (#368, second
+  carry). `AST-CRED-003 Hardcoded Secret Detected` prints the file with **no line number and
+  no `Verify:` line**, directly above `AST-CRED-001` which prints `config.js:3` and a runnable
+  `Verify:`. The masked preview and the secret type exist in the JSON and are dropped by the
+  text renderer. A CRITICAL that cannot say which line it means, sitting above a HIGH that
+  can, inverts the severity signal.
+
+**Two analyzers, one artifact, opposite verdicts:**
+
+- **`fix-all --scan-only` declares Credential Protection clean and exits 0 on a tree where
+  `secure` reports a CRITICAL hardcoded secret** (#477). `secure --fix` routes users there in
+  its own output — "Run `hackmyagent fix-all` to apply all available fixes" — so following the
+  tool's instruction moves you from the analyzer that found the credential to the one that
+  says the tree is clean.
+
+**A verdict on something never measured:**
+
+- **`scan-soul --ci` exits 0 when there is no governance file at all** (#390, second carry;
+  the other half of that issue, a governance file conforming to nothing, is fixed in this
+  release). The worst possible posture is the one case CI passes, and the command prints a
+  fabricated `0/100` with a full per-domain table for a file it never found. Every other
+  command — `check`, `detect`, `attack`, `red-team` — exits 2 with `NOT MEASURED` in the same
+  situation.
+
+Two smaller ones worth naming because they mislead rather than merely annoy: the `Path
+forward` projection on a mixed-severity tree can promise `100` where the measured result after
+those fixes is `98`, because it does not account for a residual LOW; and a `Verify:` line in
+some credential fix text hardcodes `.` rather than the directory that was scanned, so copying
+it audits the current directory instead of the target.
+
 ## [0.27.0] - 2026-08-07
 
 Four changes here can turn a green pipeline red, and they are the reason to read this
