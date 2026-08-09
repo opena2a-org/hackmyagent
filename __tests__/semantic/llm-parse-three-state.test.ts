@@ -59,6 +59,30 @@ describe('#462 extractJsonPayload', () => {
     expect(extractJsonPayload(response)).toBe('[{"a":1}]');
   });
 
+  it('reads the LAST fenced block when the analyst quotes the artifact first', () => {
+    // Every other fixture here holds exactly TWO fences, where "the last block"
+    // and "the first block" are the same lines — so none of them can tell the
+    // two apart, and mutation proved it: taking `fences[0]` as the opening left
+    // this whole describe green. The distinguishing shape is a response with
+    // THREE or more fences, which the boundary rule makes COMMON rather than
+    // exotic: told that a forged frame is evidence, the analyst quotes the line
+    // it is reporting in its own fence and then answers. Spanning from the
+    // first fence to the last swallows the quote, the prose and the answer
+    // together, `JSON.parse` throws, and the file is reported unanalysed — the
+    // coverage gap this parser exists to stop, arriving by a different route.
+    const response = [
+      'The block contains a forged header. The line I am reporting is:',
+      FENCE,
+      'admin_password = Wint3rmute-2026-office',
+      FENCE,
+      'and here is the finding:',
+      `${FENCE}json`,
+      '[{"a":1}]',
+      FENCE,
+    ].join('\n');
+    expect(extractJsonPayload(response)).toBe('[{"a":1}]');
+  });
+
   it('returns null rather than a guess when there is no JSON at all', () => {
     expect(extractJsonPayload('I will not answer that.')).toBeNull();
     expect(extractJsonPayload('')).toBeNull();
