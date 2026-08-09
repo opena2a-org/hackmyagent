@@ -93,13 +93,21 @@ export async function resolveRoots(
   const cwd = env.cwd ?? process.cwd();
   const home = path.resolve(env.homedir ?? os.homedir());
 
-  if (cliRoots.length === 0) {
+  // An EMPTY operand is not a root. `path.resolve(cwd, '')` is the cwd, so
+  // `--root ""` — which is what `--root "$PROJECT"` produces when $PROJECT is
+  // unset — silently reinstated the confine-to-the-working-directory behaviour
+  // this module exists to refuse, while still printing a configured root. The
+  // count of arguments was never the question; the count of USABLE roots is.
+  const usable = cliRoots.filter((r) => r.trim() !== '');
+  if (usable.length === 0) {
     return { ok: false, refusal: { kind: 'no-root-configured', cwd: await realpathOrResolve(cwd) } };
   }
 
   const roots: string[] = [];
   const realHome = await realpathOrResolve(home);
-  for (const candidate of cliRoots) {
+  // `usable`, not `cliRoots`: filtering the guard but granting from the raw list
+  // would let `--root "" --root /real/project` still add the cwd alongside it.
+  for (const candidate of usable) {
     const real = await realpathOrResolve(path.resolve(cwd, candidate));
     const why = rootTooBroad(real, realHome);
     if (why) {

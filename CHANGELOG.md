@@ -4,29 +4,38 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
-## [0.28.0] - 2026-08-08
+## [0.29.0] - 2026-08-09
 
-Four changes, and they move pipelines in both directions. Two can turn a green pipeline red,
-two can turn a red one green, and the green-going ones are the ones to read carefully — a
-finding getting quieter deserves more scrutiny than a finding getting louder, not less.
+Two CRITICAL vulnerabilities, both reachable in every published version through **0.28.0**.
+Upgrade before running HackMyAgent against a repository you do not control, and re-register
+the MCP server if you use it.
 
-| What changes | 0.27.0 | 0.28.0 |
-|---|---|---|
-| `--ignore` or an `.hmaignore` `!CHECK-ID` rule | removed the check's penalties, so suppressing a failing check made the tree score better | **suppression no longer moves the score or the exit code**, and every suppressed ID is named in the output |
-| An `.hmaignore` **path** rule | findings left the scored set silently | still out of scope, but disclosed on a `Scope` line with a severity breakdown, and as `outOfScope` in `--json` |
-| An MCP server declaring no tool key | a fabricated `['*']` produced a CRITICAL "Full Wildcard Tool Access" citing the server-key line | treated as the MCP default it is; a benign read-only server goes **69/100 to 96/100** |
-| A file carrying `.codePointAt(` and a codepoint range literal | **CRITICAL**, on a filename-keyed exemption an attacker controls | **MEDIUM unless corroborated**, and no filename can make the check skip a file |
+**#463 is closed. #462 is closed in part, and the part that remains open is described below
+and tracked as #484.** The MCP server is no longer an unconfined file reader, and a scanned
+file can no longer forge the frame around its own content. A scanned file CAN still get a
+findings array of its own adopted as the deep-tier result, through the reply reader, so a
+`--deep` PASS on a tree you do not control is not proof of anything. Running `secure` without
+`--deep` is unaffected.
 
-Why this is a minor rather than a patch: `--json` gains three fields (`outOfScope`,
-`suppressed`, `coverage.semanticFamilyCoverage`), the text output gains `Scope` and
-`Suppressed` lines and a semantic-coverage qualifier, and scores move in both directions. This
-is a `0.x` release, so a `^0.27.0` range does not resolve to it and nobody is upgraded without
-choosing to. Pipelines on `@latest` or `npx` pick it up on the next run.
+There is no patched `0.28.x`. `0.28.0` was cut and published from a separate branch while
+the fix below was still in review, so it carries neither fix, and neither does `0.27.0`.
 
-**Read the `UNICODE-STEGO-002` entry under `Fixed` before upgrading if you gate CI on the exit
-code.** It lowers severities, and its corroborator recognises two spellings of an execution
-sink, so some real droppers now report MEDIUM and exit 0. That gap is measured, disclosed in
-that entry, and tracked as #475 rather than papered over.
+**If you have run the MCP server, rotate any credential that was readable from the machine it
+ran on.** It accepted any absolute path the host model asked for, so the set of files it could
+have returned is not bounded by the project you pointed it at. HackMyAgent collects no
+telemetry, so we cannot tell you what any particular install read, and nothing we can run
+after the fact would establish that.
+
+`0.28.0` listed four known issues as "scheduled for 0.29.0". They are not in this release.
+It was cut to close the two vulnerabilities below and nothing else, so those four carry
+forward. Where this release's own fixes stop short, the entry that describes the fix says
+so rather than leaving it to a summary.
+
+Why this is a minor rather than a patch: `mcp-serve` now requires `--root` and has no
+unconfined mode, so an existing MCP registration stops working until it is re-registered, and
+`secure --deep` gains a third exit code. This is a `0.x` release, so a `^0.28.0` range
+does not resolve to it and nobody is upgraded without choosing to. Pipelines on `@latest` or
+`npx` pick it up on the next run.
 
 ### Security
 
@@ -35,7 +44,7 @@ that entry, and tracked as #475 rather than papered over.
 Scanned file content was interpolated into HackMyAgent's own analysis prompt with no
 boundary and no escaping, and the analyst's answer was read with a parser that turned any
 failure into "no findings". Both are present in every published version from 0.8.0
-through 0.27.0.
+through 0.28.0.
 
 Measured on `c982b58`, five trials per payload, through HackMyAgent's own prompt builder
 and parser. A `config.json` holding a plaintext admin password and an internal token:
@@ -80,13 +89,53 @@ and made any refusal containing a bracket read as clean. Losing a finding loudly
 than losing one silently, so the narrow reader ships and the gap is visible in the exit
 code. Widening it safely is tracked separately.
 
+**The narrow reader has the same defect, and this release does NOT close it (#484).** The
+rule "the answer is the last fenced block" was measured into existence, because the boundary
+rule makes the analyst quote suspicious artifact text back before answering. But an artifact
+carrying its OWN fenced findings array can get that array quoted into the reply in the
+position the reader prefers. Measured end to end on a file holding a plaintext admin
+password, the analyst correctly reporting it both times: `69/100 exit 1` answering plainly,
+`98/100 exit 0` when it also quoted the planted block — a silent clean pass, not even
+reported as unanalyzed. Found by adversarial review of this branch, not in the field, and it
+is present in every published version with a deep tier.
+
+So be precise about what #462 means here. The FRAME is closed: an artifact can no longer
+forge the `File:`/`Content:` block, because the boundary carries 128 random bits per request
+that the artifact cannot predict. The READER is not. Treat a `--deep` PASS on a tree you do
+not control as unproven; `secure` without `--deep` is unaffected, as are the static and
+structural layers.
+
+A fix was written during this release's gate and withdrawn, which is why it is being
+described rather than shipped. It closed this shape and opened a worse one: its tie-breaker
+dropped the analyst's genuine `[]` whenever the scanned file contained `[]` — which most JSON
+does — and adopted the competing block instead, turning a clean scan into an attacker-authored
+CRITICAL whose description and recommendation text the file controlled. That is a worse
+outcome than the defect it fixed, so it was reverted rather than iterated on under release
+pressure. The direction that is likely correct, and the reason it needs live-model
+measurement first, is recorded in #484.
+
 The same exit code covers a deep scan cut short for other reasons — notably the daily
 Layer 3 budget being spent, which skips the remaining files. Those files are named, and the
 run exits 2 rather than reporting a clean tree it did not finish reading.
 
-Together with the `--ignore` change below, this release makes two runs fail that used to
-pass. Both are the same correction: a scan that did not measure something must not report it
-as clean. Neither is a new detection, and neither changes what the checks find.
+**`--ignore SEM-LLM-NOT-ANALYZED` cannot turn that exit 2 back into a pass.** The predicate
+deciding whether the run reached a verdict was reading the list findings had already been
+filtered OUT of, so suppressing the not-analyzed check restored exactly the clean pass this
+entry exists to prevent. It now reads the unfiltered set. This is the same correction 0.28.0
+made for the score and the exit code, applied to the one channel that change did not reach.
+
+So this release makes runs fail that used to pass, and it is one correction, not several: a
+scan that did not measure something must not report it as clean. It is not a new detection
+and it does not change what any check finds.
+
+**That correction does not yet cover a deep scan run with no API key, and this release does
+not close that.** `secure --deep` without `ANTHROPIC_API_KEY` set skips Layer 3 entirely and
+still reports a pass, with no disclosure in the text output, in `--json`, or in `coverage`.
+Measured on a file holding a plaintext admin password: with a key, `69/100` and exit 1; with
+the key unset, `98/100` and **exit 0**, the credential still in the file. Published `0.28.0`
+produces the same two numbers, so this is not a regression from this release — but it is the
+same failure this entry is about, reached a different way, and the rule above should be read
+as covering only the two causes named. Tracked as #479.
 
 The same defect existed on the `scan-soul --deep` coverage path, where a passing verdict
 can only raise a control and never lower it. It is fixed the same way, and a hedged answer
@@ -111,7 +160,7 @@ higher one.
 
 `hackmyagent_analyze_file` read whatever path the host model asked for, and `scan`,
 `deep_scan` and `benchmark` accepted any directory. Present in every published version
-from 0.6.0 through 0.27.0.
+from 0.6.0 through 0.28.0.
 
 Reproduced against a real MCP session rooted at a small project directory: an absolute
 path, a `../` traversal, and a symlink inside the project each returned the full contents
@@ -134,6 +183,26 @@ which is what the refusal text tells you to run. A path inside a root must also 
 be a directory: `scan` used to answer `Score: 98/100` for a directory that was never
 there.
 
+**An empty `--root` operand is refused rather than resolved to the working directory.** The
+check counted arguments, and `path.resolve(cwd, "")` is the working directory — so
+`--root ""`, which is what `--root "$PROJECT"` produces when the variable is unset, granted
+whatever directory the client happened to choose while still reporting a configured root.
+That is the confine-to-nothing-behind-a-security-flag outcome the mandatory root exists to
+prevent. Both the check and the grant now read the same filtered list, so an empty operand
+cannot ride along beside a real root either.
+
+**A root reached through a symbolic link answers for itself.** Roots are stored resolved,
+so a root granted as `/tmp/proj` is held as `/private/tmp/proj` on macOS; the request was
+then compared against that stored form as the caller had spelled it, and the server refused
+the very root it had been granted. The refusal printed `Resolved to` and `Allowed roots` as
+the same string while saying the path was outside, and told the user to grant a root they
+had already granted. `init-mcp` writes the spelling you type, and on macOS every path under
+`/tmp` and `/var` traverses a link, so the documented setup produced exactly this. Only the
+absolute non-canonical spelling failed, which is why `.` and `./sub` kept working and hid
+it. Both sides are now resolved the same way before they are compared. This does not widen
+containment — a link that resolves outside a root still resolves outside it, and the tests
+assert that in the same file as the fix.
+
 **Confinement covers what a scan discovers, not only the path you pass it.** A project
 can contain a symbolic link at a name the scanner looks for — `CLAUDE.md`, `.env`,
 `.mcp.json` — pointing anywhere on the machine. Confining the directory argument alone
@@ -151,6 +220,19 @@ applied to `hackmyagent secure` on the command line: there you chose the directo
 yourself, and a monorepo whose `.env` is a link to a shared file is a legitimate thing to
 scan.
 
+**That reasoning does not stretch to `--deep`, and the gap it leaves is open in this
+release.** Choosing the directory is not the same as choosing where its contents are sent.
+`secure . --deep` can follow a symbolic link out of the scanned tree and include those
+bytes in what it transmits to the model provider, so a repository you do not control can
+cause a file you never meant to share to leave the machine. We have reproduced it. It is
+not fixed here, it is not new in this release, and it is present in every published version
+with a deep tier.
+
+Until it is fixed: **do not run `--deep` against a tree you do not trust.** `hackmyagent
+secure` without `--deep` does not transmit file contents anywhere, and the static and
+structural layers are unaffected. Fixing this is the next security item, and it is tracked
+as #483.
+
 `hackmyagent_analyze_file` is removed and returns a pointer to `hackmyagent_deep_scan` for
 one release. The `fix` parameter is removed from the MCP surface: there is no write path
 behind it, and passing it now returns a note saying so rather than doing nothing quietly.
@@ -158,6 +240,33 @@ A filesystem write nobody confirmed, initiated by a model that may be acting on 
 just read out of a file, is not something a security tool should offer. Fixes are applied
 from a terminal with `hackmyagent secure --fix`. A suppression list supplied through the
 MCP tool is now named in the response instead of applied silently.
+
+
+## [0.28.0] - 2026-08-08
+
+Four changes, and they move pipelines in both directions. Two can turn a green pipeline red,
+two can turn a red one green, and the green-going ones are the ones to read carefully — a
+finding getting quieter deserves more scrutiny than a finding getting louder, not less.
+
+| What changes | 0.27.0 | 0.28.0 |
+|---|---|---|
+| `--ignore` or an `.hmaignore` `!CHECK-ID` rule | removed the check's penalties, so suppressing a failing check made the tree score better | **suppression no longer moves the score or the exit code**, and every suppressed ID is named in the output |
+| An `.hmaignore` **path** rule | findings left the scored set silently | still out of scope, but disclosed on a `Scope` line with a severity breakdown, and as `outOfScope` in `--json` |
+| An MCP server declaring no tool key | a fabricated `['*']` produced a CRITICAL "Full Wildcard Tool Access" citing the server-key line | treated as the MCP default it is; a benign read-only server goes **69/100 to 96/100** |
+| A file carrying `.codePointAt(` and a codepoint range literal | **CRITICAL**, on a filename-keyed exemption an attacker controls | **MEDIUM unless corroborated**, and no filename can make the check skip a file |
+
+Why this is a minor rather than a patch: `--json` gains three fields (`outOfScope`,
+`suppressed`, `coverage.semanticFamilyCoverage`), the text output gains `Scope` and
+`Suppressed` lines and a semantic-coverage qualifier, and scores move in both directions. This
+is a `0.x` release, so a `^0.27.0` range does not resolve to it and nobody is upgraded without
+choosing to. Pipelines on `@latest` or `npx` pick it up on the next run.
+
+**Read the `UNICODE-STEGO-002` entry under `Fixed` before upgrading if you gate CI on the exit
+code.** It lowers severities, and its corroborator recognises two spellings of an execution
+sink, so some real droppers now report MEDIUM and exit 0. That gap is measured, disclosed in
+that entry, and tracked as #475 rather than papered over.
+
+### Security
 
 **`--ignore` and `.hmaignore` no longer change the score or the exit code (#450).**
 This can turn a green pipeline red, and it is the reason to read this entry before

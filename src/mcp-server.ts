@@ -221,7 +221,7 @@ scan below is complete. To apply fixes, run from a terminal:
 }
 
 /**
- * `hackmyagent_analyze_file` was removed in 0.28.0 (#463).
+ * `hackmyagent_analyze_file` was removed in 0.29.0 (#463).
  *
  * The stub is one minor cycle of discoverability, not a deprecation window: it
  * does not preserve the behaviour, it only stops `Unknown tool:` being a dead end
@@ -230,7 +230,7 @@ scan below is complete. To apply fixes, run from a terminal:
  * in a charter does.
  */
 export function analyzeFileRemovalText(discoverableArtifacts: string[]): string {
-  return `hackmyagent_analyze_file was removed in hackmyagent 0.28.0.
+  return `hackmyagent_analyze_file was removed in hackmyagent 0.29.0.
 
 Use hackmyagent_deep_scan instead. Point it at the directory containing the file,
 or at the file itself when it is one of: ${discoverableArtifacts.join(', ')}. It
@@ -372,7 +372,7 @@ export async function handleToolCall(
         }
 
       case 'hackmyagent_analyze_file': {
-        // Removed in 0.28.0 (#463). The stub is deleted in 0.29.0.
+        // Removed in 0.29.0 (#463). The stub is deleted in 0.30.0.
         //
         // The earlier rationale here said `deep_scan` returns the same class of
         // content "bounded by what HMA decided is security-relevant, instead of

@@ -167,7 +167,7 @@ describe('#463 the arbitrary-file reader is gone', () => {
   it('returns a redirect rather than reading the file, even inside the root', async () => {
     const res = await handleToolCall('hackmyagent_analyze_file', { file: path.join(root, '.gitignore') }, [root]);
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain('was removed in hackmyagent 0.28.0');
+    expect(res.content[0].text).toContain('was removed in hackmyagent 0.29.0');
     expect(res.content[0].text).toContain('hackmyagent_deep_scan');
     expect(res.content[0].text).not.toContain('node_modules');
   });

@@ -132,3 +132,34 @@ describe('canonicalizing the request does not widen containment', () => {
     if (!outcome.ok) expect(outcome.refusal.kind).toBe('not-a-directory');
   });
 });
+
+/**
+ * An empty `--root` operand is not a root.
+ *
+ * Found by adversarial review. `resolveRoots` guarded on the COUNT of arguments,
+ * and `path.resolve(cwd, '')` is the cwd — so `--root ""`, which is what
+ * `--root "$PROJECT"` produces when the variable is unset, granted the
+ * client-chosen working directory while still reporting a configured root.
+ * That is precisely the "confine to nothing while printing a security-sounding
+ * flag" outcome this module's header says was ruled out.
+ */
+describe('#463 an empty --root operand is refused, not resolved to the cwd', () => {
+  it('refuses an empty or whitespace-only root the way no root at all is refused', async () => {
+    for (const operand of ['', '   ', '\t']) {
+      const outcome = await resolveRoots([operand], { cwd: base, homedir: '/Users/nobody' });
+      expect(outcome.ok, `--root ${JSON.stringify(operand)} was accepted`).toBe(false);
+      if (!outcome.ok) expect(outcome.refusal.kind).toBe('no-root-configured');
+    }
+  });
+
+  it('does not grant the cwd alongside a real root when both are passed', async () => {
+    // The guard and the grant have to read the same list. Filtering only the
+    // guard would let an empty operand ride along with a legitimate root.
+    const outcome = await resolveRoots(['', canonical], { cwd: base, homedir: '/Users/nobody' });
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.roots).toEqual([canonical]);
+      expect(outcome.roots).not.toContain(base);
+    }
+  });
+});
