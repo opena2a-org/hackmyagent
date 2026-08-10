@@ -743,6 +743,10 @@ Examples:
         displayUnifiedCheck({
           name: resolved,
           sourceLabel: 'local',
+          // #286 — `targetDir` is the directory the findings' paths resolve
+          // against (the file's parent when the target is a lone file), which
+          // is what makes the rendered Verify commands runnable from any cwd.
+          scanRoot: targetDir,
           nanomindScan: {
             compiledArtifacts: nmResult.compiledArtifacts,
             // #456 — `check` discloses the analyzer-family shortfall on the
@@ -988,6 +992,24 @@ interface UnifiedCheckDisplayOptions {
   name: string;
   sourceLabel?: string;
   projectType?: string;
+  /**
+   * The directory `finding.file` paths are relative to (#286).
+   *
+   * Without it the rendered `Verify:` command names a TARGET-relative path and
+   * only runs when the reader's shell happens to already sit at the scan
+   * target: scanning an absolute path from `$HOME` produced 68 unique `sed`
+   * commands, 0 of which ran. Absent for target types that have no local
+   * directory (a registry lookup, a remote package), where the previous
+   * behaviour is still the only truthful one.
+   *
+   * ONE root, not two. A previous revision carried a separate `probeRoot` so a
+   * filesystem existence check could be answered against the tree that was
+   * actually scanned; that check existed only to feed a `cat <path>` fallback
+   * for findings with no line, and both are gone (see `generateVerifyCommand`).
+   * What is left is the path the reader is shown, which is the only root a
+   * `sed -n '<line>p'` citation needs.
+   */
+  scanRoot?: string;
   localScan?: {
     score: number;
     maxScore: number;
@@ -1399,7 +1421,7 @@ function renderRegistryOnlyCheck(
 }
 
 function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
-  const { name, sourceLabel, projectType, localScan, registry, verbose, version, nanomindScan, usedAnalm } = opts;
+  const { name, sourceLabel, projectType, scanRoot, localScan, registry, verbose, version, nanomindScan, usedAnalm } = opts;
 
   // #328 — `fullAuditTarget` is a path out of the scanned tree and it is spliced
   // into `Run \`secure <target>\``. Sanitised ONCE here, where it enters the
@@ -2309,7 +2331,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         if (f.guidance) {
           console.log(`  ${borderColor}│${RESET()} ${escapeForDisplay(cleanFixText(f.guidance, f.file))}`);
         }
-        const verifyCmd = generateVerifyCommand(f);
+        const verifyCmd = generateVerifyCommand(f, scanRoot);
         if (verifyCmd) {
           console.log(`  ${borderColor}│${RESET()} ${colors.dim}Verify: ${verifyCmd}${RESET()}`);
         }
@@ -2352,7 +2374,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         if (f.guidance) {
           console.log(`  ${borderColor}│${RESET()} ${escapeForDisplay(cleanFixText(f.guidance, f.file))}`);
         }
-        const verifyLine = generateVerifyCommand(f);
+        const verifyLine = generateVerifyCommand(f, scanRoot);
         if (verifyLine) {
           console.log(`  ${borderColor}│${RESET()} ${colors.dim}Verify: ${verifyLine}${RESET()}`);
         }
@@ -4423,6 +4445,16 @@ Examples:
         targetDir = _tmp;
       }
 
+      // #286 — the directory a finding's `file` actually resolves against, for
+      // building runnable `Verify:` commands. NOT `displayDir` for a lone-file
+      // target: that target is copied into a temp dir and its findings carry
+      // the BASENAME, so `join(displayDir, basename)` would name
+      // `<file>/<file>`. The containing directory is where that basename
+      // resolves, and it is also the path the reader recognises.
+      const citationRoot = _isFileTarget
+        ? require('node:path').dirname(originalTarget)
+        : displayDir;
+
       // Parse ignore list
       const ignoreList = options.ignore
         ? options.ignore.split(',').map((s) => s.trim()).filter(Boolean)
@@ -5180,6 +5212,9 @@ Examples:
         name: secureDisplayName,
         version: secureDisplayVersion ?? undefined,
         projectType: result.projectType,
+        // #286 — the directory the findings' paths are relative to, so every
+        // rendered Verify command runs from wherever the reader is standing.
+        scanRoot: citationRoot,
         // #450 — the two narrowings, carried so the report can name them.
         // Without this the scan is narrowed invisibly: 0.27.0 printed
         // `100/100 · No security issues found` on this repo while an

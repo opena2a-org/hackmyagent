@@ -939,25 +939,44 @@ function configEvidenceDetail(configs: readonly AiConfigFile[]): string {
  * `sed -n '<line>p' <file>` for a cited config, or undefined when the path
  * cannot be named truthfully.
  *
- * Deliberately not `generateVerifyCommand()`: that helper quotes through
- * `shellEscapePath`, which predates `citationPath` and does not make a leading
- * `-` an operand — and the path here is `scanDirectory` joined to the config
- * name, so the user-controlled half can be anything. The emitted form is
- * identical so the two surfaces read the same; unifying `generateVerifyCommand`
- * onto `citationPath` touches five analyzers and their pinned tests, so it is
- * its own change rather than a rider on this one.
+ * Kept as its own function, but the paths have partly converged: #286 gave
+ * `generateVerifyCommand()` an optional `scanRoot`, and on that path it joins
+ * the root to the finding's file and renders through `citationPath` — which,
+ * unlike `shellEscapePath`, also makes a leading `-` an operand. That much this
+ * comment used to point forward to.
+ *
+ * THE RULE IS THE SAME ON BOTH: NO LINE, NO VERIFY. An earlier revision of this
+ * function kept a `cat <path>` branch for the lineless case and argued it was
+ * safe here because this function "fires only on an `AiConfigFile` ... where the
+ * file is a declarative agent config rather than a secret store". That claim was
+ * false, and one run falsified it: a `.claude/settings.json` holding
+ * `permissions.allow: ["Bash(*)"]` alongside an `env` block is BOTH, and it is
+ * the ordinary shape of that file. `detect` rendered
+ *
+ *     HIGH  AI config files grant broad permissions
+ *     Verify: cat <target>/.claude/settings.json
+ *
+ * while `secure` reported `CRITICAL Exposed Credential` on the same file — the
+ * tool telling the reader to print a secret file it had itself flagged as
+ * holding one. That is the exact defect `generateVerifyCommand` deleted, and it
+ * survived here because the sweep was done by spelling rather than by class.
+ *
+ * `cat` also never verified the flagged trigger. The finding is about a
+ * permission ENTRY; `cat` prints the whole file and leaves the reader to find
+ * it. So it failed the standard's item 3 independently of the disclosure.
+ *
+ * The lineless case now emits nothing. The finding keeps its `fix`, and the
+ * absent Verify is the signal that the emit site owes a line: the structured
+ * permission path (`permission-grant.ts` `findPermissionGrant`) deliberately
+ * returns none, which is tracked separately — recovering it there is what turns
+ * this back into a `sed`, and it is the only thing that should.
  */
 function configVerifyCommand(scanDirectory: string, config: AiConfigFile | undefined): string | undefined {
   if (!config?.evidence) return undefined;
+  if (config.evidence.line === undefined) return undefined;
   const quotedPath = citationPath(path.join(scanDirectory, config.file));
   if (!quotedPath) return undefined;
-  // No line means no `sed`. `cat` is the honest substitute: it carries no
-  // scanned text into the command — so it cannot copy a credential out of a
-  // permission entry into a line the reader is invited to run — and the
-  // finding already names the entry to look for.
-  return config.evidence.line === undefined
-    ? `cat ${quotedPath}`
-    : `sed -n '${config.evidence.line}p' ${quotedPath}`;
+  return `sed -n '${config.evidence.line}p' ${quotedPath}`;
 }
 
 function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScanResult): Finding[] {

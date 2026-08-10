@@ -169,6 +169,117 @@ describe("generateVerifyCommand (#141)", () => {
   });
 });
 
+describe("generateVerifyCommand with a scanRoot (#286)", () => {
+  // The rootful branch had no unit coverage at all: it was exercised only
+  // end-to-end by `__tests__/cli/locatable-runnable-citations.test.ts`, whose
+  // scan target is a temp directory and whose findings therefore all carry
+  // TARGET-RELATIVE paths. No fixture in either suite produced a finding with
+  // an absolute `file`, so deleting the `isAbsolute` guard and always joining
+  // the root left both suites green while turning `/etc/app/config.ts` into
+  // `<root>/etc/app/config.ts` — a Verify naming a path that does not exist.
+
+  it("joins a target-relative file onto the root", () => {
+    expect(
+      generateVerifyCommand({ file: "app/config.ts", line: 10 }, "/srv/scan")
+    ).toBe("sed -n '10p' /srv/scan/app/config.ts");
+  });
+
+  it("leaves an ALREADY-ABSOLUTE file alone instead of joining it under the root", () => {
+    // The pin. `join('/srv/scan', '/var/data/config.ts')` is
+    // '/srv/scan/var/data/config.ts', so the mutant is not equivalent: it emits
+    // a command against a path the scan never read.
+    expect(
+      generateVerifyCommand({ file: "/var/data/config.ts", line: 10 }, "/srv/scan")
+    ).toBe("sed -n '10p' /var/data/config.ts");
+  });
+
+  it("keeps the rootless form target-relative", () => {
+    // The two forms must stay distinguishable: a caller with no durable root
+    // still gets the previous behaviour rather than a fabricated absolute path.
+    expect(
+      generateVerifyCommand({ file: "app/config.ts", line: 10 })
+    ).toBe("sed -n '10p' 'app/config.ts'");
+  });
+
+  it("still emits nothing for a finding with no line, root or no root", () => {
+    expect(generateVerifyCommand({ file: "app/config.ts" }, "/srv/scan")).toBeUndefined();
+    expect(generateVerifyCommand({ file: "app/config.ts" })).toBeUndefined();
+  });
+
+  it("makes a leading dash an operand rather than a flag", () => {
+    // `citationPath`, unlike the older `shellEscapePath` the rootless branch
+    // uses, prefixes `./` so `sed` cannot read the path as an option.
+    expect(
+      generateVerifyCommand({ file: "-rf/config.ts", line: 4 }, "")
+    ).toBe("sed -n '4p' ./-rf/config.ts");
+  });
+});
+
+/**
+ * A display hazard in the SCAN ROOT must not silence the whole report (#368,
+ * round 5).
+ *
+ * `citationPath` refuses any path containing an invisible character, because
+ * such a path renders as something other than the bytes a command acts on.
+ * Applying that test to the JOINED path made the ROOT able to veto every
+ * finding: one `\p{Cf}` character in the directory the user chose to scan
+ * suppressed the `Verify:` line for every finding in the report, including
+ * findings whose own file name is plain ASCII and whose line is known.
+ *
+ * Measured on a directory named `zwj-<ZWJ>-proj`: three `Verify: sed` lines
+ * before the change, zero after, while `SKILL.md:13` still printed. Score and
+ * finding count were byte-identical, which is exactly why the regression
+ * evidence for that change — "0 findings lost, 0 score movement" — could not
+ * see it. Comparing findings and scores does not compare commands.
+ *
+ * The refusal is about ATTACKER-CONTROLLED names. `f.file` comes out of the
+ * scanned tree and keeps the full test on both branches. The root is the
+ * operator's own argument, so when it cannot be named the citation falls back
+ * to the target-relative form — which is what this function emitted before the
+ * root existed, and what it still emits with no root.
+ */
+describe("generateVerifyCommand: a hazardous root must not veto the citation (#368)", () => {
+  const ZWJ = "‍";
+
+  it("falls back to the target-relative form when the ROOT is unnameable", () => {
+    const cmd = generateVerifyCommand({ file: "SKILL.md", line: 13 }, `/srv/zwj-a${ZWJ}b-proj`);
+    // A command, not silence. Identical to the rootless form, so the fallback
+    // cannot be worse than the behaviour that shipped before the root existed.
+    expect(cmd).toBe("sed -n '13p' SKILL.md");
+    expect(cmd).not.toContain(ZWJ);
+  });
+
+  it("still refuses when the FINDING'S OWN file is unnameable", () => {
+    // The half that must NOT be relaxed: the fallback is for the root only.
+    // A mutant that dropped the hazard test entirely would pass the case above
+    // and fail here.
+    expect(
+      generateVerifyCommand({ file: `SKI${ZWJ}LL.md`, line: 13 }, "/srv/scan")
+    ).toBeUndefined();
+  });
+
+  it("refuses when BOTH are unnameable", () => {
+    expect(
+      generateVerifyCommand({ file: `SKI${ZWJ}LL.md`, line: 13 }, `/srv/zwj-a${ZWJ}b-proj`)
+    ).toBeUndefined();
+  });
+
+  it("an unnameable root does not resurrect a finding with no line", () => {
+    // The fallback must not become a second route around "no line, no Verify".
+    expect(
+      generateVerifyCommand({ file: "SKILL.md" }, `/srv/zwj-a${ZWJ}b-proj`)
+    ).toBeUndefined();
+  });
+
+  it("a clean root still produces the joined, runnable form", () => {
+    // Non-vacuity: if the join stopped happening altogether, every assertion
+    // above would still pass while #286's whole point was lost.
+    expect(
+      generateVerifyCommand({ file: "SKILL.md", line: 13 }, "/srv/scan")
+    ).toBe("sed -n '13p' /srv/scan/SKILL.md");
+  });
+});
+
 describe("shellEscapePath (#141)", () => {
   it("returns undefined on tab characters", () => {
     expect(shellEscapePath("a\tb")).toBeUndefined();

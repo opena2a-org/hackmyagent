@@ -16,7 +16,8 @@
  */
 
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { join, relative, extname, basename } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { join, relative, extname, basename, isAbsolute } from 'node:path';
 
 import type { SecurityFinding, Severity, ProjectType, NanoMindIntentSignal } from '../hardening/security-check.js';
 import type { SecurityAST, CompilationResult } from './types.js';
@@ -38,6 +39,7 @@ import {
   analyzerRouteFor,
 } from './analyzers/family-coverage.js';
 import type { AnalyzerFamily, AnalyzerRoute } from './analyzers/family-coverage.js';
+import { resolveFindingLine } from '../types/finding-location.js';
 import { enrichFindings } from './fix-generator.js';
 import { enforceSeverityFloor, validateEnhancement } from './security/defense-in-depth.js';
 import type { SeverityLevel } from './security/defense-in-depth.js';
@@ -418,8 +420,21 @@ export async function runNanoMindScan(
   // Step 5: Deduplicate AST findings (group by checkId, keep representative)
   const dedupedASTFindings = deduplicateFindings(allASTFindings);
 
-  // Step 6: Merge using defense-in-depth rules
-  const mergedFindings = mergeFindings(existingFindings, dedupedASTFindings);
+  // Step 6: Merge using defense-in-depth rules.
+  //
+  // #368 — the conversion boundary gets a way back to the artifact's bytes so
+  // an AST finding that carries a verbatim trigger but no line can still be
+  // located. Read lazily and only for unlocated findings: holding every
+  // scanned file's content for the whole scan would trade a citation for a
+  // memory regression proportional to the tree.
+  const readArtifact = (file: string): string | undefined => {
+    try {
+      return readFileSync(isAbsolute(file) ? file : join(targetDir, file), 'utf-8');
+    } catch {
+      return undefined;
+    }
+  };
+  const mergedFindings = mergeFindings(existingFindings, dedupedASTFindings, readArtifact);
 
   // Step 7: Attach the advisory NanoMind intent to every finding whose artifact
   // the classifier read.
@@ -830,7 +845,7 @@ function runNonAgentAnalyzers(
   findings.push(...analyzeCredentials(ast, verifier, undefined, artifactContent));
   findings.push(...analyzeCode(ast, verifier));
   findings.push(...analyzeSteganography(ast));
-  return enrichFindings(findings, ast);
+  return enrichFindings(findings, ast, undefined);
 }
 
 /**
@@ -847,7 +862,7 @@ function runCodeAnalyzers(
   const findings: ASTFinding[] = [];
   findings.push(...analyzeCredentials(ast, verifier, undefined, artifactContent));
   findings.push(...analyzeCode(ast, verifier));
-  return enrichFindings(findings, ast);
+  return enrichFindings(findings, ast, undefined);
 }
 
 // ============================================================================
@@ -947,10 +962,15 @@ function findingMatchKey(file: string | undefined, attackClass: string | undefin
  *      b. If AST says passed but static says failed for the same issue,
  *         the static finding wins (suppression blocked via validateEnhancement).
  *      c. If no matching static finding, add the AST finding as a new finding.
+ *
+ * `readArtifact` is optional and only reaches the conversion in 2c — see
+ * `astFindingToSecurityFinding`. Callers that do not have the scanned tree in
+ * hand (tests, in-memory merges) omit it and get the previous behaviour.
  */
 export function mergeFindings(
   staticFindings: SecurityFinding[],
   astFindings: ASTFinding[],
+  readArtifact?: (file: string) => string | undefined,
 ): SecurityFinding[] {
   // Clone static findings so we don't mutate the originals
   const merged: SecurityFinding[] = staticFindings.map(f => ({ ...f }));
@@ -996,7 +1016,7 @@ export function mergeFindings(
       }
     } else {
       // No matching static finding -- add as a new finding
-      merged.push(astFindingToSecurityFinding(astFinding));
+      merged.push(astFindingToSecurityFinding(astFinding, readArtifact));
     }
   }
 
@@ -1010,8 +1030,21 @@ export function mergeFindings(
 /**
  * Convert an ASTFinding to a SecurityFinding for the merged output.
  * The `file` property must be truthy for findings to pass the scanner filter.
+ *
+ * `readArtifact` (#368) supplies the artifact's raw bytes on demand so a
+ * finding whose analyzer never recorded a line can still be located from its
+ * verbatim trigger. It is consulted ONLY for a finding that has a file and no
+ * line, so a scan pays for at most one read per unlocated finding. When the
+ * reader is absent or the trigger is not in the content — a dedupe rollup
+ * (`[5 instances across: ...]`) never is — the line stays undefined.
  */
-function astFindingToSecurityFinding(ast: ASTFinding): SecurityFinding {
+function astFindingToSecurityFinding(
+  ast: ASTFinding,
+  readArtifact?: (file: string) => string | undefined,
+): SecurityFinding {
+  const needsLine = ast.line === undefined && !!ast.file;
+  const raw = needsLine && readArtifact && ast.file ? readArtifact(ast.file) : undefined;
+  const line = resolveFindingLine({ file: ast.file, line: ast.line, evidence: ast.evidence }, raw);
   return {
     checkId: ast.checkId,
     name: ast.name,
@@ -1022,7 +1055,7 @@ function astFindingToSecurityFinding(ast: ASTFinding): SecurityFinding {
     message: ast.message,
     fixable: ast.fixable,
     file: ast.file ?? 'ast-analysis',
-    line: ast.line,
+    line,
     fix: ast.fix,
     guidance: ast.guidance,
     attackClass: ast.attackClass,

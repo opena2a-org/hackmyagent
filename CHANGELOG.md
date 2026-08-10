@@ -4,6 +4,44 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Findings are locatable, and their `Verify:` commands run (#368, #286)
+
+A finding that cannot be located is a dead end, and one that cites the wrong line is
+worse than one that cites none.
+
+- **`Verify:` commands now carry the scan root, so they run from any directory.**
+  `file` is target-relative, and the emitted command used it verbatim: a scan of an
+  absolute path produced `sed -n '2p' 'src/config.js'`, which fails with
+  `No such file or directory` from any shell not already sitting in the target. Measured
+  on one earlier run, 0 of 68 emitted commands ran. The path is now joined to the scan
+  root and rendered through `citationPath`, which also makes a leading `-` an operand.
+- **Findings that carry a verbatim trigger but no line can recover one**, at the two
+  adapter boundaries that convert a detector's finding into the rendered shape.
+- **`detect` no longer answers "no line" with `cat <file>`.** A `.claude/settings.json`
+  holding a permission grant beside an `env` block is both an agent config and a
+  credential store, and `secure` reports `CRITICAL Exposed Credential` on the same file —
+  so the tool was telling the reader to print a file it had itself flagged as holding a
+  secret. The finding now renders no `Verify:` rather than an unsafe one; giving it a real
+  citation is tracked as #495.
+
+**Not shipped: credential findings still cite a re-searched line, not a recorded offset.**
+`AST-CRED-001` derives its line by locating the leftmost credential-*shaped* string in the
+file, which is the wrong line whenever a SHA-256 digest or an `sk-EXAMPLE…` placeholder
+sits above the real key, and `AST-CRED-003` on a `source_code` artifact still reports no
+line at all. A fix that carried the offset from the producer was built and withdrawn: it
+was correct for the digest case and wrong for others, and three review rounds each found
+it citing a value the finding was not about. The value-versus-marker question it turns on
+is not answerable from the pattern alone (a `-----BEGIN RSA PRIVATE KEY-----` match is a
+good citation when a key body follows and a bad one when nothing does) nor from the bytes
+alone. Tracked as #497 with the measurements, rather than shipped half-right.
+
+Findings whose detector genuinely records no location still emit no line and no `Verify:`.
+Line recovery at the two adapter boundaries is deliberately narrow: a verbatim trigger is
+accepted as a location only when it is at least 8 characters, is not a bare word from the
+credential keyword vocabulary, and occurs exactly once in the artifact. Anything else
+reports no line. Defaulting to line 1 would satisfy every "the finding has a line" check
+while pointing every command at the top of the file.
+
 ### Breaking: `scan-soul` exit codes now follow the conformance verdict (#390)
 
 `scan-soul` used to print its report and exit 0 no matter what it found. It now
