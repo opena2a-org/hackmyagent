@@ -24,14 +24,35 @@
  * `src/types/finding-location.ts`'s "a citation that is confidently wrong is
  * worse than an absent one", produced by the change that quotes it.
  *
- * THE RULE THESE PIN: among offset-carrying surfaces, consider only those whose
- * bytes the GATE also accepts, and take the LEFTMOST of those. Where none
- * qualifies the citation falls back to the gate's own leftmost match, which is
- * exactly the pre-#368 behaviour — so this can never be worse than main.
+ * THE RULE THESE PIN, IN TWO HALVES AT TWO LAYERS:
  *
- * The third block is the negative control and it matters as much as the other
- * two: it is the case #368 exists to fix, and a "fix" that simply stopped
- * consuming the carried offset would pass blocks 1 and 2 and fail this one.
+ *   - **Producer.** A pattern whose match is a structural MARKER rather than
+ *     the secret value records no offset at all (`marker: true` on
+ *     `CANONICAL_CREDENTIAL_PATTERNS`). `PEM private key` is the only one.
+ *     Whether a span is a value or a marker is a property of the PATTERN, so it
+ *     is decided where the pattern is known.
+ *   - **Consumer.** Among the offsets that do arrive, take the LEFTMOST.
+ *
+ * A previous revision put both halves in the consumer by re-testing each slice
+ * with `hasCredentialFormat`. That is a content gate answering a provenance
+ * question, and it was measurably wrong: the entropy-blob class is
+ * `[A-Za-z0-9+=_]{40,}`, which excludes `/`, so roughly half of all real AWS
+ * secret access keys failed when sliced out of context — and because
+ * AST-CRED-003's fallback chain is empty on `source_code`, that CRITICAL went
+ * back to carrying no line at all. The `AWS SECRET` block below pins that case
+ * specifically.
+ *
+ * Note on the fallback: when no offset qualifies, AST-CRED-001 falls back to
+ * the gate's leftmost match, which is pre-#368 behaviour. AST-CRED-003 does
+ * NOT — its chain is `located ?? lineFromSpan ?? findLineFromString(...)`, and
+ * on `source_code` the latter two are empty. So "the citation falls back to
+ * main's behaviour" is true of AST-CRED-001 only, and refusing a candidate
+ * costs AST-CRED-003 its line entirely. That asymmetry is why the producer,
+ * not the consumer, decides what is citable.
+ *
+ * The NEGATIVE CONTROL block matters as much as the rest: it is the case #368
+ * exists to fix, and a "fix" that simply stopped consuming the carried offset
+ * would pass every other block and fail that one.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -122,10 +143,17 @@ describe('the fixtures satisfy their detector preconditions', () => {
     }
   });
 
-  it('the gate REJECTS the PEM marker, which is what makes case 2 a defect', () => {
-    // If this ever flips, the PEM fixture stops testing the gate-disagreement
-    // case and this file must be rebuilt rather than re-pinned.
-    expect(hasCredentialFormat(PEM_MARKER)).toBe(false);
+  it('the PEM marker produces a risk surface but NO offset', async () => {
+    // The producer-side half of the rule, asserted directly. The marker must
+    // still be detected — it is real signal — and must not be citable.
+    const surfaces = (await compile(PEM_CONTENT, 'app/pem.ts')).inferredRiskSurface
+      .filter(s => s.attackClass === 'CRED-HARVEST');
+    const pemSurface = surfaces.find(s => /PEM/i.test(s.evidence ?? ''));
+    expect(pemSurface, 'the PEM marker must still be detected as a risk').toBeDefined();
+    expect(
+      pemSurface!.evidenceOffset,
+      'a marker pattern must carry no offset — it cannot say where a secret byte is',
+    ).toBeUndefined();
   });
 
   it('the planted values sit on the lines the assertions name', () => {
@@ -203,6 +231,70 @@ describe('NEGATIVE CONTROL: the carry still beats the gate on the digest case (#
   it('AST-CRED-003 cites the key line too', async () => {
     const f = await finding(DIGEST_CONTENT, 'app/config.ts', 'AST-CRED-003');
     expect(f.line).toBe(DIGEST_KEY_LINE);
+  });
+});
+
+// ── AWS SECRET: the value class a content gate silently drops ───────────────
+//
+// 40 chars over `[A-Za-z0-9/+]`, containing BOTH `/` and `+`. This is an
+// ordinary AWS secret access key and it is NOT accepted by
+// `hasCredentialFormat` in isolation, because the entropy-blob class is
+// `[A-Za-z0-9+=_]{40,}` — no `/` — and there is no vendor prefix to match.
+// A digest sits above it, so a citation that refuses this value lands on the
+// digest (AST-CRED-001) or on nothing at all (AST-CRED-003).
+const AWS_SECRET = 'aB3k/Q9zR7tN2vM6wP1sC8dH5gJ0lYx4UeT7v+Qz';
+const AWS_SECRET_CONTENT = [
+  '// Build metadata.',                          // 1
+  `const buildSha = "${DIGEST}";`,               // 2
+  '',                                            // 3
+  '// Storage credentials.',                     // 4
+  `const awsSecretAccessKey = "${AWS_SECRET}";`, // 5
+  'module.exports = { buildSha, awsSecretAccessKey };', // 6
+].join('\n');
+const AWS_SECRET_LINE = 5;
+
+describe('an AWS secret access key keeps its citation (#368)', () => {
+  it('the fixture is exactly the class an isolated content test drops', () => {
+    // Both halves asserted, because the case only exists where both hold: the
+    // name-gated producer matches it, and the gate does not accept it alone.
+    expect(AWS_SECRET).toHaveLength(40);
+    expect(AWS_SECRET).toMatch(/[/]/);
+    expect(
+      hasCredentialFormat(AWS_SECRET),
+      'if the gate ever accepts this in isolation, this fixture stops testing the case',
+    ).toBe(false);
+  });
+
+  it('AST-CRED-001 cites the secret on line 5, not the digest on line 2', async () => {
+    const f = await finding(AWS_SECRET_CONTENT, 'app/storage.ts', 'AST-CRED-001');
+    expect(f.line).toBe(AWS_SECRET_LINE);
+    expect(f.line).not.toBe(DIGEST_LINE);
+  });
+
+  it('AST-CRED-003 keeps a line at all', async () => {
+    // The sharper half. AST-CRED-003 has no gate fallback on `source_code`, so
+    // a refused candidate does not degrade its citation — it removes it, and
+    // with it the `Verify:` command entirely.
+    const f = await finding(AWS_SECRET_CONTENT, 'app/storage.ts', 'AST-CRED-003');
+    expect(f.line, 'a refused candidate costs this CRITICAL its line entirely').toBeDefined();
+    expect(f.line).toBe(AWS_SECRET_LINE);
+  });
+});
+
+describe('the message and the line name the SAME credential (#368)', () => {
+  it('AST-CRED-003 does not describe one credential while pointing at another', async () => {
+    // The line took the leftmost offset while the message took
+    // `credentialRisks[0]` — pattern-table order — so on this fixture the
+    // message named the AWS key and the citation pointed at the GitHub token.
+    // Both now read the one selected surface.
+    const f = await finding(ORDER_CONTENT, 'app/integrations.ts', 'AST-CRED-003');
+    expect(f.line).toBe(ORDER_GH_LINE);
+    const described = `${f.message ?? ''} ${f.evidence ?? ''}`;
+    expect(
+      described,
+      'the message names a credential the cited line does not contain',
+    ).toContain(GH_TOKEN.slice(0, 4));
+    expect(described).not.toContain(AWS_KEY.slice(0, 4));
   });
 });
 

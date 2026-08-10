@@ -1278,9 +1278,13 @@ interface CanonicalCredentialHit {
    * the `source_code` artifacts this scan runs for. It is not a general fix:
    * no other artifact type produces one of these hits, so no other artifact
    * type gets a carried offset.
+   *
+   * ABSENT for a `marker: true` pattern, whose match is a structural token
+   * rather than the secret value — see `CANONICAL_CREDENTIAL_PATTERNS`. Such a
+   * hit still reports the risk; it just cannot say where a secret byte is.
    */
-  index: number;
-  length: number;
+  index?: number;
+  length?: number;
 }
 
 /**
@@ -1312,7 +1316,32 @@ const LEFT_ANCHOR = '(?<![A-Za-z0-9])';
 /** Build an anchored, global pattern from a bare vendor shape. */
 const vendor = (shape: string) => new RegExp(LEFT_ANCHOR + shape, 'g');
 
-const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
+/**
+ * `marker: true` means the pattern matches a STRUCTURAL TOKEN rather than the
+ * secret value itself (#368).
+ *
+ * The distinction exists because a matched span is used for two different
+ * things. As a SIGNAL ("this artifact contains credential material") a header
+ * marker is fine. As a CITATION ("the credential this finding names is HERE")
+ * it is wrong: `-----BEGIN RSA PRIVATE KEY-----` holds no key material, and a
+ * source file that mentions it in a prefix check is not a file whose second
+ * line is a secret. Pointing a `Verify:` command at that line shows the reader
+ * something harmless and invites them to dismiss a CRITICAL.
+ *
+ * So a marker pattern still produces its risk surface and still contributes to
+ * detection; it simply carries no offset, and the citation falls to a
+ * value-bearing pattern or to the caller's own fallback.
+ *
+ * THIS IS A PROPERTY OF THE PATTERN, NOT OF THE BYTES, which is why it is
+ * recorded here rather than tested downstream. A previous revision filtered
+ * candidates by re-testing each slice with the credential gate, and that gate
+ * rejects roughly half of all real AWS secret access keys when they are sliced
+ * out of context — the entropy-blob class is `[A-Za-z0-9+=_]{40,}`, which
+ * excludes `/`. The result was that an AWS secret lost its citation entirely
+ * and the CRITICAL went back to having no line at all, which is the defect the
+ * carry exists to remove. A content test cannot answer a provenance question.
+ */
+const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp; marker?: boolean }> = [
   { label: 'Anthropic API key', regex: vendor(String.raw`sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}`) },
   { label: 'OpenAI project key', regex: vendor(String.raw`sk-proj-[a-zA-Z0-9_-]{20,}`) },
   // OpenAI's PRE-project key format, and the one still issued to older accounts.
@@ -1363,7 +1392,9 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   // with two long segments (`MSG.INCIDENT_ESCALATION_QUEUE.HIGH_PRIORITY_ROUTE`
   // was positively identified as a credential once already — see the note in
   // src/types/credential-format.ts). Do not relax them.
-  { label: 'PEM private key', regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PRIVATE)[A-Z ]*KEY-----/g },
+  // The match is the header LINE, not the key body, so it is a marker: it says
+  // a PEM block is present and says nothing about where any secret byte is.
+  { label: 'PEM private key', marker: true, regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PRIVATE)[A-Z ]*KEY-----/g },
 ];
 
 /**
@@ -1461,7 +1492,7 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit
   // definition rather than a concrete key literal.
   const regexContextMarker = /\\d|\\w|\\s|\[a-z|\[A-Z|\[0-9|\{\d+,|\*\?|\+\?/;
 
-  for (const { label, regex } of CANONICAL_CREDENTIAL_PATTERNS) {
+  for (const { label, regex, marker } of CANONICAL_CREDENTIAL_PATTERNS) {
     regex.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = regex.exec(content)) !== null) {
@@ -1491,16 +1522,13 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit
       hits.push({
         label,
         evidence: `${label}: ${matched.slice(0, 16)}...`,
-        // `match.index` is the first character of the matched value. For the
-        // `vendor(...)` entries that is because `LEFT_ANCHOR` is a zero-width
-        // lookbehind and contributes nothing to the match. The `PEM private
-        // key` entry is a raw literal with no `LEFT_ANCHOR` at all, so it holds
-        // there for the simpler reason that the whole pattern IS the value it
-        // reports. Stated for both because an earlier revision of this comment
-        // gave the lookbehind as the reason for every entry, and PEM is
-        // precisely the pattern whose consumption later needed correcting.
-        index: match.index,
-        length: matched.length,
+        // `match.index` is the first character of the matched value, because
+        // `LEFT_ANCHOR` is a zero-width lookbehind and contributes nothing to
+        // the match. That reasoning covers every `vendor(...)` entry — which is
+        // now every entry that reaches this line, since a `marker` pattern
+        // records no offset at all and `PEM private key` was the only entry
+        // without a `LEFT_ANCHOR`.
+        ...(marker ? {} : { index: match.index, length: matched.length }),
       });
     }
   }

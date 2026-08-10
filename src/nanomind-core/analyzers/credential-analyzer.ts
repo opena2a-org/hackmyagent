@@ -516,10 +516,20 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
   const severity: ASTFinding['severity'] =
     maxConfidence >= 0.8 ? 'critical' : maxConfidence >= 0.5 ? 'high' : 'medium';
 
+  // ONE SELECTION FEEDS BOTH THE LINE AND THE MESSAGE (#368). `located` is
+  // computed here, above `evidenceSummary`, because the two used to be chosen
+  // by different rules over the same array: the line took the leftmost
+  // offset-carrying surface and the message took `credentialRisks[0]`, which is
+  // pattern-table order. On a file with a GitHub token on line 2 and an AWS key
+  // on line 5 that rendered a finding whose message named the AWS key and whose
+  // `Verify:` printed the GitHub token — internally inconsistent, and the
+  // reader has no way to tell which one the CRITICAL is about.
+  const located = locatedCredentialRisk(ast, artifactContent);
+
   const evidenceSummary =
     credentialEvidence.length > 0
       ? credentialEvidence[0].text.slice(0, 120)
-      : credentialRisks[0]?.evidence ?? 'Credential pattern detected';
+      : located?.evidence ?? credentialRisks[0]?.evidence ?? 'Credential pattern detected';
 
   // THE CARRIED OFFSET IS AUTHORITATIVE WHERE IT EXISTS (#368), AND IT EXISTS
   // ON `source_code` ONLY. `located` is the credential whose exact position in
@@ -543,7 +553,8 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
   //
   // Order: producer offset, then the EvidenceSpan's own offset (signed AST
   // data, exact and local), then the substring search on the unsigned content.
-  const located = locatedCredentialRisk(ast, artifactContent);
+  // `located` is the one computed above `evidenceSummary`, so the line and the
+  // message describe the same credential rather than two independent picks.
   const spanStart = credentialEvidence[0]?.start;
   const lineFromSpan = artifactContent !== undefined && spanStart !== undefined
     ? lineFromOffset(artifactContent, spanStart)
@@ -959,9 +970,9 @@ function findFirstCredentialFormat(content: string): { line: number; match: stri
 function locatedCredentialRisk(
   ast: SecurityAST,
   content: string | undefined,
-): { line: number; match: string } | undefined {
+): { line: number; match: string; evidence: string } | undefined {
   if (content === undefined) return undefined;
-  let best: { start: number; length: number } | undefined;
+  let best: { start: number; length: number; evidence: string } | undefined;
   for (const risk of ast.inferredRiskSurface) {
     if (risk.attackClass !== 'CRED-HARVEST') continue;
     const start = risk.evidenceOffset;
@@ -976,28 +987,36 @@ function locatedCredentialRisk(
     // than an attack. `start + length === content.length` is a valid slice and
     // is deliberately admitted.
     if (start < 0 || length <= 0 || start + length > content.length) continue;
-    // THE CITATION MUST NAME A VALUE THE GATE ACCEPTS. The canonical scan that
-    // produces these offsets and the gate that decides the finding fires match
-    // DIFFERENT sets, and `PEM private key` matches only the header MARKER —
-    // `-----BEGIN RSA PRIVATE KEY-----`, which carries no key material. A file
-    // holding that marker as an ordinary string constant (a PEM sniffing
-    // helper) had the citation moved onto it and off the real token that fired
-    // the finding, together with a `Verify:` command that prints something
-    // harmless. That is the confidently-wrong citation this whole path exists
-    // to prevent, produced by the carry itself.
-    if (!hasCredentialFormat(content.slice(start, start + length))) continue;
-    // AND IT MUST BE THE LEFTMOST SUCH VALUE, not the first one pushed.
+    // NO CONTENT TEST HERE, DELIBERATELY. Whether a matched span is the secret
+    // VALUE or a structural MARKER is a property of the pattern that matched
+    // it, and the producer already knows which: a `marker: true` pattern
+    // records no offset, so `-----BEGIN RSA PRIVATE KEY-----` never reaches
+    // this loop as a candidate.
+    //
+    // An earlier revision re-tested each slice with `hasCredentialFormat`
+    // instead. That is a content gate being asked a provenance question, and it
+    // was measurably wrong: the entropy-blob class is `[A-Za-z0-9+=_]{40,}`,
+    // which excludes `/`, so roughly half of all real AWS secret access keys
+    // failed when sliced out of context. Those lost their citation, and because
+    // AST-CRED-003's own fallback chain is empty on `source_code`, that CRITICAL
+    // went back to carrying NO line at all — the exact defect the carry exists
+    // to remove.
+    //
+    // THE LEFTMOST CANDIDATE, not the first one pushed.
     // Surfaces arrive in `CANONICAL_CREDENTIAL_PATTERNS` order — `AWS access
     // key` is index 3, `GitHub personal access token` is index 4 — so a
     // first-match selection cites an AWS key on line 5 over a GitHub token on
     // line 2, making the citation a function of the order a pattern table
     // happens to be written in. Leftmost is the same rule the gate itself uses.
-    if (!best || start < best.start) best = { start, length };
+    if (!best || start < best.start) best = { start, length, evidence: risk.evidence };
   }
   if (!best) return undefined;
   return {
     line: lineFromOffset(content, best.start),
     match: maskCredentialValue(content.slice(best.start, best.start + best.length)),
+    // The producer's own label for THIS surface (`"AWS access key: AKIA…"`), so
+    // a caller building a message names the credential the line points at.
+    evidence: best.evidence,
   };
 }
 
