@@ -98,6 +98,16 @@ export interface DeepAnalysisEntry {
 export interface SoulScanResult {
   file: string | null;
   fileSize: number;
+  /**
+   * A governance file was found and `fs.readFileSync` threw on it (#390).
+   *
+   * The read is swallowed to `''` so tier and profile detection can still run,
+   * which makes `fileSize === 0` ambiguous downstream: an EMPTY governance file
+   * and an UNREADABLE one are the same two values. A caller reporting "no bytes
+   * could be read from it" over an empty-but-readable file is stating something
+   * false, so the distinction is recorded here rather than guessed at the CLI.
+   */
+  fileReadFailed: boolean;
   agentTier: AgentTier;
   tierForced: boolean;
   /** Detected or forced agent profile. */
@@ -1861,8 +1871,12 @@ export class SoulScanner {
     const targetDir = targetIsFile ? path.dirname(target) : target;
 
     // Read content early (needed for tier + profile detection)
+    let fileReadFailed = false;
     const contentForTier = govFile
-      ? (() => { try { return fs.readFileSync(govFile, 'utf-8'); } catch { return ''; } })()
+      ? (() => {
+          try { return fs.readFileSync(govFile, 'utf-8'); }
+          catch { fileReadFailed = true; return ''; }
+        })()
       : '';
     const tierForced = !!options?.tier;
     const tier = (tierForced ? options!.tier!.toUpperCase() as AgentTier : null) || this.detectTier(targetDir, contentForTier);
@@ -2095,6 +2109,8 @@ export class SoulScanner {
       return {
         file: null,
         fileSize: 0,
+        // No file was found, so nothing was attempted and nothing failed.
+        fileReadFailed: false,
         agentTier: tier,
         tierForced,
         agentProfile: profile,
@@ -2301,6 +2317,7 @@ export class SoulScanner {
     const result: SoulScanResult = {
       file: path.relative(targetDir, govFile) || path.basename(govFile),
       fileSize,
+      fileReadFailed,
       agentTier: tier,
       tierForced,
       agentProfile: profile,
