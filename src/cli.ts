@@ -8326,16 +8326,26 @@ function domainBar(pct: number): string {
  * rewrite your file" — measured, `harden-soul` takes the canonical prose
  * fixture from 50 lines to 456, which is heavy for one missing control.
  *
- * DERIVED from the control def, never authored beside it. The def's
- * `remediation` sentence is built from the same `keywords` array the matcher
- * reads, so a clause produced here satisfies the control it names by
- * construction. An authored string would be a second copy of the keyword list
- * that drifts the first time either side is edited — a fix command that no
- * longer fixes, which is worse than printing no fix command at all.
+ * THE TWO ENTRIES BELOW ARE AUTHORED, AND THE TEST IS WHAT MAKES THAT SAFE.
+ * They are governance prose a reader can paste into a SOUL.md and have it read
+ * like the rest of the document, which the def's `remediation` sentence — an
+ * instruction to the operator — does not. The cost of authoring them is that
+ * each is a second copy of the control's keyword vocabulary and can drift from
+ * it the first time either side is edited, leaving a fix command that no longer
+ * fixes. That is worse than printing no fix command at all.
  *
- * `__tests__/cli/scan-soul-conformance-gate.test.ts` feeds this output back
- * through the real scanner for every `critical: true` control and asserts the
- * control passes, so the derivation is pinned rather than assumed.
+ * So the guarantee is not derivation, it is the round trip:
+ * `__tests__/cli/scan-soul-conformance-gate.test.ts` feeds this exact output
+ * back through the real scanner for every `critical: true` control and asserts
+ * the control then passes. A clause that stops satisfying its own control
+ * fails there.
+ *
+ * `handEditClause`'s FALLBACK is the derived one, for a `critical: true`
+ * control with no authored entry: it quotes the def's own `remediation`, which
+ * is written from the same `keywords` array the matcher reads and so satisfies
+ * the control by construction. It is unreached today — both criticals are
+ * authored — and reads as instruction rather than as governance prose, which is
+ * why it is the fallback and not the rule.
  */
 const HAND_EDIT_CLAUSES: Record<string, string[]> = {
   'SOUL-IH-003': [
@@ -8505,20 +8515,43 @@ Examples:
       // on `conformance === 'none'` anyway. That subsumption is a property of
       // the control table, not of this file, so a test pins it — see
       // `__tests__/cli/scan-soul-conformance-gate.test.ts`.
+      // ONE SOURCE FOR THE RULE. The gate and the disclosure below both read
+      // `conformance`, not two different things that happen to agree today.
+      //
+      // These were `criticalMissing.length` here and `conformance === 'none'`
+      // there, which coincide only because `calculateConformance` returns
+      // 'none' exactly when `criticalMissing` is non-empty. That is a property
+      // of a function this file does not own. Adding a plausible band to it —
+      // `if (score < 15) return 'none'` — made BOTH channels exit 0 on a file
+      // reporting `conformance: none`, the one thing ruling 1 says cannot
+      // happen, while emitting `gate.failed: false` next to
+      // `gate.reason: 'critical-control-missing'`. Every exit-contract test
+      // passed under that mutant, because they all pin trees where the two
+      // agree. A decision taken on a derived value is a decision about a
+      // different value.
+      const conformanceNone = result.conformance === 'none';
       const soulVerdict = deriveCheckVerdict(
-        // Missing CRITICAL controls are the critical count. Governance
-        // violations and the two profile HIGHs are deliberately NOT promoted
-        // here: they gate the exit code under `--ci` further down and always
-        // have, and widening them to the default channel is a policy change
-        // #390 did not ask for.
-        { critical: result.criticalMissing.length, high: 0, issues: 0 },
+        // Conformance IS the gate. Governance violations and the two profile
+        // HIGHs are deliberately NOT promoted here: they gate the exit code
+        // under `--ci` further down and always have, and widening them to the
+        // default channel is a policy change #390 did not ask for.
+        { critical: conformanceNone ? 1 : 0, high: 0, issues: 0 },
         {
-          examined: result.file ? result.totalControls : 0,
+          // MEASURED REQUIRES BYTES READ, not a directory entry that exists.
+          // `scanner.ts` swallows a failed read to `''`, so a `chmod 000`
+          // SOUL.md — and a DIRECTORY named SOUL.md, which `existsSync`
+          // accepts — both arrived here as `result.file` set, and this
+          // reported `examined: 29` over zero bytes read. That is the exact
+          // shape `src/check/verdict.ts` exists to make unrepresentable, and
+          // it was introduced by this change: main asserted no coverage at all.
+          examined: result.file && result.fileSize > 0 ? result.totalControls : 0,
           total: result.totalControls,
           unit: 'governance control',
         },
-        'nothing-to-examine',
-        `No governance file was found, so no governance score can be reported for this target.`,
+        result.file ? 'target-unreadable' : 'nothing-to-examine',
+        result.file
+          ? `${escapePathForDisplay(require('path').basename(result.file))} was found but no bytes could be read from it, so no governance score can be reported.`
+          : `No governance file was found, so no governance score can be reported for this target.`,
       );
 
       // The missing CRITICAL controls, carrying the metadata the failure
@@ -8543,29 +8576,68 @@ Examples:
       // exited 0 while `detect` and `secure -b oasb-2` exited 1 on the same tree.
       if (!soulVerdict.measured) {
         const searched = GOVERNANCE_FILES.join(', ');
+        // #206 R2.1 — `markerInvalid` is raised specifically so an unrecognised
+        // `--profile` value is surfaced on the path where there is no file to
+        // score. Returning before the `ciMode` HIGH gates below silently
+        // dropped it: measured, `scan-soul <no-file-tree> --profile BOGUS --ci`
+        // went from exit 1 with the finding on stderr and `markerInvalid` in
+        // `--json`, to exit 2 with an empty stderr and the key absent. The exit
+        // stayed non-zero so `set -e` still failed, which is exactly why this
+        // was invisible — the code was right and the reason was gone. The
+        // signal travels on BOTH channels here rather than at the gate below,
+        // because this arm never reaches it.
+        const mi = result.markerInvalid;
         if (options.json) {
           // The band is WITHHELD, not zeroed. A consumer reading `score` must
           // not receive a number this run did not earn; `coverage.measured`
           // is the key that answers, and it is the same shape `check` emits.
           // `writeJsonStdout` prepends `hackmyagentVersion` itself.
           writeJsonStdout({
-            file: null,
+            // The file is named when one was FOUND but could not be read, and
+            // null only when the search came up empty. Reporting null in both
+            // cases contradicted the `detail` string beside it, which names
+            // the file it could not read.
+            file: result.file ?? null,
             score: null,
             conformance: null,
             coverage: coverageJson(soulVerdict),
             searched: GOVERNANCE_FILES,
-            gate: { failed: true, reason: 'no-governance-file', exitCode: EXIT_UNMEASURED },
+            ...(mi ? { markerInvalid: mi } : {}),
+            gate: {
+              failed: true,
+              reason: soulVerdict.reason === 'target-unreadable' ? 'governance-file-unreadable' : 'no-governance-file',
+              exitCode: EXIT_UNMEASURED,
+            },
           });
         } else {
           console.log();
           console.log(`  ${colors.bold}${unmeasuredBanner(soulVerdict)}${RESET()}`);
           console.log(`  ${colors.dim}Searched: ${searched}${RESET()}`);
+          if (mi) {
+            const sourceLabel = mi.source === 'flag' ? '--profile flag' : 'marker';
+            const displayedValue = mi.attemptedValue.length === 0 ? '(empty)' : mi.attemptedValue;
+            console.log();
+            console.log(
+              `  ${colors.brightRed}${colors.bold}HIGH${RESET()}  ${colors.bold}SOUL-PROFILE-MARKER-INVALID${RESET()}`
+              + `  ${colors.dim}${sourceLabel} declares an unrecognized profile${RESET()}`,
+            );
+            console.log(
+              `        ${colors.dim}value='${escapeForDisplay(displayedValue)}' resolved to ${mi.resolvedProfile} from body keywords${RESET()}`,
+            );
+          }
           console.log();
           console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
           console.log(`  ${colors.cyan}Create one:${RESET()}     ${prefix} harden-soul ${citationTarget(directory)}`);
           console.log(`  ${colors.cyan}Preview first:${RESET()}  ${prefix} harden-soul ${citationTarget(directory)} --dry-run`);
           console.log(`  ${colors.cyan}All commands:${RESET()}   ${prefix} --help`);
           console.log();
+        }
+        if (mi) {
+          const sourceLabel = mi.source === 'flag' ? '--profile flag' : 'marker';
+          const displayedValue = mi.attemptedValue.length === 0 ? '(empty)' : mi.attemptedValue;
+          process.stderr.write(
+            `SOUL-PROFILE-MARKER-INVALID HIGH: ${sourceLabel} value='${displayedValue}' is not a recognized profile; resolved to ${mi.resolvedProfile} from body keywords.\n`,
+          );
         }
         await finishWithFindings(soulVerdict.exitCode);
         return;
@@ -8929,7 +9001,14 @@ Examples:
           `  Detection ${colors.dim}Keyword match. A control written as prose in other words is`
           + `${RESET()}`,
         );
-        console.log(`            ${colors.dim}reported missing here. Re-check with --deep.${RESET()}`);
+        // #260 — never suggest the escape hatch that is already running. The
+        // two strings here live outside `src/ui/soul-scope-disclosure.ts`, so
+        // the existing self-reference test could not reach them.
+        console.log(
+          options.deep
+            ? `            ${colors.dim}reported missing here, and the semantic pass did not recover it.${RESET()}`
+            : `            ${colors.dim}reported missing here. Re-check with --deep.${RESET()}`,
+        );
         console.log(
           `  Exit      ${colors.dim}${EXIT_FAIL} — conformance none `
           + `(${result.criticalMissing.length} of ${applicableCritical.length} critical `
@@ -9036,12 +9115,20 @@ Examples:
       const soulFormat = options.json ? 'json' : 'text';
       await handleSoulContribution(options.contribute, targetDir, result, soulScanDurationMs, options.registryUrl, soulFormat);
 
-      // #390 — the `--ci` channel was a total dead end on this failure:
-      // it printed the Conformance block naming the control, suppressed Next
-      // Steps (above), wrote nothing to stderr, and exited 0. The exit code is
-      // already settled; this is the line that says what to do about it.
-      // Same shape as the SOUL-VIOLATION / SOUL-PROFILE-MISMATCH lines below.
-      if (conformanceFails && (globalCiMode || options.ci)) {
+      // #390 — the reason on stderr, on EVERY channel.
+      //
+      // The `--ci` channel was a total dead end on this failure: it printed the
+      // Conformance block naming the control, suppressed Next Steps, wrote
+      // nothing to stderr, and exited 0. The exit code is already settled; this
+      // is the line that says what to do about it.
+      //
+      // NOT gated on `--ci`. main wrote its `Governance score is 0/100:` line
+      // to stderr unconditionally, so gating this one lost it for every
+      // pipeline that redirects stdout: `scan-soul <tree> >/dev/null` exited 1
+      // with nothing said. Same shape as the SOUL-VIOLATION /
+      // SOUL-PROFILE-MISMATCH lines below, which are `ciMode`-gated because
+      // they also `process.exit(1)`; this one only explains a code already set.
+      if (conformanceFails) {
         const first = missingCritical[0];
         const detail = first ? `${first.id} (${first.name})` : result.criticalMissing.join(', ');
         // Same #273 reasoning as the Next Steps block: the control ID goes
@@ -9055,18 +9142,27 @@ Examples:
           + `critical control${applicableCritical.length === 1 ? '' : 's'} not detected in ${soulFileName} `
           + `— ${detail}. Add it with \`${CLI_PREFIX} harden-soul ${citationTarget(directory)}\`.`
           + (explainCmd ? ` Run ${explainCmd} for the clause the scanner looks for.` : '')
-          + ` Controls written as prose in other words are reported missing; re-check with --deep.\n`,
+          + (options.deep
+            ? ` Controls written as prose in other words are reported missing, and the semantic pass did not recover this one.\n`
+            : ` Controls written as prose in other words are reported missing; re-check with --deep.\n`),
         );
       }
 
       // #390 — a `--ci` gate that failed on ANY un-passed control used to sit
       // here. It never ran: `--ci` is filtered out of `process.argv` at
       // `main()` before `parse()`, so `options.ci` is always undefined (#454).
-      // Deleted rather than made reachable. Measured, reviving it flips
-      // `test/hma` from exit 0 to exit 1 at 74/100 with `conformance: standard`
-      // and an EMPTY `criticalMissing` — strictly stricter than every other
-      // gate in the tool, and contradicting the conformance axis this change
-      // establishes. Leaving it was a trap for whoever fixes #454.
+      // Deleted rather than made reachable. Measured on the in-repo fixture,
+      // reviving it flips `test/` from exit 0 to exit 1 at 18/100 with
+      // `conformance: essential` and an EMPTY `criticalMissing` — a file that
+      // passes the conformance gate failing on un-passed NON-critical controls,
+      // which is strictly stricter than every other gate in the tool and
+      // contradicts the conformance axis this change establishes. Leaving it
+      // was a trap for whoever fixes #454.
+      //
+      // (An earlier revision of this comment cited `test/hma` at 74/100. That
+      // path is not in this repository — it is a workspace fixture outside the
+      // tree — so the number was uncheckable by anyone reading the source. The
+      // in-repo path and its measured numbers replace it.)
 
       // Check fail threshold
       if (options.failBelow) {

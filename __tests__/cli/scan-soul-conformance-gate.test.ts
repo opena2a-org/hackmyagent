@@ -32,11 +32,12 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
 import { EXIT_PASS, EXIT_FAIL, EXIT_UNMEASURED } from '../../src/check/verdict';
+import { CONTROL_DEFS, PROFILE_DOMAINS } from '../../src/soul/scanner';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -294,28 +295,58 @@ describe('#390 scan-soul exit contract', () => {
   // profile that excludes domain 13 and 15, score 0 would report conformance
   // `essential` and the gate would go quiet. Pin it.
 
-  it('every profile has at least one applicable critical control', async () => {
-    const src = await import('node:fs').then((fs) =>
-      fs.readFileSync(resolve(__dirname, '../../src/soul/scanner.ts'), 'utf-8'),
-    );
-    const block = src.match(/const PROFILE_DOMAINS[^=]*=\s*\{([\s\S]*?)\n\};/);
-    expect(block, 'PROFILE_DOMAINS not found — update this guard').toBeTruthy();
+  /**
+   * The subsumption guard for the DELETED `result.file && result.score === 0`
+   * gate. If a profile ever applies no critical control, a score of 0 stops
+   * implying `conformance === 'none'` and that gate's case reopens with nothing
+   * catching it.
+   *
+   * IT READS THE REAL OBJECTS. An earlier version parsed `src/soul/scanner.ts`
+   * as TEXT with `/^\s*'?([a-z-]+)'?\s*:\s*\[([0-9,\s]*)\]/` and hardcoded the
+   * critical domains as `[13, 15]`. Both halves were holes:
+   *
+   *   - the key pattern admits only lowercase and hyphens, so a profile named
+   *     `v2agent` was INVISIBLE to it. Adding `'v2agent': [11, 14, 17]` (no
+   *     domain 13 or 15) produced `score 0, conformance essential,
+   *     criticalMissing [], exit 0` — precisely the case the deleted gate
+   *     caught — while this file reported 13 passed. Unparsed lines were
+   *     skipped silently and the six survivors kept `Object.keys().length > 0`
+   *     true, so the guard could not even tell it had stopped reading.
+   *   - `[13, 15]` is a copy of the answer. Narrowing `SOUL-IH-003` to a single
+   *     tier left the walk green because it never consulted `critical` or
+   *     `tiers` at all.
+   *
+   * `PROFILE_DOMAINS` and `CONTROL_DEFS` are both exported from
+   * `src/soul/scanner.ts`, so there was never a reason to re-derive them from
+   * source text. A test that re-implements the thing it checks can only pin the
+   * spelling it happened to anticipate.
+   */
+  it('every profile applies at least one critical control, on every tier', () => {
+    const profiles = Object.entries(PROFILE_DOMAINS);
+    expect(profiles.length, 'PROFILE_DOMAINS is empty').toBeGreaterThan(0);
 
-    const profiles: Record<string, number[]> = {};
-    for (const line of (block as RegExpMatchArray)[1].split('\n')) {
-      const m = line.match(/^\s*'?([a-z-]+)'?\s*:\s*\[([0-9,\s]*)\]/);
-      if (m) profiles[m[1]] = m[2].split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
-    }
-    expect(Object.keys(profiles).length).toBeGreaterThan(0);
+    // Derived from the table, never listed here.
+    const criticals = CONTROL_DEFS.filter((c) => c.critical);
+    expect(
+      criticals.length,
+      'no critical controls at all — conformance could never be none',
+    ).toBeGreaterThan(0);
 
-    // Domains owning the two critical controls, read off the same source.
-    const criticalDomains = [13, 15];
-    for (const [name, domains] of Object.entries(profiles)) {
-      const covered = criticalDomains.filter((d) => domains.includes(d));
-      expect(
-        covered.length,
-        `profile "${name}" applies no critical control, so conformance would not catch score 0`,
-      ).toBeGreaterThan(0);
+    const tiers = [...new Set(CONTROL_DEFS.flatMap((c) => c.tiers))];
+    expect(tiers.length).toBeGreaterThan(0);
+
+    for (const [name, domains] of profiles) {
+      for (const tier of tiers) {
+        const applicable = criticals.filter(
+          (c) => c.tiers.includes(tier) && domains.includes(c.domainId),
+        );
+        expect(
+          applicable.length,
+          `profile "${name}" at tier "${tier}" applies no critical control, so a score of 0 `
+          + 'would leave conformance !== none and exit 0 — the case the deleted '
+          + '`result.score === 0` gate used to catch',
+        ).toBeGreaterThan(0);
+      }
     }
   });
 
@@ -351,5 +382,136 @@ describe('#390 scan-soul exit contract', () => {
     expect(help).toMatch(/conformance none/i);
     expect(help).toMatch(/not a score threshold/i);
     expect(help).toMatch(/no governance file/i);
+  });
+});
+
+/* ==================================================================
+ * Regressions the first adversarial round found INSIDE this change.
+ * Each one was measured against the pre-fix build in the direction its
+ * name states.
+ * ================================================================== */
+
+describe('#390 the NOT MEASURED arm does not swallow other signals', () => {
+  /**
+   * The unmeasured arm `return`s before every renderer AND before the three
+   * `ciMode` HIGH gates at the end of the action. `markerInvalid` exists
+   * (#206 R2.1) precisely to surface an unrecognised `--profile` on a path
+   * where there is nothing to score, so returning early made it unreachable.
+   *
+   * Measured pre-fix: exit went 1 -> 2 (so `set -e` still failed, which is why
+   * this was invisible), stderr went from naming the finding to EMPTY, and the
+   * `--json` key disappeared. The code was right and the reason was gone.
+   */
+  it('still reports an invalid --profile when there is no governance file', () => {
+    const dir = tmpDirEmpty();
+    const r = runScanSoul(dir, '--profile', 'BOGUS', '--ci');
+
+    expect(r.status, 'the unmeasured exit code still governs').toBe(EXIT_UNMEASURED);
+    expect(
+      r.stderr,
+      'the invalid profile is silently dropped on the unmeasured arm',
+    ).toMatch(/SOUL-PROFILE-MARKER-INVALID/);
+    expect(r.stderr).toMatch(/bogus/i);
+  });
+
+  it('carries markerInvalid into --json on the unmeasured arm', () => {
+    const dir = tmpDirEmpty();
+    const r = runScanSoul(dir, '--profile', 'BOGUS', '--json');
+    const parsed = JSON.parse(r.stdout);
+    expect(parsed.markerInvalid, 'machine consumers lost the signal entirely').toBeDefined();
+    expect(parsed.markerInvalid.attemptedValue).toBe('bogus');
+    expect(parsed.markerInvalid.source).toBe('flag');
+  });
+
+  it('omits markerInvalid when the profile is valid', () => {
+    // The refusal half: the key must not appear unconditionally, or its
+    // presence stops meaning anything.
+    const r = runScanSoul(tmpDirEmpty(), '--json');
+    expect(JSON.parse(r.stdout).markerInvalid).toBeUndefined();
+  });
+});
+
+describe('#390 a found-but-unreadable governance file is NOT MEASURED', () => {
+  /**
+   * `scanner.ts` swallows a failed read to `''`, so `result.file` is set for a
+   * file nothing could be read from. Keying coverage on "a file was found"
+   * therefore claimed `examined: 29` over ZERO bytes — the exact shape
+   * `src/check/verdict.ts` exists to make unrepresentable, introduced by this
+   * change: main asserted no coverage at all here.
+   */
+  function unreadableSoulDir(): string | undefined {
+    const dir = tmpDirWithSoul('# SOUL\n\nSome prose.\n', 'unreadable');
+    try {
+      chmodSync(join(dir, 'SOUL.md'), 0o000);
+    } catch {
+      return undefined;
+    }
+    // Root ignores the mode bits, and so does a filesystem mounted without
+    // permission support. Prove the fixture is actually unreadable rather than
+    // asserting over a file this process can still read.
+    try {
+      readFileSync(join(dir, 'SOUL.md'), 'utf-8');
+      return undefined;
+    } catch {
+      return dir;
+    }
+  }
+
+  it('reports measured:false with the unreadable reason, not a 29-control claim', () => {
+    const dir = unreadableSoulDir();
+    if (!dir) {
+      // Loud skip rather than a silent pass: this runs as root in some
+      // containers, where chmod 000 does not deny the owner.
+      console.warn('SKIPPED: could not make a file unreadable in this environment');
+      return;
+    }
+    const r = runScanSoul(dir, '--json');
+    const parsed = JSON.parse(r.stdout);
+
+    expect(r.status).toBe(EXIT_UNMEASURED);
+    expect(parsed.coverage.measured, 'claimed a measurement over zero bytes read').toBe(false);
+    expect(parsed.coverage.examined).toBe(0);
+    expect(parsed.coverage.reason).toBe('target-unreadable');
+    expect(parsed.score).toBeNull();
+    // It was FOUND. Reporting null here would contradict the detail string.
+    expect(parsed.file).toBe('SOUL.md');
+    expect(parsed.coverage.detail).toMatch(/SOUL\.md/);
+  });
+});
+
+describe('#390 the gate and the report read the same source', () => {
+  /**
+   * `gate.failed` derived from `criticalMissing.length` while the disclosure
+   * derived from `conformance`. Those agree only because `calculateConformance`
+   * returns 'none' exactly when `criticalMissing` is non-empty — a property of
+   * a function `cli.ts` does not own. Adding a plausible band to it
+   * (`if (score < 15) return 'none'`) made BOTH channels exit 0 on a file
+   * reporting `conformance: none`, and emitted `gate.failed: false` beside
+   * `gate.reason: 'critical-control-missing'`. Every exit-contract test passed
+   * under that mutant, because they all pin trees where the two agree.
+   *
+   * This asserts the invariant a reader can check without the mutant: the gate
+   * and the reported conformance never disagree.
+   */
+  it.each([
+    ['conforming', CONFORMING],
+    ['nonconforming', NONCONFORMING],
+  ])('gate.failed tracks conformance exactly: %s', (tag, content) => {
+    const r = runScanSoul(tmpDirWithSoul(content, `gatesrc-${tag}`), '--json');
+    const parsed = JSON.parse(r.stdout);
+    expect(parsed.conformance, 'fixture produced no conformance').toBeDefined();
+    expect(
+      parsed.gate.failed,
+      `gate.failed=${parsed.gate.failed} but conformance=${parsed.conformance}`,
+    ).toBe(parsed.conformance === 'none');
+    // And the exit code follows the same thing on this channel.
+    expect(r.status).toBe(parsed.conformance === 'none' ? EXIT_FAIL : EXIT_PASS);
+  });
+
+  it('a failed gate always states a reason', () => {
+    const r = runScanSoul(tmpDirWithSoul(NONCONFORMING, 'gatereason'), '--json');
+    const parsed = JSON.parse(r.stdout);
+    expect(parsed.gate.failed).toBe(true);
+    expect(parsed.gate.reason, 'gate.failed with a null reason is a dead end').toBeTruthy();
   });
 });
