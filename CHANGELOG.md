@@ -30,8 +30,8 @@ worse than one that cites none. Three separate defects produced both.
   key material, so a file using that marker in a prefix check would otherwise take the
   citation off the real credential. Whether a span is a value or a marker is a property
   of the pattern, so it is decided where the pattern is known rather than by re-testing
-  the bytes downstream — a content test there rejects roughly half of all real AWS secret
-  access keys, which contain `/`.
+  the bytes downstream — a content test there rejects any AWS secret access key
+  containing a `/`, which the entropy-blob class does not admit.
   **Scope: `source_code` artifacts only** — that scan is the sole producer of an offset and
   runs only for that type, so a skill, `mcp_config` or soul artifact keeps the previous
   behaviour, including the previous wrong-line risk. This does not close that half.

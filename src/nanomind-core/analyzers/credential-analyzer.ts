@@ -996,8 +996,11 @@ function locatedCredentialRisk(
     // An earlier revision re-tested each slice with `hasCredentialFormat`
     // instead. That is a content gate being asked a provenance question, and it
     // was measurably wrong: the entropy-blob class is `[A-Za-z0-9+=_]{40,}`,
-    // which excludes `/`, so roughly half of all real AWS secret access keys
-    // failed when sliced out of context. Those lost their citation, and because
+    // which excludes `/`, so ANY AWS secret access key containing a `/` failed
+    // when sliced out of context. (Under a uniform draw over that pattern's own
+    // alphabet a `/` appears in ~47% of values, so the affected share is large —
+    // but that is a property of the alphabet, not a measurement of issued keys.)
+    // Those lost their citation, and because
     // AST-CRED-003's own fallback chain is empty on `source_code`, that CRITICAL
     // went back to carrying NO line at all — the exact defect the carry exists
     // to remove.

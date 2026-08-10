@@ -36,8 +36,8 @@
  * A previous revision put both halves in the consumer by re-testing each slice
  * with `hasCredentialFormat`. That is a content gate answering a provenance
  * question, and it was measurably wrong: the entropy-blob class is
- * `[A-Za-z0-9+=_]{40,}`, which excludes `/`, so roughly half of all real AWS
- * secret access keys failed when sliced out of context — and because
+ * `[A-Za-z0-9+=_]{40,}`, which excludes `/`, so ANY AWS secret access key
+ * containing a `/` failed when sliced out of context — and because
  * AST-CRED-003's fallback chain is empty on `source_code`, that CRITICAL went
  * back to carrying no line at all. The `AWS SECRET` block below pins that case
  * specifically.
@@ -62,12 +62,13 @@ import { hasCredentialFormat } from '../../src/types/credential-format';
 import type { SecurityAST } from '../../src/nanomind-core/types';
 import type { ASTFinding } from '../../src/nanomind-core/analyzers/capability-analyzer';
 
-/**
+/*
  * Values are built from fixed high-diversity alphabets rather than a literal
  * key: the detectors drop a value with too few distinct characters as a
  * redaction sentinel, and any FAKE/EXAMPLE/DUMMY segment suppresses the hit
  * outright. Each precondition is asserted below rather than assumed.
  */
+
 /**
  * EXACTLY 36 characters after `ghp_`. The canonical pattern is
  * `ghp_[a-zA-Z0-9]{36}` — a 32-character body is accepted by the GATE (whose

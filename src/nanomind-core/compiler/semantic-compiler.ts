@@ -1335,7 +1335,7 @@ const vendor = (shape: string) => new RegExp(LEFT_ANCHOR + shape, 'g');
  * THIS IS A PROPERTY OF THE PATTERN, NOT OF THE BYTES, which is why it is
  * recorded here rather than tested downstream. A previous revision filtered
  * candidates by re-testing each slice with the credential gate, and that gate
- * rejects roughly half of all real AWS secret access keys when they are sliced
+ * rejects ANY AWS secret access key containing a `/` when they are sliced
  * out of context — the entropy-blob class is `[A-Za-z0-9+=_]{40,}`, which
  * excludes `/`. The result was that an AWS secret lost its citation entirely
  * and the CRITICAL went back to having no line at all, which is the defect the
