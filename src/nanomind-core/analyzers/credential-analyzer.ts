@@ -113,12 +113,37 @@ function checkCredentialsInNonEnvContext(
   // values (`$OPENAI_API_KEY`, `${OPENAI_API_KEY}`) deliberately do NOT
   // match. SDKs are also gated — flagging an SDK source file that only
   // mentions the word "credential" was the same false-positive shape.
-  const credLocation = artifactContent !== undefined
+  //
+  // #368 — THE GATE AND THE CITATION ARE TWO DIFFERENT QUESTIONS, and
+  // conflating them is what produced a confidently wrong line. The gate asks
+  // "does this artifact contain any credential-shaped value at all", which the
+  // leftmost match answers correctly. The citation asks "where is the value
+  // THIS finding names", which the leftmost match answers WRONGLY the moment a
+  // SHA-256 digest or a `sk-EXAMPLE…` doc placeholder sits above the real key:
+  // measured on a fixture with a digest on line 3 and the key on line 7, both
+  // AST-CRED-001 and AST-CRED-003 cited line 3.
+  const gateHit = artifactContent !== undefined
     ? findFirstCredentialFormat(artifactContent)
     : undefined;
-  if (!credLocation) {
+  if (!gateHit) {
     return findings;
   }
+  // So the citation PREFERS the offset the producer recorded — WHERE ONE
+  // EXISTS, WHICH IS `source_code` AND NOTHING ELSE. The only producer of
+  // `evidenceOffset` is the canonical credential scan, and the compiler runs it
+  // under `if (parsed.type === 'source_code')` (semantic-compiler.ts:176). On a
+  // skill, an mcp_config or a soul artifact no risk surface carries an offset,
+  // `locatedCredentialRisk` returns undefined, and this falls straight back to
+  // the leftmost match — byte-for-byte main's behaviour, including main's
+  // wrong-line risk when the file holds more than one credential-shaped string.
+  // THIS CHANGE DOES NOT CLOSE THAT. It is a live residual, it is not filed as
+  // #353 (which is the unmasked-secret leak in AST-CRED-003's title), and it is
+  // not fixed here.
+  //
+  // What this line does close is the `source_code` case the offset covers,
+  // where it can only move a citation from the leftmost lookalike TO the value
+  // the producer matched, never the other way.
+  const credLocation = locatedCredentialRisk(ast, artifactContent) ?? gateHit;
 
   for (const access of credentialAccess) {
     // Credential reads in skills/configs/source code are suspicious
@@ -480,14 +505,35 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
       ? credentialEvidence[0].text.slice(0, 120)
       : credentialRisks[0]?.evidence ?? 'Credential pattern detected';
 
-  // Prefer the EvidenceSpan's character offset (signed AST data) — it's
-  // exact and local. Fall back to substring search on the unsigned content
-  // when only a RiskSurface evidence string is available.
+  // THE CARRIED OFFSET IS AUTHORITATIVE WHERE IT EXISTS (#368), AND IT EXISTS
+  // ON `source_code` ONLY. `located` is the credential whose exact position in
+  // this content the PRODUCER recorded at the moment it matched — the canonical
+  // / name-gated credential scan, which semantic-compiler.ts:176 runs under
+  // `if (parsed.type === 'source_code')`. Nothing here searches for it:
+  // `evidenceSummary` is a synthesized label plus a truncated prefix of the
+  // value, so it appears nowhere in the artifact, and the two line sources
+  // below it were the whole of this finding's citation. On the `source_code`
+  // path both are empty — no CRED evidence span, and a summary no substring
+  // search can find — so the CRITICAL shipped with no line and therefore no
+  // `Verify:` at all.
+  //
+  // ON EVERY OTHER ARTIFACT TYPE `located` is undefined and the citation is
+  // whatever main already produced, UNCHANGED AND NOT CLOSED HERE. Measured on
+  // an `mcp_config` carrying the word "credential" on line 4 and the key on
+  // line 8: `lineFromSpan` resolves the CRED evidence span to the prose on
+  // line 4 while AST-CRED-001's leftmost match resolves to line 8 — the same
+  // two lines before this change and after it. The two checks CAN disagree on
+  // such an artifact, and nothing below prevents it.
+  //
+  // Order: producer offset, then the EvidenceSpan's own offset (signed AST
+  // data, exact and local), then the substring search on the unsigned content.
+  const located = locatedCredentialRisk(ast, artifactContent);
   const spanStart = credentialEvidence[0]?.start;
   const lineFromSpan = artifactContent !== undefined && spanStart !== undefined
     ? lineFromOffset(artifactContent, spanStart)
     : undefined;
-  const fallbackLine = lineFromSpan ?? findLineFromString(artifactContent, evidenceSummary);
+  const fallbackLine =
+    located?.line ?? lineFromSpan ?? findLineFromString(artifactContent, evidenceSummary);
 
   findings.push({
     checkId: 'AST-CRED-003',
@@ -835,6 +881,64 @@ function findFirstCredentialFormat(content: string): { line: number; match: stri
     if (content.charCodeAt(i) === 10 /* \n */) line++;
   }
   return { line, match: maskCredentialValue(hit.value) };
+}
+
+/**
+ * The credential the COMPILER actually matched: its line and its masked value
+ * (#368). Undefined when no risk surface carries a usable offset.
+ *
+ * IT RETURNS A VALUE ON `source_code` AND NOTHING ELSE, TODAY. The single
+ * producer of `evidenceOffset` is the canonical credential-format scan, and
+ * semantic-compiler.ts:176 runs it under `if (parsed.type === 'source_code')`.
+ * On a skill, mcp_config or soul artifact this returns undefined and both
+ * callers fall back to main's guesses — AST-CRED-001 to the leftmost
+ * credential-format match, AST-CRED-003 to the CRED evidence span, which can
+ * be a policy sentence. THOSE TWO GUESSES CAN DISAGREE, AND DO: measured on an
+ * `mcp_config` holding the word "credential" on line 4 and the key on line 8,
+ * AST-CRED-001 cites 8 and AST-CRED-003 cites 4, identically before this change
+ * and after it. This function does not close that; it closes `source_code`.
+ *
+ * Where it does return a value it is the honest citation source and the reason
+ * `RiskSurface` carries an offset at all. The canonical credential-format scan
+ * records where each value sat in the original content at the moment it
+ * matched; this reads that back and masks the value from those same bytes.
+ * AST-CRED-001 consumes BOTH fields — `line` becomes its line and `match` its
+ * `evidence` — so for that finding the two describe one value by construction.
+ * AST-CRED-003 consumes `line` only: its `message` and `evidence` are still
+ * built from `evidenceSummary`, so where the CRED evidence span is prose the
+ * cited line and the quoted excerpt describe different lines. That mismatch is
+ * a known residual of this change, not something it repairs.
+ *
+ * `find(r => r.evidenceOffset !== undefined)`, NOT `credentialRisks[0]`. The
+ * first CRED-HARVEST risk on the array is frequently `mapRiskSurfaces`'
+ * keyword-context surface, whose evidence is the bare word `api_key` and which
+ * carries no offset at all; taking it and stopping would send the citation back
+ * to a substring search for the word, i.e. the first mention of "api_key" in
+ * the file rather than the key. Both AST-CRED-001 and AST-CRED-003 read this
+ * one function, so WHEN IT RETURNS A VALUE the two findings agree on the line.
+ * When it returns undefined — every artifact type above — they need not, and
+ * the measurement quoted above is a case where they do not.
+ */
+function locatedCredentialRisk(
+  ast: SecurityAST,
+  content: string | undefined,
+): { line: number; match: string } | undefined {
+  if (content === undefined) return undefined;
+  for (const risk of ast.inferredRiskSurface) {
+    if (risk.attackClass !== 'CRED-HARVEST') continue;
+    const start = risk.evidenceOffset;
+    const length = risk.evidenceLength;
+    if (start === undefined || length === undefined) continue;
+    // The AST is signed; the content is not. A mismatch means the two are not
+    // the same artifact, and a citation derived from a stale offset is exactly
+    // the confidently-wrong kind. Refuse rather than clamp.
+    if (start < 0 || length <= 0 || start + length > content.length) continue;
+    return {
+      line: lineFromOffset(content, start),
+      match: maskCredentialValue(content.slice(start, start + length)),
+    };
+  }
+  return undefined;
 }
 
 /**

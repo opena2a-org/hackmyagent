@@ -2335,7 +2335,10 @@ export class HardeningScanner {
       const structuralFindings = await structural.analyze(targetDir, {
         isExcludedDir: (dir) => this.isOwnBackupDir(dir),
       });
-      const converted = toSecurityFindings(structuralFindings);
+      const converted = toSecurityFindings(
+        structuralFindings,
+        (file) => this.readArtifactForCitation(targetDir, file),
+      );
       findings.push(...converted);
       layer2Count = converted.length;
     } catch {
@@ -2357,7 +2360,10 @@ export class HardeningScanner {
           onProgress: options.onProgress,
         });
         const llmResult = await llm.analyze(files);
-        const converted = toSecurityFindings(llmResult.findings);
+        const converted = toSecurityFindings(
+          llmResult.findings,
+          (file) => this.readArtifactForCitation(targetDir, file),
+        );
         findings.push(...converted);
         layer3Count = converted.length;
         llmCost = llmResult.cost;
@@ -4084,6 +4090,22 @@ export class HardeningScanner {
     const [here, there] = await Promise.all([identityOf(dir), identityOf(canonicalReal)]);
     if (here.kind === 'unknown' || there.kind === 'unknown') return true;
     return sameIdentity(identityOrUndefined(here), identityOrUndefined(there));
+  }
+
+  /**
+   * The scanned file's own bytes, for recovering a citation line at the
+   * semantic → SecurityFinding boundary (#368).
+   *
+   * `file` is target-relative as the semantic engine reports it. Returns
+   * undefined on any read failure — a finding with no line is the honest
+   * outcome, and a throw here would take out the whole Layer 2 conversion.
+   */
+  private readArtifactForCitation(targetDir: string, file: string): string | undefined {
+    try {
+      return fsSync.readFileSync(path.resolve(targetDir, file), 'utf-8');
+    } catch {
+      return undefined;
+    }
   }
 
   private async isOwnBackupDir(dirPath: string): Promise<boolean> {

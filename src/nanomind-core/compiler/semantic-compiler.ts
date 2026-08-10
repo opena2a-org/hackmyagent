@@ -181,6 +181,21 @@ export class SemanticCompiler {
           attackClass: 'CRED-HARVEST',
           confidence: 0.9,
           evidence: hit.evidence,
+          // #368 — the offset is CARRIED, not re-derived. This scan runs on the
+          // ORIGINAL `content`, which is the same string the analyzers receive
+          // as `artifactContent`, so the offset is valid in the file the reader
+          // will open. Risk surfaces built by `mapRiskSurfaces` deliberately
+          // carry NO offset: those match against the preprocessed analysis
+          // view, whose positions do not map back.
+          //
+          // SCOPE: this is the only producer of `evidenceOffset` in the tree,
+          // and it sits inside the `parsed.type === 'source_code'` branch
+          // above. A skill, mcp_config or soul artifact therefore reaches the
+          // analyzers with no offset on any surface, and their citations stay
+          // exactly what they were before #368 — leftmost-match guesses, with
+          // the wrong-line risk that implies. #368 does not close that half.
+          evidenceOffset: hit.index,
+          evidenceLength: hit.length,
         });
         declaredDataAccess.push({
           dataType: 'credentials',
@@ -1245,6 +1260,27 @@ function hasCanonicalCredentialFormat(content: string): boolean {
 interface CanonicalCredentialHit {
   label: string;
   evidence: string;
+  /**
+   * 0-based offset of the matched VALUE in the content this scan was given,
+   * and its length (#368).
+   *
+   * The scan already knows both — `evidence` is built from the match at the
+   * moment of the match — and throwing them away is what forced the credential
+   * analyzer to re-derive a location by searching for the leftmost
+   * credential-SHAPED string in the file. That search cites a SHA-256 digest or
+   * a `sk-EXAMPLE…` placeholder whenever one sits above the real key, which is
+   * a confidently wrong citation on a CRITICAL finding.
+   *
+   * `evidence` is NOT a location and must not be used as one: it is a
+   * synthesized label plus a truncated prefix of the value, so it appears
+   * nowhere in the artifact. Those truncated bytes are a separate, still-open
+   * defect (#353); this offset pair is what the citation is derived from on
+   * the `source_code` artifacts this scan runs for. It is not a general fix:
+   * no other artifact type produces one of these hits, so no other artifact
+   * type gets a carried offset.
+   */
+  index: number;
+  length: number;
 }
 
 /**
@@ -1455,6 +1491,10 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit
       hits.push({
         label,
         evidence: `${label}: ${matched.slice(0, 16)}...`,
+        // `LEFT_ANCHOR` is a zero-width lookbehind, so `match.index` is the
+        // first character of the value itself.
+        index: match.index,
+        length: matched.length,
       });
     }
   }
@@ -1494,6 +1534,13 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit
       hits.push({
         label,
         evidence: `${label}: ${value.slice(0, 8)}...`,
+        // Group 1 is the trailing atom of every name-gated pattern (the name
+        // anchor is matched, never captured), so the value's offset is the end
+        // of the whole match minus the value's own length. Computed rather than
+        // searched: `indexOf` inside `match[0]` would find an earlier
+        // coincidental copy of the value in the name anchor.
+        index: match.index + match[0].length - value.length,
+        length: value.length,
       });
     }
   }
