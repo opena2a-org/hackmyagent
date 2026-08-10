@@ -113,53 +113,12 @@ function checkCredentialsInNonEnvContext(
   // values (`$OPENAI_API_KEY`, `${OPENAI_API_KEY}`) deliberately do NOT
   // match. SDKs are also gated — flagging an SDK source file that only
   // mentions the word "credential" was the same false-positive shape.
-  //
-  // #368 — THE GATE AND THE CITATION ARE TWO DIFFERENT QUESTIONS, and
-  // conflating them is what produced a confidently wrong line. The gate asks
-  // "does this artifact contain any credential-shaped value at all", which the
-  // leftmost match answers correctly. The citation asks "where is the value
-  // THIS finding names", which the leftmost match answers WRONGLY the moment a
-  // SHA-256 digest or a `sk-EXAMPLE…` doc placeholder sits above the real key:
-  // measured on a fixture with a digest above the key, AST-CRED-001 cited the
-  // DIGEST's line. (An earlier revision of this comment added "and so did
-  // AST-CRED-003". It did not — on that fixture AST-CRED-003 carried no line at
-  // all, which is a different defect with a different fix, and the overstatement
-  // was caught by an adversarial round re-running the measurement.)
-  const gateHit = artifactContent !== undefined
+  const credLocation = artifactContent !== undefined
     ? findFirstCredentialFormat(artifactContent)
     : undefined;
-  if (!gateHit) {
+  if (!credLocation) {
     return findings;
   }
-  // So the citation PREFERS the offset the producer recorded — WHERE ONE
-  // EXISTS, WHICH IS `source_code` AND NOTHING ELSE. The only producer of
-  // `evidenceOffset` is the canonical credential scan, and the compiler runs it
-  // under `if (parsed.type === 'source_code')` (semantic-compiler.ts:176). On a
-  // skill, an mcp_config or a soul artifact no risk surface carries an offset,
-  // `locatedCredentialRisk` returns undefined, and this falls straight back to
-  // the leftmost match — byte-for-byte main's behaviour, including main's
-  // wrong-line risk when the file holds more than one credential-shaped string.
-  // THIS CHANGE DOES NOT CLOSE THAT. It is a live residual, it is not filed as
-  // #353 (which is the unmasked-secret leak in AST-CRED-003's title), and it is
-  // not fixed here.
-  //
-  // WHAT THIS LINE CLOSES, STATED AS THE SELECTION ACTUALLY BEHAVES. An earlier
-  // revision of this comment claimed the carry "can only move a citation from
-  // the leftmost lookalike TO the value the producer matched, never the other
-  // way". That was false in both halves, and an adversarial round proved it:
-  // the surfaces arrive in pattern-table order rather than file order, and the
-  // canonical scan matches values the gate does not. It moved a citation from a
-  // real GitHub token on line 2 to an AWS key on line 5, and — worse — from a
-  // real token onto a `-----BEGIN RSA PRIVATE KEY-----` string constant holding
-  // no key material.
-  //
-  // `locatedCredentialRisk` now takes the LEFTMOST offset-carrying surface
-  // whose bytes the GATE also accepts, so the claim above is true by
-  // construction rather than by hope: a candidate the gate rejects cannot be
-  // selected, and among the rest the leftmost wins, which is the gate's own
-  // rule. Where no candidate qualifies this falls back to `gateHit`, which is
-  // byte-for-byte main's behaviour — so this path cannot be worse than main.
-  const credLocation = locatedCredentialRisk(ast, artifactContent) ?? gateHit;
 
   for (const access of credentialAccess) {
     // Credential reads in skills/configs/source code are suspicious
@@ -516,51 +475,19 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
   const severity: ASTFinding['severity'] =
     maxConfidence >= 0.8 ? 'critical' : maxConfidence >= 0.5 ? 'high' : 'medium';
 
-  // ONE SELECTION FEEDS BOTH THE LINE AND THE MESSAGE (#368). `located` is
-  // computed here, above `evidenceSummary`, because the two used to be chosen
-  // by different rules over the same array: the line took the leftmost
-  // offset-carrying surface and the message took `credentialRisks[0]`, which is
-  // pattern-table order. On a file with a GitHub token on line 2 and an AWS key
-  // on line 5 that rendered a finding whose message named the AWS key and whose
-  // `Verify:` printed the GitHub token — internally inconsistent, and the
-  // reader has no way to tell which one the CRITICAL is about.
-  const located = locatedCredentialRisk(ast, artifactContent);
-
   const evidenceSummary =
     credentialEvidence.length > 0
       ? credentialEvidence[0].text.slice(0, 120)
-      : located?.evidence ?? credentialRisks[0]?.evidence ?? 'Credential pattern detected';
+      : credentialRisks[0]?.evidence ?? 'Credential pattern detected';
 
-  // THE CARRIED OFFSET IS AUTHORITATIVE WHERE IT EXISTS (#368), AND IT EXISTS
-  // ON `source_code` ONLY. `located` is the credential whose exact position in
-  // this content the PRODUCER recorded at the moment it matched — the canonical
-  // / name-gated credential scan, which semantic-compiler.ts:176 runs under
-  // `if (parsed.type === 'source_code')`. Nothing here searches for it:
-  // `evidenceSummary` is a synthesized label plus a truncated prefix of the
-  // value, so it appears nowhere in the artifact, and the two line sources
-  // below it were the whole of this finding's citation. On the `source_code`
-  // path both are empty — no CRED evidence span, and a summary no substring
-  // search can find — so the CRITICAL shipped with no line and therefore no
-  // `Verify:` at all.
-  //
-  // ON EVERY OTHER ARTIFACT TYPE `located` is undefined and the citation is
-  // whatever main already produced, UNCHANGED AND NOT CLOSED HERE. Measured on
-  // an `mcp_config` carrying the word "credential" on line 4 and the key on
-  // line 8: `lineFromSpan` resolves the CRED evidence span to the prose on
-  // line 4 while AST-CRED-001's leftmost match resolves to line 8 — the same
-  // two lines before this change and after it. The two checks CAN disagree on
-  // such an artifact, and nothing below prevents it.
-  //
-  // Order: producer offset, then the EvidenceSpan's own offset (signed AST
-  // data, exact and local), then the substring search on the unsigned content.
-  // `located` is the one computed above `evidenceSummary`, so the line and the
-  // message describe the same credential rather than two independent picks.
+  // Prefer the EvidenceSpan's character offset (signed AST data) — it's
+  // exact and local. Fall back to substring search on the unsigned content
+  // when only a RiskSurface evidence string is available.
   const spanStart = credentialEvidence[0]?.start;
   const lineFromSpan = artifactContent !== undefined && spanStart !== undefined
     ? lineFromOffset(artifactContent, spanStart)
     : undefined;
-  const fallbackLine =
-    located?.line ?? lineFromSpan ?? findLineFromString(artifactContent, evidenceSummary);
+  const fallbackLine = lineFromSpan ?? findLineFromString(artifactContent, evidenceSummary);
 
   findings.push({
     checkId: 'AST-CRED-003',
@@ -908,119 +835,6 @@ function findFirstCredentialFormat(content: string): { line: number; match: stri
     if (content.charCodeAt(i) === 10 /* \n */) line++;
   }
   return { line, match: maskCredentialValue(hit.value) };
-}
-
-/**
- * The credential the COMPILER actually matched: its line and its masked value
- * (#368). Undefined when no risk surface carries a usable offset.
- *
- * IT RETURNS A VALUE ON `source_code` AND NOTHING ELSE, TODAY. The single
- * producer of `evidenceOffset` is the canonical credential-format scan, and
- * semantic-compiler.ts:176 runs it under `if (parsed.type === 'source_code')`.
- * On a skill, mcp_config or soul artifact this returns undefined and both
- * callers fall back to main's guesses — AST-CRED-001 to the leftmost
- * credential-format match, AST-CRED-003 to the CRED evidence span, which can
- * be a policy sentence. THOSE TWO GUESSES CAN DISAGREE, AND DO: measured on an
- * `mcp_config` holding the word "credential" on line 4 and the key on line 8,
- * AST-CRED-001 cites 8 and AST-CRED-003 cites 4, identically before this change
- * and after it. This function does not close that; it closes `source_code`.
- *
- * Where it does return a value it is the honest citation source and the reason
- * `RiskSurface` carries an offset at all. The canonical credential-format scan
- * records where each value sat in the original content at the moment it
- * matched; this reads that back and masks the value from those same bytes.
- * AST-CRED-001 consumes BOTH fields — `line` becomes its line and `match` its
- * `evidence` — so for that finding the two describe one value by construction.
- * AST-CRED-003 consumes `line` only: its `message` and `evidence` are still
- * built from `evidenceSummary`, so where the CRED evidence span is prose the
- * cited line and the quoted excerpt describe different lines. That mismatch is
- * a known residual of this change, not something it repairs.
- *
- * SELECTION, IN TWO PARTS, AND NEITHER IS "THE FIRST ONE". Not
- * `credentialRisks[0]`: the first CRED-HARVEST risk on the array is frequently
- * `mapRiskSurfaces`' keyword-context surface, whose evidence is the bare word
- * `api_key` and which carries no offset at all. But not the first
- * offset-carrying one either, which is what this function used to return:
- *
- *   1. **Only candidates the GATE accepts.** The canonical scan that produces
- *      these offsets and `findCredentialFormatMatch` — the matcher that decides
- *      the finding fires — cover different sets. `PEM private key` matches the
- *      header MARKER alone, which holds no key material and which the gate
- *      rejects. Selecting it moved the citation off a real `hf_` token and onto
- *      a PEM sniffing helper's string constant, with a `Verify:` that prints
- *      something harmless — the confidently-wrong citation this path exists to
- *      prevent. Measured before the guard: line 2 instead of line 5.
- *   2. **Then the LEFTMOST of those.** Surfaces are pushed in
- *      `CANONICAL_CREDENTIAL_PATTERNS` order — `AWS access key` index 3,
- *      `GitHub personal access token` index 4 — so first-wins made the citation
- *      a function of the order that table is written in: a GitHub token on
- *      line 2 lost to an AWS key on line 5. Leftmost is the gate's own rule.
- *
- * Both are pinned by `__tests__/nanomind-core/credential-citation-selection.test.ts`,
- * which also carries the negative control: the digest-above-key case this carry
- * exists for must still cite the key, so a "fix" that stopped consuming the
- * offset fails there.
- *
- * Both AST-CRED-001 and AST-CRED-003 read this one function, so WHEN IT RETURNS
- * A VALUE the two findings agree on the line. When it returns undefined — every
- * artifact type above, and now also a `source_code` file whose only
- * offset-carrying surface the gate rejects — they need not, and the measurement
- * quoted above is a case where they do not.
- */
-function locatedCredentialRisk(
-  ast: SecurityAST,
-  content: string | undefined,
-): { line: number; match: string; evidence: string } | undefined {
-  if (content === undefined) return undefined;
-  let best: { start: number; length: number; evidence: string } | undefined;
-  for (const risk of ast.inferredRiskSurface) {
-    if (risk.attackClass !== 'CRED-HARVEST') continue;
-    const start = risk.evidenceOffset;
-    const length = risk.evidenceLength;
-    if (start === undefined || length === undefined) continue;
-    // A bounds check, NOT an integrity check. `signAST` covers `contentHash`,
-    // `artifactType`, the intent fields, `modelVersion` and `compiledAt` — it
-    // does NOT cover `inferredRiskSurface`, so `verifyAST` cannot detect a
-    // tampered offset and this must not claim to. What it does prevent is
-    // slicing outside the buffer, which is the reachable failure: the AST and
-    // the content are built in-process today, so a stale pair is a bug rather
-    // than an attack. `start + length === content.length` is a valid slice and
-    // is deliberately admitted.
-    if (start < 0 || length <= 0 || start + length > content.length) continue;
-    // NO CONTENT TEST HERE, DELIBERATELY. Whether a matched span is the secret
-    // VALUE or a structural MARKER is a property of the pattern that matched
-    // it, and the producer already knows which: a `marker: true` pattern
-    // records no offset, so `-----BEGIN RSA PRIVATE KEY-----` never reaches
-    // this loop as a candidate.
-    //
-    // An earlier revision re-tested each slice with `hasCredentialFormat`
-    // instead. That is a content gate being asked a provenance question, and it
-    // was measurably wrong: the entropy-blob class is `[A-Za-z0-9+=_]{40,}`,
-    // which excludes `/`, so ANY AWS secret access key containing a `/` failed
-    // when sliced out of context. (Under a uniform draw over that pattern's own
-    // alphabet a `/` appears in ~47% of values, so the affected share is large —
-    // but that is a property of the alphabet, not a measurement of issued keys.)
-    // Those lost their citation, and because
-    // AST-CRED-003's own fallback chain is empty on `source_code`, that CRITICAL
-    // went back to carrying NO line at all — the exact defect the carry exists
-    // to remove.
-    //
-    // THE LEFTMOST CANDIDATE, not the first one pushed.
-    // Surfaces arrive in `CANONICAL_CREDENTIAL_PATTERNS` order — `AWS access
-    // key` is index 3, `GitHub personal access token` is index 4 — so a
-    // first-match selection cites an AWS key on line 5 over a GitHub token on
-    // line 2, making the citation a function of the order a pattern table
-    // happens to be written in. Leftmost is the same rule the gate itself uses.
-    if (!best || start < best.start) best = { start, length, evidence: risk.evidence };
-  }
-  if (!best) return undefined;
-  return {
-    line: lineFromOffset(content, best.start),
-    match: maskCredentialValue(content.slice(best.start, best.start + best.length)),
-    // The producer's own label for THIS surface (`"AWS access key: AKIA…"`), so
-    // a caller building a message names the credential the line points at.
-    evidence: best.evidence,
-  };
 }
 
 /**

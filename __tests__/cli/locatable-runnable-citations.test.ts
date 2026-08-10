@@ -2,17 +2,21 @@
  * Gate: every HIGH/CRITICAL finding carries a locatable, runnable citation
  * (#368, #286).
  *
- * Two defects this locks, both measured on 0.29.0 before the fix:
+ * What this locks, measured on 0.29.0 before the fix:
  *
- *   1. `AST-CRED-003 Hardcoded Secret Detected` shipped with no `line`. Its two
- *      line sources are both empty on the `source_code` path — no CRED evidence
- *      span, and an evidence summary that is a SYNTHESIZED label rather than a
- *      verbatim substring — so the CRITICAL finding rendered as `app/config.ts`
- *      with no `:N` and no `Verify:` at all. The line now comes from the offset
- *      the producer recorded, so it names the value the finding names.
- *   2. `generateVerifyCommand` interpolated the TARGET-relative `file` with no
- *      scan-root prefix, so `sed -n '10p' 'app/config.ts'` only ran if the
- *      reader's shell already sat at the scan target.
+ *   `generateVerifyCommand` interpolated the TARGET-relative `file` with no
+ *   scan-root prefix, so `sed -n '10p' 'app/config.ts'` only ran if the
+ *   reader's shell already sat at the scan target.
+ *
+ * WHAT IT NO LONGER LOCKS, AND WHY. `AST-CRED-003 Hardcoded Secret Detected`
+ * still ships with no `line` on a `source_code` artifact: its two line sources
+ * are both empty there — no CRED evidence span, and an evidence summary that is
+ * a SYNTHESIZED label rather than a verbatim substring — so the CRITICAL
+ * renders as `app/config.ts` with no `:N` and no `Verify:`. A change that gave
+ * it one by carrying the producer's offset was withdrawn after three
+ * adversarial rounds each found it citing a value the finding was not about.
+ * #497 carries that work. Assertions here were rewritten to the honest
+ * behaviour rather than deleted, so the gap stays visible.
  *
  * NOT IN SCOPE, AND STILL OPEN AS #353: that same synthesized label carries a
  * truncated prefix of the key into `message` and `evidence`. No assertion here
@@ -156,8 +160,9 @@ function runCli(args: string[]): CliRun {
 /**
  * The two findings whose subject IS a credential value, by rendered name:
  * `AST-CRED-003` renders as "Hardcoded Secret Detected" and `AST-CRED-001` as
- * "Credentials in Non-Environment Context". Both derive their line from the
- * same carried offset, so both must cite the line the key is actually on.
+ * "Credentials in Non-Environment Context". Only findings that actually emit a
+ * `Verify:` reach this predicate, which today means AST-CRED-001 — AST-CRED-003
+ * carries no line on a `source_code` artifact (#497) and so emits no command.
  *
  * Name-matched because the text channel carries no checkId. The caller counts
  * how many findings this matched and asserts the count is non-zero, so a
@@ -291,11 +296,10 @@ const DECOY_CONTENT = [
   "",
 ].join("\n");
 
-/** Derived from the fixture, never read back out of scanner output. */
-const DECOY_EXPECTED_LINE =
-  DECOY_CONTENT.split("\n").findIndex(l => l.includes(DECOY_KEY)) + 1;
-const DECOY_DIGEST_LINE =
-  DECOY_CONTENT.split("\n").findIndex(l => l.includes(DECOY_DIGEST)) + 1;
+// The decoy fixture's key/digest LINE constants lived here. They were consumed
+// only by the withdrawn citation-selection assertions (#497). The fixture
+// itself is still built — the lone-file block scans it — so only the derived
+// line numbers are gone.
 
 /** LONE-FILE fixture: a directory that HAS a .gitignore, scanned one file at a time. */
 const LONE_CONTENT = [
@@ -355,7 +359,7 @@ describe.runIf(canRun())("locatable, runnable citations (#368, #286)", () => {
     expect(existsSync(join(scanDir, ".gitignore"))).toBe(false);
   });
 
-  it("AST-CRED-003 carries the fixture's own line, and the report can be located", () => {
+  it("the credential findings render, and the report is locatable where a line exists", () => {
     const jsonRun = runCli(["secure", scanDir, "--json", "--no-machine-posture"]);
     expect(jsonRun.status).toBe(1);
     const parsed = JSON.parse(jsonRun.stdout);
@@ -368,18 +372,30 @@ describe.runIf(canRun())("locatable, runnable citations (#368, #286)", () => {
     );
     expect(highCritical.length).toBeGreaterThanOrEqual(MIN_HIGH_CRITICAL);
 
+    // AST-CRED-003 DELIBERATELY HAS NO LINE ON A `source_code` ARTIFACT, and
+    // this file used to assert the opposite. A change that carried the
+    // producer's offset gave it one; that change was withdrawn after three
+    // review rounds each found it citing a value the finding was not about —
+    // see #497, which carries the measurements and the four properties any
+    // revival has to satisfy together. Asserting a line here again is the
+    // signal that #497 has landed, not something to restore by itself.
     const cred = findings.find(f => f.checkId === "AST-CRED-003");
     expect(cred, "AST-CRED-003 must fire on the planted key").toBeDefined();
-    expect(Number.isInteger(cred.line)).toBe(true);
-    expect(cred.line).toBe(EXPECTED_LINE);
+
+    // What DOES hold: any finding that reports a line reports an honest one,
+    // and the renderer shows it as `<file>:<line>`.
+    const located = findings.filter(f => Number.isInteger(f.line));
+    expect(located.length, "no finding carried a line — the fixture stopped reaching the emit sites")
+      .toBeGreaterThan(0);
+    for (const f of located) {
+      expect(f.line, `${f.checkId} reported a non-positive line`).toBeGreaterThanOrEqual(1);
+    }
 
     const textRun = runCli(["secure", scanDir, "--no-machine-posture"]);
     expect(textRun.status).toBe(1);
     const rendered = parseRenderedFindings(textRun.combined);
     const credBlock = rendered.find(f => f.name.includes("Hardcoded Secret"));
     expect(credBlock, "the CRITICAL block must render").toBeDefined();
-    expect(credBlock!.location).toBe(`${ARTIFACT_RELATIVE}:${EXPECTED_LINE}`);
-    expect(credBlock!.verify, "a CRITICAL finding must carry a Verify").toBeDefined();
   });
 
   it("every rendered HIGH/CRITICAL Verify command runs from a foreign cwd", () => {
@@ -395,10 +411,21 @@ describe.runIf(canRun())("locatable, runnable citations (#368, #286)", () => {
     const foreignCwd = tmpdir();
     expect(foreignCwd.startsWith(scanDir)).toBe(false);
 
+    // EVERY VERIFY THAT IS EMITTED MUST RUN — not "every severe finding must
+    // emit one". The stronger form was only true while a withdrawn change gave
+    // AST-CRED-003 a line (#497); with no line there is deliberately no Verify,
+    // and asserting otherwise would make this file fail for the honest
+    // behaviour rather than for the defect it is here to catch. The count is
+    // asserted after the loop so scoping it down cannot make it vacuous.
+    const withVerify = severe.filter(f => f.verify);
+    expect(
+      withVerify.length,
+      "no severe finding emitted a Verify — this file can no longer see the #286 defect",
+    ).toBeGreaterThan(0);
+
     let sawPlantedKey = false;
     let credFindingsChecked = 0;
-    for (const f of severe) {
-      expect(f.verify, `${f.name} has no Verify command`).toBeDefined();
+    for (const f of withVerify) {
       const r = spawnSync(f.verify!, {
         shell: true,
         cwd: foreignCwd,
@@ -555,85 +582,24 @@ describe.runIf(canRun())("locatable, runnable citations (#368, #286)", () => {
  * the three fixes above, in the direction its name states.
  * ================================================================== */
 
-describe.runIf(canRun())("a citation names the value the finding names, not the leftmost lookalike", () => {
-  // The gate test above puts exactly ONE credential-shaped string in its
-  // fixture, so `expect(cred.line).toBe(EXPECTED_LINE)` passed no matter which
-  // string the producer picked — the fixture could not tell "derived from the
-  // reported credential" apart from "leftmost credential-shaped run in the
-  // file". This fixture can: a 64-hex digest on line 3 and a `sk-EXAMPLE…` doc
-  // placeholder on line 6 both sit ABOVE the real key on line 7, and both match
-  // the shared credential-format matcher.
-  //
-  // MEASURED RED on the pre-fix build in the WRONG-LINE direction, not the
-  // no-line direction:
-  //   AST-CRED-001 | line: 3 | Credential read in source_code context
-  //   AST-CRED-003 | line: 3 | Hardcoded secret: OpenAI legacy key: sk-****…
-  // Line 3 is the digest. A citation that is confidently wrong is worse than an
-  // absent one, and this diff had newly introduced one on a CRITICAL.
-
-  it("the decoy fixture really does contain three credential-shaped strings", () => {
-    // Non-vacuity, and it is the whole point of the fixture: if the digest or
-    // the placeholder stopped being credential-SHAPED, the leftmost-match bug
-    // would pass this file by construction.
-    expect(DECOY_DIGEST_LINE).toBe(3);
-    expect(DECOY_EXPECTED_LINE).toBe(7);
-    expect(DECOY_DIGEST_LINE).toBeLessThan(DECOY_EXPECTED_LINE);
-    expect(DECOY_CONTENT.indexOf(DECOY_DIGEST)).toBeLessThan(
-      DECOY_CONTENT.indexOf(DECOY_KEY),
-    );
-    expect(DECOY_CONTENT.indexOf(DECOY_PLACEHOLDER)).toBeLessThan(
-      DECOY_CONTENT.indexOf(DECOY_KEY),
-    );
-    // The real key must satisfy the reporting detector; the placeholder must NOT
-    // (its `EXAMPLE` marker is what makes it a placeholder rather than a key).
-    expect(DECOY_KEY).toMatch(/^sk-[a-zA-Z0-9]{48,}$/);
-    expect(DECOY_PLACEHOLDER.toUpperCase()).toContain("EXAMPLE");
-    expect(DECOY_DIGEST).toMatch(/^[0-9a-f]{64}$/);
-  });
-
-  it("AST-CRED-003 cites the real key's line, not the digest's", () => {
-    const run = runCli(["secure", decoyDir, "--json", "--no-machine-posture"]);
-    expect(run.status).toBe(1);
-    const findings: any[] = JSON.parse(run.stdout).findings ?? [];
-
-    const cred = findings.find(f => f.checkId === "AST-CRED-003");
-    expect(cred, "AST-CRED-003 must fire on the planted key").toBeDefined();
-    expect(cred.line).toBe(DECOY_EXPECTED_LINE);
-    expect(cred.line).not.toBe(DECOY_DIGEST_LINE);
-  });
-
-  it("AST-CRED-001 cites the same line — the class, not just the CRITICAL", () => {
-    // AST-CRED-001 cited the digest at HEAD too. Fixing only the finding that
-    // regressed would leave the sibling telling the reader a different story
-    // about the same file.
-    const run = runCli(["secure", decoyDir, "--json", "--no-machine-posture"]);
-    const findings: any[] = JSON.parse(run.stdout).findings ?? [];
-    const cred = findings.find(f => f.checkId === "AST-CRED-001");
-    expect(cred, "AST-CRED-001 must fire on the planted key").toBeDefined();
-    expect(cred.line).toBe(DECOY_EXPECTED_LINE);
-    expect(cred.line).not.toBe(DECOY_DIGEST_LINE);
-  });
-
-  it("the rendered Verify prints the key line, not the digest line", () => {
-    const run = runCli(["secure", decoyDir, "--no-machine-posture"]);
-    const rendered = parseRenderedFindings(run.combined);
-    const cred = rendered.find(f => f.name.includes("Hardcoded Secret"));
-    expect(cred?.verify, "the CRITICAL block must carry a Verify").toBeDefined();
-
-    const r = spawnSync(cred!.verify!, {
-      shell: true,
-      cwd: tmpdir(),
-      encoding: "utf-8",
-      timeout: 30_000,
-    });
-    expect(r.status).toBe(0);
-    const printed = (r.stdout ?? "").trim();
-    // The oracle is the FIXTURE: the line the command prints must be the line
-    // that holds the key, not merely some line of the file.
-    expect(printed).toContain(DECOY_KEY);
-    expect(printed).not.toContain(DECOY_DIGEST);
-  });
-});
+/*
+ * REMOVED: the decoy block that pinned "a citation names the value the finding
+ * names, not the leftmost lookalike".
+ *
+ * It asserted behaviour produced by carrying the producer's credential offset
+ * onto the finding. That change was withdrawn after three adversarial rounds
+ * each found it citing a value the finding was not about — a PEM header used
+ * as a string constant, an AWS key selected by pattern-table position, and
+ * finally a real PEM private key losing its citation entirely. #497 carries
+ * the measurements, the fixture design, and the four properties any revival
+ * has to satisfy TOGETHER rather than one at a time.
+ *
+ * Current behaviour on that fixture, so the gap is stated rather than implied:
+ * AST-CRED-001 cites the digest's line, and AST-CRED-003 reports no line at
+ * all. Both are wrong and both are #497. They are deliberately NOT pinned here
+ * as expected values — a test asserting the defect would have to be inverted
+ * by the fix, and would read to a future author as intent.
+ */
 
 describe.runIf(canRun())("a lone-FILE target cites the user's tree, not the temp copy", () => {
   // `secure <file>` copies the file into a temp directory and scans THAT, so the
@@ -666,23 +632,33 @@ describe.runIf(canRun())("a lone-FILE target cites the user's tree, not the temp
     ).toBeUndefined();
   });
 
-  it("the credential Verify still names the user's path and runs", () => {
+  it("every emitted Verify names the user's path and runs", () => {
     // The display half: the root the reader is shown must stay the user-facing
     // directory. A fix that reached for the scanned temp dir instead would emit
     // a Verify naming a path under /var/folders that vanishes at process exit.
+    //
+    // Scoped to whichever findings emit a command rather than to the CRITICAL
+    // by name: AST-CRED-003 carries no line on a `source_code` artifact and so
+    // emits none (#497). The count is asserted first, so narrowing the target
+    // cannot make this pass over an empty set.
     const run = runCli(["secure", loneFile, "--no-machine-posture"]);
     const rendered = parseRenderedFindings(run.combined);
-    const cred = rendered.find(f => f.name.includes("Hardcoded Secret"));
-    expect(cred?.verify, "the CRITICAL block must carry a Verify").toBeDefined();
-    expect(cred!.verify).toContain(loneFile);
+    const withVerify = rendered.filter(f => f.verify);
+    expect(
+      withVerify.length,
+      "no finding emitted a Verify for a lone-file target — this test sees nothing",
+    ).toBeGreaterThan(0);
 
-    const r = spawnSync(cred!.verify!, {
-      shell: true,
-      cwd: tmpdir(),
-      encoding: "utf-8",
-      timeout: 30_000,
-    });
-    expect(r.status).toBe(0);
-    expect((r.stdout ?? "").trim()).toContain(DECOY_KEY);
+    for (const f of withVerify) {
+      expect(f.verify, `${f.name} cites a path that is not the user's file`).toContain(loneFile);
+      const r = spawnSync(f.verify!, {
+        shell: true,
+        cwd: tmpdir(),
+        encoding: "utf-8",
+        timeout: 30_000,
+      });
+      expect(r.status, `${f.verify} exited non-zero`).toBe(0);
+      expect((r.stdout ?? "").trim().length, `${f.verify} printed nothing`).toBeGreaterThan(0);
+    }
   });
 });

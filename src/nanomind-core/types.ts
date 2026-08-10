@@ -139,30 +139,6 @@ export interface RiskSurface {
   confidence: number;
   /** Specific text that creates this risk */
   evidence: string;
-  /**
-   * Where the matched VALUE behind `evidence` sits in the ORIGINAL artifact
-   * content: 0-based character offset and length (#368).
-   *
-   * Present only when the producer matched a concrete substring of the
-   * unmodified content and can therefore say exactly where it was — today the
-   * canonical credential-format scan, and ONLY on `source_code`, because that
-   * is the artifact type the compiler runs it for. Every other artifact type
-   * reaches the analyzers with no offset anywhere on this array. Absent too
-   * when `evidence` is a label, a rollup, or a match against the preprocessed
-   * analysis view, whose offsets do not map back to the file.
-   *
-   * The alternative an emit site falls back to without this is "find the
-   * leftmost credential-SHAPED string in the file", which cites a SHA-256
-   * digest or a doc placeholder sitting above the real key. A citation that is
-   * confidently wrong is worse than an absent one, so these two fields are how
-   * a finding cites the value it actually names — on the artifact types that
-   * carry them. Where they are absent the emit site keeps the leftmost-match
-   * guess and its wrong-line risk; adding a second producer is what would
-   * close that, and no such producer exists yet.
-   */
-  evidenceOffset?: number;
-  /** Length of the matched value at `evidenceOffset`. See above. */
-  evidenceLength?: number;
   /** How to mitigate */
   mitigation?: string;
 }

@@ -7,7 +7,7 @@ All notable changes to HackMyAgent are documented in this file.
 ### Findings are locatable, and their `Verify:` commands run (#368, #286)
 
 A finding that cannot be located is a dead end, and one that cites the wrong line is
-worse than one that cites none. Three separate defects produced both.
+worse than one that cites none.
 
 - **`Verify:` commands now carry the scan root, so they run from any directory.**
   `file` is target-relative, and the emitted command used it verbatim: a scan of an
@@ -15,28 +15,25 @@ worse than one that cites none. Three separate defects produced both.
   `No such file or directory` from any shell not already sitting in the target. Measured
   on one earlier run, 0 of 68 emitted commands ran. The path is now joined to the scan
   root and rendered through `citationPath`, which also makes a leading `-` an operand.
-- **Credential findings cite the offset the producer recorded, not a re-search.**
-  `AST-CRED-001` re-derived its line by locating the leftmost credential-*shaped* string
-  in the file, which is a SHA-256 digest or an `sk-EXAMPLE…` placeholder whenever one sits
-  above the real key. Measured on a file with a digest on line 2 and the key on line 5, it
-  cited line 2. The canonical credential scan already knew the exact offset at the moment
-  it matched; that offset is now carried on the risk surface and consumed by both
-  credential findings, so they agree by construction rather than by coincidence.
-  The citation is the **leftmost** carried offset, and a pattern whose match is a
-  structural marker rather than a secret value records no offset at all. Both halves are
-  load-bearing: offsets arrive in pattern-table order rather than file order, so
-  first-wins made the citation depend on how that table happens to be written; and
-  `PEM private key` matches the `-----BEGIN RSA PRIVATE KEY-----` header, which holds no
-  key material, so a file using that marker in a prefix check would otherwise take the
-  citation off the real credential. Whether a span is a value or a marker is a property
-  of the pattern, so it is decided where the pattern is known rather than by re-testing
-  the bytes downstream — a content test there rejects any AWS secret access key
-  containing a `/`, which the entropy-blob class does not admit.
-  **Scope: `source_code` artifacts only** — that scan is the sole producer of an offset and
-  runs only for that type, so a skill, `mcp_config` or soul artifact keeps the previous
-  behaviour, including the previous wrong-line risk. This does not close that half.
-- **`AST-CRED-003` had no line at all, and therefore no `Verify:`.** It is a CRITICAL. It
-  now resolves to the same carried offset.
+- **Findings that carry a verbatim trigger but no line can recover one**, at the two
+  adapter boundaries that convert a detector's finding into the rendered shape.
+- **`detect` no longer answers "no line" with `cat <file>`.** A `.claude/settings.json`
+  holding a permission grant beside an `env` block is both an agent config and a
+  credential store, and `secure` reports `CRITICAL Exposed Credential` on the same file —
+  so the tool was telling the reader to print a file it had itself flagged as holding a
+  secret. The finding now renders no `Verify:` rather than an unsafe one; giving it a real
+  citation is tracked as #495.
+
+**Not shipped: credential findings still cite a re-searched line, not a recorded offset.**
+`AST-CRED-001` derives its line by locating the leftmost credential-*shaped* string in the
+file, which is the wrong line whenever a SHA-256 digest or an `sk-EXAMPLE…` placeholder
+sits above the real key, and `AST-CRED-003` on a `source_code` artifact still reports no
+line at all. A fix that carried the offset from the producer was built and withdrawn: it
+was correct for the digest case and wrong for others, and three review rounds each found
+it citing a value the finding was not about. The value-versus-marker question it turns on
+is not answerable from the pattern alone (a `-----BEGIN RSA PRIVATE KEY-----` match is a
+good citation when a key body follows and a bad one when nothing does) nor from the bytes
+alone. Tracked as #497 with the measurements, rather than shipped half-right.
 
 Findings whose detector genuinely records no location still emit no line and no `Verify:`.
 Line recovery at the two adapter boundaries is deliberately narrow: a verbatim trigger is
