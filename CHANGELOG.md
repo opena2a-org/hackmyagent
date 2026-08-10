@@ -4,6 +4,37 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Findings are locatable, and their `Verify:` commands run (#368, #286)
+
+A finding that cannot be located is a dead end, and one that cites the wrong line is
+worse than one that cites none. Three separate defects produced both.
+
+- **`Verify:` commands now carry the scan root, so they run from any directory.**
+  `file` is target-relative, and the emitted command used it verbatim: a scan of an
+  absolute path produced `sed -n '2p' 'src/config.js'`, which fails with
+  `No such file or directory` from any shell not already sitting in the target. Measured
+  on one earlier run, 0 of 68 emitted commands ran. The path is now joined to the scan
+  root and rendered through `citationPath`, which also makes a leading `-` an operand.
+- **Credential findings cite the offset the producer recorded, not a re-search.**
+  `AST-CRED-001` re-derived its line by locating the leftmost credential-*shaped* string
+  in the file, which is a SHA-256 digest or an `sk-EXAMPLE…` placeholder whenever one sits
+  above the real key. Measured on a file with a digest on line 2 and the key on line 5, it
+  cited line 2. The canonical credential scan already knew the exact offset at the moment
+  it matched; that offset is now carried on the risk surface and consumed by both
+  credential findings, so they agree by construction rather than by coincidence.
+  **Scope: `source_code` artifacts only** — that scan is the sole producer of an offset and
+  runs only for that type, so a skill, `mcp_config` or soul artifact keeps the previous
+  behaviour, including the previous wrong-line risk. This does not close that half.
+- **`AST-CRED-003` had no line at all, and therefore no `Verify:`.** It is a CRITICAL. It
+  now resolves to the same carried offset.
+
+Findings whose detector genuinely records no location still emit no line and no `Verify:`.
+Line recovery at the two adapter boundaries is deliberately narrow: a verbatim trigger is
+accepted as a location only when it is at least 8 characters, is not a bare word from the
+credential keyword vocabulary, and occurs exactly once in the artifact. Anything else
+reports no line. Defaulting to line 1 would satisfy every "the finding has a line" check
+while pointing every command at the top of the file.
+
 ### Breaking: `scan-soul` exit codes now follow the conformance verdict (#390)
 
 `scan-soul` used to print its report and exit 0 no matter what it found. It now
