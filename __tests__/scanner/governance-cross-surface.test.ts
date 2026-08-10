@@ -124,11 +124,24 @@ function detectSummary(dir: string): DetectSummary {
   return detectJson(dir).summary;
 }
 
-function soulScore(dir: string): { score: number; conformance: string; violations: number } {
+function soulScore(dir: string): {
+  score: number | null;
+  conformance: string | null;
+  violations: number;
+  coverage?: { measured?: boolean };
+} {
   const raw = runCli(['scan-soul', dir, '--json']);
   expect(raw.length, `scan-soul emitted nothing for ${dir}`).toBeGreaterThan(0);
   const j = JSON.parse(raw);
-  return { score: j.score, conformance: j.conformance, violations: (j.violations ?? []).length };
+  // `score` is null on the unmeasured arm (#390) — kept nullable here rather
+  // than coerced, because coercing it to 0 is precisely the false assertion
+  // that arm exists to stop making.
+  return {
+    score: j.score ?? null,
+    conformance: j.conformance ?? null,
+    violations: (j.violations ?? []).length,
+    coverage: j.coverage,
+  };
 }
 
 let root: string;
@@ -247,6 +260,36 @@ describe('#291 governance model reconciliation', () => {
       for (const { label, dir } of cases()) {
         const soul = soulScore(dir);
         const summary = detectSummary(dir);
+        // #390 (2026-08-10): `scan-soul` now WITHHOLDS the band over a tree
+        // with no governance file — `score: null`, `coverage.measured: false`,
+        // exit 2 — rather than asserting 0/100 over zero bytes read. So on
+        // that one case there is no number to compare, and demanding equality
+        // would force scan-soul back to publishing a score it did not earn.
+        //
+        // The underlying model has NOT diverged: `detect` reads
+        // `SoulScanResult.score` in-process (`src/scanner/detect.ts:640`), the
+        // same field scan-soul renders from, and it is still 0 there.
+        //
+        // And detect's 0 is NOT the false assertion scan-soul's was. Measured
+        // on this fixture, detect reports `2 AI agents running without
+        // governance (Claude Code, Ollama)` — it found agents and found no
+        // governance for them, which is a measured finding about a real
+        // population, not a grade handed to a file that does not exist. The
+        // two commands are answering different questions on the same tree, so
+        // the numbers are allowed to differ here.
+        //
+        // `secure -b oasb-2` is the one that still prints
+        // `Governance Score (OASB-2): 0/100 · Conformance: NONE` over a tree
+        // with no governance file, which IS the shape #390 removed from
+        // scan-soul. Filed; out of scope here because that number feeds a
+        // composite score, a clamp and a verdict band.
+        if (soul.score === null || soul.score === undefined) {
+          expect(
+            soul.coverage?.measured,
+            `${label}: scan-soul withheld the score but did not say it was unmeasured`,
+          ).toBe(false);
+          continue;
+        }
         expect(
           summary.governanceRaw,
           `${label}: detect says ${summary.governanceRaw}, scan-soul says ${soul.score} — `
@@ -255,11 +298,24 @@ describe('#291 governance model reconciliation', () => {
       }
     });
 
+    it('the equality above is checked on more than one fixture', () => {
+      // Guards the guard against the skip introduced above: if every case fell
+      // into the unmeasured branch, the loop would assert nothing about parity
+      // and still pass.
+      const measured = cases().filter((c) => typeof soulScore(c.dir).score === 'number');
+      expect(
+        measured.length,
+        'every fixture went down the unmeasured branch — the parity assertion never ran',
+      ).toBeGreaterThanOrEqual(3);
+    });
+
     it('spans a real range of scores, so the equality above is not vacuous', () => {
       // Guards the guard: if every fixture collapsed to the same number (or
       // the CLI silently produced 0 everywhere), the assertion above would
       // pass while measuring nothing.
-      const scores = cases().map((c) => soulScore(c.dir).score);
+      const scores = cases()
+        .map((c) => soulScore(c.dir).score)
+        .filter((s): s is number => typeof s === 'number');
       expect(Math.min(...scores), `all fixtures scored alike: ${scores.join(', ')}`).toBe(0);
       expect(Math.max(...scores), `no fixture reached full conformance: ${scores.join(', ')}`).toBe(100);
     });
