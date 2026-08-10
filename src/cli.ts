@@ -8403,8 +8403,11 @@ Exit codes (#390) — the same on the text and --json channels:
      Not a score threshold — a file scoring well above zero still
      fails here if a critical control is missing. Use --fail-below
      for a score floor. Same gate as secure -b oasb-2 and detect.
-  ${EXIT_UNMEASURED}  no governance file found: nothing was measured, so no score
-     is reported. Not a failing grade — there is nothing to grade.
+  ${EXIT_UNMEASURED}  nothing was measured, so no score is reported. Not a failing
+     grade — there is nothing to grade. Three cases reach it:
+     no governance file was found; one was found but could not be
+     read; or one was found and is empty. --json says which of the
+     three, in gate.reason.
 
 Examples:
   $ ${CLI_PREFIX} scan-soul                    Scan current directory
@@ -8643,11 +8646,19 @@ Examples:
           console.log(`  ${colors.cyan}All commands:${RESET()}   ${prefix} --help`);
           console.log();
         }
-        if (mi) {
+        // Text channel only. On `--json` the signal is already IN the object,
+        // and writing it to stderr as well made `--json 2>&1` stop parsing —
+        // the measured `--json` arm keeps stderr empty, so this one must too.
+        //
+        // `escapeForDisplay` for the same reason the stdout line above uses it:
+        // this value comes from argv, and `src/ui/display-safe.ts` states the
+        // harm directly — `ESC [ 2 J` clears the reader's terminal from inside
+        // a security report. The sibling line 20 lines up already escapes it.
+        if (mi && !options.json) {
           const sourceLabel = mi.source === 'flag' ? '--profile flag' : 'marker';
           const displayedValue = mi.attemptedValue.length === 0 ? '(empty)' : mi.attemptedValue;
           process.stderr.write(
-            `SOUL-PROFILE-MARKER-INVALID HIGH: ${sourceLabel} value='${displayedValue}' is not a recognized profile; resolved to ${mi.resolvedProfile} from body keywords.\n`,
+            `SOUL-PROFILE-MARKER-INVALID HIGH: ${sourceLabel} value='${escapeForDisplay(displayedValue)}' is not a recognized profile; resolved to ${mi.resolvedProfile} from body keywords.\n`,
           );
         }
         await finishWithFindings(soulVerdict.exitCode);
@@ -9126,7 +9137,7 @@ Examples:
       const soulFormat = options.json ? 'json' : 'text';
       await handleSoulContribution(options.contribute, targetDir, result, soulScanDurationMs, options.registryUrl, soulFormat);
 
-      // #390 — the reason on stderr, on EVERY channel.
+      // #390 — the reason on stderr, on every TEXT channel.
       //
       // The `--ci` channel was a total dead end on this failure: it printed the
       // Conformance block naming the control, suppressed Next Steps, wrote
@@ -9136,7 +9147,10 @@ Examples:
       // NOT gated on `--ci`. main wrote its `Governance score is 0/100:` line
       // to stderr unconditionally, so gating this one lost it for every
       // pipeline that redirects stdout: `scan-soul <tree> >/dev/null` exited 1
-      // with nothing said. Same shape as the SOUL-VIOLATION /
+      // with nothing said. To be exact about the reach: this is the TEXT
+      // channel on every flag combination, not every channel — the `--json`
+      // arm returns above, deliberately, so `--json 2>&1` stays parseable and
+      // the machine consumer reads `gate.reason` instead. Same shape as the SOUL-VIOLATION /
       // SOUL-PROFILE-MISMATCH lines below, which are `ciMode`-gated because
       // they also `process.exit(1)`; this one only explains a code already set.
       if (conformanceFails) {

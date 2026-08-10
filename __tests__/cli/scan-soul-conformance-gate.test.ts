@@ -32,7 +32,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
@@ -284,6 +284,27 @@ describe('#390 scan-soul exit contract', () => {
     ).toEqual([]);
     expect(after.body.conformance).not.toBe('none');
     expect(after.status).toBe(0);
+
+    // PER-CONTROL, not just in aggregate. Pasting all clauses at once cannot
+    // isolate a failure, because the clauses CROSS-SATISFY: measured, the
+    // SOUL-IH-003 clause alone yields `criticalMissing: []`, since its word
+    // "immutable" is also SOUL-HB-001 vocabulary. So replacing the HB-001
+    // clause with prose containing none of its own keywords left the aggregate
+    // assertion above green — the drift this test exists to catch, undetected.
+    //
+    // Each clause is therefore pasted ALONE and asserted against the control it
+    // was offered for, which is the claim the docblock in `cli.ts` actually
+    // makes.
+    for (let i = 0; i < clauses.length; i++) {
+      const control = missingBefore[i];
+      const solo = json(
+        tmpDirWithSoul(`# Bot\n\nAnswers questions.\n\n## Governance\n${clauses[i]}\n`, `solo-${i}`),
+      );
+      expect(
+        solo.body.criticalMissing as string[],
+        `the clause offered for ${control} does not satisfy ${control} on its own.\nclause: ${clauses[i]}`,
+      ).not.toContain(control);
+    }
   });
 
   // ── The structural guard the deleted score gate used to provide ────────
@@ -457,11 +478,38 @@ describe('#390 a found-but-unreadable governance file is NOT MEASURED', () => {
     }
   }
 
+  /**
+   * A DIRECTORY named SOUL.md. `fs.existsSync` accepts it, so it reaches the
+   * same arm, and `readFileSync` fails with EISDIR — which is denied to ROOT
+   * TOO. That matters: the `chmod 000` fixture below returns undefined and
+   * passes vacuously wherever the process can read the file anyway, and a root
+   * container is a normal CI shape. This case has no such escape, so it is the
+   * one that actually holds the guard.
+   */
+  function unreadableSoulDirViaEisdir(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'scan-soul-390-eisdir-'));
+    mkdirSync(join(dir, 'SOUL.md'));
+    return dir;
+  }
+
+  it('a directory named SOUL.md is unreadable, not a 29-control measurement', () => {
+    // No environment guard, on purpose — EISDIR denies root as well.
+    const r = runScanSoul(unreadableSoulDirViaEisdir(), '--json');
+    const parsed = JSON.parse(r.stdout);
+
+    expect(r.status).toBe(EXIT_UNMEASURED);
+    expect(parsed.coverage.measured, 'claimed a measurement over zero bytes read').toBe(false);
+    expect(parsed.coverage.examined).toBe(0);
+    expect(parsed.coverage.reason).toBe('target-unreadable');
+    expect(parsed.score).toBeNull();
+  });
+
   it('reports measured:false with the unreadable reason, not a 29-control claim', () => {
     const dir = unreadableSoulDir();
     if (!dir) {
-      // Loud skip rather than a silent pass: this runs as root in some
-      // containers, where chmod 000 does not deny the owner.
+      // Vacuous wherever the process can still read a chmod 000 file (root).
+      // The EISDIR case above is the unconditional guard; this one adds the
+      // permission-denied path where the environment allows it.
       console.warn('SKIPPED: could not make a file unreadable in this environment');
       return;
     }
@@ -528,9 +576,61 @@ describe('#390 the gate and the report read the same source', () => {
    * `gate.reason: 'critical-control-missing'`. Every exit-contract test passed
    * under that mutant, because they all pin trees where the two agree.
    *
-   * This asserts the invariant a reader can check without the mutant: the gate
-   * and the reported conformance never disagree.
+   * WHAT THE TWO TESTS BELOW CAN AND CANNOT DO, stated plainly rather than
+   * claimed. `calculateConformance` returns 'none' if and only if
+   * `criticalMissing` is non-empty, so on the SHIPPED code the two expressions
+   * are equivalent on every possible input and NO end-to-end fixture can tell
+   * them apart. Reverting the settlement point to `criticalMissing.length`
+   * leaves the whole suite green, and that is not a hole in the fixtures — it
+   * is what equivalence means.
+   *
+   * So the refactor itself is a robustness measure, not a behaviour change, and
+   * the thing worth pinning is the INVARIANT it depends on. `the conformance
+   * invariant` below asserts that iff directly against the scanner. The day
+   * someone adds a band to `calculateConformance` — the exact mutant that made
+   * both channels exit 0 on `conformance: none` — that test fails and names the
+   * assumption that broke, which is the earliest point at which anything CAN
+   * fail. The two below it assert the observable consequence.
    */
+  /**
+   * THE INVARIANT the single-source settlement rests on: the scanner reports
+   * `conformance === 'none'` if and only if a critical control is missing.
+   *
+   * This is the one assertion in this block that can fail against a plausible
+   * edit, because it tests `calculateConformance` rather than a consequence of
+   * it. Adding `if (score < 15) return 'none'` — a perfectly reasonable-looking
+   * conformance band — breaks the iff, and the CLI would then report
+   * `conformance: none` while the gate, whichever expression it uses, disagreed
+   * with the printed disclosure. Measured before the settlement was unified:
+   * that mutant produced `gate.failed: false` beside
+   * `gate.reason: 'critical-control-missing'` and exit 0 on BOTH channels.
+   *
+   * Driven from the real scanner over generated files, not from a fixture pair,
+   * so it covers the score range rather than two points on it.
+   */
+  it('the conformance invariant: none if and only if a critical control is missing', () => {
+    const cases: Array<{ tag: string; body: string }> = [
+      { tag: 'bare', body: '# Bot\n\nAnswers questions about billing.\n' },
+      { tag: 'ih-only', body: `# Bot\n\n## Injection Hardening\n${NONCONFORMING}\n` },
+      { tag: 'both', body: CONFORMING },
+      { tag: 'nonconforming', body: NONCONFORMING },
+      // Padded so the score climbs without adding critical vocabulary: a band
+      // added anywhere in the score range has to break the iff somewhere.
+      { tag: 'padded', body: `${NONCONFORMING}\n\n## Notes\n${'The agent logs requests. '.repeat(40)}\n` },
+      { tag: 'conforming-padded', body: `${CONFORMING}\n\n## Notes\n${'The agent logs requests. '.repeat(40)}\n` },
+    ];
+
+    for (const { tag, body } of cases) {
+      const b = json(tmpDirWithSoul(body, `inv-${tag}`)).body;
+      const missing = (b.criticalMissing as string[]) ?? [];
+      expect(
+        b.conformance === 'none',
+        `[${tag}] score=${b.score} conformance=${b.conformance} criticalMissing=${JSON.stringify(missing)} `
+        + '— the CLI settles its exit code on this equivalence; it no longer holds',
+      ).toBe(missing.length > 0);
+    }
+  });
+
   it.each([
     ['conforming', CONFORMING],
     ['nonconforming', NONCONFORMING],
