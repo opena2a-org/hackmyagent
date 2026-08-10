@@ -51,12 +51,27 @@ const CATEGORY_LABELS: Record<string, string> = {
  * Convert a SemanticFinding to a SecurityFinding for the core scanner.
  *
  * `rawContent` (#368) is the analyzed file's own bytes, when the caller has
- * them. A semantic finding whose analyzer recorded no line used to arrive at
- * the renderer unlocatable — no `<file>:<N>`, no `Verify:` — and
- * `resolveFindingLine` recovers one from the finding's verbatim trigger
- * instead. It returns undefined rather than a default when nothing verbatim
+ * them, so `resolveFindingLine` can recover a line from a finding's verbatim
+ * trigger. It returns undefined rather than a default when nothing verbatim
  * can be found, which is the correct answer for the absence-shaped findings
  * (`SEM-PERM-002 Unrestricted Bash access`) that have no single trigger line.
+ *
+ * NO DETECTOR IN `src/semantic/` REACHES THAT RECOVERY TODAY, and an earlier
+ * revision of this docblock claimed it did. Enumerated: `SEM-CRED-001`
+ * (`structural/credential-context.ts`) is the only site that sets `evidence`
+ * at all, and it always sets a valid `line` AND `evidence.lines[0].n`, so
+ * `resolveFindingLine` returns at step 1 without consulting `rawContent`.
+ * Every semantic finding that LACKS a line — `SEM-MCP-001..008`,
+ * `SEM-INST-003/004`, `SEM-PERM-001/002/003`, `SEM-CRED-004` — sets no
+ * `evidence`, so there is no verbatim trigger to locate and the result is
+ * undefined whatever the caller passes.
+ *
+ * So the parameter is wiring ahead of its producers, not a live recovery path:
+ * dropping the reader argument at both `hardening/scanner.ts` call sites leaves
+ * the whole suite green and `secure --json` byte-identical, which was measured.
+ * It is kept because the fix for those detectors is to make them carry
+ * evidence, and this is the boundary that will consume it — but until then
+ * nothing here changes behaviour, and the docblock must not imply otherwise.
  */
 export function toSecurityFinding(
   finding: SemanticFinding,

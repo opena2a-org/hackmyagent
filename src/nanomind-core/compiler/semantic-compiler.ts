@@ -1491,8 +1491,14 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit
       hits.push({
         label,
         evidence: `${label}: ${matched.slice(0, 16)}...`,
-        // `LEFT_ANCHOR` is a zero-width lookbehind, so `match.index` is the
-        // first character of the value itself.
+        // `match.index` is the first character of the matched value. For the
+        // `vendor(...)` entries that is because `LEFT_ANCHOR` is a zero-width
+        // lookbehind and contributes nothing to the match. The `PEM private
+        // key` entry is a raw literal with no `LEFT_ANCHOR` at all, so it holds
+        // there for the simpler reason that the whole pattern IS the value it
+        // reports. Stated for both because an earlier revision of this comment
+        // gave the lookbehind as the reason for every entry, and PEM is
+        // precisely the pattern whose consumption later needed correcting.
         index: match.index,
         length: matched.length,
       });

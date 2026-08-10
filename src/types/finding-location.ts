@@ -79,6 +79,21 @@ const GENERIC_TRIGGER_VOCABULARY = /^(?:password|credential|api[_-]?key|secret|t
  * claim as "the line the detector meant". With exactly one occurrence the two
  * cannot disagree; with more than one, there is no cheap tie-break that is
  * right, and the honest answer is no line.
+ *
+ * THE ARTIFACT IS ATTACKER-CONTROLLED, SO THIS IS AN ATTACKER-REACHABLE SWITCH.
+ * Repeating the trigger anywhere in the file — inside a comment, inside a
+ * string, anywhere — suppresses the recovered line and therefore the `Verify:`
+ * for that finding. Stated here rather than left implicit, because it is a real
+ * property of the rule and not an oversight.
+ *
+ * It is accepted deliberately. The finding itself, its severity and its
+ * contribution to the score are untouched; only the citation is withheld, and
+ * the alternative — picking one of several identical-looking occurrences — is
+ * the confidently-wrong citation this module exists to refuse. A tie-break that
+ * chose among attacker-influenced candidates would let the same attacker point
+ * the reader at a line of their choosing, which is strictly worse than pointing
+ * at none. Closing it properly means the detector recording its own offset, the
+ * way the credential scan does; recovery from text cannot do better.
  */
 function occursExactlyOnce(content: string, trigger: string): boolean {
   const first = content.indexOf(trigger);

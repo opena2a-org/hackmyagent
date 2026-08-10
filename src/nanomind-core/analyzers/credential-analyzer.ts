@@ -120,8 +120,11 @@ function checkCredentialsInNonEnvContext(
   // leftmost match answers correctly. The citation asks "where is the value
   // THIS finding names", which the leftmost match answers WRONGLY the moment a
   // SHA-256 digest or a `sk-EXAMPLE…` doc placeholder sits above the real key:
-  // measured on a fixture with a digest on line 3 and the key on line 7, both
-  // AST-CRED-001 and AST-CRED-003 cited line 3.
+  // measured on a fixture with a digest above the key, AST-CRED-001 cited the
+  // DIGEST's line. (An earlier revision of this comment added "and so did
+  // AST-CRED-003". It did not — on that fixture AST-CRED-003 carried no line at
+  // all, which is a different defect with a different fix, and the overstatement
+  // was caught by an adversarial round re-running the measurement.)
   const gateHit = artifactContent !== undefined
     ? findFirstCredentialFormat(artifactContent)
     : undefined;
@@ -140,9 +143,22 @@ function checkCredentialsInNonEnvContext(
   // #353 (which is the unmasked-secret leak in AST-CRED-003's title), and it is
   // not fixed here.
   //
-  // What this line does close is the `source_code` case the offset covers,
-  // where it can only move a citation from the leftmost lookalike TO the value
-  // the producer matched, never the other way.
+  // WHAT THIS LINE CLOSES, STATED AS THE SELECTION ACTUALLY BEHAVES. An earlier
+  // revision of this comment claimed the carry "can only move a citation from
+  // the leftmost lookalike TO the value the producer matched, never the other
+  // way". That was false in both halves, and an adversarial round proved it:
+  // the surfaces arrive in pattern-table order rather than file order, and the
+  // canonical scan matches values the gate does not. It moved a citation from a
+  // real GitHub token on line 2 to an AWS key on line 5, and — worse — from a
+  // real token onto a `-----BEGIN RSA PRIVATE KEY-----` string constant holding
+  // no key material.
+  //
+  // `locatedCredentialRisk` now takes the LEFTMOST offset-carrying surface
+  // whose bytes the GATE also accepts, so the claim above is true by
+  // construction rather than by hope: a candidate the gate rejects cannot be
+  // selected, and among the rest the leftmost wins, which is the gate's own
+  // rule. Where no candidate qualifies this falls back to `gateHit`, which is
+  // byte-for-byte main's behaviour — so this path cannot be worse than main.
   const credLocation = locatedCredentialRisk(ast, artifactContent) ?? gateHit;
 
   for (const access of credentialAccess) {
@@ -909,36 +925,80 @@ function findFirstCredentialFormat(content: string): { line: number; match: stri
  * cited line and the quoted excerpt describe different lines. That mismatch is
  * a known residual of this change, not something it repairs.
  *
- * `find(r => r.evidenceOffset !== undefined)`, NOT `credentialRisks[0]`. The
- * first CRED-HARVEST risk on the array is frequently `mapRiskSurfaces`'
- * keyword-context surface, whose evidence is the bare word `api_key` and which
- * carries no offset at all; taking it and stopping would send the citation back
- * to a substring search for the word, i.e. the first mention of "api_key" in
- * the file rather than the key. Both AST-CRED-001 and AST-CRED-003 read this
- * one function, so WHEN IT RETURNS A VALUE the two findings agree on the line.
- * When it returns undefined — every artifact type above — they need not, and
- * the measurement quoted above is a case where they do not.
+ * SELECTION, IN TWO PARTS, AND NEITHER IS "THE FIRST ONE". Not
+ * `credentialRisks[0]`: the first CRED-HARVEST risk on the array is frequently
+ * `mapRiskSurfaces`' keyword-context surface, whose evidence is the bare word
+ * `api_key` and which carries no offset at all. But not the first
+ * offset-carrying one either, which is what this function used to return:
+ *
+ *   1. **Only candidates the GATE accepts.** The canonical scan that produces
+ *      these offsets and `findCredentialFormatMatch` — the matcher that decides
+ *      the finding fires — cover different sets. `PEM private key` matches the
+ *      header MARKER alone, which holds no key material and which the gate
+ *      rejects. Selecting it moved the citation off a real `hf_` token and onto
+ *      a PEM sniffing helper's string constant, with a `Verify:` that prints
+ *      something harmless — the confidently-wrong citation this path exists to
+ *      prevent. Measured before the guard: line 2 instead of line 5.
+ *   2. **Then the LEFTMOST of those.** Surfaces are pushed in
+ *      `CANONICAL_CREDENTIAL_PATTERNS` order — `AWS access key` index 3,
+ *      `GitHub personal access token` index 4 — so first-wins made the citation
+ *      a function of the order that table is written in: a GitHub token on
+ *      line 2 lost to an AWS key on line 5. Leftmost is the gate's own rule.
+ *
+ * Both are pinned by `__tests__/nanomind-core/credential-citation-selection.test.ts`,
+ * which also carries the negative control: the digest-above-key case this carry
+ * exists for must still cite the key, so a "fix" that stopped consuming the
+ * offset fails there.
+ *
+ * Both AST-CRED-001 and AST-CRED-003 read this one function, so WHEN IT RETURNS
+ * A VALUE the two findings agree on the line. When it returns undefined — every
+ * artifact type above, and now also a `source_code` file whose only
+ * offset-carrying surface the gate rejects — they need not, and the measurement
+ * quoted above is a case where they do not.
  */
 function locatedCredentialRisk(
   ast: SecurityAST,
   content: string | undefined,
 ): { line: number; match: string } | undefined {
   if (content === undefined) return undefined;
+  let best: { start: number; length: number } | undefined;
   for (const risk of ast.inferredRiskSurface) {
     if (risk.attackClass !== 'CRED-HARVEST') continue;
     const start = risk.evidenceOffset;
     const length = risk.evidenceLength;
     if (start === undefined || length === undefined) continue;
-    // The AST is signed; the content is not. A mismatch means the two are not
-    // the same artifact, and a citation derived from a stale offset is exactly
-    // the confidently-wrong kind. Refuse rather than clamp.
+    // A bounds check, NOT an integrity check. `signAST` covers `contentHash`,
+    // `artifactType`, the intent fields, `modelVersion` and `compiledAt` — it
+    // does NOT cover `inferredRiskSurface`, so `verifyAST` cannot detect a
+    // tampered offset and this must not claim to. What it does prevent is
+    // slicing outside the buffer, which is the reachable failure: the AST and
+    // the content are built in-process today, so a stale pair is a bug rather
+    // than an attack. `start + length === content.length` is a valid slice and
+    // is deliberately admitted.
     if (start < 0 || length <= 0 || start + length > content.length) continue;
-    return {
-      line: lineFromOffset(content, start),
-      match: maskCredentialValue(content.slice(start, start + length)),
-    };
+    // THE CITATION MUST NAME A VALUE THE GATE ACCEPTS. The canonical scan that
+    // produces these offsets and the gate that decides the finding fires match
+    // DIFFERENT sets, and `PEM private key` matches only the header MARKER —
+    // `-----BEGIN RSA PRIVATE KEY-----`, which carries no key material. A file
+    // holding that marker as an ordinary string constant (a PEM sniffing
+    // helper) had the citation moved onto it and off the real token that fired
+    // the finding, together with a `Verify:` command that prints something
+    // harmless. That is the confidently-wrong citation this whole path exists
+    // to prevent, produced by the carry itself.
+    if (!hasCredentialFormat(content.slice(start, start + length))) continue;
+    // AND IT MUST BE THE LEFTMOST SUCH VALUE, not the first one pushed.
+    // Surfaces arrive in `CANONICAL_CREDENTIAL_PATTERNS` order — `AWS access
+    // key` is index 3, `GitHub personal access token` is index 4 — so a
+    // first-match selection cites an AWS key on line 5 over a GitHub token on
+    // line 2, making the citation a function of the order a pattern table
+    // happens to be written in. Leftmost is the same rule the gate itself uses.
+    if (!best || start < best.start) best = { start, length };
   }
-  return undefined;
+  if (!best) return undefined;
+  return {
+    line: lineFromOffset(content, best.start),
+    match: maskCredentialValue(content.slice(best.start, best.start + best.length)),
+  };
 }
 
 /**

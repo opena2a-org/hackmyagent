@@ -153,6 +153,21 @@ function runCli(args: string[]): CliRun {
   return { status: r.status, stdout, stderr, combined: `${stdout}\n${stderr}` };
 }
 
+/**
+ * The two findings whose subject IS a credential value, by rendered name:
+ * `AST-CRED-003` renders as "Hardcoded Secret Detected" and `AST-CRED-001` as
+ * "Credentials in Non-Environment Context". Both derive their line from the
+ * same carried offset, so both must cite the line the key is actually on.
+ *
+ * Name-matched because the text channel carries no checkId. The caller counts
+ * how many findings this matched and asserts the count is non-zero, so a
+ * renamed finding fails loudly instead of turning the oracle back into
+ * "the printed line exists somewhere in the file".
+ */
+function isCredentialFinding(f: { name: string }): boolean {
+  return /Hardcoded Secret|Credentials in Non-Environment/i.test(f.name);
+}
+
 interface RenderedFinding {
   severity: string;
   name: string;
@@ -381,6 +396,7 @@ describe.runIf(canRun())("locatable, runnable citations (#368, #286)", () => {
     expect(foreignCwd.startsWith(scanDir)).toBe(false);
 
     let sawPlantedKey = false;
+    let credFindingsChecked = 0;
     for (const f of severe) {
       expect(f.verify, `${f.name} has no Verify command`).toBeDefined();
       const r = spawnSync(f.verify!, {
@@ -398,8 +414,44 @@ describe.runIf(canRun())("locatable, runnable citations (#368, #286)", () => {
         ARTIFACT_CONTENT.includes(out),
         `${f.verify} printed text that is not in the planted fixture`,
       ).toBe(true);
+      // "IN THE FIXTURE SOMEWHERE" IS NOT AN ORACLE FOR A CREDENTIAL FINDING.
+      // The assertion above is satisfied by ANY line of the file, so a citation
+      // that moved to the wrong line of the right file passes it. An adversarial
+      // round found exactly that — the credential citation moving onto a
+      // `-----BEGIN RSA PRIVATE KEY-----` string constant — while this test
+      // stayed green, because the constant is also "in the fixture".
+      //
+      // WHAT THIS ASSERTION DOES AND DOES NOT COVER, measured rather than
+      // assumed. It pins that a finding whose subject is a credential prints
+      // THAT credential. It does NOT reproduce the PEM regression above: doing
+      // so needs an artifact whose credential is invisible to the canonical
+      // scan (e.g. `hf_`) beside a decoy the scan DOES match, and this
+      // fixture's key is `sk-`, which the scan matches at a lower pattern index
+      // — so the wrong candidate is never selected here. Reverting the fix and
+      // re-running this file still passes; that was checked, not presumed.
+      // The selection itself is pinned in
+      // `__tests__/nanomind-core/credential-citation-selection.test.ts`, where
+      // three mutants each kill a different assertion. Keyed on
+      // the rendered NAME because that is what the text channel carries — the
+      // parsed block has no checkId — and the count is asserted after the loop
+      // so this cannot quietly match nothing.
+      if (isCredentialFinding(f)) {
+        credFindingsChecked += 1;
+        expect(
+          out.includes(KEY),
+          `${f.name}: ${f.verify} printed a line that does not contain the planted key — `
+            + `the citation names a different line than the finding is about`,
+        ).toBe(true);
+      }
       if (out.includes(KEY)) sawPlantedKey = true;
     }
+    // Non-vacuity: the per-credential assertion above must have RUN. If the
+    // renderer ever changes these finding names, the guard silently stops
+    // matching and the strengthened oracle reverts to the weak one.
+    expect(
+      credFindingsChecked,
+      "no credential finding was matched by name — the per-credential oracle did not run",
+    ).toBeGreaterThan(0);
     expect(
       sawPlantedKey,
       "no Verify command showed the planted credential line",

@@ -22,6 +22,14 @@ worse than one that cites none. Three separate defects produced both.
   cited line 2. The canonical credential scan already knew the exact offset at the moment
   it matched; that offset is now carried on the risk surface and consumed by both
   credential findings, so they agree by construction rather than by coincidence.
+  The citation is the **leftmost** carried offset whose bytes the credential gate also
+  accepts. Both halves of that rule are load-bearing: offsets arrive in pattern-table
+  order rather than file order, and the scan matches values the gate does not — the
+  `PEM private key` pattern matches the `-----BEGIN RSA PRIVATE KEY-----` header marker,
+  which holds no key material, so a file using that marker in a prefix check would
+  otherwise take the citation off the real credential. Where no carried offset qualifies,
+  the citation falls back to the gate's own leftmost match, which is the previous
+  behaviour — so this path is never worse than before.
   **Scope: `source_code` artifacts only** — that scan is the sole producer of an offset and
   runs only for that type, so a skill, `mcp_config` or soul artifact keeps the previous
   behaviour, including the previous wrong-line risk. This does not close that half.
