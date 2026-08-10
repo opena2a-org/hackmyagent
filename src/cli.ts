@@ -249,6 +249,7 @@ import {
   fullCoverage,
   coverageJson,
   unmeasuredBanner,
+  EXIT_PASS,
   EXIT_FAIL,
   EXIT_UNMEASURED,
   type CheckVerdict,
@@ -8385,6 +8386,15 @@ Agent profiles filter domains by agent purpose:
 Maturity levels:
   Hardened (80+), Standard (60-79), Developing (40-59),
   Initial (1-39), Not Started (0)
+
+Exit codes (#390) — the same on the text and --json channels:
+  ${EXIT_PASS}  conformance essential or better
+  ${EXIT_FAIL}  conformance none: a critical control was not detected.
+     Not a score threshold — a file scoring well above zero still
+     fails here if a critical control is missing. Use --fail-below
+     for a score floor. Same gate as secure -b oasb-2 and detect.
+  ${EXIT_UNMEASURED}  no governance file found: nothing was measured, so no score
+     is reported. Not a failing grade — there is nothing to grade.
 
 Examples:
   $ ${CLI_PREFIX} scan-soul                    Scan current directory

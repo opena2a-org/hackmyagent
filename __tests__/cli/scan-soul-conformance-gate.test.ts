@@ -36,6 +36,7 @@ import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { EXIT_PASS, EXIT_FAIL, EXIT_UNMEASURED } from '../../src/check/verdict';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -316,5 +317,39 @@ describe('#390 scan-soul exit contract', () => {
         `profile "${name}" applies no critical control, so conformance would not catch score 0`,
       ).toBeGreaterThan(0);
     }
+  });
+
+  /**
+   * `--help` is the contract a CI author reads before wiring the command up,
+   * and this change makes two exit codes reachable that were not before. The
+   * help listed `--fail-below` as the only non-zero exit, which is now false:
+   * a file scoring 20/100 with a critical control missing exits 1 without any
+   * threshold flag, and a tree with no governance file exits 2.
+   *
+   * The numbers in the help are interpolated from the same constants the
+   * action exits with, so they cannot drift apart numerically. What this pins
+   * is that the block still EXISTS and still names all three — a deletion or a
+   * fourth code added without documenting it fails here.
+   */
+  it('--help documents every exit code the action can produce', () => {
+    const help = execFileSync(process.execPath, [CLI_PATH, 'scan-soul', '--help'], {
+      encoding: 'utf-8',
+    }).replace(STRIP_ANSI, '');
+
+    expect(help).toMatch(/Exit codes/i);
+
+    // Derived from the module the action imports, not from literals here.
+    for (const code of [EXIT_PASS, EXIT_FAIL, EXIT_UNMEASURED]) {
+      expect(
+        help,
+        `exit code ${code} is reachable but not documented in scan-soul --help`,
+      ).toMatch(new RegExp(`^\\s*${code}\\s`, 'm'));
+    }
+
+    // The distinction the gate turns on, stated where the reader looks for it:
+    // this is not a score threshold, and "no file" is not a failing grade.
+    expect(help).toMatch(/conformance none/i);
+    expect(help).toMatch(/not a score threshold/i);
+    expect(help).toMatch(/no governance file/i);
   });
 });

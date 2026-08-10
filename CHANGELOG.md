@@ -11,10 +11,12 @@ exits on the verdict, which changes the result of existing CI jobs that call it.
 
 - **Exit 1 when `conformance` is `none`.** A missing CRITICAL control is the
   trigger, not a score threshold: `calculateConformance` returns `none` whenever
-  a `critical: true` control is absent, before any band check. Measured on the
-  five real SOUL.md files in reach, **four flip from exit 0 to exit 1**; the one
-  file with conformance `essential` stays at exit 0 on every channel. A pipeline
-  that treated `scan-soul` as advisory will start failing on those files.
+  a `critical: true` control is absent, before any band check. Measured across
+  the six governance files in reach, **the four with conformance `none` flip
+  from exit 0 to exit 1** (scores 4, 7, 19 and 20 — the gate does not track
+  score); the two that reach `essential` and `standard` stay at exit 0 on both
+  channels. A pipeline that treated `scan-soul` as advisory will start failing
+  on those files.
 - **Exit 2, with the verdict withheld, over a tree with no governance file.**
   It used to print a full `0/100` nine-domain table and name controls as
   "Missing" from a file that does not exist. Neither 0 nor 1 is true there. This

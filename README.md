@@ -201,13 +201,21 @@ hackmyagent attack http://localhost:7003/v1/chat/completions --api-format openai
 ```bash
 hackmyagent scan-soul                     # scan current directory for SOUL.md
 hackmyagent scan-soul --deep              # LLM semantic analysis (requires ANTHROPIC_API_KEY)
-hackmyagent scan-soul --fail-below 60     # CI gate
+hackmyagent scan-soul --fail-below 60     # add a score floor on top of the default gate
 hackmyagent scan-soul --explain           # print the 9-domain governance model and exit
 hackmyagent harden-soul                   # generate or update governance sections
 hackmyagent harden-soul --dry-run         # preview without writing
 ```
 
 Auto-detects governance file in this priority: `SOUL.md`, `system-prompt.md`, `CLAUDE.md`, `.cursorrules`, `agent-config.yaml`.
+
+`scan-soul` already gates without a flag: it exits 1 when conformance is `none`,
+meaning one of the critical controls was not detected. That is not a score
+threshold — a file scoring well above zero still fails if a critical control is
+missing, which is the same gate `secure -b oasb-2` and `detect` apply. Over a
+tree with no governance file at all it exits 2 and reports nothing, because
+there is nothing to grade. `--fail-below` adds a score floor on top of that.
+Run `hackmyagent scan-soul --help` for the full exit-code contract.
 
 ### `detect` (shadow AI audit)
 
@@ -356,8 +364,8 @@ Always disclosed on a `Scope` line and as `outOfScope` in `--json`.
 | Code | Meaning |
 |---|---|
 | 0 | Measured. No critical or high issues. |
-| 1 | Measured. Critical or high severity issues found. |
-| 2 | **Not measured.** For `red-team`, no score or risk level is reported. For `secure --deep`, the static results ARE reported and scored; the deep layer did not finish, so the run reaches no deep-scan verdict. The target does not exist (`check <missing path>`, an unknown package), was unreachable, answered no payload, or the command reaches no verdict by design. `red-team` and `attack --local` exit 2 on every run: both generate payloads without executing any against an agent, so neither concludes anything about the target. A scan whose plugins failed is also 2. |
+| 1 | Measured. Critical or high severity issues found. For `scan-soul`, also conformance `none` — a critical governance control was not detected, whatever the score. |
+| 2 | **Not measured.** For `red-team`, no score or risk level is reported. For `secure --deep`, the static results ARE reported and scored; the deep layer did not finish, so the run reaches no deep-scan verdict. The target does not exist (`check <missing path>`, an unknown package), was unreachable, answered no payload, or the command reaches no verdict by design. `red-team` and `attack --local` exit 2 on every run: both generate payloads without executing any against an agent, so neither concludes anything about the target. A scan whose plugins failed is also 2. `scan-soul` exits 2 over a tree with no governance file: no score or conformance level is reported, because nothing was read. |
 | 3 | QUARANTINE. Binary integrity check failed (tampered installation). |
 
 Exit 2 is non-zero on purpose. A CI job that asked for a security verdict and
