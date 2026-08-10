@@ -4,6 +4,55 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Breaking: `scan-soul` exit codes now follow the conformance verdict (#390)
+
+`scan-soul` used to print its report and exit 0 no matter what it found. It now
+exits on the verdict, which changes the result of existing CI jobs that call it.
+
+- **Exit 1 when `conformance` is `none`.** A missing CRITICAL control is the
+  trigger, not a score threshold: `calculateConformance` returns `none` whenever
+  a `critical: true` control is absent, before any band check. Measured on the
+  five real SOUL.md files in reach, **four flip from exit 0 to exit 1**; the one
+  file with conformance `essential` stays at exit 0 on every channel. A pipeline
+  that treated `scan-soul` as advisory will start failing on those files.
+- **Exit 2, with the verdict withheld, over a tree with no governance file.**
+  It used to print a full `0/100` nine-domain table and name controls as
+  "Missing" from a file that does not exist. Neither 0 nor 1 is true there. This
+  is the `UnmeasuredVerdict` arm `src/check/verdict.ts` already returns when
+  `coverage.examined <= 0`, not a new rule.
+
+Both codes are decided by one `deriveCheckVerdict` call placed above the
+output-channel branch, so `--json` and the text report cannot disagree.
+
+**Migration.** Run `hackmyagent harden-soul <dir>` to add the missing control
+text, or `harden-soul --dry-run <dir>` to see the diff first. The failure output
+names the missing control and its domain, prints the remediation from the
+control definition, and offers `explain <checkId>` plus a one-clause hand edit
+for the case where the full `harden-soul` rewrite is heavier than the gap
+warrants. Detection is keyword matching: a control written as prose in other
+words is reported missing, and the output says so.
+
+No opt-out flag ships with this. The catalog holds exactly two `critical: true`
+controls, so a per-check waiver two tokens wide would be a total bypass rather
+than a waiver. `--accept <checkId>` stays filed as its own issue across
+`secure`, `detect` and `scan-soul` together.
+
+### Fixed
+
+- `scan-soul`'s `Searched:` line listed three hardcoded filenames while the
+  scanner actually reads the ten-entry `GOVERNANCE_FILES` set. The line is now
+  derived from that set, so it stops understating what was looked at (#390).
+
+### Known limitation
+
+- `secure -b oasb-2` still prints `Governance Score (OASB-2): 0/100` and
+  `Conformance: NONE` over a tree with no governance file — the same shape this
+  change removes from `scan-soul`. That number feeds a composite score, a clamp
+  and a verdict band, so it is tracked separately as #489. `detect` is
+  deliberately left alone: it backs its `0/100` with a population it measured
+  (`2 AI agents running without governance`), which is a finding rather than a
+  grade handed to a file that does not exist.
+
 ## [0.29.0] - 2026-08-09
 
 Two CRITICAL vulnerabilities, both reachable in every published version through **0.28.0**.
