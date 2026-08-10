@@ -4,6 +4,79 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### `secure` no longer passes a tree it could not read (#438)
+
+A file the scan discovered and could not open used to leave the assessment entirely, so
+the score went UP as coverage went down. One fixture, one `chmod`, measured on `890084d`
+— a benign `src/util.js`, a `.gitignore`, and a `src/secrets.js` holding an `sk-` key:
+
+| `src/secrets.js` | score | exit |
+|---|---|---|
+| mode 644 | 69/100 | 1 |
+| mode 000 | 98/100 | **0**, on text, `--json`, sarif, html and asff |
+
+`secure --fix` then wrote a `.gitignore` into that tree and the next run scored
+**100/100 exit 0** with the credential file still unreadable.
+
+- **The root cause was one wrapper.** `tracked-fs`'s `attribute` rethrew a failed read
+  and recorded nothing — correct for `ENOENT`, which is why the wrapper exists, and
+  wrong for a file that is there and cannot be opened. Failed reads now report on their
+  own channel, carrying the errno. The error is rethrown unchanged, so no call site's
+  error handling moves.
+- **The unit is "inputs discovered but not read", not any files-read threshold.** A
+  files-read gate was tried and reverted: it moved the bar from 0 files to 1, and
+  `--fix` satisfies it by writing into the target. An unread input cannot be cleared
+  that way — the `EACCES` recorded on the other file is still there.
+- **Which errnos count was measured, and the measurement overrode the design.** #438's
+  own brief named `EISDIR` as a code that should gate. Counting it fires on every real
+  repository — 9 on hackmyagent's own tree, 10 on atlas, 5 on ai-trust, 1 on a clean
+  two-file fixture — because checks probe `.claude`, `.github` and `node_modules` as
+  files and get a directory back. `ENOENT`, `EISDIR` and `ENOTDIR` all mean "no file of
+  the kind sought is at that path" and are excluded; everything else counts, so an
+  unanticipated errno fails closed. Measured false positives on four real trees: zero.
+- **One settlement point, above the output-channel branch.** `secure` settled its exit
+  code in seven places, each with its own `return`, and both `--fail-below` early
+  returns sit ABOVE each channel's critical/high line — so a per-channel gate is
+  bypassed whenever a threshold is supplied. A floor is now set once, before any
+  channel branches: an incomplete run cannot exit 0, and any arm remains free to raise
+  the code for its own reasons.
+- **The run says which file, and why.** One `SCAN-UNREAD-001` MEDIUM finding per
+  unreadable path, naming the errno and carrying a remedy derived from it — `chmod` for
+  `EACCES`/`EPERM`, and honest prose for `EIO`/`ELOOP`, which `chmod` would not fix.
+  The score is still reported and is framed as an upper bound: two files were read, so
+  the run measured something, and withholding the number would let one unreadable file
+  blank an entire assessment.
+- **The unit counts only paths the scan is responsible for.** Containment is
+  decided on the REAL path: a committable `src/evil.js -> /etc/master.passwd`
+  symlink needs no `chmod` and no privileges, and the read that failed never
+  touched the scanned tree — counting it gated ordinary repositories at exit 2
+  permanently, with a `chmod` remedy that reports success and changes nothing.
+- **An `.hmaignore` path rule does NOT scope an unread input out of the gate,
+  and that is deliberate.** A path rule legitimately scopes findings about what
+  is IN a file; it cannot make the scan's own claim about what it READ true.
+  Exiting 0 there would only be defensible if the run said what it dropped, and
+  it cannot: `outOfScope` renders as a bare count on text and `--json`, and not
+  at all on sarif, asff and html — so honouring the rule produced exit 0 with
+  nothing said on three of five channels, on the channels a CI consumer reads.
+  The finding stays visible and stays in the exit code. `--ignore <checkId>`
+  likewise cannot clear it (#450). The remedy is to make the file readable or to
+  scan a narrower target, and the finding's guidance says so.
+- **`secure --help` now documents exit 2**, which it never did — not even for the
+  `--deep` case shipped in #462.
+
+MEDIUM, not HIGH, and on its own premise: severity feeds the band gate, and a HIGH
+would route to exit 1 before the completeness check and make the exit-2 arm unreachable
+for the exact case it exists for. (#462's "transient availability event" reasoning does
+NOT transfer — the measured base rate here is zero across four real trees.)
+
+**Known issue: `--scan-depth quick` still reproduces this (#499).** At quick depth 55 of
+61 static checks are skipped and the only reader of the file is the NanoMind semantic
+layer, which runs after `scanner.scan()` returns and therefore outside the coverage
+ledger's window. `secure --scan-depth quick` over an unreadable credential file still
+reports 98/100 at exit 0. Closing it means routing the semantic layer's reads through
+the tracked namespace and extending the ledger's lifetime, which changes what
+`filesExamined` means repo-wide — filed rather than half-fixed.
+
 ### Findings are locatable, and their `Verify:` commands run (#368, #286)
 
 A finding that cannot be located is a dead end, and one that cites the wrong line is

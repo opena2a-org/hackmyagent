@@ -27,7 +27,7 @@ import {
   validateCapabilities,
 } from './skill-capability-validator';
 import { clampScoreToVerdictBand, countsAgainstScore, expandSuppressed, retainForVerdict, summarizeSuppressed } from '../ui/verdict-band';
-import { shellQuote, citationTarget, citationPaths, commandNaming } from '../ui/shell-quote';
+import { shellQuote, citationTarget, citationPath, citationPaths, commandNaming } from '../ui/shell-quote';
 import {
   isPathWithinDirectory as containIsPathWithinDirectory,
   resolveInsideTree as containResolveInsideTree,
@@ -1930,6 +1930,26 @@ export class HardeningScanner {
    * Returns true to KEEP. May re-point `f.file` / `f.details.files` in place.
    */
   private retainAfterPathSuppression(f: SecurityFinding, ignoredPaths: string[]): boolean {
+    // A coverage statement is not a finding ABOUT a path's contents, so a path
+    // rule cannot scope it away (#438).
+    //
+    // `test-fixtures/` in an `.hmaignore` means "this part of the tree is not my
+    // product", which honestly removes findings about what is IN those files.
+    // It cannot make the scan's own claim about what it READ true. And the
+    // paragraph above is explicit that scoping is legitimate *provided the scope
+    // is disclosed* — for this finding that proviso does not hold: `outOfScope`
+    // is rendered as a bare count on text and `--json`, and NOT AT ALL on sarif,
+    // asff and html. Letting a path rule clear this gate therefore produced
+    // exit 0 with nothing said on three of the five channels, on the channels a
+    // CI consumer reads. Measured, and it is the exact failure this unit exists
+    // to remove.
+    //
+    // So it stays visible and stays in the exit code. The remedy is to make the
+    // file readable or to scan a narrower target — not to declare the unread
+    // file out of scope. If `outOfScope` ever renders on every channel, this
+    // carve-out is the thing to revisit.
+    if (f.checkId === 'SCAN-UNREAD-001') return true;
+
     const covered = this.coveredFilesOf(f);
     // Nothing path-shaped to judge — a finding about the tree as a whole.
     if (covered.length === 0) return true;
@@ -1951,6 +1971,25 @@ export class HardeningScanner {
   /**
    * Check if a file path matches any .hmaignore pattern.
    */
+  /** Every unreadable input this run recorded, before scope filtering. */
+  private unreadableAll: { path: string; code: string; rel: string }[] = [];
+
+  /**
+   * The `{count, codes}` shape the exit code is settled on, counted over the
+   * inputs that were NOT scoped out by an `.hmaignore` path rule.
+   *
+   * `excludedRels` comes from the same `pathExcluded` set that produces the
+   * `Scope` disclosure, so the number and the sentence are two readings of one
+   * fact. A scoped-out file is named on screen AND absent from the gate; an
+   * `--ignore`d check is neither, because suppressing a check is not narrowing
+   * the scanned scope (#450).
+   */
+  private scopedUnreadableInputs(): { count: number; codes: Record<string, number> } {
+    const codes: Record<string, number> = {};
+    for (const u of this.unreadableAll) codes[u.code] = (codes[u.code] ?? 0) + 1;
+    return { count: this.unreadableAll.length, codes };
+  }
+
   private isPathIgnored(filePath: string, ignoredPaths: string[]): boolean {
     if (!filePath || ignoredPaths.length === 0) return false;
     const normalized = filePath.replace(/\\/g, '/');
@@ -1971,6 +2010,9 @@ export class HardeningScanner {
   async scan(options: ScanOptions): Promise<ScanResult> {
     const ledger = new CoverageLedger(options.targetDir);
     this.coverage = ledger;
+    // Per-run, like the ledger itself: a reused instance must not inherit the
+    // previous scan's unread set.
+    this.unreadableAll = [];
     return withActiveLedger(ledger, () => this.scanInner(options));
   }
 
@@ -2513,6 +2555,90 @@ export class HardeningScanner {
       });
     }
 
+    // #438 — inputs the scan found inside the target and could not read.
+    //
+    // This is the channel the PATHS travel on. The coverage object carries the
+    // count and the errno codes and deliberately carries no filenames (a
+    // single-file scan normalises its target into a generated temp directory,
+    // and emitting read paths put that name into `--json`), so without a
+    // finding the user would be told a file was unreadable and never which one
+    // — the dead end the per-finding protocol forbids.
+    //
+    // MEDIUM, not HIGH, and the reasoning is #462's verbatim: an unreadable
+    // file is frequently an environment fact rather than an attack, and raising
+    // it would turn a permissions quirk into a red pipeline, which is what
+    // pushes people to bypass a gate. The verdict channel says the true thing
+    // instead — this run did not examine everything it found — through the exit
+    // code, which `cli.ts` settles once, above every output channel.
+    // Every unreadable path gets a finding, and the `.hmaignore` path rules are
+    // then applied to it by the SAME machinery that applies them to every other
+    // finding — so a scoped-out file lands on `outOfScope` and the `Scope` line
+    // names it, exactly as a scoped-out readable finding is named today.
+    //
+    // Filtering the finding out here instead was the first attempt and it was
+    // worse than the defect it fixed: it turned "exit 2 with nothing named" into
+    // "exit 0 with nothing said". The disclosure INVERTED — content the scan
+    // could read and scoped out was disclosed, content it could NOT read and
+    // scoped out was not, so the case carrying less information carried less
+    // warning. This repo's own `.hmaignore` scopes `src/hardening/` and
+    // `src/nanomind-core/`, so that silence reached real trees.
+    //
+    // The exit-code unit is then derived from the same marking below, which is
+    // what makes the `Scope` line's "not scored and not in the exit code" a true
+    // statement rather than a contradiction.
+    const unreadable = this.coverage.unreadablePaths().map((u) => ({
+      ...u,
+      rel: path.relative(targetDir, u.path) || path.basename(u.path),
+    }));
+    this.unreadableAll = unreadable;
+    for (const u of unreadable) {
+      const rel = u.rel;
+      // ONE finding per path, not one naming the first of N. `file` is a single
+      // field and SARIF/ASFF consumers key on it, so a summary finding leaves
+      // every path after the first in no structured field at all.
+      //
+      // The remedy is derived from the ERRNO, not from the finding. `chmod` is
+      // the answer for a permission denial and is a dead end for `EIO` or
+      // `ELOOP`, which the predicate deliberately admits — a fix line that
+      // cannot work is exactly what the per-finding protocol forbids.
+      const permission = u.code === 'EACCES' || u.code === 'EPERM';
+      const cited = citationPath(rel);
+      const fix = permission
+        ? (cited
+          ? `chmod u+r ${cited} && ${this.cliName} secure ${citationTarget(targetDir)}`
+          : 'Make the file named above readable, then re-run this scan.')
+        : `Resolve the ${u.code} on this path (a broken symlink, an I/O error or an `
+          + `unreadable mount are the usual causes), then re-run this scan.`;
+      findings.push({
+        checkId: 'SCAN-UNREAD-001',
+        name: 'Input Discovered But Not Read',
+        description: 'A file inside the target was discovered and its contents could not be read, so no check examined it',
+        category: 'hardening',
+        severity: 'medium',
+        // `passed: false` so it is SHOWN. A `passed: true` finding is filtered
+        // out of the report, which is how an earlier disclosure managed to
+        // exist in the code and appear nowhere on screen.
+        passed: false,
+        message: `${rel} could not be read (${u.code})`,
+        file: rel,
+        fixable: false,
+        fix,
+        // The errno is named in the body, not only in `message`: the rendered
+        // finding prints `guidance`, so an errno that lives only on `message`
+        // reaches no reader — and the errno is the input that decides which
+        // remedy applies.
+        guidance:
+          `This file was discovered inside the target and the read failed with ${u.code}, so its `
+          + 'contents never reached a check. The score above is an upper bound, not a measurement '
+          + 'of this tree: nothing was ruled out about this file, and a credential or an injected '
+          + 'instruction in it would be invisible to this scan — leaving the score HIGHER than if '
+          + 'the file had been readable, because the evidence simply left the assessment. Re-run '
+          + 'once it can be read. If it is meant to be unreadable, scan a narrower target that '
+          + 'does not contain it — an `.hmaignore` path rule will not clear this, because it '
+          + 'scopes what is reported about a file and cannot make an unread file read.',
+      } as any);
+    }
+
     if (this.fixWritesIntoForeignArchive.length > 0) {
       const rels = [...new Set(this.fixWritesIntoForeignArchive.map(
         (f) => path.relative(targetDir, f) || path.basename(f),
@@ -2942,6 +3068,7 @@ export class HardeningScanner {
       filteredFindings.filter((f) => f.suppressedBy && f.suppressedBy !== 'hmaignore-path'),
     );
     const outOfScope = summarizeSuppressed(pathExcluded);
+
     filteredFindings = filteredFindings.filter((f) => !f.suppressed);
 
     // #421 — which FAILED findings did the scanner silence on its own?
@@ -3128,6 +3255,11 @@ export class HardeningScanner {
         filesReadByCategory: this.coverage.categoryFileCounts(),
         suppressedFailures,
         unevidencedFailures,
+        // Counts and errno codes, never paths — same rule as the line above.
+        // Derived from the SCOPED list, not the raw ledger — see where
+        // `unreadableInScope` is built. This is the number `cli.ts` settles the
+        // exit code on.
+        unreadableInputs: this.scopedUnreadableInputs(),
       },
     };
   }

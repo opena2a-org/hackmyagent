@@ -464,6 +464,13 @@ export const TAXONOMY_EXEMPT_CHECKIDS: ReadonlySet<string> = new Set([
   // FIX-WRITE-FAILED beside it — the credential it redacted is reported by
   // CRED-001, which carries its own attack class.
   'FIX-FOREIGN-ARCHIVE',
+  // #438 — reports that a file inside the target was discovered and could not
+  // be read, so no check examined it. The same family as SEM-LLM-NOT-ANALYZED
+  // above: it names an ABSENCE of measurement rather than a threat. Giving it
+  // an attack class would assert something about the file's contents, which is
+  // precisely what this run could not determine — the finding exists to say
+  // that nothing is known about it.
+  'SCAN-UNREAD-001',
 ]);
 
 /**

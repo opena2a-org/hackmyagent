@@ -6,7 +6,14 @@
  * and runs each analyzer.
  */
 
-import * as fs from 'fs/promises';
+// Routed through the tracked namespace, not `fs/promises`. #438: at
+// `--scan-depth quick` this analyzer is the ONLY reader of a target file, so
+// while it imported `fs/promises` directly its `EACCES` reached no ledger and
+// `secure --scan-depth quick` scored an unreadable credential file 98/100 at
+// exit 0 — the same defect, on a documented flag. The 2026-08-05 coverage
+// decision's review trigger is exactly "any new file-read path that bypasses
+// the tracked `fs` namespace".
+import { fs } from '../../hardening/tracked-fs';
 import * as path from 'path';
 import type { SemanticFinding, AnalysisFile, FileType } from '../types';
 import { CredentialContextAnalyzer } from './credential-context';

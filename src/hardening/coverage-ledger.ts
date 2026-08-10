@@ -34,6 +34,42 @@
  */
 
 import * as path from 'path';
+// Real `fs`, deliberately NOT the tracked namespace: this module is what the
+// tracked namespace reports INTO, so importing it back would be a cycle.
+import { realpathSync } from 'fs';
+
+/**
+ * Errnos that mean "nothing of the kind sought is at that path", so a failed
+ * read carrying one is not a lost input.
+ *
+ * Measured, not assumed — see `CoverageLedger.unreadableInputs` for the numbers.
+ * `EISDIR` is here despite #438's design brief naming it as a code that SHOULD
+ * gate: counting it fires on every real repository, because checks probe
+ * `.claude`, `.github` and `node_modules` as files and get a directory back.
+ */
+const NOT_THERE_ERRNOS: ReadonlySet<string> = new Set(['ENOENT', 'EISDIR', 'ENOTDIR']);
+
+/**
+ * Method name recorded for a failed read raised outside any `coverage.run()`
+ * frame — the semantic layer, and the pre-scan probes.
+ *
+ * A failure is recorded whoever raised it, because "I could not read this" is a
+ * fact about the target rather than a claim by a check. A SUCCESS raised there
+ * is still dropped: unattributable evidence is not evidence, and that asymmetry
+ * is the fail-closed direction on both channels.
+ */
+const UNATTRIBUTED = '(unattributed)';
+
+/**
+ * True when a failed read means the scan lost an input it had discovered.
+ *
+ * Excludes by name rather than admitting a known-good list, which is the
+ * fail-closed direction: an errno nobody anticipated means the bytes did not
+ * arrive, and a scan that cannot read a file must not claim it read it.
+ */
+export function countsAsUnread(code: string): boolean {
+  return !NOT_THERE_ERRNOS.has(code);
+}
 
 /**
  * What a scan can honestly say about one category.
@@ -306,6 +342,17 @@ export class CoverageLedger {
   /** Per-method distinct path sets, so two reads of one file count once. */
   private readonly readsByMethod = new Map<string, Set<string>>();
   private readonly inspectedByMethod = new Map<string, Set<string>>();
+  /**
+   * Paths inside the target that were discovered and whose contents could NOT
+   * be read, keyed by path so twelve checks probing one unreadable file record
+   * one input and not twelve. Value is the errno the first failure carried.
+   *
+   * Recorded raw: every failing errno lands here, including `ENOENT`. Deciding
+   * which of them mean "discovered but not read" is a policy question and lives
+   * in `unreadableInputs`, not in the recording — a ledger that filters at
+   * write time cannot be re-measured when the policy is questioned.
+   */
+  private readonly readFailures = new Map<string, { code: string; method: string }>();
 
   constructor(targetRoot: string) {
     this.targetRoot = path.resolve(targetRoot);
@@ -391,6 +438,72 @@ export class CoverageLedger {
     this.note(target, this.inspectedByMethod, false);
   }
 
+  /**
+   * Attribute a content read that FAILED. Called by the tracked `fs` namespace.
+   *
+   * The counterpart to `noteRead`, and the reason it exists: a read that threw
+   * leaves no trace in `filesReadAll`, so a file the scan discovered and could
+   * not open simply left the assessment. `secure` scored a tree 69/100 at exit 1
+   * with a credential file readable and 98/100 at exit 0 with the same file at
+   * mode 000 — the score went UP because the evidence went away (#438).
+   *
+   * Filtered exactly like `noteRead`: attributable to a running check, inside
+   * the target, deduped by path. A path that is later read successfully is not
+   * unreadable — see `unreadableInputs`, which subtracts rather than this
+   * recording it, so the two orderings agree.
+   */
+  noteReadFailure(target: string, code: string): void {
+    // NOT filtered on attribution, and this is the one place the failure
+    // channel must diverge from `note()`.
+    //
+    // `note()` drops a read it cannot attribute to a running check, and that is
+    // safe there: dropping a SUCCESS lowers `filesExamined` and understates
+    // coverage, the direction this ledger is allowed to be wrong in. Dropping a
+    // FAILURE inverts it — it asserts that nothing was lost, which overstates
+    // completeness and is the one direction forbidden.
+    //
+    // Measured: the semantic structural analyzer runs outside any
+    // `coverage.run()` frame and at `--scan-depth quick` is the only reader of
+    // a target file. While failures required a method, its `EACCES` was dropped
+    // and `secure --scan-depth quick` scored an unreadable credential file
+    // 98/100 at exit 0 — #438 surviving inside its own fix.
+    const method = this.stack[this.stack.length - 1] ?? UNATTRIBUTED;
+    let resolved: string;
+    try {
+      resolved = path.resolve(target);
+    } catch {
+      return;
+    }
+    if (!this.isInsideTarget(resolved)) return;
+    if (this.readFailures.has(resolved)) return; // first failure wins
+    // Containment is decided on the REAL path, not the lexical one. A symlink
+    // inside the target pointing at a file outside it — `src/evil.js` ->
+    // `/etc/master.passwd` — is a path any contributor can commit, and the read
+    // that failed never touched the scanned tree at all. Counting it gated
+    // ordinary repositories at exit 2 permanently, with a `chmod` remedy that
+    // reports success and changes nothing, because the file it names is not the
+    // file that was read. `noteRead` has the same lexical shape, but there the
+    // error is in the safe direction: it can only OVERSTATE what was examined
+    // by one path, while here it invents a lost input.
+    //
+    // Resolving needs execute on the parent directories, not read on the file,
+    // so an ordinary mode-000 file still resolves and still counts. If the link
+    // cannot be resolved at all the lexical decision stands, which is the
+    // fail-closed direction.
+    // BOTH sides resolved, or the comparison is between two different kinds of
+    // path. `os.tmpdir()` is `/var/folders/...` on macOS and `/var` is itself a
+    // symlink to `/private/var`, so comparing a resolved FILE against a lexical
+    // ROOT reported every file in a temp-dir scan as outside its own target and
+    // silently switched the gate off. Caught by the suite, which builds its
+    // fixtures under `os.tmpdir()`; the hand-run fixtures sat under an
+    // already-resolved path and hid it.
+    try {
+      const real = realpathSync(resolved);
+      if (real !== resolved && !this.isInsideReal(real)) return;
+    } catch { /* unresolvable — keep the lexical decision */ }
+    this.readFailures.set(resolved, { code: code || 'UNKNOWN', method });
+  }
+
   private note(target: string, into: Map<string, Set<string>>, isRead: boolean): void {
     const method = this.stack[this.stack.length - 1];
     if (!method) return; // outside any registered check — not attributable
@@ -408,6 +521,28 @@ export class CoverageLedger {
     }
     set.add(resolved);
     if (isRead) this.filesReadAll.add(resolved);
+  }
+
+  /**
+   * Containment against the REALPATH of the target root, resolved once.
+   *
+   * Separate from `isInsideTarget` on purpose: that one answers about the path
+   * the caller named, which is what the rest of the ledger keys on.
+   */
+  private realRootCache?: string | null;
+  private isInsideReal(real: string): boolean {
+    if (this.realRootCache === undefined) {
+      // `null`, not the lexical root: falling back to the lexical form would
+      // compare a resolved file against an unresolved root — the same
+      // transformed-vs-untransformed mixing this method exists to avoid. A root
+      // that cannot be resolved means containment is unknown, and unknown keeps
+      // the input, which is the fail-closed direction.
+      try { this.realRootCache = realpathSync(this.targetRoot); }
+      catch { this.realRootCache = null; }
+    }
+    const root = this.realRootCache;
+    if (root === null) return true;
+    return real === root || real.startsWith(root + path.sep);
   }
 
   private isInsideTarget(resolved: string): boolean {
@@ -439,6 +574,76 @@ export class CoverageLedger {
   /** Every cap that fired, for the `--json` inventory. */
   get caps(): CoverageTruncation[] {
     return [...this.truncations];
+  }
+
+  /**
+   * Inputs the scan discovered inside the target and could not read.
+   *
+   * **Three errnos are excluded, and that exclusion is the whole
+   * discrimination.** The scanner probes for files that usually do not exist —
+   * `.env.production`, `compose.yaml`, a dozen config spellings per check — and
+   * a probe that misses is honestly "nothing there to examine", which is what
+   * `tracked-fs`'s attribute-on-resolve rule was written to protect
+   * (report-on-call once measured `549 files examined` on a 529-file tree).
+   *
+   * | errno | meaning at the probed path | counts? |
+   * |---|---|---|
+   * | `ENOENT` | nothing at all is there | no |
+   * | `EISDIR` | a DIRECTORY is there, a file was sought | no |
+   * | `ENOTDIR` | a component is a file, so the path does not resolve | no |
+   * | everything else | something IS there and its bytes never arrived | yes |
+   *
+   * `EISDIR` and `ENOTDIR` are on that list because they were MEASURED, not
+   * because they read as harmless. #438's design brief named `EISDIR` as one of
+   * the codes that SHOULD gate; counting it fires on every real repository —
+   * 9 on hackmyagent's own tree, 10 on atlas, 5 on ai-trust, and 1 on a clean
+   * two-file fixture — because checks probe `.claude`, `.github` and
+   * `node_modules` as files and get a directory. Creating three directories
+   * named `.env`, `package.json` and `CLAUDE.md` in an otherwise clean tree
+   * raises the count by exactly three. A gate including it is a gate that fails
+   * every target, which is the failure mode this unit was chosen to avoid.
+   * `ENOTDIR` is the mirror image: a FILE named `.claude` produces one.
+   *
+   * Excluding by name rather than counting only a known-good list is deliberate
+   * and fail-closed: an errno nobody anticipated means the bytes did not arrive
+   * and the scan cannot claim it read them. `EACCES` is the measured true
+   * positive — zero occurrences across four real trees, one on the fixture.
+   *
+   * Subtracts anything later read successfully, so a retry that succeeds does
+   * not leave a phantom, and the failure-then-success and success-then-failure
+   * orderings agree.
+   *
+   * Returns COUNTS and errno codes, never paths — same rule as
+   * `categoryFileCounts`. The paths reach the user through a finding, which is
+   * the channel that carries `file:line` and a fix; putting them here would put
+   * a normalised temp-directory name into `--json`.
+   */
+  get unreadableInputs(): { count: number; codes: Record<string, number> } {
+    const codes: Record<string, number> = {};
+    let count = 0;
+    for (const [resolved, { code, method }] of this.readFailures) {
+      if (!countsAsUnread(code)) continue;
+      if (this.readsByMethod.get(method)?.has(resolved)) continue;
+      count++;
+      codes[code] = (codes[code] ?? 0) + 1;
+    }
+    return { count, codes };
+  }
+
+  /**
+   * The unreadable paths themselves, for the finding that names them.
+   *
+   * Deliberately NOT part of the `--json` coverage block. A caller that renders
+   * these is responsible for the same path hygiene every finding observes.
+   */
+  unreadablePaths(): { path: string; code: string }[] {
+    const out: { path: string; code: string }[] = [];
+    for (const [resolved, { code, method }] of this.readFailures) {
+      if (!countsAsUnread(code)) continue;
+      if (this.readsByMethod.get(method)?.has(resolved)) continue;
+      out.push({ path: resolved, code });
+    }
+    return out.sort((a, b) => a.path.localeCompare(b.path));
   }
 
   /**
@@ -683,6 +888,19 @@ export function noteInspect(target: unknown): void {
   if (!activeLedger) return;
   if (typeof target !== 'string') return;
   activeLedger.noteInspect(target);
+}
+
+/**
+ * Report a FAILED content read to the active ledger, if any.
+ *
+ * `code` is the errno (`EACCES`, `ENOENT`, …). It is recorded verbatim; the
+ * decision about which codes mean "discovered but not read" is made when the
+ * ledger is read, not here.
+ */
+export function noteReadFailure(target: unknown, code: unknown): void {
+  if (!activeLedger) return;
+  if (typeof target !== 'string') return; // fd / URL / Buffer — not attributable
+  activeLedger.noteReadFailure(target, typeof code === 'string' ? code : 'UNKNOWN');
 }
 
 /** Test seam: the ledger currently installed, or null. */
