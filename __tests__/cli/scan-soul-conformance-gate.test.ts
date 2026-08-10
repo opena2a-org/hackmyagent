@@ -477,6 +477,44 @@ describe('#390 a found-but-unreadable governance file is NOT MEASURED', () => {
     expect(parsed.file).toBe('SOUL.md');
     expect(parsed.coverage.detail).toMatch(/SOUL\.md/);
   });
+
+  /**
+   * An EMPTY governance file is not an unreadable one, and the first version of
+   * this fix reported it as such. `fileSize === 0` covers both, because the
+   * scanner swallows a failed read to `''`, so a 0-byte SOUL.md that read
+   * perfectly was told "no bytes could be read from it" — a false statement in
+   * a security tool's own output.
+   *
+   * The scanner now records `fileReadFailed` where the read actually throws, so
+   * the two cases are distinguishable at the producer rather than guessed here.
+   * Both are still exit 2 — neither is gradeable — but they say different
+   * things because they ARE different things.
+   */
+  it('an empty governance file is reported as empty, not as unreadable', () => {
+    const dir = tmpDirWithSoul('', 'emptyfile');
+    const r = runScanSoul(dir, '--json');
+    const parsed = JSON.parse(r.stdout);
+
+    expect(r.status).toBe(EXIT_UNMEASURED);
+    expect(parsed.coverage.measured).toBe(false);
+    expect(parsed.coverage.reason).toBe('nothing-to-examine');
+    expect(parsed.gate.reason).toBe('governance-file-empty');
+    expect(parsed.coverage.detail).toMatch(/empty/i);
+    expect(
+      parsed.coverage.detail,
+      'an empty file is readable — claiming otherwise is false',
+    ).not.toMatch(/could not be read|no bytes/i);
+  });
+
+  it('a file with only whitespace still measures and still gates', () => {
+    // The boundary on the other side of `fileSize > 0`. This one HAS bytes, so
+    // it is gradeable and must not be swept into the unmeasured arm — the
+    // fail-closed direction of the same predicate.
+    const r = runScanSoul(tmpDirWithSoul('   \n\n  \n', 'wsonly'), '--json');
+    const parsed = JSON.parse(r.stdout);
+    expect(parsed.coverage.measured, 'a non-empty file was reported unmeasured').toBe(true);
+    expect(r.status).toBe(EXIT_FAIL);
+  });
 });
 
 describe('#390 the gate and the report read the same source', () => {

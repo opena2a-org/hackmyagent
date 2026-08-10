@@ -8548,10 +8548,19 @@ Examples:
           total: result.totalControls,
           unit: 'governance control',
         },
-        result.file ? 'target-unreadable' : 'nothing-to-examine',
-        result.file
-          ? `${escapePathForDisplay(require('path').basename(result.file))} was found but no bytes could be read from it, so no governance score can be reported.`
-          : `No governance file was found, so no governance score can be reported for this target.`,
+        // THREE cases, not two. `fileSize === 0` with a file present covers
+        // both an UNREADABLE file and an EMPTY one, and they are different
+        // facts: "no bytes could be read" is false about a 0-byte file that
+        // read fine. `fileReadFailed` is recorded by the scanner at the point
+        // the read throws, so this reports which one actually happened.
+        !result.file
+          ? 'nothing-to-examine'
+          : result.fileReadFailed ? 'target-unreadable' : 'nothing-to-examine',
+        !result.file
+          ? `No governance file was found, so no governance score can be reported for this target.`
+          : result.fileReadFailed
+            ? `${escapePathForDisplay(require('path').basename(result.file))} was found but could not be read, so no governance score can be reported.`
+            : `${escapePathForDisplay(require('path').basename(result.file))} was found but is empty, so there is nothing to grade.`,
       );
 
       // The missing CRITICAL controls, carrying the metadata the failure
@@ -8605,7 +8614,9 @@ Examples:
             ...(mi ? { markerInvalid: mi } : {}),
             gate: {
               failed: true,
-              reason: soulVerdict.reason === 'target-unreadable' ? 'governance-file-unreadable' : 'no-governance-file',
+              reason: soulVerdict.reason === 'target-unreadable'
+                ? 'governance-file-unreadable'
+                : result.file ? 'governance-file-empty' : 'no-governance-file',
               exitCode: EXIT_UNMEASURED,
             },
           });
