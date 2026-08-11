@@ -283,6 +283,49 @@ behaviour — verified identical on published 0.24.0, 0.25.0 and 0.25.1 — and
 other tests assert it. The previous "exit 2" line in this checklist was the
 expectation that was wrong, not the code. Do not "fix" the CLI to match it.
 
+### The `--ci` cells
+
+This section was titled for `--ci` from the day it was written and contained no
+`--ci` cell, which is how #454 shipped twice — closed 2026-08-10 as completed
+with the defect fully live. `--ci` is an **output-mode** flag: it suppresses
+prompts and turns contribution off, and it **never** changes the exit code.
+
+```bash
+# 1. --ci does not move the exit code. Run each pair and compare.
+#    A LOW-only tree exits 0 in BOTH channels; a critical/high tree exits 1 in both.
+node dist/cli.js secure "$CLEAN" >/dev/null 2>&1; A=$?
+node dist/cli.js secure "$CLEAN" --ci >/dev/null 2>&1; B=$?
+node dist/cli.js secure "$BAD"   >/dev/null 2>&1; C=$?
+node dist/cli.js secure "$BAD"   --ci >/dev/null 2>&1; D=$?
+echo "clean: $A vs $B   bad: $C vs $D"
+# Expected: $A -eq $B AND $C -eq $D. Any divergence is a contract break.
+# A LOW-only tree exiting 1 under --ci means an any-finding gate was revived.
+
+# 2. --ci turns contribution OFF even when the machine carries a prior opt-in.
+#    Isolate HOME so the developer's real config is neither read nor written.
+SMOKE_HOME=$(mktemp -d); mkdir -p "$SMOKE_HOME/.opena2a"
+printf '{"contribute":{"enabled":true}}\n' > "$SMOKE_HOME/.opena2a/config.json"
+HOME="$SMOKE_HOME" REGISTRY_URL=http://localhost:9 \
+  node dist/cli.js secure "$CLEAN" --ci >/dev/null 2>&1
+node -e 'const f=process.argv[1];const fs=require("fs");
+  if(!fs.existsSync(f)){console.log("queued: 0");process.exit(0)}
+  const q=JSON.parse(fs.readFileSync(f,"utf8"));
+  const e=Array.isArray(q)?q:(q.events||[]);
+  console.log("queued:", e.length);
+  if(e.length) throw new Error("--ci did not disable contribution")' \
+  "$SMOKE_HOME/.opena2a/contribute-queue.json"
+# Expected: queued: 0. Repeat for scan-soul, the other command declaring --ci.
+```
+
+**Count the queue correctly.** The queue file is an object `{"events":[…]}`, not
+a bare array. A counter written as `Array.isArray(q)?q.length:0` reports **0**
+for every run and reads as a permanent pass — it silently inverted this exact
+measurement once already.
+
+**Do not use a dead sink at `127.0.0.1`.** `REGISTRY_URL` is validated: only
+`https://` and `http://localhost` are accepted, so `http://127.0.0.1:9` aborts
+the run before it scans and every cell reads exit 1.
+
 ---
 
 ## 6.5 Deep-scan verdict and MCP root confinement (4 min)
