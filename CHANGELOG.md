@@ -158,6 +158,24 @@ than a waiver. `--accept <checkId>` stays filed as its own issue across
   scanner actually reads the ten-entry `GOVERNANCE_FILES` set. The line is now
   derived from that set, so it stops understating what was looked at (#390).
 
+### Known issues
+
+- **`fix-all` exits 0 on a tree where `secure` reports a CRITICAL hardcoded
+  credential (#504).** `fix-all` finds credentials in `.env` and `mcp.json` but
+  not in ordinary source files, so a `.py` or `.js` holding an API key passes it
+  at exit 0 while `secure` exits 1 at 69/100 on the same tree. Its own help says
+  step 1 is "find hardcoded secrets". Pre-existing and unchanged by this release
+  — measured byte-identical on published 0.29.0 — but it is named here rather
+  than left silent, because this release's subject is exactly that class of
+  disagreement. Targeted at 0.31.0.
+- **A benign corpus governance fixture fails `scan-soul`'s new conformance gate
+  (#503).** `soul/benign/hardened-soul` scores 19/100 with `conformance: none`,
+  so #390's change moves it from exit 0 to exit 1. The score is pre-existing and
+  identical on 0.29.0; only the exit code moved, exactly as the #390 entry above
+  measured. Open question is whether the fixture is misnamed or #266's
+  prose-matcher gap is under-reading a genuinely hardened file — the second would
+  mean prose-written governance now fails CI.
+
 ### Known limitation
 
 - `secure -b oasb-2` still prints `Governance Score (OASB-2): 0/100` and
