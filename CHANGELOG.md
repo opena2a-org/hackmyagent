@@ -2,7 +2,7 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
-## [Unreleased]
+## [0.31.0] - 2026-08-11
 
 ### `--ci` now turns contribution off, and its help text stops promising an exit-code effect (#454)
 
