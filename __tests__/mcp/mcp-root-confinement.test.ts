@@ -24,7 +24,6 @@ import * as path from 'path';
 import {
   handleToolCall,
   TOOL_DEFINITIONS_FOR_TEST,
-  analyzeFileRemovalText,
   fixRequestedNote,
   unknownToolText,
 } from '../../src/mcp-server';
@@ -164,17 +163,25 @@ describe('#463 the arbitrary-file reader is gone', () => {
     expect(TOOL_DEFINITIONS_FOR_TEST.map((t) => t.name)).not.toContain('hackmyagent_analyze_file');
   });
 
-  it('returns a redirect rather than reading the file, even inside the root', async () => {
+  // #502 — the 0.29.0 redirect stub is gone as of 0.31.0. The name now falls
+  // through to the server's `default:` arm like any other unknown tool.
+  it('falls through to the standard unknown-tool response, not the removal stub', async () => {
     const res = await handleToolCall('hackmyagent_analyze_file', { file: path.join(root, '.gitignore') }, [root]);
-    expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain('was removed in hackmyagent 0.29.0');
-    expect(res.content[0].text).toContain('hackmyagent_deep_scan');
-    expect(res.content[0].text).not.toContain('node_modules');
-  });
 
-  it('names real discoverable artifacts in the redirect, generated not hardcoded', () => {
-    const text = analyzeFileRemovalText(['CLAUDE.md', 'mcp.json']);
-    expect(text).toContain('CLAUDE.md, mcp.json');
+    // `isError` alone cannot tell the two apart: the stub set it and so does
+    // `default:`. The text is the only thing that separates them.
+    expect(res.isError).toBe(true);
+    // The stable half of `unknownToolText`. The tool-name sentence it also emits
+    // is generated from TOOL_DEFINITIONS, so pinning the whole string would go
+    // red on any future tool addition.
+    expect(res.content[0].text).toContain('Unknown tool: hackmyagent_analyze_file');
+    expect(res.content[0].text).toContain('tools/list');
+    // Removed, not reworded — the stub's redirect must be absent.
+    expect(res.content[0].text).not.toContain('was removed in hackmyagent 0.29.0');
+    // Not a crash: `handleToolCall`'s catch prefixes thrown errors with `Error:`.
+    expect(res.content[0].text).not.toContain('Error:');
+    // Still reads nothing. `.gitignore` in the fixture holds `node_modules`.
+    expect(res.content[0].text).not.toContain('node_modules');
   });
 
   it('no longer ships the .env credential-enumeration guidance anywhere in the tool surface', () => {

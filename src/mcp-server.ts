@@ -220,28 +220,6 @@ scan below is complete. To apply fixes, run from a terminal:
 \`${cliName} rollback ${cited}\` reverts the most recent --fix.`;
 }
 
-/**
- * `hackmyagent_analyze_file` was removed in 0.29.0 (#463).
- *
- * The stub is one minor cycle of discoverability, not a deprecation window: it
- * does not preserve the behaviour, it only stops `Unknown tool:` being a dead end
- * inside the tool that exists to unblock people. The artifact list is GENERATED,
- * because an enumerated literal in a string rots exactly the way a frozen literal
- * in a charter does.
- */
-export function analyzeFileRemovalText(discoverableArtifacts: string[]): string {
-  return `hackmyagent_analyze_file was removed in hackmyagent 0.29.0.
-
-Use hackmyagent_deep_scan instead. Point it at the directory containing the file,
-or at the file itself when it is one of: ${discoverableArtifacts.join(', ')}. It
-returns the same file contents with per-type analysis guidance, plus the Layer 1
-and Layer 2 findings for the surrounding project.
-
-For a file outside that set, read it with your own file-reading tool.
-hackmyagent_analyze_file returned such files unchanged with generic guidance and
-added no analysis of its own.`;
-}
-
 /** `Unknown tool: X` was a dead end for any typo. This names what is available. */
 export function unknownToolText(name: string): string {
   return `Unknown tool: ${name}
@@ -371,30 +349,7 @@ export async function handleToolCall(
           };
         }
 
-      case 'hackmyagent_analyze_file': {
-        // Removed in 0.29.0 (#463). The stub outlives 0.30.0 deliberately:
-        // deleting it is a behaviour change to the MCP surface and wanted its
-        // own test, which is not something to add during a release cut. Tracked
-        // for 0.31.0.
-        //
-        // The earlier rationale here said `deep_scan` returns the same class of
-        // content "bounded by what HMA decided is security-relevant, instead of
-        // by whatever path the host model asked for". That bounded the NAME. The
-        // attacker picks the TARGET: a link at any of those names pointed
-        // wherever they liked, and `deep_scan` read it. A removed capability may
-        // not be justified on a bound we do not have.
-        //
-        // What actually bounds it is `confineTo` on the deep_scan path above:
-        // every artifact's realpath must be inside a granted root, and anything
-        // withheld is named in the result.
-        const { discoverableArtifactNames } = await import('./semantic/structural/index');
-        return {
-          content: [{ type: 'text', text: analyzeFileRemovalText(discoverableArtifactNames()) }],
-          isError: true,
-        };
-      }
-
-        case 'hackmyagent_benchmark': {
+      case 'hackmyagent_benchmark': {
         const requested = (args?.directory as string) || '.';
         const resolvedDir = await resolveWithinRoots(roots, requested);
         if (!resolvedDir.ok) return refuse(resolvedDir.refusal);
