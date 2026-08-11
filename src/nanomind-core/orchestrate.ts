@@ -539,7 +539,11 @@ export async function runCoverageSweep(
   let swept = 0;
   let nullVerdicts = 0;
   const deadlineAt = Date.now() + SWEEP_DEADLINE_MS;
-  const { readFile } = await import('node:fs/promises');
+  // Tracked, not raw (#499) — `join(targetDir, …)` makes every read here a read
+  // of the scan target, so a failure is a lost input and must reach the ledger.
+  // The `catch { continue }` below stays: skipping the artifact is right, but it
+  // must no longer be the only record that the read happened.
+  const { fs: { readFile } } = await import('../hardening/tracked-fs.js');
   const { join } = await import('node:path');
 
   // The analyst is a generative model reading attacker-controlled artifact

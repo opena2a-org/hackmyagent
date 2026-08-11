@@ -4,6 +4,48 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The completeness gate now holds at `--scan-depth quick` (#499)
+
+0.30.0 closed #438 at `standard` and `deep` and said so, but at `quick` depth 55 of 61
+static check groups are skipped and the only component that opens an arbitrary source file
+is the NanoMind semantic layer — which ran after `scanner.scan()` returned, outside the
+coverage ledger's window. So `secure --scan-depth quick` over an unreadable credential file
+still reported `98/100` at exit 0.
+
+One benign fixture, one `chmod`, measured on `8d66a0b`:
+
+| depth | mode 000 before | after | mode 644 control |
+|---|---|---|---|
+| quick | **98/100, exit 0** | 93/100, exit 2 | 98/100, exit 0 — unchanged |
+| standard | 93/100, exit 2 | unchanged | unchanged |
+| deep | 93/100, exit 2 | unchanged | unchanged |
+
+- **The pass moved, the ledger did not widen.** The semantic pass is now a
+  `ScanOptions.semanticPass` hook invoked inside `scanInner`, ahead of the coverage
+  snapshot, the `SCAN-UNREAD-001` loop and the scope filter. It runs **outside** any
+  `coverage.run()` frame, deliberately: with an empty method stack its successful reads are
+  unattributable and get dropped, so only read FAILURES are recorded. `filesExamined` is
+  byte-identical in all six cells of the depth x mode matrix — nothing was re-baked.
+- **Two bypasses were stacked, and fixing either alone is inert.** The ambient ledger was
+  null during the semantic pass, and the layer read through raw `node:fs` so its reads
+  reported nothing even with the window open. A repo lint now fails the build on a
+  `fs/promises` import that bypasses the tracked namespace.
+- **Base rate on five real trees at quick and standard: zero unread inputs.** Nothing that
+  passes today newly gates.
+
+**Known: three routes around this gate remain open, all at `--scan-depth quick`, all
+pre-existing.** `chmod 600` on a *containing directory* still drops its files with no record
+(#515, exit 0 at 98/100); `--static-only` removes the only reader at that depth and
+reproduces the old behaviour exactly (#516); and the `-b oasb-1` / `-b oasb-2` arms reach
+exit 2 but print a passing rating and never name the file (#514). The shared root is that
+the unit is "inputs discovered but not read" while discovery is owned by whichever
+component happens to read — filed rather than half-fixed.
+
+**Correction to 0.30.0's changelog.** That entry says, of the settlement point, "an
+incomplete run cannot exit 0". That was true at `standard` and `deep` and **false at
+`quick`**, which the same entry's own "Known issue" block went on to describe. The sentence
+should have been scoped when it was written. It is true at every depth as of this release.
+
 ## [0.30.0] - 2026-08-11
 
 ### `secure` no longer passes a tree it could not read (#438)

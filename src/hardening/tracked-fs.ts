@@ -117,4 +117,20 @@ for (const name of PATH_INSPECTIONS) {
  */
 export const fs = wrapped as unknown as typeof realFs;
 
+/**
+ * There is deliberately NO tracked `readFileSync` here.
+ *
+ * A sync channel was built for #499 and then removed, because the sweep found
+ * no consumer for it: the only sync reads of the target on the scan path are
+ * citation re-reads of files already discovered and already attempted
+ * (`scanner-bridge.ts` `readArtifact`, `scanner.ts` `readArtifactForCitation`),
+ * and those must NOT report. `unreadableInputs` subtracts a failure only when
+ * the same method later reads that path successfully, so a re-read failing on a
+ * path another check had read would be an unsubtractable false unread input.
+ *
+ * If a genuine sync DISCOVERY read of the target ever appears, add the channel
+ * back — the wrapper shape above is the template. Do not route a re-read
+ * through it.
+ */
+
 export default fs;

@@ -354,6 +354,44 @@ export interface ScanOptions {
    * Suppresses checks that only make sense for source repos (GIT-001, GIT-002, GIT-003).
    */
   isNpmPackage?: boolean;
+  /**
+   * The NanoMind semantic pass, run INSIDE the coverage ledger's window (#499).
+   *
+   * The caller supplies it as a hook rather than calling it after `scan()`
+   * returns, and that placement is the whole fix. `scan()` installs the ambient
+   * ledger around `scanInner` only, so a semantic pass invoked afterwards ran
+   * with `activeLedger` null: its reads reported nothing, its read FAILURES
+   * reported nothing, and at `--scan-depth quick` — where 55 of the 61 static
+   * checks are skipped and the semantic layer is the only reader of the tree —
+   * an unreadable credential file left the assessment entirely. `secure` scored
+   * that tree 98/100 at exit 0 while the same tree readable scored 69/100 at
+   * exit 1.
+   *
+   * Running here also puts the pass ahead of the three things that consume the
+   * ledger and used to happen first: the `unreadablePaths()` collection and its
+   * per-path `SCAN-UNREAD-001` findings, the `.hmaignore` scope filter applied
+   * to them, and the coverage snapshot on the result. So the semantic layer's
+   * lost inputs travel the exact channels a static check's do, through one
+   * settlement point, with no second source of truth and no per-channel copy
+   * (#494 is the receipt for why that matters).
+   *
+   * It is invoked OUTSIDE any `coverage.run()` frame, which is what keeps the
+   * scope narrow: with an empty method stack `noteRead` drops the read as
+   * unattributable, so semantic SUCCESSES stay out of `filesExamined`, while
+   * `noteReadFailure` records the failure as `(unattributed)`. That asymmetry is
+   * the ledger's documented safety direction — dropping a success understates
+   * coverage, dropping a failure would assert nothing was lost — and it is why
+   * this fix moves the gate without re-baking a single coverage number.
+   *
+   * Findings it returns are appended before the score is computed. A throw is
+   * contained: the semantic layer is an enhancement and must never take the
+   * static scan down with it.
+   */
+  semanticPass?: (ctx: {
+    targetDir: string;
+    findings: SecurityFinding[];
+    projectType: ProjectType;
+  }) => Promise<{ findings?: SecurityFinding[] } | void>;
 }
 
 // Patterns for detecting exposed credentials
@@ -2555,6 +2593,95 @@ export class HardeningScanner {
       });
     }
 
+    // Record what the static fixes actually created, hashed, so rollback can
+    // remove those files without guessing (#262). Sourced from the fixed
+    // findings' own file attribution rather than "every backup candidate that
+    // is absent", which is what made the pre-0.25.1 rollback delete files the
+    // user wrote. The governance auto-fix runs after this returns, so the CLI
+    // calls recordCreatedFiles again for SOUL.md.
+    //
+    // Placed ABOVE the semantic pass, and that ordering is a durability rule
+    // rather than a preference (#499). The manifest is what `rollback` reads to
+    // know which files HMA generated, and the window between "the fix is on
+    // disk" and "the manifest says so" is a window in which an interrupt leaves
+    // `rollback` reporting `[+] Rollback complete` over a tree it did not
+    // restore. That window used to be ~45ms; running the semantic pass first
+    // would put a model load and a whole compile set inside it — measured at
+    // ~3.4s on a three-file fixture, and it scales with the tree. Both inputs
+    // are settled by now (the semantic layer never sets `fixed` and never
+    // writes), so nothing is lost by persisting before the pass rather than
+    // after it.
+    if (shouldFix && backupPath) {
+      await this.recordCreatedFiles(
+        targetDir,
+        backupPath,
+        [
+          ...findings.filter(f => f.fixed && f.file).map(f => f.file as string),
+          // Plus every path a fix actually wrote. `recordCreatedFiles` still
+          // records only paths HMA OBSERVED missing — at backup time, or
+          // proven absent immediately before the write — and guards each with
+          // a sha256, so widening the candidate list cannot make rollback
+          // delete a file the user wrote.
+          ...this.fixWritePaths,
+        ],
+      );
+    }
+
+    // #499 — the semantic pass runs HERE, inside the ledger's window and ahead
+    // of everything that reads the ledger. See `ScanOptions.semanticPass` for
+    // why the placement is the fix rather than an optimisation.
+    //
+    // Deliberately not wrapped in `this.coverage.run(...)`: an empty method
+    // stack is what makes the successful reads unattributable and therefore
+    // dropped, holding this change to the failure channel. Wrapping it would
+    // silently fold every semantic read into `filesExamined` and into whichever
+    // category the method registered — the wide change that was considered and
+    // rejected.
+    if (options.semanticPass) {
+      // Deliberately NOT wrapped in try/catch. Before #499 this pass ran as a
+      // statement after `scan()` returned, so a throw inside it killed the
+      // command outright — loudly. Catching it here because the call moved
+      // would convert that crash into a scan that quietly reports a
+      // semantic-free result as though it were complete, which is the same
+      // false-assurance shape this ledger exists to remove. Relocating the call
+      // must not change what a failure costs.
+      //
+      // `dropPathlessNoiseFloor`, because that is exactly what the caller used
+      // to hand the semantic pass: `cli.ts` read `result.allFindings`, and
+      // `allFindings` is this filter applied to this array. Passing the raw
+      // array instead would quietly widen the merge input, which is the kind of
+      // drift that turns a relocation into a behaviour change.
+      const mergeInput = dropPathlessNoiseFloor(findings, projectType);
+      // What the noise-floor filter removed, kept aside rather than discarded.
+      //
+      // The merge input has to be the filtered set — that is exactly what the
+      // caller used to hand the pass. But `findings` is ALSO the array
+      // `unevidencedFailures` is counted from further down (it iterates for
+      // `!f.file`), and those pathless records are precisely what the filter
+      // drops. Replacing the array with the merge result alone deleted them:
+      // measured, `unevidencedFailures` fell 41 -> 0 on ai-trust and 45 -> 1 on
+      // secretless, silently removing the one line that tells a reader a
+      // "categories clear" report is hiding ~40 checks that failed with nothing
+      // to point at (#421). A false-assurance regression of the same class this
+      // fix exists to close, caused by the fix. Pre-#499 the pass ran after
+      // `scan()` returned, so `findings` still held them.
+      const keptForMerge = new Set(mergeInput);
+      const noiseFloor = findings.filter((f) => !keptForMerge.has(f));
+      const semantic = await options.semanticPass({
+        targetDir,
+        findings: mergeInput,
+        projectType,
+      });
+      if (semantic?.findings) {
+        // Replace rather than append: the semantic pass MERGES (its contract is
+        // defense-in-depth — static findings can be upgraded but never
+        // suppressed), so it returns the whole set, and appending would
+        // duplicate every static finding it was handed.
+        findings.length = 0;
+        findings.push(...semantic.findings, ...noiseFloor);
+      }
+    }
+
     // #438 — inputs the scan found inside the target and could not read.
     //
     // This is the channel the PATHS travel on. The coverage object carries the
@@ -3184,28 +3311,6 @@ export class HardeningScanner {
     // Determine if all fixes completed successfully (atomic)
     const hasFixedFindings = filteredFindings.some((f) => f.fixed);
     const atomicFix = shouldFix ? !fixFailed && hasFixedFindings : undefined;
-
-    // Record what the static fixes actually created, hashed, so rollback can
-    // remove those files without guessing (#262). Sourced from the fixed
-    // findings' own file attribution rather than "every backup candidate that
-    // is absent", which is what made the pre-0.25.1 rollback delete files the
-    // user wrote. The governance auto-fix runs after this returns, so the CLI
-    // calls recordCreatedFiles again for SOUL.md.
-    if (shouldFix && backupPath) {
-      await this.recordCreatedFiles(
-        targetDir,
-        backupPath,
-        [
-          ...findings.filter(f => f.fixed && f.file).map(f => f.file as string),
-          // Plus every path a fix actually wrote. `recordCreatedFiles` still
-          // records only paths HMA OBSERVED missing — at backup time, or
-          // proven absent immediately before the write — and guards each with
-          // a sha256, so widening the candidate list cannot make rollback
-          // delete a file the user wrote.
-          ...this.fixWritePaths,
-        ],
-      );
-    }
 
     return {
       timestamp: new Date(),

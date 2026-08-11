@@ -15,7 +15,34 @@
  *   6. Return merged findings + integrity status
  */
 
-import { readFile, readdir, stat } from 'node:fs/promises';
+// The TRACKED namespace, not `node:fs` (#499). At `--scan-depth quick` 55 of the
+// 61 static checks are skipped and this module is the only reader of the target,
+// so while these imports were raw an unreadable credential file left the
+// assessment silently and `secure` scored the tree 98/100 at exit 0. Every read
+// below is a read OF THE SCAN TARGET and therefore coverage evidence; HMA's own
+// state (models, integrity manifest, LLM cache) is read elsewhere and stays raw.
+import { fs as trackedFs } from '../hardening/tracked-fs';
+const { readFile, readdir, stat } = trackedFs;
+// DELIBERATELY RAW, and the reason is not an oversight (#499).
+//
+// Two callers, and neither is a read of a discovered input:
+//
+//   1. `readArtifact` — the lazy re-read of a file the scan has ALREADY
+//      discovered and already attempted, to recover a citation line for a
+//      finding that carries none (#368).
+//   2. the governance-file candidate loop — an existence probe over five
+//      mutually exclusive spellings, where a miss is the ordinary case.
+//
+// Neither may record a lost input. See the comment at each site.
+//
+// `CoverageLedger.unreadableInputs` subtracts a recorded failure only when the
+// SAME method later read that path successfully (`coverage-ledger.ts:643`), and
+// reads made outside a `coverage.run()` frame are dropped as unattributable and
+// can never populate that per-method set. So a tracked re-read that failed on a
+// path some other check had read successfully would be a permanent,
+// unsubtractable unread input — a false exit 2 over a file the scan did read,
+// with a `chmod` remedy naming a file that is not the problem. A citation
+// re-read may lose a line number; it may not invent a lost input.
 import { readFileSync } from 'node:fs';
 import { join, relative, extname, basename, isAbsolute } from 'node:path';
 
@@ -273,7 +300,25 @@ export async function runNanoMindScan(
   let projectConstraints: Constraint[] = [];
   for (const candidate of governanceFileCandidates) {
     try {
-      const govContent = await readFile(candidate, 'utf-8');
+      // RAW read, deliberately, and this one is load-bearing (#499).
+      //
+      // This loop is an existence PROBE, not a read of a discovered input: five
+      // mutually exclusive spellings of one optional file, `break` on the first
+      // hit, and a miss is the ordinary case. Routing it through the tracked
+      // namespace put every miss on the coverage failure channel. `ENOENT` is
+      // filtered, so an absent `.opena2a/` stayed quiet — but a `.opena2a/`
+      // directory that cannot be traversed yields `EACCES` for all three policy
+      // spellings, and the scan then reported three unreadable inputs naming
+      // `policy.yml`, `policy.yaml` and `policy.json`, none of which exist. A
+      // clean tree went from `100/100 exit 0` to `85/100 exit 2` over three
+      // fabricated findings whose `chmod` remedy names a file that is not there.
+      //
+      // `tracked-fs` exempts `stat`/`access` for exactly this reason, in exactly
+      // these words: an existence probe's rejection is the normal case rather
+      // than a lost input, and counting it "would count one obstruction twice,
+      // in two units". The real obstruction — the unreadable directory — is
+      // already reported once by the static walker.
+      const govContent = readFileSync(candidate, 'utf-8');
       projectConstraints = extractDeclaredConstraints(govContent);
       break; // Use the first governance file found
     } catch {
