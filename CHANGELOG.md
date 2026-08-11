@@ -4,6 +4,28 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Breaking: the `hackmyagent_analyze_file` MCP stub is deleted (#502)
+
+The tool itself was removed in 0.29.0 (#463). What stayed behind was a stub that answered
+the name with a redirect to `hackmyagent_deep_scan` instead of the server's `Unknown tool:`
+response. That stub is gone. **An MCP client still calling `hackmyagent_analyze_file` now
+gets the standard unknown-tool error, which names the three tools the server does provide
+and points at `tools/list`, instead of the 0.29.0 migration text.** Both responses set
+`isError: true`, so a client that only inspects that field sees no change; a client that
+parsed the redirect text does.
+
+- **The stub was never a deprecation window.** It did not preserve the behaviour — it
+  only stopped `Unknown tool:` being a dead end for one minor cycle, inside the tool whose
+  job is to unblock people. That cycle covered 0.29.0 and 0.30.0. `hackmyagent_analyze_file`
+  has been absent from `tools/list` since 0.29.0, so no host model has been offered it for
+  two minor versions.
+- **`deep_scan` is still the replacement.** Point it at the directory containing the file,
+  or at the file itself when it is one of the artifacts discovery accepts.
+- **One helper went with it.** `discoverableArtifactNames` existed solely to generate the
+  redirect's artifact list and had no other caller; it is deleted rather than left as a
+  dead export whose own comment cites a tool that no longer exists. `FILE_DISCOVERY`
+  remains the single source of truth for what discovery accepts.
+
 ### The completeness gate now holds at `--scan-depth quick` (#499)
 
 0.30.0 closed #438 at `standard` and `deep` and said so, but at `quick` depth 55 of 61
