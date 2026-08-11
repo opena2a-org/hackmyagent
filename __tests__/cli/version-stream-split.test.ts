@@ -11,8 +11,9 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdtempSync } from 'node:fs';
+import { resolve, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
@@ -22,11 +23,20 @@ beforeAll(assertDistFreshIfPresent);
 const CLI_PATH = resolve(__dirname, '../../dist/cli.js');
 const STRIP_ANSI = /\x1b\[[0-9;]*m/g;
 
+// OPENA2A_TELEMETRY is opt-out only (config.js envOptOut only recognizes
+// off/0/false/no) — it can never force-enable telemetry against a disabled
+// on-disk config. Without isolating the config dir, this suite reads
+// whatever machine it runs on: a developer who has ever run
+// `hackmyagent telemetry off` gets a false red here while CI's clean
+// environment stays green. A fresh XDG_CONFIG_HOME per spawn removes the
+// dependency on ambient machine state.
+const XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), 'hma-version-test-'));
+
 function runVersion(flag: string): { stdout: string; stderr: string; status: number } {
   const res = spawnSync(process.execPath, [CLI_PATH, flag], {
     encoding: 'utf8',
     timeout: 20000,
-    env: { ...process.env, NODE_OPTIONS: '', NO_COLOR: '1', OPENA2A_TELEMETRY: 'on' },
+    env: { ...process.env, NODE_OPTIONS: '', NO_COLOR: '1', OPENA2A_TELEMETRY: 'on', XDG_CONFIG_HOME },
   });
   return {
     stdout: (res.stdout ?? '').replace(STRIP_ANSI, ''),
