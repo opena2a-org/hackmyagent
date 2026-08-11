@@ -4,6 +4,8 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-08-11
+
 ### `secure` no longer passes a tree it could not read (#438)
 
 A file the scan discovered and could not open used to leave the assessment entirely, so

@@ -372,7 +372,10 @@ export async function handleToolCall(
         }
 
       case 'hackmyagent_analyze_file': {
-        // Removed in 0.29.0 (#463). The stub is deleted in 0.30.0.
+        // Removed in 0.29.0 (#463). The stub outlives 0.30.0 deliberately:
+        // deleting it is a behaviour change to the MCP surface and wanted its
+        // own test, which is not something to add during a release cut. Tracked
+        // for 0.31.0.
         //
         // The earlier rationale here said `deep_scan` returns the same class of
         // content "bounded by what HMA decided is security-relevant, instead of
