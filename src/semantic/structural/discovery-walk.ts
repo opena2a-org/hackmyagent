@@ -28,7 +28,10 @@
  * such implementations is what #270/#318 were.
  */
 
-import * as fs from 'fs/promises';
+// Tracked namespace — see the note in `./index.ts`. The discovery walk is what
+// FINDS the inputs, so a read it cannot complete is precisely an
+// "input discovered but not read" (#438).
+import { fs } from '../../hardening/tracked-fs';
 import * as path from 'path';
 import type { FileType } from '../types';
 import { isPathWithinDirectory } from '../../hardening/contain';

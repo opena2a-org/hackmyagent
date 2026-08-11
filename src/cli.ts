@@ -182,6 +182,33 @@ function deepScanIncomplete(result: { findings?: unknown[]; suppressed?: ScanRes
   return gateSet(result).some((f: any) => f?.checkId === 'SEM-LLM-NOT-ANALYZED');
 }
 
+/**
+ * Inputs `secure` discovered inside the target and could not read (#438).
+ *
+ * The sibling of `deepScanIncomplete`, and the same sentence about a different
+ * layer: a run that could not open a file it found has not examined that file,
+ * and must not report a PASS over it. Measured on the branch before this, one
+ * fixture and one `chmod`: a tree holding a benign source file and a
+ * `src/secrets.js` with an `sk-` key scored `69/100 exit 1` readable and
+ * `98/100 exit 0` at mode 000, on all five output channels. The score went UP
+ * because the unread file left the assessment. `secure --fix` then wrote a
+ * `.gitignore` into that tree and the next run scored `100/100 exit 0` with the
+ * credential file still sitting there unreadable.
+ *
+ * The unit is inputs-discovered-but-not-read and NOT any files-read threshold.
+ * A files-read gate was tried and reverted: it moved the bar from 0 files to 1,
+ * and `--fix` satisfies it by writing into the target. An unread input cannot be
+ * cleared that way — the `EACCES` recorded on the other file is still there.
+ *
+ * Which errnos count is decided in `coverage-ledger.ts` and was measured, not
+ * assumed: `ENOENT`, `EISDIR` and `ENOTDIR` all mean "no file of the kind sought
+ * is at that path" and are excluded, which is why this reads 0 on hackmyagent's
+ * own tree, on secretless, on ai-trust and on atlas.
+ */
+function unreadInputCount(result: { coverage?: { unreadableInputs?: { count: number } } }): number {
+  return result.coverage?.unreadableInputs?.count ?? 0;
+}
+
 async function finishWithFindings(code: number): Promise<void> {
   await recordTelemetry(code);
   process.exitCode = code;
@@ -4330,7 +4357,15 @@ Output formats (--format):
   html   Shareable compliance report
 
 Severities: critical, high, medium, low
-Exit code 1 if critical/high issues found (or non-compliant in benchmark mode).
+
+Exit codes:
+  0  measured, and no critical/high issue was found
+  1  measured, and a critical/high issue was found
+     (or non-compliant in benchmark mode, or a score below --fail-below)
+  2  the run did not examine everything it found, so it reaches no pass:
+     an input was discovered and could not be read, or a --deep analysis
+     did not complete. What DID run is still reported and scored above,
+     and the score is an upper bound rather than a measurement of the tree.
 
 Examples:
   $ ${CLI_PREFIX} secure                           Scan current directory
@@ -4659,6 +4694,35 @@ Examples:
           ...expandSuppressed(result.suppressed),
         ] as any;
         scanner.applyScore(result, forScore);
+      }
+
+      // ── The one settlement point (#438) ──────────────────────────────────
+      //
+      // Placed here because this is the first statement at which the findings
+      // and the score are final and NO output channel has branched yet. Every
+      // one of the command's other exit statements is below it: the two
+      // benchmark arms, the json / sarif / html / asff returns, the text arm,
+      // and — the reason a per-channel gate could not work — the two
+      // `--fail-below` early returns that sit ABOVE each channel's own
+      // critical/high line and return before reaching it.
+      //
+      // It settles a FLOOR, not the whole code. An incomplete run must not exit
+      // 0; a run that also found a critical must still exit 1, and every arm
+      // below is free to raise the code for its own reasons. That direction is
+      // what makes this bypass-proof: no statement in this action assigns 0 or
+      // calls `finishWithFindings(0)` (verified by grep over the action body),
+      // so once this is set the only way back to 0 is for nothing to have gone
+      // wrong. A `return` inside any renderer leaves it standing.
+      //
+      // This is deliberately NOT a fifth copy of the three-line
+      // `critHigh / deepScanIncomplete` block each channel carries. #494 is what
+      // per-channel copies produce: `--fail-below` is checked on text and json
+      // only, so it is silently inert under `--format sarif|html|asff` on
+      // published 0.29.0. A per-channel coverage gate would be the third
+      // generation of that same bug.
+      const unreadInputs = unreadInputCount(result);
+      if (unreadInputs > 0) {
+        process.exitCode = EXIT_UNMEASURED;
       }
 
       // AI Infrastructure auto-detection — scan NemoClaw, OpenClaw, etc. if present.

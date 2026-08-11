@@ -16,7 +16,7 @@
  */
 
 import * as realFs from 'fs/promises';
-import { noteRead, noteInspect } from './coverage-ledger';
+import { noteRead, noteInspect, noteReadFailure } from './coverage-ledger';
 
 /**
  * Calls whose first argument is a path the scanner READ THE CONTENTS of.
@@ -47,8 +47,26 @@ type AnyFn = (...args: unknown[]) => unknown;
  * direction this ledger must never be wrong in.
  *
  * A failed read is therefore not evidence. There was nothing there to examine.
+ *
+ * That sentence is true for `ENOENT` and false for everything else, and the
+ * difference was #438. A file at mode 000 inside the target was discovered, was
+ * probed, and its bytes never reached a check — but because the rejection was
+ * rethrown and recorded nowhere, the file simply left the assessment, and
+ * `secure` scored the tree 98/100 at exit 0 where the same tree with the same
+ * file readable scored 69/100 at exit 1. The score went UP because the evidence
+ * went away.
+ *
+ * So a failed read now reports too, on its own channel. `onFailure` records the
+ * errno and the ledger decides which codes mean "discovered but not read"
+ * (`unreadableInputs` drops `ENOENT`). Recording on the rejection cannot
+ * overstate coverage the way report-on-call did: these paths never enter
+ * `filesReadAll`, and `filesExamined` is unchanged by this wrapper.
  */
-function attribute<T extends AnyFn>(fn: T, report: (target: unknown) => void): T {
+function attribute<T extends AnyFn>(
+  fn: T,
+  report: (target: unknown) => void,
+  onFailure?: (target: unknown, code: unknown) => void,
+): T {
   return function (this: unknown, ...args: unknown[]) {
     const target = args[0];
     const out = fn.apply(this, args) as Promise<unknown>;
@@ -59,6 +77,9 @@ function attribute<T extends AnyFn>(fn: T, report: (target: unknown) => void): T
           return value;
         },
         (err) => {
+          // Rethrown unchanged: every existing call site's error handling is
+          // untouched, and this wrapper stays invisible to control flow.
+          onFailure?.(target, (err as NodeJS.ErrnoException | null)?.code);
           throw err;
         },
       );
@@ -74,9 +95,15 @@ const wrapped: Record<string, unknown> = { ...realFs };
 
 for (const name of CONTENT_READS) {
   const fn = (realFs as unknown as Record<string, unknown>)[name];
-  if (typeof fn === 'function') wrapped[name] = attribute(fn as AnyFn, noteRead);
+  if (typeof fn === 'function') wrapped[name] = attribute(fn as AnyFn, noteRead, noteReadFailure);
 }
 
+// Failures are NOT reported on this channel. `access` is an existence probe by
+// definition and `stat` is used the same way, so their rejections are the
+// normal case rather than a lost input. An unreadable DIRECTORY is already
+// caught where it matters: `scanner.ts` catches the `readdir` rejection, sets
+// `complete = false` and emits a HIGH. Reporting it here as well would count
+// one obstruction twice, in two units.
 for (const name of PATH_INSPECTIONS) {
   const fn = (realFs as unknown as Record<string, unknown>)[name];
   if (typeof fn === 'function') wrapped[name] = attribute(fn as AnyFn, noteInspect);

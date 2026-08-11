@@ -288,6 +288,32 @@ export interface ScanResult {
     /** Distinct files read per category. Counts only — never filenames. */
     filesReadByCategory?: Record<string, number>;
     /**
+     * Inputs inside the target that were discovered and could not be read —
+     * `EACCES`, `EPERM`, `EIO` and every other errno EXCEPT the three that mean
+     * "no file of the kind sought is at that path": `ENOENT` (nothing there),
+     * `EISDIR` (a directory there) and `ENOTDIR` (a path component is a file).
+     * Those three are excluded because a probe for a config spelling that does
+     * not exist found nothing to examine, which is honest, and is the case
+     * `tracked-fs` attributes on resolve for.
+     *
+     * `coverage-ledger.ts`'s `countsAsUnread` is the single authority on that
+     * set; this sentence must be read as describing it, never as a second copy.
+     * #438's design brief named `EISDIR` as a code that SHOULD gate — counting
+     * it fires on every real repository (9 on hackmyagent's own tree, 10 on
+     * atlas), which is why the measurement overrode the brief.
+     *
+     * The unit `secure`'s completeness gate is derived from (#438). It is
+     * deliberately not a files-read threshold: the reverted fix moved the bar
+     * from 0 files to 1, and `secure --fix` then satisfied its own gate by
+     * writing a `.gitignore` into the target and scoring itself 100/100. An
+     * unread input cannot be cleared by writing a new readable file — the
+     * `EACCES` recorded on the other one is still there.
+     *
+     * Counts and errno codes, never paths. The paths reach the user through a
+     * finding, which is the channel that carries `file:line` and a fix.
+     */
+    unreadableInputs?: { count: number; codes: Record<string, number> };
+    /**
      * FAILED checks that MATCHED something in the tree and were dropped from
      * `findings` anyway, because the check's prefix is out of scope for the
      * detected project type.
