@@ -15,7 +15,29 @@
  *   6. Return merged findings + integrity status
  */
 
-import { readFile, readdir, stat } from 'node:fs/promises';
+// The TRACKED namespace, not `node:fs` (#499). At `--scan-depth quick` 55 of the
+// 61 static checks are skipped and this module is the only reader of the target,
+// so while these imports were raw an unreadable credential file left the
+// assessment silently and `secure` scored the tree 98/100 at exit 0. Every read
+// below is a read OF THE SCAN TARGET and therefore coverage evidence; HMA's own
+// state (models, integrity manifest, LLM cache) is read elsewhere and stays raw.
+import { fs as trackedFs } from '../hardening/tracked-fs';
+const { readFile, readdir, stat } = trackedFs;
+// DELIBERATELY RAW, and the reason is not an oversight (#499).
+//
+// This import serves `readArtifact` only — the lazy re-read of a file the scan
+// has ALREADY discovered and already attempted, used to recover a citation line
+// for a finding that carries none (#368). It is not a discovery read, and it
+// must not be able to record one.
+//
+// `CoverageLedger.unreadableInputs` subtracts a recorded failure only when the
+// SAME method later read that path successfully (`coverage-ledger.ts:643`), and
+// reads made outside a `coverage.run()` frame are dropped as unattributable and
+// can never populate that per-method set. So a tracked re-read that failed on a
+// path some other check had read successfully would be a permanent,
+// unsubtractable unread input — a false exit 2 over a file the scan did read,
+// with a `chmod` remedy naming a file that is not the problem. A citation
+// re-read may lose a line number; it may not invent a lost input.
 import { readFileSync } from 'node:fs';
 import { join, relative, extname, basename, isAbsolute } from 'node:path';
 

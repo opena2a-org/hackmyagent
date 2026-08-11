@@ -394,3 +394,89 @@ describe('#438 --fail-below cannot bypass the settlement', () => {
     }
   });
 });
+
+/**
+ * #499 — the same settlement, at every `--scan-depth`.
+ *
+ * #438 closed the gate at `standard` and `deep` and left `quick` open, so a
+ * documented flag was a one-token bypass of the completeness floor. Measured on
+ * `67e6f04` (0.30.0, published `latest`), the fixture below:
+ *
+ *   mode 000 --scan-depth quick     ->  98/100  exit 0   unreadableInputs 0
+ *   mode 000 --scan-depth standard  ->  93/100  exit 2   unreadableInputs 1
+ *   mode 000 --scan-depth deep      ->  93/100  exit 2   unreadableInputs 1
+ *
+ * At quick depth 55 of the 61 orchestrated checks are skipped and the ONLY
+ * reader of the file is the NanoMind semantic layer, which ran after
+ * `scanInner` had already returned — outside the coverage ledger's window, and
+ * through the raw `fs` namespace rather than the tracked one. Two independent
+ * bypasses stacked: the ambient ledger was null, and the reads were untracked.
+ *
+ * The depths are read out of `src/cli.ts`'s own `validDepths` rather than
+ * written here, so a fourth depth cannot be added without either extending this
+ * suite or failing it.
+ */
+const VALID_DEPTHS: string[] = (() => {
+  const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'cli.ts'), 'utf-8');
+  const m = src.match(/const validDepths = \[([^\]]+)\]/);
+  if (!m) throw new Error('cannot locate validDepths in src/cli.ts — the enumeration source moved');
+  const depths = m[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+  // A silently-empty parse would enumerate nothing and pass every case.
+  if (depths.length < 3) throw new Error(`validDepths parsed to ${JSON.stringify(depths)} — refusing to run a vacuous enumeration`);
+  return depths;
+})();
+
+describe('#499 the completeness floor holds at every scan depth', () => {
+  it.each(VALID_DEPTHS)('%s: an unreadable input is not a pass', (depth) => {
+    const dir = makeTree(`depth-${depth}`);
+    if (!makeUnreadable(path.join(dir, 'src', 'secrets.js'))) {
+      console.warn('skipped: this process can read a mode-000 file (running as root?)');
+      return;
+    }
+    expect(run(['secure', dir, '--scan-depth', depth]).status).toBe(EXIT_INCOMPLETE);
+  }, 240_000);
+
+  it.each(VALID_DEPTHS)('%s: the unread input is NAMED, on every channel', (depth) => {
+    const dir = makeTree(`depth-named-${depth}`);
+    if (!makeUnreadable(path.join(dir, 'src', 'secrets.js'))) {
+      console.warn('skipped: this process can read a mode-000 file (running as root?)');
+      return;
+    }
+    // A count with no name is the shape #438 rejected: `outOfScope` rendered as
+    // a bare number on two channels and not at all on three.
+    const body = json(['secure', dir, '--scan-depth', depth]);
+    expect(body.body).not.toBeNull();
+    const named = (body.body.findings ?? []).filter((f: any) => f.checkId === 'SCAN-UNREAD-001');
+    expect(named.length).toBe(1);
+    expect(named[0].file).toContain('secrets.js');
+    expect(run(['secure', dir, '--scan-depth', depth, '--format', 'sarif']).out).toContain('SCAN-UNREAD-001');
+  }, 240_000);
+
+  it.each(VALID_DEPTHS)('%s CONTROL: the same tree fully readable keeps exit 1', (depth) => {
+    // Without this the suite would pass on a change that gated every tree.
+    //
+    // At `quick` the exit 1 is earned by AST-CRED-001/003 from the SEMANTIC
+    // layer — the static pass never reads `secrets.js` at that depth. So a
+    // "fix" that closed the gap by disabling NanoMind at quick turns this
+    // control red, which is correct: it would trade a false pass for a blind
+    // one.
+    const dir = makeTree(`depth-control-${depth}`);
+    expect(run(['secure', dir, '--scan-depth', depth]).status).toBe(EXIT_FAIL);
+  }, 240_000);
+
+  it.each(VALID_DEPTHS)('%s CONTROL: a clean readable tree still exits 0', (depth) => {
+    // The negative control that keeps this a gate rather than a blanket fail.
+    //
+    // Ruled 2026-08-11 (Abdel, on a CPO/CISO split): `--scan-depth quick` KEEPS
+    // its ability to exit 0. CISO argued a run that skipped 55 of 61 checks may
+    // never pass; the ruling is that #438's unit is "inputs discovered and not
+    // read", not "every check ran", and a user passing `--scan-depth quick`
+    // consented to the reduced depth. That objection is tracked separately, not
+    // absorbed here.
+    const dir = path.join(root, `depth-clean-${depth}`);
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'util.js'), 'function add(a,b){return a+b;}\nmodule.exports={add};\n');
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\n.env\n*.pem\n*.key\n');
+    expect(run(['secure', dir, '--scan-depth', depth]).status).toBe(0);
+  }, 240_000);
+});

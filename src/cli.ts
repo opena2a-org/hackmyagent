@@ -4589,6 +4589,24 @@ Examples:
 
       const scanner = new HardeningScanner();
       const scanStartMs = Date.now();
+
+      // NanoMind Semantic Compiler: AST-based analysis runs alongside static checks
+      // Defense-in-depth: static findings can NEVER be suppressed, only upgraded
+      //
+      // #499 — passed as a HOOK rather than called after `scan()` returns. The
+      // coverage ledger is ambient and installed around `scanInner` only, so
+      // while this ran here as a following statement, every read the semantic
+      // layer made was invisible to the ledger — including its read FAILURES.
+      // At `--scan-depth quick`, where 55 of the 61 static checks are skipped
+      // and this layer is the only reader of the tree, that made `chmod 000` a
+      // one-flag bypass of the completeness gate: 98/100 at exit 0 over an
+      // unreadable credential file. Running inside the window also puts it
+      // ahead of the `SCAN-UNREAD-001` generation, the `.hmaignore` scope
+      // filter and the coverage snapshot, so its lost inputs travel the same
+      // channels a static check's do, settled once (#494).
+      const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
+      let nmResult: Awaited<ReturnType<typeof orchestrateNanoMind>> | undefined;
+
       const result = await scanner.scan({
         targetDir,
         autoFix: options.fix ?? false,
@@ -4598,32 +4616,44 @@ Examples:
         scanDepth,
         cliName: CLI_PREFIX,
         onProgress,
+        semanticPass: async ({ findings: existingFindings, projectType }) => {
+          nmResult = await orchestrateNanoMind(targetDir, existingFindings, {
+            staticOnly: isStaticOnly,
+            ci: options.ci,
+            deep: isDeep,
+            nanomind: resolveNanomindFlag(options),
+            silent: format !== 'text',
+            projectType,
+            // Sweep eligibility must match what the product reports: a finding
+            // dropped by the projectType filter does not structurally cover its
+            // file (it never reaches the user), so the sweep still reads it.
+            findingVisible: (f) => scanner.findingAppliesTo(f, projectType),
+          });
+          return { findings: nmResult.mergedFindings };
+        },
       });
       const scanDurationMs = Date.now() - scanStartMs;
 
-      // NanoMind Semantic Compiler: AST-based analysis runs alongside static checks
-      // Defense-in-depth: static findings can NEVER be suppressed, only upgraded
-      const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-      const existingFindings = result.allFindings || result.findings || [];
-      const nmResult = await orchestrateNanoMind(targetDir, existingFindings, {
-        staticOnly: isStaticOnly,
-        ci: options.ci,
-        deep: isDeep,
-        nanomind: resolveNanomindFlag(options),
-        silent: format !== 'text',
-        projectType: result.projectType,
-        // Sweep eligibility must match what the product reports: a finding
-        // dropped by the projectType filter does not structurally cover its
-        // file (it never reaches the user), so the sweep still reads it.
-        // `|| 'library'` mirrors the display-filter + check-path call sites
-        // (detectProjectType always returns a concrete value today; the
-        // fallback keeps this robust if the type ever loosens).
-        findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library'),
-      });
+      // `scanInner` invokes the hook unconditionally and does not swallow its
+      // throw, so reaching here means it ran. Asserted rather than defaulted:
+      // the fields read off it below (`compileSetTruncated`, `compiledArtifacts`)
+      // feed the semantic truncation disclosure, and defaulting them would
+      // print "not truncated" over a pass that never happened.
+      if (!nmResult) throw new Error('internal: the semantic pass did not run');
 
       {
         // Re-apply all filters after NanoMind merge (merge uses allFindings which is unfiltered)
-        const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir, result.projectType || 'library');
+        // #499 — re-filter from `result.allFindings`, NOT from
+        // `nmResult.mergedFindings`. The semantic pass now runs inside the scan
+        // and therefore BEFORE `SCAN-UNREAD-001` is generated, so
+        // `mergedFindings` is the merge of the static set as it stood at that
+        // moment and carries no unread-input findings. Re-deriving the whole
+        // report from it would delete them, taking #438's per-path disclosure
+        // with them and leaving exit 2 with nothing named — the precise failure
+        // the scanner's own comment at the generation site warns against.
+        // `allFindings` is the merged set with those findings pushed on top.
+        const postMerge = result.allFindings || result.findings || [];
+        const refiltered = await scanner.reapplyIgnoreFilters(postMerge, targetDir, result.projectType || 'library');
         // #450 — the semantic layer produces findings the scan pass never saw,
         // so this call can narrow scope where `scanInner` did not. Take the
         // wider of the two records rather than the later one, or a narrowing
