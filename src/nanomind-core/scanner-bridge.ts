@@ -25,10 +25,15 @@ import { fs as trackedFs } from '../hardening/tracked-fs';
 const { readFile, readdir, stat } = trackedFs;
 // DELIBERATELY RAW, and the reason is not an oversight (#499).
 //
-// This import serves `readArtifact` only — the lazy re-read of a file the scan
-// has ALREADY discovered and already attempted, used to recover a citation line
-// for a finding that carries none (#368). It is not a discovery read, and it
-// must not be able to record one.
+// Two callers, and neither is a read of a discovered input:
+//
+//   1. `readArtifact` — the lazy re-read of a file the scan has ALREADY
+//      discovered and already attempted, to recover a citation line for a
+//      finding that carries none (#368).
+//   2. the governance-file candidate loop — an existence probe over five
+//      mutually exclusive spellings, where a miss is the ordinary case.
+//
+// Neither may record a lost input. See the comment at each site.
 //
 // `CoverageLedger.unreadableInputs` subtracts a recorded failure only when the
 // SAME method later read that path successfully (`coverage-ledger.ts:643`), and
@@ -295,7 +300,25 @@ export async function runNanoMindScan(
   let projectConstraints: Constraint[] = [];
   for (const candidate of governanceFileCandidates) {
     try {
-      const govContent = await readFile(candidate, 'utf-8');
+      // RAW read, deliberately, and this one is load-bearing (#499).
+      //
+      // This loop is an existence PROBE, not a read of a discovered input: five
+      // mutually exclusive spellings of one optional file, `break` on the first
+      // hit, and a miss is the ordinary case. Routing it through the tracked
+      // namespace put every miss on the coverage failure channel. `ENOENT` is
+      // filtered, so an absent `.opena2a/` stayed quiet — but a `.opena2a/`
+      // directory that cannot be traversed yields `EACCES` for all three policy
+      // spellings, and the scan then reported three unreadable inputs naming
+      // `policy.yml`, `policy.yaml` and `policy.json`, none of which exist. A
+      // clean tree went from `100/100 exit 0` to `85/100 exit 2` over three
+      // fabricated findings whose `chmod` remedy names a file that is not there.
+      //
+      // `tracked-fs` exempts `stat`/`access` for exactly this reason, in exactly
+      // these words: an existence probe's rejection is the normal case rather
+      // than a lost input, and counting it "would count one obstruction twice,
+      // in two units". The real obstruction — the unreadable directory — is
+      // already reported once by the static walker.
+      const govContent = readFileSync(candidate, 'utf-8');
       projectConstraints = extractDeclaredConstraints(govContent);
       break; // Use the first governance file found
     } catch {

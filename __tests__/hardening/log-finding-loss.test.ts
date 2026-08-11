@@ -400,7 +400,21 @@ describeSpawn('#421 layer 2 — the run discloses what it silenced', () => {
   // indistinguishable from a clean result. It is disclosed as a count.
   it('counts the checks that failed with nothing to point at', () => {
     const scan = scanFixture(HOME_DIR, undefined);
-    expect(scan?.coverage?.unevidencedFailures).toBeGreaterThan(0);
+    // NOT `toBeGreaterThan(0)`, which is what this asserted until #499.
+    //
+    // On this fixture the honest count is in the dozens, and the pathless
+    // noise floor it counts is carried in the same array the semantic merge
+    // replaces. #499's first cut replaced that array with the merge result
+    // alone and dropped the whole noise floor — measured, `unevidencedFailures`
+    // fell to 41 -> 0 on ai-trust and 45 -> 1 on secretless, deleting the only
+    // line that tells a reader a "categories clear" report is hiding ~40 checks
+    // that failed with nothing to point at.
+    //
+    // `> 0` survived that intact, because this fixture lands on exactly 1. A
+    // guard one finding away from vacuous is why the regression shipped green.
+    // The floor is set below the measured value with room for legitimate check
+    // churn, and high enough that a collapse to a handful cannot pass.
+    expect(scan?.coverage?.unevidencedFailures).toBeGreaterThan(15);
   });
 
   it('states that count on the Coverage line', () => {

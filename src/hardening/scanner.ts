@@ -2593,6 +2593,40 @@ export class HardeningScanner {
       });
     }
 
+    // Record what the static fixes actually created, hashed, so rollback can
+    // remove those files without guessing (#262). Sourced from the fixed
+    // findings' own file attribution rather than "every backup candidate that
+    // is absent", which is what made the pre-0.25.1 rollback delete files the
+    // user wrote. The governance auto-fix runs after this returns, so the CLI
+    // calls recordCreatedFiles again for SOUL.md.
+    //
+    // Placed ABOVE the semantic pass, and that ordering is a durability rule
+    // rather than a preference (#499). The manifest is what `rollback` reads to
+    // know which files HMA generated, and the window between "the fix is on
+    // disk" and "the manifest says so" is a window in which an interrupt leaves
+    // `rollback` reporting `[+] Rollback complete` over a tree it did not
+    // restore. That window used to be ~45ms; running the semantic pass first
+    // would put a model load and a whole compile set inside it — measured at
+    // ~3.4s on a three-file fixture, and it scales with the tree. Both inputs
+    // are settled by now (the semantic layer never sets `fixed` and never
+    // writes), so nothing is lost by persisting before the pass rather than
+    // after it.
+    if (shouldFix && backupPath) {
+      await this.recordCreatedFiles(
+        targetDir,
+        backupPath,
+        [
+          ...findings.filter(f => f.fixed && f.file).map(f => f.file as string),
+          // Plus every path a fix actually wrote. `recordCreatedFiles` still
+          // records only paths HMA OBSERVED missing — at backup time, or
+          // proven absent immediately before the write — and guards each with
+          // a sha256, so widening the candidate list cannot make rollback
+          // delete a file the user wrote.
+          ...this.fixWritePaths,
+        ],
+      );
+    }
+
     // #499 — the semantic pass runs HERE, inside the ledger's window and ahead
     // of everything that reads the ledger. See `ScanOptions.semanticPass` for
     // why the placement is the fix rather than an optimisation.
@@ -2617,9 +2651,25 @@ export class HardeningScanner {
       // `allFindings` is this filter applied to this array. Passing the raw
       // array instead would quietly widen the merge input, which is the kind of
       // drift that turns a relocation into a behaviour change.
+      const mergeInput = dropPathlessNoiseFloor(findings, projectType);
+      // What the noise-floor filter removed, kept aside rather than discarded.
+      //
+      // The merge input has to be the filtered set — that is exactly what the
+      // caller used to hand the pass. But `findings` is ALSO the array
+      // `unevidencedFailures` is counted from further down (it iterates for
+      // `!f.file`), and those pathless records are precisely what the filter
+      // drops. Replacing the array with the merge result alone deleted them:
+      // measured, `unevidencedFailures` fell 41 -> 0 on ai-trust and 45 -> 1 on
+      // secretless, silently removing the one line that tells a reader a
+      // "categories clear" report is hiding ~40 checks that failed with nothing
+      // to point at (#421). A false-assurance regression of the same class this
+      // fix exists to close, caused by the fix. Pre-#499 the pass ran after
+      // `scan()` returned, so `findings` still held them.
+      const keptForMerge = new Set(mergeInput);
+      const noiseFloor = findings.filter((f) => !keptForMerge.has(f));
       const semantic = await options.semanticPass({
         targetDir,
-        findings: dropPathlessNoiseFloor(findings, projectType),
+        findings: mergeInput,
         projectType,
       });
       if (semantic?.findings) {
@@ -2628,7 +2678,7 @@ export class HardeningScanner {
         // suppressed), so it returns the whole set, and appending would
         // duplicate every static finding it was handed.
         findings.length = 0;
-        findings.push(...semantic.findings);
+        findings.push(...semantic.findings, ...noiseFloor);
       }
     }
 
@@ -3261,28 +3311,6 @@ export class HardeningScanner {
     // Determine if all fixes completed successfully (atomic)
     const hasFixedFindings = filteredFindings.some((f) => f.fixed);
     const atomicFix = shouldFix ? !fixFailed && hasFixedFindings : undefined;
-
-    // Record what the static fixes actually created, hashed, so rollback can
-    // remove those files without guessing (#262). Sourced from the fixed
-    // findings' own file attribution rather than "every backup candidate that
-    // is absent", which is what made the pre-0.25.1 rollback delete files the
-    // user wrote. The governance auto-fix runs after this returns, so the CLI
-    // calls recordCreatedFiles again for SOUL.md.
-    if (shouldFix && backupPath) {
-      await this.recordCreatedFiles(
-        targetDir,
-        backupPath,
-        [
-          ...findings.filter(f => f.fixed && f.file).map(f => f.file as string),
-          // Plus every path a fix actually wrote. `recordCreatedFiles` still
-          // records only paths HMA OBSERVED missing — at backup time, or
-          // proven absent immediately before the write — and guards each with
-          // a sha256, so widening the candidate list cannot make rollback
-          // delete a file the user wrote.
-          ...this.fixWritePaths,
-        ],
-      );
-    }
 
     return {
       timestamp: new Date(),

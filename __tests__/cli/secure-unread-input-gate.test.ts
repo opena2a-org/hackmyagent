@@ -480,3 +480,59 @@ describe('#499 the completeness floor holds at every scan depth', () => {
     expect(run(['secure', dir, '--scan-depth', depth]).status).toBe(0);
   }, 240_000);
 });
+
+/**
+ * #499 — an existence PROBE that misses is not a lost input.
+ *
+ * The first cut of the #499 sweep routed the semantic layer's governance-file
+ * candidate loop through the tracked namespace. That loop probes five mutually
+ * exclusive spellings of one optional file and `break`s on the first hit, so a
+ * miss is the ordinary case. `ENOENT` is filtered and an absent `.opena2a/`
+ * stayed quiet — but a `.opena2a/` that cannot be traversed answers `EACCES`
+ * for all three policy spellings, and the scan then reported three unreadable
+ * inputs naming `policy.yml`, `policy.yaml` and `policy.json`, none of which
+ * exist. A clean tree went from `100/100 exit 0` to `85/100 exit 2` over three
+ * fabricated findings whose `chmod` remedy names a file that is not there.
+ *
+ * Measured on the broken build: quick `unread 3`, standard `unread 4` — the one
+ * real obstruction counted a second, third and fourth time.
+ */
+describe('#499 a probe miss is not an unread input', () => {
+  function probeTree(name: string): string {
+    const dir = path.join(root, name);
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '.opena2a'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'util.js'), 'function add(a,b){return a+b;}\nmodule.exports={add};\n');
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\n.env\n*.pem\n*.key\n');
+    fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"probe","version":"1.0.0"}\n');
+    return dir;
+  }
+
+  it.each(VALID_DEPTHS)('%s: an unreadable .opena2a/ names no file that does not exist', (depth) => {
+    const dir = probeTree(`probe-${depth}`);
+    const gov = path.join(dir, '.opena2a');
+    fs.chmodSync(gov, 0o000);
+    restore.push(gov);
+    try {
+      fs.readdirSync(gov);
+      console.warn('skipped: this process can read a mode-000 directory (running as root?)');
+      return;
+    } catch { /* genuinely unreadable */ }
+
+    const res = json(['secure', dir, '--scan-depth', depth]);
+    expect(res.body).not.toBeNull();
+    const named = (res.body.findings ?? [])
+      .filter((f: any) => f.checkId === 'SCAN-UNREAD-001')
+      .map((f: any) => f.file as string);
+
+    // Every path the gate names must actually exist. This is the assertion
+    // that fails on the broken build, and it is phrased as "no phantom" rather
+    // than a count so it stays true if the directory itself is legitimately
+    // reported (which it is, at standard depth, exactly once).
+    const phantom = named.filter((rel) => !fs.existsSync(path.join(dir, rel)));
+    expect(phantom).toEqual([]);
+
+    // And the one real obstruction is not counted more than once.
+    expect(named.length).toBeLessThanOrEqual(1);
+  }, 240_000);
+});
