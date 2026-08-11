@@ -71,12 +71,22 @@ const ALLOWED = [
     reason:
       'adm-zip <0.6.0, reached only through onnxruntime-node, which HackMyAgent ' +
       'needs for local NanoMind inference. onnxruntime-node@1.27.0 is the latest ' +
-      'release and pins adm-zip ^0.5.16; the patched 0.6.0 is outside that caret, ' +
-      'so no version of the dependency resolves clean and `overrides` do not reach ' +
-      'a consumer. Tracked upstream at microsoft/onnxruntime. The extract path that ' +
-      'carries the advisory runs in onnxruntime-node postinstall when it downloads ' +
-      'execution-provider binaries; the base package ships those binaries, so the ' +
-      'script exits before requiring adm-zip on a default install.',
+      'STABLE release and pins adm-zip ^0.5.16; the patched 0.6.0 is outside that ' +
+      'caret, so no stable version resolves clean. `overrides` do not reach a ' +
+      'consumer -- this package already ships one and consumers still resolve ' +
+      'adm-zip@0.5.18, so that lever is spent, not untried. The fix HAS landed ' +
+      'upstream on the dev channel: onnxruntime-node@1.29.0-dev.20260810-1d69bbd631 ' +
+      'declares adm-zip ^0.6.0, and our ^1.27.0 range admits it, so a stable 1.28/1.29 ' +
+      'cut resolves this with no action from us. ' +
+      'REACHABILITY, corrected 2026-08-10 -- the previous text here claimed the base ' +
+      'package ships the execution-provider binaries so the script exits before ' +
+      'requiring adm-zip. That was wrong in our favour, which is the worst direction ' +
+      'for a waiver to be wrong. adm-zip is required unconditionally at ' +
+      'script/install-utils.js:11 on every platform. Whether a ZIP is PARSED depends ' +
+      'on install-metadata requirements: five platforms are [], but linux/x64 is ' +
+      '["cuda12"] and the tarball ships none of the three required .so files -- so on ' +
+      'linux/x64, the ordinary CI and container platform, postinstall DOES download a ' +
+      'nupkg from nuget.org and parse it. Impact is availability-only and install-time.',
     reviewBy: '2026-11-01',
   },
 ];
