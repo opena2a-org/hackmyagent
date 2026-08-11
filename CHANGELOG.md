@@ -4,6 +4,40 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### `fix-all --dry-run` no longer reports a tree as fixed that it never wrote to (#504, in part)
+
+`--dry-run` and `--scan-only` both write nothing, and they disagreed on the exit code. One
+fixture — a `.env` and an `mcp.json`, each holding an Anthropic key:
+
+| command | exit | summary line |
+|---|---|---|
+| `fix-all <dir> --scan-only` | 1 | 2 CRITICAL `CRED-001` outstanding |
+| `fix-all <dir> --dry-run` | **0** | `Findings: 3 total \| 2 fixed` |
+
+Nothing was written in either run, and `fix-all --help` states "Exit code 1 if critical/high
+issues remain after fixing". After a dry run they all remain.
+
+- **The cause was one shared set.** Each plugin's dry-run branch returns a synthetic preview
+  remediation per auto-fixable finding, and those populated the same `fixedIds` set the real
+  fix pass uses — so a previewed finding was filtered out of `remainingFindings`, which both
+  the exit code and the `--json` payload read. Preview remediations are now excluded from
+  that set. The "Fixes Available" block still renders the full preview: it reads the
+  unfiltered list, so gating correctly costs nothing that `--dry-run` exists for.
+- **The summary no longer says "fixed" over a tree it did not touch.** A dry run now reports
+  `N fixable (nothing written)`.
+
+**This is a breaking change for any CI job running `fix-all --dry-run` as a soft preview** —
+a tree with outstanding critical or high findings now exits 1 there, as it already did under
+`--scan-only`.
+
+**The other half of #504 is not in this release.** `fix-all` still does not detect credentials
+in ordinary source files, so a tree whose credentials live in `.py`/`.js` still passes
+`fix-all` while `secure` reports CRITICAL on the same bytes. Two attempts at that half were
+built and rejected in review: the first fired CRITICAL on AWS's own documented example keys,
+and the second silently removed `secure`'s existing detection of live credentials in
+`_test.go`, `test_*.py` and `*.test.tsx` by widening a pattern the two commands share. The
+measurements from both attempts are recorded on the issue so the third does not repeat them.
+
 ### Breaking: the `hackmyagent_analyze_file` MCP stub is deleted (#502)
 
 The tool itself was removed in 0.29.0 (#463). What stayed behind was a stub that answered

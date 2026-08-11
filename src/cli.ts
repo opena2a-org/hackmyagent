@@ -8175,7 +8175,20 @@ Examples:
         // same tree. A finding that was remediated but is not auto-fixable is
         // still outstanding: the remediation recorded an attempt, not a
         // resolution.
-        const fixedIds = new Set(allRemediations.map((r) => r.findingId));
+        // A dry run writes nothing, so nothing it "remediated" is resolved.
+        // Each plugin's dry-run branch returns a synthetic preview remediation
+        // per auto-fixable finding, and counting those here cleared the finding
+        // from `remainingFindings` — which both the exit code and the JSON
+        // payload read. Measured on one fixture (`.env` + `mcp.json`, each
+        // holding an Anthropic key): `--scan-only` exited 1 with 2 CRITICAL
+        // while `--dry-run` exited 0 and reported "2 fixed" over a tree it had
+        // not touched. `fix-all --help` promises "Exit code 1 if critical/high
+        // issues remain after fixing", and after a dry run they all remain.
+        //
+        // The preview list itself is unaffected: the "Fixes Available" block
+        // renders `allRemediations`, which is deliberately not filtered here.
+        const appliedRemediations = options.dryRun ? [] : allRemediations;
+        const fixedIds = new Set(appliedRemediations.map((r) => r.findingId));
         const remainingFindings = allFindings.filter(
           (f) => !fixedIds.has(f.id) || !f.autoFixable
         );
@@ -8217,7 +8230,10 @@ Examples:
 
         // Summary
         console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-        console.log(`\nFindings: ${allFindings.length} total | ${allRemediations.length} fixed\n`);
+        console.log(
+          `\nFindings: ${allFindings.length} total | ${allRemediations.length} ` +
+          `${options.dryRun ? 'fixable (nothing written)' : 'fixed'}\n`
+        );
 
         // Show remaining issues (not auto-fixed)
         // `remainingFindings` is computed once, above the JSON branch, so
