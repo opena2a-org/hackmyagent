@@ -334,11 +334,14 @@ strength of an opt-in recorded earlier on the same machine. Most scanning comman
 `--json` — `check`, `secure`, `attack`, `scan`, `fix-all`, `scan-soul`, `harden-soul`,
 `red-team`, `wild`, `detect`, `trust`.
 
-Neither flag changes the exit code: a command that exits 1 on findings exits 1 in every
-channel, with or without `--ci` and with or without `--json`. `--ci` selects how a run
-reports, never what it concludes. To gate a pipeline on severity, read the exit code the
-command already returns; to gate on the score, use `--fail-below <n>` on the text and
-JSON channels.
+`--json` never changes the exit code: a command that exits 1 on findings exits 1 in both
+channels. `--ci` mostly doesn't either — it selects how a run reports, not what it
+concludes. The one exception is `scan-soul`, which additionally exits 1 under `--ci` on a
+HIGH-severity SOUL finding (a governance violation, a profile mismatch, or an unrecognized
+`--profile` value) that renders as a warning and passes CI without the flag — deliberate,
+so a pipeline can opt into treating a misleading SOUL verdict as a failure. To gate a
+pipeline on severity, read the exit code the command already returns; to gate on the
+score, use `--fail-below <n>` on the text and JSON channels.
 
 ```yaml
 name: Agent Security

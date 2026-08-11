@@ -433,8 +433,12 @@ let globalCiMode = false;
  * programmatic caller that constructs an options object directly still works.
  *
  * `--ci` is an OUTPUT-MODE flag. It suppresses prompts and turns contribution off.
- * It never changes the exit code -- a command that exits 1 on findings exits 1 in
- * both channels (README.md, "CI/CD integration").
+ * In `secure` and `fix-all` it never changes the exit code -- a command that exits
+ * 1 on findings exits 1 in both channels (README.md, "CI/CD integration").
+ * `scan-soul` is the deliberate exception: it gates its exit code on three
+ * HIGH-severity findings (governance violation, profile mismatch, invalid
+ * `--profile` marker) only when isCiMode() is true -- pre-existing behavior from
+ * #162/#206, unrelated to #454, and NOT covered by the "never" above.
  */
 function isCiMode(options?: { ci?: boolean }): boolean {
   return globalCiMode || options?.ci === true;
@@ -8597,7 +8601,7 @@ Examples:
   .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', validateRegistryUrl(process.env.REGISTRY_URL || 'https://api.oa2a.org'))
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
-  .option('--ci', 'CI mode: suppress interactive prompts and disable contribution. Does not change the exit code')
+  .option('--ci', 'CI mode: suppress interactive prompts and disable contribution. Also exits non-zero on a HIGH-severity SOUL finding (governance violation, profile mismatch, or unrecognized --profile value)')
   .option('--explain', 'Print the 9-domain governance model and exit (no scan)')
   .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean; publish?: boolean; registryUrl?: string; contribute?: boolean; ci?: boolean; explain?: boolean }) => {
     try {

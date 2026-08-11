@@ -25,12 +25,16 @@ an isolated `HOME` and the flush threshold unreached:
 explicit opt-in on that machine. What it failed to do was turn it **off**, which is the one
 thing the flag existed to do there.
 
-- **`--ci` is an output-mode flag and does not change the exit code.** The help string said
-  "exit non-zero on findings". That rule had never fired, and it is not being made to fire:
-  an unreachable any-finding gate in `secure` was **deleted** rather than revived, matching
-  the precedent already set in `scan-soul`. Reviving it would have flipped a LOW-only tree
-  from exit 0 to exit 1 and contradicted the invariant README publishes. Exit codes are
-  byte-identical with and without `--ci` on every command measured.
+- **`--ci` is an output-mode flag. In `secure` and `fix-all` it does not change the exit
+  code.** The help string said "exit non-zero on findings". That rule had never fired, and
+  it is not being made to fire: an unreachable any-finding gate in `secure` was **deleted**
+  rather than revived, matching the precedent already set in `scan-soul`. Reviving it would
+  have flipped a LOW-only tree from exit 0 to exit 1 and contradicted the invariant README
+  publishes. Exit codes are byte-identical with and without `--ci` on every `secure`
+  fixture measured, clean and critical alike. `scan-soul` is unchanged and is the
+  documented exception: it has always gated its exit code under `--ci` on three
+  HIGH-severity SOUL findings (governance violation, profile mismatch, invalid `--profile`
+  marker), pre-existing behavior from #162/#206 that this issue does not touch.
 - **The strip stays.** Only `secure` and `scan-soul` declare `--ci`; the other 23 commands
   would have Commander reject it as an unknown option. The reads were fixed, not the strip,
   through a single `isCiMode()` helper rather than another copy of the resolution expression.

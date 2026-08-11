@@ -288,10 +288,14 @@ expectation that was wrong, not the code. Do not "fix" the CLI to match it.
 This section was titled for `--ci` from the day it was written and contained no
 `--ci` cell, which is how #454 shipped twice — closed 2026-08-10 as completed
 with the defect fully live. `--ci` is an **output-mode** flag: it suppresses
-prompts and turns contribution off, and it **never** changes the exit code.
+prompts and turns contribution off. In `secure` and `fix-all` it **never**
+changes the exit code. `scan-soul` is the deliberate exception (pre-existing,
+#162/#206, not touched by #454): it additionally exits 1 under `--ci` on a
+HIGH-severity SOUL finding that renders as a warning and passes CI without the
+flag.
 
 ```bash
-# 1. --ci does not move the exit code. Run each pair and compare.
+# 1. --ci does not move secure's exit code. Run each pair and compare.
 #    A LOW-only tree exits 0 in BOTH channels; a critical/high tree exits 1 in both.
 node dist/cli.js secure "$CLEAN" >/dev/null 2>&1; A=$?
 node dist/cli.js secure "$CLEAN" --ci >/dev/null 2>&1; B=$?
@@ -300,6 +304,18 @@ node dist/cli.js secure "$BAD"   --ci >/dev/null 2>&1; D=$?
 echo "clean: $A vs $B   bad: $C vs $D"
 # Expected: $A -eq $B AND $C -eq $D. Any divergence is a contract break.
 # A LOW-only tree exiting 1 under --ci means an any-finding gate was revived.
+
+# 1b. scan-soul is the exception: an unrecognized --profile value is a HIGH
+#     finding that gates the exit code ONLY under --ci. test/SOUL.md clears the
+#     conformance gate on its own (exit 0, Level ESSENTIAL+), so this isolates
+#     the profile gate specifically.
+node dist/cli.js scan-soul test/                    >/dev/null 2>&1; E=$?
+node dist/cli.js scan-soul test/ --profile bogus    >/dev/null 2>&1; F=$?
+node dist/cli.js scan-soul test/ --profile bogus --ci >/dev/null 2>&1; G=$?
+echo "soul: no-flag=$E  bad-profile=$F  bad-profile+ci=$G"
+# Expected: $E -eq 0 (conformant tree, no --ci effect), $F -eq 0 (the marker-invalid
+# finding is a warning outside --ci), $G -eq 1 (the same finding gates under --ci).
+# G equal to F means the scan-soul exception silently stopped firing.
 
 # 2. --ci turns contribution OFF even when the machine carries a prior opt-in.
 #    Isolate HOME so the developer's real config is neither read nor written.
