@@ -421,8 +421,19 @@ const VALID_DEPTHS: string[] = (() => {
   const m = src.match(/const validDepths = \[([^\]]+)\]/);
   if (!m) throw new Error('cannot locate validDepths in src/cli.ts — the enumeration source moved');
   const depths = m[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
-  // A silently-empty parse would enumerate nothing and pass every case.
-  if (depths.length < 3) throw new Error(`validDepths parsed to ${JSON.stringify(depths)} — refusing to run a vacuous enumeration`);
+  // Membership, not arity. A count check (`length < 3`) passes when a comment
+  // token or a reformat displaces one of the names — the enumeration would then
+  // silently run three cases over the wrong set and report green. Asserting the
+  // exact set means a genuinely new depth fails HERE, loudly, with the parsed
+  // value in the message, instead of going unpinned.
+  const expected = ['quick', 'standard', 'deep'];
+  const missing = expected.filter((d) => !depths.includes(d));
+  if (missing.length > 0 || depths.length !== expected.length) {
+    throw new Error(
+      `validDepths parsed to ${JSON.stringify(depths)}; expected exactly ${JSON.stringify(expected)}. `
+      + 'If a depth was added, extend this suite rather than loosening the check.',
+    );
+  }
   return depths;
 })();
 

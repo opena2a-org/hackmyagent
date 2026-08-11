@@ -22,16 +22,23 @@
  *
  * #499's acceptance criteria name two spellings, `from 'fs/promises'` and
  * `import('node:fs/promises')`. Written to that letter this lint would be
- * VACUOUS — measured on the tree the day it was written, three further bypass
- * routes were already present and would have passed it:
+ * VACUOUS — measured on the tree the day it was written, two further bypass
+ * routes were already present INSIDE the covered subtrees and would have
+ * passed it:
  *
- *   import { promises as fs } from 'fs'     src/hardening/contain.ts:13
- *   fs.promises.realpath(...)               src/soul/scanner.ts:2370
+ *   import { promises as fs } from 'fs'     src/hardening/contain.ts
  *   import { readFileSync } from 'node:fs'  src/nanomind-core/scanner-bridge.ts
  *
  * So the predicate below is the CLASS — any acquisition of a Node fs namespace,
  * by static import, dynamic import or require, under any of its spellings — and
  * every permitted site is named with the reason it is permitted.
+ *
+ * A third route, `fs.promises.realpath(...)` in `src/soul/scanner.ts`, is
+ * deliberately NOT cited as evidence for this lint: `soul` is not in `COVERED`,
+ * so this suite says nothing about it either way. Whether the SOUL scanner's
+ * reads should be tracked is a separate question and is filed separately. The
+ * distinction matters — a lint's docblock claiming reach it does not have is
+ * the same defect as an exemption granted without a reason.
  *
  * ## Why an allowlist of exact sites, not a rule
  *
@@ -72,7 +79,11 @@ function walk(dir: string, out: string[] = []): string[] {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, e.name);
     if (e.isDirectory()) walk(full, out);
-    else if (e.name.endsWith('.ts') && !e.name.endsWith('.test.ts')) out.push(full);
+    // `.cts`/`.mts` as well as `.ts`. There are none today, so omitting them
+    // would be vacuous-in-practice rather than a live hole — but a lint whose
+    // coverage depends on nobody using a standard extension is one bad day away
+    // from being wrong, and the fix is three characters.
+    else if (/\.(c|m)?ts$/.test(e.name) && !/\.test\.(c|m)?ts$/.test(e.name)) out.push(full);
   }
   return out;
 }
@@ -147,7 +158,9 @@ const UNREVIEWED: Record<string, { count: number; why: string }> = {
   'hardening/contain.ts': { count: 1, why: 'promises-as-fs; reads not traced' },
   'hardening/nemoclaw-scanner.ts': {
     count: 1,
-    why: 'sync target reads, but reached from `check`, not from scanInner — separate exposure',
+    why: 'sync reads, but no caller: `new NemoClawScanner` appears nowhere in src/ or dist/ '
+      + '(the `secure-nemoclaw` command reads ~/.nemoclaw directly, outside any scan target). '
+      + 'Unreferenced today is not the same as safe if it is ever wired up — hence pinned, not reviewed',
   },
   'nanomind-core/daemon-lifecycle.ts': {
     count: 1,
@@ -173,23 +186,35 @@ describe('#499 the tracked-fs sweep cannot silently regress', () => {
 
   const PERMITTED = { ...REVIEWED, ...UNREVIEWED };
 
+  /**
+   * THE GATE. Every violation of the discipline, as human-readable lines.
+   *
+   * Extracted as a function so the red-proof below can run THIS, rather than
+   * re-deriving an equivalent check of its own. The first version of that
+   * red-proof asserted a count it computed itself, which proved the detector
+   * worked and said nothing about the gate: deleting every assertion in the
+   * test below still left the suite green. A guard whose proof does not
+   * exercise it is not proven.
+   */
+  function violations(root: string): string[] {
+    const found = countByFile(root);
+    return [
+      // A NEW raw-fs site on a covered subtree. That is the whole point: #499
+      // was a new read path added to a module nobody re-checked.
+      ...Object.keys(found).filter((f) => !(f in PERMITTED)).map((f) => `unpermitted: ${f}`),
+      // A SECOND acquisition inside an already-permitted file, so an exemption
+      // granted for one traced read cannot silently cover a new one.
+      ...Object.entries(found)
+        .filter(([f, n]) => f in PERMITTED && n !== PERMITTED[f].count)
+        .map(([f, n]) => `count changed: ${f}: ${PERMITTED[f].count} permitted, ${n} found`),
+      // And the reverse, so the table cannot rot into a list of dead entries
+      // that quietly permit whatever later lands in those files.
+      ...Object.keys(PERMITTED).filter((f) => !(f in found)).map((f) => `stale entry: ${f}`),
+    ].sort();
+  }
+
   it('every fs acquisition on a scan-target subtree is named and justified', () => {
-    const found = countByFile(SRC);
-
-    // A NEW raw-fs site on a covered subtree fails here. That is the whole
-    // point: #499 was a new read path added to a module nobody re-checked.
-    expect(Object.keys(found).filter((f) => !(f in PERMITTED)).sort()).toEqual([]);
-
-    // A SECOND acquisition inside an already-permitted file fails too, so an
-    // exemption granted for one traced read cannot silently cover a new one.
-    const grew = Object.entries(found)
-      .filter(([f, n]) => f in PERMITTED && n !== PERMITTED[f].count)
-      .map(([f, n]) => `${f}: ${PERMITTED[f].count} permitted, ${n} found`);
-    expect(grew).toEqual([]);
-
-    // And the reverse, so the table cannot rot into a list of dead entries that
-    // quietly permit whatever later lands in those files.
-    expect(Object.keys(PERMITTED).filter((f) => !(f in found)).sort()).toEqual([]);
+    expect(violations(SRC)).toEqual([]);
   });
 
   it('every permitted site carries a written reason', () => {
@@ -230,13 +255,38 @@ describe('#499 the tracked-fs sweep cannot silently regress', () => {
       expect(after).not.toBe(before); // the mutation actually applied
       fs.writeFileSync(bridge, after);
 
-      // The reintroduced raw import is a SECOND acquisition in a file permitted
-      // for exactly one, so the count rule is what catches it — assert that
-      // specific mechanism, not merely that something somewhere went red.
-      const counts = countByFile(dst);
-      expect(counts['nanomind-core/scanner-bridge.ts']).toBe(
-        REVIEWED['nanomind-core/scanner-bridge.ts'].count + 1,
+      // Runs THE GATE, not a lookalike. If the assertion in the test above is
+      // deleted or weakened, this red-proof goes green and stops protecting
+      // anything — so it has to call the same function that test calls.
+      const found = violations(dst);
+      expect(found).not.toEqual([]);
+      // And it must name the reintroduced site, not merely be non-empty: the
+      // stale-entry rule would also fire on a copy that is simply out of date.
+      expect(found.some((v) => v.startsWith('count changed: nanomind-core/scanner-bridge.ts'))).toBe(true);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('RED-PROOF: the gate flags a WHOLLY NEW untracked reader', () => {
+    // The case above reintroduces an import into a file that already holds one,
+    // so it exercises the count rule. This exercises the other one — a brand new
+    // module, which is the shape #499 actually took. Without it, deleting the
+    // unpermitted-file rule would leave the suite green.
+    const tmp = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'hma-499-lint-new-'));
+    try {
+      const dst = path.join(tmp, 'src');
+      fs.cpSync(SRC, dst, { recursive: true });
+
+      const planted = path.join(dst, 'nanomind-core', 'sneaky-reader.ts');
+      expect(fs.existsSync(planted)).toBe(false); // the mutation is genuinely new
+      fs.writeFileSync(
+        planted,
+        "import { readFile } from 'node:fs/promises';\nexport const read = (p: string) => readFile(p, 'utf-8');\n",
       );
+
+      const found = violations(dst);
+      expect(found).toContain('unpermitted: nanomind-core/sneaky-reader.ts');
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
