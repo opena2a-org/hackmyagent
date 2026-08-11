@@ -118,8 +118,14 @@ describe('scan-soul --deep progress counter (#260)', () => {
     expect(start, 'showDeepProgress gate not found — did it move?').toBeGreaterThan(-1);
     const callSite = CLI_SOURCE.slice(start, start + 320);
 
+    // #454 — the CI input is `isCiMode(options)`, not a bare `options.ci`.
+    // The strip in main() removes --ci from argv before parse(), so `options.ci`
+    // is always undefined and wiring it here passed the gate a permanently dead
+    // value. This still asserts all five inputs are wired; it pins the CI one to
+    // the form that actually carries the signal. A bare `options.ci` here is the
+    // defect, so accepting it would make this guard assert the bug.
     expect(callSite, 'the gate must delegate to the tested predicate').toContain('shouldShowDeepProgress');
-    for (const input of ['options.deep', 'options.json', 'options.ci', 'globalCiMode', 'process.stderr.isTTY']) {
+    for (const input of ['options.deep', 'options.json', 'isCiMode(options)', 'globalCiMode', 'process.stderr.isTTY']) {
       expect(callSite, `${input} must be passed to the gate`).toContain(input);
     }
   });

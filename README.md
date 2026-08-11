@@ -128,7 +128,7 @@ hackmyagent secure --deep                     # full behavioural simulation (20 
 hackmyagent secure --static-only              # static checks only, faster
 hackmyagent secure --ignore CRED-001,GIT-002  # leave check IDs out of the findings list
 hackmyagent secure --json                     # JSON output for CI
-hackmyagent secure --ci                       # non-interactive, exit non-zero on findings
+hackmyagent secure --ci                       # non-interactive, no contribution, exit code unchanged
 hackmyagent secure --publish                  # push anonymised results to the OpenA2A Registry
 hackmyagent secure -b oasb-1                  # OASB-1 benchmark (L1, L2, L3)
 hackmyagent secure -b oasb-1 --fail-below 70  # CI gate (adds a floor; the rating gate still applies)
@@ -328,10 +328,20 @@ OpenAI API, MCP and A2A traffic. It is driven from `opena2a runtime`
 
 ## CI/CD integration
 
-`secure` and `scan-soul` take `--ci` for non-interactive, byte-stable output. Most
-scanning commands take `--json` — `check`, `secure`, `attack`, `scan`, `fix-all`,
-`scan-soul`, `harden-soul`, `red-team`, `wild`, `detect`, `trust` — and adding it never
-changes the exit code: a command that exits 1 on findings exits 1 in both channels.
+`secure` and `scan-soul` take `--ci` for non-interactive, byte-stable output. It also
+turns contribution off for that run, so a build server never shares scan results on the
+strength of an opt-in recorded earlier on the same machine. Most scanning commands take
+`--json` — `check`, `secure`, `attack`, `scan`, `fix-all`, `scan-soul`, `harden-soul`,
+`red-team`, `wild`, `detect`, `trust`.
+
+`--json` never changes the exit code: a command that exits 1 on findings exits 1 in both
+channels. `--ci` mostly doesn't either — it selects how a run reports, not what it
+concludes. The one exception is `scan-soul`, which additionally exits 1 under `--ci` on a
+HIGH-severity SOUL finding (a governance violation, a profile mismatch, or an unrecognized
+`--profile` value) that renders as a warning and passes CI without the flag — deliberate,
+so a pipeline can opt into treating a misleading SOUL verdict as a failure. To gate a
+pipeline on severity, read the exit code the command already returns; to gate on the
+score, use `--fail-below <n>` on the text and JSON channels.
 
 ```yaml
 name: Agent Security

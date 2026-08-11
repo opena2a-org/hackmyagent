@@ -283,6 +283,65 @@ behaviour — verified identical on published 0.24.0, 0.25.0 and 0.25.1 — and
 other tests assert it. The previous "exit 2" line in this checklist was the
 expectation that was wrong, not the code. Do not "fix" the CLI to match it.
 
+### The `--ci` cells
+
+This section was titled for `--ci` from the day it was written and contained no
+`--ci` cell, which is how #454 shipped twice — closed 2026-08-10 as completed
+with the defect fully live. `--ci` is an **output-mode** flag: it suppresses
+prompts and turns contribution off. In `secure` and `fix-all` it **never**
+changes the exit code. `scan-soul` is the deliberate exception (pre-existing,
+#162/#206, not touched by #454): it additionally exits 1 under `--ci` on a
+HIGH-severity SOUL finding that renders as a warning and passes CI without the
+flag.
+
+```bash
+# 1. --ci does not move secure's exit code. Run each pair and compare.
+#    A LOW-only tree exits 0 in BOTH channels; a critical/high tree exits 1 in both.
+node dist/cli.js secure "$CLEAN" >/dev/null 2>&1; A=$?
+node dist/cli.js secure "$CLEAN" --ci >/dev/null 2>&1; B=$?
+node dist/cli.js secure "$BAD"   >/dev/null 2>&1; C=$?
+node dist/cli.js secure "$BAD"   --ci >/dev/null 2>&1; D=$?
+echo "clean: $A vs $B   bad: $C vs $D"
+# Expected: $A -eq $B AND $C -eq $D. Any divergence is a contract break.
+# A LOW-only tree exiting 1 under --ci means an any-finding gate was revived.
+
+# 1b. scan-soul is the exception: an unrecognized --profile value is a HIGH
+#     finding that gates the exit code ONLY under --ci. test/SOUL.md clears the
+#     conformance gate on its own (exit 0, Level ESSENTIAL+), so this isolates
+#     the profile gate specifically.
+node dist/cli.js scan-soul test/                    >/dev/null 2>&1; E=$?
+node dist/cli.js scan-soul test/ --profile bogus    >/dev/null 2>&1; F=$?
+node dist/cli.js scan-soul test/ --profile bogus --ci >/dev/null 2>&1; G=$?
+echo "soul: no-flag=$E  bad-profile=$F  bad-profile+ci=$G"
+# Expected: $E -eq 0 (conformant tree, no --ci effect), $F -eq 0 (the marker-invalid
+# finding is a warning outside --ci), $G -eq 1 (the same finding gates under --ci).
+# G equal to F means the scan-soul exception silently stopped firing.
+
+# 2. --ci turns contribution OFF even when the machine carries a prior opt-in.
+#    Isolate HOME so the developer's real config is neither read nor written.
+SMOKE_HOME=$(mktemp -d); mkdir -p "$SMOKE_HOME/.opena2a"
+printf '{"contribute":{"enabled":true}}\n' > "$SMOKE_HOME/.opena2a/config.json"
+HOME="$SMOKE_HOME" REGISTRY_URL=http://localhost:9 \
+  node dist/cli.js secure "$CLEAN" --ci >/dev/null 2>&1
+node -e 'const f=process.argv[1];const fs=require("fs");
+  if(!fs.existsSync(f)){console.log("queued: 0");process.exit(0)}
+  const q=JSON.parse(fs.readFileSync(f,"utf8"));
+  const e=Array.isArray(q)?q:(q.events||[]);
+  console.log("queued:", e.length);
+  if(e.length) throw new Error("--ci did not disable contribution")' \
+  "$SMOKE_HOME/.opena2a/contribute-queue.json"
+# Expected: queued: 0. Repeat for scan-soul, the other command declaring --ci.
+```
+
+**Count the queue correctly.** The queue file is an object `{"events":[…]}`, not
+a bare array. A counter written as `Array.isArray(q)?q.length:0` reports **0**
+for every run and reads as a permanent pass — it silently inverted this exact
+measurement once already.
+
+**Do not use a dead sink at `127.0.0.1`.** `REGISTRY_URL` is validated: only
+`https://` and `http://localhost` are accepted, so `http://127.0.0.1:9` aborts
+the run before it scans and every cell reads exit 1.
+
 ---
 
 ## 6.5 Deep-scan verdict and MCP root confinement (4 min)

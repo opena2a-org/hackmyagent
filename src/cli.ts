@@ -418,9 +418,31 @@ function validateRegistryUrl(url: string): string {
 }
 
 // Global CI mode flag -- set before parse() by stripping --ci from argv.
-// Commands that already define --ci (secure, scan-soul) use their own opts;
-// all others can check this module-level flag.
+// The strip runs before parse(), so `options.ci` is ALWAYS undefined even on the
+// two commands that declare the flag (secure, scan-soul). Reading `options.ci`
+// alone is therefore dead in every case; that was #454. Resolve CI mode through
+// isCiMode() and never through a bare `options.ci`.
 let globalCiMode = false;
+
+/**
+ * Resolve CI mode for a command action.
+ *
+ * The global --ci strip (see main()) removes the flag from argv before Commander
+ * parses it, so a command's own `options.ci` never populates. `globalCiMode` is the
+ * authoritative signal; `options.ci` is kept in the disjunction only so a
+ * programmatic caller that constructs an options object directly still works.
+ *
+ * `--ci` is an OUTPUT-MODE flag. It suppresses prompts and turns contribution off.
+ * In `secure` and `fix-all` it never changes the exit code -- a command that exits
+ * 1 on findings exits 1 in both channels (README.md, "CI/CD integration").
+ * `scan-soul` is the deliberate exception: it gates its exit code on three
+ * HIGH-severity findings (governance violation, profile mismatch, invalid
+ * `--profile` marker) only when isCiMode() is true -- pre-existing behavior from
+ * #162/#206, unrelated to #454, and NOT covered by the "never" above.
+ */
+function isCiMode(options?: { ci?: boolean }): boolean {
+  return globalCiMode || options?.ci === true;
+}
 
 // Check for NO_COLOR env or non-TTY to disable colors by default
 const noColorEnv = process.env.NO_COLOR !== undefined || !process.stdout.isTTY;
@@ -4414,7 +4436,7 @@ Examples:
   .option('--registry-key <key>', 'Registry API key (default: REGISTRY_API_KEY env)')
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
-  .option('--ci', 'CI mode: suppress interactive prompts, exit non-zero on findings')
+  .option('--ci', 'CI mode: suppress interactive prompts and disable contribution. Does not change the exit code')
   .option('--no-machine-posture', 'Skip the advisory scan of AI runtimes installed outside the target (~/.openclaw, ~/.nemoclaw)')
   .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; nanomind?: boolean; analm?: boolean; scanDepth?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean; machinePosture?: boolean }) => {
     try {
@@ -4424,9 +4446,10 @@ Examples:
       // path even when we scan a normalized temp dir below.
       const displayDir = originalTarget;
 
-      // CI mode: force non-interactive defaults
-      if (options.ci) {
-        if (!options.format && !options.json) options.format = 'text';
+      // CI mode: force non-interactive defaults.
+      // No format coercion here -- Commander already defaults --format to 'text'
+      // (see the .option above), so the old `!options.format` branch never ran.
+      if (isCiMode(options)) {
         // In CI, never prompt -- only contribute if explicitly --contribute
         if (options.contribute === undefined) options.contribute = false;
       }
@@ -4619,7 +4642,7 @@ Examples:
         semanticPass: async ({ findings: existingFindings, projectType }) => {
           nmResult = await orchestrateNanoMind(targetDir, existingFindings, {
             staticOnly: isStaticOnly,
-            ci: options.ci,
+            ci: isCiMode(options),
             deep: isDeep,
             nanomind: resolveNanomindFlag(options),
             silent: format !== 'text',
@@ -5627,10 +5650,13 @@ Examples:
         process.exit(1);
       }
 
-      // Exit with non-zero if critical/high issues remain (or any issues in --ci mode)
-      if (options.ci && gatedIssues.length > 0) {
-        return finishWithFindings(1);
-      }
+      // #454 -- an any-finding `--ci` gate used to sit here. It never ran: `--ci`
+      // is filtered out of `process.argv` in main() before parse(), so
+      // `options.ci` was always undefined. Deleted rather than made reachable,
+      // matching the #390 precedent in scan-soul: `--ci` is an output-mode flag
+      // and never changes the exit code. Reviving it would flip a LOW-only tree
+      // from exit 0 to exit 1 and contradict README.md's published invariant.
+      // Exit with non-zero if critical/high issues remain
       const criticalOrHigh = gatedIssues.filter(
         (f: any) => f.severity === 'critical' || f.severity === 'high'
       );
@@ -8575,7 +8601,7 @@ Examples:
   .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', validateRegistryUrl(process.env.REGISTRY_URL || 'https://api.oa2a.org'))
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
-  .option('--ci', 'CI mode: suppress interactive prompts, exit non-zero on findings')
+  .option('--ci', 'CI mode: suppress interactive prompts and disable contribution. Also exits non-zero on a HIGH-severity SOUL finding (governance violation, profile mismatch, or unrecognized --profile value)')
   .option('--explain', 'Print the 9-domain governance model and exit (no scan)')
   .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean; publish?: boolean; registryUrl?: string; contribute?: boolean; ci?: boolean; explain?: boolean }) => {
     try {
@@ -8588,7 +8614,7 @@ Examples:
       const targetDir = require("path").resolve(directory);
 
       // CI mode: force non-interactive defaults
-      if (options.ci) {
+      if (isCiMode(options)) {
         if (options.contribute === undefined) options.contribute = false;
       }
 
@@ -8607,7 +8633,7 @@ Examples:
       const showDeepProgress = shouldShowDeepProgress({
         deep: options.deep,
         json: options.json,
-        ci: options.ci,
+        ci: isCiMode(options),
         ciMode: globalCiMode,
         isTty: process.stderr.isTTY,
       });
@@ -8876,7 +8902,7 @@ Examples:
         // on a SOUL that actively subverts governance, and a JSON-parsing
         // CI pipeline (the natural choice) let it through. Apply the same
         // HIGH-severity gate here, plus the --fail-below threshold.
-        const jsonCiMode = globalCiMode || options.ci;
+        const jsonCiMode = isCiMode(options);
         const jsonHasHigh =
           (result.violations ?? []).length > 0 ||
           result.profileMismatch !== undefined ||
@@ -9199,7 +9225,7 @@ Examples:
       }
 
       // ── Next Steps ─────────────────────────────────────────────────
-      if (!globalCiMode && !options.ci) {
+      if (!isCiMode(options)) {
         console.log();
         console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
         if (missing > 0 && !conformanceFails) {
@@ -9350,7 +9376,7 @@ Examples:
       // or the new marker-invalid HIGH renders red in the output
       // while still passing CI. Both the global --ci flag (stripped
       // from argv early) and the per-command --ci option are honored.
-      const ciMode = globalCiMode || options.ci;
+      const ciMode = isCiMode(options);
       if (ciMode && (result.violations ?? []).length > 0) {
         const first = (result.violations ?? [])[0];
         process.stderr.write(
