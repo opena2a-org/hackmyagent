@@ -37,12 +37,25 @@ const URL_CREDENTIAL_PATTERN =
 
 /**
  * Classify a secret by its key name and value.
- * Returns { type, masked } where type is a human-readable label and
- * masked shows the first 5 chars of the value followed by ****.
+ * Returns { type, masked } where type is a human-readable label and masked is a
+ * fixed marker carrying NO characters of the value.
+ *
+ * `masked` deliberately does not preview the value. It once returned the first 5
+ * characters, which reached `description` and could not be removed downstream: the
+ * reporting boundary matches full-length credential shapes, so a 5-character prefix
+ * is invisible to it and rides out stamped `redactionStatus: 'clean'`. Do not
+ * reintroduce a preview here -- `type` is what identifies the credential to the user,
+ * and `__tests__/hardening/credential-preview-truncation.test.ts` fails if any
+ * character of the value reaches the finding.
  */
 function classifySecret(key: string, value: string): { type: string; masked: string } {
   const v = value.trim().replace(/^["']|["']$/g, '');
-  const preview = v.length > 5 ? v.slice(0, 5) + '****' : '****';
+  // Classification only — never a prefix of the value. `v.slice(0, 5) + '****'` put 5 raw
+  // characters into `description`, and the boundary could not remove them: its patterns
+  // match full-length credentials, so a 5-character preview is invisible to it and rides
+  // out stamped `redactionStatus: 'clean'`. The `type` returned alongside is what tells
+  // the user which credential this is.
+  const preview = '[REDACTED]';
 
   // Value-based classification (most reliable)
   if (/^sk-ant-/.test(v)) return { type: 'Anthropic API key', masked: preview };
@@ -447,7 +460,10 @@ function detectUrlPasswords(file: AnalysisFile): SemanticFinding[] {
       if (isPlaceholderUrlPassword(password)) continue;
       if (isVisualFiller(password, MIN_DRAWN_ONLY_CORE_CHARS)) continue;
 
-      const urlPwMasked = password.length > 5 ? password.slice(0, 5) + '****' : '****';
+      // Classification only. The line below already redacts every occurrence of `password`
+      // out of `safeContent`; this parenthetical was the one place the same secret's first
+      // 5 characters still reached `description`.
+      const urlPwMasked = '[REDACTED]';
       // Redact every occurrence of the raw password from the line before placing it
       // into structured evidence. Split-on-`:pw@` only catches the URL slot, but
       // the same secret can appear in comments, sibling assignments, or doc strings

@@ -46,7 +46,8 @@ const { readFile, readdir, stat } = trackedFs;
 import { readFileSync } from 'node:fs';
 import { join, relative, extname, basename, isAbsolute } from 'node:path';
 
-import type { SecurityFinding, Severity, ProjectType, NanoMindIntentSignal } from '../hardening/security-check.js';
+import type { SecurityFinding, SecurityFindingDraft, Severity, ProjectType, NanoMindIntentSignal } from '../hardening/security-check.js';
+import { emitFinding, type RedactedFinding } from '../hardening/finding-emit.js';
 import type { SecurityAST, CompilationResult } from './types.js';
 import type { ASTFinding } from './analyzers/capability-analyzer.js';
 import type { IntegrityStatus } from './security/integrity-verifier.js';
@@ -220,7 +221,7 @@ export interface SemanticFamilyCoverage {
 }
 
 export interface NanoMindScanResult {
-  mergedFindings: SecurityFinding[];
+  mergedFindings: SecurityFindingDraft[];
   astFindings: ASTFinding[];
   integrityStatus: IntegrityStatus;
   compiledArtifacts: number;
@@ -255,7 +256,7 @@ export interface NanoMindScanResult {
  */
 export async function runNanoMindScan(
   targetDir: string,
-  existingFindings: SecurityFinding[],
+  existingFindings: SecurityFindingDraft[],
   projectType?: ProjectType,
 ): Promise<NanoMindScanResult> {
   // Step 1: Integrity check before anything else
@@ -594,9 +595,9 @@ export function intentSignalFromCompilation(
  * an empty map returns the input array unchanged.
  */
 export function annotateFindingsWithIntent(
-  findings: SecurityFinding[],
+  findings: SecurityFindingDraft[],
   intentByPath: Map<string, NanoMindIntentSignal>,
-): SecurityFinding[] {
+): SecurityFindingDraft[] {
   if (intentByPath.size === 0) return findings;
   return findings.map(f => {
     const intent = f.file ? intentByPath.get(f.file) : undefined;
@@ -1013,12 +1014,12 @@ function findingMatchKey(file: string | undefined, attackClass: string | undefin
  * hand (tests, in-memory merges) omit it and get the previous behaviour.
  */
 export function mergeFindings(
-  staticFindings: SecurityFinding[],
+  staticFindings: SecurityFindingDraft[],
   astFindings: ASTFinding[],
   readArtifact?: (file: string) => string | undefined,
-): SecurityFinding[] {
+): SecurityFindingDraft[] {
   // Clone static findings so we don't mutate the originals
-  const merged: SecurityFinding[] = staticFindings.map(f => ({ ...f }));
+  const merged: SecurityFindingDraft[] = staticFindings.map(f => ({ ...f }));
 
   // Index static findings by match key for O(1) lookup
   const staticIndex = new Map<string, number[]>();
@@ -1086,11 +1087,17 @@ export function mergeFindings(
 function astFindingToSecurityFinding(
   ast: ASTFinding,
   readArtifact?: (file: string) => string | undefined,
-): SecurityFinding {
+): RedactedFinding {
   const needsLine = ast.line === undefined && !!ast.file;
   const raw = needsLine && readArtifact && ast.file ? readArtifact(ast.file) : undefined;
   const line = resolveFindingLine({ file: ast.file, line: ast.line, evidence: ast.evidence }, raw);
-  return {
+  // Route point 2, and the one C1 is about: `resolveFindingLine` above reads the
+  // RAW artifact and the raw `ast.evidence`, and it has already returned by the
+  // time `emitFinding` runs. Line derivation completing before redaction is
+  // therefore a property of the control flow here, not a convention a later
+  // edit could quietly invert — there is no path on which the redacted text is
+  // what gets located.
+  return emitFinding({
     checkId: ast.checkId,
     name: ast.name,
     description: ast.description,
@@ -1110,7 +1117,7 @@ function astFindingToSecurityFinding(
       evidence: ast.evidence,
       instanceCount: (ast as ASTFinding & { instanceCount?: number }).instanceCount ?? 1,
     },
-  };
+  });
 }
 
 /**

@@ -24,6 +24,7 @@ import { readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import yaml from 'js-yaml';
+import { evidenceCitationProblem } from '../src/types/redacted-evidence';
 
 interface ExpectedFinding {
   checkId: string;
@@ -191,34 +192,29 @@ function verifyAssertions(fixtureDir: string, findings: RawFinding[]): string[] 
     const evLine = firstEvidenceLine(f);
     if (evLine && evLine.content) {
       const ev = evLine.content.trim();
-      // Some detectors (SEM-CRED-001) redact secret values in evidence
-      // text so credentials don't leak into logs / diffs. Compare on the
-      // pre-redaction prefix and post-redaction suffix instead of the
-      // full string. The line-existence check above already gates that
-      // the cited position is real; this just relaxes the substring
-      // match for redacted evidence.
-      if (ev.includes('[REDACTED]')) {
-        // Split on every redaction marker and require that *every*
-        // non-empty segment appears in lineContent. A pure-`[REDACTED]`
-        // evidence string yields all-empty segments and fails — that's a
-        // bug at the emit site, not a tolerable redaction. Verifying
-        // every segment also defends against multi-redaction strings
-        // where only the first segment was previously checked.
-        const segments = ev.split('[REDACTED]');
-        const nonEmpty = segments.filter(s => s !== '');
-        if (nonEmpty.length === 0) {
-          reasons.push(
-            `verify: ${f.checkId} cites ${f.file}:${f.line} — evidence is pure '[REDACTED]' marker with no surrounding content; emit site must include literal context around the redaction`,
-          );
-        } else {
-          const missing = nonEmpty.find(s => !lineContent.includes(s));
-          if (missing !== undefined) {
-            reasons.push(
-              `verify: ${f.checkId} cites ${f.file}:${f.line} — line content doesn't include redacted-evidence segment (line=${JSON.stringify(lineContent.slice(0, 60))}, missing=${JSON.stringify(missing.slice(0, 60))})`,
-            );
-          }
-        }
-      } else if (!lineContent.includes(ev)) {
+      // Detectors redact secret values in evidence text so credentials
+      // don't leak into logs / diffs, so compare on the fragments either
+      // side of each marker rather than on the full string. The
+      // line-existence check above already gates that the cited position
+      // is real; this only relaxes the substring match, and every
+      // non-empty fragment must still be on the line.
+      //
+      // The marker vocabulary lives in src/types/redacted-evidence.ts and
+      // is a SHAPE, not a literal. It used to be the single literal
+      // `[REDACTED]`, which recognised one of the four marker families the
+      // tree emits — `'[REDACTED_GITHUB_TOKEN]'.includes('[REDACTED]')` is
+      // false — so any typed or lowercase marker failed this gate while
+      // citing its line correctly.
+      const problem = evidenceCitationProblem(ev, lineContent);
+      if (problem?.kind === 'pure-marker') {
+        reasons.push(
+          `verify: ${f.checkId} cites ${f.file}:${f.line} — evidence is a redaction marker with no surrounding content; emit site must include literal context around the redaction`,
+        );
+      } else if (problem?.kind === 'missing-segment') {
+        reasons.push(
+          `verify: ${f.checkId} cites ${f.file}:${f.line} — line content doesn't include redacted-evidence segment (line=${JSON.stringify(lineContent.slice(0, 60))}, missing=${JSON.stringify(problem.missing.slice(0, 60))})`,
+        );
+      } else if (problem?.kind === 'evidence-absent') {
         reasons.push(
           `verify: ${f.checkId} cites ${f.file}:${f.line} — line content doesn't include evidence (line=${JSON.stringify(lineContent.slice(0, 60))}, evidence=${JSON.stringify(ev.slice(0, 60))})`,
         );

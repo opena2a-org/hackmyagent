@@ -864,9 +864,14 @@ function maskCredentialValue(value: string): string {
     const remaining = Math.max(0, value.length - prefix.length);
     return `${prefix}${'*'.repeat(Math.min(remaining, 16))}`;
   }
-  // Unknown shape — show first 8 chars then asterisks. Cap so the
-  // masked output never exceeds 24 chars regardless of input length.
-  return `${value.slice(0, 8)}${'*'.repeat(Math.min(Math.max(value.length - 8, 0), 16))}`;
+  // Unknown shape — mask ENTIRELY. The vendor-prefix branch above is safe because a
+  // vendor prefix is a constant: it is identical for every key of that vendor and so
+  // says nothing about this one, so it is classification, which PC-6' permits. When no
+  // prefix matches there is no constant to keep, and `value.slice(0, 8)` was therefore
+  // 8 characters of live secret body — the exact leak this file's docstring forbids, and
+  // one the boundary cannot clean up downstream because a truncated credential no longer
+  // matches the redactor's full-length shapes. Cap the mask so output stays bounded.
+  return '*'.repeat(Math.min(Math.max(value.length, 1), 24));
 }
 
 /**
