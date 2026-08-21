@@ -64,6 +64,40 @@ import {
 const BACKUP_MANIFEST_VERSION = 2;
 
 /** A file a fix stage actually created, with the hash of what it wrote. */
+/**
+ * Every extension the JavaScript/TypeScript family uses, as ONE list.
+ *
+ * #414. `walkDirectory` was called with a hand-written extension array at each
+ * of twelve JS-family sites, in four different spellings: `['.ts', '.js']`,
+ * `['.ts', '.js', '.mjs']`, `['.ts', '.js', '.py', '.mjs']` and
+ * `['.ts', '.js', '.md', '.txt']`. Whether a check read your file depended on
+ * which check it was.
+ *
+ * The sharpest case sat three lines apart inside `checkNemoClawPatterns`, whose
+ * own docstring says it detects "unsafe installs, missing digest verification,
+ * injection vectors, secret leaks":
+ *
+ *   const shFiles   = walkDirectory(targetDir, ['.sh'], 0, 5);
+ *   const tsJsFiles = walkDirectory(targetDir, ['.ts', '.js'], 0, 5);
+ *
+ * Measured on 0.31.0 against a consumer repo, as a control: identical hazards
+ * (an Anthropic-shaped API key, `child_process.exec`, and a curl-pipe-to-sh)
+ * produced 2 CRITICALs from the `.sh` and NOTHING from the `.mjs`, in the same
+ * run, from the same check group, scoring 98/100. #413 fixed the semantic
+ * compile set, so those files reach NanoMind; this is the static half.
+ *
+ * `.mjs` matters more than the count suggests: it is the standard extension for
+ * build, release and deploy tooling, which is where the credentials and the
+ * shell-outs live.
+ *
+ * NOT a general "source file" list. Walks that are deliberately single-language
+ * keep their own arrays and MUST NOT be widened to this: `['.sh']` for shell
+ * checks, `['.py']` for Python, `['.yaml', '.yml']` for workflow parsing. A
+ * check that only understands shell learns nothing from being handed a `.tsx`,
+ * and widening it would cost scan time and invite false positives.
+ */
+export const JS_FAMILY_EXTENSIONS = ['.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx'] as const;
+
 export interface CreatedFileRecord {
   /** Path relative to the scan target. */
   path: string;
@@ -12434,7 +12468,7 @@ dist/
       const srcDir = path.join(targetDir, 'src');
       const srcExists = await fs.access(srcDir).then(() => true).catch(() => false);
       if (srcExists) {
-        const files = await this.walkDirectory(srcDir, ['.ts', '.js', '.py', '.mjs']);
+        const files = await this.walkDirectory(srcDir, [...JS_FAMILY_EXTENSIONS, '.py']);
         for (const file of files.slice(0, 50)) {
           try {
             const content = await fs.readFile(file, 'utf-8');
@@ -12545,7 +12579,7 @@ dist/
       const srcDir = path.join(targetDir, 'src');
       const srcExists = await fs.access(srcDir).then(() => true).catch(() => false);
       if (srcExists) {
-        const files = await this.walkDirectory(srcDir, ['.ts', '.js', '.py', '.mjs']);
+        const files = await this.walkDirectory(srcDir, [...JS_FAMILY_EXTENSIONS, '.py']);
         for (const file of files.slice(0, 50)) {
           try {
             const content = await fs.readFile(file, 'utf-8');
@@ -12913,7 +12947,7 @@ dist/
       const skillsDir = path.join(targetDir, 'skills');
       const dirExists = await fs.access(skillsDir).then(() => true).catch(() => false);
       if (dirExists) {
-        const files = await this.walkDirectory(skillsDir, ['.ts', '.js', '.py', '.md']);
+        const files = await this.walkDirectory(skillsDir, [...JS_FAMILY_EXTENSIONS, '.py', '.md']);
         for (const file of files.slice(0, 30)) {
           try {
             const content = await fs.readFile(file, 'utf-8');
@@ -13447,7 +13481,7 @@ dist/
 
     // Collect source files by extension (max depth 5, skips node_modules/.git/dist/build)
     const shFiles = await this.walkDirectory(targetDir, ['.sh'], 0, 5);
-    const tsJsFiles = await this.walkDirectory(targetDir, ['.ts', '.js'], 0, 5);
+    const tsJsFiles = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS], 0, 5);
     const pyFiles = await this.walkDirectory(targetDir, ['.py'], 0, 5);
     const yamlFiles = await this.walkDirectory(targetDir, ['.yaml', '.yml'], 0, 5);
 
@@ -14772,7 +14806,7 @@ dist/
     _autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const files = await this.walkDirectory(targetDir, ['.ts', '.js', '.mjs'], 0, 2);
+    const files = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS], 0, 2);
 
     // Match exec( or execSync( followed by a backtick (template literal)
     // Do NOT match execFile or execFileSync (those use array args, safe)
@@ -14870,7 +14904,7 @@ dist/
     _autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const files = await this.walkDirectory(targetDir, ['.ts', '.js', '.mjs'], 0, 2);
+    const files = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS], 0, 2);
 
     const pattern = /--(token|password|api[_-]?key|secret|auth)\s*[=\s]\s*[`$"']\s*\$?\{?|["']--(token|password|api[_-]?key|secret|auth)["']/g;
 
@@ -14923,7 +14957,7 @@ dist/
     _autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const files = await this.walkDirectory(targetDir, ['.ts', '.js', '.mjs'], 0, 2);
+    const files = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS], 0, 2);
 
     const pattern = /if\s*\(\s*(digest|hash|checksum|signature|integrity)\s*&&/g;
 
@@ -14971,7 +15005,7 @@ dist/
     _autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const files = await this.walkDirectory(targetDir, ['.ts', '.js', '.mjs'], 0, 2);
+    const files = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS], 0, 2);
 
     for (const file of files.slice(0, 100)) {
       try {
@@ -15177,7 +15211,7 @@ dist/
     _autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const files = await this.walkDirectory(targetDir, ['.ts', '.js', '.mjs'], 0, 2);
+    const files = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS], 0, 2);
 
     const spreadPattern = /env:\s*\{\s*\.\.\.process\.env/g;
     const directPattern = /\benv:\s*process\.env\b/g;
@@ -15427,7 +15461,7 @@ dist/
     const findings: SecurityFindingDraft[] = [];
 
     // Path 1: Look for system-prompt files that load both soul and skill content
-    const promptFiles = await this.walkDirectory(targetDir, ['.ts', '.js', '.mjs'], 0, 2);
+    const promptFiles = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS], 0, 2);
     const targetFiles = promptFiles.filter(f => {
       const name = path.basename(f).toLowerCase();
       return name.includes('system-prompt') || name.includes('systemprompt') ||
@@ -15799,7 +15833,7 @@ dist/
     _autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const files = await this.walkDirectory(targetDir, ['.ts', '.js', '.mjs'], 0, 2);
+    const files = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS], 0, 2);
 
     // Look for store/save/persist calls with text/content parameter (method or function)
     const storePattern = /(?:\.|^|\s|\()(store|save|persist|insert|upsert|push)\s*\(\s*\{[^}]*(text|content|message|input)\b/g;
@@ -15925,7 +15959,7 @@ dist/
     }
 
     // Check for system-prompt source files
-    const srcFiles = await this.walkDirectory(targetDir, ['.ts', '.js', '.md', '.txt'], 0, 2);
+    const srcFiles = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS, '.md', '.txt'], 0, 2);
     for (const file of srcFiles) {
       const basename = path.basename(file).toLowerCase();
       if (promptFilePatterns.some(p => basename === p.toLowerCase())) {
