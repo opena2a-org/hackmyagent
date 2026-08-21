@@ -916,10 +916,17 @@ function runCodeAnalyzers(
 // ============================================================================
 
 /**
- * Deduplicate AST findings by checkId. When the same check fires on many
- * files (e.g., AST-GOV-002 on 60 constraints, AST-EXFIL-001 on 19 risk
- * surfaces), keep one representative finding per checkId with the highest
+ * Deduplicate AST findings per (checkId, file). When the same check fires many
+ * times within ONE artifact (e.g. AST-GOV-002 on 60 constraints in a single
+ * SOUL.md), keep one representative for that artifact with the highest
  * severity and annotate it with instance count and affected files.
+ *
+ * Grouping is deliberately scoped to a single file. A check that fires on
+ * several files yields one finding per file, each with its own path and line,
+ * because remediation is per-file: a hardcoded secret in each of five files is
+ * five separate credentials to rotate, not one. Scoring is what bounds a check
+ * that fires broadly, not this function — `calculateSecurityScore` caps each
+ * checkId at MAX_FINDINGS_PER_CHECK at full weight and discounts the rest.
  *
  * Passed findings are kept as-is (they don't affect scoring).
  */
@@ -935,12 +942,19 @@ function deduplicateFindings(findings: ASTFinding[]): ASTFinding[] {
     }
   }
 
-  // Group failed findings by checkId
+  // Group failed findings by checkId AND file. The rollup exists to stop one
+  // check flooding a report when it fires many times inside ONE artifact
+  // (AST-GOV-002 on 60 constraints in a single SOUL.md). Keying on checkId
+  // alone extended that reach across files, so a scan reported at most one
+  // instance of each check for the whole tree and every other file's finding
+  // survived only as text in the survivor's evidence, with no file and no line
+  // of its own. Which file survived was decided by walk order (#535).
   const groups = new Map<string, ASTFinding[]>();
   for (const f of failed) {
-    const group = groups.get(f.checkId) ?? [];
+    const key = `${f.checkId}\x00${f.file ?? ''}`;
+    const group = groups.get(key) ?? [];
     group.push(f);
-    groups.set(f.checkId, group);
+    groups.set(key, group);
   }
 
   const deduped: ASTFinding[] = [];
@@ -964,7 +978,9 @@ function deduplicateFindings(findings: ASTFinding[]): ASTFinding[] {
         `${representative.evidence ?? ''} [${group.length} instances across: ${fileList}${suffix}]`.trim();
     }
 
-    // Store instance count for downstream scoring
+    // Carried through to `details.instanceCount` for JSON consumers. Nothing
+    // inside this package reads it: scoring counts findings, so a rollup of N
+    // occurrences within one file still contributes as one finding by design.
     (representative as ASTFinding & { instanceCount?: number }).instanceCount = group.length;
 
     deduped.push(representative);
