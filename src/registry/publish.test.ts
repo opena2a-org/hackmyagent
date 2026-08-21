@@ -16,6 +16,7 @@ import {
   type PublishResult,
 } from './publish';
 import type { SecurityFinding } from '../hardening';
+import { emitFinding } from '../hardening/finding-emit';
 import type { AttackReport } from '../attack';
 import type { SoulScanResult } from '../soul';
 import type { BenchmarkResult } from '../benchmarks';
@@ -76,7 +77,7 @@ function makeHardeningFindings(): SecurityFinding[] {
       fixed: false,
       fix: 'Restrict permissions',
     },
-  ] as SecurityFinding[];
+  ].map(f => emitFinding(f as never)) as SecurityFinding[];
 }
 
 function makeAttackReport(): AttackReport {
@@ -371,7 +372,7 @@ describe('buildPublishPayload', () => {
         passed: true,
         fixed: false,
       },
-    ] as SecurityFinding[];
+    ].map(f => emitFinding(f as never)) as SecurityFinding[];
 
     const data: PublishScanData = {
       packageName: '@test/clean',
@@ -395,7 +396,7 @@ describe('buildPublishPayload', () => {
         passed: false,
         fixed: false,
       },
-    ] as SecurityFinding[];
+    ].map(f => emitFinding(f as never)) as SecurityFinding[];
 
     const data: PublishScanData = {
       packageName: '@test/warn',

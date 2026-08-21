@@ -34,9 +34,16 @@ import { toASSF } from '../../src/output/asff';
 import { reportRemediation, reportFindings } from '../../src/registry/remediation';
 import { countsAgainstScore } from '../../src/ui/verdict-band';
 import type { SecurityFinding } from '../../src/hardening';
+import { emitFinding } from '../../src/hardening/finding-emit';
+import type { SecurityFindingDraft } from '../../src/hardening/security-check';
 
 /** The PERM-001 shape: the fix ran, the verification pass disproved it. */
-const UNVERIFIED_FIX: SecurityFinding = {
+// Emitted through the real boundary (unit 2): the builders under test now
+// read redaction provenance on their inputs, and a fixture that fabricates
+// the type without the stamps is exactly the launder the read exists to
+// catch. These fixtures carry no credential bytes, so emission stamps
+// 'clean' and leaves every byte the assertions read unchanged.
+const UNVERIFIED_FIX: SecurityFinding = emitFinding({
   checkId: 'PERM-001',
   name: 'World-readable credential file',
   description: '.env is readable by every user on the host',
@@ -48,7 +55,7 @@ const UNVERIFIED_FIX: SecurityFinding = {
   fixed: true,
   fixVerified: false,
   file: '.env',
-};
+} as SecurityFindingDraft);
 
 /**
  * The same two shapes in a category that reaches a package page.
@@ -56,7 +63,12 @@ const UNVERIFIED_FIX: SecurityFinding = {
  * (`permissions` among them) because they say nothing about the published
  * package, so the PERM-001 fixture cannot exercise that consumer.
  */
-const UNVERIFIED_FIX_PUBLIC: SecurityFinding = {
+// Emitted through the real boundary (unit 2): the builders under test now
+// read redaction provenance on their inputs, and a fixture that fabricates
+// the type without the stamps is exactly the launder the read exists to
+// catch. These fixtures carry no credential bytes, so emission stamps
+// 'clean' and leaves every byte the assertions read unchanged.
+const UNVERIFIED_FIX_PUBLIC: SecurityFinding = emitFinding({
   checkId: 'CRED-001',
   name: 'Hardcoded credential',
   description: 'A credential is committed in source',
@@ -68,23 +80,33 @@ const UNVERIFIED_FIX_PUBLIC: SecurityFinding = {
   fixed: true,
   fixVerified: false,
   file: 'config.js',
-};
+} as SecurityFindingDraft);
 
-const VERIFIED_FIX_PUBLIC: SecurityFinding = {
+// Emitted through the real boundary (unit 2): the builders under test now
+// read redaction provenance on their inputs, and a fixture that fabricates
+// the type without the stamps is exactly the launder the read exists to
+// catch. These fixtures carry no credential bytes, so emission stamps
+// 'clean' and leaves every byte the assertions read unchanged.
+const VERIFIED_FIX_PUBLIC: SecurityFinding = emitFinding({
   ...UNVERIFIED_FIX_PUBLIC,
   checkId: 'CRED-002',
   fixVerified: true,
-};
+} as SecurityFindingDraft);
 
 /** Same shape, but the fix demonstrably landed. */
-const VERIFIED_FIX: SecurityFinding = {
+// Emitted through the real boundary (unit 2): the builders under test now
+// read redaction provenance on their inputs, and a fixture that fabricates
+// the type without the stamps is exactly the launder the read exists to
+// catch. These fixtures carry no credential bytes, so emission stamps
+// 'clean' and leaves every byte the assertions read unchanged.
+const VERIFIED_FIX: SecurityFinding = emitFinding({
   ...UNVERIFIED_FIX,
   checkId: 'PERM-002',
   name: 'World-readable key file',
   description: 'id_rsa is readable by every user on the host',
   fixVerified: true,
   file: 'id_rsa',
-};
+} as SecurityFindingDraft);
 
 afterEach(() => vi.restoreAllMocks());
 
