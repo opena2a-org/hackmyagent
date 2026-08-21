@@ -228,10 +228,11 @@ jobs:
             -X POST "https://api.anthropic.com/v1/messages" \
             -H "Content-Type: application/json" \
             -H "x-api-key: ${ANTHROPIC_API_KEY}" \
-            -H "anthropic-version: 2025-04-15" \
+            -H "anthropic-version: 2023-06-01" \
             -d @/tmp/request.json)
 
           echo "API response HTTP code: $HTTP_CODE"
+          echo "primary" > /tmp/review_path.txt
 
           # Extract response text (skip thinking blocks)
           REVIEW_TEXT=""
@@ -242,6 +243,7 @@ jobs:
           # Fallback: retry without extended thinking if first attempt failed
           if [ -z "$REVIEW_TEXT" ]; then
             echo "First attempt failed (HTTP $HTTP_CODE), retrying without extended thinking..."
+            echo "fallback" > /tmp/review_path.txt
 
             jq -n \
               --rawfile system /tmp/system_prompt.txt \
@@ -263,7 +265,7 @@ jobs:
             echo "Fallback API response HTTP code: $HTTP_CODE"
 
             if [ "$HTTP_CODE" = "200" ]; then
-              REVIEW_TEXT=$(jq -r '.content[0].text // empty' /tmp/api_response.json)
+              REVIEW_TEXT=$(jq -r '[.content[] | select(.type == "text") | .text] | join("\n") // empty' /tmp/api_response.json)
             fi
           fi
 
@@ -344,7 +346,12 @@ jobs:
             cat /tmp/review_body.txt
             echo ""
             echo "---"
-            echo "*Reviewed ${FILE_COUNT} files changed (${DIFF_SIZE} bytes)*"
+            REVIEW_PATH=$(cat /tmp/review_path.txt 2>/dev/null || echo "unknown")
+            if [ "$REVIEW_PATH" = "fallback" ]; then
+              echo "*Reviewed ${FILE_COUNT} files changed (${DIFF_SIZE} bytes) — produced by the FALLBACK request, without extended thinking. The primary request failed; see the run log.*"
+            else
+              echo "*Reviewed ${FILE_COUNT} files changed (${DIFF_SIZE} bytes)*"
+            fi
           } > /tmp/full_review.txt
 
           BODY=$(cat /tmp/full_review.txt)
