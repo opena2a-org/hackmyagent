@@ -2,6 +2,34 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [Unreleased]
+
+### The redaction boundary gained its reader, and rebuilds can no longer drop the stamp
+
+0.32.0 stamped every emitted finding with `redactionStatus` and `redactedShapes`, but the
+stamp was write-only: nothing read it at any publish boundary, and one re-map on the `check`
+text path rebuilt findings field-by-field, dropping both stamps so a second emit downgraded
+an honest `applied` to `clean` — a false cleanliness claim over text the boundary had in
+fact modified.
+
+- **Every publish channel now reads the stamp before a byte leaves.** The JSON stdout
+  chokepoint, the `--output` file arms, the SARIF/HTML/ASFF/ASP report generators, the
+  registry publish builders, and the MCP tool payloads all assert that every finding-shaped
+  value carries redaction provenance. A finding without it aborts the scan with an error
+  naming the channel and check — never the finding's text. There is deliberately no flag to
+  soften this: a finding without provenance was constructed outside the redaction boundary
+  and its text may carry an unredacted credential.
+- **Rebuilds go through `reemitFinding`**, whose parameter types make dropping or
+  downgrading the two stamps unrepresentable. The `check` re-map is fixed, and a repo guard
+  now rejects casts into the branded finding types anywhere outside the boundary module.
+- **The analyst advisory channel is redacted structurally.** Its safety previously rested on
+  the fact that analyst prompts are built from already-redacted finding text; every analyst
+  response now passes through the same open-bag redaction walk as finding `details`, so an
+  upstream change cannot silently turn it into a leak path.
+- No output changes on healthy scans: scores, finding counts, and every measured JSON
+  payload are byte-identical before and after, and the new read fires on zero healthy
+  objects across all measured channels.
+
 ## [0.32.0] - 2026-08-20
 
 ### Finding evidence carries a classification, not a prefix of the matched value
