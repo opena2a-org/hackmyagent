@@ -14,7 +14,8 @@ import * as fsSync from 'fs';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import { execFile } from 'child_process';
-import type { ScanResult, SecurityFinding, Severity, ProjectType } from './security-check';
+import type { ScanResult, SecurityFinding, SecurityFindingDraft, Severity, ProjectType } from './security-check';
+import { emitFinding } from './finding-emit';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
 import { enrichWithTaxonomy } from './taxonomy';
 import { lineFromOffset } from '../types/text-position';
@@ -421,11 +422,15 @@ export interface ScanOptions {
    * contained: the semantic layer is an enhancement and must never take the
    * static scan down with it.
    */
+  // Drafts on both sides: the semantic pass runs INSIDE the scan, upstream of
+  // route point 4, so it neither receives nor returns emitted findings. Typing
+  // it on `SecurityFinding` would oblige a merge pass to invent the two
+  // redaction fields it is in no position to know.
   semanticPass?: (ctx: {
     targetDir: string;
-    findings: SecurityFinding[];
+    findings: SecurityFindingDraft[];
     projectType: ProjectType;
-  }) => Promise<{ findings?: SecurityFinding[] } | void>;
+  }) => Promise<{ findings?: SecurityFindingDraft[] } | void>;
 }
 
 // Patterns for detecting exposed credentials
@@ -1046,7 +1051,7 @@ export function calculateSecurityScore(findings: Array<{ passed?: boolean; fixed
  * finding can only lower `weightedSum`, so this is >= the headline score.
  */
 export function scoreExcludingOwnArchive(
-  findings: SecurityFinding[],
+  findings: SecurityFindingDraft[],
 ): number | undefined {
   if (!findings.some(f => f.inOwnArchive)) return undefined;
   const liveTree = findings.filter(f => !f.inOwnArchive);
@@ -1063,7 +1068,7 @@ export function scoreExcludingOwnArchive(
  * CHECK_PROJECT_TYPES map. Exported so CLI can filter findings after
  * NanoMind merge.
  */
-export function findingAppliesTo(finding: SecurityFinding, projectType: ProjectType): boolean {
+export function findingAppliesTo(finding: SecurityFindingDraft, projectType: ProjectType): boolean {
   // FIRST match in declaration order. A full check ID overrides the group it
   // sits in by being DECLARED BEFORE it — `check-project-types-order.test.ts`
   // holds that ordering, because nothing else does.
@@ -1114,7 +1119,7 @@ export function isReportableFinding(
   f: { passed?: boolean; fixed?: boolean; file?: string; checkId: string },
   projectType: ProjectType,
 ): boolean {
-  return retainForVerdict(f) && Boolean(f.file) && findingAppliesTo(f as SecurityFinding, projectType);
+  return retainForVerdict(f) && Boolean(f.file) && findingAppliesTo(f as SecurityFindingDraft, projectType);
 }
 
 /**
@@ -1133,9 +1138,9 @@ export function isReportableFinding(
  * composite) get a clean signal without dropping legitimate findings.
  */
 export function dropPathlessNoiseFloor(
-  findings: SecurityFinding[],
+  findings: SecurityFindingDraft[],
   projectType: ProjectType,
-): SecurityFinding[] {
+): SecurityFindingDraft[] {
   return findings.filter((f) => {
     if (f.passed || f.fixed) return true;
     if (f.file) return true;
@@ -1871,12 +1876,26 @@ export class HardeningScanner {
    * the defect this parameter exists to close, restored silently. Making it
    * required turns every un-migrated call site into a compile error instead.
    */
-  async reapplyIgnoreFilters(
-    findings: SecurityFinding[],
+  /**
+   * GENERIC over the finding type, deliberately. Every return is `findings`
+   * itself or a filter of it — this method marks and removes, and never
+   * constructs a finding — so whatever the caller passed in comes back out.
+   *
+   * Typing it on `SecurityFindingDraft` instead would force the CLI to cast at
+   * `cli.ts:4703`/`:4720`, where the post-merge report is re-derived into
+   * `ScanResult.findings`. That cast would launder the `RedactedFinding` brand
+   * at the one point downstream of the boundary that rebuilds both channels —
+   * exactly the "a site that satisfies the type by casting" case the runtime
+   * `redactionStatus` field exists to catch, except silent. Preserving the type
+   * parameter keeps the brand intact through the re-filter and makes the casts
+   * unnecessary rather than load-bearing.
+   */
+  async reapplyIgnoreFilters<T extends SecurityFindingDraft>(
+    findings: T[],
     targetDir: string,
     projectType: ProjectType,
     additionalIgnorePaths?: string[],
-  ): Promise<SecurityFinding[]> {
+  ): Promise<T[]> {
     const hmaIgnore = await this.loadHmaIgnore(targetDir);
     const allIgnoredPaths = [...hmaIgnore.paths, ...(additionalIgnorePaths || [])];
     const suppressedCheckPatterns = hmaIgnore.checkIds;
@@ -1897,8 +1916,8 @@ export class HardeningScanner {
     // path rule is a scope change and leaves the array, with the summary parked
     // on `lastOutOfScope` for the caller to disclose. Callers render with
     // `isDisplayed()`.
-    const pathExcluded: SecurityFinding[] = [];
-    const checkSuppressed: SecurityFinding[] = [];
+    const pathExcluded: T[] = [];
+    const checkSuppressed: T[] = [];
     for (const f of findings) {
       // Already out of scope from the scan pass. It must be re-collected, not
       // skipped: `nmResult.mergedFindings` is rebuilt from `allFindings`, which
@@ -1940,7 +1959,7 @@ export class HardeningScanner {
     // unreportable findings back into the returned array, and the one caller
     // that does not re-filter (`secure-openclaw`, `cli.ts`) would start listing
     // and scoring them — trading this defect for a new one on another path.
-    const reportable = (f: SecurityFinding) => isReportableFinding(f, projectType);
+    const reportable = (f: SecurityFindingDraft) => isReportableFinding(f, projectType);
     this.lastOutOfScope = summarizeSuppressed(pathExcluded.filter(reportable));
     this.lastSuppressed = summarizeSuppressed(checkSuppressed.filter(reportable));
     if (pathExcluded.length === 0 && checkSuppressed.length === 0) return findings;
@@ -1972,7 +1991,7 @@ export class HardeningScanner {
    * representative path and carry the rest of the evidence in
    * `details.files`, so reading either side alone loses paths.
    */
-  private coveredFilesOf(f: SecurityFinding): string[] {
+  private coveredFilesOf(f: SecurityFindingDraft): string[] {
     const listed = Array.isArray(f.details?.files) ? f.details.files : [];
     return [...new Set(
       [f.file, ...listed].filter(
@@ -2001,7 +2020,7 @@ export class HardeningScanner {
    *
    * Returns true to KEEP. May re-point `f.file` / `f.details.files` in place.
    */
-  private retainAfterPathSuppression(f: SecurityFinding, ignoredPaths: string[]): boolean {
+  private retainAfterPathSuppression(f: SecurityFindingDraft, ignoredPaths: string[]): boolean {
     // A coverage statement is not a finding ABOUT a path's contents, so a path
     // rule cannot scope it away (#438).
     //
@@ -2176,7 +2195,7 @@ export class HardeningScanner {
     const projectType = await this.detectProjectType(targetDir);
 
     // Run all checks
-    const findings: SecurityFinding[] = [];
+    const findings: SecurityFindingDraft[] = [];
 
     // Credential exposure checks
     const credFindings = await this.coverage.run('checkCredentialExposure', () => this.checkCredentialExposure(targetDir, shouldFix));
@@ -2502,7 +2521,7 @@ export class HardeningScanner {
             fixable: false,
             file: missed.path,
             fix: `Re-run the deep scan: ${this.cliName} secure ${shellQuote(targetDir)} --deep. If it repeats on the same file, the file's own content may be interfering with the analysis; the other layers' findings for it still stand.`,
-          } as SecurityFinding);
+          } as SecurityFindingDraft);
         }
       } catch {
         // LLM analysis failure is non-fatal — fall back to Layer 2 only
@@ -2937,7 +2956,7 @@ export class HardeningScanner {
         // SAME notion of "which paths does this finding speak for" that
         // verification does (#280) — the two disagreeing is what let one
         // ignored path delete a multi-file finding.
-        const coveredFiles = (f: SecurityFinding): string[] => this.coveredFilesOf(f);
+        const coveredFiles = (f: SecurityFindingDraft): string[] => this.coveredFilesOf(f);
 
         // Compare against the verify scan's UNFILTERED findings. Its
         // `findings` has already been through the user-facing filter below,
@@ -3093,11 +3112,11 @@ export class HardeningScanner {
         // spelled. (A NUL separator is the conventional choice and is what this
         // was first written with — it is also a raw control byte in source,
         // invisible in every diff, which `render-source-gate` rightly rejects.)
-        const alreadyHeld = new Map<string, SecurityFinding>();
+        const alreadyHeld = new Map<string, SecurityFindingDraft>();
         for (const f of findings) {
           if (f.file) alreadyHeld.set(`${f.checkId} ${f.file}`, f);
         }
-        const adopted: SecurityFinding[] = [];
+        const adopted: SecurityFindingDraft[] = [];
         for (const f of verifyResult.findings) {
           if (!f.file) continue;
           // Identity, not spelling (#317) — and only a proven `yes`. `unknown`
@@ -3186,7 +3205,7 @@ export class HardeningScanner {
     //
     // So: path exclusions leave the scored set and are reported as scope;
     // check-ID suppressions stay in it and are reported as suppression.
-    const pathExcluded: SecurityFinding[] = [];
+    const pathExcluded: SecurityFindingDraft[] = [];
     for (const f of filteredFindings) {
       if (ignoredChecks.has(f.checkId.toUpperCase())) {
         f.suppressed = true;
@@ -3253,7 +3272,7 @@ export class HardeningScanner {
     //    2 of them nominally critical. Nothing was found, so `clear` is not
     //    made false by them, and surfacing them by category would be a wall of
     //    FUD with no path forward. Counted, not named.
-    const survived = new Set<SecurityFinding>(filteredFindings);
+    const survived = new Set<SecurityFindingDraft>(filteredFindings);
     const suppressedFailures: Array<{
       checkId: string;
       name: string;
@@ -3304,7 +3323,7 @@ export class HardeningScanner {
     // separately on `outOfScope`.
     const scoredFindings = [
       ...filteredFindings,
-      ...(expandSuppressed(suppressed) as unknown as SecurityFinding[]),
+      ...(expandSuppressed(suppressed) as unknown as SecurityFindingDraft[]),
     ];
 
     // Calculate score (only on applicable findings, plus suppressed penalties)
@@ -3346,18 +3365,52 @@ export class HardeningScanner {
     const hasFixedFindings = filteredFindings.some((f) => f.fixed);
     const atomicFix = shouldFix ? !fixFailed && hasFixedFindings : undefined;
 
+    // Route point 4. Both returned arrays are filters of `findings`, so a draft
+    // that survives both used to be THE SAME OBJECT in each — `filteredFindings`
+    // is `findings.filter(...)` (:3122, :3204) and `dropPathlessNoiseFloor` is
+    // another filter over `findings`.
+    //
+    // Emitting each array independently would quietly end that. `emitFinding`
+    // returns a new object, so the two channels would hold separate copies and a
+    // post-scan mutation of `result.findings[i]` would stop reaching
+    // `result.allFindings` — `cli.ts:11630` demotes severity exactly that way.
+    // No consumer depends on it today (`eval` never reads `allFindings`, and the
+    // `secure` path re-derives both from one array at `cli.ts:4718`), so this is
+    // a latent hazard rather than a live defect — but it is one a future reader
+    // would have no way to see, and preserving identity costs a Map.
+    //
+    // It also halves the work: a finding in both channels is redacted once.
+    const emitted = new Map<SecurityFindingDraft, ReturnType<typeof emitFinding>>();
+    const emitOnce = (f: SecurityFindingDraft) => {
+      const seen = emitted.get(f);
+      if (seen) return seen;
+      const fresh = emitFinding(f);
+      emitted.set(f, fresh);
+      return fresh;
+    };
+
     return {
       timestamp: new Date(),
       platform,
       projectType,
-      findings: filteredFindings,
+      // Route point 4: the last construction before any channel. Everything
+      // above this line is a DRAFT — the 68 accumulators, the 65 check methods
+      // that fill them, and every helper that filters, scores or enriches them
+      // — and the two redaction fields do not exist until here. `scan()`'s
+      // return is the narrowest point that covers the 253 `scanner.ts` literals
+      // plus `assembly-scanner`, `external-scanner` and `nanomind-analyzer`.
+      findings: filteredFindings.map(emitOnce),
       // allFindings is consumed by benchmark, OASB-2 composite, and the
       // corpus release-smoke harness. Drop true noise-floor findings —
       // pathless failed findings whose check doesn't apply to this
       // project type (issue #131 / #130). Pathless findings whose check
       // DOES apply (a check that found real evidence but failed to
       // attribute a file) are preserved as legitimate detections.
-      allFindings: dropPathlessNoiseFloor(findings, projectType),
+      // `allFindings` is a SECOND channel, not a view of the first: benchmark,
+      // the OASB-2 composite and the corpus release-smoke harness read it, and
+      // two of the four measured JSON leak paths were under `$.allFindings[…]`.
+      // It emits independently for that reason.
+      allFindings: dropPathlessNoiseFloor(findings, projectType).map(emitOnce),
       score,
       rawScore,
       scoreClamped,
@@ -3645,7 +3698,7 @@ export class HardeningScanner {
    * separate copies of the same loop; the copies agreed by luck, and only one
    * of them would have been fixed (#421).
    */
-  findingAppliesTo(finding: SecurityFinding, projectType: ProjectType): boolean {
+  findingAppliesTo(finding: SecurityFindingDraft, projectType: ProjectType): boolean {
     return findingAppliesTo(finding, projectType);
   }
 
@@ -3656,15 +3709,15 @@ export class HardeningScanner {
    * `reapplyIgnoreFilters` had not, so the suppression accounting disagreed with
    * the display set about what a suppression could possibly withhold.
    */
-  isReportableFinding(finding: SecurityFinding, projectType: ProjectType): boolean {
+  isReportableFinding(finding: SecurityFindingDraft, projectType: ProjectType): boolean {
     return isReportableFinding(finding, projectType);
   }
 
   private async checkCredentialExposure(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const envVarsToAdd: Set<string> = new Set();
 
     // Credential patterns with their env var names (stricter to avoid false positives)
@@ -3886,8 +3939,8 @@ export class HardeningScanner {
   private async checkClaudeMd(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const claudeMdPath = path.join(targetDir, 'CLAUDE.md');
 
     try {
@@ -3935,8 +3988,8 @@ export class HardeningScanner {
   private async checkMcpConfig(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const mcpConfigPath = path.join(targetDir, 'mcp.json');
 
     try {
@@ -4705,8 +4758,8 @@ export class HardeningScanner {
   private async checkFilePermissions(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // Files that should have restricted permissions
     const sensitiveFiles = [
@@ -4796,8 +4849,8 @@ export class HardeningScanner {
   private async checkGitSecurity(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // Existence-aware severity (#250): a missing or incomplete .gitignore
     // is a LOW hardening advisory on its own; it becomes a HIGH exposure
@@ -5029,8 +5082,8 @@ dist/
   private async checkNetworkSecurity(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const mcpConfigPath = path.join(targetDir, 'mcp.json');
 
     let mcpConfig: Record<string, unknown> | null = null;
@@ -5110,8 +5163,8 @@ dist/
   private async checkMcpAdvanced(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const mcpConfigPath = path.join(targetDir, 'mcp.json');
 
     let mcpConfig: Record<string, unknown> | null = null;
@@ -5257,8 +5310,8 @@ dist/
   private async checkClaudeAdvanced(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const claudeSettingsPath = path.join(targetDir, '.claude', 'settings.json');
 
     // `.claude/settings.json`, parsed the way `detect` parses it (#363).
@@ -5377,8 +5430,8 @@ dist/
   private async checkCursorConfig(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // Check multiple Cursor config locations
     const cursorPaths = [
@@ -5420,8 +5473,8 @@ dist/
   private async checkVscodeConfig(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const vscodeMcpPath = path.join(targetDir, '.vscode', 'mcp.json');
 
     let vscodeConfig: Record<string, unknown> | null = null;
@@ -5959,8 +6012,8 @@ dist/
   private async checkCredentialsAdvanced(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // CRED-002: Check for private key files. Recursive (bounded) since
     // #250 — a key at certs/server.pem is exactly as committable as one
@@ -6083,8 +6136,8 @@ dist/
   private async checkPermissionsAdvanced(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // PERM-002: Check for executable config files
     const configFiles = ['config.json', 'mcp.json', 'settings.json', '.env'];
@@ -6152,8 +6205,8 @@ dist/
   private async checkEnvironmentSecurity(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // ENV-001: Check for development mode indicators
     let devModeEnabled = false;
@@ -6273,8 +6326,8 @@ dist/
   private async checkLoggingSecurity(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // LOG-001: Check for logging configuration
     let hasLoggingConfig = false;
@@ -6453,8 +6506,8 @@ dist/
   private async checkDependencySecurity(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // DEP-001: Check for package-lock.json
     let hasLockFile = false;
@@ -6596,8 +6649,8 @@ dist/
   private async checkAuthSecurity(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // AUTH-001: Check for auth configuration
     let hasAuthConfig = false;
@@ -6710,8 +6763,8 @@ dist/
   private async checkProcessSecurity(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // PROC-001: Check for Dockerfile security
     // Search common Dockerfile locations
@@ -6832,8 +6885,8 @@ dist/
   private async checkClaudeExtended(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const claudeSettingsPath = path.join(targetDir, '.claude', 'settings.json');
 
     let claudeSettings: Record<string, unknown> | null = null;
@@ -6933,8 +6986,8 @@ dist/
   private async checkMcpExtended(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const mcpConfigPath = path.join(targetDir, 'mcp.json');
 
     let mcpConfig: Record<string, unknown> | null = null;
@@ -7069,8 +7122,8 @@ dist/
   private async checkNetworkExtended(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // NET-003: Check for HTTPS enforcement
     let hasHttpsEnforcement = false;
@@ -7205,8 +7258,8 @@ dist/
   private async checkAPISecurity(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // API-001: Check for API versioning
     let hasApiVersioning = false;
@@ -7330,8 +7383,8 @@ dist/
   private async checkSecretManagement(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // SEC-001: Check for secret management tools
     let hasSecretManager = false;
@@ -7446,8 +7499,8 @@ dist/
   private async checkIOSecurity(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // IO-001: Check for file upload handling
     let hasFileUpload = false;
@@ -7582,8 +7635,8 @@ dist/
   private async checkPromptSecurity(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // PROMPT-001: Check for system prompt boundary markers
     let hasPromptBoundaries = false;
@@ -7699,8 +7752,8 @@ dist/
   private async checkInputValidation(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // INJ-001: Check for input validation in MCP handlers
     let hasInputValidation = false;
@@ -7867,8 +7920,8 @@ dist/
   private async checkRateLimiting(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // RATE-001: Check for rate limiting configuration
     let hasRateLimiting = false;
@@ -8014,8 +8067,8 @@ dist/
   private async checkSessionSecurity(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // SESSION-001: Check for secure session configuration
     let hasSecureSessions = false;
@@ -8157,8 +8210,8 @@ dist/
   private async checkEncryption(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // ENCRYPT-001: Check for encryption at rest
     let hasEncryption = false;
@@ -8313,8 +8366,8 @@ dist/
   private async checkAuditTrail(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // AUDIT-001: Check for audit logging
     let hasAuditLogging = false;
@@ -8455,8 +8508,8 @@ dist/
   private async checkSandboxing(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // SANDBOX-001: Check for Docker/container usage
     let hasContainerization = false;
@@ -8567,8 +8620,8 @@ dist/
   private async checkToolBoundaries(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const mcpConfigPath = path.join(targetDir, 'mcp.json');
 
     let mcpConfig: Record<string, unknown> | null = null;
@@ -8683,7 +8736,7 @@ dist/
     return findings;
   }
 
-  calculateScore(findings: SecurityFinding[]): {
+  calculateScore(findings: SecurityFindingDraft[]): {
     score: number;
     maxScore: number;
   } {
@@ -8709,7 +8762,7 @@ dist/
       scoreClamped?: boolean;
       scoreExcludingOwnArchive?: number;
     },
-    findings: SecurityFinding[],
+    findings: SecurityFindingDraft[],
   ): void {
     const { score: rawScore } = this.calculateScore(findings);
     const { score, clamped } = clampScoreToVerdictBand(rawScore, findings);
@@ -9827,8 +9880,8 @@ dist/
   private async checkOpenclawSkills(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const skillFiles = await this.findSkillFiles(targetDir);
 
     for (const skillFile of skillFiles) {
@@ -10638,8 +10691,8 @@ dist/
   private async checkOpenclawHeartbeat(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const heartbeatFiles = await this.findHeartbeatFiles(targetDir);
 
     for (const heartbeatFile of heartbeatFiles) {
@@ -10869,8 +10922,8 @@ dist/
   private async checkOpenclawGateway(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const configFiles = await this.findGatewayConfigFiles(targetDir);
 
     for (const configFile of configFiles) {
@@ -11390,8 +11443,8 @@ dist/
   private async checkOpenclawConfig(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // CONFIG-001: Session File Exposure
     const sessionPatterns = [
@@ -11767,8 +11820,8 @@ dist/
   private async checkOpenclawSupplyChain(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const skillFiles = await this.findSkillFiles(targetDir);
 
     // Known malicious skill patterns from ClawHavoc campaign
@@ -12023,8 +12076,8 @@ dist/
   private async checkOpenclawCVE(
     targetDir: string,
     _autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // CVE-001: Vulnerable OpenClaw Version
     const pkgJsonPath = path.join(targetDir, 'package.json');
@@ -12288,8 +12341,8 @@ dist/
    * Check for memory/context poisoning risks
    * Detects patterns that could allow attackers to poison agent memory or conversation context
    */
-  private async checkMemoryPoisoning(targetDir: string, _autoFix: boolean): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  private async checkMemoryPoisoning(targetDir: string, _autoFix: boolean): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // MEM-001: Unvalidated memory persistence
     // Check for memory/context files that accept external input without validation
@@ -12456,8 +12509,8 @@ dist/
    * Check for RAG (Retrieval-Augmented Generation) poisoning risks
    * Detects patterns that could allow attackers to inject malicious content into RAG pipelines
    */
-  private async checkRAGPoisoning(targetDir: string, _autoFix: boolean): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  private async checkRAGPoisoning(targetDir: string, _autoFix: boolean): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // RAG-001: Unvalidated retrieval sources
     const ragConfigFiles = ['rag.json', 'retrieval.json', 'vector-store.json', 'embeddings.json'];
@@ -12631,8 +12684,8 @@ dist/
    * Check for agent identity spoofing risks
    * Detects missing or weak agent identity verification
    */
-  private async checkAgentIdentity(targetDir: string, _autoFix: boolean): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  private async checkAgentIdentity(targetDir: string, _autoFix: boolean): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // AIM-001: No agent identity declaration
     const identityFiles = ['agent-card.json', '.well-known/agent-card.json', 'agent.json', '.well-known/agent.json', 'aim.json', '.well-known/aim.json'];
@@ -12731,8 +12784,8 @@ dist/
    * Check for agent DNA/behavioral fingerprint forgery risks
    * Detects integrity issues with agent behavioral profiles
    */
-  private async checkAgentDNA(targetDir: string, _autoFix: boolean): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  private async checkAgentDNA(targetDir: string, _autoFix: boolean): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // DNA-001: No behavioral fingerprint
     const dnaFiles = ['agent-dna.json', '.well-known/agent-dna.json', '.agent-dna', 'behavioral-profile.json'];
@@ -12859,8 +12912,8 @@ dist/
   /**
    * Check for skill-based memory manipulation risks
    */
-  private async checkSkillMemory(targetDir: string, _autoFix: boolean): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  private async checkSkillMemory(targetDir: string, _autoFix: boolean): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // SKILL-MEM-001: Skills with memory write access
     // Check SKILL.md for memory manipulation patterns
@@ -12932,8 +12985,8 @@ dist/
   private async checkUnicodeSteganography(
     targetDir: string,
     _autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     // Scan expanded file types beyond JS/TS (configs, docs, and Python are attack surfaces too)
     const stegoExtensions = ['.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx', '.py', '.md', '.txt', '.yaml', '.yml', '.json', '.toml'];
     const sourceFiles = await this.walkDirectory(targetDir, stegoExtensions);
@@ -13423,8 +13476,8 @@ dist/
   private async checkNemoClawPatterns(
     targetDir: string,
     _shouldFix: boolean,
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // Collect source files by extension (max depth 5, skips node_modules/.git/dist/build)
     const shFiles = await this.walkDirectory(targetDir, ['.sh'], 0, 5);
@@ -14116,8 +14169,8 @@ dist/
   private async checkLLMExposure(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // Patterns for LLM server configs that indicate exposure risk
     const llmConfigFiles = [
@@ -14228,8 +14281,8 @@ dist/
   private async checkAIToolExposure(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // Fix transforms for AI tool patterns
     const AI_TOOL_FIXES: Record<string, Array<{ match: RegExp; replace: string }>> = {
@@ -14397,8 +14450,8 @@ dist/
   private async checkA2AExposure(
     targetDir: string,
     _autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // Check for .well-known/agent.json (A2A discovery file)
     const wellKnownPaths = [
@@ -14483,8 +14536,8 @@ dist/
   private async checkMCPDiscovery(
     targetDir: string,
     _autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     const mcpDiscoveryPaths = [
       path.join(targetDir, '.well-known', 'mcp'),
@@ -14535,8 +14588,8 @@ dist/
   private async checkWebServedCredentials(
     targetDir: string,
     autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // Unambiguous web-served directories — static assets published to a
     // public web server.
@@ -14751,8 +14804,8 @@ dist/
   private async checkCodeInjection(
     targetDir: string,
     _autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const files = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS], 0, 2);
 
     // Match exec( or execSync( followed by a backtick (template literal)
@@ -14801,8 +14854,8 @@ dist/
   private async checkInstallScripts(
     targetDir: string,
     _autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const files = await this.walkDirectory(targetDir, ['.sh'], 0, 2);
 
     const pattern = /\b(curl|wget)\b[^|]*\|\s*(ba)?sh\b/g;
@@ -14849,8 +14902,8 @@ dist/
   private async checkCLICredentialPassthrough(
     targetDir: string,
     _autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const files = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS], 0, 2);
 
     const pattern = /--(token|password|api[_-]?key|secret|auth)\s*[=\s]\s*[`$"']\s*\$?\{?|["']--(token|password|api[_-]?key|secret|auth)["']/g;
@@ -14902,8 +14955,8 @@ dist/
   private async checkIntegrityBypass(
     targetDir: string,
     _autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const files = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS], 0, 2);
 
     const pattern = /if\s*\(\s*(digest|hash|checksum|signature|integrity)\s*&&/g;
@@ -14950,8 +15003,8 @@ dist/
   private async checkTOCTOU(
     targetDir: string,
     _autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const files = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS], 0, 2);
 
     for (const file of files.slice(0, 100)) {
@@ -15055,8 +15108,8 @@ dist/
   private async checkTmpPaths(
     targetDir: string,
     _autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const files = await this.walkDirectory(targetDir, ['.sh'], 0, 2);
 
     const pattern = /(>|>>)\s*\/tmp\/|(-o)\s+\/tmp\/|\s\/tmp\/\S+/g;
@@ -15107,8 +15160,8 @@ dist/
   private async checkDockerInjection(
     targetDir: string,
     _autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const files = await this.walkDirectory(targetDir, ['.sh'], 0, 2);
 
     const pattern = /docker\s+exec\b.*?(\$\{?\w+\}?)/g;
@@ -15156,8 +15209,8 @@ dist/
   private async checkEnvLeak(
     targetDir: string,
     _autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const files = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS], 0, 2);
 
     const spreadPattern = /env:\s*\{\s*\.\.\.process\.env/g;
@@ -15211,8 +15264,8 @@ dist/
   private async checkSandboxMessaging(
     targetDir: string,
     _autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // Scan YAML/JSON files in policies/ and config/ directories
     const policyDirs = ['policies', 'config', '.openclaw'];
@@ -15279,8 +15332,8 @@ dist/
   private async checkWebExposedFiles(
     targetDir: string,
     _autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     const webDirs = ['public', 'static', 'dist', 'build', 'out', 'www'];
     // Track seen real paths to avoid duplicates on case-insensitive filesystems
@@ -15404,8 +15457,8 @@ dist/
   private async checkSoulOverride(
     targetDir: string,
     _autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // Path 1: Look for system-prompt files that load both soul and skill content
     const promptFiles = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS], 0, 2);
@@ -15548,8 +15601,8 @@ dist/
    * Scans SOUL.md files for missing constraints, escape clauses, bypass instructions,
    * contradictory privacy claims, or stacked unverifiable compliance assertions.
    */
-  private async checkSoulGovernanceGaps(targetDir: string): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  private async checkSoulGovernanceGaps(targetDir: string): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const soulFiles = await this.findFilesMatching(targetDir, ['SOUL.md']);
 
     for (const soulFile of soulFiles) {
@@ -15778,8 +15831,8 @@ dist/
   private async checkMemoryStoreSanitization(
     targetDir: string,
     _autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
     const files = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS], 0, 2);
 
     // Look for store/save/persist calls with text/content parameter (method or function)
@@ -15887,8 +15940,8 @@ dist/
   private async checkAgentCredentialProtection(
     targetDir: string,
     _autoFix: boolean
-  ): Promise<SecurityFinding[]> {
-    const findings: SecurityFinding[] = [];
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
 
     // System prompt files to check
     const promptFileNames = ['SOUL.md', 'CLAUDE.md', 'system-prompt.md', 'system-prompt.txt'];
@@ -15956,7 +16009,7 @@ dist/
   private async checkContextLifecycle(
     targetDir: string,
     options: ScanOptions,
-  ): Promise<SecurityFinding[]> {
+  ): Promise<SecurityFindingDraft[]> {
     try {
       const result = await scanAssembly({
         targetDir,

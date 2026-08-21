@@ -290,7 +290,8 @@ import {
   UNREACHABLE_PREFIXES,
   type CategoryCoverage,
 } from './hardening/coverage-ledger';
-import type { ScanResult, SuppressionChannel } from './hardening/security-check';
+import type { ScanResult, SuppressionChannel, SecurityFindingDraft } from './hardening/security-check';
+import { emitFindings } from './hardening/finding-emit';
 import { compareFindingsByTier } from './ui/finding-tier';
 import {
   scoreLineLabel,
@@ -1572,7 +1573,28 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     medium = gatedIssues.filter(f => f.severity === 'medium').length;
     low = gatedIssues.filter(f => f.severity === 'low').length;
     verdictInput = gatedIssues as any;
-    failed = issues.map(f => ({
+    // `check`'s NanoMind re-map, on the TEXT path only.
+    //
+    // This emit does NOT cover `check --json`, and an earlier comment here said
+    // it did. `--json` returns above, before `displayUnifiedCheck` is ever
+    // called, so no line in this function is on the JSON channel. What actually
+    // covers `check` on both channels is upstream: `mergeFindings` builds every
+    // finding through `astFindingToSecurityFinding`, which emits, and `check`
+    // passes an EMPTY static set, so nothing reaches either channel unemitted.
+    //
+    // Stated this way because the previous wording named the one channel the
+    // code cannot reach, which is the same defect as the false depth-cap
+    // comment this release deletes: a comment that tells the next reader not to
+    // look is worse than no comment. The coverage above is also incidental —
+    // nothing here requires it — so it is pinned by a test rather than trusted
+    // (`__tests__/hardening/finding-emit.test.ts`, the `mergeFindings` block).
+    //
+    // KNOWN, ruled OUT of 0.32.0 and carried to the hardening unit: this re-map
+    // lists its fields by name and does not copy `redactionStatus` /
+    // `redactedShapes`, so re-emitting downgrades an honest `applied` to
+    // `clean`. Inert today — the field has no consumers and `failed` never
+    // reaches the JSON channel — but it is defect (1)'s false-clean class.
+    failed = emitFindings(issues.map(f => ({
       checkId: f.checkId || '',
       name: f.name || f.description || '',
       description: f.description || '',
@@ -1586,7 +1608,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       fix: f.fix,
       guidance: f.guidance,
       attackClass: f.attackClass,
-    }));
+    })));
     // Use the canonical scoring formula (exponential decay + 0.4x governance weight)
     //
     // #457 — `gatedIssues`, not `issues`. The counts, the verdict and the exit
@@ -4333,8 +4355,10 @@ async function handleSoulContribution(
   registryUrl?: string,
   format?: string,
 ): Promise<void> {
-  // Convert soul controls into SecurityFinding-shaped objects
-  const findings: SecurityFinding[] = [];
+  // Convert soul controls into SecurityFinding-shaped objects.
+  // A draft accumulator: these are emitted at the `handleContribution` call
+  // below, which publishes them to the Registry.
+  const findings: SecurityFindingDraft[] = [];
   for (const domain of result.domains) {
     if (domain.skippedByProfile || domain.skippedByTier) continue;
     for (const ctrl of domain.controls) {
@@ -4351,7 +4375,7 @@ async function handleSoulContribution(
     }
   }
 
-  await handleContribution(contributeFlag, targetDir, findings, durationMs, registryUrl, format);
+  await handleContribution(contributeFlag, targetDir, emitFindings(findings), durationMs, registryUrl, format);
 }
 
 program
@@ -4692,7 +4716,12 @@ Examples:
         // printed `CONFIG-004 (critical x2)` for a single occurrence.
         result.suppressed = scanner.lastSuppressed.length > 0 ? scanner.lastSuppressed : undefined;
         if (result.allFindings) {
-          result.allFindings = refiltered as typeof result.allFindings;
+          // No cast. `reapplyIgnoreFilters` is generic over the finding type and
+          // only marks and filters, so `refiltered` is still branded and assigns
+          // directly. A cast here would have compiled just as quietly while
+          // laundering the boundary guarantee at the one point downstream of it
+          // that rebuilds both channels.
+          result.allFindings = refiltered;
         }
         if (result.findings) {
           // Re-apply the same gates as the original filter:
@@ -4707,9 +4736,9 @@ Examples:
           // `countsAgainstScore` ran a few lines below, so the score was
           // recomputed from a list the unverified fix had been removed from.
           const projectType = result.projectType || 'library';
-          result.findings = refiltered.filter((f: any) =>
+          result.findings = refiltered.filter((f) =>
             scanner.isReportableFinding(f, projectType)
-          ) as typeof result.findings;
+          );
         }
         // Re-apply CLI --ignore list (reapplyIgnoreFilters only covers .hmaignore file rules)
         //
@@ -4734,7 +4763,7 @@ Examples:
                 .map((f: any) => ({ ...f, suppressed: true, suppressedBy: 'ignore-flag' })),
             ]);
           }
-          result.findings = (result.findings || []).filter((f: any) => !hit(f)) as typeof result.findings;
+          result.findings = (result.findings || []).filter((f: any) => !hit(f));
           if (result.allFindings) {
             result.allFindings = result.allFindings.filter((f: any) => !hit(f));
           }
@@ -5931,7 +5960,15 @@ Examples:
         const nmResult = await orchestrateNanoMind(targetDir, result.findings, { silent: !!options.json, projectType: result.projectType });
         // Re-apply .hmaignore filters and recalculate score after NanoMind merge
         const hRefiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir, result.projectType || 'library');
-        result.findings = hRefiltered as typeof result.findings;
+        // `mergedFindings` is `SecurityFindingDraft[]`: NanoMind returns the
+        // findings it was given PLUS ones it created, and the created ones have
+        // never crossed the boundary. Casting the array into `RedactedFinding[]`
+        // published them unredacted while the brand said otherwise — which is
+        // the whole failure the brand exists to prevent. Emitting is correct
+        // rather than merely type-safe: re-emitting an already-emitted finding
+        // is a no-op on text, and `applied` is absorbing, so the ones that came
+        // from `result.findings` keep their honest status.
+        result.findings = emitFindings(hRefiltered);
         const hForScore = hRefiltered.filter((f: any) => countsAgainstScore(f));
         scanner.applyScore(result, hForScore);
       } catch { /* NanoMind unavailable */ }
@@ -6181,7 +6218,7 @@ Examples:
       try {
         const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
         const nmResult = await orchestrateNanoMind(targetDir, findings, { silent: !!options.json });
-        mergedFindings = nmResult.mergedFindings as typeof findings;
+        mergedFindings = emitFindings(nmResult.mergedFindings);
       } catch { /* NanoMind unavailable */ }
 
       // Re-apply .hmaignore filtering after NanoMind merge (paths + check IDs)
@@ -11586,8 +11623,19 @@ function isAiToolingFile(filePath: string): boolean {
  * and build file findings. Mutates `result.findings` in place and
  * recalculates the score.
  */
+/**
+ * Takes `Pick<ScanResult, …>` and NOT a structural `{ findings: SecurityFinding[] }`.
+ *
+ * The structural version was the worst site in this class precisely because it
+ * had no cast to grep for: a `ScanResult` satisfies it by covariance, the
+ * parameter then re-binds `findings` to an UNBRANDED `SecurityFinding[]`, and
+ * the write-back laundered the array in silence. It is the last mutator before
+ * four `--json` payloads, so the brand was being erased one step before publish
+ * with nothing in the source to notice. Naming `ScanResult` keeps the element
+ * type branded through both the read and the write.
+ */
 function filterLocalOnlyFindings(
-  result: { findings: SecurityFinding[]; score: number; maxScore: number },
+  result: Pick<ScanResult, 'findings' | 'score' | 'maxScore'>,
   scanner: HardeningScanner,
 ): void {
   result.findings = result.findings.filter(f => {
@@ -11901,9 +11949,9 @@ async function checkGitHubRepo(
       const nmResult = await orchestrateNanoMind(repoDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, repoDir, result.projectType || 'library');
       const projectType = result.projectType || 'library';
-      result.findings = refiltered.filter((f: any) =>
-        scanner.isReportableFinding(f, projectType)
-      ) as typeof result.findings;
+      result.findings = emitFindings(
+        refiltered.filter((f: any) => scanner.isReportableFinding(f, projectType)),
+      );
       scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
@@ -12235,9 +12283,9 @@ async function checkPyPiPackage(
       const nmResult = await orchestrateNanoMind(extractDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, extractDir, result.projectType || 'library');
       const projectType = result.projectType || 'library';
-      result.findings = refiltered.filter((f: any) =>
-        scanner.isReportableFinding(f, projectType)
-      ) as typeof result.findings;
+      result.findings = emitFindings(
+        refiltered.filter((f: any) => scanner.isReportableFinding(f, projectType)),
+      );
       scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
@@ -12448,9 +12496,9 @@ async function checkRawUrl(
       const nmResult = await orchestrateNanoMind(scanDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, scanDir, result.projectType || 'library');
       const projectType = result.projectType || 'library';
-      result.findings = refiltered.filter((f: any) =>
-        scanner.isReportableFinding(f, projectType)
-      ) as typeof result.findings;
+      result.findings = emitFindings(
+        refiltered.filter((f: any) => scanner.isReportableFinding(f, projectType)),
+      );
       scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;
@@ -12632,9 +12680,9 @@ async function checkNpmPackage(
       const nmResult = await orchestrateNanoMind(packageDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, packageDir, result.projectType || 'library');
       const projectType = result.projectType || 'library';
-      result.findings = refiltered.filter((f: any) =>
-        scanner.isReportableFinding(f, projectType)
-      ) as typeof result.findings;
+      result.findings = emitFindings(
+        refiltered.filter((f: any) => scanner.isReportableFinding(f, projectType)),
+      );
       scanner.applyScore(result, result.findings.filter((f: any) => countsAgainstScore(f)));
       analystFindings = nmResult.analystFindings;
       analystZeroState = nmResult.analystZeroState;

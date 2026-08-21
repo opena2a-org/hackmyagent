@@ -4,7 +4,7 @@
  * These identifiers match the attack_classes table in the OpenA2A Registry.
  */
 
-import type { SecurityFinding } from './security-check';
+import type { SecurityFindingDraft } from './security-check';
 
 /** Maps HMA check ID prefixes and exact IDs to attack class identifiers */
 const TAXONOMY_MAP: Record<string, string> = {
@@ -611,7 +611,7 @@ export function getCheckCounts(): CheckCounts {
  * `CRED-EXPOSURE`) are left untouched — inline values take precedence
  * over the table lookup.
  */
-export function enrichWithTaxonomy(findings: SecurityFinding[]): void {
+export function enrichWithTaxonomy(findings: SecurityFindingDraft[]): void {
   for (const finding of findings) {
     if (finding.attackClass) continue;
     const attackClass = getAttackClass(finding.checkId);

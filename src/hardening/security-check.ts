@@ -3,6 +3,10 @@
  */
 
 import type { Evidence, Rationale, ConceptId } from '../types/finding-evidence';
+import type { ShapeId } from '../types/credential-format';
+// Type-only, and therefore erased: `finding-emit` imports types from here, so a
+// value import would be a runtime cycle. This one is not.
+import type { RedactedFinding } from './finding-emit';
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low';
 
@@ -141,7 +145,63 @@ export interface SecurityFinding {
    * (not the heuristic fallback). See `NanoMindIntentSignal`.
    */
   nanomindIntent?: NanoMindIntentSignal;
+  /**
+   * Always present. Whether this finding's byte-carrying fields passed the
+   * redaction boundary (`emitFinding`), and what the boundary concluded.
+   *
+   * `'unverified'` is the INITIALIZER, not a fallback: a construction path that
+   * never reached the redactor emits an explicit unknown, never a claim of
+   * cleanliness. An unwired site is therefore visible in the output rather than
+   * silently asserting it is clean — this workspace's rule for degraded state.
+   *
+   * `[ABDEL]` 2026-08-13 (D3). Field name, type and the always-present rule are
+   * FROZEN, as is the closed three-member union.
+   */
+  redactionStatus: 'applied' | 'clean' | 'unverified';
+  /**
+   * Always present. Registry shape ids the redactor resolved FROM THE VALUE.
+   *
+   * `[]` unless `'applied'` — and `'applied'` with `[]` is valid and honest,
+   * because a key-name or context heuristic resolves no shape (C9). Sorted and
+   * deduped.
+   *
+   * `ShapeId`'s MEMBERSHIP is deliberately open (22 today; GAP-8 grows it).
+   * `readonly ShapeId[]` here, `string[]` in the published schema — consumers
+   * MUST tolerate an id they have not seen. Do not publish this as a
+   * string-literal union: that freezes the vocabulary by accident and makes
+   * every future credential shape a breaking change.
+   *
+   * Forbidden on this pair, now and after the freeze: `redactionCount`, byte
+   * offsets, any length / `totalChars` / `byteLength` / character count, any
+   * preserved prefix or suffix, any hash or fingerprint of the body, salted or
+   * not. The predicate: a redaction field may carry CLASSIFICATION, never a
+   * MEASUREMENT OF THE BODY.
+   */
+  redactedShapes: readonly ShapeId[];
 }
+
+/**
+ * What a PRODUCER writes: every field of a finding except the two the
+ * redaction boundary stamps.
+ *
+ * A detector cannot write `redactionStatus` or `redactedShapes`, because a
+ * detector is not in a position to know them — only `emitFinding`
+ * (`src/hardening/finding-emit.ts`) is. Producer-side accumulators, the private
+ * check methods that fill them, and every hand-written adapter therefore carry
+ * `SecurityFindingDraft[]`; the two redaction fields appear exactly when a value
+ * crosses the boundary and not one line earlier.
+ *
+ * This is the type that makes the boundary provable rather than asserted. The
+ * settlement brief's claim that four route points cover every construction site
+ * was an unverified premise (CA rejected it as such): with the two fields
+ * REQUIRED on `SecurityFinding`, the compiler enumerates the real set, and it
+ * found three producers the four-point route set did not name
+ * (`skill-capability-validator.ts:167`, `cli.ts:4341`, `cli.ts:1575`).
+ */
+export type SecurityFindingDraft = Omit<
+  SecurityFinding,
+  'redactionStatus' | 'redactedShapes'
+>;
 
 /**
  * Per-artifact advisory classification from the NanoMind non-generative
@@ -169,10 +229,19 @@ export interface ScanResult {
   platform: string;
   /** Detected project type */
   projectType: ProjectType;
-  /** Filtered findings (failed checks with file paths) - for CLI display */
-  findings: SecurityFinding[];
-  /** All findings including passed checks - for benchmark evaluation */
-  allFindings?: SecurityFinding[];
+  /**
+   * Filtered findings (failed checks with file paths) - for CLI display.
+   *
+   * `RedactedFinding`, not `SecurityFinding`: this is what makes C10's brand
+   * load-bearing rather than decorative. A `ScanResult` cannot be built from
+   * findings that did not cross `emitFinding`, because no other module can
+   * produce the brand — so a future channel that assembles its own result is a
+   * COMPILE error rather than a silent leak.
+   */
+  findings: RedactedFinding[];
+  /** All findings including passed checks - for benchmark evaluation. Branded
+   *  for the same reason: it is a second published channel, not a view. */
+  allFindings?: RedactedFinding[];
   /**
    * Composite score as rendered and published. Clamped out of the "good"
    * band whenever the scan's own verdict is fail-direction (>=1 critical or

@@ -24,11 +24,15 @@
 import { fs } from '../hardening/tracked-fs';
 import * as path from 'path';
 import type {
-  SecurityFinding,
+  SecurityFindingDraft,
   AssemblyComponent,
   AssemblyInteraction,
   LifecycleScanResult,
 } from '../hardening/security-check';
+// `scanAssembly` is a PUBLIC export (`src/index.ts:47`), so its findings reach
+// library consumers as objects that never touch a serializer. It emits here
+// rather than relying on the scanner's boundary downstream.
+import { emitFindings, type RedactedFinding } from '../hardening/finding-emit';
 
 /** Patterns that indicate prompt injection when found in assembled context */
 const INJECTION_PATTERNS: { pattern: RegExp; name: string; severity: 'critical' | 'high' | 'medium' }[] = [
@@ -210,8 +214,8 @@ function assemblePrompt(components: AssemblyComponent[]): { assembled: string; c
 function scanAssembledPrompt(
   assembled: string,
   components: AssemblyComponent[],
-): { findings: SecurityFinding[]; interactions: AssemblyInteraction[] } {
-  const findings: SecurityFinding[] = [];
+): { findings: SecurityFindingDraft[]; interactions: AssemblyInteraction[] } {
+  const findings: SecurityFindingDraft[] = [];
   const interactions: AssemblyInteraction[] = [];
 
   // 1. Scan full assembled prompt for injection patterns
@@ -434,7 +438,7 @@ function scanAssembledPrompt(
  * Runs the full Stage 1 assembly scan.
  */
 export async function scanAssembly(options: AssemblyScanOptions): Promise<{
-  findings: SecurityFinding[];
+  findings: RedactedFinding[];
   components: AssemblyComponent[];
   interactions: AssemblyInteraction[];
   assembledPrompt: string;
@@ -536,7 +540,7 @@ export async function scanAssembly(options: AssemblyScanOptions): Promise<{
 
   if (onProgress) onProgress(`Assembly scan complete: ${findings.length} findings from ${components.length} components`);
 
-  return { findings, components, interactions, assembledPrompt: assembled, tokenEstimate };
+  return { findings: emitFindings(findings), components, interactions, assembledPrompt: assembled, tokenEstimate };
 }
 
 /**
