@@ -291,7 +291,7 @@ import {
   type CategoryCoverage,
 } from './hardening/coverage-ledger';
 import type { ScanResult, SuppressionChannel, SecurityFindingDraft } from './hardening/security-check';
-import { emitFindings, reemitFinding, assertRedactionProvenance, RedactionProvenanceError } from './hardening/finding-emit';
+import { emitFindings, reemitFinding, assertRedactionProvenance, rethrowIfRedactionProvenance } from './hardening/finding-emit';
 import { buildJsonStdoutDocument } from './output/json-stdout';
 import { compareFindingsByTier } from './ui/finding-tier';
 import {
@@ -5134,6 +5134,7 @@ Examples:
               publishStatus = { success: false, error: 'Could not determine package name' };
             }
           } catch (publishErr: unknown) {
+            rethrowIfRedactionProvenance(publishErr);
             const msg = publishErr instanceof Error ? publishErr.message : 'unknown error';
             publishStatus = { success: false, error: msg };
           }
@@ -5536,7 +5537,7 @@ Examples:
           // but silenced the only signal that a laundering defect exists
           // (adversarial review 2026-08-21, F2). An internal invariant is not
           // a registry error; it propagates.
-          if (_reportErr instanceof RedactionProvenanceError) throw _reportErr;
+          rethrowIfRedactionProvenance(_reportErr);
         }
       }
 
@@ -5597,6 +5598,7 @@ Examples:
             }
           }
         } catch (publishErr: unknown) {
+          rethrowIfRedactionProvenance(publishErr);
           const msg = publishErr instanceof Error ? publishErr.message : 'unknown error';
           console.error(`\nFailed to publish to registry: ${msg}`);
           console.error('Scan results are still available locally.');
@@ -7110,6 +7112,7 @@ Examples:
             console.log();
           }
         } catch (publishErr: unknown) {
+          rethrowIfRedactionProvenance(publishErr);
           const msg = publishErr instanceof Error ? publishErr.message : 'unknown error';
           console.error(`\nFailed to publish to registry: ${msg}`);
           console.error('Scan results are still available locally.');
@@ -8931,6 +8934,7 @@ Examples:
               publishStatus = { success: false, error: 'Could not determine package name' };
             }
           } catch (publishErr: unknown) {
+            rethrowIfRedactionProvenance(publishErr);
             const msg = publishErr instanceof Error ? publishErr.message : 'unknown error';
             publishStatus = { success: false, error: msg };
           }
@@ -9363,6 +9367,7 @@ Examples:
             }
           }
         } catch (publishErr: unknown) {
+          rethrowIfRedactionProvenance(publishErr);
           const msg = publishErr instanceof Error ? publishErr.message : 'unknown error';
           process.stderr.write(`Failed to publish to registry: ${msg}\n`);
           process.stderr.write('Scan results are still available locally.\n');
@@ -12094,6 +12099,7 @@ async function checkGitHubRepo(
     // /tmp/hma-check-gh-* directories orphaned, which eventually ENOSPC'd the
     // scanner container. See `finally { await rm(tempDir, ...) }` below.
   } catch (err: unknown) {
+    rethrowIfRedactionProvenance(err);
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
       const errorHint = `Verify the URL: https://github.com/${displayName}`;
@@ -12606,6 +12612,7 @@ async function checkRawUrl(
 
     // Exit code settled above, before the `--json` branch.
   } catch (err: unknown) {
+    rethrowIfRedactionProvenance(err);
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
       console.error(`Error: Could not clone repository from "${escapeForDisplay(String(url))}".`);
@@ -12819,6 +12826,7 @@ async function checkNpmPackage(
 
     // Exit code settled above, before the `--json` branch.
   } catch (err: unknown) {
+    rethrowIfRedactionProvenance(err);
     const message = err instanceof Error ? err.message : String(err);
     // Clean npm error messages
     if (message.includes('404') || message.includes('Not Found')) {

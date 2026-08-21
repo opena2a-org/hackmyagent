@@ -192,6 +192,40 @@ describe('assertRedactionProvenance — the publish-boundary read', () => {
     );
   });
 
+  // RED-PROOF: narrow the predicate's last clause back to
+  // `(message || description)` — this case goes red.
+  //
+  // `toASSF` renders `f.message || f.name || f.checkId` over a local finding
+  // type whose `message` is OPTIONAL and which declares no `description`, so a
+  // message-less finding would ship its `name` — a byte-carrying field — while
+  // a two-field predicate skipped it unexamined (adversarial review
+  // 2026-08-21). The predicate now derives from BYTE_CARRYING_FIELDS.
+  it('catches a laundered finding whose only body text is name', () => {
+    const nameOnly = {
+      checkId: 'TEST-NAMEONLY-001',
+      severity: 'high',
+      passed: false,
+      name: 'a finding whose bytes live only in name',
+    };
+    expect(() => assertRedactionProvenance([nameOnly], 'asff')).toThrow(
+      RedactionProvenanceError,
+    );
+  });
+
+  it('catches a laundered finding whose only body text is guidance', () => {
+    // The same property for a field neither the old predicate nor the asff
+    // case named — the point of deriving from the redactor's own list.
+    const guidanceOnly = {
+      checkId: 'TEST-GUIDANCEONLY-001',
+      severity: 'high',
+      passed: false,
+      guidance: 'remediation prose that could quote an artifact',
+    };
+    expect(() => assertRedactionProvenance([guidanceOnly], 'test-channel')).toThrow(
+      RedactionProvenanceError,
+    );
+  });
+
   it('zero-fire control: an honestly emitted finding passes', () => {
     const payload = { findings: emitFindings([draft(), draft({ message: `x ${GH}` })]) };
     expect(() => assertRedactionProvenance(payload, 'test-channel')).not.toThrow();
