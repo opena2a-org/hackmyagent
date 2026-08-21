@@ -13,12 +13,20 @@ import type { Evidence, Rationale, ConceptId } from '../../types/finding-evidenc
 import { resolveFindingLine } from '../../types/finding-location';
 
 /**
- * SecurityFinding shape duplicated here to avoid a circular dependency —
- * the semantic engine has zero runtime dependencies.
+ * PRE-EMIT finding shape duplicated here so the semantic engine keeps zero
+ * runtime dependencies (the import below is type-only and erased at compile).
  *
- * Keep this interface in sync with the canonical `SecurityFinding` in
- * `src/hardening/security-check.ts`. Drift here causes silently-stripped
- * fields when SemanticFinding → SecurityFinding conversion happens.
+ * This interface mirrors `SecurityFindingDraft`, NOT the full
+ * `SecurityFinding` — deliberately. This adapter's outputs are drafts: they
+ * have not crossed the redaction boundary yet (they are emitted downstream at
+ * the scanner's route points), so they must NOT carry `redactionStatus` /
+ * `redactedShapes` — a detector is not in a position to know them. The
+ * compile-time assertion after the interface makes drift a build error in
+ * both directions the old "keep in sync" comment could not enforce: a field
+ * added here that the canonical draft lacks, or a type that widens past it.
+ * The exported NAME stays `SecurityFinding` because it is public on the `.`
+ * and `./semantic` subpaths and renaming a published type is a breaking
+ * change (`[CHIEF-CA]` 2026-08-21).
  */
 export interface SecurityFinding {
   checkId: string;
@@ -39,6 +47,22 @@ export interface SecurityFinding {
   rationale?: Rationale;
   concept?: ConceptId;
 }
+
+// Drift assertions against the canonical draft (type-only import — erased at
+// compile, so the zero-runtime-dependency property of this module holds).
+// (1) Every key here must exist on `SecurityFindingDraft`, so a field the
+// canonical type drops (or never had) is a build error here, not a silently
+// stripped field at conversion. (2) A value of this shape must be assignable
+// to the canonical draft, so a type widened past the canonical one fails.
+// The canonical draft may grow fields this mirror lacks — that is additive
+// and safe; the hazard this pins is the mirror inventing or widening.
+import type { SecurityFindingDraft as _CanonicalDraft } from '../../hardening/security-check';
+type _AdapterKeysExistOnDraft =
+  Exclude<keyof SecurityFinding, keyof _CanonicalDraft> extends never ? true : never;
+const _adapterKeysExistOnDraft: _AdapterKeysExistOnDraft = true;
+void _adapterKeysExistOnDraft;
+const _adapterAssignableToDraft = (f: SecurityFinding): _CanonicalDraft => f;
+void _adapterAssignableToDraft;
 
 const CATEGORY_LABELS: Record<string, string> = {
   credential: 'Credential Protection',
