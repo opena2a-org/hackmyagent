@@ -2,7 +2,7 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
-## [0.32.0] - 2026-08-19
+## [0.32.0] - 2026-08-20
 
 ### Finding evidence carries a classification, not a prefix of the matched value
 
@@ -41,7 +41,7 @@ the value after its constant vendor prefix:
 ### Known issues
 
 Carried into this release, each reproducing identically on 0.31.0. None is introduced here, and
-none is fixed here. All three are scheduled for **0.33.0**.
+none is fixed here. All four are scheduled for **0.33.0**.
 
 - **`fix-all` reports `CRED-001` HIGH from the key name alone** ([#539](https://github.com/opena2a-org/hackmyagent/issues/539)).
   An empty assignment (`API_KEY=`) is reported as a hardcoded credential, as is an environment
@@ -58,6 +58,11 @@ none is fixed here. All three are scheduled for **0.33.0**.
   On a sufficiently poor starting file, the command writes both a profile marker and the nine domain
   sections, and the sections can imply a different profile than the marker declares, producing a HIGH
   `SOUL-PROFILE-MISMATCH` and clamping the score. The stated fix (remove the marker) does work.
+- **A finding on several files is reported and scored as one** ([#535](https://github.com/opena2a-org/hackmyagent/issues/535)).
+  Failed AST findings are grouped by check alone, so one file survives per check for the whole scan
+  and the rest are discarded. Five distinct credentials in five files score 69/100 naming one file --
+  the same score and the same finding count as a single credential in a single file. The other four
+  reach neither the score, the finding count, nor the output. Reproduces identically on 0.31.0.
 
 ## [0.31.0] - 2026-08-11
 
