@@ -30,9 +30,9 @@ fact modified.
   raw artifact file, so its narrative could quote a credential it read, and those rows carry
   no `passed` field so the boundary reader exempts them by shape. Both now pass through the
   same open-bag redaction walk as finding `details`.
-- No output changes on healthy scans: scores, finding counts, and every measured JSON
-  payload are byte-identical before and after, and the new read fires on zero healthy
-  objects across all measured channels.
+- No output changes on healthy scans: across every measured JSON payload the only field
+  that differs before and after is the scan's own `timestamp` — scores, finding counts and
+  every finding byte are unchanged — and the new read fires on zero healthy objects.
 
 ## [0.32.0] - 2026-08-20
 
