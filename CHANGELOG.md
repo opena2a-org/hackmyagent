@@ -42,15 +42,20 @@ fact modified.
 - **Every channel that publishes findings now reads the stamp before a byte leaves.** The
   JSON stdout chokepoint, the `--output` file arms, the SARIF/HTML/ASFF/ASP report
   generators, the registry publish builders, and the MCP tool payloads all assert that every
-  finding-shaped value carries redaction provenance. A finding without it aborts the scan
-  with an error naming the channel and check — never the finding's text. There is
-  deliberately no flag to soften this: a finding without provenance was constructed outside
-  the redaction boundary and its text may carry an unredacted credential. Channels that
+  finding-shaped value carries redaction provenance. A finding without it is never
+  published, and raises an error naming the channel and check — never the finding's text.
+  On most channels that ends the scan; the registry publish paths and the MCP handler
+  catch it so a network failure cannot kill a local scan, and both surface the error
+  rather than swallowing it. There is deliberately no flag to soften this: a finding
+  without provenance was constructed outside the redaction boundary and its text may carry
+  an unredacted credential. Channels that
   serialize other result types — `attack`, `wild`, `eval`, `scan-soul` — are outside this
   contract and unchanged.
-- **Rebuilds go through `reemitFinding`**, whose parameter types make dropping or
-  downgrading the two stamps unrepresentable. The `check` re-map is fixed, and a repo guard
-  now rejects casts into the branded finding types anywhere outside the boundary module.
+- **Rebuilds go through `reemitFinding`**, which refuses to drop or downgrade the two
+  stamps: its parameter types stop a literal override bag from naming them, and because
+  that check does not extend to a widened variable, the body discards both keys at runtime
+  as well. The `check` re-map is fixed, and a repo guard now rejects casts into the branded
+  finding types anywhere outside the boundary module.
 - **Both analyst advisory channels are redacted structurally.** Per-finding analyst output
   previously rested on the fact that its prompts are built from already-redacted finding
   text. Coverage-sweep escalations had no such property at all: that pass hands the model the

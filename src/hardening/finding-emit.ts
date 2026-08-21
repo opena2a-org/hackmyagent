@@ -422,26 +422,52 @@ export class RedactionProvenanceError extends Error {
     super(
       `hackmyagent internal defect: finding "${checkId}" reached publish channel ` +
       `"${channel}" ${defect}. This finding was constructed outside the redaction ` +
-      `boundary and its text may contain unredacted credentials, so the scan was ` +
-      `aborted rather than published. Please report this at ` +
+      `boundary and its text may contain unredacted credentials, so it was NOT ` +
+      `published. Please report this at ` +
       `https://github.com/opena2a-org/hackmyagent/issues`,
     );
     this.name = 'RedactionProvenanceError';
   }
 }
 
+/**
+ * Re-throw a redaction-provenance failure out of a catch that exists to
+ * swallow something else.
+ *
+ * Every registry publish path wraps its call in `try/catch` because a network
+ * failure must not kill a local scan — correct, and it also swallowed the
+ * provenance abort, which is the one error in there that is OUR defect rather
+ * than the network's. Bytes stay off the wire either way (the read runs before
+ * the request), but the signal that a laundering path exists died in the catch.
+ *
+ * Call this FIRST in any catch that wraps a publish boundary. An internal
+ * invariant is not a registry error.
+ */
+export function rethrowIfRedactionProvenance(err: unknown): void {
+  if (err instanceof RedactionProvenanceError) throw err;
+}
+
 /** The reader's shape predicate: what counts as a finding at a boundary. */
 function isFindingShaped(v: Record<string, unknown>): boolean {
-  // The four-part predicate is the exemption mechanism — identity-only
-  // projections (`coverage.suppressedFailures`, `summarizeSuppressed` rows)
-  // carry no `passed` and no body text, so they are exempt BY SHAPE. Never
-  // exempt a site by allowlist: a shape exemption is earned by carrying no
-  // bytes, and adding a body-text field to a projection revokes it.
+  // The predicate is the exemption mechanism — identity-only projections
+  // (`coverage.suppressedFailures`, `summarizeSuppressed` rows) carry no
+  // `passed`, so they are exempt BY SHAPE. Never exempt a site by allowlist: a
+  // shape exemption is earned by what the value carries, and a projection that
+  // grows a byte-carrying field revokes its own exemption automatically.
+  //
+  // The last clause reads `BYTE_CARRYING_FIELDS` rather than naming `message`
+  // and `description`: those two were an under-count. `toASSF` renders
+  // `f.message || f.name || f.checkId` over a local finding type whose
+  // `message` is OPTIONAL and which has no `description` at all, so a
+  // message-less finding would have shipped its `name` — a byte-carrying field
+  // — while failing a two-field predicate and being skipped unexamined
+  // (adversarial review 2026-08-21). Deriving the clause from the same list the
+  // redactor walks means a field added there is covered here the day it exists.
   return (
     typeof v.checkId === 'string' &&
     typeof v.severity === 'string' &&
     typeof v.passed === 'boolean' &&
-    (typeof v.message === 'string' || typeof v.description === 'string')
+    BYTE_CARRYING_FIELDS.some(f => typeof v[f] === 'string')
   );
 }
 
@@ -455,13 +481,21 @@ function isFindingShaped(v: Record<string, unknown>): boolean {
  * REJECTED at publish by `[CHIEF-CISO]` ruling (2026-08-21): it may exist on a
  * value in process, it may never cross a publish boundary.
  *
- * Fail-mode is ABORT, uniformly — no CI/production fork, and deliberately no
- * flag or env var to soften it (that would be a gate bypass). A laundered
- * finding's text may carry unredacted credentials; publishing it in any
- * annotated form is fail-open for a tool whose users chose it for exactly this
- * guarantee. Untrusted-INPUT malformation is handled upstream by `emitFinding`
- * per finding; this reader fires only on our own unwired producer, where a
- * crash is the honest state and the only signal that reaches the defect.
+ * Fail-mode is THROW, in every environment — no CI/production fork, and
+ * deliberately no flag or env var to soften it (that would be a gate bypass).
+ * A laundered finding's text may carry unredacted credentials; publishing it in
+ * any annotated form is fail-open for a tool whose users chose it for exactly
+ * this guarantee. Untrusted-INPUT malformation is handled upstream by
+ * `emitFinding` per finding; this reader fires only on our own unwired
+ * producer.
+ *
+ * A throw is not always an abort, and the difference is a caller's, not this
+ * function's. Registry publish paths and the MCP handler wrap their calls in
+ * `try/catch` so a network failure cannot kill a local scan; those catches call
+ * `rethrowIfRedactionProvenance` (publish) or surface the message as a tool
+ * error (MCP), so the SIGNAL always survives even where the process does not
+ * abort. What is invariant everywhere is that the bytes never leave: this read
+ * runs before the write or the request.
  *
  * The walk is iterative (no recursion depth to overflow), cycle-safe, and has
  * NO depth cap — a walker that silently skips containers re-enacts defect (1),
