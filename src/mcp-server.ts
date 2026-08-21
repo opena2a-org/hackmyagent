@@ -32,6 +32,7 @@ import {
   buildDeepScanResult,
 } from './semantic';
 import { citationTarget } from './ui/shell-quote';
+import { assertRedactionProvenance } from './hardening/finding-emit';
 import { getCheckCounts } from './hardening/taxonomy';
 import { countsAgainstScore } from './ui/verdict-band';
 import {
@@ -149,6 +150,7 @@ export function buildScanToolText(result: {
   findings: SecurityFinding[];
   semanticAnalysis?: { layer2Findings: number };
 }): string {
+  assertRedactionProvenance(result.findings, 'mcp-scan-text');
   const issues = result.findings.filter((f) => countsAgainstScore(f));
   const fixed = result.findings.filter((f) => f.fixed);
 
@@ -179,6 +181,7 @@ export function buildDeepScanLayer1(findings: SecurityFinding[]): Array<{
   file?: string;
   message: string;
 }> {
+  assertRedactionProvenance(findings, 'mcp-deep-scan');
   return findings
     .filter((f) => countsAgainstScore(f))
     .map((f) => ({

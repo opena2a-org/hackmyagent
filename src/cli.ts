@@ -291,7 +291,8 @@ import {
   type CategoryCoverage,
 } from './hardening/coverage-ledger';
 import type { ScanResult, SuppressionChannel, SecurityFindingDraft } from './hardening/security-check';
-import { emitFindings } from './hardening/finding-emit';
+import { emitFindings, reemitFinding, assertRedactionProvenance } from './hardening/finding-emit';
+import { buildJsonStdoutDocument } from './output/json-stdout';
 import { compareFindingsByTier } from './ui/finding-tier';
 import {
   scoreLineLabel,
@@ -358,21 +359,12 @@ function writeLargeStdout(text: string): void {
 }
 
 function writeJsonStdout(data: unknown): void {
-  // Stamp the producing version on every JSON surface (#202). A finding
-  // pasted into a bug report or archived in CI otherwise carries no record
-  // of which build emitted it. Injected centrally rather than at each call
-  // site so no surface can be missed or drift.
-  //
-  // Only plain objects are stamped: arrays and scalars would change shape.
-  // An existing `hackmyagentVersion` is never overwritten, so a payload that
-  // deliberately reports a different version keeps it. Corpus goldens store a
-  // distilled projection (score / severities / checkIds), not raw JSON, so
-  // this does not churn them on a version bump.
-  const stamped =
-    data && typeof data === 'object' && !Array.isArray(data)
-      ? { hackmyagentVersion: VERSION, ...(data as Record<string, unknown>) }
-      : data;
-  writeLargeStdout(JSON.stringify(stamped, null, 2) + '\n');
+  // Version stamping (#202) and the publish-boundary provenance read (unit 2)
+  // both live in `buildJsonStdoutDocument` — extracted so the chokepoint is
+  // importable and its read is provable by injection rather than by grep.
+  // ~32 JSON surfaces flow through here; a finding-shaped value without
+  // redaction provenance THROWS before a byte is written.
+  writeLargeStdout(buildJsonStdoutDocument(data, VERSION));
 }
 
 // The version-footer command set and its gate moved to
@@ -803,7 +795,15 @@ Examples:
             // same terms as `secure`. Two paths rendering the same compile
             // count must not disagree about how much of the suite read it.
             semanticFamilyCoverage: nmResult.semanticFamilyCoverage,
-            findings: issues as any[],
+            // Emitted at the bag boundary so the bag's `SecurityFinding[]`
+            // type is earned, not cast. Runtime no-op on this path — every
+            // element already crossed the boundary inside `mergeFindings`
+            // with the empty static set, and applied is absorbing — but the
+            // type witness this restores is what lets the re-map downstream
+            // use `reemitFinding` without a launder. Roadmap item (11)
+            // rejected an emit near here when the value became `as any[]`
+            // one line later; that premise is what this change removes.
+            findings: emitFindings(issues),
           },
           artifactSummaries: nmResult.artifactSummaries,
           suppressed: skillSuppressed.length > 0 ? skillSuppressed : undefined,
@@ -1099,7 +1099,15 @@ interface UnifiedCheckDisplayOptions {
      * than assert a coverage claim built from nothing.
      */
     semanticFamilyCoverage?: SemanticFamilyCoverage;
-    findings: Array<{ severity: string; checkId?: string; description?: string; name?: string; message?: string; fix?: string; guidance?: string; file?: string; line?: number; passed?: boolean; attackClass?: string; category?: string }>;
+    /**
+     * `SecurityFinding[]`, not an inline bag — `[CHIEF-CA]` 2026-08-21. The
+     * previous hand-listed bag type was a TYPE-level named-field rebuild: it
+     * admitted values without the two redaction fields, which is exactly how
+     * the defect-(13) re-map downstream of it typechecked. With the canonical
+     * type here, the compiler enumerates the producers, and the re-map can go
+     * through `reemitFinding` without a cast.
+     */
+    findings: SecurityFinding[];
   };
   /** Per-artifact summaries for the Observations block. Skill/MCP/SOUL/A2A
    *  detected and compiled by the semantic compiler. Shape mirrors
@@ -1589,26 +1597,27 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // nothing here requires it — so it is pinned by a test rather than trusted
     // (`__tests__/hardening/finding-emit.test.ts`, the `mergeFindings` block).
     //
-    // KNOWN, ruled OUT of 0.32.0 and carried to the hardening unit: this re-map
-    // lists its fields by name and does not copy `redactionStatus` /
-    // `redactedShapes`, so re-emitting downgrades an honest `applied` to
-    // `clean`. Inert today — the field has no consumers and `failed` never
-    // reaches the JSON channel — but it is defect (1)'s false-clean class.
-    failed = emitFindings(issues.map(f => ({
+    // Defect (13) of the hardening unit, FIXED here: the previous re-map
+    // listed 13 fields by name and copied neither `redactionStatus` nor
+    // `redactedShapes`, so re-emitting downgraded an honest `applied` to
+    // `clean` — a false cleanliness claim, invisible to grep because a
+    // stripped draft is indistinguishable from a fresh one. `reemitFinding`
+    // spreads the prior finding, so the two fields ride through and the
+    // absorbing-applied merge honours them; its `Omit`-typed overrides make
+    // reintroducing the drop unrepresentable. The normalizations below are
+    // the old re-map's, unchanged; fields it used to drop (evidence,
+    // rationale, details) now ride along, which is additive on this text
+    // path. `severity` needs no cast now that the bag carries the canonical
+    // type.
+    failed = issues.map(f => reemitFinding(f, {
       checkId: f.checkId || '',
       name: f.name || f.description || '',
       description: f.description || '',
       category: f.category || '',
-      severity: f.severity as Severity,
       passed: false,
       message: f.message || f.description || '',
       fixable: false,
-      file: f.file,
-      line: f.line,
-      fix: f.fix,
-      guidance: f.guidance,
-      attackClass: f.attackClass,
-    })));
+    }));
     // Use the canonical scoring formula (exponential decay + 0.4x governance weight)
     //
     // #457 — `gatedIssues`, not `issues`. The counts, the verdict and the exit
@@ -3036,6 +3045,7 @@ function generateBenchmarkReport(
 
 // SARIF 2.1.0 output for GitHub Security tab and IDE integration
 function generateSarifOutput(benchmarkResult: BenchmarkResult, findings: SecurityFinding[], targetDir: string): string {
+  assertRedactionProvenance(findings, 'sarif-benchmark');
   const rules: Array<{
     id: string;
     name: string;
@@ -3134,6 +3144,7 @@ function generateSarifOutput(benchmarkResult: BenchmarkResult, findings: Securit
 
 // HTML report for shareable compliance documentation
 function generateHtmlReport(result: BenchmarkResult): string {
+  assertRedactionProvenance(result, 'html-benchmark');
   const ratingColor = {
     'Certified': '#22c55e',
     'Compliant': '#22c55e',
@@ -3850,6 +3861,7 @@ function escapeHtml(str: string): string {
 
 // SARIF output for non-benchmark secure scans
 function generateScanSarif(findings: SecurityFinding[], targetDir: string): string {
+  assertRedactionProvenance(findings, 'sarif-scan');
   const issues = findings.filter(f => countsAgainstScore(f));
   const rules = issues.map(f => ({
     id: f.checkId,
@@ -3901,6 +3913,7 @@ function generateScanSarif(findings: SecurityFinding[], targetDir: string): stri
 
 // HTML report for non-benchmark secure scans
 function generateScanHtmlReport(scanResult: { findings: SecurityFinding[]; score: number; maxScore: number; projectType: string }, targetDir: string): string {
+  assertRedactionProvenance(scanResult.findings, 'html-scan');
   const issues = scanResult.findings.filter(f => countsAgainstScore(f));
   // Verified fixes only, so "Auto-Fixed" and "issues" stay disjoint and the
   // header arithmetic adds up. A fix the verification pass could not confirm
@@ -4016,6 +4029,7 @@ function generateScanHtmlReport(scanResult: { findings: SecurityFinding[]; score
 
 // Agent Security Profile (ASP) - our differentiator format
 function generateAspOutput(benchmarkResult: BenchmarkResult, scanResult: { findings: SecurityFinding[]; projectType: string }, targetDir: string): string {
+  assertRedactionProvenance(scanResult.findings, 'asp');
   const fs = require('fs');
   const path = require('path');
 
@@ -4941,7 +4955,7 @@ Examples:
         const compositeScore = Math.round((infraScore + govScore) / 2);
 
         if (format === 'json') {
-          const jsonOutput = JSON.stringify({
+          const compositePayload = {
             benchmark: 'OASB',
             infraScore,
             govScore,
@@ -4949,7 +4963,11 @@ Examples:
             conformance: govResult.conformance,
             infraResult,
             govResult,
-          }, null, 2);
+          };
+          // This arm bypasses writeJsonStdout (writeFileSync(1, ...) below),
+          // so it carries its own boundary read.
+          assertRedactionProvenance(compositePayload, 'benchmark-composite-json');
+          const jsonOutput = JSON.stringify(compositePayload, null, 2);
           if (options.output) {
             require('fs').writeFileSync(options.output, jsonOutput);
             console.error(`Report written to ${options.output}`);
@@ -5186,6 +5204,10 @@ Examples:
           ...(nmResult.coverageSweep ? { coverageSweep: nmResult.coverageSweep } : {}),
         };
         const jsonOutput = publishStatus ? { ...jsonBase, publish: publishStatus } : jsonBase;
+        // The --output arm below bypasses writeJsonStdout, so the boundary
+        // read runs here, covering both arms (the stdout arm re-reads inside
+        // buildJsonStdoutDocument — a read is idempotent).
+        assertRedactionProvenance(jsonOutput, 'secure-json');
         if (options.output) {
           require('fs').writeFileSync(options.output, JSON.stringify(jsonOutput, null, 2) + '\n');
           console.error(`Report written to ${options.output}`);
@@ -11391,6 +11413,7 @@ async function publishToRegistry(
   name: string,
   result: { score: number; maxScore: number; projectType: string; findings: SecurityFinding[] },
 ): Promise<boolean> {
+  assertRedactionProvenance(result.findings, 'registry-publish-scan');
   try {
     const { RegistryClient } = await import('@opena2a/registry-client');
     const client = new RegistryClient({
