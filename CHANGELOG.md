@@ -44,9 +44,11 @@ fact modified.
   generators, the registry publish builders, and the MCP tool payloads all assert that every
   finding-shaped value carries redaction provenance. A finding without it is never
   published, and raises an error naming the channel and check — never the finding's text.
-  On most channels that ends the scan; the registry publish paths and the MCP handler
-  catch it so a network failure cannot kill a local scan, and both surface the error
-  rather than swallowing it. There is deliberately no flag to soften this: a finding
+  On most channels that ends the scan. The registry publish paths and the MCP handler
+  wrap their calls so a network failure cannot kill a local scan; they re-raise this
+  error rather than reporting it as a publish failure, which does end the run — so
+  `secure --json --publish` now exits without emitting a document where it previously
+  emitted one carrying `publish.error`. There is deliberately no flag to soften this: a finding
   without provenance was constructed outside the redaction boundary and its text may carry
   an unredacted credential. Channels that
   serialize other result types — `attack`, `wild`, `eval`, `scan-soul` — are outside this

@@ -152,9 +152,9 @@ export interface SecurityFinding {
    * `'unverified'` is the DEGRADED value, not an initializer: no construction
    * path sets it — every construction emits. It is what a publish boundary
    * would stamp on a finding-shaped value carrying no redaction provenance IF
-   * its fail-mode were not abort — an explicit unknown, never a claim of
-   * cleanliness. Under the shipped fail-mode (`[CHIEF-CISO]` 2026-08-21,
-   * abort, uniformly) it has no producer, and `assertRedactionProvenance`
+   * its fail-mode were not to throw — an explicit unknown, never a claim of
+   * cleanliness. Under the shipped fail-mode (`[CHIEF-CISO]` 2026-08-21, throw
+   * in every environment) it has no producer, and `assertRedactionProvenance`
    * REJECTS it at every publish boundary: it may exist on a value in process,
    * it may never cross a channel. (`[CHIEF-CA]` 2026-08-21 corrected the
    * earlier "INITIALIZER" wording here, which described semantics nothing

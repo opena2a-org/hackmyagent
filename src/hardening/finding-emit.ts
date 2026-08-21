@@ -435,10 +435,17 @@ export class RedactionProvenanceError extends Error {
  * swallow something else.
  *
  * Every registry publish path wraps its call in `try/catch` because a network
- * failure must not kill a local scan — correct, and it also swallowed the
+ * failure must not kill a local scan — correct, and it also caught the
  * provenance abort, which is the one error in there that is OUR defect rather
- * than the network's. Bytes stay off the wire either way (the read runs before
- * the request), but the signal that a laundering path exists died in the catch.
+ * than the network's.
+ *
+ * Precisely what went wrong is worth stating, because a first version of this
+ * comment overstated it: the message was NOT lost. Those catches print
+ * "Failed to publish to registry: <msg>" or put it on `publishStatus.error`,
+ * so the text reached the user. What they did was MISLABEL it — an internal
+ * laundering defect rendered as a network failure, on a path that then
+ * continues and exits normally. A reader who sees "failed to publish" checks
+ * their connectivity, not their code.
  *
  * Call this FIRST in any catch that wraps a publish boundary. An internal
  * invariant is not a registry error.

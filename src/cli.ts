@@ -12099,6 +12099,7 @@ async function checkGitHubRepo(
     // /tmp/hma-check-gh-* directories orphaned, which eventually ENOSPC'd the
     // scanner container. See `finally { await rm(tempDir, ...) }` below.
   } catch (err: unknown) {
+    rethrowIfRedactionProvenance(err);
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
       const errorHint = `Verify the URL: https://github.com/${displayName}`;
@@ -12611,6 +12612,7 @@ async function checkRawUrl(
 
     // Exit code settled above, before the `--json` branch.
   } catch (err: unknown) {
+    rethrowIfRedactionProvenance(err);
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
       console.error(`Error: Could not clone repository from "${escapeForDisplay(String(url))}".`);
@@ -12824,6 +12826,7 @@ async function checkNpmPackage(
 
     // Exit code settled above, before the `--json` branch.
   } catch (err: unknown) {
+    rethrowIfRedactionProvenance(err);
     const message = err instanceof Error ? err.message : String(err);
     // Clean npm error messages
     if (message.includes('404') || message.includes('Not Found')) {
