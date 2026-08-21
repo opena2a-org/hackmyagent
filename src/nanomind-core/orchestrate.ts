@@ -20,6 +20,7 @@ import { ANALYZER_FAMILY_COUNT } from './analyzers/family-coverage.js';
 import type { AnalystResponse, ArtifactCoverageVerdict } from './inference/security-analyst.js';
 import { routeAnalystVerdict, combineVerdict } from './analyst-coverage.js';
 import { countsAgainstScore } from '../ui/verdict-band';
+import { redactOpenBagForPublish } from '../hardening/finding-emit';
 
 export type { ArtifactSummary } from './scanner-bridge.js';
 
@@ -386,6 +387,10 @@ async function runAnalystOnFindings(
   findings: SecurityFindingDraft[],
   runInference: typeof import('./inference/security-analyst.js').runAnalystInference,
 ): Promise<AnalystResponse[]> {
+  // Exported below as `runAnalystOnFindingsForTest` so the open-bag redaction
+  // wiring (the `redactOpenBagForPublish` call at the push site) is provable
+  // by injection through THIS function with a stubbed `runInference`, not by
+  // grep — a text guard is satisfied by dead code; an injection is not.
   const results: AnalystResponse[] = [];
   const failed = findings.filter(f => countsAgainstScore(f));
 
@@ -448,12 +453,20 @@ async function runAnalystOnFindings(
     });
 
     if (response) {
-      results.push(response);
+      // [CHIEF-CISO] 2026-08-21: the analyst response rides the secure/check
+      // JSON channels raw, and "its input was already redacted" was a
+      // prose-only invariant one upstream edit could break silently. The
+      // open-bag walk makes it structural: every string leaf at any depth is
+      // offered to the redactor before the bag can reach a channel.
+      results.push(redactOpenBagForPublish(response) as AnalystResponse);
     }
   }
 
   return results;
 }
+
+/** Test-only alias — see the comment inside `runAnalystOnFindings`. */
+export const runAnalystOnFindingsForTest = runAnalystOnFindings;
 
 // ============================================================================
 // Coverage sweep (Phase A P1 — CDS-023/024, abstention-gated)
