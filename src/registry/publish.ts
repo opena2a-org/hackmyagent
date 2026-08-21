@@ -12,6 +12,7 @@ import { createHash } from 'crypto';
 import { readdirSync, statSync, readFileSync } from 'fs';
 import { join, relative } from 'path';
 import type { SecurityFinding, Severity } from '../hardening';
+import { assertRedactionProvenance } from '../hardening/finding-emit';
 import { calculateSecurityScore } from '../hardening';
 import { clampScoreToVerdictBand, countsAgainstScore } from '../ui/verdict-band';
 import type { AttackReport } from '../attack';
@@ -166,6 +167,11 @@ export function signPayload(payload: string, privateKeyPem: string): string | nu
  * Combines results from hardening, attack, SOUL, and OASB scans into a single payload.
  */
 export function buildPublishPayload(data: PublishScanData, toolVersion: string): UnifiedPublishPayload {
+  // Publish-boundary read (unit 2): every finding leaving for the Registry
+  // must carry redaction provenance. The payload built below projects the
+  // fields away (wire-schema carry is a separate unit), so the read runs on
+  // the INPUT, where the provenance still exists to be read.
+  assertRedactionProvenance(data, 'registry-publish');
   const scanTimestamp = new Date().toISOString();
   const findings: UnifiedFinding[] = [];
 

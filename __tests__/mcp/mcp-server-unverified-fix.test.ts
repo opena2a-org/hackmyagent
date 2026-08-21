@@ -17,11 +17,13 @@
  */
 import { describe, it, expect } from 'vitest';
 import { buildScanToolText, buildDeepScanLayer1 } from '../../src/mcp-server';
+import { emitFinding } from '../../src/hardening/finding-emit';
+import type { SecurityFindingDraft } from '../../src/hardening/security-check';
 import { countsAgainstScore } from '../../src/ui/verdict-band';
 import type { SecurityFinding } from '../../src/index';
 
 /** A CRITICAL whose fix was applied and then DISPROVED by the verification pass. */
-const disprovedFix = {
+const disprovedFix = emitFinding({
   checkId: 'CRED-001',
   name: 'Hardcoded Secret',
   category: 'credentials',
@@ -35,10 +37,10 @@ const disprovedFix = {
   passed: true,
   fixed: true,
   fixVerified: false,
-} as unknown as SecurityFinding;
+} as unknown as SecurityFindingDraft) as SecurityFinding;
 
 /** An ordinary genuinely-passing check. */
-const cleanPass = {
+const cleanPass = emitFinding({
   checkId: 'GIT-001',
   name: 'Gitignore present',
   category: 'git',
@@ -46,7 +48,7 @@ const cleanPass = {
   message: '.gitignore covers secrets',
   fixable: false,
   passed: true,
-} as unknown as SecurityFinding;
+} as unknown as SecurityFindingDraft) as SecurityFinding;
 
 describe('#285 MCP scan tool reports a disproved fix', () => {
   it('pins the premise: the naive predicate and the real one disagree on this finding', () => {

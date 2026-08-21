@@ -13,6 +13,7 @@
 
 import { VERSION } from '../index.js';
 import { countsAgainstScore } from '../ui/verdict-band';
+import { assertRedactionProvenance } from '../hardening/finding-emit';
 
 export interface SecurityFinding {
   checkId: string;
@@ -85,6 +86,7 @@ export function toASSF(
     targetDir?: string;
   } = {},
 ): string {
+  assertRedactionProvenance(findings, 'asff');
   const accountId = options.awsAccountId || process.env.AWS_ACCOUNT_ID || '000000000000';
   const region = options.awsRegion || process.env.AWS_REGION || 'us-east-1';
   const targetDir = options.targetDir || process.cwd();

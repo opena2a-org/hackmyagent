@@ -22,6 +22,7 @@
 //   never displayed.
 
 import { describe, it, expect } from 'vitest';
+import { emitFindings } from '../../src/hardening/finding-emit';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { calculateSecurityScore } from '../../src/hardening';
@@ -154,9 +155,11 @@ describe('H-7: no published surface computes a composite without the clamp', () 
       packageName: 'p',
       packageType: 'npm',
       packageVersion: '1.0.0',
-      hardeningFindings: [
-        { checkId: 'X-1', name: 'x', severity: 'high', passed: false, category: 'other', message: '' },
-      ],
+      // Emitted through the real boundary (unit 2): buildPublishPayload now
+      // reads redaction provenance on its input.
+      hardeningFindings: emitFindings([
+        { checkId: 'X-1', name: 'x', severity: 'high', passed: false, category: 'other', message: '' } as never,
+      ]),
     } as any, '0.0.0-test');
 
     // Non-vacuity: the input must actually land in the good band pre-clamp,

@@ -149,10 +149,16 @@ export interface SecurityFinding {
    * Always present. Whether this finding's byte-carrying fields passed the
    * redaction boundary (`emitFinding`), and what the boundary concluded.
    *
-   * `'unverified'` is the INITIALIZER, not a fallback: a construction path that
-   * never reached the redactor emits an explicit unknown, never a claim of
-   * cleanliness. An unwired site is therefore visible in the output rather than
-   * silently asserting it is clean — this workspace's rule for degraded state.
+   * `'unverified'` is the DEGRADED value, not an initializer: no construction
+   * path sets it — every construction emits. It is what a publish boundary
+   * would stamp on a finding-shaped value carrying no redaction provenance IF
+   * its fail-mode were not abort — an explicit unknown, never a claim of
+   * cleanliness. Under the shipped fail-mode (`[CHIEF-CISO]` 2026-08-21,
+   * abort, uniformly) it has no producer, and `assertRedactionProvenance`
+   * REJECTS it at every publish boundary: it may exist on a value in process,
+   * it may never cross a channel. (`[CHIEF-CA]` 2026-08-21 corrected the
+   * earlier "INITIALIZER" wording here, which described semantics nothing
+   * implemented — the reader is the implementation now.)
    *
    * `[ABDEL]` 2026-08-13 (D3). Field name, type and the always-present rule are
    * FROZEN, as is the closed three-member union.

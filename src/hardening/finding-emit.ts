@@ -351,14 +351,176 @@ export function emitFindings(
   return drafts.map(emitFinding);
 }
 
-// A `reemitFinding` wrapper was written here and DELETED before it shipped: it
-// had zero production callers, and `emitFinding` already handles an
-// already-emitted input through its absorbing-applied merge, so the wrapper
-// added a second name for one behaviour and nothing else.
-//
-// The settlement brief §3.5 records the cost of keeping such a function:
-// `redactSecretsForNanoMind` is the documented "NanoMind has zero access to
-// secrets" boundary, has zero production call sites, and its presence is why the
-// daemon boundary was believed to exist for as long as it did. An exported
-// function with no callers is read as a guarantee. Rebuild sites call
-// `emitFinding` directly.
+/**
+ * Re-emit an already-emitted finding with normalizing overrides, without the
+ * rebuild being able to drop or downgrade the two redaction fields.
+ *
+ * The parameter types are the first mechanism: `prior` is a full
+ * `SecurityFinding`, on which both redaction fields are REQUIRED — a stripped
+ * bag does not typecheck — and `overrides` is `Omit`-typed so a LITERAL
+ * override bag cannot name either redaction field. The type alone is NOT
+ * sufficient (excess-property checks do not apply to widened variables), so
+ * the body also discards the two keys at runtime; the only source for them is
+ * the prior value, which the absorbing-applied merge in `emitFinding` then
+ * honours.
+ *
+ * HISTORY, kept because a reversed rationale left implicit is a hazard: a
+ * `reemitFinding` wrapper was written here once before and DELETED before it
+ * shipped — that version was a zero-caller alias with `emitFinding`'s own
+ * signature, and an exported function with no callers is read as a guarantee
+ * (the settlement brief §3.5 records `redactSecretsForNanoMind` as the cost of
+ * keeping one). This version differs on both counts: it has a production
+ * caller (the `check` text-path re-map in `cli.ts`), and its narrower types ARE
+ * the guarantee — defect (13) of the hardening unit was a named-field rebuild
+ * at that call site downgrading an honest `'applied'` to `'clean'`, invisible
+ * to grep because a stripped draft is indistinguishable from a fresh one.
+ *
+ * LIMIT, stated: nothing forces a future rebuild site through this function. A
+ * hand-enumerated rebuild fed to `emitFinding` still typechecks and still
+ * downgrades. This narrows the class; `assertRedactionProvenance` below and
+ * the publish-boundary tests are the runtime residue-catcher for launders, and
+ * the value-level downgrade remains catchable only at its call site.
+ */
+export function reemitFinding(
+  prior: SecurityFinding,
+  overrides?: Partial<Omit<SecurityFinding, 'redactionStatus' | 'redactedShapes'>>,
+): RedactedFinding {
+  // The `Omit` guards LITERAL override bags only — TypeScript's excess-property
+  // check does not apply to a widened variable, so a bag that happens to carry
+  // `redactionStatus: 'clean'` typechecks, reaches the spread, and downgrades a
+  // prior `'applied'` (adversarial review 2026-08-21, F1). Discard the two keys
+  // at runtime so the only source for them is `prior`, whatever the caller holds.
+  const { redactionStatus: _smuggledStatus, redactedShapes: _smuggledShapes, ...safeOverrides } =
+    (overrides ?? {}) as Record<string, unknown>;
+  return emitFinding({ ...prior, ...safeOverrides } as SecurityFindingDraft);
+}
+
+// Compile-time pin for the property the `Omit` buys (tsc does not check
+// `__tests__/`, so this lives here where the build enforces it): the override
+// bag must not admit either redaction field.
+type _OverrideBag = NonNullable<Parameters<typeof reemitFinding>[1]>;
+type _OverridesCannotCarryStatus = 'redactionStatus' extends keyof _OverrideBag ? never : true;
+type _OverridesCannotCarryShapes = 'redactedShapes' extends keyof _OverrideBag ? never : true;
+const _overridesCannotCarryStatus: _OverridesCannotCarryStatus = true;
+const _overridesCannotCarryShapes: _OverridesCannotCarryShapes = true;
+void _overridesCannotCarryStatus;
+void _overridesCannotCarryShapes;
+
+/**
+ * Thrown by `assertRedactionProvenance` when a finding-shaped value reaches a
+ * publish boundary without redaction provenance. Carries NO byte-carrying
+ * content — the whole point is that the value's text may hold an unredacted
+ * credential, so the error names the channel, the checkId and the offending
+ * field, never the finding's text.
+ */
+export class RedactionProvenanceError extends Error {
+  constructor(
+    public readonly channel: string,
+    public readonly checkId: string,
+    public readonly defect: string,
+  ) {
+    super(
+      `hackmyagent internal defect: finding "${checkId}" reached publish channel ` +
+      `"${channel}" ${defect}. This finding was constructed outside the redaction ` +
+      `boundary and its text may contain unredacted credentials, so the scan was ` +
+      `aborted rather than published. Please report this at ` +
+      `https://github.com/opena2a-org/hackmyagent/issues`,
+    );
+    this.name = 'RedactionProvenanceError';
+  }
+}
+
+/** The reader's shape predicate: what counts as a finding at a boundary. */
+function isFindingShaped(v: Record<string, unknown>): boolean {
+  // The four-part predicate is the exemption mechanism — identity-only
+  // projections (`coverage.suppressedFailures`, `summarizeSuppressed` rows)
+  // carry no `passed` and no body text, so they are exempt BY SHAPE. Never
+  // exempt a site by allowlist: a shape exemption is earned by carrying no
+  // bytes, and adding a body-text field to a projection revokes it.
+  return (
+    typeof v.checkId === 'string' &&
+    typeof v.severity === 'string' &&
+    typeof v.passed === 'boolean' &&
+    (typeof v.message === 'string' || typeof v.description === 'string')
+  );
+}
+
+/**
+ * The publish-boundary reader (defect (10) of the hardening unit): the runtime
+ * read that the `redactionStatus` contract promised and nothing implemented.
+ *
+ * Walks a payload about to leave the process and THROWS if any finding-shaped
+ * value lacks redaction provenance: `redactionStatus` missing or outside
+ * {'applied','clean'}, or `redactedShapes` not an array. `'unverified'` is
+ * REJECTED at publish by `[CHIEF-CISO]` ruling (2026-08-21): it may exist on a
+ * value in process, it may never cross a publish boundary.
+ *
+ * Fail-mode is ABORT, uniformly — no CI/production fork, and deliberately no
+ * flag or env var to soften it (that would be a gate bypass). A laundered
+ * finding's text may carry unredacted credentials; publishing it in any
+ * annotated form is fail-open for a tool whose users chose it for exactly this
+ * guarantee. Untrusted-INPUT malformation is handled upstream by `emitFinding`
+ * per finding; this reader fires only on our own unwired producer, where a
+ * crash is the honest state and the only signal that reaches the defect.
+ *
+ * The walk is iterative (no recursion depth to overflow), cycle-safe, and has
+ * NO depth cap — a walker that silently skips containers re-enacts defect (1),
+ * publishing content nothing examined. Read-only on the healthy path.
+ */
+export function assertRedactionProvenance(payload: unknown, channel: string): void {
+  const seen = new WeakSet<object>();
+  const stack: unknown[] = [payload];
+  while (stack.length > 0) {
+    const value = stack.pop();
+    if (Array.isArray(value)) {
+      if (seen.has(value)) continue;
+      seen.add(value);
+      for (const item of value) stack.push(item);
+      continue;
+    }
+    if (isPlainObject(value)) {
+      if (seen.has(value)) continue;
+      seen.add(value);
+      if (isFindingShaped(value)) {
+        const checkId = String(value.checkId);
+        const status = value.redactionStatus;
+        if (status !== 'applied' && status !== 'clean') {
+          throw new RedactionProvenanceError(
+            channel,
+            checkId,
+            status === undefined
+              ? 'with no redactionStatus'
+              : `with redactionStatus ${JSON.stringify(status)}`,
+          );
+        }
+        if (!Array.isArray(value.redactedShapes)) {
+          throw new RedactionProvenanceError(channel, checkId, 'with no redactedShapes array');
+        }
+      }
+      for (const v of Object.values(value)) stack.push(v);
+    }
+    // Strings, numbers, non-plain objects: nothing to read. KNOWN RESIDUE
+    // (adversarial review 2026-08-21, F5): a non-plain container is skipped
+    // here, and while a bare Map/Set serializes as `{}`, an object with a
+    // `toJSON()` serializes FULLY — so a producer that put finding text
+    // behind `toJSON` would cross this reader unexamined. No producer in the
+    // tree constructs such a value on any findings channel today (analyst
+    // responses are JSON-parsed daemon output; `Date` fields carry no text);
+    // if one appears, it needs handling HERE before it ships.
+  }
+}
+
+/**
+ * Redact an untyped bag that is about to ride a publish channel OUTSIDE any
+ * `SecurityFinding` (the analyst advisory channel is the production caller).
+ *
+ * `[CHIEF-CISO]` 2026-08-21: the analyst channel's "input is already redacted"
+ * property was prose-only — one upstream edit away from a silent leak path.
+ * This walk makes it structural: every string leaf at any depth is offered to
+ * the redactor, exactly as `details` is inside `emitFinding`. The pass's
+ * status/shapes are deliberately discarded — the bag is not a finding and has
+ * no provenance fields; the guarantee bought here is byte-level only.
+ */
+export function redactOpenBagForPublish(value: unknown): unknown {
+  return redactDetails(value, new RedactionPass());
+}
