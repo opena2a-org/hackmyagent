@@ -14,7 +14,7 @@
  * Defense-in-depth: static findings can NEVER be suppressed, only upgraded.
  */
 
-import type { SecurityFinding, ProjectType } from '../hardening/security-check.js';
+import type { SecurityFinding, SecurityFindingDraft, ProjectType } from '../hardening/security-check.js';
 import type { NanoMindScanResult, ArtifactSummary, CoverageCandidate, SemanticFamilyCoverage } from './scanner-bridge.js';
 import { ANALYZER_FAMILY_COUNT } from './analyzers/family-coverage.js';
 import type { AnalystResponse, ArtifactCoverageVerdict } from './inference/security-analyst.js';
@@ -42,11 +42,11 @@ export interface OrchestrationOptions {
    * .well-known/mcp.json filtered for projectType=library while still
    * suppressing the sweep). Absent = all findings count (legacy behavior).
    */
-  findingVisible?: (finding: SecurityFinding) => boolean;
+  findingVisible?: (finding: SecurityFindingDraft) => boolean;
 }
 
 export interface OrchestrationResult {
-  mergedFindings: SecurityFinding[];
+  mergedFindings: SecurityFindingDraft[];
   nanomindUsed: boolean;
   compiledArtifacts: number;
   /**
@@ -150,7 +150,7 @@ export function sweepIndicatesDaemonError(stats: CoverageSweepStats): boolean {
  */
 export async function orchestrateNanoMind(
   targetDir: string,
-  existingFindings: SecurityFinding[],
+  existingFindings: SecurityFindingDraft[],
   options: OrchestrationOptions = {},
 ): Promise<OrchestrationResult> {
   const { staticOnly = false, ci = false, silent = false, nanomind = false } = options;
@@ -383,7 +383,7 @@ export async function orchestrateNanoMind(
  * and high/critical severity findings.
  */
 async function runAnalystOnFindings(
-  findings: SecurityFinding[],
+  findings: SecurityFindingDraft[],
   runInference: typeof import('./inference/security-analyst.js').runAnalystInference,
 ): Promise<AnalystResponse[]> {
   const results: AnalystResponse[] = [];
@@ -506,10 +506,10 @@ export interface CoverageSweepOutcome {
 export async function runCoverageSweep(
   targetDir: string,
   candidates: CoverageCandidate[],
-  mergedFindings: SecurityFinding[],
+  mergedFindings: SecurityFindingDraft[],
   classify: (content: string) => Promise<ArtifactCoverageVerdict | null>,
   silent = false,
-  findingVisible?: (finding: SecurityFinding) => boolean,
+  findingVisible?: (finding: SecurityFindingDraft) => boolean,
 ): Promise<CoverageSweepOutcome> {
   // Files already carrying a high/critical structural ATTACK finding are
   // covered by the per-finding analyst stage; the sweep targets the misses.

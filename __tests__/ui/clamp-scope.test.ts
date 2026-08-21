@@ -239,7 +239,11 @@ describe('H-7: no published surface computes a composite without the clamp', () 
           /^return calculateSecurityScore\(findings\);$/.test(trimmed)
           && lines
             .slice(Math.max(0, i - 6), i)
-            .some((l) => /calculateScore\(findings: SecurityFinding\[\]\)/.test(l))
+            // `SecurityFindingDraft[]`, not `SecurityFinding[]`: the accessor
+            // moved to the draft type when the redaction boundary landed, and
+            // this anchor is deliberately EXACT — matching the type name loosely
+            // is how it would become the hole the comment above warns about.
+            .some((l) => /calculateScore\(findings: SecurityFindingDraft\[\]\)/.test(l))
         ) return;
         const window = stripComments(lines.slice(i, i + LOOKAHEAD).join('\n'));
         if (window.includes('clampScoreToVerdictBand')) return;

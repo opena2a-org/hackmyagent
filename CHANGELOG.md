@@ -2,6 +2,68 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [0.32.0] - 2026-08-20
+
+### Finding evidence carries a classification, not a prefix of the matched value
+
+Findings rendered a shortened form of a matched credential into their own text. Because a
+shortened credential no longer matches the full-length shapes the reporting boundary
+recognises, it crossed the boundary unmodified and was then marked as examined and clean --
+so the output asserted cleanliness over text that still carried part of the value.
+
+Measured on `secure --json` and `check --json`, counting JSON paths that carry characters of
+the value after its constant vendor prefix:
+
+| channel | 0.31.0 | 0.32.0 |
+|---|---|---|
+| `secure --json` | 4 paths, 5 characters | **0** |
+| `check --json` | 2 paths, 5 characters | **0** |
+| `findings[].description` preview | 2 paths, 5 characters | **0** |
+
+- **Five producers, and the fifth needed a different answer from the other four.** Four
+  rendered a fixed-width slice of the value and now emit a marker. The fifth,
+  `maskCredentialValue`, has two arms. Its vendor-prefix arm is **unchanged**: a vendor
+  prefix is a constant, identical for every key of that vendor, so it identifies the vendor
+  and says nothing about the individual value -- that is classification, and its existing
+  test pins it ("evidence must preserve the recognizable prefix"). Its unknown-shape arm had
+  no such constant to keep and was emitting the first 8 characters of the value itself; that
+  arm now masks in full.
+- **No detection, scoring or exit-code change.** Finding counts are identical on every target
+  exercised, corpus goldens match byte-for-byte, and the released suite is 280 files / 4111
+  tests green.
+- **What this release does NOT close.** Several credential shapes are still not detected at
+  all. Measured on 0.32.0: a source file holding a plain `DB_PASSWORD`, a
+  `postgres://user:password@host` DSN, a `glpat-` token and an `hf_` token scores **98/100,
+  exit 0, with zero credential findings**; an AWS `AKIA` key in the same shape of file scores
+  **69/100, exit 1**. A clean `secure` result is not evidence that a target holds no
+  credential. Widening that vocabulary is tracked separately and is not in this release.
+
+### Known issues
+
+Carried into this release, each reproducing identically on 0.31.0. None is introduced here, and
+none is fixed here. All four are scheduled for **0.33.0**.
+
+- **`fix-all` reports `CRED-001` HIGH from the key name alone** ([#539](https://github.com/opena2a-org/hackmyagent/issues/539)).
+  An empty assignment (`API_KEY=`) is reported as a hardcoded credential, as is an environment
+  variable reference, which is the remediation this tool recommends elsewhere. Confined to `.env`
+  and `.env.local`; `secure` does not report these, so the two commands disagree on the same file.
+  The finding carries no `evidence` field, so nothing in the output lets you check it against the
+  line it cites.
+- **`secure --fix` archives are scanned by the next run** ([#389](https://github.com/opena2a-org/hackmyagent/issues/389)).
+  Each `--fix` copies the file into a timestamped directory under `.hackmyagent-backup/`, and the
+  following scan reports findings on that copy, so counts climb on a tree where nothing was added:
+  4, then 5, then 6 over three runs. Three runs leave three plaintext copies of the credential on
+  disk. The `Fix:` line on those findings cites a path that differs every run.
+- **`harden-soul` output can be penalised by `scan-soul`** ([#446](https://github.com/opena2a-org/hackmyagent/issues/446)).
+  On a sufficiently poor starting file, the command writes both a profile marker and the nine domain
+  sections, and the sections can imply a different profile than the marker declares, producing a HIGH
+  `SOUL-PROFILE-MISMATCH` and clamping the score. The stated fix (remove the marker) does work.
+- **A finding on several files is reported and scored as one** ([#535](https://github.com/opena2a-org/hackmyagent/issues/535)).
+  Failed AST findings are grouped by check alone, so one file survives per check for the whole scan
+  and the rest are discarded. Five distinct credentials in five files score 69/100 naming one file --
+  the same score and the same finding count as a single credential in a single file. The other four
+  reach neither the score, the finding count, nor the output. Reproduces identically on 0.31.0.
+
 ## [0.31.0] - 2026-08-11
 
 ### `--ci` now turns contribution off, and its help text stops promising an exit-code effect (#454)

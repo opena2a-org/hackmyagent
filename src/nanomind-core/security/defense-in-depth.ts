@@ -16,6 +16,7 @@
  */
 
 import type { SecurityAST, IntentClass } from '../types.js';
+import type { ShapeId } from '../../types/credential-format.js';
 
 // ============================================================================
 // Rule 1: NanoMind can UPGRADE but NEVER SUPPRESS
@@ -137,98 +138,126 @@ export function requireBenignConsensus(
 // ============================================================================
 
 /**
+ * One redaction rule: the pattern, what replaces it, and — the reason this
+ * table exists — WHICH registry shape a match proves.
+ *
+ * `redactedShapes` (C9) may carry only ids the redactor resolved FROM THE
+ * VALUE, and a marker cannot supply that: `CREDENTIAL_REDACTION_MARKERS` is
+ * many-to-one (all five GitHub shapes share `[REDACTED_GITHUB_TOKEN]`), so
+ * recovering ids from redacted text would publish five candidates where one
+ * matched. The RULES are 1:1 with shape ids, so the id is recorded where it is
+ * actually known — at the match — rather than reconstructed afterwards.
+ *
+ * `replacement` rather than a bare marker because the AWS-secret rule preserves
+ * its name anchor via `$1`.
+ */
+interface CredentialRedactionRule {
+  readonly id: ShapeId;
+  readonly pattern: RegExp;
+  readonly replacement: string;
+}
+
+/**
+ * The rules, in the order they must run. Order and pattern bodies are carried
+ * over verbatim from the sequential `.replace()` chain this table replaced;
+ * `redaction-rule-table-parity.test.ts` pins that the folded output is
+ * byte-identical to the chain's on every fixture, so the table is a
+ * refactoring and not a behaviour change.
+ *
+ * Two registry shapes are deliberately ABSENT and must stay absent in this
+ * release: `entropy-blob` and `jwt`. Adding `entropy-blob` is the measured S4
+ * stop condition — its class `[A-Za-z0-9+=_]{40,}` swallows a git SHA-40, a
+ * SHA-256 `contentHash`, an npm `sha512-` integrity value and a base64 data-URI
+ * body, and HMA's own reports carry `contentHash` values. Closing those two is
+ * GAP-8, which is held out of this release deliberately.
+ */
+const CREDENTIAL_REDACTION_RULES: readonly CredentialRedactionRule[] = [
+  // Order matters here in a way it does not in the detector: `sk-proj-` and
+  // `sk-ant-api` must be replaced BEFORE the generic `sk-` rule, or a project
+  // key would be reported under the legacy label. The legacy rule's
+  // alphanumeric-only class already excludes both, and the ordering makes that
+  // independent of the class staying that way.
+  { id: 'anthropic-key', pattern: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/g, replacement: '[REDACTED_ANTHROPIC_KEY]' },
+  { id: 'openai-project-key', pattern: /sk-proj-[a-zA-Z0-9_-]{20,}/g, replacement: '[REDACTED_OPENAI_KEY]' },
+  { id: 'openai-key', pattern: /sk-[a-zA-Z0-9]{48,}/g, replacement: '[REDACTED_OPENAI_KEY]' },
+  { id: 'aws-access-key-id', pattern: /AKIA[0-9A-Z]{16}/g, replacement: '[REDACTED_AWS_KEY]' },
+  { id: 'github-pat', pattern: /ghp_[a-zA-Z0-9]{36}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
+  { id: 'github-oauth', pattern: /gho_[a-zA-Z0-9]{36}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
+  { id: 'github-server', pattern: /ghs_[a-zA-Z0-9]{36}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
+  { id: 'github-user', pattern: /ghu_[a-zA-Z0-9]{36}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
+  { id: 'github-fine-grained', pattern: /github_pat_[a-zA-Z0-9_]{60,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
+  { id: 'gitlab-pat', pattern: /glpat-[a-zA-Z0-9_-]{20,}/g, replacement: '[REDACTED_GITLAB_TOKEN]' },
+  { id: 'huggingface-token', pattern: /hf_[a-zA-Z0-9]{34,}/g, replacement: '[REDACTED_HUGGINGFACE_TOKEN]' },
+  { id: 'npm-token', pattern: /npm_[a-zA-Z0-9]{36}/g, replacement: '[REDACTED_NPM_TOKEN]' },
+  { id: 'stripe-live', pattern: /sk_live_[0-9a-zA-Z]{24,}/g, replacement: '[REDACTED_STRIPE_KEY]' },
+  { id: 'stripe-test', pattern: /sk_test_[0-9a-zA-Z]{24,}/g, replacement: '[REDACTED_STRIPE_KEY]' },
+  { id: 'sendgrid-key', pattern: /SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/g, replacement: '[REDACTED_SENDGRID_KEY]' },
+  { id: 'google-api-key', pattern: /AIza[0-9A-Za-z_-]{35}/g, replacement: '[REDACTED_GOOGLE_KEY]' },
+  { id: 'slack-token', pattern: /xox[baprs]-[a-zA-Z0-9-]{10,}/g, replacement: '[REDACTED_SLACK_TOKEN]' },
+  // AWS secret access key. The name anchor MIRRORS the detector's deliberately,
+  // and the value class is intentionally WIDER than the detector's (`=`
+  // padding, `{40,}` rather than exactly 40): over-redaction here costs a
+  // mangled token, under-redaction leaks a live secret. `$1` preserves the
+  // matched name anchor so only the value is removed.
+  {
+    id: 'aws-secret-access-key',
+    pattern: /((?:aws.{0,16}?(?:secret|private).{0,16}?key|secret[_\s.-]?access[_\s.-]?key)["'\s]*[:=]+>?\s*["']?)([A-Za-z0-9/+=]{40,})/gi,
+    replacement: '$1[REDACTED_AWS_SECRET]',
+  },
+  // The header alone is enough: the detector fires on `-----BEGIN … KEY-----`
+  // without requiring the closing marker, and a truncated or single-line block
+  // would otherwise stay verbatim.
+  { id: 'pem-private-key', pattern: /-----BEGIN [A-Z ]+ KEY-----[\s\S]*?-----END [A-Z ]+ KEY-----/g, replacement: '[REDACTED_PRIVATE_KEY]' },
+  { id: 'connection-string', pattern: /(?:postgres|mysql|mongodb|redis):\/\/[^\s'"]+/gi, replacement: '[REDACTED_CONNECTION_STRING]' },
+];
+
+/**
+ * Shape-anchored redaction that also reports WHICH shapes it resolved from the
+ * value. `shapes` is sorted and deduped, and it is empty exactly when nothing
+ * shape-anchored matched.
+ *
+ * This is the only function that can answer C9 honestly, because it is the only
+ * point at which the matched rule — and therefore the shape id — is still in
+ * hand.
+ */
+export function redactCredentialShapesReporting(content: string): {
+  text: string;
+  shapes: ShapeId[];
+} {
+  let text = content;
+  const shapes = new Set<ShapeId>();
+
+  for (const rule of CREDENTIAL_REDACTION_RULES) {
+    // `pattern` carries /g, so `replace` is a full scan; testing separately
+    // would advance `lastIndex` on a shared literal. Compare instead.
+    const before = text;
+    text = text.replace(rule.pattern, rule.replacement);
+    if (text !== before) shapes.add(rule.id);
+  }
+
+  return { text, shapes: [...shapes].sort() };
+}
+
+/**
  * Strip ALL credential-like content before sending to NanoMind.
  * This goes beyond the input sanitizer (which strips meta-instructions).
  * This strips actual secrets so NanoMind never sees real credentials.
  *
  * Even if the daemon is compromised, it cannot exfiltrate credentials
  * because it never received them.
- */
-/**
- * Redact only values that carry a recognizable CREDENTIAL SHAPE — a vendor
- * prefix, a key block, a connection string. Every rule here is anchored to a
- * shape, so it cannot destroy ordinary prose.
+ *
+ * Redacts only values that carry a recognizable CREDENTIAL SHAPE — a vendor
+ * prefix, a key block, a connection string. Every rule is anchored to a shape,
+ * so it cannot destroy ordinary prose.
  *
  * Shared by both boundaries below so the shape list cannot drift between them.
  * A shape the compiler's detectors can report MUST appear here; see
  * `pinned-credential-shapes.test.ts`, which iterates BOTH detector lists.
  */
 export function redactCredentialShapes(content: string): string {
-  let redacted = content;
-
-  // API keys.
-  //
-  // The invariant is COVERAGE, not equality: this list must redact every shape
-  // `CANONICAL_CREDENTIAL_PATTERNS` in the semantic compiler can DETECT, and it
-  // may redact more. A shape detected but not redacted is the worst of both —
-  // the scanner proves the secret is real, then forwards it to the daemon —
-  // whereas redacting something that was not a credential costs only a mangled
-  // token in an advisory prompt. `pinned-credential-shapes.test.ts` asserts
-  // that direction. (`glpat-` is deliberately here and NOT in the detector.)
-  //
-  // These rules are deliberately NOT left-anchored, unlike the detector's.
-  // Anchoring is an FP control, and the two sides want opposite defaults: a
-  // false positive here is a mangled token, a false negative is a leaked
-  // secret. Anchoring also broke adjacent tokens — `ghp_<36>ghp_<36>` redacted
-  // the first and left the second verbatim, because the replacement consumed
-  // the boundary the next match needed.
-  //
-  // Order matters here in a way it does not in the detector: `sk-proj-` and
-  // `sk-ant-api` must be replaced BEFORE the generic `sk-` rule, or a project
-  // key would be reported under the legacy label. The legacy rule's
-  // alphanumeric-only class already excludes both, and the ordering makes that
-  // independent of the class staying that way.
-  redacted = redacted.replace(/sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/g, '[REDACTED_ANTHROPIC_KEY]');
-  redacted = redacted.replace(/sk-proj-[a-zA-Z0-9_-]{20,}/g, '[REDACTED_OPENAI_KEY]');
-  redacted = redacted.replace(/sk-[a-zA-Z0-9]{48,}/g, '[REDACTED_OPENAI_KEY]');
-  redacted = redacted.replace(/AKIA[0-9A-Z]{16}/g, '[REDACTED_AWS_KEY]');
-  redacted = redacted.replace(/ghp_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_TOKEN]');
-  redacted = redacted.replace(/gho_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_TOKEN]');
-  redacted = redacted.replace(/ghs_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_TOKEN]');
-  redacted = redacted.replace(/ghu_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_TOKEN]');
-  redacted = redacted.replace(/github_pat_[a-zA-Z0-9_]{60,}/g, '[REDACTED_GITHUB_TOKEN]');
-  redacted = redacted.replace(/glpat-[a-zA-Z0-9_-]{20,}/g, '[REDACTED_GITLAB_TOKEN]');
-  redacted = redacted.replace(/hf_[a-zA-Z0-9]{34,}/g, '[REDACTED_HUGGINGFACE_TOKEN]');
-  redacted = redacted.replace(/npm_[a-zA-Z0-9]{36}/g, '[REDACTED_NPM_TOKEN]');
-  redacted = redacted.replace(/sk_live_[0-9a-zA-Z]{24,}/g, '[REDACTED_STRIPE_KEY]');
-  redacted = redacted.replace(/sk_test_[0-9a-zA-Z]{24,}/g, '[REDACTED_STRIPE_KEY]');
-  redacted = redacted.replace(/SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/g, '[REDACTED_SENDGRID_KEY]');
-  redacted = redacted.replace(/AIza[0-9A-Za-z_-]{35}/g, '[REDACTED_GOOGLE_KEY]');
-  redacted = redacted.replace(/xox[baprs]-[a-zA-Z0-9-]{10,}/g, '[REDACTED_SLACK_TOKEN]');
-
-  // AWS secret access key. The compiler's SECOND detector list
-  // (`NAME_GATED_CREDENTIAL_PATTERNS`) reports this shape, so the coverage
-  // invariant requires it here — its absence left a detected 40-character
-  // secret rendering 33 characters into text, JSON, HTML and SARIF.
-  //
-  // The name anchor below MIRRORS the detector's anchor deliberately, and the
-  // first attempt at this rule shows why that is not optional: it matched only
-  // a literal `aws_secret_access_key`, while the detector also fires on
-  // `secretAccessKey`, `awsSecretKey` and `secret_access_key`. All three were
-  // detected and left verbatim, leaking the FULL 40 characters whenever the
-  // value was unquoted — a narrower redactor than detector is the same drift
-  // this rule exists to close, just one level down.
-  //
-  // The value class is intentionally WIDER than the detector's (`=` padding,
-  // `{40,}` rather than exactly 40): over-redaction here costs a mangled
-  // token, under-redaction leaks a live secret. Quotes stay optional because
-  // the detector makes them optional; the generic name-gated rule below
-  // requires quotes and therefore cannot cover the bare form.
-  redacted = redacted.replace(
-    /((?:aws.{0,16}?(?:secret|private).{0,16}?key|secret[_\s.-]?access[_\s.-]?key)["'\s]*[:=]+>?\s*["']?)([A-Za-z0-9/+=]{40,})/gi,
-    '$1[REDACTED_AWS_SECRET]',
-  );
-
-  // Private key blocks. The header alone is enough: the detector fires on
-  // `-----BEGIN … KEY-----` without requiring the closing marker, and a
-  // truncated or single-line block would otherwise stay verbatim.
-  redacted = redacted.replace(/-----BEGIN [A-Z ]+ KEY-----[\s\S]*?-----END [A-Z ]+ KEY-----/g, '[REDACTED_PRIVATE_KEY]');
-
-  // Connection strings
-  redacted = redacted.replace(/(?:postgres|mysql|mongodb|redis):\/\/[^\s'"]+/gi, '[REDACTED_CONNECTION_STRING]');
-
-  return redacted;
+  return redactCredentialShapesReporting(content).text;
 }
+
 
 /**
  * Daemon boundary. Shapes, plus an aggressive name-gated rule that redacts ANY
@@ -267,10 +296,29 @@ export function redactSecretsForNanoMind(content: string): string {
  * "hunter2xyz"` redacted while leaving prose intact.
  */
 export function redactSecretsForReport(content: string): string {
-  return redactCredentialShapes(content).replace(
+  return redactSecretsForReportReporting(content).text;
+}
+
+/**
+ * The report boundary, reporting which shapes it resolved FROM THE VALUE.
+ *
+ * The name-gated rule below contributes NO shape ids, and that is C9 stated as
+ * code rather than as a convention: it fires on an IDENTIFIER
+ * (`password`/`secret`/`token`/`key`) without ever inspecting what the value
+ * is, so it cannot know which shape it removed — it cannot even know it removed
+ * a credential. A finding redacted only by this rule is honestly
+ * `redactionStatus: 'applied'` with `redactedShapes: []`.
+ */
+export function redactSecretsForReportReporting(content: string): {
+  text: string;
+  shapes: ShapeId[];
+} {
+  const shapePass = redactCredentialShapesReporting(content);
+  const text = shapePass.text.replace(
     /(?:password|secret|token|key)\s*[=:]\s*['"]([^'"\s]{8,})['"]/gi,
     (match) => `${match.split(/[=:]/)[0]}=[REDACTED]`,
   );
+  return { text, shapes: shapePass.shapes };
 }
 
 // ============================================================================

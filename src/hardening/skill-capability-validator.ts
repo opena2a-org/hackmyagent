@@ -6,7 +6,7 @@
  * undeclared capabilities.
  */
 
-import type { SecurityFinding } from './security-check';
+import type { SecurityFindingDraft } from './security-check';
 
 export interface SkillDeclaredCapabilities {
   capabilities: string[];
@@ -156,8 +156,8 @@ export function validateCapabilities(
   declared: SkillDeclaredCapabilities,
   inferred: InferredCapability[],
   filePath?: string
-): SecurityFinding[] {
-  const findings: SecurityFinding[] = [];
+): SecurityFindingDraft[] {
+  const findings: SecurityFindingDraft[] = [];
 
   for (const inf of inferred) {
     if (isCapabilityDeclared(inf.capability, declared)) {

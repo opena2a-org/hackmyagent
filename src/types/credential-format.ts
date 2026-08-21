@@ -62,15 +62,565 @@
  */
 const JWT_PREFIX = 'eyJ';
 
+/* ------------------------------------------------------------------ *
+ * The credential shape registry
+ * ------------------------------------------------------------------ */
+
+/**
+ * The surfaces a credential shape can reach.
+ *
+ * These are the four places in the tree that decide, independently, whether a
+ * run of bytes is a credential. They are named here so that a shape's ABSENCE
+ * from one of them is data rather than an accident nobody can see:
+ *
+ *   - `format-scan`        this module's `findCredentialFormatMatch` /
+ *                          `hasCredentialFormat` — vendor alternation, JWT scan
+ *                          and the entropy fallback.
+ *   - `vendor-alternation` membership in `VENDOR_PREFIX_ALTERNATIVES`, i.e. the
+ *                          regex alternation the format scan and its callers
+ *                          compose.
+ *   - `ast-canonical`      `CANONICAL_CREDENTIAL_PATTERNS` and
+ *                          `NAME_GATED_CREDENTIAL_PATTERNS` in
+ *                          `nanomind-core/compiler/semantic-compiler.ts`.
+ *   - `nanomind-redaction` `redactCredentialShapes` in
+ *                          `nanomind-core/security/defense-in-depth.ts`.
+ *
+ * Every membership recorded below was read off those three files, not inferred.
+ */
+export type Surface =
+  | 'format-scan'
+  | 'vendor-alternation'
+  | 'ast-canonical'
+  | 'nanomind-redaction';
+
+/** Every shape this tree can detect or redact, by id. */
+export type ShapeId =
+  | 'anthropic-key'
+  | 'openai-project-key'
+  | 'openai-key'
+  | 'stripe-live'
+  | 'stripe-test'
+  | 'github-pat'
+  | 'github-oauth'
+  | 'github-server'
+  | 'github-user'
+  | 'github-fine-grained'
+  | 'huggingface-token'
+  | 'gitlab-pat'
+  | 'npm-token'
+  | 'aws-access-key-id'
+  | 'google-api-key'
+  | 'slack-token'
+  | 'sendgrid-key'
+  | 'jwt'
+  | 'entropy-blob'
+  | 'pem-private-key'
+  | 'aws-secret-access-key'
+  | 'connection-string';
+
+/**
+ * A credential body: either one run of a character class, or fixed-width
+ * segments joined by a separator (SendGrid, and nothing else today).
+ *
+ * `min`/`max` are the DETECTOR's floor and ceiling, deliberately — see
+ * `shapeAlternation`.
+ */
+export type ShapeBody =
+  | { readonly kind: 'run'; readonly class: string; readonly min: number; readonly max?: number }
+  | {
+      readonly kind: 'segments';
+      readonly separator: string;
+      readonly segments: readonly { readonly class: string; readonly length: number }[];
+    };
+
+interface ShapeCommon {
+  readonly id: ShapeId;
+  /** Display only. NEVER enumerate by this — see `slack-token`. */
+  readonly label: string;
+  /**
+   * Literal substrings that identify a hand-written COPY of this shape in
+   * source. One entry per spelling: `SG.` and `SG\.` are the same shape written
+   * two ways and a single-spelling guard sees only one of them.
+   */
+  readonly guards: readonly string[];
+  readonly surfaces: ReadonlySet<Surface>;
+  /**
+   * The measured reason this shape does not reach every surface. REQUIRED
+   * whenever `surfaces` is not the full set — enforced at load, below.
+   */
+  readonly rationale?: string;
+}
+
+/** A shape identified by a vendor-issued prefix. */
+export interface VendorShape extends ShapeCommon {
+  readonly kind: 'vendor';
+  /**
+   * The recognisable head, as regex source, carrying NO quantifier: `ghp_`,
+   * `sk-ant-api[0-9]`, `xox[abprs]-`. Unquantified classes are part of the head
+   * because they are part of what makes the token recognisable.
+   */
+  readonly head: string;
+  readonly body: ShapeBody;
+}
+
+/** A shape with no vendor prefix: self-describing, or gated by a key name. */
+export interface StructuralShape extends ShapeCommon {
+  readonly kind: 'structural';
+  /**
+   * Full regex source, or the empty string for a shape matched by a scan rather
+   * than by a regex (the JWT).
+   */
+  readonly source: string;
+  /** The key-name regex a name-gated shape requires before it will fire. */
+  readonly nameGate?: string;
+}
+
+export type CredentialShape = VendorShape | StructuralShape;
+
+const ALL_SURFACES: readonly Surface[] = [
+  'format-scan',
+  'vendor-alternation',
+  'ast-canonical',
+  'nanomind-redaction',
+];
+
+const EVERY_SURFACE: ReadonlySet<Surface> = new Set(ALL_SURFACES);
+
+/**
+ * Why five shapes are missing from `ast-canonical`, in one place because it is
+ * ONE reason and repeating it per shape would read as five findings.
+ *
+ * It is NOT a measured exclusion, and saying so is the point. The canonical
+ * list is short by process, not by judgement: a first draft added eight shapes
+ * at once, two adversarial rounds measured a false-positive class on ordinary
+ * identifiers plus a quadratic scan introduced while trying to bound it, and
+ * the rest are being re-added ONE AT A TIME on `fix/credential-fp-siblings`
+ * (#352/#353). The history is written down at
+ * `__tests__/nanomind-core/pinned-credential-shapes.test.ts:9-14`.
+ *
+ * So for each shape carrying this string: nobody has measured its false-
+ * positive cost, and nobody has decided it should be absent. It is an
+ * UNDECLARED GAP with a known cause, which is a different thing from a
+ * deliberate exclusion like `gitlab-pat`'s, and a reader has to be able to tell
+ * them apart. Closing them is the widening step, and it is separately gated.
+ *
+ * Note what the gap actually costs, because it is not "the shape is unknown":
+ * `credential-analyzer.ts:116-121` wires the shared matcher as a GATE
+ * (`if (!credLocation) return findings;`) and never as a producer, so these
+ * shapes are matched by the vocabulary and then dropped rather than never seen.
+ */
+const NOT_YET_RE_ADDED_TO_CANONICAL =
+  'UNDECLARED GAP, not a measured exclusion: absent from CANONICAL_CREDENTIAL_PATTERNS ' +
+  '(semantic-compiler.ts:1279-1330) only because that list is being re-populated one shape at a ' +
+  'time on fix/credential-fp-siblings (#352/#353) after a first draft of eight measured an FP ' +
+  'class and a quadratic scan — see __tests__/nanomind-core/pinned-credential-shapes.test.ts:9-14. ' +
+  'No FP measurement exists for this shape. Contrast gitlab-pat, whose absence IS measured.';
+
+/**
+ * ONE floor per shape, and it is the DETECTOR's.
+ *
+ * The reason is measured. `defense-in-depth` hand-wrote its own body counts —
+ * `ghp_…{36}`, `github_pat_…{60,}`, `hf_…{34,}`, `npm_…{36}`, `sk_live_…{24,}`
+ * — while this module's detector uses `{20,}`. Every gap between the two is a
+ * band in which a token is DETECTED and then NOT redacted: the scanner proves
+ * the secret is real and forwards it verbatim. Deriving a redactor quantifier
+ * from `body.min` closes that band mechanically. Nothing derives from it yet —
+ * this registry is data first — but the floor lives in exactly one place now,
+ * so the adoption cannot re-create the drift it removes.
+ */
+export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
+  {
+    kind: 'vendor',
+    id: 'anthropic-key',
+    label: 'Anthropic API key',
+    head: 'sk-ant-api[0-9]',
+    body: { kind: 'run', class: '[a-zA-Z0-9_-]', min: 16 },
+    guards: ['sk-ant'],
+    surfaces: EVERY_SURFACE,
+  },
+  {
+    kind: 'vendor',
+    id: 'openai-project-key',
+    label: 'OpenAI project key',
+    head: 'sk-proj-',
+    body: { kind: 'run', class: '[a-zA-Z0-9_-]', min: 16 },
+    guards: ['sk-proj'],
+    surfaces: EVERY_SURFACE,
+  },
+  {
+    kind: 'vendor',
+    id: 'openai-key',
+    label: 'OpenAI legacy key',
+    head: 'sk-',
+    body: { kind: 'run', class: '[a-zA-Z0-9_-]', min: 20 },
+    // `sk-` on its own matches `task-`, `risk-` and `disk-` and would make the
+    // enumeration guard useless. The two spellings a copy actually takes are a
+    // character class (`sk-[a-zA-Z0-9…`) and an alternation branch (`sk-|…`).
+    guards: ['sk-[', 'sk-|'],
+    surfaces: EVERY_SURFACE,
+  },
+  {
+    kind: 'vendor',
+    id: 'stripe-live',
+    label: 'Stripe live key',
+    head: 'sk_live_',
+    body: { kind: 'run', class: '[a-zA-Z0-9]', min: 20 },
+    guards: ['sk_live_'],
+    surfaces: EVERY_SURFACE,
+  },
+  {
+    kind: 'vendor',
+    id: 'stripe-test',
+    label: 'Stripe test key',
+    head: 'sk_test_',
+    body: { kind: 'run', class: '[a-zA-Z0-9]', min: 20 },
+    guards: ['sk_test_'],
+    surfaces: new Set<Surface>(['format-scan', 'vendor-alternation', 'nanomind-redaction']),
+    rationale: NOT_YET_RE_ADDED_TO_CANONICAL,
+  },
+  {
+    kind: 'vendor',
+    id: 'github-pat',
+    label: 'GitHub personal access token',
+    head: 'ghp_',
+    body: { kind: 'run', class: '[a-zA-Z0-9]', min: 20 },
+    guards: ['ghp_'],
+    surfaces: EVERY_SURFACE,
+  },
+  {
+    kind: 'vendor',
+    id: 'github-oauth',
+    label: 'GitHub OAuth token',
+    head: 'gho_',
+    body: { kind: 'run', class: '[a-zA-Z0-9]', min: 20 },
+    guards: ['gho_'],
+    surfaces: EVERY_SURFACE,
+  },
+  {
+    kind: 'vendor',
+    id: 'github-server',
+    label: 'GitHub app token',
+    head: 'ghs_',
+    body: { kind: 'run', class: '[a-zA-Z0-9]', min: 20 },
+    guards: ['ghs_'],
+    surfaces: EVERY_SURFACE,
+  },
+  {
+    kind: 'vendor',
+    id: 'github-user',
+    label: 'GitHub user-to-server token',
+    head: 'ghu_',
+    body: { kind: 'run', class: '[a-zA-Z0-9]', min: 20 },
+    guards: ['ghu_'],
+    surfaces: new Set<Surface>(['format-scan', 'vendor-alternation', 'nanomind-redaction']),
+    rationale: NOT_YET_RE_ADDED_TO_CANONICAL,
+  },
+  {
+    kind: 'vendor',
+    id: 'github-fine-grained',
+    label: 'GitHub fine-grained token',
+    head: 'github_pat_',
+    body: { kind: 'run', class: '[a-zA-Z0-9_]', min: 20 },
+    guards: ['github_pat_'],
+    surfaces: new Set<Surface>(['format-scan', 'vendor-alternation', 'nanomind-redaction']),
+    rationale: NOT_YET_RE_ADDED_TO_CANONICAL,
+  },
+  {
+    kind: 'vendor',
+    id: 'huggingface-token',
+    label: 'Hugging Face token',
+    head: 'hf_',
+    body: { kind: 'run', class: '[a-zA-Z0-9]', min: 20 },
+    guards: ['hf_'],
+    surfaces: new Set<Surface>(['format-scan', 'vendor-alternation', 'nanomind-redaction']),
+    rationale: NOT_YET_RE_ADDED_TO_CANONICAL,
+  },
+  {
+    kind: 'vendor',
+    id: 'gitlab-pat',
+    label: 'GitLab personal access token',
+    head: 'glpat-',
+    body: { kind: 'run', class: '[a-zA-Z0-9_-]', min: 20 },
+    guards: ['glpat-'],
+    surfaces: new Set<Surface>(['format-scan', 'vendor-alternation', 'nanomind-redaction']),
+    rationale:
+      'DELIBERATELY excluded from CANONICAL_CREDENTIAL_PATTERNS and the exclusion is measured ' +
+      '(semantic-compiler.ts:1310-1324): the body class admits `-` and `_`, so `glpat-` plus any ' +
+      'hyphenated identifier matches, and the entropy lookahead tried to separate them went ' +
+      'QUADRATIC on attacker-supplied content — 0ms -> 651ms at 60 KB, 1ms -> 40s at 480 KB — ' +
+      'while still passing `glpat-' + 'shared-linux-docker-runner-1`. Do not flatten this into the ' +
+      'canonical list without a bounded pattern AND a ReDoS measurement.',
+  },
+  {
+    kind: 'vendor',
+    id: 'npm-token',
+    label: 'npm access token',
+    head: 'npm_',
+    body: { kind: 'run', class: '[a-zA-Z0-9]', min: 20 },
+    guards: ['npm_'],
+    surfaces: new Set<Surface>(['format-scan', 'vendor-alternation', 'nanomind-redaction']),
+    rationale: NOT_YET_RE_ADDED_TO_CANONICAL,
+  },
+  {
+    kind: 'vendor',
+    id: 'aws-access-key-id',
+    label: 'AWS access key ID',
+    head: 'AKIA',
+    body: { kind: 'run', class: '[0-9A-Z]', min: 16, max: 16 },
+    guards: ['AKIA'],
+    surfaces: EVERY_SURFACE,
+  },
+  {
+    kind: 'vendor',
+    id: 'google-api-key',
+    label: 'Google API key',
+    head: 'AIza',
+    body: { kind: 'run', class: '[0-9A-Za-z_-]', min: 35, max: 35 },
+    guards: ['AIza'],
+    surfaces: EVERY_SURFACE,
+  },
+  {
+    kind: 'vendor',
+    id: 'slack-token',
+    label: 'Slack token',
+    // The class is part of the head on purpose: `xoxb-`, `xoxp-`, `xoxa-`,
+    // `xoxr-` and `xoxs-` are five distinct token types that this tree reports
+    // under the SINGLE label "Slack bot token". That is why enumeration is by
+    // pattern and never by label — narrowing this to `xoxb-` is invisible to
+    // any label-set assertion.
+    head: 'xox[abprs]-',
+    body: { kind: 'run', class: '[0-9A-Za-z-]', min: 10 },
+    guards: ['xox'],
+    surfaces: EVERY_SURFACE,
+  },
+  {
+    kind: 'vendor',
+    id: 'sendgrid-key',
+    label: 'SendGrid API key',
+    head: 'SG\\.',
+    // FIXED widths, and they are load-bearing. Written as `SG\.<16,>\.<16,>`
+    // this matched any dotted identifier with two long segments, so
+    // `MSG.INCIDENT_ESCALATION_QUEUE.HIGH_PRIORITY_ROUTE` was positively
+    // identified as a credential on a benign taxonomy document. A real SendGrid
+    // secret is 43 characters and clears the 40-character blob fallback on its
+    // own; this shape is what NAMES it. Do not relax the widths.
+    body: {
+      kind: 'segments',
+      separator: '\\.',
+      segments: [
+        { class: '[A-Za-z0-9_-]', length: 22 },
+        { class: '[A-Za-z0-9_-]', length: 43 },
+      ],
+    },
+    guards: ['SG.', 'SG\\.'],
+    surfaces: new Set<Surface>(['format-scan', 'vendor-alternation', 'nanomind-redaction']),
+    rationale:
+      'Absent from CANONICAL_CREDENTIAL_PATTERNS: semantic-compiler.ts:1325-1329 carries the ' +
+      'explanatory comment for this shape but no entry beneath it, so the comment reads as ' +
+      'coverage that is not there.',
+  },
+  {
+    kind: 'structural',
+    id: 'jwt',
+    label: 'JSON Web Token',
+    // Matched by a linear scan, not by a regex alternative. Expressing the JWT
+    // as an alternative is what made every consumer either quadratic or
+    // truncating, so `findJwtMatch` owns it and there is no source here.
+    source: '',
+    guards: ['eyJ'],
+    surfaces: new Set<Surface>(['format-scan']),
+    rationale:
+      'Detected only by this module (findJwtMatch, and the JWT_PREFIX entry in ' +
+      'VENDOR_PREFIX_MATCHERS). It is NOT in CANONICAL_CREDENTIAL_PATTERNS and it is NOT in ' +
+      'redactCredentialShapes — defense-in-depth.ts:181-231 has no eyJ rule at all. ' +
+      'A JWT reaching redactCredentialShapes today is passed through verbatim.',
+  },
+  {
+    kind: 'structural',
+    id: 'entropy-blob',
+    label: 'High-entropy secret',
+    source: '\\b[A-Za-z0-9+=_]{40,}\\b',
+    guards: ['[A-Za-z0-9+=_]{40,}'],
+    surfaces: new Set<Surface>(['format-scan']),
+    rationale:
+      'The anonymous fallback (credential-format.ts:873 ENTROPY_BLOB_ALTERNATIVE), gated by ' +
+      'isCredibleEntropyBlob at credential-format.ts:995. Deliberately confined to this module: ' +
+      'it has no vendor name to report, so promoting it to the redactor or to ' +
+      'CANONICAL_CREDENTIAL_PATTERNS (semantic-compiler.ts:1279-1330) is an FP question nobody ' +
+      'has measured.',
+  },
+  {
+    kind: 'structural',
+    id: 'pem-private-key',
+    label: 'PEM private key',
+    source: '-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PRIVATE)[A-Z ]*KEY-----',
+    guards: ['-----BEGIN'],
+    surfaces: new Set<Surface>(['ast-canonical', 'nanomind-redaction']),
+    rationale:
+      'Not a vendor prefix and not part of this module: detected by ' +
+      'CANONICAL_CREDENTIAL_PATTERNS (semantic-compiler.ts:1330) and redacted by ' +
+      'defense-in-depth.ts:227. Listed here because a shape absent from the registry cannot be ' +
+      'guarded against being copied a fourth time.',
+  },
+  {
+    kind: 'structural',
+    id: 'aws-secret-access-key',
+    label: 'AWS secret access key',
+    source: '[A-Za-z0-9/+=]{40,}',
+    nameGate: '(?:aws.{0,16}?(?:secret|private).{0,16}?key|secret[_\\s.-]?access[_\\s.-]?key)',
+    guards: ['secret_access_key', 'secret[_\\s.-]?access'],
+    surfaces: new Set<Surface>(['ast-canonical', 'nanomind-redaction']),
+    rationale:
+      'Name-gated: a bare 40-character blob is a git SHA as often as a secret, so it fires only ' +
+      'when the assignment target names it. Lives in NAME_GATED_CREDENTIAL_PATTERNS ' +
+      '(semantic-compiler.ts:1350-1364), not the canonical list, and has no vendor prefix, so it ' +
+      'is on neither of this module`s surfaces.',
+  },
+  {
+    kind: 'structural',
+    id: 'connection-string',
+    label: 'Connection string with embedded credentials',
+    source: '(?:postgres|mysql|mongodb|redis)://[^\\s\'"]+',
+    guards: ['postgres://', 'mongodb://'],
+    surfaces: new Set<Surface>(['nanomind-redaction']),
+    rationale:
+      'Redacted by defense-in-depth but detected by neither this module nor the canonical list. ' +
+      'Note the scheme sets already disagree: the redactor covers 4 schemes while ' +
+      'credential-context.ts:35 URL_CREDENTIAL_PATTERN covers 10 (adding postgresql, amqp, ' +
+      'rabbitmq, ftp, sftp, http, https), so six schemes are located and never redacted here.',
+  },
+];
+
+/**
+ * Compose a shape's alternation source from its own parts.
+ *
+ * THE RECORD STORES A BARE ALTERNATION AND EACH ROLE COMPOSES ITS OWN ANCHOR.
+ * The detector left-anchors (`anchoredVendorAlternation`); the redactor is
+ * deliberately unanchored, with a written reason — anchoring broke
+ * `ghp_<36>ghp_<36>`, redacting the first and leaving the second, because the
+ * replacement consumed the boundary the next match needed. Storing an anchored
+ * regex would force one of the two roles to be wrong.
+ */
+export function shapeAlternation(shape: CredentialShape): string {
+  if (shape.kind === 'structural') return shape.source;
+  const { body } = shape;
+  if (body.kind === 'segments') {
+    return (
+      shape.head +
+      body.segments.map(s => `${s.class}{${s.length}}`).join(body.separator)
+    );
+  }
+  const quantifier =
+    body.max === undefined
+      ? `{${body.min},}`
+      : body.max === body.min
+        ? `{${body.min}}`
+        : `{${body.min},${body.max}}`;
+  return `${shape.head}${body.class}${quantifier}`;
+}
+
+/**
+ * The marker each shape redacts to.
+ *
+ * A `Record<ShapeId, string>` rather than a field on the shape, so that the
+ * TYPE is what forces totality: adding a member to `ShapeId` without adding a
+ * marker is a compile error, before any test runs. The load-time check below is
+ * the second layer, for the JavaScript consumer the type never reaches.
+ *
+ * A shape cannot become detectable without becoming redactable in the same
+ * edit. That is the whole mechanism: `defense-in-depth` used to carry sixteen
+ * hand-written vendor rules with their own body counts, and a `ghp_` token with
+ * a 44-character body had its first 36 characters consumed by the labelled rule
+ * and shipped the remaining 8 verbatim to stdout, `--json`, SARIF and HTML.
+ */
+export const CREDENTIAL_REDACTION_MARKERS: Readonly<Record<ShapeId, string>> = {
+  'anthropic-key': '[REDACTED_ANTHROPIC_KEY]',
+  'openai-project-key': '[REDACTED_OPENAI_KEY]',
+  'openai-key': '[REDACTED_OPENAI_KEY]',
+  'stripe-live': '[REDACTED_STRIPE_KEY]',
+  'stripe-test': '[REDACTED_STRIPE_KEY]',
+  'github-pat': '[REDACTED_GITHUB_TOKEN]',
+  'github-oauth': '[REDACTED_GITHUB_TOKEN]',
+  'github-server': '[REDACTED_GITHUB_TOKEN]',
+  'github-user': '[REDACTED_GITHUB_TOKEN]',
+  'github-fine-grained': '[REDACTED_GITHUB_TOKEN]',
+  'huggingface-token': '[REDACTED_HUGGINGFACE_TOKEN]',
+  'gitlab-pat': '[REDACTED_GITLAB_TOKEN]',
+  'npm-token': '[REDACTED_NPM_TOKEN]',
+  'aws-access-key-id': '[REDACTED_AWS_KEY]',
+  'google-api-key': '[REDACTED_GOOGLE_KEY]',
+  'slack-token': '[REDACTED_SLACK_TOKEN]',
+  'sendgrid-key': '[REDACTED_SENDGRID_KEY]',
+  jwt: '[REDACTED_JWT]',
+  'entropy-blob': '[REDACTED_SECRET]',
+  'pem-private-key': '[REDACTED_PRIVATE_KEY]',
+  'aws-secret-access-key': '[REDACTED_AWS_SECRET]',
+  'connection-string': '[REDACTED_CONNECTION_STRING]',
+};
+
+/**
+ * Load-time totality, in both directions, plus the rationale rule.
+ *
+ * Runs at module initialisation so a registry that cannot satisfy its own
+ * contract fails loudly at import rather than silently at the first redaction.
+ */
+(function assertRegistryTotality(): void {
+  const ids = new Set<ShapeId>();
+  for (const shape of CREDENTIAL_SHAPES) {
+    if (ids.has(shape.id)) {
+      throw new Error(`credential-format: duplicate shape id ${shape.id}`);
+    }
+    ids.add(shape.id);
+    if (CREDENTIAL_REDACTION_MARKERS[shape.id] === undefined) {
+      throw new Error(
+        `credential-format: no redaction marker for shape ${shape.id}. Add one to ` +
+          'CREDENTIAL_REDACTION_MARKERS — a detectable shape must be nameable when it is redacted.',
+      );
+    }
+    if (shape.guards.length === 0) {
+      throw new Error(
+        `credential-format: shape ${shape.id} has no enumeration guard. A shape with no guard ` +
+          'literal can be copied into another file without the enumeration test seeing it.',
+      );
+    }
+    const total = ALL_SURFACES.every(s => shape.surfaces.has(s));
+    if (!total && (shape.rationale === undefined || shape.rationale.length === 0)) {
+      throw new Error(
+        `credential-format: shape ${shape.id} reaches only ` +
+          `${[...shape.surfaces].join(', ')} and carries no rationale. A surface a shape does ` +
+          'not reach is either a measured decision or a defect, and the record has to say which.',
+      );
+    }
+  }
+  for (const id of Object.keys(CREDENTIAL_REDACTION_MARKERS) as ShapeId[]) {
+    if (!ids.has(id)) {
+      throw new Error(
+        `credential-format: orphan redaction marker for ${id} — no such shape in ` +
+          'CREDENTIAL_SHAPES. Markers and shapes are one vocabulary, not two.',
+      );
+    }
+  }
+})();
+
+/** Every shape that reaches `surface`, in registry order. */
+export function shapesFor(surface: Surface): readonly CredentialShape[] {
+  return CREDENTIAL_SHAPES.filter(s => s.surfaces.has(surface));
+}
+
 /**
  * Vendor-prefixed credential shapes, in one place.
  *
- * This is the single source of truth. The credential analyzer's
- * `hasVendorPrefixCredential` content gate and `maskCredentialValue` both build
- * from this same array; keeping separate hand-maintained lists meant a token
- * could be "vendor-known" to one gate and anonymous to another, which is how
- * `hf_`, `ghs_`, `ghu_`, `glpat-` and `npm_` ended up subject to the entropy
- * fallback in one code path and exempt in the next.
+ * DERIVED from `CREDENTIAL_SHAPES` — this array used to be the source of truth
+ * and is now a VIEW of it, byte-identical to the literal it replaced
+ * (`__tests__/types/credential-shape-registry.test.ts` pins every entry against
+ * a hand-written expectation). Keeping separate hand-maintained lists meant a
+ * token could be "vendor-known" to one gate and anonymous to another, which is
+ * how `hf_`, `ghs_`, `ghu_`, `glpat-` and `npm_` ended up subject to the
+ * entropy fallback in one code path and exempt in the next.
+ *
+ * Order is registry order and it is load-bearing: `sk-ant-api…` and `sk-proj-…`
+ * must be tested before the generic `sk-…`, or a project key is reported under
+ * the legacy label.
  *
  * The JWT is deliberately NOT here — it is the one shape whose segments are
  * unbounded, and expressing it as a regex alternative is what made every
@@ -81,37 +631,67 @@ const JWT_PREFIX = 'eyJ';
  * Alternatives are NOT anchored here. See `anchoredVendorAlternation` for who
  * anchors and who deliberately does not.
  */
-export const VENDOR_PREFIX_ALTERNATIVES = [
-  'sk-ant-api[0-9][a-zA-Z0-9_-]{16,}',
-  'sk-proj-[a-zA-Z0-9_-]{16,}',
-  'sk-[a-zA-Z0-9_-]{20,}',
-  'sk_live_[a-zA-Z0-9]{20,}',
-  'sk_test_[a-zA-Z0-9]{20,}',
-  'ghp_[a-zA-Z0-9]{20,}',
-  'gho_[a-zA-Z0-9]{20,}',
-  'ghs_[a-zA-Z0-9]{20,}',
-  'ghu_[a-zA-Z0-9]{20,}',
-  'github_pat_[a-zA-Z0-9_]{20,}',
-  'hf_[a-zA-Z0-9]{20,}',
-  'glpat-[a-zA-Z0-9_-]{20,}',
-  'npm_[a-zA-Z0-9]{20,}',
-  'AKIA[0-9A-Z]{16}',
-  'AIza[0-9A-Za-z_-]{35}',
-  'xox[abprs]-[0-9A-Za-z-]{10,}',
-  // SendGrid keys are `SG.<22-char key id>.<43-char secret>`, both segments at
-  // FIXED lengths. Written as `SG\.<16,>\.<16,>` this matched any dotted
-  // identifier with two long segments, so
-  // `MSG.INCIDENT_ESCALATION_QUEUE.HIGH_PRIORITY_ROUTE` was positively
-  // identified as a credential on a benign taxonomy document — the very
-  // false-positive class this module exists to remove, re-created one gate
-  // over. `origin/main` has no `SG.` at all and is clean on it.
-  //
-  // The fixed lengths are what separate a key from a namespace, and they do it
-  // in the UNANCHORED veto too, which is where the anchor could not reach. A
-  // real SendGrid secret is 43 characters, so it also clears the 40-character
-  // blob fallback on its own; this alternative is what names it.
-  'SG\\.[A-Za-z0-9_-]{22}\\.[A-Za-z0-9_-]{43}',
+export const VENDOR_PREFIX_ALTERNATIVES = shapesFor('vendor-alternation').map(shapeAlternation);
+
+/**
+ * Key names that mark a value as a credential when the value itself has no
+ * recognisable shape.
+ *
+ * The union of the four vocabularies that encode this list today, each of which
+ * was read to build it:
+ *
+ *   - `scanner/detect.ts:496`               api[_-]?key, secret, token, password
+ *   - `scanner/permission-vocabulary.ts:415` + apikey, passwd, pwd, authorization
+ *   - `nanomind-core/security/defense-in-depth.ts:270` password, secret, token, key
+ *   - `semantic/structural/credential-context.ts:29` the 20-name list
+ *
+ * WARNING FOR THE ADOPTION STEP: this union is WIDER than three of the four
+ * consumers, and `key` alone (from defense-in-depth) is the widest member of
+ * all. Adopting this list at a narrow site widens what that site reports, which
+ * is a detection change and not a refactor. `keyNamesFor` records which sites
+ * carry which name so that widening is a measured decision rather than a
+ * side effect.
+ */
+export const CREDENTIAL_KEY_NAMES: readonly string[] = [
+  'api_key',
+  'apikey',
+  'secret',
+  'token',
+  'password',
+  'passwd',
+  'pwd',
+  'authorization',
+  'auth',
+  'credential',
+  'key',
+  'access_key',
+  'private_key',
+  'client_secret',
+  'signing_key',
+  'encryption_key',
+  'master_key',
+  'jwt_secret',
+  'session_secret',
+  'db_password',
+  'database_password',
 ];
+
+/**
+ * The separator between a credential key name and its value, in one place.
+ *
+ * `\s*` `[:=]` `\s*` `["']?` and NOTHING ELSE. Every optional atom added
+ * between the two `\s*` runs makes the pair ambiguous and the match quadratic:
+ * a `(?:bearer|basic|token)?` group added here took `detect` from 0.25s to 51s
+ * on a 200 KB config, reachable through `secure`, which has no size cap in
+ * front of it. An opaque bearer token is a KNOWN GAP, not something to close by
+ * stepping over the scheme word.
+ *
+ * Returns a fresh RegExp each call: a shared `g`-flagged instance carries
+ * `lastIndex` between callers.
+ */
+export function keyNameDelimiterPattern(): RegExp {
+  return /\s*[:=]\s*["']?/;
+}
 
 /**
  * Left anchor for a vendor prefix: the prefix must not be glued to the tail of

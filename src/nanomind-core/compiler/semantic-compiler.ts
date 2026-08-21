@@ -1312,7 +1312,7 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   // admits `-` and `_`, so `glpat-` plus any hyphenated identifier of 20+
   // characters matches, and no cheap predicate separates the two: an entropy
   // lookahead (`(?=[a-z_-]*[A-Z0-9])`) still passed
-  // `glpat-shared-linux-docker-runner-1` and `glpat-XXXXXXXXXXXXXXXXXXXX` —
+  // a hyphenated GitLab runner slug and a drawn-blank GitLab token placeholder —
   // GitLab's own docs placeholder — while introducing a QUADRATIC scan on
   // attacker-supplied file content (measured 0ms -> 651ms at 60 KB,
   // 1ms -> 40s at 480 KB, against a 10 MB file cap). A denial of service in a
@@ -1454,7 +1454,12 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit
 
       hits.push({
         label,
-        evidence: `${label}: ${matched.slice(0, 16)}...`,
+        // Classification only. A truncated credential is still credential bytes, and it
+        // is bytes the boundary cannot remove: `redactSecretsForReportReporting` matches
+        // full-length shapes, so `matched.slice(0, 16)` passes through untouched AND is
+        // stamped `redactionStatus: 'clean'`. `label` already carries everything the user
+        // acts on (which vendor), and `file`/`line` carry where.
+        evidence: `${label}: [REDACTED]`,
       });
     }
   }
@@ -1493,7 +1498,9 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit
 
       hits.push({
         label,
-        evidence: `${label}: ${value.slice(0, 8)}...`,
+        // Same rule as the canonical arm above. This is a SEPARATE producer with its own
+        // truncation width, so fixing only the canonical one leaves the class open.
+        evidence: `${label}: [REDACTED]`,
       });
     }
   }

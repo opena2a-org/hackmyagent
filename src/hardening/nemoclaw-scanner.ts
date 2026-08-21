@@ -12,7 +12,8 @@ import { statSync, readdirSync, readFileSync, existsSync } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { commandNaming } from '../ui/shell-quote';
-import type { SecurityFinding, Severity } from './security-check';
+import type { SecurityFinding, SecurityFindingDraft, Severity } from './security-check';
+import { emitFinding, type RedactedFinding } from './finding-emit';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -129,9 +130,11 @@ function finding(
   severity: Severity,
   passed: boolean,
   message: string,
-  extra?: Partial<SecurityFinding>,
-): SecurityFinding {
-  return {
+  extra?: Partial<SecurityFindingDraft>,
+): RedactedFinding {
+  // Route point 3 of the boundary: the single constructor every NemoClaw
+  // finding goes through, so emitting here covers all of them.
+  return emitFinding({
     checkId,
     name,
     description,
@@ -148,7 +151,7 @@ function finding(
     fix: extra?.fix,
     attackClass: extra?.attackClass,
     details: extra?.details,
-  };
+  });
 }
 
 // ---------------------------------------------------------------------------
