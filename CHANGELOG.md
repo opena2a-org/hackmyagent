@@ -2,6 +2,35 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [Unreleased]
+
+### The ARP re-export now delivers opt-in telemetry
+
+`hackmyagent/arp` is a thin re-export of `@opena2a/aim-sdk/arp` (#249), so the pin in
+package.json decides the runtime-protection behaviour this package delivers. The pin read
+`1.0.2`, which predates the aim-sdk release that made ARP structural-signature telemetry
+opt-in (`1.2.0`, GHSA-r2hq-x5w4-5v63) — so the module delivered here still started that
+channel by default and read neither the documented `OPENA2A_TELEMETRY=off` opt-out nor the
+explicit opt-in.
+
+Measured through the re-export on a clean `HOME`, before and after the bump:
+
+| probe | pinned 1.0.2 | pinned 1.2.0 |
+|---|---|---|
+| default posture | on | **off** |
+| `OPENA2A_TELEMETRY=off` honored | no | **yes** |
+| opt-out beats an explicit opt-in | no | **yes** |
+
+Scope, measured rather than assumed: no hackmyagent scan command constructs
+`AgentRuntimeProtection`, so `secure` / `check` / `scan` users were never emitting. The
+change reaches consumers who start the runtime themselves — importers of `hackmyagent/arp`,
+the `hackmyagent/oasb` harness adapter (which constructs it), and the `arp-guard` shim,
+which floats on this package.
+
+`__tests__/arp/delivered-telemetry-posture.test.ts` pins the delivered property in a
+scrubbed-env, fresh-`HOME` child process, so a future pin change cannot regress the posture
+silently — the test fails on the behaviour, whatever version string carries it.
+
 ## [0.32.0] - 2026-08-20
 
 ### Finding evidence carries a classification, not a prefix of the matched value
