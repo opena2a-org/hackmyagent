@@ -599,7 +599,15 @@ export async function runCoverageSweep(
     const combined = combineVerdict(false, routed, 'abstention-gated');
     if (combined.escalate && (routed === 'attack' || routed === 'abstain')) {
       const severity = oneLine(verdict.severity);
-      escalations.push({
+      // The sweep is the STRONGER half of the analyst channel: unlike
+      // `runAnalystOnFindings`, whose prompt is built from already-redacted
+      // finding text, `classify` above read the RAW artifact file — so the
+      // model's own text can quote a credential it saw (adversarial review
+      // 2026-08-21, F3). Every field that carries model text goes through the
+      // open-bag walk before the escalation can reach a JSON channel;
+      // `sanitizeAnalystString`/`oneLine` strip control characters only and
+      // are not a redactor.
+      escalations.push(redactOpenBagForPublish({
         file: candidate.path,
         artifactType: candidate.artifactType,
         routed,
@@ -609,7 +617,7 @@ export async function runCoverageSweep(
         summary: oneLine(verdict.analysis).slice(0, 600),
         modelVersion: verdict.modelVersion,
         policy: 'abstention-gated',
-      });
+      }) as AnalystEscalation);
     }
   }
 

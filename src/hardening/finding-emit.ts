@@ -355,12 +355,14 @@ export function emitFindings(
  * Re-emit an already-emitted finding with normalizing overrides, without the
  * rebuild being able to drop or downgrade the two redaction fields.
  *
- * The parameter types are the mechanism, not documentation of it. `prior` is a
- * full `SecurityFinding`, on which both redaction fields are REQUIRED — a
- * stripped bag does not typecheck. `overrides` is `Omit`-typed so handing in a
- * `redactionStatus` or `redactedShapes` override is unrepresentable — the only
- * source for those fields is the prior value, which the absorbing-applied merge
- * in `emitFinding` then honours.
+ * The parameter types are the first mechanism: `prior` is a full
+ * `SecurityFinding`, on which both redaction fields are REQUIRED — a stripped
+ * bag does not typecheck — and `overrides` is `Omit`-typed so a LITERAL
+ * override bag cannot name either redaction field. The type alone is NOT
+ * sufficient (excess-property checks do not apply to widened variables), so
+ * the body also discards the two keys at runtime; the only source for them is
+ * the prior value, which the absorbing-applied merge in `emitFinding` then
+ * honours.
  *
  * HISTORY, kept because a reversed rationale left implicit is a hazard: a
  * `reemitFinding` wrapper was written here once before and DELETED before it
@@ -383,7 +385,14 @@ export function reemitFinding(
   prior: SecurityFinding,
   overrides?: Partial<Omit<SecurityFinding, 'redactionStatus' | 'redactedShapes'>>,
 ): RedactedFinding {
-  return emitFinding({ ...prior, ...overrides } as SecurityFindingDraft);
+  // The `Omit` guards LITERAL override bags only — TypeScript's excess-property
+  // check does not apply to a widened variable, so a bag that happens to carry
+  // `redactionStatus: 'clean'` typechecks, reaches the spread, and downgrades a
+  // prior `'applied'` (adversarial review 2026-08-21, F1). Discard the two keys
+  // at runtime so the only source for them is `prior`, whatever the caller holds.
+  const { redactionStatus: _smuggledStatus, redactedShapes: _smuggledShapes, ...safeOverrides } =
+    (overrides ?? {}) as Record<string, unknown>;
+  return emitFinding({ ...prior, ...safeOverrides } as SecurityFindingDraft);
 }
 
 // Compile-time pin for the property the `Omit` buys (tsc does not check
@@ -490,9 +499,14 @@ export function assertRedactionProvenance(payload: unknown, channel: string): vo
       }
       for (const v of Object.values(value)) stack.push(v);
     }
-    // Strings, numbers, non-plain objects: nothing to read. A non-plain
-    // container (Map/Set/class instance) serializes as `{}` on every JSON
-    // channel, so it cannot carry finding text onto the wire.
+    // Strings, numbers, non-plain objects: nothing to read. KNOWN RESIDUE
+    // (adversarial review 2026-08-21, F5): a non-plain container is skipped
+    // here, and while a bare Map/Set serializes as `{}`, an object with a
+    // `toJSON()` serializes FULLY — so a producer that put finding text
+    // behind `toJSON` would cross this reader unexamined. No producer in the
+    // tree constructs such a value on any findings channel today (analyst
+    // responses are JSON-parsed daemon output; `Date` fields carry no text);
+    // if one appears, it needs handling HERE before it ships.
   }
 }
 
