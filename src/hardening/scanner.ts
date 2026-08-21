@@ -68,10 +68,15 @@ const BACKUP_MANIFEST_VERSION = 2;
  * Every extension the JavaScript/TypeScript family uses, as ONE list.
  *
  * #414. `walkDirectory` was called with a hand-written extension array at each
- * of twelve JS-family sites, in four different spellings: `['.ts', '.js']`,
- * `['.ts', '.js', '.mjs']`, `['.ts', '.js', '.py', '.mjs']` and
- * `['.ts', '.js', '.md', '.txt']`. Whether a check read your file depended on
- * which check it was.
+ * of twelve JS-family sites, in five different spellings: `['.ts', '.js']` (1),
+ * `['.ts', '.js', '.mjs']` (7), `['.ts', '.js', '.py', '.mjs']` (2),
+ * `['.ts', '.js', '.py', '.md']` (1) and `['.ts', '.js', '.md', '.txt']` (1).
+ * Whether a check read your file depended on which check it was.
+ *
+ * The counts are the measurement, and they sum to the twelve: 1 + 7 + 2 + 1 + 1.
+ * An earlier version of this comment said "four different spellings" and omitted
+ * `['.ts', '.js', '.py', '.md']`, which is why the per-spelling counts are written
+ * out here rather than summarised.
  *
  * The sharpest case sat three lines apart inside `checkNemoClawPatterns`, whose
  * own docstring says it detects "unsafe installs, missing digest verification,
