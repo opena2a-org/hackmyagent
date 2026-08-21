@@ -291,7 +291,7 @@ import {
   type CategoryCoverage,
 } from './hardening/coverage-ledger';
 import type { ScanResult, SuppressionChannel, SecurityFindingDraft } from './hardening/security-check';
-import { emitFindings, reemitFinding, assertRedactionProvenance } from './hardening/finding-emit';
+import { emitFindings, reemitFinding, assertRedactionProvenance, RedactionProvenanceError } from './hardening/finding-emit';
 import { buildJsonStdoutDocument } from './output/json-stdout';
 import { compareFindingsByTier } from './ui/finding-tier';
 import {
@@ -5530,7 +5530,13 @@ Examples:
             }
           }
         } catch (_reportErr: any) {
-          // Silently ignore registry errors - they are not relevant to local scan results
+          // Silently ignore NETWORK/registry errors - they are not relevant to
+          // local scan results. The provenance read is the one exception: this
+          // catch was swallowing its abort, which kept the bytes off the wire
+          // but silenced the only signal that a laundering defect exists
+          // (adversarial review 2026-08-21, F2). An internal invariant is not
+          // a registry error; it propagates.
+          if (_reportErr instanceof RedactionProvenanceError) throw _reportErr;
         }
       }
 

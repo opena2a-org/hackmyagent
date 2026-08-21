@@ -89,6 +89,28 @@ describe('reemitFinding — the sanctioned rebuild preserves provenance', () => 
     expect(JSON.stringify(second)).not.toContain(AWS);
   });
 
+  // RED-PROOF: delete the runtime destructure of `redactionStatus` /
+  // `redactedShapes` from `reemitFinding` — this case goes red.
+  //
+  // The `Omit` on the override parameter is not sufficient on its own:
+  // TypeScript's excess-property check applies to LITERAL bags, so a widened
+  // variable carrying `redactionStatus: 'clean'` typechecks, reaches the
+  // spread, and downgrades a prior 'applied' — defect (13) reintroduced
+  // through the sanctioned helper, and invisible to the publish reader
+  // because 'clean' is a valid publish status. Found by adversarial review
+  // 2026-08-21 (F1), which built exactly this bag and compiled it.
+  it('a widened override bag cannot smuggle a status downgrade', () => {
+    const first = appliedFinding();
+    const smuggle: Record<string, unknown> = {
+      passed: false,
+      redactionStatus: 'clean',
+      redactedShapes: [],
+    };
+    const second = reemitFinding(first, smuggle);
+    expect(second.redactionStatus, 'the prior applied must survive a hostile override bag').toBe('applied');
+    expect(second.redactedShapes).toContain('github-pat');
+  });
+
   // MECHANISM CONTROL, not a defect pin — this is defect (13) itself, measured,
   // so the preserving cases above are provably non-vacuous. It passes on every
   // tree because it exercises the hazard, not the fix: `emitFinding` cannot
