@@ -1,8 +1,17 @@
 # Contributing to HackMyAgent
 
-We welcome contributions to HackMyAgent. Here's how to get started.
+Contributions are welcome, including from outside the organization.
 
-## Development Setup
+For a small, well scoped change, open a pull request. For anything larger, a new check, a change
+to scoring or severity, a new command, [open an issue](https://github.com/opena2a-org/hackmyagent/issues/new)
+first and describe the case. A detection change is easier to review against a fixture that
+reproduces it than against a diff.
+
+If you do not have write access here you will work from a fork, and one of the required checks
+cannot pass on a pull request opened from a fork. Read
+[Pull requests from a fork](#pull-requests-from-a-fork) before you push.
+
+## Development setup
 
 ```bash
 # Clone the repo
@@ -19,7 +28,7 @@ npm run build
 npm test
 ```
 
-## Project Structure
+## Project structure
 
 ```
 src/
@@ -32,22 +41,75 @@ src/
   oasb/           # Open Agent Security Benchmark
 ```
 
-## Making Changes
+## Making changes
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Make your changes
-4. Run tests (`npm test`)
-5. Commit with a clear message
-6. Push and open a pull request
+With write access to this repository, branch here. Without it, work from a fork and read
+[Pull requests from a fork](#pull-requests-from-a-fork) before you push.
 
-## Code Style
+1. Branch from `main`: `git checkout -b fix/short-description`
+2. Make your changes
+3. Build and run the suite: `npm run build && npm test`
+4. Commit with a message that says what changed and why
+5. Open a pull request against `main`
+
+## Pull requests from a fork
+
+None of this is specific to your change. It is how this repository is configured, and it is
+cheaper to read now than to work out from a red check later.
+
+**The checks do not start on their own.** This repository requires a maintainer to approve
+workflow runs for contributors outside the organization. Until someone does, your pull request
+reports no checks at all, passing or failing.
+
+**One required check cannot pass from a fork, ever.** `Claude Code Review` calls a model API
+using a repository secret. GitHub does not pass repository secrets to a workflow triggered from
+a fork: "With the exception of `GITHUB_TOKEN`, secrets are not passed to the runner when a
+workflow is triggered from a forked repository"
+([GitHub documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets)).
+Without the key the review cannot run, and a review that did not run is recorded as
+inconclusive, which this repository treats as not passing rather than as an approval. So the
+check reports failure. That is a platform rule and a deliberate policy, not a judgement about
+your change.
+
+**No comment will appear explaining it.** The workflow posts its result as a pull request
+comment, and on a fork run its token is read only, so the post fails. The result is written to
+the check's own summary instead. Open `Claude Code Review` from the checks list and read the
+summary there.
+
+`Claude Code Review` is the only required check in that position. You can confirm that in your
+own clone:
+
+```bash
+grep -rn "secrets\." .github/workflows/
+```
+
+Every match is in `pr-review.yml`, the workflow behind `Claude Code Review`. The workflows behind
+the other required checks reference no secret. Those are the checks to read on your change. No
+pull request has been opened from a fork on this repository yet, so you would be the first.
+
+We do not merge past a failing required check. The route is:
+
+1. Open the pull request from your fork. Leave `Claude Code Review` alone.
+2. A maintainer reviews the change and replies on your pull request.
+3. When it is ready, a maintainer pushes your commits to a branch in this repository and opens a
+   pull request from there. The review runs on that one with the key available, and the change
+   merges through the same checks as anything else.
+4. We close your original as superseded and link to the pull request that merged it.
+
+Your commits keep you as their author. If a merge would collapse them, we add a
+`Co-authored-by:` trailer naming you.
+
+If that is more process than the change is worth, a typo, a dead link, a wrong path in the docs,
+[open an issue](https://github.com/opena2a-org/hackmyagent/issues/new) instead and we will carry
+it in.
+
+## Code style
 
 - TypeScript with strict mode
 - Tests for all new functionality
 - Clear, descriptive variable names
 
-## Adding Security Checks
+## Adding a security check
 
 New security checks go in `src/hardening/scanner.ts`. Each check needs:
 
@@ -58,11 +120,12 @@ New security checks go in `src/hardening/scanner.ts`. Each check needs:
 - Detection logic
 - Optional auto-fix logic
 
-Add corresponding tests in `scanner.test.ts`.
+Add corresponding tests in `__tests__/hardening/scanner.test.ts`.
 
-## Reporting Security Issues
+## Reporting a vulnerability
 
-For security vulnerabilities, please email info@opena2a.org instead of opening a public issue.
+Do not open a public issue for a suspected vulnerability. [SECURITY.md](SECURITY.md) has the
+reporting route, what to include, and the disclosure policy.
 
 ## License
 
