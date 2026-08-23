@@ -61,12 +61,23 @@ jobs:
           # lines (HTTP 406 "diff exceeded the maximum number of lines"), so
           # fall back to building the same diff locally — the checkout is
           # full-history and HEAD is the PR merge ref.
+          #
+          # WHICH PATH PRODUCED THE DIFF IS RECORDED, not left to be inferred
+          # from whatever `gh` happened to print to stderr. The fallback is a
+          # precondition of enforcing this check on a repository whose history
+          # contains pull requests over the API's limit, so "the fallback
+          # carried the step" has to be a claim the run log can settle, and one
+          # that survives `gh` rewording its own error message.
+          DIFF_SOURCE=api
           if ! gh pr diff "$PR_NUMBER" > /tmp/pr_diff.txt; then
+            DIFF_SOURCE=local-git
             git diff "origin/${BASE_REF}...HEAD" > /tmp/pr_diff.txt
           fi
           if ! gh pr diff "$PR_NUMBER" --name-only > /tmp/pr_changed_files.txt; then
+            DIFF_SOURCE="${DIFF_SOURCE},local-git-names"
             git diff --name-only "origin/${BASE_REF}...HEAD" > /tmp/pr_changed_files.txt
           fi
+          echo "diff source: $DIFF_SOURCE"
           gh pr view "$PR_NUMBER" --json title -q '.title' > /tmp/pr_title.txt
           gh pr view "$PR_NUMBER" --json body -q '.body' | head -c 2000 > /tmp/pr_body.txt
 
@@ -268,15 +279,386 @@ jobs:
             cat /tmp/pr_previous_review.txt >> /tmp/pr_user_msg.txt
           fi
 
+      - name: Partition oversized reviews
+        id: partition
+        # THE PARTITIONER IS HERE AND NOT IN THE SHARED ACTION, and that is a
+        # ruling rather than a convenience. What decides how a diff is cut is
+        # repo-shaped: file boundaries, which hunks travel with which full-file
+        # context, what the per-batch target is. What must never vary — the
+        # per-batch nonce, the per-batch token measurement, and an aggregation
+        # that cannot turn an incomplete review into a pass — belongs to the
+        # action, which is why none of it is repeated here.
+        #
+        # WHY THIS EXISTS AT ALL. A pull request on this repo can be genuinely
+        # larger than the model's context window, not merely larger than a
+        # badly chosen cap: #351's diff alone measured 259,622 input tokens
+        # against a 200,000-token window. The three ways out that were
+        # considered and rejected are raising the budget, exempting files by
+        # type, and routing such pull requests around the gate. Splitting on
+        # file boundaries is the only one that reviews every line without
+        # weakening what a green check means.
+        #
+        # This step deliberately contains no workflow expressions, so it can be
+        # executed verbatim outside Actions. `__tests__/gate/pr-review-partition.test.ts`
+        # does exactly that: it lifts this `run:` block out of this file and
+        # runs it against fixtures. That is why breaking the partitioner turns
+        # the required `test (ubuntu-latest)` and `test (macos-latest)` checks
+        # red, rather than being discovered on some future large pull request.
+        run: |
+          set -euo pipefail
+
+          BATCH_DIR=/tmp/pr_batches
+          WORK_DIR=/tmp/pr_partition
+          rm -rf "$BATCH_DIR" "$WORK_DIR"
+          mkdir -p "$BATCH_DIR" "$WORK_DIR"
+          TAB=$(printf '\t')
+
+          # ~420 KB per batch, composed. This is a BYTE heuristic and it does
+          # not pretend to be anything else: the caller has no token
+          # instrument, and inventing one here would put a second, weaker
+          # measurement next to the authoritative one. The authoritative
+          # measurement is the action's per-batch `count_tokens` against the
+          # same unraised `token-budget`, and a batch this heuristic mis-sizes
+          # fails closed there.
+          #
+          # THERE IS NO RE-SPLIT LOOP. Re-partitioning after a failed
+          # measurement is how a gate ends up sending until something passes,
+          # which is the shape of every fail-open defect this gate has had.
+          #
+          # Why 420000: the byte-per-token ratios measured on this repo's own
+          # oversized pull requests were 3.24, 2.85 and 2.99, so 420 KB lands
+          # near 130,000-147,000 tokens against the action's 180,000-token
+          # budget. The remaining margin is deliberate and absorbs a denser
+          # diff than any measured here without raising the budget.
+          TARGET_BYTES=420000
+
+          # The same cap single mode applies to full source context, applied
+          # per file rather than across the whole request. A file bigger than
+          # this still travels — its diff is never dropped — it is its
+          # line-numbered source that is cut, and the cut says so in the text
+          # the model reads.
+          MAX_FULL_SIZE=200000
+
+          refuse() {
+            # Leave nothing behind that a later reader could mistake for a
+            # partition that succeeded. `batch-dir` is emitted empty below and
+            # the review step is skipped either way, so this is insurance
+            # against the next refactor, not against this one.
+            rm -rf "$BATCH_DIR"
+            {
+              printf 'SUMMARY: This pull request was not reviewed, and no review request was sent.\n\n'
+              printf '%s\n\n' "$1"
+              printf 'Automated review is a required check on this repository, so this pull request cannot merge until a review completes. Split it into smaller pull requests — each one is reviewed on its own — rather than asking for this check to be waived. The review budget is not raised for large changes and no file is exempt from review by type or by name, because both of those are decided by whoever wrote the change.\n'
+            } > /tmp/pr_gate_refusal.txt
+            printf 'batch-dir=\n' >> "$GITHUB_OUTPUT"
+            printf 'refused=true\n' >> "$GITHUB_OUTPUT"
+            printf 'batches=0\n' >> "$GITHUB_OUTPUT"
+            echo "::error::$1"
+            # Exit 0 on purpose: the refusal is a REVIEW OUTCOME, not a step
+            # crash, and the difference decides which message a blocked author
+            # reads. `Run Claude review` is skipped, the verdict is therefore
+            # absent, and absent is INCONCLUSIVE, which does not pass.
+            exit 0
+          }
+
+          # THE DECISION IS MADE ON THE ARTIFACT THAT WOULD ACTUALLY BE SENT,
+          # system prompt included, because that is what `count_tokens` sees.
+          # Measuring the diff alone would under-count by the whole full-file
+          # context block, which on this repo is the larger half.
+          SYS_BYTES=$(wc -c < /tmp/system_prompt.txt | tr -d ' ')
+          SINGLE_BYTES=$(wc -c < /tmp/pr_user_msg.txt | tr -d ' ')
+          COMPOSED_BYTES=$((SYS_BYTES + SINGLE_BYTES))
+          echo "composed single request: $COMPOSED_BYTES bytes (system $SYS_BYTES + user $SINGLE_BYTES); batch target $TARGET_BYTES"
+
+          if [ "$COMPOSED_BYTES" -le "$TARGET_BYTES" ]; then
+            # The default, and the org default. Batch mode stays off, the
+            # action sends exactly one request, and every byte of its behaviour
+            # is what it was before batch mode existed.
+            printf 'batch-dir=\n' >> "$GITHUB_OUTPUT"
+            printf 'refused=false\n' >> "$GITHUB_OUTPUT"
+            printf 'batches=1\n' >> "$GITHUB_OUTPUT"
+            echo "This pull request fits in one request. Batch mode stays off."
+            exit 0
+          fi
+
+          echo "This pull request does not fit in one request. Partitioning on file boundaries."
+
+          # SPLIT ON FILE BOUNDARIES, WHOLE FILES ONLY. A file's hunks never
+          # straddle two batches: a reviewer shown half of a function's changes
+          # reports on code it was not given.
+          #
+          # The artifact being split is /tmp/pr_diff.txt — THE SAME ONE
+          # measured above and the same one that gets sent. When the 20,000-line
+          # HTTP 406 sent the gather step down the local `git diff` fallback,
+          # this partitions the fallback's output. There is no second diff
+          # fetched by some other route, which is the path-dependence this
+          # step is written to avoid.
+          #
+          # The splitter is line-based, so it can only be byte-exact on a diff
+          # whose last line is terminated. Git terminates every line it emits,
+          # including `\ No newline at end of file`, so this normalisation is
+          # not expected to fire — and it exists precisely because "not
+          # expected" is not "cannot". Refusing a 30,000-line pull request over
+          # one absent byte would be a false red on the exact class this whole
+          # mechanism was built to review. The normalised copy is what gets
+          # partitioned, what the conservation check compares against, and what
+          # is sent, so all three still see one artifact.
+          SRC="$WORK_DIR/source.diff"
+          cp /tmp/pr_diff.txt "$SRC"
+          if [ -s "$SRC" ] && [ "$(tail -c 1 "$SRC" | wc -l | tr -d ' ')" -eq 0 ]; then
+            printf '\n' >> "$SRC"
+            echo "::notice::The gathered diff did not end in a newline; one was added before splitting."
+          fi
+
+          # `---` and `+++` are read only BEFORE the first `@@` of a chunk.
+          # After that, `+++ b/x` is a line the pull request ADDED to some file
+          # — a diff of a diff renders exactly that way — and reading it as a
+          # header is how a partitioner starts taking direction from the
+          # payload it is supposed to be cutting up.
+          #
+          # The path comes from `+++ b/PATH`, then `rename to PATH`, then
+          # `--- a/PATH` for a deletion, and only then from the `diff --git`
+          # line. That order is deliberate: the first three carry ONE path
+          # each, so they are unambiguous even when the path contains a space,
+          # which git does not quote. The `diff --git` line carries two and is
+          # used last, and then only when it splits symmetrically into the SAME
+          # path twice — an exact test rather than a guess at where the
+          # boundary between them falls.
+          #
+          # The `@@` count travels with the chunk because a chunk with no hunks
+          # has no content to review: a 100%-similarity rename, a mode change,
+          # a binary file. Attaching source to those would add the whole file
+          # to a request in exchange for nothing, and for a binary it would add
+          # the whole file as line-numbered nonsense.
+          awk -v dir="$WORK_DIR" -v man="$WORK_DIR/manifest.tsv" '
+            function resolve(   L) {
+              if (plus != "-" && plus != "" && plus != "?") return plus
+              if (renamed != "") return renamed
+              if (plus == "" && minus != "-" && minus != "" && minus != "?") return minus
+              if (plus == "-" && minus == "-") {
+                L = (length(hdr) - 5) / 2
+                if (L > 0 && L == int(L) && substr(hdr, 1, 2) == "a/" &&
+                    substr(hdr, 3 + L, 3) == " b/" &&
+                    substr(hdr, 3, L) == substr(hdr, 6 + L, L)) return substr(hdr, 3, L)
+              }
+              return ""
+            }
+            function emit() { if (n > 0) printf "%06d\t%s\t%s\n", n, inhunk, resolve() >> man }
+            BEGIN { n = 0; cur = sprintf("%s/%06d.diff", dir, 0); opened = 0
+                    hdr = ""; plus = "-"; minus = "-"; renamed = ""; inhunk = 0 }
+            /^diff --git / {
+              emit()
+              if (opened) close(cur)
+              n++
+              cur = sprintf("%s/%06d.diff", dir, n); opened = 1
+              hdr = substr($0, 12); plus = "-"; minus = "-"; renamed = ""; inhunk = 0
+            }
+            { print > cur; opened = 1 }
+            n > 0 && inhunk == 0 && /^@@ / { inhunk = 1 }
+            n > 0 && inhunk == 0 && /^rename to / {
+              if (substr($0, 11, 1) != "\"") renamed = substr($0, 11)
+            }
+            n > 0 && inhunk == 0 && /^--- / {
+              if ($0 == "--- /dev/null") minus = ""
+              else if (substr($0, 5, 2) == "a/") minus = substr($0, 7)
+              else minus = "?"
+            }
+            n > 0 && inhunk == 0 && /^\+\+\+ / {
+              if ($0 == "+++ /dev/null") plus = ""
+              else if (substr($0, 5, 2) == "b/") plus = substr($0, 7)
+              else plus = "?"
+            }
+            END { emit() }
+          ' "$SRC"
+
+          MAN="$WORK_DIR/manifest.tsv"
+          [ -s "$MAN" ] || refuse "The diff carries no file headers, so it could not be split on file boundaries."
+
+          # Anything before the first `diff --git` belongs to the first batch.
+          # It is not expected to exist, and it is carried rather than dropped
+          # precisely because it is not expected: the conservation check below
+          # is what proves the carry, not this comment.
+          PREAMBLE="$WORK_DIR/000000.diff"
+
+          # Full source context, one file per change, subject to the same
+          # exclusions single mode applies. The exclusions govern CONTEXT only.
+          # A diff is never withheld from review by file type — that predicate
+          # is written by whoever opened the pull request.
+          while IFS="$TAB" read -r IDX HUNKS FPATH; do
+            CTXF="$WORK_DIR/$IDX.ctx"
+            : > "$CTXF"
+            [ -n "$FPATH" ] || continue
+            [ "$HUNKS" = "1" ] || continue
+            case "$FPATH" in
+              *.test.* | *.spec.* | package-lock.json | *.lock) continue ;;
+            esac
+            [ -f "$FPATH" ] || continue
+            nl -ba < "$FPATH" > "$CTXF.raw"
+            printf '\n=== %s ===\n' "$FPATH" > "$CTXF"
+            if [ "$(wc -c < "$CTXF.raw" | tr -d ' ')" -gt "$MAX_FULL_SIZE" ]; then
+              # Truncate the SOURCE, and say so where the model reads it. A
+              # silent cut would leave the verification mandate ("search the
+              # full source for a mitigation") running against a file it was
+              # only shown part of, with nothing to say so.
+              head -c "$MAX_FULL_SIZE" < "$CTXF.raw" >> "$CTXF"
+              printf '\n[FULL SOURCE TRUNCATED at %s bytes — the rest of this file is not shown, so absence of a mitigation below this point is not evidence]\n' "$MAX_FULL_SIZE" >> "$CTXF"
+            else
+              cat "$CTXF.raw" >> "$CTXF"
+            fi
+            rm -f "$CTXF.raw"
+          done < "$MAN"
+
+          # Per-batch overhead, measured rather than estimated, by building the
+          # scaffold every batch shares and weighing it. `9 of 9` stands in for
+          # the batch numbers: the ceiling is 8, so no real pair is longer.
+          PR_TITLE=$(cat /tmp/pr_title.txt)
+          {
+            printf 'PR #%s: %s\n\nDescription:\n' "$PR_NUMBER" "$PR_TITLE"
+            cat /tmp/pr_body.txt
+          } > "$WORK_DIR/head_pre.txt"
+
+          : > "$WORK_DIR/tail.txt"
+          if [ -s /tmp/pr_previous_review.txt ] && [ "$(wc -c < /tmp/pr_previous_review.txt | tr -d ' ')" -gt 10 ]; then
+            printf '\n\nPREVIOUS REVIEW (check if issues were fixed — do not re-raise mitigated findings):\n' > "$WORK_DIR/tail.txt"
+            cat /tmp/pr_previous_review.txt >> "$WORK_DIR/tail.txt"
+          fi
+
+          # THE SCOPE NOTE. It states a fact the model cannot otherwise know
+          # and would otherwise guess at, and it stops there. It does not tell
+          # the model to approve anything, to lower its bar, or to treat
+          # missing context as benign, because a partitioner that can talk the
+          # reviewer into a pass is worse than no partitioner. The one
+          # suppression it carries is narrow and true: a call into code that
+          # was not included is not by itself a defect.
+          scope_note() {
+            printf 'SCOPE OF THIS REQUEST: this pull request was too large to review in one request, so it was split on file boundaries. This is request %s of %s. It carries the COMPLETE changes to the files listed below, together with their source. The other changed files are being reviewed in the other requests and are not shown here. Review the files in this request. A reference to code outside this request is not by itself a finding; a defect in the code that IS here is a finding whether or not the rest of the pull request is visible.\n' "$1" "$2"
+          }
+
+          {
+            cat "$WORK_DIR/head_pre.txt"
+            printf '\n\n'
+            scope_note 9 9
+            printf '\nChanged files (this batch):\n'
+            printf '\n\nFULL SOURCE FILES (line-numbered — use for verifying mitigations):\n'
+            printf '\n\nDIFF (changes introduced in this PR):\n'
+            cat "$WORK_DIR/tail.txt"
+          } > "$WORK_DIR/scaffold.txt"
+          SCAFFOLD_BYTES=$(wc -c < "$WORK_DIR/scaffold.txt" | tr -d ' ')
+
+          # 256 bytes for the one-line notice a batch carries when it holds a
+          # change whose path could not be read from the diff header.
+          OVERHEAD=$((SYS_BYTES + SCAFFOLD_BYTES + 256))
+          BUDGET=$((TARGET_BYTES - OVERHEAD))
+          [ "$BUDGET" -gt 0 ] || refuse "The pull request title, description and system prompt alone fill a review request, leaving no room for the diff."
+
+          # PACK. Greedy, in diff order, whole units only.
+          PLAN="$WORK_DIR/plan.tsv"
+          : > "$PLAN"
+          NBATCH=0
+          USED=0
+          while IFS="$TAB" read -r IDX HUNKS FPATH; do
+            D=$(wc -c < "$WORK_DIR/$IDX.diff" | tr -d ' ')
+            C=$(wc -c < "$WORK_DIR/$IDX.ctx" | tr -d ' ')
+            L=0
+            [ -z "$FPATH" ] || L=$((${#FPATH} + 1))
+            UNIT=$((D + C + L))
+            if [ "$UNIT" -gt "$BUDGET" ]; then
+              WHAT="\`$FPATH\`"
+              [ -n "$FPATH" ] || WHAT="one file"
+              # NO FILE-TYPE CARVE-OUT. Exempting generated files, lock files
+              # or vendored trees would make the gate's coverage a function of
+              # what the author called the file.
+              refuse "$WHAT alone needs $UNIT bytes of diff and source, against a $BUDGET-byte budget for one review request. Batches are cut on file boundaries, so this cannot be split any further, and this gate does not exempt a file from review because of its type, its name or its size."
+            fi
+            if [ "$NBATCH" -eq 0 ] || [ $((USED + UNIT)) -gt "$BUDGET" ]; then
+              NBATCH=$((NBATCH + 1))
+              USED=0
+            fi
+            USED=$((USED + UNIT))
+            printf '%s\t%s\t%s\n' "$IDX" "$NBATCH" "$FPATH" >> "$PLAN"
+          done < "$MAN"
+
+          # COMPOSE. Each batch file IS a user message: in batch mode the
+          # action does not read `user-message-file` at all.
+          B=1
+          while [ "$B" -le "$NBATCH" ]; do
+            BN=$(printf '%03d' "$B")
+            LIST="$WORK_DIR/$BN.list"; : > "$LIST"
+            CTX="$WORK_DIR/$BN.ctx";  : > "$CTX"
+            DIFF="$WORK_DIR/$BN.diff"; : > "$DIFF"
+            if [ "$B" -eq 1 ] && [ -f "$PREAMBLE" ]; then
+              cat "$PREAMBLE" >> "$DIFF"
+            fi
+            UNNAMED=0
+            while IFS="$TAB" read -r IDX ASSIGN FPATH; do
+              [ "$ASSIGN" = "$B" ] || continue
+              cat "$WORK_DIR/$IDX.diff" >> "$DIFF"
+              cat "$WORK_DIR/$IDX.ctx" >> "$CTX"
+              if [ -n "$FPATH" ]; then
+                printf '%s\n' "$FPATH" >> "$LIST"
+              else
+                UNNAMED=$((UNNAMED + 1))
+              fi
+            done < "$PLAN"
+            if [ "$UNNAMED" -gt 0 ]; then
+              # Named, because an unexplained gap between the file list and the
+              # diff below reads as a diff that was tampered with. A path this
+              # gate cannot read is a limitation of the gate, and the change is
+              # still reviewed — only its source context is missing.
+              printf '(and %s change(s) whose path could not be read from the diff header — their diffs are included below, without source context)\n' "$UNNAMED" >> "$LIST"
+            fi
+            {
+              cat "$WORK_DIR/head_pre.txt"
+              printf '\n\n'
+              scope_note "$B" "$NBATCH"
+              printf '\nChanged files (this batch):\n'
+              cat "$LIST"
+              printf '\n\nFULL SOURCE FILES (line-numbered — use for verifying mitigations):\n'
+              cat "$CTX"
+              printf '\n\nDIFF (changes introduced in this PR):\n'
+              cat "$DIFF"
+              cat "$WORK_DIR/tail.txt"
+            } > "$BATCH_DIR/$BN.txt"
+            echo "batch $B/$NBATCH: $(wc -c < "$BATCH_DIR/$BN.txt" | tr -d ' ') bytes"
+            B=$((B + 1))
+          done
+
+          # BYTE CONSERVATION, CHECKED RATHER THAN ASSUMED. The property that
+          # makes a chunked review mean anything is that every byte of the diff
+          # is reviewed exactly once. Counting batches cannot prove it: a
+          # dropped chunk leaves the count and the loop agreeing with each
+          # other and disagreeing with the pull request. So the batches are
+          # taken apart again and compared to the diff they came from.
+          : > "$WORK_DIR/rejoined.diff"
+          B=1
+          while [ "$B" -le "$NBATCH" ]; do
+            cat "$WORK_DIR/$(printf '%03d' "$B").diff" >> "$WORK_DIR/rejoined.diff"
+            B=$((B + 1))
+          done
+          cmp -s "$WORK_DIR/rejoined.diff" "$SRC" \
+            || refuse "The diff could not be split into batches without altering it, so no review request was sent. This is a defect in the gate, not in the pull request."
+
+          printf 'batch-dir=%s\n' "$BATCH_DIR" >> "$GITHUB_OUTPUT"
+          printf 'refused=false\n' >> "$GITHUB_OUTPUT"
+          printf 'batches=%s\n' "$NBATCH" >> "$GITHUB_OUTPUT"
+          echo "Partitioned into $NBATCH batches; every byte of the diff accounted for."
+
       - name: Run Claude review
         id: review
+        # `success() &&` is load-bearing and not decoration. An `if:` REPLACES
+        # the implicit success() check, so `if: steps.partition.outputs.refused
+        # != 'true'` on its own would run this step after the partition step
+        # CRASHED — sending a single request built from whatever files survived
+        # the crash. Skipped here means no verdict, and no verdict is
+        # INCONCLUSIVE.
+        if: success() && steps.partition.outputs.refused != 'true'
         # The model call is shared across the org. It held three defects at
         # once — an anthropic-version the API rejected, an extraction that read
         # only the first content block, and a byte cap standing in for a token
         # budget — and copy-paste is how one defect became nine. Pinned to a
         # SHA, never @main: @main would move every consuming repo, and this
         # check is REQUIRED on this repo's main, the instant that file changed.
-        uses: opena2a-org/.github/actions/claude-review@025b1897886f261c12ccc79da3f75d345842c897
+        uses: opena2a-org/.github/actions/claude-review@dcb77137b11cb33c11e76cf6435b7676bd568d01
         with:
           # A composite action cannot read `secrets`, so the caller passes it
           # in. A step `env:` is the boundary GitHub actually enforces: this
@@ -293,6 +675,17 @@ jobs:
           thinking-budget: "10000"
           max-tokens: "16000"
           fallback-max-tokens: "8192"
+          # EMPTY unless the previous step decided this pull request does not
+          # fit in one request, and empty is the org default. With it empty the
+          # action sends exactly one request and behaves as it did before batch
+          # mode existed; `user-message-file` above is what it reads. When it is
+          # set, the batch files ARE the user messages and the input above is
+          # not read at all.
+          #
+          # `max-batches` is deliberately NOT passed: the action's default of 8
+          # is the ceiling the ruling fixed, and the ceiling that bounds this
+          # gate's worst-case cost is not a per-repo dial.
+          batch-dir: ${{ steps.partition.outputs.batch-dir }}
 
       - name: Post review
         # Posting is best effort and must never decide the outcome. A run that
@@ -309,6 +702,7 @@ jobs:
           REVIEW_FILE: ${{ steps.review.outputs.review-file }}
           REVIEW_PATH: ${{ steps.review.outputs.review-path }}
           INPUT_TOKENS: ${{ steps.review.outputs.input-tokens }}
+          BATCHES: ${{ steps.partition.outputs.batches }}
         run: |
           # An absent verdict means the review step never reached a decision —
           # including the case where the action itself failed to run at all.
@@ -324,8 +718,18 @@ jobs:
           # Guard: if the review body is missing, say so. Do not manufacture
           # one that reads as an approval.
           if [ -z "$REVIEW_FILE" ] || [ ! -f "$REVIEW_FILE" ]; then
-            REVIEW_FILE=/tmp/pr_review_body_missing.txt
-            printf 'SUMMARY: Automated review could not be completed and produced no review body. A human review is required.\n' > "$REVIEW_FILE"
+            if [ -s /tmp/pr_gate_refusal.txt ]; then
+              # The partition step refused before any request went out, and it
+              # wrote down WHY and what to do about it. That text is the whole
+              # value of the refusal to the person now blocked, so it is the
+              # body — not the generic "could not be completed", which would
+              # send them looking through a run log for a policy they could
+              # have read here.
+              REVIEW_FILE=/tmp/pr_gate_refusal.txt
+            else
+              REVIEW_FILE=/tmp/pr_review_body_missing.txt
+              printf 'SUMMARY: Automated review could not be completed and produced no review body. A human review is required.\n' > "$REVIEW_FILE"
+            fi
           elif [ ! -s "$REVIEW_FILE" ]; then
             # A reply consisting of nothing but the nonce-bound marker line
             # leaves a ZERO-BYTE body once the marker is stripped, under a
@@ -364,6 +768,25 @@ jobs:
               ;;
           esac
 
+          # How many requests carried this review. Emitted only alongside the
+          # "Reviewed N files" sentence, and for the same reason: it is a claim
+          # about work that happened. `BATCHES` is the partitioner's count, so
+          # it says how the review was CUT — the action's aggregate verdict
+          # already says whether all of the pieces came back, and a batch count
+          # printed next to a verdict that did not complete would read as if
+          # they had.
+          # `0` is the partitioner's REFUSED value and must never render a
+          # sentence, because "reviewed in 0 batches" claims a review that did
+          # not happen. It is unreachable today — the refusal path leaves
+          # `review-path` empty, which takes the other footer branch below —
+          # and it is enumerated here so that it stays unreachable if that
+          # branch is ever restructured.
+          BATCH_NOTE=""
+          case "${BATCHES:-1}" in
+            ''|0|1) ;;
+            *) BATCH_NOTE=" The change did not fit in one request and was reviewed in ${BATCHES} batches, split on file boundaries." ;;
+          esac
+
           # The "Reviewed N files" sentence is a factual claim about work that
           # happened, so it is emitted ONLY when a request produced a review. On
           # `none` and on empty the machine verdict is correctly INCONCLUSIVE,
@@ -371,7 +794,7 @@ jobs:
           # a human reads failing OPEN.
           case "$REVIEW_PATH" in
             primary|fallback)
-              FOOTER="*Reviewed ${FILE_COUNT} files changed (${DIFF_SIZE} bytes, ${INPUT_TOKENS:-unmeasured} input tokens) — ${PATH_NOTE}*"
+              FOOTER="*Reviewed ${FILE_COUNT} files changed (${DIFF_SIZE} bytes, ${INPUT_TOKENS:-unmeasured} input tokens) — ${PATH_NOTE}${BATCH_NOTE}*"
               ;;
             *)
               FOOTER="*No review was produced. The change measured ${FILE_COUNT} files (${DIFF_SIZE} bytes) — ${PATH_NOTE}*"
