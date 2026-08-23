@@ -4,6 +4,66 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The verdict line now says when the analyst dissents
+
+`secure --nanomind` could route a file to a named attack class at high severity and still
+print a verdict saying the tree was fine. The escalation is advisory and non-scoring by
+design ([CDS-024]: the analyst carries a measured ~22% false-positive rate on dual-use
+security code, so it does not auto-apply), and it renders in the NanoMind Coverage
+Escalations footer — well below the verdict line, which is what a reader anchors on.
+
+Measured on `8c767f6`, a skill whose prose instructs the agent to read the local cloud
+credential profile and POST it to a remote endpoint, with a complete `.gitignore` so the
+deterministic suite has nothing to say:
+
+| | before | after |
+|---|---|---|
+| Security | `100/100` | `100/100` |
+| exit code | `0` | `0` |
+| Verdict | `No security issues detected. This library looks safe to use.` | `… looks safe to use. (analyst dissents on 1 file — see NanoMind Coverage Escalations)` |
+| footer | `REVIEW .claude/skills/helper/SKILL.md prompt_injection (critical)` | unchanged |
+
+The advisory contract is untouched where it counts: the score, the exit code and the finding
+list are identical. The line does come off the green — a verdict already carrying `good`
+tone drops to `warning`, for the reason the two disclosure branches beside it give in their
+own words, that "green here is what made the pre-fix output read as an all-clear". Colour is
+read faster than the sentence, and a bold-green line announcing a named attack class at high
+severity would have left half this defect open. The downgrade is one-way and only from
+`good`: a fail-direction verdict keeps its tone, so the advisory channel can withdraw an
+all-clear it disagrees with but can never soften a failing verdict into something calmer.
+Only `attack`-routed escalations reach it —
+`abstain` is the model hedging on benign-but-security-shaped content, is hidden from the
+footer by default for that reason, and would spend the line's credibility on parser noise.
+With no attack-routed escalation the suffix is empty and the line is byte-identical.
+
+The clause is appended as the **last** mutation of the rendered verdict value, which is the
+whole of the fix rather than an implementation detail. Two disclosure branches assign that
+value outright instead of appending to it — the coverage-gap disclosure and the #200
+quick-scan disclosure — and both are gated on `totalFindings === 0`. Escalations are never
+counted into findings, so that gate is exactly the scan where a dissent is the only adverse
+signal in the output. The coverage-gap branch is the one that bites: it fires on
+hackmyagent's own self-scan. (The quick-scan branch is defensive — its only call site passes
+no escalations today.) Composed onto `buildVerdict`'s message, the clause was silently
+deleted in the one case it exists for; measured with the gate forced on, the verdict read
+`No issues in what was examined — but …` with the dissent nowhere on the line and the footer
+still showing it. The live path is confirmed directly: under `--scan-depth quick` the
+coverage-gap branch assigns the verdict value and the clause still survives.
+
+That ordering carries **no automated guard**, and the honest reason is worth recording. Three
+successive source-grep guards were written for it and all three were defeated — by an alias,
+by bracket access with a template key, by `Object.defineProperty`, and finally by
+`const sink = verdictDisplay!;`, the non-null idiom the same function already uses. Each
+defeat left the suite green while the clause was erased at runtime, and each repair added a
+coverage claim that was itself false. A guard indistinguishable from its absence is not a
+guard, and one advertising class coverage it lacks is worse than none, so it was deleted
+rather than extended a fourth time. The invariant is held by the comment at the append site
+and by nothing else. The behavioural test that would close it needs no analyst daemon — the
+render can be driven by swapping the orchestrator export in `require.cache` — and is tracked
+in #560.
+
+`buildVerdict` is exported from `@opena2a/cli-ui` (pinned `0.5.2`), so the clause is composed
+in `hackmyagent` rather than in the renderer — no cross-package release.
+
 ### The ARP re-export now delivers opt-in telemetry
 
 `hackmyagent/arp` is a thin re-export of `@opena2a/aim-sdk/arp` (#249), so the pin in

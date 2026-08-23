@@ -57,6 +57,7 @@ import {
 } from './index';
 import { resolveAndLogMcpShorthand } from './resolve-mcp';
 import { suppressedCategoryLabels, unresolvedCategoryNames } from './ui/unresolved-categories';
+import { analystDissentSuffix, dissentingFiles } from './ui/analyst-dissent';
 import { WildScanner, type WildScanReport } from './wild';
 import { buildCheckOutput, buildNotFoundOutput, mapScanStatusForMeter, translateDownloadError } from '@opena2a/check-core';
 import {
@@ -1979,6 +1980,9 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         line: f.line,
       })),
     );
+    // NOTE: the analyst-dissent clause is NOT composed onto this object. It is
+    // appended to the rendered `verdictDisplay.value` below, after the two
+    // branches that assign that value outright. See `analystDissentSuffix`.
 
     // Artifact-intent honesty pass (#252). The classifier over-flags benign
     // and OOD input at max confidence, so its raw label is only printed when
@@ -2327,6 +2331,43 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           console.log(`  ${colors.dim}${contIndent}${disclosure}${RESET()}`);
         }
       }
+    }
+
+    // The verdict line says when the analyst dissents — otherwise it could
+    // assert a clean result while the tool held a named attack class at high
+    // severity, mentioned only in the footer far below. Rationale and the
+    // attack-only rule: `ui/analyst-dissent.ts`.
+    //
+    // LAST mutation of `verdictDisplay.value`, deliberately. The two
+    // disclosure branches above ASSIGN this value rather than appending to it,
+    // and both are gated on `totalFindings === 0` — exactly when a dissent is
+    // the only adverse signal in the output. Composed any earlier, the clause
+    // is silently deleted in the one case it exists for. Anything added below
+    // that rewrites this value has to append, not assign.
+    //
+    // The coverage-gap branch is the live one: it fires on hackmyagent's own
+    // self-scan. The #200 quick-scan branch is defensive — its only call site
+    // passes no escalations today, so it cannot co-occur with a dissent yet.
+    //
+    // Neither score nor exit code reads this object, so neither can move.
+    // Empty when there is no attack-routed escalation, so the line — tone
+    // included — stays byte-identical.
+    const dissentSuffix = analystDissentSuffix(opts.analystEscalations);
+    verdictDisplay.value += dissentSuffix;
+    // ...and it comes off the green, for the reason the two branches above
+    // already give in their own words: "green here is what made the pre-fix
+    // output read as an all-clear". Painting a disclosure of a named attack
+    // class at HIGH/CRITICAL in bold green would leave half this defect open —
+    // the module opens by saying `98/100` is what a user reads as safe, and
+    // colour is read faster than the sentence.
+    //
+    // Only DOWNGRADES, and only from `good`. A verdict already `critical` or
+    // `warning` keeps its tone: the advisory channel is allowed to withdraw an
+    // all-clear it disagrees with, never to soften a fail-direction verdict
+    // into something calmer. That asymmetry is the whole of what makes this
+    // not a repaint.
+    if (dissentSuffix !== '' && verdictDisplay.tone === 'good') {
+      verdictDisplay.tone = 'warning';
     }
 
     for (const line of [categoriesLine, verdictDisplay]) {
@@ -2745,7 +2786,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   const hiddenAbstains = allEscalations.length - escalations.length;
   if (allEscalations.length > 0) {
     divider('NanoMind Coverage Escalations');
-    const flaggedCount = allEscalations.filter(e => e.routed === 'attack').length;
+    // Counted through `dissentingFiles`, the same function the verdict clause
+    // counts through, so the headline and that clause cannot report different
+    // numbers for one scan. This line said "flagged N files" off an ENTRY
+    // count; the clause says "dissents on N file". Two escalations on one path
+    // printed "1 file" beside "flagged 2 files" — a contradiction the reader
+    // has no way to resolve. Byte-identical while the producer stays
+    // one-per-candidate; correct if it ever stops being.
+    const flaggedCount = dissentingFiles(allEscalations).length;
     const headline = flaggedCount > 0
       ? `Advisory — the AI analyst flagged ${flaggedCount} file${flaggedCount === 1 ? '' : 's'} the deterministic checks did not.`
       : `Advisory — the AI analyst was uncertain about ${allEscalations.length} file${allEscalations.length === 1 ? '' : 's'} the deterministic checks did not flag.`;
