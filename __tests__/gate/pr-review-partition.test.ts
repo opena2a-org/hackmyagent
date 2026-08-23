@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -207,6 +207,24 @@ function runPartition(fx: Fixture, mutate?: (s: string) => string): RunResult {
 // ---------------------------------------------------------------- fixtures
 
 const PAD = 'x'.repeat(60);
+
+/**
+ * Files this suite writes OUTSIDE its own temp trees, so it can prove the
+ * out-of-tree guard has something real to refuse. Tracked and removed: a suite
+ * that litters the filesystem is a defect in the suite.
+ */
+const outsideFiles: string[] = [];
+
+function makeOutsideFile(tag: string): string {
+  const p = path.join(os.tmpdir(), `hma-outside-${tag}-${process.pid}.ts`);
+  fs.writeFileSync(p, 'OUT OF TREE SOURCE MARKER\n');
+  outsideFiles.push(p);
+  return p;
+}
+
+afterAll(() => {
+  for (const p of outsideFiles) fs.rmSync(p, { force: true });
+});
 
 /** A unified diff chunk that adds `lines` lines to `p`. */
 function chunk(p: string, lines: number): string {
@@ -598,6 +616,27 @@ describe('PR review gate: what it refuses, and what it refuses to exempt', () =>
     expect(r.batches.map(diffSection).join('')).toBe(fx.diff);
   });
 
+  it('reads no source for a path that points outside the checkout', () => {
+    // The path is parsed out of the diff and the next thing done with it is a
+    // file read whose contents go into a model request. Git will not track a
+    // `..` path, so this is defence in depth rather than a live hole — which
+    // is exactly why it needs a row: an unreachable guard with no test is
+    // indistinguishable from a guard that was never written.
+    // The target really exists, so the row fails if the guard is removed
+    // rather than passing because there was nothing to read.
+    const outside = makeOutsideFile('row');
+    {
+      const fx = manyFiles(6, 1200);
+      fx.diff +=
+        `diff --git a/${outside} b/${outside}\nindex 1111111..2222222 100644\n` +
+        `--- a/${outside}\n+++ b/${outside}\n@@ -0,0 +1,1 @@\n+q\n`;
+      const r = runPartition(fx);
+      expect(r.batches.join('')).not.toContain('OUT OF TREE SOURCE MARKER');
+      // The change itself still travels; only its source is withheld.
+      expect(r.batches.map(diffSection).join('')).toBe(fx.diff);
+    }
+  });
+
   it('excludes source by BASENAME, so a directory name cannot suppress it', () => {
     // A shell `case` glob crosses `/`, so `*.test.*` against a full path also
     // matched every file under a directory an author named
@@ -903,6 +942,22 @@ describe('PR review gate: the rows above can fail', () => {
       },
     },
     {
+      name: 'the out-of-tree path guard is removed',
+      mutate: (s) =>
+        s.replace(
+          '  case "$FPATH" in\n' +
+            '    /* | ../* | */../* | */.. | ..)\n' +
+            '      echo "::warning::Refusing to read source for an out-of-tree path."\n' +
+            '      continue\n' +
+            '      ;;\n' +
+            '  esac\n',
+          '',
+        ),
+      check: (r) => {
+        expect(r.batches.join('')).toContain('OUT OF TREE SOURCE MARKER');
+      },
+    },
+    {
       name: 'the packer cuts on hunk boundaries instead of file boundaries',
       mutate: (s) =>
         s.replace(
@@ -957,6 +1012,16 @@ describe('PR review gate: the rows above can fail', () => {
       return fx;
     },
     'conservation breaks and the guard no longer refuses': () => manyFiles(12, 1200),
+    'the out-of-tree path guard is removed': () => {
+      // Written next to the temp trees the runner makes, so the read has a
+      // real target and the mutant can actually leak something.
+      const outside = makeOutsideFile('mut');
+      const fx = manyFiles(6, 1200);
+      fx.diff +=
+        `diff --git a/${outside} b/${outside}\nindex 1111111..2222222 100644\n` +
+        `--- a/${outside}\n+++ b/${outside}\n@@ -0,0 +1,1 @@\n+q\n`;
+      return fx;
+    },
     'the packer cuts on hunk boundaries instead of file boundaries': () =>
       unevenMultiHunkFixture(14),
   };

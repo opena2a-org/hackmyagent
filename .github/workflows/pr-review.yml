@@ -491,6 +491,20 @@ jobs:
             CTXF="$WORK_DIR/$IDX.ctx"
             : > "$CTXF"
             [ -n "$FPATH" ] || continue
+            # STAY INSIDE THE CHECKOUT. This path is parsed out of the diff
+            # text, and the next thing that happens to it is a file read whose
+            # contents go into a model request. Git will not track a path with
+            # a `..` component or a leading `/`, and the `inhunk == 0` guard
+            # keeps this parse on git's own header lines, so there is no route
+            # to this today. It is two lines, it removes the whole class
+            # rather than the instance, and "git would never emit that" is the
+            # kind of reasoning this gate exists to distrust.
+            case "$FPATH" in
+              /* | ../* | */../* | */.. | ..)
+                echo "::warning::Refusing to read source for an out-of-tree path."
+                continue
+                ;;
+            esac
             # MATCH ON THE BASENAME. A shell `case` glob crosses `/`, so
             # `*.test.*` against a full path also matches every file under a
             # directory called `util.test.helpers` — a name chosen by whoever
