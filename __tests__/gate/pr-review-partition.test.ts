@@ -118,6 +118,8 @@ interface Fixture {
   systemPrompt?: string;
   /** Extra environment for the step, e.g. pinning a locale. */
   env?: Record<string, string>;
+  /** [linkPath, target] pairs created in the tree before the step runs. */
+  symlinks?: Array<[string, string]>;
 }
 
 /**
@@ -154,6 +156,12 @@ function runPartition(fx: Fixture, mutate?: (s: string) => string): RunResult {
       const fp = path.join(dir, p);
       fs.mkdirSync(path.dirname(fp), { recursive: true });
       fs.writeFileSync(fp, c);
+    }
+
+    for (const [link, target] of fx.symlinks ?? []) {
+      const lp = path.join(dir, link);
+      fs.mkdirSync(path.dirname(lp), { recursive: true });
+      fs.symlinkSync(target, lp);
     }
 
     const title = fx.title ?? 'A large change';
@@ -392,7 +400,11 @@ function fileList(batch: string): string[] {
   const mark = '\nChanged files (this batch):\n';
   const i = batch.indexOf(mark);
   const rest = batch.slice(i + mark.length);
-  return rest.slice(0, rest.indexOf('\n\n')).split('\n').filter(Boolean);
+  return rest
+    .slice(0, rest.indexOf('\n\n'))
+    .split('\n')
+    .filter(Boolean)
+    .filter((l) => !l.startsWith('('));
 }
 
 // ---------------------------------------------------------------- the rows
@@ -525,9 +537,17 @@ describe('PR review gate: batch mode cuts on file boundaries', () => {
     const r = runPartition(manyFiles(12, 1200));
     r.batches.forEach((b) => {
       const section = diffSection(b);
-      const headers = chunkSpans(section).map((s) => s.header);
-      const listed = fileList(b).map((p) => `diff --git a/${p} b/${p}`);
-      expect(headers.sort()).toEqual(listed.sort());
+      // Sets, not lists: a typechange is two chunks for one path, and the
+      // list deliberately names it once.
+      const headers = [...new Set(chunkSpans(section).map((s) => s.header))].sort();
+      const listed = [
+        ...new Set(
+          fileList(b)
+            .filter((p) => !p.startsWith('('))
+            .map((p) => `diff --git a/${p} b/${p}`),
+        ),
+      ].sort();
+      expect(headers).toEqual(listed);
     });
   });
 
@@ -774,13 +794,12 @@ describe('PR review gate: diff shapes that are not plain edits', () => {
     expect(r.batches.join('')).not.toContain('=== gone.ts ===');
   });
 
-  it('attaches source for a chunk with NO hunks, and says the diff withheld it', () => {
-    // git emits `Binary files ... differ` and no hunks for any file with a
-    // NUL in its first 8 KB, and a `.ts` file with a NUL in a comment still
-    // compiles and runs. Binariness is therefore a predicate the author
-    // writes. Withholding the source too would leave the model with a
-    // one-line "Binary files differ" as the whole account of a changed file,
-    // while the footer told the human it had been reviewed.
+  it('names a chunk with NO hunks, attaches no source, and says the contents are not shown', () => {
+    // A chunk with no `@@` is a rename, a mode change, or a file git treats
+    // as binary. Reading the working-tree file for those follows symlinks,
+    // spends the batch budget on bytes already on main, and ships raw NUL
+    // bytes — all measured. So the file is NAMED and the withholding is
+    // stated, and the source is not attached.
     const fx = manyFiles(6, 1200);
     fx.diff +=
       'diff --git a/src/evil.ts b/src/evil.ts\nindex 888d4b1..f0493bf 100644\n' +
@@ -789,18 +808,55 @@ describe('PR review gate: diff shapes that are not plain edits', () => {
     const r = runPartition(fx);
     const all = r.batches.join('');
     expect(r.batches.flatMap(fileList)).toContain('src/evil.ts');
-    expect(all).toContain('BINARY SOURCE MARKER');
-    expect(all).toContain('the diff does NOT show what changed in it');
+    expect(all).not.toContain('BINARY SOURCE MARKER');
+    expect(all).toContain('WITHOUT the diff showing what changed in them');
+    expect(all).toContain('absence of a diff is not evidence');
   });
 
-  it('names a pure rename and attaches its source, matching single mode', () => {
+  it('does not read a renamed symlink’s target', () => {
+    // `[ -f ]` follows symlinks, so reading the working-tree file for a
+    // hunkless chunk would send the TARGET's contents into a request whose
+    // reply is posted publicly — and a pure rename's diff shows only
+    // `rename from/to`, so a human reading the diff would not see it either.
+    const target = makeOutsideFile('symtarget');
+    const fx = manyFiles(6, 1200);
+    fx.diff +=
+      'diff --git a/src/vendored.ts b/src/renamed.ts\nsimilarity index 100%\n' +
+      'rename from src/vendored.ts\nrename to src/renamed.ts\n';
+    fx.symlinks = [['src/renamed.ts', target]];
+    const r = runPartition(fx);
+    expect(r.batches.join('')).not.toContain('OUT OF TREE SOURCE MARKER');
+  });
+
+  it('does not turn a rename-heavy pull request into more batches than the ceiling', () => {
+    // Attaching source to 100%-similarity renames spent the budget on bytes
+    // already on main: measured, 40 renames took 2 batches to 15, past the
+    // 8-batch ceiling, which refuses the pull request outright.
+    let diff = '';
+    const tree: Array<[string, string]> = [];
+    for (let i = 0; i < 6; i++) {
+      diff += chunk(`src/f${i}.ts`, 1200);
+      tree.push([`src/f${i}.ts`, 'const x = 1;\n'.repeat(300)]);
+    }
+    for (let i = 0; i < 40; i++) {
+      diff +=
+        `diff --git a/src/old${i}.ts b/src/new${i}.ts\nsimilarity index 100%\n` +
+        `rename from src/old${i}.ts\nrename to src/new${i}.ts\n`;
+      tree.push([`src/new${i}.ts`, 'const moved = 1;\n'.repeat(3000)]);
+    }
+    const r = runPartition({ diff, tree });
+    expect(r.outputs.refused).toBe('false');
+    expect(Number(r.outputs.batches)).toBeLessThanOrEqual(8);
+  });
+
+  it('names a pure rename and attaches no source, because nothing changed in it', () => {
     const fx = manyFiles(6, 1200);
     fx.diff +=
       'diff --git a/old.ts b/new.ts\nsimilarity index 100%\nrename from old.ts\nrename to new.ts\n';
     fx.tree!.push(['new.ts', 'RENAMED SOURCE MARKER\n']);
     const r = runPartition(fx);
     expect(r.batches.flatMap(fileList)).toContain('new.ts');
-    expect(r.batches.join('')).toContain('RENAMED SOURCE MARKER');
+    expect(r.batches.join('')).not.toContain('RENAMED SOURCE MARKER');
   });
 
   it('carries a change whose path it cannot read, and says the batch holds one', () => {
@@ -948,7 +1004,7 @@ describe('PR review gate: the rows above can fail', () => {
       name: 'a chunk is dropped from the plan',
       mutate: (s) =>
         s.replace(
-          "printf '%s\\t%s\\t%s\\n' \"$IDX\" \"$NBATCH\" \"$FPATH\" >> \"$PLAN\"",
+          "printf '%s\\t%s\\t%s\\t%s\\n' \"$IDX\" \"$NBATCH\" \"$HUNKS\" \"$FPATH\" >> \"$PLAN\"",
           '[ "$IDX" = "000003" ] || printf \'%s\\t%s\\t%s\\n\' "$IDX" "$NBATCH" "$FPATH" >> "$PLAN"',
         ),
       check: (r, fx) => {
@@ -960,7 +1016,7 @@ describe('PR review gate: the rows above can fail', () => {
     {
       name: 'the single-file ceiling never fires',
       mutate: (s) =>
-        s.replace('if [ "$UNIT" -gt "$BUDGET" ]; then', 'if [ "$UNIT" -gt 999999999 ]; then'),
+        s.replace('if [ "$OWN" -gt "$BUDGET" ]; then', 'if [ "$OWN" -gt 999999999 ]; then'),
       check: (r) => {
         expect(r.outputs.refused).not.toBe('true');
       },
@@ -985,14 +1041,10 @@ describe('PR review gate: the rows above can fail', () => {
       // The regression this replaced: skipping source for a chunk with no
       // hunks left a file git calls binary — a predicate its author writes —
       // represented to the model by one line saying the files differ.
-      name: 'source is skipped for chunks with no hunks',
-      mutate: (s) =>
-        s.replace(
-          '  [ -n "$FPATH" ] || continue\n',
-          '  [ -n "$FPATH" ] || continue\n  [ "$HUNKS" = "1" ] || continue\n',
-        ),
+      name: 'source is attached to chunks with no hunks',
+      mutate: (s) => s.replace('  [ "$HUNKS" = "1" ] || continue\n', ''),
       check: (r) => {
-        expect(r.batches.join('')).not.toContain('BINARY SOURCE MARKER');
+        expect(r.batches.join('')).toContain('BINARY SOURCE MARKER');
       },
     },
     {
@@ -1018,7 +1070,7 @@ describe('PR review gate: the rows above can fail', () => {
       mutate: (s) =>
         s
           .replace(
-            "printf '%s\\t%s\\t%s\\n' \"$IDX\" \"$NBATCH\" \"$FPATH\" >> \"$PLAN\"",
+            "printf '%s\\t%s\\t%s\\t%s\\n' \"$IDX\" \"$NBATCH\" \"$HUNKS\" \"$FPATH\" >> \"$PLAN\"",
             '[ "$IDX" = "000003" ] || printf \'%s\\t%s\\t%s\\n\' "$IDX" "$NBATCH" "$FPATH" >> "$PLAN"',
           )
           .replace(
@@ -1086,7 +1138,7 @@ describe('PR review gate: the rows above can fail', () => {
         '--- a/src/IMPOSTOR2.ts\n-real removed line\n';
       return fx;
     },
-    'source is skipped for chunks with no hunks': () => {
+    'source is attached to chunks with no hunks': () => {
       const fx = manyFiles(6, 1200);
       fx.diff +=
         'diff --git a/src/evil.ts b/src/evil.ts\nindex 888d4b1..f0493bf 100644\n' +

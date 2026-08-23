@@ -514,25 +514,30 @@ jobs:
             case "${FPATH##*/}" in
               *.test.* | *.spec.* | package-lock.json | *.lock) continue ;;
             esac
+            # NO SOURCE FOR A CHUNK WITH NO HUNKS. A rename, a mode change and
+            # a binary file have no hunks, and reading the working-tree file
+            # for them buys nothing and costs three ways: `-f` follows a
+            # SYMLINK, so a renamed symlink would send its target's contents
+            # (measured: `/etc/hosts`) into a request whose reply is posted
+            # publicly; a 100%-similarity rename would spend the batch budget
+            # on bytes already on main (measured: 40 renames turned 2 batches
+            # into 15, past the 8-batch ceiling, which refuses the pull
+            # request); and a real binary would ship raw NUL bytes and invalid
+            # UTF-8 into the request.
+            #
+            # These files are still NAMED in the batch, and the fact that
+            # their contents are not shown is stated where the model reads it
+            # — see the list built below. What is NOT solved here is the case
+            # that raised this: git calls a file binary on a NUL in its first
+            # 8 KB, and a `.ts` file with a NUL in a comment still compiles,
+            # so an author can put a change where neither the diff nor this
+            # request shows it. Single mode has the same hole through the same
+            # `nl -ba` on the same file list, so it is not a batch-mode defect
+            # and it is not fixed by a batch-mode change. It is filed.
+            [ "$HUNKS" = "1" ] || continue
             [ -f "$FPATH" ] || continue
             nl -ba < "$FPATH" > "$CTXF.raw"
             printf '\n=== %s ===\n' "$FPATH" > "$CTXF"
-            if [ "$HUNKS" != "1" ]; then
-              # A chunk with no `@@` had its contents withheld by git, not by
-              # us: git emits `Binary files ... differ` for anything with a NUL
-              # in the first 8 KB, and a `.ts` file with a NUL in a comment
-              # still compiles. Whether a file counts as binary is therefore
-              # decided by whoever wrote it.
-              #
-              # So the source is attached ANYWAY, and the withholding is
-              # stated. Skipping it would leave the model with a one-line
-              # `Binary files ... differ` as the entire account of a file the
-              # pull request changed, while the footer told the human it was
-              # reviewed. That is the shape of every fail-open this gate has
-              # had, and it would be worse here than in single mode, which
-              # attaches the source unconditionally.
-              printf '[This file is changed by this pull request and the diff does NOT show what changed in it: git emitted no hunks for it. Do not read the absence of a diff as the absence of a change. Review the full source below.]\n' >> "$CTXF"
-            fi
             if [ "$(wc -c < "$CTXF.raw" | tr -d ' ')" -gt "$MAX_FULL_SIZE" ]; then
               # Truncate the SOURCE, and say so where the model reads it. A
               # silent cut would leave the verification mandate ("search the
@@ -573,7 +578,7 @@ jobs:
           # suppression it carries is narrow and true: a call into code that
           # was not included is not by itself a defect.
           scope_note() {
-            printf 'SCOPE OF THIS REQUEST: this pull request was too large to review in one request, so it was split on file boundaries. This is request %s of %s. It carries the COMPLETE changes to the files listed below, and the full source of those files where source is available (it is not, for a file this pull request deletes, and for test and lock files). The other changed files are being reviewed in the other requests and are not shown here. Review the files in this request. A reference to code outside this request is not by itself a finding; a defect in the code that IS here is a finding whether or not the rest of the pull request is visible.\n' "$1" "$2"
+            printf 'SCOPE OF THIS REQUEST: this pull request was too large to review in one request, so it was split on file boundaries. This is request %s of %s. It carries the COMPLETE changes to the files listed below, and the full source of those files where source is available (it is not for a file this pull request deletes, for test and lock files, or for a file whose changes the diff does not show). The other changed files are being reviewed in the other requests and are not shown here. Review the files in this request. A reference to code outside this request is not by itself a finding; a defect in the code that IS here is a finding whether or not the rest of the pull request is visible.\n' "$1" "$2"
           }
 
           {
@@ -616,9 +621,10 @@ jobs:
             # it is guarding.
             L=0
             [ -z "$FPATH" ] || L=$(($(printf '%s' "$FPATH" | wc -c | tr -d ' ') + 1))
-            UNIT=$((D + C + L + CARRY))
+            OWN=$((D + C + L))
+            UNIT=$((OWN + CARRY))
             CARRY=0
-            if [ "$UNIT" -gt "$BUDGET" ]; then
+            if [ "$OWN" -gt "$BUDGET" ]; then
               # BOUND THE AUTHOR'S BYTES BEFORE THEY GO IN A COMMENT. This
               # message becomes the posted review body, and the gate fetches
               # its own past comments back as PREVIOUS REVIEW on the next
@@ -627,21 +633,30 @@ jobs:
               # prose ride into a block the next review reads. Control
               # characters go, and 120 characters is far more than a path
               # needs to be identifiable and far less than a paragraph.
-              SAFE=$(printf '%s' "$FPATH" | tr -d '\000-\037' | cut -c1-120)
-              [ "${#FPATH}" -le 120 ] || SAFE="$SAFE..."
+              # BYTES on both sides. `cut -c` is byte-based on GNU coreutils
+              # while `${#FPATH}` counts characters, so deciding in one unit
+              # and cutting in the other both skipped the ellipsis and left a
+              # half-written character in the posted comment. `iconv -c` drops
+              # the incomplete tail the byte cut can leave. Backticks go with
+              # the control characters: one closes the code span this path is
+              # rendered in, and the rest of the path then reads as prose.
+              FBYTES=$(printf '%s' "$FPATH" | wc -c | tr -d ' ')
+              SAFE=$(printf '%s' "$FPATH" | tr -d '\000-\037`' | head -c 120 \
+                       | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null || true)
+              [ "$FBYTES" -le 120 ] || SAFE="$SAFE..."
               WHAT="\`$SAFE\`"
               [ -n "$FPATH" ] || WHAT="one file"
               # NO FILE-TYPE CARVE-OUT. Exempting generated files, lock files
               # or vendored trees would make the gate's coverage a function of
               # what the author called the file.
-              refuse "$WHAT alone needs $UNIT bytes of diff and source, against a $BUDGET-byte budget for one review request. Batches are cut on file boundaries, so this cannot be split any further, and this gate does not exempt a file from review because of its type, its name or its size."
+              refuse "$WHAT alone needs $OWN bytes of diff and source, against a $BUDGET-byte budget for one review request. Batches are cut on file boundaries, so this cannot be split any further, and this gate does not exempt a file from review because of its type, its name or its size."
             fi
             if [ "$NBATCH" -eq 0 ] || [ $((USED + UNIT)) -gt "$BUDGET" ]; then
               NBATCH=$((NBATCH + 1))
               USED=0
             fi
             USED=$((USED + UNIT))
-            printf '%s\t%s\t%s\n' "$IDX" "$NBATCH" "$FPATH" >> "$PLAN"
+            printf '%s\t%s\t%s\t%s\n' "$IDX" "$NBATCH" "$HUNKS" "$FPATH" >> "$PLAN"
           done < "$MAN"
 
           # COMPOSE. Each batch file IS a user message: in batch mode the
@@ -656,8 +671,9 @@ jobs:
               cat "$PREAMBLE" >> "$DIFF"
             fi
             UNNAMED=0
+            NOSHOW=0
             SEEN="$WORK_DIR/$BN.seen"; : > "$SEEN"
-            while IFS="$TAB" read -r IDX ASSIGN FPATH; do
+            while IFS="$TAB" read -r IDX ASSIGN HUNKS FPATH; do
               [ "$ASSIGN" = "$B" ] || continue
               cat "$WORK_DIR/$IDX.diff" >> "$DIFF"
               if [ -z "$FPATH" ]; then
@@ -676,7 +692,13 @@ jobs:
               printf '%s\n' "$FPATH" >> "$SEEN"
               printf '%s\n' "$FPATH" >> "$LIST"
               cat "$WORK_DIR/$IDX.ctx" >> "$CTX"
+              [ "$HUNKS" = "1" ] || NOSHOW=$((NOSHOW + 1))
             done < "$PLAN"
+            if [ "$NOSHOW" -gt 0 ]; then
+              # The one thing the model must not conclude from a file that is
+              # listed with no diff and no source: that it did not change.
+              printf '(%s of the files above are changed by this pull request WITHOUT the diff showing what changed in them, and their source is not shown either: git emitted no hunks for them, which it does for a rename, a mode change, and any file it treats as binary. The absence of a diff is not evidence that a file is unchanged.)\n' "$NOSHOW" >> "$LIST"
+            fi
             if [ "$UNNAMED" -gt 0 ]; then
               # Named, because an unexplained gap between the file list and the
               # diff below reads as a diff that was tampered with. A path this
@@ -781,6 +803,7 @@ jobs:
           INPUT_TOKENS: ${{ steps.review.outputs.input-tokens }}
           BATCHES: ${{ steps.partition.outputs.batches }}
           IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          REFUSED: ${{ steps.partition.outputs.refused }}
         run: |
           # An absent verdict means the review step never reached a decision —
           # including the case where the action itself failed to run at all.
@@ -893,7 +916,13 @@ jobs:
           # untouched and the job still fails: this changes what a human
           # reads, not what the gate decides.
           FORK_NOTE=""
-          if [ "${IS_FORK:-false}" = "true" ] && [ "$VERDICT" != "APPROVE" ]; then
+          # NOT on a refusal. `refused` means the partitioner declined before
+          # any request went out, and that has its own explanation in the body
+          # below. Publishing the fork explanation over it would put a
+          # transport reason on a size decision, which is the exact inversion
+          # this gate's failure messaging exists to prevent.
+          if [ "${IS_FORK:-false}" = "true" ] && [ "$VERDICT" != "APPROVE" ] \
+             && [ "${REFUSED:-false}" != "true" ]; then
             FORK_NOTE=$'\n**This pull request was opened from a fork, so the automated review could not run.** GitHub does not pass repository secrets to a workflow triggered from a fork, and this check calls a model API with one. That is a platform rule, not a fault in this change and not a fault in the pipeline. A review that did not run is recorded as inconclusive rather than as an approval, so the check reports failure.\n\nNothing here needs fixing by you. A maintainer picks the change up from here: see [Pull requests from a fork](https://github.com/opena2a-org/hackmyagent/blob/main/CONTRIBUTING.md#pull-requests-from-a-fork).\n'
           fi
 
