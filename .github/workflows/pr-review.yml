@@ -114,7 +114,12 @@ jobs:
             case "${file##*/}" in
               *.test.* | *.spec.* | package-lock.json | *.lock) continue ;;
             esac
-            [ -f "$file" ] || continue
+            # Not a symlink, for the same reason as the partition step below:
+            # `[ -f ]` follows one, and this loop's output is sent to the model
+            # and quoted back into a public comment. Single mode is the common
+            # path, so fixing only the batch path would have closed the rare
+            # half of the hole.
+            [ -f "$file" ] && [ ! -L "$file" ] || continue
             FILE_SIZE=$(wc -c < "$file" | tr -d ' ')
             NEW_TOTAL=$((TOTAL_SIZE + FILE_SIZE))
             if [ "$NEW_TOTAL" -gt "$MAX_FULL_SIZE" ]; then
@@ -535,7 +540,15 @@ jobs:
             # `nl -ba` on the same file list, so it is not a batch-mode defect
             # and it is not fixed by a batch-mode change. It is filed.
             [ "$HUNKS" = "1" ] || continue
-            [ -f "$FPATH" ] || continue
+            # NOT A SYMLINK. `[ -f ]` follows one, so a pull request that ADDS
+            # `evil.ts -> /etc/passwd` would have the TARGET's contents read
+            # into the review request, and the reply is posted as a public
+            # comment. The chunk has hunks in that case -- the link's own
+            # content is the target path -- so the no-hunk rule above does not
+            # reach it, and the out-of-tree guard does not either, because it
+            # inspects the path STRING and this path is entirely ordinary.
+            # A string can only answer where a path points if the path says.
+            [ -f "$FPATH" ] && [ ! -L "$FPATH" ] || continue
             nl -ba < "$FPATH" > "$CTXF.raw"
             printf '\n=== %s ===\n' "$FPATH" > "$CTXF"
             if [ "$(wc -c < "$CTXF.raw" | tr -d ' ')" -gt "$MAX_FULL_SIZE" ]; then

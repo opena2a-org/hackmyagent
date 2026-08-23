@@ -813,6 +813,23 @@ describe('PR review gate: diff shapes that are not plain edits', () => {
     expect(all).toContain('absence of a diff is not evidence');
   });
 
+  it('does not read the target of a symlink the pull request ADDS', () => {
+    // The dangerous case, and the one the no-hunk rule does NOT reach: a
+    // symlink that is added or modified has hunks, because the link's own
+    // content is the target path. `[ -f ]` follows it, and the reply to this
+    // request is posted as a public comment. The out-of-tree guard cannot see
+    // it either — that path string is entirely ordinary.
+    const target = makeOutsideFile('addedlink');
+    const fx = manyFiles(6, 1200);
+    fx.diff +=
+      'diff --git a/src/evil.ts b/src/evil.ts\nnew file mode 120000\nindex 0000000..1111111\n' +
+      '--- /dev/null\n+++ b/src/evil.ts\n@@ -0,0 +1 @@\n+' + target + '\n';
+    fx.symlinks = [['src/evil.ts', target]];
+    const r = runPartition(fx);
+    expect(r.batches.flatMap(fileList)).toContain('src/evil.ts');
+    expect(r.batches.join('')).not.toContain('OUT OF TREE SOURCE MARKER');
+  });
+
   it('does not read a renamed symlink’s target', () => {
     // `[ -f ]` follows symlinks, so reading the working-tree file for a
     // hunkless chunk would send the TARGET's contents into a request whose
@@ -1083,6 +1100,17 @@ describe('PR review gate: the rows above can fail', () => {
       },
     },
     {
+      name: 'the symlink guard is removed',
+      mutate: (s) =>
+        s.replace(
+          '[ -f "$FPATH" ] && [ ! -L "$FPATH" ] || continue',
+          '[ -f "$FPATH" ] || continue',
+        ),
+      check: (r) => {
+        expect(r.batches.join('')).toContain('OUT OF TREE SOURCE MARKER');
+      },
+    },
+    {
       name: 'the out-of-tree path guard is removed',
       mutate: (s) =>
         s.replace(
@@ -1153,6 +1181,15 @@ describe('PR review gate: the rows above can fail', () => {
       return fx;
     },
     'conservation breaks and the guard no longer refuses': () => manyFiles(12, 1200),
+    'the symlink guard is removed': () => {
+      const target = makeOutsideFile('mutlink');
+      const fx = manyFiles(6, 1200);
+      fx.diff +=
+        'diff --git a/src/evil.ts b/src/evil.ts\nnew file mode 120000\nindex 0000000..1111111\n' +
+        '--- /dev/null\n+++ b/src/evil.ts\n@@ -0,0 +1 @@\n+' + target + '\n';
+      fx.symlinks = [['src/evil.ts', target]];
+      return fx;
+    },
     'the out-of-tree path guard is removed': () => {
       // Written next to the temp trees the runner makes, so the read has a
       // real target and the mutant can actually leak something.
