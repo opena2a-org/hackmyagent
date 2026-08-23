@@ -35,6 +35,13 @@ const EXPECTED_PIN = 'dcb77137b11cb33c11e76cf6435b7676bd568d01';
 /** Must match `TARGET_BYTES` in the step. Asserted, not assumed — see below. */
 const TARGET_BYTES = 420000;
 
+/**
+ * Must match `MAX_FULL_TOTAL` in the step. Asserted below, for the same reason
+ * `TARGET_BYTES` is: a constant this suite believes and the step does not use
+ * makes every row about it a row about nothing.
+ */
+const MAX_FULL_TOTAL = 200000;
+
 // The step writes fixed `/tmp/pr_*` paths, matching the rest of the workflow
 // and the runner it was written for, where a job owns the machine. Two of
 // these suites running at once would therefore hand each other's fixtures
@@ -396,6 +403,115 @@ function impostorChunk(p: string, victim: string): string {
   );
 }
 
+const SRC_MARK = '\n\nFULL SOURCE FILES (line-numbered — use for verifying mitigations):\n';
+
+/** Pull the FULL SOURCE block back out of a composed batch. */
+function sourceSection(batch: string): string {
+  const i = batch.indexOf(SRC_MARK);
+  if (i < 0) throw new Error('batch has no FULL SOURCE section');
+  const rest = batch.slice(i + SRC_MARK.length);
+  const d = rest.indexOf(DIFF_MARK);
+  return d < 0 ? rest : rest.slice(0, d);
+}
+
+/**
+ * path -> the exact source block the model is shown for it, across every batch.
+ *
+ * Keyed by path rather than by position because the whole point of the rows
+ * below is that a file's allocation does not depend on where it sits.
+ */
+function sourceByPath(batches: string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const b of batches) {
+    const sec = sourceSection(b);
+    const heads: Array<{ p: string; at: number; end: number }> = [];
+    const re = /^=== (.+) ===$/gm;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(sec)) !== null) {
+      heads.push({ p: m[1], at: m.index, end: m.index + m[0].length });
+    }
+    heads.forEach((h, k) => {
+      // `- 1` because every context file OPENS with the newline that precedes
+      // its `=== path ===` header, so the byte before the next header belongs to
+      // the next file. Without it a file's extracted body picks up an extra
+      // trailing newline whenever it is not the last in its batch — which is
+      // a function of where it landed, and would make the order-independence
+      // row below fail against an implementation that is perfectly ordered.
+      const body = sec.slice(h.end, k + 1 < heads.length ? heads[k + 1].at - 1 : sec.length);
+      // One entry per path across the WHOLE request. Two would mean the budget
+      // was charged once and the request carried the bytes twice.
+      if (out.has(h.p)) throw new Error(`source for ${h.p} appears in two batches`);
+      out.set(h.p, body);
+    });
+  }
+  return out;
+}
+
+/** The common cut level the step reports, so rows assert against it rather than a guess. */
+function cutLevel(stdout: string): number {
+  const m = /common cut level (\d+) bytes/.exec(stdout);
+  if (!m) throw new Error('the step did not report a cut level');
+  return Number(m[1]);
+}
+
+/** Re-emit a diff with its file chunks in reverse order — same files, same bytes. */
+function reverseFileOrder(diff: string): string {
+  return [...chunkSpans(diff)].reverse().map((s) => diff.slice(s.start, s.end)).join('');
+}
+
+/**
+ * `n` changed files whose working-tree source is large enough to be cut, and
+ * DELIBERATELY UNEVEN in size.
+ *
+ * Evenness would hide the rule. With every file the same size, max-min fair
+ * water-filling, a plain budget-over-file-count split, and several wrong rules
+ * all produce the same allocation, so a row built on an even fixture passes
+ * against an implementation that has none of the property it claims to assert.
+ */
+function bigSourceFixture(n: number): Fixture {
+  let diff = '';
+  const tree: Array<[string, string]> = [];
+  for (let i = 0; i < n; i++) {
+    const p = `src/big${i}.ts`;
+    diff += chunk(p, 400);
+    tree.push([p, `const v${i} = ${'y'.repeat(40)};\n`.repeat(600 + i * 90)]);
+  }
+  return { diff, tree };
+}
+
+/**
+ * A fixture on which the REDISTRIBUTION step actually runs.
+ *
+ * This one matters more than it looks, and it was built the wrong way first.
+ * `bigSourceFixture` gives every file more source than an even split of the
+ * budget, so the level is decided at the first step of the walk and is
+ * `budget / files` whatever order the files arrive in. Order-independence then
+ * holds for a reason that has nothing to do with the sort, and the row
+ * asserting it passed against a step with the sort deliberately removed —
+ * a vacuous row that read as coverage.
+ *
+ * Files BELOW the even split are what make order observable: they are served
+ * whole, hand their unspent share back, and the level for everyone else depends
+ * on that having happened before the large files are weighed.
+ */
+function mixedSourceFixture(): Fixture {
+  let diff = '';
+  const tree: Array<[string, string]> = [];
+  // Small enough that each is served whole at any plausible level.
+  for (let i = 0; i < 8; i++) {
+    const p = `src/small${i}.ts`;
+    diff += chunk(p, 400);
+    tree.push([p, `const s${i} = 1;\n`.repeat(80)]);
+  }
+  // Large enough that each is cut at any plausible level.
+  for (let i = 0; i < 4; i++) {
+    const p = `src/large${i}.ts`;
+    diff += chunk(p, 400);
+    tree.push([p, `const l${i} = ${'q'.repeat(60)};\n`.repeat(1200 + i * 200)]);
+  }
+  return { diff, tree };
+}
+
 function fileList(batch: string): string[] {
   const mark = '\nChanged files (this batch):\n';
   const i = batch.indexOf(mark);
@@ -708,18 +824,25 @@ describe('PR review gate: what it refuses, and what it refuses to exempt', () =>
     expect(r.batches.join('')).toContain('HIDDEN DIR SOURCE MARKER');
   });
 
-  it('truncates one file’s source at the cap and says so where the model reads it', () => {
+  it('truncates one file’s source at the cut level and says so where the model reads it', () => {
     // A silent cut would leave the system prompt's verification mandate
     // ("search the full source for a mitigation") running against a file it
     // was only shown part of, with nothing to say so.
+    //
+    // The notice states a LINE RANGE, not a byte count. Bytes are not something
+    // the model can act on; `lines 1-N of M` lets it place its own blind spot
+    // against the `@@` headers it is already holding.
     const fx = manyFiles(6, 1200);
     fx.diff += chunk('src/huge-src.ts', 4);
     fx.tree!.push(['src/huge-src.ts', `const x = 1; // ${'y'.repeat(60)}\n`.repeat(4000)]);
     const r = runPartition(fx);
     const all = r.batches.join('');
     expect(all).toContain('=== src/huge-src.ts ===');
-    expect(all).toContain('[FULL SOURCE TRUNCATED at 200000 bytes');
-    expect(all).toContain('absence of a mitigation below this point is not evidence');
+    expect(all).toMatch(/\[FULL SOURCE TRUNCATED — lines 1-\d+ of 4000 shown\./);
+    expect(all).toContain('is not evidence that none exists');
+    // And it says the cut is uniform, so a cut file is not read as one this
+    // gate singled out for suspicion.
+    expect(all).toContain('cut at the same level');
   });
 
   it('bounds the author-controlled path it echoes into the refusal', () => {
@@ -743,6 +866,174 @@ describe('PR review gate: what it refuses, and what it refuses to exempt', () =>
     const r = runPartition({ diff: `${'q'.repeat(500000)}\n` });
     expect(r.outputs.refused).toBe('true');
     expect(r.refusal).toContain('no file headers');
+  });
+});
+
+describe('PR review gate: full source is budgeted across the request, and cut uniformly', () => {
+  it('the aggregate budget this suite asserts against is the one the step uses', () => {
+    expect(partitionScript()).toContain(`MAX_FULL_TOTAL=${MAX_FULL_TOTAL}`);
+    // The per-file constant is RETIRED here. Leaving it would mean two budgets
+    // in one step, and the one that binds would be whichever the next reader
+    // happened to find.
+    expect(partitionScript()).not.toContain('MAX_FULL_SIZE');
+  });
+
+  it('bounds full source across the WHOLE pull request, not per file', () => {
+    // The defect this closes: the same 200,000 was applied per file here while
+    // single mode applied it as a running total, so batch mode's full-source
+    // context had no aggregate bound at all. Measured on the acceptance corpus
+    // before the fix: 986,720 bytes against single mode's 245,852.
+    const r = runPartition(bigSourceFixture(12));
+    expect(r.outputs.refused).toBe('false');
+    const emitted = r.batches.reduce((n, b) => n + Buffer.byteLength(sourceSection(b)), 0);
+    expect(emitted).toBeLessThanOrEqual(MAX_FULL_TOTAL);
+    // Non-vacuous: the fixture really does want far more than the budget, so a
+    // step that had no aggregate cap would blow straight through it.
+    const wanted = (bigSourceFixture(12).tree ?? []).reduce(
+      (n, [, c]) => n + Buffer.byteLength(c) + c.split('\n').length * 7,
+      0,
+    );
+    expect(wanted).toBeGreaterThan(MAX_FULL_TOTAL * 2);
+  });
+
+  it('gives every file the same context however the author orders the diff', () => {
+    // THE PROPERTY. Single mode serves files whole until a running total
+    // overflows and then breaks, so file order decides who gets source and who
+    // gets none — and order comes from the author's own diff. Restoring that
+    // shape was refused (`[CHIEF-CISO]`, 2026-08-20 and 2026-08-23). This row is
+    // what stops it coming back: same files, reversed, byte-identical result.
+    //
+    // On `mixedSourceFixture`, not `bigSourceFixture` — see that fixture's note.
+    // The row below proves this choice is what gives this one teeth.
+    const fx = mixedSourceFixture();
+    const forward = runPartition(fx);
+    const backward = runPartition({ ...fx, diff: reverseFileOrder(fx.diff) });
+
+    const a = sourceByPath(forward.batches);
+    const b = sourceByPath(backward.batches);
+    expect([...b.keys()].sort()).toEqual([...a.keys()].sort());
+    for (const [p, s] of a) expect(b.get(p)).toBe(s);
+    expect(cutLevel(backward.stdout)).toBe(cutLevel(forward.stdout));
+  });
+
+  it('would catch an ordering-dependent cut, so the row above is not vacuous', () => {
+    // A row asserting that two runs agree passes trivially against any
+    // implementation whose output does not depend on order — including one that
+    // ignores order because it ignores the sizes too. So the ordering
+    // dependence is REINTRODUCED here, by dropping the sort that makes the
+    // level a function of the multiset, and the same comparison must now fail.
+    //
+    // This row is why the fixture above is the mixed one. Run against
+    // `bigSourceFixture` it FAILS — every file there exceeds an even split, so
+    // the walk terminates at its first step and the unsorted step is
+    // order-independent too. Measured, not assumed: that is exactly what
+    // happened on the first version of these rows.
+    const fx = mixedSourceFixture();
+    const unsort = (s: string) =>
+      s.replace('cut -f2 "$CTXMAN" | sort -n | awk', 'cut -f2 "$CTXMAN" | awk');
+    const forward = runPartition(fx, unsort);
+    const backward = runPartition({ ...fx, diff: reverseFileOrder(fx.diff) }, unsort);
+    const a = sourceByPath(forward.batches);
+    const b = sourceByPath(backward.batches);
+    expect([...a.keys()].some((p) => a.get(p) !== b.get(p))).toBe(true);
+  });
+
+  it('cuts every oversized file at one common level instead of serving some whole', () => {
+    // The ordered break's signature is a handful of files carrying complete
+    // source and the rest carrying none. Uniform degradation has no such
+    // silhouette: every file is cut, and cut to within a line of the same size.
+    const fx = bigSourceFixture(12);
+    const r = runPartition(fx);
+    const level = cutLevel(r.stdout);
+    const sizes = [...sourceByPath(r.batches).values()].map((s) => Buffer.byteLength(s));
+    expect(sizes.length).toBe(12);
+    for (const s of sizes) {
+      expect(s).toBeLessThanOrEqual(level);
+      // Nobody is starved to pay for somebody else. The only spread is the
+      // rounding down to a whole line, which is one line of this fixture.
+      expect(s).toBeGreaterThan(level - 200);
+    }
+  });
+
+  it('gives two files of identical size identical context', () => {
+    // The allocation is a function of the multiset of sizes, so equal sizes
+    // must produce equal allocations no matter where either file sits.
+    // At OPPOSITE ENDS of the diff, so this is a claim about position and not
+    // only about arithmetic: adjacent twins would be served identically by an
+    // ordered rule too.
+    const fx = mixedSourceFixture();
+    const same = `const same = ${'z'.repeat(40)};\n`.repeat(700);
+    fx.diff = chunk('src/twin-a.ts', 400) + fx.diff + chunk('src/twin-b.ts', 400);
+    fx.tree!.push(['src/twin-a.ts', same], ['src/twin-b.ts', same]);
+    const m = sourceByPath(runPartition(fx).batches);
+    const a = m.get('src/twin-a.ts');
+    const b = m.get('src/twin-b.ts');
+    expect(a).toBeDefined();
+    expect(Buffer.byteLength(a!)).toBe(Buffer.byteLength(b!));
+  });
+
+  it('charges the budget once for a path that two chunks name', () => {
+    // A typechange is two chunks for one path, and which files are typechanges
+    // is the author's choice. Charging per chunk would let an author lower
+    // every other file's allowance by converting one file to a symlink and
+    // back — the author-controllable predicate this gate refuses, arriving
+    // through the manifest rather than through a glob.
+    const twice =
+      'diff --git a/src/thing.ts b/src/thing.ts\ndeleted file mode 100644\nindex 1111111..0000000\n' +
+      '--- a/src/thing.ts\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-was a file\n' +
+      'diff --git a/src/thing.ts b/src/thing.ts\nnew file mode 100644\nindex 0000000..2222222\n' +
+      '--- /dev/null\n+++ b/src/thing.ts\n@@ -0,0 +1,1 @@\n+is a file again\n';
+    const once =
+      'diff --git a/src/thing.ts b/src/thing.ts\nindex 1111111..2222222 100644\n' +
+      '--- a/src/thing.ts\n+++ b/src/thing.ts\n@@ -1,1 +1,1 @@\n-was a file\n+is a file again\n';
+    const body = `const t = ${'w'.repeat(40)};\n`.repeat(700);
+
+    const two = bigSourceFixture(12);
+    two.diff += twice;
+    two.tree!.push(['src/thing.ts', body]);
+    const one = bigSourceFixture(12);
+    one.diff += once;
+    one.tree!.push(['src/thing.ts', body]);
+
+    // Thirteen distinct paths either way, so the level must be the same. If the
+    // second chunk were charged, the level would fall.
+    expect(cutLevel(runPartition(two).stdout)).toBe(cutLevel(runPartition(one).stdout));
+  });
+
+  it('handles a file whose FIRST line is longer than its allowance', () => {
+    // Zero shown lines is an ordinary outcome, not a contrived one: a minified
+    // bundle is one enormous line, so the byte allowance runs out before the
+    // first newline. It reaches a `head -n 0`, which GNU head accepts and BSD
+    // head REFUSES (`illegal line count -- 0`) — so without the guard this row
+    // is green on `test (ubuntu-latest)` and red on `test (macos-latest)`, both
+    // of which are required checks. Found by probing the bound, not by the
+    // suite, which is why it is now a row.
+    const fx = mixedSourceFixture();
+    fx.diff += chunk('src/bundle.min.js', 400);
+    fx.tree!.push(['src/bundle.min.js', `${'m'.repeat(120000)}\nconst after = 1;\n`]);
+    const r = runPartition(fx);
+    expect(r.status).toBe(0);
+    expect(r.outputs.refused).toBe('false');
+    const body = sourceByPath(r.batches).get('src/bundle.min.js');
+    expect(body).toBeDefined();
+    // No source, and it SAYS no source — the one thing the model must not have
+    // to infer from an empty block.
+    expect(body).toContain('FULL SOURCE NOT SHOWN');
+    expect(body).toContain('is not evidence that none exists');
+    expect(body).not.toContain('mmmm');
+    // Still inside its share of the budget.
+    expect(Buffer.byteLength(body!)).toBeLessThanOrEqual(cutLevel(r.stdout));
+  });
+
+  it('leaves every file whole when the whole pull request fits the budget', () => {
+    // The budget must not cut what it does not have to. Twelve small files are
+    // nowhere near 200,000 bytes, so none of them carries a notice.
+    const r = runPartition(manyFiles(12, 1200));
+    const all = r.batches.join('');
+    expect(all).not.toContain('FULL SOURCE TRUNCATED');
+    for (const [, s] of sourceByPath(r.batches)) {
+      expect(s).toContain('const x = 1;');
+    }
   });
 });
 
