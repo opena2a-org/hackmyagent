@@ -548,7 +548,11 @@ jobs:
 
           # Per-batch overhead, measured rather than estimated, by building the
           # scaffold every batch shares and weighing it. `9 of 9` stands in for
-          # the batch numbers: the ceiling is 8, so no real pair is longer.
+          # the batch numbers. Any run that SENDS is at or under the 8-batch
+          # ceiling, so its numbers are single digits and the scaffold is
+          # exact; a partition that lands above the ceiling can render a couple
+          # of bytes more, and that run is refused by the action before a
+          # request goes out. The 256-byte slack below covers it either way.
           PR_TITLE=$(cat /tmp/pr_title.txt)
           {
             printf 'PR #%s: %s\n\nDescription:\n' "$PR_NUMBER" "$PR_TITLE"
