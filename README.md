@@ -400,14 +400,14 @@ OpenClaw and wiring a CI pipeline: [`docs/USE-CASES.md`](docs/USE-CASES.md).
 
 ## Contributing
 
-Apache 2.0. PRs from outside the org welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has the dev loop, test conventions, and pre-push review gates.
+Apache 2.0. Pull requests from outside the organization are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has the development loop and what happens to a pull request opened from a fork.
 
 ```bash
 git clone https://github.com/opena2a-org/hackmyagent.git
 cd hackmyagent && npm install && npm run build && npm test
 ```
 
-Security issues: `info@opena2a.org` (coordinated disclosure, response within 24 hours).
+Security issues: see [SECURITY.md](SECURITY.md). Do not open a public issue.
 
 ## Links
 
