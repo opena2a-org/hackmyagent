@@ -1765,6 +1765,153 @@ export function stampSequenceField(seq: number, attempt: number): string {
   return String(Math.min(seq + attempt, 999)).padStart(3, '0');
 }
 
+/**
+ * SHELL-EXFIL-001 helpers — deterministic credential-file exfiltration in
+ * shell scripts. Modeled on `checkInstallScripts` (INSTALL-001), scoped by the
+ * CSR ruling of 2026-08-24 to the credential-file-upload shape so it does not
+ * overlap INSTALL-001's `curl … | sh` download-execute surface.
+ *
+ * The signal is a remote `curl`/`wget` that READS a known credential file into
+ * the request body — not the HTTP verb. A bare `@file` POST of a non-credential
+ * payload does not fire; the credential-file allowlist is the discriminator.
+ */
+
+/**
+ * Path suffixes that identify a home-directory credential file. Matched
+ * home-prefix-agnostically: `~/.aws/credentials`, `$HOME/.aws/credentials`,
+ * `/root/.aws/credentials` and `/home/u/.aws/credentials` all end in
+ * `/.aws/credentials`. SSH public keys (`id_rsa.pub`) do not end in these
+ * suffixes and so never match.
+ */
+const SHELL_EXFIL_HOME_CRED_SUFFIXES = [
+  '/.aws/credentials',
+  '/.ssh/id_rsa',
+  '/.ssh/id_ed25519',
+  '/.ssh/id_ecdsa',
+  '/.ssh/id_dsa',
+  '/.docker/config.json',
+  '/.kube/config',
+  '/.netrc',
+  '/.git-credentials',
+  '/.npmrc',
+];
+
+/** Any file under the gcloud config dir is credential material. */
+const SHELL_EXFIL_GCLOUD_DIR = '/.config/gcloud/';
+
+/** Credential files matched by basename (project-local or home). */
+const SHELL_EXFIL_BARE_CRED_NAMES = new Set([
+  '.npmrc',
+  '.netrc',
+  '.git-credentials',
+]);
+
+/** `.env.example` and friends are placeholder templates, not secrets. */
+const SHELL_EXFIL_ENV_TEMPLATE_TOKENS = new Set(['example', 'sample', 'template', 'dist']);
+
+/**
+ * True when `rawPath` names a known credential file. Home-prefix-agnostic:
+ * `~`, `$HOME`, `${HOME}` and absolute home paths are all treated as the same
+ * suffix. `.env`/`.env.*` match by basename but exclude template placeholders.
+ */
+export function isCredentialFilePath(rawPath: string): boolean {
+  const p = rawPath.trim().replace(/^['"]/, '').replace(/['"]$/, '');
+  if (!p) return false;
+
+  // Home-anchored credential files: normalise a leading ~ / $HOME / ${HOME} to
+  // a bare `/…` so the suffix comparison is prefix-agnostic, then also test the
+  // raw path so an absolute `/root/.aws/credentials` still matches.
+  const norm = p
+    .replace(/^~(?=\/)/, '')
+    .replace(/^\$\{HOME\}(?=\/)/, '')
+    .replace(/^\$HOME(?=\/)/, '');
+  for (const suf of SHELL_EXFIL_HOME_CRED_SUFFIXES) {
+    if (norm.endsWith(suf) || p.endsWith(suf)) return true;
+  }
+  if (p.includes(SHELL_EXFIL_GCLOUD_DIR)) return true;
+
+  // Basename-matched credential files.
+  const base = (p.split('/').pop() || '');
+  if (base === '.env') return true;
+  if (base.startsWith('.env.')) {
+    // A real dotenv file (.env.production) is a secret; a template is not. Scan
+    // every dot-segment after `.env.`, not just the final extension, so a
+    // template backup like `.env.example.bak` is still recognised as a template.
+    const segments = base.slice('.env.'.length).split('.');
+    return !segments.some(s => SHELL_EXFIL_ENV_TEMPLATE_TOKENS.has(s));
+  }
+  return SHELL_EXFIL_BARE_CRED_NAMES.has(base);
+}
+
+/**
+ * Upload tokens that make curl/wget READ a local file into the request body.
+ * Each captures the file path (group 1). Modelled on how curl actually decides
+ * to read a file, verified against curl 8.7.1:
+ *
+ *  - Plain data flags (`-d`/`--data`/`--data-binary`/`--data-ascii`) read a file
+ *    ONLY when the value BEGINS with `@`. A `name=` prefix (`-d name=@f`) is sent
+ *    literally — no read — so these patterns require a value-initial `@`. Long
+ *    flags take a space or `=` separator; short `-d` takes a space or is glued
+ *    (`-d@f`), never `-d=` (that `=` is part of the value curl sends literally).
+ *  - `--data-urlencode` reads on `@f` or `name@f` (an optional name then `@`), but
+ *    NOT `name=@f`; the name segment excludes `=`, so the `=@` form cannot match.
+ *  - Form flags (`-F`/`--form`) DO read `name=@f`, so they keep the field prefix.
+ *  - `-T`/`--upload-file` take a bare path (no `@`).
+ *
+ * `--data-raw` is excluded structurally: curl passes its `@` through literally,
+ * and because the separator must follow the flag NAME, `--data-raw` never
+ * satisfies `--data(?:\s+|=)` — the `-raw` is neither a space nor `=`. Short-flag
+ * patterns are anchored with `(?:^|\s)` so `-d` does not match inside a token.
+ *
+ * Every class is a linear regex: an optional name segment then a mandatory `@`
+ * (excluded from that segment's class, so no ambiguous overlap) then `[^\s'"]+`.
+ */
+const SHELL_EXFIL_UPLOAD_PATTERNS: RegExp[] = [
+  // curl plain data flags, value-initial @ (long: space or '='; -d handled below).
+  /(?:--data-binary|--data-ascii|--data)(?:\s+|=)['"]?@([^\s'"]+)/g,
+  // curl -d: space-separated or glued, value-initial @.
+  /(?:^|\s)-d\s*['"]?@([^\s'"]+)/g,
+  // curl --data-urlencode: @file or name@file (name excludes '=', so name=@ is out).
+  /--data-urlencode(?:\s+|=)['"]?[^\s'"@=]*@([^\s'"]+)/g,
+  // curl form upload: --form name=@file (the file IS read here).
+  /--form(?:\s+|=)['"]?[^\s'"@]*@([^\s'"]+)/g,
+  // curl -F name=@file, name possibly glued (`-Ffile=@f`).
+  /(?:^|\s)-F\s*['"]?[^\s'"@]*@([^\s'"]+)/g,
+  // curl file upload by path (no @): --upload-file file.
+  /--upload-file(?:\s+|=)['"]?@?([^\s'"=]+)/g,
+  // curl -T file, path possibly glued (`-T~/.ssh/id_rsa`).
+  /(?:^|\s)-T\s*['"]?@?([^\s'"=]+)/g,
+  // wget --post-file / --body-file (space or `=`).
+  /--(?:post-file|body-file)(?:\s*=|\s+)['"]?([^\s'"]+)/g,
+];
+
+/** A literal remote URL in the same command is required (item-7 conjunct 4). */
+const SHELL_EXFIL_URL = /\b(?:https?|ftps?):\/\/[^\s'"]+/;
+
+/**
+ * Detects a single shell command that exfiltrates a credential file to a remote
+ * endpoint. Returns the matched credential path and destination URL, or null.
+ * Four conjuncts on one line: (1) curl/wget invocation, (2) a file-reading
+ * upload token, (3) the read path is a credential file, (4) a literal remote URL.
+ */
+export function detectShellCredentialExfil(
+  line: string,
+): { credPath: string; url: string } | null {
+  if (!/\b(?:curl|wget)\b/.test(line)) return null;
+  const urlMatch = line.match(SHELL_EXFIL_URL);
+  if (!urlMatch) return null;
+  for (const pattern of SHELL_EXFIL_UPLOAD_PATTERNS) {
+    // Every match on the line, not just the first: a benign `@payload.json`
+    // before a real `@~/.aws/credentials` must not mask the credential.
+    for (const m of line.matchAll(pattern)) {
+      if (isCredentialFilePath(m[1])) {
+        return { credPath: m[1], url: urlMatch[0] };
+      }
+    }
+  }
+  return null;
+}
+
 export class HardeningScanner {
   private cliName = 'hackmyagent';
   /**
@@ -2469,6 +2616,9 @@ export class HardeningScanner {
 
     const installFindings = await this.coverage.run('checkInstallScripts', () => this.checkInstallScripts(targetDir, shouldFix));
     findings.push(...installFindings);
+
+    const shellExfilFindings = await this.coverage.run('checkShellCredentialExfil', () => this.checkShellCredentialExfil(targetDir, shouldFix));
+    findings.push(...shellExfilFindings);
 
     const cliPassFindings = await this.coverage.run('checkCLICredentialPassthrough', () => this.checkCLICredentialPassthrough(targetDir, shouldFix));
     findings.push(...cliPassFindings);
@@ -14916,6 +15066,57 @@ dist/
               guidance: 'Piping directly to sh executes whatever the remote server returns without verification. A compromised or MITM-ed server can inject arbitrary code into your system.',
             });
             break;
+          }
+        }
+      } catch { /* skip unreadable files */ }
+    }
+
+    return findings;
+  }
+
+  /**
+   * SHELL-EXFIL-001: credential file exfiltration in shell scripts.
+   * Detects a remote curl/wget that uploads a known credential file
+   * (`~/.aws/credentials`, `~/.ssh/id_*`, `.env`, gcloud/docker/kube/npm/netrc/
+   * git credentials). Scoped to credential-file upload so it does not overlap
+   * INSTALL-001's `curl … | sh` download-execute surface. CSR ruling 2026-08-24.
+   */
+  private async checkShellCredentialExfil(
+    targetDir: string,
+    _autoFix: boolean
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
+    const files = await this.walkDirectory(targetDir, ['.sh', '.bash', '.zsh'], 0, 2);
+
+    for (const file of files.slice(0, 100)) {
+      try {
+        const stat = await fs.stat(file);
+        if (stat.size > MAX_FILE_SIZE) continue;
+        const content = await fs.readFile(file, 'utf-8');
+        const lines = content.split('\n');
+        const relativePath = path.relative(targetDir, file);
+
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].length > MAX_LINE_LENGTH) continue;
+          // Skip comment lines so a `# curl … @~/.aws/credentials` note does not fire.
+          if (lines[i].trimStart().startsWith('#')) continue;
+          const match = detectShellCredentialExfil(lines[i]);
+          if (match) {
+            findings.push({
+              checkId: 'SHELL-EXFIL-001',
+              name: 'Credential file exfiltration in shell script',
+              description: 'Shell script uploads a credential file to a remote endpoint. A credential file sent over the network in a request body leaves the machine and can be captured, replayed, or logged at the destination.',
+              category: 'credential-exposure',
+              severity: 'critical',
+              passed: false,
+              message: `Credential file ${match.credPath} is sent to ${match.url} in ${relativePath}`,
+              file: relativePath,
+              line: i + 1,
+              fixable: false,
+              fix: `Remove the upload of ${match.credPath} on line ${i + 1}. If a service needs to authenticate, exchange the credential for a scoped, short-lived token server-side and never place a credential file in a request body. If this destination is known-good, add the path to .hmaignore.`,
+              guidance: 'Transmitting a credential file (AWS/SSH/gcloud/docker/kube/npm keys, .env, .netrc) to a remote endpoint exposes long-lived secrets. The receiving server can be compromised or spoofed, and request bodies are frequently logged in transit.',
+            });
+            break; // One finding per file.
           }
         }
       } catch { /* skip unreadable files */ }

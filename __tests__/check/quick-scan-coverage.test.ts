@@ -26,7 +26,7 @@ import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
 const BASE = {
   compiledArtifacts: 3,
   observedCheckIds: [] as string[],
-  staticCheckCount: 310,
+  staticCheckCount: 311,
   fullAuditTarget: './my-agent',
 };
 
@@ -37,7 +37,7 @@ describe('#388 quick-scan coverage', () => {
     const c = quickScanCoverage(BASE);
     expect(c.executions).toEqual([]);
     expect(c.mode).toBe('quick-scan');
-    expect(c.staticChecksNotRun).toBe(310);
+    expect(c.staticChecksNotRun).toBe(311);
   });
 
   it('reports every category as not-examined when the run found nothing', () => {

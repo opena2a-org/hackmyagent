@@ -192,6 +192,7 @@ const TAXONOMY_MAP: Record<string, string> = {
   // Code injection, supply chain, operational security
   // CODEINJ-001 removed — deduplicated with NEMO-005
   'INSTALL-001': 'SUPPLY-CHAIN-INSTALL',
+  'SHELL-EXFIL-001': 'CRED-EXFIL',
   'CLIPASS-001': 'RETROACTIVE-PRIV',
   'INTEGRITY-001': 'INTEGRITY-BYPASS',
   'TOCTOU-001': 'TOCTOU-RACE',

@@ -34,11 +34,11 @@ describe('check-count single source of truth', () => {
   // whenever the taxonomy changes — this test fails on drift by design, forcing
   // the public-facing numbers to be updated in the same change.
   it('matches the published golden counts (update docs when this changes)', () => {
-    expect(counts.total).toBe(323);
-    expect(counts.static).toBe(310);
+    expect(counts.total).toBe(324);
+    expect(counts.static).toBe(311);
     expect(counts.semantic).toBe(13);
-    expect(counts.totalCategories).toBe(74);
-    expect(counts.staticCategories).toBe(69);
+    expect(counts.totalCategories).toBe(75);
+    expect(counts.staticCategories).toBe(70);
   });
 
   it('the scan display no longer hardcodes a static-check count (teeth)', () => {
