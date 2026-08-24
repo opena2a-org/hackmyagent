@@ -98,6 +98,75 @@ const BACKUP_MANIFEST_VERSION = 2;
  */
 export const JS_FAMILY_EXTENSIONS = ['.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx'] as const;
 
+/**
+ * Build the per-path `SCAN-UNREAD-001` finding for one discovered-but-unread
+ * input. Module-level and pure so a second command (`check` on a local path,
+ * #508) can emit the identical finding through the same errno->remedy logic
+ * instead of carrying a second copy of it — the per-channel-copy class #494
+ * was the receipt for.
+ *
+ * ONE finding per path, not one naming the first of N: `file` is a single
+ * field and SARIF/ASFF consumers key on it, so a summary finding leaves every
+ * path after the first in no structured field at all. The remedy is derived
+ * from the ERRNO, not from the finding — `chmod` answers a permission denial
+ * and is a dead end for `EIO`/`ELOOP`, which the predicate deliberately admits.
+ *
+ * `command` names the CLI verb the remedy re-runs; it defaults to `secure`, so
+ * the `HardeningScanner.secure` caller is byte-for-byte unchanged.
+ */
+export function buildUnreadInputFinding(
+  u: { rel: string; code: string },
+  opts: { cliName: string; targetDir: string; command?: string },
+): SecurityFinding {
+  const { rel, code } = u;
+  const { cliName, targetDir, command = 'secure' } = opts;
+  const permission = code === 'EACCES' || code === 'EPERM';
+  const cited = citationPath(rel);
+  const target = citationTarget(targetDir);
+  // The re-run verb is a string LITERAL per branch, never a raw `${command}`
+  // interpolation: a bare identifier in a runnable command string is what the
+  // render-source gate (#273) forbids, and `command` is a fixed internal verb,
+  // not a path operand. `secure` is the default so this caller is byte-for-byte
+  // unchanged. `${cited}`/`${target}` are citation-bound and `${cliName}` is a
+  // known non-path operand, exactly as before.
+  const fix = permission
+    ? (cited
+      ? (command === 'check'
+        ? `chmod u+r ${cited} && ${cliName} check ${target}`
+        : `chmod u+r ${cited} && ${cliName} secure ${target}`)
+      : 'Make the file named above readable, then re-run this scan.')
+    : `Resolve the ${code} on this path (a broken symlink, an I/O error or an `
+      + `unreadable mount are the usual causes), then re-run this scan.`;
+  return {
+    checkId: 'SCAN-UNREAD-001',
+    name: 'Input Discovered But Not Read',
+    description: 'A file inside the target was discovered and its contents could not be read, so no check examined it',
+    category: 'hardening',
+    severity: 'medium',
+    // `passed: false` so it is SHOWN. A `passed: true` finding is filtered
+    // out of the report, which is how an earlier disclosure managed to
+    // exist in the code and appear nowhere on screen.
+    passed: false,
+    message: `${rel} could not be read (${code})`,
+    file: rel,
+    fixable: false,
+    fix,
+    // The errno is named in the body, not only in `message`: the rendered
+    // finding prints `guidance`, so an errno that lives only on `message`
+    // reaches no reader — and the errno is the input that decides which
+    // remedy applies.
+    guidance:
+      `This file was discovered inside the target and the read failed with ${code}, so its `
+      + 'contents never reached a check. The score above is an upper bound, not a measurement '
+      + 'of this tree: nothing was ruled out about this file, and a credential or an injected '
+      + 'instruction in it would be invisible to this scan — leaving the score HIGHER than if '
+      + 'the file had been readable, because the evidence simply left the assessment. Re-run '
+      + 'once it can be read. If it is meant to be unreadable, scan a narrower target that '
+      + 'does not contain it — an `.hmaignore` path rule will not clear this, because it '
+      + 'scopes what is reported about a file and cannot make an unread file read.',
+  } as any;
+}
+
 export interface CreatedFileRecord {
   /** Path relative to the scan target. */
   path: string;
@@ -2772,51 +2841,11 @@ export class HardeningScanner {
     }));
     this.unreadableAll = unreadable;
     for (const u of unreadable) {
-      const rel = u.rel;
-      // ONE finding per path, not one naming the first of N. `file` is a single
-      // field and SARIF/ASFF consumers key on it, so a summary finding leaves
-      // every path after the first in no structured field at all.
-      //
-      // The remedy is derived from the ERRNO, not from the finding. `chmod` is
-      // the answer for a permission denial and is a dead end for `EIO` or
-      // `ELOOP`, which the predicate deliberately admits — a fix line that
-      // cannot work is exactly what the per-finding protocol forbids.
-      const permission = u.code === 'EACCES' || u.code === 'EPERM';
-      const cited = citationPath(rel);
-      const fix = permission
-        ? (cited
-          ? `chmod u+r ${cited} && ${this.cliName} secure ${citationTarget(targetDir)}`
-          : 'Make the file named above readable, then re-run this scan.')
-        : `Resolve the ${u.code} on this path (a broken symlink, an I/O error or an `
-          + `unreadable mount are the usual causes), then re-run this scan.`;
-      findings.push({
-        checkId: 'SCAN-UNREAD-001',
-        name: 'Input Discovered But Not Read',
-        description: 'A file inside the target was discovered and its contents could not be read, so no check examined it',
-        category: 'hardening',
-        severity: 'medium',
-        // `passed: false` so it is SHOWN. A `passed: true` finding is filtered
-        // out of the report, which is how an earlier disclosure managed to
-        // exist in the code and appear nowhere on screen.
-        passed: false,
-        message: `${rel} could not be read (${u.code})`,
-        file: rel,
-        fixable: false,
-        fix,
-        // The errno is named in the body, not only in `message`: the rendered
-        // finding prints `guidance`, so an errno that lives only on `message`
-        // reaches no reader — and the errno is the input that decides which
-        // remedy applies.
-        guidance:
-          `This file was discovered inside the target and the read failed with ${u.code}, so its `
-          + 'contents never reached a check. The score above is an upper bound, not a measurement '
-          + 'of this tree: nothing was ruled out about this file, and a credential or an injected '
-          + 'instruction in it would be invisible to this scan — leaving the score HIGHER than if '
-          + 'the file had been readable, because the evidence simply left the assessment. Re-run '
-          + 'once it can be read. If it is meant to be unreadable, scan a narrower target that '
-          + 'does not contain it — an `.hmaignore` path rule will not clear this, because it '
-          + 'scopes what is reported about a file and cannot make an unread file read.',
-      } as any);
+      // ONE finding per path, not one naming the first of N — see
+      // `buildUnreadInputFinding`, extracted to module scope so the local
+      // `check` arm can emit the identical finding through the same
+      // errno->remedy logic rather than a second copy (#508 / #494 class).
+      findings.push(buildUnreadInputFinding(u, { cliName: this.cliName, targetDir }));
     }
 
     if (this.fixWritesIntoForeignArchive.length > 0) {
