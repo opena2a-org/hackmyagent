@@ -340,6 +340,7 @@ import { shouldShowDeepProgress } from './ui/progress-gate';
 import { generateVerifyCommand } from './ui/verify-command';
 import { commandSucceeded } from './telemetry/command-success';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
+import { UsageError, usageError } from './checker/errors';
 import { RootRefusalError } from './mcp/roots';
 import { shellQuote, citationPath, citationTarget, commandNaming } from './ui/shell-quote';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
@@ -919,10 +920,8 @@ Examples:
         skipDnsVerification: options.offline,
       });
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(
-          `Timed out verifying "${skill}" (10s). The publisher may not exist or DNS is unreachable.\n` +
-          `Try: ${getCheckCommand()} ${skill} --offline`
-        )), 10000)
+        setTimeout(() => reject(usageError`Timed out verifying "${skill}" (10s). The publisher may not exist or DNS is unreachable.
+Try: ${getCheckCommand()} ${skill} --offline`), 10000)
       );
       const result = await Promise.race([checkPromise, timeoutPromise]);
 
@@ -996,7 +995,12 @@ Examples:
         process.exit(1);
       }
     } catch (error) {
-      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
+      if (error instanceof UsageError) {
+        error.message.split('\n').forEach((line, i) =>
+          console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+      } else {
+        console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
+      }
       process.exit(1);
     }
   });
@@ -1023,7 +1027,7 @@ function displayCheckFindings(
     for (const f of failed.slice(0, limit)) {
       const sev = SEVERITY_DISPLAY[f.severity];
       const attackClass = (f as any).attackClass ? ` (${(f as any).attackClass})` : '';
-      console.log(`  ${sev.color()}${sev.symbol}${RESET()} ${f.name}: ${f.message}${colors.dim}${attackClass}${RESET()}`);
+      console.log(`  ${sev.color()}${sev.symbol}${RESET()} ${f.name}: ${escapeForDisplay(f.message)}${colors.dim}${attackClass}${RESET()}`);
       if (verbose) {
         console.log(`    ${colors.dim}Check:    ${f.checkId}${RESET()}`);
         if (f.category) {
@@ -1333,16 +1337,9 @@ function renderConceptForFinding(
   }
 }
 
-/** Shorten a file path for display — show filename + parent dir only */
-function shortenPath(filePath: string): string {
-  const parts = filePath.split('/');
-  if (parts.length <= 2) return filePath;
-  return parts.slice(-2).join('/');
-}
-
-// #374 note on the two finding-header renderers below (`Top Issues` and the
-// normal findings list): both choose between `f.file` and `shortenPath(f.file)`
-// INLINE rather than through a helper, and both escape on the line that prints.
+// #377 note on the two finding-header renderers below (`Top Issues` and the
+// normal findings list): both render the FULL relative path — the path the
+// `Verify:` line prints — escaped INLINE on the line that prints.
 // A helper would read better and would defeat `render-source-gate`, which proves
 // the escape is applied by reading the printing line — it cannot see through an
 // indirection, and a guard that has to trust a helper's name proves nothing
@@ -2462,18 +2459,13 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       // the list (issue #134).
       const topFindings = [...failed].sort(compareFindingsByTier).slice(0, 3);
       for (const f of topFindings) {
-        // #374 — a finding inside the archive `--fix` just created needs its FULL
-                // relative path. `shortenPath` keeps the last two segments, so
-                // `.hackmyagent-backup/<stamp>/.claude/settings.json` collapses to
-                // `.claude/settings.json` — the live file, which that run just redacted —
-                // and the two render under one header, distinguishable only by `Verify:`.
-                const shortFile = f.file
-                  ? escapePathForDisplay(f.inOwnArchive ? f.file : shortenPath(f.file))
-                  : '';
-        const loc = shortFile + (f.line ? `:${f.line}` : '');
+        // #377 — the header names the file the `Verify:` line names: the full
+        // relative path, never elided (subsumes the #374 archive case).
+        const headerPath = f.file ? escapePathForDisplay(f.file) : '';
+        const loc = headerPath + (f.line ? `:${f.line}` : '');
         const borderColor = SEVERITY_DISPLAY[f.severity].color();
         console.log();
-        console.log(`  ${borderColor}│${RESET()} ${sevBadge(f.severity)}  ${colors.bold}${colors.white}${f.name || f.message}${RESET()}`);
+        console.log(`  ${borderColor}│${RESET()} ${sevBadge(f.severity)}  ${colors.bold}${colors.white}${escapeForDisplay(f.name || f.message)}${RESET()}`);
         if (loc) console.log(`  ${borderColor}│${RESET()} ${colors.dim}${loc}${RESET()}`);
         if (f.guidance) {
           console.log(`  ${borderColor}│${RESET()} ${escapeForDisplay(cleanFixText(f.guidance, f.file))}`);
@@ -2505,18 +2497,13 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         // #324 — the finding header, the guidance and the fix all interpolate a
         // path that came from the scanned tree. A newline in one split the
         // location line and truncated the fix command mid-quote.
-        // #374 — a finding inside the archive `--fix` just created needs its FULL
-                // relative path. `shortenPath` keeps the last two segments, so
-                // `.hackmyagent-backup/<stamp>/.claude/settings.json` collapses to
-                // `.claude/settings.json` — the live file, which that run just redacted —
-                // and the two render under one header, distinguishable only by `Verify:`.
-                const shortFile = f.file
-                  ? escapePathForDisplay(f.inOwnArchive ? f.file : shortenPath(f.file))
-                  : '';
-        const loc = shortFile + (f.line ? `:${f.line}` : '');
+        // #377 — the header names the file the `Verify:` line names: the full
+        // relative path, never elided (subsumes the #374 archive case).
+        const headerPath = f.file ? escapePathForDisplay(f.file) : '';
+        const loc = headerPath + (f.line ? `:${f.line}` : '');
         const borderColor = SEVERITY_DISPLAY[f.severity].color();
         console.log();
-        console.log(`  ${borderColor}│${RESET()} ${sevBadge(f.severity)}  ${colors.bold}${colors.white}${f.name || f.message}${RESET()}`);
+        console.log(`  ${borderColor}│${RESET()} ${sevBadge(f.severity)}  ${colors.bold}${colors.white}${escapeForDisplay(f.name || f.message)}${RESET()}`);
         if (loc) console.log(`  ${borderColor}│${RESET()} ${colors.dim}${loc}${RESET()}`);
         if (f.guidance) {
           console.log(`  ${borderColor}│${RESET()} ${escapeForDisplay(cleanFixText(f.guidance, f.file))}`);
@@ -2550,7 +2537,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           }
           if (similarCount > 0) {
             const sevColor = SEVERITY_DISPLAY[f.severity]?.color() ?? colors.dim;
-            const collapseCtx = artifactName ? ` in ${artifactName}` : (dir ? ` in ${shortenPath(dir)}` : '');
+            const collapseCtx = artifactName ? ` in ${escapePathForDisplay(artifactName)}` : (dir ? ` in ${escapePathForDisplay(dir)}` : '');
             console.log(`  ${borderColor}│${RESET()} ${colors.dim}+ ${similarCount} more ${RESET()}${sevColor}${f.severity}${collapseCtx ? `${RESET()}${colors.dim}${collapseCtx}` : ''}${RESET()}${colors.dim}  (run with --verbose to see all)${RESET()}`);
           }
         }
@@ -5056,7 +5043,7 @@ Examples:
             process.stderr.write(`[Simulation] Complete.\n\n`);
           } // end skillFiles.length > 0
         } catch (err) {
-          process.stderr.write(`[Simulation] Skipped: ${err instanceof Error ? err.message : 'unknown error'}\n\n`);
+          process.stderr.write(`[Simulation] Skipped: ${escapeForDisplay(err instanceof Error ? err.message : 'unknown error')}\n\n`);
         }
       }
 
@@ -5503,7 +5490,7 @@ Examples:
           }
         } catch (govFixErr: unknown) {
           const msg = govFixErr instanceof Error ? govFixErr.message : 'unknown error';
-          process.stderr.write(`Governance auto-fix skipped: ${msg}\n`);
+          process.stderr.write(`Governance auto-fix skipped: ${escapeForDisplay(msg)}\n`);
         }
       }
 
@@ -5727,14 +5714,14 @@ Examples:
             } catch (nErr: unknown) {
               if (options.verbose) {
                 const nMsg = nErr instanceof Error ? nErr.message : 'unknown error';
-                console.error(`Narrative emission skipped: ${nMsg}`);
+                console.error(`Narrative emission skipped: ${escapeForDisplay(nMsg)}`);
               }
             }
           }
         } catch (publishErr: unknown) {
           rethrowIfRedactionProvenance(publishErr);
           const msg = publishErr instanceof Error ? publishErr.message : 'unknown error';
-          console.error(`\nFailed to publish to registry: ${msg}`);
+          console.error(`\nFailed to publish to registry: ${escapeForDisplay(msg)}`);
           console.error('Scan results are still available locally.');
         }
       }
@@ -5824,7 +5811,7 @@ Examples:
           }
         } catch (ciErr: unknown) {
           const msg = ciErr instanceof Error ? ciErr.message : 'unknown error';
-          console.error(`\nFailed to submit CI scan result: ${msg}`);
+          console.error(`\nFailed to submit CI scan result: ${escapeForDisplay(msg)}`);
           console.error('Scan results are still available locally.');
         }
       }
@@ -5866,7 +5853,12 @@ Examples:
         return finishWithFindings(2);
       }
     } catch (error) {
-      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
+      if (error instanceof UsageError) {
+        error.message.split('\n').forEach((line, i) =>
+          console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+      } else {
+        console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
+      }
       process.exit(1);
     }
   });
@@ -6262,7 +6254,12 @@ Examples:
 
       // Exit code settled above, before the `--json` branch.
     } catch (error) {
-      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
+      if (error instanceof UsageError) {
+        error.message.split('\n').forEach((line, i) =>
+          console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+      } else {
+        console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
+      }
       process.exit(1);
     }
   });
@@ -6497,7 +6494,12 @@ Examples:
 
       // Exit code settled above, before the `--json` branch.
     } catch (error) {
-      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
+      if (error instanceof UsageError) {
+        error.message.split('\n').forEach((line, i) =>
+          console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+      } else {
+        console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
+      }
       process.exit(1);
     }
   });
@@ -6630,7 +6632,12 @@ Examples:
           process.exit(1);
         }
       } catch (error) {
-        console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
+        if (error instanceof UsageError) {
+          error.message.split('\n').forEach((line, i) =>
+            console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+        } else {
+          console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
+        }
         process.exit(1);
       }
     }
@@ -6882,7 +6889,12 @@ Examples:
       // possible, on the code path #327 added to make failure recoverable.
       if (incomplete) process.exitCode = 1;
     } catch (error) {
-      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
+      if (error instanceof UsageError) {
+        error.message.split('\n').forEach((line, i) =>
+          console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+      } else {
+        console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
+      }
       process.exit(1);
     }
   });
@@ -7250,7 +7262,7 @@ Examples:
         } catch (publishErr: unknown) {
           rethrowIfRedactionProvenance(publishErr);
           const msg = publishErr instanceof Error ? publishErr.message : 'unknown error';
-          console.error(`\nFailed to publish to registry: ${msg}`);
+          console.error(`\nFailed to publish to registry: ${escapeForDisplay(msg)}`);
           console.error('Scan results are still available locally.');
         }
       }
@@ -7262,7 +7274,12 @@ Examples:
         process.exit(attackCode);
       }
     } catch (error) {
-      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
+      if (error instanceof UsageError) {
+        error.message.split('\n').forEach((line, i) =>
+          console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+      } else {
+        console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
+      }
       process.exit(1);
     }
   });
@@ -8385,7 +8402,7 @@ Examples:
             pluginErrors++;
             results.push({ name, findings: [], remediations: [] });
             if (!options.json) {
-              console.log(`  ${colors.brightRed}[!!] Plugin error: ${pluginErr instanceof Error ? pluginErr.message : String(pluginErr)}${RESET()}`);
+              console.log(`  ${colors.brightRed}[!!] Plugin error: ${escapeForDisplay(pluginErr instanceof Error ? pluginErr.message : String(pluginErr))}${RESET()}`);
               if (pluginErr instanceof Error && pluginErr.stack) {
                 console.error(pluginErr.stack);
               }
@@ -8551,9 +8568,12 @@ Examples:
           process.exit(1);
         }
       } catch (error) {
-        console.error(
-          `Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`
-        );
+        if (error instanceof UsageError) {
+          error.message.split('\n').forEach((line, i) =>
+            console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+        } else {
+          console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
+        }
         process.exit(1);
       }
     }
@@ -8573,7 +8593,7 @@ program
       const { startMcpServer } = await import('./mcp-server');
       await startMcpServer(options.root ?? []);
     } catch (error) {
-      console.error(`Error starting MCP server: ${error instanceof Error ? error.message : error}`);
+      console.error(`Error starting MCP server: ${escapeForDisplay(error instanceof Error ? error.message : String(error))}`);
       process.exit(1);
     }
   });
@@ -9505,7 +9525,7 @@ Examples:
         } catch (publishErr: unknown) {
           rethrowIfRedactionProvenance(publishErr);
           const msg = publishErr instanceof Error ? publishErr.message : 'unknown error';
-          process.stderr.write(`Failed to publish to registry: ${msg}\n`);
+          process.stderr.write(`Failed to publish to registry: ${escapeForDisplay(msg)}\n`);
           process.stderr.write('Scan results are still available locally.\n');
         }
       }
@@ -9610,7 +9630,12 @@ Examples:
         process.exit(1);
       }
     } catch (error) {
-      process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
+      if (error instanceof UsageError) {
+        error.message.split('\n').forEach((line, i) =>
+          process.stderr.write(i === 0 ? `Error: ${escapeForDisplay(line)}\n` : `${escapeForDisplay(line)}\n`));
+      } else {
+        process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
+      }
       process.exit(1);
     }
   });
@@ -9767,7 +9792,12 @@ Examples:
         console.log();
       }
     } catch (error) {
-      process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
+      if (error instanceof UsageError) {
+        error.message.split('\n').forEach((line, i) =>
+          process.stderr.write(i === 0 ? `Error: ${escapeForDisplay(line)}\n` : `${escapeForDisplay(line)}\n`));
+      } else {
+        process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
+      }
       process.exit(1);
     }
   });
@@ -10306,7 +10336,12 @@ Examples:
         process.exitCode = 1;
       }
     } catch (error) {
-      process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
+      if (error instanceof UsageError) {
+        error.message.split('\n').forEach((line, i) =>
+          process.stderr.write(i === 0 ? `Error: ${escapeForDisplay(line)}\n` : `${escapeForDisplay(line)}\n`));
+      } else {
+        process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
+      }
       process.exit(1);
     }
   });
@@ -10794,7 +10829,12 @@ Examples:
         process.exit(1);
       }
     } catch (error) {
-      console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
+      if (error instanceof UsageError) {
+        error.message.split('\n').forEach((line, i) =>
+          console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+      } else {
+        console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
+      }
       process.exit(1);
     }
   });
@@ -11028,7 +11068,7 @@ Examples:
       } else {
         process.stderr.write(`Error: Could not reach the registry.\n`);
         process.stderr.write(`  URL: ${endpoint}\n`);
-        process.stderr.write(`  ${err instanceof Error ? err.message : String(err)}\n`);
+        process.stderr.write(`  ${escapeForDisplay(err instanceof Error ? err.message : String(err))}\n`);
       }
       process.exit(1);
     }
@@ -12534,7 +12574,7 @@ async function checkPyPiPackage(
     if (message.includes('not found on PyPI')) {
       console.error(`Error: ${escapeForDisplay(String(message))}`);
     } else {
-      console.error(`Error scanning PyPI package "${name}": ${message}`);
+      console.error(`Error scanning PyPI package "${escapeForDisplay(name)}": ${escapeForDisplay(String(message))}`);
     }
     process.exitCode = 1;
   } finally {
@@ -12758,7 +12798,7 @@ async function checkRawUrl(
       console.error(`\nTry downloading manually and scanning the local path:`);
       console.error(`  ${getCheckCommand()} ./downloaded-dir/`);
     } else {
-      console.error(`Error scanning URL: ${message}`);
+      console.error(`Error scanning URL: ${escapeForDisplay(String(message))}`);
     }
     process.exitCode = 1;
   } finally {
@@ -13092,7 +13132,7 @@ async function checkNpmPackage(
     // itself) is visible rather than silently swallowed. Set HMA_INTEGRITY_DEBUG=1
     // to see the full stack.
     const msg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`hackmyagent: integrity check skipped (${msg})\n`);
+    process.stderr.write(`hackmyagent: integrity check skipped (${escapeForDisplay(msg)})\n`);
     if (process.env.HMA_INTEGRITY_DEBUG && err instanceof Error && err.stack) {
       process.stderr.write(err.stack + '\n');
     }

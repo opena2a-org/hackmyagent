@@ -4,6 +4,33 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Finding headers name the whole path; usage errors keep their lines
+
+Two display fixes on one boundary: developer-authored line structure now renders, and
+attacker-influenced content is escaped exactly as before.
+
+`secure` and `check` finding headers printed only the last two path segments, silently —
+`packages/a/src/config/db.json` and `packages/b/src/config/db.json` both rendered
+`config/db.json`, and the header could name a different real file than the `Verify:` line
+under it (#377). Headers now carry the full relative path, the same one `Verify:` cites, and
+the `+ N more` collapse line display-escapes whichever name it renders — the artifact's, or
+the full directory when no artifact name applies. The #374 archive carve-out is subsumed and
+removed.
+
+`check <bad-identifier>` and the registry-timeout guidance rendered as one line carrying
+literal `\n` (#523): the display escape that stops a newline inside scanned content from
+splitting or forging output lines (#324/#334) was applied to our own static help text.
+Developer-authored usage messages now travel as `UsageError` (src/checker/errors.ts), whose
+tagged-template builder escapes every interpolated value at construction — a newline planted
+in argv or environment cannot add, split, or forge a line through a `UsageError` message — and
+catch sites render each
+authored line individually, escaped again on the printing line. Everything that is not a
+`UsageError` renders exactly as before. Twelve error renders that printed a caught message
+unescaped now escape it — the same #324 boundary, applied in the direction it was missing —
+and so do the finding-header name fallback, the collapse label, and a plugin-error line that
+printed through `console.log` beneath the structural test's earlier sight line.
+
+
 ### The benchmark arms say what the run could not read
 
 `secure -b oasb-1` and `-b oasb-2` could exit 2 — the unmeasured floor firing for an input the
