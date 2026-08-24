@@ -282,16 +282,27 @@ function notFoundCoverage(target: string, ecosystem: string) {
  * withheld rather than reported as `low`.
  */
 function remoteCheckVerdict(
-  result: { coverage?: { filesExamined: number } },
+  result: { coverage?: { filesExamined: number; unreadableInputs?: ReadFailureRecord } },
   counts: { critical: number; high: number },
   displayTarget: string,
 ): CheckVerdict {
   const filesExamined = result.coverage?.filesExamined ?? 0;
+  // #508 — the scanner's ledger already records the inputs it discovered and
+  // could not read; this derivation used to define the denominator as the
+  // numerator (`fullCoverage`), so an unreadable member of a package left
+  // BOTH sides of the fraction and the claim read as complete. The record now
+  // carries the denominator, and every input was unread is said as such
+  // rather than as "nothing to examine".
+  const record = result.coverage?.unreadableInputs ?? { count: 0, codes: {} };
+  const allUnread = filesExamined === 0 && record.count > 0;
+  const target = escapeForDisplay(displayTarget);
   return deriveCheckVerdict(
     counts,
-    fullCoverage(filesExamined, 'file'),
-    'nothing-to-examine',
-    `No file was read from ${escapeForDisplay(displayTarget)}, so no risk level can be reported for it.`,
+    recordedCoverage(filesExamined, 'file', record),
+    allUnread ? 'target-unreadable' : 'nothing-to-examine',
+    allUnread
+      ? `Every file discovered in ${target} could not be read (${escapeForDisplay(Object.keys(record.codes).join(', '))}), so no risk level can be reported for it.`
+      : `No file was read from ${target}, so no risk level can be reported for it.`,
   );
 }
 // Per-invocation start times keyed by subcommand name (preAction → postAction).
@@ -303,22 +314,28 @@ import {
   fullCoverage,
   coverageJson,
   unmeasuredBanner,
+  recordedCoverage,
+  unreadInputs,
   EXIT_PASS,
   EXIT_FAIL,
   EXIT_UNMEASURED,
   type CheckVerdict,
+  type ReadFailureRecord,
 } from './check/verdict';
 import { quickScanCoverage } from './check/quick-scan-coverage';
+import { rewriteRemoteUnreadRemedy, UNREAD_INPUT_CHECK_ID } from './check/remote-unread-remedy';
 import {
   summarizeCoverage,
   SEMANTIC_PREFIXES,
   CHECK_METHOD_PREFIXES,
   categoryForPrefix,
   UNREACHABLE_PREFIXES,
+  CoverageLedger,
+  withActiveLedger,
   type CategoryCoverage,
 } from './hardening/coverage-ledger';
 import type { ScanResult, SuppressionChannel, SecurityFindingDraft } from './hardening/security-check';
-import { emitFindings, reemitFinding, assertRedactionProvenance, rethrowIfRedactionProvenance } from './hardening/finding-emit';
+import { emitFindings, reemitFinding, assertRedactionProvenance, rethrowIfRedactionProvenance, type RedactedFinding } from './hardening/finding-emit';
 import { buildJsonStdoutDocument } from './output/json-stdout';
 import { compareFindingsByTier } from './ui/finding-tier';
 import {
@@ -570,8 +587,15 @@ Accepts:
 Output includes: verdict, security score, findings with fix commands, registry trust context, and path forward for recovery.
 
 Risk levels: low, medium, high, critical
-Exit code 0 if measured and low/medium, 1 if measured and high/critical,
-2 if the target could not be measured (missing path, package not found).
+
+Exit codes:
+  0  measured completely, and the risk is low or medium
+  1  measured, and the risk is high or critical
+  2  not measured, or not completely measured. The target does not exist
+     or could not be fetched; or an input inside it was discovered and
+     could not be read. In the second case what DID run is still reported,
+     and the risk level is an upper bound rather than a measurement of the
+     target — the run names each unread input and the errno.
 
 Examples:
   $ ${CLI_PREFIX} check @sentry/mcp-server
@@ -641,8 +665,8 @@ Examples:
       }
 
       // Detect local file/directory paths - run NanoMind scan instead of registry lookup
-      const { statSync } = await import('node:fs');
-      const { resolve, dirname, isAbsolute } = await import('node:path');
+      const { statSync, accessSync, constants: fsConstants } = await import('node:fs');
+      const { resolve, dirname, isAbsolute, relative, basename } = await import('node:path');
       const resolved = resolve(skill);
       let resolvedStat: ReturnType<typeof statSync> | undefined;
       let statError: NodeJS.ErrnoException | undefined;
@@ -690,6 +714,39 @@ Examples:
         return;
       }
 
+      // #508 — a target FILE that exists and cannot be read. The local arm
+      // scans the file's parent directory, so this used to compile the
+      // readable siblings and report their band, at exit 0, on the file the
+      // user named — `100/100` on the wrong file. Nothing the user asked
+      // about was scanned, so it is said that way: unmeasured, exit 2, with
+      // the errno and a runnable check.
+      if (isLocalPath && resolvedStat?.isFile()) {
+        let readError: NodeJS.ErrnoException | undefined;
+        try { accessSync(resolved, fsConstants.R_OK); } catch (e) { readError = e as NodeJS.ErrnoException; }
+        if (readError) {
+          const code = escapeForDisplay(readError.code ?? 'unknown error');
+          const verdict = unmeasured(
+            'target-unreadable',
+            `${escapePathForDisplay(skill)} could not be read (${code}), so nothing was scanned.`,
+            recordedCoverage(0, 'artifact', { count: 1, codes: { [readError.code ?? 'UNKNOWN']: 1 } }),
+          );
+          await settleCheckVerdict(verdict);
+          if (options.json) {
+            writeJsonStdout({
+              hackmyagentVersion: VERSION,
+              target: skill,
+              type: 'local-path',
+              coverage: coverageJson(verdict),
+            });
+          } else {
+            console.error(unmeasuredBanner(verdict));
+            const verify = commandNaming(skill, cited => `  Verify: ls -l ${cited}`);
+            if (verify) console.error(verify);
+          }
+          return;
+        }
+      }
+
       if (isLocalPath && resolvedStat) {
         // Local path: run NanoMind semantic analysis directly. This is a
         // *narrowed* matrix (semantic only, no static-check suite) — we
@@ -700,10 +757,21 @@ Examples:
         const targetDir = resolvedStat.isFile() ? dirname(resolved) : resolved;
 
         const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-        const nmResult = await orchestrateNanoMind(targetDir, [], { silent: !!options.json, nanomind: resolveNanomindFlag(options) });
+        // #508 — the semantic readers route through the ambient coverage
+        // ledger, and on this arm none was active: a read that failed with
+        // EACCES was dropped on the floor, and the file left BOTH sides of the
+        // coverage fraction (`examined 1 / total 1` over a tree with an
+        // unreadable input). This is the same window `scanner.scan()` opens
+        // around its own checks — the first and only one on this command.
+        const ledger = new CoverageLedger(targetDir);
+        const nmResult = await withActiveLedger(ledger, () =>
+          orchestrateNanoMind(targetDir, [], { silent: !!options.json, nanomind: resolveNanomindFlag(options) }),
+        );
+        const unreadRecord = ledger.unreadableInputs;
+        const unreadPaths = ledger.unreadablePaths();
 
         // Apply .hmaignore filtering (paths + check IDs)
-        const { loadHmaIgnore: loadIgnore, isPathIgnored: pathIgnored, isCheckIgnored: checkIgnored } = await import('./hardening/scanner.js');
+        const { loadHmaIgnore: loadIgnore, isPathIgnored: pathIgnored, isCheckIgnored: checkIgnored, buildUnreadInputFinding } = await import('./hardening/scanner.js');
         const skillIgnoreRules = await loadIgnore(targetDir);
         // #450 — one of the hand-rolled copies of the suppression rule. The
         // findings still LEAVE the reported set, exactly as before; what changes
@@ -711,13 +779,35 @@ Examples:
         // risk band and the exit code with it. A path rule does, because that is
         // a scope statement — see `scanner.ts` for why the two differ.
         const skillFindings = nmResult.mergedFindings;
+        // #508 — one SCAN-UNREAD-001 per unread input, through the same
+        // errno->remedy builder `secure` uses; `command: 'check'` names the
+        // re-run verb on this arm. Emitted through the redaction boundary
+        // HERE: this arm publishes `details` raw on --json, so a finding
+        // that never crossed `emitFindings` is refused by the provenance
+        // guard at the channel.
+        for (const u of unreadPaths) {
+          skillFindings.push(...emitFindings([buildUnreadInputFinding(
+            { ...u, rel: relative(targetDir, u.path) || basename(u.path) },
+            { cliName: CLI_PREFIX, targetDir, command: 'check' },
+          )]));
+        }
         const skillSuppressedRaw: any[] = [];
         const skillOutOfScopeRaw: any[] = [];
         if (skillIgnoreRules.paths.length > 0 || skillIgnoreRules.checkIds.length > 0) {
           for (const f of skillFindings as any[]) {
             if (checkIgnored(f.checkId, skillIgnoreRules.checkIds)) {
               skillSuppressedRaw.push({ ...f, suppressed: true, suppressedBy: 'hmaignore-check' });
-            } else if (f.file && pathIgnored(f.file, skillIgnoreRules.paths)) {
+            } else if (f.checkId !== UNREAD_INPUT_CHECK_ID && f.file && pathIgnored(f.file, skillIgnoreRules.paths)) {
+              // The carve-out above mirrors `secure` exactly (see
+              // retainAfterPathSuppression in scanner.ts): a coverage
+              // statement is not a finding about a path's contents, so a path
+              // rule cannot scope it away — `outOfScope` renders as a bare
+              // count, and this arm's exit code was settled from the same
+              // record, so scoping the finding out would print "not in the
+              // exit code" about the very input holding the exit at 2. An
+              // explicit `!SCAN-UNREAD-001` check rule (the branch above)
+              // still suppresses it onto the Suppressed line, with the
+              // penalty, exactly as on `secure`.
               skillOutOfScopeRaw.push({ ...f, suppressed: true, suppressedBy: 'hmaignore-path' });
             }
           }
@@ -747,11 +837,20 @@ Examples:
         // consistent: `compiledArtifacts` is counted from the run, so a quick
         // scan that compiled nothing reports "not measured" instead of the
         // `low` band that zero findings over zero artifacts used to produce.
+        //
+        // #508 — the denominator comes from the run's own record: what was
+        // compiled PLUS what was discovered and could not be read. A run that
+        // read some inputs and not others keeps its band (an upper bound over
+        // what it read) and exits 2; a run whose every attempted input was
+        // unread says so instead of "nothing to examine".
+        const allUnread = nmResult.compiledArtifacts === 0 && unreadRecord.count > 0;
         const verdict = deriveCheckVerdict(
           { critical: critical.length, high: high.length, issues: gated.length },
-          fullCoverage(nmResult.compiledArtifacts, 'artifact'),
-          'nothing-to-examine',
-          `${escapePathForDisplay(resolved)} holds no artifact this scan can read, so no risk level can be reported.`,
+          recordedCoverage(nmResult.compiledArtifacts, 'artifact', unreadRecord),
+          allUnread ? 'target-unreadable' : 'nothing-to-examine',
+          allUnread
+            ? `${escapePathForDisplay(resolved)} holds ${unreadRecord.count} input${unreadRecord.count === 1 ? '' : 's'} this scan attempted and could not read (${escapeForDisplay(Object.keys(unreadRecord.codes).join(', '))}), and nothing it could, so no risk level can be reported.`
+            : `${escapePathForDisplay(resolved)} holds no artifact this scan can read, so no risk level can be reported.`,
         );
         await settleCheckVerdict(verdict);
 
@@ -819,6 +918,9 @@ Examples:
           scanRoot: targetDir,
           nanomindScan: {
             compiledArtifacts: nmResult.compiledArtifacts,
+            // #508 — what the run discovered and could not read, so the header
+            // carries the denominator and the paths are named under it.
+            unreadInputs: { count: unreadRecord.count, paths: unreadPaths },
             // #456 — `check` discloses the analyzer-family shortfall on the
             // same terms as `secure`. Two paths rendering the same compile
             // count must not disagree about how much of the suite read it.
@@ -1120,6 +1222,13 @@ interface UnifiedCheckDisplayOptions {
     compiledArtifacts: number;
     /** True when the semantic compile set hit its 200-file cap. */
     compileSetTruncated?: boolean;
+    /**
+     * #508 — inputs the run discovered inside the target and could not read,
+     * from the coverage ledger the local `check` arm now runs under. The
+     * header carries the denominator and the paths are named under it; the
+     * exit code was settled from the same record, so the two cannot drift.
+     */
+    unreadInputs?: { count: number; paths: { path: string; code: string }[] };
     /**
      * #456 — which of the seven analyzer families examined the compiled set.
      * `compiledArtifacts` counts files the compiler produced an AST for; this
@@ -1707,6 +1816,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // reads as the size of the scan; on a 529-file repo it was the cap, and
     // adding a file to the tree did not move it. Name it as a cap when it is
     // one, and prefer the measured read count when the ledger has it.
+    const unread = nanomindScan.unreadInputs?.count ?? 0;
     if (nanomindScan.compileSetTruncated) {
       const read = localScan?.coverage?.filesExamined;
       meta.push(
@@ -1714,9 +1824,16 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           ? `${read} file${read === 1 ? '' : 's'} read · semantic capped at ${nanomindScan.compiledArtifacts}`
           : `semantic capped at ${nanomindScan.compiledArtifacts} files`,
       );
+    } else if (unread > 0) {
+      // #508 — "2 files analyzed" over a tree holding a third the run could
+      // not read is the count that read as complete. The denominator is the
+      // run's own record: compiled plus discovered-and-not-read.
+      const compiled = nanomindScan.compiledArtifacts;
+      meta.push(`${compiled} of ${compiled + unread} files analyzed`);
     } else {
       meta.push(`${nanomindScan.compiledArtifacts} files analyzed`);
     }
+    if (unread > 0) meta.push(`${unread} could not be read`);
   }
   if (localScan?.filesScanned) meta.push(`${localScan.filesScanned} files scanned`);
 
@@ -1725,6 +1842,29 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   // of the tree. It is a heading rather than a command, so it is escaped for
   // display and not quoted.
   console.log(`  ${colors.bold}${colors.white}${escapePathForDisplay(name)}${RESET()}  ${colors.dim}${meta.join(' · ')}${RESET()}`);
+
+  // #508 — name what the run discovered and could not read, directly under
+  // the header and before any band is printed, so the risk level below is
+  // read as what it is: an upper bound over the inputs that were read. The
+  // exit code (2, unless a critical/high band already settled 1) came from
+  // the same record. Paths come out of the scanned tree and are escaped for
+  // display; the Verify line is a runnable command on the relative path.
+  const unreadPaths = nanomindScan?.unreadInputs?.paths ?? [];
+  if (unreadPaths.length > 0) {
+    const { relative: relativePath } = require('node:path') as typeof import('node:path');
+    const rel = (p: string) => (scanRoot ? relativePath(scanRoot, p) || p : p);
+    for (const u of unreadPaths) {
+      console.log(`  ${colors.yellow}Not read${RESET()}     ${escapePathForDisplay(rel(u.path))}  ${colors.dim}(${escapeForDisplay(u.code)})${RESET()}`);
+    }
+    const n = unreadPaths.length;
+    // `citationPath`, not `shellQuote`: this path is spliced into a command
+    // the report tells the user to RUN, and citation quotes it or refuses —
+    // the render-source gate caught the first cut splicing it raw. When the
+    // path cannot be cited truthfully the clause is omitted rather than
+    // printed against a different path (#273's rule).
+    const cited = citationPath(rel(unreadPaths[0].path));
+    console.log(`  ${colors.dim}The risk level below is an upper bound: ${n} input${n === 1 ? '' : 's'} discovered and not read.${cited ? ` Verify: ls -l ${cited}` : ''}${RESET()}`);
+  }
 
   // ── Verdict + Score ─────────────────────────────────────────────────
   if (localScan || nanomindScan) {
@@ -12273,6 +12413,7 @@ async function checkGitHubRepo(
 
     // Filter local-dev-only findings irrelevant to cloned repos
     filterLocalOnlyFindings(result, scanner);
+    result.findings = rewriteRemoteUnreadRemedy(result.findings, 'repository', undefined);
 
     const failed = result.findings.filter(f => !f.passed);
     const critical = failed.filter(f => f.severity === 'critical');
@@ -12604,6 +12745,7 @@ async function checkPyPiPackage(
 
     // Filter local-dev-only findings irrelevant to downloaded packages
     filterLocalOnlyFindings(result, scanner);
+    result.findings = rewriteRemoteUnreadRemedy(result.findings, 'package', `pip download --no-deps --no-binary :all: ${shellQuote(name)} (then tar tvzf the sdist it downloads)`);
 
     const failed = result.findings.filter(f => !f.passed);
     const critical = failed.filter(f => f.severity === 'critical');
@@ -12821,6 +12963,7 @@ async function checkRawUrl(
 
     // Filter local-dev-only findings irrelevant to downloaded URLs
     filterLocalOnlyFindings(result, scanner);
+    result.findings = rewriteRemoteUnreadRemedy(result.findings, 'archive', `curl -sL ${shellQuote(url)} -o archive && tar tvzf archive (or unzip -l archive)`);
 
     const failed = result.findings.filter(f => !f.passed);
     const critical = failed.filter(f => f.severity === 'critical');
@@ -13006,6 +13149,7 @@ async function checkNpmPackage(
 
     // Filter local-dev-only findings irrelevant to downloaded packages
     filterLocalOnlyFindings(result, scanner);
+    result.findings = rewriteRemoteUnreadRemedy(result.findings, 'package', `npm pack ${shellQuote(name)} (then tar tvzf the tarball it prints)`);
 
     const failed = result.findings.filter(f => !f.passed);
     const critical = failed.filter(f => f.severity === 'critical');
