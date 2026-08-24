@@ -341,7 +341,8 @@ HIGH-severity SOUL finding (a governance violation, a profile mismatch, or an un
 `--profile` value) that renders as a warning and passes CI without the flag — deliberate,
 so a pipeline can opt into treating a misleading SOUL verdict as a failure. To gate a
 pipeline on severity, read the exit code the command already returns; to gate on the
-score, use `--fail-below <n>` on the text and JSON channels.
+score, use `--fail-below <n>` on any output channel. A threshold only raises the exit
+code: a run that could not read one of its inputs still exits 2, not 1.
 
 ```yaml
 name: Agent Security
