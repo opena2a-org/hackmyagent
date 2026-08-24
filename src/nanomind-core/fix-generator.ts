@@ -19,6 +19,7 @@
 import { citationTarget } from '../ui/shell-quote.js';
 import type { SecurityAST, ArtifactType, Capability, Constraint } from './types.js';
 import type { ASTFinding } from './analyzers/capability-analyzer.js';
+import { FIX_LINES } from '../hardening/fix-lines.js';
 
 // ============================================================================
 // Public API
@@ -44,7 +45,8 @@ export function enrichFindings(
 
     return {
       ...f,
-      fix: contextualFix,
+      fix: contextualFix.fix,
+      ...(contextualFix.fixLines ? { [FIX_LINES]: contextualFix.fixLines } : {}),
       guidance: contextualGuidance,
     };
   });
@@ -54,67 +56,91 @@ export function enrichFindings(
 // Fix Generation (attack class dispatch)
 // ============================================================================
 
-function generateFix(finding: ASTFinding, ast: SecurityAST, projectConstraints?: Constraint[]): string {
+/**
+ * #367 — a fix is one string for every machine channel and, when this module
+ * composed it from parts, the same parts for the text channel. The parts ARE
+ * the line structure: each `parts.push` is one developer-authored line, so a
+ * boundary between elements is trusted and a newline inside an element (a
+ * file name from the scanned tree) is not — the renderer escapes each element
+ * on its own printing line and never splits `fix` to recover structure.
+ * `fixLines.join('\n') === fix` by construction here, and `emitFinding`
+ * drops any pair for which that stops being true.
+ */
+interface GeneratedFix {
+  fix: string;
+  fixLines?: readonly string[];
+}
+
+function composed(parts: readonly string[]): GeneratedFix {
+  return { fix: parts.join('\n'), fixLines: parts };
+}
+
+/** An analyzer-supplied fix: one string, no structure claimed for it. */
+function verbatim(fix: string): GeneratedFix {
+  return { fix };
+}
+
+function generateFix(finding: ASTFinding, ast: SecurityAST, projectConstraints?: Constraint[]): GeneratedFix {
   const attackClass = finding.attackClass ?? finding.checkId;
 
   // Dispatch by attack class for domain-specific fixes
   switch (attackClass) {
     case 'PRIV-ESCALATION':
-      return fixCapabilityIssue(finding, ast, projectConstraints);
+      return composed(fixCapabilityIssue(finding, ast, projectConstraints));
 
     case 'CRED-EXPOSURE':
     case 'CRED-EXFIL':
     case 'CRED-HARVEST':
     case 'CRED-HARDCODED':
-      return fixCredentialIssue(finding, ast);
+      return composed(fixCredentialIssue(finding, ast));
 
     case 'SKILL-EXFIL':
     case 'DATA-EXFIL':
-      return fixExfiltrationIssue(finding, ast);
+      return composed(fixExfiltrationIssue(finding, ast));
 
     case 'PROMPT-INJECT':
     case 'JAILBREAK':
     case 'ROLE-HIJACK':
     case 'AUTHORITY-CONFUSION':
-      return fixInjectionIssue(finding, ast);
+      return composed(fixInjectionIssue(finding, ast));
 
     case 'HEARTBEAT-RCE':
-      return fixRemoteExecutionIssue(finding, ast);
+      return composed(fixRemoteExecutionIssue(finding, ast));
 
     case 'PERSISTENCE':
-      return fixPersistenceIssue(finding, ast);
+      return composed(fixPersistenceIssue(finding, ast));
 
     case 'SOUL-BYPASS':
-      return fixGovernanceIssue(finding, ast);
+      return composed(fixGovernanceIssue(finding, ast));
 
     case 'SOUL-GAP':
     case 'SOUL-MISSING':
       // The governance analyzer sets a specific `hackmyagent harden-soul .` fix with
       // the exact missing domains listed. Preserve it; only fall back to the generic
       // prose generator if the analyzer didn't produce a fix.
-      return finding.fix ?? fixGovernanceIssue(finding, ast);
+      return finding.fix !== undefined ? verbatim(finding.fix) : composed(fixGovernanceIssue(finding, ast));
 
     case 'CAPABILITY-ABUSE':
     case 'CAPABILITY-CREEP':
-      return fixCapabilityIssue(finding, ast, projectConstraints);
+      return composed(fixCapabilityIssue(finding, ast, projectConstraints));
 
     case 'SEMANTIC-MISMATCH':
       // Prefer the analyzer's specific fix when set — it includes cap.name
       // and renders well in single-line CLI output. Fall back to the prose
       // generator only when the analyzer didn't supply one.
-      return finding.fix ?? fixScopeMismatch(finding, ast);
+      return finding.fix !== undefined ? verbatim(finding.fix) : composed(fixScopeMismatch(finding, ast));
 
     case 'SCAN-EVASION':
-      return fixScannerEvasion(finding, ast);
+      return composed(fixScannerEvasion(finding, ast));
 
     case 'SUPPLY-CHAIN':
-      return fixSupplyChain(finding, ast);
+      return composed(fixSupplyChain(finding, ast));
 
     case 'SCOPE-WILDCARD':
-      return finding.fix ?? fixGeneric(finding, ast);
+      return finding.fix !== undefined ? verbatim(finding.fix) : composed(fixGeneric(finding, ast));
 
     default:
-      return finding.fix ?? fixGeneric(finding, ast);
+      return finding.fix !== undefined ? verbatim(finding.fix) : composed(fixGeneric(finding, ast));
   }
 }
 
@@ -122,7 +148,7 @@ function generateFix(finding: ASTFinding, ast: SecurityAST, projectConstraints?:
 // Capability Fixes
 // ============================================================================
 
-function fixCapabilityIssue(finding: ASTFinding, ast: SecurityAST, projectConstraints?: Constraint[]): string {
+function fixCapabilityIssue(finding: ASTFinding, ast: SecurityAST, projectConstraints?: Constraint[]): string[] {
   const parts: string[] = [];
   const file = finding.file ?? ast.artifactPath ?? 'the artifact';
 
@@ -176,14 +202,14 @@ function fixCapabilityIssue(finding: ASTFinding, ast: SecurityAST, projectConstr
 
   parts.push('');
   parts.push(verifyCommand(ast));
-  return parts.join('\n');
+  return parts;
 }
 
 // ============================================================================
 // Credential Fixes
 // ============================================================================
 
-function fixCredentialIssue(finding: ASTFinding, ast: SecurityAST): string {
+function fixCredentialIssue(finding: ASTFinding, ast: SecurityAST): string[] {
   const parts: string[] = [];
   const file = finding.file ?? ast.artifactPath ?? 'the artifact';
 
@@ -228,14 +254,14 @@ function fixCredentialIssue(finding: ASTFinding, ast: SecurityAST): string {
 
   parts.push('');
   parts.push(verifyCommand(ast));
-  return parts.join('\n');
+  return parts;
 }
 
 // ============================================================================
 // Exfiltration Fixes
 // ============================================================================
 
-function fixExfiltrationIssue(finding: ASTFinding, ast: SecurityAST): string {
+function fixExfiltrationIssue(finding: ASTFinding, ast: SecurityAST): string[] {
   const parts: string[] = [];
   const file = finding.file ?? ast.artifactPath ?? 'the artifact';
 
@@ -267,14 +293,14 @@ function fixExfiltrationIssue(finding: ASTFinding, ast: SecurityAST): string {
 
   parts.push('');
   parts.push(verifyCommand(ast));
-  return parts.join('\n');
+  return parts;
 }
 
 // ============================================================================
 // Injection / Jailbreak Fixes
 // ============================================================================
 
-function fixInjectionIssue(finding: ASTFinding, ast: SecurityAST): string {
+function fixInjectionIssue(finding: ASTFinding, ast: SecurityAST): string[] {
   const parts: string[] = [];
   const file = finding.file ?? ast.artifactPath ?? 'the artifact';
 
@@ -356,14 +382,14 @@ function fixInjectionIssue(finding: ASTFinding, ast: SecurityAST): string {
 
   parts.push('');
   parts.push(verifyCommand(ast));
-  return parts.join('\n');
+  return parts;
 }
 
 // ============================================================================
 // Remote Execution Fixes
 // ============================================================================
 
-function fixRemoteExecutionIssue(finding: ASTFinding, ast: SecurityAST): string {
+function fixRemoteExecutionIssue(finding: ASTFinding, ast: SecurityAST): string[] {
   const parts: string[] = [];
   const file = finding.file ?? ast.artifactPath ?? 'the artifact';
 
@@ -402,14 +428,14 @@ function fixRemoteExecutionIssue(finding: ASTFinding, ast: SecurityAST): string 
 
   parts.push('');
   parts.push(verifyCommand(ast));
-  return parts.join('\n');
+  return parts;
 }
 
 // ============================================================================
 // Persistence Fixes
 // ============================================================================
 
-function fixPersistenceIssue(finding: ASTFinding, ast: SecurityAST): string {
+function fixPersistenceIssue(finding: ASTFinding, ast: SecurityAST): string[] {
   const parts: string[] = [];
   const file = finding.file ?? ast.artifactPath ?? 'the artifact';
 
@@ -435,14 +461,14 @@ function fixPersistenceIssue(finding: ASTFinding, ast: SecurityAST): string {
 
   parts.push('');
   parts.push(verifyCommand(ast));
-  return parts.join('\n');
+  return parts;
 }
 
 // ============================================================================
 // Governance Fixes
 // ============================================================================
 
-function fixGovernanceIssue(finding: ASTFinding, ast: SecurityAST): string {
+function fixGovernanceIssue(finding: ASTFinding, ast: SecurityAST): string[] {
   const parts: string[] = [];
   const file = finding.file ?? ast.artifactPath ?? 'the artifact';
 
@@ -506,14 +532,14 @@ function fixGovernanceIssue(finding: ASTFinding, ast: SecurityAST): string {
 
   parts.push('');
   parts.push(verifyCommand(ast));
-  return parts.join('\n');
+  return parts;
 }
 
 // ============================================================================
 // Scope Mismatch Fixes
 // ============================================================================
 
-function fixScopeMismatch(finding: ASTFinding, ast: SecurityAST): string {
+function fixScopeMismatch(finding: ASTFinding, ast: SecurityAST): string[] {
   const parts: string[] = [];
   const file = finding.file ?? ast.artifactPath ?? 'the artifact';
 
@@ -536,14 +562,14 @@ function fixScopeMismatch(finding: ASTFinding, ast: SecurityAST): string {
 
   parts.push('');
   parts.push(verifyCommand(ast));
-  return parts.join('\n');
+  return parts;
 }
 
 // ============================================================================
 // Scanner Evasion Fix
 // ============================================================================
 
-function fixScannerEvasion(finding: ASTFinding, ast: SecurityAST): string {
+function fixScannerEvasion(finding: ASTFinding, ast: SecurityAST): string[] {
   const parts: string[] = [];
   const file = finding.file ?? ast.artifactPath ?? 'the artifact';
 
@@ -559,14 +585,14 @@ function fixScannerEvasion(finding: ASTFinding, ast: SecurityAST): string {
   parts.push('  4. If intentional: remove the artifact entirely.');
   parts.push('  5. If benign: simplify the artifact to remove false positive triggers.');
 
-  return parts.join('\n');
+  return parts;
 }
 
 // ============================================================================
 // Supply Chain Fix
 // ============================================================================
 
-function fixSupplyChain(finding: ASTFinding, ast: SecurityAST): string {
+function fixSupplyChain(finding: ASTFinding, ast: SecurityAST): string[] {
   const parts: string[] = [];
   const file = finding.file ?? ast.artifactPath ?? 'the artifact';
 
@@ -585,14 +611,14 @@ function fixSupplyChain(finding: ASTFinding, ast: SecurityAST): string {
 
   parts.push('');
   parts.push(verifyCommand(ast));
-  return parts.join('\n');
+  return parts;
 }
 
 // ============================================================================
 // Generic Fix (fallback)
 // ============================================================================
 
-function fixGeneric(finding: ASTFinding, ast: SecurityAST): string {
+function fixGeneric(finding: ASTFinding, ast: SecurityAST): string[] {
   const parts: string[] = [];
   const file = finding.file ?? ast.artifactPath ?? 'the artifact';
 
@@ -603,7 +629,7 @@ function fixGeneric(finding: ASTFinding, ast: SecurityAST): string {
   parts.push('Review the flagged content and address the security concern.');
   parts.push('');
   parts.push(verifyCommand(ast));
-  return parts.join('\n');
+  return parts;
 }
 
 // ============================================================================

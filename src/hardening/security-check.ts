@@ -7,6 +7,7 @@ import type { ShapeId } from '../types/credential-format';
 // Type-only, and therefore erased: `finding-emit` imports types from here, so a
 // value import would be a runtime cycle. This one is not.
 import type { RedactedFinding } from './finding-emit';
+import { FIX_LINES } from './fix-lines';
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low';
 
@@ -116,6 +117,15 @@ export interface SecurityFinding {
   line?: number;
   /** Runnable command or concise action to fix this issue */
   fix?: string;
+  /**
+   * #367 — `fix` as the lines its producer authored, carried beside the
+   * joined string rather than recovered from it: a boundary between elements
+   * is trusted line structure, a newline inside an element is not. Holds only
+   * while the elements join to `fix`; `emitFinding` drops a pair that
+   * disagrees. Text channel only: the key is a symbol, which `JSON.stringify`
+   * never serializes, so no JSON channel carries it from any site.
+   */
+  readonly [FIX_LINES]?: readonly string[];
   /**
    * Remedy to cite when the auto-fix ran but the verification pass proved it
    * did not land. `fix` normally names the auto-fix itself, which is a dead

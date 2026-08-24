@@ -16,6 +16,7 @@
 import type { SecurityAST, Capability, Constraint, RiskSurface } from '../types.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import { isNonAgentProjectType } from './family-coverage.js';
+import { FIX_LINES } from '../../hardening/fix-lines.js';
 
 // ============================================================================
 // Finding Type (compatible with HMA SecurityFinding)
@@ -49,6 +50,15 @@ export interface ASTFinding {
   file?: string;
   line?: number;
   fix?: string;
+  /**
+   * #367 — the tool-authored line structure of `fix`, one element per line,
+   * joining to `fix`. Set only by the fix generator, which composes `fix`
+   * from parts; a boundary between parts is a developer-authored line, a
+   * newline inside a part is a byte from the scanned tree. Absent when `fix`
+   * came from an analyzer as one string. Symbol-keyed so no JSON channel can
+   * carry it — see `FIX_LINES`.
+   */
+  readonly [FIX_LINES]?: readonly string[];
   guidance?: string;
   attackClass?: string;
   /** AST-specific: confidence from NanoMind semantic analysis */
