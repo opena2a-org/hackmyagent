@@ -340,12 +340,35 @@ jobs:
           # diff than any measured here without raising the budget.
           TARGET_BYTES=420000
 
-          # The same cap single mode applies to full source context, applied
-          # per file rather than across the whole request. A file bigger than
-          # this still travels — its diff is never dropped — it is its
-          # line-numbered source that is cut, and the cut says so in the text
-          # the model reads.
-          MAX_FULL_SIZE=200000
+          # AN AGGREGATE BUDGET FOR FULL SOURCE CONTEXT, ACROSS THE WHOLE PULL
+          # REQUEST — not per file.
+          #
+          # This constant used to be applied PER FILE here while single mode
+          # applied the same number as a running total across the request, and
+          # the comment that stood in this place claimed the two were the same
+          # cap. They were not: on the acceptance corpus batch mode emitted
+          # 986,720 bytes of source against single mode's 245,852, and because
+          # the packer sizes batches on bytes, that difference also bought two
+          # extra batches — 5 instead of 3 — moving every over-budget pull
+          # request closer to the 8-batch ceiling that refuses it outright.
+          #
+          # DENOMINATED IN THE BYTES ACTUALLY EMITTED, which is what the packer
+          # below counts. Single mode counts RAW file bytes instead, and that is
+          # a defect rather than a convention worth inheriting: `nl -ba` prefixes
+          # every line with 7 bytes, so the emitted size of a 200,000-byte raw
+          # payload runs from 200,008 bytes (one long line) to 900,000 (100,000
+          # two-byte lines) — measured, both. Line length is chosen by whoever
+          # writes the file, so a raw budget is an author-controlled 4.5x
+          # amplifier on the request this gate pays for and has to fit.
+          #
+          # 200,000 is not derived. It is the number this gate already used, and
+          # adopting it as the aggregate is the smallest possible invention.
+          # THIS IS NOT A RESTORATION OF PARITY WITH SINGLE MODE — single mode's
+          # emitted budget is not a fixed quantity at all, for the reason just
+          # given. It is a bound being chosen, and no changed file is shown MORE
+          # source than before — strictly less whenever the budget binds, and
+          # exactly the same when the whole pull request fits inside it.
+          MAX_FULL_TOTAL=200000
 
           refuse() {
             # Leave nothing behind that a later reader could mistake for a
@@ -488,10 +511,43 @@ jobs:
           # is what proves the carry, not this comment.
           PREAMBLE="$WORK_DIR/000000.diff"
 
+          # THE TRUNCATION NOTICE, IN ONE PLACE because it is written twice: once
+          # at its widest to reserve room for it, and once for real. It states a
+          # LINE RANGE rather than a byte count. Bytes tell the model nothing it
+          # can act on; `lines 1-280 of 1500` lets it localise its own blind spot
+          # against the `@@` headers it is already holding, and it tells an author
+          # reading a finding whether the reviewer could even see their mitigation.
+          # It also says the cut is uniform, so a cut file is not read as a file
+          # this gate singled out.
+          cut_notice() {
+            if [ "$1" -eq 0 ]; then
+              # No line fit. `lines 1-0 of 400` is not a sentence anyone can act
+              # on. This branch is NOT always shorter than the one below —
+              # measured, it runs up to 9 bytes longer for a file under 1,000
+              # lines — so the caller reserves the larger of the two rather than
+              # assuming which one wins.
+              printf '\n[FULL SOURCE NOT SHOWN — none of this file'"'"'s %s lines fit the budget this pull request leaves for source context. Every changed file is cut at the same level, so this is not a judgement about this file. Absence of a mitigation is not evidence that none exists; the diff below is the whole of what changed.]\n' "$2"
+              return
+            fi
+            printf '\n[FULL SOURCE TRUNCATED — lines 1-%s of %s shown. Every changed file in this pull request is cut at the same level, so this is not a judgement about this file. There is no source context here for anything below line %s, and absence of a mitigation outside lines 1-%s is not evidence that none exists.]\n' "$1" "$2" "$1" "$1"
+          }
+
           # Full source context, one file per change, subject to the same
           # exclusions single mode applies. The exclusions govern CONTEXT only.
           # A diff is never withheld from review by file type — that predicate
           # is written by whoever opened the pull request.
+          #
+          # TWO PASSES, because an aggregate budget cannot be spent before it is
+          # known how many claims there are on it. Pass 1 applies every
+          # eligibility rule and weighs what each file WOULD emit; the level is
+          # then computed from those sizes alone; pass 2 writes the files. The
+          # eligibility rules exist once, in pass 1, and pass 2 reads only what
+          # pass 1 recorded — a second copy of them is how one defect became nine
+          # in the model call this workflow no longer contains.
+          CTXMAN="$WORK_DIR/ctx-manifest.tsv"
+          : > "$CTXMAN"
+          SEEN_CTX="$WORK_DIR/ctx-seen"
+          : > "$SEEN_CTX"
           while IFS="$TAB" read -r IDX HUNKS FPATH; do
             CTXF="$WORK_DIR/$IDX.ctx"
             : > "$CTXF"
@@ -549,20 +605,136 @@ jobs:
             # inspects the path STRING and this path is entirely ordinary.
             # A string can only answer where a path points if the path says.
             [ -f "$FPATH" ] && [ ! -L "$FPATH" ] || continue
+            # ONE CLAIM ON THE BUDGET PER PATH, not per chunk. A typechange is
+            # TWO chunks naming one path, and which files are typechanges is the
+            # author's choice — so charging the budget per chunk would let an
+            # author halve every other file's allowance by converting one file to
+            # a symlink and back. That is the author-controllable predicate this
+            # gate refuses, arriving through the manifest instead of through a
+            # glob. The compose loop below de-duplicates per path WITHIN a
+            # batch, so when both chunks pack into one batch the second chunk's
+            # context was built, charged, and then never sent. When the two
+            # chunks straddle a batch boundary the later batch still lists the
+            # path (its own diff travels with it) with no source and no notice;
+            # source attaches once, to the first chunk. Leaving the second
+            # `.ctx` empty is what makes the packer's count match what a batch
+            # actually carries.
+            if grep -qxF -- "$FPATH" "$SEEN_CTX" 2>/dev/null; then
+              continue
+            fi
+            printf '%s\n' "$FPATH" >> "$SEEN_CTX"
             nl -ba < "$FPATH" > "$CTXF.raw"
+            # What this file would emit if it were shown whole: its header plus
+            # its numbered source. The header is charged because the packer
+            # counts it — a budget that does not count everything it puts in the
+            # request is guarding a number rather than a request.
+            HDR_BYTES=$(printf '\n=== %s ===\n' "$FPATH" | wc -c | tr -d ' ')
+            RAW_BYTES=$(wc -c < "$CTXF.raw" | tr -d ' ')
+            printf '%s\t%s\t%s\t%s\n' "$IDX" "$((HDR_BYTES + RAW_BYTES))" "$HDR_BYTES" "$FPATH" >> "$CTXMAN"
+          done < "$MAN"
+
+          # THE LEVEL. Largest single L with sum(min(size_i, L)) <= the budget —
+          # max-min fair, one common cut level for every file.
+          #
+          # WHY NOT SINGLE MODE'S SHAPE. Single mode serves files whole until a
+          # running total overflows and then `break`s, so file order decides who
+          # gets source and who gets none. Order comes from the changed-file
+          # list, which the author's diff determines, so an author can push the
+          # file carrying the change past the cut and have it reviewed with no
+          # source at all. Refused on 2026-08-20 as a file-type-weighted cap and
+          # refused again here in its ordering form.
+          #
+          # The sort is INTERNAL. The result is a function of the multiset of
+          # sizes and the budget, and of nothing else — permuting the changed
+          # files cannot change what any file gets. That is the property, and
+          # `__tests__/gate/pr-review-partition.test.ts` asserts it by permuting.
+          #
+          # Not plain budget-over-file-count: a file smaller than its share would
+          # leave the remainder unspent. Walking ascending hands that remainder
+          # back by raising the one common level, so every file gets at least
+          # what an even split would have given it and no file gets a different
+          # rule.
+          LEVEL=$(cut -f2 "$CTXMAN" | sort -n | awk -v B="$MAX_FULL_TOTAL" '
+            { s[NR] = $1 + 0 }
+            END {
+              n = NR
+              if (n == 0) { print B; exit }
+              rem = B
+              for (i = 1; i <= n; i++) {
+                left = n - i + 1
+                lvl = int(rem / left)
+                if (s[i] <= lvl) { rem -= s[i]; continue }
+                print lvl
+                exit
+              }
+              # Every file fitted whole; nothing is cut.
+              print B
+            }')
+          echo "full source: $(wc -l < "$CTXMAN" | tr -d ' ') files, ${MAX_FULL_TOTAL}-byte aggregate budget, common cut level $LEVEL bytes"
+
+          while IFS="$TAB" read -r IDX SIZE HDR_BYTES FPATH; do
+            CTXF="$WORK_DIR/$IDX.ctx"
             printf '\n=== %s ===\n' "$FPATH" > "$CTXF"
-            if [ "$(wc -c < "$CTXF.raw" | tr -d ' ')" -gt "$MAX_FULL_SIZE" ]; then
+            if [ "$SIZE" -le "$LEVEL" ]; then
+              cat "$CTXF.raw" >> "$CTXF"
+            else
               # Truncate the SOURCE, and say so where the model reads it. A
               # silent cut would leave the verification mandate ("search the
               # full source for a mitigation") running against a file it was
               # only shown part of, with nothing to say so.
-              head -c "$MAX_FULL_SIZE" < "$CTXF.raw" >> "$CTXF"
-              printf '\n[FULL SOURCE TRUNCATED at %s bytes — the rest of this file is not shown, so absence of a mitigation below this point is not evidence]\n' "$MAX_FULL_SIZE" >> "$CTXF"
-            else
-              cat "$CTXF.raw" >> "$CTXF"
+              TOTAL_LINES=$(wc -l < "$CTXF.raw" | tr -d ' ')
+              # Reserve the notice at its WIDEST. The shown line number can never
+              # carry more digits than the total, so a notice rendered with the
+              # total in every slot bounds the one actually written, and the
+              # file therefore cannot exceed the level by reserving too little
+              # for its own footer — WHENEVER THERE IS ROOM TO RESERVE AT ALL.
+              #
+              # When there is not, the bound does not hold and the honest
+              # statement is the one below rather than the guarantee. A level
+              # under about 320 bytes cannot pay for a header and a notice at
+              # all, and a file still gets both: probed at a 200-byte budget over
+              # 3 files, level 66, each file emitted 321 bytes. So the real bound
+              # is `sum(emitted) <= budget + files x (header + notice)`, and the
+              # second term only appears once the budget has already collapsed —
+              # on the order of six hundred short-path files, fewer when paths
+              # are long, since the header carries the path. Dropping the notice
+              # instead would buy the bound by making a file with no source
+              # indistinguishable from one with nothing to hide, which is the
+              # trade this whole step refuses.
+              NOTICE_MAX=$(cut_notice "$TOTAL_LINES" "$TOTAL_LINES" | wc -c | tr -d ' ')
+              # BOTH BRANCHES, because which one fires is not known until the cut
+              # is made: a first line longer than the allowance yields zero shown
+              # lines even when the allowance was generous. Reserving only the
+              # branch that looked likely is how a bound acquires an exception.
+              NOTICE_ZERO=$(cut_notice 0 "$TOTAL_LINES" | wc -c | tr -d ' ')
+              [ "$NOTICE_ZERO" -le "$NOTICE_MAX" ] || NOTICE_MAX=$NOTICE_ZERO
+              ALLOW=$((LEVEL - HDR_BYTES - NOTICE_MAX))
+              SHOWN=0
+              if [ "$ALLOW" -gt 0 ]; then
+                # CUT ON A LINE BOUNDARY. `head -c` stops wherever the byte count
+                # runs out, which puts half a line number in front of the model
+                # and can leave half a UTF-8 character behind — the same defect
+                # the refusal path already fixed with `iconv -c`. Counting whole
+                # lines inside the byte allowance and then taking that many lines
+                # is exact in both units: `wc -l` counts newlines, so the result
+                # never exceeds the allowance.
+                SHOWN=$(head -c "$ALLOW" < "$CTXF.raw" | wc -l | tr -d ' ')
+                # NOT `head -n 0`. BSD head REFUSES a zero line count — `head:
+                # illegal line count -- 0` — while GNU head prints nothing and
+                # succeeds. The workflow runs on ubuntu-latest, but this step is
+                # executed verbatim by `__tests__/gate/pr-review-partition.test.ts`
+                # on BOTH required test runners, and `test (macos-latest)` is one
+                # of them. Under `set -e` the refusal crashes the step, which
+                # fails closed but turns a required check red on a pull request
+                # that did nothing wrong. Zero shown lines is reachable whenever a
+                # file's FIRST line is longer than the allowance — a minified
+                # bundle is the ordinary case, not a contrived one.
+                [ "$SHOWN" -eq 0 ] || head -n "$SHOWN" < "$CTXF.raw" >> "$CTXF"
+              fi
+              cut_notice "$SHOWN" "$TOTAL_LINES" >> "$CTXF"
             fi
             rm -f "$CTXF.raw"
-          done < "$MAN"
+          done < "$CTXMAN"
 
           # Per-batch overhead, measured rather than estimated, by building the
           # scaffold every batch shares and weighing it. `9 of 9` stands in for
