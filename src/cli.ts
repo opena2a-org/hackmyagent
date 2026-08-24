@@ -2961,6 +2961,33 @@ interface LocalControlResult {
   remediation?: string;
 }
 
+/**
+ * #514 (disclosure half) — a benchmark run can exit 2 for an input it could
+ * not read while printing a passing rating, and nothing in the output said
+ * why: `generateBenchmarkReport` maps findings through control `checkIds`,
+ * and `SCAN-UNREAD-001` belongs to no control, so the one finding that
+ * explains the exit code vanished from the report. These two helpers surface
+ * the run's own read-failure record beside the rating. The rating itself and
+ * the exit code are untouched: what a rating may CLAIM over an unread input
+ * is the #513 design question, which is deferred with its own record, and
+ * this discloses rather than decides.
+ */
+function benchmarkUnreadFindings(result: { findings: SecurityFinding[] }): SecurityFinding[] {
+  return result.findings.filter((f) => f.checkId === 'SCAN-UNREAD-001');
+}
+
+function printBenchmarkUnreadDisclosure(result: ScanResult): void {
+  const count = unreadInputCount(result);
+  if (count === 0) return;
+  console.log(`${colors.yellow}Unread inputs: ${count}${RESET()} — the compliance above is an upper bound over what was read.`);
+  for (const f of benchmarkUnreadFindings(result)) {
+    // The message already leads with the path ("src/greet.js could not be
+    // read (EACCES)"), so printing `f.file` beside it named the path twice.
+    console.log(`  ${escapeForDisplay(f.message ?? f.file ?? '')}`);
+  }
+  console.log();
+}
+
 function generateBenchmarkReport(
   findings: SecurityFinding[],
   level: BenchmarkLevel,
@@ -5058,6 +5085,11 @@ Examples:
             conformance: govResult.conformance,
             infraResult,
             govResult,
+            // #514 — the record that explains an exit-2 run; absent when a
+            // ledger kept none, {count: 0, ...} when everything was read.
+            ...(result.coverage?.unreadableInputs
+              ? { unreadableInputs: result.coverage.unreadableInputs }
+              : {}),
           };
           // This arm bypasses writeJsonStdout (writeFileSync(1, ...) below),
           // so it carries its own boundary read.
@@ -5082,6 +5114,7 @@ Examples:
 
           // Show infra report then governance report
           printBenchmarkReport(infraResult, options.verbose ?? false);
+          printBenchmarkUnreadDisclosure(result);
 
           process.stdout.write('\nGovernance Domains (scan-soul):\n');
           for (const domain of govResult.domains) {
@@ -5138,7 +5171,18 @@ Examples:
         let output: string;
         switch (format) {
           case 'json':
-            output = JSON.stringify(benchmarkResult, null, 2);
+            // #514 — the record that explains an exit-2 run rides beside the
+            // rating, in the same shape `secure --json` carries.
+            output = JSON.stringify(
+              {
+                ...benchmarkResult,
+                ...(result.coverage?.unreadableInputs
+                  ? { unreadableInputs: result.coverage.unreadableInputs }
+                  : {}),
+              },
+              null,
+              2,
+            );
             break;
           case 'sarif':
             output = generateSarifOutput(benchmarkResult, result.findings, targetDir);
@@ -5151,6 +5195,7 @@ Examples:
             break;
           default: // text
             printBenchmarkReport(benchmarkResult, options.verbose ?? false);
+            printBenchmarkUnreadDisclosure(result);
             output = '';
         }
 
