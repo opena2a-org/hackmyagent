@@ -28,6 +28,15 @@ import { redactSecretsForReport } from '../security/defense-in-depth.js';
 import { getTMEClassifier } from '../inference/tme-classifier.js';
 import { TMENeuralClassifier } from '../inference/tme-neural.js';
 import { buildAnalysisView } from './source-code-preprocessor.js';
+import {
+  CREDENTIAL_NOUN,
+  EXFIL_VERB,
+  TRANSMIT_VERB,
+  findStructuredCredentialTransmission,
+  findStructuredFirstUrl,
+  findStructuredVerbUrl,
+  parseStructuredJson,
+} from './structured-colocation.js';
 import type {
   SecurityAST,
   CompilationResult,
@@ -1069,18 +1078,31 @@ function extractDataAccessPatterns(
   // every structured credential key has a null/empty/placeholder value.
   const credentialKeywordContext = analyzeCredentialKeywordContext(content);
 
+  // Structured artifacts (JSON, JSONC) pair by leaf string value, not by
+  // paragraph: object keys such as `SessionStart`/`PostToolUse` are
+  // identifiers, and pretty-printed JSON has no blank line for the paragraph
+  // gate below to find, so on the prose engine every URL in a settings file
+  // pairs with every verb (#541, #403). See `structured-colocation.ts`.
+  const structuredRoot = parseStructuredJson(content);
+  if (structuredRoot !== undefined) {
+    return extractStructuredDataAccessPatterns(content, structuredRoot, capabilities, credentialKeywordContext);
+  }
+
+  const lower = content.toLowerCase();
   for (const dt of dataTypes) {
-    if (content.toLowerCase().includes(dt)) {
+    const idx = lower.indexOf(dt);
+    if (idx >= 0) {
       if ((dt === 'credential' || dt === 'session') && credentialKeywordContext === 'schema-only') {
         continue;
       }
       const hasCap = capabilities.some(c => c.name.includes('read') || c.name.includes('access'));
       patterns.push({
-        dataType: dt === 'credential' || dt === 'session' ? 'credentials' :
-                  dt === 'payment' || dt === 'financial' ? 'financial' :
-                  dt === 'medical' ? 'pii' : 'general',
+        dataType: dataTypeOfNoun(dt),
         accessMode: 'read',
         coveredByCapability: hasCap,
+        // The first occurrence is the one the substring test matched, so the
+        // finding can cite the word and line that fired (#403).
+        matched: { scope: 'document', term: content.slice(idx, idx + dt.length), termOffset: idx },
       });
     }
   }
@@ -1097,43 +1119,149 @@ function extractDataAccessPatterns(
   // gate uses substring matching (matches "Resend", "reupload", etc. — the
   // adversarial real-world phrasings) and relies on the proximity check
   // inside `findCoLocatedTransmissionUrl` to suppress misattribution.
-  if (/send|forward|transmit|post|upload/i.test(content) && /https?:\/\//.test(content)) {
-    const coLocated = findCoLocatedTransmissionUrl(content);
+  const firstVerb = TRANSMIT_VERB.exec(content);
+  if (firstVerb && /https?:\/\//.test(content)) {
+    const coLocated = findCoLocatedTransmission(content, TRANSMIT_VERB);
+    // Trailing punctuation belongs to the sentence; a closing quote or `>`
+    // belongs to the YAML/markdown syntax around the URL (#559). Only the
+    // TAIL is trimmed: quotes are legal inside a URL's userinfo component and
+    // must stay in the span so the analyzer resolves the host the request
+    // actually reaches.
     const destination = coLocated
-      ? coLocated.replace(/[.,;:!?)\]]+$/, '')
+      ? coLocated.url.replace(URL_TRAILING_PUNCTUATION, '')
       : 'external';
     patterns.push({
       dataType: 'general',
       accessMode: 'transmit',
       destination,
       coveredByCapability: capabilities.some(c => c.name.includes('api.call') || c.name.includes('send')),
+      matched: coLocated
+        ? { scope: 'document', verb: coLocated.verb, verbOffset: coLocated.verbOffset, destinationOffset: coLocated.urlOffset }
+        : { scope: 'document', verb: firstVerb[0], verbOffset: firstVerb.index },
     });
   }
 
   return patterns;
 }
 
+const DATA_TYPE_NOUNS = ['user', 'customer', 'payment', 'session', 'credential', 'email', 'profile', 'medical', 'financial'];
+
+function dataTypeOfNoun(dt: string): string {
+  return dt === 'credential' || dt === 'session' ? 'credentials' :
+         dt === 'payment' || dt === 'financial' ? 'financial' :
+         dt === 'medical' ? 'pii' : 'general';
+}
+
+/** Trailing characters that belong to the surrounding text, not to a URL. */
+const URL_TRAILING_PUNCTUATION = /[.,;:!?)\]>"']+$/;
+
 /**
- * Returns the first URL in `content` that appears in the same paragraph as
- * a send/forward/transmit/post/upload verb. Two regions are considered
- * "co-located" when no blank-line break (`\n\s*\n`) separates them — i.e.
- * they share a paragraph in the conventional markdown sense. When no URL
- * is co-located with any verb, returns `undefined` so the caller can fall
- * back to a placeholder destination instead of misattributing an unrelated
- * URL as a credential-exfil endpoint (issue #148).
+ * The JSON engine of `extractDataAccessPatterns` (hackmyagent #541 / #403):
  *
- * Iterates all URL matches, not only the first, so that a documentation
- * URL in an opening paragraph does not block a real exfil URL in a later
- * paragraph from being captured.
+ *   - the data-type nouns are tested against leaf string VALUES only — a key
+ *     named `SessionStart` is an identifier, not an access to a session;
+ *   - a `credentials`/`transmit` pattern is emitted only for a leaf that holds
+ *     BOTH a credential noun and a transmit verb (a scalar array counts as one
+ *     leaf, so an argv-style `"args"` list still pairs), with the destination
+ *     taken from that leaf or a sibling leaf;
+ *   - a `general`/`transmit` pattern is emitted for a verb co-located with a
+ *     URL, for the narratives that list where an artifact sends data.
+ *
+ * Every pattern carries `matched.scope === 'structured'`, which tells the
+ * credential analyzer that the pairing is already resolved and must not be
+ * redone document-wide. A noun in one leaf and a verb in another never pair
+ * here, whatever their distance — the accepted trade: a package record whose
+ * keywords carry `credential-protection` and `post-quantum` in separate
+ * values is not forwarding anything.
  */
-export function findCoLocatedTransmissionUrl(content: string): string | undefined {
+function extractStructuredDataAccessPatterns(
+  content: string,
+  root: unknown,
+  capabilities: Capability[],
+  credentialKeywordContext: 'value-present' | 'schema-only' | 'no-structured',
+): DataAccessPattern[] {
+  const patterns: DataAccessPattern[] = [];
+  const lower = content.toLowerCase();
+  const readCovered = capabilities.some(c => c.name.includes('read') || c.name.includes('access'));
+
+  // The READ pass stays document-wide, keys included, exactly as on the prose
+  // engine: a key named `sessionToken` holding a live JWT is a credential in
+  // the artifact, and AST-CRED-001 (which additionally requires a
+  // credential-format value) and four other consumers read these patterns.
+  // Only the PAIRING below is leaf-scoped — a key never supplies the verb or
+  // the noun of a forwarding claim. `analyzeCredentialKeywordContext` keeps
+  // its existing role of reading `"credentials": null` as declaring none.
+  for (const dt of DATA_TYPE_NOUNS) {
+    const idx = lower.indexOf(dt);
+    if (idx < 0) continue;
+    if ((dt === 'credential' || dt === 'session') && credentialKeywordContext === 'schema-only') continue;
+    patterns.push({
+      dataType: dataTypeOfNoun(dt),
+      accessMode: 'read',
+      coveredByCapability: readCovered,
+      matched: { scope: 'structured', term: content.slice(idx, idx + dt.length), termOffset: idx },
+    });
+  }
+
+  const transmitCovered = capabilities.some(c => c.name.includes('api.call') || c.name.includes('send'));
+  const credential = findStructuredCredentialTransmission(content, CREDENTIAL_NOUN, TRANSMIT_VERB);
+  if (credential) {
+    patterns.push({
+      dataType: 'credentials',
+      accessMode: 'transmit',
+      destination: credential.url?.span ?? 'external',
+      coveredByCapability: transmitCovered,
+      matched: {
+        scope: 'structured',
+        term: credential.term,
+        termOffset: credential.termOffset,
+        verb: credential.verb,
+        verbOffset: credential.verbOffset,
+        destinationOffset: credential.url?.offset,
+      },
+    });
+  }
+
+  const verbUrl = findStructuredVerbUrl(content, TRANSMIT_VERB);
+  if (verbUrl && verbUrl.url.span !== credential?.url?.span) {
+    patterns.push({
+      dataType: 'general',
+      accessMode: 'transmit',
+      destination: verbUrl.url.span,
+      coveredByCapability: transmitCovered,
+      matched: {
+        scope: 'structured',
+        verb: verbUrl.verb,
+        verbOffset: verbUrl.verbOffset,
+        destinationOffset: verbUrl.url.offset,
+      },
+    });
+  }
+
+  return patterns;
+}
+
+export interface CoLocatedTransmission {
+  /** The URL span exactly as written, bounded by whitespace (untrimmed). */
+  url: string;
+  urlOffset: number;
+  /** The verb that shares a paragraph with the URL, as written. */
+  verb: string;
+  verbOffset: number;
+}
+
+/**
+ * Prose-engine co-location: the first URL in `content` (document order) that
+ * shares a paragraph with a verb from `verbRe` — no blank-line break
+ * (`\n\s*\n`) between the two spans. Returns the verb as well as the URL so a
+ * finding can cite both tokens with their lines.
+ */
+export function findCoLocatedTransmission(
+  content: string,
+  verbRe: RegExp,
+): CoLocatedTransmission | undefined {
   const URL = /https?:\/\/[^\s]+/g;
-  // Substring match (no word-boundary anchor) so re-prefixed verbs like
-  // "Resend"/"Reupload"/"Reposting" — common real-world malicious phrasings
-  // — still pair with their URL. Mid-word matches like "compost" → "post"
-  // are tolerated because the paragraph-level proximity gate is the real
-  // anti-misattribution check.
-  const VERB = /send|forward|transmit|post|upload/gi;
+  const VERB = new RegExp(verbRe.source, 'gi');
 
   const verbs: Array<{ start: number; end: number }> = [];
   let vm: RegExpExecArray | null;
@@ -1150,11 +1278,34 @@ export function findCoLocatedTransmissionUrl(content: string): string | undefine
       const lo = Math.min(u0, v.start);
       const hi = Math.max(u1, v.end);
       if (!/\n\s*\n/.test(content.slice(lo, hi))) {
-        return um[0];
+        return { url: um[0], urlOffset: u0, verb: content.slice(v.start, v.end), verbOffset: v.start };
       }
     }
   }
   return undefined;
+}
+
+/**
+ * Returns the first URL in `content` that appears in the same paragraph as
+ * a send/forward/transmit/post/upload verb. Two regions are considered
+ * "co-located" when no blank-line break (`\n\s*\n`) separates them — i.e.
+ * they share a paragraph in the conventional markdown sense. When no URL
+ * is co-located with any verb, returns `undefined` so the caller can fall
+ * back to a placeholder destination instead of misattributing an unrelated
+ * URL as a credential-exfil endpoint (issue #148).
+ *
+ * Iterates all URL matches, not only the first, so that a documentation
+ * URL in an opening paragraph does not block a real exfil URL in a later
+ * paragraph from being captured.
+ */
+export function findCoLocatedTransmissionUrl(content: string): string | undefined {
+  // Substring match (no word-boundary anchor) so re-prefixed verbs like
+  // "Resend"/"Reupload"/"Reposting" — common real-world malicious phrasings
+  // — still pair with their URL. Mid-word matches like "compost" → "post"
+  // are tolerated because the paragraph-level proximity gate is the real
+  // anti-misattribution check. (Structured JSON is routed to the leaf engine
+  // by `extractDataAccessPatterns` before this prose pass runs.)
+  return findCoLocatedTransmission(content, TRANSMIT_VERB)?.url;
 }
 
 /**
@@ -1638,14 +1789,19 @@ function mapRiskSurfaces(
   // Skip for governance docs (they describe rules about data handling, not perform exfiltration)
   // Evidence: prefer the URL span (more specific anchor than the verb).
   if (!isGovernanceDoc && benignContextScore < 2) {
-    const urlMatch = /https?:\/\/[^\s]+\.(co|io|com|net|org)/.exec(content);
-    const verbMatch = /forward|send|transmit|export/i.exec(content);
+    // The fire gate is unchanged: a URL on one of five TLDs anywhere plus a
+    // verb anywhere (kept deliberately; widening it to any host
+    // is unmeasured on benign skills). Longest alternative first: with
+    // `(co|…)` first, JS alternation returned `co` for every `.com` and the
+    // evidence named a different registry (#559).
+    const urlMatch = /https?:\/\/[^\s]+\.(com|net|org|co|io)/.exec(content);
+    const verbMatch = EXFIL_VERB.exec(content);
     if (urlMatch && verbMatch) {
       surfaces.push({
         surface: 'External data transmission',
         attackClass: 'SKILL-EXFIL',
         confidence: intent === 'malicious' ? 0.9 : intent === 'suspicious' ? 0.6 : 0.3,
-        evidence: urlMatch[0],
+        evidence: exfilEvidenceSpan(content, urlMatch[0]),
       });
     }
   }
@@ -1880,6 +2036,25 @@ function mapRiskSurfaces(
 }
 
 /** Simple Levenshtein distance for typosquat detection */
+/**
+ * The evidence span for the SKILL-EXFIL surface: the URL that sits next to
+ * the verb — in the same JSON leaf or sibling leaf, or in the same paragraph
+ * of prose — rather than the first URL in the document. In a settings file
+ * the first URL is the `$schema` pointer, and the finding derived from this
+ * evidence cited its line while the exfiltrating command sat seven lines
+ * below (#541). The gate's own match is the fallback, trimmed of trailing
+ * punctuation, and still a verbatim substring so the line lookup resolves.
+ * A host outside the five-TLD gate (`evil.example`, a raw IP) can be the
+ * evidence once something on a listed TLD opened the gate.
+ */
+function exfilEvidenceSpan(content: string, gateMatch: string): string {
+  const structured = findStructuredVerbUrl(content, EXFIL_VERB) ?? findStructuredFirstUrl(content);
+  if (structured) return 'url' in structured ? structured.url.span : structured.span;
+  const prose = findCoLocatedTransmission(content, EXFIL_VERB);
+  if (prose) return prose.url.replace(URL_TRAILING_PUNCTUATION, '');
+  return gateMatch.replace(URL_TRAILING_PUNCTUATION, '');
+}
+
 function levenshtein(a: string, b: string): number {
   const m = a.length, n = b.length;
   const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
