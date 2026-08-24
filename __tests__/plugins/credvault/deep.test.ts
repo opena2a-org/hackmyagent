@@ -352,7 +352,7 @@ describe('CredVaultPlugin (deep)', () => {
   // ─── Fix output verification ──────────────────────────────────────
 
   describe('fix output verification', () => {
-    it('creates encrypted store with key and meta files', async () => {
+    it('creates no store and no key; writes the example env file', async () => {
       fs.writeFileSync(
         path.join(tmpDir, 'config.json'),
         JSON.stringify({ key: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz' }),
@@ -361,27 +361,13 @@ describe('CredVaultPlugin (deep)', () => {
 
       await plugin.fix(tmpDir);
 
+      // #431 — the fix replaces the value and writes .env.example; it creates
+      // no store and no key (the store only ever held `{}`, and the key sat
+      // ungitignored in the tree).
       const storeDir = path.join(tmpDir, '.opena2a', 'credvault');
-      expect(fs.existsSync(path.join(storeDir, 'secrets.meta.json'))).toBe(true);
-      expect(fs.existsSync(path.join(storeDir, 'secrets.enc'))).toBe(true);
-      expect(fs.existsSync(path.join(storeDir, 'store.key'))).toBe(true);
+      expect(fs.existsSync(storeDir)).toBe(false);
+      expect(fs.existsSync(path.join(tmpDir, '.env.example'))).toBe(true);
 
-      // Verify meta is valid JSON
-      const meta = JSON.parse(fs.readFileSync(path.join(storeDir, 'secrets.meta.json'), 'utf-8'));
-      expect(meta.version).toBe('1');
-
-      // Verify store key is hex-encoded 32 bytes (64 hex chars)
-      const keyHex = fs.readFileSync(path.join(storeDir, 'store.key'), 'utf-8');
-      expect(keyHex.length).toBe(64);
-      expect(/^[0-9a-f]+$/.test(keyHex)).toBe(true);
-
-      // Verify encrypted store has iv:authTag:ciphertext format (AES-256-GCM)
-      const enc = fs.readFileSync(path.join(storeDir, 'secrets.enc'), 'utf-8');
-      const parts = enc.split(':');
-      expect(parts.length).toBe(3);
-      expect(parts[0].length).toBe(24); // 12 bytes IV = 24 hex chars (GCM)
-      expect(parts[1].length).toBe(32); // 16 bytes auth tag = 32 hex chars
-      expect(parts[2].length).toBeGreaterThan(0);
     });
 
     it('.env.example contains correct variable names', async () => {

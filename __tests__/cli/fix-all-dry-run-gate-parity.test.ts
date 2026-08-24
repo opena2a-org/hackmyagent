@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -53,10 +53,15 @@ function makeFixture(): string {
   return dir;
 }
 
+// #534 — `fix-all --with-aim` writes a real identity into the user store.
+// Isolated here so a test run never writes into the developer's own ~/.opena2a.
+const ISOLATED_HOME = mkdtempSync(join(tmpdir(), 'hma-isolated-home-'));
+afterAll(() => rmSync(ISOLATED_HOME, { recursive: true, force: true }));
+
 function run(dir: string, ...args: string[]) {
   const res = spawnSync(process.execPath, [CLI, 'fix-all', dir, ...args], {
     encoding: 'utf-8',
-    env: { ...process.env, NO_COLOR: '1' },
+    env: { ...process.env, NO_COLOR: '1', HOME: ISOLATED_HOME, OPENA2A_HOME: ISOLATED_HOME },
   });
   return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
 }
