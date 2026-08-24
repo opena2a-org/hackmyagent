@@ -323,7 +323,7 @@ import {
   type ReadFailureRecord,
 } from './check/verdict';
 import { quickScanCoverage } from './check/quick-scan-coverage';
-import { rewriteRemoteUnreadRemedy } from './check/remote-unread-remedy';
+import { rewriteRemoteUnreadRemedy, UNREAD_INPUT_CHECK_ID } from './check/remote-unread-remedy';
 import {
   summarizeCoverage,
   SEMANTIC_PREFIXES,
@@ -666,7 +666,7 @@ Examples:
 
       // Detect local file/directory paths - run NanoMind scan instead of registry lookup
       const { statSync, accessSync, constants: fsConstants } = await import('node:fs');
-      const { resolve, dirname, isAbsolute } = await import('node:path');
+      const { resolve, dirname, isAbsolute, relative, basename } = await import('node:path');
       const resolved = resolve(skill);
       let resolvedStat: ReturnType<typeof statSync> | undefined;
       let statError: NodeJS.ErrnoException | undefined;
@@ -771,7 +771,7 @@ Examples:
         const unreadPaths = ledger.unreadablePaths();
 
         // Apply .hmaignore filtering (paths + check IDs)
-        const { loadHmaIgnore: loadIgnore, isPathIgnored: pathIgnored, isCheckIgnored: checkIgnored } = await import('./hardening/scanner.js');
+        const { loadHmaIgnore: loadIgnore, isPathIgnored: pathIgnored, isCheckIgnored: checkIgnored, buildUnreadInputFinding } = await import('./hardening/scanner.js');
         const skillIgnoreRules = await loadIgnore(targetDir);
         // #450 — one of the hand-rolled copies of the suppression rule. The
         // findings still LEAVE the reported set, exactly as before; what changes
@@ -779,13 +779,35 @@ Examples:
         // risk band and the exit code with it. A path rule does, because that is
         // a scope statement — see `scanner.ts` for why the two differ.
         const skillFindings = nmResult.mergedFindings;
+        // #508 — one SCAN-UNREAD-001 per unread input, through the same
+        // errno->remedy builder `secure` uses; `command: 'check'` names the
+        // re-run verb on this arm. Emitted through the redaction boundary
+        // HERE: this arm publishes `details` raw on --json, so a finding
+        // that never crossed `emitFindings` is refused by the provenance
+        // guard at the channel.
+        for (const u of unreadPaths) {
+          skillFindings.push(...emitFindings([buildUnreadInputFinding(
+            { ...u, rel: relative(targetDir, u.path) || basename(u.path) },
+            { cliName: CLI_PREFIX, targetDir, command: 'check' },
+          )]));
+        }
         const skillSuppressedRaw: any[] = [];
         const skillOutOfScopeRaw: any[] = [];
         if (skillIgnoreRules.paths.length > 0 || skillIgnoreRules.checkIds.length > 0) {
           for (const f of skillFindings as any[]) {
             if (checkIgnored(f.checkId, skillIgnoreRules.checkIds)) {
               skillSuppressedRaw.push({ ...f, suppressed: true, suppressedBy: 'hmaignore-check' });
-            } else if (f.file && pathIgnored(f.file, skillIgnoreRules.paths)) {
+            } else if (f.checkId !== UNREAD_INPUT_CHECK_ID && f.file && pathIgnored(f.file, skillIgnoreRules.paths)) {
+              // The carve-out above mirrors `secure` exactly (see
+              // retainAfterPathSuppression in scanner.ts): a coverage
+              // statement is not a finding about a path's contents, so a path
+              // rule cannot scope it away — `outOfScope` renders as a bare
+              // count, and this arm's exit code was settled from the same
+              // record, so scoping the finding out would print "not in the
+              // exit code" about the very input holding the exit at 2. An
+              // explicit `!SCAN-UNREAD-001` check rule (the branch above)
+              // still suppresses it onto the Suppressed line, with the
+              // penalty, exactly as on `secure`.
               skillOutOfScopeRaw.push({ ...f, suppressed: true, suppressedBy: 'hmaignore-path' });
             }
           }

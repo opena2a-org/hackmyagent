@@ -111,6 +111,38 @@ describe('#508 check settles a floor over a tree it could not fully read', () =>
     expect(body.coverage.total).toBe(body.coverage.examined + 1);
     expect(body.coverage.unreadableInputs.count).toBe(1);
     expect(body.coverage.unreadableInputs.codes.EACCES).toBe(1);
+    // #508 wiring — the record is not only counted: each unread path carries
+    // its own SCAN-UNREAD-001 finding through the same builder `secure` uses,
+    // and the remedy re-runs THIS command, not `secure`.
+    const unread = (body.details ?? []).filter((f: any) => f.checkId === 'SCAN-UNREAD-001');
+    expect(unread).toHaveLength(1);
+    expect(unread[0].file).toBe('src/greet.js');
+    expect(unread[0].fix).toContain('check');
+    expect(unread[0].fix).not.toContain('secure');
+  });
+
+  it('a .hmaignore path rule cannot scope the unread disclosure away — the carve-out secure ships', () => {
+    if (cannotProbe()) return;
+    const dir = tree('scoped');
+    fs.writeFileSync(path.join(dir, '.hmaignore'), 'src/\n');
+    makeUnreadable(path.join(dir, 'src', 'greet.js'));
+    const { status, body } = json(['check', dir]);
+    expect(status).toBe(EXIT_UNMEASURED);
+    const unread = (body.details ?? []).filter((f: any) => f.checkId === 'SCAN-UNREAD-001');
+    expect(unread).toHaveLength(1);
+    const scoped = (body.outOfScope ?? []).filter((f: any) => f.checkId === 'SCAN-UNREAD-001');
+    expect(scoped).toHaveLength(0);
+  });
+
+  it('an explicit !SCAN-UNREAD-001 check rule suppresses the finding; the exit floor reads the record', () => {
+    if (cannotProbe()) return;
+    const dir = tree('checkid');
+    fs.writeFileSync(path.join(dir, '.hmaignore'), '!SCAN-UNREAD-001\n');
+    makeUnreadable(path.join(dir, 'src', 'greet.js'));
+    const { status, body } = json(['check', dir]);
+    expect(status).toBe(EXIT_UNMEASURED);
+    const unread = (body.details ?? []).filter((f: any) => f.checkId === 'SCAN-UNREAD-001');
+    expect(unread).toHaveLength(0);
   });
 
   it('text: the header carries the denominator and the unread path is named with a runnable check', () => {
@@ -125,6 +157,8 @@ describe('#508 check settles a floor over a tree it could not fully read', () =>
     expect(out).toContain('(EACCES)');
     expect(out).toContain('upper bound');
     expect(out).toMatch(/Verify: ls -l /);
+    // #508 wiring — the per-path finding renders on the text channel too.
+    expect(out).toContain('Input Discovered But Not Read');
     // The band is still printed: withholding it would hand one file the
     // power to blank the assessment.
     expect(out).toMatch(/Quick scan/);

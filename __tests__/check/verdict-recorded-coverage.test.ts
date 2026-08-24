@@ -146,7 +146,7 @@ describe('fullCoverage is a ratchet, not a convenience', () => {
     return out;
   }
 
-  it('has at most two executable callers under src/, and neither is a check arm', () => {
+  it('has at most two executable callers under src/, both in cli.ts', () => {
     const callers = executableCallers();
     expect(callers.length, callers.join('\n')).toBeLessThanOrEqual(2);
     for (const c of callers) expect(c.startsWith('cli.ts:')).toBe(true);
