@@ -195,6 +195,10 @@ export type {
   PluginInitOptions,
 } from './plugins/core';
 
+// The user store plugins read private-material paths from (#534)
+export { resolveProjectStore, findLegacyKeyMaterial } from './store/project-store';
+export type { ProjectStore, LegacyKeyMaterial } from './store/project-store';
+
 // OpenClaw plugins
 export { createPlugin as createCredVaultPlugin } from './plugins/credvault';
 export { createPlugin as createSigncryptPlugin } from './plugins/signcrypt';

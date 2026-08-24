@@ -143,9 +143,11 @@ describe('CredVaultPlugin', () => {
 
       await plugin.fix(tmpDir);
 
+      // #431 — no store, no key: every store this plugin ever wrote encrypted
+      // the literal `{}`, and the key beside it sat ungitignored in the tree.
       const storeDir = path.join(tmpDir, '.opena2a', 'credvault');
-      expect(fs.existsSync(storeDir)).toBe(true);
-      expect(fs.existsSync(path.join(storeDir, 'secrets.meta.json'))).toBe(true);
+      expect(fs.existsSync(storeDir)).toBe(false);
+      expect(fs.existsSync(path.join(tmpDir, '.opena2a'))).toBe(false);
     });
 
     it('dry run does not modify files', async () => {

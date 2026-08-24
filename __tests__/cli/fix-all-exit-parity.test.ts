@@ -19,7 +19,7 @@
 // evidence. They now share one predicate, so the number in the payload and
 // the exit code can never be computed off different sets again.
 
-import { describe, it, expect, afterEach, beforeAll } from 'vitest';
+import { describe, it, expect, afterEach, afterAll, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -63,11 +63,16 @@ function makeFixture(): string {
   return dir;
 }
 
+// #534 — `fix-all --with-aim` writes a real identity into the user store.
+// Isolated here so a test run never writes into the developer's own ~/.opena2a.
+const ISOLATED_HOME = mkdtempSync(join(tmpdir(), 'hma-isolated-home-'));
+afterAll(() => rmSync(ISOLATED_HOME, { recursive: true, force: true }));
+
 function run(dir: string, args: string[]) {
   return spawnSync('node', [CLI, 'fix-all', dir, ...args], {
     encoding: 'utf8',
     timeout: 180_000,
-    env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off' },
+    env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: ISOLATED_HOME, OPENA2A_HOME: ISOLATED_HOME },
   });
 }
 

@@ -10,6 +10,7 @@ import type {
   PluginInitOptions,
 } from './core';
 import type { AIMCore } from '@opena2a/aim-core';
+import { resolveProjectStore, type ProjectStore } from '../store/project-store';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -26,7 +27,6 @@ export interface SignatureRecord {
 }
 
 export interface SignCryptConfig {
-  dataDir?: string;
   maxHeartbeatAge?: number; // seconds, default 604800 (7 days)
 }
 
@@ -249,10 +249,12 @@ export const metadata: PluginMetadata = {
 export class SignCryptPlugin implements OpenA2APlugin {
   readonly metadata = metadata;
   private aimCore?: AIMCore;
+  private store?: ProjectStore;
   private config: SignCryptConfig = {};
 
   async init(options?: PluginInitOptions): Promise<void> {
     this.aimCore = options?.aimCore;
+    this.store = options?.store;
     this.config = (options?.config as SignCryptConfig) ?? {};
   }
 
@@ -311,7 +313,8 @@ export class SignCryptPlugin implements OpenA2APlugin {
       remediations.push({
         findingId: finding.id,
         description: `Signed ${finding.filePath} with SHA-256 hash pin and Ed25519 signature`,
-        filesModified: [finding.filePath],
+        // Both files this iteration wrote: the signed file and the record of it.
+        filesModified: [finding.filePath, path.join(SIGNATURE_DIR, SIGNATURES_FILE)],
         rollbackAvailable: false,
       });
     }
@@ -328,20 +331,27 @@ export class SignCryptPlugin implements OpenA2APlugin {
       this.aimCore.setTrustHints({ configSigned: true });
     }
 
-    // If files were signed without AIM identity, add a recommendation finding
+    // Files signed without an identity: say where one would come from. The
+    // identity lives in the user store (#534), so the check resolves through
+    // the same contract the writer uses — a probe of the old in-tree path
+    // would tell every user with an out-of-tree identity to create one forever.
     if (!this.aimCore && remediations.length > 0) {
-      // Check if an identity already exists on disk
-      const aimDir = path.join(agentDir, '.opena2a', 'aim', 'identity.json');
-      if (!fs.existsSync(aimDir)) {
-        remediations.push({
-          findingId: 'SIGN-TIP',
-          description: 'Files signed with hash pins only (no cryptographic identity). ' +
-            'Run with --with-aim to create an Ed25519 identity for automatic signature management, ' +
-            'audit logging, and trust scoring.',
-          filesModified: [],
-          rollbackAvailable: false,
-        });
-      }
+      // Resolving can refuse (store would sit inside the target); a tip is
+      // not worth failing the plugin over, so that case reads as "no identity".
+      let store: ProjectStore | undefined = this.store;
+      if (!store) { try { store = resolveProjectStore(agentDir); } catch { store = undefined; } }
+      const hasIdentity = store ? fs.existsSync(store.identityPath) : false;
+      remediations.push({
+        findingId: 'SIGN-TIP',
+        description: hasIdentity
+          ? `Files signed with hash pins only. An identity for this project exists at ${store!.identityPath}; ` +
+            'run with --with-aim to sign with it.'
+          : 'Files signed with hash pins only (no cryptographic identity). ' +
+            'Run with --with-aim to create an Ed25519 identity, stored outside the project, for automatic ' +
+            'signature management and audit logging.',
+        filesModified: [],
+        rollbackAvailable: false,
+      });
     }
 
     return remediations;
