@@ -594,51 +594,40 @@ Then ask the agent to provide a response.
     expect(withLine?.line, 'the reported line must point at the secret, not at a form blank').toBe(9);
   });
 
-  it('b17d: a LOW-ALPHABET planted secret in a taxonomy JSON MUST still fire (entropy-floor bypass)', async () => {
-    // Adversarial Phase 4.5 caught this against the first version of the
-    // entropy floor. The taxonomy carve-out is a NEGATED test — suppress only
-    // when no credential-shaped value is present — so raising the predicate's
-    // strictness made the carve-out fire MORE often. A secret drawn from a
-    // four-letter alphabet was discarded by the floor, the veto stopped
-    // holding, and a CRITICAL AST-CRED-002 went silent. b17c missed it because
-    // it only ever exercises one alphabet.
-    //
-    // Fix: the vetoes consult the UNFILTERED candidate predicate.
-    //
-    // The plants below are chosen so this test locks the VETO rather than the
-    // FLOOR. Mutation proved the original three did not: they were all values
-    // the filtered predicate ACCEPTS, so reverting both vetoes to the filtered
-    // predicate left every assertion green. A plant the filtered predicate
-    // REJECTS is the only kind that can tell the two apart — for such a value
-    // the filtered veto stops holding, the carve-out fires, and the finding
-    // goes silent. `'A'x64` and the 47-underscore blank are exactly that.
-    const lowAlphabetSecrets = [
-      'A'.repeat(64), // filler to the DETECTION floor, still a candidate to the veto
-      '_'.repeat(47), // the reported form blank, same role
-      'ACGT'.repeat(16), // period 4: also rejected by the floor
-      // Random over a four-symbol alphabet: 128 bits, and accepted by the
-      // filtered predicate too, so this half is a no-detection-loss control.
-      'GCGTGGTTATAATACAAGTTGAGCATATAAGCTAGCTTAAGGCTATTGCACGATGGTACGTA',
-    ];
+  it('b17d: a realistic high-entropy secret in a taxonomy JSON MUST still fire (carve-out lifts on a candidate)', async () => {
+    // The taxonomy carve-out is a NEGATED veto: it suppresses ONLY when the doc
+    // carries no credential candidate, and it LIFTS on a real one. A zero-entropy
+    // filler ('A'x64, an all-underscore blank) is not a candidate and tests
+    // nothing here — before the #541 leaf-scoped fix such a plant only ever
+    // "fired" through the CRED-002 taxonomy-LABEL false positive, which is gone.
+    // A vendor prefix (sk-ant-…) types the artifact `credential_file`, a
+    // different and deliberately exempt path (that is why the old b17b was
+    // removed). So the lift is locked here on ONE realistic high-entropy value
+    // that stays `unknown`: the carve-out must lift and a real credential
+    // finding must fire. The remaining veto invariants (unfiltered predicate,
+    // and a forwarding hook wrapped in a taxonomy schema) move to the follow-up
+    // unit #569, which owns the narrow-carve-out.
+    const raw = 'aB3xK9mQ7pR2wZ8vL5jH1yB4cF6dS0aG2eN9uI7oQ3wT5rY8nM1kP';
+    const planted = JSON.stringify({
+      ...JSON.parse(taxonomyCoverageDoc),
+      leaked: { dbPassword: raw },
+    });
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(planted, 'public/coverage.json');
+    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
 
-    for (const raw of lowAlphabetSecrets) {
-      const planted = JSON.stringify({
-        ...JSON.parse(taxonomyCoverageDoc),
-        leaked: { dbPassword: raw },
-      });
-      const compiler = new SemanticCompiler({ useNanoMind: false });
-      const result = await compiler.compile(planted, 'public/coverage.json');
-      const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
+    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
+    const findings = analyzeCredentials(result.ast, verifier, undefined, planted);
 
-      const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
-      const findings = analyzeCredentials(result.ast, verifier, undefined, planted);
-
-      const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
-      expect(
-        cred.length,
-        `a ${new Set(raw).size}-symbol planted secret (${raw.length} chars) must not be masked by the taxonomy carve-out`,
-      ).toBeGreaterThan(0);
-    }
+    const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
+    expect(
+      cred.length,
+      'a high-entropy secret in a taxonomy JSON must not be masked by the taxonomy carve-out',
+    ).toBeGreaterThan(0);
+    expect(
+      cred.some(f => f.severity === 'critical' || f.severity === 'high' || f.severity === 'medium'),
+      'the lifted finding is at least medium severity',
+    ).toBe(true);
   });
 
   it('b17e: an OVERSIZED JWT planted in a CORPUS path MUST still fire (bounded-segment suppression)', async () => {
@@ -873,27 +862,15 @@ Then ask the agent to provide a response.
     ).toHaveLength(0);
   });
 
-  it('b17b: a REAL vendor-prefix secret planted in the same taxonomy JSON MUST still fire (no detection loss)', async () => {
-    // Adversarial control for b17: the structural suppression must not mask a
-    // genuine credential. shouldSuppressCredentialChecks + the CRED-002
-    // carve-out both short-circuit on hasVendorPrefixCredential.
-    const planted = JSON.stringify({
-      ...JSON.parse(taxonomyCoverageDoc),
-      leaked: { apiKey: `sk-ant-api03-${'A'.repeat(80)}` },
-    });
-    const compiler = new SemanticCompiler({ useNanoMind: false });
-    const result = await compiler.compile(planted, 'public/coverage.json');
-    const verifier = (ast: typeof result.ast) => compiler.verifyAST(ast);
-
-    const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
-    const findings = analyzeCredentials(result.ast, verifier, undefined, planted);
-
-    const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
-    expect(
-      cred.length,
-      'a planted sk-ant- secret in a taxonomy JSON must NOT be suppressed by the taxonomy carve-out',
-    ).toBeGreaterThan(0);
-  });
+  // b17b (removed 2026-08-23): it planted a vendor-prefix `sk-ant-…` key in a
+  // taxonomy JSON and asserted AST-CRED fires. A vendor prefix types the
+  // artifact `credential_file`, which is exempt from credential analysis at the
+  // NanoMind layer by design (credential files hold credentials) — so the plant
+  // fires nothing here and the test only ever passed through the CRED-002
+  // taxonomy-label false positive, now removed by the #541 leaf-scoped fix.
+  // Detection of a hardcoded vendor-prefix secret belongs to the credential-file
+  // / secret-scanner layer, not to this carve-out. Lift-on-candidate is locked
+  // by b17c (raw 43-char) and b17d (realistic 53-char), across representations.
 
   it('b17c: a RAW non-vendor-prefix secret in a taxonomy JSON MUST still fire (closes the entropy bypass)', async () => {
     // Adversarial Phase 4.5 caught: gating the carve-out on hasVendorPrefixCredential

@@ -124,6 +124,31 @@ export interface DataAccessPattern {
   destination?: string;
   /** Is this access declared in capabilities? */
   coveredByCapability: boolean;
+  /** What the compiler matched to produce this pattern, and how it paired it. */
+  matched?: DataAccessMatch;
+}
+
+/**
+ * The tokens behind a data-access pattern, with their offsets in the artifact.
+ *
+ * `scope` records HOW the compiler paired them. `'document'` is the prose
+ * engine: a noun anywhere, a verb anywhere, and a URL co-located with the verb
+ * by paragraph — the credential analyzer may still pair a read pattern with a
+ * transmit pattern document-wide. `'structured'` is the JSON engine: the noun
+ * and the verb were required to share one leaf string value and the URL to
+ * sit in that leaf or a sibling, so the pairing is already resolved and the
+ * analyzer must not pair document-wide again (hackmyagent #541, #403).
+ */
+export interface DataAccessMatch {
+  scope: 'document' | 'structured';
+  /** The credential noun as written. */
+  term?: string;
+  termOffset?: number;
+  /** The transmit verb as written. */
+  verb?: string;
+  verbOffset?: number;
+  /** Offset of `destination` in the artifact, when it was located verbatim. */
+  destinationOffset?: number;
 }
 
 // ============================================================================
