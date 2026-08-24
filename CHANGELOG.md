@@ -4,6 +4,44 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### `secure --fail-below` settles once, on every channel, and only ever raises the exit code
+
+`--fail-below N` was checked by two per-channel copies — one on the text arm, one on `--json`
+— so under `--format sarif`, `--format html` and `--format asff` it was never read: a score
+below the threshold exited 0 with nothing on stderr (#494). SARIF is the format CI uploads,
+so the flag was inert exactly where it is used. Measured on the published 0.29.0 and on
+`main`: an empty package directory scoring 98 with `--fail-below 99` exited `text: 1`,
+`json: 1`, `sarif: 0`, `html: 0`, `asff: 0`.
+
+The two copies also sat below the exit-2 unmeasured floor (#438) and ASSIGNED exit 1 over
+it, so a tree holding an input the run could not read reported "I measured this and it
+failed" as soon as a threshold was supplied — a stricter flag returned a weaker signal
+(#512).
+
+Both are one change. The threshold is settled once, at the same settlement point the
+coverage floor uses and above every output channel, through a `raiseExitCode` helper that
+never lowers the code; the per-channel copies of the gate are deleted. The precedence rule
+is stated in one place, on that helper: an unread input settles a floor of 2; a
+`--fail-below` breach raises to at least 1 and cannot lower that floor; a critical/high
+finding still exits 1 on every channel as before. On the text channel the one-line reason
+keeps its old place at the end of the report (measured on published 0.30.0, whose text-arm
+threshold block is unchanged through 0.32.0: line 44 of 45, before the version footer); on the document channels it goes to stderr at settlement,
+where its position beside a JSON or SARIF body is immaterial.
+
+What moves, measured against a `main` build with the same fixtures:
+
+| run | before | after |
+|---|---|---|
+| clean tree below threshold, `--format sarif` / `html` / `asff` | 0 | **1**, stderr `Score N is below threshold M` |
+| clean tree below threshold, text / `--json` | 1 | 1 |
+| clean tree at or above threshold, any channel | 0 | 0 |
+| tree with an unreadable input, below threshold, any channel | 1 | **2** (the breach is still printed) |
+| tree with an unreadable input, no threshold | 2 | 2 |
+
+A pipeline that requested SARIF with a score floor and has been passing on a low score
+will start failing; that is the flag doing what its help text says. The `-b oasb-1` and
+`-b oasb-2` arms keep their own compliance-percentage threshold and are not touched here
+(their exit-2 arm is #511 / #514).
 ### The verdict line now says when the analyst dissents
 
 `secure --nanomind` could route a file to a named attack class at high severity and still
