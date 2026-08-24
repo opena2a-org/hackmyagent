@@ -73,6 +73,7 @@ import { enforceSeverityFloor, validateEnhancement } from './security/defense-in
 import type { SeverityLevel } from './security/defense-in-depth.js';
 import { verifyAll } from './security/integrity-verifier.js';
 import { queueClassificationStat } from '../telemetry/nanomind-telemetry.js';
+import { FIX_LINES } from '../hardening/fix-lines.js';
 
 // ============================================================================
 // Constants
@@ -1125,6 +1126,7 @@ function astFindingToSecurityFinding(
     file: ast.file ?? 'ast-analysis',
     line,
     fix: ast.fix,
+    [FIX_LINES]: ast[FIX_LINES],
     guidance: ast.guidance,
     attackClass: ast.attackClass,
     details: {

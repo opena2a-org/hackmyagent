@@ -179,9 +179,12 @@ interface RenderedFinding {
   location: string;
   verify?: string;
   /**
-   * `Verify:` commands the renderer prints INSIDE another line \u2014 today the
-   * `Fix:` text, which `fix-generator.ts` terminates with
-   * `Verify: hackmyagent secure <dir>`.
+   * `Verify:` commands the renderer prints as part of a FIX rather than as the
+   * finding's own citation: `fix-generator.ts` terminates its fix prose with
+   * `Verify: hackmyagent secure <dir>`. Since #367 the fix's authored parts
+   * render one per line, so that Verify is a continuation line of the Fix
+   * block \u2014 indented past the gutter, where the finding's own `Verify:` line
+   * is not \u2014 and a fix that is still one line carries it mid-line.
    */
   embeddedVerify: string[];
 }
@@ -202,7 +205,11 @@ interface RenderedFinding {
 function parseRenderedFindings(text: string): RenderedFinding[] {
   const out: RenderedFinding[] = [];
   const badge = /^\s*\u2502\s+(CRITICAL|HIGH|MEDIUM|LOW)\s{2,}(.+?)\s*$/;
-  const body = /^\s*\u2502\s+(.*?)\s*$/;
+  // The indent after the gutter is what separates the finding's own `Verify:`
+  // line (`\u2502 Verify: \u2026`, one space) from a Fix continuation line carrying
+  // the generator's embedded one (`\u2502      Verify: \u2026`, #367). A bare `\u2502`
+  // is a blank part of a multi-line fix, still inside the block.
+  const body = /^\s*\u2502(\s*)(.*?)\s*$/;
   let current: RenderedFinding | undefined;
   for (const raw of text.split("\n")) {
     const b = badge.exec(raw);
@@ -217,9 +224,12 @@ function parseRenderedFindings(text: string): RenderedFinding[] {
       current = undefined;
       continue;
     }
-    const content = m[1];
+    const indent = m[1];
+    const content = m[2];
     if (content.startsWith("Verify: ")) {
-      current.verify = content.slice("Verify: ".length).trim();
+      const command = content.slice("Verify: ".length).trim();
+      if (indent.length > 1) current.embeddedVerify.push(command);
+      else current.verify = command;
       continue;
     }
     const embedded = content.indexOf("Verify: ");

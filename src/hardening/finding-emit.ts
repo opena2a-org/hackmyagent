@@ -21,6 +21,7 @@ import type { Evidence, PositiveEvidence, AbsenceEvidence } from '../types/findi
 import type { ShapeId } from '../types/credential-format';
 import type { SecurityFinding, SecurityFindingDraft } from './security-check';
 import { redactSecretsForReportReporting } from '../nanomind-core/security/defense-in-depth';
+import { FIX_LINES } from './fix-lines';
 
 /**
  * Unforgeable witness that a finding passed the boundary.
@@ -322,6 +323,34 @@ export function emitFinding(draft: SecurityFindingDraft): RedactedFinding {
   for (const field of BYTE_CARRYING_FIELDS) {
     const value = draft[field];
     if (typeof value === 'string') emitted[field] = pass.run(value);
+  }
+
+  // #367 — `FIX_LINES` is `fix` as the lines its producer authored. It is a
+  // string[] under a symbol key, so the string-typed walk above steps over it,
+  // and a field the walk steps over is a field that ships raw: it is walked
+  // here, element by element, through the same pass. It crosses only while it
+  // still describes `fix` — a pair that disagrees (a `fix` rewritten after
+  // composition) leaves without its structure, because structure the text does
+  // not have is a forged line boundary the moment a renderer prints it.
+  //
+  // Agreement is checked on BOTH sides of the pass. A secret that spans a part
+  // boundary matches the joined string and none of the elements, so the parts
+  // can agree with the draft's `fix` while the redacted parts disagree with the
+  // redacted `fix` — and an element carrying the secret would leave under a
+  // redacted string. The key is a global-registry symbol any in-process module
+  // can write, so a value that is not a string array is dropped, not walked
+  // (the pass would throw on it, and a scan must not die on a malformed
+  // remediation). The spread above already copied the key; this settles it.
+  const lines = draft[FIX_LINES];
+  const carrier = emitted as { [FIX_LINES]?: readonly string[] };
+  if (lines !== undefined) {
+    const wellFormed = Array.isArray(lines) && lines.every((line) => typeof line === 'string');
+    const redacted = wellFormed ? lines.map((line) => pass.run(line)) : undefined;
+    if (redacted && lines.join('\n') === draft.fix && redacted.join('\n') === emitted.fix) {
+      carrier[FIX_LINES] = redacted;
+    } else {
+      delete carrier[FIX_LINES];
+    }
   }
 
   if (draft.evidence !== undefined) {

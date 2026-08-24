@@ -100,6 +100,47 @@ unescaped now escape it — the same #324 boundary, applied in the direction it 
 and so do the finding-header name fallback, the collapse label, and a plugin-error line that
 printed through `console.log` beneath the structural test's earlier sight line.
 
+### Multi-part fix text renders on separate lines in the findings list
+
+The fix generator composes a remediation from several authored parts — the command, a
+sentence or two of guidance, a fenced snippet, a blank line, the `Verify:` command — joined
+with newlines. The text channel display-escapes every fix string whole, and it must: a
+newline inside a scanned file name has to reach the terminal as the two characters `\n`,
+never as a line break (#324, #334). The fixes on this surface carry several parts plus the
+`Verify:` line, so every authored newline rendered as `\n` too, and the recommended YAML was
+unreadable as printed (#367).
+
+The line structure now travels out of band. A composed fix carries its parts, one element
+per authored line, beside the unchanged joined `fix`; in the findings list the renderer
+prints the first part through the same pipeline as before and each further part on its own
+line inside the finding's gutter, escaping each element on its printing line. Only a
+boundary between parts becomes a line. A newline inside a part — a byte from the scanned
+tree — still renders as `\n`, and the escape table is not changed: this carries
+tool-authored line structure out of band, it does not exempt anything from
+`escapeForDisplay`. One visible consequence: a citation inside a continuation part is now
+target-completed like any other line, so the `Verify: hackmyagent secure .` a fix ends with
+renders `secure <target>` (or the `<dir>` placeholder where the path cannot be cited), where
+it used to keep the literal `.`; `--json` still carries `.`.
+
+`fixLines` is walked by the redaction boundary element by element, exactly as `fix` is, and
+is carried only while `fixLines.join('\n') === fix` — a `fix` rewritten after composition
+leaves its stale structure behind rather than rendering line breaks the text does not have.
+Only the fix generator produces it. It is keyed by a symbol, which `JSON.stringify` never
+serializes, so no JSON channel — a `--json` document, an `--output` file, a report written to
+disk, a Registry payload — can carry it, from any site. SARIF and HTML pick `fix`; the MCP
+server prints `fix`; ASFF carries no remediation at all (it reads a field findings do not
+have — unchanged here). Measured on the fixtures below: `--json`, `--json --output` and
+`--format sarif|html|asff` are identical to the build before this change apart from run
+timestamps and ids.
+
+Measured against the build before this change, on the root-level skill + MCP fixture the new
+CLI suite uses: lines carrying a literal `\n` 5 → 0 under `check` and 4 → 0 under `secure`,
+with the parts on separate lines; on `check getsentry/sentry-mcp`, 2 → 0. `--json`,
+`--json --output`, SARIF, HTML and ASFF on the same fixture: identical apart from timestamps
+and ids. Still printing a composed fix as one escaped line: the benchmark report, `detect`'s
+infrastructure listing and the deprecated NemoClaw arm (#596); ASFF's missing remediation is
+#594.
+
 ### `check` no longer exits 0 over an input it could not read
 
 `check <local path>` and the four downloaded targets (npm, PyPI, GitHub, URL) derived their
