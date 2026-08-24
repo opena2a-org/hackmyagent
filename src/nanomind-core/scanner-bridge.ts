@@ -1132,6 +1132,11 @@ function astFindingToSecurityFinding(
       confidence: ast.confidence,
       evidence: ast.evidence,
       instanceCount: (ast as ASTFinding & { instanceCount?: number }).instanceCount ?? 1,
+      // The tokens a pairing finding matched (AST-CRED-002: credential term,
+      // transmit verb, destination origin, each with its line) ride in the
+      // existing details bag rather than as a new top-level field: no
+      // consumer reads it yet, so it is not a contract.
+      ...(ast.matched ? { matched: ast.matched } : {}),
     },
   });
 }

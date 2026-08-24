@@ -21,6 +21,22 @@ import { isNonAgentProjectType } from './family-coverage.js';
 // Finding Type (compatible with HMA SecurityFinding)
 // ============================================================================
 
+/**
+ * The tokens a pairing finding matched, each with the line it sits on, so a
+ * reader can tell from the output which words fired and where. AST-CRED-002
+ * carries the credential term, the transmit verb and the destination as an
+ * origin (`scheme://host[:port]` — never the full URL, whose path or query
+ * may carry a token). Rendered into `details.matched` by the scanner bridge.
+ */
+export interface FindingMatch {
+  term?: string;
+  verb?: string;
+  destination?: string;
+  termLine?: number;
+  verbLine?: number;
+  destinationLine?: number;
+}
+
 export interface ASTFinding {
   checkId: string;
   name: string;
@@ -39,6 +55,8 @@ export interface ASTFinding {
   confidence?: number;
   /** AST-specific: evidence from the AST */
   evidence?: string;
+  /** AST-specific: what a pairing finding matched (AST-CRED-002) */
+  matched?: FindingMatch;
 }
 
 // ============================================================================

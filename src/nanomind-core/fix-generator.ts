@@ -194,8 +194,22 @@ function fixCredentialIssue(finding: ASTFinding, ast: SecurityAST): string {
     }
     parts.push('After encrypting: rotate the credential immediately (the old value may be in git history).');
   } else if (finding.attackClass === 'CRED-EXFIL') {
-    const destination = finding.evidence?.match(/to\s+(\S+)/)?.[1] ?? 'an external endpoint';
-    parts.push(`In ${file}, remove credential forwarding to ${destination}. Then run: opena2a protect . to also secure any hardcoded values found.`);
+    // Name the tokens that fired and the line that carries the destination,
+    // so a reader can tell a false pairing from a real one without opening
+    // the file (#403). The `opena2a protect .` sentence is not in this arm:
+    // vaulting a hardcoded value does not stop a forwarding instruction.
+    const matched = finding.matched;
+    if (matched?.verb && matched.term) {
+      // Cite the line as prose ("on line N"), not an embedded `file:N` path:
+      // the finding header and the Verify line already carry `file:line`, and
+      // a path in the fix prose is silently elided by the display path
+      // shortener (#377), which rendered "In settings.json:9" as ":9".
+      const loc = matched.destinationLine ? `on line ${matched.destinationLine}` : `in ${file}`;
+      parts.push(`Remove the "${matched.verb}" instruction ${loc} that sends "${matched.term}" to ${matched.destination ?? 'an unresolved destination'}.`);
+    } else {
+      const destination = finding.evidence?.match(/to\s+(\S+)/)?.[1] ?? 'an external endpoint';
+      parts.push(`Remove credential forwarding to ${destination}.`);
+    }
     parts.push('If external authentication is required:');
     parts.push('  1. Use OAuth token exchange (never forward raw credentials).');
     parts.push('  2. Use a credential broker that issues scoped, short-lived tokens.');
@@ -601,7 +615,18 @@ function generateGuidance(finding: ASTFinding, ast: SecurityAST, projectConstrai
 
   // Context-aware severity explanation
   if (finding.severity === 'critical') {
-    parts.push(`Critical in this context because this ${ast.artifactType} ${artifactRiskContext(ast)}.`);
+    const matched = finding.matched;
+    if (finding.attackClass === 'CRED-EXFIL' && matched?.verb && matched.term) {
+      // A pairing finding explains itself by its tokens; "this unknown may
+      // influence agent behavior" named nothing a reader could check (#403).
+      const at = (line?: number) => (line ? ` (line ${line})` : '');
+      parts.push(
+        `Critical because "${matched.verb}"${at(matched.verbLine)} and "${matched.term}"${at(matched.termLine)} ` +
+        `resolve to ${matched.destination ?? 'an unresolved destination'}${at(matched.destinationLine)}.`,
+      );
+    } else {
+      parts.push(`Critical in this context because this ${ast.artifactType} ${artifactRiskContext(ast)}.`);
+    }
   }
 
   // Add attack class explanation
