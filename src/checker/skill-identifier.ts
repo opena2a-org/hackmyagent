@@ -3,6 +3,8 @@
  * Parses skill identifiers like @publisher/skill, ./local/path, or GitHub URLs
  */
 
+import { usageError } from './errors';
+
 export interface SkillIdentifier {
   publisher?: string;
   name: string;
@@ -63,15 +65,14 @@ export function parseSkillIdentifier(identifier: string): SkillIdentifier {
   }
 
   const cli = process.env.HMA_CHECK_COMMAND ?? `${process.env.HMA_CLI_PREFIX ?? 'hackmyagent'} check`;
-  throw new Error(
-    'Invalid skill identifier: unrecognized format.\n' +
-    'Expected one of:\n' +
-    '  @publisher/skill-name    Scoped registry identifier\n' +
-    '  https://github.com/...   GitHub URL\n' +
-    '  ./path/to/skill          Local file or directory\n' +
-    '\nExamples:\n' +
-    `  ${cli} @anthropic/code-review\n` +
-    `  ${cli} https://github.com/org/skill\n` +
-    `  ${cli} ./skills/my-skill.md`
-  );
+  throw usageError`Invalid skill identifier: unrecognized format.
+Expected one of:
+  @publisher/skill-name    Scoped registry identifier
+  https://github.com/...   GitHub URL
+  ./path/to/skill          Local file or directory
+
+Examples:
+  ${cli} @anthropic/code-review
+  ${cli} https://github.com/org/skill
+  ${cli} ./skills/my-skill.md`;
 }
