@@ -12,7 +12,6 @@ import type {
 import type { AIMCore } from '@opena2a/aim-core';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as crypto from 'crypto';
 
 // --- Credential patterns (aligned with hackmyagent-core CRED-001) ---
 // Catalog is exported for introspection by the lockstep test against
@@ -57,61 +56,13 @@ export interface SecretEntry {
   backend: 'local' | 'env';
 }
 
-export interface CredVaultConfig {
-  dataDir?: string;
-}
-
-// --- Encrypted Store ---
-
-const STORE_FILE = 'secrets.enc';
-const STORE_META_FILE = 'secrets.meta.json';
-
-interface SecretStoreMeta {
-  version: string;
-  entries: Record<string, { allowedSkills: string[]; backend: string }>;
-}
-
-function getStoreDir(agentDir: string): string {
-  return path.join(agentDir, '.opena2a', 'credvault');
-}
-
-function initStore(agentDir: string): void {
-  const storeDir = getStoreDir(agentDir);
-  fs.mkdirSync(storeDir, { recursive: true });
-
-  // Use exclusive-create (wx) to atomically create-if-not-exists (avoids TOCTOU)
-  const metaPath = path.join(storeDir, STORE_META_FILE);
-  try {
-    const meta: SecretStoreMeta = { version: '1', entries: {} };
-    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), { encoding: 'utf-8', flag: 'wx' });
-  } catch (e: any) {
-    if (e.code !== 'EEXIST') throw e;
-  }
-
-  const storePath = path.join(storeDir, STORE_FILE);
-  try {
-    // Generate encryption key and create empty store
-    const key = crypto.randomBytes(32);
-    const iv = crypto.randomBytes(12); // 12 bytes for GCM
-    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-    const encrypted = Buffer.concat([cipher.update('{}', 'utf-8'), cipher.final()]);
-    const authTag = cipher.getAuthTag();
-
-    // Store key alongside (in production, this would use OS keychain)
-    const keyPath = path.join(storeDir, 'store.key');
-    fs.writeFileSync(keyPath, key.toString('hex'), { encoding: 'utf-8', flag: 'wx' });
-    // Format: iv:authTag:ciphertext (all hex)
-    fs.writeFileSync(
-      storePath,
-      iv.toString('hex') + ':' + authTag.toString('hex') + ':' + encrypted.toString('hex'),
-      { encoding: 'utf-8', flag: 'wx' }
-    );
-    // Restrict key file permissions (owner read/write only)
-    try { fs.chmodSync(keyPath, 0o600); } catch { /* Windows */ }
-  } catch (e: any) {
-    if (e.code !== 'EEXIST') throw e;
-  }
-}
+// A credential store was created here until #431: an AES key written
+// beside a ciphertext that, in every shipped version, encrypted the literal
+// `{}` — nothing ever wrote an entry or read one back. A key that protects
+// nothing is liability without benefit, and it sat ungitignored in the tree
+// this plugin was asked to make safer. `fix-all` removes the credential from
+// the config file and stores it nowhere; the user recovers the value from
+// the provider or from history, and the output says so.
 
 // --- Scan helpers ---
 
@@ -371,9 +322,6 @@ export class CredVaultPlugin implements OpenA2APlugin {
         }));
     }
 
-    // Initialize encrypted store
-    initStore(agentDir);
-
     // Fix CRED-001: Replace hardcoded credentials with env var references
     const credFindings = findings.filter((f) => f.id === 'CRED-001');
     if (credFindings.length > 0) {
@@ -449,7 +397,7 @@ export class CredVaultPlugin implements OpenA2APlugin {
   }
 
   async uninstall(): Promise<void> {
-    // No persistent state beyond the store directory
+    // No persistent state
   }
 }
 

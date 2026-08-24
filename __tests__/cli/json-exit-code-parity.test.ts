@@ -22,9 +22,9 @@
  * 0 under `--json` on a fixture that exits 1 without it. Three commands, one
  * defect, and only one of them had been reported.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
@@ -125,11 +125,16 @@ function jsonCommands(): string[] {
   return out.sort();
 }
 
+// #534 — `fix-all --with-aim` writes a real identity into the user store.
+// Isolated here so a test run never writes into the developer's own ~/.opena2a.
+const ISOLATED_HOME = mkdtempSync(path.join(tmpdir(), 'hma-isolated-home-'));
+afterAll(() => rmSync(ISOLATED_HOME, { recursive: true, force: true }));
+
 function run(args: string[]): { status: number | null; stdout: string } {
   const r = spawnSync(process.execPath, [CLI, ...args], {
     encoding: 'utf8',
     timeout: 90_000,
-    env: { ...process.env, NO_COLOR: '1' },
+    env: { ...process.env, NO_COLOR: '1', HOME: ISOLATED_HOME, OPENA2A_HOME: ISOLATED_HOME },
   });
   if (r.error) throw r.error;
   return { status: r.status, stdout: r.stdout ?? '' };

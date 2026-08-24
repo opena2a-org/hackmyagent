@@ -4,6 +4,52 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+#### `fix-all` no longer writes private keys into the tree it fixes
+
+`fix-all --with-aim` wrote the agent's Ed25519 signing identity — secret key included — to
+`<target>/.opena2a/aim/identity.json`, and `fix-all` wrote an AES key to
+`<target>/.opena2a/credvault/store.key`, both inside the project, neither gitignored, one
+`git add -A` from a commit (#534, #431). The only message called them "plugin data". Affected:
+`hackmyagent` from 0.5.0 (identity) and from 0.5.4 (vault key) through every release before this
+one, and the deprecated `@opena2a/credvault-openclaw` 0.1.2 and earlier.
+
+The identity now lives in your user store, `$OPENA2A_HOME/projects/<key>/aim/` (default root
+`~/.opena2a`; `key` is derived from the project's real path, so each project has its own
+identity). `fix-all --with-aim` refuses to write (exit 1) if that store would sit inside the target; a
+scan, a dry-run or a plain `fix-all` on such a target still runs. The output names
+the private key, its path, and that it is outside the project the moment it is created; `--json`
+carries `privateKeyPaths`, `store`, and `legacyKeyMaterial`. Files that stay in the tree —
+`.opena2a/signcrypt/signatures.json`, `.opena2a/skillguard/pins.json`, `.env.example` — are
+public and correct to commit (the report lists only what the run itself wrote). `--dry-run` and
+`--scan-only` write nothing under the target and create no identity — so `aimEnabled` in their
+`--json` is now `false`, where it used to report the identity that was being constructed.
+
+The vault key is not relocated: it is no longer generated. In every shipped version the
+credvault store encrypted the literal `{}` and nothing ever wrote to it or read from it, so the
+key protected nothing. `fix-all` removes a hardcoded credential from the config file and does not
+store it — recover the value from your provider or from history — and the output now says so.
+
+**If you have run `fix-all` before this version:** check for the two files above. Identity file
+present: regenerate by running `fix-all --with-aim` on the tree (the new identity is created
+outside the project and the files are re-signed), then take the old file out of the tree. Vault
+key present: there is nothing to regenerate; take `.opena2a/credvault/` out of the tree. If either
+file was ever committed or pushed, treat that key as public. `fix-all` reports such files on every
+run, with their git state and the verify commands, and never reads, moves or deletes them. The
+0.26.1 notes scheduled the vault-key fix for 0.27.0; every release through the one before this
+carried it unchanged. Those notes called `store.key` the key to the `secrets.enc` "it decrypts",
+which implied the store held the removed credential; it held `{}`. `secure` reports an in-tree
+vault key as `Private Key Files` and has no check that sees `identity.json` (#577); use the git
+commands, not `secure`, to check a tree.
+
+This closes the class for `fix-all`. `secure --fix` and `harden-soul` still copy `.env` and other
+sensitive files into `<target>/.hackmyagent-backup/` (#389, #376); that is a separate, open change.
+
+Plugin authors: `PluginInitOptions.store` carries the `ProjectStore`; a plugin reads private
+paths from it and never derives them from `agentDir` (a repository test fails on the old shape).
+`CredVaultConfig.dataDir` and `SignCryptConfig.dataDir`, never read, are removed.
+
 ### Finding headers name the whole path; usage errors keep their lines
 
 Two display fixes on one boundary: developer-authored line structure now renders, and

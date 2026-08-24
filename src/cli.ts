@@ -8205,7 +8205,8 @@ import { createPlugin as createCredVaultPlugin } from './plugins/credvault';
 import { createPlugin as createSecretlessPlugin } from './plugins/secretless';
 import { createPlugin as createSigncryptPlugin } from './plugins/signcrypt';
 import { createPlugin as createSkillguardPlugin } from './plugins/skillguard';
-import { AIMCore } from '@opena2a/aim-core';
+import { AIMCore, loadIdentity } from '@opena2a/aim-core';
+import { resolveProjectStore, findLegacyKeyMaterial, type ProjectStore } from './store/project-store';
 import type {
   Finding as PluginFinding,
   Remediation,
@@ -8238,8 +8239,13 @@ Step 2 requires secretless-ai (npm install -g secretless-ai). If not
 installed, the plugin reports this and continues with the remaining steps.
 
 Use --with-aim to create a cryptographic identity for your agent.
-This enables automatic file signing, audit logging, and trust scoring
-so you don't need to manage keys or track files manually.
+This enables automatic file signing and audit logging.
+The private key never enters the project tree: it lives in your user
+store, $OPENA2A_HOME/projects/<key>/aim/ (default root ~/.opena2a); each
+run prints the exact path.
+
+fix-all keeps no backup: commit before running it, or preview with
+--dry-run. rollback does not cover fix-all.
 
 Exit code 1 if critical/high issues remain after fixing.
 
@@ -8254,7 +8260,7 @@ Examples:
   .option('--dry-run', 'Preview fixes without applying them')
   .option('--scan-only', 'Only scan, do not fix')
   .option('--json', 'Output as JSON (for scripting/CI)')
-  .option('--with-aim', 'Create agent identity for automatic signing, audit logging, and trust scoring')
+  .option('--with-aim', 'Create agent identity (Ed25519, stored outside the project under $OPENA2A_HOME or ~/.opena2a) for automatic signing and audit logging')
   .option('-v, --verbose', 'Show all findings including passed plugins')
   .action(
     async (
@@ -8306,13 +8312,41 @@ Examples:
         }
         targetDir = realTarget;
 
+        // #534 — every private key this command creates lives in the user
+        // store, never under the target. Resolved once here; every plugin
+        // receives the same object, and the identity's own path is what the
+        // report prints. A dry-run or scan-only run constructs no identity and
+        // writes nothing anywhere.
+        // Resolving can refuse — the store would sit inside the target. Only a
+        // run that is about to WRITE the identity needs the store; a scan, a
+        // dry-run or a plain fix-all on such a target still runs, as before.
+        let store: ProjectStore | null = null;
+        let storeRefusal: Error | null = null;
+        try {
+          store = resolveProjectStore(targetDir, { createdBy: `hackmyagent@${VERSION}` });
+        } catch (e) {
+          storeRefusal = e instanceof Error ? e : new Error(String(e));
+        }
+        const writes = !options.dryRun && !options.scanOnly;
+        // Private key material an earlier version wrote INTO this tree. Named
+        // in every mode, touched in none: regenerating is the remedy, and what
+        // becomes of the old file is the user's call with its git state shown.
+        const legacyKeyMaterial = findLegacyKeyMaterial(targetDir);
+
         // Initialize AIM Core if requested
         let aimCore: AIMCore | undefined;
-        if (options.withAim) {
+        let identityReused = false;
+        if (options.withAim && writes) {
+          if (!store) throw storeRefusal;
+          store.ensure();
+          identityReused = loadIdentity(store.aimDir) !== null;
           aimCore = new AIMCore({
             agentName: path.basename(targetDir),
-            dataDir: path.join(targetDir, '.opena2a', 'aim'),
+            dataDir: store.aimDir,
           });
+          // Created eagerly so every plugin signs with the same identity and
+          // the report can name it whether or not a plugin needed it.
+          aimCore.getIdentity();
         }
 
         // Create and initialize plugins in execution order
@@ -8330,7 +8364,7 @@ Examples:
         const plugins: Array<{ name: string; plugin: OpenA2APlugin }> = [];
         for (const factory of pluginFactories) {
           const plugin = factory.create();
-          await plugin.init(aimCore ? { aimCore } : undefined);
+          await plugin.init({ ...(aimCore ? { aimCore } : {}), ...(store ? { store } : {}) });
           plugins.push({ name: factory.name, plugin });
         }
 
@@ -8344,6 +8378,27 @@ Examples:
             console.log(`Scanning ${escapePathForDisplay(targetDir)} (scan-only -- no fixes applied)...\n`);
           } else {
             console.log(`Scanning and fixing ${escapePathForDisplay(targetDir)}...\n`);
+          }
+
+          for (const legacy of legacyKeyMaterial) {
+            // `git -C <target>` so the command runs from any cwd (#286); the
+            // path operand is target-relative, which is what ls-files expects.
+            const citedTarget = citationTarget(targetDir);
+            const cited = citationPath(legacy.relativePath);
+            console.log(`${colors.brightRed}[!!] Private key inside the project${RESET()} — written by an earlier hackmyagent release (${legacy.kind === 'identity' ? 'signing identity' : 'vault key'})`);
+            console.log(`   ${escapePathForDisplay(legacy.relativePath)}  (${legacy.gitState})`);
+            if (citedTarget && cited) {
+              console.log(`   Verify: git -C ${citedTarget} ls-files --error-unmatch -- ${cited}   (exit 0 means git tracks it)`);
+              console.log(`           git -C ${citedTarget} log --all --oneline -- ${cited}`);
+            }
+            if (legacy.kind === 'identity') {
+              console.log(`   Fix: regenerate. Run ${CLI_PREFIX} fix-all --with-aim on this tree: the new identity is created outside`);
+              console.log(`        the project and the files are re-signed. Then take the old file out of the tree; if it was`);
+              console.log(`        ever committed or pushed, treat that key as public.\n`);
+            } else {
+              console.log(`   Fix: nothing to regenerate. The vault never held a value (it encrypted \`{}\`); take .opena2a/credvault/`);
+              console.log(`        out of the tree. If it was ever committed or pushed, treat the key as public.\n`);
+            }
           }
         }
 
@@ -8457,6 +8512,25 @@ Examples:
               findings: r.findings,
               remediations: r.remediations,
             })),
+            // #534 — where the private key went (null when this run created
+            // none), the store it went to, and any key an earlier version
+            // left inside the tree. Absolute paths, so a pipeline can assert
+            // in one loop that none of them resolves under `target`.
+            privateKeyPaths: {
+              identity: aimCore && store ? store.identityPath : null,
+              vault: null,
+            },
+            store: store === null ? null : {
+              root: store.root,
+              key: store.key,
+              aimDir: aimCore ? store.aimDir : null,
+              credvaultDir: null,
+              legacyInTree: {
+                identity: { found: legacyKeyMaterial.some((l) => l.kind === 'identity'), path: legacyKeyMaterial.find((l) => l.kind === 'identity')?.path ?? null },
+                vault: { found: legacyKeyMaterial.some((l) => l.kind === 'vault'), path: legacyKeyMaterial.find((l) => l.kind === 'vault')?.path ?? null },
+              },
+            },
+            legacyKeyMaterial,
           };
           writeJsonStdout(jsonOutput);
           if (pluginErrors > 0) process.exit(2);
@@ -8521,26 +8595,47 @@ Examples:
           }
           console.log();
 
-          if (!options.dryRun) {
-            console.log(
-              `${colors.cyan}Note:${RESET()} Plugin data stored in ${escapePathForDisplay(targetDir)}/.opena2a/`
-            );
-            // `fix-all --uninstall` was never a registered option and
-            // `fix-all` writes no backup, so `rollback` cannot undo it
-            // either. The instruction names the directory it just wrote
-            // instead of a command that does not exist (#372).
-            //
-            // A path the reader is invited to paste goes through
-            // `citationPath`, and its null — a path that cannot be shown
-            // truthfully — omits the command rather than printing an `rm -rf`
-            // whose operand is not the directory the reader sees. The line
-            // above already names the location, which is what makes dropping
-            // this one safe.
-            const dataDir = citationPath(`${targetDir}/.opena2a`);
-            if (dataDir) {
-              console.log(`      Remove it with: rm -rf ${dataDir}\n`);
+        }
+
+        // #534 — what this run wrote, and where. A private key is named as a
+        // private key, at the path it was written to, the moment it exists;
+        // the in-tree residue is public material that is correct to commit.
+        if (writes) {
+          if (aimCore && store) {
+            const identity = aimCore.getIdentity();
+            const keyPath = citationPath(store.identityPath);
+            console.log(`Signing identity: ${escapeForDisplay(identity.agentName)}  (Ed25519, ${identityReused ? 'reused' : 'created'})`);
+            if (keyPath) {
+              console.log(`  Private key  ${keyPath}   outside the project; do not copy it into the tree`);
+            } else {
+              // The path carries a display hazard; name the store it is in rather than a directory as the key.
+              console.log(`  Private key  in the store ${escapePathForDisplay(store.root)} (path not printable)   outside the project`);
+            }
+            console.log(`  Public key   ${escapeForDisplay(identity.publicKey)}`);
+          }
+          const credentialFixes = results.find((r) => r.name === 'Credential Protection')?.remediations.length ?? 0;
+          if (credentialFixes > 0) {
+            console.log(`Credential vault: none — fix-all removes credentials from config files and stores nothing;`);
+            console.log(`  recover each value from your provider or from history, then set it in the environment.`);
+          }
+          // Only what THIS run wrote, by the plugins' own filesModified — a file
+          // that merely exists may hold anything and is not ours to call safe.
+          const written = new Set(
+            results.flatMap((r) => r.remediations.flatMap((m) => m.filesModified))
+              .map((f) => path.relative(targetDir, path.resolve(targetDir, f)).split(path.sep).join('/')),
+          );
+          const publicWrites: Array<[string, string]> = [
+            ['.opena2a/signcrypt/signatures.json', 'hash pins and signatures'],
+            ['.opena2a/skillguard/pins.json', 'SHA-256 skill pins'],
+            ['.env.example', 'variable names only'],
+          ].filter(([rel]) => written.has(rel)) as Array<[string, string]>;
+          if (publicWrites.length > 0) {
+            console.log(`Written to the project (public, safe to commit):`);
+            for (const [rel, what] of publicWrites) {
+              console.log(`  ${rel.padEnd(36)} ${what}`);
             }
           }
+          console.log(`fix-all keeps no backup: commit before running it, or preview with --dry-run. rollback does not cover fix-all.\n`);
         }
 
         // All clear message

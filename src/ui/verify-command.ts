@@ -105,6 +105,7 @@ function isUsableLine(line: number | undefined): line is number {
  *     Verify: cat <target>/.env
  *     CRITICAL  Private Key Files
  *     Verify: cat <target>/.opena2a/credvault/store.key
+ *     (the vault key `fix-all` wrote in-tree at the time — #431; it writes none now)
  *
  * — a security scanner instructing the reader to print an entire secret file to
  * a terminal, on findings whose flagged trigger (`.env` is not listed in

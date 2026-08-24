@@ -1,6 +1,7 @@
 export const VERSION = '0.1.0';
 
 import type { AIMCore } from '@opena2a/aim-core';
+import type { ProjectStore } from '../store/project-store';
 import type { Evidence, Rationale, ConceptId } from '../types/finding-evidence';
 
 // --- Plugin Interface ---
@@ -117,6 +118,13 @@ export interface OpenA2APlugin {
 export interface PluginInitOptions {
   /** Optional aim-core instance for identity-aware features */
   aimCore?: AIMCore;
+  /**
+   * The user store for the project being fixed (#534). The only source of a
+   * path for private material: a plugin that needs one reads it from here and
+   * never derives it from `agentDir`. Absent for callers that predate it;
+   * plugins then resolve it themselves with `resolveProjectStore(agentDir)`.
+   */
+  store?: ProjectStore;
   /** Plugin-specific configuration */
   config?: Record<string, unknown>;
 }
