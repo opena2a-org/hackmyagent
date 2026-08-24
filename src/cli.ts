@@ -216,6 +216,32 @@ async function finishWithFindings(code: number): Promise<void> {
 }
 
 /**
+ * Raise the exit code to at least `code`; never lower it.
+ *
+ * THE PRECEDENCE RULE for `secure`, stated here and nowhere else (#512):
+ *
+ * - An input the run discovered and could not read settles a FLOOR of
+ *   `EXIT_UNMEASURED` (2) above every output channel (#438). "The command
+ *   cannot say, and does not pretend to."
+ * - A `--fail-below` breach raises the code to at least `EXIT_FAIL` (1) and
+ *   never lowers that floor. A threshold is a claim about the SCORE, and over
+ *   a tree with an unread input the score is an upper bound, not a
+ *   measurement — so "I could not measure this" outranks "I measured it and
+ *   it failed". A caller who adds a stricter flag must not get a weaker
+ *   signal back. Before this, the per-channel copies assigned 1 over the 2.
+ * - A critical/high FINDING is a fact about findings, not about the score;
+ *   each channel's `finishWithFindings(1)` is the recorded #438 behaviour
+ *   ("a run that also found a critical must still exit 1") and is untouched.
+ *
+ * `process.exitCode` is read, not assumed 0, because the floor may already
+ * have set it. `Number()` because newer Node typings allow a string here.
+ */
+function raiseExitCode(code: number): void {
+  const current = Number(process.exitCode ?? 0);
+  if (!(current >= code)) process.exitCode = code;
+}
+
+/**
  * Settle a `check` verdict's exit code. Called ABOVE the output-channel
  * branch on every `check` target path, so no renderer — and no `return`
  * inside one — can change it. See `src/check/verdict.ts` for why (#373).
@@ -4845,10 +4871,10 @@ Examples:
       // Placed here because this is the first statement at which the findings
       // and the score are final and NO output channel has branched yet. Every
       // one of the command's other exit statements is below it: the two
-      // benchmark arms, the json / sarif / html / asff returns, the text arm,
-      // and — the reason a per-channel gate could not work — the two
-      // `--fail-below` early returns that sit ABOVE each channel's own
-      // critical/high line and return before reaching it.
+      // benchmark arms, the json / sarif / html / asff returns and the text
+      // arm. The two per-channel `--fail-below` early returns that used to sit
+      // ABOVE each channel's own critical/high line — the reason a per-channel
+      // gate could not work — are gone; the threshold settles here (#494).
       //
       // It settles a FLOOR, not the whole code. An incomplete run must not exit
       // 0; a run that also found a critical must still exit 1, and every arm
@@ -4859,14 +4885,35 @@ Examples:
       // wrong. A `return` inside any renderer leaves it standing.
       //
       // This is deliberately NOT a fifth copy of the three-line
-      // `critHigh / deepScanIncomplete` block each channel carries. #494 is what
-      // per-channel copies produce: `--fail-below` is checked on text and json
-      // only, so it is silently inert under `--format sarif|html|asff` on
-      // published 0.29.0. A per-channel coverage gate would be the third
+      // `critHigh / deepScanIncomplete` block each channel carries. #494 was
+      // what per-channel copies produced: `--fail-below` was checked on text
+      // and json only, so it was silently inert under `--format sarif|html|asff`
+      // on published 0.29.0. A per-channel coverage gate would be the third
       // generation of that same bug.
       const unreadInputs = unreadInputCount(result);
       if (unreadInputs > 0) {
         process.exitCode = EXIT_UNMEASURED;
+      }
+
+      // `--fail-below` settles here too — once, for every channel (#494).
+      // SARIF is the format CI uploads, so a per-channel check that skipped it
+      // left the flag inert exactly where it is used: a job that asked for a
+      // score floor got a green build regardless of score, with nothing on
+      // stderr. A breach RAISES the code and never lowers the floor set just
+      // above (#512); the rule lives on `raiseExitCode`.
+      //
+      // The exit code is settled HERE for every channel. The one-line stderr
+      // reason is printed here for the document channels (json / sarif / html
+      // / asff), where stdout is a report and the sentence's position beside
+      // it is immaterial — and at the END of the text arm, after the report,
+      // where the published builds print it (0.30.0 measured: line 44 of 45,
+      // before the exit footer). Emitting it here in text mode put the reason
+      // five lines into a 45-line run, above the score it explains. One boolean drives the code and both sites, so the
+      // sentence cannot print without the code moving, or the reverse.
+      const thresholdBreached = failBelow !== undefined && result.score < failBelow;
+      if (thresholdBreached) {
+        raiseExitCode(EXIT_FAIL);
+        if (format !== 'text') console.error(`Score ${result.score} is below threshold ${failBelow}`);
       }
 
       // AI Infrastructure auto-detection — scan NemoClaw, OpenClaw, etc. if present.
@@ -5265,16 +5312,10 @@ Examples:
         }
         // Community contribution (non-blocking, runs in JSON mode too)
         await handleContribution(options.contribute, targetDir, result.findings, scanDurationMs, options.registryUrl, format);
-        // `--fail-below` is honored here, not only on the text path. It returns
-        // before the check near the end of the action, so `--json --fail-below 99`
-        // exited 0 on a score of 98 while the same run without `--json` exited 1.
-        // CI is precisely where a threshold is used and precisely where `--json`
-        // is used, so the flag was inert exactly where it matters.
-        if (failBelow !== undefined && result.score < failBelow) {
-          console.error(`Score ${result.score} is below threshold ${failBelow}`);
-          process.exitCode = 1;
-          return;
-        }
+        // `--fail-below` is settled once at the settlement point above (#494);
+        // no per-channel copy here. The copy this replaced returned before the
+        // critical/high line below, and its sibling on sarif/html/asff did not
+        // exist at all.
         const critHigh = gateSet(result).filter((f: any) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) await finishWithFindings(1);
         else if (deepScanIncomplete(result)) await finishWithFindings(2);
@@ -5751,10 +5792,12 @@ Examples:
         console.log(`${colors.cyan}Helpful?${RESET()} Star the project: https://github.com/opena2a-org/opena2a\n`);
       }
 
-      // Check --fail-below threshold (standard mode)
-      if (failBelow !== undefined && result.score < failBelow) {
+      // `--fail-below` was settled once at the settlement point above (#494);
+      // this is the text channel's copy of the REASON, not of the gate — the
+      // exit code is already raised. The hard `process.exit(1)` that sat here
+      // also skipped the deep-scan line below it.
+      if (thresholdBreached) {
         console.error(`Score ${result.score} is below threshold ${failBelow}`);
-        process.exit(1);
       }
 
       // #454 -- an any-finding `--ci` gate used to sit here. It never ran: `--ci`
