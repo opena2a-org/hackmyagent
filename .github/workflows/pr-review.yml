@@ -611,10 +611,14 @@ jobs:
             # author halve every other file's allowance by converting one file to
             # a symlink and back. That is the author-controllable predicate this
             # gate refuses, arriving through the manifest instead of through a
-            # glob. The compose loop below already de-duplicates per path, so a
-            # second chunk's context was built, charged, and then never sent.
-            # Leaving its `.ctx` empty is what makes the packer's count match
-            # what the batch actually carries.
+            # glob. The compose loop below de-duplicates per path WITHIN a
+            # batch, so when both chunks pack into one batch the second chunk's
+            # context was built, charged, and then never sent. When the two
+            # chunks straddle a batch boundary the later batch still lists the
+            # path (its own diff travels with it) with no source and no notice;
+            # source attaches once, to the first chunk. Leaving the second
+            # `.ctx` empty is what makes the packer's count match what a batch
+            # actually carries.
             if grep -qxF -- "$FPATH" "$SEEN_CTX" 2>/dev/null; then
               continue
             fi
@@ -692,7 +696,8 @@ jobs:
               # 3 files, level 66, each file emitted 321 bytes. So the real bound
               # is `sum(emitted) <= budget + files x (header + notice)`, and the
               # second term only appears once the budget has already collapsed —
-              # it needs thousands of changed files to reach. Dropping the notice
+              # on the order of six hundred short-path files, fewer when paths
+              # are long, since the header carries the path. Dropping the notice
               # instead would buy the bound by making a file with no source
               # indistinguishable from one with nothing to hide, which is the
               # trade this whole step refuses.

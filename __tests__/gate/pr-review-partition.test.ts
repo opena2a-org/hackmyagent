@@ -885,6 +885,10 @@ describe('PR review gate: full source is budgeted across the request, and cut un
     // before the fix: 986,720 bytes against single mode's 245,852.
     const r = runPartition(bigSourceFixture(12));
     expect(r.outputs.refused).toBe('false');
+    // Batch mode must actually have engaged. Single mode leaves `batches`
+    // empty, `emitted` reads 0, and every bound below holds vacuously; the
+    // fixture sits only a few percent above the single-request threshold.
+    expect(r.batches.length).toBeGreaterThanOrEqual(2);
     const emitted = r.batches.reduce((n, b) => n + Buffer.byteLength(sourceSection(b)), 0);
     expect(emitted).toBeLessThanOrEqual(MAX_FULL_TOTAL);
     // Non-vacuous: the fixture really does want far more than the budget, so a
