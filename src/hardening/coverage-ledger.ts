@@ -192,6 +192,7 @@ export const CHECK_METHOD_PREFIXES: Readonly<Record<string, readonly string[]>> 
   checkMCPDiscovery: ['MCP'],
   checkWebServedCredentials: ['WEBCRED'],
   checkInstallScripts: ['INSTALL'],
+  checkShellCredentialExfil: ['SHELL-EXFIL'],
   checkCLICredentialPassthrough: ['CLIPASS'],
   checkIntegrityBypass: ['INTEGRITY'],
   checkTOCTOU: ['TOCTOU'],
@@ -257,7 +258,7 @@ export const SEMANTIC_PREFIXES: readonly string[] = [
 const PREFIX_TO_CATEGORY: Readonly<Record<string, string>> = {
   CRED: 'credentials', 'AST-CRED': 'credentials', WEBCRED: 'credentials',
   'SEM-CRED': 'credentials', 'AGENT-CRED': 'credentials', ENVLEAK: 'credentials',
-  CLIPASS: 'credentials',
+  CLIPASS: 'credentials', 'SHELL-EXFIL': 'credentials',
   MCP: 'MCP', 'AST-MCP': 'MCP', 'SEM-MCP': 'MCP',
   NET: 'network', GATEWAY: 'network', WEBEXPOSE: 'network',
   // `AST-EXFIL` is egress, so it is credited to network. It, `AST-INJECT`,

