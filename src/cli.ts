@@ -324,6 +324,7 @@ import {
 } from './check/verdict';
 import { quickScanCoverage } from './check/quick-scan-coverage';
 import { rewriteRemoteUnreadRemedy, UNREAD_INPUT_CHECK_ID } from './check/remote-unread-remedy';
+import { FIX_LINES } from './hardening/fix-lines';
 import {
   summarizeCoverage,
   SEMANTIC_PREFIXES,
@@ -1398,6 +1399,30 @@ function cleanFixText(text: string, fileAlreadyShown?: string): string {
  * (multi-sentence, shell examples, explanations) is rendered as Fix: text
  * without the arrow so it doesn't look like a runnable command.
  */
+/**
+ * #367 — the parts of a fix as the text channel prints them. The generator
+ * carries its authored line structure out of band under `FIX_LINES`; a finding
+ * without it is one line. The pair is used only while it still describes
+ * `fix`: a `fix` rewritten after emission (the auto-fix path swaps in
+ * `manualFix` in place) leaves the structure stale, and stale structure is not
+ * rendered — the string is, escaped whole, exactly as before #367.
+ */
+function fixParts(f: { fix?: string; readonly [FIX_LINES]?: readonly string[] }): readonly string[] {
+  const fix = f.fix ?? '';
+  const lines = f[FIX_LINES];
+  const wellFormed = Array.isArray(lines) && lines.every((line) => typeof line === 'string');
+  return wellFormed && lines.join('\n') === fix ? lines : [fix];
+}
+
+/**
+ * Continuation lines sit under line 0's text, past its `→  ` or `Fix: `
+ * marker. The marker is chosen by `formatFixLine` from the REBRANDED line 0
+ * (`cleanFixText` rebrands), so the indent is keyed on the same text.
+ */
+function fixContinuationIndent(firstLine: string): string {
+  return ' '.repeat(/^(opena2a|hackmyagent)\s/.test(rebrandCommandCitations(firstLine)) ? 3 : 5);
+}
+
 function formatFixLine(text: string): string {
   const isRunnable = /^(opena2a|hackmyagent)\s/.test(text);
   const parts = text.split(/\s+—\s+/);
@@ -2617,7 +2642,15 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         if (f.fix) {
           // #324 — escaped BEFORE `cleanFixText`, which keeps only the first
           // line: a command must be rendered whole or it is not runnable.
-          console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(escapeForDisplay(f.fix), f.file))}`);
+          // #367 — the authored parts render one per line; every part is
+          // escaped on its own printing line, so a newline inside a part (a
+          // tree byte) is the two characters `\n` and only the generator's
+          // boundaries become lines.
+          const parts = fixParts(f);
+          console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(escapeForDisplay(parts[0]), f.file))}`);
+          for (const part of parts.slice(1)) {
+            console.log(`  ${borderColor}│${RESET()}${part === '' ? '' : ` ${fixContinuationIndent(parts[0])}${escapeForDisplay(rebrandCommandCitations(part))}`}`);
+          }
           renderConceptForFinding(f, conceptsSeen, borderColor);
         }
       }
@@ -2653,7 +2686,13 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           console.log(`  ${borderColor}│${RESET()} ${colors.dim}Verify: ${verifyLine}${RESET()}`);
         }
         if (f.fix) {
-          console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(escapeForDisplay(f.fix), f.file))}`);
+          // #367 — see the Top Issues site above: parts one per line, each
+          // escaped on its own printing line.
+          const parts = fixParts(f);
+          console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(escapeForDisplay(parts[0]), f.file))}`);
+          for (const part of parts.slice(1)) {
+            console.log(`  ${borderColor}│${RESET()}${part === '' ? '' : ` ${fixContinuationIndent(parts[0])}${escapeForDisplay(rebrandCommandCitations(part))}`}`);
+          }
           renderConceptForFinding(f, conceptsSeen, borderColor);
         }
         if (verbose) {
