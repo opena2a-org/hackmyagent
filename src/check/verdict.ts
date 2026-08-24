@@ -51,11 +51,19 @@
  * |---|---|
  * | 0 | measured, and the result is one the command promises to pass on |
  * | 1 | measured, and the result is one the command promises to fail on |
- * | 2 | **not measured** — the command cannot say, and does not pretend to |
+ * | 2 | **not measured, or not completely measured** — the command cannot say, and does not pretend to |
  *
  * 2 is non-zero on purpose. A CI job that asked for a security verdict and got
  * "I could not reach the target" has not been told the target is safe, and the
  * conservative reading is the honest one. Exit 0 there is the bug being fixed.
+ *
+ * "Not completely measured" is the #438 case brought to `check` (#508): the
+ * run read some inputs and discovered at least one it could not read. The
+ * band is still derived and printed, over what WAS read, as an upper bound —
+ * withholding it would hand one unreadable file the power to blank a whole
+ * assessment — but the exit code says the run did not examine everything it
+ * found. A high or critical band over what was read still exits 1: a found
+ * credential outranks an unread file, on `check` exactly as on `secure`.
  */
 
 /** Severity band a command reports for a target. Ordered worst-first. */
@@ -99,6 +107,25 @@ export interface Coverage {
   readonly total: number;
   /** Singular noun for one unit, for the sentence a renderer prints. */
   readonly unit: string;
+  /**
+   * Inputs the run discovered inside the target and could not read, when a
+   * coverage ledger kept that record. The same shape `secure --json` carries
+   * under `coverage.unreadableInputs`, so one consumer predicate serves both
+   * commands. Present means "a record was kept" (possibly `count: 0`); absent
+   * means no record was kept — never "nothing was unread".
+   */
+  readonly unreadableInputs?: ReadFailureRecord;
+}
+
+/**
+ * What a coverage ledger records about reads that failed: how many distinct
+ * inputs, and the errno tally. Paths are deliberately NOT here — they come out
+ * of the scanned tree and reach the user through findings and the text
+ * channel, where they are escaped for display.
+ */
+export interface ReadFailureRecord {
+  readonly count: number;
+  readonly codes: Readonly<Record<string, number>>;
 }
 
 /**
@@ -125,7 +152,12 @@ export interface MeasuredVerdict {
   readonly risk: CheckRisk;
   /** Mandatory. This is the whole point of the type. */
   readonly coverage: Coverage;
-  readonly exitCode: typeof EXIT_PASS | typeof EXIT_FAIL;
+  /**
+   * `EXIT_UNMEASURED` on the measured arm means "measured, but not
+   * completely": `coverage.unreadableInputs.count > 0` and the band is not
+   * one the command fails on. See `deriveCheckVerdict` for the precedence.
+   */
+  readonly exitCode: typeof EXIT_PASS | typeof EXIT_FAIL | typeof EXIT_UNMEASURED;
 }
 
 export interface UnmeasuredVerdict {
@@ -156,9 +188,49 @@ export interface UnmeasuredVerdict {
  */
 export type CheckVerdict = MeasuredVerdict | UnmeasuredVerdict;
 
-/** A run that inspected everything it set out to inspect. */
+/**
+ * A run that inspected everything it set out to inspect.
+ *
+ * @deprecated The denominator here is the numerator, so an input the run
+ * discovered and could not read leaves BOTH sides of the fraction and the
+ * claim reads as complete (#508). Callers that keep a coverage ledger use
+ * `recordedCoverage`; the remaining callers are the two deprecated
+ * `secure-openclaw` / `secure-nemoclaw` sites, whose unit is `'check'` and
+ * cannot take a file-count denominator until that command's own discovery
+ * record exists. A ratchet test pins the caller count; zero callers is the
+ * exit condition of the measurement-record unit.
+ */
 export function fullCoverage(examined: number, unit: string): Coverage {
   return { examined, total: examined, unit };
+}
+
+/**
+ * Coverage derived from a run's own read-failure record: `total` is what the
+ * run read PLUS what it discovered and could not read, so `examined < total`
+ * holds exactly when the record is non-empty.
+ *
+ * The unit caveat, stated because the stronger claim is false: an unread
+ * input is counted in `total` in the caller's unit whether or not it would
+ * have compiled to one of those units had it been readable. That is the
+ * fail-closed reading #438 chose — "discovered and not read" — and it is why
+ * the record itself is carried beside the fraction rather than folded into it.
+ */
+export function recordedCoverage(
+  examined: number,
+  unit: string,
+  record: ReadFailureRecord,
+): Coverage {
+  return { examined, total: examined + record.count, unit, unreadableInputs: record };
+}
+
+/**
+ * Inputs the run discovered and could not read, on either arm: 0 when no
+ * record was kept. Reads the record, not `total - examined`, because `attack`
+ * and `detect` report partial fractions that are not read failures.
+ */
+export function unreadInputs(verdict: CheckVerdict): number {
+  const coverage = verdict.measured ? verdict.coverage : verdict.attempted;
+  return coverage?.unreadableInputs?.count ?? 0;
 }
 
 /** A run that could not measure. The only way to build the unmeasured arm. */
@@ -228,11 +300,19 @@ export function deriveCheckVerdict(
       : counts.high > 0 ? 'high'
         : issues > 0 ? 'medium'
           : 'low';
+  // Precedence, shared with `secure`'s settlement point: a band the command
+  // fails on exits 1 whatever else happened; otherwise an input discovered
+  // and not read exits 2; otherwise 0. Keyed on the read-failure RECORD, not
+  // on `examined < total` — `attack` (answered of sent) and `detect` (a
+  // deliberate 4-of-5) report partial fractions that are not read failures,
+  // and their exit codes must not move with this (#508).
+  const failing = risk === 'critical' || risk === 'high';
+  const unread = coverage.unreadableInputs?.count ?? 0;
   return {
     measured: true,
     risk,
     coverage,
-    exitCode: risk === 'critical' || risk === 'high' ? EXIT_FAIL : EXIT_PASS,
+    exitCode: failing ? EXIT_FAIL : unread > 0 ? EXIT_UNMEASURED : EXIT_PASS,
   };
 }
 
@@ -263,15 +343,20 @@ export function coverageJson(verdict: CheckVerdict): {
   examined: number;
   total: number;
   unit: string;
+  unreadableInputs?: ReadFailureRecord;
   reason?: UnmeasuredReason;
   detail?: string;
 } {
   if (verdict.measured) return { measured: true, ...verdict.coverage };
+  // The record rides on the unmeasured arm too, so "every input was unread"
+  // (`target-unreadable`, examined 0) keeps its count and errno tally.
+  const record = verdict.attempted?.unreadableInputs;
   return {
     measured: false,
     examined: 0,
     total: verdict.attempted?.total ?? 0,
     unit: verdict.attempted?.unit ?? 'unit',
+    ...(record ? { unreadableInputs: record } : {}),
     reason: verdict.reason,
     detail: verdict.detail,
   };

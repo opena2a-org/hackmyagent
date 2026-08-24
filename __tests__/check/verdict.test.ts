@@ -24,6 +24,8 @@ import {
   deriveCheckVerdict,
   unmeasured,
   fullCoverage,
+  recordedCoverage,
+  unreadInputs,
   coverageJson,
   unmeasuredBanner,
   EXIT_PASS,
@@ -268,10 +270,17 @@ describe('the machine and text channels report the same measurement', () => {
       deriveCheckVerdict({ critical: 2, high: 0 }, SOME),
       deriveCheckVerdict({ critical: 0, high: 0 }, fullCoverage(0, 'file')),
       unmeasured('target-not-found', 'gone'),
+      // #508 — measured, but not completely: a record of one unread input.
+      deriveCheckVerdict({ critical: 0, high: 0 }, recordedCoverage(3, 'file', { count: 1, codes: { EACCES: 1 } })),
+      deriveCheckVerdict({ critical: 1, high: 0 }, recordedCoverage(3, 'file', { count: 1, codes: { EACCES: 1 } })),
     ]) {
       expect(coverageJson(v).measured).toBe(v.measured);
       expect(unmeasuredBanner(v) === '').toBe(v.measured);
-      expect(v.exitCode === EXIT_UNMEASURED).toBe(!v.measured);
+      // Exit 2 means "not measured, or not completely measured": the
+      // unmeasured arm, or a measured band the command does not fail on over
+      // a recorded unread input. A failing band exits 1 either way.
+      const failing = v.measured && (v.risk === 'critical' || v.risk === 'high');
+      expect(v.exitCode === EXIT_UNMEASURED).toBe(!v.measured || (unreadInputs(v) > 0 && !failing));
     }
   });
 });

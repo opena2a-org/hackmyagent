@@ -76,6 +76,57 @@ unescaped now escape it — the same #324 boundary, applied in the direction it 
 and so do the finding-header name fallback, the collapse label, and a plugin-error line that
 printed through `console.log` beneath the structural test's earlier sight line.
 
+### `check` no longer exits 0 over an input it could not read
+
+`check <local path>` and the four downloaded targets (npm, PyPI, GitHub, URL) derived their
+coverage claim with the denominator defined as the numerator, so an input the run discovered and
+could not read left BOTH sides of the fraction: `--json` reported `coverage: {measured: true,
+examined: 1, total: 1}` and the command exited 0 over a tree holding a `chmod 000` credential
+file (#508). `secure` has settled this case since 0.30.0 (#438); `check` now does the same, and
+the two commands order the same two facts the same way.
+
+- **Exit code.** An input discovered inside the target and not read settles exit **2** — unless
+  the band over what WAS read is high or critical, which still exits **1**. Exit 0 is
+  unreachable while anything the scan attempted went unread. On the local arm the record
+  reaches what the semantic compiler attempts: a file it never selects as a candidate, or the
+  contents of a directory it cannot list, are not yet in the record — `secure` reads more of
+  the tree and records both; #588 tracks closing that gap. The precedence is written once, in
+  `deriveCheckVerdict`, and is keyed on the run's read-failure record rather than on
+  `examined < total`, so `attack` and `detect`, which report partial fractions that are not
+  read failures, do not move.
+- **Coverage.** `--json` `coverage.total` is what the run read PLUS what it discovered and
+  could not read, and `coverage.unreadableInputs: {count, codes}` carries the record in the same
+  shape `secure --json` already uses. `measured` stays `true` for a partial run; the partial
+  predicate is `examined < total`. On the text channel the header reads
+  `2 of 3 files analyzed · 1 could not be read`, each unread path is named with its errno under
+  it, and the risk level is framed as an upper bound with a runnable `ls -l` check.
+- **Local arm.** `check <path>` ran the semantic layer with no coverage ledger, so a failed read
+  was dropped on the floor; it now runs under the same ledger window `secure` uses, and each
+  unread path carries its own `SCAN-UNREAD-001` finding through the builder `secure` uses, with a
+  remedy that re-runs `check`. A `.hmaignore` path rule cannot scope that finding away — the
+  same carve-out `secure` ships, because the exit code was settled from the same record — while
+  an explicit `!SCAN-UNREAD-001` check rule suppresses it onto the Suppressed line like any
+  other check. Naming a readable FILE whose directory holds an unreadable sibling settles the
+  same exit 2: the local arm scans the file's parent directory, and the header names what was
+  not read.
+- **A target file that cannot itself be read** is reported as `NOT MEASURED` (`target-unreadable`,
+  exit 2). It used to be scanned as its parent directory and reported on the readable siblings —
+  `100/100` on the wrong file.
+- **Downloaded targets.** The `SCAN-UNREAD-001` remedy on npm, PyPI, GitHub and URL targets no
+  longer says `chmod` and no longer cites the temporary extraction directory (which the run
+  deletes before the line is read, and which leaked into `--json`). For an archive it says what
+  is true: the mode bits are part of what was published, so treat the member as unreviewed and
+  inspect the archive's member list; for a clone it says the mode came from the checkout.
+- `check --help` gains the exit-code table in `secure`'s shape; README's exit-2 row now names
+  `check` beside `secure`.
+
+Measured on the fixture in `__tests__/cli/check-unread-input-floor.test.ts` against a `main`
+build: mixed tree `exit 0 / examined 2, total 2` → `exit 2 / examined 2, total 3,
+unreadableInputs {count: 1, codes: {EACCES: 1}}`; token beside the unread file `1 → 1`; readable
+control `0 → 0`; the unreadable target file `0 (sibling's score) → 2 (NOT MEASURED)`.
+
+`fullCoverage` is deprecated rather than deleted: its two remaining callers are the deprecated
+`secure-openclaw` / `secure-nemoclaw` sites, and a test pins that count so it can only go down.
 
 ### The benchmark arms say what the run could not read
 
