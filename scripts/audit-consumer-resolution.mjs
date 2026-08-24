@@ -65,30 +65,12 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
  * severity.
  */
 const ALLOWED = [
-  {
-    id: 'GHSA-xcpc-8h2w-3j85',
-    package: 'adm-zip',
-    reason:
-      'adm-zip <0.6.0, reached only through onnxruntime-node, which HackMyAgent ' +
-      'needs for local NanoMind inference. onnxruntime-node@1.27.0 is the latest ' +
-      'STABLE release and pins adm-zip ^0.5.16; the patched 0.6.0 is outside that ' +
-      'caret, so no stable version resolves clean. `overrides` do not reach a ' +
-      'consumer -- this package already ships one and consumers still resolve ' +
-      'adm-zip@0.5.18, so that lever is spent, not untried. The fix HAS landed ' +
-      'upstream on the dev channel: onnxruntime-node@1.29.0-dev.20260810-1d69bbd631 ' +
-      'declares adm-zip ^0.6.0, and our ^1.27.0 range admits it, so a stable 1.28/1.29 ' +
-      'cut resolves this with no action from us. ' +
-      'REACHABILITY, corrected 2026-08-10 -- the previous text here claimed the base ' +
-      'package ships the execution-provider binaries so the script exits before ' +
-      'requiring adm-zip. That was wrong in our favour, which is the worst direction ' +
-      'for a waiver to be wrong. adm-zip is required unconditionally at ' +
-      'script/install-utils.js:11 on every platform. Whether a ZIP is PARSED depends ' +
-      'on install-metadata requirements: five platforms are [], but linux/x64 is ' +
-      '["cuda12"] and the tarball ships none of the three required .so files -- so on ' +
-      'linux/x64, the ordinary CI and container platform, postinstall DOES download a ' +
-      'nupkg from nuget.org and parse it. Impact is availability-only and install-time.',
-    reviewBy: '2026-11-01',
-  },
+  // GHSA-xcpc-8h2w-3j85 (adm-zip via onnxruntime-node) was waived here from
+  // 2026-08-10 until 2026-08-24, when a fresh consumer resolution stopped
+  // pulling the vulnerable range -- the waiver's own prediction ("a stable
+  // onnxruntime-node cut declaring adm-zip ^0.6.0 resolves this with no
+  // action from us") held. Removed per this gate's rule that an entry which
+  // no longer matches is removed, not left to rot.
 ];
 
 /** Packages that must never appear in a consumer tree, at any version. */
