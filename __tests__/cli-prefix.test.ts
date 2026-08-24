@@ -54,7 +54,7 @@ describe('rebrandCommandCitations (pure)', () => {
 });
 
 describe('resolveCliPrefix', () => {
-  it('returns the HMA_CLI_PREFIX env value verbatim when set', () => {
+  it('returns a well-formed HMA_CLI_PREFIX value unchanged', () => {
     const prev = process.env.HMA_CLI_PREFIX;
     process.env.HMA_CLI_PREFIX = 'opena2a';
     expect(resolveCliPrefix()).toBe('opena2a');

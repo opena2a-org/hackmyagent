@@ -100,6 +100,42 @@ unescaped now escape it — the same #324 boundary, applied in the direction it 
 and so do the finding-header name fallback, the collapse label, and a plugin-error line that
 printed through `console.log` beneath the structural test's earlier sight line.
 
+### Three display-escape gaps outside the findings list
+
+`escapeForDisplay` keeps a byte from a scanned tree from splitting, forging or rewriting a
+report line (#324, #334), and the finding renderers apply it on every printing line. Three
+surfaces outside them did not, and the render-source gate could not see any of them because
+none of the values is path-named.
+
+- **`HMA_CLI_PREFIX` (#574).** The prefix is interpolated into the footers, the usage text and
+  every rebranded citation, and several of those sites rebrand after escaping the text they
+  sit in, so a value carrying a newline printed its second line at column 0 (7 forged lines
+  and 9 raw escape bytes on the skill fixture the new suite uses). The prefix is now escaped
+  once where it is derived, so every interpolation of `CLI_PREFIX` inherits the display-safe
+  form, and a prefix that had to be altered is announced once on stderr. The configured value
+  itself is kept for the data channels: the scanner composes its fix strings with it, and
+  those ship in `--json`, SARIF and HTML exactly as before, for any prefix. The vector is the
+  environment, not a scanned tree, so the exposure was bounded; the contract now holds there
+  too.
+- **`scan-soul` (#595).** The violation listing printed the matched sentence of the scanned
+  SOUL.md and the fix text raw, and the invalid-profile-marker lines printed the marker's value
+  raw; an escape sequence inside any of them reached the terminal as the byte. All of them now
+  escape on the printing line (the sequence renders as visible text); `--json` still carries
+  the value.
+- **Three fix prints (#596).** The deprecated OpenClaw and NemoClaw arms and `scan`'s
+  remote-host findings still printed a composed fix as one escaped line after the findings
+  list moved to one authored part per line; they now render parts the same way, through the
+  same idiom the #367 tripwires cover. A fourth renderer with the same shape and no callers is
+  deleted.
+
+Measured against the build before this change, on the fixtures the new suites use: lines
+beginning with the forged prefix text 7 → 0 under `secure` (all 14 mentions still on screen),
+raw escape bytes 9 → 0; raw escape bytes in `scan-soul` output 1 → 0 with the evidence still
+shown; whole-string fix prints in `src/cli.ts` 5 → 0. With the same hostile prefix, `--json`,
+SARIF and HTML are byte-identical to before (they carry the configured value); `check`,
+`scan-soul` and `detect --json`, ASFF, the MCP server and the Registry payload do not read the
+prefix.
+
 ### Multi-part fix text renders on separate lines in the findings list
 
 The fix generator composes a remediation from several authored parts — the command, a
