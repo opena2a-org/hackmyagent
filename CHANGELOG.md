@@ -4,6 +4,26 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The benchmark arms say what the run could not read
+
+`secure -b oasb-1` and `-b oasb-2` could exit 2 — the unmeasured floor firing for an input the
+run discovered and could not read — while printing a rating and nothing else: the output said
+`Rating: Certified`, the exit code said "not fully measured", and nothing connected them (#514,
+the disclosure half). The cause: the benchmark report maps findings through control `checkIds`,
+and `SCAN-UNREAD-001` belongs to no control, so the one finding that explains the exit code
+vanished from every benchmark channel.
+
+Both arms now print the run's own read-failure record beside the rating on the text channel —
+`Unread inputs: N — the compliance above is an upper bound over what was read.` with each path
+and errno under it — and carry `unreadableInputs {count, codes}` in `--format json`, the same
+shape `secure --json` and `check --json` use.
+
+Deliberately NOT here: whether a passing rating may be issued at all over an unread input. That
+is the #513 rating-design question, which is deferred with its own record; this change discloses
+and decides nothing. The ratings, compliance numbers and exit codes are byte-identical on a
+fully readable tree, and the SARIF / HTML / ASP benchmark channels still carry no unread record
+— stated so the gap is on the record rather than silent.
+
 ### `secure --fail-below` settles once, on every channel, and only ever raises the exit code
 
 `--fail-below N` was checked by two per-channel copies — one on the text arm, one on `--json`
