@@ -502,8 +502,75 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
       expect(res.out).toContain('chmod u+rx cfg && ');
     });
 
-    it.todo('text header reads `N files analyzed · 1 directory not listed (contents unknown)`, never `N of M files analyzed` — rendered in src/cli.ts; lands with the paired change to that file');
-    it.todo('text prints a `Not listed  cfg/  (EACCES)` line at every depth — rendered in src/cli.ts; lands with the paired change to that file');
-    it.todo('check: SARIF and --ci are not offered on this arm (`check --help` lists --json and --offline only) — recorded, not skipped');
+    it('text header names a lost directory as not listed, never as a file denominator', (ctx) => {
+      for (const nested of [undefined, 'lib']) {
+        const dir = makeTree(nested ? 'check-header-nested' : 'check-header', nested ? { nestedUnder: nested } : {});
+        if (!makeUnlistable(path.join(dir, ...(nested ? [nested] : []), 'cfg'))) osDeclined(ctx);
+        const res = run(['check', '--offline', dir]);
+        expect(res.status).toBe(EXIT_INCOMPLETE);
+        expect(res.out).toMatch(/\d+ files? analyzed · 1 directory not listed \(contents unknown\)/);
+        expect(res.out).not.toMatch(/\d+ of \d+ files analyzed/);
+        expect(res.out).not.toContain('could not be read');
+      }
+    });
+
+    it('text prints a `Not listed  cfg/  (EACCES)` line at every depth, never `Not read` for a directory', (ctx) => {
+      for (const nested of [undefined, 'lib']) {
+        const dir = makeTree(nested ? 'check-listed-nested' : 'check-listed', nested ? { nestedUnder: nested } : {});
+        const shown = nested ? `${nested}/cfg/` : 'cfg/';
+        if (!makeUnlistable(path.join(dir, ...(nested ? [nested] : []), 'cfg'))) osDeclined(ctx);
+        const res = run(['check', '--offline', dir]);
+        expect(res.status).toBe(EXIT_INCOMPLETE);
+        expect(res.out).toContain(`Not listed  ${shown}  (EACCES)`);
+        expect(res.out).not.toMatch(/Not read\s+(lib\/)?cfg\b/);
+      }
+    });
+
+    it('the header Verify is a command that runs: `ls -ld` on the obstruction, for a 000 directory and for a path behind a 600 ancestor', (ctx) => {
+      const dir = makeTree('check-verify');
+      if (!makeUnlistable(path.join(dir, 'cfg'))) osDeclined(ctx);
+      const res = run(['check', '--offline', dir]);
+      expect(res.status).toBe(EXIT_INCOMPLETE);
+      expect(res.out).toContain('Verify: ls -ld cfg');
+      expect(res.out).not.toContain('Verify: ls -l cfg');
+      expect(spawnSync('ls', ['-ld', 'cfg'], { cwd: dir }).status).toBe(0);
+
+      const dir2 = makeTree('check-verify-600', { credential: false });
+      fs.mkdirSync(path.join(dir2, 'a', 'b', 'c'), { recursive: true });
+      fs.writeFileSync(path.join(dir2, 'a', 'b', 'c', 'secrets.js'), `const K = "${SK_KEY}";\nmodule.exports={K};\n`);
+      if (!makeNonTraversable(path.join(dir2, 'a'), 'b')) osDeclined(ctx);
+      const res2 = run(['check', '--offline', dir2]);
+      expect(res2.status).toBe(EXIT_INCOMPLETE);
+      expect(res2.out).toContain('Verify: ls -ld a');
+      expect(res2.out).not.toContain('ls -l a/b');
+      expect(spawnSync('ls', ['-ld', 'a'], { cwd: dir2 }).status).toBe(0);
+    });
+
+    it('a lost file and a lost directory keep their own counts and labels in one header', (ctx) => {
+      const dir = makeTree('check-mixed');
+      if (!makeUnlistable(path.join(dir, 'cfg'))) osDeclined(ctx);
+      const hidden = path.join(dir, 'hidden.js');
+      fs.writeFileSync(hidden, 'module.exports = {};\n');
+      fs.chmodSync(hidden, 0o000);
+      restore.push({ p: hidden, mode: 0o644 });
+      try { fs.readFileSync(hidden); osDeclined(ctx); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EACCES') throw e; }
+      const res = run(['check', '--offline', dir]);
+      expect(res.status).toBe(EXIT_INCOMPLETE);
+      expect(res.out).toMatch(/\d+ of \d+ files analyzed · 1 directory not listed \(contents unknown\) · 1 could not be read/);
+      expect(res.out).toContain('Not listed  cfg/  (EACCES)');
+      expect(res.out).toContain('Not read     hidden.js  (EACCES)');
+      const verify = /Verify: (ls -ld?) (\S+)/.exec(res.out);
+      expect(verify).not.toBeNull();
+      expect(spawnSync('ls', [verify![1] === 'ls -ld' ? '-ld' : '-l', verify![2]], { cwd: dir }).status).toBe(0);
+    });
+
+    it('check --help offers --json and --offline and neither --sarif nor --ci (recorded, not skipped)', () => {
+      const res = run(['check', '--help']);
+      expect(res.status).toBe(0);
+      expect(res.out).toContain('--json');
+      expect(res.out).toContain('--offline');
+      expect(res.out).not.toMatch(/--sarif\b/);
+      expect(res.out).not.toMatch(/--ci\b/);
+    });
   });
 });

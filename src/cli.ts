@@ -295,7 +295,7 @@ function remoteCheckVerdict(
   // BOTH sides of the fraction and the claim read as complete. The record now
   // carries the denominator, and every input was unread is said as such
   // rather than as "nothing to examine".
-  const record = result.coverage?.unreadableInputs ?? { count: 0, codes: {} };
+  const record = result.coverage?.unreadableInputs ?? { count: 0, codes: {}, directories: 0 };
   const allUnread = filesExamined === 0 && record.count > 0;
   const target = escapeForDisplay(displayTarget);
   return deriveCheckVerdict(
@@ -731,7 +731,7 @@ Examples:
           const verdict = unmeasured(
             'target-unreadable',
             `${escapePathForDisplay(skill)} could not be read (${code}), so nothing was scanned.`,
-            recordedCoverage(0, 'artifact', { count: 1, codes: { [readError.code ?? 'UNKNOWN']: 1 } }),
+            recordedCoverage(0, 'artifact', { count: 1, codes: { [readError.code ?? 'UNKNOWN']: 1 }, directories: 0 }),
           );
           await settleCheckVerdict(verdict);
           if (options.json) {
@@ -774,7 +774,7 @@ Examples:
         const unreadPaths = ledger.unreadablePaths();
 
         // Apply .hmaignore filtering (paths + check IDs)
-        const { loadHmaIgnore: loadIgnore, isPathIgnored: pathIgnored, isCheckIgnored: checkIgnored, buildUnreadInputFinding } = await import('./hardening/scanner.js');
+        const { loadHmaIgnore: loadIgnore, isPathIgnored: pathIgnored, isCheckIgnored: checkIgnored, buildUnreadInputFinding, unsearchableAncestorSync } = await import('./hardening/scanner.js');
         const skillIgnoreRules = await loadIgnore(targetDir);
         // #450 — one of the hand-rolled copies of the suppression rule. The
         // findings still LEAVE the reported set, exactly as before; what changes
@@ -923,7 +923,21 @@ Examples:
             compiledArtifacts: nmResult.compiledArtifacts,
             // #508 — what the run discovered and could not read, so the header
             // carries the denominator and the paths are named under it.
-            unreadInputs: { count: unreadRecord.count, paths: unreadPaths },
+            unreadInputs: {
+              count: unreadRecord.count,
+              directories: unreadRecord.directories,
+              // #588 — the header's Verify must name the directory this user
+              // cannot ENTER when that, not the lost path's own mode, is why
+              // the path was lost: `ls -l a/b` under a `chmod 600 a` fails
+              // with the same EACCES the scan hit. Same probe, same answer as
+              // the finding's remedy; a permission denial only.
+              paths: unreadPaths.map((u) => ({
+                ...u,
+                obstructedBy: u.code === 'EACCES' || u.code === 'EPERM'
+                  ? unsearchableAncestorSync(u.path, targetDir)
+                  : undefined,
+              })),
+            },
             // #456 — `check` discloses the analyzer-family shortfall on the
             // same terms as `secure`. Two paths rendering the same compile
             // count must not disagree about how much of the suite read it.
@@ -1187,7 +1201,12 @@ interface UnifiedCheckDisplayOptions {
      * header carries the denominator and the paths are named under it; the
      * exit code was settled from the same record, so the two cannot drift.
      */
-    unreadInputs?: { count: number; paths: { path: string; code: string }[] };
+    unreadInputs?: {
+      count: number;
+      /** How many of `count` are directories the run could not LIST (#588). */
+      directories: number;
+      paths: { path: string; code: string; kind: 'file' | 'directory'; obstructedBy?: string }[];
+    };
     /**
      * #456 — which of the seven analyzer families examined the compiled set.
      * `compiledArtifacts` counts files the compiler produced an AST for; this
@@ -1800,6 +1819,13 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // adding a file to the tree did not move it. Name it as a cap when it is
     // one, and prefer the measured read count when the ledger has it.
     const unread = nanomindScan.unreadInputs?.count ?? 0;
+    // #588 — a directory the run could not LIST is not a file it could not
+    // read: nothing beneath it was discovered, so it has no place in a file
+    // denominator. "1 of 2 files analyzed" over a lost directory named a
+    // count that does not exist; the directory is named as itself and its
+    // contents as unknown. Files that could not be read keep the denominator.
+    const unlisted = nanomindScan.unreadInputs?.directories ?? 0;
+    const unreadFiles = unread - unlisted;
     if (nanomindScan.compileSetTruncated) {
       const read = localScan?.coverage?.filesExamined;
       meta.push(
@@ -1807,16 +1833,18 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           ? `${read} file${read === 1 ? '' : 's'} read · semantic capped at ${nanomindScan.compiledArtifacts}`
           : `semantic capped at ${nanomindScan.compiledArtifacts} files`,
       );
-    } else if (unread > 0) {
+    } else if (unreadFiles > 0) {
       // #508 — "2 files analyzed" over a tree holding a third the run could
       // not read is the count that read as complete. The denominator is the
       // run's own record: compiled plus discovered-and-not-read.
       const compiled = nanomindScan.compiledArtifacts;
-      meta.push(`${compiled} of ${compiled + unread} files analyzed`);
+      meta.push(`${compiled} of ${compiled + unreadFiles} files analyzed`);
     } else {
-      meta.push(`${nanomindScan.compiledArtifacts} files analyzed`);
+      const compiled = nanomindScan.compiledArtifacts;
+      meta.push(`${compiled} file${compiled === 1 ? '' : 's'} analyzed`);
     }
-    if (unread > 0) meta.push(`${unread} could not be read`);
+    if (unlisted > 0) meta.push(`${unlisted} director${unlisted === 1 ? 'y' : 'ies'} not listed (contents unknown)`);
+    if (unreadFiles > 0) meta.push(`${unreadFiles} could not be read`);
   }
   if (localScan?.filesScanned) meta.push(`${localScan.filesScanned} files scanned`);
 
@@ -1836,8 +1864,17 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   if (unreadPaths.length > 0) {
     const { relative: relativePath } = require('node:path') as typeof import('node:path');
     const rel = (p: string) => (scanRoot ? relativePath(scanRoot, p) || p : p);
+    // #588 — a directory is shown with its trailing separator and as "not
+    // listed": nothing inside it was discovered, which is a different fact
+    // from a file whose bytes were not read. The scan root is named `./`.
+    const shownRel = (u: { path: string; kind: 'file' | 'directory' }): string => {
+      const r = scanRoot ? relativePath(scanRoot, u.path) : u.path;
+      if (u.kind !== 'directory') return r || u.path;
+      return r === '' ? './' : `${r.replace(/[\\/]+$/, '')}/`;
+    };
     for (const u of unreadPaths) {
-      console.log(`  ${colors.yellow}Not read${RESET()}     ${escapePathForDisplay(rel(u.path))}  ${colors.dim}(${escapeForDisplay(u.code)})${RESET()}`);
+      const label = u.kind === 'directory' ? `${colors.yellow}Not listed${RESET()}  ` : `${colors.yellow}Not read${RESET()}     `;
+      console.log(`  ${label}${escapePathForDisplay(shownRel(u))}  ${colors.dim}(${escapeForDisplay(u.code)})${RESET()}`);
     }
     const n = unreadPaths.length;
     // `citationPath`, not `shellQuote`: this path is spliced into a command
@@ -1845,8 +1882,20 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // the render-source gate caught the first cut splicing it raw. When the
     // path cannot be cited truthfully the clause is omitted rather than
     // printed against a different path (#273's rule).
-    const cited = citationPath(rel(unreadPaths[0].path));
-    console.log(`  ${colors.dim}The risk level below is an upper bound: ${n} input${n === 1 ? '' : 's'} discovered and not read.${cited ? ` Verify: ls -l ${cited}` : ''}${RESET()}`);
+    // #588 — the cited command must RUN. `ls -l <dir>` lists the directory's
+    // contents and fails with the same EACCES the scan hit, and `ls -l a/b`
+    // under a `chmod 600 a` cannot even stat through `a`. A directory, or any
+    // path lost behind an ancestor this user cannot enter, is verified with
+    // `ls -ld` on the obstruction itself — the target the remedy names. The
+    // scan root is cited by its absolute path: `.` is whatever directory the
+    // reader is standing in.
+    const first = unreadPaths[0];
+    const firstRel = rel(first.path).replace(/[\\/]+$/, '');
+    const ancestor = first.obstructedBy !== undefined && first.obstructedBy !== firstRel ? first.obstructedBy : undefined;
+    const verifyTarget = ancestor ?? firstRel;
+    const verb = first.kind === 'directory' || ancestor !== undefined ? 'ls -ld' : 'ls -l';
+    const cited = verifyTarget === '.' || verifyTarget === '' ? citationPath(scanRoot ?? first.path) : citationPath(verifyTarget);
+    console.log(`  ${colors.dim}The risk level below is an upper bound: ${n} input${n === 1 ? '' : 's'} discovered and not read.${cited ? ` Verify: ${verb} ${cited}` : ''}${RESET()}`);
   }
 
   // ── Verdict + Score ─────────────────────────────────────────────────

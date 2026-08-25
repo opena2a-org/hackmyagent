@@ -271,8 +271,8 @@ describe('the machine and text channels report the same measurement', () => {
       deriveCheckVerdict({ critical: 0, high: 0 }, fullCoverage(0, 'file')),
       unmeasured('target-not-found', 'gone'),
       // #508 — measured, but not completely: a record of one unread input.
-      deriveCheckVerdict({ critical: 0, high: 0 }, recordedCoverage(3, 'file', { count: 1, codes: { EACCES: 1 } })),
-      deriveCheckVerdict({ critical: 1, high: 0 }, recordedCoverage(3, 'file', { count: 1, codes: { EACCES: 1 } })),
+      deriveCheckVerdict({ critical: 0, high: 0 }, recordedCoverage(3, 'file', { count: 1, codes: { EACCES: 1 }, directories: 0 })),
+      deriveCheckVerdict({ critical: 1, high: 0 }, recordedCoverage(3, 'file', { count: 1, codes: { EACCES: 1 }, directories: 0 })),
     ]) {
       expect(coverageJson(v).measured).toBe(v.measured);
       expect(unmeasuredBanner(v) === '').toBe(v.measured);

@@ -129,11 +129,11 @@ export interface ReadFailureRecord {
   /**
    * How many of `count` are directories the scan could not LIST (#588); the
    * rest are files it could not read. Always emitted by the ledger, `0`
-   * included. Optional here only because the remote arms' empty default
-   * (`{ count: 0, codes: {} }` in `src/cli.ts`) predates it — make it
-   * required once that literal carries `directories: 0`.
+   * included, and required here so a caller cannot hand the verdict a record
+   * that is silent about the KIND of input it lost — the remote arms' empty
+   * default in `src/cli.ts` carries `directories: 0`.
    */
-  readonly directories?: number;
+  readonly directories: number;
 }
 
 /**

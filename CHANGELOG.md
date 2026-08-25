@@ -4,6 +4,31 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### `check` names a directory it could not list as a directory
+
+The local `check` arm's header counted a directory the run could not list as a
+file it could not read — `1 of 2 files analyzed · 1 could not be read` over a
+`chmod 000 cfg`, a denominator that does not exist — and its hint line named the
+lost path with `Not read` and cited `Verify: ls -l cfg`, which fails with the
+same `EACCES` the scan hit (`ls -l a/b` under a `chmod 600 a` cannot even stat
+through `a`). The header now reads `1 file analyzed · 1 directory not listed
+(contents unknown)`, a lost directory prints as `Not listed  cfg/  (EACCES)`, and
+the cited command is `ls -ld` on the obstruction itself (`cfg`, or the `a` the
+user cannot enter) — the same target the `SCAN-UNREAD-001` remedy names. Files
+that could not be read keep their `N of M files analyzed` count and `Not read`
+line. `--json` on a directory-target scan is unchanged; the single-FILE
+target-unreadable arm's `coverage.unreadableInputs` now carries `directories: 0`
+like every other producer of that record. (#588 check-arm half; #515.)
+
+### README: the OASB-1 `Not Assessed` rating in the exit-code table
+
+`## Exit codes` row 2 and the paragraph under it now say what `secure -b oasb-1`
+does when no scored L1 control produced a result — rating `Not Assessed`, exit 2,
+no compliance figure, `--fail-below` not evaluated; a `--category` whose L2/L3
+controls did produce results keeps its measured figure and a `--fail-below`
+breach over it exits 1 — mirroring `docs/use-cases/ci-pipeline.md`. (#513, #458
+step 0.)
+
 ### A directory the scan cannot list no longer leaves the assessment silently
 
 `chmod 000 <dir>` — or a directory under a parent this user cannot enter — rejects
