@@ -376,8 +376,8 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
       expect(res.out).toContain('cfg/ could not be listed (EACCES)');
     });
 
-    it.todo('text header reads `N files analyzed · 1 directory not listed (contents unknown)`, never `N of M files analyzed` — rendered in src/cli.ts (Seat 1 edit pending)');
-    it.todo('text prints a `Not listed  cfg/  (EACCES)` line at every depth — rendered in src/cli.ts (Seat 1 edit pending)');
+    it.todo('text header reads `N files analyzed · 1 directory not listed (contents unknown)`, never `N of M files analyzed` — rendered in src/cli.ts; lands with the paired change to that file');
+    it.todo('text prints a `Not listed  cfg/  (EACCES)` line at every depth — rendered in src/cli.ts; lands with the paired change to that file');
     it.todo('check: SARIF and --ci are not offered on this arm (`check --help` lists --json and --offline only) — recorded, not skipped');
   });
 });
