@@ -272,14 +272,17 @@ export function buildUnreadInputFinding(
   const pathLength = code === 'ENAMETOOLONG' && u.path
     ? `The absolute path is ${u.path.length} characters. `
     : '';
+  // The directory kind opens with the ruled sentence — the same one `message`
+  // carries — because the text channel renders `guidance`, not `message`, and
+  // the words the user sees must be the words that were ruled.
+  const listedSentence = `${shown} could not be listed (${code}) — its contents were not discovered, so nothing inside it reached any check.`;
   const guidance = isDir
     ? ancestorSentence
       + (ancestor
         ? ''
         : (permission
-          ? `${shown} could not be listed by this user (${code}): the directory denies read or `
-            + 'search to this process, so nothing beneath it was discovered. '
-          : `${shown} could not be listed (${code}): ${cause}. ${pathLength}`))
+          ? `${listedSentence} `
+          : `${listedSentence} Cause: ${cause}. ${pathLength}`))
       + 'The score above is an upper bound, not a measurement of this tree: nothing was ruled '
       + 'out about anything beneath it, and a credential or an injected instruction there would '
       + 'be invisible to this scan — leaving the score HIGHER than if it had been listable, '
@@ -310,9 +313,7 @@ export function buildUnreadInputFinding(
     // out of the report, which is how an earlier disclosure managed to
     // exist in the code and appear nowhere on screen.
     passed: false,
-    message: isDir
-      ? `${shown} could not be listed (${code}) — its contents were not discovered, so nothing inside it reached any check.`
-      : `${rel} could not be read (${code})`,
+    message: isDir ? listedSentence : `${rel} could not be read (${code})`,
     file: shown,
     kind,
     fixable: false,
