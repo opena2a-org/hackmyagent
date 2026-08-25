@@ -4,6 +4,15 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### `-b` takes the benchmark name case-insensitively on both arms
+
+`secure -b OASB-2` was accepted (the composite arm lower-cased the name) while
+`secure -b OASB-1` was rejected as `Unknown benchmark 'OASB-1'` — one flag, two
+spelling rules. The name is now normalized once before validation, so
+`-b OASB-1`, `-b Oasb-2` and their lower-case forms run the same report, on
+every format. Unknown names are still rejected, with the value as given and the
+available list in lower case. (#630)
+
 ### `--fail-below` on the benchmark arms gates the figure the arm prints
 
 `secure -b oasb-1 --fail-below N` and `-b oasb-2 --fail-below N` also applied the

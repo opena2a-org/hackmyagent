@@ -5000,10 +5000,16 @@ Examples:
         ? options.ignore.split(',').map((s) => s.trim()).filter(Boolean)
         : [];
 
-      // Validate benchmark flag if provided
-      const isOasb2 = options.benchmark?.toLowerCase() === 'oasb-2';
+      // Validate benchmark flag if provided. #630 — normalized ONCE, here:
+      // the composite arm lower-cased the name while the validator compared
+      // it as given, so `-b OASB-2` ran and `-b OASB-1` was "unknown". Every
+      // later reader branches on the normalized value.
+      const benchmarkAsGiven = options.benchmark;
+      if (options.benchmark !== undefined) options.benchmark = options.benchmark.toLowerCase();
+      const isOasb2 = options.benchmark === 'oasb-2';
       if (options.benchmark && !isOasb2 && !isValidBenchmark(options.benchmark)) {
-        console.error(`Error: Unknown benchmark '${escapeForDisplay(String(options.benchmark))}'. Available: ${[...AVAILABLE_BENCHMARKS, 'oasb-2'].join(', ')}`);
+        // The rejection names the value the user typed, not the normalized one.
+        console.error(`Error: Unknown benchmark '${escapeForDisplay(String(benchmarkAsGiven))}'. Available: ${[...AVAILABLE_BENCHMARKS, 'oasb-2'].join(', ')}`);
         process.exit(1);
       }
 
