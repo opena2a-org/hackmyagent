@@ -9,14 +9,16 @@ All notable changes to HackMyAgent are documented in this file.
 `chmod 000 <dir>` — or a directory under a parent this user cannot enter — rejects
 the walker's `readdir`. Every path beneath it left the scan without a single read
 ever being attempted, so nothing on the read channel could disclose it: the
-coverage ledger recorded no input, no finding named the directory, and the only
-trace was the sensitive-artifact walk's completeness flag, which reached output
-solely by escalating `GIT-001`/`GIT-002`/`CRED-002` to HIGH — a severity derived
-from an obstruction deciding the exit code, without saying where the obstruction
-was. On a tree whose `.gitignore` is complete nothing escalated at all: a
-`cfg/secrets.js` holding an API key behind `chmod 000 cfg` scored 98/100 at exit 0
-on both `secure` and `check`, and `secure --fix` reached exit 0 over it by writing
-a `.gitignore` into the target (#588).
+walkers recorded no input, no finding named the directory as a directory, and the
+trace that reached output was the sensitive-artifact walk's completeness flag,
+which escalated `GIT-001`/`GIT-002`/`CRED-002` to HIGH — a severity derived from
+an obstruction deciding the exit code, without saying where the obstruction was.
+A `cfg/secrets.js` holding an API key behind `chmod 000 cfg`, under a complete
+`.gitignore`, scored 100/100 at exit 0 at quick depth on `secure` and exit 0 on
+`check`; at standard depth `secure` exited 1 with `CRED-002` at HIGH and a record
+from a fixed-path probe that named `cfg` as a file, with a `chmod u+r cfg` remedy
+that fails; and `secure --fix` reached exit 0 over the directory by writing a
+`.gitignore` into the target (#588).
 
 A rejected directory listing is now an unread input of the directory kind. The
 tracked `fs` namespace reports `readdir`/`opendir` rejections on the same failure
@@ -24,17 +26,18 @@ channel a failed `readFile` uses, the three discovery walkers record the loss
 where they discovered the path, and the ledger applies the one errno policy it
 already had (`ENOENT`/`ENOTDIR` on a probe for a directory that is not there stay
 free). `coverage.unreadableInputs` becomes `{ count, codes, directories }`: `count`
-widens to include directories, so the `count > 0` predicate every consumer gates
+widens to include directories, so the `count > 0` predicate the exit code settles
 on cannot read false while an obstruction exists; `directories` is the kind split,
-always present, and never an estimate of what a directory hid — one obstruction is
+present on every record the ledger emits, and never an estimate of what a
+directory hid — one obstruction is
 one unit, and records beneath a lost directory are attributed to it. `SCAN-UNREAD-001`
 names the directory with a trailing separator (`cfg/`; the scan root as `./`),
 carries `kind: "directory"`, says `cfg/ could not be listed (EACCES) — its contents
 were not discovered, so nothing inside it reached any check.`, and prints the
 remedy for the call that failed: `chmod u+rx cfg && hackmyagent secure <target>`.
 The remedy is keyed on the errno first; a permission denial under a directory this
-user cannot enter keeps the `chmod u+x <dir>` shape, and every other errno names a
-cause it can produce (a symbolic-link loop, an I/O error, an unavailable mount, a
+user cannot enter keeps the `chmod u+x <dir>` shape, and the other errnos name a
+cause they can produce (a symbolic-link loop, an I/O error, an unavailable mount, a
 path longer than the system allows — with the measured length and a shallower
 checkout as the remedy) instead of a sentence that named a broken symlink, which
 is `ENOENT` and never reaches this finding. The sensitive-artifact walk's flag now
@@ -43,15 +46,16 @@ committable `node_modules`): those still escalate; an unlistable directory does
 not, and `GIT-001`/`GIT-002` stay LOW on it with a cross-reference to the record.
 `secure --fix` cannot clear the record by writing a readable file.
 
-Measured on the same fixture, both arms, quick and standard depth: with a complete
-`.gitignore`, exit **0 → 2** (score 98 → 93, one `SCAN-UNREAD-001` naming `cfg/`,
-`GIT-002` LOW); with no `.gitignore`, exit **1 → 2** with `GIT-001` back at LOW
+Measured on that fixture, both arms: with a complete `.gitignore`, exit **0 → 2**
+at quick depth (score 100 → 95) and **1 → 2** at standard (69 → 95, `CRED-002` back
+on its passed branch), one `SCAN-UNREAD-001` naming `cfg/` on `secure` and on
+`check`; on a tree with no `.gitignore`, exit **1 → 2** with `GIT-001` back at LOW
 (it was HIGH on the obstruction alone); `secure --fix` exit **0 → 2** with the
 directory untouched. A mode-000 scan root that produced 64 findings, one per
 fixed-path probe and none naming the root, is one record named `./`. The printed
 remedy runs as printed and clears the obstruction in one step; the next run finds
 the credential at exit 1. Base rate with the shipped walker across five real trees (1,391 directories, 7,645 files, skipping `node_modules`/`.git`/`dist`/`build`): no
-directory whose listing fails, and every tree keeps its exit code and score. The
+directory whose listing fails, and each of the five keeps its exit code and score. The
 remaining #588 shape — a file the semantic compiler never selects as a candidate,
 lost at quick depth on both commands — is not in the record yet.
 
