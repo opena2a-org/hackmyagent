@@ -120,12 +120,17 @@ export {
   getControlsForCategory,
   getCheckIdsForLevel,
   calculateRating,
+  ratingsUnavailableWhenNull,
+  automatedControlsAt,
+  nextLevelFooter,
   AVAILABLE_BENCHMARKS,
   isValidBenchmark,
 } from './benchmarks';
 
 export type {
   BenchmarkLevel,
+  BenchmarkRating,
+  LadderRating,
   BenchmarkControl,
   BenchmarkCategory,
   BenchmarkResult,

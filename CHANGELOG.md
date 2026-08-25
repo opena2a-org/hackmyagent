@@ -47,6 +47,78 @@ was named `scopedUnreadableInputs` although it counts every recorded unread
 input; the comment now describes the number that is produced and the method is
 named for what it does (#590).
 
+### Breaking: a benchmark level with no measured controls is `null`, not 100
+
+`secure -b oasb-1` set a level's compliance to 100 when no scored control at
+that level produced a result, and the overall figure to 0 in the same case.
+The two L3 controls (3.5, 8.4) have no automated check, so every `L3=100%`
+ever printed was that default, and the rating ladder read an unmeasured level
+as perfect. Measured on 0.32.0 over five repositories: at `-l L2` and `-l L3`,
+ai-trust, secretless and oasb printed `Certified` over L2 and L3 denominators
+of 0/0; `-l L1 -c "Identity & Provenance"` printed `Rating: Certified` beside
+`Compliance: 0% (0/0 verified controls)` on any tree at exit 0, and exit 1
+under `--fail-below 80` because `0 < 80`.
+
+A zero-denominator level is now `null` in `--json` and `--format asp`
+(`l1Compliance`, `l2Compliance`, `l3Compliance`; `compliance` when nothing
+was measured), renders `not assessed`, and never feeds the rating ladder: a
+rung that reads a null level is skipped, not failed, and the first available
+rung that holds is awarded. `Certified` cannot be awarded at a level whose
+denominator is null, so those three repositories now print
+`Rating: Passing (L2, L3 not assessed)` at `-l L3` and
+`Rating: Passing (L2 not assessed)` at `-l L2`, exit 0 as before, with one
+`Not assessed at Lx:` line per unmeasured level under the header, each
+carrying a Verify command that repeats the run's own flags (`--category`,
+`--scan-depth`, `--no-machine-posture`, `--ignore`, `--deep`,
+`--static-only`) and runs as printed; `--json` carries the bare word `Passing`. `Passing (L2, L3 not
+assessed)` means the L1 ladder holds and the higher levels were not
+measured; it is not an L2 or L3 pass. A bare `Passing` at L2 or L3 now says
+those levels were measured; in 0.32.0 the same bare word could stand over an
+unmeasured L2.
+A run in which no scored control produced a result prints
+`Rating: Not Assessed` and `Compliance: not measured (0/0 verified controls)`,
+exits 2, and does not evaluate `--fail-below`
+(`--fail-below N not evaluated: no compliance was measured`). A `--category`
+that has controls at L2 or L3 and none at L1 is also `Not Assessed` at
+exit 2; its compliance figure is measured over the controls it does have,
+and a `--fail-below` breach over that figure still exits 1, this arm's
+existing precedence. `-l L1` on a project tree keeps its rating word and
+exit code (none of the five repositories moved) and its non-verbose text
+output is identical apart from timestamps; at every level `--json` now
+carries `null` for `l2Compliance` and `l3Compliance` where 0.32.0 printed
+the 100 default, and `--verbose` lists the examined levels only. The L2
+footer no longer recommends `-l L3` while the catalogue has no automated L3
+check.
+Library consumers: `calculateRating` takes `number | null` and can return a
+sixth value, `Not Assessed` (the `BenchmarkResult['rating']` union widens the
+same way); the four compliance fields of `BenchmarkResult` are
+`number | null`. New exports beside it: `ratingsUnavailableWhenNull`,
+`automatedControlsAt`, `nextLevelFooter`, and the types `BenchmarkRating` and
+`LadderRating`. `formatPublishOutput` prints `compliance not measured` for a
+null figure.
+
+Not changed here: an empty directory at `--scan-depth quick -l L1` still
+prints `Certified 100% (2/2)`; its L1 denominator is 2, and the cell closes
+when absent-subject checks leave the denominator (#458). The MCP server's
+benchmark assessor is unchanged (#458). `-b oasb-2` still averages an
+unmeasured OASB-1 half as 0 (`Infrastructure Score (OASB-1): 0%`, the figure
+0.32.0 printed) above the OASB-1 report's `not measured`; the composite's own
+refusal is #458 step 4. A category whose verified denominator is 0 still
+reads `compliance: 0` at the category grain and `N/A (no controls at this
+level)` in text, as before. The rating design in #513 (a passing word while
+automatable controls at a measured level go unverified) stays open.
+
+Verify:
+
+```
+d=$(mktemp -d)
+hackmyagent secure "$d" -b oasb-1 -l L3 --scan-depth quick --no-machine-posture --format json | jq '{rating, l2Compliance, l3Compliance}'
+# 0.32.0: "Certified", 100, 100      now: "Passing", null, null
+hackmyagent secure "$d" -b oasb-1 -l L1 -c "Identity & Provenance" --no-machine-posture; echo "exit $?"
+# 0.32.0: Rating: Certified, Compliance: 0% (0/0 verified controls), exit 0
+# now:    Rating: Not Assessed, Compliance: not measured (0/0 verified controls), exit 2
+```
+
 ### UNICODE-STEGO-002 corroborates invisible payloads only on the classes a decoder reconstitutes
 
 The GlassWorm decoder finding is CRITICAL only when a corroborator is present in

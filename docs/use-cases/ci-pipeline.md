@@ -56,7 +56,13 @@ conformance is `NONE`, exits 1 whether or not you pass the flag. Before 0.27.0
 Exit `2` means HMA could not look at the target, so it reports no score and no
 risk level. Causes: the path or package does not exist, the endpoint under
 `attack` was unreachable, no payload was answered, `attack --local` was used
-(which contacts no agent), or a scan plugin failed. It is non-zero on purpose --
+(which contacts no agent), or a scan plugin failed. For `secure -b oasb-1`,
+exit 2 also means the rating ladder could not be read: no scored L1 control
+produced a result, the rating prints as `Not Assessed`, and the category
+results are still printed. When nothing at all was measured there is no
+compliance figure and `--fail-below` is not evaluated; a `--category` whose
+L2 or L3 controls did produce results keeps its measured figure, and a
+`--fail-below` breach over it exits 1. It is non-zero on purpose --
 "I could not tell you" must not be read by a pipeline as "it is safe".
 
 ## JSON output format

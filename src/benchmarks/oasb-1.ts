@@ -63,16 +63,23 @@ export interface BenchmarkResult {
   version: string;
   level: BenchmarkLevel;
   timestamp: Date;
-  /** Overall compliance percentage */
-  compliance: number;
-  /** L1 compliance percentage */
-  l1Compliance: number;
-  /** L2 compliance percentage (includes L1) */
-  l2Compliance: number;
-  /** L3 compliance percentage (includes L1+L2) */
-  l3Compliance: number;
-  /** Rating based on compliance */
-  rating: 'Certified' | 'Compliant' | 'Passing' | 'Needs Improvement' | 'Not Passing';
+  /**
+   * Overall compliance percentage over the scored controls that produced a
+   * result; `null` when none did. A zero denominator is not a figure (#458
+   * step 0; CISO 2026-08-11: never 100, never 0).
+   */
+  compliance: number | null;
+  /** L1 compliance percentage over L1 scored controls; `null` when none produced a result */
+  l1Compliance: number | null;
+  /** L2 compliance percentage over L2 scored controls; `null` when none produced a result */
+  l2Compliance: number | null;
+  /** L3 compliance percentage over L3 scored controls; `null` when none produced a result */
+  l3Compliance: number | null;
+  /**
+   * Rating from the ladder in `calculateRating`. `Not Assessed` when no rung
+   * of the ladder could read a measured level (L1 is `null`).
+   */
+  rating: 'Certified' | 'Compliant' | 'Passing' | 'Needs Improvement' | 'Not Passing' | 'Not Assessed';
   categories: BenchmarkCategoryResult[];
   /** Total controls checked */
   totalControls: number;
@@ -1372,36 +1379,125 @@ export function getCheckIdsForLevel(level: BenchmarkLevel): string[] {
   return Array.from(checkIds);
 }
 
+export type BenchmarkRating = BenchmarkResult['rating'];
+/** The words the ladder can award; `Not Assessed` is what it says when it cannot. */
+export type LadderRating = Exclude<BenchmarkRating, 'Not Assessed'>;
+
+interface LadderRung {
+  rating: LadderRating;
+  /**
+   * The levels this rung's condition reads. A rung is UNAVAILABLE — skipped,
+   * not failed — when any of them is `null` (no scored control at that level
+   * produced a result).
+   */
+  reads: readonly BenchmarkLevel[];
+  holds: (l1: number, l2: number, l3: number) => boolean;
+}
+
 /**
- * Calculate compliance rating based on percentages
+ * The rating ladder, one rung list per requested level, walked top-down.
+ * The first available rung that holds is awarded.
+ *
+ * Kept as data so the render can say which words a null level takes off the
+ * table (`ratingsUnavailableWhenNull`) from the same source the arithmetic
+ * walks — the prose cannot drift from the rule.
+ */
+const RATING_LADDER: Record<BenchmarkLevel, readonly LadderRung[]> = {
+  L1: [
+    { rating: 'Certified', reads: ['L1'], holds: (l1) => l1 === 100 },
+    { rating: 'Passing', reads: ['L1'], holds: (l1) => l1 >= 90 },
+    { rating: 'Needs Improvement', reads: ['L1'], holds: (l1) => l1 >= 70 },
+    { rating: 'Not Passing', reads: ['L1'], holds: () => true },
+  ],
+  L2: [
+    { rating: 'Certified', reads: ['L1', 'L2'], holds: (l1, l2) => l1 === 100 && l2 === 100 },
+    { rating: 'Compliant', reads: ['L1', 'L2'], holds: (l1, l2) => l1 === 100 && l2 >= 90 },
+    { rating: 'Passing', reads: ['L1'], holds: (l1) => l1 >= 90 },
+    { rating: 'Needs Improvement', reads: ['L1'], holds: (l1) => l1 >= 70 },
+    { rating: 'Not Passing', reads: ['L1'], holds: () => true },
+  ],
+  L3: [
+    { rating: 'Certified', reads: ['L1', 'L2', 'L3'], holds: (l1, l2, l3) => l1 === 100 && l2 === 100 && l3 === 100 },
+    { rating: 'Compliant', reads: ['L1', 'L2'], holds: (l1, l2) => l1 === 100 && l2 >= 90 },
+    { rating: 'Passing', reads: ['L1'], holds: (l1) => l1 >= 90 },
+    { rating: 'Needs Improvement', reads: ['L1'], holds: (l1) => l1 >= 70 },
+    { rating: 'Not Passing', reads: ['L1'], holds: () => true },
+  ],
+};
+
+/**
+ * Calculate the compliance rating from per-level percentages.
+ *
+ * A level is `null` when no scored control at that level produced a result
+ * (#458 step 0). Such a level never feeds the ladder: every rung that reads
+ * it is skipped, and the first available rung that holds is awarded. `0` is a
+ * measurement (0 of N passed) and fails rungs exactly as before. When every
+ * rung reads a null — L1 is null — the ladder has nothing to say and returns
+ * `Not Assessed`.
+ *
+ * Before this, a null-denominator level defaulted to 100 and read as perfect
+ * (the sentence in #513's title); CISO 2026-08-11 / CPO 2026-08-25 rulings.
  */
 export function calculateRating(
-  l1Compliance: number,
-  l2Compliance: number,
-  l3Compliance: number,
+  l1Compliance: number | null,
+  l2Compliance: number | null,
+  l3Compliance: number | null,
   level: BenchmarkLevel
-): BenchmarkResult['rating'] {
-  if (level === 'L1') {
-    if (l1Compliance === 100) return 'Certified';
-    if (l1Compliance >= 90) return 'Passing';
-    if (l1Compliance >= 70) return 'Needs Improvement';
-    return 'Not Passing';
+): BenchmarkRating {
+  const byLevel: Record<BenchmarkLevel, number | null> = {
+    L1: l1Compliance,
+    L2: l2Compliance,
+    L3: l3Compliance,
+  };
+  // A null a rung did not declare it reads becomes NaN, so an undeclared read
+  // can never make the rung hold: every comparison against NaN is false.
+  const num = (v: number | null): number => (v === null ? Number.NaN : v);
+  for (const rung of RATING_LADDER[level]) {
+    if (rung.reads.some((lv) => byLevel[lv] === null)) continue;
+    if (rung.holds(num(l1Compliance), num(l2Compliance), num(l3Compliance))) return rung.rating;
   }
+  return 'Not Assessed';
+}
 
-  if (level === 'L2') {
-    if (l1Compliance === 100 && l2Compliance === 100) return 'Certified';
-    if (l1Compliance === 100 && l2Compliance >= 90) return 'Compliant';
-    if (l1Compliance >= 90) return 'Passing';
-    if (l1Compliance >= 70) return 'Needs Improvement';
-    return 'Not Passing';
+/**
+ * The rating words that a `null` at `nullLevel` takes off the table when the
+ * benchmark was requested at `level`, in ladder order (strongest first).
+ * Empty when the ladder at `level` never reads `nullLevel`.
+ */
+export function ratingsUnavailableWhenNull(level: BenchmarkLevel, nullLevel: BenchmarkLevel): LadderRating[] {
+  return RATING_LADDER[level].filter((r) => r.reads.includes(nullLevel)).map((r) => r.rating);
+}
+
+/** The own-level controls at `level` that an automated check can settle. */
+export function automatedControlsAt(level: BenchmarkLevel, catalogue: BenchmarkCategory[] = OASB_1_CATEGORIES): BenchmarkControl[] {
+  return catalogue
+    .flatMap((c) => c.controls)
+    .filter((c) => c.level === level && c.scored && c.verification === 'automated' && c.checkIds.length > 0);
+}
+
+/**
+ * The "next level" line printed under a benchmark report, or `null` at L3.
+ *
+ * A footer cites the next level's command only while an automated check
+ * there can change the rating; a cited command that cannot produce the
+ * outcome it promises is a dead end. Derived from the catalogue, never from
+ * a literal, so the day OASB-1 gains an automated L3 check the citation
+ * returns with no code change (#458 step 0, CPO 2026-08-25 R4).
+ */
+export function nextLevelFooter(
+  current: BenchmarkLevel,
+  cliPrefix: string,
+  catalogue: BenchmarkCategory[] = OASB_1_CATEGORIES,
+): string | null {
+  const next: BenchmarkLevel | null = current === 'L1' ? 'L2' : current === 'L2' ? 'L3' : null;
+  if (next === null) return null;
+  const purpose = next === 'L2' ? 'for stricter checks' : 'for hardened requirements';
+  if (automatedControlsAt(next, catalogue).length > 0) {
+    return `Run '${cliPrefix} secure -b oasb-1 -l ${next}' ${purpose}.`;
   }
-
-  // L3
-  if (l1Compliance === 100 && l2Compliance === 100 && l3Compliance === 100) return 'Certified';
-  if (l1Compliance === 100 && l2Compliance >= 90) return 'Compliant';
-  if (l1Compliance >= 90) return 'Passing';
-  if (l1Compliance >= 70) return 'Needs Improvement';
-  return 'Not Passing';
+  const own = catalogue.flatMap((c) => c.controls).filter((c) => c.level === next);
+  const ids = own.map((c) => c.id).join(', ');
+  return `${next} adds ${own.length} control${own.length === 1 ? '' : 's'} (${ids}); none has an automated check in this version, so -l ${next} cannot raise this rating.`;
 }
 
 export const OASB_1_VERSION = '1.0.0';

@@ -25,6 +25,8 @@ import {
   getControlsForCategory,
   getCheckIdsForLevel,
   calculateRating,
+  ratingsUnavailableWhenNull,
+  nextLevelFooter,
   AVAILABLE_BENCHMARKS,
   isValidBenchmark,
   type BenchmarkLevel,
@@ -3208,13 +3210,23 @@ function generateBenchmarkReport(
     controlResults.push({ control, status, findings: relatedFindings, remediation });
   }
 
-  // Calculate compliance percentages
-  const l1Compliance = l1Total > 0 ? Math.round((l1Passed / l1Total) * 100) : 100;
-  const l2Compliance = l2Total > 0 ? Math.round((l2Passed / l2Total) * 100) : 100;
-  const l3Compliance = l3Total > 0 ? Math.round((l3Passed / l3Total) * 100) : 100;
+  // Compliance percentages. #458 step 0 — a level with no scored control
+  // that produced a result has no figure: `null`, never a default. The two
+  // L3 controls (3.5, 8.4) have no automated check, so `l3Compliance` was the
+  // old `: 100` default on every target and the L3 ladder read it as perfect
+  // (the sentence in #513's title); a category with no scored control read
+  // `Rating: Certified` beside `Compliance: 0% (0/0)` because the overall
+  // figure defaulted to 0 five lines below — the opposite default for the
+  // same case. CISO 2026-08-11 / CPO 2026-08-25: zero denominator => null,
+  // renders "not assessed", never feeds the ladder, never Not Passing.
+  const pct = (passed: number, total: number): number | null =>
+    total > 0 ? Math.round((passed / total) * 100) : null;
+  const l1Compliance = pct(l1Passed, l1Total);
+  const l2Compliance = pct(l2Passed, l2Total);
+  const l3Compliance = pct(l3Passed, l3Total);
   const totalScored = l1Total + l2Total + l3Total;
   const totalPassed = l1Passed + l2Passed + l3Passed;
-  const overallCompliance = totalScored > 0 ? Math.round((totalPassed / totalScored) * 100) : 0;
+  const overallCompliance = pct(totalPassed, totalScored);
 
   // Group results by category
   const categoryResults: BenchmarkCategoryResult[] = [];
@@ -3366,7 +3378,7 @@ function generateSarifOutput(benchmarkResult: BenchmarkResult, findings: Securit
 }
 
 // HTML report for shareable compliance documentation
-function generateHtmlReport(result: BenchmarkResult): string {
+function generateHtmlReport(result: BenchmarkResult, targetDir: string, flags?: BenchmarkRunFlags): string {
   assertRedactionProvenance(result, 'html-benchmark');
   const ratingColor = {
     'Certified': '#22c55e',
@@ -3374,6 +3386,7 @@ function generateHtmlReport(result: BenchmarkResult): string {
     'Passing': '#eab308',
     'Needs Improvement': '#f97316',
     'Not Passing': '#ef4444',
+    'Not Assessed': '#94a3b8',
   }[result.rating] || '#94a3b8';
 
   const ratingBg = {
@@ -3382,14 +3395,18 @@ function generateHtmlReport(result: BenchmarkResult): string {
     'Passing': 'rgba(234, 179, 8, 0.15)',
     'Needs Improvement': 'rgba(249, 115, 22, 0.15)',
     'Not Passing': 'rgba(239, 68, 68, 0.15)',
+    'Not Assessed': 'rgba(148, 163, 184, 0.15)',
   }[result.rating] || 'rgba(148, 163, 184, 0.15)';
 
   // Generate donut chart SVG
   const donutRadius = 70;
   const donutStroke = 14;
   const donutCircumference = 2 * Math.PI * donutRadius;
-  const donutOffset = donutCircumference * (1 - result.compliance / 100);
-  const complianceColor = result.compliance >= 90 ? '#22c55e' : result.compliance >= 70 ? '#eab308' : '#ef4444';
+  // #458 step 0 — `compliance` is null when no control produced a result:
+  // an empty ring in the neutral colour, never `null%` under a red grade.
+  const donutOffset = donutCircumference * (1 - (result.compliance ?? 0) / 100);
+  const complianceColor = result.compliance === null ? '#94a3b8'
+    : result.compliance >= 90 ? '#22c55e' : result.compliance >= 70 ? '#eab308' : '#ef4444';
 
   // Generate radar chart data points
   const radarCategories = result.categories.slice(0, 10); // Max 10 for radar
@@ -3480,7 +3497,9 @@ function generateHtmlReport(result: BenchmarkResult): string {
     if (pct >= 60) return { letter: 'improving', color: '#f97316' };
     return { letter: 'needs-attention', color: '#ef4444' };
   };
-  const grade = getGrade(result.compliance);
+  const grade = result.compliance === null
+    ? { letter: 'not assessed', color: '#94a3b8' }
+    : getGrade(result.compliance);
 
   // Generate executive summary items
   const executiveSummary = failedControls.length === 0
@@ -3557,7 +3576,7 @@ function generateHtmlReport(result: BenchmarkResult): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OASB-1 Compliance Report | ${result.rating}</title>
+  <title>OASB-1 Compliance Report | ${escapeHtml(ratingWithScope(result))}</title>
   <style>
     :root {
       --bg-primary: #0a0f1a;
@@ -3946,7 +3965,8 @@ function generateHtmlReport(result: BenchmarkResult): string {
         <div class="meta">Version ${result.version} • Generated ${new Date(result.timestamp).toLocaleString()}</div>
       </div>
       <div class="header-right">
-        <div class="rating-badge">${result.rating}</div>
+        <div class="rating-badge">${escapeHtml(ratingWithScope(result))}</div>
+        ${notAssessedLines(result, targetDir, flags).map((line) => `<div style="margin-top: 8px; font-size: 13px; color: #94a3b8;">${escapeHtml(line)}</div>`).join('')}
         <div class="level-tag">${result.level} — ${result.level === 'L1' ? 'Essential' : result.level === 'L2' ? 'Standard' : 'Hardened'}</div>
       </div>
     </header>
@@ -3958,7 +3978,7 @@ function generateHtmlReport(result: BenchmarkResult): string {
             <span class="grade-letter" style="color: ${grade.color};">${grade.letter}</span>
           </div>
           <div class="score-main">
-            <div class="score-pct">${result.compliance}%</div>
+            <div class="score-pct">${result.compliance === null ? 'not measured' : `${result.compliance}%`}</div>
             <div class="score-label">Security Score</div>
           </div>
         </div>
@@ -4358,13 +4378,151 @@ function generateAspOutput(benchmarkResult: BenchmarkResult, scanResult: { findi
   return JSON.stringify(asp, null, 2);
 }
 
-function printBenchmarkReport(result: BenchmarkResult, verbose: boolean): void {
+/** The levels a `-l <level>` run examines, lowest first. */
+function examinedLevels(level: BenchmarkLevel): BenchmarkLevel[] {
+  return level === 'L1' ? ['L1'] : level === 'L2' ? ['L1', 'L2'] : ['L1', 'L2', 'L3'];
+}
+
+/** The examined levels whose compliance is `null` (no scored control produced a result). */
+function notAssessedLevels(result: BenchmarkResult): BenchmarkLevel[] {
+  const byLevel: Record<BenchmarkLevel, number | null> = {
+    L1: result.l1Compliance,
+    L2: result.l2Compliance,
+    L3: result.l3Compliance,
+  };
+  return examinedLevels(result.level).filter((lv) => byLevel[lv] === null);
+}
+
+/**
+ * #458 step 0 — the rating word never travels alone (CISO 2026-08-11, "no
+ * channel may render a rating word alone"): when a level at or below the
+ * requested one was not assessed, the text and html renderers say so in the
+ * same string. `--json` carries the bare word; the nulls sit beside it.
+ */
+function ratingWithScope(result: BenchmarkResult): string {
+  if (result.rating === 'Not Assessed') return result.rating;
+  const missing = notAssessedLevels(result);
+  return missing.length === 0 ? result.rating : `${result.rating} (${missing.join(', ')} not assessed)`;
+}
+
+/**
+ * The flags of this run that change what the scan runs, so a printed
+ * Verify/Fix command reproduces the figure it stands beside instead of
+ * measuring a different population: `--category`, `--scan-depth`,
+ * `--no-machine-posture`, `--ignore` (removes its checks from `allFindings`
+ * before the benchmark reads it), `--deep` and `--static-only` (turn the
+ * semantic and simulation layers on and off). Not carried: `--nanomind`
+ * (per-finding analysis by its help text, not a check) and `--fix` (mutates
+ * the target).
+ */
+interface BenchmarkRunFlags {
+  category?: string;
+  scanDepth?: string;
+  machinePosture?: boolean;
+  ignore?: string[];
+  deep?: boolean;
+  staticOnly?: boolean;
+}
+
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/**
+ * #458 step 0 — one line per level, at or below the requested one, whose
+ * compliance is `null`: what was not measured, why, which rating words that
+ * takes off the table, and how to verify it.
+ *
+ * Derived from the control statuses the run produced and the catalogue —
+ * never hardcoded, because #458 steps 1-2 change these counts (absent-subject
+ * controls become `not-applicable`, a different reason). The "not awardable"
+ * clause comes from the same rung table `calculateRating` walks. The cited
+ * Verify carries the run's own flags (category, depth, machine posture,
+ * `--ignore`, `--deep`, `--static-only`) so it reproduces the figure on the
+ * line, and is a runnable shell line.
+ */
+function notAssessedLines(result: BenchmarkResult, targetDir: string, flags?: BenchmarkRunFlags): string[] {
+  const examined = examinedLevels(result.level);
+  const byLevel: Record<BenchmarkLevel, number | null> = {
+    L1: result.l1Compliance,
+    L2: result.l2Compliance,
+    L3: result.l3Compliance,
+  };
+  const catalogue = new Map<string, BenchmarkControl>(
+    OASB_1_CATEGORIES.flatMap((c: BenchmarkCategory) => c.controls).map((c: BenchmarkControl) => [c.id, c]),
+  );
+  // #273 — the target is quoted only when the shell needs it, and a path the
+  // reader cannot be shown truthfully becomes the house `<dir>` placeholder.
+  const dir = citationTarget(targetDir);
+  const lines: string[] = [];
+  for (const lv of examined) {
+    if (byLevel[lv] !== null) continue;
+    const inScope = result.categories
+      .flatMap((c: BenchmarkCategoryResult) => c.controls)
+      .filter((c: BenchmarkControlResult) => c.level === lv);
+    const automated = inScope.filter((r: BenchmarkControlResult) => {
+      const c = catalogue.get(r.controlId);
+      return !!c && c.scored && c.verification === 'automated' && c.checkIds.length > 0;
+    });
+    const measured = inScope.filter((r: BenchmarkControlResult) => r.status !== 'unverified').length;
+    const manualForward = inScope.filter((r: BenchmarkControlResult) => {
+      const c = catalogue.get(r.controlId);
+      return !!c && (c.verification === 'manual' || c.verification === 'forward');
+    }).length;
+    // The words a null at `lv` takes off the table for the REQUESTED level's
+    // rating; "at Lx" is said only on the requested level's own line.
+    const off = ratingsUnavailableWhenNull(result.level, lv);
+    const ladderSize = ratingsUnavailableWhenNull(result.level, 'L1').length;
+    const where = lv === result.level ? ` at ${lv}` : '';
+    const offClause = off.length === 0 ? ''
+      : off.length >= ladderSize ? `no rating is awardable${where}`
+      : off.length === 1 ? `${off[0]} is not awardable${where}`
+      : `${[...off].reverse().join(' and ')} are not awardable${where}`;
+    const verify = `Verify: ${CLI_PREFIX} secure ${dir} -b oasb-1 -l ${lv}${runFlagsForCitation(flags)} --format json | jq '[.categories[].controls[] | select(.level == "${lv}")]'`;
+    // A Fix is owed only where the rating itself is withheld (L1 null =>
+    // `Not Assessed`). A --category that selects nothing automatable at this
+    // level is fixed by dropping the flag; an `--ignore` list naming a check
+    // that measures one of these automated controls is fixed by dropping
+    // that (a list naming nothing here cannot have emptied the population,
+    // so that Fix would change nothing); a selection whose automated controls
+    // produced nothing is fixed by pointing at the real project root.
+    const selectsNothingAutomatable = !!flags?.category && automated.length === 0;
+    const ignored = new Set((flags?.ignore ?? []).map((id) => id.toUpperCase()));
+    const suppressedByIgnore = ignored.size > 0 && automated.some((r: BenchmarkControlResult) =>
+      (catalogue.get(r.controlId)?.checkIds ?? []).some((id) => ignored.has(id.toUpperCase())));
+    const fix = lv !== 'L1' ? ''
+      : selectsNothingAutomatable
+        ? ` Fix: drop --category: ${CLI_PREFIX} secure ${dir} -b oasb-1 -l ${result.level}${runFlagsForCitation(flags, { category: true })}`
+        : suppressedByIgnore
+          ? ` Fix: drop --ignore: ${CLI_PREFIX} secure ${dir} -b oasb-1 -l ${result.level}${runFlagsForCitation(flags, { ignore: true })}`
+          : ` Fix: run against the project root that holds the artifacts OASB-1 examines (package manifest, agent or MCP config, source).`;
+    if (inScope.length === 0) {
+      lines.push(`Not assessed at ${lv}: the selected category has no ${lv} controls; ${offClause}. ${verify}${fix}`);
+      continue;
+    }
+    if (automated.length === 0) {
+      const ids = inScope.map((r: BenchmarkControlResult) => r.controlId).join(', ');
+      lines.push(
+        `Not assessed at ${lv}: none of the ${plural(inScope.length, `${lv} control`)} (${ids}) has an automated check in this version; ${offClause}. ${verify}${fix}`,
+      );
+      continue;
+    }
+    const ids = automated.map((r: BenchmarkControlResult) => r.controlId).join(', ');
+    const manual = manualForward > 0 ? ` (${manualForward} of ${plural(inScope.length, `${lv} control`)} are manual/forward)` : '';
+    lines.push(
+      `Not assessed at ${lv}: ${measured} of ${plural(automated.length, `automated ${lv} control`)} (${ids}) produced a result on this tree${manual}; ${offClause}. ${verify}${fix}`,
+    );
+  }
+  return lines;
+}
+
+function printBenchmarkReport(result: BenchmarkResult, verbose: boolean, targetDir: string, flags?: BenchmarkRunFlags): void {
   const ratingColors: Record<BenchmarkResult['rating'], string> = {
     'Certified': colors.green,
     'Compliant': colors.green,
     'Passing': colors.yellow,
     'Needs Improvement': colors.yellow,
     'Not Passing': colors.red,
+    // Neither green nor red: the ladder did not measure, so it does not say.
+    'Not Assessed': colors.dim,
   };
 
   // Header
@@ -4378,10 +4536,17 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean): void {
     'L3': 'Level 3 - Hardened',
   };
   console.log(`Level: ${levelNames[result.level]}`);
-  console.log(`Rating: ${ratingColors[result.rating]}${result.rating}${RESET()}`);
-  console.log(`Compliance: ${result.compliance}% (${result.passedControls}/${result.passedControls + result.failedControls} verified controls)`);
+  console.log(`Rating: ${ratingColors[result.rating]}${ratingWithScope(result)}${RESET()}`);
+  if (result.compliance === null) {
+    console.log(`Compliance: not measured (0/0 verified controls)`);
+  } else {
+    console.log(`Compliance: ${result.compliance}% (${result.passedControls}/${result.passedControls + result.failedControls} verified controls)`);
+  }
   if (result.unverifiedControls > 0) {
     console.log(`Unverified: ${result.unverifiedControls} controls require manual/forward verification`);
+  }
+  for (const line of notAssessedLines(result, targetDir, flags)) {
+    console.log(`${colors.dim}${line}${RESET()}`);
   }
   console.log();
 
@@ -4427,18 +4592,21 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean): void {
 
   // Compliance breakdown by level
   if (verbose) {
-    console.log(`\nCompliance by level: L1=${result.l1Compliance}% L2=${result.l2Compliance}% L3=${result.l3Compliance}%`);
+    // Examined levels only: a level the run was not asked for has no figure
+    // to report, and printing `L3=not assessed` on an -l L2 run reads as
+    // a gap rather than as scope.
+    const pctOrNot = (v: number | null): string => (v === null ? 'not assessed' : `${v}%`);
+    const byLevel: Record<BenchmarkLevel, number | null> = { L1: result.l1Compliance, L2: result.l2Compliance, L3: result.l3Compliance };
+    console.log(`\nCompliance by level: ${examinedLevels(result.level).map((lv) => `${lv}=${pctOrNot(byLevel[lv])}`).join(' ')}`);
     console.log(`Legend: [?] = Manual/Forward verification required`);
   }
 
   // Show appropriate next step based on current level
-  if (result.level === 'L1') {
-    console.log(`\nRun '${CLI_PREFIX} secure -b oasb-1 -l L2' for stricter checks.`);
-  } else if (result.level === 'L2') {
-    console.log(`\nRun '${CLI_PREFIX} secure -b oasb-1 -l L3' for hardened requirements.`);
-  } else {
-    console.log(`\nThis is the highest maturity level (L3 - Hardened).`);
-  }
+  // #458 step 0 — the next-level line is derived from the catalogue
+  // (`nextLevelFooter`): it cites a command only while an automated check
+  // at that level can change the rating.
+  const footer = nextLevelFooter(result.level, CLI_PREFIX);
+  console.log(footer === null ? `\nThis is the highest maturity level (L3 - Hardened).` : `\n${footer}`);
   console.log(`Spec: https://oasb.ai/oasb-1\n`);
 }
 
@@ -4648,9 +4816,11 @@ Exit codes:
   1  measured, and a critical/high issue was found
      (or non-compliant in benchmark mode, or a score below --fail-below)
   2  the run did not examine everything it found, so it reaches no pass:
-     an input was discovered and could not be read, or a --deep analysis
-     did not complete. What DID run is still reported and scored above,
-     and the score is an upper bound rather than a measurement of the tree.
+     an input was discovered and could not be read, a --deep analysis
+     did not complete, or (benchmark mode) no scored L1 control produced
+     a result and the rating is Not Assessed. What DID run is still
+     reported and scored above, and the score is an upper bound rather
+     than a measurement of the tree.
 
 Examples:
   $ ${CLI_PREFIX} secure                           Scan current directory
@@ -4674,13 +4844,13 @@ Examples:
   // unqualified claim in `--help` would make the tool assert something a user
   // can falsify in one command. The benchmark path is tracked separately; until
   // it is fixed the promise is scoped to where it holds.
-  .option('--ignore <checks>', 'Comma-separated check IDs to leave out of the findings list (e.g., CRED-001,GIT-002). Suppressed checks are still scored and still set the exit code for this command; use --fail-below for a score floor. Not yet honoured by --benchmark')
+  .option('--ignore <checks>', 'Comma-separated check IDs to leave out of the findings list (e.g., CRED-001,GIT-002). Suppressed checks are still scored and still set the exit code for this command; use --fail-below for a score floor. With --benchmark the ignored checks cannot report, so a control measured only by them stays unverified')
   .option('--json', 'Output as JSON (deprecated: use --format json)')
   .option('-f, --format <format>', 'Output format: text, json, sarif, html, asff; asp with -b oasb-1', 'text')
   .option('--aws-account-id <id>', 'AWS account ID for ASFF format')
   .option('--aws-region <region>', 'AWS region for ASFF format')
   .option('-o, --output <file>', 'Write output to file instead of stdout')
-  .option('--fail-below <percent>', 'ADDITIONALLY exit 1 if compliance is below this threshold (0-100). Does not disable the default non-compliance gate')
+  .option('--fail-below <percent>', 'ADDITIONALLY exit 1 if compliance is below this threshold (0-100). Does not disable the default non-compliance gate; not evaluated when no compliance was measured (0 verified controls: exit 2)')
   .option('-v, --verbose', 'Show all checks including passed ones')
   .option('-b, --benchmark <name>', 'Run benchmark compliance check (e.g., oasb-1)')
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
@@ -5247,7 +5417,14 @@ Examples:
           process.stdout.write('\n');
 
           // Show infra report then governance report
-          printBenchmarkReport(infraResult, options.verbose ?? false);
+          printBenchmarkReport(infraResult, options.verbose ?? false, targetDir, {
+            category: options.category,
+            scanDepth: options.scanDepth,
+            machinePosture: options.machinePosture,
+            ignore: ignoreList,
+            deep: options.deep === true,
+            staticOnly: isStaticOnly,
+          });
           printBenchmarkUnreadDisclosure(result);
 
           process.stdout.write('\nGovernance Domains (scan-soul):\n');
@@ -5294,12 +5471,24 @@ Examples:
 
       // Benchmark mode - output compliance report
       if (options.benchmark) {
-        // Use allFindings (unfiltered) for accurate benchmark evaluation
+        // allFindings: every finding regardless of the score threshold. It is
+        // not unfiltered: `--ignore` removed its checks above, so the controls
+        // they measure read as not assessed (the cited Verify repeats the flag).
         const benchmarkResult = generateBenchmarkReport(
           result.allFindings || result.findings,
           level,
           options.category
         );
+
+        // The run's own flags, for the Verify/Fix commands the report cites.
+        const benchmarkRunFlags: BenchmarkRunFlags = {
+          category: options.category,
+          scanDepth: options.scanDepth,
+          machinePosture: options.machinePosture,
+          ignore: ignoreList,
+          deep: options.deep === true,
+          staticOnly: isStaticOnly,
+        };
 
         // Output based on format
         let output: string;
@@ -5322,13 +5511,13 @@ Examples:
             output = generateSarifOutput(benchmarkResult, result.findings, targetDir);
             break;
           case 'html':
-            output = generateHtmlReport(benchmarkResult);
+            output = generateHtmlReport(benchmarkResult, targetDir, benchmarkRunFlags);
             break;
           case 'asp':
             output = generateAspOutput(benchmarkResult, result, targetDir);
             break;
           default: // text
-            printBenchmarkReport(benchmarkResult, options.verbose ?? false);
+            printBenchmarkReport(benchmarkResult, options.verbose ?? false, targetDir, benchmarkRunFlags);
             printBenchmarkUnreadDisclosure(result);
             output = '';
         }
@@ -5358,10 +5547,46 @@ Examples:
           console.error(`Benchmark rating is ${benchmarkResult.rating}. Exiting 1 per "non-compliant in benchmark mode".`);
         }
 
-        // Check fail threshold
-        if (failBelow !== undefined && benchmarkResult.compliance < failBelow) {
-          console.error(`Compliance ${benchmarkResult.compliance}% is below threshold ${failBelow}%`);
-          process.exit(1);
+        // #458 step 0 — `Not Assessed` means the rating ladder could not be
+        // read: no scored L1 control produced a result. That is "did not
+        // measure", so the unmeasured floor (2) is raised, raise-only, the
+        // same code this arm already uses for an unread input above.
+        //
+        // A --category can select controls at L2/L3 and none at L1; then the
+        // compliance figure IS measured (over those controls) while the
+        // rating is Not Assessed, and a `--fail-below` breach over it still
+        // exits 1 below. That is this arm's recorded precedence — measured-
+        // and-failed outranks not-measured ("both true -> 1"), which differs
+        // from the secure arm's #512 rule and is kept as is by the CPO
+        // ruling of 2026-08-25. The reason printed says which case it is.
+        if (benchmarkResult.rating === 'Not Assessed') {
+          const measuredElsewhere = benchmarkResult.passedControls + benchmarkResult.failedControls;
+          const why = measuredElsewhere > 0
+            ? `no scored L1 control produced a result in this selection, so the rating ladder cannot be read; ${plural(measuredElsewhere, 'scored control')} at a higher level produced a result and ${measuredElsewhere === 1 ? 'is' : 'are'} not rated`
+            : 'no scored control produced a result';
+          console.error(`Benchmark rating is Not Assessed: ${why}. Exit code raised to ${EXIT_UNMEASURED} (not measured).`);
+          raiseExitCode(EXIT_UNMEASURED);
+        }
+
+        // Check fail threshold — against a measured figure only. For any
+        // positive N, `null < N` is `true` in JS, so a bare comparison over a
+        // null compliance would exit 1 for a number that was never produced
+        // (0.32.0 defaulted the figure to 0 and printed `Compliance 0% is
+        // below threshold` over 0/0 controls — the same claim, one step
+        // earlier). A threshold is a claim about a measurement.
+        if (failBelow !== undefined) {
+          if (benchmarkResult.compliance === null) {
+            console.error(`--fail-below ${failBelow} not evaluated: no compliance was measured (0 verified controls).`);
+          } else if (benchmarkResult.compliance < failBelow) {
+            // Beside a Not Assessed rating this is the case the comment above
+            // describes: the breach is over a MEASURED figure, so it outranks
+            // the not-measured floor that was just raised. Say so.
+            const outranks = benchmarkResult.rating === 'Not Assessed'
+              ? ' — a measured breach outranks the not-measured floor above: exit 1'
+              : '';
+            console.error(`Compliance ${benchmarkResult.compliance}% is below threshold ${failBelow}%${outranks}`);
+            process.exit(1);
+          }
         }
 
         if (ratingFails) process.exit(1);
@@ -6202,6 +6427,36 @@ function detectAIInfrastructure(primaryTarget: string): Array<{ name: string; di
       return false;
     }
   });
+}
+
+/**
+ * The flags of the current run, rendered for a cited `secure` command
+ * (`omit` drops the flag a "drop --category" / "drop --ignore" Fix removes).
+ * The category and the ignore list go through `citationPath`: quoted when the
+ * shell needs it, the house placeholder when the bytes cannot be shown
+ * truthfully. The cited `-c` value is the run's own spelling (the gate in
+ * `generateBenchmarkReport` matches case-insensitively and exits 1 on any
+ * other string), so the placeholder arm is the helper's contract, not a
+ * defence this file relies on.
+ *
+ * Placed under the `secure` registration on purpose: the #372 walker
+ * attributes a flag that names no command to the enclosing `.command(`, and
+ * these are `secure` flags (`check` registers neither `--scan-depth` nor
+ * `--no-machine-posture`). Function declarations hoist, so the callers above
+ * are unaffected.
+ */
+function runFlagsForCitation(
+  flags: BenchmarkRunFlags | undefined,
+  omit: { category?: boolean; ignore?: boolean } = {},
+): string {
+  const parts: string[] = [];
+  if (flags?.category && !omit.category) parts.push(`-c ${citationPath(flags.category) ?? '<category>'}`);
+  if (flags?.scanDepth && flags.scanDepth !== 'standard') parts.push(`--scan-depth ${escapeForDisplay(flags.scanDepth)}`);
+  if (flags?.machinePosture === false) parts.push('--no-machine-posture');
+  if (flags?.ignore && flags.ignore.length > 0 && !omit.ignore) parts.push(`--ignore ${citationPath(flags.ignore.join(',')) ?? '<checks>'}`);
+  if (flags?.deep) parts.push('--deep');
+  if (flags?.staticOnly) parts.push('--static-only');
+  return parts.length > 0 ? ` ${parts.join(' ')}` : '';
 }
 
 program
