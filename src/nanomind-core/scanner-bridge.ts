@@ -22,6 +22,7 @@
 // below is a read OF THE SCAN TARGET and therefore coverage evidence; HMA's own
 // state (models, integrity manifest, LLM cache) is read elsewhere and stays raw.
 import { fs as trackedFs } from '../hardening/tracked-fs';
+import { noteReadFailure } from '../hardening/coverage-ledger';
 const { readFile, readdir, stat } = trackedFs;
 // DELIBERATELY RAW, and the reason is not an oversight (#499).
 //
@@ -827,11 +828,33 @@ async function walkDir(
   }
 }
 
+/**
+ * Size/empty gate on a path the walker has ALREADY discovered.
+ *
+ * A rejection here is not "nothing there": `readdir` listed this entry a
+ * moment ago. `chmod 600 <dir>` (readable, not traversable) is the measured
+ * case — the directory lists its files and every `stat` on them rejects
+ * `EACCES`. Returning `false` silently dropped a discovered credential file
+ * from the compile set, and at `--scan-depth quick`, where this walker is the
+ * only reader of the tree, the tree scored 98/100 at exit 0 against 69/100 at
+ * exit 1 with the directory traversable (#515) — #438's shape, one errno path
+ * over from the `chmod 000 <file>` case #499 closed.
+ *
+ * So the rejection is reported on the ledger's failure channel, the one the
+ * tracked `readFile` already uses, and the ledger decides which codes count
+ * (`ENOENT`/`EISDIR`/`ENOTDIR` do not: a file removed between the listing and
+ * this call is not a lost input). The file is still excluded from the compile
+ * set — this records the loss, it does not pretend to have read the bytes.
+ * The tracked namespace deliberately does not report `stat` failures in
+ * general, because probe sites expect them; this is the discovery-side
+ * exception, recorded at the site that knows the path was discovered.
+ */
 async function isWithinSizeLimit(filePath: string): Promise<boolean> {
   try {
     const s = await stat(filePath);
     return s.size <= MAX_FILE_SIZE && s.size > 0;
-  } catch {
+  } catch (err) {
+    noteReadFailure(filePath, (err as NodeJS.ErrnoException | null)?.code);
     return false;
   }
 }

@@ -99,11 +99,18 @@ for (const name of CONTENT_READS) {
 }
 
 // Failures are NOT reported on this channel. `access` is an existence probe by
-// definition and `stat` is used the same way, so their rejections are the
-// normal case rather than a lost input. An unreadable DIRECTORY is already
-// caught where it matters: `scanner.ts` catches the `readdir` rejection, sets
-// `complete = false` and emits a HIGH. Reporting it here as well would count
-// one obstruction twice, in two units.
+// definition and `stat` is mostly used the same way, so their rejections are
+// the normal case rather than a lost input — at PROBE sites. A `stat` on a
+// path a walker has already listed is a discovery read, and a rejection there
+// IS a lost input: `chmod 600 <dir>` lists the directory's files and rejects
+// every `stat` on them (#515). That case is recorded by the discovery site
+// itself (`scanner-bridge.ts` `isWithinSizeLimit`), the only place that knows
+// the path was discovered rather than probed; this wrapper cannot tell the two
+// apart and must not guess. An unreadable DIRECTORY is disclosed by
+// `scanner.ts`, whose sensitive-file walk sets `walkComplete = false` on the
+// `readdir` rejection and escalates GIT-001/GIT-002 to HIGH; reporting
+// `readdir` rejections here as well would count one obstruction twice, in two
+// units.
 for (const name of PATH_INSPECTIONS) {
   const fn = (realFs as unknown as Record<string, unknown>)[name];
   if (typeof fn === 'function') wrapped[name] = attribute(fn as AnyFn, noteInspect);
