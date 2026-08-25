@@ -32,6 +32,7 @@
 // FINDS the inputs, so a read it cannot complete is precisely an
 // "input discovered but not read" (#438).
 import { fs } from '../../hardening/tracked-fs';
+import { noteListFailure } from '../../hardening/coverage-ledger';
 import * as path from 'path';
 import type { FileType } from '../types';
 import { isPathWithinDirectory } from '../../hardening/contain';
@@ -207,9 +208,11 @@ export async function walkForArtifacts(
     let dirents;
     try {
       dirents = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
+    } catch (err) {
       // EACCES and friends: a config we cannot see could be in there, so this
-      // result is not a proof of absence.
+      // result is not a proof of absence — and the directory itself is a lost
+      // input of the directory kind, recorded where it was discovered (#588).
+      noteListFailure(dir, (err as NodeJS.ErrnoException | null)?.code);
       complete = false;
       return;
     }
@@ -243,7 +246,11 @@ export async function walkForArtifacts(
         try {
           const st = await fs.lstat(abs);
           if (!st.isDirectory()) continue;
-        } catch {
+        } catch (err) {
+          // The dirent said directory; an `lstat` that rejects here is the
+          // parent denying search (`chmod 600 a/` with `a/b/` beneath it), and
+          // `a/b/` is then a directory the scan could not list (#588).
+          noteListFailure(abs, (err as NodeJS.ErrnoException | null)?.code);
           complete = false;
           continue;
         }

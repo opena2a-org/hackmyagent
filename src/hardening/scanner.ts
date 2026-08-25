@@ -51,6 +51,7 @@ import {
   type CategoryCoverage,
   type CheckExecution,
   type CoverageTruncation,
+  noteListFailure,
 } from './coverage-ledger';
 
 /**
@@ -5928,9 +5929,12 @@ dist/
       let dirents;
       try {
         dirents = await fs.readdir(dir, { withFileTypes: true });
-      } catch {
+      } catch (err) {
         // An unreadable directory (EACCES, etc.) means we cannot verify
-        // its contents — a key could hide there. Do not assume clean.
+        // its contents — a key could hide there. Do not assume clean. The
+        // directory itself is a lost input of the directory kind, recorded
+        // where it was discovered (#588).
+        noteListFailure(dir, (err as NodeJS.ErrnoException | null)?.code);
         complete = false;
         return;
       }
@@ -5970,7 +5974,11 @@ dist/
           try {
             const st = await fs.lstat(abs);
             if (!st.isDirectory()) continue;
-          } catch {
+          } catch (err) {
+            // The dirent said directory; an `lstat` that rejects here is the
+            // parent denying search, and `abs` is a directory the scan could
+            // not list (#588).
+            noteListFailure(abs, (err as NodeJS.ErrnoException | null)?.code);
             complete = false;
             continue;
           }

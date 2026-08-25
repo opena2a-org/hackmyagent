@@ -22,7 +22,7 @@
 // below is a read OF THE SCAN TARGET and therefore coverage evidence; HMA's own
 // state (models, integrity manifest, LLM cache) is read elsewhere and stays raw.
 import { fs as trackedFs } from '../hardening/tracked-fs';
-import { noteReadFailure } from '../hardening/coverage-ledger';
+import { noteReadFailure, noteListFailure } from '../hardening/coverage-ledger';
 const { readFile, readdir, stat } = trackedFs;
 // DELIBERATELY RAW, and the reason is not an oversight (#499).
 //
@@ -761,8 +761,13 @@ async function walkDir(
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return; // Permission denied or similar
+  } catch (err) {
+    // A directory this walker named and cannot list is a lost input of the
+    // directory kind (#588): everything beneath it leaves the scan without a
+    // read ever being attempted. The ledger's errno policy decides whether the
+    // code means "not there" (a race with a delete) or an obstruction.
+    noteListFailure(dir, (err as NodeJS.ErrnoException | null)?.code);
+    return;
   }
 
   for (const entry of entries) {
