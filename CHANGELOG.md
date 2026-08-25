@@ -4,6 +4,19 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### `--fail-below` on the benchmark arms gates the figure the arm prints
+
+`secure -b oasb-1 --fail-below N` and `-b oasb-2 --fail-below N` also applied the
+threshold to the hardening score — a figure neither arm prints. On a tree whose
+hardening score is 98 and whose OASB-1 compliance is 100%, `-b oasb-1
+--fail-below 100` exited 1; in json it printed `Score 98 is below threshold 100`
+beside the compliance the arm reported, on `-b oasb-2` that line sat beside
+`Composite score 59 is below threshold 100`, and in text mode the exit code was
+raised with no sentence at all, because the benchmark arms return before the
+text channel's deferred reason. Each arm now evaluates `--fail-below` once,
+against the figure it reports: compliance on `-b oasb-1`, the composite on
+`-b oasb-2`. Plain `secure --fail-below` is unchanged. (#628, #616)
+
 ### `secure -b oasb-2` no longer averages an OASB-1 level that measured nothing
 
 When no scored OASB-1 control produces a result (for example `-c 'Identity &

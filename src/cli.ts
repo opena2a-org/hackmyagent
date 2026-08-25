@@ -5290,7 +5290,15 @@ Examples:
       // before the exit footer). Emitting it here in text mode put the reason
       // five lines into a 45-line run, above the score it explains. One boolean drives the code and both sites, so the
       // sentence cannot print without the code moving, or the reverse.
-      const thresholdBreached = failBelow !== undefined && result.score < failBelow;
+      // #628 — not on a benchmark arm. `-b oasb-1` gates `--fail-below` on the
+      // compliance figure it prints and `-b oasb-2` on the composite; the
+      // hardening score is never shown there, so gating on it here breached a
+      // threshold over a number the user could not see (`-b oasb-1
+      // --fail-below 100` exited 1 at `Compliance: 100%`), printed a second,
+      // contradicting sentence in json, and in text raised the exit code with
+      // no sentence at all — the arms return before the deferred reason below.
+      // Each arm evaluates the flag once, against the figure it reports.
+      const thresholdBreached = failBelow !== undefined && !options.benchmark && result.score < failBelow;
       if (thresholdBreached) {
         raiseExitCode(EXIT_FAIL);
         if (format !== 'text') console.error(`Score ${result.score} is below threshold ${failBelow}`);
