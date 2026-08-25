@@ -7089,35 +7089,39 @@ dist/
     const findings: SecurityFindingDraft[] = [];
 
     // DEP-001: Check for package-lock.json
-    let hasLockFile = false;
-    try {
-      await fs.access(path.join(targetDir, 'package-lock.json'));
-      hasLockFile = true;
-    } catch {
-      try {
-        await fs.access(path.join(targetDir, 'yarn.lock'));
-        hasLockFile = true;
-      } catch {
-        try {
-          await fs.access(path.join(targetDir, 'pnpm-lock.yaml'));
-          hasLockFile = true;
-        } catch {}
-      }
+    // #458: a lock file is a MUST-exist artifact, so its absence is the
+    // finding (an absent-mitigation advisory whose `file` names the path the
+    // fix creates), never a not-applicable record. Content reads rather than
+    // `fs.access` so an unreadable candidate reaches the coverage ledger;
+    // the loop stops at the first lock file it can read.
+    const lockFileProbes: SubjectRead[] = [];
+    for (const lockFile of ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml']) {
+      const probe = await readCheckSubject(path.join(targetDir, lockFile));
+      lockFileProbes.push(probe);
+      if (probe.state === 'read') break;
     }
+    const hasLockFile = lockFileProbes.some((probe) => probe.state === 'read');
 
-    findings.push({
-      checkId: 'DEP-001',
-      name: 'Dependency Lock File',
-      description: 'No dependency lock file found',
-      category: 'dependencies',
-      severity: 'medium',
-      passed: hasLockFile,
-      message: hasLockFile
-        ? 'Dependency lock file present'
-        : 'No lock file found - dependency versions may vary between installs',
-      fixable: false,
-      guidance: 'Without a lock file, npm install can resolve to different package versions on different machines, including versions with known vulnerabilities or supply-chain backdoors.',
-    });
+    if (hasLockFile || lockFileProbes.every((probe) => probe.state === 'absent')) {
+      const dep001: SecurityFindingDraft = {
+        checkId: 'DEP-001',
+        name: 'Dependency Lock File',
+        description: 'No dependency lock file found',
+        category: 'dependencies',
+        severity: 'medium',
+        passed: hasLockFile,
+        message: hasLockFile
+          ? 'Dependency lock file present'
+          : 'No lock file found - dependency versions may vary between installs',
+        fixable: false,
+        guidance: 'Without a lock file, npm install can resolve to different package versions on different machines, including versions with known vulnerabilities or supply-chain backdoors.',
+      };
+      if (!hasLockFile) {
+        // Absent-mitigation advisory: `file` is the path the fix creates.
+        dep001.file = 'package-lock.json';
+      }
+      findings.push(dep001);
+    }
 
     // DEP-002: Check for known vulnerable packages
     const vulnerablePackages = ['event-stream', 'flatmap-stream', 'eslint-scope@3.7.2'];
