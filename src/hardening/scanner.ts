@@ -27,7 +27,7 @@ import {
   inferActualCapabilities,
   validateCapabilities,
 } from './skill-capability-validator';
-import { clampScoreToVerdictBand, countsAgainstScore, expandSuppressed, retainForVerdict, summarizeSuppressed } from '../ui/verdict-band';
+import { clampScoreToVerdictBand, countsAgainstScore, expandSuppressed, isMeasured, retainForVerdict, summarizeSuppressed } from '../ui/verdict-band';
 import { shellQuote, citationTarget, citationPath, citationPaths, commandNaming } from '../ui/shell-quote';
 import {
   isPathWithinDirectory as containIsPathWithinDirectory,
@@ -1221,7 +1221,7 @@ const SEVERITY_WEIGHTS: Record<Severity, number> = {
  * when it fires across dozens of files in a large repository. All findings
  * are still reported — only the score contribution is capped.
  */
-export function calculateSecurityScore(findings: Array<{ passed?: boolean; fixed?: boolean; severity: string; category?: string; checkId?: string }>): {
+export function calculateSecurityScore(findings: Array<{ passed?: boolean; fixed?: boolean; severity?: string; category?: string; checkId?: string }>): {
   score: number;
   maxScore: number;
 } {
@@ -3702,6 +3702,11 @@ export class HardeningScanner {
     }> = [];
     let unevidencedFailures = 0;
     for (const f of findings) {
+      // #458 — a not-applicable record has no pass/fail state and no severity:
+      // without this guard it falls past `passed && !fixed` and (carrying no
+      // `file`) is rolled up as an unevidenced FAILURE — a check that measured
+      // nothing counted as a failure we suppressed.
+      if (!isMeasured(f)) continue;
       if (f.passed && !f.fixed) continue;
       if (survived.has(f)) continue;
       if (ignoredChecks.has(f.checkId.toUpperCase())) continue;

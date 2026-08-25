@@ -19,7 +19,7 @@ import type { NanoMindScanResult, ArtifactSummary, CoverageCandidate, SemanticFa
 import { ANALYZER_FAMILY_COUNT } from './analyzers/family-coverage.js';
 import type { AnalystResponse, ArtifactCoverageVerdict } from './inference/security-analyst.js';
 import { routeAnalystVerdict, combineVerdict } from './analyst-coverage.js';
-import { countsAgainstScore } from '../ui/verdict-band';
+import { countsAgainstScore, isMeasured } from '../ui/verdict-band';
 import { redactOpenBagForPublish } from '../hardening/finding-emit';
 
 export type { ArtifactSummary } from './scanner-bridge.js';
@@ -392,7 +392,7 @@ async function runAnalystOnFindings(
   // by injection through THIS function with a stubbed `runInference`, not by
   // grep — a text guard is satisfied by dead code; an injection is not.
   const results: AnalystResponse[] = [];
-  const failed = findings.filter(f => countsAgainstScore(f));
+  const failed = findings.filter(isMeasured).filter(f => countsAgainstScore(f));
 
   // Limit to top 10 most important findings to keep inference time reasonable
   const prioritized = failed

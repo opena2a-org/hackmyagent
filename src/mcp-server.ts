@@ -34,7 +34,7 @@ import {
 import { citationTarget } from './ui/shell-quote';
 import { assertRedactionProvenance } from './hardening/finding-emit';
 import { getCheckCounts } from './hardening/taxonomy';
-import { countsAgainstScore, confirmedFix } from './ui/verdict-band';
+import { countsAgainstScore, confirmedFix, isMeasured } from './ui/verdict-band';
 import {
   resolveRoots,
   resolveWithinRoots,
@@ -117,6 +117,9 @@ function formatFindingsForLLM(findings: SecurityFinding[]): string {
 
   const lines: string[] = [];
   for (const f of findings) {
+    // #458 — a not-applicable record has no severity to print; its disclosure
+    // rides the summary's not-applicable bucket, not the LLM findings list.
+    if (!isMeasured(f)) continue;
     const location = f.file ? (f.line ? `${f.file}:${f.line}` : f.file) : '';
     lines.push(`[${f.severity.toUpperCase()}] ${f.checkId}: ${f.name}`);
     if (location) lines.push(`  Location: ${location}`);
@@ -186,6 +189,8 @@ export function buildDeepScanLayer1(findings: SecurityFinding[]): Array<{
 }> {
   assertRedactionProvenance(findings, 'mcp-deep-scan');
   return findings
+    // #458 — layer 1 maps `severity` below; a not-applicable record has none.
+    .filter(isMeasured)
     .filter((f) => countsAgainstScore(f))
     .map((f) => ({
       checkId: f.checkId,

@@ -14,7 +14,7 @@ import { join, relative } from 'path';
 import type { SecurityFinding, Severity } from '../hardening';
 import { assertRedactionProvenance } from '../hardening/finding-emit';
 import { calculateSecurityScore } from '../hardening';
-import { clampScoreToVerdictBand, countsAgainstScore } from '../ui/verdict-band';
+import { clampScoreToVerdictBand, countsAgainstScore, isMeasured } from '../ui/verdict-band';
 import type { AttackReport } from '../attack';
 import type { SoulScanResult } from '../soul';
 import type { BenchmarkResult } from '../benchmarks';
@@ -178,6 +178,10 @@ export function buildPublishPayload(data: PublishScanData, toolVersion: string):
   // Map hardening findings
   if (data.hardeningFindings) {
     for (const f of data.hardeningFindings) {
+      // #458 — a not-applicable record is not a finding on the wire: the OASB-1
+      // status channel carries not-applicable; the signed publish canonical
+      // carries measured findings only.
+      if (!isMeasured(f)) continue;
       findings.push({
         checkId: f.checkId,
         name: f.name,

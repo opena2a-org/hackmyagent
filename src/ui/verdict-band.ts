@@ -32,6 +32,8 @@
  * incoherence.
  */
 
+import type { SecurityFinding, Severity } from '../hardening/security-check';
+
 /** Lowest score the meter still paints green. Mirrors the renderer in cli.ts. */
 export const GOOD_BAND_FLOOR = 70;
 
@@ -329,4 +331,24 @@ export function clampDisclosure(opts: {
 }): string {
   if (!opts.clamped || opts.rawScore === undefined) return '';
   return `  (score capped from ${opts.rawScore} to ${opts.score} — verdict is fail-direction)`;
+}
+
+/**
+ * #458 — a finding that measured its subject. A not-applicable record carries
+ * no `severity`: a severity is a measured weight, and a check that measured
+ * nothing has no honest value to put there. So "has a severity" and "was
+ * measured" are the same fact, and every consumer that weighs, sorts, buckets,
+ * or renders `severity` narrows through this guard first. The runtime check
+ * keys on the exact field the narrow claims — nothing is trusted from context.
+ *
+ * Generic so producer-side code holding `SecurityFindingDraft` (or a
+ * structural subset) narrows the type it actually has instead of asserting a
+ * different one.
+ */
+export type MeasuredFinding = SecurityFinding & { severity: Severity };
+
+export function isMeasured<T extends { severity?: Severity }>(
+  f: T
+): f is T & { severity: Severity } {
+  return f.severity !== undefined;
 }

@@ -61,7 +61,15 @@ export interface SecurityFinding {
   name: string;
   description: string;
   category: string;
-  severity: Severity;
+  /**
+   * Absent EXACTLY when `notApplicable` is set: a severity is a measured
+   * weight, and a check that measured nothing has no honest value to put
+   * here (#458). Every other finding carries one. Consumers that weigh or
+   * render severity test `notApplicable` first (the render filter already
+   * drops NA records from `result.findings`, so a post-filter consumer
+   * narrows by that fact, not by inventing a default).
+   */
+  severity?: Severity;
   /**
    * Whether the check found its subject and MEASURED it clean.
    *
