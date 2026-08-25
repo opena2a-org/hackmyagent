@@ -13538,8 +13538,9 @@ async function checkNpmPackage(
     await tele.track(name, {
       // Exit 1 normally means "findings were detected and the command did its
       // job", which is the security-tool convention `successFromExitCode`
-      // encodes. `rollback` is the exception (#350): there exit 1 means the
-      // user's files did not all come back, so only 0 is a success.
+      // encodes. The exceptions are the commands whose exit 1 means "I did not
+      // do my job"; EXIT1_IS_FAILURE is the authoritative list (its entries
+      // carry the per-command reasoning — #350, #362).
       success: commandSucceeded(name, exitCode, tele.successFromExitCode),
       durationMs: Date.now() - startedAt,
     });

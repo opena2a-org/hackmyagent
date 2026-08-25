@@ -33,7 +33,16 @@
  * (add it)? `secure` and `scan-soul` exit 1 for findings — the first case.
  * `rollback` exits 1 when files did not come back — the second.
  */
-export const EXIT1_IS_FAILURE: ReadonlySet<string> = new Set(['rollback']);
+export const EXIT1_IS_FAILURE: ReadonlySet<string> = new Set([
+  'rollback',
+  // #362 — every exit 1 in harden-soul is a refusal or an error (the target
+  // directory is missing, no backup could be written, the target refused the
+  // write, or the run threw); it has no findings-style exit 1. The fleet
+  // metric read "governance hardened" for the refused runs it recorded (no
+  // backup, write refused); the missing-target and thrown paths hard-exit
+  // through process.exit(1) and emit no event at all.
+  'harden-soul',
+]);
 
 /**
  * Commands whose exit 2 reports a RESULT rather than a crash.
