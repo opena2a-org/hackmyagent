@@ -422,7 +422,7 @@ function writeJsonStdout(data: unknown): void {
 // ./cli-prefix). When a parent CLI sets HMA_CLI_PREFIX, every user-facing
 // command citation — program name, --help examples, hints, scanner `fix:`
 // strings — reads in the parent's verb namespace (e.g. `opena2a secure …`).
-import { CLI_PREFIX, rebrandCommandCitations, OPENA2A_PACKAGE, setCitationTarget } from './cli-prefix';
+import { CLI_PREFIX, RAW_CLI_PREFIX, rebrandCommandCitations, OPENA2A_PACKAGE, setCitationTarget } from './cli-prefix';
 
 let nanomindDeprecationWarned = false;
 /**
@@ -789,7 +789,7 @@ Examples:
         for (const u of unreadPaths) {
           skillFindings.push(...emitFindings([buildUnreadInputFinding(
             { ...u, rel: relative(targetDir, u.path) || basename(u.path) },
-            { cliName: CLI_PREFIX, targetDir, command: 'check' },
+            { cliName: RAW_CLI_PREFIX, targetDir, command: 'check' },
           )]));
         }
         const skillSuppressedRaw: any[] = [];
@@ -1116,50 +1116,6 @@ const SEVERITY_DISPLAY: Record<Severity, { symbol: string; label: string; color:
   low: { symbol: '[.]', label: 'LOW', color: () => colors.green },
 };
 
-/**
- * Display check command findings with optional verbose details.
- * When verbose is true, shows checkId, category, file location, and fix/guidance for each finding.
- */
-function displayCheckFindings(
-  failed: SecurityFinding[],
-  verbose: boolean,
-): void {
-  if (failed.length > 0) {
-    console.log();
-    const limit = verbose ? failed.length : 15;
-    for (const f of failed.slice(0, limit)) {
-      const sev = SEVERITY_DISPLAY[f.severity];
-      const attackClass = (f as any).attackClass ? ` (${(f as any).attackClass})` : '';
-      console.log(`  ${sev.color()}${sev.symbol}${RESET()} ${f.name}: ${escapeForDisplay(f.message)}${colors.dim}${attackClass}${RESET()}`);
-      if (verbose) {
-        console.log(`    ${colors.dim}Check:    ${f.checkId}${RESET()}`);
-        if (f.category) {
-          console.log(`    ${colors.dim}Category: ${f.category}${RESET()}`);
-        }
-        if (f.file) {
-          // Escaped where it is BUILT, like the other three `location`s in this
-          // file. Escaping at the print site instead left this name half
-          // sanitized, and the rule that one raw declaration disqualifies a
-          // name everywhere then hid the three that were already correct.
-          const location = escapePathForDisplay(f.line ? `${f.file}:${f.line}` : f.file);
-          console.log(`    ${colors.dim}File:     ${location}${RESET()}`);
-        }
-        if (f.fix) {
-          // #324 — the verbose renderer interpolates the same untrusted paths.
-          console.log(`    ${colors.cyan}Fix:      ${escapeForDisplay(rebrandCommandCitations(f.fix))}${RESET()}`);
-        }
-        if ((f as any).guidance) {
-          console.log(`    ${colors.dim}Guidance: ${escapeForDisplay(String((f as any).guidance))}${RESET()}`);
-        }
-      }
-    }
-    if (failed.length > limit) {
-      console.log(`\n  ... and ${failed.length - limit} more (use --verbose to see all)`);
-    }
-  } else {
-    console.log(`\n  ${colors.green}No security issues found.${RESET()}`);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Unified check display — one function for all target types (0.17.0)
@@ -4942,7 +4898,7 @@ Examples:
         ignore: ignoreList,
         deep: isDeep,
         scanDepth,
-        cliName: CLI_PREFIX,
+        cliName: RAW_CLI_PREFIX,
         onProgress,
         semanticPass: async ({ findings: existingFindings, projectType }) => {
           nmResult = await orchestrateNanoMind(targetDir, existingFindings, {
@@ -6288,7 +6244,7 @@ Examples:
         autoFix: options.fix ?? false,
         dryRun: options.dryRun ?? false,
         ignore: [],
-        cliName: CLI_PREFIX,
+        cliName: RAW_CLI_PREFIX,
       });
 
       // NanoMind semantic analysis (defense-in-depth)
@@ -6391,7 +6347,12 @@ Examples:
             console.log(`   File: ${location}`);
           }
           if (finding.fix) {
-            console.log(`   ${colors.cyan}Recommended fix:${RESET()} ${escapeForDisplay(finding.fix)}`);
+            // #596 — authored parts one per line, as the findings list renders them (#367).
+            const parts = fixParts(finding);
+            console.log(`   ${colors.cyan}Recommended fix:${RESET()} ${escapeForDisplay(rebrandCommandCitations(parts[0]))}`);
+            for (const part of parts.slice(1)) {
+              console.log(`   ${part === '' ? '' : `                 ${escapeForDisplay(rebrandCommandCitations(part))}`}`);
+            }
           }
           console.log();
         }
@@ -6642,7 +6603,12 @@ Examples:
             console.log(`   File: ${location}`);
           }
           if (finding.fix) {
-            console.log(`   ${colors.cyan}Recommended fix:${RESET()} ${escapeForDisplay(finding.fix)}`);
+            // #596 — authored parts one per line, as the findings list renders them (#367).
+            const parts = fixParts(finding);
+            console.log(`   ${colors.cyan}Recommended fix:${RESET()} ${escapeForDisplay(rebrandCommandCitations(parts[0]))}`);
+            for (const part of parts.slice(1)) {
+              console.log(`   ${part === '' ? '' : `                 ${escapeForDisplay(rebrandCommandCitations(part))}`}`);
+            }
           }
           console.log();
         }
@@ -6797,7 +6763,14 @@ Examples:
               console.log(`     ${escapeForDisplay(finding.description)}`);
               console.log(`     Evidence: ${escapeForDisplay(finding.evidence)}`);
               console.log(`     Impact: ${escapeForDisplay(finding.impact)}`);
-              console.log(`     Fix: ${escapeForDisplay(finding.fix)}`);
+              {
+                // #596 — authored parts one per line (#367).
+                const parts = fixParts(finding);
+                console.log(`     Fix: ${escapeForDisplay(rebrandCommandCitations(parts[0]))}`);
+                for (const part of parts.slice(1)) {
+                  console.log(`     ${part === '' ? '' : `     ${escapeForDisplay(rebrandCommandCitations(part))}`}`);
+                }
+              }
             }
           }
           console.log();
@@ -9462,7 +9435,7 @@ Examples:
         // too. Eclipse the "all controls covered" verdict so the user
         // sees the marker problem before reading per-domain scores.
         soulVerdictColor = colors.brightRed;
-        soulVerdictText = `Profile marker invalid: '${result.markerInvalid.attemptedValue}' is not a recognized profile`;
+        soulVerdictText = `Profile marker invalid: '${escapeForDisplay(result.markerInvalid.attemptedValue)}' is not a recognized profile`;
       } else if (missing === 0) {
         soulVerdictColor = colors.green;
         // `result.totalControls` is the count *applicable* to this agent's
@@ -9525,9 +9498,18 @@ Examples:
         for (const v of shown) {
           console.log();
           console.log(`  ${colors.brightRed}${colors.bold}HIGH${RESET()}  ${colors.bold}${v.id}${RESET()}  ${colors.dim}${v.name}${RESET()}`);
-          console.log(`  ${colors.dim}Evidence (${soulFileName}:${v.line}):${RESET()} ${v.evidence}`);
+          // #595 — the evidence is the matched line of the scanned file and the
+          // fix is composed around it; both escape on the printing line.
+          console.log(`  ${colors.dim}Evidence (${soulFileName}:${v.line}):${RESET()} ${escapeForDisplay(v.evidence)}`);
           console.log(`  ${colors.dim}Subverts:${RESET()} ${v.controlId} ${colors.dim}(${v.domain})${RESET()}`);
-          console.log(`  ${colors.cyan}Fix:${RESET()} ${v.fix}`);
+          {
+            // Same idiom as every other fix print (#367/#596); a one-line fix has no continuation.
+            const parts = fixParts(v);
+            console.log(`  ${colors.cyan}Fix:${RESET()} ${escapeForDisplay(rebrandCommandCitations(parts[0]))}`);
+            for (const part of parts.slice(1)) {
+              console.log(`  ${part === '' ? '' : `     ${escapeForDisplay(rebrandCommandCitations(part))}`}`);
+            }
+          }
         }
         if (soulViolations.length > shown.length) {
           console.log(`  ${colors.dim}...and ${soulViolations.length - shown.length} more violation${soulViolations.length - shown.length > 1 ? 's' : ''} (see --json for the full list)${RESET()}`);
@@ -9577,7 +9559,7 @@ Examples:
         const displayedValue = mi.attemptedValue.length === 0 ? '(empty)' : mi.attemptedValue;
         console.log();
         console.log(`  ${colors.brightRed}${colors.bold}HIGH${RESET()}  ${colors.bold}SOUL-PROFILE-MARKER-INVALID${RESET()}  ${colors.dim}${sourceLabel} declares an unrecognized profile${RESET()}`);
-        console.log(`  ${colors.dim}Attempted ${sourceLabel} value=${RESET()}${colors.bold}${displayedValue}${RESET()}${colors.dim} is not a recognized profile name.${RESET()}`);
+        console.log(`  ${colors.dim}Attempted ${sourceLabel} value=${RESET()}${colors.bold}${escapeForDisplay(displayedValue)}${RESET()}${colors.dim} is not a recognized profile name.${RESET()}`);
         console.log(`  ${colors.dim}Evaluated using detected profile=${RESET()}${colors.bold}${mi.resolvedProfile}${RESET()}${colors.dim} (from body keywords).${RESET()}`);
         console.log(`  ${colors.dim}Recognized profiles:${RESET()} conversational, code-assistant, tool-agent, autonomous, orchestrator, custom`);
         if (mi.source === 'flag') {
@@ -9899,7 +9881,7 @@ Examples:
         const sourceLabel = mi.source === 'flag' ? '--profile flag' : 'marker';
         const displayedValue = mi.attemptedValue.length === 0 ? '(empty)' : mi.attemptedValue;
         process.stderr.write(
-          `SOUL-PROFILE-MARKER-INVALID HIGH: ${sourceLabel} value='${displayedValue}' is not a recognized profile; resolved to ${mi.resolvedProfile} from body keywords.\n`,
+          `SOUL-PROFILE-MARKER-INVALID HIGH: ${sourceLabel} value='${escapeForDisplay(displayedValue)}' is not a recognized profile; resolved to ${mi.resolvedProfile} from body keywords.\n`,
         );
         process.exit(1);
       }

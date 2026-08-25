@@ -13,6 +13,7 @@
  * wrapper's argv0), and `rebrandCommandCitations` is a no-op.
  */
 import { citationPath } from './ui/shell-quote';
+import { escapeForDisplay } from './ui/display-safe';
 
 /**
  * Resolve the binary-level command prefix.
@@ -20,7 +21,13 @@ import { citationPath } from './ui/shell-quote';
  *   2. argv0-derived: `opena2a`/`opena2a-*` → `opena2a scan`.
  *   3. Default: `hackmyagent`.
  */
-export function resolveCliPrefix(): string {
+/**
+ * The prefix as configured: the VALUE, for data channels. The hardening
+ * scanner composes its `fix` strings with it (`cliName`), and those strings
+ * ship in `--json`, SARIF and HTML, which carry values, not renderings. Every
+ * printing line that shows a scanner fix escapes it there.
+ */
+export function resolveRawCliPrefix(): string {
   if (process.env.HMA_CLI_PREFIX) return process.env.HMA_CLI_PREFIX;
   const argv1 = process.argv[1] || '';
   const basename = require('path').basename(argv1).replace(/\.[jt]s$/, '');
@@ -30,7 +37,33 @@ export function resolveCliPrefix(): string {
   return 'hackmyagent';
 }
 
+/**
+ * The prefix for the text channel: `resolveRawCliPrefix()` made display-safe.
+ *
+ * #574 — the prefix is interpolated into footers, usage text and every
+ * rebranded citation, and several of those sites rebrand AFTER escaping the
+ * text they sit in. A value carrying a newline or an escape sequence forged
+ * lines through them. It is escaped once here, so every interpolation of
+ * `CLI_PREFIX` inherits the display-safe form; `escapeForDisplay` is
+ * idempotent on already-escaped text, so sites that escape again render the
+ * same bytes. The vector is the environment, not a scanned tree — bounded,
+ * but the display contract holds nowhere if it does not hold here.
+ */
+export function resolveCliPrefix(): string {
+  const raw = resolveRawCliPrefix();
+  const safe = escapeForDisplay(raw);
+  // Not silent: a prefix that had to be altered to be displayable is said so,
+  // once, on stderr — the citations the user is about to read carry the
+  // escaped form, and nothing else would tell them why.
+  if (safe !== raw) {
+    console.error('HMA_CLI_PREFIX contained control characters; command citations render it escaped.');
+  }
+  return safe;
+}
+
 export const CLI_PREFIX = resolveCliPrefix();
+/** The configured value, for data channels (see `resolveRawCliPrefix`). */
+export const RAW_CLI_PREFIX = resolveRawCliPrefix();
 
 /**
  * hackmyagent verbs that may appear in user-facing command citations. Used to
