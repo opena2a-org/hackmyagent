@@ -514,7 +514,10 @@ export function formatPublishOutput(
       parts.push(`hardening (${failed.length} finding${failed.length === 1 ? '' : 's'})`);
     }
     if (data.oasbResult) {
-      parts.push(`OASB (${data.oasbResult.compliance}% compliance)`);
+      // #458 step 0: a benchmark run that measured nothing carries `null`.
+      parts.push(data.oasbResult.compliance === null
+        ? 'OASB (compliance not measured)'
+        : `OASB (${data.oasbResult.compliance}% compliance)`);
     }
     if (data.soulResult) {
       parts.push(`SOUL (${data.soulResult.score}/100)`);
