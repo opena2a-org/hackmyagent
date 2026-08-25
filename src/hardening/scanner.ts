@@ -124,7 +124,7 @@ export function unsearchableAncestorSync(absPath: string, targetDir: string): st
 
 /**
  * Build the per-path `SCAN-UNREAD-001` finding for one discovered-but-unread
- * input. Module-level and pure so a second command (`check` on a local path,
+ * input. Module-level, shared by both arms, so a second command (`check` on a local path,
  * #508) can emit the identical finding through the same errno->remedy logic
  * instead of carrying a second copy of it — the per-channel-copy class #494
  * was the receipt for.
@@ -136,7 +136,7 @@ export function unsearchableAncestorSync(absPath: string, targetDir: string): st
  * and is a dead end for `EIO`/`ELOOP`, which the predicate deliberately admits.
  *
  * `command` names the CLI verb the remedy re-runs; it defaults to `secure`, so
- * the `HardeningScanner.secure` caller is byte-for-byte unchanged.
+ * the `HardeningScanner.secure` caller's re-run verb is unchanged.
  *
  * Not pure: when the caller did not classify the obstruction and the record
  * carries its absolute path, this builder probes the tree itself
@@ -185,9 +185,13 @@ export function buildUnreadInputFinding(
   // The re-run verb is a string LITERAL per branch, never a raw `${command}`
   // interpolation: a bare identifier in a runnable command string is what the
   // render-source gate (#273) forbids, and `command` is a fixed internal verb,
-  // not a path operand. `secure` is the default so this caller is byte-for-byte
-  // unchanged. `${cited}`/`${target}` are citation-bound and `${cliName}` is a
-  // known non-path operand, exactly as before.
+  // not a path operand. `secure` is the default so the `secure` caller's re-run
+  // verb is unchanged. `${cited}`/`${citedDir}`/`${target}` are citation-bound
+  // (`citationPath` quotes shell-significant names and returns null for a
+  // display hazard, which falls through to the generic remedy) and `${cliName}`
+  // is a known non-path operand. The gate itself does not inspect `chmod` sites
+  // — its operand class has no `+` (#618) — so the binding, not the gate, is
+  // what protects these strings.
   const fix = permission
     ? (citedDir
       ? (command === 'check'
@@ -2372,8 +2376,9 @@ export class HardeningScanner {
    * for fixed-path probes, which reach several levels down without listing.
    * Returns the path relative to the target, or undefined when every ancestor
    * is searchable (the file itself is the obstruction). The target root is
-   * never named: a root the scan could not enter would have listed nothing to
-   * lose.
+   * never named: the walk stops strictly inside the target, so a root that
+   * lists but cannot be entered leaves each child with the per-file remedy
+   * (recorded as #617).
    *
    * `access(X_OK)` is an inspection of a path already known to exist, not a
    * discovery read: a rejection here is the probe's answer, and the tracked
