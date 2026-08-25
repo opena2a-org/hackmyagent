@@ -126,6 +126,14 @@ export interface Coverage {
 export interface ReadFailureRecord {
   readonly count: number;
   readonly codes: Readonly<Record<string, number>>;
+  /**
+   * How many of `count` are directories the scan could not LIST (#588); the
+   * rest are files it could not read. Always emitted by the ledger, `0`
+   * included. Optional here only because the remote arms' empty default
+   * (`{ count: 0, codes: {} }` in `src/cli.ts`) predates it — make it
+   * required once that literal carries `directories: 0`.
+   */
+  readonly directories?: number;
 }
 
 /**

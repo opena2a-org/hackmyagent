@@ -16,7 +16,7 @@
  */
 
 import * as realFs from 'fs/promises';
-import { noteRead, noteInspect, noteReadFailure } from './coverage-ledger';
+import { noteRead, noteInspect, noteReadFailure, noteListFailure, noteListed } from './coverage-ledger';
 
 /**
  * Calls whose first argument is a path the scanner READ THE CONTENTS of.
@@ -30,8 +30,16 @@ const CONTENT_READS = ['readFile'] as const;
  * even though it never opened it.
  */
 const PATH_INSPECTIONS = [
-  'readdir', 'stat', 'lstat', 'access', 'realpath', 'readlink', 'opendir',
+  'stat', 'lstat', 'access', 'realpath', 'readlink',
 ] as const;
+
+/**
+ * Calls that LIST a directory. Inspections for the success channel, and —
+ * unlike the probes above — a rejection here is a lost input: a directory the
+ * scan cannot list loses every path under it without a single read ever being
+ * attempted, so nothing on the read channel can disclose it (#588).
+ */
+const DIRECTORY_LISTINGS = ['readdir', 'opendir'] as const;
 
 type AnyFn = (...args: unknown[]) => unknown;
 
@@ -79,7 +87,17 @@ function attribute<T extends AnyFn>(
         (err) => {
           // Rethrown unchanged: every existing call site's error handling is
           // untouched, and this wrapper stays invisible to control flow.
-          onFailure?.(target, (err as NodeJS.ErrnoException | null)?.code);
+          //
+          // Attributed to the path the ERRNO names, not to the argument: a
+          // recursive readdir rejects with the errno of a NESTED directory,
+          // and recording the listable argument named the wrong directory,
+          // printed a chmod that was a no-op, and let coalescing suppress the
+          // true record (#588 adversarial round). For every plain call the
+          // two are the same path; when the error carries none, the argument
+          // stands.
+          const errPath = (err as NodeJS.ErrnoException | null)?.path;
+          onFailure?.(typeof errPath === 'string' && errPath.length > 0 ? errPath : target,
+            (err as NodeJS.ErrnoException | null)?.code);
           throw err;
         },
       );
@@ -106,14 +124,30 @@ for (const name of CONTENT_READS) {
 // every `stat` on them (#515). That case is recorded by the discovery site
 // itself (`scanner-bridge.ts` `isWithinSizeLimit`), the only place that knows
 // the path was discovered rather than probed; this wrapper cannot tell the two
-// apart and must not guess. An unreadable DIRECTORY is disclosed by
-// `scanner.ts`, whose sensitive-file walk sets `walkComplete = false` on the
-// `readdir` rejection and escalates GIT-001/GIT-002 to HIGH; reporting
-// `readdir` rejections here as well would count one obstruction twice, in two
-// units.
+// apart and must not guess.
 for (const name of PATH_INSPECTIONS) {
   const fn = (realFs as unknown as Record<string, unknown>)[name];
   if (typeof fn === 'function') wrapped[name] = attribute(fn as AnyFn, noteInspect);
+}
+
+// A directory listing that fails IS reported (#588). `readdir` on a path that
+// exists is never a probe in the `access` sense — the caller wants the
+// contents, and a rejection means every path beneath it left the scan. The
+// ledger applies the same NOT_THERE policy as for reads, so `readdir` on a
+// missing or non-directory path (ENOENT/ENOTDIR — a probe for a config
+// directory that is not there) stays free. The discovery walkers record the
+// same rejection at their own catch sites; the ledger dedups by path, and the
+// second record is what a test seam that replaces this namespace observes.
+// A listing that succeeds is an inspection for the coverage counts AND a
+// listing for the failure channel's subtraction rule — the two are reported
+// separately because a `stat` succeeding on a directory is not a listing.
+const noteInspectedAndListed = (target: unknown): void => {
+  noteInspect(target);
+  noteListed(target);
+};
+for (const name of DIRECTORY_LISTINGS) {
+  const fn = (realFs as unknown as Record<string, unknown>)[name];
+  if (typeof fn === 'function') wrapped[name] = attribute(fn as AnyFn, noteInspectedAndListed, noteListFailure);
 }
 
 /**

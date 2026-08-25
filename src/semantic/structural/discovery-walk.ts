@@ -32,6 +32,7 @@
 // FINDS the inputs, so a read it cannot complete is precisely an
 // "input discovered but not read" (#438).
 import { fs } from '../../hardening/tracked-fs';
+import { noteListFailure } from '../../hardening/coverage-ledger';
 import * as path from 'path';
 import type { FileType } from '../types';
 import { isPathWithinDirectory } from '../../hardening/contain';
@@ -50,18 +51,13 @@ export interface WalkedArtifact {
 
 export interface WalkResult {
   artifacts: WalkedArtifact[];
-  /**
-   * False when the walk could NOT see the whole tree — an unreadable
-   * directory, or a bound reached. Absence is only trustworthy when this is
-   * true.
-   *
-   * No Layer-2 finding is absence-based across the tree: every one is derived
-   * from the CONTENT of a file that was read (verified across all four
-   * analyzers, 2026-08-03). So an incomplete walk under-reports, which is the
-   * direction the root-only code already failed in, and can never turn an
-   * unreadable directory into a positive accusation.
-   */
-  complete: boolean;
+  // No completeness flag: nothing consumed one. A directory the walk cannot
+  // list is recorded on the coverage ledger as an unread input (#588), which
+  // is the channel that reaches the exit code and the user; a bound reached
+  // under-reports, and no Layer-2 finding is absence-based across the tree
+  // (every one is derived from the CONTENT of a file that was read, verified
+  // across all four analyzers, 2026-08-03), so a bounded walk can never turn
+  // into a positive accusation.
 }
 
 export interface WalkOptions {
@@ -188,34 +184,32 @@ export async function walkForArtifacts(
 ): Promise<WalkResult> {
   const artifacts: WalkedArtifact[] = [];
   let entries = 0;
-  let complete = true;
 
   try {
     const rootStat = await fs.stat(targetDir);
     // A single-FILE target has no tree to walk; the caller handles it, and an
     // empty result there is complete rather than unverifiable.
-    if (!rootStat.isDirectory()) return { artifacts, complete: true };
+    if (!rootStat.isDirectory()) return { artifacts };
   } catch {
-    return { artifacts, complete: true };
+    return { artifacts };
   }
 
   const walk = async (dir: string, depth: number): Promise<void> => {
     if (entries >= MAX_ENTRIES || artifacts.length >= MAX_ARTIFACTS) {
-      complete = false;
       return;
     }
     let dirents;
     try {
       dirents = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
+    } catch (err) {
       // EACCES and friends: a config we cannot see could be in there, so this
-      // result is not a proof of absence.
-      complete = false;
+      // result is not a proof of absence — and the directory itself is a lost
+      // input of the directory kind, recorded where it was discovered (#588).
+      noteListFailure(dir, (err as NodeJS.ErrnoException | null)?.code);
       return;
     }
     for (const dirent of dirents) {
       if (entries++ >= MAX_ENTRIES) {
-        complete = false;
         return;
       }
       if (dirent.isSymbolicLink()) continue;
@@ -224,7 +218,6 @@ export async function walkForArtifacts(
       // so this holds by construction. Kept so no read ever touches a path
       // outside the scan root even if that invariant were violated.
       if (!isPathWithinDirectory(abs, targetDir)) {
-        complete = false;
         continue;
       }
 
@@ -236,15 +229,17 @@ export async function walkForArtifacts(
         // neither costs completeness — the same stance layer 1 takes.
         if (dirent.name === '.git' || dirent.name === 'node_modules') continue;
         if (depth + 1 > MAX_DEPTH) {
-          complete = false;
           continue;
         }
         // TOCTOU: re-examine before descending.
         try {
           const st = await fs.lstat(abs);
           if (!st.isDirectory()) continue;
-        } catch {
-          complete = false;
+        } catch (err) {
+          // The dirent said directory; an `lstat` that rejects here is the
+          // parent denying search (`chmod 600 a/` with `a/b/` beneath it), and
+          // `a/b/` is then a directory the scan could not list (#588).
+          noteListFailure(abs, (err as NodeJS.ErrnoException | null)?.code);
           continue;
         }
         if (opts.isExcludedDir && (await opts.isExcludedDir(abs))) continue;
@@ -258,7 +253,6 @@ export async function walkForArtifacts(
       const type = classifyArtifact(rel, specs);
       if (type === undefined) continue;
       if (artifacts.length >= MAX_ARTIFACTS) {
-        complete = false;
         return;
       }
       artifacts.push({ rel, type });
@@ -272,5 +266,5 @@ export async function walkForArtifacts(
   // of the host filesystem.
   artifacts.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
 
-  return { artifacts, complete };
+  return { artifacts };
 }

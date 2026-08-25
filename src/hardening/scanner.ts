@@ -51,6 +51,7 @@ import {
   type CategoryCoverage,
   type CheckExecution,
   type CoverageTruncation,
+  noteListFailure,
 } from './coverage-ledger';
 
 /**
@@ -103,9 +104,9 @@ export const JS_FAMILY_EXTENSIONS = ['.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx
  * `buildUnreadInputFinding` can classify an obstruction its caller did not
  * (the `check` arm passes the ledger record through unmodified). Same bounds,
  * kept textually in step with the async method — change the two together: the
- * shallowest ancestor STRICTLY inside the target that this process cannot
- * enter; the target root is never named. `accessSync` here is an inspection
- * of a path already known to exist, not a discovery read.
+ * shallowest ancestor inside the target that this process cannot enter, the
+ * target root included and named `.` (#588). `accessSync` here is an
+ * inspection of a path already known to exist, not a discovery read.
  */
 export function unsearchableAncestorSync(absPath: string, targetDir: string): string | undefined {
   const root = path.resolve(targetDir);
@@ -119,7 +120,18 @@ export function unsearchableAncestorSync(absPath: string, targetDir: string): st
     }
     dir = path.dirname(dir);
   }
-  return shallowest ? path.relative(targetDir, shallowest) : undefined;
+  // The root last (#588): a root that lists but cannot be entered loses every
+  // path beneath it, and naming a child instead sends the user to the wrong
+  // directory. `.` is the root's own relative name, so the remedy stays a
+  // relative command like every other.
+  if (dir === root || path.resolve(absPath) === root) {
+    try {
+      fsSync.accessSync(root, fsSync.constants.X_OK);
+    } catch {
+      shallowest = root;
+    }
+  }
+  return shallowest ? (path.relative(targetDir, shallowest) || '.') : undefined;
 }
 
 /**
@@ -145,16 +157,31 @@ export function unsearchableAncestorSync(absPath: string, targetDir: string): st
  * inspections of paths already known to exist and report to no channel.
  */
 export function buildUnreadInputFinding(
-  u: { rel: string; code: string; obstructedBy?: string; path?: string },
+  u: { rel: string; code: string; kind?: 'file' | 'directory'; obstructedBy?: string; path?: string },
   opts: { cliName: string; targetDir: string; command?: string },
 ): SecurityFinding {
-  const { rel, code, obstructedBy } = u;
+  const { code, obstructedBy } = u;
   const { cliName, targetDir, command = 'secure' } = opts;
+  const kind: 'file' | 'directory' = u.kind ?? 'file';
+  const isDir = kind === 'directory';
   const permission = code === 'EACCES' || code === 'EPERM';
-  const cited = citationPath(rel);
-  // The directory this user cannot enter, when that — not the file's own mode —
-  // is why the read failed (#515). `chmod u+r <file>` inside it fails with the
-  // same EACCES the scan did, so the remedy names the directory instead.
+  // The scan root is its own relative name. Both callers derive `rel` with a
+  // basename fallback for a path that IS the target; that name is not a path
+  // inside the target and must not render as one (#588).
+  const rel = isDir && u.path && path.resolve(u.path) === path.resolve(targetDir) ? '.' : u.rel;
+  // A directory is shown with a trailing separator on every channel — `file`,
+  // `message` and SARIF's uri all derive from it — so a reader never mistakes
+  // it for a file. The ruled shape for this kind.
+  const shown = isDir ? (rel === '.' ? './' : `${rel.replace(/[\\/]+$/, '')}/`) : rel;
+  const target = citationTarget(targetDir);
+  // A `chmod` operand is read relative to the READER's cwd while the re-run
+  // target is absolute; `.` would then chmod whatever directory the reader is
+  // standing in and report success. The root is cited by its absolute path.
+  const citeOperand = (p: string): string | null => (p === '.' ? target : citationPath(p));
+  const cited = citeOperand(rel);
+  // The directory this user cannot enter, when that — not the record's own
+  // mode — is why it was lost (#515). `chmod u+r <file>` inside it fails with
+  // the same EACCES the scan did, so the remedy names the directory instead.
   //
   // Classified HERE when the caller did not: the `check` arm hands the ledger
   // record straight to this builder and computes no ancestor of its own, and
@@ -164,7 +191,11 @@ export function buildUnreadInputFinding(
   // its absolute path.
   const obstruction = obstructedBy
     ?? (permission && u.path ? unsearchableAncestorSync(u.path, targetDir) : undefined);
-  const citedDir = obstruction ? citationPath(obstruction) : null;
+  // A directory record whose only obstruction is itself (its listing failed and
+  // every ancestor is searchable) is its own remedy target; an ancestor that
+  // cannot be entered is the #515 shape and wins over it.
+  const ancestor = isDir && (obstruction === undefined || obstruction === rel) ? undefined : obstruction;
+  const citedAncestor = ancestor ? citeOperand(ancestor) : null;
   // `chmod u+x` answers a directory that can be LISTED but not entered. One
   // that denies read as well needs `u+rx`, and the guidance must not claim it
   // "can be listed" (mode 000: nothing lists it). When the probe cannot tell
@@ -172,78 +203,126 @@ export function buildUnreadInputFinding(
   // caller pinned a path that never existed — the enterable-not-listable
   // wording stands, which is what every earlier pin in the unit suite relies
   // on.
-  let dirDeniesRead = false;
-  if (obstruction && permission) {
+  let ancestorDeniesRead = false;
+  if (ancestor && permission) {
     try {
-      fsSync.accessSync(path.resolve(targetDir, obstruction), fsSync.constants.R_OK);
+      fsSync.accessSync(path.resolve(targetDir, ancestor), fsSync.constants.R_OK);
     } catch (e) {
       const c = (e as NodeJS.ErrnoException).code;
-      dirDeniesRead = c === 'EACCES' || c === 'EPERM';
+      ancestorDeniesRead = c === 'EACCES' || c === 'EPERM';
     }
   }
-  const target = citationTarget(targetDir);
-  // The re-run verb is a string LITERAL per branch, never a raw `${command}`
-  // interpolation: a bare identifier in a runnable command string is what the
-  // render-source gate (#273) forbids, and `command` is a fixed internal verb,
-  // not a path operand. `secure` is the default so the `secure` caller's re-run
-  // verb is unchanged. `${cited}`/`${citedDir}`/`${target}` are citation-bound
-  // (`citationPath` quotes shell-significant names and returns null for a
-  // display hazard, which falls through to the generic remedy) and `${cliName}`
-  // is a known non-path operand. The gate itself does not inspect `chmod` sites
-  // — its operand class has no `+` (#618) — so the binding, not the gate, is
-  // what protects these strings.
-  const fix = permission
-    ? (citedDir
-      ? (command === 'check'
-        ? (dirDeniesRead
-          ? `chmod u+rx ${citedDir} && ${cliName} check ${target}`
-          : `chmod u+x ${citedDir} && ${cliName} check ${target}`)
-        : (dirDeniesRead
-          ? `chmod u+rx ${citedDir} && ${cliName} secure ${target}`
-          : `chmod u+x ${citedDir} && ${cliName} secure ${target}`))
-      : cited
-        ? (command === 'check'
-          ? `chmod u+r ${cited} && ${cliName} check ${target}`
-          : `chmod u+r ${cited} && ${cliName} secure ${target}`)
-        : 'Make the file named above readable, then re-run this scan.')
-    : `Resolve the ${code} on this path (a broken symlink, an I/O error or an `
-      + `unreadable mount are the usual causes), then re-run this scan.`;
+  // Every runnable remedy is a string LITERAL per verb, never a raw
+  // `${command}` interpolation: a bare identifier in a runnable command string
+  // is what the render-source gate (#273) forbids, and `command` is a fixed
+  // internal verb, not a path operand. `${cited}`/`${citedAncestor}`/`${target}`
+  // are citation-bound (`citationPath` quotes shell-significant names and
+  // returns null for a display hazard, which falls through to the generic
+  // remedy) and `${cliName}` is a known non-path operand. The gate itself does
+  // not inspect `chmod` sites — its operand class has no `+` (#618) — so the
+  // binding, not the gate, is what protects these strings.
+  const chmodUx = (dir: string): string => (command === 'check'
+    ? `chmod u+x ${dir} && ${cliName} check ${target}`
+    : `chmod u+x ${dir} && ${cliName} secure ${target}`);
+  const chmodUrx = (dir: string): string => (command === 'check'
+    ? `chmod u+rx ${dir} && ${cliName} check ${target}`
+    : `chmod u+rx ${dir} && ${cliName} secure ${target}`);
+  const chmodUr = (file: string): string => (command === 'check'
+    ? `chmod u+r ${file} && ${cliName} check ${target}`
+    : `chmod u+r ${file} && ${cliName} secure ${target}`);
+  // The remedy is keyed on the ERRNO first; the failed-call rule (a listing
+  // that failed => `u+rx`, a read under a directory this user cannot enter =>
+  // `u+x` on that directory) lives inside the permission branch only. Any
+  // other errno names a cause it can actually produce — `chmod` answers a
+  // permission denial and is a dead end for the rest, and a cause that the
+  // errno cannot have sends the user the wrong way (#617). A dangling symlink
+  // is ENOENT and never reaches this finding, so it is not among the causes.
+  const cause = ((): string => {
+    switch (code) {
+      case 'ENAMETOOLONG':
+        return 'the absolute path is longer than this system allows — scan the tree from a shallower checkout';
+      case 'ELOOP':
+        return 'a symbolic-link loop sits on this path';
+      case 'EIO':
+        return 'an I/O error was reported on this path';
+      case 'ENXIO':
+      case 'ENODEV':
+      case 'ESTALE':
+        return 'the device or mount behind this path is not available';
+      default:
+        return 'an I/O error or an unreadable mount are the usual causes';
+    }
+  })();
+  const fix = !permission
+    ? `Resolve the ${code} on this path: ${cause}, then re-run this scan.`
+    : citedAncestor
+      ? (ancestorDeniesRead ? chmodUrx(citedAncestor) : chmodUx(citedAncestor))
+      : isDir
+        ? (cited ? chmodUrx(cited) : 'Make the directory named above listable, then re-run this scan.')
+        : (cited ? chmodUr(cited) : 'Make the file named above readable, then re-run this scan.');
+  // The errno is named in the body, not only in `message`: the rendered
+  // finding prints `guidance`, so an errno that lives only on `message`
+  // reaches no reader — and the errno is the input that decides which
+  // remedy applies.
+  const ancestorSentence = ancestor
+    ? (ancestorDeniesRead
+      ? `\`${ancestor}\` cannot be listed or entered by this user (no read or execute bit `
+        + `on the directory), which is why ${shown} could not be ${isDir ? 'listed' : 'read'}: `
+        + `the remedy is on \`${ancestor}\`, not on ${isDir ? shown : 'the file'}. `
+      : `\`${ancestor}\` can be listed but not entered by this user (no execute bit on the `
+        + `directory), which is why ${shown} could not be ${isDir ? 'listed' : 'opened'}: `
+        + `the remedy is on \`${ancestor}\`, not on ${isDir ? shown : 'the file'}. `)
+    : '';
+  const pathLength = code === 'ENAMETOOLONG' && u.path
+    ? `The absolute path is ${u.path.length} characters. `
+    : '';
+  // The directory kind opens with the ruled sentence — the same one `message`
+  // carries — because the text channel renders `guidance`, not `message`, and
+  // the words the user sees must be the words that were ruled.
+  const listedSentence = `${shown} could not be listed (${code}) — its contents were not discovered, so nothing inside it reached any check.`;
+  const guidance = isDir
+    ? ancestorSentence
+      + (ancestor
+        ? ''
+        : (permission
+          ? `${listedSentence} `
+          : `${listedSentence} Cause: ${cause}. ${pathLength}`))
+      + 'The score above is an upper bound, not a measurement of this tree: nothing was ruled '
+      + 'out about anything beneath it, and a credential or an injected instruction there would '
+      + 'be invisible to this scan — leaving the score HIGHER than if it had been listable, '
+      + 'because the evidence simply left the assessment. Re-run once it can be listed. If it is '
+      + 'meant to stay closed, scan a narrower target that does not contain it — an `.hmaignore` '
+      + 'path rule will not clear this, because it scopes what is reported and cannot make an '
+      + 'unlisted directory listed.'
+    : ancestorSentence
+      + `This file was discovered inside the target and the read failed with ${code}`
+      + (permission ? '' : ` (${cause})`)
+      + `, so its contents never reached a check. ${pathLength}`
+      + 'The score above is an upper bound, not a measurement of this tree: nothing was ruled out '
+      + 'about this file, and a credential or an injected instruction in it would be invisible to '
+      + 'this scan — leaving the score HIGHER than if the file had been readable, because the '
+      + 'evidence simply left the assessment. Re-run once it can be read. If it is meant to be '
+      + 'unreadable, scan a narrower target that does not contain it — an `.hmaignore` path rule '
+      + 'will not clear this, because it scopes what is reported about a file and cannot make an '
+      + 'unread file read.';
   return {
     checkId: 'SCAN-UNREAD-001',
     name: 'Input Discovered But Not Read',
-    description: 'A file inside the target was discovered and its contents could not be read, so no check examined it',
+    description: isDir
+      ? 'A directory inside the target was discovered and could not be listed, so nothing inside it reached any check'
+      : 'A file inside the target was discovered and its contents could not be read, so no check examined it',
     category: 'hardening',
     severity: 'medium',
     // `passed: false` so it is SHOWN. A `passed: true` finding is filtered
     // out of the report, which is how an earlier disclosure managed to
     // exist in the code and appear nowhere on screen.
     passed: false,
-    message: `${rel} could not be read (${code})`,
-    file: rel,
+    message: isDir ? listedSentence : `${rel} could not be read (${code})`,
+    file: shown,
+    kind,
     fixable: false,
     fix,
-    // The errno is named in the body, not only in `message`: the rendered
-    // finding prints `guidance`, so an errno that lives only on `message`
-    // reaches no reader — and the errno is the input that decides which
-    // remedy applies.
-    guidance:
-      (obstruction
-        ? (dirDeniesRead
-          ? `\`${obstruction}\` cannot be listed or entered by this user (no read or execute bit `
-            + `on the directory), which is why ${rel} could not be read: the remedy is on the `
-            + 'directory, not on the file. '
-          : `\`${obstruction}\` can be listed but not entered by this user (no execute bit on the `
-            + `directory), which is why ${rel} could not be opened: the remedy is on the directory, `
-            + 'not on the file. ')
-        : '')
-      + `This file was discovered inside the target and the read failed with ${code}, so its `
-      + 'contents never reached a check. The score above is an upper bound, not a measurement '
-      + 'of this tree: nothing was ruled out about this file, and a credential or an injected '
-      + 'instruction in it would be invisible to this scan — leaving the score HIGHER than if '
-      + 'the file had been readable, because the evidence simply left the assessment. Re-run '
-      + 'once it can be read. If it is meant to be unreadable, scan a narrower target that '
-      + 'does not contain it — an `.hmaignore` path rule will not clear this, because it '
-      + 'scopes what is reported about a file and cannot make an unread file read.',
+    guidance,
   } as any;
 }
 
@@ -2359,7 +2438,7 @@ export class HardeningScanner {
    * Check if a file path matches any .hmaignore pattern.
    */
   /** Every unreadable input this run recorded, before scope filtering. */
-  private unreadableAll: { path: string; code: string; rel: string; obstructedBy?: string }[] = [];
+  private unreadableAll: { path: string; code: string; kind: 'file' | 'directory'; rel: string; obstructedBy?: string }[] = [];
 
   /**
    * For a permission-denied read, the shallowest ancestor inside the target
@@ -2376,9 +2455,9 @@ export class HardeningScanner {
    * for fixed-path probes, which reach several levels down without listing.
    * Returns the path relative to the target, or undefined when every ancestor
    * is searchable (the file itself is the obstruction). The target root is
-   * never named: the walk stops strictly inside the target, so a root that
-   * lists but cannot be entered leaves each child with the per-file remedy
-   * (recorded as #617).
+   * probed last and named `.` (#588): a root that lists but cannot be entered
+   * loses every path beneath it, and a walk that stopped strictly inside the
+   * target left each child with a per-file remedy that fails.
    *
    * `access(X_OK)` is an inspection of a path already known to exist, not a
    * discovery read: a rejection here is the probe's answer, and the tracked
@@ -2400,7 +2479,15 @@ export class HardeningScanner {
       }
       dir = path.dirname(dir);
     }
-    return shallowest ? path.relative(targetDir, shallowest) : undefined;
+    // The root last (#588) — see `unsearchableAncestorSync`.
+    if (dir === root || path.resolve(absPath) === root) {
+      try {
+        await fs.access(root, fs.constants.X_OK);
+      } catch {
+        shallowest = root;
+      }
+    }
+    return shallowest ? (path.relative(targetDir, shallowest) || '.') : undefined;
   }
 
   /**
@@ -2418,10 +2505,14 @@ export class HardeningScanner {
    * render at all — and was removed. A method named for that shape survived
    * it (#590).
    */
-  private allUnreadableInputs(): { count: number; codes: Record<string, number> } {
+  private allUnreadableInputs(): { count: number; codes: Record<string, number>; directories: number } {
     const codes: Record<string, number> = {};
-    for (const u of this.unreadableAll) codes[u.code] = (codes[u.code] ?? 0) + 1;
-    return { count: this.unreadableAll.length, codes };
+    let directories = 0;
+    for (const u of this.unreadableAll) {
+      codes[u.code] = (codes[u.code] ?? 0) + 1;
+      if (u.kind === 'directory') directories++;
+    }
+    return { count: this.unreadableAll.length, codes, directories };
   }
 
   private isPathIgnored(filePath: string, ignoredPaths: string[]): boolean {
@@ -3114,7 +3205,7 @@ export class HardeningScanner {
     // The exit-code unit (`allUnreadableInputs`) is then counted over this same
     // list, unscoped, so the finding, the count and the exit code cannot
     // disagree about a file (#590).
-    const unreadable: { path: string; code: string; rel: string; obstructedBy?: string }[] = [];
+    const unreadable: { path: string; code: string; kind: 'file' | 'directory'; rel: string; obstructedBy?: string }[] = [];
     for (const u of this.coverage.unreadablePaths()) {
       const rel = path.relative(targetDir, u.path) || path.basename(u.path);
       // A permission denial on a file inside a directory this user cannot
@@ -4075,7 +4166,8 @@ export class HardeningScanner {
     //
     // The root names are probed UNCONDITIONALLY, exactly as before, rather
     // than being filtered through the walk's results. The walk is bounded and
-    // can return `complete: false` on a pathological or unreadable tree;
+    // is bounded on a pathological tree and records an unreadable directory on
+    // the coverage ledger (#588);
     // gating the root probe on it would let a deep/unreadable directory
     // REMOVE detection that exists today. This change may only ever add
     // locations, never subtract them. Absent files are skipped by the same
@@ -5169,12 +5261,16 @@ export class HardeningScanner {
     // Existence-aware severity (#250): a missing or incomplete .gitignore
     // is a LOW hardening advisory on its own; it becomes a HIGH exposure
     // only when a file matching an uncovered pattern actually exists.
-    // `walkComplete=false` means the walk could not prove absence (deep
-    // or unreadable tree), so we must not downgrade to LOW on an empty
-    // result — that would recreate the silent-miss the adversarial
-    // review caught.
-    const { keyFiles, namedSensitive, complete: walkComplete } =
+    // `walkBounded` means the walk could not prove absence because a BOUND
+    // stopped it (a deep or huge tree), so we must not downgrade to LOW on
+    // an empty result — that would recreate the silent-miss the adversarial
+    // review caught. A directory the walk could not LIST is not a bound: it is
+    // an unread input on the coverage ledger, disclosed by SCAN-UNREAD-001 at
+    // the exit-2 floor, and escalating a git finding on it as well would let
+    // a severity derived from an obstruction decide the exit code (#588).
+    const { keyFiles, namedSensitive, bounded: walkBounded } =
       await this.collectSensitiveArtifacts(targetDir);
+    const unlistedDirs = this.coverage.unreadableInputs.directories > 0;
 
     // GIT-001: Check for missing .gitignore
     const gitignorePath = path.join(targetDir, '.gitignore');
@@ -5225,7 +5321,7 @@ dist/
       // HIGH when a sensitive file is actually present, OR when the walk
       // could not prove absence (fail-safe): a missing .gitignore over an
       // unverifiable tree is treated as exposure, not hygiene advice.
-      const git001Exposed = presentSensitive.length > 0 || !walkComplete;
+      const git001Exposed = presentSensitive.length > 0 || walkBounded;
       const git001Named = presentSensitive.slice(0, 3).join(', ');
       findings.push({
         checkId: 'GIT-001',
@@ -5234,7 +5330,9 @@ dist/
           ? `No .gitignore and sensitive files present: ${git001Named}${presentSensitive.length > 3 ? ` (+${presentSensitive.length - 3} more)` : ''}`
           : git001Exposed
             ? 'No .gitignore and the project tree could not be fully scanned for sensitive files'
-            : 'No .gitignore file to prevent accidental commits',
+            : unlistedDirs
+              ? 'No .gitignore file to prevent accidental commits (a directory could not be listed — see SCAN-UNREAD-001)'
+              : 'No .gitignore file to prevent accidental commits',
         category: 'git',
         severity: git001Exposed ? 'high' : 'low',
         passed: git001Fixed,
@@ -5247,8 +5345,10 @@ dist/
         guidance: presentSensitive.length > 0
           ? `Sensitive files (${git001Named}) exist in this project with no .gitignore — a single git add . commits them. Create a .gitignore now; if any were already committed, rotate them and run git rm --cached on each.`
           : git001Exposed
-            ? 'This project has no .gitignore and its tree is too large or partly unreadable to fully verify no keys or secrets files are present. Add a .gitignore covering .env, secrets.json, *.pem, *.key and confirm no such files are tracked.'
-            : 'Without .gitignore, sensitive files (.env, secrets.json, *.pem, *.key) can be accidentally committed to version control and exposed.',
+            ? 'This project has no .gitignore and its tree is too large or deep to fully verify no keys or secrets files are present. Add a .gitignore covering .env, secrets.json, *.pem, *.key and confirm no such files are tracked.'
+            : unlistedDirs
+              ? 'Without .gitignore, sensitive files (.env, secrets.json, *.pem, *.key) can be accidentally committed to version control and exposed. A directory in this tree could not be listed, so what it holds is unknown — the SCAN-UNREAD-001 finding names it and carries the remedy.'
+              : 'Without .gitignore, sensitive files (.env, secrets.json, *.pem, *.key) can be accidentally committed to version control and exposed.',
       });
     }
 
@@ -5300,7 +5400,7 @@ dist/
         // walk could not prove absence for a key/secrets pattern (fail-safe).
         const nonEnvMissing = missingPatterns.some((p) => p !== '.env');
         const git002Exposed = exposedFiles.length > 0;
-        const git002Unverifiable = !git002Exposed && !walkComplete && nonEnvMissing;
+        const git002Unverifiable = !git002Exposed && walkBounded && nonEnvMissing;
         const git002High = git002Exposed || git002Unverifiable;
         const missingLabel = missingPatterns.length > 0 ? missingPatterns.join(', ') : '(patterns present)';
 
@@ -5311,7 +5411,9 @@ dist/
             ? `Committable sensitive files present: ${exposedFiles.slice(0, 3).join(', ')}${exposedFiles.length > 3 ? ` (+${exposedFiles.length - 3} more)` : ''}`
             : git002Unverifiable
               ? `Missing: ${missingLabel} (project tree could not be fully scanned to confirm no matching files exist)`
-              : `Missing: ${missingLabel} (no committable matching files found)`,
+              : unlistedDirs
+                ? `Missing: ${missingLabel} (no committable matching files found; a directory could not be listed — see SCAN-UNREAD-001)`
+                : `Missing: ${missingLabel} (no committable matching files found)`,
           category: 'git',
           severity: git002High ? 'high' : 'low',
           passed: git002Fixed,
@@ -5324,8 +5426,10 @@ dist/
           guidance: git002Exposed
             ? `These sensitive files are not git-ignored and would be committed by a single git add . (${exposedFiles.slice(0, 3).join(', ')}). Ignore them; if any was already committed, rotate its contents and run git rm --cached on it.`
             : git002Unverifiable
-              ? `The .gitignore is missing ${missingLabel} and the project tree is too large or partly unreadable to confirm no matching key or secrets files exist. Add the patterns and verify no such files are tracked.`
-              : `No committable files match the missing patterns yet, but adding them now (${missingLabel}) means a future key or secrets file is never committed by accident.`,
+              ? `The .gitignore is missing ${missingLabel} and the project tree is too large or deep to confirm no matching key or secrets files exist. Add the patterns and verify no such files are tracked.`
+              : unlistedDirs
+                ? `No committable files match the missing patterns among what could be listed, but a directory in this tree could not be — the SCAN-UNREAD-001 finding names it. Adding the patterns now (${missingLabel}) means a future key or secrets file is never committed by accident.`
+                : `No committable files match the missing patterns yet, but adding them now (${missingLabel}) means a future key or secrets file is never committed by accident.`,
         });
       }
     }
@@ -5870,7 +5974,7 @@ dist/
    * (fail-safe toward detection).
    *
    * Bounds are deliberately generous (depth 25, 50k entries) so that
-   * real repositories walk to completion; `complete=false` is reserved
+   * real repositories walk to completion; `bounded=true` is reserved
    * for genuinely pathological trees, where staying conservative costs a
    * rare false HIGH rather than a silent miss.
    */
@@ -5878,7 +5982,14 @@ dist/
     keyFiles: string[];
     namedSensitive: string[];
     configFiles: string[];
-    complete: boolean;
+    /**
+     * True when a BOUND stopped the walk — the entry or depth cap, an entry
+     * outside the root, or a committable node_modules — so absence below the
+     * bound is unproven. A directory the walk could not LIST is not a bound:
+     * it is recorded on the coverage ledger as an unread input (#588) and
+     * disclosed by SCAN-UNREAD-001, never by escalating another finding.
+     */
+    bounded: boolean;
   }> {
     const keyFiles: string[] = [];
     const namedSensitive: string[] = [];
@@ -5887,17 +5998,16 @@ dist/
     const MAX_DEPTH = 25;
     const MAX_ENTRIES = 50000;
     let entries = 0;
-    let complete = true;
+    let bounded = false;
 
     // A non-directory target (single-file scan, e.g. `secure SKILL.md`)
     // has no tree to walk and no place for a key to hide — that is a
-    // complete result, not an unverifiable one. Only a genuinely
-    // unreadable *directory* below counts as incomplete.
+    // complete result, not an unverifiable one.
     try {
       const rootStat = await fs.stat(targetDir);
-      if (!rootStat.isDirectory()) return { keyFiles, namedSensitive, configFiles, complete: true };
+      if (!rootStat.isDirectory()) return { keyFiles, namedSensitive, configFiles, bounded: false };
     } catch {
-      return { keyFiles, namedSensitive, configFiles, complete: true };
+      return { keyFiles, namedSensitive, configFiles, bounded: false };
     }
 
     const targetRoot = path.resolve(targetDir);
@@ -5918,21 +6028,23 @@ dist/
      */
     const walk = async (dir: string, depth: number, insideOwnBackup: boolean): Promise<void> => {
       if (entries >= MAX_ENTRIES) {
-        complete = false;
+        bounded = true;
         return;
       }
       let dirents;
       try {
         dirents = await fs.readdir(dir, { withFileTypes: true });
-      } catch {
+      } catch (err) {
         // An unreadable directory (EACCES, etc.) means we cannot verify
-        // its contents — a key could hide there. Do not assume clean.
-        complete = false;
+        // its contents — a key could hide there. Do not assume clean: the
+        // directory is a lost input of the directory kind, recorded where it
+        // was discovered, and SCAN-UNREAD-001 names it (#588). Not a bound.
+        noteListFailure(dir, (err as NodeJS.ErrnoException | null)?.code);
         return;
       }
       for (const dirent of dirents) {
         if (entries++ >= MAX_ENTRIES) {
-          complete = false;
+          bounded = true;
           return;
         }
         if (dirent.isSymbolicLink()) continue;
@@ -5944,7 +6056,7 @@ dist/
         // were ever violated.
         const absResolved = path.resolve(abs);
         if (absResolved !== targetRoot && !absResolved.startsWith(targetRoot + path.sep)) {
-          complete = false;
+          bounded = true;
           continue;
         }
         if (dirent.isDirectory()) {
@@ -5956,7 +6068,7 @@ dist/
           if (depth + 1 > MAX_DEPTH) {
             // A real subtree exists below the depth bound — we did not
             // look inside it, so absence is no longer provable.
-            complete = false;
+            bounded = true;
             continue;
           }
           // Re-lstat before descending: guards a TOCTOU where the entry is
@@ -5966,8 +6078,11 @@ dist/
           try {
             const st = await fs.lstat(abs);
             if (!st.isDirectory()) continue;
-          } catch {
-            complete = false;
+          } catch (err) {
+            // The dirent said directory; an `lstat` that rejects here is the
+            // parent denying search, and `abs` is a directory the scan could
+            // not list (#588) — recorded, not a bound.
+            noteListFailure(abs, (err as NodeJS.ErrnoException | null)?.code);
             continue;
           }
           await walk(abs, depth + 1, insideOwnBackup || (await this.isOwnBackupDir(abs)));
@@ -6030,7 +6145,7 @@ dist/
     // is moot, so the skip is safe.
     if (skippedNodeModules.length > 0) {
       if (await this.hasCommittableSensitiveUnder(targetDir, skippedNodeModules)) {
-        complete = false;
+        bounded = true;
       }
     }
 
@@ -6039,7 +6154,7 @@ dist/
     // stability a property of the host filesystem.
     configFiles.sort();
 
-    return { keyFiles, namedSensitive, configFiles, complete };
+    return { keyFiles, namedSensitive, configFiles, bounded };
   }
 
   /**
@@ -6333,7 +6448,7 @@ dist/
     // #250 — a key at certs/server.pem is exactly as committable as one
     // at the root — and carries `file` so the finding survives the
     // user-facing concrete-findings filter.
-    const { keyFiles: foundKeys, complete: keyScanComplete } =
+    const { keyFiles: foundKeys, bounded: keyScanBounded } =
       await this.collectSensitiveArtifacts(targetDir);
 
     if (foundKeys.length > 0) {
@@ -6353,12 +6468,13 @@ dist/
         details: { files: foundKeys },
         guidance: 'Private key files (.pem, .key) in a project directory are easily committed to git. Once pushed, the keys are compromised and must be rotated.',
       });
-    } else if (!keyScanComplete) {
-      // No key found, but the walk could not exhaustively verify absence
-      // (tree too deep/large, an unreadable directory, or an un-ignored
-      // node_modules). Do NOT report clean — a key could hide in the
-      // unscanned portion. Fail-safe HIGH so the scan does not award a
-      // false clean bill (adversarial-review finding, #250).
+    } else if (keyScanBounded) {
+      // No key found, but a BOUND stopped the walk (tree too deep/large, or
+      // an un-ignored node_modules). Do NOT report clean — a key could hide
+      // in the unscanned portion. Fail-safe HIGH so the scan does not award a
+      // false clean bill (adversarial-review finding, #250). A directory the
+      // walk could not list is not a bound: SCAN-UNREAD-001 discloses it at
+      // the exit-2 floor, and this finding takes the passed branch (#588).
       findings.push({
         checkId: 'CRED-002',
         name: 'Private Key Files',
@@ -6366,13 +6482,18 @@ dist/
         category: 'credentials',
         severity: 'high',
         passed: false,
-        message: 'Private-key scan incomplete — tree too large/deep or partly unreadable to confirm no keys are present',
+        message: 'Private-key scan incomplete — tree too large/deep to confirm no keys are present',
         file: '.',
         fixable: false,
         fix: `List candidate key files yourself: find . -type f \\( -name '*.pem' -o -name '*.key' \\) -not -path '*/node_modules/*'`,
-        guidance: 'The project tree is too large or deep, has an unreadable directory, or contains an un-ignored node_modules — so the scanner could not confirm no private keys are committed. Verify manually and ensure keys are outside the repo or in a secrets manager.',
+        guidance: 'The project tree is too large or deep, or contains an un-ignored node_modules — so the scanner could not confirm no private keys are committed. Verify manually and ensure keys are outside the repo or in a secrets manager.',
       });
     } else {
+      // The passed branch may not claim the whole tree when a directory was
+      // not listed: "no key files found" without the caveat asserts an
+      // absence the scan could not measure (#588). The record carries the
+      // remedy; this message only stops over-claiming.
+      const unlisted = this.coverage.unreadableInputs.directories > 0;
       findings.push({
         checkId: 'CRED-002',
         name: 'Private Key Files',
@@ -6380,7 +6501,9 @@ dist/
         category: 'credentials',
         severity: 'critical',
         passed: true,
-        message: 'No private key files found in project directory',
+        message: unlisted
+          ? 'No private key files found among what could be listed (a directory could not be listed — see SCAN-UNREAD-001)'
+          : 'No private key files found in project directory',
         fixable: false,
         guidance: 'Private key files (.pem, .key) in a project directory are easily committed to git. Once pushed, the keys are compromised and must be rotated.',
       });
@@ -7745,8 +7868,15 @@ dist/
     // SEC-003: Check for key rotation support
     let hasKeyRotation = false;
     try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+      // Dirents, not names: this probe reads EVERY root entry, and a directory
+      // at mode 000 fails open() with EACCES before EISDIR can say "not a
+      // file" — which put `.git`/`node_modules` on the coverage ledger as an
+      // unread FILE at standard depth (#588). A directory is never this
+      // probe's input; a file, symlink or anything else keeps today's read.
+      const entries = await fs.readdir(targetDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) continue;
+        const file = entry.name;
         try {
           const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
           if (content.includes('rotation') || content.includes('rotate') || content.includes('KEY_VERSION')) {

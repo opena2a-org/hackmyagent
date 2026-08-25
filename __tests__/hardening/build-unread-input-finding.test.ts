@@ -11,7 +11,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import * as fsn from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { buildUnreadInputFinding } from '../../src/hardening/scanner';
+import { buildUnreadInputFinding, unsearchableAncestorSync } from '../../src/hardening/scanner';
 
 describe('buildUnreadInputFinding', () => {
   // A fresh target per probe-sensitive cell. The builder probes
@@ -157,6 +157,156 @@ describe('buildUnreadInputFinding', () => {
       expect(check.fix).toContain('hackmyagent check');
       expect(check.guidance).toContain('cannot be listed or entered');
     } finally { cleanup(dir); }
+  });
+
+  describe('directory kind (#588): a directory the scan could not list', () => {
+    const NO_FILE = /\bfiles?\b/i;
+
+    it('names the directory with a trailing separator, in the ruled words, with a listing remedy', () => {
+      const dir = freshTarget();
+      const f = buildUnreadInputFinding(
+        { rel: 'cfg', code: 'EACCES', kind: 'directory' },
+        { cliName: 'hackmyagent', targetDir: dir },
+      );
+      expect(f.checkId).toBe('SCAN-UNREAD-001');
+      expect(f.kind).toBe('directory');
+      expect(f.file).toBe('cfg/');
+      expect(f.message).toBe('cfg/ could not be listed (EACCES) — its contents were not discovered, so nothing inside it reached any check.');
+      expect(f.fix).toBe(`chmod u+rx cfg && hackmyagent secure ${dir}`);
+      expect(f.fixable).toBe(false);
+      expect(f.severity).toBe('medium');
+      expect(f.description).not.toMatch(NO_FILE);
+      expect(f.guidance).not.toMatch(NO_FILE);
+      expect(f.guidance).toContain('upper bound');
+      const check = buildUnreadInputFinding(
+        { rel: 'cfg', code: 'EPERM', kind: 'directory' },
+        { cliName: 'hackmyagent', targetDir: dir, command: 'check' },
+      );
+      expect(check.fix).toBe(`chmod u+rx cfg && hackmyagent check ${dir}`);
+      expect(check.message).toContain('(EPERM)');
+    });
+
+    it('the scan root itself renders as `./`, whichever name the caller derived for it', () => {
+      const dir = freshTarget();
+      const f = buildUnreadInputFinding(
+        { rel: path.basename(dir), path: dir, code: 'EACCES', kind: 'directory' },
+        { cliName: 'hackmyagent', targetDir: dir },
+      );
+      expect(f.file).toBe('./');
+      expect(f.message.startsWith('./ could not be listed (EACCES)')).toBe(true);
+      // The operand is the absolute target, not `.`: the reader's cwd is not the
+      // target, and `chmod u+rx .` would chmod it and report success.
+      expect(f.fix).toBe(`chmod u+rx ${dir} && hackmyagent secure ${dir}`);
+    });
+
+    it('a directory lost under an unsearchable ancestor takes the ancestor remedy (#515 shape) and says so', () => {
+      const dir = freshTarget();
+      const f = buildUnreadInputFinding(
+        { rel: 'a/b', code: 'EACCES', kind: 'directory', obstructedBy: 'a' },
+        { cliName: 'hackmyagent', targetDir: dir },
+      );
+      expect(f.file).toBe('a/b/');
+      expect(f.fix).toBe(`chmod u+x a && hackmyagent secure ${dir}`);
+      expect(f.guidance).toContain('a/b/ could not be listed');
+      expect(f.guidance).toContain('the remedy is on `a`');
+      expect(f.guidance).not.toMatch(NO_FILE);
+    });
+
+    it('a raw directory record with no caller obstruction is its own remedy target (shape-level: the output does not depend on the mode bits)', () => {
+      // The ancestor probe inspects ANCESTORS of the record's path, never the
+      // path itself, so this output is identical whatever cfg's mode is — the
+      // real-obstruction end-to-end coverage lives in the repo matrix suite.
+      const { dir } = realTree();
+      try {
+        const f = buildUnreadInputFinding(
+          { path: path.join(dir, 'cfg'), rel: 'cfg', code: 'EACCES', kind: 'directory' },
+          { cliName: 'hackmyagent', targetDir: dir, command: 'check' },
+        );
+        expect(f.fix).toBe(`chmod u+rx cfg && hackmyagent check ${dir}`);
+        expect(f.file).toBe('cfg/');
+      } finally { cleanup(dir); }
+    });
+  });
+
+  describe('errno-first remedy: a non-permission code names a cause it can have', () => {
+    it('ENAMETOOLONG names the measured path length and a shallower checkout, never a chmod or a symlink alias', () => {
+      const dir = freshTarget();
+      const long = path.join(dir, 'x'.repeat(300), 'y'.repeat(300), 'z'.repeat(300), 'secrets.js');
+      const f = buildUnreadInputFinding(
+        { rel: path.relative(dir, long), path: long, code: 'ENAMETOOLONG' },
+        { cliName: 'hackmyagent', targetDir: dir },
+      );
+      expect(f.fix).toContain('shallower checkout');
+      expect(f.fix).not.toContain('chmod');
+      expect(f.fix).not.toContain('symlink');
+      expect(f.guidance).toContain(`${long.length} characters`);
+      expect(f.guidance).not.toContain('symlink');
+    });
+
+    it('ELOOP and EIO name their own causes; nothing names "a broken symlink" (a dangling link is ENOENT and never reaches here)', () => {
+      const dir = freshTarget();
+      const loop = buildUnreadInputFinding({ rel: 'loop', code: 'ELOOP' }, { cliName: 'hackmyagent', targetDir: dir });
+      expect(loop.fix).toContain('Resolve the ELOOP');
+      expect(loop.fix).toContain('symbolic-link loop');
+      const eio = buildUnreadInputFinding({ rel: 'disk.js', code: 'EIO' }, { cliName: 'hackmyagent', targetDir: dir });
+      expect(eio.fix).toContain('Resolve the EIO');
+      expect(eio.fix).toContain('I/O error');
+      for (const f of [loop, eio]) {
+        expect(f.fix).not.toContain('broken symlink');
+        expect(f.guidance).not.toContain('broken symlink');
+      }
+      const unknown = buildUnreadInputFinding({ rel: 'odd', code: 'EWHATEVER' }, { cliName: 'hackmyagent', targetDir: dir });
+      expect(unknown.fix).toContain('Resolve the EWHATEVER');
+      expect(unknown.fix).not.toContain('broken symlink');
+    });
+
+    it('the directory kind with a non-permission errno gets the same cause phrase and no chmod', () => {
+      const dir = freshTarget();
+      const f = buildUnreadInputFinding({ rel: 'cfg', code: 'EIO', kind: 'directory' }, { cliName: 'hackmyagent', targetDir: dir });
+      expect(f.file).toBe('cfg/');
+      expect(f.fix).toContain('Resolve the EIO');
+      expect(f.fix).not.toContain('chmod');
+      expect(f.guidance).not.toMatch(/\bfiles?\b/i);
+    });
+  });
+
+  describe('unsearchableAncestorSync names the scan root (#588)', () => {
+    it('a readable tree has no unsearchable ancestor', () => {
+      const { dir, locked } = realTree();
+      try {
+        expect(unsearchableAncestorSync(locked, dir)).toBeUndefined();
+      } finally { cleanup(dir); }
+    });
+
+    it('a root this process cannot enter is the obstruction, named `.` — not silence, not the child', (ctx) => {
+      // Measured before this change: a mode-600 root lost every probe path
+      // and the finding named each child with a `chmod u+r <file>` that fails.
+      const { dir, locked } = realTree();
+      try {
+        fsn.chmodSync(dir, 0o600);
+        if (!denied(dir, fsn.constants.X_OK)) {
+          console.warn('[build-unread-input-finding] cannot deny search on the root to this process (root?): SKIPPING, not passing');
+          ctx.skip();
+        }
+        expect(unsearchableAncestorSync(locked, dir)).toBe('.');
+        // The root record itself (a mode-000 root rejects readdir) classifies the same way.
+        expect(unsearchableAncestorSync(dir, dir)).toBe('.');
+      } finally { fsn.chmodSync(dir, 0o700); cleanup(dir); }
+    });
+
+    it('the shallowest unsearchable directory wins over a deeper one, and the root over both', (ctx) => {
+      const { dir, locked } = realTree();
+      try {
+        fsn.chmodSync(path.join(dir, 'cfg'), 0o600);
+        if (!denied(path.join(dir, 'cfg'), fsn.constants.X_OK)) {
+          console.warn('[build-unread-input-finding] cannot deny search to this process (root?): SKIPPING, not passing');
+          ctx.skip();
+        }
+        expect(unsearchableAncestorSync(locked, dir)).toBe('cfg');
+        fsn.chmodSync(dir, 0o600);
+        expect(unsearchableAncestorSync(locked, dir)).toBe('.');
+      } finally { fsn.chmodSync(dir, 0o700); cleanup(dir); }
+    });
   });
 
   it('an absent obstruction directory degrades to the enterable-not-listable strings (probe ENOENT)', () => {
