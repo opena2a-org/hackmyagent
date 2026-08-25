@@ -113,6 +113,11 @@ export interface SecurityFinding {
   suppressedBy?: SuppressionChannel;
   /** File path where the issue was found (relative to scan directory) */
   file?: string;
+  /**
+   * For `SCAN-UNREAD-001`: whether `file` names a file the scan could not read
+   * or a directory it could not list (#588). Absent on every other finding.
+   */
+  kind?: 'file' | 'directory';
   /** Line number in the file where the issue was found */
   line?: number;
   /** Runnable command or concise action to fix this issue */

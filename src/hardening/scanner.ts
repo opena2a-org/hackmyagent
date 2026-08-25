@@ -157,16 +157,27 @@ export function unsearchableAncestorSync(absPath: string, targetDir: string): st
  * inspections of paths already known to exist and report to no channel.
  */
 export function buildUnreadInputFinding(
-  u: { rel: string; code: string; obstructedBy?: string; path?: string },
+  u: { rel: string; code: string; kind?: 'file' | 'directory'; obstructedBy?: string; path?: string },
   opts: { cliName: string; targetDir: string; command?: string },
 ): SecurityFinding {
-  const { rel, code, obstructedBy } = u;
+  const { code, obstructedBy } = u;
   const { cliName, targetDir, command = 'secure' } = opts;
+  const kind: 'file' | 'directory' = u.kind ?? 'file';
+  const isDir = kind === 'directory';
   const permission = code === 'EACCES' || code === 'EPERM';
+  // The scan root is its own relative name. Both callers derive `rel` with a
+  // basename fallback for a path that IS the target; that name is not a path
+  // inside the target and must not render as one (#588).
+  const rel = u.path && path.resolve(u.path) === path.resolve(targetDir) ? '.' : u.rel;
+  // A directory is shown with a trailing separator on every channel — `file`,
+  // `message` and SARIF's uri all derive from it — so a reader never mistakes
+  // it for a file. The ruled shape for this kind.
+  const shown = isDir ? (rel === '.' ? './' : `${rel.replace(/[\\/]+$/, '')}/`) : rel;
   const cited = citationPath(rel);
-  // The directory this user cannot enter, when that — not the file's own mode —
-  // is why the read failed (#515). `chmod u+r <file>` inside it fails with the
-  // same EACCES the scan did, so the remedy names the directory instead.
+  const target = citationTarget(targetDir);
+  // The directory this user cannot enter, when that — not the record's own
+  // mode — is why it was lost (#515). `chmod u+r <file>` inside it fails with
+  // the same EACCES the scan did, so the remedy names the directory instead.
   //
   // Classified HERE when the caller did not: the `check` arm hands the ledger
   // record straight to this builder and computes no ancestor of its own, and
@@ -176,7 +187,11 @@ export function buildUnreadInputFinding(
   // its absolute path.
   const obstruction = obstructedBy
     ?? (permission && u.path ? unsearchableAncestorSync(u.path, targetDir) : undefined);
-  const citedDir = obstruction ? citationPath(obstruction) : null;
+  // A directory record whose only obstruction is itself (its listing failed and
+  // every ancestor is searchable) is its own remedy target; an ancestor that
+  // cannot be entered is the #515 shape and wins over it.
+  const ancestor = isDir && (obstruction === undefined || obstruction === rel) ? undefined : obstruction;
+  const citedAncestor = ancestor ? citationPath(ancestor) : null;
   // `chmod u+x` answers a directory that can be LISTED but not entered. One
   // that denies read as well needs `u+rx`, and the guidance must not claim it
   // "can be listed" (mode 000: nothing lists it). When the probe cannot tell
@@ -184,78 +199,125 @@ export function buildUnreadInputFinding(
   // caller pinned a path that never existed — the enterable-not-listable
   // wording stands, which is what every earlier pin in the unit suite relies
   // on.
-  let dirDeniesRead = false;
-  if (obstruction && permission) {
+  let ancestorDeniesRead = false;
+  if (ancestor && permission) {
     try {
-      fsSync.accessSync(path.resolve(targetDir, obstruction), fsSync.constants.R_OK);
+      fsSync.accessSync(path.resolve(targetDir, ancestor), fsSync.constants.R_OK);
     } catch (e) {
       const c = (e as NodeJS.ErrnoException).code;
-      dirDeniesRead = c === 'EACCES' || c === 'EPERM';
+      ancestorDeniesRead = c === 'EACCES' || c === 'EPERM';
     }
   }
-  const target = citationTarget(targetDir);
-  // The re-run verb is a string LITERAL per branch, never a raw `${command}`
-  // interpolation: a bare identifier in a runnable command string is what the
-  // render-source gate (#273) forbids, and `command` is a fixed internal verb,
-  // not a path operand. `secure` is the default so the `secure` caller's re-run
-  // verb is unchanged. `${cited}`/`${citedDir}`/`${target}` are citation-bound
-  // (`citationPath` quotes shell-significant names and returns null for a
-  // display hazard, which falls through to the generic remedy) and `${cliName}`
-  // is a known non-path operand. The gate itself does not inspect `chmod` sites
-  // — its operand class has no `+` (#618) — so the binding, not the gate, is
-  // what protects these strings.
-  const fix = permission
-    ? (citedDir
-      ? (command === 'check'
-        ? (dirDeniesRead
-          ? `chmod u+rx ${citedDir} && ${cliName} check ${target}`
-          : `chmod u+x ${citedDir} && ${cliName} check ${target}`)
-        : (dirDeniesRead
-          ? `chmod u+rx ${citedDir} && ${cliName} secure ${target}`
-          : `chmod u+x ${citedDir} && ${cliName} secure ${target}`))
-      : cited
-        ? (command === 'check'
-          ? `chmod u+r ${cited} && ${cliName} check ${target}`
-          : `chmod u+r ${cited} && ${cliName} secure ${target}`)
-        : 'Make the file named above readable, then re-run this scan.')
-    : `Resolve the ${code} on this path (a broken symlink, an I/O error or an `
-      + `unreadable mount are the usual causes), then re-run this scan.`;
+  // Every runnable remedy is a string LITERAL per verb, never a raw
+  // `${command}` interpolation: a bare identifier in a runnable command string
+  // is what the render-source gate (#273) forbids, and `command` is a fixed
+  // internal verb, not a path operand. `${cited}`/`${citedAncestor}`/`${target}`
+  // are citation-bound (`citationPath` quotes shell-significant names and
+  // returns null for a display hazard, which falls through to the generic
+  // remedy) and `${cliName}` is a known non-path operand. The gate itself does
+  // not inspect `chmod` sites — its operand class has no `+` (#618) — so the
+  // binding, not the gate, is what protects these strings.
+  const chmodUx = (dir: string): string => (command === 'check'
+    ? `chmod u+x ${dir} && ${cliName} check ${target}`
+    : `chmod u+x ${dir} && ${cliName} secure ${target}`);
+  const chmodUrx = (dir: string): string => (command === 'check'
+    ? `chmod u+rx ${dir} && ${cliName} check ${target}`
+    : `chmod u+rx ${dir} && ${cliName} secure ${target}`);
+  const chmodUr = (file: string): string => (command === 'check'
+    ? `chmod u+r ${file} && ${cliName} check ${target}`
+    : `chmod u+r ${file} && ${cliName} secure ${target}`);
+  // The remedy is keyed on the ERRNO first; the failed-call rule (a listing
+  // that failed => `u+rx`, a read under a directory this user cannot enter =>
+  // `u+x` on that directory) lives inside the permission branch only. Any
+  // other errno names a cause it can actually produce — `chmod` answers a
+  // permission denial and is a dead end for the rest, and a cause that the
+  // errno cannot have sends the user the wrong way (#617). A dangling symlink
+  // is ENOENT and never reaches this finding, so it is not among the causes.
+  const cause = ((): string => {
+    switch (code) {
+      case 'ENAMETOOLONG':
+        return 'the absolute path is longer than this system allows — scan the tree from a shallower checkout';
+      case 'ELOOP':
+        return 'a symbolic-link loop sits on this path';
+      case 'EIO':
+        return 'an I/O error was reported on this path';
+      case 'ENXIO':
+      case 'ENODEV':
+      case 'ESTALE':
+        return 'the device or mount behind this path is not available';
+      default:
+        return 'an I/O error or an unreadable mount are the usual causes';
+    }
+  })();
+  const fix = !permission
+    ? `Resolve the ${code} on this path: ${cause}, then re-run this scan.`
+    : citedAncestor
+      ? (ancestorDeniesRead ? chmodUrx(citedAncestor) : chmodUx(citedAncestor))
+      : isDir
+        ? (cited ? chmodUrx(cited) : 'Make the directory named above listable, then re-run this scan.')
+        : (cited ? chmodUr(cited) : 'Make the file named above readable, then re-run this scan.');
+  // The errno is named in the body, not only in `message`: the rendered
+  // finding prints `guidance`, so an errno that lives only on `message`
+  // reaches no reader — and the errno is the input that decides which
+  // remedy applies.
+  const ancestorSentence = ancestor
+    ? (ancestorDeniesRead
+      ? `\`${ancestor}\` cannot be listed or entered by this user (no read or execute bit `
+        + `on the directory), which is why ${shown} could not be ${isDir ? 'listed' : 'read'}: `
+        + `the remedy is on \`${ancestor}\`, not on ${isDir ? shown : 'the file'}. `
+      : `\`${ancestor}\` can be listed but not entered by this user (no execute bit on the `
+        + `directory), which is why ${shown} could not be ${isDir ? 'listed' : 'opened'}: `
+        + `the remedy is on \`${ancestor}\`, not on ${isDir ? shown : 'the file'}. `)
+    : '';
+  const pathLength = code === 'ENAMETOOLONG' && u.path
+    ? `The absolute path is ${u.path.length} characters. `
+    : '';
+  const guidance = isDir
+    ? ancestorSentence
+      + (ancestor
+        ? ''
+        : (permission
+          ? `${shown} could not be listed by this user (${code}): the directory denies read or `
+            + 'search to this process, so nothing beneath it was discovered. '
+          : `${shown} could not be listed (${code}): ${cause}. ${pathLength}`))
+      + 'The score above is an upper bound, not a measurement of this tree: nothing was ruled '
+      + 'out about anything beneath it, and a credential or an injected instruction there would '
+      + 'be invisible to this scan — leaving the score HIGHER than if it had been listable, '
+      + 'because the evidence simply left the assessment. Re-run once it can be listed. If it is '
+      + 'meant to stay closed, scan a narrower target that does not contain it — an `.hmaignore` '
+      + 'path rule will not clear this, because it scopes what is reported and cannot make an '
+      + 'unlisted directory listed.'
+    : ancestorSentence
+      + `This file was discovered inside the target and the read failed with ${code}`
+      + (permission ? '' : ` (${cause})`)
+      + `, so its contents never reached a check. ${pathLength}`
+      + 'The score above is an upper bound, not a measurement of this tree: nothing was ruled out '
+      + 'about this file, and a credential or an injected instruction in it would be invisible to '
+      + 'this scan — leaving the score HIGHER than if the file had been readable, because the '
+      + 'evidence simply left the assessment. Re-run once it can be read. If it is meant to be '
+      + 'unreadable, scan a narrower target that does not contain it — an `.hmaignore` path rule '
+      + 'will not clear this, because it scopes what is reported about a file and cannot make an '
+      + 'unread file read.';
   return {
     checkId: 'SCAN-UNREAD-001',
     name: 'Input Discovered But Not Read',
-    description: 'A file inside the target was discovered and its contents could not be read, so no check examined it',
+    description: isDir
+      ? 'A directory inside the target was discovered and could not be listed, so nothing inside it reached any check'
+      : 'A file inside the target was discovered and its contents could not be read, so no check examined it',
     category: 'hardening',
     severity: 'medium',
     // `passed: false` so it is SHOWN. A `passed: true` finding is filtered
     // out of the report, which is how an earlier disclosure managed to
     // exist in the code and appear nowhere on screen.
     passed: false,
-    message: `${rel} could not be read (${code})`,
-    file: rel,
+    message: isDir
+      ? `${shown} could not be listed (${code}) — its contents were not discovered, so nothing inside it reached any check.`
+      : `${rel} could not be read (${code})`,
+    file: shown,
+    kind,
     fixable: false,
     fix,
-    // The errno is named in the body, not only in `message`: the rendered
-    // finding prints `guidance`, so an errno that lives only on `message`
-    // reaches no reader — and the errno is the input that decides which
-    // remedy applies.
-    guidance:
-      (obstruction
-        ? (dirDeniesRead
-          ? `\`${obstruction}\` cannot be listed or entered by this user (no read or execute bit `
-            + `on the directory), which is why ${rel} could not be read: the remedy is on the `
-            + 'directory, not on the file. '
-          : `\`${obstruction}\` can be listed but not entered by this user (no execute bit on the `
-            + `directory), which is why ${rel} could not be opened: the remedy is on the directory, `
-            + 'not on the file. ')
-        : '')
-      + `This file was discovered inside the target and the read failed with ${code}, so its `
-      + 'contents never reached a check. The score above is an upper bound, not a measurement '
-      + 'of this tree: nothing was ruled out about this file, and a credential or an injected '
-      + 'instruction in it would be invisible to this scan — leaving the score HIGHER than if '
-      + 'the file had been readable, because the evidence simply left the assessment. Re-run '
-      + 'once it can be read. If it is meant to be unreadable, scan a narrower target that '
-      + 'does not contain it — an `.hmaignore` path rule will not clear this, because it '
-      + 'scopes what is reported about a file and cannot make an unread file read.',
+    guidance,
   } as any;
 }
 
