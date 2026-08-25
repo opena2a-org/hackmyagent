@@ -37,8 +37,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { HardeningScanner } from '../../src/hardening/scanner';
-import type { SecurityFinding, ScanResult } from '../../src/hardening/security-check';
+import { HardeningScanner, findingAppliesTo } from '../../src/hardening/scanner';
+import type { SecurityFinding, SecurityFindingDraft, ScanResult } from '../../src/hardening/security-check';
 import { initThrowawayRepo } from '../helpers/throwaway-repo';
 
 const SCAN_TIMEOUT = 120_000;
@@ -245,14 +245,21 @@ describe.skipIf(runsAsRoot)('#458 — an unreadable subject emits nothing; the u
 
 describe('#458 — NA records are project-type-scoped like any pathless record', () => {
   it(
-    'a cli tree with no subjects carries no NA records: none of the three checks applies there',
+    'a cli tree with no subjects keeps NA records only for checks that apply to cli',
     async () => {
       // 'PROMPT-' -> mcp/api, 'TOOL-' -> mcp, 'SANDBOX-' -> webapp/api/mcp:
-      // none includes cli, so dropPathlessNoiseFloor routes every NA record
-      // out of allFindings. Absence-of-the-check on non-applicable trees is
-      // #426's lane — this cell pins that #458 did not change it.
+      // none includes cli, so dropPathlessNoiseFloor routes those NA records
+      // out of allFindings exactly as it routes any other pathless record.
+      // Checks scoped 'all' (CRED-, PERM-, CLAUDE-, ...) keep theirs, so the
+      // cell is stated as the predicate, not as a count of zero. Absence of
+      // the check on non-applicable trees is #426's lane — this pins that
+      // #458 did not change it.
       const result = await scanTree(await makeTree('cli'));
-      expect((result.allFindings ?? []).filter((f) => f.notApplicable)).toHaveLength(0);
+      const na = (result.allFindings ?? []).filter((f) => f.notApplicable);
+      expect(na.length).toBeGreaterThan(0);
+      for (const f of na) {
+        expect(findingAppliesTo(f as SecurityFindingDraft, 'cli'), `${f.checkId} does not apply to a cli tree`).toBe(true);
+      }
       for (const checkId of ['PROMPT-001', 'SANDBOX-002', 'TOOL-001']) {
         expect(byId(result.allFindings, checkId)).toHaveLength(0);
       }
