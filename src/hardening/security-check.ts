@@ -95,6 +95,12 @@ export interface SecurityFinding {
    * failure with `file` set to the path the fix creates, never this. Any errno
    * other than not-there is an unread input (`buildUnreadInputFinding`), never
    * this either.
+   *
+   * `subject` and `reason` are EMITTER LITERALS: fixed strings in the check's
+   * source, never scanned bytes and never derived from file content. That rule
+   * is what keeps them outside the redaction boundary's byte-carrying set
+   * (`finding-emit.ts` `BYTE_CARRYING_FIELDS`) without teaching the redactor
+   * to walk nested fields.
    */
   notApplicable?: { subject: string; reason: string };
   message: string;

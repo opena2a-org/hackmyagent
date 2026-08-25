@@ -51,6 +51,7 @@ import {
   type CategoryCoverage,
   type CheckExecution,
   type CoverageTruncation,
+  countsAsUnread,
   noteListFailure,
 } from './coverage-ledger';
 
@@ -324,6 +325,46 @@ export function buildUnreadInputFinding(
     fix,
     guidance,
   } as any;
+}
+
+/**
+ * #458 — one errno vocabulary for a check whose subject may be absent.
+ *
+ * The three-way classification behind the ruled four-state verdict contract:
+ *
+ * - `read`: the subject exists and its bytes are in hand — MEASURE it.
+ * - `absent`: a not-there errno (`countsAsUnread` false: ENOENT / EISDIR /
+ *   ENOTDIR) — the subject does not exist in this tree, so the check measured
+ *   nothing. The caller emits a not-applicable record naming the subject —
+ *   unless the check RECOMMENDS the artifact, in which case absence IS the
+ *   finding, with `file` set to the path the fix creates (GIT-001 /
+ *   SANDBOX-001 shape).
+ * - `unread`: every other errno (EACCES, EPERM, ELOOP, ENAMETOOLONG, …) — the
+ *   subject may well exist; the scan could not look. The caller emits NOTHING
+ *   for this check. The tracked-fs namespace has already recorded the failed
+ *   read on the ledger's unreadable-inputs channel, and
+ *   `buildUnreadInputFinding` is the one reporter for that channel. A
+ *   not-applicable record here would absorb a read failure into "not
+ *   applicable" and undo #438/#499/#508/#514; a `passed: false` would score a
+ *   tree nothing measured. The check id being absent downstream is correct:
+ *   `generateBenchmarkReport` reads a missing check id as `unverified`, which
+ *   is exactly what an unreadable subject is.
+ *
+ * Fail-closed: an error carrying no errno code classifies as `unread` — no
+ * evidence of absence is never `absent`.
+ */
+type SubjectRead =
+  | { state: 'read'; content: string }
+  | { state: 'absent' }
+  | { state: 'unread' };
+
+async function readCheckSubject(filePath: string): Promise<SubjectRead> {
+  try {
+    return { state: 'read', content: await fs.readFile(filePath, 'utf-8') };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? '';
+    return countsAsUnread(code) ? { state: 'unread' } : { state: 'absent' };
+  }
 }
 
 export interface CreatedFileRecord {
@@ -8104,33 +8145,49 @@ dist/
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
 
-    // PROMPT-001: Check for system prompt boundary markers
-    let hasPromptBoundaries = false;
+    // PROMPT-001: Check for system prompt boundary markers.
+    // #458 — errno-gated: absent subject => not-applicable record; unread
+    // subject => no record (the ledger's unreadable-inputs channel carries
+    // the obstruction); read subject => measured pass/fail, unchanged.
     const claudeMdPath = path.join(targetDir, 'CLAUDE.md');
-    try {
-      const content = await fs.readFile(claudeMdPath, 'utf-8');
-      hasPromptBoundaries =
+    const claudeMdRead = await readCheckSubject(claudeMdPath);
+    if (claudeMdRead.state === 'absent') {
+      findings.push({
+        checkId: 'PROMPT-001',
+        name: 'Prompt Boundary Markers',
+        description: 'System prompts should have clear boundary markers to prevent injection',
+        category: 'prompt-security',
+        notApplicable: {
+          subject: 'CLAUDE.md',
+          reason: 'No CLAUDE.md in the scanned tree, so there is no system prompt file whose boundary markers could be measured.',
+        },
+        message: 'Not applicable: no CLAUDE.md to measure for prompt boundary markers',
+        fixable: false,
+      });
+    } else if (claudeMdRead.state === 'read') {
+      const content = claudeMdRead.content;
+      const hasPromptBoundaries =
         content.includes('SYSTEM:') ||
         content.includes('USER:') ||
         content.includes('---') ||
         content.includes('###') ||
         content.toLowerCase().includes('do not follow instructions') ||
         content.toLowerCase().includes('ignore attempts to');
-    } catch {}
 
-    findings.push({
-      checkId: 'PROMPT-001',
-      name: 'Prompt Boundary Markers',
-      description: 'System prompts should have clear boundary markers to prevent injection',
-      category: 'prompt-security',
-      severity: 'high',
-      passed: hasPromptBoundaries,
-      message: hasPromptBoundaries
-        ? 'Prompt boundaries detected in CLAUDE.md'
-        : 'Consider adding prompt boundary markers to prevent injection attacks',
-      fixable: false,
-      guidance: 'Without clear boundary markers, attackers can inject instructions that blend with the system prompt, making it impossible for the model to distinguish trusted from untrusted content.',
-    });
+      findings.push({
+        checkId: 'PROMPT-001',
+        name: 'Prompt Boundary Markers',
+        description: 'System prompts should have clear boundary markers to prevent injection',
+        category: 'prompt-security',
+        severity: 'high',
+        passed: hasPromptBoundaries,
+        message: hasPromptBoundaries
+          ? 'Prompt boundaries detected in CLAUDE.md'
+          : 'Consider adding prompt boundary markers to prevent injection attacks',
+        fixable: false,
+        guidance: 'Without clear boundary markers, attackers can inject instructions that blend with the system prompt, making it impossible for the model to distinguish trusted from untrusted content.',
+      });
+    }
 
     // PROMPT-002: Check for injection defense instructions
     let hasInjectionDefense = false;
@@ -8977,56 +9034,84 @@ dist/
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
 
-    // SANDBOX-001: Check for Docker/container usage
-    let hasContainerization = false;
-    try {
-      await fs.access(path.join(targetDir, 'Dockerfile'));
-      hasContainerization = true;
-    } catch {}
-    try {
-      await fs.access(path.join(targetDir, 'docker-compose.yml'));
-      hasContainerization = true;
-    } catch {}
-    try {
-      await fs.access(path.join(targetDir, 'docker-compose.yaml'));
-      hasContainerization = true;
-    } catch {}
+    // SANDBOX-001: Check for Docker/container usage.
+    // #458 — containerization is a mitigation this check RECOMMENDS, so its
+    // absence is the finding, never a not-applicable record: the fail keeps
+    // `passed: false` and gains `file` naming the path the fix creates
+    // (GIT-001's advisory shape), which keeps it off the pathless noise floor.
+    // The probes go through `readCheckSubject` rather than `fs.access` because
+    // tracked-fs does not ledger a failed `access` — a probe obstructed by
+    // EACCES must reach the unreadable-inputs channel, not vanish. Every
+    // probed path is content-read by SANDBOX-002/003/004 when present, so
+    // coverage counts do not move.
+    const containerProbes = [
+      await readCheckSubject(path.join(targetDir, 'Dockerfile')),
+      await readCheckSubject(path.join(targetDir, 'docker-compose.yml')),
+      await readCheckSubject(path.join(targetDir, 'docker-compose.yaml')),
+    ];
+    const hasContainerization = containerProbes.some((p) => p.state === 'read');
+    if (hasContainerization || containerProbes.every((p) => p.state === 'absent')) {
+      const sandbox001: SecurityFindingDraft = {
+        checkId: 'SANDBOX-001',
+        name: 'Container Isolation',
+        description: 'Applications should run in isolated containers',
+        category: 'sandboxing',
+        severity: 'medium',
+        passed: hasContainerization,
+        message: hasContainerization
+          ? 'Container configuration detected'
+          : 'Consider running in Docker containers for isolation',
+        fixable: false,
+        guidance: 'Without container isolation, a compromised application has direct access to the host filesystem, network, and other processes. Containers limit the blast radius of a breach.',
+      };
+      if (!hasContainerization) {
+        // Absent-mitigation advisory: `file` is the path the fix creates.
+        sandbox001.file = 'Dockerfile';
+      }
+      findings.push(sandbox001);
+    }
+    // else: no probe read and at least one failed for a reason other than
+    // absence — containerization is UNKNOWN, not absent. Emit nothing; the
+    // ledger's unreadable-inputs channel discloses the obstruction (#458).
 
-    findings.push({
-      checkId: 'SANDBOX-001',
-      name: 'Container Isolation',
-      description: 'Applications should run in isolated containers',
-      category: 'sandboxing',
-      severity: 'medium',
-      passed: hasContainerization,
-      message: hasContainerization
-        ? 'Container configuration detected'
-        : 'Consider running in Docker containers for isolation',
-      fixable: false,
-      guidance: 'Without container isolation, a compromised application has direct access to the host filesystem, network, and other processes. Containers limit the blast radius of a breach.',
-    });
-
-    // SANDBOX-002: Check for non-root execution
-    let hasNonRootConfig = false;
-    try {
-      const dockerPath = path.join(targetDir, 'Dockerfile');
-      const content = await fs.readFile(dockerPath, 'utf-8');
-      hasNonRootConfig = content.includes('USER ') && !content.includes('USER root');
-    } catch {}
-
-    findings.push({
-      checkId: 'SANDBOX-002',
-      name: 'Non-Root Execution',
-      description: 'Containers should not run as root',
-      category: 'sandboxing',
-      severity: 'high',
-      passed: hasNonRootConfig,
-      message: hasNonRootConfig
-        ? 'Non-root user configured in Dockerfile'
-        : 'Configure containers to run as non-root user',
-      fixable: false,
-      guidance: 'Containers running as root can escape container isolation more easily. A container breakout as root grants full control of the host system.',
-    });
+    // SANDBOX-002: Check for non-root execution.
+    // #458 — this boolean was the class's root defect: it collapsed "no
+    // Dockerfile" with "runs as root". Absent Dockerfile => not-applicable
+    // (there is no container execution to measure — SANDBOX-001 carries the
+    // containerization advisory); unread => no record; read => measured.
+    // Reuses SANDBOX-001's Dockerfile read so one scan pass cannot classify
+    // the same subject two different ways.
+    const dockerfileRead = containerProbes[0];
+    if (dockerfileRead.state === 'absent') {
+      findings.push({
+        checkId: 'SANDBOX-002',
+        name: 'Non-Root Execution',
+        description: 'Containers should not run as root',
+        category: 'sandboxing',
+        notApplicable: {
+          subject: 'Dockerfile',
+          reason: 'No Dockerfile in the scanned tree, so there is no container execution to measure for root privilege. SANDBOX-001 carries the containerization advisory.',
+        },
+        message: 'Not applicable: no Dockerfile to measure for root execution',
+        fixable: false,
+      });
+    } else if (dockerfileRead.state === 'read') {
+      const hasNonRootConfig =
+        dockerfileRead.content.includes('USER ') && !dockerfileRead.content.includes('USER root');
+      findings.push({
+        checkId: 'SANDBOX-002',
+        name: 'Non-Root Execution',
+        description: 'Containers should not run as root',
+        category: 'sandboxing',
+        severity: 'high',
+        passed: hasNonRootConfig,
+        message: hasNonRootConfig
+          ? 'Non-root user configured in Dockerfile'
+          : 'Configure containers to run as non-root user',
+        fixable: false,
+        guidance: 'Containers running as root can escape container isolation more easily. A container breakout as root grants full control of the host system.',
+      });
+    }
 
     // SANDBOX-003: Check for resource limits
     let hasResourceLimits = false;
@@ -9090,36 +9175,62 @@ dist/
     const findings: SecurityFindingDraft[] = [];
     const mcpConfigPath = path.join(targetDir, 'mcp.json');
 
+    // #458 — one errno-classified read shared by TOOL-001/002/003. TOOL-001 is
+    // errno-gated in this cut; TOOL-002/003 keep their legacy behaviour
+    // (`mcpConfig` null => failed advisory) until the class sweep reaches them.
+    const mcpRead = await readCheckSubject(mcpConfigPath);
     let mcpConfig: Record<string, unknown> | null = null;
-    try {
-      const content = await fs.readFile(mcpConfigPath, 'utf-8');
-      mcpConfig = JSON.parse(content);
-    } catch {}
-
-    // TOOL-001: Check for tool whitelisting
-    let hasToolWhitelist = false;
-    if (mcpConfig?.servers) {
-      for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { allowedTools?: string[] }>)) {
-        if (server.allowedTools && server.allowedTools.length > 0) {
-          hasToolWhitelist = true;
-          break;
-        }
-      }
+    if (mcpRead.state === 'read') {
+      try {
+        mcpConfig = JSON.parse(mcpRead.content);
+      } catch {}
     }
 
-    findings.push({
-      checkId: 'TOOL-001',
-      name: 'Tool Whitelisting',
-      description: 'MCP servers should have explicit tool whitelists',
-      category: 'tool-boundaries',
-      severity: 'high',
-      passed: hasToolWhitelist,
-      message: hasToolWhitelist
-        ? 'Tool whitelisting configured'
-        : 'Configure allowedTools to restrict MCP server capabilities',
-      fixable: false,
-      guidance: 'Without an explicit tool whitelist, MCP servers expose all available tools to the AI agent. A prompt injection attack can invoke any tool, including destructive ones.',
-    });
+    // TOOL-001: Check for tool whitelisting.
+    // #458 — absent mcp.json => not-applicable (nothing configures MCP servers
+    // here, so there are no tool boundaries to measure); unread => no record
+    // (the ledger's unreadable-inputs channel carries the obstruction);
+    // present-but-unparseable JSON keeps today's fail: a config that exists
+    // and cannot be parsed is a measured defect of the subject, not a missing
+    // subject.
+    if (mcpRead.state === 'absent') {
+      findings.push({
+        checkId: 'TOOL-001',
+        name: 'Tool Whitelisting',
+        description: 'MCP servers should have explicit tool whitelists',
+        category: 'tool-boundaries',
+        notApplicable: {
+          subject: 'mcp.json',
+          reason: 'No mcp.json in the scanned tree, so no MCP servers are configured and there are no tool boundaries to measure.',
+        },
+        message: 'Not applicable: no mcp.json to measure for tool whitelisting',
+        fixable: false,
+      });
+    } else if (mcpRead.state === 'read') {
+      let hasToolWhitelist = false;
+      if (mcpConfig?.servers) {
+        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { allowedTools?: string[] }>)) {
+          if (server.allowedTools && server.allowedTools.length > 0) {
+            hasToolWhitelist = true;
+            break;
+          }
+        }
+      }
+
+      findings.push({
+        checkId: 'TOOL-001',
+        name: 'Tool Whitelisting',
+        description: 'MCP servers should have explicit tool whitelists',
+        category: 'tool-boundaries',
+        severity: 'high',
+        passed: hasToolWhitelist,
+        message: hasToolWhitelist
+          ? 'Tool whitelisting configured'
+          : 'Configure allowedTools to restrict MCP server capabilities',
+        fixable: false,
+        guidance: 'Without an explicit tool whitelist, MCP servers expose all available tools to the AI agent. A prompt injection attack can invoke any tool, including destructive ones.',
+      });
+    }
 
     // TOOL-002: Check for resource constraints
     let hasResourceConstraints = false;

@@ -56,6 +56,11 @@ export type RedactedFinding = SecurityFinding & {
  * `finding.rationale` to `message` and `:98` assigns THE SAME STRING to
  * `rationale.plainEnglish`, so redacting `message` alone leaves the identical
  * bytes on a second field of the same object.
+ *
+ * `notApplicable.subject`/`.reason` are excluded BY RULE, not oversight: the
+ * field's contract (`security-check.ts`) makes them emitter literals — never
+ * scanned bytes — and extending this walk to nested fields would add a parsing
+ * surface for strings that carry no target bytes.
  */
 const BYTE_CARRYING_FIELDS = [
   'name',
