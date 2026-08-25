@@ -4,6 +4,57 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### A directory the scan cannot list no longer leaves the assessment silently
+
+`chmod 000 <dir>` — or a directory under a parent this user cannot enter — rejects
+the walker's `readdir`. Every path beneath it left the scan without a single read
+ever being attempted, so nothing on the read channel could disclose it: the
+coverage ledger recorded no input, no finding named the directory, and the only
+trace was the sensitive-artifact walk's completeness flag, which reached output
+solely by escalating `GIT-001`/`GIT-002`/`CRED-002` to HIGH — a severity derived
+from an obstruction deciding the exit code, without saying where the obstruction
+was. On a tree whose `.gitignore` is complete nothing escalated at all: a
+`cfg/secrets.js` holding an API key behind `chmod 000 cfg` scored 98/100 at exit 0
+on both `secure` and `check`, and `secure --fix` reached exit 0 over it by writing
+a `.gitignore` into the target (#588).
+
+A rejected directory listing is now an unread input of the directory kind. The
+tracked `fs` namespace reports `readdir`/`opendir` rejections on the same failure
+channel a failed `readFile` uses, the three discovery walkers record the loss
+where they discovered the path, and the ledger applies the one errno policy it
+already had (`ENOENT`/`ENOTDIR` on a probe for a directory that is not there stay
+free). `coverage.unreadableInputs` becomes `{ count, codes, directories }`: `count`
+widens to include directories, so the `count > 0` predicate every consumer gates
+on cannot read false while an obstruction exists; `directories` is the kind split,
+always present, and never an estimate of what a directory hid — one obstruction is
+one unit, and records beneath a lost directory are attributed to it. `SCAN-UNREAD-001`
+names the directory with a trailing separator (`cfg/`; the scan root as `./`),
+carries `kind: "directory"`, says `cfg/ could not be listed (EACCES) — its contents
+were not discovered, so nothing inside it reached any check.`, and prints the
+remedy for the call that failed: `chmod u+rx cfg && hackmyagent secure <target>`.
+The remedy is keyed on the errno first; a permission denial under a directory this
+user cannot enter keeps the `chmod u+x <dir>` shape, and every other errno names a
+cause it can produce (a symbolic-link loop, an I/O error, an unavailable mount, a
+path longer than the system allows — with the measured length and a shallower
+checkout as the remedy) instead of a sentence that named a broken symlink, which
+is `ENOENT` and never reaches this finding. The sensitive-artifact walk's flag now
+means bounds only (the entry and depth caps, an entry outside the root, a
+committable `node_modules`): those still escalate; an unlistable directory does
+not, and `GIT-001`/`GIT-002` stay LOW on it with a cross-reference to the record.
+`secure --fix` cannot clear the record by writing a readable file.
+
+Measured on the same fixture, both arms, quick and standard depth: with a complete
+`.gitignore`, exit **0 → 2** (score 98 → 93, one `SCAN-UNREAD-001` naming `cfg/`,
+`GIT-002` LOW); with no `.gitignore`, exit **1 → 2** with `GIT-001` back at LOW
+(it was HIGH on the obstruction alone); `secure --fix` exit **0 → 2** with the
+directory untouched. A mode-000 scan root that produced 64 findings, one per
+fixed-path probe and none naming the root, is one record named `./`. The printed
+remedy runs as printed and clears the obstruction in one step; the next run finds
+the credential at exit 1. Base rate with the shipped walker across five real trees (1,391 directories, 7,645 files, skipping `node_modules`/`.git`/`dist`/`build`): no
+directory whose listing fails, and every tree keeps its exit code and score. The
+remaining #588 shape — a file the semantic compiler never selects as a candidate,
+lost at quick depth on both commands — is not in the record yet.
+
 ### A directory the scan can list but not enter no longer hides its files at `--scan-depth quick`
 
 `chmod 600 <dir>` (readable, not traversable) lets `readdir` list the directory's
@@ -34,12 +85,10 @@ input). Measured across ten real trees (about 4,500 directories and 37,000
 files): no directory whose listing fails and no listed file whose `stat` fails,
 so no readable repository changes exit code.
 
-Not closed here: a directory the scan cannot list at all (`chmod 000 <dir>`, or
-a non-searchable directory with the file one level further down) is lost by the
-walker on `readdir`, not on a child `stat`, and this change does not record it.
-The `GIT-001`/`GIT-002` severity escalation reaches output only when those
-checks fire, and never names the directory; on a tree whose `.gitignore` is
-complete the run can exit 0 with no disclosure. Tracked with #588.
+A directory the scan cannot list at all (`chmod 000 <dir>`, or a non-searchable
+directory with the file one level further down) is lost by the walker on
+`readdir`, not on a child `stat`, and this change alone did not record it; the
+entry above closes that (#588).
 
 The `--json` comment on `coverage.unreadableInputs` cited a scoped list
 (`unreadableInScope`) that does not exist, and the method producing the number
@@ -294,9 +343,9 @@ the two commands order the same two facts the same way.
 - **Exit code.** An input discovered inside the target and not read settles exit **2** — unless
   the band over what WAS read is high or critical, which still exits **1**. Exit 0 is
   unreachable while anything the scan attempted went unread. On the local arm the record
-  reaches what the semantic compiler attempts: a file it never selects as a candidate, or the
-  contents of a directory it cannot list, are not yet in the record — `secure` reads more of
-  the tree and records both; #588 tracks closing that gap. The precedence is written once, in
+  reaches what the semantic compiler attempts: a file it never selects as a candidate is not
+  yet in the record, on either command, at quick depth — #588 tracks closing that gap. A
+  directory it cannot list is in the record on both commands (see the entry above). The precedence is written once, in
   `deriveCheckVerdict`, and is keyed on the run's read-failure record rather than on
   `examined < total`, so `attack` and `detect`, which report partial fractions that are not
   read failures, do not move.
