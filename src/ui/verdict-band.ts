@@ -109,7 +109,22 @@ export function countsAgainstScore(f: {
  * fix summary leads with what was confirmed (`fixSummaryLine`); the MCP
  * summary and the OpenClaw arm counted every attempt.
  */
-export function confirmedFix(f: { passed?: boolean; fixed?: boolean; fixVerified?: boolean }): boolean {
+export function confirmedFix(f: {
+  passed?: boolean;
+  fixed?: boolean;
+  fixVerified?: boolean;
+  notApplicable?: { subject: string; reason: string };
+}): boolean {
+  // #458 — nothing was measured, so nothing can be a confirmed fix. This is
+  // the one predicate where the NA short-circuit in `countsAgainstScore`
+  // INVERTS instead of composing: on an NA record `countsAgainstScore` is
+  // false, so `!countsAgainstScore(f)` reads "not an issue" as "confirmed",
+  // and an NA record carrying a stray `fixed: true` would be published as a
+  // remediation (src/registry/remediation.ts). No current emitter writes that
+  // shape; the guard exists so the three-way partition (issue / confirmed
+  // fix / not-applicable) never depends on emitter discipline. Same
+  // first-position rule as the two siblings.
+  if (f.notApplicable) return false;
   return f.fixed === true && !countsAgainstScore(f);
 }
 
