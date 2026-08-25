@@ -6489,6 +6489,11 @@ dist/
         guidance: 'The project tree is too large or deep, or contains an un-ignored node_modules — so the scanner could not confirm no private keys are committed. Verify manually and ensure keys are outside the repo or in a secrets manager.',
       });
     } else {
+      // The passed branch may not claim the whole tree when a directory was
+      // not listed: "no key files found" without the caveat asserts an
+      // absence the scan could not measure (#588). The record carries the
+      // remedy; this message only stops over-claiming.
+      const unlisted = this.coverage.unreadableInputs.directories > 0;
       findings.push({
         checkId: 'CRED-002',
         name: 'Private Key Files',
@@ -6496,7 +6501,9 @@ dist/
         category: 'credentials',
         severity: 'critical',
         passed: true,
-        message: 'No private key files found in project directory',
+        message: unlisted
+          ? 'No private key files found among what could be listed (a directory could not be listed — see SCAN-UNREAD-001)'
+          : 'No private key files found in project directory',
         fixable: false,
         guidance: 'Private key files (.pem, .key) in a project directory are easily committed to git. Once pushed, the keys are compromised and must be rotated.',
       });

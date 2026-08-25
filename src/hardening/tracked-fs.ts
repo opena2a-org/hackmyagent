@@ -87,7 +87,17 @@ function attribute<T extends AnyFn>(
         (err) => {
           // Rethrown unchanged: every existing call site's error handling is
           // untouched, and this wrapper stays invisible to control flow.
-          onFailure?.(target, (err as NodeJS.ErrnoException | null)?.code);
+          //
+          // Attributed to the path the ERRNO names, not to the argument: a
+          // recursive readdir rejects with the errno of a NESTED directory,
+          // and recording the listable argument named the wrong directory,
+          // printed a chmod that was a no-op, and let coalescing suppress the
+          // true record (#588 adversarial round). For every plain call the
+          // two are the same path; when the error carries none, the argument
+          // stands.
+          const errPath = (err as NodeJS.ErrnoException | null)?.path;
+          onFailure?.(typeof errPath === 'string' && errPath.length > 0 ? errPath : target,
+            (err as NodeJS.ErrnoException | null)?.code);
           throw err;
         },
       );

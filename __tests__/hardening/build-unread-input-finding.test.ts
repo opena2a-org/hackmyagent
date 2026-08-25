@@ -212,14 +212,12 @@ describe('buildUnreadInputFinding', () => {
       expect(f.guidance).not.toMatch(NO_FILE);
     });
 
-    it('a real mode-000 directory classifies itself as the obstruction from the raw record', (ctx) => {
+    it('a raw directory record with no caller obstruction is its own remedy target (shape-level: the output does not depend on the mode bits)', () => {
+      // The ancestor probe inspects ANCESTORS of the record's path, never the
+      // path itself, so this output is identical whatever cfg's mode is — the
+      // real-obstruction end-to-end coverage lives in the repo matrix suite.
       const { dir } = realTree();
       try {
-        fsn.chmodSync(path.join(dir, 'cfg'), 0o000);
-        if (!denied(path.join(dir, 'cfg'), fsn.constants.R_OK)) {
-          console.warn('[build-unread-input-finding] cannot deny read to this process (root?): SKIPPING, not passing');
-          ctx.skip();
-        }
         const f = buildUnreadInputFinding(
           { path: path.join(dir, 'cfg'), rel: 'cfg', code: 'EACCES', kind: 'directory' },
           { cliName: 'hackmyagent', targetDir: dir, command: 'check' },

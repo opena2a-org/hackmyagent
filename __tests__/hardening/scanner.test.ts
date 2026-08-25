@@ -3632,9 +3632,19 @@ describe('#250 existence-aware git severity + surfaced file findings', () => {
       await fs.writeFile(path.join(tempDir, '.gitignore'), 'node_modules/\n.env\nsecrets.json\n*.pem\n*.key\n');
       if (!(await withUnlistableDir())) { ctx.skip(); }
       const result = await scanner.scan({ targetDir: tempDir });
-      const cred = result.findings.find((f) => f.checkId === 'CRED-002');
-      expect(cred?.severity).not.toBe('high');
-      expect(cred?.description ?? '').not.toMatch(/could not fully cover/);
+      // A passed finding is filtered out of `findings`; the passed CRED-002
+      // lives in `allFindings`. Asserting on `findings` here would let every
+      // check below pass against `undefined`.
+      const all = (result as any).allFindings ?? result.findings;
+      const cred = all.find((f: any) => f.checkId === 'CRED-002');
+      expect(cred).toBeDefined();
+      expect(cred.severity).not.toBe('high');
+      expect(cred.passed).toBe(true);
+      expect(cred.description ?? '').not.toMatch(/could not fully cover/);
+      // The passed branch may not claim the whole tree: a directory was not
+      // listed, and "No private key files found" without that caveat asserts
+      // an absence the scan could not measure.
+      expect(cred.message).toBe('No private key files found among what could be listed (a directory could not be listed — see SCAN-UNREAD-001)');
     });
   });
 

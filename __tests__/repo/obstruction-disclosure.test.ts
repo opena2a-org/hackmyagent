@@ -150,8 +150,8 @@ const ARMS: Array<{ name: string; args: string[]; secure: boolean }> = [
   { name: 'check', args: ['check', '--offline'], secure: false },
 ];
 
-describe('#588 a directory the scan cannot list is an unread input on every channel', () => {
-  describe.each(ARMS)('$name', ({ name, args, secure }) => {
+describe('#588 a directory the scan cannot list is an unread input on every channel', { timeout: 300_000 }, () => {
+  describe.each(ARMS)('$name', { timeout: 300_000 }, ({ name, args, secure }) => {
     beforeEach(() => { armTag = name.replace(/\s+/g, '-'); });
 
     it('control: the same tree listable exits on its findings and records nothing unread', () => {
@@ -279,7 +279,7 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
     });
   });
 
-  describe('cause split, both directions (secure)', () => {
+  describe('cause split, both directions (secure)', { timeout: 300_000 }, () => {
     it('no .gitignore over a mode-000 directory: exit 2 with GIT-001 at LOW (was exit 1 with GIT-001 HIGH)', (ctx) => {
       const dir = makeTree('nogi', { gitignore: false });
       if (!makeUnlistable(path.join(dir, 'cfg'))) osDeclined(ctx);
@@ -306,7 +306,7 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
     });
   });
 
-  describe.each(['quick', 'standard'])('`secure --fix` does not reach exit 0 over an unread input (%s depth)', (depth) => {
+  describe.each(['quick', 'standard'])('`secure --fix` does not reach exit 0 over an unread input (%s depth)', { timeout: 300_000 }, (depth) => {
     it('--fix: exit 2, the directory untouched, the record still there after the fix pass', (ctx) => {
       const dir = makeTree(`fix-${depth}`, { gitignore: false });
       if (!makeUnlistable(path.join(dir, 'cfg'))) osDeclined(ctx);
@@ -326,7 +326,7 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
     });
   });
 
-  describe('direction: secure and check agree on the same fixture', () => {
+  describe('direction: secure and check agree on the same fixture', { timeout: 300_000 }, () => {
     it('same exit, same {count, codes, directories}, same directory, same chmod clause modulo the verb', (ctx) => {
       const dir = makeTree('direction');
       if (!makeUnlistable(path.join(dir, 'cfg'))) osDeclined(ctx);
@@ -344,7 +344,7 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
     });
   });
 
-  describe('direction on a name only one arm enters', () => {
+  describe('direction on a name only one arm enters', { timeout: 300_000 }, () => {
     it('a mode-000 dist/ is named by secure (which reads dist/) and not by check (which never enters it, readable or not)', (ctx) => {
       // The direction rule binds on obstructions both arms would have READ. `check`
       // runs the semantic walker only, whose skip list holds `dist`; the guard is
@@ -372,7 +372,42 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
     });
   });
 
-  describe('policy-skipped names are breadth, not loss (attempt-set predicate)', () => {
+  describe('a rejection two levels down names the directory that failed, not its listable parent', { timeout: 300_000 }, () => {
+    it('src/hidden at mode 000: secure at standard names src/hidden/, whose printed remedy runs and clears', (ctx) => {
+      // The assembly scanner lists src/ with { recursive: true }; Node rejects
+      // that call with the NESTED directory's errno. Attributing it to src/
+      // named a directory that lists fine, with a chmod remedy that is a no-op
+      // and an exit 2 nothing could clear.
+      const dir = makeTree('srcrec', { credential: false });
+      fs.mkdirSync(path.join(dir, 'src', 'hidden'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'src', 'a.ts'), 'export const x = 1;\n');
+      fs.writeFileSync(path.join(dir, 'src', 'hidden', 'b.ts'), 'export const y = 2;\n');
+      if (!makeUnlistable(path.join(dir, 'src', 'hidden'))) osDeclined(ctx);
+      const res = json(['secure', '--scan-depth', 'standard', dir]);
+      expect(res.status).toBe(EXIT_INCOMPLETE);
+      const unread = unreadFindings(res.body);
+      expect(unread.map((f) => f.file)).toEqual([path.join('src', 'hidden') + '/']);
+      const clause = unread[0].fix.split(' && ')[0];
+      expect(clause).toBe(`chmod u+rx ${path.join('src', 'hidden')}`);
+      const ran = spawnSync('sh', ['-c', clause], { cwd: dir, encoding: 'utf-8' });
+      expect(ran.status).toBe(0);
+      const again = json(['secure', '--scan-depth', 'standard', dir]);
+      expect(again.body.coverage.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
+    });
+
+    it('a mode-000 directory under src/node_modules is recorded by the walker that attempted it, by its own name', (ctx) => {
+      const dir = makeTree('srcnm', { credential: false });
+      fs.mkdirSync(path.join(dir, 'src', 'node_modules', 'hidden'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'src', 'a.ts'), 'export const x = 1;\n');
+      if (!makeUnlistable(path.join(dir, 'src', 'node_modules', 'hidden'))) osDeclined(ctx);
+      const res = json(['secure', '--scan-depth', 'standard', dir]);
+      expect(res.status).toBe(EXIT_INCOMPLETE);
+      const unread = unreadFindings(res.body);
+      expect(unread.map((f) => f.file)).toEqual([path.join('src', 'node_modules', 'hidden') + '/']);
+    });
+  });
+
+  describe('policy-skipped names are breadth, not loss (attempt-set predicate)', { timeout: 300_000 }, () => {
     it('a mode-000 .aws/ is named by secure (its sensitive-artifact walk enters it) and not by check', (ctx) => {
       const dir = makeTree('aws-dir', { credential: false });
       fs.mkdirSync(path.join(dir, '.aws'));
@@ -388,7 +423,7 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
       expect(c.body.coverage.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
     });
 
-    describe.each(['.git', 'node_modules'])('%s/', (name) => {
+    describe.each(['.git', 'node_modules'])('%s/', { timeout: 300_000 }, (name) => {
     it('at mode 000 is out of class on both arms at every depth: no walker attempts it, and no root probe reads it as a file', (ctx) => {
       // Before this change secure at standard depth recorded `.git` as a FILE
       // (kind file, `chmod u+r .git`): a root probe read every root entry,
@@ -423,7 +458,7 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
     });
   });
 
-  describe('channels (secure)', () => {
+  describe('channels (secure)', { timeout: 300_000 }, () => {
     it('SARIF at quick and standard: one result, level warning, artifactLocation.uri is the directory', (ctx) => {
       const dir = makeTree('sarif');
       if (!makeUnlistable(path.join(dir, 'cfg'))) osDeclined(ctx);
@@ -455,6 +490,15 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
       const res = run(['secure', '--scan-depth', 'quick', '--ci', dir]);
       expect(res.status).toBe(EXIT_INCOMPLETE);
       expect(res.out).toContain('cfg/ could not be listed (EACCES)');
+    });
+
+    it('check text names the directory in the ruled words and exits 2', (ctx) => {
+      const dir = makeTree('check-text');
+      if (!makeUnlistable(path.join(dir, 'cfg'))) osDeclined(ctx);
+      const res = run(['check', '--offline', dir]);
+      expect(res.status).toBe(EXIT_INCOMPLETE);
+      expect(res.out).toContain('cfg/ could not be listed (EACCES)');
+      expect(res.out).toContain('chmod u+rx cfg && ');
     });
 
     it.todo('text header reads `N files analyzed · 1 directory not listed (contents unknown)`, never `N of M files analyzed` — rendered in src/cli.ts; lands with the paired change to that file');

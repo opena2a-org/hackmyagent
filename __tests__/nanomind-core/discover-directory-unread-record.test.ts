@@ -73,6 +73,42 @@ async function scanWithLedger(): Promise<{ ledger: CoverageLedger; compiled: num
   return { ledger, compiled: result.compiledArtifacts };
 }
 
+describe('the tracked wrapper itself records a rejected listing against the path that failed', () => {
+  // No mock here: this drives the REAL tracked namespace, so it pins the
+  // wrapper's own failure channel — including that a recursive readdir, which
+  // Node rejects with the errno of a NESTED directory, is recorded against
+  // that nested directory and never against its listable argument. The
+  // assembly scanner lists `src/` recursively at standard depth; attributing
+  // its rejection to `src/` named a directory that lists fine, printed a
+  // remedy that is a no-op, and let coalescing suppress the true record.
+  it('a recursive readdir rejected by a nested directory records the nested directory', async (ctx) => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hma-588-wrap-'));
+    try {
+      await mkdir(path.join(dir, 'src', 'hidden'), { recursive: true });
+      await writeFile(path.join(dir, 'src', 'a.ts'), 'export const x = 1;\n');
+      const { chmod } = await import('node:fs/promises');
+      await chmod(path.join(dir, 'src', 'hidden'), 0o000);
+      let denied = false;
+      try { await (await import('node:fs/promises')).readdir(path.join(dir, 'src', 'hidden')); } catch { denied = true; }
+      if (!denied) {
+        console.warn('[discover-directory] cannot deny listing to this process (root?): SKIPPING, not passing');
+        await chmod(path.join(dir, 'src', 'hidden'), 0o755);
+        ctx.skip();
+      }
+      const { fs: tracked } = await vi.importActual<typeof import('../../src/hardening/tracked-fs')>('../../src/hardening/tracked-fs');
+      const ledger = new CoverageLedger(dir);
+      await withActiveLedger(ledger, async () => {
+        try { await tracked.readdir(path.join(dir, 'src'), { recursive: true }); } catch { /* the rejection under test */ }
+      });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 1 });
+      expect(ledger.unreadablePaths()).toEqual([
+        { path: path.join(dir, 'src', 'hidden'), code: 'EACCES', kind: 'directory' },
+      ]);
+      await chmod(path.join(dir, 'src', 'hidden'), 0o755);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+});
+
 describe('#588 a directory whose readdir rejects is an unread input of the directory kind', () => {
   it('control: with readdir working, nothing is unread and cfg/secrets.js compiles', async () => {
     const { ledger, compiled } = await scanWithLedger();
