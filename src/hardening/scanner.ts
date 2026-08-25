@@ -104,9 +104,9 @@ export const JS_FAMILY_EXTENSIONS = ['.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx
  * `buildUnreadInputFinding` can classify an obstruction its caller did not
  * (the `check` arm passes the ledger record through unmodified). Same bounds,
  * kept textually in step with the async method — change the two together: the
- * shallowest ancestor STRICTLY inside the target that this process cannot
- * enter; the target root is never named. `accessSync` here is an inspection
- * of a path already known to exist, not a discovery read.
+ * shallowest ancestor inside the target that this process cannot enter, the
+ * target root included and named `.` (#588). `accessSync` here is an
+ * inspection of a path already known to exist, not a discovery read.
  */
 export function unsearchableAncestorSync(absPath: string, targetDir: string): string | undefined {
   const root = path.resolve(targetDir);
@@ -120,7 +120,18 @@ export function unsearchableAncestorSync(absPath: string, targetDir: string): st
     }
     dir = path.dirname(dir);
   }
-  return shallowest ? path.relative(targetDir, shallowest) : undefined;
+  // The root last (#588): a root that lists but cannot be entered loses every
+  // path beneath it, and naming a child instead sends the user to the wrong
+  // directory. `.` is the root's own relative name, so the remedy stays a
+  // relative command like every other.
+  if (dir === root || path.resolve(absPath) === root) {
+    try {
+      fsSync.accessSync(root, fsSync.constants.X_OK);
+    } catch {
+      shallowest = root;
+    }
+  }
+  return shallowest ? (path.relative(targetDir, shallowest) || '.') : undefined;
 }
 
 /**
@@ -2377,9 +2388,9 @@ export class HardeningScanner {
    * for fixed-path probes, which reach several levels down without listing.
    * Returns the path relative to the target, or undefined when every ancestor
    * is searchable (the file itself is the obstruction). The target root is
-   * never named: the walk stops strictly inside the target, so a root that
-   * lists but cannot be entered leaves each child with the per-file remedy
-   * (recorded as #617).
+   * probed last and named `.` (#588): a root that lists but cannot be entered
+   * loses every path beneath it, and a walk that stopped strictly inside the
+   * target left each child with a per-file remedy that fails.
    *
    * `access(X_OK)` is an inspection of a path already known to exist, not a
    * discovery read: a rejection here is the probe's answer, and the tracked
@@ -2401,7 +2412,15 @@ export class HardeningScanner {
       }
       dir = path.dirname(dir);
     }
-    return shallowest ? path.relative(targetDir, shallowest) : undefined;
+    // The root last (#588) — see `unsearchableAncestorSync`.
+    if (dir === root || path.resolve(absPath) === root) {
+      try {
+        await fs.access(root, fs.constants.X_OK);
+      } catch {
+        shallowest = root;
+      }
+    }
+    return shallowest ? (path.relative(targetDir, shallowest) || '.') : undefined;
   }
 
   /**

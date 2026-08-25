@@ -11,7 +11,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import * as fsn from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { buildUnreadInputFinding } from '../../src/hardening/scanner';
+import { buildUnreadInputFinding, unsearchableAncestorSync } from '../../src/hardening/scanner';
 
 describe('buildUnreadInputFinding', () => {
   // A fresh target per probe-sensitive cell. The builder probes
@@ -157,6 +157,45 @@ describe('buildUnreadInputFinding', () => {
       expect(check.fix).toContain('hackmyagent check');
       expect(check.guidance).toContain('cannot be listed or entered');
     } finally { cleanup(dir); }
+  });
+
+  describe('unsearchableAncestorSync names the scan root (#588)', () => {
+    it('a readable tree has no unsearchable ancestor', () => {
+      const { dir, locked } = realTree();
+      try {
+        expect(unsearchableAncestorSync(locked, dir)).toBeUndefined();
+      } finally { cleanup(dir); }
+    });
+
+    it('a root this process cannot enter is the obstruction, named `.` — not silence, not the child', (ctx) => {
+      // Measured before this change: a mode-600 root lost every probe path
+      // and the finding named each child with a `chmod u+r <file>` that fails.
+      const { dir, locked } = realTree();
+      try {
+        fsn.chmodSync(dir, 0o600);
+        if (!denied(dir, fsn.constants.X_OK)) {
+          console.warn('[build-unread-input-finding] cannot deny search on the root to this process (root?): SKIPPING, not passing');
+          ctx.skip();
+        }
+        expect(unsearchableAncestorSync(locked, dir)).toBe('.');
+        // The root record itself (a mode-000 root rejects readdir) classifies the same way.
+        expect(unsearchableAncestorSync(dir, dir)).toBe('.');
+      } finally { fsn.chmodSync(dir, 0o700); cleanup(dir); }
+    });
+
+    it('the shallowest unsearchable directory wins over a deeper one, and the root over both', (ctx) => {
+      const { dir, locked } = realTree();
+      try {
+        fsn.chmodSync(path.join(dir, 'cfg'), 0o600);
+        if (!denied(path.join(dir, 'cfg'), fsn.constants.X_OK)) {
+          console.warn('[build-unread-input-finding] cannot deny search to this process (root?): SKIPPING, not passing');
+          ctx.skip();
+        }
+        expect(unsearchableAncestorSync(locked, dir)).toBe('cfg');
+        fsn.chmodSync(dir, 0o600);
+        expect(unsearchableAncestorSync(locked, dir)).toBe('.');
+      } finally { fsn.chmodSync(dir, 0o700); cleanup(dir); }
+    });
   });
 
   it('an absent obstruction directory degrades to the enterable-not-listable strings (probe ENOENT)', () => {
