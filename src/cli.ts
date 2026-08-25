@@ -4638,6 +4638,8 @@ Output formats (--format):
   json   Machine-readable JSON
   sarif  GitHub Security tab / IDE integration
   html   Shareable compliance report
+  asff   AWS Security Hub findings
+  asp    Agent Security Profile (with -b oasb-1)
 
 Severities: critical, high, medium, low
 
@@ -4674,7 +4676,7 @@ Examples:
   // it is fixed the promise is scoped to where it holds.
   .option('--ignore <checks>', 'Comma-separated check IDs to leave out of the findings list (e.g., CRED-001,GIT-002). Suppressed checks are still scored and still set the exit code for this command; use --fail-below for a score floor. Not yet honoured by --benchmark')
   .option('--json', 'Output as JSON (deprecated: use --format json)')
-  .option('-f, --format <format>', 'Output format: text, json, sarif, html, asff (default: text)', 'text')
+  .option('-f, --format <format>', 'Output format: text, json, sarif, html, asff; asp with -b oasb-1', 'text')
   .option('--aws-account-id <id>', 'AWS account ID for ASFF format')
   .option('--aws-region <region>', 'AWS region for ASFF format')
   .option('-o, --output <file>', 'Write output to file instead of stdout')
@@ -4799,6 +4801,16 @@ Examples:
       const format = options.json ? 'json' : (options.format || 'text');
       if (!validFormats.includes(format)) {
         console.error(`Error: Invalid format '${escapeForDisplay(String(format))}'. Use: ${validFormats.join(', ')}`);
+        process.exit(1);
+      }
+      // #563 — the Agent Security Profile is rendered only by the OASB-1
+      // benchmark arm (the OASB-2 composite has no profile format either);
+      // outside it the format was accepted and the ordinary text report
+      // printed, so a CI job that asked for a machine format got a human one
+      // with nothing in the exit code to say so. Refuse it where the other
+      // format errors are raised, and name the flag it needs.
+      if (format === 'asp' && String(options.benchmark ?? '').toLowerCase() !== 'oasb-1') {
+        console.error('Error: --format asp is the Agent Security Profile of an OASB-1 benchmark run. Use it with -b oasb-1.');
         process.exit(1);
       }
 
