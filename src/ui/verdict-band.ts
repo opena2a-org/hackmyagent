@@ -95,6 +95,19 @@ export function countsAgainstScore(f: {
 }
 
 /**
+ * #274 — a fix the count surfaces may call "fixed": attempted AND not
+ * disproved. The complement of `countsAgainstScore` over the fixed ones, so
+ * the two counts on a summary line partition the findings: a finding is an
+ * outstanding issue or a confirmed fix, never both. The HTML report and the
+ * Registry remediation report already drew this line inline, and the text
+ * fix summary leads with what was confirmed (`fixSummaryLine`); the MCP
+ * summary and the OpenClaw arm counted every attempt.
+ */
+export function confirmedFix(f: { passed?: boolean; fixed?: boolean; fixVerified?: boolean }): boolean {
+  return f.fixed === true && !countsAgainstScore(f);
+}
+
+/**
  * Whether a finding stays in the report list after a re-filter.
  *
  * The list this gates is the one `countsAgainstScore` is then applied to, so
