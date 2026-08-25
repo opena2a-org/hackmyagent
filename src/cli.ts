@@ -12238,6 +12238,10 @@ async function publishToRegistry(
       toolVersion: VERSION,
       findings: result.findings
         .filter(f => !PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES.has(f.category))
+        // #458 — result.findings holds measured records only (the render filter in
+        // scanner.ts drops a not-applicable record, which has no pass/fail state);
+        // this narrows the type to say so and drops nothing: the parity test pins it.
+        .filter((f): f is SecurityFinding & { passed: boolean } => typeof f.passed === 'boolean')
         .map(f => ({
           checkId: f.checkId,
           name: f.name,
