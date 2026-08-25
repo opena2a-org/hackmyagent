@@ -147,6 +147,74 @@ describe('#438 CoverageLedger records inputs discovered but not read', () => {
     expect(ledger.unreadableInputs.count).toBe(1);
   });
 
+  describe('directory case (#588): a listing that failed is a lost input of the directory kind', () => {
+    it('records a readdir EACCES inside the target as one unreadable input, counted in `count` and in `directories`', async () => {
+      const ledger = new CoverageLedger(TARGET);
+      await withFailure(ledger, (l) => l.noteListFailure(inside('cfg'), 'EACCES'));
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 1 });
+      expect(ledger.unreadablePaths()).toEqual([{ path: inside('cfg'), code: 'EACCES', kind: 'directory' }]);
+    });
+
+    it('emits `directories: 0` on an empty ledger — a consumer must never have to infer the field', () => {
+      expect(new CoverageLedger(TARGET).unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
+    });
+
+    it.each(['ENOENT', 'ENOTDIR'])('%s on a listing is not a lost directory — same NOT_THERE policy, no second list', async (code) => {
+      const ledger = new CoverageLedger(TARGET);
+      await withFailure(ledger, (l) => l.noteListFailure(inside('gone'), code));
+      expect(ledger.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
+    });
+
+    it('a file record keeps kind `file`, and the two kinds add up in `count`', async () => {
+      const ledger = new CoverageLedger(TARGET);
+      await withFailure(ledger, (l) => {
+        l.noteReadFailure(inside('secrets.js'), 'EACCES');
+        l.noteListFailure(inside('cfg'), 'EPERM');
+      });
+      expect(ledger.unreadableInputs).toEqual({ count: 2, codes: { EACCES: 1, EPERM: 1 }, directories: 1 });
+      expect(ledger.unreadablePaths().map((p) => p.kind).sort()).toEqual(['directory', 'file']);
+    });
+
+    it('subtracts a directory the SAME check later listed successfully, in both orderings', async () => {
+      const failFirst = new CoverageLedger(TARGET);
+      await withFailure(failFirst, (l) => {
+        l.noteListFailure(inside('cfg'), 'EACCES');
+        l.noteInspect(inside('cfg'));
+      });
+      expect(failFirst.unreadableInputs.directories).toBe(0);
+      const listFirst = new CoverageLedger(TARGET);
+      await withFailure(listFirst, (l) => {
+        l.noteInspect(inside('cfg'));
+        l.noteListFailure(inside('cfg'), 'EACCES');
+      });
+      expect(listFirst.unreadableInputs.directories).toBe(0);
+    });
+
+    it('ignores a listing failure OUTSIDE the target root', async () => {
+      const ledger = new CoverageLedger(TARGET);
+      await withFailure(ledger, (l) => l.noteListFailure(path.join(path.sep, 'etc'), 'EACCES'));
+      expect(ledger.unreadableInputs.directories).toBe(0);
+    });
+
+    it('records a listing failure raised outside any check — the semantic walker runs unattributed', () => {
+      const ledger = new CoverageLedger(TARGET);
+      ledger.noteListFailure(inside('cfg'), 'EACCES');
+      expect(ledger.unreadableInputs.directories).toBe(1);
+    });
+
+    it('one path recorded on BOTH channels counts once, as the directory', async () => {
+      // A mode-000 directory rejects the walker's readdir AND a check's readFile
+      // probe of the same path; that is one obstruction, not two.
+      const ledger = new CoverageLedger(TARGET);
+      await withFailure(ledger, (l) => {
+        l.noteReadFailure(inside('cfg'), 'EACCES');
+        l.noteListFailure(inside('cfg'), 'EACCES');
+      });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 1 });
+      expect(ledger.unreadablePaths()).toEqual([{ path: inside('cfg'), code: 'EACCES', kind: 'directory' }]);
+    });
+  });
+
   it('records a failure raised outside any check — dropping it would overstate', async () => {
     // The one place the failure channel MUST diverge from `note()`. Dropping an
     // unattributable SUCCESS understates coverage (safe); dropping an

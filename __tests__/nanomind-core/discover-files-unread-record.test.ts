@@ -94,7 +94,7 @@ describe('#515 discovered file whose stat rejects is an unread input', () => {
     // Presence first, then content: `expect(x?.count)` would pass against a
     // ledger that lost the field.
     expect(ledger.unreadableInputs).toBeDefined();
-    expect(ledger.unreadableInputs).toEqual({ count: 0, codes: {} });
+    expect(ledger.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
     expect(compiled).toBeGreaterThanOrEqual(2);
   });
 
@@ -102,9 +102,9 @@ describe('#515 discovered file whose stat rejects is an unread input', () => {
     reject.under = path.join(dir, 'cfg');
     const { ledger, compiled } = await scanWithLedger();
 
-    expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 } });
+    expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 0 });
     expect(ledger.unreadablePaths()).toEqual([
-      { path: path.resolve(dir, 'cfg', 'secrets.js'), code: 'EACCES' },
+      { path: path.resolve(dir, 'cfg', 'secrets.js'), code: 'EACCES', kind: 'file' },
     ]);
     // The readable half is still analyzed: recording the loss must not blank
     // the run (the #438 "withholding" alternative was rejected for that).
@@ -115,7 +115,7 @@ describe('#515 discovered file whose stat rejects is an unread input', () => {
     reject.under = path.join(dir, 'cfg');
     reject.code = 'EPERM';
     const { ledger } = await scanWithLedger();
-    expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EPERM: 1 } });
+    expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EPERM: 1 }, directories: 0 });
   });
 
   it('ENOENT on a listed child is NOT a lost input — a file removed between the listing and the stat', async () => {
@@ -124,7 +124,7 @@ describe('#515 discovered file whose stat rejects is an unread input', () => {
     const { ledger } = await scanWithLedger();
     // The record is made and the ledger's errno discrimination drops it — the
     // same rule `readFile` failures already follow, not a second one.
-    expect(ledger.unreadableInputs).toEqual({ count: 0, codes: {} });
+    expect(ledger.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
     expect(ledger.unreadablePaths()).toEqual([]);
   });
 });

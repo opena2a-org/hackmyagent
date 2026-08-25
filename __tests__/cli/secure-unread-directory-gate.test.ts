@@ -152,7 +152,7 @@ describe('#515 secure over a directory it can list but not enter', () => {
     const res = json(['secure', dir, '--scan-depth', 'quick']);
     expect(res.body).not.toBeNull();
     expect(res.status).toBe(EXIT_FAIL);
-    expect(res.body.coverage.unreadableInputs).toEqual({ count: 0, codes: {} });
+    expect(res.body.coverage.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
     expect(res.body.findings.some((f: any) => /^AST-CRED-/.test(f.checkId) && f.file === 'cfg/secrets.js')).toBe(true);
   }, 300_000);
 
@@ -165,7 +165,7 @@ describe('#515 secure over a directory it can list but not enter', () => {
     expect(res.status).toBe(EXIT_INCOMPLETE);
 
     // Counted on the same channel a failed readFile uses.
-    expect(res.body.coverage.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 } });
+    expect(res.body.coverage.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 0 });
 
     // Named, with the file the walker discovered — not the directory, not a
     // count. The path is what the user acts on.
@@ -203,7 +203,7 @@ describe('#515 secure over a directory it can list but not enter', () => {
     expect(() => fs.statSync(path.join(dir, 'cfg', 'secrets.js'))).not.toThrow();
     const again = json(['secure', dir, '--scan-depth', 'quick']);
     expect(again.status).toBe(EXIT_FAIL);
-    expect(again.body.coverage.unreadableInputs).toEqual({ count: 0, codes: {} });
+    expect(again.body.coverage.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
   }, 300_000);
 
   it('the text channel leads with the unread input rather than a clean verdict', (ctx: TestContext) => {
@@ -227,7 +227,7 @@ describe('#515 secure over a directory it can list but not enter', () => {
     expect(res.status).toBe(EXIT_INCOMPLETE);
     // ONE record for one file, although two readers (static readFile and the
     // semantic walker's stat) both failed on it: the ledger dedups by path.
-    expect(res.body.coverage.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 } });
+    expect(res.body.coverage.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 0 });
     expect(res.body.findings.filter((f: any) => f.checkId === 'SCAN-UNREAD-001')).toHaveLength(1);
   }, 300_000);
 
@@ -258,7 +258,7 @@ describe('#515 secure over a directory it can list but not enter', () => {
     const res = json(['check', dir, '--offline']);
     expect(res.body).not.toBeNull();
     expect(res.status).toBe(EXIT_INCOMPLETE);
-    expect(res.body.coverage.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 } });
+    expect(res.body.coverage.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 0 });
     const unread = (res.body.details ?? []).filter((f: any) => f.checkId === 'SCAN-UNREAD-001');
     expect(unread.map((f: any) => f.file)).toEqual(['cfg/secrets.js']);
     // The remedy names the DIRECTORY and re-runs the command the user ran —
@@ -272,7 +272,7 @@ describe('#515 secure over a directory it can list but not enter', () => {
     execSync(unread[0].fix.split(' && ')[0], { cwd: dir });
     const after = json(['check', dir, '--offline']);
     expect(after.body).not.toBeNull();
-    expect(after.body.coverage.unreadableInputs).toEqual({ count: 0, codes: {} });
+    expect(after.body.coverage.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
     expect(after.status).not.toBe(EXIT_INCOMPLETE);
   }, 300_000);
 });

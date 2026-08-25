@@ -396,8 +396,13 @@ export interface ScanResult {
      *
      * Counts and errno codes, never paths. The paths reach the user through a
      * finding, which is the channel that carries `file:line` and a fix.
+     *
+     * `count` includes BOTH kinds of lost input: a file the scan discovered
+     * and could not read, and a directory it discovered and could not list
+     * (#588) — one unit per obstruction, never an estimate of what a directory
+     * hid. `directories` is the kind split and is always present, `0` included.
      */
-    unreadableInputs?: { count: number; codes: Record<string, number> };
+    unreadableInputs?: { count: number; codes: Record<string, number>; directories: number };
     /**
      * FAILED checks that MATCHED something in the tree and were dropped from
      * `findings` anyway, because the check's prefix is out of scope for the

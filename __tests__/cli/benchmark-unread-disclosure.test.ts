@@ -89,7 +89,7 @@ describe('#514 the benchmark arms disclose what the run could not read', () => {
     expect(text.out).not.toContain('Unread inputs:');
     const json = run(['secure', dir, '-b', 'oasb-1', '-l', 'L1', '--no-machine-posture', '--format', 'json']);
     const body = JSON.parse(json.stdout.slice(json.stdout.indexOf('{')));
-    expect(body.unreadableInputs).toEqual({ count: 0, codes: {} });
+    expect(body.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
   });
 
   it('text: -b oasb-1 names the unread input and frames compliance as an upper bound', () => {

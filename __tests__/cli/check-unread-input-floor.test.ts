@@ -97,7 +97,7 @@ describe('#508 check settles a floor over a tree it could not fully read', () =>
     expect(status).toBe(EXIT_PASS);
     expect(body.measured).toBe(true);
     expect(body.coverage.examined).toBe(body.coverage.total);
-    expect(body.coverage.unreadableInputs).toEqual({ count: 0, codes: {} });
+    expect(body.coverage.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
   });
 
   it('--json: one unread input puts the file on the denominator, keeps the band, and exits 2', () => {
@@ -184,6 +184,8 @@ describe('#508 check settles a floor over a tree it could not fully read', () =>
     expect(status).toBe(EXIT_UNMEASURED);
     expect(body.coverage.measured).toBe(false);
     expect(body.coverage.reason).toBe('target-unreadable');
+    // The target-unreadable arm builds this record itself in `src/cli.ts`; it
+    // gains `directories: 0` with that arm's edit (#588 rendering set), not here.
     expect(body.coverage.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 } });
     const text = run(['check', file]);
     expect(text.status).toBe(EXIT_UNMEASURED);

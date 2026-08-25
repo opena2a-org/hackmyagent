@@ -354,6 +354,19 @@ export class CoverageLedger {
    * write time cannot be re-measured when the policy is questioned.
    */
   private readonly readFailures = new Map<string, { code: string; method: string }>();
+  /**
+   * Directories inside the target that were discovered and could NOT be
+   * listed (`readdir`/`opendir` rejected), keyed by resolved path — the
+   * directory kind of the same fact `readFailures` records for files (#588).
+   * A directory the walker cannot list loses every path under it without a
+   * single read ever being attempted, so nothing on the read channel can
+   * disclose it; this is the only place it can land.
+   *
+   * Recorded raw, same as `readFailures`; the NOT_THERE policy is applied in
+   * `unreadableInputs` through the one `countsAsUnread` predicate — a second
+   * errno list for listings would be a second predicate for one fact.
+   */
+  private readonly listFailures = new Map<string, { code: string; method: string }>();
 
   constructor(targetRoot: string) {
     this.targetRoot = path.resolve(targetRoot);
@@ -454,6 +467,27 @@ export class CoverageLedger {
    * recording it, so the two orderings agree.
    */
   noteReadFailure(target: string, code: string): void {
+    this.recordFailure(target, code, this.readFailures);
+  }
+
+  /**
+   * Attribute a directory LISTING that failed (`readdir`/`opendir` rejected).
+   * Called by the tracked `fs` namespace and by the walkers (#588).
+   *
+   * Same filters as `noteReadFailure`: unattributed allowed, inside the
+   * target, realpath containment, deduped by resolved path, first errno wins.
+   * A directory that the SAME check later lists successfully is subtracted
+   * in `unreadableInputs`, exactly as a retried read is.
+   */
+  noteListFailure(target: string, code: string): void {
+    this.recordFailure(target, code, this.listFailures);
+  }
+
+  private recordFailure(
+    target: string,
+    code: string,
+    into: Map<string, { code: string; method: string }>,
+  ): void {
     // NOT filtered on attribution, and this is the one place the failure
     // channel must diverge from `note()`.
     //
@@ -476,7 +510,7 @@ export class CoverageLedger {
       return;
     }
     if (!this.isInsideTarget(resolved)) return;
-    if (this.readFailures.has(resolved)) return; // first failure wins
+    if (into.has(resolved)) return; // first failure wins
     // Containment is decided on the REAL path, not the lexical one. A symlink
     // inside the target pointing at a file outside it — `src/evil.js` ->
     // `/etc/master.passwd` — is a path any contributor can commit, and the read
@@ -502,7 +536,7 @@ export class CoverageLedger {
       const real = realpathSync(resolved);
       if (real !== resolved && !this.isInsideReal(real)) return;
     } catch { /* unresolvable — keep the lexical decision */ }
-    this.readFailures.set(resolved, { code: code || 'UNKNOWN', method });
+    into.set(resolved, { code: code || 'UNKNOWN', method });
   }
 
   private note(target: string, into: Map<string, Set<string>>, isRead: boolean): void {
@@ -619,16 +653,51 @@ export class CoverageLedger {
    * the channel that carries `file:line` and a fix; putting them here would put
    * a normalised temp-directory name into `--json`.
    */
-  get unreadableInputs(): { count: number; codes: Record<string, number> } {
+  get unreadableInputs(): { count: number; codes: Record<string, number>; directories: number } {
     const codes: Record<string, number> = {};
     let count = 0;
+    let directories = 0;
+    for (const { code, kind } of this.lostInputs()) {
+      count++;
+      codes[code] = (codes[code] ?? 0) + 1;
+      if (kind === 'directory') directories++;
+    }
+    return { count, codes, directories };
+  }
+
+  /**
+   * Every discovered-and-lost input that survives the policy, both kinds.
+   *
+   * `count` in `unreadableInputs` is the length of this list, and it WIDENS to
+   * include directories on purpose (#588 ruling): a sibling-only field would
+   * leave the `count > 0` predicate every consumer gates on reading `false`
+   * while an obstruction exists — a silent false-clean. `directories` beside it
+   * is the kind split, never an estimate of what a directory hid: one
+   * obstruction is one unit, whatever is behind it.
+   *
+   * Subtraction mirrors the read channel: a listing the SAME check later
+   * completed sits in `inspectedByMethod`, as a retried read sits in
+   * `readsByMethod`. A path recorded on BOTH channels (a mode-000 directory
+   * rejects the walker's `readdir` and a check's `readFile` probe alike) is one
+   * obstruction and is reported once, as the directory — the kind whose remedy
+   * actually clears it.
+   */
+  private lostInputs(): { resolved: string; code: string; kind: 'file' | 'directory' }[] {
+    const out: { resolved: string; code: string; kind: 'file' | 'directory' }[] = [];
+    const lostDirs = new Set<string>();
+    for (const [resolved, { code, method }] of this.listFailures) {
+      if (!countsAsUnread(code)) continue;
+      if (this.inspectedByMethod.get(method)?.has(resolved)) continue;
+      lostDirs.add(resolved);
+      out.push({ resolved, code, kind: 'directory' });
+    }
     for (const [resolved, { code, method }] of this.readFailures) {
       if (!countsAsUnread(code)) continue;
       if (this.readsByMethod.get(method)?.has(resolved)) continue;
-      count++;
-      codes[code] = (codes[code] ?? 0) + 1;
+      if (lostDirs.has(resolved)) continue;
+      out.push({ resolved, code, kind: 'file' });
     }
-    return { count, codes };
+    return out;
   }
 
   /**
@@ -637,14 +706,10 @@ export class CoverageLedger {
    * Deliberately NOT part of the `--json` coverage block. A caller that renders
    * these is responsible for the same path hygiene every finding observes.
    */
-  unreadablePaths(): { path: string; code: string }[] {
-    const out: { path: string; code: string }[] = [];
-    for (const [resolved, { code, method }] of this.readFailures) {
-      if (!countsAsUnread(code)) continue;
-      if (this.readsByMethod.get(method)?.has(resolved)) continue;
-      out.push({ path: resolved, code });
-    }
-    return out.sort((a, b) => a.path.localeCompare(b.path));
+  unreadablePaths(): { path: string; code: string; kind: 'file' | 'directory' }[] {
+    return this.lostInputs()
+      .map(({ resolved, code, kind }) => ({ path: resolved, code, kind }))
+      .sort((a, b) => a.path.localeCompare(b.path));
   }
 
   /**
@@ -902,6 +967,16 @@ export function noteReadFailure(target: unknown, code: unknown): void {
   if (!activeLedger) return;
   if (typeof target !== 'string') return; // fd / URL / Buffer — not attributable
   activeLedger.noteReadFailure(target, typeof code === 'string' ? code : 'UNKNOWN');
+}
+
+/**
+ * Report a FAILED directory listing to the active ledger, if any (#588).
+ * Same contract as `noteReadFailure`: the errno is recorded verbatim.
+ */
+export function noteListFailure(target: unknown, code: unknown): void {
+  if (!activeLedger) return;
+  if (typeof target !== 'string') return;
+  activeLedger.noteListFailure(target, typeof code === 'string' ? code : 'UNKNOWN');
 }
 
 /** Test seam: the ledger currently installed, or null. */

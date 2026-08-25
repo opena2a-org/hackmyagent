@@ -2359,7 +2359,7 @@ export class HardeningScanner {
    * Check if a file path matches any .hmaignore pattern.
    */
   /** Every unreadable input this run recorded, before scope filtering. */
-  private unreadableAll: { path: string; code: string; rel: string; obstructedBy?: string }[] = [];
+  private unreadableAll: { path: string; code: string; kind: 'file' | 'directory'; rel: string; obstructedBy?: string }[] = [];
 
   /**
    * For a permission-denied read, the shallowest ancestor inside the target
@@ -2418,10 +2418,14 @@ export class HardeningScanner {
    * render at all — and was removed. A method named for that shape survived
    * it (#590).
    */
-  private allUnreadableInputs(): { count: number; codes: Record<string, number> } {
+  private allUnreadableInputs(): { count: number; codes: Record<string, number>; directories: number } {
     const codes: Record<string, number> = {};
-    for (const u of this.unreadableAll) codes[u.code] = (codes[u.code] ?? 0) + 1;
-    return { count: this.unreadableAll.length, codes };
+    let directories = 0;
+    for (const u of this.unreadableAll) {
+      codes[u.code] = (codes[u.code] ?? 0) + 1;
+      if (u.kind === 'directory') directories++;
+    }
+    return { count: this.unreadableAll.length, codes, directories };
   }
 
   private isPathIgnored(filePath: string, ignoredPaths: string[]): boolean {
@@ -3114,7 +3118,7 @@ export class HardeningScanner {
     // The exit-code unit (`allUnreadableInputs`) is then counted over this same
     // list, unscoped, so the finding, the count and the exit code cannot
     // disagree about a file (#590).
-    const unreadable: { path: string; code: string; rel: string; obstructedBy?: string }[] = [];
+    const unreadable: { path: string; code: string; kind: 'file' | 'directory'; rel: string; obstructedBy?: string }[] = [];
     for (const u of this.coverage.unreadablePaths()) {
       const rel = path.relative(targetDir, u.path) || path.basename(u.path);
       // A permission denial on a file inside a directory this user cannot
