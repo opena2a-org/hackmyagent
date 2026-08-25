@@ -187,6 +187,17 @@ path and rollback command are keyed on the backup the scanner wrote rather than 
 count, so a run whose only attempt was disproved still says where the backup is and how to roll
 back.
 
+### Telemetry records a harden-soul run that changed nothing as a failure
+
+`harden-soul` exits 1 only when it did not do its job — the target directory is missing, no
+backup could be written, the target refused the write, or the run threw; it has no
+findings-style exit 1. The telemetry hook followed the security-tool convention (exit 0 and 1
+both count as success) for it, so the fleet metric read "governance hardened" for the refused
+runs it recorded — no backup could be written, or the target refused the write — while the
+missing-target and thrown paths hard-exit and emit no event at all (#362). The command joins `rollback` in the set whose exit 1 is a
+failure; the set is pinned by a test that has to be edited deliberately to grow. Nothing a user
+sees changes outside the telemetry payload.
+
 ### Multi-part fix text renders on separate lines in the findings list
 
 The fix generator composes a remediation from several authored parts — the command, a

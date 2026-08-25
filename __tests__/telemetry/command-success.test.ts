@@ -50,11 +50,12 @@ describe('commandSucceeded (#350)', () => {
     expect(commandSucceeded('secure', 2, conventional)).toBe(false);
   });
 
-  it('lists rollback, and does not quietly grow', () => {
+  it('lists rollback and harden-soul, and does not quietly grow', () => {
     // A guard on the exception surface itself. Adding a command here changes
     // what a published metric means, so it should be a deliberate edit that
-    // fails this assertion first.
-    expect([...EXIT1_IS_FAILURE].sort()).toEqual(['rollback']);
+    // fails this assertion first. harden-soul was added under #362: its exit 1
+    // is a refusal or an error on every path, never a result.
+    expect([...EXIT1_IS_FAILURE].sort()).toEqual(['harden-soul', 'rollback']);
   });
 });
 
