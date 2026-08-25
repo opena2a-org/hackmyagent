@@ -172,9 +172,14 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
 
   it('RED-ON-BASE text (T2): default depth -l L3 is Not Passing with the null scope in the same string, exit 1', () => {
     const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--verbose']);
-    expect(res.out).toContain('Rating: Not Passing (L2, L3 not assessed)');
+    // Since #458 steps 1-2 an absent Dockerfile is a MEASURED L2 failure —
+    // SANDBOX-001's ruled advisory shape (`passed: false`, `file` = the path
+    // the fix creates) — so L2 leaves the null scope on an empty tree and only
+    // L3 remains unmeasured. The property under test is unchanged: the null
+    // scope travels in the rating string, never alone.
+    expect(res.out).toContain('Rating: Not Passing (L3 not assessed)');
     expect(res.out).toContain('Compliance by level: L1=');
-    expect(res.out).toContain('L2=not assessed L3=not assessed');
+    expect(res.out).toContain('L2=0% L3=not assessed');
     expect(res.status).toBe(1);
   });
 
@@ -382,12 +387,15 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
     expect(res.status).toBe(0);
   });
 
-  it('RED-ON-BASE json: an L1 failure still reads Not Passing at -l L3 when L2/L3 are unmeasured (null rungs are skipped, not failed)', () => {
+  it('RED-ON-BASE json: an L1 failure still reads Not Passing at -l L3 when L3 is unmeasured (null rungs are skipped, not failed)', () => {
     const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--format', 'json']);
     const body = parseJson(res.stdout);
     expect(typeof body.l1Compliance).toBe('number');
     expect(body.l1Compliance).toBeLessThan(70);
-    expect(body.l2Compliance).toBeNull();
+    // L2 is measured on an empty tree since #458 steps 1-2 (SANDBOX-001's
+    // advisory record fails 9.4 Sandboxing): 0, a number, not null. L3 is the
+    // null rung this cell is about.
+    expect(body.l2Compliance).toBe(0);
     expect(body.l3Compliance).toBeNull();
     expect(body.rating).toBe('Not Passing');
     expect(res.status).toBe(1);
