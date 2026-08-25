@@ -213,6 +213,7 @@ export type ToolResult = {
 export interface BenchmarkAssessment {
   passed: number;
   failed: number;
+  notApplicable: number;
   unverified: number;
   compliance: number;
   rating: string;
@@ -225,13 +226,17 @@ export function assessBenchmarkFindings(
   level: BenchmarkLevel,
 ): BenchmarkAssessment {
   const controls = getControlsForLevel(level);
-  const checkIdResults = new Map<string, boolean | undefined>();
+  // #458 — last record per checkId wins, as before, but the record keeps its
+  // notApplicable marker: a not-applicable record has no pass/fail state and
+  // must never be read as the legacy "no false => pass".
+  const checkIdResults = new Map<string, Pick<SecurityFinding, 'passed' | 'notApplicable'>>();
   for (const f of allFindings) {
-    checkIdResults.set(f.checkId, f.passed);
+    checkIdResults.set(f.checkId, { passed: f.passed, notApplicable: f.notApplicable });
   }
 
   let passed = 0;
   let failed = 0;
+  let notApplicable = 0;
   let unverified = 0;
   const lines: string[] = [];
 
@@ -244,26 +249,56 @@ export function assessBenchmarkFindings(
       continue;
     }
 
-    const allPass = control.checkIds.every((id) => checkIdResults.get(id) !== false);
-    if (allPass) {
-      passed++;
-      lines.push(`[PASS] ${control.id} ${control.name}`);
-    } else {
+    const records = control.checkIds.map((id) => ({ id, record: checkIdResults.get(id) }));
+    // notApplicable is decided per record FIRST, in the same order as
+    // `countsAgainstScore`: an NA record's `passed` is not read at all.
+    const failedChecks = records.filter(
+      ({ record }) => record !== undefined && !record.notApplicable && record.passed === false,
+    );
+    if (failedChecks.length > 0) {
       failed++;
-      const failedChecks = control.checkIds.filter((id) => checkIdResults.get(id) === false);
-      lines.push(`[FAIL] ${control.id} ${control.name} (${failedChecks.join(', ')})`);
+      lines.push(
+        `[FAIL] ${control.id} ${control.name} (${failedChecks.map(({ id }) => id).join(', ')})`,
+      );
+      continue;
     }
+
+    const naChecks = records.filter(({ record }) => record?.notApplicable);
+    const anyMeasured = records.some(({ record }) => record !== undefined && !record.notApplicable);
+    if (naChecks.length > 0 && !anyMeasured) {
+      // Every record this control has is a positive not-applicable: the
+      // control's subject is absent from the scanned tree, so the control was
+      // neither satisfied nor violated. Own bucket, own line, excluded from
+      // the compliance denominator below.
+      notApplicable++;
+      lines.push(
+        `[NOT-APPLICABLE] ${control.id} ${control.name} (${naChecks
+          .map(({ id, record }) => `${id}: no ${record!.notApplicable!.subject}`)
+          .join(', ')})`,
+      );
+      continue;
+    }
+
+    // Legacy credit, deliberately kept: a control none of whose checkIds
+    // produced ANY record still counts as a pass, exactly as
+    // `get(id) !== false` did before #458. The ruling narrows that credit
+    // only where a positive not-applicable record exists; the absent-record
+    // credit is pinned by the #458 test so a future change of it is loud.
+    passed++;
+    lines.push(`[PASS] ${control.id} ${control.name}`);
   }
 
+  // notApplicable is excluded: an absent subject shrinks the denominator, it
+  // does not dent compliance (#458 ruling, CA + CPO 2026-08-24).
   const total = passed + failed;
   const compliance = total > 0 ? Math.round((passed / total) * 100) : 0;
   const rating = calculateRating(compliance, compliance, compliance, level);
   const text =
     `OASB-1 ${level} Assessment: ${compliance}% compliance (${rating})\n` +
-    `Passed: ${passed} | Failed: ${failed} | Unverified: ${unverified}\n\n` +
+    `Passed: ${passed} | Failed: ${failed} | Not applicable: ${notApplicable} | Unverified: ${unverified}\n\n` +
     lines.join('\n');
 
-  return { passed, failed, unverified, compliance, rating, lines, text };
+  return { passed, failed, notApplicable, unverified, compliance, rating, lines, text };
 }
 
 function refuse(refusal: RootRefusal): ToolResult {
