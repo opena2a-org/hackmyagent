@@ -683,18 +683,38 @@ export class CoverageLedger {
    * actually clears it.
    */
   private lostInputs(): { resolved: string; code: string; kind: 'file' | 'directory' }[] {
-    const out: { resolved: string; code: string; kind: 'file' | 'directory' }[] = [];
-    const lostDirs = new Set<string>();
+    const lostDirs = new Map<string, string>(); // resolved dir -> errno
     for (const [resolved, { code, method }] of this.listFailures) {
       if (!countsAsUnread(code)) continue;
       if (this.inspectedByMethod.get(method)?.has(resolved)) continue;
-      lostDirs.add(resolved);
+      lostDirs.set(resolved, code);
+    }
+    // Coalescing (#588 ruling): a record beneath a directory that is ITSELF a
+    // recorded obstruction is attributed to that directory, never counted
+    // beside it — clearing the directory clears everything under it, and a
+    // count that said otherwise would be an estimate of what it hid. Only
+    // onto a recorded ancestor: a sibling, or a parent the scan listed fine,
+    // is not an obstruction the ledger observed, and the ledger does not
+    // invent one. Pure path ancestry — no probe, so both arms coalesce alike.
+    const underLostDir = (resolved: string): boolean => {
+      let dir = path.dirname(resolved);
+      while (dir !== resolved) {
+        if (lostDirs.has(dir)) return true;
+        const up = path.dirname(dir);
+        if (up === dir) break;
+        dir = up;
+      }
+      return false;
+    };
+    const out: { resolved: string; code: string; kind: 'file' | 'directory' }[] = [];
+    for (const [resolved, code] of lostDirs) {
+      if (underLostDir(resolved)) continue;
       out.push({ resolved, code, kind: 'directory' });
     }
     for (const [resolved, { code, method }] of this.readFailures) {
       if (!countsAsUnread(code)) continue;
       if (this.readsByMethod.get(method)?.has(resolved)) continue;
-      if (lostDirs.has(resolved)) continue;
+      if (lostDirs.has(resolved) || underLostDir(resolved)) continue;
       out.push({ resolved, code, kind: 'file' });
     }
     return out;

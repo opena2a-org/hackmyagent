@@ -202,6 +202,62 @@ describe('#438 CoverageLedger records inputs discovered but not read', () => {
       expect(ledger.unreadableInputs.directories).toBe(1);
     });
 
+    it('coalesces a lost file onto the lost directory above it — one obstruction, one unit', async () => {
+      // `chmod 000 cfg`: the walker cannot list cfg/, and a check that probes
+      // cfg/secrets.js by name gets EACCES too. Clearing cfg/ clears both.
+      const ledger = new CoverageLedger(TARGET);
+      await withFailure(ledger, (l) => {
+        l.noteListFailure(inside('cfg'), 'EACCES');
+        l.noteReadFailure(inside('cfg/secrets.js'), 'EACCES');
+        l.noteReadFailure(inside('cfg/deeper/key.pem'), 'EACCES');
+      });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 1 });
+      expect(ledger.unreadablePaths()).toEqual([{ path: inside('cfg'), code: 'EACCES', kind: 'directory' }]);
+    });
+
+    it('coalesces a lost directory onto a lost ancestor directory', async () => {
+      const ledger = new CoverageLedger(TARGET);
+      await withFailure(ledger, (l) => {
+        l.noteListFailure(inside('a'), 'EACCES');
+        l.noteListFailure(inside('a/b'), 'EACCES');
+      });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 1 });
+    });
+
+    it('the scan root itself, unlistable, is ONE record that absorbs every probe beneath it', async () => {
+      // Measured before this change: a mode-000 root produced ~64 findings,
+      // one per fixed-path probe, and named none of them as the root.
+      const ledger = new CoverageLedger(TARGET);
+      await withFailure(ledger, (l) => {
+        l.noteListFailure(TARGET, 'EACCES');
+        for (const p of ['.env', 'package.json', '.claude/settings.json', 'cfg/secrets.js']) l.noteReadFailure(inside(p), 'EACCES');
+      });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 1 });
+      expect(ledger.unreadablePaths()).toEqual([{ path: TARGET, code: 'EACCES', kind: 'directory' }]);
+    });
+
+    it('does NOT coalesce onto a sibling, nor onto an ancestor that is not itself a recorded obstruction', async () => {
+      // `chmod 600 a/`: a/ lists fine (not recorded), a/b/ cannot be entered
+      // and a/x.js cannot be read. Two records; the remedy names a/ for both,
+      // but the ledger does not invent an obstruction it never observed.
+      const ledger = new CoverageLedger(TARGET);
+      await withFailure(ledger, (l) => {
+        l.noteListFailure(inside('a/b'), 'EACCES');
+        l.noteReadFailure(inside('a/x.js'), 'EACCES');
+        l.noteListFailure(inside('other'), 'EACCES');
+      });
+      expect(ledger.unreadableInputs).toEqual({ count: 3, codes: { EACCES: 3 }, directories: 2 });
+    });
+
+    it('a lost directory that does not COUNT (ENOENT) coalesces nothing', async () => {
+      const ledger = new CoverageLedger(TARGET);
+      await withFailure(ledger, (l) => {
+        l.noteListFailure(inside('cfg'), 'ENOENT');
+        l.noteReadFailure(inside('cfg/secrets.js'), 'EACCES');
+      });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 0 });
+    });
+
     it('one path recorded on BOTH channels counts once, as the directory', async () => {
       // A mode-000 directory rejects the walker's readdir AND a check's readFile
       // probe of the same path; that is one obstruction, not two.
