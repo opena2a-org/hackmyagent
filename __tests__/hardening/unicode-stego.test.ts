@@ -652,7 +652,10 @@ describe('UNICODE-STEGO checks', () => {
       expect(stego001.length).toBe(1);
       expect(stego002.length).toBe(1);
       expect(stego002[0].severity).toBe('critical');
-      expect(stego002[0].message).toContain('invisible codepoints');
+      // The corroborator is the variation-selector/tag payload the decoder shape
+      // actually consumes, named precisely — a lone zero-width char does not lift
+      // this finding (see the payload-class defence-negative below).
+      expect(stego002[0].message).toContain('variation-selector or tag-character payload');
     });
 
     it('reports the earlier of the two signals, not the first .codePointAt', async () => {
@@ -766,6 +769,50 @@ describe('UNICODE-STEGO checks', () => {
       // MUST match it, or this test is measuring nothing.
       expect(REVERTED_GATE.test('  return String.fromCodePoint(...out);')).toBe(true);
       expect(REVERTED_GATE.test('  return String.fromCharCode(...out);')).toBe(true);
+    });
+
+    // #475 — the invisible corroborator fired on ANY invisible char, so a lone
+    // zero-width char (U+200B) lifted a decoder shape to CRITICAL. That is not the
+    // payload this shape reconstitutes (its range is FE0x / E01xx), and one benign
+    // use of a zero-width char is escaping a `**/` inside a JSDoc so the block
+    // comment does not close. Corroboration now requires a variation-selector or
+    // tag-character payload; a file whose only invisible is a lone zero-width
+    // escape, with no sink and no VS/tag payload, is a MEDIUM lead. UNICODE-STEGO-001
+    // still reports the zero-width char on its own (a HIGH lead; `.hmaignore` is the
+    // place to waive a known-benign comment escape).
+    it('does not escalate on a decoder shape whose only invisible is a lone zero-width char', async () => {
+      const content = Buffer.concat([
+        Buffer.from(
+          [
+            'function decode(input) {',
+            '  const out = [];',
+            '  for (let i = 0; i < input.length; i++) {',
+            '    const cp = input.codePointAt(i);',
+            '    if (cp >= 0xFE00 && cp <= 0xFE0F) { out.push(cp - 0xFE00); }',
+            '  }',
+            '  return String.fromCharCode(...out);',
+            '}',
+            'const note = "see the ',
+          ].join('\n')
+        ),
+        Buffer.from([0xE2, 0x80, 0x8B]), // U+200B, the only invisible char; no VS/tag payload
+        Buffer.from(' docs";\nmodule.exports = decode;\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'zw-only-shape.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego001 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'zw-only-shape.js'
+      );
+      const stego002 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'zw-only-shape.js'
+      );
+
+      expect(stego001.length).toBe(1);
+      expect(stego001[0].severity).toBe('high');
+      expect(stego002.length).toBe(1);
+      expect(stego002[0].severity).toBe('medium');
+      expect(['critical', 'high']).not.toContain(stego002[0].severity);
     });
   });
 

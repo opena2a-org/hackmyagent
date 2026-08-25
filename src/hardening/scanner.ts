@@ -13413,16 +13413,22 @@ dist/
       // requires corroboration, and both corroborators are read from THIS file so a
       // finding's severity never depends on the order the tree is walked in:
       //   1. an execution sink here, so a decoded string can reach eval/Function;
-      //   2. UNICODE-STEGO-001 fired here, so the invisible payload that a decoder
-      //      would decode is actually present in the same file.
-      // Neither holds for a test that builds a payload and asserts a sanitiser
-      // escapes it. That is a correct DEFENCE against this technique, and a check
-      // that grades a defence as the attack fires hardest on the people doing the
-      // right thing.
+      //   2. a variation-selector or tag-character payload here — the invisible
+      //      classes this decoder shape actually reconstitutes (its hex range is
+      //      FE0x / E01xx). A lone zero-width char or a mid-file BOM is NOT such a
+      //      payload: a single U+200B is not a decodable string, and one common
+      //      benign use is escaping a comment delimiter (a `**/` inside a JSDoc),
+      //      so corroborating on it grades a legitimate escape as the attack and
+      //      fires hardest on the people doing the right thing (#475). UNICODE-
+      //      STEGO-001 still reports the zero-width char on its own (a HIGH lead);
+      //      it just does not lift THIS decoder finding to CRITICAL.
+      // Neither corroborator holds for a test that builds a payload and asserts a
+      // sanitiser escapes it — a correct DEFENCE against this technique.
       const hasExecutionSink =
         /(?:^|[^\w.$])eval\s*\(/.test(content) ||
         /(?:^|[^\w.$])(?:new\s+)?Function\s*\(/.test(content);
-      const corroborated = hasExecutionSink || hasAnyInvisible;
+      const hasDecodablePayload = hasVariationSelectors || hasTagCharsIn001;
+      const corroborated = hasExecutionSink || hasDecodablePayload;
 
       if (hasCodePointAt && hasHexLiteral) {
         // Report the EARLIER of the two signals. Reporting the first `.codePointAt(`
@@ -13431,8 +13437,8 @@ dist/
         const reportedLine = Math.min(codePointAtLine, hexLiteralLine);
         const corroboration = hasExecutionSink
           ? 'an execution sink (eval/Function) in the same file'
-          : hasAnyInvisible
-            ? 'invisible codepoints present in the same file (UNICODE-STEGO-001)'
+          : hasDecodablePayload
+            ? 'a variation-selector or tag-character payload in the same file (UNICODE-STEGO-001)'
             : null;
         // Say what was actually observed. A file that only READS codepoints must not
         // be described as reconstituting them; that sentence would be false about the
@@ -13446,7 +13452,7 @@ dist/
           name: 'GlassWorm Decoder Pattern Detected',
           description: corroboration
             ? `Source file ${act} Unicode variation selector or tag character codepoints AND carries corroborating evidence - this is the decoder half of a GlassWorm attack`
-            : `Source file ${act} Unicode variation selector or tag character codepoints. This is the shape of a GlassWorm decoder, but neither corroborator this check recognises is present - no literal eval( or Function( call, and no invisible codepoints`,
+            : `Source file ${act} Unicode variation selector or tag character codepoints. This is the shape of a GlassWorm decoder, but neither corroborator this check recognises is present - no literal eval( or Function( call, and no variation-selector or tag-character payload`,
           category: 'unicode-stego',
           severity: corroborated ? 'critical' : 'medium',
           passed: false,
@@ -13461,7 +13467,7 @@ dist/
             : `sed -n '${Math.max(1, reportedLine - 5)},${reportedLine + 20}p' ${shellEscape(relativePath)}   # confirm this decodes for inspection, not for execution`,
           guidance: corroboration
             ? `The GlassWorm attack hides a payload in invisible Unicode characters and rebuilds it at runtime from their codepoints. This file ${act} those codepoints AND carries corroborating evidence, so treat it as live until traced. Follow the value from the range literal to whatever consumes it.`
-            : `This file ${act} codepoints in the variation selector or tag range. Sanitisers, linters, width calculators and tests for this attack all legitimately do the same thing, which is why this is a lead rather than a verdict. What was actually checked, stated narrowly on purpose: no literal eval( or Function( call appears in this file, and UNICODE-STEGO-001 did not fire on it. Neither is a statement about the class. A decoded string can reach an executor through vm, child_process, a dynamic import(), a member expression such as globalThis.eval, or the Function constructor reached through a prototype chain, and this check recognises none of those - so read the file rather than trusting this line. Reconstitution likewise has many spellings (an alias, a destructured binding, .map, Buffer.from, TextDecoder), so its absence from the message above is not proof the file does not rebuild a string.`,
+            : `This file ${act} codepoints in the variation selector or tag range. Sanitisers, linters, width calculators and tests for this attack all legitimately do the same thing, which is why this is a lead rather than a verdict. What was actually checked, stated narrowly on purpose: no literal eval( or Function( call appears in this file, and no variation-selector or tag-character payload - the invisible classes this shape decodes - is present (a lone zero-width char or a mid-file BOM, which UNICODE-STEGO-001 may still report on its own, does not corroborate this finding). Neither is a statement about the class. A decoded string can reach an executor through vm, child_process, a dynamic import(), a member expression such as globalThis.eval, or the Function constructor reached through a prototype chain, and this check recognises none of those - so read the file rather than trusting this line. Reconstitution likewise has many spellings (an alias, a destructured binding, .map, Buffer.from, TextDecoder), so its absence from the message above is not proof the file does not rebuild a string.`,
         });
       }
 

