@@ -186,8 +186,9 @@ export class StructuralAnalyzer {
     // reasons. Order: preserving the root sequence keeps finding order — and so
     // the byte-compared corpus goldens — stable for trees that only have
     // root-level config, which is every pre-existing fixture. Unconditionality:
-    // the walk below is bounded and can return `complete: false` on a
-    // pathological or unreadable tree, and gating the root probe on its results
+    // the walk below is bounded, and on a pathological or unreadable tree it
+    // under-reports (an unreadable directory lands on the coverage ledger as an
+    // unread input, #588), and gating the root probe on its results
     // would let a deep or unreadable directory REMOVE detection that exists
     // today. This change may only ever add locations, never subtract them.
     const seen = new Set<string>();

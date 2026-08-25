@@ -3589,6 +3589,55 @@ describe('#250 existence-aware git severity + surfaced file findings', () => {
     });
   });
 
+  describe('#588 cause split: an unlistable directory is disclosed by SCAN-UNREAD-001, not by GIT/CRED severity', () => {
+    async function withUnlistableDir(): Promise<boolean> {
+      const cfg = path.join(tempDir, 'cfg');
+      await fs.mkdir(cfg, { recursive: true });
+      await fs.writeFile(path.join(cfg, 'placeholder.txt'), 'x');
+      await fs.chmod(cfg, 0o000);
+      try {
+        await fs.readdir(cfg);
+        console.warn('[scanner.test] cannot deny listing to this process (root?): SKIPPING, not passing');
+        return false;
+      } catch { return true; }
+    }
+    afterEach(async () => {
+      try { await fs.chmod(path.join(tempDir, 'cfg'), 0o755); } catch { /* absent */ }
+    });
+
+    it('GIT-002 with a complete .gitignore over a mode-000 directory is LOW and cross-references the record', async (ctx) => {
+      await fs.writeFile(path.join(tempDir, '.gitignore'), 'node_modules/\n.env\nsecrets.json\n');
+      if (!(await withUnlistableDir())) { ctx.skip(); }
+      const result = await scanner.scan({ targetDir: tempDir });
+      const unread = result.findings.find((f) => f.checkId === 'SCAN-UNREAD-001');
+      expect(unread?.file).toBe('cfg/');
+      const finding = result.findings.find((f) => f.checkId === 'GIT-002');
+      expect(finding).toBeDefined();
+      expect(finding?.severity).toBe('low');
+      expect(finding?.description).toMatch(/SCAN-UNREAD-001/);
+      expect(finding?.description).not.toMatch(/could not be fully scanned/);
+      expect(result.coverage.unreadableInputs.directories).toBe(1);
+    });
+
+    it('GIT-001 with no .gitignore over a mode-000 directory is LOW, not HIGH', async (ctx) => {
+      if (!(await withUnlistableDir())) { ctx.skip(); }
+      const result = await scanner.scan({ targetDir: tempDir });
+      const finding = result.findings.find((f) => f.checkId === 'GIT-001');
+      expect(finding).toBeDefined();
+      expect(finding?.severity).toBe('low');
+      expect(result.findings.find((f) => f.checkId === 'SCAN-UNREAD-001')?.file).toBe('cfg/');
+    });
+
+    it('CRED-002 does not escalate on the unlistable cause — the record is the disclosure', async (ctx) => {
+      await fs.writeFile(path.join(tempDir, '.gitignore'), 'node_modules/\n.env\nsecrets.json\n*.pem\n*.key\n');
+      if (!(await withUnlistableDir())) { ctx.skip(); }
+      const result = await scanner.scan({ targetDir: tempDir });
+      const cred = result.findings.find((f) => f.checkId === 'CRED-002');
+      expect(cred?.severity).not.toBe('high');
+      expect(cred?.description ?? '').not.toMatch(/could not fully cover/);
+    });
+  });
+
   describe('GIT-002 line-aware pattern presence (substring bug fix)', () => {
     it('a comment mentioning secrets.json does NOT count as covering it', async () => {
       await fs.writeFile(

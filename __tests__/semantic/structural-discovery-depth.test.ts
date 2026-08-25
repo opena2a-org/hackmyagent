@@ -14,6 +14,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { StructuralAnalyzer } from '../../src/semantic/structural';
 import { classifyArtifact, walkForArtifacts } from '../../src/semantic/structural/discovery-walk';
+import { CoverageLedger, withActiveLedger } from '../../src/hardening/coverage-ledger';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -159,10 +160,9 @@ describe('#298 discovery walk bounds and safety', () => {
       { isExcludedDir: async (abs) => path.basename(abs) === 'drop' },
     );
     expect(res.artifacts.map(a => a.rel)).toEqual([path.join('keep', 'CLAUDE.md')]);
-    expect(res.complete).toBe(true);
   });
 
-  it('reports an unreadable directory as incomplete rather than as clean', async () => {
+  it('records an unreadable directory on the coverage ledger rather than reporting clean', async () => {
     if (process.getuid?.() === 0) return; // root reads everything
     const tree = path.join(dir, 'unreadable');
     const locked = path.join(tree, 'locked');
@@ -170,12 +170,16 @@ describe('#298 discovery walk bounds and safety', () => {
     fs.writeFileSync(path.join(locked, 'CLAUDE.md'), CLAUDE_MD);
     fs.chmodSync(locked, 0o000);
     try {
-      const res = await walkForArtifacts(tree, [{ glob: 'CLAUDE.md', type: 'agent_instructions' }]);
+      const ledger = new CoverageLedger(tree);
+      const res = await withActiveLedger(ledger, () =>
+        walkForArtifacts(tree, [{ glob: 'CLAUDE.md', type: 'agent_instructions' }]));
       // Absence of a finding here is NOT proof the tree is clean, and the
-      // result must say so — an empty result reported as complete is the
-      // silent-miss #250 caught at layer 1.
+      // ledger must say so — an empty result with nothing recorded is the
+      // silent-miss #250 caught at layer 1. The record, not a flag on the
+      // walk result, is what reaches the exit code and the user (#588).
       expect(res.artifacts).toEqual([]);
-      expect(res.complete).toBe(false);
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 1 });
+      expect(ledger.unreadablePaths()).toEqual([{ path: locked, code: 'EACCES', kind: 'directory' }]);
     } finally {
       fs.chmodSync(locked, 0o755);
     }

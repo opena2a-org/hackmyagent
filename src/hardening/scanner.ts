@@ -4161,7 +4161,8 @@ export class HardeningScanner {
     //
     // The root names are probed UNCONDITIONALLY, exactly as before, rather
     // than being filtered through the walk's results. The walk is bounded and
-    // can return `complete: false` on a pathological or unreadable tree;
+    // is bounded on a pathological tree and records an unreadable directory on
+    // the coverage ledger (#588);
     // gating the root probe on it would let a deep/unreadable directory
     // REMOVE detection that exists today. This change may only ever add
     // locations, never subtract them. Absent files are skipped by the same
@@ -5255,12 +5256,16 @@ export class HardeningScanner {
     // Existence-aware severity (#250): a missing or incomplete .gitignore
     // is a LOW hardening advisory on its own; it becomes a HIGH exposure
     // only when a file matching an uncovered pattern actually exists.
-    // `walkComplete=false` means the walk could not prove absence (deep
-    // or unreadable tree), so we must not downgrade to LOW on an empty
-    // result — that would recreate the silent-miss the adversarial
-    // review caught.
-    const { keyFiles, namedSensitive, complete: walkComplete } =
+    // `walkBounded` means the walk could not prove absence because a BOUND
+    // stopped it (a deep or huge tree), so we must not downgrade to LOW on
+    // an empty result — that would recreate the silent-miss the adversarial
+    // review caught. A directory the walk could not LIST is not a bound: it is
+    // an unread input on the coverage ledger, disclosed by SCAN-UNREAD-001 at
+    // the exit-2 floor, and escalating a git finding on it as well would let
+    // a severity derived from an obstruction decide the exit code (#588).
+    const { keyFiles, namedSensitive, bounded: walkBounded } =
       await this.collectSensitiveArtifacts(targetDir);
+    const unlistedDirs = this.coverage.unreadableInputs.directories > 0;
 
     // GIT-001: Check for missing .gitignore
     const gitignorePath = path.join(targetDir, '.gitignore');
@@ -5311,7 +5316,7 @@ dist/
       // HIGH when a sensitive file is actually present, OR when the walk
       // could not prove absence (fail-safe): a missing .gitignore over an
       // unverifiable tree is treated as exposure, not hygiene advice.
-      const git001Exposed = presentSensitive.length > 0 || !walkComplete;
+      const git001Exposed = presentSensitive.length > 0 || walkBounded;
       const git001Named = presentSensitive.slice(0, 3).join(', ');
       findings.push({
         checkId: 'GIT-001',
@@ -5320,7 +5325,9 @@ dist/
           ? `No .gitignore and sensitive files present: ${git001Named}${presentSensitive.length > 3 ? ` (+${presentSensitive.length - 3} more)` : ''}`
           : git001Exposed
             ? 'No .gitignore and the project tree could not be fully scanned for sensitive files'
-            : 'No .gitignore file to prevent accidental commits',
+            : unlistedDirs
+              ? 'No .gitignore file to prevent accidental commits (a directory could not be listed — see SCAN-UNREAD-001)'
+              : 'No .gitignore file to prevent accidental commits',
         category: 'git',
         severity: git001Exposed ? 'high' : 'low',
         passed: git001Fixed,
@@ -5333,8 +5340,10 @@ dist/
         guidance: presentSensitive.length > 0
           ? `Sensitive files (${git001Named}) exist in this project with no .gitignore — a single git add . commits them. Create a .gitignore now; if any were already committed, rotate them and run git rm --cached on each.`
           : git001Exposed
-            ? 'This project has no .gitignore and its tree is too large or partly unreadable to fully verify no keys or secrets files are present. Add a .gitignore covering .env, secrets.json, *.pem, *.key and confirm no such files are tracked.'
-            : 'Without .gitignore, sensitive files (.env, secrets.json, *.pem, *.key) can be accidentally committed to version control and exposed.',
+            ? 'This project has no .gitignore and its tree is too large or deep to fully verify no keys or secrets files are present. Add a .gitignore covering .env, secrets.json, *.pem, *.key and confirm no such files are tracked.'
+            : unlistedDirs
+              ? 'Without .gitignore, sensitive files (.env, secrets.json, *.pem, *.key) can be accidentally committed to version control and exposed. A directory in this tree could not be listed, so what it holds is unknown — the SCAN-UNREAD-001 finding names it and carries the remedy.'
+              : 'Without .gitignore, sensitive files (.env, secrets.json, *.pem, *.key) can be accidentally committed to version control and exposed.',
       });
     }
 
@@ -5386,7 +5395,7 @@ dist/
         // walk could not prove absence for a key/secrets pattern (fail-safe).
         const nonEnvMissing = missingPatterns.some((p) => p !== '.env');
         const git002Exposed = exposedFiles.length > 0;
-        const git002Unverifiable = !git002Exposed && !walkComplete && nonEnvMissing;
+        const git002Unverifiable = !git002Exposed && walkBounded && nonEnvMissing;
         const git002High = git002Exposed || git002Unverifiable;
         const missingLabel = missingPatterns.length > 0 ? missingPatterns.join(', ') : '(patterns present)';
 
@@ -5397,7 +5406,9 @@ dist/
             ? `Committable sensitive files present: ${exposedFiles.slice(0, 3).join(', ')}${exposedFiles.length > 3 ? ` (+${exposedFiles.length - 3} more)` : ''}`
             : git002Unverifiable
               ? `Missing: ${missingLabel} (project tree could not be fully scanned to confirm no matching files exist)`
-              : `Missing: ${missingLabel} (no committable matching files found)`,
+              : unlistedDirs
+                ? `Missing: ${missingLabel} (no committable matching files found; a directory could not be listed — see SCAN-UNREAD-001)`
+                : `Missing: ${missingLabel} (no committable matching files found)`,
           category: 'git',
           severity: git002High ? 'high' : 'low',
           passed: git002Fixed,
@@ -5410,8 +5421,10 @@ dist/
           guidance: git002Exposed
             ? `These sensitive files are not git-ignored and would be committed by a single git add . (${exposedFiles.slice(0, 3).join(', ')}). Ignore them; if any was already committed, rotate its contents and run git rm --cached on it.`
             : git002Unverifiable
-              ? `The .gitignore is missing ${missingLabel} and the project tree is too large or partly unreadable to confirm no matching key or secrets files exist. Add the patterns and verify no such files are tracked.`
-              : `No committable files match the missing patterns yet, but adding them now (${missingLabel}) means a future key or secrets file is never committed by accident.`,
+              ? `The .gitignore is missing ${missingLabel} and the project tree is too large or deep to confirm no matching key or secrets files exist. Add the patterns and verify no such files are tracked.`
+              : unlistedDirs
+                ? `No committable files match the missing patterns among what could be listed, but a directory in this tree could not be — the SCAN-UNREAD-001 finding names it. Adding the patterns now (${missingLabel}) means a future key or secrets file is never committed by accident.`
+                : `No committable files match the missing patterns yet, but adding them now (${missingLabel}) means a future key or secrets file is never committed by accident.`,
         });
       }
     }
@@ -5956,7 +5969,7 @@ dist/
    * (fail-safe toward detection).
    *
    * Bounds are deliberately generous (depth 25, 50k entries) so that
-   * real repositories walk to completion; `complete=false` is reserved
+   * real repositories walk to completion; `bounded=true` is reserved
    * for genuinely pathological trees, where staying conservative costs a
    * rare false HIGH rather than a silent miss.
    */
@@ -5964,7 +5977,14 @@ dist/
     keyFiles: string[];
     namedSensitive: string[];
     configFiles: string[];
-    complete: boolean;
+    /**
+     * True when a BOUND stopped the walk — the entry or depth cap, an entry
+     * outside the root, or a committable node_modules — so absence below the
+     * bound is unproven. A directory the walk could not LIST is not a bound:
+     * it is recorded on the coverage ledger as an unread input (#588) and
+     * disclosed by SCAN-UNREAD-001, never by escalating another finding.
+     */
+    bounded: boolean;
   }> {
     const keyFiles: string[] = [];
     const namedSensitive: string[] = [];
@@ -5973,17 +5993,16 @@ dist/
     const MAX_DEPTH = 25;
     const MAX_ENTRIES = 50000;
     let entries = 0;
-    let complete = true;
+    let bounded = false;
 
     // A non-directory target (single-file scan, e.g. `secure SKILL.md`)
     // has no tree to walk and no place for a key to hide — that is a
-    // complete result, not an unverifiable one. Only a genuinely
-    // unreadable *directory* below counts as incomplete.
+    // complete result, not an unverifiable one.
     try {
       const rootStat = await fs.stat(targetDir);
-      if (!rootStat.isDirectory()) return { keyFiles, namedSensitive, configFiles, complete: true };
+      if (!rootStat.isDirectory()) return { keyFiles, namedSensitive, configFiles, bounded: false };
     } catch {
-      return { keyFiles, namedSensitive, configFiles, complete: true };
+      return { keyFiles, namedSensitive, configFiles, bounded: false };
     }
 
     const targetRoot = path.resolve(targetDir);
@@ -6004,7 +6023,7 @@ dist/
      */
     const walk = async (dir: string, depth: number, insideOwnBackup: boolean): Promise<void> => {
       if (entries >= MAX_ENTRIES) {
-        complete = false;
+        bounded = true;
         return;
       }
       let dirents;
@@ -6012,16 +6031,15 @@ dist/
         dirents = await fs.readdir(dir, { withFileTypes: true });
       } catch (err) {
         // An unreadable directory (EACCES, etc.) means we cannot verify
-        // its contents — a key could hide there. Do not assume clean. The
-        // directory itself is a lost input of the directory kind, recorded
-        // where it was discovered (#588).
+        // its contents — a key could hide there. Do not assume clean: the
+        // directory is a lost input of the directory kind, recorded where it
+        // was discovered, and SCAN-UNREAD-001 names it (#588). Not a bound.
         noteListFailure(dir, (err as NodeJS.ErrnoException | null)?.code);
-        complete = false;
         return;
       }
       for (const dirent of dirents) {
         if (entries++ >= MAX_ENTRIES) {
-          complete = false;
+          bounded = true;
           return;
         }
         if (dirent.isSymbolicLink()) continue;
@@ -6033,7 +6051,7 @@ dist/
         // were ever violated.
         const absResolved = path.resolve(abs);
         if (absResolved !== targetRoot && !absResolved.startsWith(targetRoot + path.sep)) {
-          complete = false;
+          bounded = true;
           continue;
         }
         if (dirent.isDirectory()) {
@@ -6045,7 +6063,7 @@ dist/
           if (depth + 1 > MAX_DEPTH) {
             // A real subtree exists below the depth bound — we did not
             // look inside it, so absence is no longer provable.
-            complete = false;
+            bounded = true;
             continue;
           }
           // Re-lstat before descending: guards a TOCTOU where the entry is
@@ -6058,9 +6076,8 @@ dist/
           } catch (err) {
             // The dirent said directory; an `lstat` that rejects here is the
             // parent denying search, and `abs` is a directory the scan could
-            // not list (#588).
+            // not list (#588) — recorded, not a bound.
             noteListFailure(abs, (err as NodeJS.ErrnoException | null)?.code);
-            complete = false;
             continue;
           }
           await walk(abs, depth + 1, insideOwnBackup || (await this.isOwnBackupDir(abs)));
@@ -6123,7 +6140,7 @@ dist/
     // is moot, so the skip is safe.
     if (skippedNodeModules.length > 0) {
       if (await this.hasCommittableSensitiveUnder(targetDir, skippedNodeModules)) {
-        complete = false;
+        bounded = true;
       }
     }
 
@@ -6132,7 +6149,7 @@ dist/
     // stability a property of the host filesystem.
     configFiles.sort();
 
-    return { keyFiles, namedSensitive, configFiles, complete };
+    return { keyFiles, namedSensitive, configFiles, bounded };
   }
 
   /**
@@ -6426,7 +6443,7 @@ dist/
     // #250 — a key at certs/server.pem is exactly as committable as one
     // at the root — and carries `file` so the finding survives the
     // user-facing concrete-findings filter.
-    const { keyFiles: foundKeys, complete: keyScanComplete } =
+    const { keyFiles: foundKeys, bounded: keyScanBounded } =
       await this.collectSensitiveArtifacts(targetDir);
 
     if (foundKeys.length > 0) {
@@ -6446,12 +6463,13 @@ dist/
         details: { files: foundKeys },
         guidance: 'Private key files (.pem, .key) in a project directory are easily committed to git. Once pushed, the keys are compromised and must be rotated.',
       });
-    } else if (!keyScanComplete) {
-      // No key found, but the walk could not exhaustively verify absence
-      // (tree too deep/large, an unreadable directory, or an un-ignored
-      // node_modules). Do NOT report clean — a key could hide in the
-      // unscanned portion. Fail-safe HIGH so the scan does not award a
-      // false clean bill (adversarial-review finding, #250).
+    } else if (keyScanBounded) {
+      // No key found, but a BOUND stopped the walk (tree too deep/large, or
+      // an un-ignored node_modules). Do NOT report clean — a key could hide
+      // in the unscanned portion. Fail-safe HIGH so the scan does not award a
+      // false clean bill (adversarial-review finding, #250). A directory the
+      // walk could not list is not a bound: SCAN-UNREAD-001 discloses it at
+      // the exit-2 floor, and this finding takes the passed branch (#588).
       findings.push({
         checkId: 'CRED-002',
         name: 'Private Key Files',
@@ -6459,11 +6477,11 @@ dist/
         category: 'credentials',
         severity: 'high',
         passed: false,
-        message: 'Private-key scan incomplete — tree too large/deep or partly unreadable to confirm no keys are present',
+        message: 'Private-key scan incomplete — tree too large/deep to confirm no keys are present',
         file: '.',
         fixable: false,
         fix: `List candidate key files yourself: find . -type f \\( -name '*.pem' -o -name '*.key' \\) -not -path '*/node_modules/*'`,
-        guidance: 'The project tree is too large or deep, has an unreadable directory, or contains an un-ignored node_modules — so the scanner could not confirm no private keys are committed. Verify manually and ensure keys are outside the repo or in a secrets manager.',
+        guidance: 'The project tree is too large or deep, or contains an un-ignored node_modules — so the scanner could not confirm no private keys are committed. Verify manually and ensure keys are outside the repo or in a secrets manager.',
       });
     } else {
       findings.push({

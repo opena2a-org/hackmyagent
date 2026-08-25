@@ -16,7 +16,7 @@
  */
 
 import * as realFs from 'fs/promises';
-import { noteRead, noteInspect, noteReadFailure, noteListFailure } from './coverage-ledger';
+import { noteRead, noteInspect, noteReadFailure, noteListFailure, noteListed } from './coverage-ledger';
 
 /**
  * Calls whose first argument is a path the scanner READ THE CONTENTS of.
@@ -128,9 +128,16 @@ for (const name of PATH_INSPECTIONS) {
 // directory that is not there) stays free. The discovery walkers record the
 // same rejection at their own catch sites; the ledger dedups by path, and the
 // second record is what a test seam that replaces this namespace observes.
+// A listing that succeeds is an inspection for the coverage counts AND a
+// listing for the failure channel's subtraction rule — the two are reported
+// separately because a `stat` succeeding on a directory is not a listing.
+const noteInspectedAndListed = (target: unknown): void => {
+  noteInspect(target);
+  noteListed(target);
+};
 for (const name of DIRECTORY_LISTINGS) {
   const fn = (realFs as unknown as Record<string, unknown>)[name];
-  if (typeof fn === 'function') wrapped[name] = attribute(fn as AnyFn, noteInspect, noteListFailure);
+  if (typeof fn === 'function') wrapped[name] = attribute(fn as AnyFn, noteInspectedAndListed, noteListFailure);
 }
 
 /**

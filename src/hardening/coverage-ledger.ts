@@ -343,6 +343,8 @@ export class CoverageLedger {
   /** Per-method distinct path sets, so two reads of one file count once. */
   private readonly readsByMethod = new Map<string, Set<string>>();
   private readonly inspectedByMethod = new Map<string, Set<string>>();
+  /** Per-method directories LISTED successfully — the listing channel's own success set (#588). */
+  private readonly listedByMethod = new Map<string, Set<string>>();
   /**
    * Paths inside the target that were discovered and whose contents could NOT
    * be read, keyed by path so twelve checks probing one unreadable file record
@@ -450,6 +452,17 @@ export class CoverageLedger {
   /** Attribute a stat/readdir-style inspection (no content read). */
   noteInspect(target: string): void {
     this.note(target, this.inspectedByMethod, false);
+  }
+
+  /**
+   * Attribute a directory listing that SUCCEEDED (#588). Kept apart from
+   * `noteInspect`: a `stat`/`lstat` succeeds on a directory this process
+   * cannot list, so an inspection must never be read as a listing — the
+   * sensitive-artifact walk lstats a dirent before descending, and treating
+   * that as "listed" dropped the record on one arm while the other kept it.
+   */
+  noteListed(target: string): void {
+    this.note(target, this.listedByMethod, false);
   }
 
   /**
@@ -676,8 +689,9 @@ export class CoverageLedger {
    * obstruction is one unit, whatever is behind it.
    *
    * Subtraction mirrors the read channel: a listing the SAME check later
-   * completed sits in `inspectedByMethod`, as a retried read sits in
-   * `readsByMethod`. A path recorded on BOTH channels (a mode-000 directory
+   * completed sits in `listedByMethod`, as a retried read sits in
+   * `readsByMethod` — never an inspection, which succeeds on a directory
+   * nothing can list. A path recorded on BOTH channels (a mode-000 directory
    * rejects the walker's `readdir` and a check's `readFile` probe alike) is one
    * obstruction and is reported once, as the directory — the kind whose remedy
    * actually clears it.
@@ -686,7 +700,7 @@ export class CoverageLedger {
     const lostDirs = new Map<string, string>(); // resolved dir -> errno
     for (const [resolved, { code, method }] of this.listFailures) {
       if (!countsAsUnread(code)) continue;
-      if (this.inspectedByMethod.get(method)?.has(resolved)) continue;
+      if (this.listedByMethod.get(method)?.has(resolved)) continue;
       lostDirs.set(resolved, code);
     }
     // Coalescing (#588 ruling): a record beneath a directory that is ITSELF a
@@ -987,6 +1001,13 @@ export function noteReadFailure(target: unknown, code: unknown): void {
   if (!activeLedger) return;
   if (typeof target !== 'string') return; // fd / URL / Buffer — not attributable
   activeLedger.noteReadFailure(target, typeof code === 'string' ? code : 'UNKNOWN');
+}
+
+/** Report a directory listing that succeeded to the active ledger, if any (#588). */
+export function noteListed(target: unknown): void {
+  if (!activeLedger) return;
+  if (typeof target !== 'string') return;
+  activeLedger.noteListed(target);
 }
 
 /**

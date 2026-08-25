@@ -175,19 +175,33 @@ describe('#438 CoverageLedger records inputs discovered but not read', () => {
       expect(ledger.unreadablePaths().map((p) => p.kind).sort()).toEqual(['directory', 'file']);
     });
 
-    it('subtracts a directory the SAME check later listed successfully, in both orderings', async () => {
+    it('subtracts a directory the SAME check later LISTED successfully, in both orderings', async () => {
       const failFirst = new CoverageLedger(TARGET);
       await withFailure(failFirst, (l) => {
         l.noteListFailure(inside('cfg'), 'EACCES');
-        l.noteInspect(inside('cfg'));
+        l.noteListed(inside('cfg'));
       });
       expect(failFirst.unreadableInputs.directories).toBe(0);
       const listFirst = new CoverageLedger(TARGET);
       await withFailure(listFirst, (l) => {
-        l.noteInspect(inside('cfg'));
+        l.noteListed(inside('cfg'));
         l.noteListFailure(inside('cfg'), 'EACCES');
       });
       expect(listFirst.unreadableInputs.directories).toBe(0);
+    });
+
+    it('a stat/lstat that SUCCEEDS on the directory does not clear its listing failure', async () => {
+      // Measured: the sensitive-artifact walk lstats a directory dirent before
+      // descending (TOCTOU guard) — that succeeds on a mode-000 directory —
+      // and then readdir rejects. Treating the inspection as a listing dropped
+      // the record on the secure arm while check kept it: a direction split.
+      const ledger = new CoverageLedger(TARGET);
+      await withFailure(ledger, (l) => {
+        l.noteInspect(inside('cfg'));
+        l.noteListFailure(inside('cfg'), 'EACCES');
+        l.noteInspect(inside('cfg'));
+      });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 1 });
     });
 
     it('ignores a listing failure OUTSIDE the target root', async () => {
