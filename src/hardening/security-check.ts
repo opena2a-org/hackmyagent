@@ -62,7 +62,33 @@ export interface SecurityFinding {
   description: string;
   category: string;
   severity: Severity;
-  passed: boolean;
+  /**
+   * Whether the check found its subject and MEASURED it clean.
+   *
+   * #458 — three states, not two. `true`: measured, clean. `false`: measured,
+   * defective (or, for an absent-mitigation advisory, `file` is the path the
+   * fix creates — GIT-001 / SANDBOX-001 shape). OMITTED: nothing was measured
+   * and `notApplicable` says why. A consumer that reads `passed` as a boolean
+   * turns the third state into whichever of the other two its comparison
+   * favours (`!== false` credits an unmeasured control as passed, `!f.passed`
+   * scores it as failed), so a consumer tests `notApplicable` first.
+   */
+  passed?: boolean;
+  /**
+   * #458 — the check's subject does not exist in this tree (a not-there errno:
+   * `coverage-ledger.ts` `countsAsUnread` is false), so the check measured
+   * nothing. `subject` names what was looked for (`Dockerfile`, `.mcp.json`,
+   * `source files`); `reason` says why that makes the check not applicable
+   * rather than failed. Carried WITHOUT `passed`, without severity weight and
+   * without a score contribution (`countsAgainstScore` and `retainForVerdict`
+   * both return false on it before reading anything else).
+   *
+   * Not for a subject that MUST exist: a required artifact's absence is a
+   * failure with `file` set to the path the fix creates, never this. Any errno
+   * other than not-there is an unread input (`buildUnreadInputFinding`), never
+   * this either.
+   */
+  notApplicable?: { subject: string; reason: string };
   message: string;
   fixable: boolean;
   fixed?: boolean;

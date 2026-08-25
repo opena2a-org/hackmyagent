@@ -78,7 +78,13 @@ export function countsAgainstScore(f: {
   passed?: boolean;
   fixed?: boolean;
   fixVerified?: boolean;
+  notApplicable?: { subject: string; reason: string };
 }): boolean {
+  // #458 — nothing was measured. Tested before everything else: a
+  // not-applicable record carries no `passed`, and on `!f.fixed` alone it
+  // counted against the score as an outstanding failure (measured on
+  // c0ee1f7: `countsAgainstScore({ notApplicable: {…} })` was true).
+  if (f.notApplicable) return false;
   // Fixed, but the verification pass proved the issue survived.
   //
   // Tested BEFORE `passed`, not after. Twelve checks report
@@ -128,7 +134,16 @@ export function confirmedFix(f: { passed?: boolean; fixed?: boolean; fixVerified
  * left the suite green at 221 files / 2886 tests, because only the `secure`
  * copy was reachable from a test. One rule, one place, one guard.
  */
-export function retainForVerdict(f: { passed?: boolean; fixed?: boolean }): boolean {
+export function retainForVerdict(f: {
+  passed?: boolean;
+  fixed?: boolean;
+  notApplicable?: { subject: string; reason: string };
+}): boolean {
+  // #458 — a not-applicable record is neither an outstanding issue nor a fix.
+  // It reaches `allFindings` under `notApplicable`; it is not a verdict line.
+  // Same first-position rule as `countsAgainstScore`: on `!f.passed` alone the
+  // record (no `passed`) was retained as a failure.
+  if (f.notApplicable) return false;
   return !f.passed || Boolean(f.fixed);
 }
 

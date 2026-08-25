@@ -1088,6 +1088,11 @@ export function mergeFindings(
       for (const idx of matchIndices) {
         const staticFinding = merged[idx];
 
+        // #458 — a not-applicable static record measured nothing, so there is
+        // nothing for the AST layer to enhance or suppress; it stays as-is.
+        // (`typeof` narrows `passed` for the rule below; an NA record has none.)
+        if (staticFinding.notApplicable || typeof staticFinding.passed !== 'boolean') continue;
+
         // Rule: If AST says passed but static says failed, static wins
         if (!validateEnhancement(staticFinding.passed, astFinding.passed)) {
           // Suppression blocked -- keep static finding as-is
