@@ -4,6 +4,23 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### `secure -b oasb-2` no longer averages an OASB-1 level that measured nothing
+
+When no scored OASB-1 control produces a result (for example `-c 'Identity &
+Provenance'`, whose L1 controls have no automated check), the level's compliance
+is `null` since the step-0 change above — but the composite still read it as `0`.
+On a tree whose governance file scores 18/100 (the partial SOUL.md fixture from
+#371): `Infrastructure Score (OASB-1): 0%`, `Composite Score: 9/100`, exit 0,
+beside its own `Rating: Not Assessed`, and `--fail-below 50` failed on that 9. The composite
+now prints `Infrastructure Score (OASB-1): not measured` and `Composite Score:
+not measured (OASB-1 not assessed)`, emits `infraScore: null` and
+`compositeScore: null` in `--format json` (the two keys become nullable; every
+other key is unchanged), raises the exit code to 2 (not measured) with one
+reason line on stderr, and does not evaluate `--fail-below` over the missing
+figure. Governance is measured independently and still prints as itself; a
+`Conformance: NONE` failure still exits 1 and outranks the not-measured floor,
+the same precedence the OASB-1 arm records. (#458 step 4.)
+
 ### `check` names a directory it could not list as a directory
 
 The local `check` arm's header counted a directory the run could not list as a

@@ -5425,9 +5425,15 @@ Examples:
         const soulScanner = new SoulScanner();
         const govResult = await soulScanner.scanSoul(targetDir);
 
-        const infraScore = infraResult.compliance ?? 0;
+        // #458 step 4 — `compliance` is `null` when no scored OASB-1 control
+        // produced a result (step 0's contract). 0.32.0 defaulted it to 0 here
+        // and averaged: `Infrastructure Score (OASB-1): 0%`, `Composite Score:
+        // 9/100`, exit 0, beside `Rating: Not Assessed` in the section below.
+        // A composite over an unmeasured term is not a measurement; the
+        // governance side WAS measured and is printed as itself.
+        const infraScore: number | null = infraResult.compliance;
         const govScore = govResult.score;
-        const compositeScore = Math.round((infraScore + govScore) / 2);
+        const compositeScore: number | null = infraScore === null ? null : Math.round((infraScore + govScore) / 2);
 
         if (format === 'json') {
           const compositePayload = {
@@ -5458,10 +5464,10 @@ Examples:
         } else {
           process.stdout.write('\nOASB Composite Security Assessment\n');
           process.stdout.write('----------------------------------------------------\n');
-          process.stdout.write(`Infrastructure Score (OASB-1): ${infraScore}%\n`);
+          process.stdout.write(`Infrastructure Score (OASB-1): ${infraScore === null ? 'not measured' : `${infraScore}%`}\n`);
           process.stdout.write(`Governance Score (OASB-2):     ${govScore}/100\n`);
           process.stdout.write('----------------------------------------------------\n');
-          process.stdout.write(`Composite Score:               ${compositeScore}/100\n`);
+          process.stdout.write(`Composite Score:               ${compositeScore === null ? 'not measured (OASB-1 not assessed)' : `${compositeScore}/100`}\n`);
           process.stdout.write(`Conformance:                   ${govResult.conformance.toUpperCase()}\n`);
           process.stdout.write('\n');
 
@@ -5510,9 +5516,26 @@ Examples:
             `OASB-2 conformance is NONE. Exiting 1 per "non-compliant in benchmark mode".`,
           );
         }
-        if (failBelow !== undefined && compositeScore < failBelow) {
-          console.error(`Composite score ${compositeScore} is below threshold ${failBelow}`);
-          process.exit(1);
+        // #458 step 4 — an unmeasured OASB-1 side raises the not-measured
+        // floor (2), raise-only, exactly as the OASB-1 arm does for its own
+        // `Not Assessed`. A measured governance failure (conformance NONE,
+        // exit 1 below) outranks it — that arm's recorded precedence.
+        if (compositeScore === null) {
+          console.error(
+            `Composite score is not measured: no scored OASB-1 control produced a result in this selection, so there is no infrastructure figure to average. Exit code raised to ${EXIT_UNMEASURED} (not measured).`,
+          );
+          raiseExitCode(EXIT_UNMEASURED);
+        }
+        // A threshold is a claim about a measurement: `null < N` is `true`
+        // in JS for any positive N, so a bare comparison here would exit 1
+        // over a number that was never produced (0.32.0 did, via `?? 0`).
+        if (failBelow !== undefined) {
+          if (compositeScore === null) {
+            console.error(`--fail-below ${failBelow} not evaluated: the composite score was not measured (OASB-1 not assessed).`);
+          } else if (compositeScore < failBelow) {
+            console.error(`Composite score ${compositeScore} is below threshold ${failBelow}`);
+            process.exit(1);
+          }
         }
         if (conformanceFails) process.exit(1);
         return;
