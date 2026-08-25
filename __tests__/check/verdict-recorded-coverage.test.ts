@@ -28,9 +28,9 @@ import {
   type ReadFailureRecord,
 } from '../../src/check/verdict';
 
-const NONE: ReadFailureRecord = { count: 0, codes: {} };
-const ONE: ReadFailureRecord = { count: 1, codes: { EACCES: 1 } };
-const TWO: ReadFailureRecord = { count: 2, codes: { EACCES: 1, EPERM: 1 } };
+const NONE: ReadFailureRecord = { count: 0, codes: {}, directories: 0 };
+const ONE: ReadFailureRecord = { count: 1, codes: { EACCES: 1 }, directories: 0 };
+const TWO: ReadFailureRecord = { count: 2, codes: { EACCES: 1, EPERM: 1 }, directories: 0 };
 
 describe('recordedCoverage', () => {
   it('puts the unread inputs on the denominator and carries the record', () => {
