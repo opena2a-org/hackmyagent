@@ -11,6 +11,9 @@ export {
   getControlsForCategory,
   getCheckIdsForLevel,
   calculateRating,
+  ratingsUnavailableWhenNull,
+  automatedControlsAt,
+  nextLevelFooter,
 } from './oasb-1';
 
 export type {
@@ -18,6 +21,8 @@ export type {
   BenchmarkControl,
   BenchmarkCategory,
   BenchmarkResult,
+  BenchmarkRating,
+  LadderRating,
   BenchmarkCategoryResult,
   BenchmarkControlResult,
 } from './oasb-1';
