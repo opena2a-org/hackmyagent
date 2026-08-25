@@ -4,6 +4,49 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### A directory the scan can list but not enter no longer hides its files at `--scan-depth quick`
+
+`chmod 600 <dir>` (readable, not traversable) lets `readdir` list the directory's
+files while `stat` on each of them rejects `EACCES`. The semantic walker's size
+gate treated that rejection as "skip", so a file the scan had already discovered
+left the assessment with no record and no finding: a tree whose `cfg/secrets.js`
+held an API key scored 98/100 at exit 0 at quick depth with `cfg/` at mode 600,
+and 69/100 at exit 1 with `cfg/` traversable. The score went up because the
+evidence went away — the #438 shape through a different errno path than the
+`chmod 000 <file>` case closed in 0.31.0 (#515).
+
+The size gate now reports the rejection on the same channel a failed `readFile`
+uses, so the file is an input discovered but not read: `SCAN-UNREAD-001` names
+it with the errno remedy, `coverage.unreadableInputs` counts it, and the run
+exits 2 at every depth — the exit code `chmod 000` on the file itself already
+produced. The remedy names the directory when a directory
+the user cannot enter is the cause — `chmod u+r <file>` inside it fails with
+the same `EACCES` the scan did — and says `chmod u+x` or `chmod u+rx`
+according to which bits the directory denies. `check <local path>` reads the
+same coverage ledger, so it records the same loss on this case (exit 2, one
+`SCAN-UNREAD-001`) and prints the same directory remedy: the finding builder
+classifies the obstruction itself when its caller passes the raw ledger
+record. `check`'s own discovery gaps (a non-candidate file, a directory it
+cannot list) remain open and are tracked with #588. The file is still not compiled; this records
+the loss, it does not pretend to have read the bytes. `ENOENT`, `EISDIR` and `ENOTDIR` are still not
+counted (a file removed between the listing and the `stat` is not a lost
+input). Measured across ten real trees (about 4,500 directories and 37,000
+files): no directory whose listing fails and no listed file whose `stat` fails,
+so no readable repository changes exit code.
+
+Not closed here: a directory the scan cannot list at all (`chmod 000 <dir>`, or
+a non-searchable directory with the file one level further down) is lost by the
+walker on `readdir`, not on a child `stat`, and this change does not record it.
+The `GIT-001`/`GIT-002` severity escalation reaches output only when those
+checks fire, and never names the directory; on a tree whose `.gitignore` is
+complete the run can exit 0 with no disclosure. Tracked with #588.
+
+The `--json` comment on `coverage.unreadableInputs` cited a scoped list
+(`unreadableInScope`) that does not exist, and the method producing the number
+was named `scopedUnreadableInputs` although it counts every recorded unread
+input; the comment now describes the number that is produced and the method is
+named for what it does (#590).
+
 ### UNICODE-STEGO-002 corroborates invisible payloads only on the classes a decoder reconstitutes
 
 The GlassWorm decoder finding is CRITICAL only when a corroborator is present in

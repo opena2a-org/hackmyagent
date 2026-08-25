@@ -99,8 +99,32 @@ const BACKUP_MANIFEST_VERSION = 2;
 export const JS_FAMILY_EXTENSIONS = ['.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx'] as const;
 
 /**
+ * Sync twin of `HardeningScanner.unsearchableAncestor`, at module scope so
+ * `buildUnreadInputFinding` can classify an obstruction its caller did not
+ * (the `check` arm passes the ledger record through unmodified). Same bounds,
+ * kept textually in step with the async method — change the two together: the
+ * shallowest ancestor STRICTLY inside the target that this process cannot
+ * enter; the target root is never named. `accessSync` here is an inspection
+ * of a path already known to exist, not a discovery read.
+ */
+export function unsearchableAncestorSync(absPath: string, targetDir: string): string | undefined {
+  const root = path.resolve(targetDir);
+  let dir = path.dirname(absPath);
+  let shallowest: string | undefined;
+  while (dir.startsWith(root + path.sep)) {
+    try {
+      fsSync.accessSync(dir, fsSync.constants.X_OK);
+    } catch {
+      shallowest = dir;
+    }
+    dir = path.dirname(dir);
+  }
+  return shallowest ? path.relative(targetDir, shallowest) : undefined;
+}
+
+/**
  * Build the per-path `SCAN-UNREAD-001` finding for one discovered-but-unread
- * input. Module-level and pure so a second command (`check` on a local path,
+ * input. Module-level, shared by both arms, so a second command (`check` on a local path,
  * #508) can emit the identical finding through the same errno->remedy logic
  * instead of carrying a second copy of it — the per-channel-copy class #494
  * was the receipt for.
@@ -112,29 +136,76 @@ export const JS_FAMILY_EXTENSIONS = ['.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx
  * and is a dead end for `EIO`/`ELOOP`, which the predicate deliberately admits.
  *
  * `command` names the CLI verb the remedy re-runs; it defaults to `secure`, so
- * the `HardeningScanner.secure` caller is byte-for-byte unchanged.
+ * the `HardeningScanner.secure` caller's re-run verb is unchanged.
+ *
+ * Not pure: when the caller did not classify the obstruction and the record
+ * carries its absolute path, this builder probes the tree itself
+ * (`unsearchableAncestorSync`, plus one read-bit probe on the obstruction) so
+ * both arms print the same remedy for the same obstruction. The probes are
+ * inspections of paths already known to exist and report to no channel.
  */
 export function buildUnreadInputFinding(
-  u: { rel: string; code: string },
+  u: { rel: string; code: string; obstructedBy?: string; path?: string },
   opts: { cliName: string; targetDir: string; command?: string },
 ): SecurityFinding {
-  const { rel, code } = u;
+  const { rel, code, obstructedBy } = u;
   const { cliName, targetDir, command = 'secure' } = opts;
   const permission = code === 'EACCES' || code === 'EPERM';
   const cited = citationPath(rel);
+  // The directory this user cannot enter, when that — not the file's own mode —
+  // is why the read failed (#515). `chmod u+r <file>` inside it fails with the
+  // same EACCES the scan did, so the remedy names the directory instead.
+  //
+  // Classified HERE when the caller did not: the `check` arm hands the ledger
+  // record straight to this builder and computes no ancestor of its own, and
+  // without this fallback it printed exactly the dead-end remedy this branch
+  // exists to remove — on the same input, in the same run (#515 adversarial
+  // round). Probe only for a permission denial, only when the record carries
+  // its absolute path.
+  const obstruction = obstructedBy
+    ?? (permission && u.path ? unsearchableAncestorSync(u.path, targetDir) : undefined);
+  const citedDir = obstruction ? citationPath(obstruction) : null;
+  // `chmod u+x` answers a directory that can be LISTED but not entered. One
+  // that denies read as well needs `u+rx`, and the guidance must not claim it
+  // "can be listed" (mode 000: nothing lists it). When the probe cannot tell
+  // — the directory vanished between the record and this render, or the
+  // caller pinned a path that never existed — the enterable-not-listable
+  // wording stands, which is what every earlier pin in the unit suite relies
+  // on.
+  let dirDeniesRead = false;
+  if (obstruction && permission) {
+    try {
+      fsSync.accessSync(path.resolve(targetDir, obstruction), fsSync.constants.R_OK);
+    } catch (e) {
+      const c = (e as NodeJS.ErrnoException).code;
+      dirDeniesRead = c === 'EACCES' || c === 'EPERM';
+    }
+  }
   const target = citationTarget(targetDir);
   // The re-run verb is a string LITERAL per branch, never a raw `${command}`
   // interpolation: a bare identifier in a runnable command string is what the
   // render-source gate (#273) forbids, and `command` is a fixed internal verb,
-  // not a path operand. `secure` is the default so this caller is byte-for-byte
-  // unchanged. `${cited}`/`${target}` are citation-bound and `${cliName}` is a
-  // known non-path operand, exactly as before.
+  // not a path operand. `secure` is the default so the `secure` caller's re-run
+  // verb is unchanged. `${cited}`/`${citedDir}`/`${target}` are citation-bound
+  // (`citationPath` quotes shell-significant names and returns null for a
+  // display hazard, which falls through to the generic remedy) and `${cliName}`
+  // is a known non-path operand. The gate itself does not inspect `chmod` sites
+  // — its operand class has no `+` (#618) — so the binding, not the gate, is
+  // what protects these strings.
   const fix = permission
-    ? (cited
+    ? (citedDir
       ? (command === 'check'
-        ? `chmod u+r ${cited} && ${cliName} check ${target}`
-        : `chmod u+r ${cited} && ${cliName} secure ${target}`)
-      : 'Make the file named above readable, then re-run this scan.')
+        ? (dirDeniesRead
+          ? `chmod u+rx ${citedDir} && ${cliName} check ${target}`
+          : `chmod u+x ${citedDir} && ${cliName} check ${target}`)
+        : (dirDeniesRead
+          ? `chmod u+rx ${citedDir} && ${cliName} secure ${target}`
+          : `chmod u+x ${citedDir} && ${cliName} secure ${target}`))
+      : cited
+        ? (command === 'check'
+          ? `chmod u+r ${cited} && ${cliName} check ${target}`
+          : `chmod u+r ${cited} && ${cliName} secure ${target}`)
+        : 'Make the file named above readable, then re-run this scan.')
     : `Resolve the ${code} on this path (a broken symlink, an I/O error or an `
       + `unreadable mount are the usual causes), then re-run this scan.`;
   return {
@@ -156,7 +227,16 @@ export function buildUnreadInputFinding(
     // reaches no reader — and the errno is the input that decides which
     // remedy applies.
     guidance:
-      `This file was discovered inside the target and the read failed with ${code}, so its `
+      (obstruction
+        ? (dirDeniesRead
+          ? `\`${obstruction}\` cannot be listed or entered by this user (no read or execute bit `
+            + `on the directory), which is why ${rel} could not be read: the remedy is on the `
+            + 'directory, not on the file. '
+          : `\`${obstruction}\` can be listed but not entered by this user (no execute bit on the `
+            + `directory), which is why ${rel} could not be opened: the remedy is on the directory, `
+            + 'not on the file. ')
+        : '')
+      + `This file was discovered inside the target and the read failed with ${code}, so its `
       + 'contents never reached a check. The score above is an upper bound, not a measurement '
       + 'of this tree: nothing was ruled out about this file, and a credential or an injected '
       + 'instruction in it would be invisible to this scan — leaving the score HIGHER than if '
@@ -2279,19 +2359,66 @@ export class HardeningScanner {
    * Check if a file path matches any .hmaignore pattern.
    */
   /** Every unreadable input this run recorded, before scope filtering. */
-  private unreadableAll: { path: string; code: string; rel: string }[] = [];
+  private unreadableAll: { path: string; code: string; rel: string; obstructedBy?: string }[] = [];
 
   /**
-   * The `{count, codes}` shape the exit code is settled on, counted over the
-   * inputs that were NOT scoped out by an `.hmaignore` path rule.
+   * For a permission-denied read, the shallowest ancestor inside the target
+   * that this process cannot ENTER. `chmod 600 <dir>` is listable and not
+   * traversable, so every `stat`/`open` on its children fails with `EACCES`
+   * whatever the children's own modes are (#515) — and the remedy the finding
+   * used to print, `chmod u+r <file>`, fails with the same `EACCES` the scan
+   * did. The remedy belongs on the directory.
    *
-   * `excludedRels` comes from the same `pathExcluded` set that produces the
-   * `Scope` disclosure, so the number and the sentence are two readings of one
-   * fact. A scoped-out file is named on screen AND absent from the gate; an
-   * `--ignore`d check is neither, because suppressing a check is not narrowing
-   * the scanned scope (#450).
+   * Shallowest, because a deeper directory cannot even be inspected until the
+   * one above it is searchable; naming it is the one step the user can take
+   * now. For a file a walker LISTED, only its parent can be unsearchable (the
+   * listing itself needed every directory above the parent); the walk matters
+   * for fixed-path probes, which reach several levels down without listing.
+   * Returns the path relative to the target, or undefined when every ancestor
+   * is searchable (the file itself is the obstruction). The target root is
+   * never named: the walk stops strictly inside the target, so a root that
+   * lists but cannot be entered leaves each child with the per-file remedy
+   * (recorded as #617).
+   *
+   * `access(X_OK)` is an inspection of a path already known to exist, not a
+   * discovery read: a rejection here is the probe's answer, and the tracked
+   * namespace deliberately reports nothing for it.
+   *
+   * Bounds are mirrored by the module-level `unsearchableAncestorSync` (the
+   * finding builder's fallback for a caller that passes the raw ledger
+   * record); change the two together.
    */
-  private scopedUnreadableInputs(): { count: number; codes: Record<string, number> } {
+  private async unsearchableAncestor(absPath: string, targetDir: string): Promise<string | undefined> {
+    const root = path.resolve(targetDir);
+    let dir = path.dirname(absPath);
+    let shallowest: string | undefined;
+    while (dir.startsWith(root + path.sep)) {
+      try {
+        await fs.access(dir, fs.constants.X_OK);
+      } catch {
+        shallowest = dir;
+      }
+      dir = path.dirname(dir);
+    }
+    return shallowest ? path.relative(targetDir, shallowest) : undefined;
+  }
+
+  /**
+   * The `{count, codes}` shape `cli.ts` settles the exit code on, counted over
+   * EVERY unread input this run recorded — deliberately not narrowed by an
+   * `.hmaignore` path rule.
+   *
+   * A path rule scopes what is REPORTED about a file's contents; it cannot make
+   * an unread file read, and `retainAfterPathSuppression` keeps
+   * `SCAN-UNREAD-001` out of path suppression for exactly that reason. So the
+   * count, the finding and the exit code are three readings of one unscoped
+   * fact (#438, #590). An earlier shape narrowed this number to an in-scope
+   * list; that inverted the disclosure — a file the scan could not read AND
+   * had scoped out went silent, on the channels where `outOfScope` does not
+   * render at all — and was removed. A method named for that shape survived
+   * it (#590).
+   */
+  private allUnreadableInputs(): { count: number; codes: Record<string, number> } {
     const codes: Record<string, number> = {};
     for (const u of this.unreadableAll) codes[u.code] = (codes[u.code] ?? 0) + 1;
     return { count: this.unreadableAll.length, codes };
@@ -2969,10 +3096,12 @@ export class HardeningScanner {
     // pushes people to bypass a gate. The verdict channel says the true thing
     // instead — this run did not examine everything it found — through the exit
     // code, which `cli.ts` settles once, above every output channel.
-    // Every unreadable path gets a finding, and the `.hmaignore` path rules are
-    // then applied to it by the SAME machinery that applies them to every other
-    // finding — so a scoped-out file lands on `outOfScope` and the `Scope` line
-    // names it, exactly as a scoped-out readable finding is named today.
+    // Every unreadable path gets a finding, and `retainAfterPathSuppression`
+    // keeps that finding OUT of `.hmaignore` path suppression: a path rule
+    // scopes what is reported about a file's contents and cannot make an
+    // unread file read, and `outOfScope` renders as a bare count on two
+    // channels and not at all on three, so scoping it out was "exit 0 with
+    // nothing said" on the channels CI reads (#438, #591).
     //
     // Filtering the finding out here instead was the first attempt and it was
     // worse than the defect it fixed: it turned "exit 2 with nothing named" into
@@ -2982,13 +3111,18 @@ export class HardeningScanner {
     // warning. This repo's own `.hmaignore` scopes `src/hardening/` and
     // `src/nanomind-core/`, so that silence reached real trees.
     //
-    // The exit-code unit is then derived from the same marking below, which is
-    // what makes the `Scope` line's "not scored and not in the exit code" a true
-    // statement rather than a contradiction.
-    const unreadable = this.coverage.unreadablePaths().map((u) => ({
-      ...u,
-      rel: path.relative(targetDir, u.path) || path.basename(u.path),
-    }));
+    // The exit-code unit (`allUnreadableInputs`) is then counted over this same
+    // list, unscoped, so the finding, the count and the exit code cannot
+    // disagree about a file (#590).
+    const unreadable: { path: string; code: string; rel: string; obstructedBy?: string }[] = [];
+    for (const u of this.coverage.unreadablePaths()) {
+      const rel = path.relative(targetDir, u.path) || path.basename(u.path);
+      // A permission denial on a file inside a directory this user cannot
+      // ENTER is the directory's fault, and the remedy has to say so (#515).
+      const permission = u.code === 'EACCES' || u.code === 'EPERM';
+      const obstructedBy = permission ? await this.unsearchableAncestor(u.path, targetDir) : undefined;
+      unreadable.push({ ...u, rel, ...(obstructedBy ? { obstructedBy } : {}) });
+    }
     this.unreadableAll = unreadable;
     for (const u of unreadable) {
       // ONE finding per path, not one naming the first of N — see
@@ -3627,10 +3761,11 @@ export class HardeningScanner {
         suppressedFailures,
         unevidencedFailures,
         // Counts and errno codes, never paths — same rule as the line above.
-        // Derived from the SCOPED list, not the raw ledger — see where
-        // `unreadableInScope` is built. This is the number `cli.ts` settles the
-        // exit code on.
-        unreadableInputs: this.scopedUnreadableInputs(),
+        // Every recorded unread input, deliberately unscoped: a path rule
+        // cannot make an unread file read, and `retainAfterPathSuppression`
+        // keeps the matching finding visible for the same reason. This is the
+        // number `cli.ts` settles the exit code on (#590).
+        unreadableInputs: this.allUnreadableInputs(),
       },
     };
   }
