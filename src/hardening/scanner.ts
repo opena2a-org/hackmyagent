@@ -1344,9 +1344,19 @@ export function findingAppliesTo(finding: SecurityFindingDraft, projectType: Pro
  * the CLI's `result`, not to the scanner instance.
  */
 export function isReportableFinding(
-  f: { passed?: boolean; fixed?: boolean; file?: string; checkId: string },
+  f: {
+    passed?: boolean;
+    fixed?: boolean;
+    file?: string;
+    checkId: string;
+    notApplicable?: { subject: string; reason: string };
+  },
   projectType: ProjectType,
 ): boolean {
+  // #458 — the same clause as the rendered-list filter in `scan()`: the CLI's
+  // refilters rebuild `result.findings` from `allFindings` through this
+  // predicate, and `allFindings` is where not-applicable records live.
+  if (f.notApplicable || typeof f.passed !== 'boolean') return false;
   return retainForVerdict(f) && Boolean(f.file) && findingAppliesTo(f as SecurityFindingDraft, projectType);
 }
 
@@ -3572,6 +3582,13 @@ export class HardeningScanner {
     // survives it, naming a check on the command line removed that check's
     // penalties and RAISED the score.
     let filteredFindings = findings.filter((f) => {
+      // #458 — a not-applicable record carries no pass/fail state and never
+      // renders: it names an absent subject, not a file. Stated here, at the
+      // site that enforces it, so `result.findings` holds measured records
+      // only (the Registry publish mapping and `isReportableFinding` rely on
+      // that; an NA record reaches `allFindings` and nothing else).
+      if (f.notApplicable || typeof f.passed !== 'boolean') return false;
+
       // Keep fixed findings (so users can see what was fixed)
       // Otherwise, only show failed checks
       if (!f.fixed && f.passed) return false;
