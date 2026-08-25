@@ -201,6 +201,71 @@ export type ToolResult = {
 };
 
 /** The text a refusal returns, in the shape the transport expects. */
+/**
+ * The `hackmyagent_benchmark` assessor, extracted so a test can reach it (the
+ * tool-handler closure above is never executed by the suite).
+ *
+ * INTERIM (#458 steps 1-2). #458 step 5 replaces this function wholesale with
+ * `generateBenchmarkReport` (`cli.ts`), the assessor `benchmark` itself uses;
+ * until then the two differ, and this one keeps its legacy reading that a
+ * control with NO record for a check id is credited as passed (`!== false`).
+ */
+export interface BenchmarkAssessment {
+  passed: number;
+  failed: number;
+  unverified: number;
+  compliance: number;
+  rating: string;
+  lines: string[];
+  text: string;
+}
+
+export function assessBenchmarkFindings(
+  allFindings: ReadonlyArray<Pick<SecurityFinding, 'checkId' | 'passed' | 'notApplicable'>>,
+  level: BenchmarkLevel,
+): BenchmarkAssessment {
+  const controls = getControlsForLevel(level);
+  const checkIdResults = new Map<string, boolean | undefined>();
+  for (const f of allFindings) {
+    checkIdResults.set(f.checkId, f.passed);
+  }
+
+  let passed = 0;
+  let failed = 0;
+  let unverified = 0;
+  const lines: string[] = [];
+
+  for (const control of controls) {
+    if (control.checkIds.length === 0) {
+      if (control.verification === 'forward' || control.verification === 'manual') {
+        unverified++;
+        lines.push(`[UNVERIFIED] ${control.id} ${control.name} (${control.verification})`);
+      }
+      continue;
+    }
+
+    const allPass = control.checkIds.every((id) => checkIdResults.get(id) !== false);
+    if (allPass) {
+      passed++;
+      lines.push(`[PASS] ${control.id} ${control.name}`);
+    } else {
+      failed++;
+      const failedChecks = control.checkIds.filter((id) => checkIdResults.get(id) === false);
+      lines.push(`[FAIL] ${control.id} ${control.name} (${failedChecks.join(', ')})`);
+    }
+  }
+
+  const total = passed + failed;
+  const compliance = total > 0 ? Math.round((passed / total) * 100) : 0;
+  const rating = calculateRating(compliance, compliance, compliance, level);
+  const text =
+    `OASB-1 ${level} Assessment: ${compliance}% compliance (${rating})\n` +
+    `Passed: ${passed} | Failed: ${failed} | Unverified: ${unverified}\n\n` +
+    lines.join('\n');
+
+  return { passed, failed, unverified, compliance, rating, lines, text };
+}
+
 function refuse(refusal: RootRefusal): ToolResult {
   return { content: [{ type: 'text', text: describeRootRefusal(refusal) }], isError: true };
 }
@@ -366,52 +431,8 @@ export async function handleToolCall(
           const result = await scanner.scan({ targetDir: dir });
 
           // Generate benchmark assessment
-          const allFindings = result.allFindings || result.findings;
-          const controls = getControlsForLevel(level);
-          const checkIdResults = new Map<string, boolean>();
-          for (const f of allFindings) {
-            checkIdResults.set(f.checkId, f.passed);
-          }
-
-          let passed = 0;
-          let failed = 0;
-          let unverified = 0;
-          const controlResults: string[] = [];
-
-          for (const control of controls) {
-            if (control.checkIds.length === 0) {
-              if (control.verification === 'forward' || control.verification === 'manual') {
-                unverified++;
-                controlResults.push(`[UNVERIFIED] ${control.id} ${control.name} (${control.verification})`);
-              }
-              continue;
-            }
-
-            const allPass = control.checkIds.every((id) => checkIdResults.get(id) !== false);
-            if (allPass) {
-              passed++;
-              controlResults.push(`[PASS] ${control.id} ${control.name}`);
-            } else {
-              failed++;
-              const failedChecks = control.checkIds.filter((id) => checkIdResults.get(id) === false);
-              controlResults.push(`[FAIL] ${control.id} ${control.name} (${failedChecks.join(', ')})`);
-            }
-          }
-
-          const total = passed + failed;
-          const compliance = total > 0 ? Math.round((passed / total) * 100) : 0;
-          const rating = calculateRating(compliance, compliance, compliance, level);
-
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `OASB-1 ${level} Assessment: ${compliance}% compliance (${rating})\n` +
-                  `Passed: ${passed} | Failed: ${failed} | Unverified: ${unverified}\n\n` +
-                  controlResults.join('\n'),
-              },
-            ],
-          };
+          const assessment = assessBenchmarkFindings(result.allFindings || result.findings, level);
+          return { content: [{ type: 'text', text: assessment.text }] };
         }
 
       default:
