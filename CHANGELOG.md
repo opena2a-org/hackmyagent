@@ -160,6 +160,15 @@ SARIF and HTML are byte-identical to before (they carry the configured value); `
 `scan-soul` and `detect --json`, ASFF, the MCP server and the Registry payload do not read the
 prefix.
 
+### `secure --format asp` outside a benchmark run is refused
+
+The Agent Security Profile is produced only by the OASB-1 benchmark arm (`-b oasb-1`; the
+OASB-2 composite has no profile format either), but the format validator accepted `asp` for any
+run and the ordinary report printed — a CI job that asked for a machine format got a human one,
+with nothing in the exit code to say so (#563). The flag is now refused on every other arm where
+the format errors are raised, exit 1, naming the flag it needs; `--help` lists `asp` with that
+condition. With `-b oasb-1` the ASP document is unchanged.
+
 ### Multi-part fix text renders on separate lines in the findings list
 
 The fix generator composes a remediation from several authored parts — the command, a
