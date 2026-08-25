@@ -194,7 +194,9 @@ describe('buildUnreadInputFinding', () => {
       );
       expect(f.file).toBe('./');
       expect(f.message.startsWith('./ could not be listed (EACCES)')).toBe(true);
-      expect(f.fix).toBe(`chmod u+rx . && hackmyagent secure ${dir}`);
+      // The operand is the absolute target, not `.`: the reader's cwd is not the
+      // target, and `chmod u+rx .` would chmod it and report success.
+      expect(f.fix).toBe(`chmod u+rx ${dir} && hackmyagent secure ${dir}`);
     });
 
     it('a directory lost under an unsearchable ancestor takes the ancestor remedy (#515 shape) and says so', () => {

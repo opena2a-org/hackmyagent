@@ -245,7 +245,9 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
       const unread = unreadFindings(res.body);
       expect(unread).toHaveLength(1);
       expect(unread[0].file).toBe('./');
-      expect(unread[0].fix.startsWith('chmod u+rx . && ')).toBe(true);
+      // The operand is the absolute target: the printed clause must do the same
+      // thing from any cwd, and `.` would not.
+      expect(unread[0].fix.startsWith(`chmod u+rx ${dir} && `)).toBe(true);
     });
 
     it('files hidden inside the lost directory never change the count — one obstruction is one unit', (ctx) => {
@@ -304,10 +306,10 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
     });
   });
 
-  describe('`secure --fix` does not reach exit 0 over an unread input', () => {
-    it.each(['quick', 'standard'])('--fix at %s depth: exit 2, the directory untouched, the record still there after the fix pass', (depth, ctx) => {
+  describe.each(['quick', 'standard'])('`secure --fix` does not reach exit 0 over an unread input (%s depth)', (depth) => {
+    it('--fix: exit 2, the directory untouched, the record still there after the fix pass', (ctx) => {
       const dir = makeTree(`fix-${depth}`, { gitignore: false });
-      if (!makeUnlistable(path.join(dir, 'cfg'))) osDeclined(ctx as unknown as TestContext);
+      if (!makeUnlistable(path.join(dir, 'cfg'))) osDeclined(ctx);
       const res = json(['secure', '--fix', '--scan-depth', depth, dir]);
       expect(res.status).toBe(EXIT_INCOMPLETE);
       expect(res.body.coverage.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 1 });
@@ -339,6 +341,85 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
       expect(cu.kind).toBe(su.kind);
       expect(cu.message).toBe(su.message);
       expect(cu.fix.replace(' check ', ' secure ')).toBe(su.fix);
+    });
+  });
+
+  describe('direction on a name only one arm enters', () => {
+    it('a mode-000 dist/ is named by secure (which reads dist/) and not by check (which never enters it, readable or not)', (ctx) => {
+      // The direction rule binds on obstructions both arms would have READ. `check`
+      // runs the semantic walker only, whose skip list holds `dist`; the guard is
+      // that the obstruction never moves an arm's verdict cleaner than its readable
+      // tree: check(readable dist/.env) == check(000 dist/) == 0, secure 1 -> 2.
+      const dir = makeTree('dist-dir', { credential: false });
+      fs.mkdirSync(path.join(dir, 'dist'));
+      // A sensitive NAME: secure's sensitive-artifact walk reports `dist/.env`
+      // on a readable tree (CRED-001); a `.js` under dist/ is never compiled by
+      // either arm, so it would prove nothing about the readable verdict.
+      fs.writeFileSync(path.join(dir, 'dist', '.env'), `AWS_ACCESS_KEY_ID=AKIA${'A'.repeat(16)}\nAWS_SECRET_ACCESS_KEY=${'b'.repeat(40)}\n`);
+      const sOpen = json(['secure', '--scan-depth', 'quick', dir]);
+      const cOpen = json(['check', '--offline', dir]);
+      expect(sOpen.status).toBe(1);
+      expect(cOpen.status).toBe(0);
+      expect(cOpen.body.coverage.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
+      if (!makeUnlistable(path.join(dir, 'dist'))) osDeclined(ctx);
+      const sLocked = json(['secure', '--scan-depth', 'quick', dir]);
+      const cLocked = json(['check', '--offline', dir]);
+      expect(sLocked.status).toBe(EXIT_INCOMPLETE);
+      expect(unreadFindings(sLocked.body).map((f) => f.file)).toEqual(['dist/']);
+      expect(sLocked.body.score).toBeLessThanOrEqual(100);
+      expect(cLocked.status).toBe(0);
+      expect(cLocked.body.coverage.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
+    });
+  });
+
+  describe('policy-skipped names are breadth, not loss (attempt-set predicate)', () => {
+    it('a mode-000 .aws/ is named by secure (its sensitive-artifact walk enters it) and not by check', (ctx) => {
+      const dir = makeTree('aws-dir', { credential: false });
+      fs.mkdirSync(path.join(dir, '.aws'));
+      fs.writeFileSync(path.join(dir, '.aws', 'credentials'), `[default]\naws_access_key_id = AKIA${'A'.repeat(16)}\n`);
+      if (!makeUnlistable(path.join(dir, '.aws'))) osDeclined(ctx);
+      for (const depth of ['quick', 'standard']) {
+        const s = json(['secure', '--scan-depth', depth, dir]);
+        expect(s.status).toBe(EXIT_INCOMPLETE);
+        expect(unreadFindings(s.body).map((f) => f.file)).toEqual(['.aws/']);
+      }
+      const c = json(['check', '--offline', dir]);
+      expect(c.status).toBe(0);
+      expect(c.body.coverage.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
+    });
+
+    describe.each(['.git', 'node_modules'])('%s/', (name) => {
+    it('at mode 000 is out of class on both arms at every depth: no walker attempts it, and no root probe reads it as a file', (ctx) => {
+      // Before this change secure at standard depth recorded `.git` as a FILE
+      // (kind file, `chmod u+r .git`): a root probe read every root entry,
+      // directories included, and a 000 directory fails open() with EACCES
+      // before EISDIR can say "not a file". A policy-skipped directory is
+      // breadth, never loss.
+      const dir = makeTree(`skip-${name}`, { credential: false });
+      fs.mkdirSync(path.join(dir, name));
+      fs.writeFileSync(path.join(dir, name, 'placeholder.txt'), 'x');
+      if (!makeUnlistable(path.join(dir, name))) osDeclined(ctx);
+      for (const depth of ['quick', 'standard']) {
+        const s = json(['secure', '--scan-depth', depth, dir]);
+        expect(s.body.coverage.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
+        expect(unreadFindings(s.body)).toHaveLength(0);
+      }
+      const c = json(['check', '--offline', dir]);
+      expect(c.body.coverage.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
+    });
+    });
+
+    it('a mode-000 regular FILE named .git at the root stays in class on secure at standard depth (the root probe reads it)', (ctx) => {
+      const dir = makeTree('gitfile', { credential: false });
+      fs.writeFileSync(path.join(dir, '.git'), 'gitdir: ../elsewhere\n');
+      fs.chmodSync(path.join(dir, '.git'), 0o000);
+      restore.push({ p: path.join(dir, '.git'), mode: 0o644 });
+      try { fs.readFileSync(path.join(dir, '.git')); osDeclined(ctx); } catch { /* denied: proceed */ }
+      const s = json(['secure', '--scan-depth', 'standard', dir]);
+      expect(s.status).toBe(EXIT_INCOMPLETE);
+      const unread = unreadFindings(s.body);
+      expect(unread.map((f) => f.file)).toEqual(['.git']);
+      expect(unread[0].kind).toBe('file');
     });
   });
 

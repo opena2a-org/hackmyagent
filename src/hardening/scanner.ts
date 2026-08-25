@@ -168,13 +168,17 @@ export function buildUnreadInputFinding(
   // The scan root is its own relative name. Both callers derive `rel` with a
   // basename fallback for a path that IS the target; that name is not a path
   // inside the target and must not render as one (#588).
-  const rel = u.path && path.resolve(u.path) === path.resolve(targetDir) ? '.' : u.rel;
+  const rel = isDir && u.path && path.resolve(u.path) === path.resolve(targetDir) ? '.' : u.rel;
   // A directory is shown with a trailing separator on every channel — `file`,
   // `message` and SARIF's uri all derive from it — so a reader never mistakes
   // it for a file. The ruled shape for this kind.
   const shown = isDir ? (rel === '.' ? './' : `${rel.replace(/[\\/]+$/, '')}/`) : rel;
-  const cited = citationPath(rel);
   const target = citationTarget(targetDir);
+  // A `chmod` operand is read relative to the READER's cwd while the re-run
+  // target is absolute; `.` would then chmod whatever directory the reader is
+  // standing in and report success. The root is cited by its absolute path.
+  const citeOperand = (p: string): string | null => (p === '.' ? target : citationPath(p));
+  const cited = citeOperand(rel);
   // The directory this user cannot enter, when that — not the record's own
   // mode — is why it was lost (#515). `chmod u+r <file>` inside it fails with
   // the same EACCES the scan did, so the remedy names the directory instead.
@@ -191,7 +195,7 @@ export function buildUnreadInputFinding(
   // every ancestor is searchable) is its own remedy target; an ancestor that
   // cannot be entered is the #515 shape and wins over it.
   const ancestor = isDir && (obstruction === undefined || obstruction === rel) ? undefined : obstruction;
-  const citedAncestor = ancestor ? citationPath(ancestor) : null;
+  const citedAncestor = ancestor ? citeOperand(ancestor) : null;
   // `chmod u+x` answers a directory that can be LISTED but not entered. One
   // that denies read as well needs `u+rx`, and the guidance must not claim it
   // "can be listed" (mode 000: nothing lists it). When the probe cannot tell
@@ -7857,8 +7861,15 @@ dist/
     // SEC-003: Check for key rotation support
     let hasKeyRotation = false;
     try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+      // Dirents, not names: this probe reads EVERY root entry, and a directory
+      // at mode 000 fails open() with EACCES before EISDIR can say "not a
+      // file" — which put `.git`/`node_modules` on the coverage ledger as an
+      // unread FILE at standard depth (#588). A directory is never this
+      // probe's input; a file, symlink or anything else keeps today's read.
+      const entries = await fs.readdir(targetDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) continue;
+        const file = entry.name;
         try {
           const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
           if (content.includes('rotation') || content.includes('rotate') || content.includes('KEY_VERSION')) {
