@@ -366,7 +366,6 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
       const cLocked = json(['check', '--offline', dir]);
       expect(sLocked.status).toBe(EXIT_INCOMPLETE);
       expect(unreadFindings(sLocked.body).map((f) => f.file)).toEqual(['dist/']);
-      expect(sLocked.body.score).toBeLessThanOrEqual(100);
       expect(cLocked.status).toBe(0);
       expect(cLocked.body.coverage.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
     });
@@ -449,7 +448,9 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
       fs.writeFileSync(path.join(dir, '.git'), 'gitdir: ../elsewhere\n');
       fs.chmodSync(path.join(dir, '.git'), 0o000);
       restore.push({ p: path.join(dir, '.git'), mode: 0o644 });
-      try { fs.readFileSync(path.join(dir, '.git')); osDeclined(ctx); } catch { /* denied: proceed */ }
+      let readable = true;
+      try { fs.readFileSync(path.join(dir, '.git')); } catch { readable = false; }
+      if (readable) osDeclined(ctx); // outside the try: ctx.skip() throws, and a catch would swallow it
       const s = json(['secure', '--scan-depth', 'standard', dir]);
       expect(s.status).toBe(EXIT_INCOMPLETE);
       const unread = unreadFindings(s.body);

@@ -58,8 +58,9 @@ the credential at exit 1. Base rate with the shipped walker across five real tre
 directory whose listing fails, and each of the five keeps its exit code and score. A
 directory is recorded by each command that would have entered it: `check` runs the
 semantic walker only and never enters `node_modules`, `.git`, `dist`, `build`,
-`coverage`, `target`, test directories or a dot-directory other than `.claude`, so a
-`chmod 000 dist/` is named by `secure` (exit 2) and not by `check` (exit 0, which says
+`coverage`, `target`, test directories or a dot-directory other than `.claude`,
+`.github` and `.well-known`, so a `chmod 000 dist/` is named by `secure` (exit 2) and
+not by `check` (exit 0, which says
 what it did not evaluate) — the coverage asymmetry the two commands already had. The
 remaining #588 shape — a file the semantic compiler never selects as a candidate,
 lost at quick depth on both commands — is not in the record yet.
@@ -357,7 +358,7 @@ the two commands order the same two facts the same way.
   directory it cannot list is in the record on each command that would have entered it (see
   the entry above): `check` runs the semantic walker only, which never enters `node_modules`,
   `.git`, `dist`, `build`, `coverage`, `target`, test directories or a dot-directory other than
-  `.claude`, readable or not, so `chmod 000 dist/` is named by `secure` — whose sensitive-artifact
+  `.claude`, `.github` and `.well-known`, readable or not, so `chmod 000 dist/` is named by `secure` — whose sensitive-artifact
   walk reads `dist/` and reports a credential there on a readable tree — and not by `check`,
   which exits 0 there and says what it did not evaluate. The precedence is written once, in
   `deriveCheckVerdict`, and is keyed on the run's read-failure record rather than on
