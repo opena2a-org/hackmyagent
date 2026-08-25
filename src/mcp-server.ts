@@ -34,7 +34,7 @@ import {
 import { citationTarget } from './ui/shell-quote';
 import { assertRedactionProvenance } from './hardening/finding-emit';
 import { getCheckCounts } from './hardening/taxonomy';
-import { countsAgainstScore } from './ui/verdict-band';
+import { countsAgainstScore, confirmedFix } from './ui/verdict-band';
 import {
   resolveRoots,
   resolveWithinRoots,
@@ -152,7 +152,10 @@ export function buildScanToolText(result: {
 }): string {
   assertRedactionProvenance(result.findings, 'mcp-scan-text');
   const issues = result.findings.filter((f) => countsAgainstScore(f));
-  const fixed = result.findings.filter((f) => f.fixed);
+  // #274 — attempted-and-disproved is an issue above, not a fix here: the two
+  // counts partition the findings, as on the HTML report, the Registry
+  // remediation report and the OpenClaw arm's `fixed` count.
+  const fixed = result.findings.filter((f) => confirmedFix(f));
 
   let summary = `Score: ${result.score}/${result.maxScore} | ${issues.length} issue${issues.length !== 1 ? 's' : ''} found`;
   if (fixed.length > 0) {

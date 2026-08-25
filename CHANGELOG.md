@@ -169,6 +169,24 @@ with nothing in the exit code to say so (#563). The flag is now refused on every
 the format errors are raised, exit 1, naming the flag it needs; `--help` lists `asp` with that
 condition. With `-b oasb-1` the ASP document is unchanged.
 
+### The MCP scan summary counts a fix only when it is confirmed
+
+The `hackmyagent_scan` MCP tool's summary line built its two counts from overlapping
+filters: outstanding issues via the scoring predicate, fixes via a bare `fixed` flag. A fix
+that was attempted and then disproved by the verification pass counted as both, so one finding
+read `1 issue found | 1 fixed` (#274). The HTML report and the Registry remediation report
+already counted a fix only when it is confirmed, and the text fix summary leads with what was
+confirmed; the MCP summary and the deprecated OpenClaw arm now count the same way. Those four
+surfaces — the HTML report, the Registry remediation report, the MCP summary and the OpenClaw
+arm — read one shared predicate; the text fix summary keeps its own attempted/verified split. For a disproved attempt the line reads `1 issue found` with no fix
+clause; a confirmed fix beside it reads `1 issue found | 1 fixed`. The body is unchanged: the
+disproved finding is listed under issues with its remedy. On the deprecated `secure-openclaw`
+arm the counts line and the `--json` `fixed` field follow the same rule (the per-finding
+`fixed`/`fixVerified` flags are unchanged), and on the text channel of a measured run the backup
+path and rollback command are keyed on the backup the scanner wrote rather than on the confirmed
+count, so a run whose only attempt was disproved still says where the backup is and how to roll
+back.
+
 ### Multi-part fix text renders on separate lines in the findings list
 
 The fix generator composes a remediation from several authored parts — the command, a

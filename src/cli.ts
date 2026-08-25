@@ -350,7 +350,7 @@ import {
 import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifact-intent';
 import { describeSemanticFamilyCoverage } from './ui/semantic-coverage-labels';
 import type { SemanticFamilyCoverage } from './nanomind-core/scanner-bridge.js';
-import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, expandSuppressed, retainForVerdict, summarizeSuppressed } from './ui/verdict-band';
+import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, confirmedFix, expandSuppressed, retainForVerdict, summarizeSuppressed } from './ui/verdict-band';
 import { shouldPrintVersionFooter } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { fixSummaryLine } from './ui/fix-summary';
@@ -4142,7 +4142,7 @@ function generateScanHtmlReport(scanResult: { findings: SecurityFinding[]; score
   // header arithmetic adds up. A fix the verification pass could not confirm
   // is counted as an outstanding issue (it is still on disk), and listing it
   // in both tables made `issues + fixed + passed` exceed the check total.
-  const fixedFindings = scanResult.findings.filter(f => f.fixed && f.fixVerified !== false);
+  const fixedFindings = scanResult.findings.filter(f => confirmedFix(f));
   const score = scanResult.score;
   const scoreColor = score >= 90 ? '#22c55e' : score >= 70 ? '#eab308' : score >= 50 ? '#f97316' : '#ef4444';
   const gradeLetters = score >= 90 ? 'strong' : score >= 80 ? 'good' : score >= 70 ? 'moderate' : score >= 60 ? 'improving' : 'needs-attention';
@@ -6281,7 +6281,8 @@ Examples:
       // Filter to OpenClaw-specific findings
       const allOpenClawFindings = filterOpenClawFindings(result.findings);
       const issues = allOpenClawFindings.filter((f) => countsAgainstScore(f));
-      const fixedFindings = allOpenClawFindings.filter((f) => f.fixed);
+      // #274 — confirmed fixes only; a disproved attempt is counted in `issues`.
+      const fixedFindings = allOpenClawFindings.filter((f) => confirmedFix(f));
       const passedFindings = allOpenClawFindings.filter((f) => f.passed);
 
       // #373, same class as `check`. `--help` above promises "Exit code 1 if
@@ -6372,7 +6373,7 @@ Examples:
         console.log(`${colors.green}No OpenClaw-specific issues found.${RESET()}\n`);
       }
 
-      // Show fixed findings
+      // Show confirmed fixes
       if (fixedFindings.length > 0) {
         console.log(`${colors.green}Auto-Remediation Applied:${RESET()}\n`);
         for (const finding of fixedFindings) {
@@ -6382,14 +6383,25 @@ Examples:
           }
         }
         console.log();
+      }
 
-        if (result.backupPath) {
-          console.log(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
-          console.log(`${colors.yellow}To rollback:${RESET()} ${CLI_PREFIX} rollback ${citationTarget(targetDir)}`);
-          console.log();
-          console.log(`${colors.cyan}Note:${RESET()} If you replaced tokens with env vars, set OPENCLAW_AUTH_TOKEN`);
-          console.log(`      in your environment before starting OpenClaw.\n`);
-        }
+      // #274 — the recoverability disclosure keys on the BACKUP the scanner
+      // wrote, not on the confirmed count. `backupPath` is set when `--fix`
+      // created the backup (before any check ran), and fix writes cannot
+      // happen without it — `createBackup` failing downgrades `shouldFix`. A
+      // run whose only attempt was disproved (`fixed: true, fixVerified:
+      // false`) rewrote the tree and has this backup all the same; gated on
+      // `fixedFindings` it printed neither the path nor the rollback command
+      // for exactly that run. The attempt itself is disclosed under Findings
+      // ("Auto-fix did not resolve this"). Known sibling gaps, recorded not
+      // fixed here: the unmeasured arm returns above before this line, and
+      // the hand-built `--json` document carries no `backupPath` (#610).
+      if (result.backupPath) {
+        console.log(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
+        console.log(`${colors.yellow}To rollback:${RESET()} ${CLI_PREFIX} rollback ${citationTarget(targetDir)}`);
+        console.log();
+        console.log(`${colors.cyan}Note:${RESET()} If you replaced tokens with env vars, set OPENCLAW_AUTH_TOKEN`);
+        console.log(`      in your environment before starting OpenClaw.\n`);
       }
 
       // Show passed checks in verbose mode

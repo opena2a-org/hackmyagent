@@ -80,10 +80,10 @@ describe('#285 MCP scan tool reports a disproved fix', () => {
     expect(text).not.toContain('No issues found.');
   });
 
-  it('still reports the fix was attempted, so the two statements do not contradict', () => {
+  it('does not count the disproved attempt as fixed: the counts partition the findings (#274)', () => {
     const text = buildScanToolText({ score: 40, maxScore: 100, findings: [disprovedFix] });
-    expect(text).toContain('1 fixed');
     expect(text).toContain('1 issue found');
+    expect(text).not.toContain('fixed');
   });
 });
 
