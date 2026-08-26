@@ -105,12 +105,10 @@ it in.
 
 ## Parity gate
 
-Every pull request reports a check named `parity / parity`. It runs the cross-CLI
-output-parity harness (`.github/workflows/parity-gate.yml`) against your branch's build
-when the change can affect contract-tracked output: anything under `src/`, or a change to
-`package.json`, `package-lock.json`, or the workflow file itself. A pull request touching
-none of those paths reports the check as skipped. Either way the check is present, which
-is what allows it to be required on `main`.
+Every pull request runs a check named `parity / parity`: the cross-CLI output-parity
+harness (`.github/workflows/parity-gate.yml`), built against your branch. It runs
+unconditionally, even for changes that cannot affect CLI output -- a check that is
+always present under one name is what allows it to be required on `main`.
 
 If the parity leg fails, your change altered JSON output that downstream consumers pin as
 golden files. If the output change is intentional, a maintainer re-baselines the goldens

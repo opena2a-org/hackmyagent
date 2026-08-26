@@ -11,55 +11,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Decides whether the parity leg must run. The workflow triggers on EVERY
-  # pull request so the parity check is always reported — run or skip, never
-  # absent — which is what lets `parity / parity` be a required context on
-  # main without stranding PRs that touch none of the parity-relevant paths.
-  # (The previous `paths:` filter made the check absent, not skipped, on
-  # non-matching PRs, so it could not be made required without stranding
-  # them -- and an unrequired parity leg blocks nothing: #636 merged red.)
-  # quotePath=off keeps non-ASCII paths raw so `src/*` matches them; a
-  # path with an embedded newline can only over-match (parity runs), never
-  # suppress a match.
-  # The path predicate lives here and only here.
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      parity: ${{ steps.diff.outputs.parity }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Compare against the merge base
-        id: diff
-        run: |
-          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
-            echo "parity=true" >> "$GITHUB_OUTPUT"
-            echo "Not a pull request: parity runs unconditionally."
-            exit 0
-          fi
-          base="$(git merge-base "origin/${GITHUB_BASE_REF}" HEAD)"
-          changed="$(git -c core.quotePath=off diff --name-only "$base" HEAD)"
-          parity=false
-          while IFS= read -r f; do
-            case "$f" in
-              src/*|package.json|package-lock.json|.github/workflows/parity-gate.yml)
-                parity=true
-                break
-                ;;
-            esac
-          done <<< "$changed"
-          echo "parity=$parity" >> "$GITHUB_OUTPUT"
-          {
-            echo "merge base: $base"
-            echo "parity: $parity"
-            echo "changed files:"
-            echo "$changed"
-          }
-
+  # Runs on EVERY pull request, unconditionally, so a check named
+  # `parity / parity` is always reported and can be a required context on
+  # main without stranding any PR.
+  # History: a `paths:` filter made the check absent (not skipped) on
+  # non-matching PRs, so it could not be required -- and an unrequired
+  # parity leg blocks nothing: #636 merged red. A run-or-skip predicate job
+  # was tried next (#641), but a skipped caller job reports its check under
+  # the caller job's own name, `parity`, while a running one expands the
+  # reusable workflow to `parity / parity` -- two names, so a single
+  # required context would strand non-matching PRs all over again (#642).
+  # Running unconditionally keeps a single name that is always present.
   parity:
-    needs: changes
-    if: needs.changes.outputs.parity == 'true'
     # opena2a-parity moved from opena2a-org to opena2a-standards on 2026-05-24.
     # Pinned to the current main SHA; bumps require an explicit, reviewable PR.
     # The pin controls only the workflow steps: on cross-repo calls the
