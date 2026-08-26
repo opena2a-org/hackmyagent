@@ -8,9 +8,10 @@
  * this file holds the BEHAVIORAL one — #285's division). Events are observed
  * via `OPENA2A_TELEMETRY_DEBUG=print`, which echoes each payload to stderr
  * as `[opena2a:telemetry] {...}`. The endpoint is pinned to a dead local
- * port so no probe ever reaches the real Registry, and every send fails as
- * an instant connection refusal — which doubles as the latency cell's
- * condition: an unreachable endpoint must never hang the exit.
+ * port so no probe reaches the real Registry, and a send fails as a fast
+ * local connection refusal — which doubles as the latency cells'
+ * condition: an unreachable endpoint must not hang the exit past their
+ * bound.
  *
  * Measured on this build (2026-08-26, darwin): detect exits 1 here because
  * the DEV machine has live AI assistants; CI machines may exit 0 or 2. The
@@ -34,8 +35,8 @@ import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-fres
 
 beforeAll(assertDistFreshIfPresent);
 
-// Connection-refused instantly on every platform; nothing listens on the
-// discard port. Same idiom as settled-outbound-claims.test.ts.
+// Nothing listens on the discard port, so a send fails as a fast local
+// connection refusal. Same idiom as settled-outbound-claims.test.ts.
 const DEAD_TELEMETRY = 'http://127.0.0.1:9';
 const DEAD_REGISTRY = 'http://localhost:9';
 // A string that appears ONLY in argv. If any event payload ever contains it,

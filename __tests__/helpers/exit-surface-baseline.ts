@@ -10,7 +10,7 @@
  * in the same diff.
  *
  * Ids are stable names, not locations: they travel with the code through
- * refactors, so this list never churns and never trains anyone to
+ * refactors, so this list has no reason to churn and nobody learns to
  * regenerate it mechanically.
  */
 export const UNSETTLED_EXIT_IDS: ReadonlySet<string> = new Set([
