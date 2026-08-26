@@ -49,7 +49,7 @@ export function generateBenchmarkReport(
     if (categoryControls.length === 0) {
       console.error(`Error: Unknown category '${escapeForDisplay(String(categoryFilter))}'.`);
       console.error(`Available categories: ${OASB_1_CATEGORIES.map((c: BenchmarkCategory) => c.name).join(', ')}`);
-      process.exit(1);
+      process.exit(1); // exit-unsettled(#350/S056): reached from the tracked benchmark command via cli.ts import; conversion needs the module to stay cli-independent
     }
     controls = controls.filter((c: BenchmarkControl) => c.category.toLowerCase() === categoryFilter.toLowerCase());
   }
