@@ -4872,7 +4872,7 @@ Examples:
         && options.format !== 'json';
       if (formatContradiction || !validFormats.includes(format)) {
         console.error(formatContradiction
-          ? `Error: --json is the deprecated alias of --format json and contradicts --format ${escapeForDisplay(String(options.format))}. Drop one of the two flags.`
+          ? `Error: --json is the deprecated alias of --format json and contradicts --format '${escapeForDisplay(String(options.format))}'. Drop one of the two flags.`
           : `Error: Invalid format '${escapeForDisplay(String(format))}'. Use: ${validFormats.join(', ')}`);
         process.exit(1); // exit-unsettled(#350/S006): pre-work refusal; events await the schema reason field (#525)
       }
@@ -7445,7 +7445,7 @@ Examples:
   .option('--stop-on-success', 'Stop after first successful attack')
   .option('--payload-file <path>', 'JSON file with custom attack payloads')
   .option('--fail-on-vulnerable [severity]', 'Exit code 1 if vulnerabilities found (optional: critical/high/medium/low)')
-  .option('--json', 'Output as JSON (shorthand for --format json)')
+  .option('--json', 'Output as JSON (deprecated alias of --format json)')
   .option('-f, --format <format>', 'Output format: text, json, sarif, html', 'text')
   .option('-o, --output <file>', 'Write output to file')
   .option('-v, --verbose', 'Show detailed output for each payload')
@@ -7568,7 +7568,7 @@ Examples:
         a2aRecipient: options.a2aRecipient,
       };
 
-      // Validate format (--json is shorthand for --format json)
+      // Validate format (--json is the deprecated alias of --format json)
       const validFormats = ['text', 'json', 'sarif', 'html'];
       // `??`, not `||`: `--format ''` fell to the text report silently
       // (#632's class, fixed on secure earlier); '' now reaches the
@@ -7583,7 +7583,7 @@ Examples:
         && options.format !== 'json';
       if (formatContradiction || !validFormats.includes(format)) {
         console.error(formatContradiction
-          ? `Error: --json is the deprecated alias of --format json and contradicts --format ${escapeForDisplay(String(options.format))}. Drop one of the two flags.`
+          ? `Error: --json is the deprecated alias of --format json and contradicts --format '${escapeForDisplay(String(options.format))}'. Drop one of the two flags.`
           : `Error: Invalid format '${escapeForDisplay(String(format))}'. Use: ${validFormats.join(', ')}`);
         process.exit(1); // exit-unsettled(#350/S020): pre-work refusal; events await the schema reason field (#525)
       }

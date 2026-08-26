@@ -43,7 +43,7 @@ describe('#605 --json contradicting --format refuses, pre-scan', { timeout: 300_
   it('RED-ON-BASE: secure --json --format sarif refuses at exit 1, naming the alias, with no report on stdout', () => {
     const r = run(['secure', dir(), '--json', '--format', 'sarif', '--no-machine-posture']);
     expect(r.status).toBe(1);
-    expect(r.stderr).toMatch(/deprecated alias.*--format sarif.*Drop one/s);
+    expect(r.stderr).toMatch(/deprecated alias.*sarif.*Drop one/s);
     expect(r.stdout).not.toContain('{');
   });
 
@@ -66,7 +66,7 @@ describe('#605 --json contradicting --format refuses, pre-scan', { timeout: 300_
     // contacted — the cell completes fast on a port nothing listens on.
     const r = run(['attack', 'http://127.0.0.1:9', '--json', '--format', 'sarif']);
     expect(r.status).toBe(1);
-    expect(r.stderr).toMatch(/deprecated alias.*--format sarif.*Drop one/s);
+    expect(r.stderr).toMatch(/deprecated alias.*sarif.*Drop one/s);
   });
 
   it("RED-ON-BASE: attack --format '' reaches the invalid-format refusal instead of falling to text", () => {
