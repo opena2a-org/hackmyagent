@@ -3,10 +3,11 @@
  *
  * Every bare `process.exit(...)` call and bare `process.exitCode` assignment
  * in `src/` carries either an `// exit-unsettled(#350/S<id>)` annotation
- * whose id lives here, or an `// exit-no-event(<tag>)` claim from the closed
- * vocabulary below. A NEW id is a new dark exit site — the #350 inversion
- * re-opening — and needs a CISO-lane ruling, not a list edit. A migration
- * deletes the site's annotation AND its id here in the same diff.
+ * whose id lives here, or an `// exit-no-event(<tag>/L<id>)` claim whose id
+ * is registered below with its tag. A NEW id of either kind is a new dark
+ * exit site — the #350 inversion re-opening — and needs a CISO-lane ruling,
+ * not a list edit. A migration deletes the site's annotation AND its id here
+ * in the same diff.
  *
  * Ids are stable names, not locations: they travel with the code through
  * refactors, so this list never churns and never trains anyone to
@@ -24,32 +25,66 @@ export const UNSETTLED_EXIT_IDS: ReadonlySet<string> = new Set([
   'S055',
   // benchmark-report.ts's category refusal (reached from the tracked benchmark command):
   'S056',
+  // UsageError branches of the converted catch template — refusals, not
+  // crashes: the run did no work, and an event that cannot say "refused"
+  // would land in the crash bucket (#525 converts these with the rest):
+  'S057', 'S058', 'S059', 'S060', 'S061', 'S062', 'S063', 'S064', 'S065',
+  'S066', 'S067', 'S068',
+]);
+
+/**
+ * Every `exit-no-event` claim, by registered id → the ONLY tag that id may
+ * carry. The annotation licenses the CLAIM, not the citation: the test
+ * checks each tag's predicate structurally where it can (pre-action must
+ * not sit inside a `.action(` callback; separate-entrypoint only inside
+ * src/arp/cli/, which a standing assertion holds un-imported), and holds
+ * the member list closed everywhere it cannot — a new member is a
+ * baseline edit reviewed as a gate-semantics change (CISO lane), never a
+ * one-line comment.
+ *
+ * Tags with no registered member (`non-tracked-command`, `post-record`)
+ * are thereby unusable until a member is deliberately registered here.
+ * The funnel's own exits carry no annotation at all: their exemption is
+ * structural (enclosing function ∈ FUNNEL_FUNCTIONS, in src/cli.ts, exact
+ * count pinned by the test).
+ */
+export const NO_EVENT_EXIT_SITES: ReadonlyMap<string, string> = new Map([
+  // Lifecycle sites in src/cli.ts that run before any command action arms
+  // telemetry (`recordTelemetry` no-ops without `currentCommandName`):
+  ['L001', 'pre-action'], // integrity self-check failure, exit 3
+  ['L002', 'pre-action'], // no-args help path
+  ['L003', 'pre-action'], // parseAsync catch after tele.error
+  // The ARP standalone binary (src/arp/cli/index.ts) — never imported into
+  // the telemetry-bearing process; self-revoking via the no-import assertion:
+  ['L004', 'separate-entrypoint'],
+  ['L005', 'separate-entrypoint'],
+  ['L006', 'separate-entrypoint'],
+  ['L007', 'separate-entrypoint'],
+  ['L008', 'separate-entrypoint'],
+  ['L009', 'separate-entrypoint'],
 ]);
 
 /**
  * The closed exemption vocabulary. Each tag names the PREDICATE that makes
- * its sites event-free — the annotation licenses the claim, not the
- * citation. Adding a tag is a gate-semantics change (CISO lane).
+ * its sites event-free. Adding a tag is a gate-semantics change (CISO lane).
  *
- * - `pre-action`: runs before any command action arms telemetry
- *   (`recordTelemetry` no-ops without `currentCommandName`); structurally
- *   checked — the site must not be inside a `.action(` callback.
+ * - `pre-action`: runs before any command action arms telemetry;
+ *   structurally checked — the site must not be inside a `.action(`
+ *   callback — AND member-closed via the registry above (the lexical check
+ *   alone is satisfiable by a helper a command action calls).
  * - `non-tracked-command`: inside an action of a command in
- *   NON_TRACKED_TELEMETRY_COMMANDS. No members today.
+ *   NON_TRACKED_TELEMETRY_COMMANDS. No members today, so no id carries it.
  * - `post-record`: after `recordTelemetry` already fired for this run
  *   (once-only). The one trust+review residue. No members today.
  * - `separate-entrypoint`: a module never imported into the
- *   telemetry-bearing process (src/arp/cli) — SELF-REVOKING via the
+ *   telemetry-bearing process (src/arp/cli/) — SELF-REVOKING via the
  *   standing no-import assertion in the test.
- * - `exit-funnel`: the funnel's own writes, additionally keyed by
- *   enclosing named function.
  */
 export const EXEMPTION_TAGS: ReadonlySet<string> = new Set([
   'pre-action',
   'non-tracked-command',
   'post-record',
   'separate-entrypoint',
-  'exit-funnel',
 ]);
 
 /** The funnel's named functions — the only writers permitted without an annotation. */

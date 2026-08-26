@@ -69,7 +69,7 @@ async function main(): Promise<void> {
     default:
       console.error(`Unknown command: ${command}`);
       showHelp();
-      process.exit(1); // exit-no-event(separate-entrypoint): standalone binary; no src/ import (self-revoking assertion in the ratchet test)
+      process.exit(1); // exit-no-event(separate-entrypoint/L004): standalone binary; no src/ import (self-revoking assertion in the ratchet test)
   }
 }
 
@@ -96,7 +96,7 @@ async function startGuard(): Promise<void> {
     console.log(`  Budget used: $${status.budget.spent} / $${status.budget.budget} (${status.budget.percentUsed}%)`);
     console.log(`  Total L2 calls: ${status.budget.totalCalls}`);
     console.log('  Stopped.\n');
-    process.exit(0); // exit-no-event(separate-entrypoint): standalone binary; no src/ import (self-revoking assertion in the ratchet test)
+    process.exit(0); // exit-no-event(separate-entrypoint/L005): standalone binary; no src/ import (self-revoking assertion in the ratchet test)
   };
 
   process.on('SIGINT', shutdown);
@@ -176,7 +176,7 @@ async function startProxy(): Promise<void> {
     console.error('      listen: 127.0.0.1:8080');
     console.error('      target: http://localhost:3000');
     console.error('      tls: false');
-    process.exit(1); // exit-no-event(separate-entrypoint): standalone binary; no src/ import (self-revoking assertion in the ratchet test)
+    process.exit(1); // exit-no-event(separate-entrypoint/L006): standalone binary; no src/ import (self-revoking assertion in the ratchet test)
   }
 
   const engine = new EventEngine(config);
@@ -244,7 +244,7 @@ async function startProxy(): Promise<void> {
     await a2aInterceptor.stop();
     console.log(`  Total detections: ${detectionCount}`);
     console.log('  Stopped.\n');
-    process.exit(0); // exit-no-event(separate-entrypoint): standalone binary; no src/ import (self-revoking assertion in the ratchet test)
+    process.exit(0); // exit-no-event(separate-entrypoint/L007): standalone binary; no src/ import (self-revoking assertion in the ratchet test)
   };
 
   process.on('SIGINT', shutdown);
@@ -344,7 +344,7 @@ async function telemetryCommand(): Promise<void> {
     default:
       console.error(`  Unknown telemetry subcommand: ${sub}`);
       console.error('  Run: arp telemetry --help');
-      process.exit(1); // exit-no-event(separate-entrypoint): standalone binary; no src/ import (self-revoking assertion in the ratchet test)
+      process.exit(1); // exit-no-event(separate-entrypoint/L008): standalone binary; no src/ import (self-revoking assertion in the ratchet test)
   }
 }
 
@@ -507,5 +507,5 @@ function showHelp(): void {
 
 main().catch((err) => {
   console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1); // exit-no-event(separate-entrypoint): standalone binary; no src/ import (self-revoking assertion in the ratchet test)
+  process.exit(1); // exit-no-event(separate-entrypoint/L009): standalone binary; no src/ import (self-revoking assertion in the ratchet test)
 });

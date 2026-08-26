@@ -76,10 +76,14 @@ export const EXIT2_IS_SEMANTIC: ReadonlySet<string> = new Set(['red-team']);
  * findings run — only the catch block can tell them apart).
  *
  * `findings` / `no-verdict` are result endings (the command did its job;
- * success). `error` / `unmeasured` / `incomplete` are failures of the job.
- * `refused` is neither — the run never started work; it is reserved for the
- * refusal slice (#525) behind the event-schema field ruling and is mapped to
- * failure until that field exists, so a premature use cannot inflate success.
+ * success). `error` / `unmeasured` / `incomplete` are failures of the job —
+ * `unmeasured` never examined the subject, `incomplete` examined some of it
+ * and could not finish (a scan whose plugins failed). `refused` is neither —
+ * the run never started work; it is reserved for the refusal slice (#525)
+ * behind the event-schema field ruling and is mapped to failure until that
+ * field exists, so a premature use cannot inflate success. `no-verdict` has
+ * no call site yet either: it is red-team's ending (#369), which today still
+ * settles through the postAction hook and EXIT2_IS_SEMANTIC.
  */
 export type ExitReason = 'findings' | 'no-verdict' | 'error' | 'unmeasured' | 'incomplete' | 'refused';
 

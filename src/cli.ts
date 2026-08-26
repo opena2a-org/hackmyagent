@@ -142,7 +142,7 @@ async function recordTelemetry(exitCode: number, reason?: ExitReason): Promise<v
  */
 async function exitRecorded(code: number, reason: ExitReason): Promise<never> {
   await recordTelemetry(code, reason);
-  process.exit(code); // exit-no-event(exit-funnel): the funnel's own exit — the event fired on the line above.
+  process.exit(code); // the funnel-owned exit (structural exemption): the funnel's own exit — the event fired on the line above.
 }
 
 /**
@@ -1088,6 +1088,9 @@ Try: ${getCheckCommand()} ${skill} --offline`), 10000)
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+        // A refused run did no work; an event that cannot say "refused" would
+        // land in the crash bucket and skew the error rate it exists to measure.
+        process.exit(1); // exit-unsettled(#350/S057): pre-work refusal — the event awaits the schema reason field (#525)
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
@@ -6236,6 +6239,9 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+        // A refused run did no work; an event that cannot say "refused" would
+        // land in the crash bucket and skew the error rate it exists to measure.
+        process.exit(1); // exit-unsettled(#350/S058): pre-work refusal — the event awaits the schema reason field (#525)
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
@@ -6684,6 +6690,9 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+        // A refused run did no work; an event that cannot say "refused" would
+        // land in the crash bucket and skew the error rate it exists to measure.
+        process.exit(1); // exit-unsettled(#350/S059): pre-work refusal — the event awaits the schema reason field (#525)
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
@@ -6933,6 +6942,9 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+        // A refused run did no work; an event that cannot say "refused" would
+        // land in the crash bucket and skew the error rate it exists to measure.
+        process.exit(1); // exit-unsettled(#350/S060): pre-work refusal — the event awaits the schema reason field (#525)
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
@@ -7079,6 +7091,9 @@ Examples:
         if (error instanceof UsageError) {
           error.message.split('\n').forEach((line, i) =>
             console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S061): pre-work refusal — the event awaits the schema reason field (#525)
         } else {
           console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
         }
@@ -7336,6 +7351,9 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+        // A refused run did no work; an event that cannot say "refused" would
+        // land in the crash bucket and skew the error rate it exists to measure.
+        process.exit(1); // exit-unsettled(#350/S062): pre-work refusal — the event awaits the schema reason field (#525)
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
@@ -7723,6 +7741,9 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+        // A refused run did no work; an event that cannot say "refused" would
+        // land in the crash bucket and skew the error rate it exists to measure.
+        process.exit(1); // exit-unsettled(#350/S063): pre-work refusal — the event awaits the schema reason field (#525)
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
@@ -8979,7 +9000,7 @@ Examples:
             legacyKeyMaterial,
           };
           writeJsonStdout(jsonOutput);
-          if (pluginErrors > 0) await exitRecorded(2, 'unmeasured');
+          if (pluginErrors > 0) await exitRecorded(2, 'incomplete');
           // The same severity gate the text path applies below. Without it
           // this branch returned 0 no matter what survived the fix pass, so
           // `--json` — the mode `--help` documents FOR CI, and the one whose
@@ -9100,7 +9121,7 @@ Examples:
 
         // Exit with non-zero if critical/high issues remain or scan is incomplete
         if (pluginErrors > 0) {
-          await exitRecorded(2, 'unmeasured'); // Exit 2 = partial/incomplete scan
+          await exitRecorded(2, 'incomplete'); // Exit 2 = partial/incomplete scan
         }
         const criticalOrHigh = remainingFindings.filter(
           (f) => f.severity === 'critical' || f.severity === 'high'
@@ -9113,6 +9134,9 @@ Examples:
         if (error instanceof UsageError) {
           error.message.split('\n').forEach((line, i) =>
             console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S064): pre-work refusal — the event awaits the schema reason field (#525)
         } else {
           console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
         }
@@ -10185,6 +10209,9 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           process.stderr.write(i === 0 ? `Error: ${escapeForDisplay(line)}\n` : `${escapeForDisplay(line)}\n`));
+        // A refused run did no work; an event that cannot say "refused" would
+        // land in the crash bucket and skew the error rate it exists to measure.
+        process.exit(1); // exit-unsettled(#350/S065): pre-work refusal — the event awaits the schema reason field (#525)
       } else {
         process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
       }
@@ -10347,6 +10374,9 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           process.stderr.write(i === 0 ? `Error: ${escapeForDisplay(line)}\n` : `${escapeForDisplay(line)}\n`));
+        // A refused run did no work; an event that cannot say "refused" would
+        // land in the crash bucket and skew the error rate it exists to measure.
+        process.exit(1); // exit-unsettled(#350/S066): pre-work refusal — the event awaits the schema reason field (#525)
       } else {
         process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
       }
@@ -10891,6 +10921,9 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           process.stderr.write(i === 0 ? `Error: ${escapeForDisplay(line)}\n` : `${escapeForDisplay(line)}\n`));
+        // A refused run did no work; an event that cannot say "refused" would
+        // land in the crash bucket and skew the error rate it exists to measure.
+        process.exit(1); // exit-unsettled(#350/S067): pre-work refusal — the event awaits the schema reason field (#525)
       } else {
         process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
       }
@@ -11389,6 +11422,9 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+        // A refused run did no work; an event that cannot say "refused" would
+        // land in the crash bucket and skew the error rate it exists to measure.
+        process.exit(1); // exit-unsettled(#350/S068): pre-work refusal — the event awaits the schema reason field (#525)
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
@@ -13681,7 +13717,7 @@ async function checkNpmPackage(
         tele.error('startup', 'INTEGRITY_FAIL');
         await tele.flush();
       } catch { /* never block integrity exit on a telemetry failure */ }
-      process.exit(3); // exit-no-event(pre-action): fires and flushes its own INTEGRITY_FAIL event before exit. Exit code 3 = integrity failure.
+      process.exit(3); // exit-no-event(pre-action/L001): fires and flushes its own INTEGRITY_FAIL event before exit. Exit code 3 = integrity failure.
     }
 
     if (integrity.status === 'DEGRADE') {
@@ -13731,7 +13767,7 @@ async function checkNpmPackage(
   program.on('option:version', () => {
     process.stdout.write(vparts.stdout + '\n');
     if (vparts.stderr) process.stderr.write(vparts.stderr + '\n');
-    process.exit(0); // exit-no-event(pre-action): runs before any command action arms telemetry
+    process.exit(0); // exit-no-event(pre-action/L002): runs before any command action arms telemetry
   });
 
   // Telemetry tracking — records command start time, fires on postAction.
@@ -13845,7 +13881,7 @@ async function checkNpmPackage(
 
   if (process.argv.length <= 2) {
     program.outputHelp();
-    process.exit(0); // exit-no-event(pre-action): runs before any command action arms telemetry
+    process.exit(0); // exit-no-event(pre-action/L003): runs before any command action arms telemetry
   }
 
   try {

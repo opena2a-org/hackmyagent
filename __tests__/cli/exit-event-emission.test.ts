@@ -17,8 +17,13 @@
  * claim is "one event on EVERY path", so the cells accept any settled code
  * and pin the event count and the success mapping for the code observed.
  *
- * RED-ON-BASE cells fail on the b44baf9 build (bare `process.exit` before
- * the postAction hook → zero events); PIN cells pass on both.
+ * RED-ON-BASE cells (detect, trust) fail on the b44baf9 build — bare
+ * `process.exit` before the postAction hook meant zero events. PIN cells
+ * pass on both builds and hold a chosen behavior against drift. The
+ * converted npm-name-not-found ending (src/cli.ts, `check`'s unmeasured
+ * arm) has no deterministic offline trigger, so it is held by the
+ * structural ratchet plus the funnel mechanism these cells prove, not by
+ * a spawn of its own.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -106,16 +111,31 @@ describe('#350 endings emit their command event', { timeout: 300_000 }, () => {
     expect(r.events[0].success).toBe(false);
   });
 
-  it('RED-ON-BASE: an unmeasured check emits its event and keeps exit 2', () => {
+  it('PIN: an unmeasured check emits its event and keeps exit 2', () => {
     // A path-style target that does not exist measures nothing (#417's
     // division: never "high risk" about a name that was never fetched).
-    // Before the sweep this ended in a bare exit — the run vanished from the
-    // aggregate exactly when it failed to measure.
+    // This path settled through `finishWithFindings` BEFORE this change —
+    // the cell is a pin against drift, not a red-on-base proof (an
+    // adversarial round caught the earlier label claiming otherwise).
     const r = run(['check', `./no-such-dir-${ARGV_MARKER}`, '--offline'], tmp('hma-350-check-'));
     expect(r.status).toBe(2);
     expect(r.events, r.raw.join('\n')).toHaveLength(1);
     expect(r.events[0].name).toBe('check');
     expect(r.events[0].success).toBe(false);
+  });
+
+  it('PIN: a UsageError refusal is dark — it never lands in the crash bucket', () => {
+    // `check skill:###bad###` is refused by the identifier parser before any
+    // work (deterministic, offline). An adversarial round measured the first
+    // sweep routing this through the catch's `exitRecorded(1, 'error')` —
+    // a refused run counted as a crashed one, polluting the exact metric
+    // this change exists to fix, against the CHANGELOG's stated deferral.
+    // The refusal branch is a registered unsettled site again; #525 flips
+    // this cell to expect one event with the refusal reason.
+    const r = run(['check', 'skill:###bad###', '--offline'], tmp('hma-350-usage-'));
+    expect(r.status).toBe(1);
+    expect(r.events, r.raw.join('\n')).toHaveLength(0);
+    expect(r.elapsedMs).toBeLessThan(20_000);
   });
 
   it('PIN: a pre-work refusal stays dark until the schema reason field lands (#525)', () => {
@@ -160,15 +180,22 @@ describe('#350 endings emit their command event', { timeout: 300_000 }, () => {
 
   it('no event ever carries argv', () => {
     // The reason vocabulary is closed and static precisely so no event field
-    // can carry user input (#350's design constraint). The canary appears in
-    // argv twice across these runs (a check target above, a trust package
-    // name here); no payload may contain it — nor the flag spelling itself.
-    const r = run(['trust', ARGV_MARKER, '--registry-url', DEAD_REGISTRY], tmp('hma-350-argv-'));
-    expect(r.events.length).toBeGreaterThan(0);
-    for (const line of r.raw) {
-      expect(line).not.toContain(ARGV_MARKER);
-      expect(line).not.toContain('--registry-url');
-      expect(line).not.toContain(DEAD_REGISTRY);
+    // can carry user input (#350's design constraint). The canary rides argv
+    // through two different settlement paths — a trust package name into the
+    // caught-crash funnel, a check target into the unmeasured arm — and
+    // every payload from BOTH runs is scanned (an adversarial round caught
+    // the first version scanning only one).
+    const runs = [
+      run(['trust', ARGV_MARKER, '--registry-url', DEAD_REGISTRY], tmp('hma-350-argv-')),
+      run(['check', `./no-such-dir-${ARGV_MARKER}`, '--offline'], tmp('hma-350-argv2-')),
+    ];
+    for (const r of runs) {
+      expect(r.events.length).toBeGreaterThan(0);
+      for (const line of r.raw) {
+        expect(line).not.toContain(ARGV_MARKER);
+        expect(line).not.toContain('--registry-url');
+        expect(line).not.toContain(DEAD_REGISTRY);
+      }
     }
   });
 });
