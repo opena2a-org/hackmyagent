@@ -103,6 +103,21 @@ If that is more process than the change is worth, a typo, a dead link, a wrong p
 [open an issue](https://github.com/opena2a-org/hackmyagent/issues/new) instead and we will carry
 it in.
 
+## Parity gate
+
+Every pull request runs a check named `parity / parity`: the cross-CLI output-parity
+harness (`.github/workflows/parity-gate.yml`), built against your branch. It runs
+unconditionally, even for changes that cannot affect CLI output -- a check that is
+always present under one name is what allows it to be required on `main`.
+
+If the parity leg fails, your change altered JSON output that downstream consumers pin as
+golden files. If the output change is intentional, a maintainer re-baselines the goldens
+in the harness repository,
+[opena2a-standards/opena2a-parity](https://github.com/opena2a-standards/opena2a-parity),
+golden-first (the procedure is in that repository's README), then re-runs the failed
+parity job on your pull request. If the change was not meant to alter output, fix the
+regression in your branch.
+
 ## Code style
 
 - TypeScript with strict mode
