@@ -26,6 +26,7 @@ import type {
   ContributionEvent,
   ContributionBatch,
 } from '@opena2a/contribute';
+import type { SettledOutcome } from '../hardening/settled-outcome';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { VERSION } from '../index';
@@ -90,6 +91,12 @@ function detectPackageVersion(directory: string, ecosystem: string): string {
 // Build contribution event from scan findings (HMA-specific adapter)
 // ---------------------------------------------------------------------------
 
+/**
+ * Severity ladder for callers with NO settled `secure` record behind them
+ * (scan-soul's converted controls, detect). A `secure` run never reaches
+ * this: its sites pass the settled record, and the event reads that (#519 —
+ * this ladder was the third spelling of one run's verdict across the wires).
+ */
 function computeVerdict(findings: SecurityFinding[]): string {
   const critical = findings.filter(f => !f.passed && f.severity === 'critical').length;
   const high = findings.filter(f => !f.passed && f.severity === 'high').length;
@@ -103,22 +110,28 @@ function computeVerdict(findings: SecurityFinding[]): string {
  *
  * Converts the detailed finding list into an anonymized summary:
  * only counts and severity distribution, no file paths or descriptions.
+ *
+ * #464/#519 — with a settled record, every figure is READ from it: `score`
+ * is the displayed 0-100 (never a passed/total ratio — that ratio reported
+ * 0 for any tree with one failure), `verdict` is the settled band, the
+ * severity counts are the record's, and `totalChecks` is the count of
+ * completed check executions from the run's own coverage record, or OMITTED
+ * when the run kept none — a derived stand-in number is worse than no
+ * number.
  */
 export function buildScanEvent(
   packageName: string,
   directory: string,
   findings: SecurityFinding[],
   durationMs: number,
+  settled?: SettledOutcome,
+  completedChecks?: number,
 ): ContributionEvent {
   const ecosystem = detectEcosystem(directory);
   const version = detectPackageVersion(directory, ecosystem);
 
-  const total = findings.length;
-  const passed = findings.filter(f => f.passed).length;
-  const failed = findings.filter(f => !f.passed);
-
-  return {
-    type: 'scan_result',
+  const base = {
+    type: 'scan_result' as const,
     tool: 'hackmyagent',
     toolVersion: VERSION,
     timestamp: new Date().toISOString(),
@@ -127,6 +140,36 @@ export function buildScanEvent(
       version: version || undefined,
       ecosystem,
     },
+  };
+
+  if (settled) {
+    if (settled.verdict === null) {
+      // Fail closed: `outboundAllowed` withholds exit-2 runs before this is
+      // ever built; a null verdict here is a caller bug, not an event.
+      throw new Error('a run at EXIT_UNMEASURED never contributes (#464)');
+    }
+    return {
+      ...base,
+      scanSummary: {
+        ...(completedChecks !== undefined ? { totalChecks: completedChecks } : {}),
+        passed: findings.filter(f => f.passed).length,
+        critical: settled.counts.critical,
+        high: settled.counts.high,
+        medium: settled.counts.medium,
+        low: settled.counts.low,
+        score: settled.score,
+        verdict: settled.verdict,
+        durationMs,
+      },
+    };
+  }
+
+  const total = findings.length;
+  const passed = findings.filter(f => f.passed).length;
+  const failed = findings.filter(f => !f.passed);
+
+  return {
+    ...base,
     scanSummary: {
       totalChecks: total,
       passed,
