@@ -22,8 +22,10 @@ one-marker-tree noise #458 opened on) or, on 31 checks, a pass it never
 measured. 77 checks now emit a positive `notApplicable: { subject, reason }`
 record instead: no `severity`, no `passed` field, excluded from the issue list,
 never counted as a confirmed fix, never published to the Registry as a measured
-finding. `maxScore` does not change. Only the not-there errnos (ENOENT, EISDIR,
-ENOTDIR) mean absent; any other read error emits nothing and is disclosed by
+finding. Project-type scope still wins: a check scoped off the detected project
+type leaves no record at all, not-applicable or otherwise. `maxScore` does not
+change. Only the not-there errnos (ENOENT, EISDIR, ENOTDIR) mean
+absent; any other read error emits nothing and is disclosed by
 `SCAN-UNREAD-001`. The hazard probes (PERM-001, PERM-002, PERM-003, LOG-003)
 still pass when the probed path is not there — a measured absence — but an
 unreadable probed path now withholds the verdict instead of passing; CRED-002 no
@@ -32,7 +34,10 @@ longer passes with a caveat on an unreadable root; a present but unparseable
 mitigations stay failures: SANDBOX-001 (`file: "Dockerfile"`), DEP-001 and
 GIT-001 carry the path the fix creates. Measured on an empty directory: 93/100,
 six passes (CRED-002, LOG-003, MCP-010, PERM-001, PERM-002, PERM-003), three
-advisories, 13 not-applicable records; on a one-marker MCP tree, 27
+advisory-shaped failures in `allFindings` (SANDBOX-001, DEP-001, GIT-001 — the
+rendered issue list shows two, SANDBOX-001 being type-suppressed for library
+trees and disclosed in `coverage.suppressedFailures`), 13 not-applicable
+records; on a one-marker MCP tree, 27
 not-applicable records and 6 pathless failures (ENV-004, LOG-001, LOG-004,
 SEC-001, SEC-002, SEC-003 — present-subject checks, unchanged here). Known: a
 populated `.cursor/rules/` directory reads as absent (its rule files were not

@@ -1491,12 +1491,21 @@ export function isReportableFinding(
  *
  * Consumers of allFindings (corpus release-smoke, benchmark, OASB-2
  * composite) get a clean signal without dropping legitimate findings.
+ *
+ * #458 — not-applicable records (no `passed`, no `file`) follow the same
+ * type rule, stated below as a decision rather than left to the fall-through:
+ * project-type scope wins over the not-applicable channel. A check scoped
+ * off the project type leaves NO record at all — the same outcome as the
+ * checks that never ran — so a library tree does not carry a PROC-001
+ * "no Dockerfile" record for a container check that cannot apply to it.
+ * `noise-floor.test.ts` pins both directions.
  */
 export function dropPathlessNoiseFloor(
   findings: SecurityFindingDraft[],
   projectType: ProjectType,
 ): SecurityFindingDraft[] {
   return findings.filter((f) => {
+    if (f.notApplicable) return findingAppliesTo(f, projectType);
     if (f.passed || f.fixed) return true;
     if (f.file) return true;
     return findingAppliesTo(f, projectType);
@@ -7783,7 +7792,7 @@ dist/
     const hasTimeout = (mcpConfig as Record<string, unknown>)?.timeout !== undefined;
 
     if (mcpReadExt.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'MCP-006', name: 'MCP Request Timeout', description: 'No request timeout configured for MCP servers', category: 'mcp' }, 'mcp.json', 'No mcp.json in the scanned tree, so no MCP servers are configured and there is no MCP transport to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'MCP-006', name: 'MCP Request Timeout', description: 'No request timeout configured for MCP servers', category: 'mcp' }, 'mcp.json', 'No mcp.json in the scanned tree. This check reads only mcp.json, so MCP servers configured elsewhere (for example .mcp.json) are outside its scope.'));
     } else if (mcpReadExt.state === 'read') {
       findings.push({
         checkId: 'MCP-006',
@@ -7806,7 +7815,7 @@ dist/
     const hasRetryConfig = (mcpConfig as Record<string, unknown>)?.retries !== undefined;
 
     if (mcpReadExt.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'MCP-007', name: 'MCP Retry Limits', description: 'No retry limits configured for MCP servers', category: 'mcp' }, 'mcp.json', 'No mcp.json in the scanned tree, so no MCP servers are configured and there is no MCP transport to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'MCP-007', name: 'MCP Retry Limits', description: 'No retry limits configured for MCP servers', category: 'mcp' }, 'mcp.json', 'No mcp.json in the scanned tree. This check reads only mcp.json, so MCP servers configured elsewhere (for example .mcp.json) are outside its scope.'));
     } else if (mcpReadExt.state === 'read') {
       findings.push({
         checkId: 'MCP-007',
@@ -7840,7 +7849,7 @@ dist/
     }
 
     if (mcpReadExt.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'MCP-008', name: 'MCP Localhost Binding', description: 'MCP servers should bind to localhost only', category: 'mcp' }, 'mcp.json', 'No mcp.json in the scanned tree, so no MCP servers are configured and there is no MCP transport to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'MCP-008', name: 'MCP Localhost Binding', description: 'MCP servers should bind to localhost only', category: 'mcp' }, 'mcp.json', 'No mcp.json in the scanned tree. This check reads only mcp.json, so MCP servers configured elsewhere (for example .mcp.json) are outside its scope.'));
     } else if (mcpReadExt.state === 'read') {
       findings.push({
         checkId: 'MCP-008',
@@ -7873,7 +7882,7 @@ dist/
     }
 
     if (mcpReadExt.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'MCP-009', name: 'Sensitive MCP Tools', description: 'MCP configuration includes potentially dangerous tools', category: 'mcp' }, 'mcp.json', 'No mcp.json in the scanned tree, so no MCP servers are configured and there is no MCP transport to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'MCP-009', name: 'Sensitive MCP Tools', description: 'MCP configuration includes potentially dangerous tools', category: 'mcp' }, 'mcp.json', 'No mcp.json in the scanned tree. This check reads only mcp.json, so MCP servers configured elsewhere (for example .mcp.json) are outside its scope.'));
     } else if (mcpReadExt.state === 'read') {
       findings.push({
         checkId: 'MCP-009',
@@ -9684,7 +9693,7 @@ dist/
         category: 'tool-boundaries',
         notApplicable: {
           subject: 'mcp.json',
-          reason: 'No mcp.json in the scanned tree, so no MCP servers are configured and there are no tool boundaries to measure.',
+          reason: 'No mcp.json in the scanned tree. This check reads only mcp.json, so tool boundaries configured elsewhere (for example .mcp.json) are outside its scope.',
         },
         message: 'Not applicable: no mcp.json to measure for tool whitelisting',
         fixable: false,
@@ -9727,7 +9736,7 @@ dist/
     }
 
     if (mcpRead.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'TOOL-002', name: 'Tool Resource Constraints', description: 'MCP tools should have resource constraints', category: 'tool-boundaries' }, 'mcp.json', 'No mcp.json in the scanned tree, so no MCP servers are configured and there are no tool boundaries to measure.'));
+      findings.push(notApplicableRecord({ checkId: 'TOOL-002', name: 'Tool Resource Constraints', description: 'MCP tools should have resource constraints', category: 'tool-boundaries' }, 'mcp.json', 'No mcp.json in the scanned tree. This check reads only mcp.json, so tool boundaries configured elsewhere (for example .mcp.json) are outside its scope.'));
     } else if (mcpRead.state === 'read') {
       findings.push({
         checkId: 'TOOL-002',
@@ -9759,7 +9768,7 @@ dist/
     }
 
     if (mcpRead.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'TOOL-003', name: 'Dangerous Tool Detection', description: 'Identify potentially dangerous MCP tools', category: 'tool-boundaries' }, 'mcp.json', 'No mcp.json in the scanned tree, so no MCP servers are configured and there are no tool boundaries to measure.'));
+      findings.push(notApplicableRecord({ checkId: 'TOOL-003', name: 'Dangerous Tool Detection', description: 'Identify potentially dangerous MCP tools', category: 'tool-boundaries' }, 'mcp.json', 'No mcp.json in the scanned tree. This check reads only mcp.json, so tool boundaries configured elsewhere (for example .mcp.json) are outside its scope.'));
     } else if (mcpRead.state === 'read') {
       findings.push({
         checkId: 'TOOL-003',
