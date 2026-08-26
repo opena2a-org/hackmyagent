@@ -4,6 +4,18 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### A contradiction between --json and --format is named, not resolved silently
+
+`--json` is the deprecated alias of `--format json`. Given together with a
+different format — `secure --ci --json --format sarif` — the alias won
+silently: the json report printed at exit 0 and nothing said the requested
+format was discarded. Both commands that carry the two flags (`secure` and
+`attack`) now refuse the contradiction where their other format errors are
+raised, before any scan: exit 1, naming the alias and both flags. Bare
+`--json` and the redundant agreement (`--json --format json`) are
+untouched. `attack --format ''` also now reaches the invalid-format
+refusal instead of falling to the text report (#605).
+
 ### check keeps its exit-code promise on PyPI and URL fetch failures
 
 `check --help` documents exit 2 for a target that "does not exist or could
