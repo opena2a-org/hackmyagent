@@ -42,3 +42,41 @@ export function usageError(strings: TemplateStringsArray, ...values: unknown[]):
   }
   return new UsageError(text);
 }
+
+/**
+ * A `UsageError` whose CAUSE is the environment failing mid-work (a network
+ * timeout), not the invocation. It renders like any usage error — the
+ * guidance text is still ours — but it is NOT a refusal: work started and
+ * the environment did not answer. The telemetry classification cares (#350):
+ * a refusal stays dark until the event schema can say "refused" (#525),
+ * while a mid-work environmental failure is a failed run and must be
+ * counted as one. An adversarial round measured check's 10s registry
+ * timeout riding the refusal branch, which would have counted DNS-dead
+ * environments as user refusals the day #525 lands.
+ */
+export class NetworkTimeoutError extends UsageError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NetworkTimeoutError';
+  }
+}
+
+/** Tagged template for `NetworkTimeoutError`, same escaping as `usageError`. */
+export function networkTimeoutError(strings: TemplateStringsArray, ...values: unknown[]): NetworkTimeoutError {
+  let text = strings[0];
+  for (let i = 0; i < values.length; i++) {
+    text += escapeForDisplay(String(values[i])) + strings[i + 1];
+  }
+  return new NetworkTimeoutError(text);
+}
+
+/**
+ * The telemetry-classification predicate the CLI catch sites use (#350):
+ * a REFUSAL prints its guidance and exits dark (registered unsettled site,
+ * converted by #525); anything else — including a mid-work network timeout
+ * that happens to render as usage guidance — settles through
+ * `exitRecorded(1, 'error')` and is counted.
+ */
+export function isRefusal(error: unknown): error is UsageError {
+  return error instanceof UsageError && !(error instanceof NetworkTimeoutError);
+}

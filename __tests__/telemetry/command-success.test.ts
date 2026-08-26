@@ -10,7 +10,12 @@
 // codes to the success set. So the decision is the call site's, and this is it.
 import { describe, it, expect } from 'vitest';
 import { successFromExitCode } from '@opena2a/telemetry';
-import { commandSucceeded, EXIT1_IS_FAILURE, EXIT2_IS_SEMANTIC } from '../../src/telemetry/command-success';
+import {
+  commandSucceeded,
+  EXIT1_IS_FAILURE,
+  EXIT2_IS_SEMANTIC,
+  type ExitReason,
+} from '../../src/telemetry/command-success';
 
 /** The real convention from `@opena2a/telemetry`, restated for the tests. */
 const conventional = (code: number): boolean => code <= 1;
@@ -100,5 +105,48 @@ describe('commandSucceeded, exit 2 as a result rather than a crash (#369)', () =
     // proves this string is the name a real invocation reports lives in
     // `__tests__/cli/redteam-unmeasured-exit.test.ts`.
     expect([...EXIT2_IS_SEMANTIC].sort()).toEqual(['red-team']);
+  });
+});
+
+// A reason from the settlement site outranks every name-keyed derivation
+// (#350's remainder). The name-keyed sets answer "what does exit 1 mean for
+// this command IN GENERAL"; the reason answers "what did THIS ending mean",
+// and only the site that ended the run knows — a locally-caught crash in a
+// findings-convention command exits 1 exactly like a findings run.
+describe('commandSucceeded, the reason outranks the convention (#350)', () => {
+  it('maps the closed vocabulary: result endings succeed, job failures do not', () => {
+    // Stated as the full map so a vocabulary edit fails here first — the same
+    // deliberate-edit guard as the two sets above. 'refused' maps to failure
+    // UNTIL the schema reason field lands (#525): a premature refusal
+    // conversion must not be able to inflate the fleet success rate.
+    const expected: Record<ExitReason, boolean> = {
+      findings: true,
+      'no-verdict': true,
+      error: false,
+      unmeasured: false,
+      incomplete: false,
+      refused: false,
+    };
+    for (const [reason, success] of Object.entries(expected) as [ExitReason, boolean][]) {
+      expect(commandSucceeded('secure', 1, conventional, reason), reason).toBe(success);
+    }
+  });
+
+  it('does not consult the convention when a reason is present', () => {
+    // The property, not the constant (same shape as the rollback cell above):
+    // a `conventional` that says everything succeeded cannot override a
+    // reason, and one that says everything failed cannot either.
+    const alwaysTrue = (): boolean => true;
+    const alwaysFalse = (): boolean => false;
+    expect(commandSucceeded('trust', 1, alwaysTrue, 'error')).toBe(false);
+    expect(commandSucceeded('benchmark', 1, alwaysFalse, 'findings')).toBe(true);
+  });
+
+  it('outranks the name-keyed sets, not just the shared convention', () => {
+    // rollback sits in EXIT1_IS_FAILURE; a reason still decides. The exit
+    // code itself does not weigh in once a reason is present — the site that
+    // ended the run said what the ending meant.
+    expect(commandSucceeded('rollback', 1, conventional, 'findings')).toBe(true);
+    expect(commandSucceeded('red-team', 2, successFromExitCode, 'error')).toBe(false);
   });
 });

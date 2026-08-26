@@ -98,14 +98,19 @@ let currentCommandName: string | undefined;
 /** Set once the event has been posted, so it is never sent twice. */
 let telemetryTracked = false;
 /** Installed by the telemetry wiring, which is where `tele` is in scope. */
-let postTelemetry: ((name: string, startedAt: number, exitCode: number) => Promise<void>) | undefined;
+let postTelemetry: ((name: string, startedAt: number, exitCode: number, reason?: ExitReason) => Promise<void>) | undefined;
 
 /**
  * Post the command event, at most once, waiting no longer than the flush bound.
  *
  * Never throws and never rejects: a telemetry failure is not a scan failure.
+ *
+ * `reason` (#350): the settlement site that KNOWS why the run ended passes
+ * it, and it outranks the name-keyed exit-code derivation — a locally-caught
+ * crash in a findings-convention command exits 1 exactly like a findings
+ * run, and only the catch block can tell the event which one happened.
  */
-async function recordTelemetry(exitCode: number): Promise<void> {
+async function recordTelemetry(exitCode: number, reason?: ExitReason): Promise<void> {
   const name = currentCommandName;
   if (!name || telemetryTracked) return;
   const startedAt = telemetryStartedAt.get(name);
@@ -114,9 +119,30 @@ async function recordTelemetry(exitCode: number): Promise<void> {
   telemetryStartedAt.delete(name);
   if (!postTelemetry) return;
   await Promise.race([
-    postTelemetry(name, startedAt, exitCode).catch(() => { /* never fails a scan */ }),
+    postTelemetry(name, startedAt, exitCode, reason).catch(() => { /* never fails a scan */ }),
     new Promise<void>((resolve) => setTimeout(resolve, TELEMETRY_FLUSH_MS).unref()),
   ]);
+}
+
+/**
+ * End the process THROUGH the event (#350's remainder).
+ *
+ * The sibling of `finishWithFindings` for the sites whose control flow relies
+ * on not returning — the locally-caught crash template, and (once the schema
+ * field lands, #525) the pre-work refusals. A hard `process.exit` here used
+ * to end the process before Commander's `postAction` hook, so the run
+ * emitted NO event: the fleet metric counted it as if it never happened,
+ * which is the #350 inversion — failures invisible, aggregate reads healthy.
+ * The measured shape on b44baf9: an uncaught throw fired `tele.error` while
+ * the CAUGHT crash — the common surface — was the dark one.
+ *
+ * Awaits the bounded post (TELEMETRY_FLUSH_MS, unref'd; zero wait when
+ * telemetry is off), then exits with the same code, preserving each site's
+ * nothing-runs-after-this assumption.
+ */
+async function exitRecorded(code: number, reason: ExitReason): Promise<never> {
+  await recordTelemetry(code, reason);
+  process.exit(code); // the funnel-owned exit (structural exemption): the funnel's own exit — the event fired on the line above.
 }
 
 /**
@@ -301,10 +327,10 @@ import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { fixSummaryLine } from './ui/fix-summary';
 import { shouldShowDeepProgress } from './ui/progress-gate';
 import { generateVerifyCommand } from './ui/verify-command';
-import { commandSucceeded } from './telemetry/command-success';
+import { commandSucceeded, type ExitReason } from './telemetry/command-success';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
 import { generateBenchmarkReport } from './benchmarks/benchmark-report';
-import { UsageError, usageError } from './checker/errors';
+import { UsageError, usageError, isRefusal, networkTimeoutError } from './checker/errors';
 import { RootRefusalError } from './mcp/roots';
 import { shellQuote, citationPath, citationTarget, commandNaming } from './ui/shell-quote';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
@@ -397,7 +423,7 @@ function validateRegistryUrl(url: string): string {
   if (url && !url.startsWith('https://') && !url.startsWith('http://localhost')) {
     console.error('Error: Registry URL must use HTTPS. Got: ' + url);
     console.error('Only https:// URLs and http://localhost are allowed.');
-    process.exit(1);
+    process.exit(1); // exit-unsettled(#350/S001): pre-work refusal; events await the schema reason field (#525)
   }
   return url;
 }
@@ -960,7 +986,7 @@ Examples:
               // A package that does not exist was not measured. Exit 1 here
               // said "scanned, and it is high risk" about a name that was
               // never fetched — the same conflation as #417's missing path.
-              process.exit(EXIT_UNMEASURED);
+              await exitRecorded(EXIT_UNMEASURED, 'unmeasured');
             }
             // Scoped name — fall through to skill check
             if (!options.json && !globalCiMode) {
@@ -983,7 +1009,7 @@ Examples:
         skipDnsVerification: options.offline,
       });
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(usageError`Timed out verifying "${skill}" (10s). The publisher may not exist or DNS is unreachable.
+        setTimeout(() => reject(networkTimeoutError`Timed out verifying "${skill}" (10s). The publisher may not exist or DNS is unreachable.
 Try: ${getCheckCommand()} ${skill} --offline`), 10000)
       );
       const result = await Promise.race([checkPromise, timeoutPromise]);
@@ -1055,16 +1081,22 @@ Try: ${getCheckCommand()} ${skill} --offline`), 10000)
 
       // Exit with non-zero for high/critical risk
       if (result.risk === 'critical' || result.risk === 'high') {
-        process.exit(1);
+        await finishWithFindings(1);
+        return;
       }
     } catch (error) {
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S057): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
-      process.exit(1);
+      await exitRecorded(1, 'error');
     }
   });
 
@@ -4731,7 +4763,7 @@ Examples:
       // Check if the target exists
       if (!require('fs').existsSync(originalTarget)) {
         console.error(`Error: Directory '${escapePathForDisplay(String(originalTarget))}' does not exist.`);
-        process.exit(1);
+        process.exit(1); // exit-unsettled(#350/S002): pre-work refusal; events await the schema reason field (#525)
       }
 
       // Single-FILE target handling.
@@ -4754,7 +4786,7 @@ Examples:
         console.error(`  Scan this file:        ${CLI_PREFIX} secure ${citationTarget(directory)}`);
         console.error(`  Remediate (directory): ${CLI_PREFIX} secure --fix ${_parent}`);
         console.error(`  Harden governance:     ${CLI_PREFIX} harden-soul ${_parent}`);
-        process.exit(2);
+        process.exit(2); // exit-unsettled(#350/S003): pre-work refusal; events await the schema reason field (#525)
       }
 
       // Read-only single-file normalization. Every directory-discovery analyzer
@@ -4806,7 +4838,7 @@ Examples:
       if (options.benchmark !== undefined && !isOasb2 && !isValidBenchmark(options.benchmark)) {
         // The rejection names the value the user typed, not the normalized one.
         console.error(`Error: Unknown benchmark '${escapeForDisplay(String(benchmarkAsGiven))}'. Available: ${[...AVAILABLE_BENCHMARKS, 'oasb-2'].join(', ')}`);
-        process.exit(1);
+        process.exit(1); // exit-unsettled(#350/S004): pre-work refusal; events await the schema reason field (#525)
       }
 
       // Validate level if benchmark mode. The composite arm consumes the level
@@ -4818,7 +4850,7 @@ Examples:
       const level = (options.level === undefined ? 'L1' : options.level.toUpperCase()) as BenchmarkLevel;
       if (options.benchmark !== undefined && !validLevels.includes(level)) {
         console.error(`Error: Invalid level '${escapeForDisplay(String(options.level))}'. Use: L1, L2, or L3`);
-        process.exit(1);
+        process.exit(1); // exit-unsettled(#350/S005): pre-work refusal; events await the schema reason field (#525)
       }
 
       // Determine output format (--json is deprecated alias for --format json)
@@ -4829,7 +4861,7 @@ Examples:
       const format = options.json ? 'json' : (options.format ?? 'text');
       if (!validFormats.includes(format)) {
         console.error(`Error: Invalid format '${escapeForDisplay(String(format))}'. Use: ${validFormats.join(', ')}`);
-        process.exit(1);
+        process.exit(1); // exit-unsettled(#350/S006): pre-work refusal; events await the schema reason field (#525)
       }
       // #563 — the Agent Security Profile is rendered only by the OASB-1
       // benchmark arm (the OASB-2 composite has no profile format either);
@@ -4839,7 +4871,7 @@ Examples:
       // format errors are raised, and name the flag it needs.
       if (format === 'asp' && options.benchmark !== 'oasb-1') {
         console.error('Error: --format asp is the Agent Security Profile of an OASB-1 benchmark run. Use it with -b oasb-1.');
-        process.exit(1);
+        process.exit(1); // exit-unsettled(#350/S007): pre-work refusal; events await the schema reason field (#525)
       }
       // #633 — each benchmark arm renders a fixed set of formats and fell to
       // the text report for the rest (`-b oasb-1 --format asff`; `-b oasb-2
@@ -4850,7 +4882,7 @@ Examples:
       const benchmarkFormats = isOasb2 ? ['text', 'json'] : ['text', 'json', 'sarif', 'html', 'asp'];
       if (options.benchmark !== undefined && !benchmarkFormats.includes(format)) {
         console.error(`Error: --format ${format} is not available with -b ${escapeForDisplay(String(benchmarkAsGiven))}. Use: ${benchmarkFormats.join(', ')}`);
-        process.exit(1);
+        process.exit(1); // exit-unsettled(#350/S008): pre-work refusal; events await the schema reason field (#525)
       }
 
       // Parse fail threshold
@@ -4860,7 +4892,7 @@ Examples:
       const failBelow = options.failBelow !== undefined ? parseInt(options.failBelow, 10) : undefined;
       if (failBelow !== undefined && (isNaN(failBelow) || failBelow < 0 || failBelow > 100)) {
         console.error(`Error: --fail-below must be a number between 0 and 100`);
-        process.exit(1);
+        process.exit(1); // exit-unsettled(#350/S009): pre-work refusal; events await the schema reason field (#525)
       }
 
       // Only show progress for text output — write to stderr so stdout stays clean for pipes
@@ -4883,7 +4915,7 @@ Examples:
       const scanDepth = (options.scanDepth === undefined ? 'standard' : options.scanDepth) as 'quick' | 'standard' | 'deep';
       if (!validDepths.includes(scanDepth)) {
         console.error(`Error: Invalid scan depth '${escapeForDisplay(String(options.scanDepth))}'. Use: ${validDepths.join(', ')}`);
-        process.exit(1);
+        process.exit(1); // exit-unsettled(#350/S010): pre-work refusal; events await the schema reason field (#525)
       }
 
       // Analysis mode: smart defaults, minimal flags
@@ -5096,7 +5128,7 @@ Examples:
       // generation of that same bug.
       const unreadInputs = unreadInputCount(result);
       if (unreadInputs > 0) {
-        process.exitCode = EXIT_UNMEASURED;
+        process.exitCode = EXIT_UNMEASURED; // exit-unsettled(#350/S011): bare assignment outside the funnel; migrate to raiseExitCode
       }
 
       // `--fail-below` settles here too — once, for every channel (#494).
@@ -5394,10 +5426,10 @@ Examples:
             console.error(`--fail-below ${failBelow} not evaluated: the composite score was not measured (OASB-1 not assessed).`);
           } else if (compositeScore < failBelow) {
             console.error(`Composite score ${compositeScore} is below threshold ${failBelow}`);
-            process.exit(1);
+            await exitRecorded(1, 'findings');
           }
         }
-        if (conformanceFails) process.exit(1);
+        if (conformanceFails) await exitRecorded(1, 'findings');
         return;
       }
 
@@ -5517,11 +5549,11 @@ Examples:
               ? ' — a measured breach outranks the not-measured floor above: exit 1'
               : '';
             console.error(`Compliance ${benchmarkResult.compliance}% is below threshold ${failBelow}%${outranks}`);
-            process.exit(1);
+            await exitRecorded(1, 'findings');
           }
         }
 
-        if (ratingFails) process.exit(1);
+        if (ratingFails) await exitRecorded(1, 'findings');
         return;
       }
 
@@ -5962,7 +5994,7 @@ Examples:
             const registryKey = options.registryKey || process.env.REGISTRY_API_KEY;
             if (!registryKey) {
               console.error('Error: --registry-key or REGISTRY_API_KEY env is required when using --version-id');
-              process.exit(1);
+              process.exit(1); // exit-unsettled(#350/S012): pre-work refusal; events await the schema reason field (#525)
             }
             const atcToken = process.env.ATC_TOKEN;
             const client = new core.RegistryClient({ registryUrl, apiKey: registryKey, atcToken });
@@ -6078,7 +6110,7 @@ Examples:
         const hmacSecret = process.env.CI_SCAN_HMAC_SECRET;
         if (!hmacSecret) {
           console.error('\nError: --ci-publish requires the CI_SCAN_HMAC_SECRET environment variable.');
-          process.exit(1);
+          process.exit(1); // exit-unsettled(#350/S013): pre-work refusal; events await the schema reason field (#525)
         }
 
         try {
@@ -6209,10 +6241,15 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S058): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
-      process.exit(1);
+      await exitRecorded(1, 'error');
     }
   });
 
@@ -6657,10 +6694,15 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S059): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
-      process.exit(1);
+      await exitRecorded(1, 'error');
     }
   });
 
@@ -6906,10 +6948,15 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S060): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
-      process.exit(1);
+      await exitRecorded(1, 'error');
     }
   });
 
@@ -6954,7 +7001,7 @@ Examples:
             `\n  ${secureCmd} ${citationTarget(target)}` +
             `\n`
           );
-          process.exit(1);
+          process.exit(1); // exit-unsettled(#350/S014): pre-work refusal; events await the schema reason field (#525)
         }
         const timeoutMs = parseInt(options.timeout ?? '2000', 10);
         const customPorts = options.ports
@@ -7045,16 +7092,22 @@ Examples:
           (f) => f.severity === 'critical' || f.severity === 'high'
         );
         if (criticalOrHigh.length > 0) {
-          process.exit(1);
+          await finishWithFindings(1);
+          return;
         }
       } catch (error) {
         if (error instanceof UsageError) {
           error.message.split('\n').forEach((line, i) =>
             console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+          if (isRefusal(error)) {
+            // A refused run did no work; an event that cannot say "refused" would
+            // land in the crash bucket and skew the error rate it exists to measure.
+            process.exit(1); // exit-unsettled(#350/S061): pre-work refusal — the event awaits the schema reason field (#525)
+          }
         } else {
           console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
         }
-        process.exit(1);
+        await exitRecorded(1, 'error');
       }
     }
   );
@@ -7303,15 +7356,20 @@ Examples:
       // lines that get lost are `backup kept at <path>` and "Copy those files
       // back by hand" — the only information that makes manual recovery
       // possible, on the code path #327 added to make failure recoverable.
-      if (incomplete) process.exitCode = 1;
+      if (incomplete) process.exitCode = 1; // exit-unsettled(#350/S015): bare assignment outside the funnel; migrate to raiseExitCode
     } catch (error) {
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S062): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
-      process.exit(1);
+      await exitRecorded(1, 'error');
     }
   });
 
@@ -7416,7 +7474,7 @@ Examples:
       // Validate target
       if (!targetUrl && !options.local) {
         console.error('Error: Target URL required (or use --local for simulation)');
-        process.exit(1);
+        process.exit(1); // exit-unsettled(#350/S016): pre-work refusal; events await the schema reason field (#525)
       }
 
       // Validate intensity
@@ -7424,7 +7482,7 @@ Examples:
       const intensity = (options.intensity || 'active') as AttackIntensity;
       if (!validIntensities.includes(intensity)) {
         console.error(`Error: Invalid intensity '${escapeForDisplay(String(options.intensity))}'. Use: ${validIntensities.join(', ')}`);
-        process.exit(1);
+        process.exit(1); // exit-unsettled(#350/S017): pre-work refusal; events await the schema reason field (#525)
       }
 
       // Parse categories
@@ -7434,7 +7492,7 @@ Examples:
         for (const cat of categories) {
           if (!ATTACK_CATEGORY_NAMES.includes(cat)) {
             console.error(`Error: Invalid category '${escapeForDisplay(String(cat))}'. Use: ${ATTACK_CATEGORY_NAMES.join(', ')}`);
-            process.exit(1);
+            process.exit(1); // exit-unsettled(#350/S018): pre-work refusal; events await the schema reason field (#525)
           }
         }
       }
@@ -7459,7 +7517,7 @@ Examples:
         const validTypes = ['api', 'mcp', 'a2a', 'local'];
         if (!validTypes.includes(options.targetType)) {
           console.error(`Error: Invalid target type '${escapeForDisplay(String(options.targetType))}'. Use: ${validTypes.join(', ')}`);
-          process.exit(1);
+          process.exit(1); // exit-unsettled(#350/S019): pre-work refusal; events await the schema reason field (#525)
         }
         targetType = options.targetType as 'api' | 'mcp' | 'a2a' | 'local';
       }
@@ -7502,7 +7560,7 @@ Examples:
       const format = options.json ? 'json' : (options.format || 'text');
       if (!validFormats.includes(format)) {
         console.error(`Error: Invalid format '${escapeForDisplay(String(format))}'. Use: ${validFormats.join(', ')}`);
-        process.exit(1);
+        process.exit(1); // exit-unsettled(#350/S020): pre-work refusal; events await the schema reason field (#525)
       }
 
       // Load custom payloads from file
@@ -7522,7 +7580,8 @@ Examples:
               + `${escapeForDisplay((e as Error).message)}`,
             );
           }
-          process.exit(1);
+          await exitRecorded(1, 'error');
+          return;
         }
         customPayloads = parseCustomPayloads(fileContent);
       }
@@ -7612,7 +7671,7 @@ Examples:
             const registryKey = options.registryKey || process.env.REGISTRY_API_KEY;
             if (!registryKey) {
               console.error('Error: --registry-key or REGISTRY_API_KEY env is required when using --version-id');
-              process.exit(1);
+              process.exit(1); // exit-unsettled(#350/S021): pre-work refusal; events await the schema reason field (#525)
             }
             const atcToken = process.env.ATC_TOKEN;
             const client = new core.RegistryClient({ registryUrl, apiKey: registryKey, atcToken });
@@ -7687,16 +7746,22 @@ Examples:
       // measure the target under any policy (#406, #430).
       const attackCode = attackExitCode(report, options.failOnVulnerable as FailPolicy);
       if (attackCode !== 0) {
-        process.exit(attackCode);
+        await finishWithFindings(attackCode);
+        return;
       }
     } catch (error) {
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S063): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
-      process.exit(1);
+      await exitRecorded(1, 'error');
     }
   });
 
@@ -8707,14 +8772,14 @@ Examples:
           realTarget = fs.realpathSync(targetDir);
         } catch {
           console.error(`Error: Directory not found: ${escapeForDisplay(String(targetDir))}`);
-          process.exit(1);
+          process.exit(1); // exit-unsettled(#350/S022): pre-work refusal; events await the schema reason field (#525)
         }
 
         // Verify resolved path is a directory (realpath already resolved any symlinks)
         const resolvedStat = fs.statSync(realTarget);
         if (!resolvedStat.isDirectory()) {
           console.error(`Error: Not a directory: ${escapeForDisplay(String(realTarget))}`);
-          process.exit(1);
+          process.exit(1); // exit-unsettled(#350/S023): pre-work refusal; events await the schema reason field (#525)
         }
 
         // Block path traversal via .. in relative paths (but allow absolute paths)
@@ -8723,7 +8788,7 @@ Examples:
           const relative = path.relative(realCwd, realTarget);
           if (relative.startsWith('..')) {
             console.error(`Error: Target directory must not traverse above current working directory. Use an absolute path instead.`);
-            process.exit(1);
+            process.exit(1); // exit-unsettled(#350/S024): pre-work refusal; events await the schema reason field (#525)
           }
         }
         targetDir = realTarget;
@@ -8949,7 +9014,7 @@ Examples:
             legacyKeyMaterial,
           };
           writeJsonStdout(jsonOutput);
-          if (pluginErrors > 0) process.exit(2);
+          if (pluginErrors > 0) await exitRecorded(2, 'incomplete');
           // The same severity gate the text path applies below. Without it
           // this branch returned 0 no matter what survived the fix pass, so
           // `--json` — the mode `--help` documents FOR CI, and the one whose
@@ -8960,7 +9025,7 @@ Examples:
               (f) => f.severity === 'critical' || f.severity === 'high'
             )
           ) {
-            process.exit(1);
+            await finishWithFindings(1);
           }
           return;
         }
@@ -9070,22 +9135,28 @@ Examples:
 
         // Exit with non-zero if critical/high issues remain or scan is incomplete
         if (pluginErrors > 0) {
-          process.exit(2); // Exit 2 = partial/incomplete scan
+          await exitRecorded(2, 'incomplete'); // Exit 2 = partial/incomplete scan
         }
         const criticalOrHigh = remainingFindings.filter(
           (f) => f.severity === 'critical' || f.severity === 'high'
         );
         if (criticalOrHigh.length > 0) {
-          process.exit(1);
+          await finishWithFindings(1);
+          return;
         }
       } catch (error) {
         if (error instanceof UsageError) {
           error.message.split('\n').forEach((line, i) =>
             console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+          if (isRefusal(error)) {
+            // A refused run did no work; an event that cannot say "refused" would
+            // land in the crash bucket and skew the error rate it exists to measure.
+            process.exit(1); // exit-unsettled(#350/S064): pre-work refusal — the event awaits the schema reason field (#525)
+          }
         } else {
           console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
         }
-        process.exit(1);
+        await exitRecorded(1, 'error');
       }
     }
   );
@@ -9105,7 +9176,7 @@ program
       await startMcpServer(options.root ?? []);
     } catch (error) {
       console.error(`Error starting MCP server: ${escapeForDisplay(error instanceof Error ? error.message : String(error))}`);
-      process.exit(1);
+      await exitRecorded(1, 'error');
     }
   });
 
@@ -9170,7 +9241,7 @@ Examples:
           ? `Error: ${msg}`
           : `Error: ${escapeForDisplay(msg)}`,
       );
-      process.exit(1);
+      process.exit(1); // exit-unsettled(#350/S025): pre-work refusal; events await the schema reason field (#525)
     }
   });
 
@@ -9355,7 +9426,7 @@ Examples:
 
       if (!require('fs').existsSync(targetDir)) {
         process.stderr.write(`Error: Directory '${escapePathForDisplay(targetDir)}' does not exist.\n`);
-        process.exit(1);
+        process.exit(1); // exit-unsettled(#350/S026): pre-work refusal; events await the schema reason field (#525)
       }
 
       const prefix = getCommandPrefix();
@@ -9650,7 +9721,7 @@ Examples:
             })()
           : false;
         if ((jsonCiMode && jsonHasHigh) || jsonBelowThreshold) {
-          process.exit(1);
+          await finishWithFindings(1);
         }
         return;
       }
@@ -10111,7 +10182,7 @@ Examples:
         const threshold = parseInt(options.failBelow, 10);
         if (!isNaN(threshold) && result.score < threshold) {
           process.stderr.write(`Score ${result.score} is below threshold ${threshold}\n`);
-          process.exit(1);
+          await exitRecorded(1, 'findings');
         }
       }
 
@@ -10128,7 +10199,7 @@ Examples:
         process.stderr.write(
           `SOUL-VIOLATION HIGH: ${(result.violations ?? []).length} governance violation(s) — first: ${first.id} at ${soulFileName}:${first.line} (${first.name}).\n`,
         );
-        process.exit(1);
+        await exitRecorded(1, 'findings');
       }
       if (ciMode && result.profileMismatch) {
         const pm = result.profileMismatch;
@@ -10138,7 +10209,7 @@ Examples:
         process.stderr.write(
           `SOUL-PROFILE-MISMATCH HIGH: declared profile=${pm.declaredProfile} skips ${pm.skippedDomains.length} of 9 domains; body suggests profile=${pm.inferredProfile}${forcedNote}.\n`,
         );
-        process.exit(1);
+        await exitRecorded(1, 'findings');
       }
       if (ciMode && result.markerInvalid) {
         const mi = result.markerInvalid;
@@ -10147,16 +10218,22 @@ Examples:
         process.stderr.write(
           `SOUL-PROFILE-MARKER-INVALID HIGH: ${sourceLabel} value='${escapeForDisplay(displayedValue)}' is not a recognized profile; resolved to ${mi.resolvedProfile} from body keywords.\n`,
         );
-        process.exit(1);
+        await finishWithFindings(1);
+        return;
       }
     } catch (error) {
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           process.stderr.write(i === 0 ? `Error: ${escapeForDisplay(line)}\n` : `${escapeForDisplay(line)}\n`));
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S065): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
       }
-      process.exit(1);
+      await exitRecorded(1, 'error');
     }
   });
 
@@ -10188,7 +10265,7 @@ Examples:
 
       if (!require('fs').existsSync(targetDir)) {
         process.stderr.write(`Error: Directory '${escapePathForDisplay(targetDir)}' does not exist.\n`);
-        process.exit(1);
+        process.exit(1); // exit-unsettled(#350/S027): pre-work refusal; events await the schema reason field (#525)
       }
 
       const prefix = getCommandPrefix();
@@ -10215,7 +10292,7 @@ Examples:
             + `governance file with nothing to roll back to is not something HackMyAgent will do.\n`
             + `  Make the directory writable and re-run.\n\n`,
           );
-          process.exitCode = 1;
+          process.exitCode = 1; // exit-unsettled(#350/S028): bare assignment outside the funnel; migrate to raiseExitCode
           return;
         }
         hardenGuard = (rel: string) => hardening.ensureGovernanceBackup(targetDir, rel);
@@ -10242,7 +10319,7 @@ Examples:
           ...(result.writeRefused ? { writeRefused: result.writeRefused } : {}),
         };
         writeJsonStdout(jsonResult);
-        if (result.writeRefused) process.exitCode = 1;
+        if (result.writeRefused) process.exitCode = 1; // exit-unsettled(#350/S029): bare assignment outside the funnel; migrate to raiseExitCode
         return;
       }
 
@@ -10255,7 +10332,7 @@ Examples:
           + `  ${result.writeRefused.reason}\n`
           + `  The file is unchanged.\n\n`,
         );
-        process.exitCode = 1;
+        process.exitCode = 1; // exit-unsettled(#350/S030): bare assignment outside the funnel; migrate to raiseExitCode
         return;
       }
 
@@ -10315,10 +10392,15 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           process.stderr.write(i === 0 ? `Error: ${escapeForDisplay(line)}\n` : `${escapeForDisplay(line)}\n`));
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S066): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
       }
-      process.exit(1);
+      await exitRecorded(1, 'error');
     }
   });
 
@@ -10725,7 +10807,7 @@ Examples:
     const minTrust = parseInt(opts.minTrust, 10);
     if (isNaN(minTrust) || minTrust < 0 || minTrust > 4) {
       process.stderr.write('Error: --min-trust must be a number between 0 and 4\n');
-      process.exit(1);
+      process.exit(1); // exit-unsettled(#350/S031): pre-work refusal; events await the schema reason field (#525)
     }
 
     // AAP gate (opt-in). Before any Registry lookup, ask the local Secretless
@@ -10743,13 +10825,13 @@ Examples:
         process.stderr.write('--grant cannot be combined with --audit or --batch.\n');
         process.stderr.write('  A single grant authorizes a single trust query. Per-package gating for\n');
         process.stderr.write('  multi-package operations is a planned follow-up.\n');
-        process.exitCode = 2;
+        process.exitCode = 2; // exit-unsettled(#350/S032): bare assignment outside the funnel; migrate to raiseExitCode
         return;
       }
       if (!packageName) {
         process.stderr.write('Error: --grant requires a package name (single-package mode only).\n');
         process.stderr.write(`Usage: ${CLI_PREFIX} trust <package> --grant <grant> --atx <path>\n`);
-        process.exitCode = 2;
+        process.exitCode = 2; // exit-unsettled(#350/S033): bare assignment outside the funnel; migrate to raiseExitCode
         return;
       }
       const gateResult = await trustAapGate({
@@ -10762,7 +10844,7 @@ Examples:
         json: opts.json,
       });
       if (gateResult !== 0) {
-        process.exitCode = gateResult;
+        process.exitCode = gateResult; // exit-unsettled(#350/S034): bare assignment outside the funnel; migrate to raiseExitCode
         return;
       }
     }
@@ -10781,7 +10863,7 @@ Examples:
         }
         if (packages.length > 100) {
           process.stderr.write(`Error: Too many dependencies (${packages.length}). Maximum 100 per request.\n`);
-          process.exit(1);
+          process.exit(1); // exit-unsettled(#350/S035): pre-work refusal; events await the schema reason field (#525)
         }
         const response = await trustBatch(packages, registryUrl);
         if (opts.json) {
@@ -10791,7 +10873,7 @@ Examples:
         }
         const belowThreshold = response.results.some((r) => r.found && r.trustLevel < minTrust);
         const hasNotFound = response.results.some((r) => !r.found);
-        if (belowThreshold || hasNotFound) process.exitCode = 1;
+        if (belowThreshold || hasNotFound) process.exitCode = 1; // exit-unsettled(#350/S036): bare assignment outside the funnel; migrate to raiseExitCode
         return;
       }
 
@@ -10799,7 +10881,7 @@ Examples:
       if (opts.batch && opts.batch.length > 0) {
         if (opts.batch.length > 100) {
           process.stderr.write(`Error: Too many packages (${opts.batch.length}). Maximum 100 per request.\n`);
-          process.exit(1);
+          process.exit(1); // exit-unsettled(#350/S037): pre-work refusal; events await the schema reason field (#525)
         }
         const packages = opts.batch.map((name) => ({
           name: resolveAndLogMcpShorthand(name),
@@ -10813,7 +10895,7 @@ Examples:
         }
         const belowThreshold = response.results.some((r) => r.found && r.trustLevel < minTrust);
         const hasNotFound = response.results.some((r) => !r.found);
-        if (belowThreshold || hasNotFound) process.exitCode = 1;
+        if (belowThreshold || hasNotFound) process.exitCode = 1; // exit-unsettled(#350/S038): bare assignment outside the funnel; migrate to raiseExitCode
         return;
       }
 
@@ -10821,7 +10903,7 @@ Examples:
       if (!packageName) {
         process.stderr.write(`Error: Provide a package name or use --audit/--batch.\n`);
         process.stderr.write(`Usage: ${CLI_PREFIX} trust <package>\n`);
-        process.exit(1);
+        process.exit(1); // exit-unsettled(#350/S039): pre-work refusal; events await the schema reason field (#525)
       }
 
       packageName = resolveAndLogMcpShorthand(packageName);
@@ -10853,16 +10935,21 @@ Examples:
         process.stdout.write(formatTrustCheck(result));
       }
       if (result.found && (result.verdict === 'blocked' || result.verdict === 'warning')) {
-        process.exitCode = 1;
+        process.exitCode = 1; // exit-unsettled(#350/S040): bare assignment outside the funnel; migrate to raiseExitCode
       }
     } catch (error) {
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           process.stderr.write(i === 0 ? `Error: ${escapeForDisplay(line)}\n` : `${escapeForDisplay(line)}\n`));
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S067): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
       }
-      process.exit(1);
+      await exitRecorded(1, 'error');
     }
   });
 
@@ -11092,7 +11179,7 @@ program
           console.error(`${escapePathForDisplay(target)} is a directory with no SKILL.md, SOUL.md, or mcp.json.`);
           // The example is meant to be pasted, so it takes the citation form.
           console.error(`red-team takes a single artifact — point it at a file, e.g. red-team ${citationTarget(join(target, 'SKILL.md'))}`);
-          process.exit(1);
+          process.exit(1); // exit-unsettled(#350/S041): pre-work refusal; events await the schema reason field (#525)
         }
         target = resolved;
       }
@@ -11103,7 +11190,8 @@ program
       } else {
         console.error(`Cannot read file: ${escapePathForDisplay(target)}`);
       }
-      process.exit(1);
+      await exitRecorded(1, 'error');
+      return;
     }
 
     const artifactType = target.toLowerCase().includes('soul') ? 'soul' as const
@@ -11349,16 +11437,22 @@ Examples:
 
       // Exit with non-zero if resilience is poor
       if (report.resilienceRating === 'critical' || report.resilienceRating === 'needs-attention') {
-        process.exit(1);
+        await finishWithFindings(1);
+        return;
       }
     } catch (error) {
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S068): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
-      process.exit(1);
+      await exitRecorded(1, 'error');
     }
   });
 
@@ -11482,7 +11576,7 @@ Examples:
       options.json ? 'json' : 'text',
     );
 
-    process.exit(exitCode);
+    await finishWithFindings(exitCode);
   });
 
 // pull-stubs: fetch pending HMA check stubs from the registry
@@ -11512,7 +11606,7 @@ Examples:
     if (!validStatuses.includes(opts.status)) {
       process.stderr.write(`Error: --status must be one of: ${validStatuses.join(', ')}\n`);
       process.stderr.write(`  Got: ${opts.status}\n`);
-      process.exit(1);
+      process.exit(1); // exit-unsettled(#350/S042): pre-work refusal; events await the schema reason field (#525)
     }
 
     const apiKey = process.env.INTERNAL_API_KEY;
@@ -11531,7 +11625,7 @@ Examples:
         process.stderr.write('  This usually means the value was copied with a smart quote, a non-breaking space, or a replacement character.\n');
         process.stderr.write('  Re-copy the key as plain ASCII and retry:\n');
         process.stderr.write('    export INTERNAL_API_KEY=<your-key>\n');
-        process.exit(1);
+        process.exit(1); // exit-unsettled(#350/S043): pre-work refusal; events await the schema reason field (#525)
       }
     }
     if (!apiKey) {
@@ -11540,7 +11634,7 @@ Examples:
       process.stderr.write('Set the variable and retry:\n');
       process.stderr.write('  export INTERNAL_API_KEY=<your-key>\n');
       process.stderr.write(`  ${CLI_PREFIX} pull-stubs\n`);
-      process.exit(1);
+      process.exit(1); // exit-unsettled(#350/S044): pre-work refusal; events await the schema reason field (#525)
     }
 
     const registryUrl = validateRegistryUrl(opts.registryUrl).replace(/\/+$/, '');
@@ -11579,7 +11673,7 @@ Examples:
           process.stderr.write('  Your INTERNAL_API_KEY may be invalid or expired.\n');
         }
         if (body) process.stderr.write(`  ${body.slice(0, 200)}\n`);
-        process.exit(1);
+        await exitRecorded(1, 'error');
       }
 
       responseData = await res.json() as typeof responseData;
@@ -11593,7 +11687,8 @@ Examples:
         process.stderr.write(`  URL: ${endpoint}\n`);
         process.stderr.write(`  ${escapeForDisplay(err instanceof Error ? err.message : String(err))}\n`);
       }
-      process.exit(1);
+      await exitRecorded(1, 'error');
+      return;
     }
 
     // Filter by status
@@ -11787,7 +11882,7 @@ program
           if (!fsSync.existsSync(oraclePath)) {
             console.error(`Error: oracle-dir not found: ${escapeForDisplay(String(oraclePath))}`);
             console.error('  Clone or create the oracle fixture directory first.');
-            process.exit(1);
+            process.exit(1); // exit-unsettled(#350/S045): pre-work refusal; events await the schema reason field (#525)
           }
 
           console.log(`Running oracle eval against: ${escapePathForDisplay(oraclePath)}`);
@@ -11823,7 +11918,7 @@ program
               o.f1 >= GATE_F1 &&
               o.criticalMissed === 0 &&
               Object.values(report.bySurface).every(m => m.recall >= GATE_RECALL && m.precision >= GATE_PRECISION);
-            if (!gate) process.exit(1);
+            if (!gate) await finishWithFindings(1);
           }
         });
       return sub;
@@ -12645,7 +12740,7 @@ async function checkGitHubRepo(
     } else {
       printNotFoundBlock({ pkg: displayName, ecosystem: 'github', errorHint });
     }
-    process.exitCode = EXIT_UNMEASURED;
+    process.exitCode = EXIT_UNMEASURED; // exit-unsettled(#350/S046): bare assignment outside the funnel; migrate to raiseExitCode
     return;
   }
 
@@ -12836,7 +12931,7 @@ async function checkGitHubRepo(
     // Every branch of this catch is a clone that did not happen: not found,
     // timed out, or failed some other way. None of them scanned the repo, so
     // none of them can report a risk band, so all three are 2.
-    process.exitCode = EXIT_UNMEASURED;
+    process.exitCode = EXIT_UNMEASURED; // exit-unsettled(#350/S047): bare assignment outside the funnel; migrate to raiseExitCode
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -12924,7 +13019,7 @@ async function checkPyPiPackage(
     } else {
       printNotFoundBlock({ pkg: name, ecosystem: 'pypi' });
     }
-    process.exitCode = EXIT_UNMEASURED;
+    process.exitCode = EXIT_UNMEASURED; // exit-unsettled(#350/S048): bare assignment outside the funnel; migrate to raiseExitCode
     return;
   }
 
@@ -12965,7 +13060,7 @@ async function checkPyPiPackage(
       //
       // Both branches end without a scan — a 404 and a 500 are equally "we did
       // not measure this package", which is 2 and not 1.
-      process.exitCode = EXIT_UNMEASURED;
+      process.exitCode = EXIT_UNMEASURED; // exit-unsettled(#350/S049): bare assignment outside the funnel; migrate to raiseExitCode
       return;
     }
 
@@ -12981,7 +13076,7 @@ async function checkPyPiPackage(
 
     if (!dist) {
       console.error(`Error: No downloadable distribution found for "${escapeForDisplay(String(name))}" on PyPI.`);
-      process.exitCode = 1;
+      process.exitCode = 1; // exit-unsettled(#350/S050): bare assignment outside the funnel; migrate to raiseExitCode
       return;
     }
 
@@ -13106,7 +13201,7 @@ async function checkPyPiPackage(
     } else {
       console.error(`Error scanning PyPI package "${escapeForDisplay(name)}": ${escapeForDisplay(String(message))}`);
     }
-    process.exitCode = 1;
+    process.exitCode = 1; // exit-unsettled(#350/S051): bare assignment outside the funnel; migrate to raiseExitCode
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -13161,7 +13256,7 @@ async function checkRawUrl(
         // Set exit code and return so `finally` can clean up tempDir (was
         // already allocated above). process.exit() would skip the cleanup
         // and orphan the /tmp/hma-check-url-* directory.
-        process.exitCode = 1;
+        process.exitCode = 1; // exit-unsettled(#350/S052): bare assignment outside the funnel; migrate to raiseExitCode
         return;
       }
 
@@ -13178,7 +13273,7 @@ async function checkRawUrl(
       const bodyRes = await fetch(finalUrl, { redirect: 'follow' });
       if (!bodyRes.ok || !bodyRes.body) {
         console.error(`Error: Failed to download "${escapeForDisplay(String(url))}" (HTTP ${bodyRes.status}).`);
-        process.exitCode = 1;
+        process.exitCode = 1; // exit-unsettled(#350/S053): bare assignment outside the funnel; migrate to raiseExitCode
         return;
       }
       const buffer = Buffer.from(await bodyRes.arrayBuffer());
@@ -13331,7 +13426,7 @@ async function checkRawUrl(
     } else {
       console.error(`Error scanning URL: ${escapeForDisplay(String(message))}`);
     }
-    process.exitCode = 1;
+    process.exitCode = 1; // exit-unsettled(#350/S054): bare assignment outside the funnel; migrate to raiseExitCode
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -13574,7 +13669,7 @@ async function checkNpmPackage(
     // The download failed, so the package was never scanned. 2, not 1 — 1
     // would tell a CI consumer the package is high risk when what happened is
     // that a typo'd name was never fetched.
-    process.exitCode = EXIT_UNMEASURED;
+    process.exitCode = EXIT_UNMEASURED; // exit-unsettled(#350/S055): bare assignment outside the funnel; migrate to raiseExitCode
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -13646,7 +13741,7 @@ async function checkNpmPackage(
         tele.error('startup', 'INTEGRITY_FAIL');
         await tele.flush();
       } catch { /* never block integrity exit on a telemetry failure */ }
-      process.exit(3); // Exit code 3 = integrity failure
+      process.exit(3); // exit-no-event(pre-action/L001): fires and flushes its own INTEGRITY_FAIL event before exit. Exit code 3 = integrity failure.
     }
 
     if (integrity.status === 'DEGRADE') {
@@ -13696,7 +13791,7 @@ async function checkNpmPackage(
   program.on('option:version', () => {
     process.stdout.write(vparts.stdout + '\n');
     if (vparts.stderr) process.stderr.write(vparts.stderr + '\n');
-    process.exit(0);
+    process.exit(0); // exit-no-event(pre-action/L002): runs before any command action arms telemetry
   });
 
   // Telemetry tracking — records command start time, fires on postAction.
@@ -13782,14 +13877,16 @@ async function checkNpmPackage(
   // Installed here because this is where `tele` is in scope. `postTelemetry` is
   // the only thing that knows how to build the event; `recordTelemetry` owns
   // when it fires and how long anyone waits for it.
-  postTelemetry = async (name, startedAt, exitCode) => {
+  postTelemetry = async (name, startedAt, exitCode, reason) => {
     await tele.track(name, {
       // Exit 1 normally means "findings were detected and the command did its
       // job", which is the security-tool convention `successFromExitCode`
       // encodes. The exceptions are the commands whose exit 1 means "I did not
       // do my job"; EXIT1_IS_FAILURE is the authoritative list (its entries
-      // carry the per-command reasoning — #350, #362).
-      success: commandSucceeded(name, exitCode, tele.successFromExitCode),
+      // carry the per-command reasoning — #350, #362). A reason from the
+      // settlement site outranks both (#350's remainder): the closed static
+      // vocabulary in command-success.ts, never derived from arguments.
+      success: commandSucceeded(name, exitCode, tele.successFromExitCode, reason),
       durationMs: Date.now() - startedAt,
     });
   };
@@ -13808,7 +13905,7 @@ async function checkNpmPackage(
 
   if (process.argv.length <= 2) {
     program.outputHelp();
-    process.exit(0);
+    process.exit(0); // exit-no-event(pre-action/L003): runs before any command action arms telemetry
   }
 
   try {
