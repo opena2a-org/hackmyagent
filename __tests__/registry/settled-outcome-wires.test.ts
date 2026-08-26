@@ -222,6 +222,17 @@ describe('the contribution event reads the record (#519)', () => {
     expect('totalChecks' in (without.scanSummary as object)).toBe(false);
   });
 
+  it('RED-ON-BASE: the settled extras ride the summary, and an absent row list stays absent', () => {
+    const withRows = makeResult({ suppressed: [suppressedRow] } as any);
+    const s = settledOutcome(withRows, 1);
+    const event = buildScanEvent('fx', '/tmp/fx-none', withRows.findings as any, 900, s, 2);
+    expect(event.scanSummary?.exitCode).toBe(1);
+    expect(event.scanSummary?.rawScore).toBe(74);
+    expect(event.scanSummary?.scoreClamped).toBe(true);
+    expect(event.scanSummary?.suppressed).toEqual([suppressedRow]);
+    expect('outOfScope' in (event.scanSummary as object)).toBe(false);
+  });
+
   it('PIN: the no-record callers (scan-soul, detect) keep the legacy derivation', () => {
     const event = buildScanEvent('fx', '/tmp/fx-none', r.findings as any, 900);
     expect(event.scanSummary?.totalChecks).toBe(2);

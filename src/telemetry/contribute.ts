@@ -160,6 +160,13 @@ export function buildScanEvent(
         score: settled.score,
         verdict: settled.verdict,
         durationMs,
+        // Settled-outcome extras (@opena2a/contribute 0.3.0): the exit code,
+        // the pre-clamp score, and the identity-only suppression rows.
+        exitCode: settled.exitCode,
+        ...(settled.rawScore !== undefined ? { rawScore: settled.rawScore } : {}),
+        ...(settled.scoreClamped !== undefined ? { scoreClamped: settled.scoreClamped } : {}),
+        ...(settled.suppressed ? { suppressed: settled.suppressed } : {}),
+        ...(settled.outOfScope ? { outOfScope: settled.outOfScope } : {}),
       },
     };
   }
