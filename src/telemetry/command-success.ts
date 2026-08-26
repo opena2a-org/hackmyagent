@@ -66,18 +66,51 @@ export const EXIT1_IS_FAILURE: ReadonlySet<string> = new Set([
 export const EXIT2_IS_SEMANTIC: ReadonlySet<string> = new Set(['red-team']);
 
 /**
+ * Why a command ended, carried by the settlement site that KNOWS (#350).
+ *
+ * A CLOSED vocabulary of static strings — never derived from arguments, so no
+ * event field can ever carry user input. The name-keyed sets above answer
+ * "what does exit 1 mean for this command IN GENERAL"; a reason answers "what
+ * did THIS ending mean", and the site that ends the run is the only place
+ * that knows (a locally-caught crash in `scan` exits 1 exactly like a
+ * findings run — only the catch block can tell them apart).
+ *
+ * `findings` / `no-verdict` are result endings (the command did its job;
+ * success). `error` / `unmeasured` / `incomplete` are failures of the job.
+ * `refused` is neither — the run never started work; it is reserved for the
+ * refusal slice (#525) behind the event-schema field ruling and is mapped to
+ * failure until that field exists, so a premature use cannot inflate success.
+ */
+export type ExitReason = 'findings' | 'no-verdict' | 'error' | 'unmeasured' | 'incomplete' | 'refused';
+
+const REASON_IS_SUCCESS: Readonly<Record<ExitReason, boolean>> = {
+  findings: true,
+  'no-verdict': true,
+  error: false,
+  unmeasured: false,
+  incomplete: false,
+  refused: false,
+};
+
+/**
  * Resolve the success flag for a command event.
  *
  * `conventional` is `tele.successFromExitCode`, injected rather than imported so
  * this module stays free of the telemetry SDK and its config/network side
  * effects — and so a test can prove the exception is what decides the answer,
  * by passing a `conventional` that would give the opposite one.
+ *
+ * A `reason` from the settlement site outranks every name-keyed derivation:
+ * the site that ended the run knows what the ending meant, and the sets below
+ * exist only for endings that carry no reason (#350's remainder).
  */
 export function commandSucceeded(
   name: string,
   exitCode: number,
   conventional: (code: number, semanticSuccessCodes?: readonly number[]) => boolean,
+  reason?: ExitReason,
 ): boolean {
+  if (reason !== undefined) return REASON_IS_SUCCESS[reason];
   if (EXIT1_IS_FAILURE.has(name)) return exitCode === 0;
   // Widen, never narrow — the library only supports widening, and narrowing is
   // what the EXIT1_IS_FAILURE branch above is for.

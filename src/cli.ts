@@ -98,14 +98,19 @@ let currentCommandName: string | undefined;
 /** Set once the event has been posted, so it is never sent twice. */
 let telemetryTracked = false;
 /** Installed by the telemetry wiring, which is where `tele` is in scope. */
-let postTelemetry: ((name: string, startedAt: number, exitCode: number) => Promise<void>) | undefined;
+let postTelemetry: ((name: string, startedAt: number, exitCode: number, reason?: ExitReason) => Promise<void>) | undefined;
 
 /**
  * Post the command event, at most once, waiting no longer than the flush bound.
  *
  * Never throws and never rejects: a telemetry failure is not a scan failure.
+ *
+ * `reason` (#350): the settlement site that KNOWS why the run ended passes
+ * it, and it outranks the name-keyed exit-code derivation — a locally-caught
+ * crash in a findings-convention command exits 1 exactly like a findings
+ * run, and only the catch block can tell the event which one happened.
  */
-async function recordTelemetry(exitCode: number): Promise<void> {
+async function recordTelemetry(exitCode: number, reason?: ExitReason): Promise<void> {
   const name = currentCommandName;
   if (!name || telemetryTracked) return;
   const startedAt = telemetryStartedAt.get(name);
@@ -114,9 +119,30 @@ async function recordTelemetry(exitCode: number): Promise<void> {
   telemetryStartedAt.delete(name);
   if (!postTelemetry) return;
   await Promise.race([
-    postTelemetry(name, startedAt, exitCode).catch(() => { /* never fails a scan */ }),
+    postTelemetry(name, startedAt, exitCode, reason).catch(() => { /* never fails a scan */ }),
     new Promise<void>((resolve) => setTimeout(resolve, TELEMETRY_FLUSH_MS).unref()),
   ]);
+}
+
+/**
+ * End the process THROUGH the event (#350's remainder).
+ *
+ * The sibling of `finishWithFindings` for the sites whose control flow relies
+ * on not returning — the locally-caught crash template, and (once the schema
+ * field lands, #525) the pre-work refusals. A hard `process.exit` here used
+ * to end the process before Commander's `postAction` hook, so the run
+ * emitted NO event: the fleet metric counted it as if it never happened,
+ * which is the #350 inversion — failures invisible, aggregate reads healthy.
+ * The measured shape on b44baf9: an uncaught throw fired `tele.error` while
+ * the CAUGHT crash — the common surface — was the dark one.
+ *
+ * Awaits the bounded post (TELEMETRY_FLUSH_MS, unref'd; zero wait when
+ * telemetry is off), then exits with the same code, preserving each site's
+ * nothing-runs-after-this assumption.
+ */
+async function exitRecorded(code: number, reason: ExitReason): Promise<never> {
+  await recordTelemetry(code, reason);
+  process.exit(code); // exit-no-event(exit-funnel): the funnel's own exit — the event fired on the line above.
 }
 
 /**
@@ -301,7 +327,7 @@ import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { fixSummaryLine } from './ui/fix-summary';
 import { shouldShowDeepProgress } from './ui/progress-gate';
 import { generateVerifyCommand } from './ui/verify-command';
-import { commandSucceeded } from './telemetry/command-success';
+import { commandSucceeded, type ExitReason } from './telemetry/command-success';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
 import { generateBenchmarkReport } from './benchmarks/benchmark-report';
 import { UsageError, usageError } from './checker/errors';
@@ -13782,14 +13808,16 @@ async function checkNpmPackage(
   // Installed here because this is where `tele` is in scope. `postTelemetry` is
   // the only thing that knows how to build the event; `recordTelemetry` owns
   // when it fires and how long anyone waits for it.
-  postTelemetry = async (name, startedAt, exitCode) => {
+  postTelemetry = async (name, startedAt, exitCode, reason) => {
     await tele.track(name, {
       // Exit 1 normally means "findings were detected and the command did its
       // job", which is the security-tool convention `successFromExitCode`
       // encodes. The exceptions are the commands whose exit 1 means "I did not
       // do my job"; EXIT1_IS_FAILURE is the authoritative list (its entries
-      // carry the per-command reasoning — #350, #362).
-      success: commandSucceeded(name, exitCode, tele.successFromExitCode),
+      // carry the per-command reasoning — #350, #362). A reason from the
+      // settlement site outranks both (#350's remainder): the closed static
+      // vocabulary in command-success.ts, never derived from arguments.
+      success: commandSucceeded(name, exitCode, tele.successFromExitCode, reason),
       durationMs: Date.now() - startedAt,
     });
   };
