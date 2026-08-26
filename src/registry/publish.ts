@@ -259,8 +259,11 @@ export function buildPublishPayload(data: PublishScanData, toolVersion: string):
   };
 
   if (data.hardeningFindings) {
-    const total = data.hardeningFindings.length;
-    const failed = data.hardeningFindings.filter(f => countsAgainstScore(f)).length;
+    // #458 — the sub-report counts measured findings only, matching the wire
+    // list above: a not-applicable record is in no denominator anywhere.
+    const measured = data.hardeningFindings.filter(isMeasured);
+    const total = measured.length;
+    const failed = measured.filter(f => countsAgainstScore(f)).length;
     subReports.hardening = {
       totalChecks: total,
       failedChecks: failed,

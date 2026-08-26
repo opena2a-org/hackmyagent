@@ -3111,23 +3111,6 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   });
 }
 
-function groupFindingsBySeverity(findings: SecurityFinding[]): Record<Severity, SecurityFinding[]> {
-  const grouped: Record<Severity, SecurityFinding[]> = {
-    critical: [],
-    high: [],
-    medium: [],
-    low: [],
-  };
-
-  for (const finding of findings) {
-    // #458 — a not-applicable record has no severity and no bucket here.
-    if (!isMeasured(finding)) continue;
-    grouped[finding.severity].push(finding);
-  }
-
-  return grouped;
-}
-
 // Benchmark compliance helpers
 interface LocalControlResult {
   control: BenchmarkControl;
