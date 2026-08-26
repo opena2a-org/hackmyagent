@@ -1368,16 +1368,29 @@ function fixParts(f: { fix?: string; readonly [FIX_LINES]?: readonly string[] })
 }
 
 /**
+ * The runnable test for a fix's first line (#598): the two shipped tool
+ * names, plus the ACTIVE prefix — under HMA_CLI_PREFIX the rebrander
+ * rewrites citations to start with it (`npx hackmyagent harden-soul …`),
+ * and the two literals alone demoted every runnable fix to the prose
+ * `Fix:` marker with the 5-space indent, purely by how the tool was
+ * invoked. The prefix is regex-escaped; it is operator configuration, not
+ * a pattern.
+ */
+const RUNNABLE_PREFIX_RE = new RegExp(
+  `^(?:opena2a|hackmyagent|${CLI_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\s`,
+);
+
+/**
  * Continuation lines sit under line 0's text, past its `→  ` or `Fix: `
  * marker. The marker is chosen by `formatFixLine` from the REBRANDED line 0
  * (`cleanFixText` rebrands), so the indent is keyed on the same text.
  */
 function fixContinuationIndent(firstLine: string): string {
-  return ' '.repeat(/^(opena2a|hackmyagent)\s/.test(rebrandCommandCitations(firstLine)) ? 3 : 5);
+  return ' '.repeat(RUNNABLE_PREFIX_RE.test(rebrandCommandCitations(firstLine)) ? 3 : 5);
 }
 
 function formatFixLine(text: string): string {
-  const isRunnable = /^(opena2a|hackmyagent)\s/.test(text);
+  const isRunnable = RUNNABLE_PREFIX_RE.test(text);
   const parts = text.split(/\s+—\s+/);
   if (isRunnable && parts.length >= 2) {
     const cmd = `${colors.cyan}${colors.bold}→  ${parts[0]}${RESET()}`;
@@ -4183,7 +4196,7 @@ function generateAspOutput(benchmarkResult: BenchmarkResult, scanResult: { findi
     capabilities,
     credentials: {
       hardcodedSecrets: hardcodedCreds,
-      recommendation: hardcodedCreds > 0 ? 'opena2a protect .  — encrypts secrets into a secure vault, injects at runtime' : 'No hardcoded credentials detected',
+      recommendation: hardcodedCreds > 0 ? 'opena2a protect . — encrypts secrets into a secure vault, injects at runtime' : 'No hardcoded credentials detected',
     },
     supplyChain: {
       signedComponents: signedSkills,
@@ -11062,10 +11075,10 @@ program
     // Static explanation lookup
     const checkId = findingId.toUpperCase();
     const staticExplanations: Record<string, string> = {
-      'CRED-001': 'Hardcoded credential detected. API keys, tokens, or passwords are embedded directly in source code. Run: opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only. Rotate any already-exposed credentials.',
-      'CRED-002': 'OpenAI API key detected (sk-proj-... or sk-...). Run: opena2a protect .  — removes the key from source and stores it in your secure vault.',
-      'CRED-003': 'Anthropic API key detected (sk-ant-...). Run: opena2a protect .  — removes the key from source and stores it in your secure vault.',
-      'CRED-004': 'AWS credential pattern detected (AKIA...). Run: opena2a protect .  — removes the key from source and stores it in your secure vault.',
+      'CRED-001': 'Hardcoded credential detected. API keys, tokens, or passwords are embedded directly in source code. Run: opena2a protect . — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only. Rotate any already-exposed credentials.',
+      'CRED-002': 'OpenAI API key detected (sk-proj-... or sk-...). Run: opena2a protect . — removes the key from source and stores it in your secure vault.',
+      'CRED-003': 'Anthropic API key detected (sk-ant-...). Run: opena2a protect . — removes the key from source and stores it in your secure vault.',
+      'CRED-004': 'AWS credential pattern detected (AKIA...). Run: opena2a protect . — removes the key from source and stores it in your secure vault.',
       'MCP-001': 'MCP server running without TLS. Agent-to-server communication is unencrypted. Enable TLS on the MCP server or use a reverse proxy with TLS termination.',
       'SKILL-005': 'External endpoint in skill capability declaration. Verify the endpoint is trusted and uses HTTPS.',
       'GOV-001': 'No governance policy found. Agents should declare behavioral constraints in a SOUL.md or governance file. Create a SOUL.md with mission, boundaries, and allowed actions.',
@@ -11089,9 +11102,9 @@ program
       'AST-INJECT-001': `Active prompt injection surface. The artifact contains language that enables instruction override — "ignore previous instructions", "you are now", or conditional compliance patterns. This is a high-confidence attack vector, not a theoretical risk. Fix: remove instruction override language. Add explicit rejection clause. Run: ${CLI_PREFIX} harden-soul <dir> to generate injection-resistant governance.`,
       'AST-GOV-001': `Governance domain gap. The artifact has capabilities but missing constraint coverage across governance domains (data handling, trust hierarchy, scope, human oversight, safety). Without coverage, the agent has no guardrails for uncovered areas. Fix: run ${CLI_PREFIX} harden-soul <dir> to auto-generate missing governance sections.`,
       'AST-GOV-002': `Weak constraint enforceability. Declared constraints use advisory language ("should", "try to", "when appropriate") that an adversary can argue against. Constraints using "should" have bypass risk above 50%. Fix: replace advisory language with mandatory: "must never", "shall not", "is forbidden". Run: ${CLI_PREFIX} scan-soul --verbose to see enforceability scores.`,
-      'AST-CRED-001': 'Credentials in non-environment context. The artifact reads, transmits, or references credential data from a context where it can be extracted via prompt injection, leaked in git history, or exposed in build artifacts. Fix: opena2a protect .  — encrypts secrets into a secure vault, injects at runtime.',
+      'AST-CRED-001': 'Credentials in non-environment context. The artifact reads, transmits, or references credential data from a context where it can be extracted via prompt injection, leaked in git history, or exposed in build artifacts. Fix: opena2a protect . — encrypts secrets into a secure vault, injects at runtime.',
       'AST-CRED-002': 'Credential forwarding. The artifact transmits credential data to an external destination — even to "trusted" endpoints this is dangerous because the destination can be compromised or spoofed. Fix: remove credential forwarding. Use OAuth token exchange or a credential broker instead of passing raw credentials.',
-      'AST-CRED-003': 'Hardcoded secret. The artifact contains patterns consistent with hardcoded API keys, tokens, or passwords. These are exposed in version control history and to anyone who can read the file. Fix: opena2a protect .  — encrypts secrets into a secure vault and rotates any already-exposed credentials.',
+      'AST-CRED-003': 'Hardcoded secret. The artifact contains patterns consistent with hardcoded API keys, tokens, or passwords. These are exposed in version control history and to anyone who can read the file. Fix: opena2a protect . — encrypts secrets into a secure vault and rotates any already-exposed credentials.',
     };
 
     // Map check ID prefixes to human-readable category labels

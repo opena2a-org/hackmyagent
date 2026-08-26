@@ -4,6 +4,20 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The fix marker no longer depends on how the tool was invoked
+
+Under a parent CLI that sets `HMA_CLI_PREFIX`, fix citations are rewritten
+to start with the prefix — and the runnable test only knew the two shipped
+tool names, so every runnable fix rendered with the prose `Fix:` marker
+and the 5-space indent instead of the `→` marker and the runnable indent,
+purely by invocation. The runnable test now recognizes the active prefix
+(escaped; it is operator configuration, not a pattern) at both sites that
+key on it — the marker and the continuation indent (#598).
+
+Twenty-three authored fix strings also carried a double space before
+their em dash (`fix-all --with-aim`, `opena2a protect .`,
+`opena2a mcp audit` spellings, across four source files); swept to single.
+
 ### A contradiction between --json and --format is named, not resolved silently
 
 `--json` is the deprecated alias of `--format json`. Given together with a
