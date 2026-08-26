@@ -4,6 +4,48 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### One settled outcome feeds every outbound record, and an unmeasured run sends nothing
+
+Every record that left the process about a `secure` run recomputed its own
+figures from the narrowed findings list. The Registry publish payload
+rebuilt a composite score (with a `passRate` ratio no server reads); the
+`--ci-publish` body derived `status: passed, counts all 0` for a run that
+displayed 49 findings and exited 1 (#464); the contribution event scored
+`passed/total` — 0 for any tree with one failure — under a third verdict
+ladder, with `totalChecks` as the length of whatever list it was handed
+(#519). Each was a second spelling of a settlement the CLI had already made.
+
+Now one projection — the settled outcome: score, verdict, exit code,
+measured, counts over the suppression-inclusive gate set, coverage — is
+computed at the run's single settlement point and READ by every wire: the
+publish payload (recompute and `passRate` deleted; typed
+`criticalCount/highCount/mediumCount/lowCount`, `measured`, `exitCode`,
+`coverage`, suppression rows and `schemaVersion` ride top-level), the
+remediation score, the scan/community/ci reports (`status` and counts from
+the record; `rawReport.settledOutcome` carries it whole), and the
+contribution event (`score` is the displayed 0-100; one verdict ladder;
+`totalChecks` is the completed-execution count from the run's coverage
+record, or omitted — a derived stand-in number is worse than no number).
+`secure --json`'s top level gains the record's flat keys — `verdict`,
+`exitCode`, `measured`, `counts` — and `coverage` gains
+`measured/examined/total/unit`, so `jq '.coverage.measured'` is one
+predicate across `check`, `secure` and every wire (#283).
+
+A run that settled `EXIT_UNMEASURED` (2) now posts NOTHING: `--publish`,
+`--registry-report`, `--version-id`, `--ci-publish` and the contribution are
+withheld before their own preconditions, one line says so (`Registry:
+nothing sent — ...`), and `--json` carries
+`publish: {success: false, attempted: false, reason: 'unmeasured'}`. No
+current wire can receive the disclosure honestly — the server manufactures
+`passed` from whatever counts arrive — so the smaller true statement is
+silence plus the sentence.
+
+Update pipelines: a consumer that read the ci body's `status` or the event's
+`score` gets the run's real figures now (a suppressed critical counts; the
+direction can only be toward more findings disclosed); the publish payload
+no longer carries `subReports.hardening.passRate`. Verify:
+`hackmyagent secure <dir> --format json | jq '{verdict, exitCode, measured, counts}'`.
+
 ### A forward-verified control now fails when its mapped check fails
 
 OASB-1 control 2.1 (Explicit Capability Grants) is forward-verified and also
