@@ -171,6 +171,7 @@ function makeOasbResult(): BenchmarkResult {
     passedControls: 39,
     failedControls: 5,
     unverifiedControls: 2,
+    notApplicableControls: 0,
   } as BenchmarkResult;
 }
 

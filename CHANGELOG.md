@@ -4,6 +4,34 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### A benchmark control whose subject artifact is absent reads `not-applicable`, never `failed`
+
+Step 3 of #458. Steps 1-2 gave a check whose subject artifact is absent (no
+`CLAUDE.md`, no `Dockerfile`, no `mcp.json`) a positive `notApplicable` record
+with `passed` omitted — and `generateBenchmarkReport`'s `!finding.passed` read
+that omission as a failure, so the benchmark counted "not applicable to this
+tree" against compliance. On an MCP-typed tree with none of those artifacts,
+nine scored controls read `failed` this way (L3: 18%, 4/22). The report now
+tests `notApplicable` first: a control whose every mapped check reported its
+subject absent is `not-applicable` — its own status and count
+(`notApplicableControls`, category `notApplicable`, per-control
+`notApplicableSubjects`), outside every compliance denominator exactly like
+`unverified` (same tree now: 38%, 5/13, 9 not applicable). A measured record
+outranks an NA sibling in both directions: one check measured and one absent
+leaves the control `passed` or `failed` by the measurement. A control with no
+record at all stays `unverified` — a type-scoped-off check leaves no record,
+and crediting that absence is the laundering #458 removed. Text output gains a
+`Not applicable: N controls` header line and `[.]` rows in `--verbose` naming
+the absent subjects; json/asp carry the new status and counts; SARIF is
+unchanged (it renders failures only). Named plainly, because this direction is
+accepted eyes-open under the four-state contract: absence RAISES the figure —
+deleting a failing `mcp.json` from the measured tree moved it from 29% to 38%
+and flipped control 5.1 from `failed` to `passed` (the measured sibling
+entered the numerator). A benchmark can only measure what is there; the
+scanner-side record says what was absent, and the `Not applicable:` line
+carries it into the report. (#458 step 3; the mcp-server assessor
+unification is step 5.)
+
 ### `-b` takes the benchmark name case-insensitively on both arms
 
 `secure -b OASB-2` was accepted (the composite arm lower-cased the name) while

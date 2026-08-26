@@ -3114,9 +3114,11 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
 // Benchmark compliance helpers
 interface LocalControlResult {
   control: BenchmarkControl;
-  status: 'passed' | 'failed' | 'unverified';
+  status: 'passed' | 'failed' | 'unverified' | 'not-applicable';
   findings: string[];
   remediation?: string;
+  /** Absent subject artifacts, when status is `not-applicable` (#458). */
+  naSubjects?: string[];
 }
 
 /**
@@ -3176,11 +3178,12 @@ function generateBenchmarkReport(
   let l1Passed = 0, l1Total = 0;
   let l2Passed = 0, l2Total = 0;
   let l3Passed = 0, l3Total = 0;
-  let passedCount = 0, failedCount = 0, unverifiedCount = 0;
+  let passedCount = 0, failedCount = 0, unverifiedCount = 0, notApplicableCount = 0;
 
   for (const control of controls) {
-    let status: 'passed' | 'failed' | 'unverified';
+    let status: 'passed' | 'failed' | 'unverified' | 'not-applicable';
     const relatedFindings: string[] = [];
+    const naSubjects: string[] = [];
     let remediation: string | undefined;
 
     if (control.verification === 'manual' || control.verification === 'forward') {
@@ -3196,39 +3199,62 @@ function generateBenchmarkReport(
       remediation = control.remediation;
     } else {
       // Check all mapped check IDs
-      let hasAnyFinding = false;
+      let hasMeasured = false;
       let hasFailure = false;
+      let hasNotApplicable = false;
       for (const checkId of control.checkIds) {
         const finding = findingsByCheckId.get(checkId);
-        if (finding) {
-          hasAnyFinding = true;
-          if (!finding.passed) {
-            hasFailure = true;
-            relatedFindings.push(`${checkId}: ${finding.description}`);
-            if (finding.fix) {
-              remediation = remediation || finding.fix;
-            }
+        if (!finding) continue;
+        // #458 step 3 — the NA test comes FIRST: an NA record OMITS `passed`
+        // (never false), so the `!finding.passed` test below read "subject
+        // absent" as a failure and, before steps 1-2, the absent subject was
+        // a pathless HIGH. The record contributes no pass/fail value; it
+        // names its absent subject.
+        if (finding.notApplicable) {
+          hasNotApplicable = true;
+          if (!naSubjects.includes(finding.notApplicable.subject)) {
+            naSubjects.push(finding.notApplicable.subject);
+          }
+          continue;
+        }
+        hasMeasured = true;
+        if (!finding.passed) {
+          hasFailure = true;
+          relatedFindings.push(`${checkId}: ${finding.description}`);
+          if (finding.fix) {
+            remediation = remediation || finding.fix;
           }
         }
       }
-      // Only mark as passed if we actually verified something
-      // Missing findings = unverified (not passed)
-      if (!hasAnyFinding) {
+      // Only mark as passed if we actually verified something. A MEASURED
+      // record outranks an NA sibling (a control with one check that measured
+      // and one whose subject is absent WAS measured); `not-applicable` is
+      // awarded only when NA records are all the control has; nothing at all
+      // stays `unverified` — a type-scoped-off check leaves NO record, and
+      // crediting that as anything would relaunder the absence #458 removed.
+      if (hasMeasured) {
+        if (hasFailure) {
+          status = 'failed';
+          failedCount++;
+          remediation = remediation || control.remediation;
+        } else {
+          status = 'passed';
+          passedCount++;
+        }
+      } else if (hasNotApplicable) {
+        status = 'not-applicable';
+        notApplicableCount++;
+      } else {
         status = 'unverified';
         unverifiedCount++;
         remediation = control.remediation;
-      } else if (hasFailure) {
-        status = 'failed';
-        failedCount++;
-        remediation = remediation || control.remediation;
-      } else {
-        status = 'passed';
-        passedCount++;
       }
     }
 
     // Count by level for compliance calculation
-    if (control.scored && status !== 'unverified') {
+    // Positive gate (#458 step 3): only a MEASURED status enters a level
+    // denominator. `not-applicable` leaves it exactly like `unverified`.
+    if (control.scored && (status === 'passed' || status === 'failed')) {
       if (control.level === 'L1') {
         l1Total++;
         if (status === 'passed') l1Passed++;
@@ -3241,7 +3267,7 @@ function generateBenchmarkReport(
       }
     }
 
-    controlResults.push({ control, status, findings: relatedFindings, remediation });
+    controlResults.push({ control, status, findings: relatedFindings, remediation, naSubjects });
   }
 
   // Compliance percentages. #458 step 0 — a level with no scored control
@@ -3273,6 +3299,7 @@ function generateBenchmarkReport(
     const passed = catControls.filter((r: LocalControlResult) => r.status === 'passed').length;
     const failed = catControls.filter((r: LocalControlResult) => r.status === 'failed').length;
     const unverified = catControls.filter((r: LocalControlResult) => r.status === 'unverified').length;
+    const notApplicable = catControls.filter((r: LocalControlResult) => r.status === 'not-applicable').length;
     const compliance = (passed + failed) > 0 ? Math.round((passed / (passed + failed)) * 100) : 0;
 
     categoryResults.push({
@@ -3281,6 +3308,7 @@ function generateBenchmarkReport(
       passed,
       failed,
       unverified,
+      notApplicable,
       controls: catControls.map((r: LocalControlResult) => ({
         controlId: r.control.id,
         name: r.control.name,
@@ -3288,6 +3316,7 @@ function generateBenchmarkReport(
         status: r.status,
         findings: r.findings,
         remediation: r.remediation,
+        ...(r.status === 'not-applicable' && r.naSubjects?.length ? { notApplicableSubjects: r.naSubjects } : {}),
       })),
     });
   }
@@ -3309,6 +3338,7 @@ function generateBenchmarkReport(
     passedControls: passedCount,
     failedControls: failedCount,
     unverifiedControls: unverifiedCount,
+    notApplicableControls: notApplicableCount,
   };
 }
 
@@ -4371,6 +4401,9 @@ function generateAspOutput(benchmarkResult: BenchmarkResult, scanResult: { findi
       l1Compliance: benchmarkResult.l1Compliance,
       l2Compliance: benchmarkResult.l2Compliance,
       l3Compliance: benchmarkResult.l3Compliance,
+      // #458 step 3 — asp accounting must sum: passed + failed + unverified
+      // + notApplicable covers every control the level examined.
+      notApplicableControls: benchmarkResult.notApplicableControls,
     },
     capabilities,
     credentials: {
@@ -4392,6 +4425,7 @@ function generateAspOutput(benchmarkResult: BenchmarkResult, scanResult: { findi
       passed: cat.passed,
       failed: cat.failed,
       unverified: cat.unverified,
+      notApplicable: cat.notApplicable,
     })),
     failedControls: benchmarkResult.categories.flatMap(cat =>
       cat.controls.filter(c => c.status === 'failed').map(c => ({
@@ -4579,6 +4613,13 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean, targetD
   if (result.unverifiedControls > 0) {
     console.log(`Unverified: ${result.unverifiedControls} controls require manual/forward verification`);
   }
+  if (result.notApplicableControls > 0) {
+    // #458 step 3 — a control whose every automated check reported its
+    // subject artifact absent. Outside every denominator, like Unverified;
+    // named here so the counts above visibly do not include it.
+    const n = result.notApplicableControls;
+    console.log(`Not applicable: ${n} control${n === 1 ? '' : 's'} — subject artifacts absent from this tree`);
+  }
   for (const line of notAssessedLines(result, targetDir, flags)) {
     console.log(`${colors.dim}${line}${RESET()}`);
   }
@@ -4589,11 +4630,21 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean, targetD
   for (const catResult of result.categories) {
     const total = catResult.passed + catResult.failed;
     if (total === 0) {
-      console.log(`  [.] ${catResult.category}: N/A (no controls at this level)`);
-      continue;
-    }
+      // #458 step 3 — "no controls at this level" was the only sentence this
+      // branch had; a category can now hold controls that are all
+      // not-applicable (or unverified), and saying they do not exist hid
+      // them from the header's count. Name what is actually there, and let
+      // --verbose fall through so the [.]/[?] rows print.
+      const parts: string[] = [];
+      if (catResult.notApplicable > 0) parts.push(`${catResult.notApplicable} not applicable`);
+      if (catResult.unverified > 0) parts.push(`${catResult.unverified} unverified`);
+      const label = parts.length > 0 ? parts.join(', ') : 'no controls at this level';
+      console.log(`  [.] ${catResult.category}: N/A (${label})`);
+      if (!verbose || catResult.controls.length === 0) continue;
+    } else {
     const statusIcon = catResult.failed === 0 ? '[+]' : (catResult.passed > 0 ? '[~]' : '[-]');
     console.log(`  ${statusIcon} ${catResult.category}: ${catResult.passed}/${total} (${catResult.compliance}%)`);
+    }
 
     // Show failed controls
     if (verbose || catResult.failed > 0) {
@@ -4607,6 +4658,11 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean, targetD
           }
         } else if (verbose && ctrl.status === 'passed') {
           console.log(`     [+] ${ctrl.controlId}: ${ctrl.name}`);
+        } else if (verbose && ctrl.status === 'not-applicable') {
+          const subjects = ctrl.notApplicableSubjects?.length
+            ? ctrl.notApplicableSubjects.join(', ')
+            : 'subject artifact';
+          console.log(`     [.] ${ctrl.controlId}: ${ctrl.name} ${colors.dim}(not applicable: ${escapeForDisplay(subjects)} absent)${RESET()}`);
         } else if (verbose && ctrl.status === 'unverified') {
           // Look up the original control to determine why it's unverified
           const originalControl = OASB_1_CATEGORIES

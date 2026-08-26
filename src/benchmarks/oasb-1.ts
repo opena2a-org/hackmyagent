@@ -89,6 +89,12 @@ export interface BenchmarkResult {
   failedControls: number;
   /** Controls that couldn't be verified (forward/manual) */
   unverifiedControls: number;
+  /**
+   * Controls whose every mapped automated check reported its subject absent
+   * (#458 step 3). Outside every compliance denominator, exactly like
+   * `unverifiedControls`.
+   */
+  notApplicableControls: number;
 }
 
 export interface BenchmarkCategoryResult {
@@ -97,6 +103,8 @@ export interface BenchmarkCategoryResult {
   passed: number;
   failed: number;
   unverified: number;
+  /** Controls whose subject artifacts are absent from this tree (#458). */
+  notApplicable: number;
   controls: BenchmarkControlResult[];
 }
 
@@ -104,11 +112,20 @@ export interface BenchmarkControlResult {
   controlId: string;
   name: string;
   level: BenchmarkLevel;
-  status: 'passed' | 'failed' | 'unverified';
+  /**
+   * `not-applicable` (#458 step 3): every automated check mapped to this
+   * control reported its subject artifact absent (a positive `notApplicable`
+   * record) and none produced a measurement. Distinct from `unverified`,
+   * which is "nothing reported at all" (manual/forward, no mapped check, a
+   * type-scoped-off check, or an unread input).
+   */
+  status: 'passed' | 'failed' | 'unverified' | 'not-applicable';
   /** Findings that relate to this control */
   findings: string[];
   /** Fix instructions if failed */
   remediation?: string;
+  /** The absent subject artifacts, when status is `not-applicable` (#458). */
+  notApplicableSubjects?: string[];
 }
 
 /**
