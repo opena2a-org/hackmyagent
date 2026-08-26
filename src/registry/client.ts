@@ -10,6 +10,7 @@ import type { SecurityFinding, Severity } from '../hardening';
 import { assertRedactionProvenance } from '../hardening/finding-emit';
 import type { AttackReport } from '../attack';
 import { countsAgainstScore, isMeasured } from '../ui/verdict-band';
+import { wireStatus, type SettledOutcome } from '../hardening/settled-outcome';
 
 // Registry ScanResult format (must match hackmyagent_service.go:175-200)
 export interface ScanReportPayload {
@@ -117,6 +118,25 @@ export interface UnifiedPublishPayload {
   verdict: 'pass' | 'warn' | 'fail';
   type?: string;
   version?: string;
+  /**
+   * Settled-outcome extras (#464): present exactly when the publish carries a
+   * settled `secure` run behind it. Typed counts the server can trust instead
+   * of re-deriving from the narrowed `findings[]`, the measurement
+   * disclosure, and identity-only suppression rows. The server drops unknown
+   * fields today (measured: every handler binds with plain json.Unmarshal);
+   * the Registry-side typed columns and the 422 on `measured: false` are the
+   * R1 migration, owned in opena2a-registry.
+   */
+  criticalCount?: number;
+  highCount?: number;
+  mediumCount?: number;
+  lowCount?: number;
+  measured?: boolean;
+  exitCode?: number;
+  coverage?: { measured: boolean; examined: number; total: number; unit: string; unreadableInputs?: unknown };
+  suppressed?: Array<{ checkId: string; name: string; category: string; severity: string; count: number; suppressedBy: string }>;
+  outOfScope?: Array<{ checkId: string; name: string; category: string; severity: string; count: number; suppressedBy: string }>;
+  schemaVersion?: number;
   /** Ed25519 signature (base64) — moved from headers to body */
   signature?: string;
   /** Public key of the signer. PEM for the legacy claimed-agent path; raw base64 for
@@ -484,12 +504,16 @@ export class RegistryClient {
 export function buildScanReport(
   versionId: string,
   findings: SecurityFinding[],
+  settled?: SettledOutcome,
 ): ScanReportPayload {
   assertRedactionProvenance(findings, 'registry-scan-report');
   const failed = findings.filter(isMeasured).filter(f => countsAgainstScore(f));
 
-  const counts = countBySeverity(failed);
-  const status = deriveStatus(counts);
+  // #464 — with a settled record the counts and status describe the RUN and
+  // are READ from it; the local derivation over the (suppression-narrowed)
+  // list remains only for callers with no settled `secure` run behind them.
+  const counts = settled ? settled.counts : countBySeverity(failed);
+  const status = settled ? wireStatus(settled) : deriveStatus(counts);
 
   // Map failed findings to vulnerability format
   const vulnerabilities: VulnerabilityFinding[] = failed.map(f => ({
@@ -526,6 +550,9 @@ export function buildScanReport(
       generator: 'hackmyagent',
       totalFindings: findings.length,
       failedFindings: failed.length,
+      // #464 — the settled record rides as ONE object built from the
+      // in-memory record, never re-assembled from a document.
+      ...(settled ? { settledOutcome: settled } : {}),
     },
   };
 }
@@ -588,14 +615,17 @@ export function buildCommunityReport(
   packageName: string,
   findings: SecurityFinding[],
   options?: { packageType?: string; version?: string },
+  settled?: SettledOutcome,
 ): CommunityScanPayload {
   assertRedactionProvenance(findings, 'registry-community-report');
   const failed = findings.filter(isMeasured).filter(f => countsAgainstScore(f));
   // Only send package-relevant findings to registry — local dev hygiene
   // checks (git, permissions, env, IDE config) don't belong on a package page
   const registryFindings = failed.filter(isRegistryRelevant);
-  const counts = countBySeverity(registryFindings);
-  const status = deriveStatus(counts);
+  // #464 — with a settled record the counts and status describe the RUN and
+  // are READ from it; the vulnerability list above stays the display subset.
+  const counts = settled ? settled.counts : countBySeverity(registryFindings);
+  const status = settled ? wireStatus(settled) : deriveStatus(counts);
 
   const vulnerabilities: VulnerabilityFinding[] = registryFindings.map(f => ({
     id: f.checkId,
@@ -623,6 +653,9 @@ export function buildCommunityReport(
       failedFindings: failed.length,
       registryRelevantFindings: registryFindings.length,
       localOnlyFindings: localOnly,
+      // #464 — the settled record rides as ONE object built from the
+      // in-memory record, never re-assembled from a document.
+      ...(settled ? { settledOutcome: settled } : {}),
     },
   };
   payload.contentHash = computeContentHash(payload);

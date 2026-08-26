@@ -20,6 +20,7 @@ import type { SoulScanResult } from '../soul';
 import type { BenchmarkResult } from '../benchmarks';
 import { RegistryClient, type UnifiedPublishPayload, type UnifiedFinding } from './client';
 import { reportFindings, reportRemediation } from './remediation';
+import type { SettledOutcome } from '../hardening/settled-outcome';
 import { firstPartySignerFromEnv } from '@opena2a/registry-client';
 
 /**
@@ -166,7 +167,7 @@ export function signPayload(payload: string, privateKeyPem: string): string | nu
  * Build a unified publish payload matching the POST /api/v1/trust/publish contract.
  * Combines results from hardening, attack, SOUL, and OASB scans into a single payload.
  */
-export function buildPublishPayload(data: PublishScanData, toolVersion: string): UnifiedPublishPayload {
+export function buildPublishPayload(data: PublishScanData, toolVersion: string, settled?: SettledOutcome): UnifiedPublishPayload {
   // Publish-boundary read (unit 2): every finding leaving for the Registry
   // must carry redaction provenance. The payload built below projects the
   // fields away (wire-schema carry is a separate unit), so the read runs on
@@ -240,17 +241,32 @@ export function buildPublishPayload(data: PublishScanData, toolVersion: string):
   // reveal the discrepancy. `score` is part of the signed strong canonical
   // below, so the signature would have attested a figure the tool never
   // displayed.
-  const { score: rawScore } = calculateSecurityScore(findings);
-  const { score, clamped: scoreClamped } = clampScoreToVerdictBand(rawScore, findings);
-
-  // Derive verdict
-  const failedCritical = findings.filter(f => !f.passed && f.severity === 'critical').length;
-  const failedHigh = findings.filter(f => !f.passed && f.severity === 'high').length;
-  const failedMedium = findings.filter(f => !f.passed && f.severity === 'medium').length;
-  const failedLow = findings.filter(f => !f.passed && f.severity === 'low').length;
-  let verdict: 'pass' | 'warn' | 'fail' = 'pass';
-  if (failedCritical > 0 || failedHigh > 0) verdict = 'fail';
+  // #464 — with a settled record (the `secure --publish` arms), every figure
+  // is READ from it, never recomputed here: the recomputation over the
+  // narrowed `findings` list is what published `score 100 / verdict pass /
+  // 0 failed checks` for the run the terminal reported `69/100 ... exit 1`.
+  // The local computation remains ONLY for callers with no settled `secure`
+  // run behind them (the `attack` registry arm's merged payload).
+  if (settled?.verdict === null) {
+    // Fail closed: `outboundAllowed` withholds exit-2 runs before this call;
+    // a null-verdict record reaching a wire is a caller bug, not a payload.
+    throw new Error('a run at EXIT_UNMEASURED never publishes (#464)');
+  }
+  const { score: localRawScore } = calculateSecurityScore(findings);
+  const { score: localScore, clamped: localClamped } = clampScoreToVerdictBand(localRawScore, findings);
+  const rawScore = settled ? (settled.rawScore ?? settled.score) : localRawScore;
+  const score = settled ? settled.score : localScore;
+  const scoreClamped = settled ? (settled.scoreClamped ?? false) : localClamped;
+  const failedCritical = settled ? settled.counts.critical : findings.filter(f => !f.passed && f.severity === 'critical').length;
+  const failedHigh = settled ? settled.counts.high : findings.filter(f => !f.passed && f.severity === 'high').length;
+  const failedMedium = settled ? settled.counts.medium : findings.filter(f => !f.passed && f.severity === 'medium').length;
+  const failedLow = settled ? settled.counts.low : findings.filter(f => !f.passed && f.severity === 'low').length;
+  let verdict: 'pass' | 'warn' | 'fail';
+  if (settled) {
+    verdict = settled.verdict;
+  } else if (failedCritical > 0 || failedHigh > 0) verdict = 'fail';
   else if (failedMedium > 0 || failedLow > 0) verdict = 'warn';
+  else verdict = 'pass';
 
   // Build sub-reports from each scan type
   const subReports: Record<string, unknown> = {
@@ -261,13 +277,16 @@ export function buildPublishPayload(data: PublishScanData, toolVersion: string):
   if (data.hardeningFindings) {
     // #458 — the sub-report counts measured findings only, matching the wire
     // list above: a not-applicable record is in no denominator anywhere.
+    // #464 — `passRate` is DELETED, not renamed: a second ratio beside the
+    // settled score was the recomputation class this PR removes, and no
+    // server reader exists (`hardening_pass_rate` is written by nothing in
+    // the Registry's internal/).
     const measured = data.hardeningFindings.filter(isMeasured);
     const total = measured.length;
     const failed = measured.filter(f => countsAgainstScore(f)).length;
     subReports.hardening = {
       totalChecks: total,
       failedChecks: failed,
-      passRate: total > 0 ? Math.round(((total - failed) / total) * 100) : 100,
     };
   }
 
@@ -337,6 +356,24 @@ export function buildPublishPayload(data: PublishScanData, toolVersion: string):
     verdict,
     subReports,
     contentHash,
+    // #464 — the settled record rides the wire: typed counts the server can
+    // trust instead of re-deriving from the narrowed findings[], plus the
+    // measurement disclosure. Absent on the non-settled (attack) path, so an
+    // unsettled publish stays byte-identical to what the Registry received.
+    ...(settled
+      ? {
+          criticalCount: settled.counts.critical,
+          highCount: settled.counts.high,
+          mediumCount: settled.counts.medium,
+          lowCount: settled.counts.low,
+          measured: settled.measured,
+          exitCode: settled.exitCode,
+          coverage: settled.coverage,
+          ...(settled.suppressed ? { suppressed: settled.suppressed } : {}),
+          ...(settled.outOfScope ? { outOfScope: settled.outOfScope } : {}),
+          schemaVersion: settled.schemaVersion,
+        }
+      : {}),
   };
 
   if (data.treeHash) {
@@ -358,6 +395,7 @@ export function buildPublishPayload(data: PublishScanData, toolVersion: string):
 export async function publishScanResults(
   data: PublishScanData,
   registryUrl: string,
+  settled?: SettledOutcome,
 ): Promise<PublishResult> {
   const keypair = readAgentKeypair();
 
@@ -395,7 +433,7 @@ export async function publishScanResults(
     // Fallback version
   }
 
-  const payload = buildPublishPayload(data, toolVersion);
+  const payload = buildPublishPayload(data, toolVersion, settled);
 
   // Sign and include identity in body (not headers).
   let signedFirstParty = false;
@@ -458,17 +496,20 @@ export async function publishScanResults(
 
     // Report remediation tracking (non-blocking)
     if (data.hardeningFindings) {
-      // `f.passed || f.fixed` counted a fix the verification pass disproved
-      // as a pass, so the score the Registry stored as `initialScore` /
-      // `rescanScore` credited repairs that never landed. Same predicate as
-      // every other consumer.
-      const score = data.hardeningFindings.length > 0
-        ? Math.round(
-            (data.hardeningFindings.filter(f => !countsAgainstScore(f)).length /
-              data.hardeningFindings.length) *
-              100,
-          )
-        : 100;
+      // #464 — the settled score, never a second ratio: the pass-fraction
+      // computed here was the third spelling of the run's score on one wire
+      // (`initialScore` / `rescanScore` disagreed with the published `score`
+      // and with the terminal). The ratio remains only for the non-settled
+      // (attack) path.
+      const score = settled
+        ? settled.score
+        : data.hardeningFindings.length > 0
+          ? Math.round(
+              (data.hardeningFindings.filter(f => !countsAgainstScore(f)).length /
+                data.hardeningFindings.length) *
+                100,
+            )
+          : 100;
 
       try {
         await reportFindings(registryUrl, result.scanId, data.packageName, data.hardeningFindings, score);

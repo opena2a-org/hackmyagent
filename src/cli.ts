@@ -141,80 +141,22 @@ async function recordTelemetry(exitCode: number): Promise<void> {
  * exists and why #344 moved `rollback` off `process.exit` after measuring a
  * report cut at ~15% of its length on a pipe.
  */
-/**
- * The set an exit code is allowed to be derived from (#450).
- *
- * `result.findings` is what the caller asked to SEE. A check ID they suppressed
- * is not in it — deliberately, because that array also feeds the `--fix`
- * governance auto-fix, the Registry publish payload and every report format —
- * but its penalty still counts, so every gate has to add it back.
- *
- * `secure` settles its exit code in five places, one per output channel, each
- * with its own `return` (#438's shape). Until that becomes one settlement point
- * this helper is what keeps the five honest: any channel that filters
- * `result.findings` directly is laundering, and `--ignore CONFIG-004` moved the
- * leaky-env corpus fixture from exit 1 to exit 0 through exactly that gap.
- */
-function gateSet(result: { findings?: unknown[]; suppressed?: ScanResult['suppressed'] }): any[] {
-  return [...(result.findings ?? []), ...expandSuppressed(result.suppressed)] as any[];
-}
-
-/**
- * True when Layer 3 sent a file for analysis and could not read an answer back.
- *
- * #462 — a `--deep` run that could not read the analyst's answer for a file has
- * not completed a deep scan, and must not report a deep-scan PASS. Measured on
- * the branch before this: the same fixture, the same plaintext operator
- * credential and the same analyst verdict went from `69/100 exit 1` to
- * `93/100 exit 0` purely because the model wrapped its reply in prose. A CI gate
- * whose answer depends on the analyst's FORMATTING is not a gate.
- *
- * The severity of `SEM-LLM-NOT-ANALYZED` is deliberately left at medium (CISO):
- * raising it would turn every transient API hiccup into a red pipeline, which
- * makes an availability event look like a security verdict and is what pushes
- * people to bypass the gate. The verdict channel says the true thing instead —
- * this run did not finish — using the exit code this CLI already means it with.
- */
-function deepScanIncomplete(result: { findings?: unknown[]; suppressed?: ScanResult['suppressed'] }): boolean {
-  // `gateSet`, NOT `result.findings`. #450's whole point is that suppressing a
-  // check removes it from the report and not from the verdict; reading the
-  // filtered list here let `--ignore SEM-LLM-NOT-ANALYZED` turn an incomplete
-  // deep scan back into exit 0. Measured before the fix: suppressed entry
-  // present, score 93, exit 0 — the laundering this release closes elsewhere,
-  // reintroduced by the code that closes it.
-  return gateSet(result).some((f: any) => f?.checkId === 'SEM-LLM-NOT-ANALYZED');
-}
-
-/**
- * Inputs `secure` discovered inside the target and could not read (#438).
- *
- * The sibling of `deepScanIncomplete`, and the same sentence about a different
- * layer: a run that could not open a file it found has not examined that file,
- * and must not report a PASS over it. Measured on the branch before this, one
- * fixture and one `chmod`: a tree holding a benign source file and a
- * `src/secrets.js` with an `sk-` key scored `69/100 exit 1` readable and
- * `98/100 exit 0` at mode 000, on all five output channels. The score went UP
- * because the unread file left the assessment. `secure --fix` then wrote a
- * `.gitignore` into that tree and the next run scored `100/100 exit 0` with the
- * credential file still sitting there unreadable.
- *
- * The unit is inputs-discovered-but-not-read and NOT any files-read threshold.
- * A files-read gate was tried and reverted: it moved the bar from 0 files to 1,
- * and `--fix` satisfies it by writing into the target. An unread input cannot be
- * cleared that way — the `EACCES` recorded on the other file is still there.
- *
- * Which errnos count is decided in `coverage-ledger.ts` and was measured, not
- * assumed: `ENOENT`, `EISDIR` and `ENOTDIR` all mean "no file of the kind sought
- * is at that path" and are excluded, which is why this reads 0 on hackmyagent's
- * own tree, on secretless, on ai-trust and on atlas.
- */
-function unreadInputCount(result: { coverage?: { unreadableInputs?: { count: number } } }): number {
-  return result.coverage?.unreadableInputs?.count ?? 0;
-}
+// `gateSet` (#450), `deepScanIncomplete` (#462) and `unreadInputCount` (#438)
+// moved to src/hardening/settled-outcome.ts so the outbound records can read
+// the same predicates without importing this side-effectful module — the same
+// extraction `benchmark-report.ts` is. Their doc comments (the leaky-env
+// laundering, the analyst-formatting gate, the mode-000 score inflation)
+// moved with them; this file imports them back unchanged.
 
 async function finishWithFindings(code: number): Promise<void> {
   await recordTelemetry(code);
-  process.exitCode = code;
+  // RAISE, never assign (#512's own precedence, previously honored only by
+  // `raiseExitCode`): a per-arm critical/high line assigning 1 trampled the
+  // EXIT_UNMEASURED floor of 2 set at the settlement point, so a run with an
+  // unread input AND a counted critical exited 1 while its settled record —
+  // honestly — said 2. Caught by the settled-outcome adversarial round.
+  const current = Number(process.exitCode ?? 0);
+  if (!(current >= code)) process.exitCode = code;
 }
 
 /**
@@ -353,6 +295,7 @@ import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifac
 import { describeSemanticFamilyCoverage } from './ui/semantic-coverage-labels';
 import type { SemanticFamilyCoverage } from './nanomind-core/scanner-bridge.js';
 import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, confirmedFix, expandSuppressed, isMeasured, retainForVerdict, summarizeSuppressed, type MeasuredFinding } from './ui/verdict-band';
+import { gateSet, deepScanIncomplete, unreadInputCount, settledOutcome, settleSecureExit, outboundAllowed, wireStatus, type SettledOutcome } from './hardening/settled-outcome';
 import { shouldPrintVersionFooter } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { fixSummaryLine } from './ui/fix-summary';
@@ -4586,6 +4529,14 @@ async function handleContribution(
   durationMs: number,
   registryUrl?: string,
   format?: string,
+  // #464/#519 — the `secure` sites pass their settled record; the event's
+  // figures then come from it, never from a recount of `findings`. The
+  // scan-soul and detect callers have no settled `secure` record and keep
+  // the legacy derivation, scoped to them inside `buildScanEvent`.
+  settled?: SettledOutcome,
+  // Completed check executions from the run's coverage record; omitted when
+  // the run kept none (the event then omits `totalChecks`, #519).
+  completedChecks?: number,
 ): Promise<void> {
   try {
     const {
@@ -4625,7 +4576,7 @@ async function handleContribution(
     const packageName = resolvePackageName(targetDir);
     if (!packageName) return;
 
-    const event = buildScanEvent(packageName, targetDir, findings, durationMs);
+    const event = buildScanEvent(packageName, targetDir, findings, durationMs, settled, completedChecks);
     await queueAndMaybeFlush(event, registryUrl, format === 'text');
     // Silent-post-consent rule (briefs/scan-result-telemetry-policy.md §5):
     // once the user has opted in (--contribute or persisted choice),
@@ -5177,6 +5128,34 @@ Examples:
         if (format !== 'text') console.error(`Score ${result.score} is below threshold ${failBelow}`);
       }
 
+      // ── The settled outcome (#464 #519 #283) ─────────────────────────────
+      //
+      // Projected ONCE, here, from the same predicates the floor above and the
+      // per-arm critical/high lines read, so every record that leaves the
+      // process — the publish payload, the remediation report, the scan/
+      // community/ci reports, the contribution event — carries the numbers
+      // this run settled, never a recomputation from the narrowed findings
+      // list. `Math.max` is the #512 precedence rule (2 outranks 1 outranks
+      // 0), spelled on the same inputs `raiseExitCode` enforces it on.
+      const settledExit = Math.max(settleSecureExit(result), thresholdBreached ? 1 : 0) as 0 | 1 | 2;
+      const settled = settledOutcome(result, settledExit);
+      // One decision, one line: no outbound arm re-discovers a reason to send.
+      const sendOutbound = outboundAllowed(settled);
+      const withheldOutbound: string[] = [];
+      // The one printed line when something outbound was withheld (#464,
+      // CISO slice A; CPO template). The reason clause is the exit-2
+      // sentence this run already prints for its cause.
+      const printWithheldLine = () => {
+        if (withheldOutbound.length === 0) return;
+        const n = unreadInputCount(result);
+        const reason =
+          n > 0
+            ? `${n} input${n === 1 ? ' was' : 's were'} discovered and not read (SCAN-UNREAD-001 above), so the score is an upper bound, not a measurement`
+            : 'the deep layer did not finish, so the run reaches no deep-scan verdict';
+        const remedy = n > 0 ? 'Make those inputs readable and re-run to publish.' : 'Re-run --deep to publish.';
+        console.error(`Registry: nothing sent — ${reason}. Withheld: ${withheldOutbound.join(', ')}. ${remedy}`);
+      };
+
       // AI Infrastructure auto-detection — scan NemoClaw, OpenClaw, etc. if present.
       //
       // [CHIEF-CA 2026-08-03] These runtimes live in $HOME, OUTSIDE the scan
@@ -5549,7 +5528,13 @@ Examples:
       if (format === 'json') {
         // Run publish in JSON mode and include result in output
         let publishStatus: Record<string, unknown> | undefined;
-        if (options.publish && options.registry !== false) {
+        // #464 — the withhold is decided BEFORE the arm's own preconditions:
+        // a run the tool could not measure publishes nothing, and the
+        // document says so instead of carrying a claim.
+        if (options.publish && options.registry !== false && !sendOutbound) {
+          withheldOutbound.push('--publish');
+          publishStatus = { success: false, attempted: false, reason: 'unmeasured' };
+        } else if (options.publish && options.registry !== false) {
           try {
             const { publishScanResults } = await import('./registry/publish');
             const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
@@ -5561,7 +5546,7 @@ Examples:
                 directory: displayDir,
                 hardeningFindings: result.findings,
               };
-              const publishResult = await publishScanResults(publishData, registryUrl);
+              const publishResult = await publishScanResults(publishData, registryUrl, settled);
               publishStatus = { ...publishResult, registryUrl };
 
               // Best-effort: if this scan looks like a skill or MCP artifact, also
@@ -5602,6 +5587,13 @@ Examples:
         const jsonCoverage = result.coverage
           ? {
               ...result.coverage,
+              // The settled record's coverage sub-keys (#464): one predicate —
+              // `jq '.coverage.measured'` — across `check`, `secure` and every
+              // wire; `total` = examined + discovered-but-unread.
+              measured: settled.coverage.measured,
+              examined: settled.coverage.examined,
+              total: settled.coverage.total,
+              unit: settled.coverage.unit,
               categories: summarizeCoverage(
                 result.coverage.executions,
                 nmResult.compileSetTruncated
@@ -5651,6 +5643,15 @@ Examples:
         // `evidence.lines[].content` reaches the payload.
         const jsonBase = {
           ...result,
+          // The settled record's flat keys (#464): the document's top level IS
+          // the record — no nested duplicate (CPO ruling; the spread-order
+          // collision is a compile error in settled-outcome.ts). `score`,
+          // `rawScore`, `scoreClamped`, `suppressed`, `outOfScope` already
+          // ride via `...result` and are the same values by construction.
+          verdict: settled.verdict,
+          exitCode: settled.exitCode,
+          measured: settled.measured,
+          counts: settled.counts,
           ...(jsonCoverage ? { coverage: jsonCoverage } : {}),
           ...(nmResult.analystFindings?.length ? { analystFindings: nmResult.analystFindings } : {}),
           ...(nmResult.analystEscalations?.length ? { analystEscalations: nmResult.analystEscalations } : {}),
@@ -5668,7 +5669,15 @@ Examples:
           writeJsonStdout(jsonOutput);
         }
         // Community contribution (non-blocking, runs in JSON mode too)
-        await handleContribution(options.contribute, targetDir, result.findings, scanDurationMs, options.registryUrl, format);
+        if (!sendOutbound) {
+          if (options.contribute !== false && (options.contribute === true || (await import('./telemetry')).isContributeEnabled() === true)) {
+            withheldOutbound.push('contribution');
+          }
+        } else {
+          await handleContribution(options.contribute, targetDir, result.findings, scanDurationMs, options.registryUrl, format, settled,
+            result.coverage?.executions ? result.coverage.executions.filter((e) => e.completed).length : undefined);
+        }
+        printWithheldLine();
         // `--fail-below` is settled once at the settlement point above (#494);
         // no per-channel copy here. The copy this replaced returned before the
         // critical/high line below, and its sibling on sarif/html/asff did not
@@ -5939,7 +5948,11 @@ Examples:
 
       // Registry reporting: only when explicitly requested via --version-id (CI) or --registry-report
       // Community contributions are handled by the opena2a CLI wrapper, not HMA directly
-      if (options.versionId || options.registryReport) {
+      if ((options.versionId || options.registryReport) && !sendOutbound) {
+        // #464 — withheld before the arm's own preconditions: an unmeasured
+        // run reports nothing, and the one line below says so.
+        withheldOutbound.push(options.versionId ? '--version-id' : '--registry-report');
+      } else if (options.versionId || options.registryReport) {
         try {
           const core = await import('./index');
           const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
@@ -5953,7 +5966,7 @@ Examples:
             }
             const atcToken = process.env.ATC_TOKEN;
             const client = new core.RegistryClient({ registryUrl, apiKey: registryKey, atcToken });
-            const payload = core.buildScanReport(options.versionId, result.findings);
+            const payload = core.buildScanReport(options.versionId, result.findings, settled);
             await client.reportScanResult(payload);
             console.log(`Registry: scan results reported for version ${options.versionId}`);
           } else if (typeof core.buildCommunityReport === 'function') {
@@ -5967,7 +5980,7 @@ Examples:
                 : null;
               const payload = core.buildCommunityReport(packageName, result.findings, {
                 version: packageVersion ?? undefined,
-              });
+              }, settled);
               const resp = typeof client.reportCommunityResult === 'function'
                 ? await client.reportCommunityResult(payload, tokenResp?.scanToken)
                 : { status: 'skipped' };
@@ -5992,6 +6005,9 @@ Examples:
         if (format === 'text') {
           console.log('\nPublish skipped: --no-registry flag is active.');
         }
+      } else if (options.publish && !sendOutbound) {
+        // #464 — withheld before the arm's own preconditions.
+        withheldOutbound.push('--publish');
       } else if (options.publish) {
         try {
           const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
@@ -6012,7 +6028,9 @@ Examples:
               hardeningFindings: result.findings,
             };
 
-            const publishResult = await publishScanResults(publishData, registryUrl);
+            // The settled record rides here too — the adversarial round
+            // caught this arm recomputing while the json arm read (#464).
+            const publishResult = await publishScanResults(publishData, registryUrl, settled);
             if (format === 'text') {
               console.log(formatPublishOutput(publishResult, publishData, registryUrl));
               console.log();
@@ -6052,7 +6070,11 @@ Examples:
       }
 
       // CI publish: submit results to registry CAAT pipeline endpoint
-      if (options.ciPublish) {
+      if (options.ciPublish && !sendOutbound) {
+        // #464 — withheld before the arm's own preconditions (the HMAC check
+        // included: an unmeasured run has nothing to sign).
+        withheldOutbound.push('--ci-publish');
+      } else if (options.ciPublish) {
         const hmacSecret = process.env.CI_SCAN_HMAC_SECRET;
         if (!hmacSecret) {
           console.error('\nError: --ci-publish requires the CI_SCAN_HMAC_SECRET environment variable.');
@@ -6080,18 +6102,13 @@ Examples:
               console.error('Warning: Could not compute tree hash. Using empty hash.');
             }
 
-            // Count severity
-            const failed = result.findings.filter((f: SecurityFinding) => countsAgainstScore(f));
-            const counts = { critical: 0, high: 0, medium: 0, low: 0 };
-            for (const f of failed) {
-              if (f.severity === 'critical') counts.critical++;
-              else if (f.severity === 'high') counts.high++;
-              else if (f.severity === 'medium') counts.medium++;
-              else if (f.severity === 'low') counts.low++;
-            }
-
-            const status = (counts.critical > 0 || counts.high > 0) ? 'failed'
-              : (counts.medium > 0 || counts.low > 0) ? 'warnings' : 'passed';
+            // #464 — the counts and status READ the settled record. This
+            // very block derived them from the narrowed `result.findings`
+            // (a suppressed row cannot even appear there, #450), which
+            // published `status: passed, counts all 0` for a run that
+            // displayed 49 findings and exited 1.
+            const counts = settled.counts;
+            const status = wireStatus(settled);
 
             const client = new RegistryClient({ registryUrl, apiKey: '' });
             const scanId = `hma-ci-${Date.now()}`;
@@ -6120,8 +6137,11 @@ Examples:
               rawReport: {
                 generator: 'hackmyagent',
                 totalFindings: result.findings.length,
-                failedFindings: failed.length,
+                failedFindings: counts.critical + counts.high + counts.medium + counts.low,
                 scanDepth,
+                // #464 — the settled record rides as ONE object built from
+                // the in-memory record (carried, not yet persisted server-side).
+                settledOutcome: settled,
               },
             });
 
@@ -6142,7 +6162,15 @@ Examples:
       }
 
       // Community contribution: share anonymized findings with OpenA2A Registry
-      await handleContribution(options.contribute, targetDir, result.findings, scanDurationMs, options.registryUrl, format);
+      if (!sendOutbound) {
+        if (options.contribute !== false && (options.contribute === true || (await import('./telemetry')).isContributeEnabled() === true)) {
+          withheldOutbound.push('contribution');
+        }
+        printWithheldLine();
+      } else {
+        await handleContribution(options.contribute, targetDir, result.findings, scanDurationMs, options.registryUrl, format, settled,
+          result.coverage?.executions ? result.coverage.executions.filter((e) => e.completed).length : undefined);
+      }
 
       // Star prompt (interactive TTY only, text format only)
       if (process.stdout.isTTY) {
