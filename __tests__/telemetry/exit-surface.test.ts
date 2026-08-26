@@ -268,19 +268,35 @@ describe('the exit-surface ratchet (#350)', () => {
     // Four import spellings, because the repo uses all of them elsewhere:
     // static `from`, `require(...)`, dynamic `import(...)`, and the bare
     // side-effect `import '...'`. An adversarial round measured the earlier
-    // single-regex version blind to three of the four.
+    // single-regex version blind to three of the four. The specifier core
+    // requires a path boundary before `arp/` so 'sharp/cli' cannot trip it,
+    // and the scan is raw text — a prose comment naming the path fails loud
+    // here, never silently.
+    const spec = `['"](?:[^'"]*[/.])?arp\\/cli`;
     const spellings = [
-      /from\s+['"][^'"]*arp\/cli/,
-      /require\(\s*['"][^'"]*arp\/cli/,
-      /import\(\s*['"][^'"]*arp\/cli/,
-      /^\s*import\s+['"][^'"]*arp\/cli/m,
+      new RegExp(`from\\s+${spec}`),
+      new RegExp(`require\\(\\s*${spec}`),
+      new RegExp(`import\\(\\s*${spec}`),
+      new RegExp(`^\\s*import\\s+${spec}`, 'm'),
     ];
+    // The one spelling the path-boundary regexes cannot see: a RELATIVE
+    // './cli' from src/arp itself, which resolves into src/arp/cli — and
+    // src/arp/index.ts IS imported into the telemetry-bearing process.
+    const relSpec = `['"]\\.\\/cli`;
+    const relSpellings = [
+      new RegExp(`from\\s+${relSpec}`),
+      new RegExp(`require\\(\\s*${relSpec}`),
+      new RegExp(`import\\(\\s*${relSpec}`),
+      new RegExp(`^\\s*import\\s+${relSpec}`, 'm'),
+    ];
+    const ARP_DIR = path.join('src', 'arp') + path.sep;
     const offenders: string[] = [];
     for (const file of walkFiles(SRC)) {
       const rel = path.relative(path.join(SRC, '..'), file);
       if (rel.startsWith(ARP_CLI_DIR)) continue;
       const text = fs.readFileSync(file, 'utf8');
       if (spellings.some((re) => re.test(text))) offenders.push(rel);
+      else if (rel.startsWith(ARP_DIR) && relSpellings.some((re) => re.test(text))) offenders.push(rel);
     }
     expect(offenders, `src/arp/cli is imported by: ${offenders.join(', ')} — the separate-entrypoint exemption no longer holds`).toEqual([]);
   });

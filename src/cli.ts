@@ -330,7 +330,7 @@ import { generateVerifyCommand } from './ui/verify-command';
 import { commandSucceeded, type ExitReason } from './telemetry/command-success';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
 import { generateBenchmarkReport } from './benchmarks/benchmark-report';
-import { UsageError, usageError } from './checker/errors';
+import { UsageError, usageError, isRefusal, networkTimeoutError } from './checker/errors';
 import { RootRefusalError } from './mcp/roots';
 import { shellQuote, citationPath, citationTarget, commandNaming } from './ui/shell-quote';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
@@ -1009,7 +1009,7 @@ Examples:
         skipDnsVerification: options.offline,
       });
       const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(usageError`Timed out verifying "${skill}" (10s). The publisher may not exist or DNS is unreachable.
+        setTimeout(() => reject(networkTimeoutError`Timed out verifying "${skill}" (10s). The publisher may not exist or DNS is unreachable.
 Try: ${getCheckCommand()} ${skill} --offline`), 10000)
       );
       const result = await Promise.race([checkPromise, timeoutPromise]);
@@ -1088,9 +1088,11 @@ Try: ${getCheckCommand()} ${skill} --offline`), 10000)
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
-        // A refused run did no work; an event that cannot say "refused" would
-        // land in the crash bucket and skew the error rate it exists to measure.
-        process.exit(1); // exit-unsettled(#350/S057): pre-work refusal — the event awaits the schema reason field (#525)
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S057): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
@@ -6239,9 +6241,11 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
-        // A refused run did no work; an event that cannot say "refused" would
-        // land in the crash bucket and skew the error rate it exists to measure.
-        process.exit(1); // exit-unsettled(#350/S058): pre-work refusal — the event awaits the schema reason field (#525)
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S058): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
@@ -6690,9 +6694,11 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
-        // A refused run did no work; an event that cannot say "refused" would
-        // land in the crash bucket and skew the error rate it exists to measure.
-        process.exit(1); // exit-unsettled(#350/S059): pre-work refusal — the event awaits the schema reason field (#525)
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S059): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
@@ -6942,9 +6948,11 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
-        // A refused run did no work; an event that cannot say "refused" would
-        // land in the crash bucket and skew the error rate it exists to measure.
-        process.exit(1); // exit-unsettled(#350/S060): pre-work refusal — the event awaits the schema reason field (#525)
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S060): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
@@ -7091,9 +7099,11 @@ Examples:
         if (error instanceof UsageError) {
           error.message.split('\n').forEach((line, i) =>
             console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
-          // A refused run did no work; an event that cannot say "refused" would
-          // land in the crash bucket and skew the error rate it exists to measure.
-          process.exit(1); // exit-unsettled(#350/S061): pre-work refusal — the event awaits the schema reason field (#525)
+          if (isRefusal(error)) {
+            // A refused run did no work; an event that cannot say "refused" would
+            // land in the crash bucket and skew the error rate it exists to measure.
+            process.exit(1); // exit-unsettled(#350/S061): pre-work refusal — the event awaits the schema reason field (#525)
+          }
         } else {
           console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
         }
@@ -7351,9 +7361,11 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
-        // A refused run did no work; an event that cannot say "refused" would
-        // land in the crash bucket and skew the error rate it exists to measure.
-        process.exit(1); // exit-unsettled(#350/S062): pre-work refusal — the event awaits the schema reason field (#525)
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S062): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
@@ -7741,9 +7753,11 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
-        // A refused run did no work; an event that cannot say "refused" would
-        // land in the crash bucket and skew the error rate it exists to measure.
-        process.exit(1); // exit-unsettled(#350/S063): pre-work refusal — the event awaits the schema reason field (#525)
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S063): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
@@ -9134,9 +9148,11 @@ Examples:
         if (error instanceof UsageError) {
           error.message.split('\n').forEach((line, i) =>
             console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
-          // A refused run did no work; an event that cannot say "refused" would
-          // land in the crash bucket and skew the error rate it exists to measure.
-          process.exit(1); // exit-unsettled(#350/S064): pre-work refusal — the event awaits the schema reason field (#525)
+          if (isRefusal(error)) {
+            // A refused run did no work; an event that cannot say "refused" would
+            // land in the crash bucket and skew the error rate it exists to measure.
+            process.exit(1); // exit-unsettled(#350/S064): pre-work refusal — the event awaits the schema reason field (#525)
+          }
         } else {
           console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
         }
@@ -10209,9 +10225,11 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           process.stderr.write(i === 0 ? `Error: ${escapeForDisplay(line)}\n` : `${escapeForDisplay(line)}\n`));
-        // A refused run did no work; an event that cannot say "refused" would
-        // land in the crash bucket and skew the error rate it exists to measure.
-        process.exit(1); // exit-unsettled(#350/S065): pre-work refusal — the event awaits the schema reason field (#525)
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S065): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
       }
@@ -10374,9 +10392,11 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           process.stderr.write(i === 0 ? `Error: ${escapeForDisplay(line)}\n` : `${escapeForDisplay(line)}\n`));
-        // A refused run did no work; an event that cannot say "refused" would
-        // land in the crash bucket and skew the error rate it exists to measure.
-        process.exit(1); // exit-unsettled(#350/S066): pre-work refusal — the event awaits the schema reason field (#525)
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S066): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
       }
@@ -10921,9 +10941,11 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           process.stderr.write(i === 0 ? `Error: ${escapeForDisplay(line)}\n` : `${escapeForDisplay(line)}\n`));
-        // A refused run did no work; an event that cannot say "refused" would
-        // land in the crash bucket and skew the error rate it exists to measure.
-        process.exit(1); // exit-unsettled(#350/S067): pre-work refusal — the event awaits the schema reason field (#525)
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S067): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         process.stderr.write(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}\n`);
       }
@@ -11422,9 +11444,11 @@ Examples:
       if (error instanceof UsageError) {
         error.message.split('\n').forEach((line, i) =>
           console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
-        // A refused run did no work; an event that cannot say "refused" would
-        // land in the crash bucket and skew the error rate it exists to measure.
-        process.exit(1); // exit-unsettled(#350/S068): pre-work refusal — the event awaits the schema reason field (#525)
+        if (isRefusal(error)) {
+          // A refused run did no work; an event that cannot say "refused" would
+          // land in the crash bucket and skew the error rate it exists to measure.
+          process.exit(1); // exit-unsettled(#350/S068): pre-work refusal — the event awaits the schema reason field (#525)
+        }
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }

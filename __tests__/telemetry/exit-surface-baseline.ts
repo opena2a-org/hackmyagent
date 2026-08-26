@@ -52,8 +52,8 @@ export const NO_EVENT_EXIT_SITES: ReadonlyMap<string, string> = new Map([
   // Lifecycle sites in src/cli.ts that run before any command action arms
   // telemetry (`recordTelemetry` no-ops without `currentCommandName`):
   ['L001', 'pre-action'], // integrity self-check failure, exit 3
-  ['L002', 'pre-action'], // no-args help path
-  ['L003', 'pre-action'], // parseAsync catch after tele.error
+  ['L002', 'pre-action'], // option:version handler
+  ['L003', 'pre-action'], // no-args help path
   // The ARP standalone binary (src/arp/cli/index.ts) — never imported into
   // the telemetry-bearing process; self-revoking via the no-import assertion:
   ['L004', 'separate-entrypoint'],
