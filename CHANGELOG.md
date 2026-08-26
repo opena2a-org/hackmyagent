@@ -4,6 +4,31 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### A forward-verified control now fails when its mapped check fails
+
+OASB-1 control 2.1 (Explicit Capability Grants) is forward-verified and also
+maps two automated checks, SEM-MCP-001 and SEM-MCP-004. The assessor
+classified every manual/forward control `unverified` before reading its
+records, so a wildcard MCP grant (`allowedTools: ["*"]`) — the exact violation
+2.1's audit step names — moved nothing in any benchmark surface: an
+`mcp.json` carrying one, beside a lockfile, read `Rating: Certified`,
+`Compliance: 100% (11/11)`, exit 0, with `--fail-below 100` exit 0, while
+`secure` on the same directory reported the wildcard as a HIGH finding.
+Records are now read for every control that maps checks, and a
+manual/forward control's checks are refutation checks: a measured failure
+fails the control — the same tree now reads `Rating: Passing`,
+`Compliance: 92% (11/12)`, `[-] 2.1: Explicit Capability Grants`, and `--fail-below
+100` exits 1; SARIF gains an `OASB-1/2.1` result; the MCP server's benchmark
+tool reports `[FAIL] 2.1 Explicit Capability Grants (SEM-MCP-004)` — while a
+clean or absent-subject result leaves it `unverified`, never `passed` and
+never `not-applicable`, because automation cannot confirm what the label says
+a person must. 2.1 is the only control in this class; every other manual and
+forward control maps no check and is unchanged, so only a tree carrying a
+SEM-MCP-001 or SEM-MCP-004 finding can move (an empty directory and the
+benign MCP corpus fixture measured byte-identical apart from the timestamp).
+Verify: `hackmyagent secure <dir> -b oasb-1 -l L1 --verbose` and read the
+2.1 row. (#639)
+
 ### `-b` is validated on presence, and each benchmark arm refuses the formats it cannot render
 
 `secure <dir> -b ''` skipped the benchmark validator and the arm switch — both
@@ -49,12 +74,11 @@ so both callers can import it — is now the one assessor: a control with no
 record is `unverified`, never credited; a level where nothing measured reports
 `not measured` and `Not Assessed` (step 0's contract), not a fabricated 0%;
 the not-applicable and measured-wins semantics are step 3's, identically on
-both surfaces. One alignment consequence on the MCP surface: a `forward`
-control that also maps automated checks (2.1) reads `unverified` even when a
-mapped check produced a measured failure — the CLI's long-standing reading,
-which unification adopts; the interim assessor reported it as failed. The
-forward-with-checkIds class is filed as #639. HTML reports now give `not-applicable` controls their own
-status class, distinct from unverified. (#458 steps 3-5 complete; steps 1-2
+both surfaces. The one reading unification carried over from the CLI — a
+`forward` control that also maps automated checks (2.1) staying `unverified`
+on a measured failure — is corrected in the entry above (#639). HTML reports
+now give `not-applicable` controls their own status class, distinct from
+unverified. (#458 steps 3-5 complete; steps 1-2
 shipped in the previous entries.)
 
 ### A benchmark control whose subject artifact is absent reads `not-applicable`, never `failed`

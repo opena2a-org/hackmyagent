@@ -73,18 +73,23 @@ export function generateBenchmarkReport(
     const naSubjects: string[] = [];
     let remediation: string | undefined;
 
-    if (control.verification === 'manual' || control.verification === 'forward') {
-      // Manual/forward controls are unverified (human must check)
-      status = 'unverified';
-      unverifiedCount++;
-      // Use control's remediation for manual/forward controls
-      remediation = control.remediation;
-    } else if (control.checkIds.length === 0) {
-      // No automated checks defined
+    if (control.checkIds.length === 0) {
+      // No automated check maps to this control (manual, forward, or an
+      // empty mapping): a person must verify it; never credited.
       status = 'unverified';
       unverifiedCount++;
       remediation = control.remediation;
     } else {
+      // #639 — `verification` says whether the mapped checks are SUFFICIENT
+      // to settle the control. `automated`: they are. `manual`/`forward`:
+      // they are not, so their checks can only REFUTE it — a measured
+      // failure fails the control (the violation is the control's own audit
+      // step); a clean, absent-subject or missing record leaves it
+      // `unverified`, never passed and never not-applicable, because
+      // automation cannot confirm what the label says a person must.
+      // Before this the manual/forward test ran BEFORE the record scan, so
+      // a failing SEM-MCP-004 (2.1's wildcard-grant check) moved nothing.
+      const refuteOnly = control.verification !== 'automated';
       // Check all mapped check IDs
       let hasMeasured = false;
       let hasFailure = false;
@@ -113,21 +118,26 @@ export function generateBenchmarkReport(
           }
         }
       }
-      // Only mark as passed if we actually verified something. A MEASURED
-      // record outranks an NA sibling (a control with one check that measured
-      // and one whose subject is absent WAS measured); `not-applicable` is
-      // awarded only when NA records are all the control has; nothing at all
-      // stays `unverified` — a type-scoped-off check leaves NO record, and
-      // crediting that as anything would relaunder the absence #458 removed.
-      if (hasMeasured) {
-        if (hasFailure) {
-          status = 'failed';
-          failedCount++;
-          remediation = remediation || control.remediation;
-        } else {
-          status = 'passed';
-          passedCount++;
-        }
+      // Resolution: a measured failure fails the control whatever its
+      // verification; a refute-only control with no failure is unverified;
+      // an automated control is passed only when something MEASURED clean
+      // (a measured record outranks an NA sibling — a control with one
+      // check that measured and one whose subject is absent WAS measured),
+      // `not-applicable` only when NA records are all it has, and nothing
+      // at all stays `unverified` — a type-scoped-off check leaves NO
+      // record, and crediting that as anything would relaunder the absence
+      // #458 removed.
+      if (hasFailure) {
+        status = 'failed';
+        failedCount++;
+        remediation = remediation || control.remediation;
+      } else if (refuteOnly) {
+        status = 'unverified';
+        unverifiedCount++;
+        remediation = control.remediation;
+      } else if (hasMeasured) {
+        status = 'passed';
+        passedCount++;
       } else if (hasNotApplicable) {
         status = 'not-applicable';
         notApplicableCount++;
