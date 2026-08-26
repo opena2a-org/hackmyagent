@@ -4,6 +4,27 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### One benchmark assessor: the MCP server's compliance tool no longer credits absence
+
+Step 5 of #458, the last piece of its series. The MCP `hackmyagent_benchmark`
+tool had its own assessor, which kept the legacy reading `#458` names: a
+control none of whose checks produced any record counted as PASSED
+(`.get(id) !== false` over an empty map), so an assessment fed nothing read
+100% compliance — 23 of its 26 controls passing for free, the other three
+manual/forward unverified. `generateBenchmarkReport` — the
+function the CLI benchmark uses, extracted to `src/benchmarks/benchmark-report.ts`
+so both callers can import it — is now the one assessor: a control with no
+record is `unverified`, never credited; a level where nothing measured reports
+`not measured` and `Not Assessed` (step 0's contract), not a fabricated 0%;
+the not-applicable and measured-wins semantics are step 3's, identically on
+both surfaces. One alignment consequence on the MCP surface: a `forward`
+control that also maps automated checks (2.1) reads `unverified` even when a
+mapped check produced a measured failure — the CLI's long-standing reading,
+which unification adopts; the interim assessor reported it as failed. The
+forward-with-checkIds class is filed as #639. HTML reports now give `not-applicable` controls their own
+status class, distinct from unverified. (#458 steps 3-5 complete; steps 1-2
+shipped in the previous entries.)
+
 ### A benchmark control whose subject artifact is absent reads `not-applicable`, never `failed`
 
 Step 3 of #458. Steps 1-2 gave a check whose subject artifact is absent (no

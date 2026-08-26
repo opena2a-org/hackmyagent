@@ -20,9 +20,6 @@ import {
   HardeningScanner,
   VERSION,
   OASB_1_VERSION,
-  getControlsForLevel,
-  getCheckIdsForLevel,
-  calculateRating,
   type BenchmarkLevel,
   type SecurityFinding,
 } from './index';
@@ -32,6 +29,7 @@ import {
   buildDeepScanResult,
 } from './semantic';
 import { citationTarget } from './ui/shell-quote';
+import { generateBenchmarkReport } from './benchmarks/benchmark-report';
 import { assertRedactionProvenance } from './hardening/finding-emit';
 import { getCheckCounts } from './hardening/taxonomy';
 import { countsAgainstScore, confirmedFix, isMeasured } from './ui/verdict-band';
@@ -207,103 +205,63 @@ export type ToolResult = {
 
 /** The text a refusal returns, in the shape the transport expects. */
 /**
- * The `hackmyagent_benchmark` assessor, extracted so a test can reach it (the
- * tool-handler closure above is never executed by the suite).
- *
- * INTERIM (#458 steps 1-2). #458 step 5 replaces this function wholesale with
- * `generateBenchmarkReport` (`cli.ts`), the assessor `benchmark` itself uses;
- * until then the two differ, and this one keeps its legacy reading that a
- * control with NO record for a check id is credited as passed (`!== false`).
+ * The `hackmyagent_benchmark` assessor — a thin adapter over the ONE shared
+ * `generateBenchmarkReport` (#458 step 5; the 0.33.0 hold condition). The
+ * interim implementation this replaces kept a legacy credit: a control none
+ * of whose checkIds produced any record counted as PASSED (`.get(id) !==
+ * false`, the executed defect #458 named). Under the shared function that
+ * control is `unverified` — absence is never credited — and a level where
+ * nothing measured has a `null` compliance and a `Not Assessed` rating
+ * (step 0's contract), not a fabricated 0%.
  */
 export interface BenchmarkAssessment {
   passed: number;
   failed: number;
   notApplicable: number;
   unverified: number;
-  compliance: number;
+  /** `null` when no scored control produced a result (step 0's contract). */
+  compliance: number | null;
   rating: string;
   lines: string[];
   text: string;
 }
 
 export function assessBenchmarkFindings(
-  allFindings: ReadonlyArray<Pick<SecurityFinding, 'checkId' | 'passed' | 'notApplicable'>>,
+  allFindings: ReadonlyArray<SecurityFinding>,
   level: BenchmarkLevel,
 ): BenchmarkAssessment {
-  const controls = getControlsForLevel(level);
-  // #458 — last record per checkId wins, as before, but the record keeps its
-  // notApplicable marker: a not-applicable record has no pass/fail state and
-  // must never be read as the legacy "no false => pass".
-  const checkIdResults = new Map<string, Pick<SecurityFinding, 'passed' | 'notApplicable'>>();
-  for (const f of allFindings) {
-    checkIdResults.set(f.checkId, { passed: f.passed, notApplicable: f.notApplicable });
-  }
-
-  let passed = 0;
-  let failed = 0;
-  let notApplicable = 0;
-  let unverified = 0;
+  const result = generateBenchmarkReport(allFindings, level);
   const lines: string[] = [];
-
-  for (const control of controls) {
-    if (control.checkIds.length === 0) {
-      if (control.verification === 'forward' || control.verification === 'manual') {
-        unverified++;
-        lines.push(`[UNVERIFIED] ${control.id} ${control.name} (${control.verification})`);
+  for (const cat of result.categories) {
+    for (const ctrl of cat.controls) {
+      if (ctrl.status === 'failed') {
+        const ids = ctrl.findings.map((f) => f.split(':')[0]).join(', ');
+        lines.push(`[FAIL] ${ctrl.controlId} ${ctrl.name}${ids ? ` (${ids})` : ''}`);
+      } else if (ctrl.status === 'passed') {
+        lines.push(`[PASS] ${ctrl.controlId} ${ctrl.name}`);
+      } else if (ctrl.status === 'not-applicable') {
+        const subjects = ctrl.notApplicableSubjects?.map((sub) => `no ${sub}`).join(', ') ?? 'subject absent';
+        lines.push(`[NOT-APPLICABLE] ${ctrl.controlId} ${ctrl.name} (${subjects})`);
+      } else {
+        lines.push(`[UNVERIFIED] ${ctrl.controlId} ${ctrl.name}`);
       }
-      continue;
     }
-
-    const records = control.checkIds.map((id) => ({ id, record: checkIdResults.get(id) }));
-    // notApplicable is decided per record FIRST, in the same order as
-    // `countsAgainstScore`: an NA record's `passed` is not read at all.
-    const failedChecks = records.filter(
-      ({ record }) => record !== undefined && !record.notApplicable && record.passed === false,
-    );
-    if (failedChecks.length > 0) {
-      failed++;
-      lines.push(
-        `[FAIL] ${control.id} ${control.name} (${failedChecks.map(({ id }) => id).join(', ')})`,
-      );
-      continue;
-    }
-
-    const naChecks = records.filter(({ record }) => record?.notApplicable);
-    const anyMeasured = records.some(({ record }) => record !== undefined && !record.notApplicable);
-    if (naChecks.length > 0 && !anyMeasured) {
-      // Every record this control has is a positive not-applicable: the
-      // control's subject is absent from the scanned tree, so the control was
-      // neither satisfied nor violated. Own bucket, own line, excluded from
-      // the compliance denominator below.
-      notApplicable++;
-      lines.push(
-        `[NOT-APPLICABLE] ${control.id} ${control.name} (${naChecks
-          .map(({ id, record }) => `${id}: no ${record!.notApplicable!.subject}`)
-          .join(', ')})`,
-      );
-      continue;
-    }
-
-    // Legacy credit, deliberately kept: a control none of whose checkIds
-    // produced ANY record still counts as a pass, exactly as
-    // `get(id) !== false` did before #458. The ruling narrows that credit
-    // only where a positive not-applicable record exists; the absent-record
-    // credit is pinned by the #458 test so a future change of it is loud.
-    passed++;
-    lines.push(`[PASS] ${control.id} ${control.name}`);
   }
-
-  // notApplicable is excluded: an absent subject shrinks the denominator, it
-  // does not dent compliance (#458 ruling, CA + CPO 2026-08-24).
-  const total = passed + failed;
-  const compliance = total > 0 ? Math.round((passed / total) * 100) : 0;
-  const rating = calculateRating(compliance, compliance, compliance, level);
+  const compliance = result.compliance;
   const text =
-    `OASB-1 ${level} Assessment: ${compliance}% compliance (${rating})\n` +
-    `Passed: ${passed} | Failed: ${failed} | Not applicable: ${notApplicable} | Unverified: ${unverified}\n\n` +
+    `OASB-1 ${level} Assessment: ${compliance === null ? 'not measured' : `${compliance}% compliance`} (${result.rating})\n` +
+    `Passed: ${result.passedControls} | Failed: ${result.failedControls} | Not applicable: ${result.notApplicableControls} | Unverified: ${result.unverifiedControls}\n\n` +
     lines.join('\n');
-
-  return { passed, failed, notApplicable, unverified, compliance, rating, lines, text };
+  return {
+    passed: result.passedControls,
+    failed: result.failedControls,
+    notApplicable: result.notApplicableControls,
+    unverified: result.unverifiedControls,
+    compliance,
+    rating: result.rating,
+    lines,
+    text,
+  };
 }
 
 function refuse(refusal: RootRefusal): ToolResult {
