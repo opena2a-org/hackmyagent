@@ -92,10 +92,12 @@ describe('#458 — not-applicable records at the publish boundary', () => {
     const hardening = payload.subReports.hardening as {
       totalChecks: number;
       failedChecks: number;
-      passRate: number;
     };
     expect(hardening.totalChecks, 'NA is in no denominator anywhere').toBe(2);
     expect(hardening.failedChecks).toBe(1);
-    expect(hardening.passRate).toBe(50);
+    // #464 deleted `passRate` — the ratio no server reads was a second
+    // spelling of the settled score. The judgment this cell carries (an NA
+    // record enters no denominator) lives on in the two counts above.
+    expect(hardening).not.toHaveProperty('passRate');
   });
 });
