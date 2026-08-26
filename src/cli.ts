@@ -4688,15 +4688,15 @@ Performs ${CHECK_COUNT} security checks across ${CATEGORY_COUNT} categories:
 Benchmark mode (--benchmark):
   oasb-1   OASB-1 infrastructure compliance (L1/L2/L3 levels)
            L1 = Essential (baseline), L2 = Standard, L3 = Hardened
-  oasb-2   OASB composite: infrastructure (50%) + governance (50%)
+  oasb-2   OASB composite: infrastructure (50%) + governance (50%); formats text, json
            Combines OASB-1 scan with scan-soul for a unified score
 
 Output formats (--format):
   text   Human-readable terminal output (default)
   json   Machine-readable JSON
-  sarif  GitHub Security tab / IDE integration
-  html   Shareable compliance report
-  asff   AWS Security Hub findings
+  sarif  GitHub Security tab / IDE integration (not with -b oasb-2)
+  html   Shareable compliance report (not with -b oasb-2)
+  asff   AWS Security Hub findings (without -b)
   asp    Agent Security Profile (with -b oasb-1)
 
 Severities: critical, high, medium, low
@@ -4736,7 +4736,7 @@ Examples:
   // it is fixed the promise is scoped to where it holds.
   .option('--ignore <checks>', 'Comma-separated check IDs to leave out of the findings list (e.g., CRED-001,GIT-002). Suppressed checks are still scored and still set the exit code for this command; use --fail-below for a score floor. With --benchmark the ignored checks cannot report, so a control measured only by them stays unverified')
   .option('--json', 'Output as JSON (deprecated: use --format json)')
-  .option('-f, --format <format>', 'Output format: text, json, sarif, html, asff; asp with -b oasb-1', 'text')
+  .option('-f, --format <format>', 'Output format: text, json, sarif, html (sarif/html not with -b oasb-2); asff without -b; asp with -b oasb-1', 'text')
   .option('--aws-account-id <id>', 'AWS account ID for ASFF format')
   .option('--aws-region <region>', 'AWS region for ASFF format')
   .option('-o, --output <file>', 'Write output to file instead of stdout')
@@ -4848,23 +4848,34 @@ Examples:
       const benchmarkAsGiven = options.benchmark;
       if (options.benchmark !== undefined) options.benchmark = options.benchmark.toLowerCase();
       const isOasb2 = options.benchmark === 'oasb-2';
-      if (options.benchmark && !isOasb2 && !isValidBenchmark(options.benchmark)) {
+      // #632 — validated on presence, not truthiness: `-b ''` (a CI template
+      // over an unset variable) skipped this gate and the
+      // `if (options.benchmark)` arm switch, so it ran the ordinary report and
+      // exited 0 where a benchmark verdict was asked for.
+      if (options.benchmark !== undefined && !isOasb2 && !isValidBenchmark(options.benchmark)) {
         // The rejection names the value the user typed, not the normalized one.
         console.error(`Error: Unknown benchmark '${escapeForDisplay(String(benchmarkAsGiven))}'. Available: ${[...AVAILABLE_BENCHMARKS, 'oasb-2'].join(', ')}`);
         process.exit(1);
       }
 
-      // Validate level if benchmark mode (not applicable for oasb-2)
+      // Validate level if benchmark mode. The composite arm consumes the level
+      // too (its infrastructure half is the OASB-1 report at `level`), and
+      // excluding it here let `-b oasb-2 -l L9` reach the rating ladder and
+      // die on `RATING_LADDER[level] is not iterable`.
       const validLevels = ['L1', 'L2', 'L3'];
-      const level = (options.level?.toUpperCase() || 'L1') as BenchmarkLevel;
-      if (options.benchmark && !isOasb2 && !validLevels.includes(level)) {
+      // Presence, not truthiness (#632's class): `-l ''` fell to L1 silently.
+      const level = (options.level === undefined ? 'L1' : options.level.toUpperCase()) as BenchmarkLevel;
+      if (options.benchmark !== undefined && !validLevels.includes(level)) {
         console.error(`Error: Invalid level '${escapeForDisplay(String(options.level))}'. Use: L1, L2, or L3`);
         process.exit(1);
       }
 
       // Determine output format (--json is deprecated alias for --format json)
       const validFormats = ['text', 'json', 'sarif', 'html', 'asp', 'asff'];
-      const format = options.json ? 'json' : (options.format || 'text');
+      // Commander supplies the 'text' default; `|| 'text'` let `--format ''`
+      // fall to the text report silently (#632's class). `??` keeps '' as
+      // given so it reaches the invalid-format error below.
+      const format = options.json ? 'json' : (options.format ?? 'text');
       if (!validFormats.includes(format)) {
         console.error(`Error: Invalid format '${escapeForDisplay(String(format))}'. Use: ${validFormats.join(', ')}`);
         process.exit(1);
@@ -4875,13 +4886,27 @@ Examples:
       // printed, so a CI job that asked for a machine format got a human one
       // with nothing in the exit code to say so. Refuse it where the other
       // format errors are raised, and name the flag it needs.
-      if (format === 'asp' && String(options.benchmark ?? '').toLowerCase() !== 'oasb-1') {
+      if (format === 'asp' && options.benchmark !== 'oasb-1') {
         console.error('Error: --format asp is the Agent Security Profile of an OASB-1 benchmark run. Use it with -b oasb-1.');
+        process.exit(1);
+      }
+      // #633 — each benchmark arm renders a fixed set of formats and fell to
+      // the text report for the rest (`-b oasb-1 --format asff`; `-b oasb-2
+      // --format sarif|html|asff`), so a consumer that asked for a machine
+      // format got prose with nothing in the exit code to say so. Same class
+      // as #563: refuse where the other format errors are raised, and list
+      // what the arm renders. `asp` outside OASB-1 keeps #563's line above.
+      const benchmarkFormats = isOasb2 ? ['text', 'json'] : ['text', 'json', 'sarif', 'html', 'asp'];
+      if (options.benchmark !== undefined && !benchmarkFormats.includes(format)) {
+        console.error(`Error: --format ${format} is not available with -b ${escapeForDisplay(String(benchmarkAsGiven))}. Use: ${benchmarkFormats.join(', ')}`);
         process.exit(1);
       }
 
       // Parse fail threshold
-      const failBelow = options.failBelow ? parseInt(options.failBelow, 10) : undefined;
+      // Presence, not truthiness: `--fail-below ''` (a CI template over an
+      // unset variable) removed the floor silently; now `''` parses to NaN
+      // and hits the range error below.
+      const failBelow = options.failBelow !== undefined ? parseInt(options.failBelow, 10) : undefined;
       if (failBelow !== undefined && (isNaN(failBelow) || failBelow < 0 || failBelow > 100)) {
         console.error(`Error: --fail-below must be a number between 0 and 100`);
         process.exit(1);
@@ -4903,7 +4928,8 @@ Examples:
 
       // Validate scan depth
       const validDepths = ['quick', 'standard', 'deep'];
-      const scanDepth = (options.scanDepth || 'standard') as 'quick' | 'standard' | 'deep';
+      // Presence, not truthiness: `--scan-depth ''` ran a standard scan silently.
+      const scanDepth = (options.scanDepth === undefined ? 'standard' : options.scanDepth) as 'quick' | 'standard' | 'deep';
       if (!validDepths.includes(scanDepth)) {
         console.error(`Error: Invalid scan depth '${escapeForDisplay(String(options.scanDepth))}'. Use: ${validDepths.join(', ')}`);
         process.exit(1);

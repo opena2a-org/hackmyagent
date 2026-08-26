@@ -4,6 +4,38 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### `-b` is validated on presence, and each benchmark arm refuses the formats it cannot render
+
+`secure <dir> -b ''` skipped the benchmark validator and the arm switch — both
+tested truthiness — so a CI job templating `-b "$BENCH"` over an unset
+variable ran the ordinary hardening report and exited 0 where it asked for a
+benchmark verdict. The empty name is
+now refused like any unknown one (`Unknown benchmark ''. Available: oasb-1,
+oasb-2`, exit 1). (#632)
+
+The benchmark arms rendered a fixed set of formats and fell to the text
+report for the rest: `-b oasb-1 --format asff` printed the prose OASB-1
+report, and the OASB-2 composite arm branches on `json` only, so `-b oasb-2
+--format sarif|html|asff` printed its prose too — a machine-format request
+answered with a human one, nothing in the exit code to say so (#563's class).
+Each arm now refuses a format it does not render where the other format
+errors are raised, listing what it does (`--format asff is not available with
+-b oasb-1. Use: text, json, sarif, html, asp`, exit 1), and `--help` marks
+`asff` as a non-benchmark format. (#633)
+
+At the same gate: the level validator excluded the composite arm, which
+consumes the level for its infrastructure half, so `-b oasb-2 -l L9` died on
+`RATING_LADDER[level] is not iterable`; it now reads `Invalid level 'L9'.
+Use: L1, L2, or L3`, exit 1. The other optional strings of the gate tested
+truthiness the same way — `--fail-below ''` removed the CI floor silently,
+`-l ''` fell to L1, `--format ''` to the text report, `--scan-depth ''` to a
+standard scan — and each now reaches its existing validation error (found by
+the adversarial review of this change). One exit-code consequence: `-b oasb-2
+--format sarif|html|asff` on a conformant tree was exit 0 with prose and is
+now exit 1 with the refusal. The asp gate's `.toLowerCase()` has been a no-op
+since #630 normalized the name before it; it now reads the normalized value
+directly.
+
 ### One benchmark assessor: the MCP server's compliance tool no longer credits absence
 
 Step 5 of #458, the last piece of its series. The MCP `hackmyagent_benchmark`
