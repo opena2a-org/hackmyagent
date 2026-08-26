@@ -23,7 +23,11 @@
  * NOT nest this record: its top level IS the record (flat keys; CPO ruling,
  * CA CONFIRM-FLAT), and `pickSettledOutcome` re-derives the record from a
  * parsed document so the identity `pickSettledOutcome(json) ≡
- * omit(record, 'schemaVersion')` is testable from either side.
+ * omit(record, 'schemaVersion')` is testable from either side. The identity
+ * holds for every document the scanner emits today (its coverage record is
+ * always attached); a document with NO coverage key picks back a record
+ * without one, while the builder synthesizes an empty record — scoped here
+ * because the narrower claim is the one that is true.
  */
 import type { ScanResult } from './security-check';
 import { countsAgainstScore, expandSuppressed } from '../ui/verdict-band';

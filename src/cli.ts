@@ -150,7 +150,13 @@ async function recordTelemetry(exitCode: number): Promise<void> {
 
 async function finishWithFindings(code: number): Promise<void> {
   await recordTelemetry(code);
-  process.exitCode = code;
+  // RAISE, never assign (#512's own precedence, previously honored only by
+  // `raiseExitCode`): a per-arm critical/high line assigning 1 trampled the
+  // EXIT_UNMEASURED floor of 2 set at the settlement point, so a run with an
+  // unread input AND a counted critical exited 1 while its settled record —
+  // honestly — said 2. Caught by the settled-outcome adversarial round.
+  const current = Number(process.exitCode ?? 0);
+  if (!(current >= code)) process.exitCode = code;
 }
 
 /**
@@ -5664,7 +5670,7 @@ Examples:
         }
         // Community contribution (non-blocking, runs in JSON mode too)
         if (!sendOutbound) {
-          if (options.contribute === true || (await import('./telemetry')).isContributeEnabled() === true) {
+          if (options.contribute !== false && (options.contribute === true || (await import('./telemetry')).isContributeEnabled() === true)) {
             withheldOutbound.push('contribution');
           }
         } else {
@@ -6022,7 +6028,9 @@ Examples:
               hardeningFindings: result.findings,
             };
 
-            const publishResult = await publishScanResults(publishData, registryUrl);
+            // The settled record rides here too — the adversarial round
+            // caught this arm recomputing while the json arm read (#464).
+            const publishResult = await publishScanResults(publishData, registryUrl, settled);
             if (format === 'text') {
               console.log(formatPublishOutput(publishResult, publishData, registryUrl));
               console.log();
@@ -6155,7 +6163,7 @@ Examples:
 
       // Community contribution: share anonymized findings with OpenA2A Registry
       if (!sendOutbound) {
-        if (options.contribute === true || (await import('./telemetry')).isContributeEnabled() === true) {
+        if (options.contribute !== false && (options.contribute === true || (await import('./telemetry')).isContributeEnabled() === true)) {
           withheldOutbound.push('contribution');
         }
         printWithheldLine();

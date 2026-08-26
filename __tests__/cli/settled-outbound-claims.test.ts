@@ -100,7 +100,48 @@ describe('#464 the --json document IS the settled record', { timeout: 300_000 },
   });
 });
 
+describe('#464 the exit precedence holds where the classes overlap', { timeout: 300_000 }, () => {
+  it('RED-ON-BASE: an unread input AND a counted critical exit 2 — the finding line RAISES, never assigns over the floor', () => {
+    const overlap = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-464-overlap-'));
+    try {
+      fs.cpSync(CORPUS, overlap, { recursive: true });
+      fs.writeFileSync(path.join(overlap, 'locked.js'), 'const secret = 1;\n');
+      fs.chmodSync(path.join(overlap, 'locked.js'), 0o000);
+      const r = run(overlap, ['--format', 'json']);
+      const j = json(r.stdout);
+      expect(j.exitCode).toBe(2);
+      expect(j.verdict).toBe('fail');
+      expect(r.status).toBe(2);
+    } finally {
+      try { fs.chmodSync(path.join(overlap, 'locked.js'), 0o600); } catch { /* best effort */ }
+      try { fs.rmSync(overlap, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  });
+});
+
 describe('#464 an unmeasured run withholds every outbound arm', { timeout: 300_000 }, () => {
+  it('RED-ON-BASE: --no-contribute beats persisted consent in the withheld line — it never claims a contribution the user disabled', () => {
+    // Consent ON in the config, disabled for this run by the flag: the line
+    // must not list `contribution`. Without the flag (consent standing) it
+    // must. This is what makes the two spellings distinguishable.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-consent-'));
+    fs.mkdirSync(path.join(home, '.opena2a'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.opena2a', 'config.json'), '{"contribute":{"enabled":true}}\n');
+    const spawn = (args: string[]) => {
+      const r = spawnSync(process.execPath, [CLI, 'secure', unread, '--no-machine-posture', ...args], {
+        encoding: 'utf8', timeout: 240_000, maxBuffer: 64 * 1024 * 1024,
+        env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: home },
+      });
+      return { status: r.status, stderr: r.stderr ?? '' };
+    };
+    const disabled = spawn(['--no-contribute', '--publish', '--registry-url', DEAD_REGISTRY]);
+    expect(disabled.status).toBe(2);
+    expect(disabled.stderr).toContain('Withheld: --publish');
+    expect(disabled.stderr).not.toContain('contribution');
+    const standing = spawn(['--publish', '--registry-url', DEAD_REGISTRY]);
+    expect(standing.stderr).toContain('Withheld: --publish, contribution');
+  });
+
   it('RED-ON-BASE json: --publish is withheld with the one line, and the document discloses it', () => {
     const r = run(unread, ['--format', 'json', '--publish', '--registry-url', DEAD_REGISTRY]);
     expect(r.status).toBe(2);

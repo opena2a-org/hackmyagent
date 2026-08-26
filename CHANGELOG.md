@@ -31,19 +31,28 @@ record, or omitted — a derived stand-in number is worse than no number).
 `measured/examined/total/unit`, so `jq '.coverage.measured'` is one
 predicate across `check`, `secure` and every wire (#283).
 
-A run that settled `EXIT_UNMEASURED` (2) now posts NOTHING: `--publish`,
-`--registry-report`, `--version-id`, `--ci-publish` and the contribution are
-withheld before their own preconditions, one line says so (`Registry:
-nothing sent — ...`), and `--json` carries
+A run that settled `EXIT_UNMEASURED` (2) posts no outcome record:
+`--publish`, `--registry-report`, `--version-id`, `--ci-publish` and the
+contribution are withheld before their own preconditions, one line says so
+(`Registry: nothing sent — ...`), and `--json` carries
 `publish: {success: false, attempted: false, reason: 'unmeasured'}`. No
 current wire can receive the disclosure honestly — the server manufactures
 `passed` from whatever counts arrive — so the smaller true statement is
-silence plus the sentence.
+silence plus the sentence. (The consent-gated NanoMind classification
+telemetry stream flushes during the scan and is outside this change's
+scope — moving it behind the settlement point is filed separately.) A run
+with an unread input AND a counted critical now exits 2, not 1: the
+per-channel finding lines used to assign over the unmeasured floor the
+settlement point had set, the precedence `raiseExitCode` documents.
 
 Update pipelines: a consumer that read the ci body's `status` or the event's
-`score` gets the run's real figures now (a suppressed critical counts; the
-direction can only be toward more findings disclosed); the publish payload
-no longer carries `subReports.hardening.passRate`. Verify:
+`score` gets the run's real figures now — a suppressed critical counts, and
+a `--fix`-confirmed repair no longer counts, so individual counts can move
+in either direction toward what the run settled. The community report's
+counts and status now describe the RUN (a machine-local critical fails it
+even though the vulnerability list stays package-relevant — the record
+carries both). The publish payload no longer carries
+`subReports.hardening.passRate`. Verify:
 `hackmyagent secure <dir> --format json | jq '{verdict, exitCode, measured, counts}'`.
 
 ### A forward-verified control now fails when its mapped check fails
