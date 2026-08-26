@@ -9507,9 +9507,11 @@ dist/
     // (GIT-001's advisory shape), which keeps it off the pathless noise floor.
     // The probes go through `readCheckSubject` rather than `fs.access` because
     // tracked-fs does not ledger a failed `access` — a probe obstructed by
-    // EACCES must reach the unreadable-inputs channel, not vanish. Every
-    // probed path is content-read by SANDBOX-002/003/004 when present, so
-    // coverage counts do not move.
+    // EACCES must reach the unreadable-inputs channel, not vanish. SANDBOX-
+    // 002/003/004 reuse these probes, so `filesRead` does not inflate. Other
+    // coverage counts do move: probes that were `access` calls are now
+    // content reads, so this category's `pathsInspected` shrinks and its
+    // examined/unevidenced accounting shifts accordingly (measured).
     const containerProbes = [
       await readCheckSubject(path.join(targetDir, 'Dockerfile')),
       await readCheckSubject(path.join(targetDir, 'docker-compose.yml')),
@@ -9580,11 +9582,13 @@ dist/
     }
 
     // SANDBOX-003: Check for resource limits
-    // #458 — both compose spellings are probed; a readable .yaml decides,
-    // else a readable .yml (the original precedence, verdict unchanged). Both
-    // absent => not-applicable; neither read and either obstructed => nothing.
-    const composeYmlRead = await readCheckSubject(path.join(targetDir, 'docker-compose.yml'));
-    const composeYamlRead = await readCheckSubject(path.join(targetDir, 'docker-compose.yaml'));
+    // #458 — reuses SANDBOX-001's compose probes so one scan pass cannot
+    // classify the same subject two different ways (and does not read it
+    // twice). A readable .yaml decides, else a readable .yml (the original
+    // precedence, verdict unchanged). Both absent => not-applicable; neither
+    // read and either obstructed => nothing.
+    const composeYmlRead = containerProbes[1];
+    const composeYamlRead = containerProbes[2];
     const composeRead: SubjectRead =
       composeYamlRead.state === 'read' ? composeYamlRead
       : composeYmlRead.state === 'read' ? composeYmlRead
@@ -9653,8 +9657,8 @@ dist/
     const findings: SecurityFindingDraft[] = [];
     const mcpConfigPath = path.join(targetDir, 'mcp.json');
 
-    // #458 — one errno-classified read shared by TOOL-001/002/003. TOOL-001 is
-    // TOOL-002/003 branch on the same read (#458): absent mcp.json =>
+    // #458 — one errno-classified read shared by TOOL-001/002/003.
+    // TOOL-002/003 branch on the same read: absent mcp.json =>
     // not-applicable naming the subject, unread => nothing, read => their
     // verdict, unchanged.
     const mcpRead = await readCheckSubject(mcpConfigPath);
