@@ -442,3 +442,87 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
     expect(res.status).toBe(1);
   });
 });
+
+describe('#458 step 3: a control whose every check reports its subject absent is not-applicable, never failed', { timeout: 300_000 }, () => {
+  // package.json with only the MCP SDK: types as `mcp`, so the TOOL-/PROMPT-/
+  // MCP- emitters run and report their subjects (mcp.json, CLAUDE.md, ...)
+  // absent — nine scored controls whose records are ALL not-applicable.
+  let mcpDir: string;
+  beforeAll(() => {
+    mcpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-458-s3-'));
+    fs.writeFileSync(path.join(mcpDir, 'package.json'), JSON.stringify({
+      name: 'fx-458-step3', version: '1.0.0',
+      dependencies: { '@modelcontextprotocol/sdk': '^1.0.0' },
+    }, null, 2));
+  });
+
+  it('RED-ON-BASE json: the all-NA controls read not-applicable and leave every count and denominator', () => {
+    const res = run(['secure', mcpDir, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--format', 'json']);
+    const body = parseJson(res.stdout);
+    const byId: Record<string, string> = {};
+    for (const cat of body.categories) for (const c of cat.controls) byId[c.controlId] = c.status;
+    for (const id of ['2.3', '2.5', '3.1', '3.2', '4.1', '4.2', '5.2', '8.2', '9.5']) {
+      expect(byId[id], `control ${id}`).toBe('not-applicable');
+    }
+    expect(body.notApplicableControls).toBe(9);
+    expect(body.passedControls).toBe(5);
+    expect(body.failedControls).toBe(8);
+    expect(body.unverifiedControls).toBe(24);
+    // The NA set is outside the verified-controls denominator.
+    expect(body.compliance).toBe(Math.round((body.passedControls / (body.passedControls + body.failedControls)) * 100));
+    expect(body.compliance).toBe(38);
+    // The subjects are named, so the reader can see WHAT is absent.
+    const na = body.categories.flatMap((c: any) => c.controls).find((c: any) => c.controlId === '2.3');
+    expect(na.notApplicableSubjects).toContain('mcp.json');
+  });
+
+  it('RED-ON-BASE json: a measured record outranks an NA sibling in both directions (empty tree)', () => {
+    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--format', 'json']);
+    const body = parseJson(res.stdout);
+    const byId: Record<string, string> = {};
+    for (const cat of body.categories) for (const c of cat.controls) byId[c.controlId] = c.status;
+    // 5.1: CRED-002 measured PASS + CRED-003/004 not-applicable -> passed.
+    expect(byId['5.1']).toBe('passed');
+    // 9.4: SANDBOX-001 measured FAIL (the ruled absent-mitigation advisory)
+    // + SANDBOX-002 not-applicable -> stays failed. [PIN either side]
+    expect(byId['9.4']).toBe('failed');
+    // Every NA record on this tree shares its control with a measured record.
+    expect(body.notApplicableControls).toBe(0);
+    // NA came out of `failed`, never out of `unverified`.
+    expect(body.unverifiedControls).toBe(38);
+  });
+
+  it('RED-ON-BASE text: the header counts not-applicable controls and --verbose names the absent subject', () => {
+    const res = run(['secure', mcpDir, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--verbose']);
+    expect(res.out).toContain('Not applicable: 9 controls — subject artifacts absent from this tree');
+    expect(res.out).toMatch(/\[\.\] 2\.3: .* \(not applicable: mcp\.json absent\)/);
+    // Every NA control prints a row, including ones in categories with no
+    // measured control — the header's count and the rows must agree (the
+    // first cut printed 6 rows under a header saying 9).
+    const naRows = (res.out.match(/\[\.\] \d+\.\d+: /g) ?? []).length;
+    expect(naRows).toBe(9);
+    // A category holding only NA/unverified controls says so, not "no
+    // controls at this level".
+    expect(res.out).toMatch(/\[\.\] .*: N\/A \(\d+ not applicable/);
+    // asp carries the same accounting (the CHANGELOG's json/asp parity claim).
+    const asp = run(['secure', mcpDir, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--format', 'asp']);
+    const aspBody = parseJson(asp.stdout);
+    expect(aspBody.securityPosture.notApplicableControls).toBe(9);
+    expect(aspBody.categories.reduce((n: number, c: any) => n + (c.notApplicable ?? 0), 0)).toBe(9);
+    // The compliance sentence counts measured controls only.
+    expect(res.out).toContain('Compliance: 38% (5/13 verified controls)');
+  });
+
+  it('PIN: the step-0 null contract and the #636 re-pins hold across step 3', () => {
+    const text = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--verbose']);
+    expect(text.out).toContain('Rating: Not Passing (L3 not assessed)');
+    expect(text.out).toContain('L2=0% L3=not assessed');
+    expect(text.status).toBe(1);
+    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--format', 'json']);
+    const body = parseJson(res.stdout);
+    expect(body.l2Compliance).toBe(0);
+    expect(body.l3Compliance).toBeNull();
+    expect(body.rating).toBe('Not Passing');
+  });
+});
+
