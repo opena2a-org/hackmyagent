@@ -22,7 +22,12 @@ import { pickSettledOutcome, SETTLED_OUTCOME_KEYS } from '../../src/hardening/se
 
 beforeAll(assertDistFreshIfPresent);
 
-const CORPUS = '/Users/ecolibria/.opena2a/corpus/repo/buggy/leaky-env-example';
+// The corpus is the PRIVATE shared fixture set (same idiom as
+// soul-corpus-direction.test.ts): resolve it from the running user's home
+// and SKIP the corpus-backed cells where it is absent (external CI) — the
+// unread-input cells below build their own fixtures and always run.
+const CORPUS = path.join(os.homedir(), '.opena2a', 'corpus', 'repo', 'buggy', 'leaky-env-example');
+const corpusAvailable = fs.existsSync(CORPUS);
 // validateRegistryUrl allows https and http://localhost only; port 9
 // (discard) refuses the connection, so an ATTEMPT fails as a network error.
 const DEAD_REGISTRY = 'http://localhost:9';
@@ -31,11 +36,12 @@ let leaky: string;
 let unread: string;
 
 beforeAll(() => {
-  // The corpus tree is the shared adversarial fixture set; copy, never touch.
-  expect(fs.existsSync(CORPUS), `corpus fixture missing: ${CORPUS}`).toBe(true);
-  leaky = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-464-leaky-'));
-  fs.cpSync(CORPUS, leaky, { recursive: true });
-  fs.writeFileSync(path.join(leaky, '.hmaignore'), '!CONFIG-004\n');
+  if (corpusAvailable) {
+    // The corpus tree is the shared adversarial fixture set; copy, never touch.
+    leaky = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-464-leaky-'));
+    fs.cpSync(CORPUS, leaky, { recursive: true });
+    fs.writeFileSync(path.join(leaky, '.hmaignore'), '!CONFIG-004\n');
+  }
 
   unread = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-464-unread-'));
   fs.writeFileSync(path.join(unread, 'index.js'), 'module.exports = 1;\n');
@@ -63,7 +69,7 @@ function json(stdout: string): any {
 }
 
 describe('#464 the --json document IS the settled record', { timeout: 300_000 }, () => {
-  it('RED-ON-BASE: flat record keys ride the top level, the exit code and the document agree, and a suppressed critical is COUNTED', () => {
+  it.skipIf(!corpusAvailable)('RED-ON-BASE: flat record keys ride the top level, the exit code and the document agree, and a suppressed critical is COUNTED', () => {
     const r = run(leaky, ['--format', 'json']);
     const j = json(r.stdout);
     expect(j.verdict).toBe('fail');
@@ -76,7 +82,7 @@ describe('#464 the --json document IS the settled record', { timeout: 300_000 },
     expect(j.coverage.total).toBe(j.coverage.examined);
   });
 
-  it('RED-ON-BASE: pickSettledOutcome reconstructs a complete record from the document alone', () => {
+  it.skipIf(!corpusAvailable)('RED-ON-BASE: pickSettledOutcome reconstructs a complete record from the document alone', () => {
     const j = json(run(leaky, ['--format', 'json']).stdout);
     const record = pickSettledOutcome(j);
     for (const key of ['score', 'verdict', 'exitCode', 'measured', 'counts', 'coverage'] as const) {
@@ -101,7 +107,7 @@ describe('#464 the --json document IS the settled record', { timeout: 300_000 },
 });
 
 describe('#464 the exit precedence holds where the classes overlap', { timeout: 300_000 }, () => {
-  it('RED-ON-BASE: an unread input AND a counted critical exit 2 — the finding line RAISES, never assigns over the floor', () => {
+  it.skipIf(!corpusAvailable)('RED-ON-BASE: an unread input AND a counted critical exit 2 — the finding line RAISES, never assigns over the floor', () => {
     const overlap = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-464-overlap-'));
     try {
       fs.cpSync(CORPUS, overlap, { recursive: true });
@@ -166,7 +172,7 @@ describe('#464 an unmeasured run withholds every outbound arm', { timeout: 300_0
     expect(r.stderr).not.toContain('CI_SCAN_HMAC_SECRET');
   });
 
-  it('PIN: a measured run still ATTEMPTS the publish (the withhold is exit-2 only)', () => {
+  it.skipIf(!corpusAvailable)('PIN: a measured run still ATTEMPTS the publish (the withhold is exit-2 only)', () => {
     const r = run(leaky, ['--format', 'json', '--publish', '--registry-url', DEAD_REGISTRY]);
     const j = json(r.stdout);
     expect(r.stderr).not.toContain('Registry: nothing sent');
