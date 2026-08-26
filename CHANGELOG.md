@@ -4,6 +4,39 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Result and crash endings now emit their telemetry event
+
+A hard `process.exit` ends the process before the hook that posts the
+anonymous command event, so every run that ended that way was invisible to
+the fleet metric — and the dark endings were precisely the interesting
+ones: `detect` on every path, the locally-caught crash template in
+fourteen commands, and unmeasured `check` runs. The aggregate counted a
+crashed run as if it never happened, which reads as health (#350).
+
+Now those endings settle through the event funnel before exiting, and the
+settlement site passes WHY the run ended — a closed, static vocabulary
+(`findings`, `no-verdict`, `error`, `unmeasured`, `incomplete`,
+`refused`), never derived from arguments, so no event field can carry user
+input. The reason outranks the exit-code convention: a caught crash in a
+findings-convention command exits 1 exactly like a findings run, and only
+the catch block can tell the event which one happened.
+
+Two consequences for anyone reading the fleet dashboards:
+
+- **Instrumentation discontinuity.** Event volume and failure rate both
+  step up at this version — not because the tools got worse, but because
+  runs that previously vanished are now counted. Comparisons across this
+  version boundary measure the instrumentation change, not the fleet.
+- **Refusals are still dark, on purpose.** A run refused before any work
+  started (bad flag, missing target) still emits no event: the current
+  event schema cannot say "refused", and an event that cannot say it would
+  land in the same bucket as a crash and skew the error rate. Those sites
+  are held in a shrink-only baseline enforced by an AST test (#350), and
+  convert together once the schema carries a reason field (#525).
+
+An unreachable telemetry endpoint still cannot slow an exit: the post is
+bounded at 750ms and the refusal paths wait on nothing.
+
 ### One settled outcome feeds every outbound record, and an unmeasured run sends nothing
 
 Every record that left the process about a `secure` run recomputed its own
