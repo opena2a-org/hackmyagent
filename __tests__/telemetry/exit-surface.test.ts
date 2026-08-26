@@ -43,7 +43,7 @@ import {
   NO_EVENT_EXIT_SITES,
   EXEMPTION_TAGS,
   FUNNEL_FUNCTIONS,
-} from './exit-surface-baseline';
+} from '../helpers/exit-surface-baseline';
 
 const SRC = path.join(__dirname, '..', '..', 'src');
 const ARP_CLI_DIR = path.join('src', 'arp', 'cli') + path.sep;
@@ -180,7 +180,7 @@ function owed(site: Site): string {
     `You owe one decision in this diff: (a) end through the settlement funnel — finishWithFindings(code) / raiseExitCode(code) / ` +
     `exitRecorded(code, reason) — so the event fires and the code can only rise; or (b) if this site is genuinely event-free, ` +
     `annotate // exit-no-event(<tag>/L<id>) (tags: ${[...EXEMPTION_TAGS].join(', ')}) AND register the id with its tag in ` +
-    `__tests__/telemetry/exit-surface-baseline.ts — a claim-bearing baseline edit, reviewed as a gate change; or (c) if the ` +
+    `__tests__/helpers/exit-surface-baseline.ts — a claim-bearing baseline edit, reviewed as a gate change; or (c) if the ` +
     `funnel is wrong for this case, reopen #350 — do not route around the gate. Both registries only shrink. ` +
     `AST-checked, not grepped: see src/telemetry/command-success.ts on #285.`
   );
