@@ -4,6 +4,29 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### check keeps its exit-code promise on PyPI and URL fetch failures
+
+`check --help` documents exit 2 for a target that "does not exist or could
+not be fetched", and the npm, GitHub and local-path arms keep that promise.
+The PyPI and URL arms did not: five fetch-failure endings exited 1, which
+tells a CI consumer "measured, high or critical risk" about a package or
+URL that was never fetched — a failing package and a network error were
+indistinguishable (#602).
+
+The five endings now settle through the same unmeasured path as the other
+arms: exit 2, the `Not measured` banner in text mode, and — where `--json`
+mode previously wrote nothing at all to stdout — a document whose
+`coverage` record says `measured: false` with the reason:
+`target-not-found` when the target denies existing (HTTP 404/410, a git
+clone the remote reports as not found, a distribution PyPI does not
+offer); `target-unreachable` when the fetch itself failed; `no-response`
+when the bytes arrived but produced no analyzable answer (a corrupt or
+unsupported archive). The reason is built from structured evidence — an
+HTTP status, a git exit code with its own stderr — never from substrings
+of a rendered error message, and the wire detail never embeds the raw
+message (it can carry local temp paths). The settlement is raise-only, so
+a verdict settled before a late error still holds its floor.
+
 ### Result and crash endings now emit their telemetry event
 
 A hard `process.exit` ends the process before the hook that posts the

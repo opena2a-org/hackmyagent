@@ -19,9 +19,11 @@ export const UNSETTLED_EXIT_IDS: ReadonlySet<string> = new Set([
   'S012', 'S013', 'S014', 'S016', 'S017', 'S018', 'S019', 'S020', 'S021', 'S022',
   'S023', 'S024', 'S025', 'S026', 'S027', 'S031', 'S035', 'S037', 'S039', 'S041',
   'S042', 'S043', 'S044', 'S045',
-  // Bare `process.exitCode` assignments outside the funnel — migrate to raiseExitCode:
+  // Bare `process.exitCode` assignments outside the funnel — migrate to raiseExitCode.
+  // (S050-S054, check's PyPI and URL fetch-failure exits, settled via
+  // settleCheckVerdict under #602 — the first baseline shrink.)
   'S011', 'S015', 'S028', 'S029', 'S030', 'S032', 'S033', 'S034', 'S036', 'S038',
-  'S040', 'S046', 'S047', 'S048', 'S049', 'S050', 'S051', 'S052', 'S053', 'S054',
+  'S040', 'S046', 'S047', 'S048', 'S049',
   'S055',
   // benchmark-report.ts's category refusal (reached from the tracked benchmark command):
   'S056',

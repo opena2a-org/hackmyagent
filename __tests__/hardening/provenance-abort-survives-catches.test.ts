@@ -71,9 +71,12 @@ describe('every swallowing catch around a publish boundary calls the helper', ()
     // Blunt on purpose, like the JSON.stringify tripwire: it does not prove
     // coverage, it forces the author of a NEW publish catch to classify it.
     const calls = (src.match(/rethrowIfRedactionProvenance\(/g) ?? []).length;
+    // 9 → 10 under #602: checkPyPiPackage's arm-wide catch gained the guard
+    // its URL sibling already had — an adversarial round measured it
+    // swallowing a provenance abort and relabeling it a network error.
     expect(
       calls,
       'cli.ts gained or lost a rethrowIfRedactionProvenance call — a new catch around a publish boundary must call it, then update this pin',
-    ).toBe(9);
+    ).toBe(10);
   });
 });
