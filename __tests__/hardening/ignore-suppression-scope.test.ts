@@ -630,8 +630,13 @@ describe('#457 — a suppression may narrow the report, never invent a penalty',
   beforeAll(async () => {
     assertDistFreshIfPresent();
     plainDir = await makeMcpFixture();
-    suppressedDir = await makeMcpFixture('!SANDBOX-002\n');
-    familyDir = await makeMcpFixture('!SANDBOX-*\n!TOOL-*\n!PROMPT-*\n');
+    // SEC-001 (whole SEC-* family): pathless failures on this fixture. The
+    // earlier victim, SANDBOX-002, became a not-applicable record under #458
+    // steps 1-2 (no `passed` at all), and SANDBOX-001 gained a `file` (the
+    // Dockerfile its fix creates) and is therefore REPORTABLE — see the last
+    // cell of this block for what a suppression of that family discloses.
+    suppressedDir = await makeMcpFixture('!SEC-001\n');
+    familyDir = await makeMcpFixture('!SEC-*\n');
   }, 120_000);
 
   afterAll(async () => {
@@ -640,22 +645,23 @@ describe('#457 — a suppression may narrow the report, never invent a penalty',
     }
   });
 
-  // Guards the two cases below. If SANDBOX-002 ever stops firing pathlessly on
-  // this fixture — the check gains file attribution, or the project-type map
-  // changes — both assertions become "98 === 98" over nothing and would pass
-  // against a fully restored defect.
+  // Guards the two cases below. If SEC-001 ever stops firing pathlessly on
+  // this fixture — the check gains file attribution, becomes a not-applicable
+  // record, or the project-type map changes — both assertions become
+  // "98 === 98" over nothing and would pass against a fully restored defect.
   it('the fixture has an unreportable finding to suppress (guards this block)', () => {
     if (!hasBuild) return;
     const plain = runJson(['secure', plainDir, '--json']);
     const all = plain.body.allFindings ?? [];
-    const victim = all.find((f: any) => f.checkId === 'SANDBOX-002');
+    const victim = all.find((f: any) => f.checkId === 'SEC-001');
     expect(plain.body.projectType).toBe('mcp');
-    // It fails...
+    // It fails (a measured failure, not a not-applicable record)...
     expect(victim).toBeDefined();
     expect(victim.passed).toBe(false);
+    expect(victim.notApplicable).toBeUndefined();
     expect(victim.file ?? null).toBeNull();
     // ...and is reported nowhere and scored not at all.
-    expect(plain.body.findings.map((f: any) => f.checkId)).not.toContain('SANDBOX-002');
+    expect(plain.body.findings.map((f: any) => f.checkId)).not.toContain('SEC-001');
     expect(plain.body.suppressed ?? []).toEqual([]);
   });
 
@@ -679,5 +685,29 @@ describe('#457 — a suppression may narrow the report, never invent a penalty',
     expect(suppressed.body.score).toBe(plain.body.score);
     expect(suppressed.exitCode).toBe(plain.exitCode);
     expect(suppressed.body.suppressed ?? []).toEqual([]);
+  });
+
+  // #458 steps 1-2 split the old SANDBOX family into the two shapes the CPO
+  // four-state contract names: SANDBOX-001 is a fail-absent-mitigation
+  // advisory (`passed: false`, `file` = the Dockerfile its fix creates) and is
+  // REPORTABLE, so suppressing it is said; SANDBOX-002 is a not-applicable
+  // record (no `passed` at all) and is not a finding, so it is never a
+  // suppressed one. The score and the exit code still do not move.
+  it('a suppressed reportable finding is disclosed; a not-applicable record never is', async () => {
+    if (!hasBuild) return;
+    const dir = await makeMcpFixture('!SANDBOX-*\n');
+    try {
+      const plain = runJson(['secure', plainDir, '--json']);
+      const res = runJson(['secure', dir, '--json']);
+      expect(res.body.score).toBe(plain.body.score);
+      expect(res.exitCode).toBe(plain.exitCode);
+      expect((res.body.suppressed ?? []).map((s: any) => [s.checkId, s.count, s.suppressedBy]))
+        .toEqual([['SANDBOX-001', 1, 'hmaignore-check']]);
+      const na = (plain.body.allFindings ?? []).find((f: any) => f.checkId === 'SANDBOX-002');
+      expect(na?.notApplicable).toBeDefined();
+      expect(Object.prototype.hasOwnProperty.call(na ?? {}, 'passed')).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -129,15 +129,31 @@ the clamp stopped being applied.
 ```bash
 rm -rf /tmp/walk-empty && mkdir -p /tmp/walk-empty
 node dist/cli.js secure /tmp/walk-empty
+node dist/cli.js secure /tmp/walk-empty --json \
+  | jq '{score, na: ([.allFindings[] | select(.notApplicable)] | length), passed: [.allFindings[] | select(.passed == true) | .checkId]}'
 ```
 
 **Grade.**
-- Score MUST be `95-100`.
-- The ONLY acceptable finding is a LOW for missing `.gitignore`.
+- Score MUST be `93/100`. The only scored findings are LOW `GIT-001` (missing
+  `.gitignore`) and MEDIUM `DEP-001` (no lock file; `file` is
+  `package-lock.json`, the path the fix creates). `SANDBOX-001` (`file`
+  `Dockerfile`) fails in `allFindings` but is out of scope for the `library`
+  project type, so it is neither shown nor scored.
+- The human output MUST list exactly those two findings.
+- `na` MUST be `13`: a check whose subject is absent records
+  `notApplicable: { subject, reason }` instead of a pass or a failure (#458).
+  No not-applicable record may carry `severity` or `passed`, and none may
+  appear in the human output.
+- `passed` MUST be exactly the six hazard probes that pass on not-there:
+  `CRED-002`, `LOG-003`, `MCP-010`, `PERM-001`, `PERM-002`, `PERM-003`. Any
+  other check passing on an empty directory means a subject read was replaced
+  by a default and the false-pass class #458 removed is back.
 - Any HIGH or CRITICAL on an empty directory means a check is firing on
   absence of input instead of presence of problem.
 
-**Failure class.** HIGH if any HIGH/CRITICAL fires. MEDIUM if score < 90.
+**Failure class.** HIGH if any HIGH/CRITICAL fires or any other check passes.
+MEDIUM if the score moves without a scanner change, or a not-applicable record
+carries a severity, carries `passed`, or reaches the human output.
 
 ## Surface — `repo`
 

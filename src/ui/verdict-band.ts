@@ -32,6 +32,8 @@
  * incoherence.
  */
 
+import type { SecurityFinding, Severity } from '../hardening/security-check';
+
 /** Lowest score the meter still paints green. Mirrors the renderer in cli.ts. */
 export const GOOD_BAND_FLOOR = 70;
 
@@ -78,7 +80,13 @@ export function countsAgainstScore(f: {
   passed?: boolean;
   fixed?: boolean;
   fixVerified?: boolean;
+  notApplicable?: { subject: string; reason: string };
 }): boolean {
+  // #458 — nothing was measured. Tested before everything else: a
+  // not-applicable record carries no `passed`, and on `!f.fixed` alone it
+  // counted against the score as an outstanding failure (measured on
+  // c0ee1f7: `countsAgainstScore({ notApplicable: {…} })` was true).
+  if (f.notApplicable) return false;
   // Fixed, but the verification pass proved the issue survived.
   //
   // Tested BEFORE `passed`, not after. Twelve checks report
@@ -103,7 +111,22 @@ export function countsAgainstScore(f: {
  * fix summary leads with what was confirmed (`fixSummaryLine`); the MCP
  * summary and the OpenClaw arm counted every attempt.
  */
-export function confirmedFix(f: { passed?: boolean; fixed?: boolean; fixVerified?: boolean }): boolean {
+export function confirmedFix(f: {
+  passed?: boolean;
+  fixed?: boolean;
+  fixVerified?: boolean;
+  notApplicable?: { subject: string; reason: string };
+}): boolean {
+  // #458 — nothing was measured, so nothing can be a confirmed fix. This is
+  // the one predicate where the NA short-circuit in `countsAgainstScore`
+  // INVERTS instead of composing: on an NA record `countsAgainstScore` is
+  // false, so `!countsAgainstScore(f)` reads "not an issue" as "confirmed",
+  // and an NA record carrying a stray `fixed: true` would be published as a
+  // remediation (src/registry/remediation.ts). No current emitter writes that
+  // shape; the guard exists so the three-way partition (issue / confirmed
+  // fix / not-applicable) never depends on emitter discipline. Same
+  // first-position rule as the two siblings.
+  if (f.notApplicable) return false;
   return f.fixed === true && !countsAgainstScore(f);
 }
 
@@ -128,7 +151,16 @@ export function confirmedFix(f: { passed?: boolean; fixed?: boolean; fixVerified
  * left the suite green at 221 files / 2886 tests, because only the `secure`
  * copy was reachable from a test. One rule, one place, one guard.
  */
-export function retainForVerdict(f: { passed?: boolean; fixed?: boolean }): boolean {
+export function retainForVerdict(f: {
+  passed?: boolean;
+  fixed?: boolean;
+  notApplicable?: { subject: string; reason: string };
+}): boolean {
+  // #458 — a not-applicable record is neither an outstanding issue nor a fix.
+  // It reaches `allFindings` under `notApplicable`; it is not a verdict line.
+  // Same first-position rule as `countsAgainstScore`: on `!f.passed` alone the
+  // record (no `passed`) was retained as a failure.
+  if (f.notApplicable) return false;
   return !f.passed || Boolean(f.fixed);
 }
 
@@ -299,4 +331,24 @@ export function clampDisclosure(opts: {
 }): string {
   if (!opts.clamped || opts.rawScore === undefined) return '';
   return `  (score capped from ${opts.rawScore} to ${opts.score} — verdict is fail-direction)`;
+}
+
+/**
+ * #458 — a finding that measured its subject. A not-applicable record carries
+ * no `severity`: a severity is a measured weight, and a check that measured
+ * nothing has no honest value to put there. So "has a severity" and "was
+ * measured" are the same fact, and every consumer that weighs, sorts, buckets,
+ * or renders `severity` narrows through this guard first. The runtime check
+ * keys on the exact field the narrow claims — nothing is trusted from context.
+ *
+ * Generic so producer-side code holding `SecurityFindingDraft` (or a
+ * structural subset) narrows the type it actually has instead of asserting a
+ * different one.
+ */
+export type MeasuredFinding = SecurityFinding & { severity: Severity };
+
+export function isMeasured<T extends { severity?: Severity }>(
+  f: T
+): f is T & { severity: Severity } {
+  return f.severity !== undefined;
 }

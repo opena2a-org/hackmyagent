@@ -61,8 +61,48 @@ export interface SecurityFinding {
   name: string;
   description: string;
   category: string;
-  severity: Severity;
-  passed: boolean;
+  /**
+   * Absent EXACTLY when `notApplicable` is set: a severity is a measured
+   * weight, and a check that measured nothing has no honest value to put
+   * here (#458). Every other finding carries one. Consumers that weigh or
+   * render severity test `notApplicable` first (the render filter already
+   * drops NA records from `result.findings`, so a post-filter consumer
+   * narrows by that fact, not by inventing a default).
+   */
+  severity?: Severity;
+  /**
+   * Whether the check found its subject and MEASURED it clean.
+   *
+   * #458 — three states, not two. `true`: measured, clean. `false`: measured,
+   * defective (or, for an absent-mitigation advisory, `file` is the path the
+   * fix creates — GIT-001 / SANDBOX-001 shape). OMITTED: nothing was measured
+   * and `notApplicable` says why. A consumer that reads `passed` as a boolean
+   * turns the third state into whichever of the other two its comparison
+   * favours (`!== false` credits an unmeasured control as passed, `!f.passed`
+   * scores it as failed), so a consumer tests `notApplicable` first.
+   */
+  passed?: boolean;
+  /**
+   * #458 — the check's subject does not exist in this tree (a not-there errno:
+   * `coverage-ledger.ts` `countsAsUnread` is false), so the check measured
+   * nothing. `subject` names what was looked for (`Dockerfile`, `.mcp.json`,
+   * `source files`); `reason` says why that makes the check not applicable
+   * rather than failed. Carried WITHOUT `passed`, without severity weight and
+   * without a score contribution (`countsAgainstScore` and `retainForVerdict`
+   * both return false on it before reading anything else).
+   *
+   * Not for a subject that MUST exist: a required artifact's absence is a
+   * failure with `file` set to the path the fix creates, never this. Any errno
+   * other than not-there is an unread input (`buildUnreadInputFinding`), never
+   * this either.
+   *
+   * `subject` and `reason` are EMITTER LITERALS: fixed strings in the check's
+   * source, never scanned bytes and never derived from file content. That rule
+   * is what keeps them outside the redaction boundary's byte-carrying set
+   * (`finding-emit.ts` `BYTE_CARRYING_FIELDS`) without teaching the redactor
+   * to walk nested fields.
+   */
+  notApplicable?: { subject: string; reason: string };
   message: string;
   fixable: boolean;
   fixed?: boolean;

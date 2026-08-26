@@ -9,7 +9,7 @@ import { createHash } from 'crypto';
 import type { SecurityFinding, Severity } from '../hardening';
 import { assertRedactionProvenance } from '../hardening/finding-emit';
 import type { AttackReport } from '../attack';
-import { countsAgainstScore } from '../ui/verdict-band';
+import { countsAgainstScore, isMeasured } from '../ui/verdict-band';
 
 // Registry ScanResult format (must match hackmyagent_service.go:175-200)
 export interface ScanReportPayload {
@@ -486,7 +486,7 @@ export function buildScanReport(
   findings: SecurityFinding[],
 ): ScanReportPayload {
   assertRedactionProvenance(findings, 'registry-scan-report');
-  const failed = findings.filter(f => countsAgainstScore(f));
+  const failed = findings.filter(isMeasured).filter(f => countsAgainstScore(f));
 
   const counts = countBySeverity(failed);
   const status = deriveStatus(counts);
@@ -590,7 +590,7 @@ export function buildCommunityReport(
   options?: { packageType?: string; version?: string },
 ): CommunityScanPayload {
   assertRedactionProvenance(findings, 'registry-community-report');
-  const failed = findings.filter(f => countsAgainstScore(f));
+  const failed = findings.filter(isMeasured).filter(f => countsAgainstScore(f));
   // Only send package-relevant findings to registry — local dev hygiene
   // checks (git, permissions, env, IDE config) don't belong on a package page
   const registryFindings = failed.filter(isRegistryRelevant);

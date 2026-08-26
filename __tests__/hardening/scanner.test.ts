@@ -3628,23 +3628,19 @@ describe('#250 existence-aware git severity + surfaced file findings', () => {
       expect(result.findings.find((f) => f.checkId === 'SCAN-UNREAD-001')?.file).toBe('cfg/');
     });
 
-    it('CRED-002 does not escalate on the unlistable cause — the record is the disclosure', async (ctx) => {
+    it('CRED-002 emits no verdict over a mode-000 directory — SCAN-UNREAD-001 is the disclosure', async (ctx) => {
       await fs.writeFile(path.join(tempDir, '.gitignore'), 'node_modules/\n.env\nsecrets.json\n*.pem\n*.key\n');
       if (!(await withUnlistableDir())) { ctx.skip(); }
       const result = await scanner.scan({ targetDir: tempDir });
-      // A passed finding is filtered out of `findings`; the passed CRED-002
-      // lives in `allFindings`. Asserting on `findings` here would let every
-      // check below pass against `undefined`.
+      // "No private key files found" is measured over what the walk listed.
+      // With a directory it could not list, that absence is unmeasurable. The
+      // pass-with-caveat of #588 still counted as a pass everywhere the caveat
+      // text was not read (#458): the check now withholds its record and the
+      // unread channel carries the disclosure and the remedy.
       const all = (result as any).allFindings ?? result.findings;
-      const cred = all.find((f: any) => f.checkId === 'CRED-002');
-      expect(cred).toBeDefined();
-      expect(cred.severity).not.toBe('high');
-      expect(cred.passed).toBe(true);
-      expect(cred.description ?? '').not.toMatch(/could not fully cover/);
-      // The passed branch may not claim the whole tree: a directory was not
-      // listed, and "No private key files found" without that caveat asserts
-      // an absence the scan could not measure.
-      expect(cred.message).toBe('No private key files found among what could be listed (a directory could not be listed — see SCAN-UNREAD-001)');
+      expect(all.find((f: any) => f.checkId === 'CRED-002')).toBeUndefined();
+      expect(result.findings.find((f) => f.checkId === 'SCAN-UNREAD-001')?.file).toBe('cfg/');
+      expect(result.coverage.unreadableInputs.directories).toBe(1);
     });
   });
 

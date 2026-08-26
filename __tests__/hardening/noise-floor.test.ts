@@ -3,7 +3,7 @@ import {
   dropPathlessNoiseFloor,
   findingAppliesTo,
 } from '../../src/hardening/scanner';
-import type { SecurityFinding } from '../../src/hardening/security-check';
+import type { SecurityFinding, SecurityFindingDraft } from '../../src/hardening/security-check';
 
 /**
  * Issue #131 / #130 — Pathless HIGH/CRITICAL findings (NET-, INJ-, SESSION-,
@@ -13,7 +13,9 @@ import type { SecurityFinding } from '../../src/hardening/security-check';
  * though `result.findings` (user-facing) already gated them out via `f.file`.
  *
  * Regression contract: dropPathlessNoiseFloor must drop only failed pathless
- * findings whose check prefix is not in scope for the current project type.
+ * findings whose check prefix is not in scope for the current project type —
+ * and (#458) not-applicable records under the same type rule: type scope wins
+ * over the not-applicable channel, so a scoped-off check leaves no record.
  * Pathless findings that DO apply (project-level real detections that lack
  * file attribution due to a separate emission bug) and all passed/fixed
  * findings remain.
@@ -135,5 +137,34 @@ describe('dropPathlessNoiseFloor (issue #131 / #130)', () => {
     ];
     expect(findingAppliesTo({ ...fail('NEW-CHECK-001') }, 'mcp')).toBe(true);
     expect(dropPathlessNoiseFloor(findings, 'mcp')).toHaveLength(1);
+  });
+});
+
+describe('not-applicable records vs project-type scope (#458)', () => {
+  function notApplicable(checkId: string): SecurityFindingDraft {
+    return {
+      checkId,
+      name: `${checkId} test record`,
+      description: 'synthetic',
+      category: 'test',
+      notApplicable: { subject: 'Dockerfile', reason: 'synthetic' },
+      message: 'Not applicable: no Dockerfile to inspect',
+      fixable: false,
+    };
+  }
+
+  it('drops a not-applicable record whose check is scoped off the project type', () => {
+    // PROC- is ['webapp', 'api']: a library or mcp tree carries NO record for
+    // it — the same outcome as the checks that never ran. This is a decision
+    // (type scope wins over the not-applicable channel), not a fall-through:
+    // dropPathlessNoiseFloor has an explicit notApplicable branch.
+    expect(dropPathlessNoiseFloor([notApplicable('PROC-001')], 'library')).toEqual([]);
+    expect(dropPathlessNoiseFloor([notApplicable('PROC-001')], 'mcp')).toEqual([]);
+  });
+
+  it('retains a not-applicable record whose check applies to the project type', () => {
+    const record = notApplicable('PROC-001');
+    expect(dropPathlessNoiseFloor([record], 'webapp')).toEqual([record]);
+    expect(dropPathlessNoiseFloor([record], 'api')).toEqual([record]);
   });
 });

@@ -1,5 +1,5 @@
 import type { SecurityFinding } from '../hardening/security-check.js';
-import { countsAgainstScore, confirmedFix } from '../ui/verdict-band';
+import { countsAgainstScore, confirmedFix, isMeasured } from '../ui/verdict-band';
 
 interface RemediationReport {
   findingId: string;
@@ -34,7 +34,7 @@ export async function reportRemediation(
   // the same finding to `/remediation/track` as still open — one call, two
   // contradictory claims about the same checkId. (`|| f.fixVerified` was also
   // dead: `fixed` is already true wherever `fixVerified` is set.)
-  const fixedFindings = findings.filter(f => confirmedFix(f));
+  const fixedFindings = findings.filter(isMeasured).filter(f => confirmedFix(f));
 
   if (fixedFindings.length === 0) {
     return;
@@ -73,7 +73,7 @@ export async function reportFindings(
   findings: SecurityFinding[],
   score: number,
 ): Promise<void> {
-  const failedFindings = findings.filter(f => countsAgainstScore(f));
+  const failedFindings = findings.filter(isMeasured).filter(f => countsAgainstScore(f));
 
   if (failedFindings.length === 0) {
     return;

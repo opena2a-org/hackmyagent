@@ -27,7 +27,7 @@ import {
   inferActualCapabilities,
   validateCapabilities,
 } from './skill-capability-validator';
-import { clampScoreToVerdictBand, countsAgainstScore, expandSuppressed, retainForVerdict, summarizeSuppressed } from '../ui/verdict-band';
+import { clampScoreToVerdictBand, countsAgainstScore, expandSuppressed, isMeasured, retainForVerdict, summarizeSuppressed } from '../ui/verdict-band';
 import { shellQuote, citationTarget, citationPath, citationPaths, commandNaming } from '../ui/shell-quote';
 import {
   isPathWithinDirectory as containIsPathWithinDirectory,
@@ -51,6 +51,7 @@ import {
   type CategoryCoverage,
   type CheckExecution,
   type CoverageTruncation,
+  countsAsUnread,
   noteListFailure,
 } from './coverage-ledger';
 
@@ -324,6 +325,122 @@ export function buildUnreadInputFinding(
     fix,
     guidance,
   } as any;
+}
+
+/**
+ * #458 — one errno vocabulary for a check whose subject may be absent.
+ *
+ * The three-way classification behind the ruled four-state verdict contract:
+ *
+ * - `read`: the subject exists and its bytes are in hand — MEASURE it.
+ * - `absent`: a not-there errno (`countsAsUnread` false: ENOENT / EISDIR /
+ *   ENOTDIR) — the subject does not exist in this tree, so the check measured
+ *   nothing. The caller emits a not-applicable record naming the subject —
+ *   unless the check RECOMMENDS the artifact, in which case absence IS the
+ *   finding, with `file` set to the path the fix creates (GIT-001 /
+ *   SANDBOX-001 shape).
+ * - `unread`: every other errno (EACCES, EPERM, ELOOP, ENAMETOOLONG, …) — the
+ *   subject may well exist; the scan could not look. The caller emits NOTHING
+ *   for this check. The tracked-fs namespace has already recorded the failed
+ *   read on the ledger's unreadable-inputs channel, and
+ *   `buildUnreadInputFinding` is the one reporter for that channel. A
+ *   not-applicable record here would absorb a read failure into "not
+ *   applicable" and undo #438/#499/#508/#514; a `passed: false` would score a
+ *   tree nothing measured. The check id being absent downstream is correct:
+ *   `generateBenchmarkReport` reads a missing check id as `unverified`, which
+ *   is exactly what an unreadable subject is.
+ *
+ * Fail-closed: an error carrying no errno code classifies as `unread` — no
+ * evidence of absence is never `absent`.
+ */
+type SubjectRead =
+  | { state: 'read'; content: string }
+  | { state: 'absent' }
+  | { state: 'unread' };
+
+async function readCheckSubject(filePath: string): Promise<SubjectRead> {
+  try {
+    return { state: 'read', content: await fs.readFile(filePath, 'utf-8') };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? '';
+    return countsAsUnread(code) ? { state: 'unread' } : { state: 'absent' };
+  }
+}
+
+/**
+ * #458 — fold the classified reads of a check whose subject is ANY of several
+ * candidate files: `read` if any candidate was read, else `unread` if any
+ * candidate failed for a reason other than not-there (the coverage ledger
+ * discloses it), else `absent`.
+ */
+function combineSubjectReads(reads: SubjectRead[]): SubjectRead {
+  const read = reads.find((r) => r.state === 'read');
+  if (read) return read;
+  return reads.some((r) => r.state === 'unread') ? { state: 'unread' } : { state: 'absent' };
+}
+
+/**
+ * #458 — the not-applicable record for a check whose subject is absent
+ * (`readCheckSubject` / `readCheckDir` classified it `absent`). No `severity`,
+ * no `passed`: the record names the subject the scan looked for and is
+ * invisible to every score / verdict / render consumer, all of which key on
+ * `passed` being a boolean or on `notApplicable`.
+ */
+function notApplicableRecord(
+  base: Pick<SecurityFindingDraft, 'checkId' | 'name' | 'description' | 'category'>,
+  subject: string,
+  reason: string,
+): SecurityFindingDraft {
+  return {
+    ...base,
+    notApplicable: { subject, reason },
+    message: `Not applicable: no ${subject} to inspect`,
+    fixable: false,
+  };
+}
+
+/**
+ * #458 — `readCheckSubject` for a check whose subject is a FAMILY of files in
+ * a directory (the root `.ts`/`.js` sources, the root config files, …) rather
+ * than one path.
+ *
+ * - `read`: the listing is in hand and at least one entry passes `admit`. The
+ *   FULL listing is returned, so the caller keeps its own filter loop and its
+ *   verdict on a present subject is unchanged.
+ * - `absent`: the directory is not there (not-there errno) OR no entry passes
+ *   `admit` — the subject family is absent from this tree; the check measured
+ *   nothing and emits a not-applicable record.
+ * - `unread`: any other errno on the listing — the caller emits nothing; the
+ *   tracked-fs namespace has ledgered the failed listing.
+ *
+ * Only the LISTING is classified here. A per-file read that fails inside the
+ * caller's loop keeps the caller's existing handling (the file was admitted,
+ * so the subject is present; the ledger discloses the unread file).
+ */
+type DirRead<T> =
+  | { state: 'read'; entries: T[] }
+  | { state: 'absent' }
+  | { state: 'unread' };
+
+async function classifyDirRead<T>(list: () => Promise<T[]>, admit: (entry: T) => boolean): Promise<DirRead<T>> {
+  let entries: T[];
+  try {
+    entries = await list();
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? '';
+    return countsAsUnread(code) ? { state: 'unread' } : { state: 'absent' };
+  }
+  return entries.some(admit) ? { state: 'read', entries } : { state: 'absent' };
+}
+
+function readCheckDir(dir: string, admit: (name: string) => boolean): Promise<DirRead<string>> {
+  return classifyDirRead(() => fs.readdir(dir), admit);
+}
+
+type DirEntryLike = { name: string; isDirectory(): boolean };
+
+function readCheckDirents(dir: string, admit: (entry: DirEntryLike) => boolean): Promise<DirRead<DirEntryLike>> {
+  return classifyDirRead<DirEntryLike>(() => fs.readdir(dir, { withFileTypes: true }), admit);
 }
 
 export interface CreatedFileRecord {
@@ -1221,7 +1338,7 @@ const SEVERITY_WEIGHTS: Record<Severity, number> = {
  * when it fires across dozens of files in a large repository. All findings
  * are still reported — only the score contribution is capped.
  */
-export function calculateSecurityScore(findings: Array<{ passed?: boolean; fixed?: boolean; severity: string; category?: string; checkId?: string }>): {
+export function calculateSecurityScore(findings: Array<{ passed?: boolean; fixed?: boolean; severity?: string; category?: string; checkId?: string }>): {
   score: number;
   maxScore: number;
 } {
@@ -1344,9 +1461,19 @@ export function findingAppliesTo(finding: SecurityFindingDraft, projectType: Pro
  * the CLI's `result`, not to the scanner instance.
  */
 export function isReportableFinding(
-  f: { passed?: boolean; fixed?: boolean; file?: string; checkId: string },
+  f: {
+    passed?: boolean;
+    fixed?: boolean;
+    file?: string;
+    checkId: string;
+    notApplicable?: { subject: string; reason: string };
+  },
   projectType: ProjectType,
 ): boolean {
+  // #458 — the same clause as the rendered-list filter in `scan()`: the CLI's
+  // refilters rebuild `result.findings` from `allFindings` through this
+  // predicate, and `allFindings` is where not-applicable records live.
+  if (f.notApplicable || typeof f.passed !== 'boolean') return false;
   return retainForVerdict(f) && Boolean(f.file) && findingAppliesTo(f as SecurityFindingDraft, projectType);
 }
 
@@ -1364,12 +1491,21 @@ export function isReportableFinding(
  *
  * Consumers of allFindings (corpus release-smoke, benchmark, OASB-2
  * composite) get a clean signal without dropping legitimate findings.
+ *
+ * #458 — not-applicable records (no `passed`, no `file`) follow the same
+ * type rule, stated below as a decision rather than left to the fall-through:
+ * project-type scope wins over the not-applicable channel. A check scoped
+ * off the project type leaves NO record at all — the same outcome as the
+ * checks that never ran — so a library tree does not carry a PROC-001
+ * "no Dockerfile" record for a container check that cannot apply to it.
+ * `noise-floor.test.ts` pins both directions.
  */
 export function dropPathlessNoiseFloor(
   findings: SecurityFindingDraft[],
   projectType: ProjectType,
 ): SecurityFindingDraft[] {
   return findings.filter((f) => {
+    if (f.notApplicable) return findingAppliesTo(f, projectType);
     if (f.passed || f.fixed) return true;
     if (f.file) return true;
     return findingAppliesTo(f, projectType);
@@ -3572,6 +3708,13 @@ export class HardeningScanner {
     // survives it, naming a check on the command line removed that check's
     // penalties and RAISED the score.
     let filteredFindings = findings.filter((f) => {
+      // #458 — a not-applicable record carries no pass/fail state and never
+      // renders: it names an absent subject, not a file. Stated here, at the
+      // site that enforces it, so `result.findings` holds measured records
+      // only (the Registry publish mapping and `isReportableFinding` rely on
+      // that; an NA record reaches `allFindings` and nothing else).
+      if (f.notApplicable || typeof f.passed !== 'boolean') return false;
+
       // Keep fixed findings (so users can see what was fixed)
       // Otherwise, only show failed checks
       if (!f.fixed && f.passed) return false;
@@ -3685,6 +3828,11 @@ export class HardeningScanner {
     }> = [];
     let unevidencedFailures = 0;
     for (const f of findings) {
+      // #458 — a not-applicable record has no pass/fail state and no severity:
+      // without this guard it falls past `passed && !fixed` and (carrying no
+      // `file`) is rolled up as an unevidenced FAILURE — a check that measured
+      // nothing counted as a failure we suppressed.
+      if (!isMeasured(f)) continue;
       if (f.passed && !f.fixed) continue;
       if (survived.has(f)) continue;
       if (ignoredChecks.has(f.checkId.toUpperCase())) continue;
@@ -5177,6 +5325,7 @@ export class HardeningScanner {
     ];
 
     const permissionIssues: string[] = [];
+    let perm001Unread = false;
 
     for (const filename of sensitiveFiles) {
       const filePath = path.join(targetDir, filename);
@@ -5217,37 +5366,48 @@ export class HardeningScanner {
             }
           }
         }
-      } catch {
-        // File doesn't exist, skip
+      } catch (err) {
+        // #458 — a not-there errno is a completed measurement: the hazard is
+        // absent. Any other errno is a probe the check could not complete;
+        // `stat` failures are not ledgered by tracked-fs, so the check records
+        // the path for SCAN-UNREAD-001 itself and withholds its verdict below
+        // unless a hazard was measured on another file.
+        const code = (err as NodeJS.ErrnoException).code ?? '';
+        if (countsAsUnread(code)) {
+          this.coverage.noteReadFailure(filePath, code);
+          perm001Unread = true;
+        }
       }
     }
 
     const passed = permissionIssues.length === 0;
-    findings.push({
-      checkId: 'PERM-001',
-      name: 'Sensitive File Permissions',
-      description: 'Sensitive files have overly permissive permissions',
-      category: 'permissions',
-      severity: 'high',
-      passed,
-      message: passed
-        ? 'All sensitive files have appropriate permissions'
-        : `Files with overly permissive permissions: ${permissionIssues.join(', ')}`,
-      // `file` makes the failing finding survive the user-facing
-      // concrete-findings filter (#250).
-      file: passed ? undefined : permissionIssues[0],
-      fixable: true,
-      fixed: autoFix && !passed,
-      fix: passed ? undefined : `${this.cliName} secure --fix`,
-      // Cited instead of `fix` when the chmod above was swallowed (immutable
-      // flag, read-only mount, restrictive MAC policy) and verification
-      // proved the file is still world-readable. Names only the files that
-      // are still failing, because the re-scan recomputes this list.
-      manualFix: passed ? undefined : chmodFix(permissionIssues),
-      fixMessage: autoFix && !passed ? 'Changed permissions to 600' : undefined,
-      details: passed ? undefined : { files: permissionIssues },
-      guidance: 'Overly broad file permissions let any user on the system read sensitive config files that may contain credentials or API keys.',
-    });
+    if (permissionIssues.length > 0 || !perm001Unread) {
+      findings.push({
+        checkId: 'PERM-001',
+        name: 'Sensitive File Permissions',
+        description: 'Sensitive files have overly permissive permissions',
+        category: 'permissions',
+        severity: 'high',
+        passed,
+        message: passed
+          ? 'All sensitive files have appropriate permissions'
+          : `Files with overly permissive permissions: ${permissionIssues.join(', ')}`,
+        // `file` makes the failing finding survive the user-facing
+        // concrete-findings filter (#250).
+        file: passed ? undefined : permissionIssues[0],
+        fixable: true,
+        fixed: autoFix && !passed,
+        fix: passed ? undefined : `${this.cliName} secure --fix`,
+        // Cited instead of `fix` when the chmod above was swallowed (immutable
+        // flag, read-only mount, restrictive MAC policy) and verification
+        // proved the file is still world-readable. Names only the files that
+        // are still failing, because the re-scan recomputes this list.
+        manualFix: passed ? undefined : chmodFix(permissionIssues),
+        fixMessage: autoFix && !passed ? 'Changed permissions to 600' : undefined,
+        details: passed ? undefined : { files: permissionIssues },
+        guidance: 'Overly broad file permissions let any user on the system read sensitive config files that may contain credentials or API keys.',
+      });
+    }
 
     return findings;
   }
@@ -5858,32 +6018,39 @@ dist/
     ];
 
     let hasCredentialsInRules = false;
+    const cursorReads: SubjectRead[] = [];
     for (const cursorPath of cursorPaths) {
-      try {
-        const content = await fs.readFile(cursorPath, 'utf-8');
-        for (const { pattern } of CREDENTIAL_PATTERNS) {
-          if (pattern.test(content)) {
-            hasCredentialsInRules = true;
-            break;
-          }
+      const read = await readCheckSubject(cursorPath);
+      cursorReads.push(read);
+      if (read.state !== 'read') continue;
+      const content = read.content;
+      for (const { pattern } of CREDENTIAL_PATTERNS) {
+        if (pattern.test(content)) {
+          hasCredentialsInRules = true;
+          break;
         }
-      } catch {}
+      }
     }
+    const cursorRead = combineSubjectReads(cursorReads);
 
-    findings.push({
-      checkId: 'CURSOR-001',
-      name: 'Cursor Rules Contain Credentials',
-      description: 'Cursor configuration files contain exposed credentials',
-      category: 'cursor',
-      severity: 'critical',
-      passed: !hasCredentialsInRules,
-      message: hasCredentialsInRules
-        ? 'Cursor rules contain exposed credentials'
-        : 'No credentials found in Cursor rules',
-      fixable: false,
-      fix: hasCredentialsInRules ? 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.' : undefined,
-      guidance: 'Cursor rules files are often committed to git. Credentials embedded there get pushed to remotes where anyone with repo access can extract them.',
-    });
+    if (cursorRead.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'CURSOR-001', name: 'Cursor Rules Contain Credentials', description: 'Cursor configuration files contain exposed credentials', category: 'cursor' }, 'Cursor rules (.cursor/rules, .cursorrules)', 'Neither .cursor/rules nor .cursorrules in the scanned tree, so there are no Cursor rules to inspect.'));
+    } else if (cursorRead.state === 'read') {
+      findings.push({
+        checkId: 'CURSOR-001',
+        name: 'Cursor Rules Contain Credentials',
+        description: 'Cursor configuration files contain exposed credentials',
+        category: 'cursor',
+        severity: 'critical',
+        passed: !hasCredentialsInRules,
+        message: hasCredentialsInRules
+          ? 'Cursor rules contain exposed credentials'
+          : 'No credentials found in Cursor rules',
+        fixable: false,
+        fix: hasCredentialsInRules ? 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.' : undefined,
+        guidance: 'Cursor rules files are often committed to git. Credentials embedded there get pushed to remotes where anyone with repo access can extract them.',
+      });
+    }
 
     return findings;
   }
@@ -5897,10 +6064,13 @@ dist/
 
     let vscodeConfig: Record<string, unknown> | null = null;
     let vscodeContent = '';
-    try {
-      vscodeContent = await fs.readFile(vscodeMcpPath, 'utf-8');
-      vscodeConfig = JSON.parse(vscodeContent);
-    } catch {}
+    const vscodeRead = await readCheckSubject(vscodeMcpPath);
+    if (vscodeRead.state === 'read') {
+      vscodeContent = vscodeRead.content;
+      try {
+        vscodeConfig = JSON.parse(vscodeContent);
+      } catch {}
+    }
 
     // VSCODE-001: Check for credentials in VSCode MCP config
     let hasCredentials = false;
@@ -5911,19 +6081,23 @@ dist/
       }
     }
 
-    findings.push({
-      checkId: 'VSCODE-001',
-      name: 'VSCode MCP Config Credentials',
-      description: 'VSCode MCP configuration contains exposed credentials',
-      category: 'vscode',
-      severity: 'critical',
-      passed: !hasCredentials,
-      message: hasCredentials
-        ? 'VSCode MCP config contains exposed credentials'
-        : 'No credentials in VSCode MCP config',
-      fixable: false,
-      guidance: 'MCP config files are shared across workspaces and often committed to repos. Credentials there are exposed to every tool and extension that reads the config.',
-    });
+    if (vscodeRead.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'VSCODE-001', name: 'VSCode MCP Config Credentials', description: 'VSCode MCP configuration contains exposed credentials', category: 'vscode' }, '.vscode/mcp.json', 'No .vscode/mcp.json in the scanned tree, so there is no VS Code MCP configuration to inspect.'));
+    } else if (vscodeRead.state === 'read') {
+      findings.push({
+        checkId: 'VSCODE-001',
+        name: 'VSCode MCP Config Credentials',
+        description: 'VSCode MCP configuration contains exposed credentials',
+        category: 'vscode',
+        severity: 'critical',
+        passed: !hasCredentials,
+        message: hasCredentials
+          ? 'VSCode MCP config contains exposed credentials'
+          : 'No credentials in VSCode MCP config',
+        fixable: false,
+        guidance: 'MCP config files are shared across workspaces and often committed to repos. Credentials there are exposed to every tool and extension that reads the config.',
+      });
+    }
 
     // VSCODE-002: Check for overly permissive paths
     let hasRootAccess = false;
@@ -5936,19 +6110,23 @@ dist/
       }
     }
 
-    findings.push({
-      checkId: 'VSCODE-002',
-      name: 'VSCode MCP Root Access',
-      description: 'VSCode MCP server has root or home directory access',
-      category: 'vscode',
-      severity: 'high',
-      passed: !hasRootAccess,
-      message: hasRootAccess
-        ? 'VSCode MCP server has dangerous filesystem access'
-        : 'VSCode MCP filesystem access is scoped',
-      fixable: false,
-      guidance: 'An MCP server with root or home directory access can read SSH keys, cloud credentials, and any file on the system. Scope access to the project directory only.',
-    });
+    if (vscodeRead.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'VSCODE-002', name: 'VSCode MCP Root Access', description: 'VSCode MCP server has root or home directory access', category: 'vscode' }, '.vscode/mcp.json', 'No .vscode/mcp.json in the scanned tree, so there is no VS Code MCP configuration to inspect.'));
+    } else if (vscodeRead.state === 'read') {
+      findings.push({
+        checkId: 'VSCODE-002',
+        name: 'VSCode MCP Root Access',
+        description: 'VSCode MCP server has root or home directory access',
+        category: 'vscode',
+        severity: 'high',
+        passed: !hasRootAccess,
+        message: hasRootAccess
+          ? 'VSCode MCP server has dangerous filesystem access'
+          : 'VSCode MCP filesystem access is scoped',
+        fixable: false,
+        guidance: 'An MCP server with root or home directory access can read SSH keys, cloud credentials, and any file on the system. Scope access to the project directory only.',
+      });
+    }
 
     return findings;
   }
@@ -6488,12 +6666,11 @@ dist/
         fix: `List candidate key files yourself: find . -type f \\( -name '*.pem' -o -name '*.key' \\) -not -path '*/node_modules/*'`,
         guidance: 'The project tree is too large or deep, or contains an un-ignored node_modules — so the scanner could not confirm no private keys are committed. Verify manually and ensure keys are outside the repo or in a secrets manager.',
       });
-    } else {
-      // The passed branch may not claim the whole tree when a directory was
-      // not listed: "no key files found" without the caveat asserts an
-      // absence the scan could not measure (#588). The record carries the
-      // remedy; this message only stops over-claiming.
-      const unlisted = this.coverage.unreadableInputs.directories > 0;
+    } else if (this.coverage.unreadableInputs.directories === 0) {
+      // #458 — "no private key files" is measured only over what the walk
+      // listed. A directory it could not list makes that absence unmeasurable:
+      // no verdict, rather than a pass with a caveat. SCAN-UNREAD-001 names
+      // the directory and the remedy.
       findings.push({
         checkId: 'CRED-002',
         name: 'Private Key Files',
@@ -6501,9 +6678,7 @@ dist/
         category: 'credentials',
         severity: 'critical',
         passed: true,
-        message: unlisted
-          ? 'No private key files found among what could be listed (a directory could not be listed — see SCAN-UNREAD-001)'
-          : 'No private key files found in project directory',
+        message: 'No private key files found in project directory',
         fixable: false,
         guidance: 'Private key files (.pem, .key) in a project directory are easily committed to git. Once pushed, the keys are compromised and must be rotated.',
       });
@@ -6511,37 +6686,50 @@ dist/
 
     // CRED-003: Check package.json for hardcoded secrets
     let hasSecretsInPackageJson = false;
-    try {
-      const content = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+    const pkgReadCred003 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadCred003.state === 'read') {
+      const content = pkgReadCred003.content;
       for (const { pattern } of CREDENTIAL_PATTERNS) {
         if (pattern.test(content)) {
           hasSecretsInPackageJson = true;
           break;
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'CRED-003',
-      name: 'Secrets in package.json',
-      description: 'package.json contains hardcoded secrets',
-      category: 'credentials',
-      severity: 'critical',
-      passed: !hasSecretsInPackageJson,
-      message: hasSecretsInPackageJson
-        ? 'package.json contains hardcoded secrets'
-        : 'No secrets found in package.json',
-      fixable: false,
-      fix: hasSecretsInPackageJson ? 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.' : undefined,
-      guidance: 'package.json is always committed to git and published to npm. Secrets there are visible to anyone who installs or forks your package.',
-    });
+    if (pkgReadCred003.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'CRED-003', name: 'Secrets in package.json', description: 'package.json contains hardcoded secrets', category: 'credentials' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadCred003.state === 'read') {
+      findings.push({
+        checkId: 'CRED-003',
+        name: 'Secrets in package.json',
+        description: 'package.json contains hardcoded secrets',
+        category: 'credentials',
+        severity: 'critical',
+        passed: !hasSecretsInPackageJson,
+        message: hasSecretsInPackageJson
+          ? 'package.json contains hardcoded secrets'
+          : 'No secrets found in package.json',
+        fixable: false,
+        fix: hasSecretsInPackageJson ? 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.' : undefined,
+        guidance: 'package.json is always committed to git and published to npm. Secrets there are visible to anyone who installs or forks your package.',
+      });
+    }
 
     // CRED-004: Check for JWT secrets in config
     let hasJwtSecret = false;
     const configFiles = ['config.json', 'config.yaml', 'config.yml', 'settings.json'];
-    for (const file of configFiles) {
-      try {
-        const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+    // #458: one classified read per candidate file. Absent everywhere
+    // => not-applicable; nothing read and something unread => no record (the
+    // coverage ledger discloses it).
+    const configFileReads: SubjectRead[] = [];
+    for (const configFile of configFiles) {
+      configFileReads.push(await readCheckSubject(path.join(targetDir, configFile)));
+    }
+    const configRead = combineSubjectReads(configFileReads);
+    for (const configFileRead of configFileReads) {
+      if (configFileRead.state === 'read') {
+        const content = configFileRead.content;
         if (content.includes('jwt') && (content.includes('secret') || content.includes('key'))) {
           // Check if it's a hardcoded value (not env reference)
           if (!content.includes('${') && !content.includes('process.env')) {
@@ -6549,23 +6737,27 @@ dist/
             break;
           }
         }
-      } catch {}
+      }
     }
 
-    findings.push({
-      checkId: 'CRED-004',
-      name: 'JWT Secret in Config',
-      description: 'JWT secret found hardcoded in configuration file',
-      category: 'credentials',
-      severity: 'critical',
-      passed: !hasJwtSecret,
-      message: hasJwtSecret
-        ? 'JWT secret hardcoded in config'
-        : 'No hardcoded JWT secrets found',
-      fixable: false,
-      fix: hasJwtSecret ? 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.' : undefined,
-      guidance: 'A hardcoded JWT secret lets anyone who reads the config forge valid authentication tokens and impersonate any user.',
-    });
+    if (configRead.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'CRED-004', name: 'JWT Secret in Config', description: 'JWT secret found hardcoded in configuration file', category: 'credentials' }, `config file (${configFiles.join(', ')})`, `None of ${configFiles.join(', ')} in the scanned tree, so there is no application configuration to inspect.`));
+    } else if (configRead.state === 'read') {
+      findings.push({
+        checkId: 'CRED-004',
+        name: 'JWT Secret in Config',
+        description: 'JWT secret found hardcoded in configuration file',
+        category: 'credentials',
+        severity: 'critical',
+        passed: !hasJwtSecret,
+        message: hasJwtSecret
+          ? 'JWT secret hardcoded in config'
+          : 'No hardcoded JWT secrets found',
+        fixable: false,
+        fix: hasJwtSecret ? 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.' : undefined,
+        guidance: 'A hardcoded JWT secret lets anyone who reads the config forge valid authentication tokens and impersonate any user.',
+      });
+    }
 
     return findings;
   }
@@ -6579,6 +6771,7 @@ dist/
     // PERM-002: Check for executable config files
     const configFiles = ['config.json', 'mcp.json', 'settings.json', '.env'];
     const executableConfigs: string[] = [];
+    let perm002Unread = false;
 
     for (const file of configFiles) {
       try {
@@ -6587,28 +6780,38 @@ dist/
         if (mode & 0o111) {
           executableConfigs.push(file);
         }
-      } catch {}
+      } catch (err) {
+        // #458 — see PERM-001: not-there is measured absence, anything else is unread.
+        const code = (err as NodeJS.ErrnoException).code ?? '';
+        if (countsAsUnread(code)) {
+          this.coverage.noteReadFailure(path.join(targetDir, file), code);
+          perm002Unread = true;
+        }
+      }
     }
 
-    findings.push({
-      checkId: 'PERM-002',
-      name: 'Executable Config Files',
-      description: 'Configuration files have executable permission',
-      category: 'permissions',
-      severity: 'medium',
-      passed: executableConfigs.length === 0,
-      message: executableConfigs.length === 0
-        ? 'No config files have executable permissions'
-        : `Config files with executable permission: ${executableConfigs.join(', ')}`,
-      fixable: true,
-      fixed: false,
-      details: executableConfigs.length > 0 ? { files: executableConfigs } : undefined,
-      guidance: 'Executable config files can be run as scripts. An attacker who modifies a config file with execute permission can trick the system into running arbitrary code.',
-    });
+    if (executableConfigs.length > 0 || !perm002Unread) {
+      findings.push({
+        checkId: 'PERM-002',
+        name: 'Executable Config Files',
+        description: 'Configuration files have executable permission',
+        category: 'permissions',
+        severity: 'medium',
+        passed: executableConfigs.length === 0,
+        message: executableConfigs.length === 0
+          ? 'No config files have executable permissions'
+          : `Config files with executable permission: ${executableConfigs.join(', ')}`,
+        fixable: true,
+        fixed: false,
+        details: executableConfigs.length > 0 ? { files: executableConfigs } : undefined,
+        guidance: 'Executable config files can be run as scripts. An attacker who modifies a config file with execute permission can trick the system into running arbitrary code.',
+      });
+    }
 
     // PERM-003: Check for group-writable sensitive files
     const sensitiveFiles = ['.env', '.env.local', 'secrets.json', 'credentials.json'];
     const groupWritable: string[] = [];
+    let perm003Unread = false;
 
     for (const file of sensitiveFiles) {
       try {
@@ -6617,24 +6820,33 @@ dist/
         if (mode & 0o020) {
           groupWritable.push(file);
         }
-      } catch {}
+      } catch (err) {
+        // #458 — see PERM-001: not-there is measured absence, anything else is unread.
+        const code = (err as NodeJS.ErrnoException).code ?? '';
+        if (countsAsUnread(code)) {
+          this.coverage.noteReadFailure(path.join(targetDir, file), code);
+          perm003Unread = true;
+        }
+      }
     }
 
-    findings.push({
-      checkId: 'PERM-003',
-      name: 'Group-Writable Sensitive Files',
-      description: 'Sensitive files have group write permission',
-      category: 'permissions',
-      severity: 'high',
-      passed: groupWritable.length === 0,
-      message: groupWritable.length === 0
-        ? 'No sensitive files have group write permission'
-        : `Group-writable sensitive files: ${groupWritable.join(', ')}`,
-      fixable: true,
-      fixed: false,
-      details: groupWritable.length > 0 ? { files: groupWritable } : undefined,
-      guidance: 'Group-writable sensitive files allow other users in the same group to modify credentials or inject malicious configuration values.',
-    });
+    if (groupWritable.length > 0 || !perm003Unread) {
+      findings.push({
+        checkId: 'PERM-003',
+        name: 'Group-Writable Sensitive Files',
+        description: 'Sensitive files have group write permission',
+        category: 'permissions',
+        severity: 'high',
+        passed: groupWritable.length === 0,
+        message: groupWritable.length === 0
+          ? 'No sensitive files have group write permission'
+          : `Group-writable sensitive files: ${groupWritable.join(', ')}`,
+        fixable: true,
+        fixed: false,
+        details: groupWritable.length > 0 ? { files: groupWritable } : undefined,
+        guidance: 'Group-writable sensitive files allow other users in the same group to modify credentials or inject malicious configuration values.',
+      });
+    }
 
     return findings;
   }
@@ -6649,113 +6861,138 @@ dist/
     let devModeEnabled = false;
     const envIndicators = ['NODE_ENV=development', 'DEBUG=true', 'DEV_MODE=true'];
     const envFiles = ['.env', '.env.local', 'config.json'];
+    // #458: one classified read per candidate file, shared by ENV-001/002/003. Absent everywhere
+    // => not-applicable; nothing read and something unread => no record (the
+    // coverage ledger discloses it).
+    const envFileReads: SubjectRead[] = [];
+    for (const envFile of envFiles) {
+      envFileReads.push(await readCheckSubject(path.join(targetDir, envFile)));
+    }
+    const envRead = combineSubjectReads(envFileReads);
 
-    for (const file of envFiles) {
-      try {
-        const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+    for (const envFileRead of envFileReads) {
+      if (envFileRead.state === 'read') {
+        const content = envFileRead.content;
         for (const indicator of envIndicators) {
           if (content.includes(indicator)) {
             devModeEnabled = true;
             break;
           }
         }
-      } catch {}
+      }
     }
 
-    findings.push({
-      checkId: 'ENV-001',
-      name: 'Development Mode Enabled',
-      description: 'Development mode indicators found in configuration',
-      category: 'environment',
-      severity: 'medium',
-      passed: !devModeEnabled,
-      message: devModeEnabled
-        ? 'Development mode enabled - ensure this is disabled in production'
-        : 'No development mode indicators found',
-      fixable: false,
-      guidance: 'Development mode typically disables security features like CSRF protection, strict CORS, and error sanitization, leaving the application exposed in production.',
-    });
+    if (envRead.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'ENV-001', name: 'Development Mode Enabled', description: 'Development mode indicators found in configuration', category: 'environment' }, `environment file (${envFiles.join(', ')})`, `None of ${envFiles.join(', ')} in the scanned tree, so there is no environment configuration to inspect.`));
+    } else if (envRead.state === 'read') {
+      findings.push({
+        checkId: 'ENV-001',
+        name: 'Development Mode Enabled',
+        description: 'Development mode indicators found in configuration',
+        category: 'environment',
+        severity: 'medium',
+        passed: !devModeEnabled,
+        message: devModeEnabled
+          ? 'Development mode enabled - ensure this is disabled in production'
+          : 'No development mode indicators found',
+        fixable: false,
+        guidance: 'Development mode typically disables security features like CSRF protection, strict CORS, and error sanitization, leaving the application exposed in production.',
+      });
+    }
 
     // ENV-002: Check for debug flags
     let hasDebugFlags = false;
     const debugPatterns = ['DEBUG=', 'VERBOSE=true', 'LOG_LEVEL=debug', 'TRACE=true'];
 
-    for (const file of envFiles) {
-      try {
-        const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+    for (const envFileRead of envFileReads) {
+      if (envFileRead.state === 'read') {
+        const content = envFileRead.content;
         for (const pattern of debugPatterns) {
           if (content.includes(pattern)) {
             hasDebugFlags = true;
             break;
           }
         }
-      } catch {}
+      }
     }
 
-    findings.push({
-      checkId: 'ENV-002',
-      name: 'Debug Flags Enabled',
-      description: 'Debug or verbose logging flags are enabled',
-      category: 'environment',
-      severity: 'low',
-      passed: !hasDebugFlags,
-      message: hasDebugFlags
-        ? 'Debug flags enabled - may expose sensitive information in logs'
-        : 'No debug flags detected',
-      fixable: false,
-      guidance: 'Debug and verbose logging flags can leak internal state, database queries, and credential values into log files or console output.',
-    });
+    if (envRead.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'ENV-002', name: 'Debug Flags Enabled', description: 'Debug or verbose logging flags are enabled', category: 'environment' }, `environment file (${envFiles.join(', ')})`, `None of ${envFiles.join(', ')} in the scanned tree, so there is no environment configuration to inspect.`));
+    } else if (envRead.state === 'read') {
+      findings.push({
+        checkId: 'ENV-002',
+        name: 'Debug Flags Enabled',
+        description: 'Debug or verbose logging flags are enabled',
+        category: 'environment',
+        severity: 'low',
+        passed: !hasDebugFlags,
+        message: hasDebugFlags
+          ? 'Debug flags enabled - may expose sensitive information in logs'
+          : 'No debug flags detected',
+        fixable: false,
+        guidance: 'Debug and verbose logging flags can leak internal state, database queries, and credential values into log files or console output.',
+      });
+    }
 
     // ENV-003: Check for error verbosity settings
     let verboseErrors = false;
     const errorPatterns = ['SHOW_ERRORS=true', 'DISPLAY_ERRORS=true', 'STACK_TRACE=true'];
 
-    for (const file of envFiles) {
-      try {
-        const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
+    for (const envFileRead of envFileReads) {
+      if (envFileRead.state === 'read') {
+        const content = envFileRead.content;
         for (const pattern of errorPatterns) {
           if (content.includes(pattern)) {
             verboseErrors = true;
             break;
           }
         }
-      } catch {}
+      }
     }
 
-    findings.push({
-      checkId: 'ENV-003',
-      name: 'Verbose Error Messages',
-      description: 'Configuration enables verbose error messages',
-      category: 'environment',
-      severity: 'medium',
-      passed: !verboseErrors,
-      message: verboseErrors
-        ? 'Verbose error messages enabled - may leak sensitive information'
-        : 'Error verbosity settings are appropriate',
-      fixable: false,
-      guidance: 'Verbose error messages expose stack traces, file paths, and internal logic to attackers, making it easier to find exploitable weaknesses.',
-    });
+    if (envRead.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'ENV-003', name: 'Verbose Error Messages', description: 'Configuration enables verbose error messages', category: 'environment' }, `environment file (${envFiles.join(', ')})`, `None of ${envFiles.join(', ')} in the scanned tree, so there is no environment configuration to inspect.`));
+    } else if (envRead.state === 'read') {
+      findings.push({
+        checkId: 'ENV-003',
+        name: 'Verbose Error Messages',
+        description: 'Configuration enables verbose error messages',
+        category: 'environment',
+        severity: 'medium',
+        passed: !verboseErrors,
+        message: verboseErrors
+          ? 'Verbose error messages enabled - may leak sensitive information'
+          : 'Error verbosity settings are appropriate',
+        fixable: false,
+        guidance: 'Verbose error messages expose stack traces, file paths, and internal logic to attackers, making it easier to find exploitable weaknesses.',
+      });
+    }
 
     // ENV-004: Check for production environment validation
     let hasEnvValidation = false;
-    try {
-      const pkgJson = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+    const pkgReadEnv004 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadEnv004.state === 'read') {
+      const pkgJson = pkgReadEnv004.content;
       hasEnvValidation = pkgJson.includes('dotenv') || pkgJson.includes('env-var') || pkgJson.includes('envalid');
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'ENV-004',
-      name: 'Environment Validation',
-      description: 'No environment variable validation library detected',
-      category: 'environment',
-      severity: 'low',
-      passed: hasEnvValidation,
-      message: hasEnvValidation
-        ? 'Environment validation library detected'
-        : 'Consider using env validation (dotenv, envalid) to catch misconfigurations',
-      fixable: false,
-      guidance: 'Without environment validation, missing or malformed variables cause silent failures. A missing DB_HOST might fall back to an insecure default rather than failing fast.',
-    });
+    if (pkgReadEnv004.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'ENV-004', name: 'Environment Validation', description: 'No environment variable validation library detected', category: 'environment' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadEnv004.state === 'read') {
+      findings.push({
+        checkId: 'ENV-004',
+        name: 'Environment Validation',
+        description: 'No environment variable validation library detected',
+        category: 'environment',
+        severity: 'low',
+        passed: hasEnvValidation,
+        message: hasEnvValidation
+          ? 'Environment validation library detected'
+          : 'Consider using env validation (dotenv, envalid) to catch misconfigurations',
+        fixable: false,
+        guidance: 'Without environment validation, missing or malformed variables cause silent failures. A missing DB_HOST might fall back to an insecure default rather than failing fast.',
+      });
+    }
 
     return findings;
   }
@@ -6768,24 +7005,29 @@ dist/
 
     // LOG-001: Check for logging configuration
     let hasLoggingConfig = false;
-    try {
-      const pkgJson = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+    const pkgReadLog001 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadLog001.state === 'read') {
+      const pkgJson = pkgReadLog001.content;
       hasLoggingConfig = pkgJson.includes('winston') || pkgJson.includes('pino') || pkgJson.includes('bunyan');
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'LOG-001',
-      name: 'Structured Logging',
-      description: 'No structured logging library detected',
-      category: 'logging',
-      severity: 'low',
-      passed: hasLoggingConfig,
-      message: hasLoggingConfig
-        ? 'Structured logging library detected'
-        : 'Consider using structured logging (winston, pino) for better security auditing',
-      fixable: false,
-      guidance: 'Unstructured console.log output is hard to filter, search, or redact. Structured logging makes it possible to automatically mask sensitive fields and detect anomalies.',
-    });
+    if (pkgReadLog001.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'LOG-001', name: 'Structured Logging', description: 'No structured logging library detected', category: 'logging' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadLog001.state === 'read') {
+      findings.push({
+        checkId: 'LOG-001',
+        name: 'Structured Logging',
+        description: 'No structured logging library detected',
+        category: 'logging',
+        severity: 'low',
+        passed: hasLoggingConfig,
+        message: hasLoggingConfig
+          ? 'Structured logging library detected'
+          : 'Consider using structured logging (winston, pino) for better security auditing',
+        fixable: false,
+        guidance: 'Unstructured console.log output is hard to filter, search, or redact. Structured logging makes it possible to automatically mask sensitive fields and detect anomalies.',
+      });
+    }
 
     // LOG-002: Check for sensitive data in log patterns
     //
@@ -6816,9 +7058,9 @@ dist/
     let sensitiveLogFile: string | undefined;
     let sensitiveLogLine: number | undefined;
 
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadLog002 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadLog002.state === 'read') {
+      for (const file of dirReadLog002.entries) {
         // Extension list deliberately UNCHANGED here — widening it is #414,
         // which is blocked on this fix precisely because a widened read
         // produced no observable change while the finding was being dropped.
@@ -6855,41 +7097,46 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
     const sensitiveInLogs = sensitiveLogFile !== undefined;
 
-    findings.push({
-      checkId: 'LOG-002',
-      name: 'Sensitive Data in Logs',
-      description: 'Potential sensitive data being logged',
-      category: 'logging',
-      severity: 'high',
-      passed: !sensitiveInLogs,
-      message: sensitiveInLogs
-        ? 'Code may be logging sensitive data - review console.log statements'
-        : 'No obvious sensitive data logging patterns found',
-      // Only set when the check actually matched. A passed LOG-002 stays
-      // pathless: it has no evidence to point at.
-      file: sensitiveLogFile,
-      // Cited ONLY when a single file matched. `.hmaignore` can re-point a
-      // multi-file finding onto a surviving path (#280, `retainAfterPathSuppression`)
-      // and that re-point moves `file` without moving `line` — so a line from
-      // the ignored file would be printed against the surviving one, and
-      // `Verify: sed -n '5p' z.js` would print nothing. No line is better than
-      // a line that sends the reader somewhere the match is not.
-      line: sensitiveLogFiles.length === 1 ? sensitiveLogLine : undefined,
-      // EVERY matching file, not just the cited one. `.hmaignore` suppression
-      // keys on all covered paths (#280), so listing one path here would let a
-      // single ignored file delete a finding that also covers un-ignored ones.
-      ...(sensitiveLogFiles.length > 0 ? { details: { files: sensitiveLogFiles } } : {}),
-      fixable: false,
-      guidance: 'Passwords, API keys, and tokens logged to console or files persist in log aggregators and crash reports, where they can be harvested by anyone with log access.',
-    });
+    if (dirReadLog002.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'LOG-002', name: 'Sensitive Data in Logs', description: 'Potential sensitive data being logged', category: 'logging' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadLog002.state === 'read') {
+      findings.push({
+        checkId: 'LOG-002',
+        name: 'Sensitive Data in Logs',
+        description: 'Potential sensitive data being logged',
+        category: 'logging',
+        severity: 'high',
+        passed: !sensitiveInLogs,
+        message: sensitiveInLogs
+          ? 'Code may be logging sensitive data - review console.log statements'
+          : 'No obvious sensitive data logging patterns found',
+        // Only set when the check actually matched. A passed LOG-002 stays
+        // pathless: it has no evidence to point at.
+        file: sensitiveLogFile,
+        // Cited ONLY when a single file matched. `.hmaignore` can re-point a
+        // multi-file finding onto a surviving path (#280, `retainAfterPathSuppression`)
+        // and that re-point moves `file` without moving `line` — so a line from
+        // the ignored file would be printed against the surviving one, and
+        // `Verify: sed -n '5p' z.js` would print nothing. No line is better than
+        // a line that sends the reader somewhere the match is not.
+        line: sensitiveLogFiles.length === 1 ? sensitiveLogLine : undefined,
+        // EVERY matching file, not just the cited one. `.hmaignore` suppression
+        // keys on all covered paths (#280), so listing one path here would let a
+        // single ignored file delete a finding that also covers un-ignored ones.
+        ...(sensitiveLogFiles.length > 0 ? { details: { files: sensitiveLogFiles } } : {}),
+        fixable: false,
+        guidance: 'Passwords, API keys, and tokens logged to console or files persist in log aggregators and crash reports, where they can be harvested by anyone with log access.',
+      });
+    }
 
     // LOG-003: Check for log file permissions
     const logFiles = ['app.log', 'error.log', 'debug.log', 'access.log'];
     const worldReadableLogs: string[] = [];
+    let log003Unread = false;
 
     for (const logFile of logFiles) {
       try {
@@ -6898,44 +7145,58 @@ dist/
         if (mode & 0o004) {
           worldReadableLogs.push(logFile);
         }
-      } catch {}
+      } catch (err) {
+        // #458 — see PERM-001: not-there is measured absence, anything else is unread.
+        const code = (err as NodeJS.ErrnoException).code ?? '';
+        if (countsAsUnread(code)) {
+          this.coverage.noteReadFailure(path.join(targetDir, logFile), code);
+          log003Unread = true;
+        }
+      }
     }
 
-    findings.push({
-      checkId: 'LOG-003',
-      name: 'Log File Permissions',
-      description: 'Log files have overly permissive permissions',
-      category: 'logging',
-      severity: 'medium',
-      passed: worldReadableLogs.length === 0,
-      message: worldReadableLogs.length === 0
-        ? 'No world-readable log files found'
-        : `World-readable log files: ${worldReadableLogs.join(', ')}`,
-      fixable: true,
-      fixed: false,
-      guidance: 'World-readable log files let any local user read application logs, which often contain request details, internal errors, and sometimes credentials.',
-    });
+    if (worldReadableLogs.length > 0 || !log003Unread) {
+      findings.push({
+        checkId: 'LOG-003',
+        name: 'Log File Permissions',
+        description: 'Log files have overly permissive permissions',
+        category: 'logging',
+        severity: 'medium',
+        passed: worldReadableLogs.length === 0,
+        message: worldReadableLogs.length === 0
+          ? 'No world-readable log files found'
+          : `World-readable log files: ${worldReadableLogs.join(', ')}`,
+        fixable: true,
+        fixed: false,
+        guidance: 'World-readable log files let any local user read application logs, which often contain request details, internal errors, and sometimes credentials.',
+      });
+    }
 
     // LOG-004: Check for audit logging capability
     let hasAuditLogging = false;
-    try {
-      const pkgJson = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+    const pkgReadLog004 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadLog004.state === 'read') {
+      const pkgJson = pkgReadLog004.content;
       hasAuditLogging = pkgJson.includes('audit') || pkgJson.includes('morgan') || pkgJson.includes('express-winston');
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'LOG-004',
-      name: 'Audit Logging',
-      description: 'No audit logging capability detected',
-      category: 'logging',
-      severity: 'medium',
-      passed: hasAuditLogging,
-      message: hasAuditLogging
-        ? 'Audit logging capability detected'
-        : 'Consider implementing audit logging for security events',
-      fixable: false,
-      guidance: 'Without audit logging, there is no record of who accessed what or when. Incident response becomes guesswork without a trail of security-relevant events.',
-    });
+    if (pkgReadLog004.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'LOG-004', name: 'Audit Logging', description: 'No audit logging capability detected', category: 'logging' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadLog004.state === 'read') {
+      findings.push({
+        checkId: 'LOG-004',
+        name: 'Audit Logging',
+        description: 'No audit logging capability detected',
+        category: 'logging',
+        severity: 'medium',
+        passed: hasAuditLogging,
+        message: hasAuditLogging
+          ? 'Audit logging capability detected'
+          : 'Consider implementing audit logging for security events',
+        fixable: false,
+        guidance: 'Without audit logging, there is no record of who accessed what or when. Incident response becomes guesswork without a trail of security-relevant events.',
+      });
+    }
 
     return findings;
   }
@@ -6947,91 +7208,108 @@ dist/
     const findings: SecurityFindingDraft[] = [];
 
     // DEP-001: Check for package-lock.json
-    let hasLockFile = false;
-    try {
-      await fs.access(path.join(targetDir, 'package-lock.json'));
-      hasLockFile = true;
-    } catch {
-      try {
-        await fs.access(path.join(targetDir, 'yarn.lock'));
-        hasLockFile = true;
-      } catch {
-        try {
-          await fs.access(path.join(targetDir, 'pnpm-lock.yaml'));
-          hasLockFile = true;
-        } catch {}
-      }
+    // #458: a lock file is a MUST-exist artifact, so its absence is the
+    // finding (an absent-mitigation advisory whose `file` names the path the
+    // fix creates), never a not-applicable record. Content reads rather than
+    // `fs.access` so an unreadable candidate reaches the coverage ledger;
+    // the loop stops at the first lock file it can read.
+    const lockFileProbes: SubjectRead[] = [];
+    for (const lockFile of ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml']) {
+      const probe = await readCheckSubject(path.join(targetDir, lockFile));
+      lockFileProbes.push(probe);
+      if (probe.state === 'read') break;
     }
+    const hasLockFile = lockFileProbes.some((probe) => probe.state === 'read');
 
-    findings.push({
-      checkId: 'DEP-001',
-      name: 'Dependency Lock File',
-      description: 'No dependency lock file found',
-      category: 'dependencies',
-      severity: 'medium',
-      passed: hasLockFile,
-      message: hasLockFile
-        ? 'Dependency lock file present'
-        : 'No lock file found - dependency versions may vary between installs',
-      fixable: false,
-      guidance: 'Without a lock file, npm install can resolve to different package versions on different machines, including versions with known vulnerabilities or supply-chain backdoors.',
-    });
+    if (hasLockFile || lockFileProbes.every((probe) => probe.state === 'absent')) {
+      const dep001: SecurityFindingDraft = {
+        checkId: 'DEP-001',
+        name: 'Dependency Lock File',
+        description: 'No dependency lock file found',
+        category: 'dependencies',
+        severity: 'medium',
+        passed: hasLockFile,
+        message: hasLockFile
+          ? 'Dependency lock file present'
+          : 'No lock file found - dependency versions may vary between installs',
+        fixable: false,
+        guidance: 'Without a lock file, npm install can resolve to different package versions on different machines, including versions with known vulnerabilities or supply-chain backdoors.',
+      };
+      if (!hasLockFile) {
+        // Absent-mitigation advisory: `file` is the path the fix creates.
+        dep001.file = 'package-lock.json';
+      }
+      findings.push(dep001);
+    }
 
     // DEP-002: Check for known vulnerable packages
     const vulnerablePackages = ['event-stream', 'flatmap-stream', 'eslint-scope@3.7.2'];
     let hasVulnerablePackage = false;
 
-    try {
-      const pkgJson = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+    const pkgReadDep002 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadDep002.state === 'read') {
+      const pkgJson = pkgReadDep002.content;
       for (const pkg of vulnerablePackages) {
         if (pkgJson.includes(pkg.split('@')[0])) {
           hasVulnerablePackage = true;
           break;
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'DEP-002',
-      name: 'Known Vulnerable Packages',
-      description: 'Package.json may contain known vulnerable packages',
-      category: 'dependencies',
-      severity: 'critical',
-      passed: !hasVulnerablePackage,
-      message: hasVulnerablePackage
-        ? 'Potentially vulnerable package detected - run npm audit'
-        : 'No known vulnerable packages in direct dependencies',
-      fixable: false,
-      guidance: 'These packages have confirmed supply-chain compromises (e.g., event-stream injected a cryptocurrency-stealing payload). Remove or replace them immediately.',
-    });
+    if (pkgReadDep002.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'DEP-002', name: 'Known Vulnerable Packages', description: 'Package.json may contain known vulnerable packages', category: 'dependencies' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadDep002.state === 'read') {
+      findings.push({
+        checkId: 'DEP-002',
+        name: 'Known Vulnerable Packages',
+        description: 'Package.json may contain known vulnerable packages',
+        category: 'dependencies',
+        severity: 'critical',
+        passed: !hasVulnerablePackage,
+        message: hasVulnerablePackage
+          ? 'Potentially vulnerable package detected - run npm audit'
+          : 'No known vulnerable packages in direct dependencies',
+        fixable: false,
+        guidance: 'These packages have confirmed supply-chain compromises (e.g., event-stream injected a cryptocurrency-stealing payload). Remove or replace them immediately.',
+      });
+    }
 
     // DEP-003: Check for wildcard versions
     let hasWildcardVersions = false;
-    try {
-      const pkgJson = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
-      const pkg = JSON.parse(pkgJson);
-      const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
-      for (const [, version] of Object.entries(allDeps)) {
-        if (version === '*' || version === 'latest') {
-          hasWildcardVersions = true;
-          break;
+    const pkgReadDep003 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadDep003.state === 'read') {
+      // A present but unparseable manifest keeps today's verdict.
+      try {
+        const pkgJson = pkgReadDep003.content;
+        const pkg = JSON.parse(pkgJson);
+        const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+        for (const [, version] of Object.entries(allDeps)) {
+          if (version === '*' || version === 'latest') {
+            hasWildcardVersions = true;
+            break;
+          }
         }
-      }
-    } catch {}
+      } catch {}
+    }
 
-    findings.push({
-      checkId: 'DEP-003',
-      name: 'Wildcard Dependency Versions',
-      description: 'Package.json uses wildcard or latest versions',
-      category: 'dependencies',
-      severity: 'high',
-      passed: !hasWildcardVersions,
-      message: hasWildcardVersions
-        ? 'Wildcard versions detected - pin dependencies for reproducible builds'
-        : 'All dependency versions are properly specified',
-      fixable: false,
-      guidance: 'Wildcard (*) or "latest" versions accept any future release, including ones compromised by supply-chain attacks. Pin versions and use a lock file.',
-    });
+    if (pkgReadDep003.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'DEP-003', name: 'Wildcard Dependency Versions', description: 'Package.json uses wildcard or latest versions', category: 'dependencies' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadDep003.state === 'read') {
+      findings.push({
+        checkId: 'DEP-003',
+        name: 'Wildcard Dependency Versions',
+        description: 'Package.json uses wildcard or latest versions',
+        category: 'dependencies',
+        severity: 'high',
+        passed: !hasWildcardVersions,
+        message: hasWildcardVersions
+          ? 'Wildcard versions detected - pin dependencies for reproducible builds'
+          : 'All dependency versions are properly specified',
+        fixable: false,
+        guidance: 'Wildcard (*) or "latest" versions accept any future release, including ones compromised by supply-chain attacks. Pin versions and use a lock file.',
+      });
+    }
 
     // DEP-004: Check for npm scripts security
     let hasDangerousScripts = false;
@@ -7045,40 +7323,48 @@ dist/
       /\$\(wget\b/,             // $(wget
     ];
     const pkgJsonPath = path.join(targetDir, 'package.json');
-    try {
-      const pkgJson = await fs.readFile(pkgJsonPath, 'utf-8');
-      const pkg = JSON.parse(pkgJson);
-      if (pkg.scripts) {
-        for (const [, script] of Object.entries(pkg.scripts)) {
-          if (typeof script === 'string') {
-            for (const pattern of dangerousScriptRegexes) {
-              if (pattern.test(script)) {
-                hasDangerousScripts = true;
-                break;
+    const pkgReadDep004 = await readCheckSubject(pkgJsonPath);
+    if (pkgReadDep004.state === 'read') {
+      // A present but unparseable manifest keeps today's verdict.
+      try {
+        const pkgJson = pkgReadDep004.content;
+        const pkg = JSON.parse(pkgJson);
+        if (pkg.scripts) {
+          for (const [, script] of Object.entries(pkg.scripts)) {
+            if (typeof script === 'string') {
+              for (const pattern of dangerousScriptRegexes) {
+                if (pattern.test(script)) {
+                  hasDangerousScripts = true;
+                  break;
+                }
               }
             }
           }
         }
-      }
-    } catch {}
+      } catch {}
+    }
 
-    findings.push({
-      checkId: 'DEP-004',
-      name: 'Dangerous npm Scripts',
-      description: 'npm scripts contain potentially dangerous commands',
-      category: 'dependencies',
-      severity: 'critical',
-      passed: !hasDangerousScripts,
-      file: hasDangerousScripts ? 'package.json' : undefined,
-      message: hasDangerousScripts
-        ? 'Dangerous patterns in npm scripts (curl|sh, eval) - review carefully'
-        : 'npm scripts appear safe',
-      fixable: false,
-      fix: hasDangerousScripts
-        ? 'Remove the curl|sh or wget|sh pattern from package.json scripts. Replace with a pinned package install: npm install --save-exact <package>  or vendor the script with a pinned checksum.'
-        : undefined,
-      guidance: 'Scripts that pipe curl/wget to sh execute arbitrary remote code during npm install. An attacker who compromises the URL controls your build environment.',
-    });
+    if (pkgReadDep004.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'DEP-004', name: 'Dangerous npm Scripts', description: 'npm scripts contain potentially dangerous commands', category: 'dependencies' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadDep004.state === 'read') {
+      findings.push({
+        checkId: 'DEP-004',
+        name: 'Dangerous npm Scripts',
+        description: 'npm scripts contain potentially dangerous commands',
+        category: 'dependencies',
+        severity: 'critical',
+        passed: !hasDangerousScripts,
+        file: hasDangerousScripts ? 'package.json' : undefined,
+        message: hasDangerousScripts
+          ? 'Dangerous patterns in npm scripts (curl|sh, eval) - review carefully'
+          : 'npm scripts appear safe',
+        fixable: false,
+        fix: hasDangerousScripts
+          ? 'Remove the curl|sh or wget|sh pattern from package.json scripts. Replace with a pinned package install: npm install --save-exact <package>  or vendor the script with a pinned checksum.'
+          : undefined,
+        guidance: 'Scripts that pipe curl/wget to sh execute arbitrary remote code during npm install. An attacker who compromises the URL controls your build environment.',
+      });
+    }
 
     return findings;
   }
@@ -7093,58 +7379,68 @@ dist/
     let hasAuthConfig = false;
     const authIndicators = ['auth', 'authentication', 'passport', 'jwt', 'session'];
 
-    try {
-      const pkgJson = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+    const pkgReadAuth001 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadAuth001.state === 'read') {
+      const pkgJson = pkgReadAuth001.content;
       for (const indicator of authIndicators) {
         if (pkgJson.toLowerCase().includes(indicator)) {
           hasAuthConfig = true;
           break;
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'AUTH-001',
-      name: 'Authentication Configuration',
-      description: 'No authentication library or configuration detected',
-      category: 'authentication',
-      severity: 'medium',
-      passed: hasAuthConfig,
-      message: hasAuthConfig
-        ? 'Authentication configuration detected'
-        : 'No authentication library detected - ensure endpoints are protected',
-      fixable: false,
-      guidance: 'Without authentication, any network-reachable client can access your API endpoints, including reading data, triggering actions, and modifying state.',
-    });
+    if (pkgReadAuth001.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'AUTH-001', name: 'Authentication Configuration', description: 'No authentication library or configuration detected', category: 'authentication' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadAuth001.state === 'read') {
+      findings.push({
+        checkId: 'AUTH-001',
+        name: 'Authentication Configuration',
+        description: 'No authentication library or configuration detected',
+        category: 'authentication',
+        severity: 'medium',
+        passed: hasAuthConfig,
+        message: hasAuthConfig
+          ? 'Authentication configuration detected'
+          : 'No authentication library detected - ensure endpoints are protected',
+        fixable: false,
+        guidance: 'Without authentication, any network-reachable client can access your API endpoints, including reading data, triggering actions, and modifying state.',
+      });
+    }
 
     // AUTH-002: Check for rate limiting
     let hasRateLimiting = false;
-    try {
-      const pkgJson = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+    const pkgReadAuth002 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadAuth002.state === 'read') {
+      const pkgJson = pkgReadAuth002.content;
       hasRateLimiting = pkgJson.includes('rate-limit') || pkgJson.includes('express-rate-limit') || pkgJson.includes('bottleneck');
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'AUTH-002',
-      name: 'Rate Limiting',
-      description: 'No rate limiting library detected',
-      category: 'authentication',
-      severity: 'high',
-      passed: hasRateLimiting,
-      message: hasRateLimiting
-        ? 'Rate limiting library detected'
-        : 'No rate limiting detected - API may be vulnerable to abuse',
-      fixable: false,
-      guidance: 'Without rate limiting, attackers can brute-force credentials, scrape data, or exhaust resources with automated requests at no cost.',
-    });
+    if (pkgReadAuth002.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'AUTH-002', name: 'Rate Limiting', description: 'No rate limiting library detected', category: 'authentication' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadAuth002.state === 'read') {
+      findings.push({
+        checkId: 'AUTH-002',
+        name: 'Rate Limiting',
+        description: 'No rate limiting library detected',
+        category: 'authentication',
+        severity: 'high',
+        passed: hasRateLimiting,
+        message: hasRateLimiting
+          ? 'Rate limiting library detected'
+          : 'No rate limiting detected - API may be vulnerable to abuse',
+        fixable: false,
+        guidance: 'Without rate limiting, attackers can brute-force credentials, scrape data, or exhaust resources with automated requests at no cost.',
+      });
+    }
 
     // AUTH-003: Check for session security
     let hasSecureSessions = false;
     const sessionIndicators = ['express-session', 'cookie-session', 'secure: true', 'httpOnly: true'];
 
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadAuth003 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json'));
+    if (dirReadAuth003.state === 'read') {
+      for (const file of dirReadAuth003.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -7157,42 +7453,51 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'AUTH-003',
-      name: 'Secure Session Configuration',
-      description: 'Session security configuration not detected',
-      category: 'authentication',
-      severity: 'medium',
-      passed: hasSecureSessions,
-      message: hasSecureSessions
-        ? 'Secure session configuration detected'
-        : 'Ensure sessions use secure, httpOnly cookies',
-      fixable: false,
-      guidance: 'Sessions without secure and httpOnly flags are vulnerable to theft via XSS attacks or network sniffing, allowing attackers to hijack authenticated sessions.',
-    });
+    if (dirReadAuth003.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'AUTH-003', name: 'Secure Session Configuration', description: 'Session security configuration not detected', category: 'authentication' }, 'source or config files (.ts, .js, .json)', 'No .ts, .js or .json files at the scanned root, so there is nothing to inspect.'));
+    } else if (dirReadAuth003.state === 'read') {
+      findings.push({
+        checkId: 'AUTH-003',
+        name: 'Secure Session Configuration',
+        description: 'Session security configuration not detected',
+        category: 'authentication',
+        severity: 'medium',
+        passed: hasSecureSessions,
+        message: hasSecureSessions
+          ? 'Secure session configuration detected'
+          : 'Ensure sessions use secure, httpOnly cookies',
+        fixable: false,
+        guidance: 'Sessions without secure and httpOnly flags are vulnerable to theft via XSS attacks or network sniffing, allowing attackers to hijack authenticated sessions.',
+      });
+    }
 
     // AUTH-004: Check for CORS configuration
     let hasCorsConfig = false;
-    try {
-      const pkgJson = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+    const pkgReadAuth004 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadAuth004.state === 'read') {
+      const pkgJson = pkgReadAuth004.content;
       hasCorsConfig = pkgJson.includes('cors');
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'AUTH-004',
-      name: 'CORS Configuration',
-      description: 'No CORS library detected',
-      category: 'authentication',
-      severity: 'medium',
-      passed: hasCorsConfig,
-      message: hasCorsConfig
-        ? 'CORS library detected'
-        : 'No CORS configuration detected - ensure cross-origin requests are properly handled',
-      fixable: false,
-      guidance: 'Without explicit CORS configuration, browsers may block legitimate cross-origin requests or, worse, a permissive default may allow malicious sites to make authenticated requests to your API.',
-    });
+    if (pkgReadAuth004.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'AUTH-004', name: 'CORS Configuration', description: 'No CORS library detected', category: 'authentication' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadAuth004.state === 'read') {
+      findings.push({
+        checkId: 'AUTH-004',
+        name: 'CORS Configuration',
+        description: 'No CORS library detected',
+        category: 'authentication',
+        severity: 'medium',
+        passed: hasCorsConfig,
+        message: hasCorsConfig
+          ? 'CORS library detected'
+          : 'No CORS configuration detected - ensure cross-origin requests are properly handled',
+        fixable: false,
+        guidance: 'Without explicit CORS configuration, browsers may block legitimate cross-origin requests or, worse, a permissive default may allow malicious sites to make authenticated requests to your API.',
+      });
+    }
 
     return findings;
   }
@@ -7214,82 +7519,101 @@ dist/
       'Dockerfile.dev',
       'docker/Dockerfile',
     ];
+    // #458: classified reads; the first readable candidate decides, an
+    // unreadable one is disclosed on the coverage ledger, none present =>
+    // not-applicable.
+    const dockerfileReads: SubjectRead[] = [];
     for (const candidate of dockerfileCandidates) {
       const candidatePath = path.join(targetDir, candidate);
-      try {
-        const dockerfile = await fs.readFile(candidatePath, 'utf-8');
+      const dockerfileRead = await readCheckSubject(candidatePath);
+      dockerfileReads.push(dockerfileRead);
+      if (dockerfileRead.state === 'read') {
+        const dockerfile = dockerfileRead.content;
         dockerfilePath = candidatePath;
         if (dockerfile.includes('USER root') || !dockerfile.includes('USER ')) {
           hasSecureDockerfile = false;
         }
         break; // Use the first Dockerfile found
-      } catch {
-        // File not found, try next candidate
       }
     }
+    const dockerfileProbe = combineSubjectReads(dockerfileReads);
 
-    findings.push({
-      checkId: 'PROC-001',
-      name: 'Container User',
-      description: 'Dockerfile runs as root or has no USER directive',
-      category: 'process',
-      severity: 'high',
-      passed: hasSecureDockerfile,
-      file: !hasSecureDockerfile && dockerfilePath ? path.relative(targetDir, dockerfilePath) : undefined,
-      message: hasSecureDockerfile
-        ? 'Container runs as non-root user or no Dockerfile present'
-        : 'Dockerfile runs as root - add USER directive for non-root user',
-      fixable: false,
-      guidance: 'A container running as root means any exploit that escapes the application gets full control of the container and potentially the host system.',
-    });
+    if (dockerfileProbe.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'PROC-001', name: 'Container User', description: 'Dockerfile runs as root or has no USER directive', category: 'process' }, 'Dockerfile', `No Dockerfile at any of the probed locations (${dockerfileCandidates.join(', ')}), so there is no container build to inspect.`));
+    } else if (dockerfileProbe.state === 'read') {
+      findings.push({
+        checkId: 'PROC-001',
+        name: 'Container User',
+        description: 'Dockerfile runs as root or has no USER directive',
+        category: 'process',
+        severity: 'high',
+        passed: hasSecureDockerfile,
+        file: !hasSecureDockerfile && dockerfilePath ? path.relative(targetDir, dockerfilePath) : undefined,
+        message: hasSecureDockerfile
+          ? 'Container runs as non-root user or no Dockerfile present'
+          : 'Dockerfile runs as root - add USER directive for non-root user',
+        fixable: false,
+        guidance: 'A container running as root means any exploit that escapes the application gets full control of the container and potentially the host system.',
+      });
+    }
 
     // PROC-002: Check for security headers middleware
     let hasSecurityHeaders = false;
-    try {
-      const pkgJson = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+    const pkgReadProc002 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadProc002.state === 'read') {
+      const pkgJson = pkgReadProc002.content;
       hasSecurityHeaders = pkgJson.includes('helmet') || pkgJson.includes('security-headers');
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'PROC-002',
-      name: 'Security Headers',
-      description: 'No security headers middleware detected',
-      category: 'process',
-      severity: 'medium',
-      passed: hasSecurityHeaders,
-      message: hasSecurityHeaders
-        ? 'Security headers middleware detected (helmet)'
-        : 'Consider using helmet or similar for security headers',
-      fixable: false,
-      guidance: 'Missing security headers (CSP, X-Frame-Options, HSTS) leave your app vulnerable to clickjacking, XSS, and protocol downgrade attacks.',
-    });
+    if (pkgReadProc002.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'PROC-002', name: 'Security Headers', description: 'No security headers middleware detected', category: 'process' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadProc002.state === 'read') {
+      findings.push({
+        checkId: 'PROC-002',
+        name: 'Security Headers',
+        description: 'No security headers middleware detected',
+        category: 'process',
+        severity: 'medium',
+        passed: hasSecurityHeaders,
+        message: hasSecurityHeaders
+          ? 'Security headers middleware detected (helmet)'
+          : 'Consider using helmet or similar for security headers',
+        fixable: false,
+        guidance: 'Missing security headers (CSP, X-Frame-Options, HSTS) leave your app vulnerable to clickjacking, XSS, and protocol downgrade attacks.',
+      });
+    }
 
     // PROC-003: Check for input validation
     let hasInputValidation = false;
-    try {
-      const pkgJson = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+    const pkgReadProc003 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadProc003.state === 'read') {
+      const pkgJson = pkgReadProc003.content;
       hasInputValidation = pkgJson.includes('joi') || pkgJson.includes('zod') || pkgJson.includes('yup') || pkgJson.includes('class-validator');
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'PROC-003',
-      name: 'Input Validation',
-      description: 'No input validation library detected',
-      category: 'process',
-      severity: 'high',
-      passed: hasInputValidation,
-      message: hasInputValidation
-        ? 'Input validation library detected'
-        : 'No input validation library found - validate all user inputs',
-      fixable: false,
-      guidance: 'Without input validation, attackers can inject SQL, scripts, or malformed data that corrupts state, steals data, or crashes the application.',
-    });
+    if (pkgReadProc003.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'PROC-003', name: 'Input Validation', description: 'No input validation library detected', category: 'process' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadProc003.state === 'read') {
+      findings.push({
+        checkId: 'PROC-003',
+        name: 'Input Validation',
+        description: 'No input validation library detected',
+        category: 'process',
+        severity: 'high',
+        passed: hasInputValidation,
+        message: hasInputValidation
+          ? 'Input validation library detected'
+          : 'No input validation library found - validate all user inputs',
+        fixable: false,
+        guidance: 'Without input validation, attackers can inject SQL, scripts, or malformed data that corrupts state, steals data, or crashes the application.',
+      });
+    }
 
     // PROC-004: Check for error handling
     let hasErrorHandling = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadProc004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadProc004.state === 'read') {
+      for (const file of dirReadProc004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -7300,21 +7624,25 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'PROC-004',
-      name: 'Error Handling',
-      description: 'No error handling patterns detected',
-      category: 'process',
-      severity: 'medium',
-      passed: hasErrorHandling,
-      message: hasErrorHandling
-        ? 'Error handling patterns detected'
-        : 'Ensure proper error handling to prevent information disclosure',
-      fixable: false,
-      guidance: 'Unhandled errors can crash the process, leak stack traces with internal paths and variable names, and create denial-of-service conditions.',
-    });
+    if (dirReadProc004.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'PROC-004', name: 'Error Handling', description: 'No error handling patterns detected', category: 'process' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadProc004.state === 'read') {
+      findings.push({
+        checkId: 'PROC-004',
+        name: 'Error Handling',
+        description: 'No error handling patterns detected',
+        category: 'process',
+        severity: 'medium',
+        passed: hasErrorHandling,
+        message: hasErrorHandling
+          ? 'Error handling patterns detected'
+          : 'Ensure proper error handling to prevent information disclosure',
+        fixable: false,
+        guidance: 'Unhandled errors can crash the process, leak stack traces with internal paths and variable names, and create denial-of-service conditions.',
+      });
+    }
 
     return findings;
   }
@@ -7327,95 +7655,117 @@ dist/
     const claudeSettingsPath = path.join(targetDir, '.claude', 'settings.json');
 
     let claudeSettings: Record<string, unknown> | null = null;
-    try {
-      const content = await fs.readFile(claudeSettingsPath, 'utf-8');
-      claudeSettings = JSON.parse(content);
-    } catch {}
+    // #458 — the settings file is the SUBJECT of CLAUDE-004/005/007: absent is
+    // not-applicable, unread is no record. Present-but-unparseable is still a
+    // read subject: the checks keep their pass, with a parse-failure message.
+    const claudeSettingsRead = await readCheckSubject(claudeSettingsPath);
+    if (claudeSettingsRead.state === 'read') {
+      try {
+        claudeSettings = JSON.parse(claudeSettingsRead.content);
+      } catch {}
+    }
 
     // CLAUDE-004: Check for deny rules
     const permissions = claudeSettings?.permissions as { deny?: string[] } | undefined;
     const hasDenyRules = permissions?.deny && permissions.deny.length > 0;
 
-    findings.push({
-      checkId: 'CLAUDE-004',
-      name: 'Claude Deny Rules',
-      description: 'No deny rules configured for Claude Code',
-      category: 'claude-code',
-      severity: 'medium',
-      passed: hasDenyRules || !claudeSettings,
-      message: hasDenyRules
-        ? 'Claude Code has deny rules configured'
-        : claudeSettings
-          ? 'Consider adding deny rules to block dangerous operations'
-          : 'No Claude settings file found',
-      fixable: false,
-      guidance: 'Without deny rules, Claude Code can execute any tool or command. Deny rules act as a blocklist to prevent dangerous operations like rm -rf or credential access.',
-    });
+    if (claudeSettingsRead.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'CLAUDE-004', name: 'Claude Deny Rules', description: 'No deny rules configured for Claude Code', category: 'claude-code' }, '.claude/settings.json', 'No .claude/settings.json in the scanned tree, so there is no Claude Code configuration to inspect.'));
+    } else if (claudeSettingsRead.state === 'read') {
+      findings.push({
+        checkId: 'CLAUDE-004',
+        name: 'Claude Deny Rules',
+        description: 'No deny rules configured for Claude Code',
+        category: 'claude-code',
+        severity: 'medium',
+        passed: hasDenyRules || !claudeSettings,
+        message: hasDenyRules
+          ? 'Claude Code has deny rules configured'
+          : claudeSettings
+            ? 'Consider adding deny rules to block dangerous operations'
+            : 'Claude settings file could not be parsed',
+        fixable: false,
+        guidance: 'Without deny rules, Claude Code can execute any tool or command. Deny rules act as a blocklist to prevent dangerous operations like rm -rf or credential access.',
+      });
+    }
 
     // CLAUDE-005: Check for memory/context persistence
     const memorySettings = claudeSettings?.memory as { enabled?: boolean } | undefined;
     const hasMemoryEnabled = memorySettings?.enabled === true;
 
-    findings.push({
-      checkId: 'CLAUDE-005',
-      name: 'Claude Memory Persistence',
-      description: 'Claude memory persistence may store sensitive context',
-      category: 'claude-code',
-      severity: 'low',
-      passed: !hasMemoryEnabled,
-      message: hasMemoryEnabled
-        ? 'Claude memory enabled - be aware sensitive data may persist'
-        : 'Claude memory not explicitly enabled',
-      fixable: false,
-      guidance: 'Persistent memory can retain API keys, internal URLs, or confidential instructions across sessions. An attacker who gains access to the memory store can extract this data.',
-    });
+    if (claudeSettingsRead.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'CLAUDE-005', name: 'Claude Memory Persistence', description: 'Claude memory persistence may store sensitive context', category: 'claude-code' }, '.claude/settings.json', 'No .claude/settings.json in the scanned tree, so there is no Claude Code configuration to inspect.'));
+    } else if (claudeSettingsRead.state === 'read') {
+      findings.push({
+        checkId: 'CLAUDE-005',
+        name: 'Claude Memory Persistence',
+        description: 'Claude memory persistence may store sensitive context',
+        category: 'claude-code',
+        severity: 'low',
+        passed: !hasMemoryEnabled,
+        message: hasMemoryEnabled
+          ? 'Claude memory enabled - be aware sensitive data may persist'
+          : 'Claude memory not explicitly enabled',
+        fixable: false,
+        guidance: 'Persistent memory can retain API keys, internal URLs, or confidential instructions across sessions. An attacker who gains access to the memory store can extract this data.',
+      });
+    }
 
     // CLAUDE-006: Check CLAUDE.md for sensitive instructions
     let hasSensitiveInstructions = false;
     const sensitivePatterns = ['never share', 'confidential', 'internal only', 'do not disclose'];
 
-    try {
-      const claudeMd = await fs.readFile(path.join(targetDir, 'CLAUDE.md'), 'utf-8');
+    const claudeMdRead = await readCheckSubject(path.join(targetDir, 'CLAUDE.md'));
+    if (claudeMdRead.state === 'read') {
+      const claudeMd = claudeMdRead.content;
       for (const pattern of sensitivePatterns) {
         if (claudeMd.toLowerCase().includes(pattern)) {
           hasSensitiveInstructions = true;
           break;
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'CLAUDE-006',
-      name: 'Sensitive Instructions in CLAUDE.md',
-      description: 'CLAUDE.md may contain sensitive instructions that could be extracted',
-      category: 'claude-code',
-      severity: 'medium',
-      passed: !hasSensitiveInstructions,
-      message: hasSensitiveInstructions
-        ? 'CLAUDE.md contains sensitive instructions - these may be extractable via prompt injection'
-        : 'No obviously sensitive instructions detected in CLAUDE.md',
-      fixable: false,
-      guidance: 'CLAUDE.md is typically committed to version control. Sensitive instructions there can be extracted via prompt injection or by anyone with repo access.',
-    });
+    if (claudeMdRead.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'CLAUDE-006', name: 'Sensitive Instructions in CLAUDE.md', description: 'CLAUDE.md may contain sensitive instructions that could be extracted', category: 'claude-code' }, 'CLAUDE.md', 'No CLAUDE.md in the scanned tree, so there are no Claude Code instructions to inspect.'));
+    } else if (claudeMdRead.state === 'read') {
+      findings.push({
+        checkId: 'CLAUDE-006',
+        name: 'Sensitive Instructions in CLAUDE.md',
+        description: 'CLAUDE.md may contain sensitive instructions that could be extracted',
+        category: 'claude-code',
+        severity: 'medium',
+        passed: !hasSensitiveInstructions,
+        message: hasSensitiveInstructions
+          ? 'CLAUDE.md contains sensitive instructions - these may be extractable via prompt injection'
+          : 'No obviously sensitive instructions detected in CLAUDE.md',
+        fixable: false,
+        guidance: 'CLAUDE.md is typically committed to version control. Sensitive instructions there can be extracted via prompt injection or by anyone with repo access.',
+      });
+    }
 
     // CLAUDE-007: Check for tool timeout configuration
     const hasToolTimeout = (claudeSettings as Record<string, unknown>)?.toolTimeout !== undefined;
 
-    findings.push({
-      checkId: 'CLAUDE-007',
-      name: 'Tool Timeout Configuration',
-      description: 'No tool timeout configured for Claude operations',
-      category: 'claude-code',
-      severity: 'low',
-      passed: hasToolTimeout || !claudeSettings,
-      message: hasToolTimeout
-        ? 'Tool timeout is configured'
-        : claudeSettings
-          ? 'Consider setting tool timeouts to prevent runaway operations'
-          : 'No Claude settings found',
-      fixable: false,
-      guidance: 'Without tool timeouts, a stuck or malicious tool call can hang indefinitely, consuming resources and blocking the agent from responding.',
-    });
+    if (claudeSettingsRead.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'CLAUDE-007', name: 'Tool Timeout Configuration', description: 'No tool timeout configured for Claude operations', category: 'claude-code' }, '.claude/settings.json', 'No .claude/settings.json in the scanned tree, so there is no Claude Code configuration to inspect.'));
+    } else if (claudeSettingsRead.state === 'read') {
+      findings.push({
+        checkId: 'CLAUDE-007',
+        name: 'Tool Timeout Configuration',
+        description: 'No tool timeout configured for Claude operations',
+        category: 'claude-code',
+        severity: 'low',
+        passed: hasToolTimeout || !claudeSettings,
+        message: hasToolTimeout
+          ? 'Tool timeout is configured'
+          : claudeSettings
+            ? 'Consider setting tool timeouts to prevent runaway operations'
+            : 'Claude settings file could not be parsed',
+        fixable: false,
+        guidance: 'Without tool timeouts, a stuck or malicious tool call can hang indefinitely, consuming resources and blocking the agent from responding.',
+      });
+    }
 
     return findings;
   }
@@ -7428,48 +7778,61 @@ dist/
     const mcpConfigPath = path.join(targetDir, 'mcp.json');
 
     let mcpConfig: Record<string, unknown> | null = null;
-    try {
-      const content = await fs.readFile(mcpConfigPath, 'utf-8');
-      mcpConfig = JSON.parse(content);
-    } catch {}
+    // #458: MCP-006..009 branch on this classified read — absent mcp.json =>
+    // not-applicable naming the subject, unread => no record, and a present
+    // but unparseable file keeps today's verdict.
+    const mcpReadExt = await readCheckSubject(mcpConfigPath);
+    if (mcpReadExt.state === 'read') {
+      try {
+        mcpConfig = JSON.parse(mcpReadExt.content);
+      } catch {}
+    }
 
     // MCP-006: Check for request timeout
     const hasTimeout = (mcpConfig as Record<string, unknown>)?.timeout !== undefined;
 
-    findings.push({
-      checkId: 'MCP-006',
-      name: 'MCP Request Timeout',
-      description: 'No request timeout configured for MCP servers',
-      category: 'mcp',
-      severity: 'medium',
-      passed: hasTimeout || !mcpConfig,
-      message: hasTimeout
-        ? 'MCP timeout is configured'
-        : mcpConfig
-          ? 'Consider setting request timeouts for MCP servers'
-          : 'No MCP config found',
-      fixable: false,
-      guidance: 'Without request timeouts, a hung or malicious MCP server can block the agent indefinitely, causing denial-of-service and preventing other tools from executing.',
-    });
+    if (mcpReadExt.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'MCP-006', name: 'MCP Request Timeout', description: 'No request timeout configured for MCP servers', category: 'mcp' }, 'mcp.json', 'No mcp.json in the scanned tree. This check reads only mcp.json, so MCP servers configured elsewhere (for example .mcp.json) are outside its scope.'));
+    } else if (mcpReadExt.state === 'read') {
+      findings.push({
+        checkId: 'MCP-006',
+        name: 'MCP Request Timeout',
+        description: 'No request timeout configured for MCP servers',
+        category: 'mcp',
+        severity: 'medium',
+        passed: hasTimeout || !mcpConfig,
+        message: hasTimeout
+          ? 'MCP timeout is configured'
+          : mcpConfig
+            ? 'Consider setting request timeouts for MCP servers'
+            : 'No MCP config found',
+        fixable: false,
+        guidance: 'Without request timeouts, a hung or malicious MCP server can block the agent indefinitely, causing denial-of-service and preventing other tools from executing.',
+      });
+    }
 
     // MCP-007: Check for retry limits
     const hasRetryConfig = (mcpConfig as Record<string, unknown>)?.retries !== undefined;
 
-    findings.push({
-      checkId: 'MCP-007',
-      name: 'MCP Retry Limits',
-      description: 'No retry limits configured for MCP servers',
-      category: 'mcp',
-      severity: 'low',
-      passed: hasRetryConfig || !mcpConfig,
-      message: hasRetryConfig
-        ? 'MCP retry limits configured'
-        : mcpConfig
-          ? 'Consider setting retry limits to prevent infinite loops'
-          : 'No MCP config found',
-      fixable: false,
-      guidance: 'Without retry limits, a failing MCP server can trigger infinite retry loops that waste API credits, saturate network connections, and stall the agent.',
-    });
+    if (mcpReadExt.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'MCP-007', name: 'MCP Retry Limits', description: 'No retry limits configured for MCP servers', category: 'mcp' }, 'mcp.json', 'No mcp.json in the scanned tree. This check reads only mcp.json, so MCP servers configured elsewhere (for example .mcp.json) are outside its scope.'));
+    } else if (mcpReadExt.state === 'read') {
+      findings.push({
+        checkId: 'MCP-007',
+        name: 'MCP Retry Limits',
+        description: 'No retry limits configured for MCP servers',
+        category: 'mcp',
+        severity: 'low',
+        passed: hasRetryConfig || !mcpConfig,
+        message: hasRetryConfig
+          ? 'MCP retry limits configured'
+          : mcpConfig
+            ? 'Consider setting retry limits to prevent infinite loops'
+            : 'No MCP config found',
+        fixable: false,
+        guidance: 'Without retry limits, a failing MCP server can trigger infinite retry loops that waste API credits, saturate network connections, and stall the agent.',
+      });
+    }
 
     // MCP-008: Check for localhost binding
     let allLocalhostBound = true;
@@ -7485,19 +7848,23 @@ dist/
       }
     }
 
-    findings.push({
-      checkId: 'MCP-008',
-      name: 'MCP Localhost Binding',
-      description: 'MCP servers should bind to localhost only',
-      category: 'mcp',
-      severity: 'high',
-      passed: allLocalhostBound,
-      message: allLocalhostBound
-        ? 'MCP servers properly bound to localhost'
-        : 'Some MCP servers not bound to localhost - may be network accessible',
-      fixable: false,
-      guidance: 'MCP servers running over network (SSE/HTTP) without authentication let any network-adjacent attacker connect and issue tool calls.',
-    });
+    if (mcpReadExt.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'MCP-008', name: 'MCP Localhost Binding', description: 'MCP servers should bind to localhost only', category: 'mcp' }, 'mcp.json', 'No mcp.json in the scanned tree. This check reads only mcp.json, so MCP servers configured elsewhere (for example .mcp.json) are outside its scope.'));
+    } else if (mcpReadExt.state === 'read') {
+      findings.push({
+        checkId: 'MCP-008',
+        name: 'MCP Localhost Binding',
+        description: 'MCP servers should bind to localhost only',
+        category: 'mcp',
+        severity: 'high',
+        passed: allLocalhostBound,
+        message: allLocalhostBound
+          ? 'MCP servers properly bound to localhost'
+          : 'Some MCP servers not bound to localhost - may be network accessible',
+        fixable: false,
+        guidance: 'MCP servers running over network (SSE/HTTP) without authentication let any network-adjacent attacker connect and issue tool calls.',
+      });
+    }
 
     // MCP-009: Check for sensitive tool names
     const sensitiveTools = ['execute', 'shell', 'eval', 'system', 'exec', 'spawn'];
@@ -7514,19 +7881,23 @@ dist/
       }
     }
 
-    findings.push({
-      checkId: 'MCP-009',
-      name: 'Sensitive MCP Tools',
-      description: 'MCP configuration includes potentially dangerous tools',
-      category: 'mcp',
-      severity: 'high',
-      passed: !hasSensitiveTools,
-      message: hasSensitiveTools
-        ? 'Sensitive tool names detected (shell, exec, eval) - ensure proper restrictions'
-        : 'No obviously sensitive tool names in MCP config',
-      fixable: false,
-      guidance: 'Tools named shell, exec, or eval typically provide arbitrary code execution. A prompt injection that invokes these tools can fully compromise the host system.',
-    });
+    if (mcpReadExt.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'MCP-009', name: 'Sensitive MCP Tools', description: 'MCP configuration includes potentially dangerous tools', category: 'mcp' }, 'mcp.json', 'No mcp.json in the scanned tree. This check reads only mcp.json, so MCP servers configured elsewhere (for example .mcp.json) are outside its scope.'));
+    } else if (mcpReadExt.state === 'read') {
+      findings.push({
+        checkId: 'MCP-009',
+        name: 'Sensitive MCP Tools',
+        description: 'MCP configuration includes potentially dangerous tools',
+        category: 'mcp',
+        severity: 'high',
+        passed: !hasSensitiveTools,
+        message: hasSensitiveTools
+          ? 'Sensitive tool names detected (shell, exec, eval) - ensure proper restrictions'
+          : 'No obviously sensitive tool names in MCP config',
+        fixable: false,
+        guidance: 'Tools named shell, exec, or eval typically provide arbitrary code execution. A prompt injection that invokes these tools can fully compromise the host system.',
+      });
+    }
 
     // MCP-010: Check for logging configuration
     let hasLogging = false;
@@ -7564,9 +7935,9 @@ dist/
 
     // NET-003: Check for HTTPS enforcement
     let hasHttpsEnforcement = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadNet003 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadNet003.state === 'read') {
+      for (const file of dirReadNet003.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -7577,29 +7948,33 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'NET-003',
-      name: 'HTTPS Configuration',
-      description: 'No HTTPS/TLS configuration detected',
-      category: 'network',
-      severity: 'high',
-      passed: hasHttpsEnforcement,
-      message: hasHttpsEnforcement
-        ? 'HTTPS/TLS configuration detected'
-        : 'No HTTPS configuration found - ensure production uses TLS',
-      fixable: false,
-      guidance: 'Without TLS, all traffic including API keys, tokens, and user data is transmitted in plaintext. Anyone on the network can intercept and read it.',
-    });
+    if (dirReadNet003.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'NET-003', name: 'HTTPS Configuration', description: 'No HTTPS/TLS configuration detected', category: 'network' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadNet003.state === 'read') {
+      findings.push({
+        checkId: 'NET-003',
+        name: 'HTTPS Configuration',
+        description: 'No HTTPS/TLS configuration detected',
+        category: 'network',
+        severity: 'high',
+        passed: hasHttpsEnforcement,
+        message: hasHttpsEnforcement
+          ? 'HTTPS/TLS configuration detected'
+          : 'No HTTPS configuration found - ensure production uses TLS',
+        fixable: false,
+        guidance: 'Without TLS, all traffic including API keys, tokens, and user data is transmitted in plaintext. Anyone on the network can intercept and read it.',
+      });
+    }
 
     // NET-004: Check for exposed debug endpoints
     let hasDebugEndpoints = false;
     const debugEndpoints = ['/debug', '/admin', '/metrics', '/health', '/status', '/__debug'];
 
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadNet004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadNet004.state === 'read') {
+      for (const file of dirReadNet004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -7612,32 +7987,39 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'NET-004',
-      name: 'Debug Endpoints',
-      description: 'Debug or admin endpoints may be exposed',
-      category: 'network',
-      severity: 'medium',
-      passed: !hasDebugEndpoints,
-      message: hasDebugEndpoints
-        ? 'Debug/admin endpoints detected - ensure they are protected or disabled in production'
-        : 'No obvious debug endpoints found',
-      fixable: false,
-      guidance: 'Debug and admin endpoints expose internal state, configuration, and metrics. Attackers use these to map your infrastructure and find weaknesses.',
-    });
+    if (dirReadNet004.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'NET-004', name: 'Debug Endpoints', description: 'Debug or admin endpoints may be exposed', category: 'network' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadNet004.state === 'read') {
+      findings.push({
+        checkId: 'NET-004',
+        name: 'Debug Endpoints',
+        description: 'Debug or admin endpoints may be exposed',
+        category: 'network',
+        severity: 'medium',
+        passed: !hasDebugEndpoints,
+        message: hasDebugEndpoints
+          ? 'Debug/admin endpoints detected - ensure they are protected or disabled in production'
+          : 'No obvious debug endpoints found',
+        fixable: false,
+        guidance: 'Debug and admin endpoints expose internal state, configuration, and metrics. Attackers use these to map your infrastructure and find weaknesses.',
+      });
+    }
 
     // NET-005: Check for WebSocket security
     let hasWebsocket = false;
     let hasWsAuth = false;
 
-    try {
-      const pkgJson = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+    const pkgReadNet005 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadNet005.state === 'read') {
+      const pkgJson = pkgReadNet005.content;
       hasWebsocket = pkgJson.includes('ws') || pkgJson.includes('socket.io') || pkgJson.includes('websocket');
 
       if (hasWebsocket) {
-        const files = await fs.readdir(targetDir);
+        // #458: a listing failure must not escape the read branch; the tracked
+        // fs ledgers it, and an empty listing keeps today's verdict.
+        const files = await fs.readdir(targetDir).catch(() => [] as string[]);
         for (const file of files) {
           if (file.endsWith('.ts') || file.endsWith('.js')) {
             try {
@@ -7650,23 +8032,27 @@ dist/
           }
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'NET-005',
-      name: 'WebSocket Security',
-      description: 'WebSocket connections may lack authentication',
-      category: 'network',
-      severity: 'high',
-      passed: !hasWebsocket || hasWsAuth,
-      message: !hasWebsocket
-        ? 'No WebSocket usage detected'
-        : hasWsAuth
-          ? 'WebSocket authentication detected'
-          : 'WebSocket without obvious authentication - ensure connections are verified',
-      fixable: false,
-      guidance: 'Unauthenticated WebSocket connections let any client send commands to your backend. Unlike HTTP, WebSockets maintain persistent connections that bypass traditional request-based security.',
-    });
+    if (pkgReadNet005.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'NET-005', name: 'WebSocket Security', description: 'WebSocket connections may lack authentication', category: 'network' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadNet005.state === 'read') {
+      findings.push({
+        checkId: 'NET-005',
+        name: 'WebSocket Security',
+        description: 'WebSocket connections may lack authentication',
+        category: 'network',
+        severity: 'high',
+        passed: !hasWebsocket || hasWsAuth,
+        message: !hasWebsocket
+          ? 'No WebSocket usage detected'
+          : hasWsAuth
+            ? 'WebSocket authentication detected'
+            : 'WebSocket without obvious authentication - ensure connections are verified',
+        fixable: false,
+        guidance: 'Unauthenticated WebSocket connections let any client send commands to your backend. Unlike HTTP, WebSockets maintain persistent connections that bypass traditional request-based security.',
+      });
+    }
 
     // NET-006: Check for proxy configuration
     let hasProxyConfig = false;
@@ -7700,9 +8086,9 @@ dist/
 
     // API-001: Check for API versioning
     let hasApiVersioning = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadApi001 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadApi001.state === 'read') {
+      for (const file of dirReadApi001.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -7713,48 +8099,57 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'API-001',
-      name: 'API Versioning',
-      description: 'API versioning not detected',
-      category: 'api',
-      severity: 'low',
-      passed: hasApiVersioning,
-      message: hasApiVersioning
-        ? 'API versioning pattern detected'
-        : 'Consider implementing API versioning for backwards compatibility',
-      fixable: false,
-      guidance: 'Without API versioning, breaking changes affect all clients immediately. Versioning enables safe deprecation and prevents accidental security regressions.',
-    });
+    if (dirReadApi001.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'API-001', name: 'API Versioning', description: 'API versioning not detected', category: 'api' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadApi001.state === 'read') {
+      findings.push({
+        checkId: 'API-001',
+        name: 'API Versioning',
+        description: 'API versioning not detected',
+        category: 'api',
+        severity: 'low',
+        passed: hasApiVersioning,
+        message: hasApiVersioning
+          ? 'API versioning pattern detected'
+          : 'Consider implementing API versioning for backwards compatibility',
+        fixable: false,
+        guidance: 'Without API versioning, breaking changes affect all clients immediately. Versioning enables safe deprecation and prevents accidental security regressions.',
+      });
+    }
 
     // API-002: Check for API documentation
     let hasApiDocs = false;
-    try {
-      const pkgJson = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+    const pkgReadApi002 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadApi002.state === 'read') {
+      const pkgJson = pkgReadApi002.content;
       hasApiDocs = pkgJson.includes('swagger') || pkgJson.includes('openapi') || pkgJson.includes('@apidevtools');
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'API-002',
-      name: 'API Documentation',
-      description: 'No API documentation library detected',
-      category: 'api',
-      severity: 'low',
-      passed: hasApiDocs,
-      message: hasApiDocs
-        ? 'API documentation library detected'
-        : 'Consider adding OpenAPI/Swagger documentation',
-      fixable: false,
-      guidance: 'Undocumented APIs are harder to use correctly and easier to misuse. Clear documentation reduces the chance of insecure integrations by consumers.',
-    });
+    if (pkgReadApi002.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'API-002', name: 'API Documentation', description: 'No API documentation library detected', category: 'api' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadApi002.state === 'read') {
+      findings.push({
+        checkId: 'API-002',
+        name: 'API Documentation',
+        description: 'No API documentation library detected',
+        category: 'api',
+        severity: 'low',
+        passed: hasApiDocs,
+        message: hasApiDocs
+          ? 'API documentation library detected'
+          : 'Consider adding OpenAPI/Swagger documentation',
+        fixable: false,
+        guidance: 'Undocumented APIs are harder to use correctly and easier to misuse. Clear documentation reduces the chance of insecure integrations by consumers.',
+      });
+    }
 
     // API-003: Check for API key in URL
     let hasKeyInUrl = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadApi003 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadApi003.state === 'read') {
+      for (const file of dirReadApi003.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -7767,27 +8162,31 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'API-003',
-      name: 'API Key in URL',
-      description: 'API keys may be passed in URL query parameters',
-      category: 'api',
-      severity: 'high',
-      passed: !hasKeyInUrl,
-      message: hasKeyInUrl
-        ? 'API key in URL pattern detected - use headers instead'
-        : 'No obvious API key in URL patterns found',
-      fixable: false,
-      guidance: 'API keys in URLs are logged by browsers, proxies, and web servers. They appear in referrer headers and browser history, making them easy to steal.',
-    });
+    if (dirReadApi003.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'API-003', name: 'API Key in URL', description: 'API keys may be passed in URL query parameters', category: 'api' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadApi003.state === 'read') {
+      findings.push({
+        checkId: 'API-003',
+        name: 'API Key in URL',
+        description: 'API keys may be passed in URL query parameters',
+        category: 'api',
+        severity: 'high',
+        passed: !hasKeyInUrl,
+        message: hasKeyInUrl
+          ? 'API key in URL pattern detected - use headers instead'
+          : 'No obvious API key in URL patterns found',
+        fixable: false,
+        guidance: 'API keys in URLs are logged by browsers, proxies, and web servers. They appear in referrer headers and browser history, making them easy to steal.',
+      });
+    }
 
     // API-004: Check for response headers security
     let hasSecurityHeaders = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadApi004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadApi004.state === 'read') {
+      for (const file of dirReadApi004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -7798,21 +8197,25 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'API-004',
-      name: 'API Security Headers',
-      description: 'Security headers not explicitly set',
-      category: 'api',
-      severity: 'medium',
-      passed: hasSecurityHeaders,
-      message: hasSecurityHeaders
-        ? 'Security headers detected in responses'
-        : 'Add security headers (X-Content-Type-Options, X-Frame-Options, CSP)',
-      fixable: false,
-      guidance: 'Missing security headers like X-Frame-Options and CSP leave your API responses vulnerable to clickjacking, MIME-sniffing, and cross-site scripting attacks.',
-    });
+    if (dirReadApi004.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'API-004', name: 'API Security Headers', description: 'Security headers not explicitly set', category: 'api' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadApi004.state === 'read') {
+      findings.push({
+        checkId: 'API-004',
+        name: 'API Security Headers',
+        description: 'Security headers not explicitly set',
+        category: 'api',
+        severity: 'medium',
+        passed: hasSecurityHeaders,
+        message: hasSecurityHeaders
+          ? 'Security headers detected in responses'
+          : 'Add security headers (X-Content-Type-Options, X-Frame-Options, CSP)',
+        fixable: false,
+        guidance: 'Missing security headers like X-Frame-Options and CSP leave your API responses vulnerable to clickjacking, MIME-sniffing, and cross-site scripting attacks.',
+      });
+    }
 
     return findings;
   }
@@ -7825,56 +8228,66 @@ dist/
 
     // SEC-001: Check for secret management tools
     let hasSecretManager = false;
-    try {
-      const pkgJson = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+    const pkgReadSec001 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadSec001.state === 'read') {
+      const pkgJson = pkgReadSec001.content;
       hasSecretManager = pkgJson.includes('vault') || pkgJson.includes('aws-sdk') || pkgJson.includes('dotenv-vault') || pkgJson.includes('1password');
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'SEC-001',
-      name: 'Secret Management',
-      description: 'No secret management tool detected',
-      category: 'secrets',
-      severity: 'medium',
-      passed: hasSecretManager,
-      message: hasSecretManager
-        ? 'Secret management capability detected'
-        : 'Consider using a secret manager (Vault, AWS Secrets Manager, doppler)',
-      fixable: false,
-      guidance: 'Without a secret manager, credentials end up in .env files, config files, or source code where they can be leaked through version control or log files.',
-    });
+    if (pkgReadSec001.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'SEC-001', name: 'Secret Management', description: 'No secret management tool detected', category: 'secrets' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadSec001.state === 'read') {
+      findings.push({
+        checkId: 'SEC-001',
+        name: 'Secret Management',
+        description: 'No secret management tool detected',
+        category: 'secrets',
+        severity: 'medium',
+        passed: hasSecretManager,
+        message: hasSecretManager
+          ? 'Secret management capability detected'
+          : 'Consider using a secret manager (Vault, AWS Secrets Manager, doppler)',
+        fixable: false,
+        guidance: 'Without a secret manager, credentials end up in .env files, config files, or source code where they can be leaked through version control or log files.',
+      });
+    }
 
     // SEC-002: Check for encryption library
     let hasEncryption = false;
-    try {
-      const pkgJson = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+    const pkgReadSec002 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadSec002.state === 'read') {
+      const pkgJson = pkgReadSec002.content;
       hasEncryption = pkgJson.includes('crypto') || pkgJson.includes('bcrypt') || pkgJson.includes('argon2') || pkgJson.includes('sodium');
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'SEC-002',
-      name: 'Encryption Library',
-      description: 'No encryption library detected',
-      category: 'secrets',
-      severity: 'medium',
-      passed: hasEncryption,
-      message: hasEncryption
-        ? 'Encryption library detected'
-        : 'Consider using encryption for sensitive data (bcrypt, argon2)',
-      fixable: false,
-      guidance: 'Without encryption, sensitive data like passwords and tokens are stored in plaintext. A database breach or file leak exposes everything immediately.',
-    });
+    if (pkgReadSec002.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'SEC-002', name: 'Encryption Library', description: 'No encryption library detected', category: 'secrets' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadSec002.state === 'read') {
+      findings.push({
+        checkId: 'SEC-002',
+        name: 'Encryption Library',
+        description: 'No encryption library detected',
+        category: 'secrets',
+        severity: 'medium',
+        passed: hasEncryption,
+        message: hasEncryption
+          ? 'Encryption library detected'
+          : 'Consider using encryption for sensitive data (bcrypt, argon2)',
+        fixable: false,
+        guidance: 'Without encryption, sensitive data like passwords and tokens are stored in plaintext. A database breach or file leak exposes everything immediately.',
+      });
+    }
 
     // SEC-003: Check for key rotation support
     let hasKeyRotation = false;
-    try {
-      // Dirents, not names: this probe reads EVERY root entry, and a directory
-      // at mode 000 fails open() with EACCES before EISDIR can say "not a
-      // file" — which put `.git`/`node_modules` on the coverage ledger as an
-      // unread FILE at standard depth (#588). A directory is never this
-      // probe's input; a file, symlink or anything else keeps today's read.
-      const entries = await fs.readdir(targetDir, { withFileTypes: true });
-      for (const entry of entries) {
+    // Dirents, not names: this probe reads EVERY root entry, and a directory
+    // at mode 000 fails open() with EACCES before EISDIR can say "not a
+    // file" — which put `.git`/`node_modules` on the coverage ledger as an
+    // unread FILE at standard depth (#588). A directory is never this
+    // probe's input; a file, symlink or anything else keeps today's read.
+    const dirReadSec003 = await readCheckDirents(targetDir, (entry) => !entry.isDirectory());
+    if (dirReadSec003.state === 'read') {
+      for (const entry of dirReadSec003.entries) {
         if (entry.isDirectory()) continue;
         const file = entry.name;
         try {
@@ -7885,29 +8298,33 @@ dist/
           }
         } catch {}
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'SEC-003',
-      name: 'Key Rotation Support',
-      description: 'No key rotation mechanism detected',
-      category: 'secrets',
-      severity: 'low',
-      passed: hasKeyRotation,
-      message: hasKeyRotation
-        ? 'Key rotation support detected'
-        : 'Consider implementing key rotation for long-lived secrets',
-      fixable: false,
-      guidance: 'Without key rotation, a single compromised key grants permanent access. Regular rotation limits the window of exposure when a key is leaked.',
-    });
+    if (dirReadSec003.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'SEC-003', name: 'Key Rotation Support', description: 'No key rotation mechanism detected', category: 'secrets' }, 'files at the scanned root', 'No files at the scanned root, so there is nothing to inspect.'));
+    } else if (dirReadSec003.state === 'read') {
+      findings.push({
+        checkId: 'SEC-003',
+        name: 'Key Rotation Support',
+        description: 'No key rotation mechanism detected',
+        category: 'secrets',
+        severity: 'low',
+        passed: hasKeyRotation,
+        message: hasKeyRotation
+          ? 'Key rotation support detected'
+          : 'Consider implementing key rotation for long-lived secrets',
+        fixable: false,
+        guidance: 'Without key rotation, a single compromised key grants permanent access. Regular rotation limits the window of exposure when a key is leaked.',
+      });
+    }
 
     // SEC-004: Check for hardcoded connection strings
     let hasHardcodedConnStr = false;
     const connPatterns = ['mongodb://', 'postgres://', 'mysql://', 'redis://', 'amqp://'];
 
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadSec004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json'));
+    if (dirReadSec004.state === 'read') {
+      for (const file of dirReadSec004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -7920,22 +8337,26 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'SEC-004',
-      name: 'Hardcoded Connection Strings',
-      description: 'Connection strings may be hardcoded',
-      category: 'secrets',
-      severity: 'critical',
-      passed: !hasHardcodedConnStr,
-      message: hasHardcodedConnStr
-        ? 'Hardcoded connection strings detected'
-        : 'No hardcoded connection strings found',
-      fixable: false,
-      fix: hasHardcodedConnStr ? 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.' : undefined,
-      guidance: 'Hardcoded connection strings contain database hostnames, ports, and credentials. Anyone with code access can connect directly to your database.',
-    });
+    if (dirReadSec004.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'SEC-004', name: 'Hardcoded Connection Strings', description: 'Connection strings may be hardcoded', category: 'secrets' }, 'source or config files (.ts, .js, .json)', 'No .ts, .js or .json files at the scanned root, so there is nothing to inspect.'));
+    } else if (dirReadSec004.state === 'read') {
+      findings.push({
+        checkId: 'SEC-004',
+        name: 'Hardcoded Connection Strings',
+        description: 'Connection strings may be hardcoded',
+        category: 'secrets',
+        severity: 'critical',
+        passed: !hasHardcodedConnStr,
+        message: hasHardcodedConnStr
+          ? 'Hardcoded connection strings detected'
+          : 'No hardcoded connection strings found',
+        fixable: false,
+        fix: hasHardcodedConnStr ? 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.' : undefined,
+        guidance: 'Hardcoded connection strings contain database hostnames, ports, and credentials. Anyone with code access can connect directly to your database.',
+      });
+    }
 
     return findings;
   }
@@ -7950,12 +8371,15 @@ dist/
     let hasFileUpload = false;
     let hasUploadSecurity = false;
 
-    try {
-      const pkgJson = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+    const pkgReadIo001 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadIo001.state === 'read') {
+      const pkgJson = pkgReadIo001.content;
       hasFileUpload = pkgJson.includes('multer') || pkgJson.includes('formidable') || pkgJson.includes('busboy');
 
       if (hasFileUpload) {
-        const files = await fs.readdir(targetDir);
+        // #458: a listing failure must not escape the read branch; the tracked
+        // fs ledgers it, and an empty listing keeps today's verdict.
+        const files = await fs.readdir(targetDir).catch(() => [] as string[]);
         for (const file of files) {
           if (file.endsWith('.ts') || file.endsWith('.js')) {
             try {
@@ -7968,80 +8392,94 @@ dist/
           }
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'IO-001',
-      name: 'File Upload Security',
-      description: 'File upload without proper validation',
-      category: 'io',
-      severity: 'high',
-      passed: !hasFileUpload || hasUploadSecurity,
-      message: !hasFileUpload
-        ? 'No file upload handling detected'
-        : hasUploadSecurity
-          ? 'File upload validation detected'
-          : 'File upload without obvious validation - add file type/size limits',
-      fixable: false,
-      guidance: 'Unrestricted file uploads let attackers send malicious executables, web shells, or oversized files that can compromise the server or exhaust disk space.',
-    });
+    if (pkgReadIo001.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'IO-001', name: 'File Upload Security', description: 'File upload without proper validation', category: 'io' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadIo001.state === 'read') {
+      findings.push({
+        checkId: 'IO-001',
+        name: 'File Upload Security',
+        description: 'File upload without proper validation',
+        category: 'io',
+        severity: 'high',
+        passed: !hasFileUpload || hasUploadSecurity,
+        message: !hasFileUpload
+          ? 'No file upload handling detected'
+          : hasUploadSecurity
+            ? 'File upload validation detected'
+            : 'File upload without obvious validation - add file type/size limits',
+        fixable: false,
+        guidance: 'Unrestricted file uploads let attackers send malicious executables, web shells, or oversized files that can compromise the server or exhaust disk space.',
+      });
+    }
 
     // IO-002: Check for SQL/NoSQL injection protection
     let hasDbLibrary = false;
     let hasParameterization = false;
 
-    try {
-      const pkgJson = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+    const pkgReadIo002 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadIo002.state === 'read') {
+      const pkgJson = pkgReadIo002.content;
       hasDbLibrary = pkgJson.includes('pg') || pkgJson.includes('mysql') || pkgJson.includes('mongodb') || pkgJson.includes('prisma') || pkgJson.includes('sequelize');
 
       if (hasDbLibrary) {
         // ORMs and query builders generally handle parameterization
         hasParameterization = pkgJson.includes('prisma') || pkgJson.includes('sequelize') || pkgJson.includes('typeorm') || pkgJson.includes('knex');
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'IO-002',
-      name: 'Query Parameterization',
-      description: 'Database queries may be vulnerable to injection',
-      category: 'io',
-      severity: 'critical',
-      passed: !hasDbLibrary || hasParameterization,
-      message: !hasDbLibrary
-        ? 'No database library detected'
-        : hasParameterization
-          ? 'ORM/query builder detected - provides parameterization'
-          : 'Raw database driver detected - ensure parameterized queries are used',
-      fixable: false,
-      guidance: 'Raw database queries built with string concatenation let attackers inject SQL or NoSQL commands that can read, modify, or delete all data in the database.',
-    });
+    if (pkgReadIo002.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'IO-002', name: 'Query Parameterization', description: 'Database queries may be vulnerable to injection', category: 'io' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadIo002.state === 'read') {
+      findings.push({
+        checkId: 'IO-002',
+        name: 'Query Parameterization',
+        description: 'Database queries may be vulnerable to injection',
+        category: 'io',
+        severity: 'critical',
+        passed: !hasDbLibrary || hasParameterization,
+        message: !hasDbLibrary
+          ? 'No database library detected'
+          : hasParameterization
+            ? 'ORM/query builder detected - provides parameterization'
+            : 'Raw database driver detected - ensure parameterized queries are used',
+        fixable: false,
+        guidance: 'Raw database queries built with string concatenation let attackers inject SQL or NoSQL commands that can read, modify, or delete all data in the database.',
+      });
+    }
 
     // IO-003: Check for XSS protection
     let hasXssProtection = false;
-    try {
-      const pkgJson = await fs.readFile(path.join(targetDir, 'package.json'), 'utf-8');
+    const pkgReadIo003 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadIo003.state === 'read') {
+      const pkgJson = pkgReadIo003.content;
       hasXssProtection = pkgJson.includes('xss') || pkgJson.includes('sanitize') || pkgJson.includes('DOMPurify') || pkgJson.includes('helmet');
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'IO-003',
-      name: 'XSS Protection',
-      description: 'No XSS protection library detected',
-      category: 'io',
-      severity: 'high',
-      passed: hasXssProtection,
-      message: hasXssProtection
-        ? 'XSS protection library detected'
-        : 'No XSS protection library found - sanitize user input before rendering',
-      fixable: false,
-      guidance: 'Without XSS protection, user-supplied content rendered in the browser can execute arbitrary JavaScript, stealing session tokens and user data.',
-    });
+    if (pkgReadIo003.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'IO-003', name: 'XSS Protection', description: 'No XSS protection library detected', category: 'io' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadIo003.state === 'read') {
+      findings.push({
+        checkId: 'IO-003',
+        name: 'XSS Protection',
+        description: 'No XSS protection library detected',
+        category: 'io',
+        severity: 'high',
+        passed: hasXssProtection,
+        message: hasXssProtection
+          ? 'XSS protection library detected'
+          : 'No XSS protection library found - sanitize user input before rendering',
+        fixable: false,
+        guidance: 'Without XSS protection, user-supplied content rendered in the browser can execute arbitrary JavaScript, stealing session tokens and user data.',
+      });
+    }
 
     // IO-004: Check for path traversal protection
     let hasPathTraversal = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadIo004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadIo004.state === 'read') {
+      for (const file of dirReadIo004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -8054,21 +8492,25 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'IO-004',
-      name: 'Path Traversal Protection',
-      description: 'Potential path traversal vulnerability',
-      category: 'io',
-      severity: 'high',
-      passed: !hasPathTraversal,
-      message: hasPathTraversal
-        ? 'Potential path traversal detected - use path.resolve/normalize'
-        : 'No obvious path traversal vulnerabilities found',
-      fixable: false,
-      guidance: 'Path traversal (../) in file paths lets attackers read sensitive files like /etc/passwd or .env by escaping the intended directory.',
-    });
+    if (dirReadIo004.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'IO-004', name: 'Path Traversal Protection', description: 'Potential path traversal vulnerability', category: 'io' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadIo004.state === 'read') {
+      findings.push({
+        checkId: 'IO-004',
+        name: 'Path Traversal Protection',
+        description: 'Potential path traversal vulnerability',
+        category: 'io',
+        severity: 'high',
+        passed: !hasPathTraversal,
+        message: hasPathTraversal
+          ? 'Potential path traversal detected - use path.resolve/normalize'
+          : 'No obvious path traversal vulnerabilities found',
+        fixable: false,
+        guidance: 'Path traversal (../) in file paths lets attackers read sensitive files like /etc/passwd or .env by escaping the intended directory.',
+      });
+    }
 
     return findings;
   }
@@ -8082,110 +8524,138 @@ dist/
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
 
-    // PROMPT-001: Check for system prompt boundary markers
-    let hasPromptBoundaries = false;
+    // PROMPT-001: Check for system prompt boundary markers.
+    // #458 — errno-gated: absent subject => not-applicable record; unread
+    // subject => no record (the ledger's unreadable-inputs channel carries
+    // the obstruction); read subject => measured pass/fail, unchanged.
     const claudeMdPath = path.join(targetDir, 'CLAUDE.md');
-    try {
-      const content = await fs.readFile(claudeMdPath, 'utf-8');
-      hasPromptBoundaries =
+    const claudeMdRead = await readCheckSubject(claudeMdPath);
+    if (claudeMdRead.state === 'absent') {
+      findings.push({
+        checkId: 'PROMPT-001',
+        name: 'Prompt Boundary Markers',
+        description: 'System prompts should have clear boundary markers to prevent injection',
+        category: 'prompt-security',
+        notApplicable: {
+          subject: 'CLAUDE.md',
+          reason: 'No CLAUDE.md in the scanned tree, so there is no system prompt file whose boundary markers could be measured.',
+        },
+        message: 'Not applicable: no CLAUDE.md to measure for prompt boundary markers',
+        fixable: false,
+      });
+    } else if (claudeMdRead.state === 'read') {
+      const content = claudeMdRead.content;
+      const hasPromptBoundaries =
         content.includes('SYSTEM:') ||
         content.includes('USER:') ||
         content.includes('---') ||
         content.includes('###') ||
         content.toLowerCase().includes('do not follow instructions') ||
         content.toLowerCase().includes('ignore attempts to');
-    } catch {}
 
-    findings.push({
-      checkId: 'PROMPT-001',
-      name: 'Prompt Boundary Markers',
-      description: 'System prompts should have clear boundary markers to prevent injection',
-      category: 'prompt-security',
-      severity: 'high',
-      passed: hasPromptBoundaries,
-      message: hasPromptBoundaries
-        ? 'Prompt boundaries detected in CLAUDE.md'
-        : 'Consider adding prompt boundary markers to prevent injection attacks',
-      fixable: false,
-      guidance: 'Without clear boundary markers, attackers can inject instructions that blend with the system prompt, making it impossible for the model to distinguish trusted from untrusted content.',
-    });
+      findings.push({
+        checkId: 'PROMPT-001',
+        name: 'Prompt Boundary Markers',
+        description: 'System prompts should have clear boundary markers to prevent injection',
+        category: 'prompt-security',
+        severity: 'high',
+        passed: hasPromptBoundaries,
+        message: hasPromptBoundaries
+          ? 'Prompt boundaries detected in CLAUDE.md'
+          : 'Consider adding prompt boundary markers to prevent injection attacks',
+        fixable: false,
+        guidance: 'Without clear boundary markers, attackers can inject instructions that blend with the system prompt, making it impossible for the model to distinguish trusted from untrusted content.',
+      });
+    }
 
     // PROMPT-002: Check for injection defense instructions
     let hasInjectionDefense = false;
-    try {
-      const content = await fs.readFile(claudeMdPath, 'utf-8');
+    if (claudeMdRead.state === 'read') {
+      const content = claudeMdRead.content;
       hasInjectionDefense =
         content.toLowerCase().includes('injection') ||
         content.toLowerCase().includes('malicious') ||
         content.toLowerCase().includes('untrusted') ||
         content.toLowerCase().includes('sanitize') ||
         content.toLowerCase().includes('validate input');
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'PROMPT-002',
-      name: 'Injection Defense Instructions',
-      description: 'System prompts should include injection defense guidance',
-      category: 'prompt-security',
-      severity: 'medium',
-      passed: hasInjectionDefense,
-      message: hasInjectionDefense
-        ? 'Injection defense instructions found'
-        : 'Consider adding injection defense instructions to system prompts',
-      fixable: false,
-      guidance: 'System prompts without injection defenses can be overridden by user inputs that say "ignore previous instructions", bypassing all safety rules.',
-    });
+    if (claudeMdRead.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'PROMPT-002', name: 'Injection Defense Instructions', description: 'System prompts should include injection defense guidance', category: 'prompt-security' }, 'CLAUDE.md', 'No CLAUDE.md in the scanned tree, so there is no system prompt file to inspect.'));
+    } else if (claudeMdRead.state === 'read') {
+      findings.push({
+        checkId: 'PROMPT-002',
+        name: 'Injection Defense Instructions',
+        description: 'System prompts should include injection defense guidance',
+        category: 'prompt-security',
+        severity: 'medium',
+        passed: hasInjectionDefense,
+        message: hasInjectionDefense
+          ? 'Injection defense instructions found'
+          : 'Consider adding injection defense instructions to system prompts',
+        fixable: false,
+        guidance: 'System prompts without injection defenses can be overridden by user inputs that say "ignore previous instructions", bypassing all safety rules.',
+      });
+    }
 
     // PROMPT-003: Check for output constraints
     let hasOutputConstraints = false;
-    try {
-      const content = await fs.readFile(claudeMdPath, 'utf-8');
+    if (claudeMdRead.state === 'read') {
+      const content = claudeMdRead.content;
       hasOutputConstraints =
         content.toLowerCase().includes('never output') ||
         content.toLowerCase().includes('do not reveal') ||
         content.toLowerCase().includes('do not disclose') ||
         content.toLowerCase().includes('keep confidential') ||
         content.toLowerCase().includes('do not share');
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'PROMPT-003',
-      name: 'Output Confidentiality Rules',
-      description: 'System prompts should define output confidentiality constraints',
-      category: 'prompt-security',
-      severity: 'medium',
-      passed: hasOutputConstraints,
-      message: hasOutputConstraints
-        ? 'Output confidentiality rules defined'
-        : 'Consider defining what information should not be disclosed',
-      fixable: false,
-      guidance: 'Without output confidentiality rules, the agent may freely reveal system prompts, internal tool names, API keys, or other sensitive context when asked.',
-    });
+    if (claudeMdRead.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'PROMPT-003', name: 'Output Confidentiality Rules', description: 'System prompts should define output confidentiality constraints', category: 'prompt-security' }, 'CLAUDE.md', 'No CLAUDE.md in the scanned tree, so there is no system prompt file to inspect.'));
+    } else if (claudeMdRead.state === 'read') {
+      findings.push({
+        checkId: 'PROMPT-003',
+        name: 'Output Confidentiality Rules',
+        description: 'System prompts should define output confidentiality constraints',
+        category: 'prompt-security',
+        severity: 'medium',
+        passed: hasOutputConstraints,
+        message: hasOutputConstraints
+          ? 'Output confidentiality rules defined'
+          : 'Consider defining what information should not be disclosed',
+        fixable: false,
+        guidance: 'Without output confidentiality rules, the agent may freely reveal system prompts, internal tool names, API keys, or other sensitive context when asked.',
+      });
+    }
 
     // PROMPT-004: Check for role confusion protection
     let hasRoleProtection = false;
-    try {
-      const content = await fs.readFile(claudeMdPath, 'utf-8');
+    if (claudeMdRead.state === 'read') {
+      const content = claudeMdRead.content;
       hasRoleProtection =
         content.toLowerCase().includes('you are') ||
         content.toLowerCase().includes('your role') ||
         content.toLowerCase().includes('as an assistant') ||
         content.toLowerCase().includes('maintain your role');
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'PROMPT-004',
-      name: 'Role Definition Protection',
-      description: 'System prompts should clearly define the AI role to prevent confusion attacks',
-      category: 'prompt-security',
-      severity: 'low',
-      passed: hasRoleProtection,
-      message: hasRoleProtection
-        ? 'Role definition found in prompts'
-        : 'Consider clearly defining the AI role to prevent role confusion attacks',
-      fixable: false,
-      guidance: 'Without a clear role definition, attackers can use "you are now a hacker assistant" style prompts to override the agent identity and bypass safety constraints.',
-    });
+    if (claudeMdRead.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'PROMPT-004', name: 'Role Definition Protection', description: 'System prompts should clearly define the AI role to prevent confusion attacks', category: 'prompt-security' }, 'CLAUDE.md', 'No CLAUDE.md in the scanned tree, so there is no system prompt file to inspect.'));
+    } else if (claudeMdRead.state === 'read') {
+      findings.push({
+        checkId: 'PROMPT-004',
+        name: 'Role Definition Protection',
+        description: 'System prompts should clearly define the AI role to prevent confusion attacks',
+        category: 'prompt-security',
+        severity: 'low',
+        passed: hasRoleProtection,
+        message: hasRoleProtection
+          ? 'Role definition found in prompts'
+          : 'Consider clearly defining the AI role to prevent role confusion attacks',
+        fixable: false,
+        guidance: 'Without a clear role definition, attackers can use "you are now a hacker assistant" style prompts to override the agent identity and bypass safety constraints.',
+      });
+    }
 
     return findings;
   }
@@ -8201,9 +8671,9 @@ dist/
 
     // INJ-001: Check for input validation in MCP handlers
     let hasInputValidation = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadInj001 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadInj001.state === 'read') {
+      for (const file of dirReadInj001.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -8221,27 +8691,31 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'INJ-001',
-      name: 'Input Validation Library',
-      description: 'Applications should use schema validation for inputs',
-      category: 'input-validation',
-      severity: 'high',
-      passed: hasInputValidation,
-      message: hasInputValidation
-        ? 'Input validation library detected'
-        : 'Consider using zod, joi, or similar for input validation',
-      fixable: false,
-      guidance: 'Without schema validation, any malformed or malicious input reaches your application logic. This is the root cause of injection, overflow, and type confusion attacks.',
-    });
+    if (dirReadInj001.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'INJ-001', name: 'Input Validation Library', description: 'Applications should use schema validation for inputs', category: 'input-validation' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadInj001.state === 'read') {
+      findings.push({
+        checkId: 'INJ-001',
+        name: 'Input Validation Library',
+        description: 'Applications should use schema validation for inputs',
+        category: 'input-validation',
+        severity: 'high',
+        passed: hasInputValidation,
+        message: hasInputValidation
+          ? 'Input validation library detected'
+          : 'Consider using zod, joi, or similar for input validation',
+        fixable: false,
+        guidance: 'Without schema validation, any malformed or malicious input reaches your application logic. This is the root cause of injection, overflow, and type confusion attacks.',
+      });
+    }
 
     // INJ-002: Check for XSS protection patterns
     let hasXssProtection = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadInj002 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadInj002.state === 'read') {
+      for (const file of dirReadInj002.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -8258,27 +8732,31 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'INJ-002',
-      name: 'XSS Protection',
-      description: 'Output should be properly escaped to prevent XSS',
-      category: 'input-validation',
-      severity: 'high',
-      passed: hasXssProtection,
-      message: hasXssProtection
-        ? 'XSS protection patterns detected'
-        : 'Consider implementing output escaping for user-facing content',
-      fixable: false,
-      guidance: 'Unescaped user content rendered in HTML lets attackers inject scripts that steal cookies, hijack sessions, and impersonate users.',
-    });
+    if (dirReadInj002.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'INJ-002', name: 'XSS Protection', description: 'Output should be properly escaped to prevent XSS', category: 'input-validation' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadInj002.state === 'read') {
+      findings.push({
+        checkId: 'INJ-002',
+        name: 'XSS Protection',
+        description: 'Output should be properly escaped to prevent XSS',
+        category: 'input-validation',
+        severity: 'high',
+        passed: hasXssProtection,
+        message: hasXssProtection
+          ? 'XSS protection patterns detected'
+          : 'Consider implementing output escaping for user-facing content',
+        fixable: false,
+        guidance: 'Unescaped user content rendered in HTML lets attackers inject scripts that steal cookies, hijack sessions, and impersonate users.',
+      });
+    }
 
     // INJ-003: Check for SQL injection protection
     let hasSqlProtection = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadInj003 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadInj003.state === 'read') {
+      for (const file of dirReadInj003.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -8297,28 +8775,32 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'INJ-003',
-      name: 'SQL Injection Protection',
-      description: 'Database queries should use parameterized statements',
-      category: 'input-validation',
-      severity: 'critical',
-      passed: hasSqlProtection,
-      message: hasSqlProtection
-        ? 'Parameterized queries or ORM detected'
-        : 'Ensure all database queries use parameterized statements',
-      fixable: false,
-      guidance: 'SQL injection via string concatenation lets attackers read, modify, or delete any data in your database. Parameterized queries prevent this entirely.',
-    });
+    if (dirReadInj003.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'INJ-003', name: 'SQL Injection Protection', description: 'Database queries should use parameterized statements', category: 'input-validation' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadInj003.state === 'read') {
+      findings.push({
+        checkId: 'INJ-003',
+        name: 'SQL Injection Protection',
+        description: 'Database queries should use parameterized statements',
+        category: 'input-validation',
+        severity: 'critical',
+        passed: hasSqlProtection,
+        message: hasSqlProtection
+          ? 'Parameterized queries or ORM detected'
+          : 'Ensure all database queries use parameterized statements',
+        fixable: false,
+        guidance: 'SQL injection via string concatenation lets attackers read, modify, or delete any data in your database. Parameterized queries prevent this entirely.',
+      });
+    }
 
     // INJ-004: Check for command injection protection
     let hasCmdProtection = false;
-    try {
-      const files = await fs.readdir(targetDir);
+    const dirReadInj004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadInj004.state === 'read') {
       let hasExec = false;
-      for (const file of files) {
+      for (const file of dirReadInj004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -8337,23 +8819,25 @@ dist/
         }
       }
       if (!hasExec) hasCmdProtection = true; // No exec calls found
-    } catch {
-      hasCmdProtection = true;
     }
 
-    findings.push({
-      checkId: 'INJ-004',
-      name: 'Command Injection Protection',
-      description: 'Shell commands should use safe execution patterns',
-      category: 'input-validation',
-      severity: 'critical',
-      passed: hasCmdProtection,
-      message: hasCmdProtection
-        ? 'Safe command execution patterns detected or no shell commands found'
-        : 'Use execFile instead of exec, or disable shell interpolation',
-      fixable: false,
-      guidance: 'Using exec() with user-controlled input lets attackers inject shell metacharacters (;, |, $()) to run arbitrary commands on the host system.',
-    });
+    if (dirReadInj004.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'INJ-004', name: 'Command Injection Protection', description: 'Shell commands should use safe execution patterns', category: 'input-validation' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadInj004.state === 'read') {
+      findings.push({
+        checkId: 'INJ-004',
+        name: 'Command Injection Protection',
+        description: 'Shell commands should use safe execution patterns',
+        category: 'input-validation',
+        severity: 'critical',
+        passed: hasCmdProtection,
+        message: hasCmdProtection
+          ? 'Safe command execution patterns detected or no shell commands found'
+          : 'Use execFile instead of exec, or disable shell interpolation',
+        fixable: false,
+        guidance: 'Using exec() with user-controlled input lets attackers inject shell metacharacters (;, |, $()) to run arbitrary commands on the host system.',
+      });
+    }
 
     return findings;
   }
@@ -8369,37 +8853,43 @@ dist/
 
     // RATE-001: Check for rate limiting configuration
     let hasRateLimiting = false;
-    try {
-      const pkgPath = path.join(targetDir, 'package.json');
-      const content = await fs.readFile(pkgPath, 'utf-8');
-      const pkg = JSON.parse(content);
+    const pkgReadRate001 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadRate001.state === 'read') {
+      // Present-but-unparseable stays a measured fail (TOOL-001 precedent).
+      try {
+        const pkg = JSON.parse(pkgReadRate001.content);
       const deps = { ...pkg.dependencies, ...pkg.devDependencies };
       hasRateLimiting =
         'express-rate-limit' in deps ||
         'rate-limiter-flexible' in deps ||
         'bottleneck' in deps ||
         '@upstash/ratelimit' in deps;
-    } catch {}
+      } catch {}
+    }
 
-    findings.push({
-      checkId: 'RATE-001',
-      name: 'Rate Limiting Configuration',
-      description: 'API endpoints should have rate limiting',
-      category: 'rate-limiting',
-      severity: 'medium',
-      passed: hasRateLimiting,
-      message: hasRateLimiting
-        ? 'Rate limiting library detected'
-        : 'Consider implementing rate limiting to prevent abuse',
-      fixable: false,
-      guidance: 'Without rate limiting, attackers can make unlimited API calls, exhausting your quota and running up costs. It also enables brute-force and credential stuffing attacks.',
-    });
+    if (pkgReadRate001.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'RATE-001', name: 'Rate Limiting Configuration', description: 'API endpoints should have rate limiting', category: 'rate-limiting' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadRate001.state === 'read') {
+      findings.push({
+        checkId: 'RATE-001',
+        name: 'Rate Limiting Configuration',
+        description: 'API endpoints should have rate limiting',
+        category: 'rate-limiting',
+        severity: 'medium',
+        passed: hasRateLimiting,
+        message: hasRateLimiting
+          ? 'Rate limiting library detected'
+          : 'Consider implementing rate limiting to prevent abuse',
+        fixable: false,
+        guidance: 'Without rate limiting, attackers can make unlimited API calls, exhausting your quota and running up costs. It also enables brute-force and credential stuffing attacks.',
+      });
+    }
 
     // RATE-002: Check for retry/backoff patterns
     let hasBackoff = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadRate002 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadRate002.state === 'read') {
+      for (const file of dirReadRate002.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -8415,27 +8905,31 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'RATE-002',
-      name: 'Retry with Backoff',
-      description: 'External calls should implement exponential backoff',
-      category: 'rate-limiting',
-      severity: 'low',
-      passed: hasBackoff,
-      message: hasBackoff
-        ? 'Retry/backoff patterns detected'
-        : 'Consider implementing exponential backoff for external calls',
-      fixable: false,
-      guidance: 'Without exponential backoff, retries hammer external services at full speed during outages, worsening the problem and potentially getting your API key banned.',
-    });
+    if (dirReadRate002.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'RATE-002', name: 'Retry with Backoff', description: 'External calls should implement exponential backoff', category: 'rate-limiting' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadRate002.state === 'read') {
+      findings.push({
+        checkId: 'RATE-002',
+        name: 'Retry with Backoff',
+        description: 'External calls should implement exponential backoff',
+        category: 'rate-limiting',
+        severity: 'low',
+        passed: hasBackoff,
+        message: hasBackoff
+          ? 'Retry/backoff patterns detected'
+          : 'Consider implementing exponential backoff for external calls',
+        fixable: false,
+        guidance: 'Without exponential backoff, retries hammer external services at full speed during outages, worsening the problem and potentially getting your API key banned.',
+      });
+    }
 
     // RATE-003: Check for timeout configurations
     let hasTimeouts = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadRate003 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json'));
+    if (dirReadRate003.state === 'read') {
+      for (const file of dirReadRate003.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -8450,27 +8944,31 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'RATE-003',
-      name: 'Timeout Configuration',
-      description: 'Operations should have appropriate timeouts',
-      category: 'rate-limiting',
-      severity: 'medium',
-      passed: hasTimeouts,
-      message: hasTimeouts
-        ? 'Timeout configurations detected'
-        : 'Consider setting timeouts for external calls and long-running operations',
-      fixable: false,
-      guidance: 'Without timeouts, a slow or unresponsive external service can cause your application to hang indefinitely, tying up connections and eventually crashing.',
-    });
+    if (dirReadRate003.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'RATE-003', name: 'Timeout Configuration', description: 'Operations should have appropriate timeouts', category: 'rate-limiting' }, 'source or config files (.ts, .js, .json)', 'No .ts, .js or .json files at the scanned root, so there is nothing to inspect.'));
+    } else if (dirReadRate003.state === 'read') {
+      findings.push({
+        checkId: 'RATE-003',
+        name: 'Timeout Configuration',
+        description: 'Operations should have appropriate timeouts',
+        category: 'rate-limiting',
+        severity: 'medium',
+        passed: hasTimeouts,
+        message: hasTimeouts
+          ? 'Timeout configurations detected'
+          : 'Consider setting timeouts for external calls and long-running operations',
+        fixable: false,
+        guidance: 'Without timeouts, a slow or unresponsive external service can cause your application to hang indefinitely, tying up connections and eventually crashing.',
+      });
+    }
 
     // RATE-004: Check for concurrent request limiting
     let hasConcurrencyLimit = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadRate004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadRate004.state === 'read') {
+      for (const file of dirReadRate004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -8486,21 +8984,25 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'RATE-004',
-      name: 'Concurrency Limits',
-      description: 'Concurrent operations should be limited',
-      category: 'rate-limiting',
-      severity: 'low',
-      passed: hasConcurrencyLimit,
-      message: hasConcurrencyLimit
-        ? 'Concurrency limiting detected'
-        : 'Consider limiting concurrent operations to prevent resource exhaustion',
-      fixable: false,
-      guidance: 'Without concurrency limits, a burst of requests can spawn unbounded parallel operations that exhaust memory, file descriptors, and CPU, crashing the service.',
-    });
+    if (dirReadRate004.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'RATE-004', name: 'Concurrency Limits', description: 'Concurrent operations should be limited', category: 'rate-limiting' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadRate004.state === 'read') {
+      findings.push({
+        checkId: 'RATE-004',
+        name: 'Concurrency Limits',
+        description: 'Concurrent operations should be limited',
+        category: 'rate-limiting',
+        severity: 'low',
+        passed: hasConcurrencyLimit,
+        message: hasConcurrencyLimit
+          ? 'Concurrency limiting detected'
+          : 'Consider limiting concurrent operations to prevent resource exhaustion',
+        fixable: false,
+        guidance: 'Without concurrency limits, a burst of requests can spawn unbounded parallel operations that exhaust memory, file descriptors, and CPU, crashing the service.',
+      });
+    }
 
     return findings;
   }
@@ -8516,9 +9018,9 @@ dist/
 
     // SESSION-001: Check for secure session configuration
     let hasSecureSessions = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadSession001 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadSession001.state === 'read') {
+      for (const file of dirReadSession001.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -8533,27 +9035,31 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'SESSION-001',
-      name: 'Secure Cookie Settings',
-      description: 'Session cookies should have secure flags',
-      category: 'session-security',
-      severity: 'high',
-      passed: hasSecureSessions,
-      message: hasSecureSessions
-        ? 'Secure cookie flags detected'
-        : 'Set httpOnly, secure, and sameSite on session cookies',
-      fixable: false,
-      guidance: 'Session cookies without secure flags can be stolen via XSS (missing httpOnly), sent over plain HTTP (missing secure), or exploited in cross-site attacks (missing sameSite).',
-    });
+    if (dirReadSession001.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'SESSION-001', name: 'Secure Cookie Settings', description: 'Session cookies should have secure flags', category: 'session-security' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadSession001.state === 'read') {
+      findings.push({
+        checkId: 'SESSION-001',
+        name: 'Secure Cookie Settings',
+        description: 'Session cookies should have secure flags',
+        category: 'session-security',
+        severity: 'high',
+        passed: hasSecureSessions,
+        message: hasSecureSessions
+          ? 'Secure cookie flags detected'
+          : 'Set httpOnly, secure, and sameSite on session cookies',
+        fixable: false,
+        guidance: 'Session cookies without secure flags can be stolen via XSS (missing httpOnly), sent over plain HTTP (missing secure), or exploited in cross-site attacks (missing sameSite).',
+      });
+    }
 
     // SESSION-002: Check for session expiry
     let hasSessionExpiry = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadSession002 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json'));
+    if (dirReadSession002.state === 'read') {
+      for (const file of dirReadSession002.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -8569,51 +9075,61 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'SESSION-002',
-      name: 'Session Expiry',
-      description: 'Sessions should have appropriate expiry times',
-      category: 'session-security',
-      severity: 'medium',
-      passed: hasSessionExpiry,
-      message: hasSessionExpiry
-        ? 'Session expiry configuration detected'
-        : 'Configure appropriate session expiry times',
-      fixable: false,
-      guidance: 'Sessions without expiry remain valid indefinitely. A stolen session token grants permanent access until the server is restarted or the token is manually revoked.',
-    });
+    if (dirReadSession002.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'SESSION-002', name: 'Session Expiry', description: 'Sessions should have appropriate expiry times', category: 'session-security' }, 'source or config files (.ts, .js, .json)', 'No .ts, .js or .json files at the scanned root, so there is nothing to inspect.'));
+    } else if (dirReadSession002.state === 'read') {
+      findings.push({
+        checkId: 'SESSION-002',
+        name: 'Session Expiry',
+        description: 'Sessions should have appropriate expiry times',
+        category: 'session-security',
+        severity: 'medium',
+        passed: hasSessionExpiry,
+        message: hasSessionExpiry
+          ? 'Session expiry configuration detected'
+          : 'Configure appropriate session expiry times',
+        fixable: false,
+        guidance: 'Sessions without expiry remain valid indefinitely. A stolen session token grants permanent access until the server is restarted or the token is manually revoked.',
+      });
+    }
 
     // SESSION-003: Check for CSRF protection
     let hasCsrfProtection = false;
-    try {
-      const pkgPath = path.join(targetDir, 'package.json');
-      const content = await fs.readFile(pkgPath, 'utf-8');
-      const pkg = JSON.parse(content);
+    const pkgReadSession003 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadSession003.state === 'read') {
+      // Present-but-unparseable stays a measured fail (TOOL-001 precedent).
+      try {
+        const pkg = JSON.parse(pkgReadSession003.content);
       const deps = { ...pkg.dependencies, ...pkg.devDependencies };
       hasCsrfProtection = 'csurf' in deps || 'csrf' in deps || '@fastify/csrf-protection' in deps;
-    } catch {}
+      } catch {}
+    }
 
-    findings.push({
-      checkId: 'SESSION-003',
-      name: 'CSRF Protection',
-      description: 'Forms should have CSRF protection',
-      category: 'session-security',
-      severity: 'high',
-      passed: hasCsrfProtection,
-      message: hasCsrfProtection
-        ? 'CSRF protection library detected'
-        : 'Consider implementing CSRF protection for state-changing operations',
-      fixable: false,
-      guidance: 'Without CSRF protection, a malicious website can trick authenticated users into performing unwanted actions (transfers, password changes, data deletion) by forging requests from their browser.',
-    });
+    if (pkgReadSession003.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'SESSION-003', name: 'CSRF Protection', description: 'Forms should have CSRF protection', category: 'session-security' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadSession003.state === 'read') {
+      findings.push({
+        checkId: 'SESSION-003',
+        name: 'CSRF Protection',
+        description: 'Forms should have CSRF protection',
+        category: 'session-security',
+        severity: 'high',
+        passed: hasCsrfProtection,
+        message: hasCsrfProtection
+          ? 'CSRF protection library detected'
+          : 'Consider implementing CSRF protection for state-changing operations',
+        fixable: false,
+        guidance: 'Without CSRF protection, a malicious website can trick authenticated users into performing unwanted actions (transfers, password changes, data deletion) by forging requests from their browser.',
+      });
+    }
 
     // SESSION-004: Check for secure token storage
     let hasSecureStorage = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadSession004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadSession004.state === 'read') {
+      for (const file of dirReadSession004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -8629,21 +9145,25 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'SESSION-004',
-      name: 'Secure Token Storage',
-      description: 'Tokens should be stored securely',
-      category: 'session-security',
-      severity: 'medium',
-      passed: hasSecureStorage,
-      message: hasSecureStorage
-        ? 'Secure token storage detected'
-        : 'Consider using secure storage for sensitive tokens',
-      fixable: false,
-      guidance: 'Tokens stored in plaintext files or localStorage can be stolen by any process with file access or XSS attack, allowing full account takeover without credentials.',
-    });
+    if (dirReadSession004.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'SESSION-004', name: 'Secure Token Storage', description: 'Tokens should be stored securely', category: 'session-security' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadSession004.state === 'read') {
+      findings.push({
+        checkId: 'SESSION-004',
+        name: 'Secure Token Storage',
+        description: 'Tokens should be stored securely',
+        category: 'session-security',
+        severity: 'medium',
+        passed: hasSecureStorage,
+        message: hasSecureStorage
+          ? 'Secure token storage detected'
+          : 'Consider using secure storage for sensitive tokens',
+        fixable: false,
+        guidance: 'Tokens stored in plaintext files or localStorage can be stolen by any process with file access or XSS attack, allowing full account takeover without credentials.',
+      });
+    }
 
     return findings;
   }
@@ -8659,9 +9179,9 @@ dist/
 
     // ENCRYPT-001: Check for encryption at rest
     let hasEncryption = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadEncrypt001 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadEncrypt001.state === 'read') {
+      for (const file of dirReadEncrypt001.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -8677,27 +9197,31 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'ENCRYPT-001',
-      name: 'Encryption Implementation',
-      description: 'Sensitive data should be encrypted at rest',
-      category: 'encryption',
-      severity: 'high',
-      passed: hasEncryption,
-      message: hasEncryption
-        ? 'Encryption implementation detected'
-        : 'Consider encrypting sensitive data at rest',
-      fixable: false,
-      guidance: 'Without encryption at rest, anyone with disk access (stolen laptop, compromised server, backup leak) can read sensitive data including credentials and user information.',
-    });
+    if (dirReadEncrypt001.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'ENCRYPT-001', name: 'Encryption Implementation', description: 'Sensitive data should be encrypted at rest', category: 'encryption' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadEncrypt001.state === 'read') {
+      findings.push({
+        checkId: 'ENCRYPT-001',
+        name: 'Encryption Implementation',
+        description: 'Sensitive data should be encrypted at rest',
+        category: 'encryption',
+        severity: 'high',
+        passed: hasEncryption,
+        message: hasEncryption
+          ? 'Encryption implementation detected'
+          : 'Consider encrypting sensitive data at rest',
+        fixable: false,
+        guidance: 'Without encryption at rest, anyone with disk access (stolen laptop, compromised server, backup leak) can read sensitive data including credentials and user information.',
+      });
+    }
 
     // ENCRYPT-002: Check for secure hashing
     let hasSecureHashing = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadEncrypt002 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadEncrypt002.state === 'read') {
+      for (const file of dirReadEncrypt002.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -8713,27 +9237,31 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'ENCRYPT-002',
-      name: 'Secure Password Hashing',
-      description: 'Passwords should use secure hashing algorithms',
-      category: 'encryption',
-      severity: 'critical',
-      passed: hasSecureHashing,
-      message: hasSecureHashing
-        ? 'Secure hashing algorithm detected (bcrypt/argon2/scrypt)'
-        : 'Use bcrypt, argon2, or scrypt for password hashing',
-      fixable: false,
-      guidance: 'Passwords hashed with fast algorithms (MD5, SHA1) can be cracked in bulk using rainbow tables or GPU brute-force. Bcrypt, argon2, and scrypt are deliberately slow to resist this.',
-    });
+    if (dirReadEncrypt002.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'ENCRYPT-002', name: 'Secure Password Hashing', description: 'Passwords should use secure hashing algorithms', category: 'encryption' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadEncrypt002.state === 'read') {
+      findings.push({
+        checkId: 'ENCRYPT-002',
+        name: 'Secure Password Hashing',
+        description: 'Passwords should use secure hashing algorithms',
+        category: 'encryption',
+        severity: 'critical',
+        passed: hasSecureHashing,
+        message: hasSecureHashing
+          ? 'Secure hashing algorithm detected (bcrypt/argon2/scrypt)'
+          : 'Use bcrypt, argon2, or scrypt for password hashing',
+        fixable: false,
+        guidance: 'Passwords hashed with fast algorithms (MD5, SHA1) can be cracked in bulk using rainbow tables or GPU brute-force. Bcrypt, argon2, and scrypt are deliberately slow to resist this.',
+      });
+    }
 
     // ENCRYPT-003: Check for weak algorithms
     let hasWeakAlgorithms = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadEncrypt003 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadEncrypt003.state === 'read') {
+      for (const file of dirReadEncrypt003.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -8749,27 +9277,31 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'ENCRYPT-003',
-      name: 'Weak Cryptographic Algorithms',
-      description: 'Avoid using weak cryptographic algorithms',
-      category: 'encryption',
-      severity: 'high',
-      passed: !hasWeakAlgorithms,
-      message: hasWeakAlgorithms
-        ? 'Weak algorithms detected (MD5/SHA1/DES) - use SHA-256+ and AES'
-        : 'No weak cryptographic algorithms detected',
-      fixable: false,
-      guidance: 'MD5 and SHA1 have known collision attacks, and DES has a 56-bit key easily brute-forced with modern hardware. Data protected by these algorithms should be considered unprotected.',
-    });
+    if (dirReadEncrypt003.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'ENCRYPT-003', name: 'Weak Cryptographic Algorithms', description: 'Avoid using weak cryptographic algorithms', category: 'encryption' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadEncrypt003.state === 'read') {
+      findings.push({
+        checkId: 'ENCRYPT-003',
+        name: 'Weak Cryptographic Algorithms',
+        description: 'Avoid using weak cryptographic algorithms',
+        category: 'encryption',
+        severity: 'high',
+        passed: !hasWeakAlgorithms,
+        message: hasWeakAlgorithms
+          ? 'Weak algorithms detected (MD5/SHA1/DES) - use SHA-256+ and AES'
+          : 'No weak cryptographic algorithms detected',
+        fixable: false,
+        guidance: 'MD5 and SHA1 have known collision attacks, and DES has a 56-bit key easily brute-forced with modern hardware. Data protected by these algorithms should be considered unprotected.',
+      });
+    }
 
     // ENCRYPT-004: Check for TLS configuration
     let hasTlsConfig = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadEncrypt004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json'));
+    if (dirReadEncrypt004.state === 'read') {
+      for (const file of dirReadEncrypt004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -8785,21 +9317,25 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'ENCRYPT-004',
-      name: 'TLS Configuration',
-      description: 'Communications should use TLS',
-      category: 'encryption',
-      severity: 'high',
-      passed: hasTlsConfig,
-      message: hasTlsConfig
-        ? 'TLS/HTTPS configuration detected'
-        : 'Ensure all communications use TLS',
-      fixable: false,
-      guidance: 'Without TLS, all network traffic including credentials, tokens, and sensitive data is transmitted in plaintext and can be intercepted by anyone on the network path.',
-    });
+    if (dirReadEncrypt004.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'ENCRYPT-004', name: 'TLS Configuration', description: 'Communications should use TLS', category: 'encryption' }, 'source or config files (.ts, .js, .json)', 'No .ts, .js or .json files at the scanned root, so there is nothing to inspect.'));
+    } else if (dirReadEncrypt004.state === 'read') {
+      findings.push({
+        checkId: 'ENCRYPT-004',
+        name: 'TLS Configuration',
+        description: 'Communications should use TLS',
+        category: 'encryption',
+        severity: 'high',
+        passed: hasTlsConfig,
+        message: hasTlsConfig
+          ? 'TLS/HTTPS configuration detected'
+          : 'Ensure all communications use TLS',
+        fixable: false,
+        guidance: 'Without TLS, all network traffic including credentials, tokens, and sensitive data is transmitted in plaintext and can be intercepted by anyone on the network path.',
+      });
+    }
 
     return findings;
   }
@@ -8815,9 +9351,9 @@ dist/
 
     // AUDIT-001: Check for audit logging
     let hasAuditLogging = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadAudit001 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadAudit001.state === 'read') {
+      for (const file of dirReadAudit001.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -8833,27 +9369,31 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'AUDIT-001',
-      name: 'Audit Logging',
-      description: 'Security-relevant events should be logged',
-      category: 'audit',
-      severity: 'medium',
-      passed: hasAuditLogging,
-      message: hasAuditLogging
-        ? 'Audit logging implementation detected'
-        : 'Consider implementing audit logging for security events',
-      fixable: false,
-      guidance: 'Missing audit logs mean you cannot detect or investigate security incidents after they occur. Attackers operate undetected and forensic analysis becomes impossible.',
-    });
+    if (dirReadAudit001.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'AUDIT-001', name: 'Audit Logging', description: 'Security-relevant events should be logged', category: 'audit' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadAudit001.state === 'read') {
+      findings.push({
+        checkId: 'AUDIT-001',
+        name: 'Audit Logging',
+        description: 'Security-relevant events should be logged',
+        category: 'audit',
+        severity: 'medium',
+        passed: hasAuditLogging,
+        message: hasAuditLogging
+          ? 'Audit logging implementation detected'
+          : 'Consider implementing audit logging for security events',
+        fixable: false,
+        guidance: 'Missing audit logs mean you cannot detect or investigate security incidents after they occur. Attackers operate undetected and forensic analysis becomes impossible.',
+      });
+    }
 
     // AUDIT-002: Check for log rotation
     let hasLogRotation = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadAudit002 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json'));
+    if (dirReadAudit002.state === 'read') {
+      for (const file of dirReadAudit002.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -8868,51 +9408,61 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'AUDIT-002',
-      name: 'Log Rotation',
-      description: 'Logs should have rotation configured',
-      category: 'audit',
-      severity: 'low',
-      passed: hasLogRotation,
-      message: hasLogRotation
-        ? 'Log rotation configuration detected'
-        : 'Consider configuring log rotation to manage disk space',
-      fixable: false,
-      guidance: 'Without log rotation, logs grow until they fill the disk, causing service outages. Attackers can also exploit this to trigger denial-of-service by generating excessive log entries.',
-    });
+    if (dirReadAudit002.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'AUDIT-002', name: 'Log Rotation', description: 'Logs should have rotation configured', category: 'audit' }, 'source or config files (.ts, .js, .json)', 'No .ts, .js or .json files at the scanned root, so there is nothing to inspect.'));
+    } else if (dirReadAudit002.state === 'read') {
+      findings.push({
+        checkId: 'AUDIT-002',
+        name: 'Log Rotation',
+        description: 'Logs should have rotation configured',
+        category: 'audit',
+        severity: 'low',
+        passed: hasLogRotation,
+        message: hasLogRotation
+          ? 'Log rotation configuration detected'
+          : 'Consider configuring log rotation to manage disk space',
+        fixable: false,
+        guidance: 'Without log rotation, logs grow until they fill the disk, causing service outages. Attackers can also exploit this to trigger denial-of-service by generating excessive log entries.',
+      });
+    }
 
     // AUDIT-003: Check for error tracking
     let hasErrorTracking = false;
-    try {
-      const pkgPath = path.join(targetDir, 'package.json');
-      const content = await fs.readFile(pkgPath, 'utf-8');
-      const pkg = JSON.parse(content);
+    const pkgReadAudit003 = await readCheckSubject(path.join(targetDir, 'package.json'));
+    if (pkgReadAudit003.state === 'read') {
+      // Present-but-unparseable stays a measured fail (TOOL-001 precedent).
+      try {
+        const pkg = JSON.parse(pkgReadAudit003.content);
       const deps = { ...pkg.dependencies, ...pkg.devDependencies };
       hasErrorTracking = '@sentry/node' in deps || 'bugsnag' in deps || 'rollbar' in deps;
-    } catch {}
+      } catch {}
+    }
 
-    findings.push({
-      checkId: 'AUDIT-003',
-      name: 'Error Tracking',
-      description: 'Errors should be tracked for monitoring',
-      category: 'audit',
-      severity: 'low',
-      passed: hasErrorTracking,
-      message: hasErrorTracking
-        ? 'Error tracking service detected'
-        : 'Consider using an error tracking service for production',
-      fixable: false,
-      guidance: 'Without error tracking, security-related failures (auth errors, injection attempts, rate limit hits) go unnoticed in production, giving attackers time to refine their approach.',
-    });
+    if (pkgReadAudit003.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'AUDIT-003', name: 'Error Tracking', description: 'Errors should be tracked for monitoring', category: 'audit' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadAudit003.state === 'read') {
+      findings.push({
+        checkId: 'AUDIT-003',
+        name: 'Error Tracking',
+        description: 'Errors should be tracked for monitoring',
+        category: 'audit',
+        severity: 'low',
+        passed: hasErrorTracking,
+        message: hasErrorTracking
+          ? 'Error tracking service detected'
+          : 'Consider using an error tracking service for production',
+        fixable: false,
+        guidance: 'Without error tracking, security-related failures (auth errors, injection attempts, rate limit hits) go unnoticed in production, giving attackers time to refine their approach.',
+      });
+    }
 
     // AUDIT-004: Check for no sensitive data in logs
     let hasLogSanitization = false;
-    try {
-      const files = await fs.readdir(targetDir);
-      for (const file of files) {
+    const dirReadAudit004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    if (dirReadAudit004.state === 'read') {
+      for (const file of dirReadAudit004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
           try {
             const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
@@ -8927,21 +9477,25 @@ dist/
           } catch {}
         }
       }
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'AUDIT-004',
-      name: 'Log Sanitization',
-      description: 'Sensitive data should be redacted from logs',
-      category: 'audit',
-      severity: 'high',
-      passed: hasLogSanitization,
-      message: hasLogSanitization
-        ? 'Log sanitization patterns detected'
-        : 'Consider redacting sensitive data (passwords, tokens) from logs',
-      fixable: false,
-      guidance: 'Unsanitized logs containing passwords, tokens, or PII become a secondary breach vector. Log aggregation services, backups, and support teams all gain access to sensitive data.',
-    });
+    if (dirReadAudit004.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'AUDIT-004', name: 'Log Sanitization', description: 'Sensitive data should be redacted from logs', category: 'audit' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+    } else if (dirReadAudit004.state === 'read') {
+      findings.push({
+        checkId: 'AUDIT-004',
+        name: 'Log Sanitization',
+        description: 'Sensitive data should be redacted from logs',
+        category: 'audit',
+        severity: 'high',
+        passed: hasLogSanitization,
+        message: hasLogSanitization
+          ? 'Log sanitization patterns detected'
+          : 'Consider redacting sensitive data (passwords, tokens) from logs',
+        fixable: false,
+        guidance: 'Unsanitized logs containing passwords, tokens, or PII become a secondary breach vector. Log aggregation services, backups, and support teams all gain access to sensitive data.',
+      });
+    }
 
     return findings;
   }
@@ -8955,105 +9509,149 @@ dist/
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
 
-    // SANDBOX-001: Check for Docker/container usage
-    let hasContainerization = false;
-    try {
-      await fs.access(path.join(targetDir, 'Dockerfile'));
-      hasContainerization = true;
-    } catch {}
-    try {
-      await fs.access(path.join(targetDir, 'docker-compose.yml'));
-      hasContainerization = true;
-    } catch {}
-    try {
-      await fs.access(path.join(targetDir, 'docker-compose.yaml'));
-      hasContainerization = true;
-    } catch {}
+    // SANDBOX-001: Check for Docker/container usage.
+    // #458 — containerization is a mitigation this check RECOMMENDS, so its
+    // absence is the finding, never a not-applicable record: the fail keeps
+    // `passed: false` and gains `file` naming the path the fix creates
+    // (GIT-001's advisory shape), which keeps it off the pathless noise floor.
+    // The probes go through `readCheckSubject` rather than `fs.access` because
+    // tracked-fs does not ledger a failed `access` — a probe obstructed by
+    // EACCES must reach the unreadable-inputs channel, not vanish. SANDBOX-
+    // 002/003/004 reuse these probes, so `filesRead` does not inflate. Other
+    // coverage counts do move: probes that were `access` calls are now
+    // content reads, so this category's `pathsInspected` shrinks and its
+    // examined/unevidenced accounting shifts accordingly (measured).
+    const containerProbes = [
+      await readCheckSubject(path.join(targetDir, 'Dockerfile')),
+      await readCheckSubject(path.join(targetDir, 'docker-compose.yml')),
+      await readCheckSubject(path.join(targetDir, 'docker-compose.yaml')),
+    ];
+    const hasContainerization = containerProbes.some((p) => p.state === 'read');
+    if (hasContainerization || containerProbes.every((p) => p.state === 'absent')) {
+      const sandbox001: SecurityFindingDraft = {
+        checkId: 'SANDBOX-001',
+        name: 'Container Isolation',
+        description: 'Applications should run in isolated containers',
+        category: 'sandboxing',
+        severity: 'medium',
+        passed: hasContainerization,
+        message: hasContainerization
+          ? 'Container configuration detected'
+          : 'Consider running in Docker containers for isolation',
+        fixable: false,
+        guidance: 'Without container isolation, a compromised application has direct access to the host filesystem, network, and other processes. Containers limit the blast radius of a breach.',
+      };
+      if (!hasContainerization) {
+        // Absent-mitigation advisory: `file` is the path the fix creates.
+        sandbox001.file = 'Dockerfile';
+      }
+      findings.push(sandbox001);
+    }
+    // else: no probe read and at least one failed for a reason other than
+    // absence — containerization is UNKNOWN, not absent. Emit nothing; the
+    // ledger's unreadable-inputs channel discloses the obstruction (#458).
 
-    findings.push({
-      checkId: 'SANDBOX-001',
-      name: 'Container Isolation',
-      description: 'Applications should run in isolated containers',
-      category: 'sandboxing',
-      severity: 'medium',
-      passed: hasContainerization,
-      message: hasContainerization
-        ? 'Container configuration detected'
-        : 'Consider running in Docker containers for isolation',
-      fixable: false,
-      guidance: 'Without container isolation, a compromised application has direct access to the host filesystem, network, and other processes. Containers limit the blast radius of a breach.',
-    });
-
-    // SANDBOX-002: Check for non-root execution
-    let hasNonRootConfig = false;
-    try {
-      const dockerPath = path.join(targetDir, 'Dockerfile');
-      const content = await fs.readFile(dockerPath, 'utf-8');
-      hasNonRootConfig = content.includes('USER ') && !content.includes('USER root');
-    } catch {}
-
-    findings.push({
-      checkId: 'SANDBOX-002',
-      name: 'Non-Root Execution',
-      description: 'Containers should not run as root',
-      category: 'sandboxing',
-      severity: 'high',
-      passed: hasNonRootConfig,
-      message: hasNonRootConfig
-        ? 'Non-root user configured in Dockerfile'
-        : 'Configure containers to run as non-root user',
-      fixable: false,
-      guidance: 'Containers running as root can escape container isolation more easily. A container breakout as root grants full control of the host system.',
-    });
+    // SANDBOX-002: Check for non-root execution.
+    // #458 — this boolean was the class's root defect: it collapsed "no
+    // Dockerfile" with "runs as root". Absent Dockerfile => not-applicable
+    // (there is no container execution to measure — SANDBOX-001 carries the
+    // containerization advisory); unread => no record; read => measured.
+    // Reuses SANDBOX-001's Dockerfile read so one scan pass cannot classify
+    // the same subject two different ways.
+    const dockerfileRead = containerProbes[0];
+    if (dockerfileRead.state === 'absent') {
+      findings.push({
+        checkId: 'SANDBOX-002',
+        name: 'Non-Root Execution',
+        description: 'Containers should not run as root',
+        category: 'sandboxing',
+        notApplicable: {
+          subject: 'Dockerfile',
+          reason: 'No Dockerfile in the scanned tree, so there is no container execution to measure for root privilege. SANDBOX-001 carries the containerization advisory.',
+        },
+        message: 'Not applicable: no Dockerfile to measure for root execution',
+        fixable: false,
+      });
+    } else if (dockerfileRead.state === 'read') {
+      const hasNonRootConfig =
+        dockerfileRead.content.includes('USER ') && !dockerfileRead.content.includes('USER root');
+      findings.push({
+        checkId: 'SANDBOX-002',
+        name: 'Non-Root Execution',
+        description: 'Containers should not run as root',
+        category: 'sandboxing',
+        severity: 'high',
+        passed: hasNonRootConfig,
+        message: hasNonRootConfig
+          ? 'Non-root user configured in Dockerfile'
+          : 'Configure containers to run as non-root user',
+        fixable: false,
+        guidance: 'Containers running as root can escape container isolation more easily. A container breakout as root grants full control of the host system.',
+      });
+    }
 
     // SANDBOX-003: Check for resource limits
+    // #458 — reuses SANDBOX-001's compose probes so one scan pass cannot
+    // classify the same subject two different ways (and does not read it
+    // twice). A readable .yaml decides, else a readable .yml (the original
+    // precedence, verdict unchanged). Both absent => not-applicable; neither
+    // read and either obstructed => nothing.
+    const composeYmlRead = containerProbes[1];
+    const composeYamlRead = containerProbes[2];
+    const composeRead: SubjectRead =
+      composeYamlRead.state === 'read' ? composeYamlRead
+      : composeYmlRead.state === 'read' ? composeYmlRead
+      : composeYmlRead.state === 'unread' || composeYamlRead.state === 'unread' ? { state: 'unread' }
+      : { state: 'absent' };
     let hasResourceLimits = false;
-    try {
-      const composePath = path.join(targetDir, 'docker-compose.yml');
-      const content = await fs.readFile(composePath, 'utf-8');
+    if (composeRead.state === 'read') {
+      const content = composeRead.content;
       hasResourceLimits = content.includes('mem_limit') || content.includes('cpus') || content.includes('deploy:');
-    } catch {}
-    try {
-      const composePath = path.join(targetDir, 'docker-compose.yaml');
-      const content = await fs.readFile(composePath, 'utf-8');
-      hasResourceLimits = content.includes('mem_limit') || content.includes('cpus') || content.includes('deploy:');
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'SANDBOX-003',
-      name: 'Resource Limits',
-      description: 'Containers should have resource limits',
-      category: 'sandboxing',
-      severity: 'medium',
-      passed: hasResourceLimits,
-      message: hasResourceLimits
-        ? 'Resource limits configured'
-        : 'Consider setting CPU and memory limits for containers',
-      fixable: false,
-      guidance: 'Without resource limits, a single compromised or buggy container can consume all host CPU and memory, causing denial-of-service for every other service on the machine.',
-    });
+    if (composeRead.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'SANDBOX-003', name: 'Resource Limits', description: 'Containers should have resource limits', category: 'sandboxing' }, 'docker-compose.yml', 'No docker-compose.yml or docker-compose.yaml in the scanned tree, so there is no container configuration to inspect.'));
+    } else if (composeRead.state === 'read') {
+      findings.push({
+        checkId: 'SANDBOX-003',
+        name: 'Resource Limits',
+        description: 'Containers should have resource limits',
+        category: 'sandboxing',
+        severity: 'medium',
+        passed: hasResourceLimits,
+        message: hasResourceLimits
+          ? 'Resource limits configured'
+          : 'Consider setting CPU and memory limits for containers',
+        fixable: false,
+        guidance: 'Without resource limits, a single compromised or buggy container can consume all host CPU and memory, causing denial-of-service for every other service on the machine.',
+      });
+    }
 
     // SANDBOX-004: Check for read-only filesystem
+    // #458 — reuses SANDBOX-003's docker-compose.yml read; this check has
+    // only ever read the .yml spelling, and that stays as it is.
     let hasReadOnlyFs = false;
-    try {
-      const composePath = path.join(targetDir, 'docker-compose.yml');
-      const content = await fs.readFile(composePath, 'utf-8');
-      hasReadOnlyFs = content.includes('read_only: true');
-    } catch {}
+    if (composeYmlRead.state === 'read') {
+      hasReadOnlyFs = composeYmlRead.content.includes('read_only: true');
+    }
 
-    findings.push({
-      checkId: 'SANDBOX-004',
-      name: 'Read-Only Filesystem',
-      description: 'Containers should use read-only filesystem where possible',
-      category: 'sandboxing',
-      severity: 'low',
-      passed: hasReadOnlyFs,
-      message: hasReadOnlyFs
-        ? 'Read-only filesystem configured'
-        : 'Consider using read-only filesystem for containers',
-      fixable: false,
-      guidance: 'A writable filesystem allows attackers to drop malware, modify binaries, or plant persistence mechanisms inside the container. Read-only filesystems prevent post-exploitation tampering.',
-    });
+    if (composeYmlRead.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'SANDBOX-004', name: 'Read-Only Filesystem', description: 'Containers should use read-only filesystem where possible', category: 'sandboxing' }, 'docker-compose.yml', 'No docker-compose.yml in the scanned tree, so there is no container configuration to inspect.'));
+    } else if (composeYmlRead.state === 'read') {
+      findings.push({
+        checkId: 'SANDBOX-004',
+        name: 'Read-Only Filesystem',
+        description: 'Containers should use read-only filesystem where possible',
+        category: 'sandboxing',
+        severity: 'low',
+        passed: hasReadOnlyFs,
+        message: hasReadOnlyFs
+          ? 'Read-only filesystem configured'
+          : 'Consider using read-only filesystem for containers',
+        fixable: false,
+        guidance: 'A writable filesystem allows attackers to drop malware, modify binaries, or plant persistence mechanisms inside the container. Read-only filesystems prevent post-exploitation tampering.',
+      });
+    }
 
     return findings;
   }
@@ -9068,36 +9666,63 @@ dist/
     const findings: SecurityFindingDraft[] = [];
     const mcpConfigPath = path.join(targetDir, 'mcp.json');
 
+    // #458 — one errno-classified read shared by TOOL-001/002/003.
+    // TOOL-002/003 branch on the same read: absent mcp.json =>
+    // not-applicable naming the subject, unread => nothing, read => their
+    // verdict, unchanged.
+    const mcpRead = await readCheckSubject(mcpConfigPath);
     let mcpConfig: Record<string, unknown> | null = null;
-    try {
-      const content = await fs.readFile(mcpConfigPath, 'utf-8');
-      mcpConfig = JSON.parse(content);
-    } catch {}
-
-    // TOOL-001: Check for tool whitelisting
-    let hasToolWhitelist = false;
-    if (mcpConfig?.servers) {
-      for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { allowedTools?: string[] }>)) {
-        if (server.allowedTools && server.allowedTools.length > 0) {
-          hasToolWhitelist = true;
-          break;
-        }
-      }
+    if (mcpRead.state === 'read') {
+      try {
+        mcpConfig = JSON.parse(mcpRead.content);
+      } catch {}
     }
 
-    findings.push({
-      checkId: 'TOOL-001',
-      name: 'Tool Whitelisting',
-      description: 'MCP servers should have explicit tool whitelists',
-      category: 'tool-boundaries',
-      severity: 'high',
-      passed: hasToolWhitelist,
-      message: hasToolWhitelist
-        ? 'Tool whitelisting configured'
-        : 'Configure allowedTools to restrict MCP server capabilities',
-      fixable: false,
-      guidance: 'Without an explicit tool whitelist, MCP servers expose all available tools to the AI agent. A prompt injection attack can invoke any tool, including destructive ones.',
-    });
+    // TOOL-001: Check for tool whitelisting.
+    // #458 — absent mcp.json => not-applicable (nothing configures MCP servers
+    // here, so there are no tool boundaries to measure); unread => no record
+    // (the ledger's unreadable-inputs channel carries the obstruction);
+    // present-but-unparseable JSON keeps today's fail: a config that exists
+    // and cannot be parsed is a measured defect of the subject, not a missing
+    // subject.
+    if (mcpRead.state === 'absent') {
+      findings.push({
+        checkId: 'TOOL-001',
+        name: 'Tool Whitelisting',
+        description: 'MCP servers should have explicit tool whitelists',
+        category: 'tool-boundaries',
+        notApplicable: {
+          subject: 'mcp.json',
+          reason: 'No mcp.json in the scanned tree. This check reads only mcp.json, so tool boundaries configured elsewhere (for example .mcp.json) are outside its scope.',
+        },
+        message: 'Not applicable: no mcp.json to measure for tool whitelisting',
+        fixable: false,
+      });
+    } else if (mcpRead.state === 'read') {
+      let hasToolWhitelist = false;
+      if (mcpConfig?.servers) {
+        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { allowedTools?: string[] }>)) {
+          if (server.allowedTools && server.allowedTools.length > 0) {
+            hasToolWhitelist = true;
+            break;
+          }
+        }
+      }
+
+      findings.push({
+        checkId: 'TOOL-001',
+        name: 'Tool Whitelisting',
+        description: 'MCP servers should have explicit tool whitelists',
+        category: 'tool-boundaries',
+        severity: 'high',
+        passed: hasToolWhitelist,
+        message: hasToolWhitelist
+          ? 'Tool whitelisting configured'
+          : 'Configure allowedTools to restrict MCP server capabilities',
+        fixable: false,
+        guidance: 'Without an explicit tool whitelist, MCP servers expose all available tools to the AI agent. A prompt injection attack can invoke any tool, including destructive ones.',
+      });
+    }
 
     // TOOL-002: Check for resource constraints
     let hasResourceConstraints = false;
@@ -9110,19 +9735,23 @@ dist/
       }
     }
 
-    findings.push({
-      checkId: 'TOOL-002',
-      name: 'Tool Resource Constraints',
-      description: 'MCP tools should have resource constraints',
-      category: 'tool-boundaries',
-      severity: 'medium',
-      passed: hasResourceConstraints,
-      message: hasResourceConstraints
-        ? 'Resource constraints configured'
-        : 'Consider setting maxTokens and timeout for MCP tools',
-      fixable: false,
-      guidance: 'Without token limits and timeouts, a runaway or malicious tool call can consume unlimited API credits and block the agent indefinitely.',
-    });
+    if (mcpRead.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'TOOL-002', name: 'Tool Resource Constraints', description: 'MCP tools should have resource constraints', category: 'tool-boundaries' }, 'mcp.json', 'No mcp.json in the scanned tree. This check reads only mcp.json, so tool boundaries configured elsewhere (for example .mcp.json) are outside its scope.'));
+    } else if (mcpRead.state === 'read') {
+      findings.push({
+        checkId: 'TOOL-002',
+        name: 'Tool Resource Constraints',
+        description: 'MCP tools should have resource constraints',
+        category: 'tool-boundaries',
+        severity: 'medium',
+        passed: hasResourceConstraints,
+        message: hasResourceConstraints
+          ? 'Resource constraints configured'
+          : 'Consider setting maxTokens and timeout for MCP tools',
+        fixable: false,
+        guidance: 'Without token limits and timeouts, a runaway or malicious tool call can consume unlimited API credits and block the agent indefinitely.',
+      });
+    }
 
     // TOOL-003: Check for dangerous tool usage
     let hasDangerousTools = false;
@@ -9138,44 +9767,52 @@ dist/
       }
     }
 
-    findings.push({
-      checkId: 'TOOL-003',
-      name: 'Dangerous Tool Detection',
-      description: 'Identify potentially dangerous MCP tools',
-      category: 'tool-boundaries',
-      severity: 'high',
-      passed: !hasDangerousTools,
-      message: hasDangerousTools
-        ? 'Potentially dangerous tools detected (shell/exec) - ensure proper restrictions'
-        : 'No obvious dangerous tools detected',
-      fixable: false,
-      guidance: 'Shell and exec tools give the AI agent arbitrary command execution on the host. A prompt injection can leverage these to exfiltrate data, install malware, or pivot to other systems.',
-    });
+    if (mcpRead.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'TOOL-003', name: 'Dangerous Tool Detection', description: 'Identify potentially dangerous MCP tools', category: 'tool-boundaries' }, 'mcp.json', 'No mcp.json in the scanned tree. This check reads only mcp.json, so tool boundaries configured elsewhere (for example .mcp.json) are outside its scope.'));
+    } else if (mcpRead.state === 'read') {
+      findings.push({
+        checkId: 'TOOL-003',
+        name: 'Dangerous Tool Detection',
+        description: 'Identify potentially dangerous MCP tools',
+        category: 'tool-boundaries',
+        severity: 'high',
+        passed: !hasDangerousTools,
+        message: hasDangerousTools
+          ? 'Potentially dangerous tools detected (shell/exec) - ensure proper restrictions'
+          : 'No obvious dangerous tools detected',
+        fixable: false,
+        guidance: 'Shell and exec tools give the AI agent arbitrary command execution on the host. A prompt injection can leverage these to exfiltrate data, install malware, or pivot to other systems.',
+      });
+    }
 
     // TOOL-004: Check for tool confirmation requirements
     let hasConfirmation = false;
-    try {
-      const claudePath = path.join(targetDir, 'CLAUDE.md');
-      const content = await fs.readFile(claudePath, 'utf-8');
+    const claudeReadTool004 = await readCheckSubject(path.join(targetDir, 'CLAUDE.md'));
+    if (claudeReadTool004.state === 'read') {
+      const content = claudeReadTool004.content;
       hasConfirmation =
         content.toLowerCase().includes('confirm') ||
         content.toLowerCase().includes('approval') ||
         content.toLowerCase().includes('ask before');
-    } catch {}
+    }
 
-    findings.push({
-      checkId: 'TOOL-004',
-      name: 'Tool Confirmation Requirements',
-      description: 'Dangerous operations should require confirmation',
-      category: 'tool-boundaries',
-      severity: 'medium',
-      passed: hasConfirmation,
-      message: hasConfirmation
-        ? 'Tool confirmation instructions detected'
-        : 'Consider requiring confirmation for destructive operations',
-      fixable: false,
-      guidance: 'Without confirmation gates, the AI agent can execute destructive operations (file deletion, database drops, deployments) in a single step with no human checkpoint.',
-    });
+    if (claudeReadTool004.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'TOOL-004', name: 'Tool Confirmation Requirements', description: 'Dangerous operations should require confirmation', category: 'tool-boundaries' }, 'CLAUDE.md', 'No CLAUDE.md in the scanned tree, so there is no system prompt file to inspect.'));
+    } else if (claudeReadTool004.state === 'read') {
+      findings.push({
+        checkId: 'TOOL-004',
+        name: 'Tool Confirmation Requirements',
+        description: 'Dangerous operations should require confirmation',
+        category: 'tool-boundaries',
+        severity: 'medium',
+        passed: hasConfirmation,
+        message: hasConfirmation
+          ? 'Tool confirmation instructions detected'
+          : 'Consider requiring confirmation for destructive operations',
+        fixable: false,
+        guidance: 'Without confirmation gates, the AI agent can execute destructive operations (file deletion, database drops, deployments) in a single step with no human checkpoint.',
+      });
+    }
 
     return findings;
   }

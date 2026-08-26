@@ -13,6 +13,49 @@ spelling rules. The name is now normalized once before validation, so
 every format. Unknown names are still rejected, with the value as given and the
 available list in lower case. (#630)
 
+### A check whose subject is absent records `not-applicable`, not a failure or a pass
+
+A hardening check whose subject was not in the scanned tree — no MCP config, no
+prompt file, no `.claude/settings.json`, no Cursor rules, no `.vscode/mcp.json`,
+no `package.json` — emitted either a pathless failure (the empty-directory and
+one-marker-tree noise #458 opened on) or, on 31 checks, a pass it never
+measured. 77 checks now emit a positive `notApplicable: { subject, reason }`
+record instead: no `severity`, no `passed` field, excluded from the issue list,
+never counted as a confirmed fix, never published to the Registry as a measured
+finding. Project-type scope still wins: a check scoped off the detected project
+type leaves no record at all, not-applicable or otherwise. `maxScore` does not
+change. Only the not-there errnos (ENOENT, EISDIR, ENOTDIR) mean
+absent; any other read error emits nothing and is disclosed by
+`SCAN-UNREAD-001`. The hazard probes (PERM-001, PERM-002, PERM-003, LOG-003)
+still pass when the probed path is not there — a measured absence — but an
+unreadable probed path now withholds the verdict instead of passing; CRED-002 no
+longer passes with a caveat on an unreadable root; a present but unparseable
+`.claude/settings.json` reads as "could not be parsed", not "not found". Absent
+mitigations stay failures: SANDBOX-001 (`file: "Dockerfile"`), DEP-001 and
+GIT-001 carry the path the fix creates. Measured on an empty directory: 93/100,
+six passes (CRED-002, LOG-003, MCP-010, PERM-001, PERM-002, PERM-003), three
+advisory-shaped failures in `allFindings` (SANDBOX-001, DEP-001, GIT-001 — the
+rendered issue list shows two, SANDBOX-001 being type-suppressed for library
+trees and disclosed in `coverage.suppressedFailures`), 13 not-applicable
+records; on a one-marker MCP tree, 27
+not-applicable records and 6 pathless failures (ENV-004, LOG-001, LOG-004,
+SEC-001, SEC-002, SEC-003 — present-subject checks, unchanged here). Known: a
+populated `.cursor/rules/` directory reads as absent (its rule files were not
+inspected before either); tracked separately. Verify:
+`T=$(mktemp -d) && printf '{"name":"t","version":"1.0.0","dependencies":{"@modelcontextprotocol/sdk":"^1.0.0"}}' > "$T/package.json" && git -C "$T" init -q && hackmyagent secure "$T" --json | jq '[.allFindings[] | select(.notApplicable)] | length'`
+— expect 27.
+
+The `secure -b oasb-1` benchmark reads these records as failures until the
+benchmark report becomes not-applicable-aware (#458 step 3, same release): an
+empty directory reports 29% compliance (L1) where it reported 69% built on
+passes it never measured, 25% at L2 and L3; a one-marker MCP tree 21% (L1) and
+18% (L2, L3) where it reported 43% and 38%. Controls 3.3, 3.4, 4.3, 5.2, 9.3
+and 9.5 move from passed to unverified on the empty directory (3.4 and 4.3 on
+the MCP tree) — the corrected direction; 5.1 (and on the MCP tree 5.2 and 9.5)
+move from passed to failed through the not-yet-aware mapping; 9.4 reads failed
+on the empty directory at L2 and L3 through the SANDBOX-001 advisory.
+(#458 steps 1-2.)
+
 ### `--fail-below` on the benchmark arms gates the figure the arm prints
 
 `secure -b oasb-1 --fail-below N` and `-b oasb-2 --fail-below N` also applied the

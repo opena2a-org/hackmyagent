@@ -352,7 +352,7 @@ import {
 import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifact-intent';
 import { describeSemanticFamilyCoverage } from './ui/semantic-coverage-labels';
 import type { SemanticFamilyCoverage } from './nanomind-core/scanner-bridge.js';
-import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, confirmedFix, expandSuppressed, retainForVerdict, summarizeSuppressed } from './ui/verdict-band';
+import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, confirmedFix, expandSuppressed, isMeasured, retainForVerdict, summarizeSuppressed, type MeasuredFinding } from './ui/verdict-band';
 import { shouldPrintVersionFooter } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { fixSummaryLine } from './ui/fix-summary';
@@ -1660,7 +1660,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   };
 
   // ── Compute findings ────────────────────────────────────────────────
-  let failed: SecurityFinding[] = [];
+  let failed: MeasuredFinding[] = [];
   /**
    * What the VERDICT and the severity counts are computed from (#450).
    *
@@ -1690,7 +1690,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // line. Today an upstream filter happens to spare us the second case —
     // but depending on that invariant is what produced the first, so decide
     // it here with the same function the score uses.
-    failed = localScan.findings.filter(f => countsAgainstScore(f));
+    failed = localScan.findings.filter(isMeasured).filter(f => countsAgainstScore(f));
     score = localScan.score;
     maxScore = localScan.maxScore;
     // #450 — the counts, the verdict and the score describe the whole tree; the
@@ -1752,7 +1752,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       passed: false,
       message: f.message || f.description || '',
       fixable: false,
-    }));
+    })).filter(isMeasured);
     // Use the canonical scoring formula (exponential decay + 0.4x governance weight)
     //
     // #457 — `gatedIssues`, not `issues`. The counts, the verdict and the exit
@@ -3111,21 +3111,6 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   });
 }
 
-function groupFindingsBySeverity(findings: SecurityFinding[]): Record<Severity, SecurityFinding[]> {
-  const grouped: Record<Severity, SecurityFinding[]> = {
-    critical: [],
-    high: [],
-    medium: [],
-    low: [],
-  };
-
-  for (const finding of findings) {
-    grouped[finding.severity].push(finding);
-  }
-
-  return grouped;
-}
-
 // Benchmark compliance helpers
 interface LocalControlResult {
   control: BenchmarkControl;
@@ -4206,7 +4191,7 @@ function generateScanSarif(findings: SecurityFinding[], targetDir: string): stri
 // HTML report for non-benchmark secure scans
 function generateScanHtmlReport(scanResult: { findings: SecurityFinding[]; score: number; maxScore: number; projectType: string }, targetDir: string): string {
   assertRedactionProvenance(scanResult.findings, 'html-scan');
-  const issues = scanResult.findings.filter(f => countsAgainstScore(f));
+  const issues = scanResult.findings.filter(isMeasured).filter(f => countsAgainstScore(f));
   // Verified fixes only, so "Auto-Fixed" and "issues" stay disjoint and the
   // header arithmetic adds up. A fix the verification pass could not confirm
   // is counted as an outstanding issue (it is still on disk), and listing it
@@ -6621,7 +6606,7 @@ Examples:
 
       // Filter to OpenClaw-specific findings
       const allOpenClawFindings = filterOpenClawFindings(result.findings);
-      const issues = allOpenClawFindings.filter((f) => countsAgainstScore(f));
+      const issues = allOpenClawFindings.filter(isMeasured).filter((f) => countsAgainstScore(f));
       // #274 — confirmed fixes only; a disproved attempt is counted in `issues`.
       const fixedFindings = allOpenClawFindings.filter((f) => confirmedFix(f));
       const passedFindings = allOpenClawFindings.filter((f) => f.passed);
@@ -6900,7 +6885,11 @@ Examples:
         }
       } catch { /* ignore filter unavailable */ }
 
-      const issues = mergedFindings.filter((f: SecurityFinding) => !f.passed);
+      // #458 — bare `!f.passed` would classify a not-applicable record
+      // (`passed` omitted — it measured nothing) as an issue and render a
+      // severity it does not carry. A check whose subject is absent
+      // contributes no failed record to any consumer.
+      const issues = mergedFindings.filter(isMeasured).filter((f) => !f.passed);
       const passedFindings = mergedFindings.filter((f: SecurityFinding) => f.passed);
 
       // #373, same class as `check` and `secure-openclaw`. Measured
@@ -10997,6 +10986,9 @@ program
       const result = await scanner.scan({ targetDir: options.directory, autoFix: false, scanDepth: 'deep' as any });
 
       for (const finding of result.findings) {
+        // #458 — a not-applicable record measured nothing; there is no severity
+        // to enrich the benchmark metadata with.
+        if (!isMeasured(finding)) continue;
         if (metadata[finding.checkId]) {
           metadata[finding.checkId].name = finding.name;
           metadata[finding.checkId].category = finding.category;
@@ -12238,6 +12230,11 @@ async function publishToRegistry(
       toolVersion: VERSION,
       findings: result.findings
         .filter(f => !PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES.has(f.category))
+        // #458 — result.findings holds measured records only (the render filter in
+        // scanner.ts drops a not-applicable record, which has no pass/fail state
+        // and no severity); this narrows the type to say both and drops nothing:
+        // the parity test pins it.
+        .filter((f): f is MeasuredFinding & { passed: boolean } => typeof f.passed === 'boolean' && f.severity !== undefined)
         .map(f => ({
           checkId: f.checkId,
           name: f.name,
