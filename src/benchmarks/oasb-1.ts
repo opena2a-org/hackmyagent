@@ -32,10 +32,23 @@ export interface BenchmarkControl {
   /** Default value/state in most deployments */
   defaultValue?: string;
 
-  /** HackMyAgent check IDs that verify this control */
+  /**
+   * HackMyAgent check IDs mapped to this control. Whether they can SETTLE it
+   * is `verification`'s call: on an `automated` control they are sufficient
+   * (passed / failed / not-applicable); on a `manual` or `forward` control
+   * they are refutation-only — a measured failure fails the control, nothing
+   * they report can pass it. A check mapped onto a non-automated control must
+   * therefore be refutation-grade: its failure is a direct violation of the
+   * control's MUST text (#639).
+   */
   checkIds: string[];
 
-  /** Control is automated, manual, or forward-looking */
+  /**
+   * `automated`: the mapped checks are sufficient to settle the control.
+   * `manual`: a person must confirm it; mapped checks can only refute it.
+   * `forward`: as manual, and the requirement is ahead of current practice —
+   * no artifact convention exists yet for a scanner to confirm it.
+   */
   verification: 'automated' | 'manual' | 'forward';
 
   /** External references (OWASP, NIST, etc.) */

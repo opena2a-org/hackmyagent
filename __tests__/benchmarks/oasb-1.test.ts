@@ -94,8 +94,9 @@ describe('OASB-1 Benchmark', () => {
     it('manual and forward controls have empty checkIds or only semantic checkIds', () => {
       for (const control of allControls) {
         if (control.verification === 'manual' || control.verification === 'forward') {
-          // Semantic engine checkIds (SEM-*) are allowed on forward controls
-          // because they provide partial automated verification
+          // Semantic engine checkIds (SEM-*) are allowed on manual/forward
+          // controls as refutation checks: a measured failure fails the
+          // control, nothing they report passes it (#639)
           const nonSemanticIds = control.checkIds.filter((id) => !id.startsWith('SEM-'));
           expect(
             nonSemanticIds.length,

@@ -1,0 +1,115 @@
+/**
+ * #639 — spawn-level: a wildcard MCP grant now moves the OASB-1 benchmark.
+ *
+ * Fixture: an `mcp.json` whose one server grants `allowedTools: ["*"]`
+ * (SEM-MCP-004, control 2.1's own audit step). Before: 2.1 read
+ * `unverified`, the tree beside a lockfile rated `Certified 100% (11/11)`
+ * at exit 0 and `--fail-below 100` exited 0. Now: `[-] 2.1`, `Passing`,
+ * `11/12`, `--fail-below 100` exits 1, SARIF carries `OASB-1/2.1`, and the
+ * same tree without the lockfile moves 56% (5/9) -> 50% (5/10).
+ *
+ * RED-ON-BASE cells fail on the 2a39b72 dist; PIN cells pass on both.
+ */
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+
+beforeAll(assertDistFreshIfPresent);
+
+const MCP = '{"mcpServers":{"fs":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","./data"],"allowedTools":["*"]}}}\n';
+const FLAGS = ['-b', 'oasb-1', '-l', 'L1', '--no-machine-posture'];
+
+let wild: string;
+let wildLock: string;
+let empty: string;
+
+beforeAll(() => {
+  wild = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-639-wild-'));
+  fs.writeFileSync(path.join(wild, 'mcp.json'), MCP);
+  wildLock = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-639-lock-'));
+  fs.writeFileSync(path.join(wildLock, 'mcp.json'), MCP);
+  fs.writeFileSync(path.join(wildLock, 'package.json'), '{"name":"fx","version":"1.0.0","private":true,"dependencies":{}}\n');
+  fs.writeFileSync(path.join(wildLock, 'package-lock.json'), '{"name":"fx","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"fx","version":"1.0.0"}}}\n');
+  empty = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-639-empty-'));
+});
+
+afterAll(() => {
+  for (const d of [wild, wildLock, empty]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } }
+});
+
+function run(dir: string, args: string[]) {
+  const r = spawnSync(process.execPath, [CLI, 'secure', dir, ...FLAGS, ...args], {
+    encoding: 'utf8',
+    timeout: 240_000,
+    maxBuffer: 64 * 1024 * 1024,
+    env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')) },
+  });
+  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+}
+
+function json(stdout: string): any {
+  return JSON.parse(stdout.slice(stdout.indexOf('{')));
+}
+
+describe('#639 a wildcard MCP grant fails OASB-1 control 2.1', { timeout: 300_000 }, () => {
+  it('fixture guard: the scan itself records the wildcard as SEM-MCP-004', () => {
+    const r = spawnSync(process.execPath, [CLI, 'secure', wild, '--no-machine-posture', '--format', 'json'], {
+      encoding: 'utf8', timeout: 240_000, maxBuffer: 64 * 1024 * 1024,
+      env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')) },
+    });
+    const body = json(r.stdout ?? '');
+    const recs = (body.allFindings ?? body.findings).filter((f: any) => f.checkId === 'SEM-MCP-004');
+    expect(recs.length).toBeGreaterThan(0);
+  });
+
+  it('RED-ON-BASE text: [-] 2.1, the category shows 1/2, compliance 50% (5/10)', () => {
+    const r = run(wild, ['--verbose']);
+    expect(r.stdout).toMatch(/\[-\] 2\.1: Explicit Capability Grants/);
+    expect(r.stdout).toMatch(/SEM-MCP-004: MCP server "fs" has allowedTools: \["\*"\]/);
+    expect(r.stdout).toMatch(/Capability & Authorization: 1\/2 \(50%\)/);
+    expect(r.stdout).toMatch(/Compliance: 50% \(5\/10 verified controls\)/);
+    expect(r.stdout).toMatch(/Unverified: 16 controls/);
+    expect(r.status).toBe(1);
+  });
+
+  it('RED-ON-BASE json: 2.1 failed with the SEM-MCP-004 finding and the record remediation', () => {
+    const body = json(run(wild, ['--format', 'json']).stdout);
+    const c = body.categories.flatMap((x: any) => x.controls).find((x: any) => x.controlId === '2.1');
+    expect(c.status).toBe('failed');
+    expect(c.findings[0]).toMatch(/^SEM-MCP-004: /);
+    expect(c.notApplicableSubjects).toBeUndefined();
+    expect(body.failedControls).toBe(5);
+    expect(body.unverifiedControls).toBe(16);
+    expect(body.l1Compliance).toBe(50);
+  });
+
+  it('RED-ON-BASE sarif: an OASB-1/2.1 result is emitted', () => {
+    const body = json(run(wild, ['--format', 'sarif']).stdout);
+    const ids = body.runs[0].results.map((x: any) => x.ruleId);
+    expect(ids).toContain('OASB-1/2.1');
+    expect(ids).toHaveLength(5);
+  });
+
+  it('RED-ON-BASE with a lockfile: Certified 100% (11/11) exit 0 becomes Passing 11/12, and --fail-below 100 exits 1', () => {
+    const r = run(wildLock, []);
+    expect(r.stdout).toMatch(/Rating: Passing/);
+    expect(r.stdout).toMatch(/Compliance: 92% \(11\/12 verified controls\)/);
+    expect(r.stdout).not.toMatch(/Certified/);
+    expect(r.status).toBe(0);
+    const gated = run(wildLock, ['--fail-below', '100']);
+    expect(gated.status).toBe(1);
+    const lenient = run(wildLock, ['--fail-below', '90']);
+    expect(lenient.status).toBe(0);
+  });
+
+  it('PIN: an empty directory is unmoved — 2.1 unverified, 3/4/19/0, compliance 43', () => {
+    const body = json(run(empty, ['--format', 'json']).stdout);
+    const c = body.categories.flatMap((x: any) => x.controls).find((x: any) => x.controlId === '2.1');
+    expect(c.status).toBe('unverified');
+    expect([body.passedControls, body.failedControls, body.unverifiedControls, body.notApplicableControls]).toEqual([3, 4, 19, 0]);
+    expect(body.compliance).toBe(43);
+  });
+});
