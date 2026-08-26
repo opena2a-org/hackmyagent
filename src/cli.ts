@@ -13076,7 +13076,19 @@ async function checkPyPiPackage(
 
     if (!dist) {
       console.error(`Error: No downloadable distribution found for "${escapeForDisplay(String(name))}" on PyPI.`);
-      process.exitCode = 1; // exit-unsettled(#350/S050): bare assignment outside the funnel; migrate to raiseExitCode
+      // #602 — nothing was fetched, so nothing was measured: exit 2 per the
+      // documented table, never 1 ("measured, high risk") about a package
+      // that was never scanned. Same settlement as the npm and local arms.
+      const verdict = unmeasured(
+        'target-not-found',
+        `${escapeForDisplay(String(name))} has no downloadable distribution on PyPI, so nothing was scanned.`,
+      );
+      await settleCheckVerdict(verdict);
+      if (options.json) {
+        writeJsonStdout({ hackmyagentVersion: VERSION, target: name, type: 'pypi-package', coverage: coverageJson(verdict) });
+      } else {
+        console.error(unmeasuredBanner(verdict));
+      }
       return;
     }
 
@@ -13196,12 +13208,28 @@ async function checkPyPiPackage(
     // Exit code settled above, before the `--json` branch.
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    if (message.includes('not found on PyPI')) {
+    const pypiNotFound = message.includes('not found on PyPI');
+    if (pypiNotFound) {
       console.error(`Error: ${escapeForDisplay(String(message))}`);
     } else {
       console.error(`Error scanning PyPI package "${escapeForDisplay(name)}": ${escapeForDisplay(String(message))}`);
     }
-    process.exitCode = 1; // exit-unsettled(#350/S051): bare assignment outside the funnel; migrate to raiseExitCode
+    // #602 — the run reached no verdict: exit 2 per the documented table,
+    // never 1, which told a CI consumer "high risk" about a package that was
+    // never scanned. Raise-only, so a verdict settled before a late error
+    // still holds its floor.
+    const verdict = unmeasured(
+      pypiNotFound ? 'target-not-found' : 'target-unreachable',
+      pypiNotFound
+        ? `${escapeForDisplay(name)} was not found on PyPI, so nothing was scanned.`
+        : `${escapeForDisplay(name)} could not be fetched from PyPI (${escapeForDisplay(String(message))}), so no verdict was measured.`,
+    );
+    await settleCheckVerdict(verdict);
+    if (options.json) {
+      writeJsonStdout({ hackmyagentVersion: VERSION, target: name, type: 'pypi-package', coverage: coverageJson(verdict) });
+    } else {
+      console.error(unmeasuredBanner(verdict));
+    }
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -13253,10 +13281,19 @@ async function checkRawUrl(
       const headRes = await fetch(url, { method: 'HEAD', redirect: 'follow' });
       if (!headRes.ok) {
         console.error(`Error: HTTP ${headRes.status} fetching "${escapeForDisplay(String(url))}".`);
-        // Set exit code and return so `finally` can clean up tempDir (was
-        // already allocated above). process.exit() would skip the cleanup
-        // and orphan the /tmp/hma-check-url-* directory.
-        process.exitCode = 1; // exit-unsettled(#350/S052): bare assignment outside the funnel; migrate to raiseExitCode
+        // #602 — nothing was fetched, so nothing was measured: exit 2 per
+        // the documented table. Settle-and-return (not process.exit) so
+        // `finally` can clean up the already-allocated tempDir.
+        const verdict = unmeasured(
+          headRes.status === 404 || headRes.status === 410 ? 'target-not-found' : 'target-unreachable',
+          `HTTP ${headRes.status} fetching ${escapeForDisplay(String(url))}, so nothing was scanned.`,
+        );
+        await settleCheckVerdict(verdict);
+        if (options.json) {
+          writeJsonStdout({ hackmyagentVersion: VERSION, target: url, type: 'raw-url', coverage: coverageJson(verdict) });
+        } else {
+          console.error(unmeasuredBanner(verdict));
+        }
         return;
       }
 
@@ -13273,7 +13310,17 @@ async function checkRawUrl(
       const bodyRes = await fetch(finalUrl, { redirect: 'follow' });
       if (!bodyRes.ok || !bodyRes.body) {
         console.error(`Error: Failed to download "${escapeForDisplay(String(url))}" (HTTP ${bodyRes.status}).`);
-        process.exitCode = 1; // exit-unsettled(#350/S053): bare assignment outside the funnel; migrate to raiseExitCode
+        // #602 — same settlement as the HEAD failure above: unmeasured, 2.
+        const verdict = unmeasured(
+          'target-unreachable',
+          `Failed to download ${escapeForDisplay(String(url))} (HTTP ${bodyRes.status}), so nothing was scanned.`,
+        );
+        await settleCheckVerdict(verdict);
+        if (options.json) {
+          writeJsonStdout({ hackmyagentVersion: VERSION, target: url, type: 'raw-url', coverage: coverageJson(verdict) });
+        } else {
+          console.error(unmeasuredBanner(verdict));
+        }
         return;
       }
       const buffer = Buffer.from(await bodyRes.arrayBuffer());
@@ -13416,7 +13463,8 @@ async function checkRawUrl(
   } catch (err: unknown) {
     rethrowIfRedactionProvenance(err);
     const message = err instanceof Error ? err.message : String(err);
-    if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
+    const urlNotFound = message.includes('128') || message.includes('not found') || message.includes('Repository not found');
+    if (urlNotFound) {
       console.error(`Error: Could not clone repository from "${escapeForDisplay(String(url))}".`);
       console.error(`\nVerify the URL is accessible and contains a git repository.`);
     } else if (message.includes('timeout') || message.includes('Timeout')) {
@@ -13426,7 +13474,19 @@ async function checkRawUrl(
     } else {
       console.error(`Error scanning URL: ${escapeForDisplay(String(message))}`);
     }
-    process.exitCode = 1; // exit-unsettled(#350/S054): bare assignment outside the funnel; migrate to raiseExitCode
+    // #602 — the run reached no verdict: exit 2 per the documented table,
+    // never 1 about a URL that was never fetched. Raise-only, so a verdict
+    // settled before a late error still holds its floor.
+    const verdict = unmeasured(
+      urlNotFound ? 'target-not-found' : 'target-unreachable',
+      `${escapeForDisplay(String(url))} could not be fetched (${escapeForDisplay(String(message))}), so no verdict was measured.`,
+    );
+    await settleCheckVerdict(verdict);
+    if (options.json) {
+      writeJsonStdout({ hackmyagentVersion: VERSION, target: url, type: 'raw-url', coverage: coverageJson(verdict) });
+    } else {
+      console.error(unmeasuredBanner(verdict));
+    }
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
