@@ -360,6 +360,7 @@ import { shouldShowDeepProgress } from './ui/progress-gate';
 import { generateVerifyCommand } from './ui/verify-command';
 import { commandSucceeded } from './telemetry/command-success';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
+import { generateBenchmarkReport } from './benchmarks/benchmark-report';
 import { UsageError, usageError } from './checker/errors';
 import { RootRefusalError } from './mcp/roots';
 import { shellQuote, citationPath, citationTarget, commandNaming } from './ui/shell-quote';
@@ -3112,14 +3113,6 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
 }
 
 // Benchmark compliance helpers
-interface LocalControlResult {
-  control: BenchmarkControl;
-  status: 'passed' | 'failed' | 'unverified' | 'not-applicable';
-  findings: string[];
-  remediation?: string;
-  /** Absent subject artifacts, when status is `not-applicable` (#458). */
-  naSubjects?: string[];
-}
 
 /**
  * #514 (disclosure half) — a benchmark run can exit 2 for an input it could
@@ -3146,200 +3139,6 @@ function printBenchmarkUnreadDisclosure(result: ScanResult): void {
     console.log(`  ${escapeForDisplay(f.message ?? f.file ?? '')}`);
   }
   console.log();
-}
-
-function generateBenchmarkReport(
-  findings: SecurityFinding[],
-  level: BenchmarkLevel,
-  categoryFilter?: string
-): BenchmarkResult {
-  // Get controls for the specified level
-  let controls = getControlsForLevel(level);
-
-  // Filter by category if specified
-  if (categoryFilter) {
-    const categoryControls = getControlsForCategory(categoryFilter);
-    if (categoryControls.length === 0) {
-      console.error(`Error: Unknown category '${escapeForDisplay(String(categoryFilter))}'.`);
-      console.error(`Available categories: ${OASB_1_CATEGORIES.map((c: BenchmarkCategory) => c.name).join(', ')}`);
-      process.exit(1);
-    }
-    controls = controls.filter((c: BenchmarkControl) => c.category.toLowerCase() === categoryFilter.toLowerCase());
-  }
-
-  // Build a map of checkId -> finding for quick lookup
-  const findingsByCheckId = new Map<string, SecurityFinding>();
-  for (const finding of findings) {
-    findingsByCheckId.set(finding.checkId, finding);
-  }
-
-  // Evaluate each control
-  const controlResults: LocalControlResult[] = [];
-  let l1Passed = 0, l1Total = 0;
-  let l2Passed = 0, l2Total = 0;
-  let l3Passed = 0, l3Total = 0;
-  let passedCount = 0, failedCount = 0, unverifiedCount = 0, notApplicableCount = 0;
-
-  for (const control of controls) {
-    let status: 'passed' | 'failed' | 'unverified' | 'not-applicable';
-    const relatedFindings: string[] = [];
-    const naSubjects: string[] = [];
-    let remediation: string | undefined;
-
-    if (control.verification === 'manual' || control.verification === 'forward') {
-      // Manual/forward controls are unverified (human must check)
-      status = 'unverified';
-      unverifiedCount++;
-      // Use control's remediation for manual/forward controls
-      remediation = control.remediation;
-    } else if (control.checkIds.length === 0) {
-      // No automated checks defined
-      status = 'unverified';
-      unverifiedCount++;
-      remediation = control.remediation;
-    } else {
-      // Check all mapped check IDs
-      let hasMeasured = false;
-      let hasFailure = false;
-      let hasNotApplicable = false;
-      for (const checkId of control.checkIds) {
-        const finding = findingsByCheckId.get(checkId);
-        if (!finding) continue;
-        // #458 step 3 — the NA test comes FIRST: an NA record OMITS `passed`
-        // (never false), so the `!finding.passed` test below read "subject
-        // absent" as a failure and, before steps 1-2, the absent subject was
-        // a pathless HIGH. The record contributes no pass/fail value; it
-        // names its absent subject.
-        if (finding.notApplicable) {
-          hasNotApplicable = true;
-          if (!naSubjects.includes(finding.notApplicable.subject)) {
-            naSubjects.push(finding.notApplicable.subject);
-          }
-          continue;
-        }
-        hasMeasured = true;
-        if (!finding.passed) {
-          hasFailure = true;
-          relatedFindings.push(`${checkId}: ${finding.description}`);
-          if (finding.fix) {
-            remediation = remediation || finding.fix;
-          }
-        }
-      }
-      // Only mark as passed if we actually verified something. A MEASURED
-      // record outranks an NA sibling (a control with one check that measured
-      // and one whose subject is absent WAS measured); `not-applicable` is
-      // awarded only when NA records are all the control has; nothing at all
-      // stays `unverified` — a type-scoped-off check leaves NO record, and
-      // crediting that as anything would relaunder the absence #458 removed.
-      if (hasMeasured) {
-        if (hasFailure) {
-          status = 'failed';
-          failedCount++;
-          remediation = remediation || control.remediation;
-        } else {
-          status = 'passed';
-          passedCount++;
-        }
-      } else if (hasNotApplicable) {
-        status = 'not-applicable';
-        notApplicableCount++;
-      } else {
-        status = 'unverified';
-        unverifiedCount++;
-        remediation = control.remediation;
-      }
-    }
-
-    // Count by level for compliance calculation
-    // Positive gate (#458 step 3): only a MEASURED status enters a level
-    // denominator. `not-applicable` leaves it exactly like `unverified`.
-    if (control.scored && (status === 'passed' || status === 'failed')) {
-      if (control.level === 'L1') {
-        l1Total++;
-        if (status === 'passed') l1Passed++;
-      } else if (control.level === 'L2') {
-        l2Total++;
-        if (status === 'passed') l2Passed++;
-      } else if (control.level === 'L3') {
-        l3Total++;
-        if (status === 'passed') l3Passed++;
-      }
-    }
-
-    controlResults.push({ control, status, findings: relatedFindings, remediation, naSubjects });
-  }
-
-  // Compliance percentages. #458 step 0 — a level with no scored control
-  // that produced a result has no figure: `null`, never a default. The two
-  // L3 controls (3.5, 8.4) have no automated check, so `l3Compliance` was the
-  // old `: 100` default on every target and the L3 ladder read it as perfect
-  // (the sentence in #513's title); a category with no scored control read
-  // `Rating: Certified` beside `Compliance: 0% (0/0)` because the overall
-  // figure defaulted to 0 five lines below — the opposite default for the
-  // same case. CISO 2026-08-11 / CPO 2026-08-25: zero denominator => null,
-  // renders "not assessed", never feeds the ladder, never Not Passing.
-  const pct = (passed: number, total: number): number | null =>
-    total > 0 ? Math.round((passed / total) * 100) : null;
-  const l1Compliance = pct(l1Passed, l1Total);
-  const l2Compliance = pct(l2Passed, l2Total);
-  const l3Compliance = pct(l3Passed, l3Total);
-  const totalScored = l1Total + l2Total + l3Total;
-  const totalPassed = l1Passed + l2Passed + l3Passed;
-  const overallCompliance = pct(totalPassed, totalScored);
-
-  // Group results by category
-  const categoryResults: BenchmarkCategoryResult[] = [];
-  for (const category of OASB_1_CATEGORIES) {
-    if (categoryFilter && category.name.toLowerCase() !== categoryFilter.toLowerCase()) continue;
-
-    const catControls = controlResults.filter((r: LocalControlResult) => r.control.category === category.name);
-    if (catControls.length === 0) continue;
-
-    const passed = catControls.filter((r: LocalControlResult) => r.status === 'passed').length;
-    const failed = catControls.filter((r: LocalControlResult) => r.status === 'failed').length;
-    const unverified = catControls.filter((r: LocalControlResult) => r.status === 'unverified').length;
-    const notApplicable = catControls.filter((r: LocalControlResult) => r.status === 'not-applicable').length;
-    const compliance = (passed + failed) > 0 ? Math.round((passed / (passed + failed)) * 100) : 0;
-
-    categoryResults.push({
-      category: category.name,
-      compliance,
-      passed,
-      failed,
-      unverified,
-      notApplicable,
-      controls: catControls.map((r: LocalControlResult) => ({
-        controlId: r.control.id,
-        name: r.control.name,
-        level: r.control.level,
-        status: r.status,
-        findings: r.findings,
-        remediation: r.remediation,
-        ...(r.status === 'not-applicable' && r.naSubjects?.length ? { notApplicableSubjects: r.naSubjects } : {}),
-      })),
-    });
-  }
-
-  const rating = calculateRating(l1Compliance, l2Compliance, l3Compliance, level);
-
-  return {
-    benchmark: OASB_1_NAME,
-    version: OASB_1_VERSION,
-    level,
-    timestamp: new Date(),
-    compliance: overallCompliance,
-    l1Compliance,
-    l2Compliance,
-    l3Compliance,
-    rating,
-    categories: categoryResults,
-    totalControls: controls.length,
-    passedControls: passedCount,
-    failedControls: failedCount,
-    unverifiedControls: unverifiedCount,
-    notApplicableControls: notApplicableCount,
-  };
 }
 
 // SARIF 2.1.0 output for GitHub Security tab and IDE integration
@@ -3590,7 +3389,7 @@ function generateHtmlReport(result: BenchmarkResult, targetDir: string, flags?: 
 
     const controlRows = cat.controls.map(ctrl => {
       const statusSvg = ctrl.status === 'passed' ? icons.check : ctrl.status === 'failed' ? icons.x : icons.circle;
-      const ctrlStatusClass = ctrl.status === 'passed' ? 'status-pass' : ctrl.status === 'failed' ? 'status-fail' : 'status-unverified';
+      const ctrlStatusClass = ctrl.status === 'passed' ? 'status-pass' : ctrl.status === 'failed' ? 'status-fail' : ctrl.status === 'not-applicable' ? 'status-na' : 'status-unverified';
       const findingsList = ctrl.findings.length > 0
         ? `<ul class="findings">${ctrl.findings.map(f => `<li>${escapeHtml(f)}</li>`).join('')}</ul>`
         : '';
@@ -3714,6 +3513,7 @@ function generateHtmlReport(result: BenchmarkResult, targetDir: string, flags?: 
     .status-fail { color: var(--danger); }
     .status-warn { color: var(--warning); }
     .status-unverified { color: var(--text-muted); }
+    .status-na { color: #8a8f98; opacity: 0.7; } /* #458: absent subject — distinct from unverified */
     .category-icon { display: flex; align-items: center; }
     .category-icon .icon { width: 18px; height: 18px; }
     .footer-btn .icon { width: 14px; height: 14px; margin-right: 0.375rem; }
