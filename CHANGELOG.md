@@ -16,11 +16,16 @@ indistinguishable (#602).
 The five endings now settle through the same unmeasured path as the other
 arms: exit 2, the `Not measured` banner in text mode, and — where `--json`
 mode previously wrote nothing at all to stdout — a document whose
-`coverage` record says `measured: false` with the reason
-(`target-not-found` for a 404/410 or a missing distribution,
-`target-unreachable` for everything that answered badly or not at all).
-The settlement is raise-only, so a verdict settled before a late error
-still holds its floor.
+`coverage` record says `measured: false` with the reason:
+`target-not-found` when the target denies existing (HTTP 404/410, a git
+clone the remote reports as not found, a distribution PyPI does not
+offer); `target-unreachable` when the fetch itself failed; `no-response`
+when the bytes arrived but produced no analyzable answer (a corrupt or
+unsupported archive). The reason is built from structured evidence — an
+HTTP status, a git exit code with its own stderr — never from substrings
+of a rendered error message, and the wire detail never embeds the raw
+message (it can carry local temp paths). The settlement is raise-only, so
+a verdict settled before a late error still holds its floor.
 
 ### Result and crash endings now emit their telemetry event
 

@@ -13033,6 +13033,9 @@ async function checkPyPiPackage(
   }
 
   const tempDir = await mkdtemp(join(tmpdir(), 'hma-check-pypi-'));
+  // What the catch below may truthfully claim (#602, adversarial round 2):
+  // false until the distribution's bytes have fully arrived.
+  let fetched = false;
 
   try {
     // Fetch package metadata from PyPI JSON API
@@ -13098,6 +13101,7 @@ async function checkPyPiPackage(
       throw new Error(`Failed to download ${dist.filename}: HTTP ${archiveRes.status}`);
     }
     const archiveBuffer = Buffer.from(await archiveRes.arrayBuffer());
+    fetched = true;
     const archivePath = join(tempDir, dist.filename);
     const { writeFileSync } = await import('node:fs');
     writeFileSync(archivePath, archiveBuffer);
@@ -13207,9 +13211,12 @@ async function checkPyPiPackage(
 
     // Exit code settled above, before the `--json` branch.
   } catch (err: unknown) {
+    // A redaction-provenance failure is a security invariant, not a fetch
+    // problem — never relabel it as a network error (adversarial round 2;
+    // the URL arm's catch already had this guard).
+    rethrowIfRedactionProvenance(err);
     const message = err instanceof Error ? err.message : String(err);
-    const pypiNotFound = message.includes('not found on PyPI');
-    if (pypiNotFound) {
+    if (message.includes('not found on PyPI')) {
       console.error(`Error: ${escapeForDisplay(String(message))}`);
     } else {
       console.error(`Error scanning PyPI package "${escapeForDisplay(name)}": ${escapeForDisplay(String(message))}`);
@@ -13217,12 +13224,14 @@ async function checkPyPiPackage(
     // #602 — the run reached no verdict: exit 2 per the documented table,
     // never 1, which told a CI consumer "high risk" about a package that was
     // never scanned. Raise-only, so a verdict settled before a late error
-    // still holds its floor.
+    // still holds its floor. `fetched` decides which claim is true (the
+    // catch spans the whole arm); the raw message stays on stderr and out
+    // of the wire detail (it embeds local temp paths).
     const verdict = unmeasured(
-      pypiNotFound ? 'target-not-found' : 'target-unreachable',
-      pypiNotFound
-        ? `${escapeForDisplay(name)} was not found on PyPI, so nothing was scanned.`
-        : `${escapeForDisplay(name)} could not be fetched from PyPI (${escapeForDisplay(String(message))}), so no verdict was measured.`,
+      fetched ? 'no-response' : 'target-unreachable',
+      fetched
+        ? `${escapeForDisplay(name)} was fetched from PyPI but could not be analyzed, so no verdict was measured.`
+        : `${escapeForDisplay(name)} could not be fetched from PyPI, so nothing was scanned.`,
     );
     await settleCheckVerdict(verdict);
     if (options.json) {
@@ -13253,6 +13262,11 @@ async function checkRawUrl(
   const tempDir = await mkdtemp(join(tmpdir(), 'hma-check-url-'));
   let scanDir = tempDir;
   let displayName = url;
+  // What the catch below may truthfully claim (#602, adversarial round 2):
+  // false until the bytes have fully arrived. A failure after this flips is
+  // an analysis failure, not a fetch failure — the two are different
+  // sentences for the user and different reasons on the wire.
+  let fetched = false;
 
   try {
     // Git clone for known forge URLs and .git suffix
@@ -13271,6 +13285,7 @@ async function checkRawUrl(
         'git', ['clone', '--depth', '1', '--single-branch', url, join(tempDir, repoName)],
         { timeout: 120_000 },
       );
+      fetched = true;
       scanDir = join(tempDir, repoName);
     } else {
       // HTTP fetch — use HEAD to determine content type
@@ -13324,6 +13339,7 @@ async function checkRawUrl(
         return;
       }
       const buffer = Buffer.from(await bodyRes.arrayBuffer());
+      fetched = true;
 
       if (isArchive) {
         const archivePath = join(tempDir, fileName);
@@ -13463,8 +13479,7 @@ async function checkRawUrl(
   } catch (err: unknown) {
     rethrowIfRedactionProvenance(err);
     const message = err instanceof Error ? err.message : String(err);
-    const urlNotFound = message.includes('128') || message.includes('not found') || message.includes('Repository not found');
-    if (urlNotFound) {
+    if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
       console.error(`Error: Could not clone repository from "${escapeForDisplay(String(url))}".`);
       console.error(`\nVerify the URL is accessible and contains a git repository.`);
     } else if (message.includes('timeout') || message.includes('Timeout')) {
@@ -13477,9 +13492,23 @@ async function checkRawUrl(
     // #602 — the run reached no verdict: exit 2 per the documented table,
     // never 1 about a URL that was never fetched. Raise-only, so a verdict
     // settled before a late error still holds its floor.
+    //
+    // The wire reason is built from STRUCTURED evidence only (adversarial
+    // round 2): the message-substring sniff above is display-only, because
+    // "128" anywhere in the URL itself would steer it. And the catch spans
+    // the whole arm, so `fetched` decides which claim is true — a target
+    // that answered every request was not "unreachable"; its bytes just
+    // produced no analyzable answer. The raw message stays on stderr and
+    // out of the wire detail (it embeds local temp paths).
+    const gitErr = err as { code?: unknown; stderr?: unknown };
+    const urlNotFound = gitErr?.code === 128 && /repository not found|not found/i.test(String(gitErr.stderr ?? ''));
     const verdict = unmeasured(
-      urlNotFound ? 'target-not-found' : 'target-unreachable',
-      `${escapeForDisplay(String(url))} could not be fetched (${escapeForDisplay(String(message))}), so no verdict was measured.`,
+      fetched ? 'no-response' : urlNotFound ? 'target-not-found' : 'target-unreachable',
+      fetched
+        ? `${escapeForDisplay(String(url))} was fetched but could not be analyzed, so no verdict was measured.`
+        : urlNotFound
+          ? `${escapeForDisplay(String(url))} was not found, so nothing was scanned.`
+          : `${escapeForDisplay(String(url))} could not be fetched, so nothing was scanned.`,
     );
     await settleCheckVerdict(verdict);
     if (options.json) {

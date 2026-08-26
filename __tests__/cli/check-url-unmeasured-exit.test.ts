@@ -44,6 +44,13 @@ const server = http.createServer((req, res) => {
     }
     return;
   }
+  if (req.url.startsWith('/garbage')) {
+    // Answers every request; the body is just not a tarball.
+    res.setHeader('content-type', 'application/gzip');
+    res.statusCode = 200;
+    res.end(req.method === 'HEAD' ? undefined : 'this is not a gzip archive');
+    return;
+  }
   res.statusCode = 404;
   res.end();
 });
@@ -111,6 +118,34 @@ describe('#602 check URL fetch failures are unmeasured, exit 2', { timeout: 300_
     const r = run('http://127.0.0.1:9/pkg.tar.gz', false);
     expect(r.status, r.stderr).toBe(2);
     expect(r.stderr).toMatch(/not measured|Not measured/i);
+  });
+
+  it('a target that answered every request is not called unreachable — bad bytes are no-response, and the wire detail carries no raw message', () => {
+    // Adversarial round 2 measured the arm-wide catch claiming "could not
+    // be fetched" / target-unreachable for a 200-everything server whose
+    // body simply is not an archive — false on both machine-readable
+    // claims — and embedding the raw error (with local temp paths) in the
+    // persistent detail. The fetched-stage flag decides the claim now.
+    const r = run(`${base}/garbage/pkg.tar.gz`, true);
+    expect(r.status, r.stderr).toBe(2);
+    const c = coverage(r.stdout);
+    expect(c.measured).toBe(false);
+    expect(c.reason).toBe('no-response');
+    expect(c.detail).not.toMatch(/hma-check-url|\/tmp\/|\/var\/folders|Command failed/);
+  });
+
+  it("the wire reason cannot be steered by '128' in the URL itself", () => {
+    // Round 2's exact repro pair: the old substring sniff mapped ANY
+    // message containing "128" to target-not-found, so two identical
+    // connection refusals disagreed based on the repo NAME. The reason is
+    // structured-evidence-only now: same failure, same reason, whatever
+    // the path spells.
+    const a = run('http://127.0.0.1:9/repo128.git', true);
+    const b = run('http://127.0.0.1:9/repoxyz.git', true);
+    expect(a.status, a.stderr).toBe(2);
+    expect(b.status, b.stderr).toBe(2);
+    expect(coverage(a.stdout).reason).toBe(coverage(b.stdout).reason);
+    expect(coverage(a.stdout).reason).toBe('target-unreachable');
   });
 
   it('PIN: the --help table and the behavior agree on exit 2', () => {
