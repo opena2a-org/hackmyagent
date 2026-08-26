@@ -4744,7 +4744,7 @@ Examples:
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
   .option('--ci', 'CI mode: suppress interactive prompts and disable contribution. Does not change the exit code')
   .option('--no-machine-posture', 'Skip the advisory scan of AI runtimes installed outside the target (~/.openclaw, ~/.nemoclaw)')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; nanomind?: boolean; analm?: boolean; scanDepth?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean; machinePosture?: boolean }) => {
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; nanomind?: boolean; analm?: boolean; scanDepth?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean; machinePosture?: boolean }, cmd: Command) => {
     try {
       const originalTarget = require("path").resolve(directory);
       let targetDir = originalTarget;
@@ -4859,8 +4859,21 @@ Examples:
       // fall to the text report silently (#632's class). `??` keeps '' as
       // given so it reaches the invalid-format error below.
       const format = options.json ? 'json' : (options.format ?? 'text');
-      if (!validFormats.includes(format)) {
-        console.error(`Error: Invalid format '${escapeForDisplay(String(format))}'. Use: ${validFormats.join(', ')}`);
+      // #605 — `--json` given together with a DIFFERENT `--format` is a
+      // contradiction, and it used to resolve silently in --json's favor: a
+      // CI job asking for sarif got the json report at exit 0 with nothing
+      // to say so. The source check distinguishes an explicit flag from
+      // Commander's 'text' default, so bare `--json` is untouched, and the
+      // redundant agreement (--json --format json) has nothing to resolve
+      // and stays allowed. One refusal site serves both messages so the
+      // exit-surface baseline holds its count.
+      const formatContradiction = options.json
+        && cmd.getOptionValueSource('format') === 'cli'
+        && options.format !== 'json';
+      if (formatContradiction || !validFormats.includes(format)) {
+        console.error(formatContradiction
+          ? `Error: --json is the deprecated alias of --format json and contradicts --format ${escapeForDisplay(String(options.format))}. Drop one of the two flags.`
+          : `Error: Invalid format '${escapeForDisplay(String(format))}'. Use: ${validFormats.join(', ')}`);
         process.exit(1); // exit-unsettled(#350/S006): pre-work refusal; events await the schema reason field (#525)
       }
       // #563 — the Agent Security Profile is rendered only by the OASB-1
@@ -7469,7 +7482,7 @@ Examples:
     registryUrl?: string;
     registryKey?: string;
     json?: boolean;
-  }) => {
+  }, cmd: Command) => {
     try {
       // Validate target
       if (!targetUrl && !options.local) {
@@ -7557,9 +7570,21 @@ Examples:
 
       // Validate format (--json is shorthand for --format json)
       const validFormats = ['text', 'json', 'sarif', 'html'];
-      const format = options.json ? 'json' : (options.format || 'text');
-      if (!validFormats.includes(format)) {
-        console.error(`Error: Invalid format '${escapeForDisplay(String(format))}'. Use: ${validFormats.join(', ')}`);
+      // `??`, not `||`: `--format ''` fell to the text report silently
+      // (#632's class, fixed on secure earlier); '' now reaches the
+      // invalid-format refusal below.
+      const format = options.json ? 'json' : (options.format ?? 'text');
+      // #605 — same contradiction as secure's: `--json --format sarif` used
+      // to resolve silently in --json's favor. Source check spares bare
+      // --json (Commander's 'text' default) and the redundant agreement;
+      // one refusal site serves both messages (baseline count unchanged).
+      const formatContradiction = options.json
+        && cmd.getOptionValueSource('format') === 'cli'
+        && options.format !== 'json';
+      if (formatContradiction || !validFormats.includes(format)) {
+        console.error(formatContradiction
+          ? `Error: --json is the deprecated alias of --format json and contradicts --format ${escapeForDisplay(String(options.format))}. Drop one of the two flags.`
+          : `Error: Invalid format '${escapeForDisplay(String(format))}'. Use: ${validFormats.join(', ')}`);
         process.exit(1); // exit-unsettled(#350/S020): pre-work refusal; events await the schema reason field (#525)
       }
 
