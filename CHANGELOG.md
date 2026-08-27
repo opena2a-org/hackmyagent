@@ -4,6 +4,16 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### secure --format asff carries each finding's remediation
+
+The ASFF emitter read a `recommendation` field that findings do not have
+(they carry `fix` / `manualFix` / `guidance`), so the `Remediation` block
+was emitted on no finding, on any tree — a Security Hub consumer saw
+findings with no remediation while the text channel printed one. ASFF now
+emits `Remediation.Recommendation.Text` from the finding's runnable fix
+(then manualFix, then guidance), the same remedy the text channel shows,
+capped at ASFF's 512-byte limit (#594).
+
 ### HMA_CLI_PREFIX is inserted literally into rebranded citations
 
 A parent CLI sets `HMA_CLI_PREFIX` to rename the tool in command citations,
