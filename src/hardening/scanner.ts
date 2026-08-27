@@ -428,13 +428,24 @@ async function readRootMcpConfigs(
 ): Promise<{ configs: RootMcpConfig[]; state: SubjectRead['state'] }> {
   const configs: RootMcpConfig[] = [];
   const reads: SubjectRead[] = [];
+  // #637 — `.mcp.json -> mcp.json` symlinks are ONE live config, not two: a
+  // spelling that resolves to an already-read real path is skipped, so a
+  // linked config is not evaluated and penalized twice. A failed realpath
+  // keeps the record (better a duplicate finding than a dropped one).
+  const seenReal = new Set<string>();
   for (const name of ROOT_MCP_CONFIG_FILES) {
     const filePath = path.join(targetDir, name);
     const read = await readCheckSubject(filePath);
-    reads.push(read);
     if (read.state === 'read') {
+      let real = filePath;
+      try {
+        real = await fs.realpath(filePath);
+      } catch {}
+      if (seenReal.has(real)) continue;
+      seenReal.add(real);
       configs.push({ name, path: filePath, content: read.content });
     }
+    reads.push(read);
   }
   return { configs, state: combineSubjectReads(reads).state };
 }
@@ -6853,7 +6864,11 @@ dist/
       try {
         const stats = await fs.stat(path.join(targetDir, file));
         const mode = stats.mode & 0o777;
-        if (mode & 0o111) {
+        // #637 — directories always carry 0o111, so a DIRECTORY named after a
+        // config file read as an "executable config" and failed control 2.2
+        // while the content checks correctly classified the same path absent
+        // (EISDIR). Only a regular file is an executable config file.
+        if (stats.isFile() && mode & 0o111) {
           executableConfigs.push(file);
         }
       } catch (err) {
@@ -16608,7 +16623,9 @@ dist/
       for (const configFile of configFiles) {
         const filePath = path.join(dirPath, configFile);
         try {
-          await fs.access(filePath);
+          // #637 — a DIRECTORY under this name is not an exposed config file.
+          const configStat = await fs.stat(filePath);
+          if (!configStat.isFile()) continue;
           const relativePath = path.relative(targetDir, filePath);
           findings.push({
             checkId: 'WEBEXPOSE-003',
