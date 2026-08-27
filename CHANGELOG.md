@@ -4,6 +4,21 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The ASP profile's credential summary no longer misses semantic secrets
+
+`secure -b oasb-1 --format asp` could report `credentials.hardcodedSecrets: 0`
+with "No hardcoded credentials detected" while its own `failedControls`
+listed control 5.1 failing on a hardcoded secret — two sections of one
+signed-shaped document contradicting each other. The summary counted only
+`CRED-*` findings by prefix, missing the semantic `SEM-CRED-*` family, so a
+dotenv secret that failed control 5.1 on `SEM-CRED-002` was reported as
+zero. The summary now counts the static `CRED-*` and semantic `SEM-CRED-*`
+credential findings, so it no longer misses the semantic family a control
+fails on (#606). It stays a per-finding count, so it can exceed the number
+of distinct checks a control cites; it never reports fewer than it counts.
+(It is not yet every hardcoded-secret check — `AST-CRED-*`/`WEBCRED-*` stay
+uncounted; #666 tracks widening it, and control 5.1's own CRED-001 gap.)
+
 ### secure --format asff carries each finding's remediation
 
 The ASFF emitter read a `recommendation` field that findings do not have

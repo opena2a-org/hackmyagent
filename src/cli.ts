@@ -4156,7 +4156,18 @@ function generateAspOutput(benchmarkResult: BenchmarkResult, scanResult: { findi
   capabilities['shell'] = hasShellAccess ? 'detected' : 'none';
 
   // Credential hygiene
-  const credentialFindings = scanResult.findings.filter(f => f.checkId.startsWith('CRED-'));
+  // #606 — count the static CRED-* AND semantic SEM-CRED-* credential
+  // findings. The old `startsWith('CRED-')` matched CRED-001..004 but not the
+  // SEM-CRED-* family, so a dotenv secret that failed OASB-1 control 5.1 on
+  // SEM-CRED-002 was reported here as `hardcodedSecrets: 0` — the summary and
+  // the failed-control list contradicting each other in one document.
+  // `SEM-CRED-` does not start with `CRED-`, so it needs its own clause; the
+  // clause also keeps the generic CRED-001 detector counted. (This is not
+  // every hardcoded-secret check in the tool — AST-CRED-*/WEBCRED-* also
+  // detect secrets and are still uncounted here; #666 tracks widening it.)
+  const credentialFindings = scanResult.findings.filter(
+    f => f.checkId.startsWith('CRED-') || f.checkId.startsWith('SEM-CRED-'),
+  );
   const hardcodedCreds = credentialFindings.filter(f => !f.passed).length;
 
   // Supply chain status
