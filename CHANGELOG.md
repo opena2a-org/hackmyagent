@@ -22,21 +22,28 @@ file it read, and the backup manifest pre-seeds both spellings. A tree with
 neither spelling records `not applicable` naming the set, `mcp.json or
 .mcp.json` (#637).
 
-Those checks' records also now carry `file:`, so their failing records are
-no longer dropped as pathless noise on a tree whose `package.json` does not
-type it as an MCP project: a benchmark run can report controls 2.3, 4.1 and
-5.2 as measured (and failing on real configuration gaps) where it previously
-reported them `unverified` — or `passed`, when the only record that survived
-the drop was a passing one. The plain `secure` score and verdict are
-unchanged. (#637)
+Those checks' records also now carry `file:`, with two score effects, both
+in the direction of counting what was measured. On a tree whose
+`package.json` does not type it as an MCP project, the failing records were
+dropped as pathless noise: a benchmark run can now report controls 2.3, 4.1
+and 5.2 as measured (and failing on real configuration gaps) where it
+previously reported them `unverified` — or `passed`, when the only record
+that survived the drop was a passing one — while the plain `secure` score is
+unchanged there (the project-type scope still keeps MCP checks out of the
+scored list; measured unchanged on every corpus fixture and five workspace
+repositories). On a tree that IS MCP-typed, the same records previously
+failed the scored list's file requirement, so a failing root config now
+lowers the plain score where it silently did not (measured 55 to 36 on a
+config failing six of the checks). (#637)
 
 The benchmark evaluator now folds every record a checkId carries instead of
 keeping the last one: any failing record fails the control whatever a later
 record says, a measured record outranks a not-applicable sibling, the
 verdict is independent of scanner emission order, and a control cites one
 evidence line per failing record — the cardinality the SARIF output already
-had. No existing tree's control status, counts or compliance figure moves
-from the fold alone; evidence arrays grow to cite every failing site.
+had. On every corpus fixture and test tree measured, no control status,
+count or compliance figure moves from the fold alone; evidence arrays grow
+to cite every failing site.
 
 ### The ASP profile's credential summary no longer misses semantic secrets
 
