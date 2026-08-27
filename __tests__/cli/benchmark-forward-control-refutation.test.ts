@@ -9,6 +9,12 @@
  * same tree without the lockfile moves 56% (5/9) -> 50% (5/10).
  *
  * RED-ON-BASE cells fail on the 2a39b72 dist; PIN cells pass on both.
+ *
+ * #637 moved the whole-report figures the cells pin (never the #639 story):
+ * the MCP checks' records gained `file:`, so the noise floor stopped
+ * dropping their failing records on these non-MCP-typed fixtures — 2.3, 4.1
+ * and 5.2 became measured. wild: 50% (5/10) -> 33% (4/12); wildLock:
+ * `Passing 92% (11/12)` exit 0 -> `Needs Improvement 71% (10/14)` exit 1.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -65,13 +71,20 @@ describe('#639 a wildcard MCP grant fails OASB-1 control 2.1', { timeout: 300_00
     expect(recs.length).toBeGreaterThan(0);
   });
 
-  it('RED-ON-BASE text: [-] 2.1, the category shows 1/2, compliance 50% (5/10)', () => {
+  // #637 — the wild/wildLock figures below moved when the MCP checks' records
+  // gained `file:`: neither fixture's package.json types it as an MCP project,
+  // so the noise floor had been dropping the checks' failing pathless records
+  // (2.3/4.1 read unverified, 5.2 passed on the surviving MCP-009 record).
+  // With file attribution 2.3, 4.1 and 5.2 are measured and fail on the
+  // config's real gaps. The #639 story these cells pin is unchanged: the
+  // wildcard grant fails 2.1 and the tree is never Certified.
+  it('RED-ON-BASE text: [-] 2.1, the category shows 1/3, compliance 33% (4/12)', () => {
     const r = run(wild, ['--verbose']);
     expect(r.stdout).toMatch(/\[-\] 2\.1: Explicit Capability Grants/);
     expect(r.stdout).toMatch(/SEM-MCP-004: MCP server "fs" has allowedTools: \["\*"\]/);
-    expect(r.stdout).toMatch(/Capability & Authorization: 1\/2 \(50%\)/);
-    expect(r.stdout).toMatch(/Compliance: 50% \(5\/10 verified controls\)/);
-    expect(r.stdout).toMatch(/Unverified: 16 controls/);
+    expect(r.stdout).toMatch(/Capability & Authorization: 1\/3 \(33%\)/);
+    expect(r.stdout).toMatch(/Compliance: 33% \(4\/12 verified controls\)/);
+    expect(r.stdout).toMatch(/Unverified: 14 controls/);
     expect(r.status).toBe(1);
   });
 
@@ -81,28 +94,30 @@ describe('#639 a wildcard MCP grant fails OASB-1 control 2.1', { timeout: 300_00
     expect(c.status).toBe('failed');
     expect(c.findings[0]).toMatch(/^SEM-MCP-004: /);
     expect(c.notApplicableSubjects).toBeUndefined();
-    expect(body.failedControls).toBe(5);
-    expect(body.unverifiedControls).toBe(16);
-    expect(body.l1Compliance).toBe(50);
+    expect(body.failedControls).toBe(8);
+    expect(body.unverifiedControls).toBe(14);
+    expect(body.l1Compliance).toBe(33);
   });
 
   it('RED-ON-BASE sarif: an OASB-1/2.1 result is emitted', () => {
     const body = json(run(wild, ['--format', 'sarif']).stdout);
     const ids = body.runs[0].results.map((x: any) => x.ruleId);
     expect(ids).toContain('OASB-1/2.1');
-    expect(ids).toHaveLength(5);
+    expect(ids).toHaveLength(8);
   });
 
-  it('RED-ON-BASE with a lockfile: Certified 100% (11/11) exit 0 becomes Passing 11/12, and --fail-below 100 exits 1', () => {
+  it('RED-ON-BASE with a lockfile: never Certified, and --fail-below 100 exits 1', () => {
     const r = run(wildLock, []);
-    expect(r.stdout).toMatch(/Rating: Passing/);
-    expect(r.stdout).toMatch(/Compliance: 92% \(11\/12 verified controls\)/);
+    // #637 — was `Rating: Passing`, `92% (11/12)`, exit 0: the three surfaced
+    // MCP controls fail, the rating drops a rung, and the rating's own exit 1
+    // now precedes any --fail-below evaluation on this fixture, so there is
+    // no observable lenient threshold left to pin here.
+    expect(r.stdout).toMatch(/Rating: Needs Improvement/);
+    expect(r.stdout).toMatch(/Compliance: 71% \(10\/14 verified controls\)/);
     expect(r.stdout).not.toMatch(/Certified/);
-    expect(r.status).toBe(0);
+    expect(r.status).toBe(1);
     const gated = run(wildLock, ['--fail-below', '100']);
     expect(gated.status).toBe(1);
-    const lenient = run(wildLock, ['--fail-below', '90']);
-    expect(lenient.status).toBe(0);
   });
 
   it('PIN: an empty directory is unmoved — 2.1 unverified, 3/4/19/0, compliance 43', () => {
