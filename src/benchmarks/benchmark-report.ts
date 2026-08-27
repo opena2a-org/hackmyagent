@@ -54,10 +54,24 @@ export function generateBenchmarkReport(
     controls = controls.filter((c: BenchmarkControl) => c.category.toLowerCase() === categoryFilter.toLowerCase());
   }
 
-  // Build a map of checkId -> finding for quick lookup
-  const findingsByCheckId = new Map<string, SecurityFinding>();
+  // Build a multimap of checkId -> ALL its records, in emission order.
+  // #637 — one checkId can legitimately carry several records (one per root
+  // MCP config spelling, one per file for the per-file emitters). The
+  // previous `Map.set` kept only the LAST record, so the verdict on a
+  // multi-record checkId was an artifact of scanner emission order: a
+  // failing `mcp.json` record followed by a clean `.mcp.json` record read
+  // as passed. The fold over a checkId's records is the same join the loop
+  // below already applies across a control's checkIds — any failure fails,
+  // a measured record outranks an NA sibling, order-independent (CA ruling
+  // 2026-08-27, ledger).
+  const findingsByCheckId = new Map<string, SecurityFinding[]>();
   for (const finding of findings) {
-    findingsByCheckId.set(finding.checkId, finding);
+    const group = findingsByCheckId.get(finding.checkId);
+    if (group) {
+      group.push(finding);
+    } else {
+      findingsByCheckId.set(finding.checkId, [finding]);
+    }
   }
 
   // Evaluate each control
@@ -95,26 +109,29 @@ export function generateBenchmarkReport(
       let hasFailure = false;
       let hasNotApplicable = false;
       for (const checkId of control.checkIds) {
-        const finding = findingsByCheckId.get(checkId);
-        if (!finding) continue;
-        // #458 step 3 — the NA test comes FIRST: an NA record OMITS `passed`
-        // (never false), so the `!finding.passed` test below read "subject
-        // absent" as a failure and, before steps 1-2, the absent subject was
-        // a pathless HIGH. The record contributes no pass/fail value; it
-        // names its absent subject.
-        if (finding.notApplicable) {
-          hasNotApplicable = true;
-          if (!naSubjects.includes(finding.notApplicable.subject)) {
-            naSubjects.push(finding.notApplicable.subject);
+        // #637 — every record of the checkId, not just the last one: each
+        // failing record is cited (one evidence line per failing record, the
+        // cardinality SARIF already has).
+        for (const finding of findingsByCheckId.get(checkId) ?? []) {
+          // #458 step 3 — the NA test comes FIRST: an NA record OMITS `passed`
+          // (never false), so the `!finding.passed` test below read "subject
+          // absent" as a failure and, before steps 1-2, the absent subject was
+          // a pathless HIGH. The record contributes no pass/fail value; it
+          // names its absent subject.
+          if (finding.notApplicable) {
+            hasNotApplicable = true;
+            if (!naSubjects.includes(finding.notApplicable.subject)) {
+              naSubjects.push(finding.notApplicable.subject);
+            }
+            continue;
           }
-          continue;
-        }
-        hasMeasured = true;
-        if (!finding.passed) {
-          hasFailure = true;
-          relatedFindings.push(`${checkId}: ${finding.description}`);
-          if (finding.fix) {
-            remediation = remediation || finding.fix;
+          hasMeasured = true;
+          if (!finding.passed) {
+            hasFailure = true;
+            relatedFindings.push(`${checkId}: ${finding.description}`);
+            if (finding.fix) {
+              remediation = remediation || finding.fix;
+            }
           }
         }
       }
