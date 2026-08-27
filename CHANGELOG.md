@@ -4,6 +4,16 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### HMA_CLI_PREFIX is inserted literally into rebranded citations
+
+A parent CLI sets `HMA_CLI_PREFIX` to rename the tool in command citations,
+and the rebrander built its replacement with an interpolated string. In a
+`String.replace` replacement string, `$&`, `$1`, `` $` ``, `$'` and `$$` are
+patterns, not text, so a prefix containing one rewrote the citation instead
+of prefixing it. The rebrander now uses a replacer function, whose return is
+inserted verbatim (#600). The vector is the environment, not a scanned
+target, so the exposure is a garbled citation, not an injection.
+
 ### Registry check-stub output is escaped against terminal control bytes
 
 `hackmyagent stubs` printed every field of the Registry JSON response — check id, series, name, severity, description, detection logic — without a display escape, so a stub carrying a raw ESC byte could steer the reader's terminal (#601). Each field now escapes on its printing line. A census of the same class across `secure`/`check`/`attack`/`scan-soul` output found no other live hole: the remaining field interpolations render tool-authored constants or analyst strings already stripped of control bytes at their IPC boundary, and a dead `displayRegistryResult` function was removed. A structural tripwire pins the property so a new raw field-print fails the build until it is escaped or classified.
