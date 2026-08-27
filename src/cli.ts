@@ -11762,21 +11762,26 @@ Examples:
     console.log(`\nHMA Check Stubs (status: ${opts.status})\n`);
 
     for (const stub of stubs) {
+      // #601 — every field here is bytes from the Registry JSON response; a
+      // raw ESC in any of them steers the terminal, so each is escaped on
+      // its printing line. `severity` is escaped for display but the raw
+      // value still keys the color map (a control byte there just misses and
+      // yields no color, never renders).
       const sc = severityColor[stub.severity?.toLowerCase()] || '';
       console.log(`${'='.repeat(60)}`);
-      console.log(`  Check ID:   ${stub.checkId}`);
-      console.log(`  Series:     ${stub.series}`);
-      console.log(`  Name:       ${stub.name}`);
-      console.log(`  Severity:   ${sc}${stub.severity}${colors.reset}`);
-      console.log(`  ARIA ID:    ${stub.ariaFindingId}`);
-      console.log(`  Status:     ${stub.status}`);
+      console.log(`  Check ID:   ${escapeForDisplay(String(stub.checkId))}`);
+      console.log(`  Series:     ${escapeForDisplay(String(stub.series))}`);
+      console.log(`  Name:       ${escapeForDisplay(String(stub.name))}`);
+      console.log(`  Severity:   ${sc}${escapeForDisplay(String(stub.severity))}${colors.reset}`);
+      console.log(`  ARIA ID:    ${escapeForDisplay(String(stub.ariaFindingId))}`);
+      console.log(`  Status:     ${escapeForDisplay(String(stub.status))}`);
       if (stub.description) {
-        console.log(`  Description: ${stub.description}`);
+        console.log(`  Description: ${escapeForDisplay(String(stub.description))}`);
       }
       if (stub.detectionLogic) {
         console.log(`  Detection logic:`);
-        for (const line of stub.detectionLogic.split('\n')) {
-          console.log(`    ${line}`);
+        for (const line of String(stub.detectionLogic).split('\n')) {
+          console.log(`    ${escapeForDisplay(line)}`);
         }
       }
       console.log('');
@@ -11793,7 +11798,7 @@ Examples:
     for (const s of stubs) { bySeries[s.series] = (bySeries[s.series] || 0) + 1; }
     console.log(`\n  By series:`);
     for (const [series, count] of Object.entries(bySeries).sort((a, b) => b[1] - a[1])) {
-      console.log(`    ${series}: ${count}`);
+      console.log(`    ${escapeForDisplay(series)}: ${count}`);
     }
 
     // By severity
@@ -12292,25 +12297,6 @@ async function publishToRegistry(
   } catch {
     return false;
   }
-}
-
-/**
- * Display registry trust data in the terminal.
- */
-function displayRegistryResult(data: RegistryTrustData): void {
-  const scoreRatio = data.trustScore;
-  const scoreColor = scoreRatio >= 0.7 ? colors.green : scoreRatio >= 0.4 ? colors.yellow : colors.red;
-  const score = Math.round(scoreRatio * 100);
-
-  console.log(`\n  ${data.name}`);
-  console.log(`  Type:       ${data.packageType ?? 'unknown'}`);
-  console.log(`  Score:      ${scoreColor}${score}/100${RESET()}  (registry)`);
-  console.log(`  Verdict:    ${data.verdict}`);
-  if (data.lastScannedAt) {
-    const days = Math.floor((Date.now() - new Date(data.lastScannedAt).getTime()) / (1000 * 60 * 60 * 24));
-    console.log(`  Scanned:    ${days === 0 ? 'today' : days + ' day(s) ago'}`);
-  }
-  printCheckNextSteps(data.name);
 }
 
 /**

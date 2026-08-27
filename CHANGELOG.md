@@ -4,6 +4,10 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Registry check-stub output is escaped against terminal control bytes
+
+`hackmyagent stubs` printed every field of the Registry JSON response — check id, series, name, severity, description, detection logic — without a display escape, so a stub carrying a raw ESC byte could steer the reader's terminal (#601). Each field now escapes on its printing line. A census of the same class across `secure`/`check`/`attack`/`scan-soul` output found no other live hole: the remaining field interpolations render tool-authored constants or analyst strings already stripped of control bytes at their IPC boundary, and a dead `displayRegistryResult` function was removed. A structural tripwire pins the property so a new raw field-print fails the build until it is escaped or classified.
+
 ### The fix marker no longer depends on how the tool was invoked
 
 Under a parent CLI that sets `HMA_CLI_PREFIX`, fix citations are rewritten
