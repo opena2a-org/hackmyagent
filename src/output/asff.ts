@@ -24,7 +24,14 @@ export interface SecurityFinding {
   message?: string;
   file?: string;
   line?: number;
-  recommendation?: string;
+  // #594 — the real finding carries its remedy under these fields, never a
+  // `recommendation` (which this interface declared and nothing ever set, so
+  // every ASFF export was remediation-free). `fix` is the runnable/concise
+  // action the text channel prints; `manualFix` is the post-auto-fix remedy;
+  // `guidance` is the educational fallback.
+  fix?: string;
+  manualFix?: string;
+  guidance?: string;
   category?: string;
 }
 
@@ -135,10 +142,14 @@ export function toASSF(
       Workflow: { Status: 'NEW' },
     };
 
-    if (f.recommendation) {
+    // The remedy the text channel would print, in the same precedence: the
+    // runnable fix first, then the post-auto-fix remedy, then the educational
+    // guidance. ASFF caps Recommendation.Text at 512 bytes (already applied).
+    const remediation = f.fix ?? f.manualFix ?? f.guidance;
+    if (remediation) {
       finding.Remediation = {
         Recommendation: {
-          Text: f.recommendation.slice(0, 512),
+          Text: remediation.slice(0, 512),
           Url: `https://hackmyagent.com/docs/checks/${f.checkId.toLowerCase()}`,
         },
       };
