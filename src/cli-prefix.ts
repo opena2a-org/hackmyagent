@@ -281,10 +281,15 @@ export function rebrandCommandCitations(text: string): string {
   if (!text) return text;
   let out = text;
   if (CLI_PREFIX !== 'hackmyagent') {
-    out = out.replace(CITATION_RE, `${CLI_PREFIX} $1`);
+    // Replacer FUNCTION, not an interpolated string (#600): CLI_PREFIX is
+    // environment-derived (HMA_CLI_PREFIX), and a `$&` / `$1` / `` $` `` / `$'`
+    // inside a String.replace replacement STRING is a pattern, not text — so a
+    // prefix carrying one rewrote the citation instead of prefixing it. A
+    // function return is inserted literally; `verb` is the one capture group.
+    out = out.replace(CITATION_RE, (_m, verb: string) => `${CLI_PREFIX} ${verb}`);
   }
   if (!opena2aIsOnPath()) {
-    out = out.replace(OPENA2A_CITATION_RE, `npx ${OPENA2A_PACKAGE} $1`);
+    out = out.replace(OPENA2A_CITATION_RE, (_m, verb: string) => `npx ${OPENA2A_PACKAGE} ${verb}`);
   }
   // Pass 3 runs LAST, on purpose: passes 1 and 2 have already normalised the
   // tool name, so this only has to recognise `${CLI_PREFIX}` and
