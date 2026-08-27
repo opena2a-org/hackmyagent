@@ -33,15 +33,15 @@ unchanged there (the project-type scope still keeps MCP checks out of the
 scored list; measured unchanged on every corpus fixture and five workspace
 repositories). On a tree that IS MCP-typed, the same records previously
 failed the scored list's file requirement, so a failing root config now
-lowers the plain score where it silently did not (measured 55 to 36 on a
-config failing six of the checks). (#637)
+lowers the plain score — and can lower the verdict — where it silently did
+not (measured 55 to 36 on a config failing six of the checks). (#637)
 
 The benchmark evaluator now folds every record a checkId carries instead of
 keeping the last one: any failing record fails the control whatever a later
 record says, a measured record outranks a not-applicable sibling, the
 verdict is independent of scanner emission order, and a control cites one
-evidence line per failing record — the cardinality the SARIF output already
-had. On every corpus fixture and test tree measured, no control status,
+evidence line per failing record — the one-result-per-failing-record shape
+SARIF uses. On every corpus fixture and test tree measured, no control status,
 count or compliance figure moves from the fold alone; evidence arrays grow
 to cite every failing site.
 

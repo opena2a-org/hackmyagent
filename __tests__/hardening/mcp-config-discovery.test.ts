@@ -22,7 +22,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
@@ -161,6 +161,39 @@ describe('root MCP config discovery (#637)', () => {
       expect(b.controls.get(id)?.notApplicableSubjects, id).toContain(SUBJECT);
     }
   }, SCAN_TIMEOUT * 2);
+
+  it('a .mcp.json symlinked to mcp.json is one config, not two', () => {
+    // Adversarial round R2 — without the realpath de-dup, the linked spelling
+    // was read twice and every finding (and its score penalty) doubled.
+    const dir = tree({ 'mcp.json': FAILING });
+    symlinkSync(join(dir, 'mcp.json'), join(dir, '.mcp.json'));
+    const found = records(dir);
+    for (const checkId of ['TOOL-001', 'MCP-006', 'MCP-009']) {
+      expect(found.filter((r) => r.checkId === checkId).length, checkId).toBe(1);
+    }
+    const lone = scan(tree({ 'mcp.json': FAILING }), []);
+    expect(scan(dir, []).score).toBe(lone.score);
+  }, SCAN_TIMEOUT * 3);
+
+  it('a DIRECTORY named .mcp.json is absent to the content checks and not an executable config', () => {
+    // Adversarial round R1 — directories always carry 0o111, so PERM-002 read
+    // a directory under a config name as an executable config file while the
+    // content checks classified the same path absent (EISDIR): one path, two
+    // contradictory interpretations.
+    const dir = tree({});
+    mkdirSync(join(dir, '.mcp.json'));
+    const out = scan(dir, []);
+    const all = out.allFindings as Record_[];
+    const perm = all.find((r) => r.checkId === 'PERM-002');
+    expect(perm?.passed).toBe(true);
+    expect(all.find((r) => r.checkId === 'TOOL-001')?.notApplicable?.subject).toBe(SUBJECT);
+    // And inside a web-served dir it is not an exposed config either.
+    const web = tree({});
+    mkdirSync(join(web, 'public'));
+    mkdirSync(join(web, 'public', '.mcp.json'));
+    const webOut = scan(web, []);
+    expect((webOut.allFindings as Record_[]).filter((r) => r.checkId === 'WEBEXPOSE-003')).toEqual([]);
+  }, SCAN_TIMEOUT * 3);
 
   it('an env reference in .mcp.json is not a hardcoded secret', () => {
     // The widened CONFIG_CANDIDATE_NAMES puts .mcp.json in front of CRED-001
