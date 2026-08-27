@@ -473,7 +473,8 @@ describe('#458 step 3: a control whose every check reports its subject absent is
     expect(body.compliance).toBe(38);
     // The subjects are named, so the reader can see WHAT is absent.
     const na = body.categories.flatMap((c: any) => c.controls).find((c: any) => c.controlId === '2.3');
-    expect(na.notApplicableSubjects).toContain('mcp.json');
+    // #637 — the subject names the set of root spellings the check reads.
+    expect(na.notApplicableSubjects).toContain('mcp.json or .mcp.json');
   });
 
   it('RED-ON-BASE json: a measured record outranks an NA sibling in both directions (empty tree)', () => {
@@ -495,7 +496,7 @@ describe('#458 step 3: a control whose every check reports its subject absent is
   it('RED-ON-BASE text: the header counts not-applicable controls and --verbose names the absent subject', () => {
     const res = run(['secure', mcpDir, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--verbose']);
     expect(res.out).toContain('Not applicable: 9 controls — subject artifacts absent from this tree');
-    expect(res.out).toMatch(/\[\.\] 2\.3: .* \(not applicable: mcp\.json absent\)/);
+    expect(res.out).toMatch(/\[\.\] 2\.3: .* \(not applicable: mcp\.json or \.mcp\.json absent\)/);
     // Every NA control prints a row, including ones in categories with no
     // measured control — the header's count and the rows must agree (the
     // first cut printed 6 rows under a header saying 9).

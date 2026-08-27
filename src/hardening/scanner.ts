@@ -101,6 +101,31 @@ const BACKUP_MANIFEST_VERSION = 2;
 export const JS_FAMILY_EXTENSIONS = ['.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx'] as const;
 
 /**
+ * #637 — the root-level MCP configuration files the deterministic MCP checks
+ * read, in probe order. `mcp.json` is the historical subject; `.mcp.json` is
+ * the project-scope file Claude Code reads. Before this constant the checks
+ * read `mcp.json` alone, so a tree whose servers lived in `.mcp.json` scored
+ * HIGHER than the same servers in `mcp.json`: every MCP-scoped OASB-1
+ * control read not-applicable while the servers were live.
+ *
+ * Every root read site and every list that names the root config consumes
+ * THIS constant — pinned both ways by
+ * __tests__/hardening/root-mcp-config-files-contract.test.ts — so a second
+ * spelling cannot split the scan's scope again. The semantic collector's
+ * `mcp_config` globs (src/semantic/structural/index.ts) carry the same pair.
+ * Other locations are other subjects: `.cursor/mcp.json` and
+ * `.vscode/mcp.json` have their own checks, `.well-known/mcp.json` is agent
+ * discovery, and `~/.claude.json` is user scope, outside a repository scan.
+ */
+export const ROOT_MCP_CONFIG_FILES = ['mcp.json', '.mcp.json'] as const;
+
+/**
+ * The not-applicable subject naming the whole set. Comma-free on purpose:
+ * cli.ts renders `notApplicableSubjects.join(', ')`.
+ */
+export const ROOT_MCP_CONFIG_SUBJECT = ROOT_MCP_CONFIG_FILES.join(' or ');
+
+/**
  * Sync twin of `HardeningScanner.unsearchableAncestor`, at module scope so
  * `buildUnreadInputFinding` can classify an obstruction its caller did not
  * (the `check` arm passes the ledger record through unmodified). Same bounds,
@@ -377,6 +402,41 @@ function combineSubjectReads(reads: SubjectRead[]): SubjectRead {
   const read = reads.find((r) => r.state === 'read');
   if (read) return read;
   return reads.some((r) => r.state === 'unread') ? { state: 'unread' } : { state: 'absent' };
+}
+
+/** One root MCP config the scan read: its name (the `file` on every record it yields), its path, its bytes. */
+interface RootMcpConfig {
+  name: (typeof ROOT_MCP_CONFIG_FILES)[number];
+  path: string;
+  content: string;
+}
+
+/**
+ * #637 — classified reads of every root MCP config spelling. EVERY spelling
+ * that was read is returned, so a caller evaluates each live config on its
+ * own and names the file on each record. A first-found read would let a
+ * clean `mcp.json` shadow a live `.mcp.json` — the evasion this closes, in a
+ * new shape — and one shared slot for two files is the defect the
+ * `.claude/settings.json` note in checkClaudeAdvanced records. `state` folds
+ * like `combineSubjectReads`: `read` when any spelling was read, else
+ * `unread` when a read failed for a reason other than not-there (the
+ * coverage ledger discloses it; the caller emits nothing), else `absent` —
+ * the only state that emits a not-applicable record, naming the SET.
+ */
+async function readRootMcpConfigs(
+  targetDir: string,
+): Promise<{ configs: RootMcpConfig[]; state: SubjectRead['state'] }> {
+  const configs: RootMcpConfig[] = [];
+  const reads: SubjectRead[] = [];
+  for (const name of ROOT_MCP_CONFIG_FILES) {
+    const filePath = path.join(targetDir, name);
+    const read = await readCheckSubject(filePath);
+    reads.push(read);
+    if (read.state === 'read') {
+      configs.push({ name, path: filePath, content: read.content });
+    }
+  }
+  return { configs, state: combineSubjectReads(reads).state };
 }
 
 /**
@@ -822,7 +882,7 @@ const CONFIG_CANDIDATE_NAMES = new Set([
   'config.json',
   'config.yaml',
   'config.yml',
-  'mcp.json',
+  ...ROOT_MCP_CONFIG_FILES,
   'settings.json',
   'secrets.json',
   'credentials.json',
@@ -2288,7 +2348,7 @@ export class HardeningScanner {
     'config.json',
     'config.yaml',
     'config.yml',
-    'mcp.json',
+    ...ROOT_MCP_CONFIG_FILES,
     'settings.json',
     '.env',
     '.env.local',
@@ -4022,10 +4082,15 @@ export class HardeningScanner {
       platforms.push('cursor');
     } catch {}
 
-    try {
-      await fs.access(path.join(targetDir, 'mcp.json'));
-      platforms.push('mcp');
-    } catch {}
+    // #637 — either root spelling marks the tree as MCP-configured.
+    for (const name of ROOT_MCP_CONFIG_FILES) {
+      try {
+        await fs.access(path.join(targetDir, name));
+        if (!platforms.includes('mcp')) {
+          platforms.push('mcp');
+        }
+      } catch {}
+    }
 
     try {
       await fs.access(path.join(targetDir, '.claude'));
@@ -4298,7 +4363,7 @@ export class HardeningScanner {
       'config.json',
       'config.yaml',
       'config.yml',
-      'mcp.json',
+      ...ROOT_MCP_CONFIG_FILES,
       'settings.json',
       'secrets.json',
       'credentials.json',
@@ -4544,11 +4609,18 @@ export class HardeningScanner {
     autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const mcpConfigPath = path.join(targetDir, 'mcp.json');
+    // #637 — every root spelling is read and evaluated on its own; each
+    // record names the file it came from and a fix writes back to it.
+    const rootMcp = await readRootMcpConfigs(targetDir);
 
-    try {
-      const content = await fs.readFile(mcpConfigPath, 'utf-8');
-      const config = JSON.parse(content);
+    for (const cfg of rootMcp.configs) {
+      let config: Record<string, unknown>;
+      try {
+        config = JSON.parse(cfg.content);
+      } catch {
+        // Present but unparseable: no findings from this file, as before.
+        continue;
+      }
 
       // Check for dangerous filesystem access
       let hasRootAccess = false;
@@ -4596,7 +4668,7 @@ export class HardeningScanner {
       // otherwise the finding reports `passed: true` for a config still
       // scoped at `/` on disk.
       if (mcp001Fixed) {
-        mcp001Fixed = await this.applyFixWrite(mcpConfigPath, JSON.stringify(config, null, 2));
+        mcp001Fixed = await this.applyFixWrite(cfg.path, JSON.stringify(config, null, 2));
       }
 
       // Only report if there's an issue
@@ -4609,7 +4681,7 @@ export class HardeningScanner {
           severity: 'high',
           passed: mcp001Fixed,
           message: 'Restrict filesystem access to specific directories',
-          file: 'mcp.json',
+          file: cfg.name,
           fixable: true,
           fixed: mcp001Fixed,
           fix: `${this.cliName} secure --fix`,
@@ -4626,14 +4698,12 @@ export class HardeningScanner {
           severity: 'critical',
           passed: false,
           message: 'Add allowedCommands to restrict shell access',
-          file: 'mcp.json',
+          file: cfg.name,
           fixable: false,
-          fix: 'Add "allowedCommands": ["ls", "cat", "grep"] to the shell server config in mcp.json',
+          fix: `Add "allowedCommands": ["ls", "cat", "grep"] to the shell server config in ${cfg.name}`,
           guidance: 'Unrestricted shell access lets the AI execute any command including destructive operations. Whitelisting specific commands limits what can be run.',
         });
       }
-    } catch {
-      // mcp.json doesn't exist - no findings needed
     }
 
     return findings;
@@ -5662,77 +5732,79 @@ dist/
     autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const mcpConfigPath = path.join(targetDir, 'mcp.json');
+    // #637 — every root spelling is read and evaluated on its own; each
+    // record names the file it came from and a fix writes back to it.
+    const rootMcp = await readRootMcpConfigs(targetDir);
 
-    let mcpConfig: Record<string, unknown> | null = null;
-    let mcpContent = '';
-    try {
-      mcpContent = await fs.readFile(mcpConfigPath, 'utf-8');
-      mcpConfig = JSON.parse(mcpContent);
-    } catch {}
+    for (const cfg of rootMcp.configs) {
+      let mcpConfig: Record<string, unknown> | null = null;
+      try {
+        mcpConfig = JSON.parse(cfg.content);
+      } catch {}
 
-    // NET-001: Check for servers bound to 0.0.0.0
-    let boundToAllInterfaces = false;
-    if (mcpConfig?.servers) {
-      for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[] }>)) {
-        if (server.args?.some((arg: string) => arg.includes('0.0.0.0'))) {
-          boundToAllInterfaces = true;
-          break;
+      // NET-001: Check for servers bound to 0.0.0.0
+      let boundToAllInterfaces = false;
+      if (mcpConfig?.servers) {
+        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[] }>)) {
+          if (server.args?.some((arg: string) => arg.includes('0.0.0.0'))) {
+            boundToAllInterfaces = true;
+            break;
+          }
         }
       }
-    }
 
-    let net001Fixed = false;
-    if (boundToAllInterfaces && autoFix && mcpContent) {
-      // Replace 0.0.0.0 with 127.0.0.1 in the file
-      const fixedContent = mcpContent.replace(/0\.0\.0\.0/g, '127.0.0.1');
-      net001Fixed = await this.applyFixWrite(mcpConfigPath, fixedContent);
-    }
+      let net001Fixed = false;
+      if (boundToAllInterfaces && autoFix) {
+        // Replace 0.0.0.0 with 127.0.0.1 in the file
+        const fixedContent = cfg.content.replace(/0\.0\.0\.0/g, '127.0.0.1');
+        net001Fixed = await this.applyFixWrite(cfg.path, fixedContent);
+      }
 
-    // Only report if bound to 0.0.0.0
-    if (boundToAllInterfaces) {
-      findings.push({
-        checkId: 'NET-001',
-        name: 'Server Bound to All Interfaces',
-        description: 'Server bound to 0.0.0.0 - accessible from any network',
-        category: 'network',
-        severity: 'critical',
-        passed: net001Fixed,
-        message: 'Change 0.0.0.0 to 127.0.0.1',
-        file: 'mcp.json',
-        fixable: true,
-        fixed: net001Fixed,
-        fix: `${this.cliName} secure --fix`,
-        guidance: 'Binding to 0.0.0.0 exposes the server to the entire network. Use 127.0.0.1 for local-only access. If remote access is needed, use a reverse proxy with authentication.',
-      });
-    }
+      // Only report if bound to 0.0.0.0
+      if (boundToAllInterfaces) {
+        findings.push({
+          checkId: 'NET-001',
+          name: 'Server Bound to All Interfaces',
+          description: 'Server bound to 0.0.0.0 - accessible from any network',
+          category: 'network',
+          severity: 'critical',
+          passed: net001Fixed,
+          message: 'Change 0.0.0.0 to 127.0.0.1',
+          file: cfg.name,
+          fixable: true,
+          fixed: net001Fixed,
+          fix: `${this.cliName} secure --fix`,
+          guidance: 'Binding to 0.0.0.0 exposes the server to the entire network. Use 127.0.0.1 for local-only access. If remote access is needed, use a reverse proxy with authentication.',
+        });
+      }
 
-    // NET-002: Check for remote MCP servers without TLS
-    let hasInsecureRemote = false;
-    if (mcpConfig?.servers) {
-      for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { url?: string }>)) {
-        if (server.url && server.url.startsWith('http://')) {
-          hasInsecureRemote = true;
-          break;
+      // NET-002: Check for remote MCP servers without TLS
+      let hasInsecureRemote = false;
+      if (mcpConfig?.servers) {
+        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { url?: string }>)) {
+          if (server.url && server.url.startsWith('http://')) {
+            hasInsecureRemote = true;
+            break;
+          }
         }
       }
-    }
 
-    // Only report if insecure remote found
-    if (hasInsecureRemote) {
-      findings.push({
-        checkId: 'NET-002',
-        name: 'Remote MCP Without TLS',
-        description: 'Remote server using HTTP instead of HTTPS',
-        category: 'network',
-        severity: 'high',
-        passed: false,
-        message: 'Change http:// to https://',
-        file: 'mcp.json',
-        fixable: false,
-        fix: 'Update URL to https:// in mcp.json',
-        guidance: 'HTTP traffic is unencrypted and vulnerable to man-in-the-middle attacks. An attacker on the network can intercept and modify MCP server communications.',
-      });
+      // Only report if insecure remote found
+      if (hasInsecureRemote) {
+        findings.push({
+          checkId: 'NET-002',
+          name: 'Remote MCP Without TLS',
+          description: 'Remote server using HTTP instead of HTTPS',
+          category: 'network',
+          severity: 'high',
+          passed: false,
+          message: 'Change http:// to https://',
+          file: cfg.name,
+          fixable: false,
+          fix: `Update URL to https:// in ${cfg.name}`,
+          guidance: 'HTTP traffic is unencrypted and vulnerable to man-in-the-middle attacks. An attacker on the network can intercept and modify MCP server communications.',
+        });
+      }
     }
 
     return findings;
@@ -5743,13 +5815,6 @@ dist/
     autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const mcpConfigPath = path.join(targetDir, 'mcp.json');
-
-    let mcpConfig: Record<string, unknown> | null = null;
-    try {
-      const content = await fs.readFile(mcpConfigPath, 'utf-8');
-      mcpConfig = JSON.parse(content);
-    } catch {}
 
     // Credential patterns with their env var names for auto-fix (stricter patterns to reduce false positives)
     const credPatterns = [
@@ -5764,122 +5829,133 @@ dist/
       { name: 'SENDGRID_KEY', pattern: /SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/, envVar: 'SENDGRID_API_KEY' },
     ];
 
-    // MCP-003: Check for secrets in env vars
-    let hasHardcodedSecrets = false;
-    let mcp003Fixed = false;
+    // #637 — every root spelling is read and evaluated on its own; each
+    // record names the file it came from and a fix writes back to it.
+    const rootMcp = await readRootMcpConfigs(targetDir);
 
-    if (mcpConfig?.servers) {
-      for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { env?: Record<string, string> }>)) {
-        if (server.env) {
-          for (const [key, value] of Object.entries(server.env)) {
-            // Check if value is a hardcoded secret (not a reference).
-            // #281 — the guard was `!value.includes('${')`, looser even than
-            // CRED-001's: ANY value containing `${` anywhere was exempt, so
-            // `"sk-ant-api03-<live> ${X}"` passed clean. Now each candidate
-            // match is tested for whether it sits outside a well-formed
-            // reference.
-            if (typeof value === 'string') {
-              for (const { pattern, envVar } of credPatterns) {
-                if (hasCredentialOutsideEnvRef(value, pattern)) {
-                  hasHardcodedSecrets = true;
+    for (const cfg of rootMcp.configs) {
+      let mcpConfig: Record<string, unknown> | null = null;
+      try {
+        mcpConfig = JSON.parse(cfg.content);
+      } catch {}
 
-                  if (autoFix) {
-                    // Replace with env var reference
-                    server.env[key] = '${' + envVar + '}';
-                    mcp003Fixed = true;
+      // MCP-003: Check for secrets in env vars
+      let hasHardcodedSecrets = false;
+      let mcp003Fixed = false;
+
+      if (mcpConfig?.servers) {
+        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { env?: Record<string, string> }>)) {
+          if (server.env) {
+            for (const [key, value] of Object.entries(server.env)) {
+              // Check if value is a hardcoded secret (not a reference).
+              // #281 — the guard was `!value.includes('${')`, looser even than
+              // CRED-001's: ANY value containing `${` anywhere was exempt, so
+              // `"sk-ant-api03-<live> ${X}"` passed clean. Now each candidate
+              // match is tested for whether it sits outside a well-formed
+              // reference.
+              if (typeof value === 'string') {
+                for (const { pattern, envVar } of credPatterns) {
+                  if (hasCredentialOutsideEnvRef(value, pattern)) {
+                    hasHardcodedSecrets = true;
+
+                    if (autoFix) {
+                      // Replace with env var reference
+                      server.env[key] = '${' + envVar + '}';
+                      mcp003Fixed = true;
+                    }
+                    break;
                   }
-                  break;
                 }
+              }
+            }
+          }
+        }
+
+        // Save fixed config
+        if (mcp003Fixed) {
+          mcp003Fixed = await this.applyFixWrite(cfg.path, JSON.stringify(mcpConfig, null, 2));
+        }
+      }
+
+      // Only report if hardcoded secrets found
+      if (hasHardcodedSecrets) {
+        findings.push({
+          checkId: 'MCP-003',
+          name: 'Hardcoded Secrets in MCP',
+          description: 'Secrets found in MCP env vars',
+          category: 'mcp',
+          severity: 'critical',
+          passed: mcp003Fixed,
+          message: 'Use ${ENV_VAR} references instead',
+          file: cfg.name,
+          fixable: true,
+          fixed: mcp003Fixed,
+          fix: `${this.cliName} secure --fix`,
+          guidance: `Hardcoded API keys in ${cfg.name} are exposed to anyone with repo access. Run opena2a protect . to encrypt them into a secure vault — keys are injected at runtime, never stored as plaintext.`,
+        });
+      }
+
+      // MCP-004: Check for default credentials
+      const defaultPasswords = ['postgres', 'password', 'admin', 'root', '123456', 'default'];
+      let hasDefaultCreds = false;
+      if (mcpConfig?.servers) {
+        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[] }>)) {
+          if (server.args) {
+            const argsStr = server.args.join(' ').toLowerCase();
+            for (const pwd of defaultPasswords) {
+              if (argsStr.includes(`password`) && argsStr.includes(pwd)) {
+                hasDefaultCreds = true;
+                break;
               }
             }
           }
         }
       }
 
-      // Save fixed config
-      if (mcp003Fixed) {
-        mcp003Fixed = await this.applyFixWrite(mcpConfigPath, JSON.stringify(mcpConfig, null, 2));
+      // Only report if default credentials found
+      if (hasDefaultCreds) {
+        findings.push({
+          checkId: 'MCP-004',
+          name: 'Default Credentials',
+          description: 'MCP server using default password',
+          category: 'mcp',
+          severity: 'critical',
+          passed: false,
+          message: 'Change to strong unique password',
+          file: cfg.name,
+          fixable: false,
+          fix: 'openssl rand -base64 24',
+          guidance: `Default passwords (postgres, admin, root, etc.) are the first thing attackers try. Generate a strong random password and update ${cfg.name}.`,
+        });
       }
-    }
 
-    // Only report if hardcoded secrets found
-    if (hasHardcodedSecrets) {
-      findings.push({
-        checkId: 'MCP-003',
-        name: 'Hardcoded Secrets in MCP',
-        description: 'Secrets found in MCP env vars',
-        category: 'mcp',
-        severity: 'critical',
-        passed: mcp003Fixed,
-        message: 'Use ${ENV_VAR} references instead',
-        file: 'mcp.json',
-        fixable: true,
-        fixed: mcp003Fixed,
-        fix: `${this.cliName} secure --fix`,
-        guidance: 'Hardcoded API keys in mcp.json are exposed to anyone with repo access. Run opena2a protect . to encrypt them into a secure vault — keys are injected at runtime, never stored as plaintext.',
-      });
-    }
-
-    // MCP-004: Check for default credentials
-    const defaultPasswords = ['postgres', 'password', 'admin', 'root', '123456', 'default'];
-    let hasDefaultCreds = false;
-    if (mcpConfig?.servers) {
-      for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[] }>)) {
-        if (server.args) {
-          const argsStr = server.args.join(' ').toLowerCase();
-          for (const pwd of defaultPasswords) {
-            if (argsStr.includes(`password`) && argsStr.includes(pwd)) {
-              hasDefaultCreds = true;
-              break;
-            }
+      // MCP-005: Check for wildcard tool access
+      let hasWildcardTools = false;
+      if (mcpConfig?.servers) {
+        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { allowedTools?: string[] }>)) {
+          if (server.allowedTools?.includes('*')) {
+            hasWildcardTools = true;
+            break;
           }
         }
       }
-    }
 
-    // Only report if default credentials found
-    if (hasDefaultCreds) {
-      findings.push({
-        checkId: 'MCP-004',
-        name: 'Default Credentials',
-        description: 'MCP server using default password',
-        category: 'mcp',
-        severity: 'critical',
-        passed: false,
-        message: 'Change to strong unique password',
-        file: 'mcp.json',
-        fixable: false,
-        fix: 'openssl rand -base64 24',
-        guidance: 'Default passwords (postgres, admin, root, etc.) are the first thing attackers try. Generate a strong random password and update mcp.json.',
-      });
-    }
-
-    // MCP-005: Check for wildcard tool access
-    let hasWildcardTools = false;
-    if (mcpConfig?.servers) {
-      for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { allowedTools?: string[] }>)) {
-        if (server.allowedTools?.includes('*')) {
-          hasWildcardTools = true;
-          break;
-        }
+      // Only report if wildcard tools found
+      if (hasWildcardTools) {
+        findings.push({
+          checkId: 'MCP-005',
+          name: 'Wildcard Tool Access',
+          description: 'Server allows all tools (*)',
+          category: 'mcp',
+          severity: 'high',
+          passed: false,
+          message: 'Restrict to specific tools needed',
+          file: cfg.name,
+          fixable: false,
+          fix: 'Replace "*" with specific tool names in allowedTools (e.g., ["read_file", "list_directory"])',
+          guidance: 'Wildcard tool access gives the AI unrestricted capabilities. Limit to only the tools your workflow actually needs to reduce attack surface.',
+        });
       }
-    }
-
-    // Only report if wildcard tools found
-    if (hasWildcardTools) {
-      findings.push({
-        checkId: 'MCP-005',
-        name: 'Wildcard Tool Access',
-        description: 'Server allows all tools (*)',
-        category: 'mcp',
-        severity: 'high',
-        passed: false,
-        message: 'Restrict to specific tools needed',
-        file: 'mcp.json',
-        fixable: false,
-        fix: 'Replace "*" with specific tool names in allowedTools (e.g., ["read_file", "list_directory"])',
-        guidance: 'Wildcard tool access gives the AI unrestricted capabilities. Limit to only the tools your workflow actually needs to reduce attack surface.',
-      });
     }
 
     return findings;
@@ -6769,7 +6845,7 @@ dist/
     const findings: SecurityFindingDraft[] = [];
 
     // PERM-002: Check for executable config files
-    const configFiles = ['config.json', 'mcp.json', 'settings.json', '.env'];
+    const configFiles = ['config.json', ...ROOT_MCP_CONFIG_FILES, 'settings.json', '.env'];
     const executableConfigs: string[] = [];
     let perm002Unread = false;
 
@@ -7775,25 +7851,31 @@ dist/
     autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const mcpConfigPath = path.join(targetDir, 'mcp.json');
 
-    let mcpConfig: Record<string, unknown> | null = null;
-    // #458: MCP-006..009 branch on this classified read — absent mcp.json =>
+    // #458: MCP-006..009 branch on this classified read — absent config =>
     // not-applicable naming the subject, unread => no record, and a present
-    // but unparseable file keeps today's verdict.
-    const mcpReadExt = await readCheckSubject(mcpConfigPath);
-    if (mcpReadExt.state === 'read') {
-      try {
-        mcpConfig = JSON.parse(mcpReadExt.content);
-      } catch {}
+    // but unparseable file keeps today's verdict. #637: the subject is the
+    // SET of root spellings (`ROOT_MCP_CONFIG_FILES`); every spelling that
+    // exists is evaluated on its own and each record names its file.
+    const rootMcp = await readRootMcpConfigs(targetDir);
+
+    if (rootMcp.state === 'absent') {
+      const reason = `No ${ROOT_MCP_CONFIG_SUBJECT} in the scanned tree, so there is no MCP server configuration to inspect.`;
+      findings.push(notApplicableRecord({ checkId: 'MCP-006', name: 'MCP Request Timeout', description: 'No request timeout configured for MCP servers', category: 'mcp' }, ROOT_MCP_CONFIG_SUBJECT, reason));
+      findings.push(notApplicableRecord({ checkId: 'MCP-007', name: 'MCP Retry Limits', description: 'No retry limits configured for MCP servers', category: 'mcp' }, ROOT_MCP_CONFIG_SUBJECT, reason));
+      findings.push(notApplicableRecord({ checkId: 'MCP-008', name: 'MCP Localhost Binding', description: 'MCP servers should bind to localhost only', category: 'mcp' }, ROOT_MCP_CONFIG_SUBJECT, reason));
+      findings.push(notApplicableRecord({ checkId: 'MCP-009', name: 'Sensitive MCP Tools', description: 'MCP configuration includes potentially dangerous tools', category: 'mcp' }, ROOT_MCP_CONFIG_SUBJECT, reason));
     }
 
-    // MCP-006: Check for request timeout
-    const hasTimeout = (mcpConfig as Record<string, unknown>)?.timeout !== undefined;
+    let hasLogging = false;
+    for (const cfg of rootMcp.configs) {
+      let mcpConfig: Record<string, unknown> | null = null;
+      try {
+        mcpConfig = JSON.parse(cfg.content);
+      } catch {}
 
-    if (mcpReadExt.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'MCP-006', name: 'MCP Request Timeout', description: 'No request timeout configured for MCP servers', category: 'mcp' }, 'mcp.json', 'No mcp.json in the scanned tree. This check reads only mcp.json, so MCP servers configured elsewhere (for example .mcp.json) are outside its scope.'));
-    } else if (mcpReadExt.state === 'read') {
+      // MCP-006: Check for request timeout
+      const hasTimeout = mcpConfig?.timeout !== undefined;
       findings.push({
         checkId: 'MCP-006',
         name: 'MCP Request Timeout',
@@ -7806,17 +7888,13 @@ dist/
           : mcpConfig
             ? 'Consider setting request timeouts for MCP servers'
             : 'No MCP config found',
+        file: cfg.name,
         fixable: false,
         guidance: 'Without request timeouts, a hung or malicious MCP server can block the agent indefinitely, causing denial-of-service and preventing other tools from executing.',
       });
-    }
 
-    // MCP-007: Check for retry limits
-    const hasRetryConfig = (mcpConfig as Record<string, unknown>)?.retries !== undefined;
-
-    if (mcpReadExt.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'MCP-007', name: 'MCP Retry Limits', description: 'No retry limits configured for MCP servers', category: 'mcp' }, 'mcp.json', 'No mcp.json in the scanned tree. This check reads only mcp.json, so MCP servers configured elsewhere (for example .mcp.json) are outside its scope.'));
-    } else if (mcpReadExt.state === 'read') {
+      // MCP-007: Check for retry limits
+      const hasRetryConfig = mcpConfig?.retries !== undefined;
       findings.push({
         checkId: 'MCP-007',
         name: 'MCP Retry Limits',
@@ -7829,28 +7907,24 @@ dist/
           : mcpConfig
             ? 'Consider setting retry limits to prevent infinite loops'
             : 'No MCP config found',
+        file: cfg.name,
         fixable: false,
         guidance: 'Without retry limits, a failing MCP server can trigger infinite retry loops that waste API credits, saturate network connections, and stall the agent.',
       });
-    }
 
-    // MCP-008: Check for localhost binding
-    let allLocalhostBound = true;
-    if (mcpConfig?.servers) {
-      for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[]; url?: string }>)) {
-        if (server.url && !server.url.includes('localhost') && !server.url.includes('127.0.0.1')) {
-          // Remote server is fine if using HTTPS
-          continue;
-        }
-        if (server.args?.some((arg: string) => arg.includes('0.0.0.0'))) {
-          allLocalhostBound = false;
+      // MCP-008: Check for localhost binding
+      let allLocalhostBound = true;
+      if (mcpConfig?.servers) {
+        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[]; url?: string }>)) {
+          if (server.url && !server.url.includes('localhost') && !server.url.includes('127.0.0.1')) {
+            // Remote server is fine if using HTTPS
+            continue;
+          }
+          if (server.args?.some((arg: string) => arg.includes('0.0.0.0'))) {
+            allLocalhostBound = false;
+          }
         }
       }
-    }
-
-    if (mcpReadExt.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'MCP-008', name: 'MCP Localhost Binding', description: 'MCP servers should bind to localhost only', category: 'mcp' }, 'mcp.json', 'No mcp.json in the scanned tree. This check reads only mcp.json, so MCP servers configured elsewhere (for example .mcp.json) are outside its scope.'));
-    } else if (mcpReadExt.state === 'read') {
       findings.push({
         checkId: 'MCP-008',
         name: 'MCP Localhost Binding',
@@ -7861,29 +7935,24 @@ dist/
         message: allLocalhostBound
           ? 'MCP servers properly bound to localhost'
           : 'Some MCP servers not bound to localhost - may be network accessible',
+        file: cfg.name,
         fixable: false,
         guidance: 'MCP servers running over network (SSE/HTTP) without authentication let any network-adjacent attacker connect and issue tool calls.',
       });
-    }
 
-    // MCP-009: Check for sensitive tool names
-    const sensitiveTools = ['execute', 'shell', 'eval', 'system', 'exec', 'spawn'];
-    let hasSensitiveTools = false;
-
-    if (mcpConfig?.servers) {
-      for (const [name] of Object.entries(mcpConfig.servers as Record<string, unknown>)) {
-        for (const tool of sensitiveTools) {
-          if (name.toLowerCase().includes(tool)) {
-            hasSensitiveTools = true;
-            break;
+      // MCP-009: Check for sensitive tool names
+      const sensitiveTools = ['execute', 'shell', 'eval', 'system', 'exec', 'spawn'];
+      let hasSensitiveTools = false;
+      if (mcpConfig?.servers) {
+        for (const [name] of Object.entries(mcpConfig.servers as Record<string, unknown>)) {
+          for (const tool of sensitiveTools) {
+            if (name.toLowerCase().includes(tool)) {
+              hasSensitiveTools = true;
+              break;
+            }
           }
         }
       }
-    }
-
-    if (mcpReadExt.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'MCP-009', name: 'Sensitive MCP Tools', description: 'MCP configuration includes potentially dangerous tools', category: 'mcp' }, 'mcp.json', 'No mcp.json in the scanned tree. This check reads only mcp.json, so MCP servers configured elsewhere (for example .mcp.json) are outside its scope.'));
-    } else if (mcpReadExt.state === 'read') {
       findings.push({
         checkId: 'MCP-009',
         name: 'Sensitive MCP Tools',
@@ -7894,22 +7963,24 @@ dist/
         message: hasSensitiveTools
           ? 'Sensitive tool names detected (shell, exec, eval) - ensure proper restrictions'
           : 'No obviously sensitive tool names in MCP config',
+        file: cfg.name,
         fixable: false,
         guidance: 'Tools named shell, exec, or eval typically provide arbitrary code execution. A prompt injection that invokes these tools can fully compromise the host system.',
       });
-    }
 
-    // MCP-010: Check for logging configuration
-    let hasLogging = false;
-    if (mcpConfig?.servers) {
-      for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[] }>)) {
-        if (server.args?.some((arg: string) => arg.includes('log') || arg.includes('verbose'))) {
-          hasLogging = true;
-          break;
+      // MCP-010 reads every root config: logging in any of them counts.
+      if (mcpConfig?.servers) {
+        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[] }>)) {
+          if (server.args?.some((arg: string) => arg.includes('log') || arg.includes('verbose'))) {
+            hasLogging = true;
+            break;
+          }
         }
       }
     }
 
+    // MCP-010: Check for logging configuration — one informational record,
+    // as before, now over every root config read.
     findings.push({
       checkId: 'MCP-010',
       name: 'MCP Logging',
@@ -9664,41 +9735,42 @@ dist/
     autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const mcpConfigPath = path.join(targetDir, 'mcp.json');
 
-    // #458 — one errno-classified read shared by TOOL-001/002/003.
-    // TOOL-002/003 branch on the same read: absent mcp.json =>
-    // not-applicable naming the subject, unread => nothing, read => their
-    // verdict, unchanged.
-    const mcpRead = await readCheckSubject(mcpConfigPath);
-    let mcpConfig: Record<string, unknown> | null = null;
-    if (mcpRead.state === 'read') {
-      try {
-        mcpConfig = JSON.parse(mcpRead.content);
-      } catch {}
-    }
+    // #458 — one errno-classified read shared by TOOL-001/002/003: absent
+    // config => not-applicable naming the subject, unread => nothing (the
+    // ledger's unreadable-inputs channel carries the obstruction), read =>
+    // their verdict; present-but-unparseable JSON keeps today's fail: a
+    // config that exists and cannot be parsed is a measured defect of the
+    // subject, not a missing subject. #637: the subject is the SET of root
+    // spellings (`ROOT_MCP_CONFIG_FILES`); every spelling that exists is
+    // evaluated on its own and each record names its file.
+    const rootMcp = await readRootMcpConfigs(targetDir);
 
-    // TOOL-001: Check for tool whitelisting.
-    // #458 — absent mcp.json => not-applicable (nothing configures MCP servers
-    // here, so there are no tool boundaries to measure); unread => no record
-    // (the ledger's unreadable-inputs channel carries the obstruction);
-    // present-but-unparseable JSON keeps today's fail: a config that exists
-    // and cannot be parsed is a measured defect of the subject, not a missing
-    // subject.
-    if (mcpRead.state === 'absent') {
+    if (rootMcp.state === 'absent') {
+      const reason = `No ${ROOT_MCP_CONFIG_SUBJECT} in the scanned tree, so there are no tool boundaries to measure.`;
       findings.push({
         checkId: 'TOOL-001',
         name: 'Tool Whitelisting',
         description: 'MCP servers should have explicit tool whitelists',
         category: 'tool-boundaries',
         notApplicable: {
-          subject: 'mcp.json',
-          reason: 'No mcp.json in the scanned tree. This check reads only mcp.json, so tool boundaries configured elsewhere (for example .mcp.json) are outside its scope.',
+          subject: ROOT_MCP_CONFIG_SUBJECT,
+          reason,
         },
-        message: 'Not applicable: no mcp.json to measure for tool whitelisting',
+        message: `Not applicable: no ${ROOT_MCP_CONFIG_SUBJECT} to measure for tool whitelisting`,
         fixable: false,
       });
-    } else if (mcpRead.state === 'read') {
+      findings.push(notApplicableRecord({ checkId: 'TOOL-002', name: 'Tool Resource Constraints', description: 'MCP tools should have resource constraints', category: 'tool-boundaries' }, ROOT_MCP_CONFIG_SUBJECT, reason));
+      findings.push(notApplicableRecord({ checkId: 'TOOL-003', name: 'Dangerous Tool Detection', description: 'Identify potentially dangerous MCP tools', category: 'tool-boundaries' }, ROOT_MCP_CONFIG_SUBJECT, reason));
+    }
+
+    for (const cfg of rootMcp.configs) {
+      let mcpConfig: Record<string, unknown> | null = null;
+      try {
+        mcpConfig = JSON.parse(cfg.content);
+      } catch {}
+
+      // TOOL-001: Check for tool whitelisting.
       let hasToolWhitelist = false;
       if (mcpConfig?.servers) {
         for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { allowedTools?: string[] }>)) {
@@ -9708,7 +9780,6 @@ dist/
           }
         }
       }
-
       findings.push({
         checkId: 'TOOL-001',
         name: 'Tool Whitelisting',
@@ -9719,25 +9790,21 @@ dist/
         message: hasToolWhitelist
           ? 'Tool whitelisting configured'
           : 'Configure allowedTools to restrict MCP server capabilities',
+        file: cfg.name,
         fixable: false,
         guidance: 'Without an explicit tool whitelist, MCP servers expose all available tools to the AI agent. A prompt injection attack can invoke any tool, including destructive ones.',
       });
-    }
 
-    // TOOL-002: Check for resource constraints
-    let hasResourceConstraints = false;
-    if (mcpConfig?.servers) {
-      for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { maxTokens?: number; timeout?: number }>)) {
-        if (server.maxTokens || server.timeout) {
-          hasResourceConstraints = true;
-          break;
+      // TOOL-002: Check for resource constraints
+      let hasResourceConstraints = false;
+      if (mcpConfig?.servers) {
+        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { maxTokens?: number; timeout?: number }>)) {
+          if (server.maxTokens || server.timeout) {
+            hasResourceConstraints = true;
+            break;
+          }
         }
       }
-    }
-
-    if (mcpRead.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'TOOL-002', name: 'Tool Resource Constraints', description: 'MCP tools should have resource constraints', category: 'tool-boundaries' }, 'mcp.json', 'No mcp.json in the scanned tree. This check reads only mcp.json, so tool boundaries configured elsewhere (for example .mcp.json) are outside its scope.'));
-    } else if (mcpRead.state === 'read') {
       findings.push({
         checkId: 'TOOL-002',
         name: 'Tool Resource Constraints',
@@ -9748,28 +9815,24 @@ dist/
         message: hasResourceConstraints
           ? 'Resource constraints configured'
           : 'Consider setting maxTokens and timeout for MCP tools',
+        file: cfg.name,
         fixable: false,
         guidance: 'Without token limits and timeouts, a runaway or malicious tool call can consume unlimited API credits and block the agent indefinitely.',
       });
-    }
 
-    // TOOL-003: Check for dangerous tool usage
-    let hasDangerousTools = false;
-    if (mcpConfig?.servers) {
-      const dangerousTools = ['shell', 'exec', 'system', 'eval', 'run_command'];
-      for (const [name] of Object.entries(mcpConfig.servers as Record<string, unknown>)) {
-        for (const dangerous of dangerousTools) {
-          if (name.toLowerCase().includes(dangerous)) {
-            hasDangerousTools = true;
-            break;
+      // TOOL-003: Check for dangerous tool usage
+      let hasDangerousTools = false;
+      if (mcpConfig?.servers) {
+        const dangerousTools = ['shell', 'exec', 'system', 'eval', 'run_command'];
+        for (const [name] of Object.entries(mcpConfig.servers as Record<string, unknown>)) {
+          for (const dangerous of dangerousTools) {
+            if (name.toLowerCase().includes(dangerous)) {
+              hasDangerousTools = true;
+              break;
+            }
           }
         }
       }
-    }
-
-    if (mcpRead.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'TOOL-003', name: 'Dangerous Tool Detection', description: 'Identify potentially dangerous MCP tools', category: 'tool-boundaries' }, 'mcp.json', 'No mcp.json in the scanned tree. This check reads only mcp.json, so tool boundaries configured elsewhere (for example .mcp.json) are outside its scope.'));
-    } else if (mcpRead.state === 'read') {
       findings.push({
         checkId: 'TOOL-003',
         name: 'Dangerous Tool Detection',
@@ -9780,6 +9843,7 @@ dist/
         message: hasDangerousTools
           ? 'Potentially dangerous tools detected (shell/exec) - ensure proper restrictions'
           : 'No obvious dangerous tools detected',
+        file: cfg.name,
         fixable: false,
         guidance: 'Shell and exec tools give the AI agent arbitrary command execution on the host. A prompt injection can leverage these to exfiltrate data, install malware, or pivot to other systems.',
       });
@@ -16482,7 +16546,7 @@ dist/
     // WEBEXPOSE-002: .env files in web directories
     const envFiles = ['.env', '.env.local', '.env.production'];
     // WEBEXPOSE-003: Sensitive config files in web directories
-    const configFiles = ['mcp.json', 'config.json', 'settings.json', 'openclaw.json'];
+    const configFiles = [...ROOT_MCP_CONFIG_FILES, 'config.json', 'settings.json', 'openclaw.json'];
     const configDirs = ['.claude'];
 
     for (const webDir of webDirs) {
