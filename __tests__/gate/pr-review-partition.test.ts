@@ -574,7 +574,7 @@ describe('PR review gate: the partition step is executable and self-describing',
 
   it('keeps the job name the required status checks are keyed on', () => {
     const wf = loadWorkflow() as unknown as { jobs: { review: { name: string } } };
-    expect(wf.jobs.review.name).toBe('Claude Code Review');
+    expect(wf.jobs.review.name).toBe('Automated code review');
   });
 });
 

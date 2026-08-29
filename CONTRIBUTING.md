@@ -61,7 +61,7 @@ cheaper to read now than to work out from a red check later.
 workflow runs for contributors outside the organization. Until someone does, your pull request
 reports no checks at all, passing or failing.
 
-**One required check cannot pass from a fork, ever.** `Claude Code Review` calls a model API
+**One required check cannot pass from a fork, ever.** `Automated code review` calls a model API
 using a repository secret. GitHub does not pass repository secrets to a workflow triggered from
 a fork: "With the exception of `GITHUB_TOKEN`, secrets are not passed to the runner when a
 workflow is triggered from a forked repository"
@@ -73,23 +73,23 @@ your change.
 
 **No comment will appear explaining it.** The workflow posts its result as a pull request
 comment, and on a fork run its token is read only, so the post fails. The result is written to
-the check's own summary instead. Open `Claude Code Review` from the checks list and read the
+the check's own summary instead. Open `Automated code review` from the checks list and read the
 summary there.
 
-`Claude Code Review` is the only required check in that position. You can confirm that in your
+`Automated code review` is the only required check in that position. You can confirm that in your
 own clone:
 
 ```bash
 grep -rn "secrets\." .github/workflows/
 ```
 
-Every match is in `pr-review.yml`, the workflow behind `Claude Code Review`. The workflows behind
+Every match is in `pr-review.yml`, the workflow behind `Automated code review`. The workflows behind
 the other required checks reference no secret. Those are the checks to read on your change. No
 pull request has been opened from a fork on this repository yet, so you would be the first.
 
 We do not merge past a failing required check. The route is:
 
-1. Open the pull request from your fork. Leave `Claude Code Review` alone.
+1. Open the pull request from your fork. Leave `Automated code review` alone.
 2. A maintainer reviews the change and replies on your pull request.
 3. When it is ready, a maintainer pushes your commits to a branch in this repository and opens a
    pull request from there. The review runs on that one with the key available, and the change

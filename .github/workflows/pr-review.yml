@@ -1,5 +1,5 @@
 name: PR Review
-# Runs on every PR to main — calls the Claude API for a security-focused code review.
+# Runs on every PR to main — an automated code review (calls the Claude API).
 #
 # The gate fails CLOSED. There are three verdicts: APPROVE passes,
 # REQUEST_CHANGES fails, INCONCLUSIVE fails. Inconclusive covers a missing key,
@@ -33,7 +33,7 @@ permissions:
 
 jobs:
   review:
-    name: Claude Code Review
+    name: Automated code review
     runs-on: ubuntu-latest
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -144,12 +144,14 @@ jobs:
           # standalone because gh rejects --slurp combined with --jq.
           #
           # The login filter is the security half: any commenter who quotes
-          # "Claude Code Review" would otherwise be fed back to the model under
+          # "Automated code review" (or the pre-rename header) would otherwise
+          # be fed back to the model under
           # a PREVIOUS REVIEW heading the system prompt instructs it to trust,
           # as the gate's own prior verdict.
           gh api --paginate --slurp "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" 2>/dev/null \
-            | jq -r '[.[][] | select(.user.login == "github-actions[bot]") | select(.body | test("Claude Code Review")) | .body] | last // ""' \
+            | jq -r '[.[][] | select(.user.login == "github-actions[bot]") | select(.body | test("Claude Code Review|Automated code review")) | .body] | last // ""' \
             | sed -e '/^## Claude Code Review/d' \
+                  -e '/^## Automated code review/d' \
                   -e '/^[[:space:]]*VERDICT:/d' \
                   -e '/VERDICT-[0-9A-Za-z_-]\{8,\}[[:space:]]*:/d' \
                   -e '/^\[redacted: this line matched the gate/d' \
@@ -387,7 +389,7 @@ jobs:
             echo "::error::$1"
             # Exit 0 on purpose: the refusal is a REVIEW OUTCOME, not a step
             # crash, and the difference decides which message a blocked author
-            # reads. `Run Claude review` is skipped, the verdict is therefore
+            # reads. `Run automated review` is skipped, the verdict is therefore
             # absent, and absent is INCONCLUSIVE, which does not pass.
             exit 0
           }
@@ -927,7 +929,7 @@ jobs:
           printf 'batches=%s\n' "$NBATCH" >> "$GITHUB_OUTPUT"
           echo "Partitioned into $NBATCH batches; every byte of the diff accounted for."
 
-      - name: Run Claude review
+      - name: Run automated review
         id: review
         # `success() &&` is load-bearing and not decoration. An `if:` REPLACES
         # the implicit success() check, so `if: steps.partition.outputs.refused
@@ -1112,7 +1114,7 @@ jobs:
           fi
 
           {
-            echo "## Claude Code Review — $VERDICT"
+            echo "## Automated code review — $VERDICT"
             echo ""
             [ -z "$FORK_NOTE" ] || printf '%s\n' "$FORK_NOTE"
             cat "$REVIEW_FILE"
