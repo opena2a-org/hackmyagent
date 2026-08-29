@@ -14,6 +14,11 @@ on:
 jobs:
   detect-noble-change:
     runs-on: ubuntu-latest
+    # Declared explicitly rather than inherited. The repository default is
+    # read-only today, but a default is a setting someone can change, and this
+    # job reads a version string out of the pull request head.
+    permissions:
+      contents: read
     outputs:
       changed: ${{ steps.check.outputs.changed }}
       base_version: ${{ steps.check.outputs.base_version }}
@@ -25,19 +30,42 @@ jobs:
 
       - name: Detect @noble/post-quantum version change
         id: check
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          base_version=$(git show ${{ github.event.pull_request.base.sha }}:package.json 2>/dev/null | node -e "let d=''; process.stdin.on('data',c=>d+=c).on('end',()=>{try{const p=JSON.parse(d);console.log((p.dependencies||{})['@noble/post-quantum']||'')}catch{console.log('')}})" || echo "")
+          base_version=$(git show "$BASE_SHA":package.json 2>/dev/null | node -e "let d=''; process.stdin.on('data',c=>d+=c).on('end',()=>{try{const p=JSON.parse(d);console.log((p.dependencies||{})['@noble/post-quantum']||'')}catch{console.log('')}})" || echo "")
           head_version=$(node -e "const p=require('./package.json');console.log((p.dependencies||{})['@noble/post-quantum']||'')")
-          echo "base_version=$base_version" >> $GITHUB_OUTPUT
-          echo "head_version=$head_version" >> $GITHUB_OUTPUT
+
+          # A version string comes out of the pull request head's package.json,
+          # so it is author-controlled and may contain newlines. Two sinks care:
+          #
+          #   $GITHUB_OUTPUT — a bare `key=value` line lets a multi-line value
+          #     append further keys, which would let a pull request forge
+          #     `changed=false` and skip the very benchmark this job enforces.
+          #     A random heredoc delimiter cannot be guessed by the author.
+          #   stdout — the runner parses `::`-prefixed lines as workflow
+          #     commands, so a newline lets the value start one of its own.
+          #
+          # Both are closed by collapsing the value to a single line first.
+          base_version=$(printf '%s' "$base_version" | tr -d '\n\r')
+          head_version=$(printf '%s' "$head_version" | tr -d '\n\r')
+          delim="__NOBLE_$RANDOM$RANDOM"
+
+          printf 'base_version<<%s\n%s\n%s\n' "$delim" "$base_version" "$delim" >> "$GITHUB_OUTPUT"
+          printf 'head_version<<%s\n%s\n%s\n' "$delim" "$head_version" "$delim" >> "$GITHUB_OUTPUT"
           if [ "$base_version" != "$head_version" ]; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-            echo "::warning::@noble/post-quantum version changed: $base_version -> $head_version. Strict ML-DSA-44 benchmark required."
+            printf 'changed=true\n' >> "$GITHUB_OUTPUT"
+            printf '::warning::@noble/post-quantum version changed: %s -> %s. Strict ML-DSA-44 benchmark required.\n' "$base_version" "$head_version"
           else
-            echo "changed=false" >> $GITHUB_OUTPUT
+            printf 'changed=false\n' >> "$GITHUB_OUTPUT"
           fi
 
   enforce-bench:
+    # Least privilege, declared: this job runs `npm ci` and a benchmark script
+    # from the pull request head, so it must not hold a token that can write
+    # anything a reader would attribute to the repository.
+    permissions:
+      contents: read
     needs: detect-noble-change
     if: needs.detect-noble-change.outputs.changed == 'true'
     runs-on: ubuntu-latest
@@ -54,32 +82,40 @@ jobs:
       - name: Run ML-DSA-44 bench in strict mode
         env:
           BENCH_FAIL_ON_OVER: '1'
+          # Read from the environment, never interpolated into the script body:
+          # head_version is read out of the pull request head's package.json, so
+          # it is author-controlled text.
+          BASE_VERSION: ${{ needs.detect-noble-change.outputs.base_version }}
+          HEAD_VERSION: ${{ needs.detect-noble-change.outputs.head_version }}
         run: |
-          echo "Enforcing sign p99 budget because @noble/post-quantum changed from '${{ needs.detect-noble-change.outputs.base_version }}' to '${{ needs.detect-noble-change.outputs.head_version }}'."
-          echo "Reference: AIComply D17 in opena2a-org/todo/AICOMPLY_DECISIONS.md"
+          echo "Enforcing sign p99 budget because @noble/post-quantum changed from '$BASE_VERSION' to '$HEAD_VERSION'."
+          echo "Reference: AIComply D17 — ML-DSA-44 sign p99 budget."
           node scripts/bench-ml-dsa-44.mjs --iters=1000
 
-      - name: Comment on PR with noble drift notice
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const base = '${{ needs.detect-noble-change.outputs.base_version }}';
-            const head = '${{ needs.detect-noble-change.outputs.head_version }}';
-            const body = [
-              `## @noble/post-quantum version change detected`,
-              ``,
-              `Base: \`${base}\` -> Head: \`${head}\``,
-              ``,
-              `AIComply D17 requires re-benchmarking on any noble version bump. This PR ran the bench in strict mode (fail if sign p99 > 2.5ms).`,
-              ``,
-              `**Reviewer checklist:**`,
-              `- [ ] Sign p99 still under 2.5ms on ubuntu-latest`,
-              `- [ ] If p99 exceeds budget, evaluate Option D (native ML-DSA binding) per escalation doc`,
-              `- [ ] Update AIComply D17 if budget revision is approved`,
-            ].join('\n');
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body,
-            });
+      - name: Publish the drift notice to the run summary
+        # This used to post a pull request comment through github-script, with
+        # the version strings interpolated into the JavaScript source. Two
+        # things were wrong with it. The interpolation was executable: GitHub
+        # substitutes ${{ }} textually before the script runs, so a crafted
+        # version string in the head package.json ran as code. And the comment
+        # itself made this job a writer of content that appears under the
+        # repository's own bot identity, in a job that executes code from the
+        # pull request head — the same primitive removed from ml-dsa-bench.yml.
+        # The notice goes to the run summary instead, which no reader mistakes
+        # for repository-authored content.
+        env:
+          BASE_VERSION: ${{ needs.detect-noble-change.outputs.base_version }}
+          HEAD_VERSION: ${{ needs.detect-noble-change.outputs.head_version }}
+        run: |
+          {
+            printf '## @noble/post-quantum version change detected\n\n'
+            printf 'Base: `%s` -> Head: `%s`\n\n' \
+              "$(printf '%s' "$BASE_VERSION" | tr -d '\n\r`')" \
+              "$(printf '%s' "$HEAD_VERSION" | tr -d '\n\r`')"
+            printf 'AIComply D17 requires re-benchmarking on any noble version bump. '
+            printf 'This PR ran the bench in strict mode (fail if sign p99 > 2.5ms).\n\n'
+            printf '**Reviewer checklist:**\n'
+            printf -- '- [ ] Sign p99 still under 2.5ms on ubuntu-latest\n'
+            printf -- '- [ ] If p99 exceeds budget, evaluate Option D (native ML-DSA binding) per escalation doc\n'
+            printf -- '- [ ] Update AIComply D17 if budget revision is approved\n'
+          } >> "$GITHUB_STEP_SUMMARY"
