@@ -24,7 +24,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
+      # NO pull-requests: write. This job executes a script from the pull
+      # request head and used to pipe its stdout verbatim into a comment
+      # posted as github-actions[bot]. That made any PR able to author bot
+      # content. The benchmark now goes to the run summary instead, which is
+      # just as readable and is not a channel into the repository's comments.
     steps:
       - uses: actions/checkout@v4
 
@@ -37,12 +41,17 @@ jobs:
 
       - name: Run ML-DSA-44 benchmark
         id: bench
+        env:
+          ITERS: ${{ github.event.inputs.iters || '1000' }}
         run: |
-          node scripts/bench-ml-dsa-44.mjs --iters=${{ github.event.inputs.iters || '1000' }} | tee bench-output.txt
+          node scripts/bench-ml-dsa-44.mjs --iters="$ITERS" | tee bench-output.txt
           grep '^__BENCH_JSON__' bench-output.txt | sed 's/^__BENCH_JSON__//' > bench-summary.json
-          echo "summary<<EOF" >> $GITHUB_OUTPUT
-          cat bench-output.txt >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # The step no longer exports the raw output. It fed the script's own
+          # stdout into $GITHUB_OUTPUT under a fixed `EOF` delimiter, so a line
+          # reading exactly EOF would end the block early and the remainder
+          # would parse as further key=value pairs. Nothing consumed the output
+          # once the PR-comment step was removed, so it goes rather than being
+          # given a random delimiter it does not need.
 
       - name: Upload benchmark artifact
         uses: actions/upload-artifact@v4
@@ -51,26 +60,17 @@ jobs:
           path: bench-summary.json
           retention-days: 90
 
-      - name: Comment on PR
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const output = fs.readFileSync('bench-output.txt', 'utf8');
-            const body = [
-              '## ML-DSA-44 benchmark (ubuntu-latest, c6i.xlarge-class)',
-              '',
-              '```',
-              output.trim(),
-              '```',
-              '',
-              'Budget (AIComply D17): sign p99 < 2.5ms, verify p99 < 1.5ms.',
-              'Runner is shared; a single over-budget run is noisy. Check for consistent regression across PR commits.',
-            ].join('\n');
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body,
-            });
+      - name: Publish benchmark to the run summary
+        run: |
+          {
+            printf '## ML-DSA-44 benchmark (ubuntu-latest, c6i.xlarge-class)\n\n'
+            # The fenced content is this script's own stdout, which the pull
+            # request head controls. A line of its own backticks would close
+            # the fence and let the rest render as markdown on the run page,
+            # so fence-shaped lines are neutralised before they go in.
+            printf '```\n'
+            sed -e 's/^```/ ```/' bench-output.txt
+            printf '\n```\n\n'
+            printf 'Budget (AIComply D17): sign p99 < 2.5ms, verify p99 < 1.5ms.\n'
+            printf 'Runner is shared; a single over-budget run is noisy. Check for consistent regression across PR commits.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
