@@ -4,6 +4,48 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The GlassWorm decoder's execution-sink corroborator reads code, and reads the same lines (#475, in part)
+
+`UNICODE-STEGO-002` lifts a decoder shape to CRITICAL when it finds an execution
+sink in the same file. It looked for one over the whole file content, with no idea
+what was code, so two things corroborated that are not calls:
+
+- **A mention in a comment or a string literal.** `src/hardening/scanner.ts`
+  self-flagged CRITICAL on the `eval(...)` written into one of its own doc comments
+  and on the `'eval() dynamic execution'` label of a detection rule. It stayed out
+  of our own score only because `.hmaignore` excludes that path — the exemption was
+  carrying the defect, so the same file scanned anywhere else reported CRITICAL on
+  its own prose. Comments are now blanked with block state carried across the line
+  boundary (the body of a doc comment has no opener on its own line, which is why
+  the existing per-line predicate could not see this), and strings are left to
+  `isMatchInsideStringLiteral`, the predicate NEMO-009 already uses for the same
+  question. Scanned as a copy with no `.hmaignore` in reach, `scanner.ts` moves from
+  CRITICAL to a MEDIUM lead. It is still reported: the file does read codepoints in
+  the range, and saying so costs a line of output.
+- **A line the finding's own signals never read.** The presence loop skips a line
+  over `MAX_LINE_LENGTH`; the corroborator ran over whole content, so an `eval(`
+  inside a minified bundle line corroborated a `.codePointAt(` and a range literal
+  read from ordinary lines. Both now read one population in one loop, so they cannot
+  disagree about which lines exist. A pair of fixtures differing only in the length
+  of one padding string pins each direction.
+
+**The sink vocabulary is unchanged, deliberately.** `vm.runInNewContext`,
+`globalThis.eval`, `(0,eval)`, a constructor chain, `Reflect.construct`, dynamic
+`import()`, `child_process` and `module._compile` still do not corroborate, and the
+finding's guidance still says so. Widening the regex would answer a semantic
+question with a lexical test for the third time in this check; it belongs with
+#424's AST dataflow work, and the regexes themselves are byte-identical to before
+this change so that claim can be diffed rather than taken on trust.
+
+**One narrowing, disclosed:** matching per line means `eval` and `(` separated by a
+newline no longer match. That spelling is legal JavaScript and is a real loss of one
+lexical variant, on a corroborator that already misses the eight spellings above.
+
+The uncorroborated finding's own description and guidance were reworded to match:
+they used to say no `eval(` or `Function(` call "appears in this file", which is now
+false about a file that mentions one in a comment. They say "in code" and name the
+line-length limit.
+
 ### The ASP profile's credential summary no longer misses semantic secrets
 
 `secure -b oasb-1 --format asp` could report `credentials.hardcodedSecrets: 0`
