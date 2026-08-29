@@ -4,6 +4,76 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The CRITICAL hardcoded-secret finding says where the secret is, and four secrets count as four (#368, #478)
+
+One cause, two symptoms, both carried since 0.28.0.
+
+`scanCanonicalCredentialFormats` knew the exact offset of every key it matched
+and threw it away. What it emitted was a CLASSIFICATION — `OpenAI legacy key:
+[REDACTED]` — which is the right thing to emit (no part of a value rides in a
+finding) but is not a substring of the file, and the only way back to a line ran
+through `extractEvidenceSpans`, which looks evidence up with `indexOf`. So:
+
+- **The CRITICAL was vaguer than the HIGH beneath it.** `AST-CRED-003` rendered
+  as `app/config.ts` with no `:N`, and with no line there is deliberately no
+  `Verify:` — directly above an `AST-CRED-001` HIGH on the same file that
+  printed both. A CRITICAL a reader cannot locate, above a HIGH they can,
+  inverts the severity signal the repo's own standard rests on (#368).
+- **Four keys in one file scored as one.** They collapsed into a single finding
+  naming the first, so removing three of the four moved the score by exactly
+  zero — which reads as "my fix did not work" (#478). Each shape was detected in
+  isolation the whole time; the loss was aggregation, not pattern coverage.
+
+The offset is now recorded at the point of the match, carried on the risk
+surface as `offset`, and turned into a line by the emit site. One finding per
+located instance, keyed on the offset rather than the line so two secrets
+sharing a line stay two secrets, and the per-file rollup in
+`deduplicateFindings` keys credential findings on their line as well — a
+hardcoded secret is a separate key to rotate, not a repetition of one issue the
+way 60 constraints in a SOUL.md are.
+
+**The detection vocabulary does not move.** The same shapes are found on the
+same files, and a file holding one secret still produces exactly one finding at
+the same severity, which a test pins beside the four-secret one.
+`MAX_FINDINGS_PER_CHECK` still caps the score contribution at three at full
+weight and 10% after, so this widens what the score can SEE without uncapping
+it. Several credential shapes remain undetected entirely — a plain
+`DB_PASSWORD`, a `postgres://` DSN, `glpat-` and `hf_` tokens still score 98/100
+at exit 0, exactly as 0.32.0 disclosed, and that is unchanged here.
+
+**Not closed by this: #497.** `AST-CRED-001` still derives its line by
+re-searching for the leftmost credential-shaped string, which is the wrong line
+whenever a digest or an `sk-EXAMPLE…` placeholder sits above the real key. The
+producer-offset route landed here for `AST-CRED-003` because the canonical scan
+records the offset of the value it matched; #497's harder half — a
+`-----BEGIN RSA PRIVATE KEY-----` match that is a good citation when a key body
+follows and a bad one when nothing does — is untouched and stays open.
+
+### `fix-all` reads the files `secure` reads before it calls credentials clean (#477)
+
+On a tree where `secure` reported a CRITICAL hardcoded secret and exited 1,
+`fix-all --scan-only` printed `Credential Protection  [+] No issues found` and
+exited 0 — while `secure --fix` routes users to `fix-all` in its own output. Two
+analyzers in one tool, opposite directions, one artifact.
+
+It was never a disagreement about which credential SHAPES count: credvault's
+catalog already carried the vendor shapes `secure` reports. It was a
+disagreement about which FILES get opened. credvault read fourteen fixed config
+paths, so an ordinary `.py` or `.ts` holding an API key was outside its
+population entirely. It now sweeps the same source extensions
+`artifact-parser.ts` classifies as `source_code`, with the same catalog and the
+same per-line ReDoS bound, and reports **CRED-005**. The sweep is bounded (depth
+8, 2000 files, no symlink traversal, the usual build and vendor directories
+skipped) and a quoted pattern in a scanner's own source does not count — source
+files legitimately hold the shapes a scanner matches with, which config files do
+not.
+
+**CRED-005 is not auto-fixable, deliberately.** `fix()` rewrites the config
+paths and nothing else, so marking it fixable would print a remedy that never
+runs and would clear the finding out of `remainingFindings` — the list the exit
+code reads. `fix-all` names the file and the line and asks the user to rotate;
+it does not rewrite source.
+
 ### The GlassWorm decoder's execution-sink corroborator reads code, and reads the same lines (#475, in part)
 
 `UNICODE-STEGO-002` lifts a decoder shape to CRITICAL when it finds an execution

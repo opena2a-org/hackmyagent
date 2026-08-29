@@ -48,6 +48,33 @@ const CONFIG_FILES = [
 
 const KEY_FILE_EXTENSIONS = ['.key', '.pem', '.p12', '.pfx'];
 
+/**
+ * Source extensions this plugin reads for CRED-005.
+ *
+ * Character for character the list `artifact-parser.ts` classifies as
+ * `source_code`, and deliberately so: #477 was not a disagreement about which
+ * credential SHAPES count — the catalog above already carries the ones `secure`
+ * reports — it was a disagreement about which FILES get opened. `fix-all` read
+ * fourteen fixed config paths, so a `.py` or `.ts` holding an API key was
+ * "Credential Protection [+] No issues found" at exit 0 while `secure` exited 1
+ * with a CRITICAL on the same tree. Reading the same population is what makes
+ * the two verdicts comparable; keep this list in step with that one.
+ */
+const SOURCE_EXTENSIONS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py', '.pyi', '.go', '.rs', '.java', '.rb',
+]);
+
+/** Directories a source sweep never descends into. */
+const SKIPPED_DIRS = new Set([
+  'node_modules', '.git', 'dist', 'build', 'out', 'coverage', '.next', '.nuxt',
+  'vendor', '__pycache__', '.venv', 'venv', 'target', '.tox', '.mypy_cache',
+  '.hackmyagent-backup', '.opena2a',
+]);
+
+/** Bounds on the sweep, so a large tree cannot turn `fix-all` into a full crawl. */
+const SOURCE_SWEEP_MAX_DEPTH = 8;
+const SOURCE_SWEEP_MAX_FILES = 2000;
+
 // --- Types ---
 
 export interface SecretEntry {
@@ -130,6 +157,111 @@ function scanFileForCredentials(filePath: string, agentDir: string): Finding[] {
           oasbControl: '1.1',
           autoFixable: true,
         });
+      }
+    }
+  }
+
+  return findings;
+}
+
+/**
+ * Collect source files under `agentDir`, breadth-bounded and depth-bounded.
+ * Unreadable directories are skipped rather than raised: this sweep widens what
+ * the plugin can see and must not be able to fail a run that used to work.
+ */
+function collectSourceFiles(agentDir: string): string[] {
+  const out: string[] = [];
+  const queue: Array<{ dir: string; depth: number }> = [{ dir: agentDir, depth: 0 }];
+
+  while (queue.length > 0 && out.length < SOURCE_SWEEP_MAX_FILES) {
+    const { dir, depth } = queue.shift()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (out.length >= SOURCE_SWEEP_MAX_FILES) break;
+      const full = path.join(dir, entry.name);
+      // Symlinks are not followed: a link out of the tree would report a
+      // finding against a path the user did not ask this command to scan.
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (SKIPPED_DIRS.has(entry.name)) continue;
+        if (depth + 1 <= SOURCE_SWEEP_MAX_DEPTH) queue.push({ dir: full, depth: depth + 1 });
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (!SOURCE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
+      // Already read, by name, in the config-file pass above. Reporting it
+      // twice would inflate the count without naming a second credential.
+      if (CONFIG_FILES.includes(path.relative(agentDir, full))) continue;
+      out.push(full);
+    }
+  }
+
+  return out;
+}
+
+/**
+ * CRED-005 — a hardcoded credential in an ordinary source file (#477).
+ *
+ * NOT auto-fixable, and that is a statement about this plugin rather than about
+ * the credential: `fix()` rewrites the fourteen config paths and nothing else,
+ * so marking these fixable would print a remedy that never runs and would clear
+ * the finding out of `remainingFindings` — the list the exit code reads. The
+ * finding names the file and the line; rotating the key is the user's move.
+ */
+function scanSourceFilesForCredentials(agentDir: string): Finding[] {
+  const findings: Finding[] = [];
+  const maxSize = 10 * 1024 * 1024;
+  // A pattern QUOTED in source is not a key. Config files hold values; source
+  // files legitimately hold the shapes a scanner matches with, which is why
+  // this guard is on this arm and not on the config-file one above.
+  const regexContextMarker = /\\d|\\w|\\s|\[a-z|\[A-Z|\[0-9|\{\d+,/;
+  const placeholderMarker = /FAKE|EXAMPLE|PLACEHOLDER|DUMMY|YOUR_?KEY|YOUR_?TOKEN|REPLACE_ME|INSERT_HERE/i;
+
+  for (const filePath of collectSourceFiles(agentDir)) {
+    try {
+      if (fs.statSync(filePath).size > maxSize) continue;
+    } catch {
+      continue;
+    }
+
+    let content: string;
+    try {
+      content = fs.readFileSync(filePath, 'utf-8');
+    } catch {
+      continue;
+    }
+
+    const relativePath = path.relative(agentDir, filePath);
+    const lines = content.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.length > 4096) continue; // Same ReDoS bound as the config pass.
+      for (const pattern of CREDENTIAL_PATTERNS) {
+        const m = pattern.regex.exec(line);
+        if (!m) continue;
+        // `continue`, not `break`: a filtered match from one pattern must not
+        // hide a real key another pattern finds on the same line.
+        if (regexContextMarker.test(m[0]) || placeholderMarker.test(m[0])) continue;
+        findings.push({
+          id: 'CRED-005',
+          title: `Exposed ${pattern.name} in source`,
+          description:
+            `${pattern.name} found in ${relativePath} at line ${i + 1}. ` +
+            'Rotate the credential, then read it from the environment or a secrets manager. ' +
+            'fix-all does not rewrite source files.',
+          severity: 'critical',
+          filePath: relativePath,
+          line: i + 1,
+          oasbControl: '1.1',
+          autoFixable: false,
+        });
+        break; // One finding per line, as the config pass does.
       }
     }
   }
@@ -264,7 +396,7 @@ export const metadata: PluginMetadata = {
   displayName: 'Credential Protection',
   description: 'Scan for hardcoded secrets and replace with environment variable references',
   version: VERSION,
-  findings: ['CRED-001', 'CRED-002', 'CRED-003', 'CRED-004'],
+  findings: ['CRED-001', 'CRED-002', 'CRED-003', 'CRED-004', 'CRED-005'],
   scoreImprovement: 25,
 };
 
@@ -286,6 +418,11 @@ export class CredVaultPlugin implements OpenA2APlugin {
         findings.push(...scanFileForCredentials(filePath, agentDir));
       }
     }
+
+    // Scan ordinary source files for the same credential shapes (CRED-005).
+    // Without this arm `fix-all` and `secure` returned opposite verdicts on one
+    // tree — see the note on SOURCE_EXTENSIONS (#477).
+    findings.push(...scanSourceFilesForCredentials(agentDir));
 
     // Scan for private key files (CRED-002)
     findings.push(...scanForKeyFiles(agentDir));

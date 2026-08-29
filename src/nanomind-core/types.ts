@@ -164,6 +164,19 @@ export interface RiskSurface {
   confidence: number;
   /** Specific text that creates this risk */
   evidence: string;
+  /**
+   * Character offset, in the ORIGINAL artifact content, of the bytes this risk
+   * was raised on. Present only where the producer recorded one.
+   *
+   * `evidence` is not always a substring of the artifact — the canonical
+   * credential scan emits a CLASSIFICATION (`OpenAI legacy key: [REDACTED]`)
+   * rather than the matched value, deliberately, so no part of a secret rides
+   * in a finding. That made the risk unlocatable by search: `extractEvidenceSpans`
+   * looks the evidence up with `indexOf` and finds nothing, so the finding
+   * built from it carried no line and therefore no `Verify:` (#368). The offset
+   * is recorded at the point of the match instead, where it is exact.
+   */
+  offset?: number;
   /** How to mitigate */
   mitigation?: string;
 }
