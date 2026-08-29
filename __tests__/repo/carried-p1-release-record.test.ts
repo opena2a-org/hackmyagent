@@ -64,11 +64,18 @@ describe('HMA-01.AC6: no third carry, no widened corroborator, no publish', () =
     expect(cut, 'the 0.29.0 heading moved — this slice no longer means what it says')
       .toBeGreaterThan(0);
 
+    // A CARRY is a Known-issues ENTRY whose subject is the issue — the bullet's first
+    // issue reference names it. A later bullet about a different issue may legitimately
+    // REFERENCE "#390's change" while describing its own defect; a bare includes() cannot
+    // tell the two apart and failed on exactly that (the 0.30.0 #503 bullet references
+    // #390's fix). Key each bullet on its first #NNN.
     for (const block of knownIssueBlocks(CHANGELOG.slice(0, cut))) {
-      for (const issue of ['#368', '#390']) {
+      const bullets = block.split(/^- /m).slice(1);
+      for (const bullet of bullets) {
+        const subject = bullet.match(/#\d+/)?.[0];
         expect(
-          block.includes(issue),
-          `${issue} is on its third carry — the recorded rule is a maximum of two:\n${block.trim().slice(0, 400)}`,
+          subject === '#368' || subject === '#390',
+          `a Known issues entry whose subject is ${subject} would be a third carry — the recorded rule is a maximum of two:\n${bullet.trim().slice(0, 400)}`,
         ).toBe(false);
       }
     }
