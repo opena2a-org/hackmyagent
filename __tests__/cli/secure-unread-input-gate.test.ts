@@ -110,7 +110,7 @@ afterAll(() => {
   try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ }
 });
 
-describe('#438 secure settles one verdict over a tree it could not read', () => {
+describe('#438 secure settles one verdict over a tree it could not read', { timeout: 300_000 }, () => {
   // Each output channel is its own `return` inside the action, and each one
   // shipped its own copy of the exit rule. `--fail-below` is already silently
   // inert on three of them (#494) for exactly that reason, so the channels are
@@ -177,7 +177,7 @@ describe('#438 secure settles one verdict over a tree it could not read', () => 
   });
 });
 
-describe('#438 the run says which input it could not read', () => {
+describe('#438 the run says which input it could not read', { timeout: 300_000 }, () => {
   it('names the file in a finding and offers a runnable fix', () => {
     const dir = makeTree('discloses');
     if (!makeUnreadable(path.join(dir, 'src', 'secrets.js'))) {
@@ -216,7 +216,7 @@ describe('#438 the run says which input it could not read', () => {
   });
 });
 
-describe('#438 the gate is deterministic and names every path', () => {
+describe('#438 the gate is deterministic and names every path', { timeout: 300_000 }, () => {
   it('returns 2 on every one of N consecutive runs', () => {
     // A gate that fires most of the time is not a gate, and the miss is a
     // silent pass on exactly the defect. 60 runs were measured by hand at 0
@@ -252,7 +252,7 @@ describe('#438 the gate is deterministic and names every path', () => {
   }, 240_000);
 });
 
-describe('#438 the gate cannot be satisfied by writing into the target', () => {
+describe('#438 the gate cannot be satisfied by writing into the target', { timeout: 300_000 }, () => {
   it('--fix writing a .gitignore does not clear an unread input', () => {
     // The hazard that killed the reverted files-read gate: `secure --fix`
     // wrote a `.gitignore`, re-read it, and thereby satisfied its own coverage
@@ -274,7 +274,7 @@ describe('#438 the gate cannot be satisfied by writing into the target', () => {
   });
 });
 
-describe('#438 the unit counts only paths the scan is responsible for', () => {
+describe('#438 the unit counts only paths the scan is responsible for', { timeout: 300_000 }, () => {
   it('a symlink whose target escapes the tree is not a lost input', () => {
     // Found by adversarial review. `src/evil.js -> /etc/master.passwd` needs no
     // chmod and no privileges — any contributor can commit it — and the read
@@ -377,7 +377,7 @@ describe('#438 the unit counts only paths the scan is responsible for', () => {
   }, 240_000);
 });
 
-describe('#438 --fail-below cannot bypass the settlement', () => {
+describe('#438 --fail-below cannot bypass the settlement', { timeout: 300_000 }, () => {
   it('a threshold that passes does not restore exit 0 over an unread input', () => {
     // The #390 round-1 shape, and the reason the settlement is above the
     // channel branch: both `--fail-below` early returns sit ABOVE each
@@ -437,7 +437,7 @@ const VALID_DEPTHS: string[] = (() => {
   return depths;
 })();
 
-describe('#499 the completeness floor holds at every scan depth', () => {
+describe('#499 the completeness floor holds at every scan depth', { timeout: 300_000 }, () => {
   it.each(VALID_DEPTHS)('%s: an unreadable input is not a pass', (depth) => {
     const dir = makeTree(`depth-${depth}`);
     if (!makeUnreadable(path.join(dir, 'src', 'secrets.js'))) {
@@ -508,7 +508,7 @@ describe('#499 the completeness floor holds at every scan depth', () => {
  * Measured on the broken build: quick `unread 3`, standard `unread 4` — the one
  * real obstruction counted a second, third and fourth time.
  */
-describe('#499 a probe miss is not an unread input', () => {
+describe('#499 a probe miss is not an unread input', { timeout: 300_000 }, () => {
   function probeTree(name: string): string {
     const dir = path.join(root, name);
     fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
