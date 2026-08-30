@@ -4,6 +4,45 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The static suite reaches where skills actually live (HMA-07)
+
+`.claude/skills/<name>/SKILL.md` is where skills sit on disk, and the scanner
+never opened one. `findSkillFiles` skipped every dot-directory except
+`.openclaw`, `.moltbot` and `.clawdbot`, so a reverse-shell SKILL.md placed
+there received no SKILL-* check at all — while the byte-identical file one
+directory over at `skills/<name>/SKILL.md` was reported CRITICAL. Not a coverage
+gap at the margin: a false clean on the most common layout, reachable by putting
+the file where the tooling itself puts it.
+
+Three reaches were short, and all three are now the reach a reader would assume:
+
+- **`.claude` is entered by name.** `.git`, `node_modules`, `.venv` and every
+  other dot-directory stay skipped — descending into git objects and
+  site-packages buys no skill coverage, and the symlink refusal that keeps a
+  directory link from walking out of the tree (#685) is untouched.
+- **The bundle is read, not just the Markdown.** A skill is a directory:
+  SKILL.md is what the agent is told, and `scripts/`, `hooks/` and `tests/`
+  beside it are what runs. Only `SKILL.md` and `*.skill.md` were ever opened, so
+  moving a credential upload one file across — into `scripts/setup.sh`, or into
+  an extensionless `scripts/install` that no extension list can match — was
+  enough to go unread. Bundled files are now analyzed, and one SKILL-006 per
+  skill directory cites every file that carried a payload, so the reviewer sees
+  one decision instead of three findings they can fix one at a time.
+- **The shell checks reach depth 3.** INSTALL-001, SHELL-EXFIL-001, TMPPATH-001
+  and DOCKERINJ-001 walked with `maxDepth 2`, which stops one directory short of
+  `skills/foo/scripts/setup.sh`.
+
+**No new flag.** The wider walk is the default walk; an opt-in would have left
+the default scan reporting the same false clean.
+
+**The detection vocabulary does not move.** No check was added, no severity
+changed, and no pattern was widened — this changes only which files the existing
+checks are given. The bundle finding fires on a conjunction (a credential file
+read into a remote request body, or a credential path and an exfiltration sink
+in the same statement), so an ordinary bundled installer stays quiet: every
+committed fixture in the tree, and the repository's own self-scan, produce a
+byte-identical finding set before and after.
+
 ### The CRITICAL hardcoded-secret finding says where the secret is, and four secrets count as four (#368, #478)
 
 One cause, two symptoms, both carried since 0.28.0.
