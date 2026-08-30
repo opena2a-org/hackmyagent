@@ -45,15 +45,53 @@ import type {
   Constraint,
   ConstraintDomain,
   DataAccessPattern,
+  DeterministicFinding,
   RiskSurface,
   IntentClass,
   EvidenceSpan,
   ArtifactType,
+  VerdictAdjustment,
+  VerdictAdjustmentSource,
 } from '../types.js';
+
+/**
+ * What the deterministic exfiltration rule (an external URL plus a data-forwarding
+ * verb) is worth on its own, with no model verdict in the input.
+ *
+ * It used to have no value of its own: the surface was pushed at
+ * `intent === 'malicious' ? 0.9 : intent === 'suspicious' ? 0.6 : 0.3`, so the
+ * SAME matched bytes were reported CRITICAL, HIGH or MEDIUM depending on what a
+ * vocabulary scorer thought of the surrounding prose — and the capability
+ * analyzer turns exactly that number into the severity a user reads. 0.6 is the
+ * mid rung the rule already used when the classifier was undecided, which is the
+ * honest reading of "this rule matched and nothing else has spoken yet". The
+ * model may still raise it to 0.9; it may no longer take it to 0.3.
+ */
+export const DETERMINISTIC_EXFIL_CONFIDENCE = 0.6;
+
+/**
+ * One verdict-plus-confidence pair, with the downgrade a layer asked to apply
+ * to it. `proposedDowngrade` is a REQUEST, not a decision — `applyDeterministicFloor`
+ * decides, because only it knows what the deterministic layer found.
+ */
+interface ScoredVerdict {
+  intentClass: IntentClass;
+  confidence: number;
+  inferredCapabilities: Capability[];
+  proposedDowngrade?: VerdictAdjustment;
+}
+
+/** Everything `compile` caches for a content hash, not just the AST. */
+interface CachedCompilation {
+  ast: SecurityAST;
+  deterministicFindings: DeterministicFinding[];
+  verdictAdjustments: VerdictAdjustment[];
+  refusedAdjustments: VerdictAdjustment[];
+}
 
 export class SemanticCompiler {
   private config: CompilerConfig;
-  private cache = new Map<string, SecurityAST>(); // content hash → AST
+  private cache = new Map<string, CachedCompilation>(); // content hash → compilation
 
   constructor(config: Partial<CompilerConfig> = {}) {
     this.config = {
@@ -62,6 +100,7 @@ export class SemanticCompiler {
       maxArtifactSize: config.maxArtifactSize ?? 1_048_576,
       daemonTimeoutMs: config.daemonTimeoutMs ?? 5000,
       signingKey: config.signingKey,
+      neuralClassifier: config.neuralClassifier,
     };
   }
 
@@ -85,12 +124,20 @@ export class SemanticCompiler {
     // credential scan), so byte-identical content parsed as a different type
     // must NOT serve a cached AST built under the other type's rules.
     const cacheKey = `${parsed.type}\x00${parsed.contentHash}`;
-    if (this.cache.has(cacheKey)) {
+    const cached = this.cache.get(cacheKey);
+    if (cached) {
+      // The deterministic floor and the adjustment record are properties of the
+      // COMPILATION, not decorations added afterwards, so they are cached with
+      // the AST. Rebuilding the result without them would make a cache hit the
+      // one path on which a downgrade goes unrecorded.
       return {
-        ast: this.cache.get(cacheKey)!,
+        ast: cached.ast,
         durationMs: Date.now() - startMs,
         nanomindUsed: false,
         warnings: ['Served from cache'],
+        deterministicFindings: cached.deterministicFindings,
+        verdictAdjustments: cached.verdictAdjustments,
+        refusedAdjustments: cached.refusedAdjustments,
       };
     }
 
@@ -135,10 +182,46 @@ export class SemanticCompiler {
     const declaredPurpose = extractDeclaredPurpose(content, parsed.frontmatter);
 
     // Step 5: NanoMind inference (intent + inferred capabilities)
+    // Step 4b: THE DETERMINISTIC LAYER, and it runs FIRST.
+    //
+    // Ordering is the whole fix. On the previous shape the classifier spoke
+    // before any rule had, so by the time `mapRiskSurfaces` ran there was
+    // already a verdict in scope to gate it — and a benign verdict deleted
+    // findings derived from bytes the classifier never disputed. Here the
+    // pattern rules read the artifact with no verdict available to them
+    // (`intent: 'suspicious'` is the neutral rung, not a classification, and
+    // `inferred: []` because inferred capabilities are the model's output),
+    // and the benign-context gates are off: a score computed from the
+    // artifact's own prose is not evidence about the artifact's own bytes.
+    //
+    // What comes out is the floor. Everything after this may add to it.
+    //
+    // The canonical credential-format scan (step 6b) belongs to this layer too
+    // — a byte sequence that matches `sk-ant-api…` is the most deterministic
+    // signal the compiler has — so it is run HERE and its hits are reused
+    // below rather than rescanned. Running it after the verdict would have left
+    // a hardcoded key out of the floor the verdict is measured against.
+    const canonicalHits = parsed.type === 'source_code' ? scanCanonicalCredentialFormats(content) : [];
+    const deterministicSurfaces = [
+      ...deterministicRiskSurfaces(analysisContent, declaredCapabilities, parsed.type),
+      ...canonicalHits.map(hit => ({
+        surface: `Hardcoded ${hit.label}`,
+        attackClass: 'CRED-HARVEST',
+        confidence: 0.9,
+        evidence: hit.evidence,
+        // Against `content`, which is what this scan read — not the stripped
+        // analysis view `mapRiskSurfaces` works from. Every consumer that turns
+        // this back into a line is handed the same `content`.
+        offset: hit.index,
+      })),
+    ];
+    const deterministicFindings = deterministicSurfaces.map(toDeterministicFinding);
+
     let intentClassification: IntentClass = 'benign';
     let intentConfidence = 0.5;
     let inferredCapabilities: Capability[] = [];
     let nanomindUsed = false;
+    let proposedDowngrade: VerdictAdjustment | undefined;
 
     if (this.config.useNanoMind) {
       const inference = await this.runNanoMindInference(sanitized.content, parsed.type);
@@ -146,6 +229,7 @@ export class SemanticCompiler {
         intentClassification = inference.intentClass;
         intentConfidence = inference.confidence;
         inferredCapabilities = inference.inferredCapabilities;
+        proposedDowngrade = inference.proposedDowngrade;
         nanomindUsed = true;
       }
     }
@@ -156,6 +240,23 @@ export class SemanticCompiler {
       intentClassification = heuristic.intentClass;
       intentConfidence = heuristic.confidence;
       inferredCapabilities = heuristic.inferredCapabilities;
+      proposedDowngrade = heuristic.proposedDowngrade;
+    }
+
+    // Step 5b: the floor decides whether the downgrade the scorer asked for is
+    // allowed to land, and records the answer either way.
+    const floored = applyDeterministicFloor(
+      { intentClass: intentClassification, confidence: intentConfidence },
+      proposedDowngrade,
+      deterministicFindings,
+    );
+    intentClassification = floored.intentClass;
+    intentConfidence = floored.confidence;
+    for (const refused of floored.refused) {
+      warnings.push(
+        `Deterministic floor: refused a ${refused.source} downgrade ${refused.from} -> ${refused.to} `
+        + `over ${deterministicFindings.length} deterministic finding(s)`,
+      );
     }
 
     // Boost confidence if manipulation was detected (strong malicious signal)
@@ -169,32 +270,25 @@ export class SemanticCompiler {
     // Use the preprocessed analysis view so the regex-based detectors
     // (eval/RCE, credential harvesting, exfiltration URLs) don't match
     // against comments, imports, or string literals in source files.
-    const inferredRiskSurface = mapRiskSurfaces(analysisContent, declaredCapabilities, inferredCapabilities, intentClassification, parsed.type);
+    //
+    // The surfaces the classifier is allowed to influence, then the floor put
+    // back underneath them: anything the deterministic pass raised is restored
+    // if this pass dropped it and re-raised if this pass came in lower. The
+    // model's contribution survives intact — `inferredCapabilities` still adds
+    // PRIV-ESCALATION surfaces here, and a `malicious` verdict still lifts the
+    // exfiltration surface to 0.9. Only the subtraction is gone.
+    const inferredRiskSurface = enforceDeterministicSurfaceFloor(
+      mapRiskSurfaces(analysisContent, declaredCapabilities, inferredCapabilities, intentClassification, parsed.type),
+      deterministicSurfaces,
+    );
 
-    // Step 6b: Canonical credential-format scan for source_code.
-    // The config-oriented pattern detectors are disabled for source files
-    // to eliminate reflexive false positives, but we still want to flag
-    // concrete hardcoded secrets — i.e. byte sequences that match known
-    // API key formats (`sk-ant-api...`, `AKIA...`, `ghp_...`, PEM blocks).
-    // This scan runs on the ORIGINAL content (not the stripped analysis
-    // view) so keys embedded in string literals are still detected. We
-    // ignore matches that look like regex rule definitions (e.g. contain
-    // `\d` / `[a-z]` character class metacharacters) or test fixtures
-    // (contain "FAKE" / "TEST" / "EXAMPLE" markers) so security scanner
-    // codebases and test files don't trip on their own reference patterns.
+    // Step 6b: data access implied by the canonical credential-format scan.
+    // The scan itself ran in step 4b as part of the deterministic layer, and
+    // its hits are already in `inferredRiskSurface` — the floor put them there.
+    // What is left here is the read pattern each hit implies, which the
+    // credential analyzer pairs with a transmit pattern.
     if (parsed.type === 'source_code') {
-      const canonicalHits = scanCanonicalCredentialFormats(content);
-      for (const hit of canonicalHits) {
-        inferredRiskSurface.push({
-          surface: `Hardcoded ${hit.label}`,
-          attackClass: 'CRED-HARVEST',
-          confidence: 0.9,
-          evidence: hit.evidence,
-          // Against `content`, which is what this scan read — not the stripped
-          // analysis view `mapRiskSurfaces` above works from. Every consumer
-          // that turns this back into a line is handed the same `content`.
-          offset: hit.index,
-        });
+      for (const _hit of canonicalHits) {
         declaredDataAccess.push({
           dataType: 'credentials',
           accessMode: 'read',
@@ -236,13 +330,21 @@ export class SemanticCompiler {
     ast.signature = this.signAST(ast);
 
     // Cache (keyed on artifact type + content hash — see Step 2).
-    this.cache.set(cacheKey, ast);
+    this.cache.set(cacheKey, {
+      ast,
+      deterministicFindings,
+      verdictAdjustments: floored.applied,
+      refusedAdjustments: floored.refused,
+    });
 
     return {
       ast,
       durationMs: Date.now() - startMs,
       nanomindUsed,
       warnings,
+      deterministicFindings,
+      verdictAdjustments: floored.applied,
+      refusedAdjustments: floored.refused,
     };
   }
 
@@ -262,31 +364,55 @@ export class SemanticCompiler {
   private async runNanoMindInference(
     sanitizedContent: string,
     artifactType: ArtifactType,
-  ): Promise<{
-    intentClass: IntentClass;
-    confidence: number;
-    inferredCapabilities: Capability[];
-  } | null> {
+  ): Promise<ScoredVerdict | null> {
     // Tier 0: Pure neural inference (7MB binary model, no dependencies)
-    const neural = new TMENeuralClassifier();
+    const neural = this.config.neuralClassifier ?? new TMENeuralClassifier();
     if (neural.load()) {
       const neuralResult = neural.classify(sanitizedContent);
       if (neuralResult.confidence > 0.6 && neuralResult.intentClass !== 'benign') {
         // Post-neural context adjustment: the neural model was trained on attack
         // data without hard-negative benign examples, so it keys off vocabulary
         // without reasoning about authorization, educational framing, or negation.
-        // Strong benign context signals override the neural classification.
+        // Strong benign context signals ASK to override the neural classification.
+        //
+        // They used to just do it, and that is the inversion this file was
+        // reshaped to close: both branches below returned the lowered verdict
+        // directly, so a paragraph of authorization prose written by whoever
+        // wrote the artifact outranked every rule that had read the artifact's
+        // bytes. The lowering is now a REQUEST carried out to `compile`, which
+        // grants it only over an artifact the deterministic layer left alone,
+        // and records it either way.
         const benignScore = detectContextualBenignSignals(sanitizedContent);
         if (benignScore >= 4) {
           // Authorization, research, IRB, or negation-list context is definitive
-          return { intentClass: 'benign', confidence: 0.7, inferredCapabilities: [] };
+          return {
+            intentClass: neuralResult.intentClass,
+            confidence: neuralResult.confidence,
+            inferredCapabilities: [],
+            proposedDowngrade: {
+              from: neuralResult.intentClass,
+              to: 'benign',
+              fromConfidence: neuralResult.confidence,
+              toConfidence: 0.7,
+              reason: `contextual benign signals scored ${benignScore} (>= 4): authorization, educational, research or negation-list framing`,
+              source: 'contextual-benign',
+            },
+          };
         }
         if (benignScore >= 2) {
           // Moderate benign context: downgrade from malicious/suspicious and cap confidence
           return {
-            intentClass: 'suspicious',
-            confidence: Math.min(0.45, neuralResult.confidence * 0.5),
+            intentClass: neuralResult.intentClass,
+            confidence: neuralResult.confidence,
             inferredCapabilities: [],
+            proposedDowngrade: {
+              from: neuralResult.intentClass,
+              to: 'suspicious',
+              fromConfidence: neuralResult.confidence,
+              toConfidence: Math.min(0.45, neuralResult.confidence * 0.5),
+              reason: `contextual benign signals scored ${benignScore} (>= 2): moderate authorization or educational framing`,
+              source: 'contextual-benign',
+            },
           };
         }
         return {
@@ -1712,7 +1838,7 @@ function extractGovernanceReferences(content: string): string[] {
  *
  * Gate: score >= 2 → downgrade malicious→suspicious; score >= 4 → classify benign.
  */
-function detectContextualBenignSignals(text: string): number {
+export function detectContextualBenignSignals(text: string): number {
   let score = 0;
 
   // Authorization: explicit written authorization for security testing
@@ -1768,12 +1894,155 @@ function isGovernanceContent(text: string): boolean {
   return constraintCount >= 3 || sectionHeaders || credProtectionSignals >= 2;
 }
 
+// ============================================================================
+// The Deterministic Floor
+// ============================================================================
+
+const INTENT_RANK: Record<IntentClass, number> = { benign: 0, suspicious: 1, malicious: 2 };
+
+/** True when `to` is a weaker claim than `from` — a lower class, or the same class held less confidently. */
+function lowers(
+  from: { intentClass: IntentClass; confidence: number },
+  to: { intentClass: IntentClass; confidence: number },
+): boolean {
+  if (INTENT_RANK[to.intentClass] < INTENT_RANK[from.intentClass]) return true;
+  return INTENT_RANK[to.intentClass] === INTENT_RANK[from.intentClass] && to.confidence < from.confidence;
+}
+
+/**
+ * `confidence` on the finding severity scale. The thresholds are the capability
+ * analyzer's (`checkExfiltrationSurface`), deliberately: the floor has to be
+ * expressed in the units the user eventually reads, or "not downgraded" would
+ * be true of a number and false of the report built from it.
+ */
+function deterministicSeverity(confidence: number): DeterministicFinding['severity'] {
+  if (confidence >= 0.8) return 'critical';
+  if (confidence >= 0.5) return 'high';
+  return 'medium';
+}
+
+function toDeterministicFinding(surface: RiskSurface): DeterministicFinding {
+  return {
+    attackClass: surface.attackClass,
+    surface: surface.surface,
+    confidence: surface.confidence,
+    severity: deterministicSeverity(surface.confidence),
+    evidence: surface.evidence,
+  };
+}
+
+/**
+ * The pattern rules, run with nothing else in scope.
+ *
+ * `inferred: []` because inferred capabilities are the classifier's output;
+ * `'suspicious'` is not a verdict but the neutral rung the surfaces' own
+ * confidences are anchored to; `contextualBenign: false` switches off the
+ * framing gates, because a score computed from the artifact's prose is not
+ * evidence about the artifact's bytes.
+ */
+function deterministicRiskSurfaces(
+  content: string,
+  declared: Capability[],
+  artifactType: ArtifactType,
+): RiskSurface[] {
+  return mapRiskSurfaces(content, declared, [], 'suspicious', artifactType, { contextualBenign: false });
+}
+
+/**
+ * Grant or refuse the downgrade a scorer asked for, and floor the verdict.
+ *
+ * Two rules, both one-directional:
+ *
+ *   - A downgrade over an artifact the deterministic layer flagged is REFUSED.
+ *     The scorer's pre-downgrade verdict stands and the refusal is recorded.
+ *   - A downgrade over an artifact nothing deterministic flagged is APPLIED and
+ *     recorded, because a model- or heuristic-only accusation is exactly the
+ *     case where authorization or educational framing is the right answer.
+ *
+ * Then the verdict floor: a deterministic finding is at minimum suspicion, so
+ * no scorer returns such an artifact to `benign` — including a scorer that
+ * never proposed a downgrade and simply never accused it in the first place.
+ * That is the same rule `requireBenignConsensus` states for static findings,
+ * applied where the compiler's own rules produce the findings.
+ */
+export function applyDeterministicFloor(
+  scored: { intentClass: IntentClass; confidence: number },
+  proposed: VerdictAdjustment | undefined,
+  deterministic: readonly DeterministicFinding[],
+): {
+  intentClass: IntentClass;
+  confidence: number;
+  applied: VerdictAdjustment[];
+  refused: VerdictAdjustment[];
+} {
+  let intentClass = scored.intentClass;
+  let confidence = scored.confidence;
+  const applied: VerdictAdjustment[] = [];
+  const refused: VerdictAdjustment[] = [];
+
+  const isRealDowngrade =
+    proposed !== undefined &&
+    lowers(
+      { intentClass: proposed.from, confidence: proposed.fromConfidence },
+      { intentClass: proposed.to, confidence: proposed.toConfidence },
+    );
+
+  if (isRealDowngrade) {
+    if (deterministic.length > 0) {
+      refused.push(proposed);
+    } else {
+      intentClass = proposed.to;
+      confidence = proposed.toConfidence;
+      applied.push(proposed);
+    }
+  }
+
+  if (deterministic.length > 0 && intentClass === 'benign') {
+    intentClass = 'suspicious';
+    confidence = Math.max(confidence, 0.6);
+  }
+
+  return { intentClass, confidence, applied, refused };
+}
+
+/**
+ * Put the deterministic surfaces back underneath the classifier-influenced
+ * ones: restore any the later pass dropped, raise any it came in below. It
+ * never removes and never lowers, so a `malicious` verdict's 0.9 exfiltration
+ * surface survives this untouched.
+ */
+export function enforceDeterministicSurfaceFloor(
+  surfaces: RiskSurface[],
+  deterministic: readonly RiskSurface[],
+): RiskSurface[] {
+  const floored: RiskSurface[] = surfaces.map(s => ({ ...s }));
+  for (const det of deterministic) {
+    const match = floored.find(s => s.attackClass === det.attackClass && s.surface === det.surface);
+    if (!match) {
+      floored.push({ ...det });
+      continue;
+    }
+    if (match.confidence < det.confidence) match.confidence = det.confidence;
+  }
+  return floored;
+}
+
+interface RiskSurfaceOptions {
+  /**
+   * Whether the contextual-benign score may gate a rule out. False in the
+   * deterministic pass; the framing it scores is then carried to the verdict
+   * as a proposed downgrade instead of silently deleting a finding.
+   */
+  contextualBenign?: boolean;
+}
+
 function mapRiskSurfaces(
   content: string,
   declared: Capability[],
   inferred: Capability[],
   intent: IntentClass,
   artifactType: ArtifactType = 'unknown',
+  options: RiskSurfaceOptions = {},
 ): RiskSurface[] {
   const surfaces: RiskSurface[] = [];
 
@@ -1803,8 +2072,9 @@ function mapRiskSurfaces(
   // SOUL.md, governance docs, and system prompts with constraint language
   const isGovernanceDoc = isGovernanceContent(text);
 
-  // Compute benign context score once for reuse across all surface checks
-  const benignContextScore = detectContextualBenignSignals(content);
+  // Compute benign context score once for reuse across all surface checks.
+  // Zero in the deterministic pass — see `RiskSurfaceOptions.contextualBenign`.
+  const benignContextScore = options.contextualBenign === false ? 0 : detectContextualBenignSignals(content);
 
   // External URL + data forwarding = exfiltration surface
   // Skip for governance docs (they describe rules about data handling, not perform exfiltration)
@@ -1821,7 +2091,15 @@ function mapRiskSurfaces(
       surfaces.push({
         surface: 'External data transmission',
         attackClass: 'SKILL-EXFIL',
-        confidence: intent === 'malicious' ? 0.9 : intent === 'suspicious' ? 0.6 : 0.3,
+        // The verdict may RAISE this; `Math.max` is what makes that the only
+        // direction available to it. Before the floor the benign rung was 0.3,
+        // and the capability analyzer turns this number straight into severity,
+        // so the same matched bytes were reported CRITICAL or MEDIUM depending
+        // on what a vocabulary scorer made of the prose around them.
+        confidence: Math.max(
+          DETERMINISTIC_EXFIL_CONFIDENCE,
+          intent === 'malicious' ? 0.9 : intent === 'suspicious' ? 0.6 : 0.3,
+        ),
         evidence: exfilEvidenceSpan(content, urlMatch[0]),
       });
     }
@@ -2120,7 +2398,7 @@ function heuristicIntentClassification(
   content: string,
   capabilities: Capability[],
   constraints: Constraint[],
-): { intentClass: IntentClass; confidence: number; inferredCapabilities: Capability[] } {
+): ScoredVerdict {
   const text = content.toLowerCase();
   let maliciousSignals = 0;
   let benignSignals = 0;
@@ -2143,17 +2421,48 @@ function heuristicIntentClassification(
   if (/must never|should not|forbidden|restricted|will never|will not/i.test(text)) benignSignals += 1;
   if (capabilities.length > 0 && capabilities.every(c => c.declared)) benignSignals += 1;
 
-  // Context-aware benign signals from authorization/educational/research framing
-  // Add directly — these are strong priors that outweigh vocabulary-based signals
-  benignSignals += contextScore;
+  // Context-aware benign signals from authorization/educational/research framing.
+  //
+  // These are computed TWICE on purpose. `verdictWithout` is what the artifact
+  // scores on its own signals; `verdictWith` adds the framing prose. When the
+  // two differ, the framing moved the verdict, and that move is exactly the
+  // thing this task exists to stop being invisible: it is returned as a
+  // proposed downgrade for `applyDeterministicFloor` to grant or refuse, not
+  // folded into a single number nobody can take apart afterwards.
+  const verdictWithout = scoreHeuristicVerdict(maliciousSignals, benignSignals);
+  const verdictWith = scoreHeuristicVerdict(maliciousSignals, benignSignals + contextScore);
 
+  if (!lowers(verdictWithout, verdictWith)) {
+    return { ...verdictWith, inferredCapabilities: [] };
+  }
+
+  return {
+    intentClass: verdictWithout.intentClass,
+    confidence: verdictWithout.confidence,
+    inferredCapabilities: [],
+    proposedDowngrade: {
+      from: verdictWithout.intentClass,
+      to: verdictWith.intentClass,
+      fromConfidence: verdictWithout.confidence,
+      toConfidence: verdictWith.confidence,
+      reason: `contextual benign signals scored ${contextScore}: authorization, educational, research or negation-list framing`,
+      source: 'contextual-benign',
+    },
+  };
+}
+
+/** The heuristic's verdict table, isolated so it can be evaluated twice. */
+function scoreHeuristicVerdict(
+  maliciousSignals: number,
+  benignSignals: number,
+): { intentClass: IntentClass; confidence: number } {
   if (maliciousSignals >= 3 && benignSignals <= maliciousSignals) {
-    return { intentClass: 'malicious', confidence: Math.min(0.9, 0.5 + maliciousSignals * 0.1), inferredCapabilities: [] };
+    return { intentClass: 'malicious', confidence: Math.min(0.9, 0.5 + maliciousSignals * 0.1) };
   }
   if (maliciousSignals > 0 && benignSignals <= maliciousSignals) {
-    return { intentClass: 'suspicious', confidence: 0.4 + maliciousSignals * 0.1, inferredCapabilities: [] };
+    return { intentClass: 'suspicious', confidence: 0.4 + maliciousSignals * 0.1 };
   }
-  return { intentClass: 'benign', confidence: Math.min(0.9, 0.7 + benignSignals * 0.05), inferredCapabilities: [] };
+  return { intentClass: 'benign', confidence: Math.min(0.9, 0.7 + benignSignals * 0.05) };
 }
 
 // ============================================================================

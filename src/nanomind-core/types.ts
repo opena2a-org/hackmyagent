@@ -188,6 +188,72 @@ export interface RiskSurface {
 export type IntentClass = 'benign' | 'suspicious' | 'malicious';
 
 // ============================================================================
+// Deterministic Layer
+// ============================================================================
+
+/**
+ * A finding the DETERMINISTIC layer raised: pattern rules reading the
+ * artifact's own bytes, with no model verdict, no vocabulary score and no
+ * framing in the input. These are the floor. The semantic/neural pass that
+ * runs afterwards may raise a severity or add context; it may never clear one
+ * of these, cap its confidence, or downgrade the verdict below it.
+ *
+ * Severity is derived from `confidence` with the same thresholds the
+ * capability analyzer applies (>= 0.8 critical, >= 0.5 high, else medium), so
+ * the floor and the finding a consumer eventually sees are on one scale.
+ */
+export interface DeterministicFinding {
+  /** Attack class from the HMA taxonomy, e.g. `SKILL-EXFIL`. */
+  attackClass: string;
+  /** What aspect of the artifact the rule fired on. */
+  surface: string;
+  /** The deterministic rule's own confidence, before any model input. */
+  confidence: number;
+  /** `confidence` expressed on the finding severity scale. */
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  /** The bytes the rule matched. */
+  evidence: string;
+}
+
+/** Which layer asked for a verdict downgrade. */
+export type VerdictAdjustmentSource = 'contextual-benign' | 'neural';
+
+/**
+ * One verdict downgrade, with the reason it was asked for.
+ *
+ * A downgrade over an artifact whose only accusation came from vocabulary
+ * scoring is legal — authorization or educational framing is often the right
+ * answer there. It is recorded rather than applied silently, because a
+ * `benign` verdict on an artifact something accused and a `benign` verdict on
+ * an artifact nothing accused are otherwise indistinguishable in the output.
+ */
+export interface VerdictAdjustment {
+  /** Verdict before the downgrade. */
+  from: IntentClass;
+  /** Verdict the downgrade asked for. */
+  to: IntentClass;
+  /** Confidence before the downgrade. */
+  fromConfidence: number;
+  /** Confidence the downgrade asked for. */
+  toConfidence: number;
+  /** Why the downgrade was asked for, in terms a report can print. */
+  reason: string;
+  /** The layer that asked. */
+  source: VerdictAdjustmentSource;
+}
+
+/**
+ * The neural classifier seen from the compiler: load it, ask it. Structural,
+ * so `TMENeuralClassifier` satisfies it without importing anything, and a test
+ * can pin a verdict at a chosen confidence instead of depending on whether a
+ * 7MB model happens to be on the machine running the suite.
+ */
+export interface NeuralVerdictSource {
+  load(): boolean;
+  classify(text: string): { intentClass: IntentClass; confidence: number; attackClass?: string };
+}
+
+// ============================================================================
 // Evidence Spans
 // ============================================================================
 
@@ -219,6 +285,14 @@ export interface CompilerConfig {
   maxArtifactSize: number;
   /** Request timeout for NanoMind daemon (ms) */
   daemonTimeoutMs: number;
+  /**
+   * Neural classifier to use instead of the bundled `TMENeuralClassifier`.
+   * Absent in every production path — the compiler constructs the real one.
+   * It exists so the floor can be measured at a KNOWN neural verdict and
+   * confidence; without it the four regimes HMA-06.AC2 iterates depend on
+   * whether the model file was downloaded onto the machine running the suite.
+   */
+  neuralClassifier?: NeuralVerdictSource;
 }
 
 export const DEFAULT_COMPILER_CONFIG: CompilerConfig = {
@@ -241,4 +315,20 @@ export interface CompilationResult {
   nanomindUsed: boolean;
   /** Warnings during compilation */
   warnings: string[];
+  /**
+   * What the deterministic layer raised, before any model or heuristic ran.
+   * The floor every other field in this result is measured against.
+   */
+  deterministicFindings: DeterministicFinding[];
+  /**
+   * Verdict downgrades that were APPLIED. Empty when nothing was downgraded —
+   * an entry here means the verdict a consumer reads is lower than the one the
+   * scorer produced, and says why.
+   */
+  verdictAdjustments: VerdictAdjustment[];
+  /**
+   * Verdict downgrades the deterministic floor REFUSED, because a
+   * deterministic finding sat underneath them. Empty on the ordinary path.
+   */
+  refusedAdjustments: VerdictAdjustment[];
 }
