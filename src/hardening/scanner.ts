@@ -1327,6 +1327,53 @@ const PERSISTENT_RECEIVER_PARTS = new Set([
   'db', 'database', 'databases',
 ]);
 
+/**
+ * Dot-directories `findSkillFiles` enters BY NAME. Every other dot-directory —
+ * `.git`, `.venv`, `.cache`, `.hackmyagent-backup` — stays skipped, and so does
+ * `node_modules`.
+ *
+ * `.claude` is here because that is where skills actually live on disk:
+ * `.claude/skills/<name>/SKILL.md`. Until HMA-07 the walk skipped every
+ * dot-directory except the three OpenClaw ones, so a reverse-shell SKILL.md at
+ * `.claude/skills/x/SKILL.md` received NO SKILL-* check while the byte-identical
+ * twin at `skills/x/SKILL.md` was reported CRITICAL. That is a false clean on
+ * the most common layout, not a coverage gap at the margin.
+ *
+ * Named entries, not "every dot-directory": widening the walk to all of them
+ * puts the scanner inside `.git` objects and `.venv` site-packages, which is
+ * cost with no skill in it.
+ */
+const SKILL_WALK_DOT_DIRS: ReadonlySet<string> = new Set([
+  '.openclaw',
+  '.moltbot',
+  '.clawdbot',
+  '.claude',
+]);
+
+/**
+ * Extensions of bundled skill files worth reading. A skill is a DIRECTORY, not
+ * a Markdown file: the prose in SKILL.md is what the agent is told, and
+ * `scripts/`, `hooks/` and `tests/` beside it are what actually runs. Before
+ * HMA-07 only `SKILL.md` and `*.skill.md` were ever opened, so the payload
+ * simply moved one file across and went unread.
+ *
+ * Markdown is excluded here on purpose — SKILL.md and `*.skill.md` are already
+ * analyzed as skill files, and a bundled `README.md` is prose, not a payload.
+ */
+const SKILL_BUNDLE_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.sh', '.bash', '.zsh', '.fish',
+  '.py', '.rb', '.pl', '.php', '.lua',
+  '.js', '.mjs', '.cjs', '.ts', '.mts', '.cts',
+  '.ps1', '.bat', '.cmd',
+  '.json', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.txt',
+]);
+
+/** Depth walked BELOW a skill directory when collecting its bundled files. */
+const SKILL_BUNDLE_MAX_DEPTH = 4;
+/** Bundled files read per skill directory, and skill directories inspected per scan. */
+const SKILL_BUNDLE_MAX_FILES = 60;
+const SKILL_BUNDLE_MAX_DIRS = 40;
+
 // OpenClaw skill security patterns
 const SKILL_REMOTE_FETCH_PATTERNS: RegExp[] = [
   /curl\s+(-[a-zA-Z]+\s+)*https?:\/\//gi,
@@ -1874,6 +1921,19 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB max file size to prevent memory 
 const MAX_LINE_LENGTH = 10000; // 10KB max line length for regex safety
 
 /**
+ * Walk depth for the shell-script checks (INSTALL-001, SHELL-EXFIL-001,
+ * TMPPATH-001, DOCKERINJ-001).
+ *
+ * These four walked with `maxDepth 2`, which stops one directory short of where
+ * skill scripts live: `skills/foo/scripts/setup.sh` is depth 3 from the repo
+ * root, so a credential upload sitting in a bundled installer was never read.
+ * 5 matches the depth the same walker is already given for the shell/JS/Python/
+ * YAML sweep at `checkNemoClawPatterns`, so this is the file's existing bound
+ * rather than a new one.
+ */
+const SHELL_CHECK_MAX_DEPTH = 5;
+
+/**
  * Shell-escape a string for safe interpolation into advisory fix commands.
  *
  * #328 — an alias for the one implementation in `src/ui/shell-quote.ts`. Two
@@ -2385,6 +2445,54 @@ export function detectShellCredentialExfil(
     }
   }
   return null;
+}
+
+/**
+ * First match of any pattern in `patterns` on `line`, or null.
+ *
+ * Every list in this file is `/g`, so `lastIndex` is reset before each test —
+ * a shared `/g` regex that is not reset skips alternate calls, which reads as a
+ * flaky detector rather than a bug.
+ */
+function firstPatternMatch(patterns: RegExp[], line: string): string | null {
+  for (const pattern of patterns) {
+    pattern.lastIndex = 0;
+    const m = pattern.exec(line);
+    if (m) return m[0].trim();
+  }
+  return null;
+}
+
+/**
+ * What makes one line of a BUNDLED skill file a payload, or null.
+ *
+ * Two shapes, both conjunctive, because a bundled script is ordinary code and a
+ * single-signal rule over `scripts/` would flag most of them:
+ *
+ *  1. `detectShellCredentialExfil` — a curl/wget that reads a known credential
+ *     file into the request body of a remote URL. Already the SHELL-EXFIL-001
+ *     discriminator; reused verbatim so the two checks cannot disagree.
+ *  2. a credential path AND an exfiltration sink on the SAME line. A deploy
+ *     script that legitimately reads `~/.aws/credentials` does not also POST it
+ *     to `webhook.site` in the same statement, and a script that POSTs telemetry
+ *     does not name a credential file in the same statement.
+ *
+ * Comment lines are skipped so a `# curl ... @~/.aws/credentials` note in a
+ * runbook does not fire, matching `checkShellCredentialExfil`. The shebang is
+ * skipped as a comment for the same reason it is not code.
+ */
+function describeSkillBundlePayload(line: string): string | null {
+  const trimmed = line.trimStart();
+  if (trimmed.startsWith('#') || trimmed.startsWith('//')) return null;
+
+  const cred = detectShellCredentialExfil(line);
+  if (cred) return `uploads ${cred.credPath} to ${cred.url}`;
+
+  const credRead = firstPatternMatch(SKILL_CREDENTIAL_ACCESS_PATTERNS, line);
+  if (!credRead) return null;
+  const sink = firstPatternMatch(SKILL_EXFILTRATION_PATTERNS, line);
+  if (!sink) return null;
+  return `reads ${credRead} and sends it out via ${sink}`;
 }
 
 export class HardeningScanner {
@@ -11176,10 +11284,10 @@ dist/
         }
 
         if (entry.isDirectory()) {
-          // Skip node_modules and hidden directories (except .openclaw, .moltbot, .clawdbot)
+          // Skip node_modules and hidden directories, except the dot-directories
+          // skills are actually kept in (`SKILL_WALK_DOT_DIRS`, `.claude` among them).
           if (entry.name === 'node_modules') continue;
-          if (entry.name.startsWith('.') &&
-              !['openclaw', 'moltbot', 'clawdbot'].includes(entry.name.slice(1))) {
+          if (entry.name.startsWith('.') && !SKILL_WALK_DOT_DIRS.has(entry.name)) {
             continue;
           }
 
@@ -11953,6 +12061,158 @@ dist/
           });
         }
       }
+    }
+
+    // The bundle: everything beside SKILL.md that is not Markdown. See
+    // `skillBundleFindings` — the skill is the directory, not the one file.
+    findings.push(...await this.skillBundleFindings(targetDir, skillFiles));
+
+    return findings;
+  }
+
+  /**
+   * Non-Markdown files bundled beside a skill: `scripts/setup.sh`,
+   * `scripts/install` (extensionless, shebang line), `tests/x.py`, `hooks/*`.
+   *
+   * A skill is a DIRECTORY. `findSkillFiles` admits only `SKILL.md` and
+   * `*.skill.md`, so until HMA-07 the rest of the bundle was never opened and
+   * moving a payload out of the Markdown and into `scripts/setup.sh` defeated
+   * every SKILL-* check while the skill still shipped and ran it.
+   *
+   * Extensionless files are admitted on a shebang: that is the shape
+   * `scripts/install` takes, and an extension allow-list alone cannot see it.
+   *
+   * Symlinked entries are skipped here exactly as `findSkillFiles` skips them.
+   * This walk adds no way out of the tree.
+   */
+  private async findSkillBundleFiles(skillDir: string, depth: number = 0): Promise<string[]> {
+    if (depth > SKILL_BUNDLE_MAX_DEPTH) return [];
+
+    const bundleFiles: string[] = [];
+    let entries;
+    try {
+      entries = await fs.readdir(skillDir, { withFileTypes: true });
+    } catch {
+      return bundleFiles;
+    }
+
+    for (const entry of entries) {
+      if (bundleFiles.length >= SKILL_BUNDLE_MAX_FILES) break;
+      if (entry.isSymbolicLink()) continue;
+
+      const fullPath = path.join(skillDir, entry.name);
+      if (!this.isPathWithinDirectory(fullPath, skillDir)) continue;
+
+      if (entry.isDirectory()) {
+        if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+        bundleFiles.push(...await this.findSkillBundleFiles(fullPath, depth + 1));
+      } else if (entry.isFile()) {
+        // SKILL.md and *.skill.md are analyzed as skill files; other Markdown
+        // beside a skill is prose (README, CHANGELOG), not a payload carrier.
+        if (entry.name.toLowerCase().endsWith('.md')) continue;
+        const ext = path.extname(entry.name).toLowerCase();
+        const admitted = ext
+          ? SKILL_BUNDLE_EXTENSIONS.has(ext)
+          : await this.startsWithShebang(fullPath);
+        if (admitted) bundleFiles.push(fullPath);
+      }
+    }
+
+    return bundleFiles.slice(0, SKILL_BUNDLE_MAX_FILES);
+  }
+
+  /** True when a file's first bytes are `#!` — how an extensionless script declares itself. */
+  private async startsWithShebang(filePath: string): Promise<boolean> {
+    try {
+      const stat = await fs.stat(filePath);
+      if (stat.size < 2 || stat.size > MAX_FILE_SIZE) return false;
+      const content = await fs.readFile(filePath, 'utf-8');
+      return content.startsWith('#!');
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * SKILL-006 over the skill BUNDLE rather than its Markdown.
+   *
+   * One finding per skill DIRECTORY, and its `evidence` names every bundled
+   * file that carried a payload. That grouping is the point: the reviewer is
+   * being told "this skill exfiltrates", and the three files it does it from
+   * are one decision, not three. A finding per file would let the reader fix
+   * `scripts/setup.sh`, see the count drop, and ship the other two.
+   *
+   * Deliberately NOT named `check*`. It is a helper of `checkOpenclawSkills`,
+   * not an orchestrated check: its reads are already attributed to that
+   * method's ledger entry, and `coverage-honesty.test.ts` reads the `check`
+   * prefix to find calls that escaped the ledger.
+   */
+  private async skillBundleFindings(
+    targetDir: string,
+    skillFiles: string[]
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
+    const seenDirs = new Set<string>();
+
+    for (const skillFile of skillFiles) {
+      const skillDir = path.dirname(skillFile);
+      if (seenDirs.has(skillDir)) continue;
+      if (seenDirs.size >= SKILL_BUNDLE_MAX_DIRS) break;
+      seenDirs.add(skillDir);
+
+      const hits: Array<{ rel: string; line: number; content: string; why: string }> = [];
+
+      for (const file of await this.findSkillBundleFiles(skillDir)) {
+        let content: string;
+        try {
+          const stat = await fs.stat(file);
+          if (stat.size > MAX_FILE_SIZE) continue;
+          content = await fs.readFile(file, 'utf-8');
+        } catch {
+          continue;
+        }
+
+        const rel = path.relative(targetDir, file) || path.basename(file);
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].length > MAX_LINE_LENGTH) continue;
+          const why = describeSkillBundlePayload(lines[i]);
+          if (!why) continue;
+          hits.push({
+            rel,
+            line: i + 1,
+            content: lines[i].trim().substring(0, 200),
+            why: `${rel} ${why}`,
+          });
+          break; // One citation per bundled file — the evidence names files, not lines.
+        }
+      }
+
+      if (hits.length === 0) continue;
+
+      // `readdir` order is filesystem-dependent, and this finding's message and
+      // evidence both enumerate files — sorted so the same skill produces the
+      // same finding text on every machine.
+      hits.sort((a, b) => a.rel.localeCompare(b.rel));
+      const named = hits.map(h => h.rel);
+      findings.push({
+        checkId: 'SKILL-006',
+        name: 'Data Exfiltration Pattern',
+        description: 'A file bundled with this skill — a script or test beside SKILL.md, not the Markdown itself — reads credential material and sends it to a remote endpoint.',
+        category: 'skill',
+        severity: 'critical',
+        passed: false,
+        message: `Exfiltration payload in ${named.length} bundled skill file(s): ${named.join(', ')}`,
+        file: hits[0].rel,
+        line: hits[0].line,
+        fixable: false,
+        fix: `Remove the exfiltration payload from ${named.join(', ')}. Reviewing only SKILL.md reviews the description of the skill, not the code that ships with it.`,
+        guidance: 'A skill is a directory: SKILL.md is what the agent is told, and the scripts beside it are what runs. A payload moved out of the Markdown into scripts/ or tests/ ships with the skill and executes with the agent\'s privileges.',
+        evidence: {
+          kind: 'positive',
+          lines: hits.map(h => ({ n: h.line, content: h.content, why: h.why })),
+        },
+      });
     }
 
     return findings;
@@ -16273,7 +16533,7 @@ dist/
     _autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const files = await this.walkDirectory(targetDir, ['.sh'], 0, 2);
+    const files = await this.walkDirectory(targetDir, ['.sh'], 0, SHELL_CHECK_MAX_DEPTH);
 
     const pattern = /\b(curl|wget)\b[^|]*\|\s*(ba)?sh\b/g;
 
@@ -16324,7 +16584,7 @@ dist/
     _autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const files = await this.walkDirectory(targetDir, ['.sh', '.bash', '.zsh'], 0, 2);
+    const files = await this.walkDirectory(targetDir, ['.sh', '.bash', '.zsh'], 0, SHELL_CHECK_MAX_DEPTH);
 
     for (const file of files.slice(0, 100)) {
       try {
@@ -16578,7 +16838,7 @@ dist/
     _autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const files = await this.walkDirectory(targetDir, ['.sh'], 0, 2);
+    const files = await this.walkDirectory(targetDir, ['.sh'], 0, SHELL_CHECK_MAX_DEPTH);
 
     const pattern = /(>|>>)\s*\/tmp\/|(-o)\s+\/tmp\/|\s\/tmp\/\S+/g;
 
@@ -16630,7 +16890,7 @@ dist/
     _autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const files = await this.walkDirectory(targetDir, ['.sh'], 0, 2);
+    const files = await this.walkDirectory(targetDir, ['.sh'], 0, SHELL_CHECK_MAX_DEPTH);
 
     const pattern = /docker\s+exec\b.*?(\$\{?\w+\}?)/g;
 
