@@ -67,6 +67,18 @@ const UNATTRIBUTED = '(unattributed)';
  * fail-closed direction: an errno nobody anticipated means the bytes did not
  * arrive, and a scan that cannot read a file must not claim it read it.
  */
+/**
+ * A link the scan refused to follow because it resolves outside the
+ * confinement root set. `rel` is the link's path as the tree spells it,
+ * relative to the root it sits under; `resolved` is where the filesystem
+ * would have sent the read; `call` is the operation that was withheld.
+ */
+export interface WithheldLink {
+  rel: string;
+  resolved: string;
+  call: string;
+}
+
 export function countsAsUnread(code: string): boolean {
   return !NOT_THERE_ERRNOS.has(code);
 }
@@ -619,31 +631,175 @@ export class CoverageLedger {
   }
 
   /**
-   * Containment against the REALPATH of the target root, resolved once.
+   * Containment against the REALPATH of the confinement root set, resolved
+   * once per ledger.
    *
    * Separate from `isInsideTarget` on purpose: that one answers about the path
    * the caller named, which is what the rest of the ledger keys on.
+   *
+   * The set defaults to `[realpath(targetRoot)]`. The MCP handlers widen it
+   * to every granted root (`ScanOptions.confineRoots`), so a link from one
+   * granted project into another is read while a link into an ungranted
+   * location is not. One set serves both the failure channel above and the
+   * out-of-tree guard below: a second list would be a second "is this inside
+   * the tree" decision, which is the drift #270/#318 exist to close.
    */
-  private realRootCache?: string | null;
+  private realRootCache?: string[] | null;
+  private confineRootsLexical?: string[];
   private isInsideReal(real: string): boolean {
+    const roots = this.confineRealRoots();
+    if (roots === null) return true;
+    return roots.some((root) => real === root || real.startsWith(root + path.sep));
+  }
+
+  /**
+   * The real root set, or `null` when NONE of the roots resolve.
+   *
+   * `null`, not the lexical roots: falling back to the lexical form would
+   * compare a resolved file against an unresolved root — the same
+   * transformed-vs-untransformed mixing `isInsideReal` exists to avoid. A root
+   * set that cannot be resolved means containment is unknown, and unknown
+   * keeps the input, which is the fail-closed direction for the failure
+   * channel and the fall-through direction for the guard (no genuine input is
+   * masked on a claim the filesystem would not confirm).
+   */
+  private confineRealRoots(): string[] | null {
     if (this.realRootCache === undefined) {
-      // `null`, not the lexical root: falling back to the lexical form would
-      // compare a resolved file against an unresolved root — the same
-      // transformed-vs-untransformed mixing this method exists to avoid. A root
-      // that cannot be resolved means containment is unknown, and unknown keeps
-      // the input, which is the fail-closed direction.
-      try { this.realRootCache = realpathSync(this.targetRoot); }
-      catch { this.realRootCache = null; }
+      const resolved: string[] = [];
+      for (const root of this.confineRootsLexical ?? [this.targetRoot]) {
+        try { resolved.push(realpathSync(root)); }
+        catch { /* an unresolvable root contributes nothing */ }
+      }
+      this.realRootCache = resolved.length > 0 ? resolved : null;
     }
-    const root = this.realRootCache;
-    if (root === null) return true;
-    return real === root || real.startsWith(root + path.sep);
+    return this.realRootCache;
+  }
+
+  /**
+   * Replace the default `[targetRoot]` confinement set. Lexical spellings;
+   * resolved lazily by `confineRealRoots`. The target root is always a member
+   * so a caller cannot confine a scan to somewhere it is not happening.
+   */
+  setConfineRoots(roots: readonly string[]): void {
+    const lexical = new Set<string>([this.targetRoot]);
+    for (const r of roots) lexical.add(path.resolve(r));
+    this.confineRootsLexical = [...lexical];
+    this.realRootCache = undefined;
+  }
+
+  /** The resolved confinement set, for callers that confine at their own site (Layer 2/3 `confineTo`). */
+  get confinementRoots(): readonly string[] {
+    return this.confineRealRoots() ?? [];
   }
 
   private isInsideTarget(resolved: string): boolean {
-    if (resolved === this.targetRoot) return true;
-    // Compare on a separator boundary so `/a/bc` is not read as inside `/a/b`.
-    return resolved.startsWith(this.targetRoot + path.sep);
+    return CoverageLedger.insideLexical(resolved, this.targetRoot);
+  }
+
+  /** Lexical containment on a separator boundary, so `/a/bc` is not read as inside `/a/b`. */
+  private static insideLexical(resolved: string, root: string): boolean {
+    // A root that already ends in the separator (`/`) takes no second one.
+    const prefix = root.endsWith(path.sep) ? root : root + path.sep;
+    return resolved === root || resolved.startsWith(prefix);
+  }
+
+  // ── Out-of-tree link confinement (the tracked namespace's guard) ──────────
+  //
+  // The invariant: during a scan, no link-following filesystem operation on a
+  // path the scanned tree can redirect resolves to a location outside the
+  // confinement set. The tracked `fs` namespace asks `withholdOutOfTree` before
+  // delegating every such call; a refusal is recorded here, on its own
+  // channel, and NEVER on `readFailures`/`listFailures`: `countsAsUnread`
+  // would turn every withheld link into an unread input and settle exit 2 on
+  // every monorepo that shares a `.env` through a link. A withheld link is a
+  // policy skip that is announced, not a lost input.
+
+  private readonly withheld = new Map<string, WithheldLink>();
+  /**
+   * Realpath memo, successes only. A path that failed to resolve is re-asked,
+   * because a `--fix` run creates files under the target and a memoized
+   * absence would outlive the write. HMA never creates a symbolic link, so a
+   * successful resolution cannot go stale within one scan.
+   */
+  private readonly realpathMemo = new Map<string, string>();
+  private static readonly REALPATH_MEMO_CAP = 65_536;
+
+  /**
+   * Decide whether a link-following call on `target` must be withheld.
+   *
+   * Returns the withheld record (already recorded) when `target` is lexically
+   * inside a confinement root and its real location is outside every root;
+   * `null` otherwise. `parentOnly` is for `lstat`/`readlink`, which touch the
+   * link's own metadata and are permitted when the PARENT resolves inside.
+   *
+   * Paths lexically outside every root are outside the invariant's domain
+   * (ancestor probes, HMA's own config and model files): the guard governs
+   * paths the scanned tree can redirect, not paths HMA chooses. An
+   * unresolvable path (dangling link, EACCES on a component) returns `null`
+   * so the real call runs and reports its own errno: a withhold on a path the
+   * filesystem would not resolve would mask a genuine lost input.
+   */
+  withholdOutOfTree(target: string, call: string, parentOnly: boolean): WithheldLink | null {
+    // Decided on the KERNEL's view of the path, never on `path.resolve`.
+    // `path.resolve` collapses `..` lexically, so `<link-dir>/../secret`
+    // resolves to a path inside the tree while the kernel follows `link-dir`
+    // first and applies `..` from wherever it lands — outside. The raw string
+    // is only made absolute (no normalization) for the domain test, and the
+    // real location comes from `realpath.native`, which is libc's realpath
+    // and applies `..` after following each link, as the read will.
+    const raw = path.isAbsolute(target) ? target : process.cwd() + path.sep + target;
+    const lexicalRoots = this.confineRootsLexical ?? [this.targetRoot];
+    const owningRoot = lexicalRoots.find((root) => CoverageLedger.insideLexical(raw, root));
+    if (owningRoot === undefined) return null;
+    // The root's OWN metadata is always readable: its parent is outside the
+    // set by definition, and the root is a path HMA chose, not one the tree
+    // can redirect. (A root that is itself a link is followed by every
+    // non-parent-only call, which is the symlinked-parent case and is fine.)
+    if (parentOnly && lexicalRoots.includes(raw)) return null;
+    const realRoots = this.confineRealRoots();
+    if (realRoots === null) return null;
+    // Parent-only applies to a leaf that names an entry; a `.`/`..` leaf is
+    // itself a traversal through the parent and is resolved in full.
+    const leaf = path.basename(raw);
+    const leafIsEntry = leaf !== '' && leaf !== '.' && leaf !== '..';
+    const probe = parentOnly && leafIsEntry ? path.dirname(raw) : raw;
+    const real = this.memoizedRealpath(probe);
+    if (real === null) return null;
+    if (realRoots.some((root) => CoverageLedger.insideLexical(real, root))) return null;
+    const resolved = parentOnly && leafIsEntry ? path.join(real, leaf) : real;
+    // The raw spelling, not `path.relative` (which would collapse the `..`
+    // that made this a traversal and alias it to a sibling's record).
+    const rel = raw === owningRoot ? '.' : raw.slice(owningRoot.length).replace(/^[\\/]+/, '');
+    return this.noteWithheldLink(rel, resolved, call);
+  }
+
+  /**
+   * Record a withheld link. Public for the raw-`fs` sites that confine at
+   * their own call (`readArtifactForCitation`, the NanoMind bridge's policy
+   * read and citation re-read): they bypass the namespace by design and
+   * report here so one channel carries every withhold. Deduped by `rel`; the
+   * first call wins, so `access` then `readFile` on one link is one record.
+   */
+  noteWithheldLink(rel: string, resolved: string, call: string): WithheldLink {
+    const existing = this.withheld.get(rel);
+    if (existing) return existing;
+    const record: WithheldLink = { rel, resolved, call };
+    this.withheld.set(rel, record);
+    return record;
+  }
+
+  /** Every link withheld during this scan, in first-seen order. */
+  get withheldLinks(): WithheldLink[] {
+    return [...this.withheld.values()];
+  }
+
+  private memoizedRealpath(lexical: string): string | null {
+    const hit = this.realpathMemo.get(lexical);
+    if (hit !== undefined) return hit;
+    let real: string;
+    try { real = realpathSync.native(lexical); } catch { return null; }
+    if (this.realpathMemo.size < CoverageLedger.REALPATH_MEMO_CAP) this.realpathMemo.set(lexical, real);
+    return real;
   }
 
   private ensure(method: string): CheckExecution {
@@ -1065,6 +1221,18 @@ export function noteListFailure(target: unknown, code: unknown): void {
   if (!activeLedger) return;
   if (typeof target !== 'string') return;
   activeLedger.noteListFailure(target, typeof code === 'string' ? code : 'UNKNOWN');
+}
+
+/**
+ * Ask the active ledger whether a link-following call on `target` must be
+ * withheld. `null` when no ledger is installed (outside a scan the namespace
+ * has no root set and passes every call through; the CLI's single-file copy
+ * runs there and confines at its own site), when the path is outside the
+ * confinement domain, or when it cannot be resolved.
+ */
+export function withholdOutOfTree(target: string, call: string, parentOnly: boolean): WithheldLink | null {
+  if (!activeLedger) return null;
+  return activeLedger.withholdOutOfTree(target, call, parentOnly);
 }
 
 /** Test seam: the ledger currently installed, or null. */

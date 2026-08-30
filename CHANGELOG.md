@@ -116,6 +116,40 @@ they used to say no `eval(` or `Function(` call "appears in this file", which is
 false about a file that mentions one in a comment. They say "in code" and name the
 line-length limit.
 
+### secure no longer follows a link out of the directory it scans
+
+A symbolic link inside the scanned tree that resolves outside it was followed
+by every check that probes a fixed name (`.env`, `CLAUDE.md`, `config.json`,
+`.claude/settings.json`, `SOUL.md`, and the rest), by the walkers when the link
+was the directory they were handed (`skills -> /`), by the structural layer,
+by the citation re-reads, and by the single-file copy — measured on a five-link
+fixture, a plain `secure` made 58 link-following calls that reached an
+out-of-tree file, quoted its bytes into findings and `--output`, and under
+`--deep` sent them in the Layer-3 request. The MCP server's `hackmyagent_scan`
+had the same gap on Layer 1; #463 had confined only the structural half of
+`hackmyagent_deep_scan`.
+
+Confinement is now enforced once, at the filesystem namespace every check
+reads through, rather than at each of the ~150 sites: before any
+link-following call (`readFile`, `stat`, `access`, `readdir`, `opendir`,
+`open`), a path inside the scanned tree whose real location is outside it is
+refused with the same not-found error an absent file produces, and the refusal
+is recorded and disclosed. The report lists each withheld link with where it
+resolves, and to include that file you point the scan at the directory that
+really contains it. Withheld links never change the exit code and are never
+counted as unread inputs, so a monorepo that shares a `.env` through a link
+still exits 0 when nothing else is wrong; a link that resolves inside the tree,
+a scan under a symlinked parent, and a target under a symlinked temp directory
+are read exactly as before. The four raw reads that bypass the namespace by
+design (the citation re-reads in the scanner and the NanoMind bridge, the
+bridge's policy probe, the single-file copy) confine at their own site, and a
+static census pins every raw `fs` import in `src/` to a justified allowlist so
+a new one fails the suite. The MCP handlers confine Layer 1 to the granted
+roots, so a link from one granted project into another is read and a link into
+an ungranted location is withheld. There is no flag that follows links out.
+The `scan-soul`, `harden-soul` and `detect` governance reads are not covered
+by this change and are tracked as a follow-up.
+
 ### The ASP profile's credential summary no longer misses semantic secrets
 
 `secure -b oasb-1 --format asp` could report `credentials.hardcodedSecrets: 0`

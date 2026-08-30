@@ -28,7 +28,23 @@ import {
   toSecurityFindings,
   buildDeepScanResult,
 } from './semantic';
+import * as path from 'path';
 import { citationTarget } from './ui/shell-quote';
+import { withheldLinkLines } from './hardening/withheld-links';
+import type { WithheldLinkRecord } from './hardening/security-check';
+
+/**
+ * The scan's withheld-link disclosure with the MCP recovery copy: the operator
+ * grants a root, they do not retarget a command. The scanner's records carry
+ * the CLI retarget sentence; only that field is replaced.
+ */
+export function mcpWithheldLinksText(records: readonly WithheldLinkRecord[]): string {
+  const withGrant = records.map((r) => ({
+    ...r,
+    retarget: `point the scan at a granted root that contains it, or grant one: hackmyagent init-mcp --root ${citationTarget(path.dirname(r.resolved))}`,
+  }));
+  return withheldLinkLines(withGrant).join('\n');
+}
 import { generateBenchmarkReport } from './benchmarks/benchmark-report';
 import { assertRedactionProvenance } from './hardening/finding-emit';
 import { getCheckCounts } from './hardening/taxonomy';
@@ -323,9 +339,14 @@ export async function handleToolCall(
         const ignore = ignoreStr ? ignoreStr.split(',').map((s: string) => s.trim()) : [];
 
         const scanner = new HardeningScanner();
-        const result = await scanner.scan({ targetDir: dir, ignore });
+        // `confineRoots`: every Layer-1 read runs under the granted root SET,
+        // so a link out of the granted roots is withheld and disclosed below
+        // rather than followed. #463 confined only the structural half of
+        // `hackmyagent_deep_scan`; Layer 1 on both tools ran unconfined.
+        const result = await scanner.scan({ targetDir: dir, ignore, confineRoots: roots });
 
         const parts: string[] = [];
+        if (result.withheldLinks?.length) parts.push(mcpWithheldLinksText(result.withheldLinks));
         // The WRITE PATH is gone, not just the schema property: models pass
         // properties outside a schema routinely, so deleting the property alone
         // would have left the write capability live and undocumented (CPO).
@@ -352,9 +373,9 @@ export async function handleToolCall(
         if (!resolvedDir.ok) return refuse(resolvedDir.refusal);
         const dir = resolvedDir.path;
 
-        // Run Layer 1+2
+        // Run Layer 1+2, confined to the granted root set (see `hackmyagent_scan`).
         const scanner = new HardeningScanner();
-        const result = await scanner.scan({ targetDir: dir });
+        const result = await scanner.scan({ targetDir: dir, confineRoots: roots });
 
           // Get structural findings and files.
           //
@@ -366,6 +387,9 @@ export async function handleToolCall(
           // `.env`, `CLAUDE.md` and `.mcp.json` symlinked out of a legitimately
           // granted root all came back in this tool's result.
           const withheld = new Map<string, string>();
+          // Layer 1's withheld links join the same `notRead` disclosure: one
+          // list of what this result does not cover, whichever layer decided.
+          for (const r of result.withheldLinks ?? []) withheld.set(r.rel, r.resolved);
           const confine = {
             confineTo: {
               roots,
@@ -426,7 +450,7 @@ export async function handleToolCall(
           const level = ((args?.level as string) || 'L1').toUpperCase() as BenchmarkLevel;
 
           const scanner = new HardeningScanner();
-          const result = await scanner.scan({ targetDir: dir });
+          const result = await scanner.scan({ targetDir: dir, confineRoots: roots });
 
           // Generate benchmark assessment
           const assessment = assessBenchmarkFindings(result.allFindings || result.findings, level);

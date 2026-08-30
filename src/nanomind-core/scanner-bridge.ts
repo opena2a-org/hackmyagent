@@ -22,7 +22,8 @@
 // below is a read OF THE SCAN TARGET and therefore coverage evidence; HMA's own
 // state (models, integrity manifest, LLM cache) is read elsewhere and stays raw.
 import { fs as trackedFs } from '../hardening/tracked-fs';
-import { noteReadFailure, noteListFailure } from '../hardening/coverage-ledger';
+import { noteReadFailure, noteListFailure, currentLedger } from '../hardening/coverage-ledger';
+import { readStaysInsideTree } from '../hardening/contain';
 const { readFile, readdir, stat } = trackedFs;
 // DELIBERATELY RAW, and the reason is not an oversight (#499).
 //
@@ -321,6 +322,16 @@ export async function runNanoMindScan(
       // than a lost input, and counting it "would count one obstruction twice,
       // in two units". The real obstruction — the unreadable directory — is
       // already reported once by the static walker.
+      //
+      // Staying raw means staying outside the tracked namespace's out-of-tree
+      // guard, so the confinement is applied here, at the site: a policy file
+      // that is a link out of the tree is not read, and the withhold lands on
+      // the same ledger channel the namespace reports to.
+      const stays = readStaysInsideTree(candidate, targetDir);
+      if (!stays.ok) {
+        currentLedger()?.noteWithheldLink(relative(targetDir, candidate), stays.resolved, 'readFileSync');
+        continue;
+      }
       const govContent = readFileSync(candidate, 'utf-8');
       projectConstraints = extractDeclaredConstraints(govContent);
       break; // Use the first governance file found
@@ -476,8 +487,16 @@ export async function runNanoMindScan(
   // scanned file's content for the whole scan would trade a citation for a
   // memory regression proportional to the tree.
   const readArtifact = (file: string): string | undefined => {
+    // Site-confined for the reason `readArtifactForCitation` gives in
+    // `scanner.ts`: a re-read by name must not quote out-of-tree bytes.
+    const filePath = isAbsolute(file) ? file : join(targetDir, file);
+    const stays = readStaysInsideTree(filePath, targetDir);
+    if (!stays.ok) {
+      currentLedger()?.noteWithheldLink(relative(targetDir, filePath), stays.resolved, 'readFileSync');
+      return undefined;
+    }
     try {
-      return readFileSync(isAbsolute(file) ? file : join(targetDir, file), 'utf-8');
+      return readFileSync(filePath, 'utf-8');
     } catch {
       return undefined;
     }
