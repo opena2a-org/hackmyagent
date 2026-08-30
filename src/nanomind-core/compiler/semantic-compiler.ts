@@ -275,8 +275,12 @@ export class SemanticCompiler {
     // back underneath them: anything the deterministic pass raised is restored
     // if this pass dropped it and re-raised if this pass came in lower. The
     // model's contribution survives intact — `inferredCapabilities` still adds
-    // PRIV-ESCALATION surfaces here, and a `malicious` verdict still lifts the
-    // exfiltration surface to 0.9. Only the subtraction is gone.
+    // PRIV-ESCALATION surfaces here, and a `malicious` verdict lifts the
+    // exfiltration surface to 0.9 whenever the classifier pass still produced
+    // it. When benign framing gated that pass's surface out, only the
+    // deterministic floor (0.6) is restored, so a malicious-verdict artifact
+    // wrapped in authorization prose reads HIGH here, not CRITICAL. Either way
+    // the surface is never removed and never lowered: only the subtraction is gone.
     const inferredRiskSurface = enforceDeterministicSurfaceFloor(
       mapRiskSurfaces(analysisContent, declaredCapabilities, inferredCapabilities, intentClassification, parsed.type),
       deterministicSurfaces,
@@ -2008,8 +2012,11 @@ export function applyDeterministicFloor(
 /**
  * Put the deterministic surfaces back underneath the classifier-influenced
  * ones: restore any the later pass dropped, raise any it came in below. It
- * never removes and never lowers, so a `malicious` verdict's 0.9 exfiltration
- * surface survives this untouched.
+ * never removes and never lowers. A `malicious` verdict's 0.9 exfiltration
+ * surface survives untouched when the classifier pass produced it; when benign
+ * framing gated that pass's surface out, the deterministic 0.6 floor is what
+ * gets restored, so the surface holds at HIGH under a malicious verdict rather
+ * than rising to CRITICAL.
  */
 export function enforceDeterministicSurfaceFloor(
   surfaces: RiskSurface[],
