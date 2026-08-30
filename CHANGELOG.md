@@ -147,6 +147,8 @@ static census pins every raw `fs` import in `src/` to a justified allowlist so
 a new one fails the suite. The MCP handlers confine Layer 1 to the granted
 roots, so a link from one granted project into another is read and a link into
 an ungranted location is withheld. There is no flag that follows links out.
+The `scan-soul`, `harden-soul` and `detect` governance reads are not covered
+by this change and are tracked as a follow-up.
 
 ### The ASP profile's credential summary no longer misses semantic secrets
 

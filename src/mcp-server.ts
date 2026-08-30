@@ -450,7 +450,7 @@ export async function handleToolCall(
           const level = ((args?.level as string) || 'L1').toUpperCase() as BenchmarkLevel;
 
           const scanner = new HardeningScanner();
-          const result = await scanner.scan({ targetDir: dir });
+          const result = await scanner.scan({ targetDir: dir, confineRoots: roots });
 
           // Generate benchmark assessment
           const assessment = assessBenchmarkFindings(result.allFindings || result.findings, level);

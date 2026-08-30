@@ -36,6 +36,8 @@ beforeAll(() => {
   realFs.symlinkSync(path.join(base, 'nowhere'), path.join(root, 'dangling.txt'));
   realFs.symlinkSync(outside, path.join(root, 'outdir'));
   realFs.symlinkSync(path.join(rootB, 'shared.txt'), path.join(root, 'to-b.txt'));
+  // Reached by `<root>/outdir/../secret.txt` on the kernel's view (outdir -> outside, then ..).
+  realFs.writeFileSync(path.join(base, 'secret.txt'), 'TRAVERSAL\n');
 });
 
 afterAll(() => {
@@ -116,7 +118,7 @@ describe('tracked-fs out-of-tree link guard', () => {
     // `to-b.txt` is out of tree here: this ledger has the single default root.
     const rels = ledger.withheldLinks.map((w) => w.rel).sort();
     expect(rels).toEqual(['out.txt', 'outdir', 'to-b.txt']);
-    expect(ledger.withheldLinks.every((w) => w.call === 'readdir')).toBe(true);
+    expect(ledger.withheldLinks.every((w) => w.call === 'listing')).toBe(true);
   });
 
   it('does not disclose a symlinked node_modules or .git dirent at listing time, but still refuses a read through it', async () => {
@@ -215,5 +217,58 @@ describe('tracked-fs out-of-tree link guard', () => {
     const value2 = await withActiveLedger(ledger2, () => fs.readFile(path.join(unresolvedBase, 'root', 'in.txt'), 'utf-8'));
     expect(value2).toBe('REAL\n');
     expect(ledger2.withheldLinks).toEqual([]);
+  });
+
+  // `..` after a link: the kernel applies it where the link lands, `path.resolve` does not.
+  describe('traversal through a link is decided on the kernel\'s view', () => {
+    const traversal = () => path.join(root, 'outdir') + path.sep + '..' + path.sep + 'secret.txt';
+
+    it('refuses the string form <root>/outdir/../secret.txt', async () => {
+      const { value: err, ledger } = await underLedger((_l) => rejection(fs.readFile(traversal(), 'utf-8')));
+      expect(err.code).toBe('ENOENT');
+      expect(ledger.withheldLinks).toEqual([
+        { rel: 'outdir' + path.sep + '..' + path.sep + 'secret.txt', resolved: path.join(base, 'secret.txt'), call: 'readFile' },
+      ]);
+    });
+
+    it('refuses the Buffer form', async () => {
+      const { value: err, ledger } = await underLedger((_l) => rejection(fs.readFile(Buffer.from(traversal()))));
+      expect(err.code).toBe('ENOENT');
+      expect(ledger.withheldLinks).toHaveLength(1);
+    });
+
+    it('never reads outside through the file-URL form with %2E%2E', async () => {
+      // WHATWG URL parsing treats `%2E%2E` as a dot segment and collapses it
+      // in the URL itself, so the path handed to the guard is `<root>/secret.txt`
+      // (absent). Either way nothing outside is read.
+      const url = new URL('outdir/%2E%2E/secret.txt', pathToFileURL(root + path.sep));
+      const { value: err } = await underLedger((_l) => rejection(fs.readFile(url, 'utf-8')));
+      expect(err.code).toBe('ENOENT');
+      let leaked: string | undefined;
+      try { leaked = await withActiveLedger(new CoverageLedger(root), () => fs.readFile(url, 'utf-8')); } catch { /* refused or absent */ }
+      expect(leaked).toBeUndefined();
+    });
+
+    it('refuses readdir of <root>/outdir/.. (would list the parent of the link target)', async () => {
+      const { value: err, ledger } = await underLedger((_l) => rejection(fs.readdir(path.join(root, 'outdir') + path.sep + '..')));
+      expect(err.code).toBe('ENOENT');
+      expect(ledger.withheldLinks[0]?.resolved).toBe(base);
+    });
+
+    it('still reads <root>/sub/../plain.txt, a traversal through a real directory', async () => {
+      const { value, ledger } = await underLedger((_l) => fs.readFile(path.join(root, 'sub') + path.sep + '..' + path.sep + 'plain.txt', 'utf-8'));
+      expect(value).toBe('PLAIN\n');
+      expect(ledger.withheldLinks).toEqual([]);
+    });
+  });
+
+  it('a confinement root of "/" withholds nothing', async () => {
+    const { value, ledger } = await underLedger(async (_l) => ({
+      plain: await fs.readFile(path.join(root, 'plain.txt'), 'utf-8'),
+      out: await fs.readFile(path.join(root, 'out.txt'), 'utf-8'),
+    }), [path.parse(root).root]);
+    expect(value.plain).toBe('PLAIN\n');
+    expect(value.out).toBe('OUTSIDE\n');
+    expect(ledger.withheldLinks).toEqual([]);
   });
 });

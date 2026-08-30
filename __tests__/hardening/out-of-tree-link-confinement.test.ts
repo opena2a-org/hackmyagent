@@ -196,6 +196,17 @@ describe('AC3 — zero canary on every channel', () => {
     expect(count(text.stdout + text.stderr)).toBe(0);
   }, TEST_TIMEOUT);
 
+  it('the CLI entry in --deep TEXT mode (the simulation walk) reaches nothing outside the tree', () => {
+    const fetchMarker = path.join(markers, 'fetch-bodies-text.ndjson');
+    const r = runCli(['secure', fx.linked, '--deep'], {
+      roots: [fx.linked],
+      env: { ANTHROPIC_API_KEY: 'test-placeholder-not-a-key', HMA_TEST_FETCH_MARKER: fetchMarker },
+    });
+    expect(r.reach!.calls).toBeGreaterThan(100);
+    expect(r.reach!.reaches.length, describeReaches(r.reach!)).toBe(0);
+    expect(count(r.stdout + r.stderr)).toBe(0);
+  }, TEST_TIMEOUT);
+
   it('intercepted Layer-3 request bodies under --deep carry no out-of-tree bytes', () => {
     const fetchMarker = path.join(markers, 'fetch-bodies.ndjson');
     const outFile = path.join(fx.base, 'cli-deep.json');

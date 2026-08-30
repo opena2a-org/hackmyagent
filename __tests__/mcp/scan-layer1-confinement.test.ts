@@ -8,11 +8,12 @@
  * every granted root: a link into another granted root is read, a link into
  * an ungranted location is withheld and disclosed in the tool's text.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { handleToolCall } from '../../src/mcp-server';
+import { HardeningScanner } from '../../src/hardening/scanner';
 
 const CANARY = 'CANARY_MCP_LAYER1_4c1e';
 let tmp: string;
@@ -80,5 +81,18 @@ describe('hackmyagent_scan Layer-1 confinement', () => {
     expect(out).not.toContain(CANARY);
     expect(out).toContain('.env');
     expect(out).toMatch(/NOT read|notRead/);
+  });
+
+  it('hackmyagent_benchmark passes the granted root set to the scan like the other two tools', async () => {
+    const spy = vi.spyOn(HardeningScanner.prototype, 'scan');
+    try {
+      const r = await handleToolCall('hackmyagent_benchmark', { directory: rootA, level: 'L1' }, [rootA, rootB]);
+      expect(text(r)).not.toContain(CANARY);
+      expect(spy).toHaveBeenCalled();
+      const opts = spy.mock.calls[0][0];
+      expect(opts.confineRoots).toEqual([rootA, rootB]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

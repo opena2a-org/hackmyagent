@@ -698,7 +698,9 @@ export class CoverageLedger {
 
   /** Lexical containment on a separator boundary, so `/a/bc` is not read as inside `/a/b`. */
   private static insideLexical(resolved: string, root: string): boolean {
-    return resolved === root || resolved.startsWith(root + path.sep);
+    // A root that already ends in the separator (`/`) takes no second one.
+    const prefix = root.endsWith(path.sep) ? root : root + path.sep;
+    return resolved === root || resolved.startsWith(prefix);
   }
 
   // ── Out-of-tree link confinement (the tracked namespace's guard) ──────────
@@ -738,24 +740,37 @@ export class CoverageLedger {
    * filesystem would not resolve would mask a genuine lost input.
    */
   withholdOutOfTree(target: string, call: string, parentOnly: boolean): WithheldLink | null {
-    let lexical: string;
-    try { lexical = path.resolve(target); } catch { return null; }
+    // Decided on the KERNEL's view of the path, never on `path.resolve`.
+    // `path.resolve` collapses `..` lexically, so `<link-dir>/../secret`
+    // resolves to a path inside the tree while the kernel follows `link-dir`
+    // first and applies `..` from wherever it lands — outside. The raw string
+    // is only made absolute (no normalization) for the domain test, and the
+    // real location comes from `realpath.native`, which is libc's realpath
+    // and applies `..` after following each link, as the read will.
+    const raw = path.isAbsolute(target) ? target : process.cwd() + path.sep + target;
     const lexicalRoots = this.confineRootsLexical ?? [this.targetRoot];
-    const owningRoot = lexicalRoots.find((root) => CoverageLedger.insideLexical(lexical, root));
+    const owningRoot = lexicalRoots.find((root) => CoverageLedger.insideLexical(raw, root));
     if (owningRoot === undefined) return null;
     // The root's OWN metadata is always readable: its parent is outside the
     // set by definition, and the root is a path HMA chose, not one the tree
     // can redirect. (A root that is itself a link is followed by every
     // non-parent-only call, which is the symlinked-parent case and is fine.)
-    if (parentOnly && lexicalRoots.includes(lexical)) return null;
+    if (parentOnly && lexicalRoots.includes(raw)) return null;
     const realRoots = this.confineRealRoots();
     if (realRoots === null) return null;
-    const probe = parentOnly ? path.dirname(lexical) : lexical;
+    // Parent-only applies to a leaf that names an entry; a `.`/`..` leaf is
+    // itself a traversal through the parent and is resolved in full.
+    const leaf = path.basename(raw);
+    const leafIsEntry = leaf !== '' && leaf !== '.' && leaf !== '..';
+    const probe = parentOnly && leafIsEntry ? path.dirname(raw) : raw;
     const real = this.memoizedRealpath(probe);
     if (real === null) return null;
     if (realRoots.some((root) => CoverageLedger.insideLexical(real, root))) return null;
-    const resolved = parentOnly ? path.join(real, path.basename(lexical)) : real;
-    return this.noteWithheldLink(path.relative(owningRoot, lexical) || '.', resolved, call);
+    const resolved = parentOnly && leafIsEntry ? path.join(real, leaf) : real;
+    // The raw spelling, not `path.relative` (which would collapse the `..`
+    // that made this a traversal and alias it to a sibling's record).
+    const rel = raw === owningRoot ? '.' : raw.slice(owningRoot.length).replace(/^[\\/]+/, '');
+    return this.noteWithheldLink(rel, resolved, call);
   }
 
   /**
@@ -782,7 +797,7 @@ export class CoverageLedger {
     const hit = this.realpathMemo.get(lexical);
     if (hit !== undefined) return hit;
     let real: string;
-    try { real = realpathSync(lexical); } catch { return null; }
+    try { real = realpathSync.native(lexical); } catch { return null; }
     if (this.realpathMemo.size < CoverageLedger.REALPATH_MEMO_CAP) this.realpathMemo.set(lexical, real);
     return real;
   }

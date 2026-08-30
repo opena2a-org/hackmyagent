@@ -128,7 +128,10 @@ function discloseSymlinkEntries(listed: string, entries: unknown): void {
     const parent = typeof dirent.parentPath === 'string' ? dirent.parentPath
       : typeof dirent.path === 'string' ? dirent.path
       : listed;
-    withholdOutOfTree(join(parent, dirent.name), 'readdir', false);
+    // Recorded as `listing`: nothing was refused here, the entry was seen and
+    // not followed. First record wins, so a later refusal on the same link
+    // keeps this label; the resolved target is the same either way.
+    withholdOutOfTree(join(parent, dirent.name), 'listing', false);
   }
 }
 

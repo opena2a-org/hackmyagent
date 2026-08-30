@@ -5378,10 +5378,20 @@ Examples:
 
           // Find skill files in target directory
           const skillFiles: string[] = [];
+          // Raw walk, site-confined like every raw reader on the scan path:
+          // an entry that is a link resolving outside the scanned tree is
+          // neither entered nor read, and `stat` (which follows links) is
+          // only called once `lstat` has shown the entry is not such a link.
+          const { lstatSync } = await import('node:fs');
+          let skippedLinks = 0;
           const findSkills = (dir: string) => {
             try {
               for (const entry of readdirSync(dir)) {
                 const fullPath = join(dir, entry);
+                if (lstatSync(fullPath).isSymbolicLink() && !readStaysInsideTree(fullPath, targetDir).ok) {
+                  skippedLinks += 1;
+                  continue;
+                }
                 const stat = statSync(fullPath);
                 if (stat.isDirectory() && !entry.startsWith('.') && entry !== 'node_modules') {
                   findSkills(fullPath);
@@ -5392,6 +5402,9 @@ Examples:
             } catch { /* skip inaccessible dirs */ }
           };
           findSkills(targetDir);
+          if (skippedLinks > 0) {
+            process.stderr.write(`\n[Simulation] ${skippedLinks} link${skippedLinks === 1 ? '' : 's'} resolving outside the scanned tree skipped.\n`);
+          }
 
           if (skillFiles.length === 0) {
             process.stderr.write(`\n[Simulation] No skill/SOUL/MCP artifacts found. Simulation skipped.\n\n`);

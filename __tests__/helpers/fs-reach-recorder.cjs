@@ -38,11 +38,12 @@ const ROOTS = (process.env.HMA_TEST_CONFINE_ROOTS || '')
   .map((r) => path.resolve(r));
 
 const realpathSync = fs.realpathSync.bind(fs);
+const realpathNative = fs.realpathSync.native.bind(fs);
 const REAL_ROOTS = ROOTS.flatMap((r) => {
   try { return [realpathSync(r)]; } catch { return []; }
 });
 
-const inside = (p, root) => p === root || p.startsWith(root + path.sep);
+const inside = (p, root) => p === root || p.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
 const reaches = [];
 let calls = 0;
 
@@ -63,19 +64,24 @@ function frameOf() {
 function check(call, a, parentOnly) {
   const target = pathArg(a);
   if (target === null || ROOTS.length === 0) return;
-  const lexical = path.resolve(target);
-  if (!ROOTS.some((r) => inside(lexical, r))) return;
+  // The kernel's view: absolute WITHOUT normalization (`..` after a link must
+  // be applied where the link lands), resolved by libc realpath.
+  const raw = path.isAbsolute(target) ? target : process.cwd() + path.sep + target;
+  if (!ROOTS.some((r) => inside(raw, r))) return;
   // The root's own metadata (its parent is outside the set by definition).
-  if (parentOnly && ROOTS.includes(lexical)) return;
+  if (parentOnly && ROOTS.includes(raw)) return;
   calls += 1;
-  const probe = parentOnly ? path.dirname(lexical) : lexical;
+  const leaf = path.basename(raw);
+  const leafIsEntry = leaf !== '' && leaf !== '.' && leaf !== '..';
+  const probe = parentOnly && leafIsEntry ? path.dirname(raw) : raw;
   let real;
-  try { real = realpathSync(probe); } catch { return; }
+  try { real = realpathNative(probe); } catch { return; }
   if (REAL_ROOTS.some((r) => inside(real, r))) return;
+  const lexical = raw;
   reaches.push({
     call,
     path: lexical,
-    resolved: parentOnly ? path.join(real, path.basename(lexical)) : real,
+    resolved: parentOnly && leafIsEntry ? path.join(real, leaf) : real,
     frame: frameOf(),
   });
 }

@@ -39,7 +39,7 @@ const ALLOWLIST: Record<string, string> = {
   'hardening/contain.ts': 'realpath/lstat identity checks on paths about to be acted on; the site-level confinement helper',
   'hardening/scanner.ts': 'raw fsSync: accessSync on ancestors (lexically outside the root), realpathSync.native identity, readFileSync in readArtifactForCitation confined by readStaysInsideTree',
   'nanomind-core/scanner-bridge.ts': 'two raw readFileSync sites (policy probe, citation re-read), each confined by readStaysInsideTree; discovery goes through tracked-fs',
-  'cli.ts': 'single-file copy confined by readStaysInsideTree with root = the argument\'s own directory; target stat is lstat-first; other reads are HMA\'s own files or --output writes',
+  'cli.ts': 'single-file copy confined by readStaysInsideTree with root = the argument\'s own directory; target stat is lstat-first; the --deep text-mode simulation walk (findSkills) is lstat-first and skips links resolving outside the target; remaining raw reads are HMA\'s own files, --output writes, and the scan-soul/harden-soul/detect governance paths tracked as a follow-up',
   'semantic/structural/git-context.ts': 'link metadata only (lstat/readlink/realpath), deliberately resolves to classify; reads no content',
   'mcp/roots.ts': 'resolves the granted roots and the requested directory against them; the entry-path confinement',
   'soul/scanner.ts': 'governance --fix path (hardenSoul), write side, contained by #270 resolveInsideTree; read side is a target-joined basename on the fix path, tracked as a fix-path census follow-up',
