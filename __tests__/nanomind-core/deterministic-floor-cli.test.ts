@@ -18,8 +18,8 @@
  * supplies about itself deleted a finding derived from the artifact's own bytes.
  *
  * The CLI is driven through `src/cli.ts` with the repo's own `tsx`, not through
- * `dist/cli.js`: the spawn suites that use the build gate themselves on
- * `existsSync(dist/cli.js)` and skip when it is absent, and a criterion whose
+ * the compiled binary: the spawn suites that use the build gate themselves on
+ * the built entry's existence and skip when it is absent, and a criterion whose
  * evidence can silently skip is not evidence. Running the entry from source also
  * closes the staleness hole `__tests__/helpers/dist-freshness.ts` documents.
  */
