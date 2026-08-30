@@ -14,29 +14,42 @@
  * surface. A `--deep-skills` escape hatch would mean the default scan still
  * reports a false clean on `.claude/skills`, which is the whole defect.
  *
- * The frozen manifests below are the always-on half of this guard, and they are
- * deliberately byte-level rather than "does the file exist": a scope violation
- * is a change to those files, and only their bytes can witness it. The
- * `git diff` test is the direct reading of the acceptance criterion and runs
- * wherever `origin/main` is fetched; it returns early in a clone that has no
- * such ref, which is why it is not the only assertion here.
+ * How each half is proved:
  *
- * Updating a frozen value is a SCOPE DECISION, not test maintenance. If a later
+ *   - The CLI-flag surface and the `tracked-fs.ts` byte digest are read from
+ *     the working tree alone, so they hold in any checkout, origin/main fetched
+ *     or not. The `tracked-fs.ts` digest is deliberately byte-level rather than
+ *     "does the file exist": AC4 needs its exact bytes, and only its bytes can
+ *     witness an edit.
+ *   - Whether the diff touches an out-of-scope path is DERIVED from
+ *     `git diff` against origin/main, not pinned to a frozen file count or tree
+ *     hash. A frozen manifest of `src/nanomind-core/**` is the same
+ *     re-baseline-by-hand hazard HMA-02 removed elsewhere: it was recorded as
+ *     62 files against a tree that has 28, so it could never have passed. The
+ *     diff reads the acceptance criterion directly, and it returns early in a
+ *     clone that has no origin/main — which is why the always-on half above is
+ *     not the diff.
+ *
+ * Retiring the guard is a SCOPE DECISION, not test maintenance. If a later
  * change legitimately edits `src/nanomind-core/**` or `tracked-fs.ts`, retire
- * this suite with that change rather than re-baselining it silently.
+ * this suite with that change rather than loosening it silently.
+ *
+ * git is spawned only through `gitFreeEnv()` (#348): under a git hook GIT_DIR
+ * is exported and points at THIS repository, so a git subprocess that inherits
+ * the ambient environment writes to the real repo. Every git call here scrubs
+ * that environment first.
  */
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import * as path from 'node:path';
+import { gitFreeEnv } from '../helpers/throwaway-repo';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
 /** Recorded at HMA-07 intake, against origin/main 957bb65. */
 const TRACKED_FS_SHA256 = 'bf6566fa2dfab6877ebed88b67b0d28e518e013d2ca164d5640aa5c472586389';
-const NANOMIND_CORE_FILE_COUNT = 62;
-const NANOMIND_CORE_TREE_SHA256 = '17fa55dc4def9231fe27ae15ea783f401240aa9f964449491b0a98df801c1aca';
 
 /** Long flags registered anywhere under `src/`, recorded at HMA-07 intake. */
 const REGISTERED_LONG_FLAGS = [
@@ -57,12 +70,21 @@ const REGISTERED_LONG_FLAGS = [
   '--version', '--version-id', '--with-aim',
 ];
 
-/** Paths HMA-07 is allowed to touch, as `git diff --stat` names them. */
+/** Paths HMA-07 is allowed to touch, as `git diff --name-only` names them. */
 const ALLOWED_DIFF_PATHS = [
   /^src\/hardening\/scanner\.ts$/,
   /^__tests__\//,
   /^test-fixtures\//,
   /^CHANGELOG\.md$/,
+];
+
+/**
+ * The out-of-scope areas, as predicates over a diff path. A change to any of
+ * these is a scope violation, whatever else the diff contains.
+ */
+const OUT_OF_SCOPE: Array<(p: string) => boolean> = [
+  (p) => p.startsWith('src/nanomind-core/'),
+  (p) => p === 'src/hardening/tracked-fs.ts',
 ];
 
 function sha256(bytes: Buffer | string): string {
@@ -76,21 +98,6 @@ function filesUnder(dir: string, acc: string[] = []): string[] {
     else if (entry.isFile()) acc.push(full);
   }
   return acc;
-}
-
-/** Path-and-content digest of a directory, stable across platforms. */
-function treeDigest(dir: string): { count: number; hash: string } {
-  const files = filesUnder(dir)
-    .map(f => path.relative(REPO_ROOT, f).split(path.sep).join('/'))
-    .sort();
-  const h = createHash('sha256');
-  for (const rel of files) {
-    h.update(rel);
-    h.update('\0');
-    h.update(sha256(readFileSync(path.join(REPO_ROOT, rel))));
-    h.update('\n');
-  }
-  return { count: files.length, hash: h.digest('hex') };
 }
 
 /** Every `--long-flag` registered through a commander `.option(...)` under `src/`. */
@@ -110,17 +117,39 @@ function registeredLongFlags(): { flags: string[]; files: string[] } {
   return { flags: [...flags].sort(), files: [...files].sort() };
 }
 
-/** `origin/main`, or null where the ref is not fetched (shallow or detached clones). */
+/**
+ * `origin/main`, or null where the ref is not fetched (shallow or detached
+ * clones). git runs with a scrubbed environment (#348).
+ */
 function originMain(): string | null {
   try {
     return execFileSync('git', ['rev-parse', '--verify', 'origin/main'], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
+      env: gitFreeEnv(),
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
   } catch {
     return null;
   }
+}
+
+/**
+ * Paths that differ between `base` and the working tree. git runs with a
+ * scrubbed environment (#348).
+ */
+function changedPaths(base: string): string[] {
+  const out = execFileSync('git', ['diff', '--name-only', base, '--'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    env: gitFreeEnv(),
+  });
+  return out.split('\n').map((s) => s.trim()).filter(Boolean);
+}
+
+/** Diff paths that fall in an out-of-scope area. Pure, so it has teeth on any list. */
+function outOfScopeChanges(changed: string[]): string[] {
+  return changed.filter((p) => OUT_OF_SCOPE.some((match) => match(p)));
 }
 
 describe('HMA-07.AC5 scope invariant', () => {
@@ -130,30 +159,24 @@ describe('HMA-07.AC5 scope invariant', () => {
     expect(sha256(readFileSync(file))).toBe(TRACKED_FS_SHA256);
   });
 
-  it('HMA-07.AC5 src/nanomind-core/** is byte-identical to origin/main (HMA-06 area untouched)', () => {
-    const digest = treeDigest(path.join(REPO_ROOT, 'src', 'nanomind-core'));
-    // Reported separately so a file added or deleted names itself in the failure.
-    expect(digest.count).toBe(NANOMIND_CORE_FILE_COUNT);
-    expect(digest.hash).toBe(NANOMIND_CORE_TREE_SHA256);
-  });
-
   it('HMA-07.AC5 no new CLI flag exists anywhere in the command surface (the wider walk is not opt-in)', () => {
     const { flags, files } = registeredLongFlags();
     expect(files).toEqual(['src/cli.ts']);
     expect(flags).toEqual(REGISTERED_LONG_FLAGS);
   });
 
-  it('HMA-07.AC5 git diff --stat origin/main names only scanner.ts, tests, fixtures and CHANGELOG.md', () => {
+  it('HMA-07.AC5 the diff against origin/main touches no path under src/nanomind-core/** or src/hardening/tracked-fs.ts', () => {
     const base = originMain();
-    if (!base) return; // no origin/main fetched here; the frozen manifests above still hold.
+    if (!base) return; // no origin/main fetched here; the always-on halves still hold.
+    expect(outOfScopeChanges(changedPaths(base))).toEqual([]);
+  });
 
-    const out = execFileSync('git', ['diff', '--name-only', base, '--'], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-    });
-    const changed = out.split('\n').map(s => s.trim()).filter(Boolean);
+  it('HMA-07.AC5 git diff --name-only origin/main names only scanner.ts, tests, fixtures and CHANGELOG.md', () => {
+    const base = originMain();
+    if (!base) return; // no origin/main fetched here; the always-on halves still hold.
 
-    const outOfScope = changed.filter(p => !ALLOWED_DIFF_PATHS.some(rx => rx.test(p)));
+    const changed = changedPaths(base);
+    const outOfScope = changed.filter((p) => !ALLOWED_DIFF_PATHS.some((rx) => rx.test(p)));
     expect(outOfScope).toEqual([]);
   });
 });
