@@ -43,6 +43,38 @@ in the same statement), so an ordinary bundled installer stays quiet: every
 committed fixture in the tree, and the repository's own self-scan, produce a
 byte-identical finding set before and after.
 
+### Benign framing in an artifact can no longer clear a finding read from its own bytes
+
+The pattern rules that read a source file directly — a hardcoded API key, an
+external URL paired with a data-forwarding verb — now set a floor the intent
+scorer cannot go under. Before this, a paragraph of authorization or
+educational prose written into the artifact could pull its intent verdict down
+to `benign` and, on that path, suppress byte-derived findings: once the framing
+scored high enough, the external-transmission (exfiltration) surface was gated
+out of the analysis entirely, and the lowered verdict was applied with no record
+that anything had been talked down.
+
+Two things change in what `secure` reports on source artifacts:
+
+- **A downgrade the framing asks for is refused when a byte-level rule fired
+  underneath it.** The scorer's pre-downgrade verdict stands, and the refusal
+  is recorded rather than applied silently. Where nothing deterministic fired,
+  the downgrade still lands — framing prose is often the right answer for an
+  artifact accused only by vocabulary scoring — and that too is now recorded,
+  so a `benign` verdict on something that was accused and a `benign` verdict on
+  something nothing accused are no longer indistinguishable.
+- **The exfiltration surface holds its rung.** The same matched bytes used to
+  be reported CRITICAL, HIGH or MEDIUM depending on what the scorer made of the
+  surrounding prose; an external-transmission surface now floors at HIGH and the
+  verdict may only raise it, never drop it to MEDIUM.
+
+Net effect for operators: some source artifacts that previously scored benign
+now surface findings, because an exfiltration pattern in the file's own bytes
+can no longer be talked down by text in the same file, and any downgrade the
+framing does earn is now recorded rather than applied silently. The detection
+vocabulary is unchanged — the same shapes are found on the same files at the
+same or higher severity; only the subtraction is gone.
+
 ### The CRITICAL hardcoded-secret finding says where the secret is, and four secrets count as four (#368, #478)
 
 One cause, two symptoms, both carried since 0.28.0.
