@@ -105,11 +105,21 @@ function confine<T extends AnyFn>(fn: T, call: string, parentOnly: boolean): T {
  * So a successful listing asks the ledger about each symlinked entry, which
  * records the out-of-tree ones and follows nothing. One site, every walker.
  */
+/**
+ * Directory names no walker on the scan path ever enters. A listing-time
+ * disclosure of a link at one of these names would tell the operator to
+ * re-point the scan at a tree the scan would not read either way (a checkout
+ * with a symlinked node_modules is the everyday case). A check that does read
+ * through such a link is still refused by the guard above and disclosed there.
+ */
+const NEVER_WALKED = new Set(['.git', 'node_modules']);
+
 function discloseSymlinkEntries(listed: string, entries: unknown): void {
   if (!Array.isArray(entries)) return;
   for (const entry of entries) {
     const dirent = entry as { name?: unknown; parentPath?: unknown; path?: unknown; isSymbolicLink?: () => boolean } | null;
     if (!dirent || typeof dirent.isSymbolicLink !== 'function' || typeof dirent.name !== 'string') continue;
+    if (NEVER_WALKED.has(dirent.name)) continue;
     let isLink = false;
     try { isLink = dirent.isSymbolicLink(); } catch { continue; }
     if (!isLink) continue;

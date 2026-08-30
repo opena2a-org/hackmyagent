@@ -119,6 +119,23 @@ describe('tracked-fs out-of-tree link guard', () => {
     expect(ledger.withheldLinks.every((w) => w.call === 'readdir')).toBe(true);
   });
 
+  it('does not disclose a symlinked node_modules or .git dirent at listing time, but still refuses a read through it', async () => {
+    const link = path.join(root, 'node_modules');
+    realFs.symlinkSync(path.join(base, 'outside-modules'), link);
+    realFs.mkdirSync(path.join(base, 'outside-modules'), { recursive: true });
+    realFs.writeFileSync(path.join(base, 'outside-modules', 'pkg.json'), '{}');
+    try {
+      const { ledger } = await underLedger((_l) => fs.readdir(root, { withFileTypes: true }));
+      expect(ledger.withheldLinks.map((w) => w.rel)).not.toContain('node_modules');
+      const { value: err, ledger: ledger2 } = await underLedger((_l) => rejection(fs.readFile(path.join(link, 'pkg.json'), 'utf8')));
+      expect(err.code).toBe('ENOENT');
+      expect(ledger2.withheldLinks.map((w) => w.rel)).toContain(path.join('node_modules', 'pkg.json'));
+    } finally {
+      realFs.rmSync(link, { force: true });
+      realFs.rmSync(path.join(base, 'outside-modules'), { recursive: true, force: true });
+    }
+  });
+
   // No false withhold.
   it('reads an in-tree link, a plain file, and a listing of the root', async () => {
     const { value, ledger } = await underLedger(async (_l) => ({
