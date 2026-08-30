@@ -4,6 +4,118 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The CRITICAL hardcoded-secret finding says where the secret is, and four secrets count as four (#368, #478)
+
+One cause, two symptoms, both carried since 0.28.0.
+
+`scanCanonicalCredentialFormats` knew the exact offset of every key it matched
+and threw it away. What it emitted was a CLASSIFICATION — `OpenAI legacy key:
+[REDACTED]` — which is the right thing to emit (no part of a value rides in a
+finding) but is not a substring of the file, and the only way back to a line ran
+through `extractEvidenceSpans`, which looks evidence up with `indexOf`. So:
+
+- **The CRITICAL was vaguer than the HIGH beneath it.** `AST-CRED-003` rendered
+  as `app/config.ts` with no `:N`, and with no line there is deliberately no
+  `Verify:` — directly above an `AST-CRED-001` HIGH on the same file that
+  printed both. A CRITICAL a reader cannot locate, above a HIGH they can,
+  inverts the severity signal the repo's own standard rests on (#368).
+- **Four keys in one file scored as one.** They collapsed into a single finding
+  naming the first, so removing three of the four moved the score by exactly
+  zero — which reads as "my fix did not work" (#478). Each shape was detected in
+  isolation the whole time; the loss was aggregation, not pattern coverage.
+
+The offset is now recorded at the point of the match, carried on the risk
+surface as `offset`, and turned into a line by the emit site. One finding per
+located instance, keyed on the offset rather than the line so two secrets
+sharing a line stay two secrets, and the per-file rollup in
+`deduplicateFindings` keys credential findings on their line as well — a
+hardcoded secret is a separate key to rotate, not a repetition of one issue the
+way 60 constraints in a SOUL.md are.
+
+**The detection vocabulary does not move.** The same shapes are found on the
+same files, and a file holding one secret still produces exactly one finding at
+the same severity, which a test pins beside the four-secret one.
+`MAX_FINDINGS_PER_CHECK` still caps the score contribution at three at full
+weight and 10% after, so this widens what the score can SEE without uncapping
+it. Several credential shapes remain undetected entirely — a plain
+`DB_PASSWORD`, a `postgres://` DSN, `glpat-` and `hf_` tokens still score 98/100
+at exit 0, exactly as 0.32.0 disclosed, and that is unchanged here.
+
+**Not closed by this: #497.** `AST-CRED-001` still derives its line by
+re-searching for the leftmost credential-shaped string, which is the wrong line
+whenever a digest or an `sk-EXAMPLE…` placeholder sits above the real key. The
+producer-offset route landed here for `AST-CRED-003` because the canonical scan
+records the offset of the value it matched; #497's harder half — a
+`-----BEGIN RSA PRIVATE KEY-----` match that is a good citation when a key body
+follows and a bad one when nothing does — is untouched and stays open.
+
+### `fix-all` reads the files `secure` reads before it calls credentials clean (#477)
+
+On a tree where `secure` reported a CRITICAL hardcoded secret and exited 1,
+`fix-all --scan-only` printed `Credential Protection  [+] No issues found` and
+exited 0 — while `secure --fix` routes users to `fix-all` in its own output. Two
+analyzers in one tool, opposite directions, one artifact.
+
+It was never a disagreement about which credential SHAPES count: credvault's
+catalog already carried the vendor shapes `secure` reports. It was a
+disagreement about which FILES get opened. credvault read fourteen fixed config
+paths, so an ordinary `.py` or `.ts` holding an API key was outside its
+population entirely. It now sweeps the same source extensions
+`artifact-parser.ts` classifies as `source_code`, with the same catalog and the
+same per-line ReDoS bound, and reports **CRED-005**. The sweep is bounded (depth
+8, 2000 files, no symlink traversal, the usual build and vendor directories
+skipped) and a quoted pattern in a scanner's own source does not count — source
+files legitimately hold the shapes a scanner matches with, which config files do
+not.
+
+**CRED-005 is not auto-fixable, deliberately.** `fix()` rewrites the config
+paths and nothing else, so marking it fixable would print a remedy that never
+runs and would clear the finding out of `remainingFindings` — the list the exit
+code reads. `fix-all` names the file and the line and asks the user to rotate;
+it does not rewrite source.
+
+### The GlassWorm decoder's execution-sink corroborator reads code, and reads the same lines (#475, in part)
+
+`UNICODE-STEGO-002` lifts a decoder shape to CRITICAL when it finds an execution
+sink in the same file. It looked for one over the whole file content, with no idea
+what was code, so two things corroborated that are not calls:
+
+- **A mention in a comment or a string literal.** `src/hardening/scanner.ts`
+  self-flagged CRITICAL on the `eval(...)` written into one of its own doc comments
+  and on the `'eval() dynamic execution'` label of a detection rule. It stayed out
+  of our own score only because `.hmaignore` excludes that path — the exemption was
+  carrying the defect, so the same file scanned anywhere else reported CRITICAL on
+  its own prose. Comments are now blanked with block state carried across the line
+  boundary (the body of a doc comment has no opener on its own line, which is why
+  the existing per-line predicate could not see this), and strings are left to
+  `isMatchInsideStringLiteral`, the predicate NEMO-009 already uses for the same
+  question. Scanned as a copy with no `.hmaignore` in reach, `scanner.ts` moves from
+  CRITICAL to a MEDIUM lead. It is still reported: the file does read codepoints in
+  the range, and saying so costs a line of output.
+- **A line the finding's own signals never read.** The presence loop skips a line
+  over `MAX_LINE_LENGTH`; the corroborator ran over whole content, so an `eval(`
+  inside a minified bundle line corroborated a `.codePointAt(` and a range literal
+  read from ordinary lines. Both now read one population in one loop, so they cannot
+  disagree about which lines exist. A pair of fixtures differing only in the length
+  of one padding string pins each direction.
+
+**The sink vocabulary is unchanged, deliberately.** `vm.runInNewContext`,
+`globalThis.eval`, `(0,eval)`, a constructor chain, `Reflect.construct`, dynamic
+`import()`, `child_process` and `module._compile` still do not corroborate, and the
+finding's guidance still says so. Widening the regex would answer a semantic
+question with a lexical test for the third time in this check; it belongs with
+#424's AST dataflow work, and the regexes themselves are byte-identical to before
+this change so that claim can be diffed rather than taken on trust.
+
+**One narrowing, disclosed:** matching per line means `eval` and `(` separated by a
+newline no longer match. That spelling is legal JavaScript and is a real loss of one
+lexical variant, on a corroborator that already misses the eight spellings above.
+
+The uncorroborated finding's own description and guidance were reworded to match:
+they used to say no `eval(` or `Function(` call "appears in this file", which is now
+false about a file that mentions one in a comment. They say "in code" and name the
+line-length limit.
+
 ### The ASP profile's credential summary no longer misses semantic secrets
 
 `secure -b oasb-1 --format asp` could report `credentials.hardcodedSecrets: 0`

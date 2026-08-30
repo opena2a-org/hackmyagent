@@ -11090,6 +11090,10 @@ program
       'CRED-002': 'OpenAI API key detected (sk-proj-... or sk-...). Run: opena2a protect . — removes the key from source and stores it in your secure vault.',
       'CRED-003': 'Anthropic API key detected (sk-ant-...). Run: opena2a protect . — removes the key from source and stores it in your secure vault.',
       'CRED-004': 'AWS credential pattern detected (AKIA...). Run: opena2a protect . — removes the key from source and stores it in your secure vault.',
+      // #477 — fix-all reads source files now, and a finding it can report has
+      // to be a finding it can explain. Says plainly that this one is not
+      // rewritten for you: fix-all edits config files, never source.
+      'CRED-005': 'Hardcoded credential in a source file. fix-all reports it but does not rewrite source. Rotate the credential at the provider, then read it from the environment or a secrets manager. Run: opena2a protect . — migrates hardcoded secrets into the Secretless vault so source files reference them by name only.',
       'MCP-001': 'MCP server running without TLS. Agent-to-server communication is unencrypted. Enable TLS on the MCP server or use a reverse proxy with TLS termination.',
       'SKILL-005': 'External endpoint in skill capability declaration. Verify the endpoint is trusted and uses HTTPS.',
       'GOV-001': 'No governance policy found. Agents should declare behavioral constraints in a SOUL.md or governance file. Create a SOUL.md with mission, boundaries, and allowed actions.',

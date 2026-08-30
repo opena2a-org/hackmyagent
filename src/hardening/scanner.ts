@@ -1720,6 +1720,87 @@ export function isMatchInsideStringLiteral(line: string, matchIndex: number): bo
 }
 
 /**
+ * Blank the comment regions of ONE line, carrying block-comment state across the
+ * line boundary in `state`, and return a line of the same length with every
+ * comment character replaced by a space.
+ *
+ * `isMatchInsideStringLiteral` above already answers this for strings and for a
+ * block comment that opens and closes on the line it is asked about, which is
+ * all its four NEMO-009 call sites need: they ask about one line at a time and
+ * about code they were already walking line by line. A FILE-WIDE reader sees
+ * something they do not — the body of a doc comment, where every line after the
+ * first carries no opener. `src/hardening/scanner.ts` self-flagged CRITICAL on
+ * the `eval(...)` written in the doc comment above that very helper (#475), so
+ * the block state has to survive the line boundary. Kept as a separate function
+ * rather than folded into the predicate, whose signature is per-line and whose
+ * existing callers pass no state.
+ *
+ * SAME LENGTH IN, SAME LENGTH OUT. A caller can measure an offset on the
+ * returned line and hand it straight back to `isMatchInsideStringLiteral`, which
+ * is the point: comments are handled here, strings there, and neither function
+ * grows a second job.
+ *
+ * Quote-aware, so `"http://example"` is not read as a line comment and `'/*'` is
+ * not read as a comment opener. Quote state does NOT carry across lines: a
+ * template literal spanning lines is read as code on its continuation lines.
+ * That direction over-reports rather than under-reports, and it is the same
+ * limit the per-line predicate already has, stated rather than silently shared.
+ * Regex literals are likewise not lexed — a `/don't/` toggles quote state, as
+ * documented on the predicate above.
+ */
+function blankCommentRegions(line: string, state: { inBlockComment: boolean }): string {
+  let out = '';
+  let quote: string | null = null;
+  let i = 0;
+  while (i < line.length) {
+    const c = line[i];
+    if (state.inBlockComment) {
+      if (c === '*' && line[i + 1] === '/') {
+        state.inBlockComment = false;
+        out += '  ';
+        i += 2;
+        continue;
+      }
+      out += ' ';
+      i += 1;
+      continue;
+    }
+    if (quote !== null) {
+      // A backslash consumes the next character if one exists. A trailing
+      // backslash at end of line consumes only itself, same as the predicate.
+      if (c === '\\' && i + 1 < line.length) {
+        out += line.slice(i, i + 2);
+        i += 2;
+        continue;
+      }
+      if (c === quote) quote = null;
+      out += c;
+      i += 1;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      quote = c;
+      out += c;
+      i += 1;
+      continue;
+    }
+    if (c === '/' && line[i + 1] === '/') {
+      out += ' '.repeat(line.length - i);
+      return out;
+    }
+    if (c === '/' && line[i + 1] === '*') {
+      state.inBlockComment = true;
+      out += '  ';
+      i += 2;
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
+/**
  * Parsed .hmaignore rules split into path patterns and check ID patterns.
  * Check ID patterns start with `!` and support trailing `*` wildcards.
  * Example: `!SANDBOX-*` suppresses all SANDBOX checks.
@@ -14376,6 +14457,55 @@ dist/
 
       const hexPattern = /0x(?:FE0[0-9A-Fa-f]|fe0[0-9a-f]|E010[0-9A-Fa-f]|e010[0-9a-f]|E01[0-9A-Ea-e][0-9A-Fa-f]|e01[0-9a-e][0-9a-f])/;
 
+      // #475, the execution-sink corroborator. BOTH PATTERNS ARE THE ONES THIS
+      // CHECK HAS ALWAYS USED, character for character. What moved is the text
+      // they are asked about, and only in the two directions the issue names:
+      //
+      //  1. THE SAME LINE POPULATION AS THE PRESENCE LOOP. The two signals below
+      //     skip a line over MAX_LINE_LENGTH; the corroborator used to run over
+      //     whole file content, so an `eval(` inside a minified bundle line
+      //     corroborated `.codePointAt(` and a range literal read from ordinary
+      //     lines the bundle had nothing to do with. One loop now reads one
+      //     population, so the two cannot disagree about which lines exist.
+      //  2. COMMENTS AND STRING LITERALS ARE NOT CODE. `src/hardening/scanner.ts`
+      //     self-flagged CRITICAL on the `eval(...)` in a doc comment and the
+      //     `'eval() dynamic execution'` label of a detection rule, and stayed
+      //     out of its own score only because `.hmaignore` excludes the path.
+      //     Comments are blanked by `blankCommentRegions` (block state carried
+      //     across lines); strings are left to `isMatchInsideStringLiteral`, the
+      //     predicate NEMO-009 already uses for the same question one line at a
+      //     time.
+      //
+      // WHAT THIS IS NOT: the sink VOCABULARY is unchanged and deliberately so.
+      // `vm.runInNewContext`, `globalThis.eval`, `(0,eval)`, a constructor chain,
+      // `Reflect.construct`, dynamic `import()`, `child_process` and
+      // `module._compile` still do not corroborate. Widening the regex is a
+      // semantic question answered by a lexical test for the third time; it
+      // belongs with #424's AST dataflow work, and the finding's own guidance
+      // already tells the reader which sinks it cannot see.
+      //
+      // ONE NARROWING, DISCLOSED: matching per line means `eval` and `(`
+      // separated by a NEWLINE (`\s` spans one) no longer match. That spelling
+      // is legal JavaScript and is not detected any more, which is a loss of
+      // exactly one lexical variant on a corroborator that already misses the
+      // eight spellings above.
+      const EXECUTION_SINK_PATTERNS = [
+        /(?:^|[^\w.$])eval\s*\(/,
+        /(?:^|[^\w.$])(?:new\s+)?Function\s*\(/,
+      ];
+      // Scanned with `g` so a line can be walked past a mention and still reach a
+      // real call after it — `const label = 'eval() docs'; eval(payload);` has
+      // both, and a first-match-only reader would answer for the label and stop.
+      // Built from `.source`, so the patterns above stay the literal bytes this
+      // check has always carried and a reader can diff them without reading here.
+      // `^` still anchors to index 0 only (no `m`), which is what makes the
+      // second and later matches on a line require the `[^\w.$]` arm.
+      const executionSinkScanners = EXECUTION_SINK_PATTERNS.map(
+        (pattern) => new RegExp(pattern.source, 'g'),
+      );
+      const sinkCommentState = { inBlockComment: false };
+      let hasExecutionSink = false;
+
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         if (line.length > MAX_LINE_LENGTH) continue;
@@ -14386,6 +14516,42 @@ dist/
         if (!hasHexLiteral && hexPattern.test(line)) {
           hasHexLiteral = true;
           hexLiteralLine = i + 1;
+        }
+        // A line that carries neither sink token and cannot open or close a
+        // block comment leaves both the state and the answer unchanged, so the
+        // character walk is skipped rather than run over every line of every
+        // scanned file. `inBlockComment` forces the walk because only the walk
+        // can find the closing delimiter.
+        const mayAffectSink =
+          !hasExecutionSink &&
+          (sinkCommentState.inBlockComment ||
+            line.includes('/*') ||
+            line.includes('*/') ||
+            line.includes('eval') ||
+            line.includes('Function'));
+        if (!mayAffectSink) continue;
+        const codeLine = blankCommentRegions(line, sinkCommentState);
+        for (const sinkScanner of executionSinkScanners) {
+          sinkScanner.lastIndex = 0;
+          let m: RegExpExecArray | null;
+          while ((m = sinkScanner.exec(codeLine)) !== null) {
+            // The patterns open with `(?:^|[^\w.$])`, so `m.index` is the
+            // character BEFORE the token — and when that character is the
+            // opening quote of a string, asking the predicate about it answers
+            // for a position that is not yet inside the string. Ask about the
+            // token.
+            const tokenOffset = m[0].search(/eval|Function/);
+            const tokenIndex = m.index + (tokenOffset >= 0 ? tokenOffset : 0);
+            if (!isMatchInsideStringLiteral(codeLine, tokenIndex)) {
+              hasExecutionSink = true;
+              break;
+            }
+            // A zero-length match cannot happen here (both patterns require a
+            // token and a paren), but advancing explicitly keeps the loop
+            // terminating on any future edit to them.
+            if (sinkScanner.lastIndex <= m.index) sinkScanner.lastIndex = m.index + 1;
+          }
+          if (hasExecutionSink) break;
         }
       }
 
@@ -14441,9 +14607,10 @@ dist/
       //      it just does not lift THIS decoder finding to CRITICAL.
       // Neither corroborator holds for a test that builds a payload and asserts a
       // sanitiser escapes it — a correct DEFENCE against this technique.
-      const hasExecutionSink =
-        /(?:^|[^\w.$])eval\s*\(/.test(content) ||
-        /(?:^|[^\w.$])(?:new\s+)?Function\s*\(/.test(content);
+      //
+      // `hasExecutionSink` is settled in the presence loop above, over the same
+      // lines and with comments and string literals excluded — see the block
+      // there for what did and did not change about it.
       const hasDecodablePayload = hasVariationSelectors || hasTagCharsIn001;
       const corroborated = hasExecutionSink || hasDecodablePayload;
 
@@ -14469,7 +14636,7 @@ dist/
           name: 'GlassWorm Decoder Pattern Detected',
           description: corroboration
             ? `Source file ${act} Unicode variation selector or tag character codepoints AND carries corroborating evidence - this is the decoder half of a GlassWorm attack`
-            : `Source file ${act} Unicode variation selector or tag character codepoints. This is the shape of a GlassWorm decoder, but neither corroborator this check recognises is present - no literal eval( or Function( call, and no variation-selector or tag-character payload`,
+            : `Source file ${act} Unicode variation selector or tag character codepoints. This is the shape of a GlassWorm decoder, but neither corroborator this check recognises is present - no literal eval( or Function( call in code, and no variation-selector or tag-character payload`,
           category: 'unicode-stego',
           severity: corroborated ? 'critical' : 'medium',
           passed: false,
@@ -14484,7 +14651,7 @@ dist/
             : `sed -n '${Math.max(1, reportedLine - 5)},${reportedLine + 20}p' ${shellEscape(relativePath)}   # confirm this decodes for inspection, not for execution`,
           guidance: corroboration
             ? `The GlassWorm attack hides a payload in invisible Unicode characters and rebuilds it at runtime from their codepoints. This file ${act} those codepoints AND carries corroborating evidence, so treat it as live until traced. Follow the value from the range literal to whatever consumes it.`
-            : `This file ${act} codepoints in the variation selector or tag range. Sanitisers, linters, width calculators and tests for this attack all legitimately do the same thing, which is why this is a lead rather than a verdict. What was actually checked, stated narrowly on purpose: no literal eval( or Function( call appears in this file, and no variation-selector or tag-character payload - the invisible classes this shape decodes - is present (a lone zero-width char or a mid-file BOM, which UNICODE-STEGO-001 may still report on its own, does not corroborate this finding). Neither is a statement about the class. A decoded string can reach an executor through vm, child_process, a dynamic import(), a member expression such as globalThis.eval, or the Function constructor reached through a prototype chain, and this check recognises none of those - so read the file rather than trusting this line. Reconstitution likewise has many spellings (an alias, a destructured binding, .map, Buffer.from, TextDecoder), so its absence from the message above is not proof the file does not rebuild a string.`,
+            : `This file ${act} codepoints in the variation selector or tag range. Sanitisers, linters, width calculators and tests for this attack all legitimately do the same thing, which is why this is a lead rather than a verdict. What was actually checked, stated narrowly on purpose: no literal eval( or Function( call appears in this file's CODE - one written inside a comment or a string literal is a mention rather than a call site and is not counted, and a line longer than the scanner's per-line limit is not read here any more than it is by the two signals this finding is built from - and no variation-selector or tag-character payload - the invisible classes this shape decodes - is present (a lone zero-width char or a mid-file BOM, which UNICODE-STEGO-001 may still report on its own, does not corroborate this finding). Neither is a statement about the class. A decoded string can reach an executor through vm, child_process, a dynamic import(), a member expression such as globalThis.eval, or the Function constructor reached through a prototype chain, and this check recognises none of those - so read the file rather than trusting this line. Reconstitution likewise has many spellings (an alias, a destructured binding, .map, Buffer.from, TextDecoder), so its absence from the message above is not proof the file does not rebuild a string.`,
         });
       }
 

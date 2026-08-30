@@ -190,6 +190,10 @@ export class SemanticCompiler {
           attackClass: 'CRED-HARVEST',
           confidence: 0.9,
           evidence: hit.evidence,
+          // Against `content`, which is what this scan read — not the stripped
+          // analysis view `mapRiskSurfaces` above works from. Every consumer
+          // that turns this back into a line is handed the same `content`.
+          offset: hit.index,
         });
         declaredDataAccess.push({
           dataType: 'credentials',
@@ -1396,6 +1400,16 @@ function hasCanonicalCredentialFormat(content: string): boolean {
 interface CanonicalCredentialHit {
   label: string;
   evidence: string;
+  /**
+   * Character offset of the matched SECRET BYTES in the content that was
+   * scanned — for the name-gated arm, of the captured value rather than of the
+   * name anchor in front of it.
+   *
+   * Recorded here because it cannot be recovered later: `evidence` is a
+   * classification, not a quotation, so nothing downstream can search for it
+   * (#368). It carries no part of the value, only where the value is.
+   */
+  index: number;
 }
 
 /**
@@ -1611,6 +1625,7 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit
         // stamped `redactionStatus: 'clean'`. `label` already carries everything the user
         // acts on (which vendor), and `file`/`line` carry where.
         evidence: `${label}: [REDACTED]`,
+        index: match.index,
       });
     }
   }
@@ -1652,6 +1667,12 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit
         // Same rule as the canonical arm above. This is a SEPARATE producer with its own
         // truncation width, so fixing only the canonical one leaves the class open.
         evidence: `${label}: [REDACTED]`,
+        // The VALUE's offset, not the match's. `match[0]` opens with the name
+        // anchor (`AWS_SECRET_ACCESS_KEY=`), which can carry the match across a
+        // line boundary from the secret it names; every pattern in this list
+        // captures the value as its final segment, so the value ends where the
+        // match does.
+        index: match.index + match[0].length - value.length,
       });
     }
   }
