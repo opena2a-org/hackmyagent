@@ -12,12 +12,13 @@ import { fs } from './tracked-fs';
 // root needs it: the JS implementation does not canonicalize case (#334).
 import * as fsSync from 'fs';
 import * as crypto from 'crypto';
+import * as os from 'os';
 import * as path from 'path';
 import { execFile } from 'child_process';
 import type { ScanResult, SecurityFinding, SecurityFindingDraft, Severity, ProjectType } from './security-check';
-import { emitFinding } from './finding-emit';
+import { emitFinding, reemitFinding } from './finding-emit';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
-import { enrichWithTaxonomy } from './taxonomy';
+import { enrichWithTaxonomy, TAXONOMY_EXEMPT_CHECKIDS } from './taxonomy';
 import { lineFromOffset } from '../types/text-position';
 import { classifySkillSection, isLikelyFalsePositive } from './skill-context';
 import { isCorpusPath, isTestPath, isExamplePath } from './path-context';
@@ -45,6 +46,12 @@ import { parseAiConfig, proseAllowEntry, forReport, MAX_TEXT } from '../scanner/
 /** Redact, escape and cap a value out of a scanned config before quoting it. */
 const forFinding = (s: string): string => forReport(s, MAX_TEXT);
 import { escapeForDisplay } from '../ui/display-safe';
+import {
+  decodeArtifact,
+  MAX_DECODE_DEPTH,
+  type ArtifactDecode,
+  type DecodedPayload,
+} from './payload-decode';
 import {
   CoverageLedger,
   withActiveLedger,
@@ -99,6 +106,74 @@ const BACKUP_MANIFEST_VERSION = 2;
  * and widening it would cost scan time and invite false positives.
  */
 export const JS_FAMILY_EXTENSIONS = ['.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx'] as const;
+
+/**
+ * Extensions the decode-then-rescan pass reads.
+ *
+ * Deliberately wider than any single check's walk, and deliberately NOT the
+ * "source file" list #414 unified: a base64 payload does not care what
+ * extension it sits behind, and the artifacts that carry them in practice are
+ * markdown skills and YAML configs rather than TypeScript. Binary extensions
+ * are absent because `decodeArtifact` reads text; a `.png` read as UTF-8
+ * produces replacement characters and no candidate survives them.
+ */
+const DECODE_ARTIFACT_EXTENSIONS = new Set<string>([
+  ...JS_FAMILY_EXTENSIONS,
+  '.md', '.markdown', '.txt', '.json', '.jsonc', '.yaml', '.yml', '.toml',
+  '.py', '.sh', '.bash', '.zsh', '.env', '.cfg', '.ini', '.xml',
+]);
+
+/**
+ * Directories the decode walk never descends into.
+ *
+ * `.git` holds packed objects, `node_modules` is not the product being
+ * assessed, and both are large enough to spend the artifact budget on content
+ * nobody asked about. THIS RUN's backup archive is excluded separately, by
+ * identity rather than by name (`isOwnBackupDir`).
+ */
+const DECODE_SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', '.venv', '__pycache__']);
+
+/**
+ * Artifacts one decode pass reads.
+ *
+ * A cap and not a timeout, so the pass costs the same on the same tree twice.
+ * It is REPORTED when it bites (`coverage.truncations`), because a decoder
+ * that quietly stopped reading is the false-clean this whole subsystem exists
+ * to avoid.
+ */
+const MAX_DECODE_ARTIFACTS = 400;
+
+/**
+ * The payload a reconstruction line belongs to.
+ *
+ * Falls back to the deepest payload rather than throwing: a rule can fire on a
+ * line the substitution did not produce (a rule reading the whole file, or a
+ * line the decoded text pushed down), and the artifact still has exactly one
+ * honest thing to cite — the encoded span that made the rescan happen at all.
+ */
+function payloadForLine(decode: ArtifactDecode, line?: number): DecodedPayload {
+  if (typeof line === 'number') {
+    const hit = decode.payloads.find(
+      (p) => line >= p.reconstructedFromLine && line <= p.reconstructedToLine,
+    );
+    if (hit) return hit;
+  }
+  return decode.payloads.reduce((deepest, p) => (p.depth > deepest.depth ? p : deepest));
+}
+
+/**
+ * Decoded text as one line of a finding message.
+ *
+ * `escapeForDisplay` because this is attacker-controlled text on its way to a
+ * terminal: a payload carrying `\r` or a CSI sequence would otherwise rewrite
+ * the line it is being reported on. Capped because a finding message is a
+ * sentence, not a file.
+ */
+function decodedExcerpt(text: string): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim();
+  const capped = oneLine.length > 160 ? `${oneLine.slice(0, 157)}...` : oneLine;
+  return escapeForDisplay(capped);
+}
 
 /**
  * Sync twin of `HardeningScanner.unsearchableAncestor`, at module scope so
@@ -735,13 +810,25 @@ export interface ScanOptions {
    */
   isNpmPackage?: boolean;
   /**
+   * Run the decode-then-rescan pass (`checkEncodedPayloads`). Default true at
+   * `standard` and `deep`; `quick` skips it with every other non-quick check.
+   *
+   * The pass re-runs the WHOLE bank over the reconstructed artifacts by
+   * scanning them, so it sets this to `false` on its own inner scan. That is
+   * what terminates the recursion, and it is an option rather than an internal
+   * flag because the inner scan goes through the same public `scan()` every
+   * other caller uses — a private back door would be a second entry point with
+   * its own drift.
+   */
+  decodeRescan?: boolean;
+  /**
    * The NanoMind semantic pass, run INSIDE the coverage ledger's window (#499).
    *
    * The caller supplies it as a hook rather than calling it after `scan()`
    * returns, and that placement is the whole fix. `scan()` installs the ambient
    * ledger around `scanInner` only, so a semantic pass invoked afterwards ran
    * with `activeLedger` null: its reads reported nothing, its read FAILURES
-   * reported nothing, and at `--scan-depth quick` — where 55 of the 61 static
+   * reported nothing, and at `--scan-depth quick` — where 56 of the 62 static
    * checks are skipped and the semantic layer is the only reader of the tree —
    * an unreadable credential file left the assessment entirely. `secure` scored
    * that tree 98/100 at exit 0 while the same tree readable scored 69/100 at
@@ -3094,7 +3181,7 @@ export class HardeningScanner {
     findings.push(...lifecycleFindings);
     } // end of standard/deep checks
 
-    // A quick scan runs 6 of the 61 orchestrated checks. Record the other 55
+    // A quick scan runs 6 of the 62 orchestrated checks. Record the other 56
     // as skipped so their categories report `not examined` with the depth as
     // the reason, instead of inheriting the fail-closed default's vaguer
     // "no check in this category ran".
@@ -3131,6 +3218,30 @@ export class HardeningScanner {
     } catch {
       // Structural analysis failure is non-fatal
     }
+    }
+
+    // Decode-then-rescan.
+    //
+    // Placed after every other static layer, and that ordering is the whole
+    // dedup rule: this pass reports a rule-bank match ONLY when the same rule
+    // did not already match the same file in its encoded form. A finding that
+    // fires on both is one finding about one file, and reporting it twice is
+    // how a decoder makes a report worse rather than better.
+    //
+    // Skipped at `quick` with every other non-quick check, and skipped
+    // explicitly on the inner scan the pass itself runs — that skip is what
+    // makes the recursion terminate, and it is recorded rather than silent so
+    // the inner scan's coverage says why the pass did not run in it.
+    if (!isQuick) {
+      if (options.decodeRescan === false) {
+        this.coverage.skip(
+          'checkEncodedPayloads',
+          'this is the inner scan of already-decoded artifacts — decoding is not re-entered',
+        );
+      } else {
+        const decodedFindings = await this.coverage.run('checkEncodedPayloads', () => this.checkEncodedPayloads(targetDir, options, findings, projectType));
+        findings.push(...decodedFindings);
+      }
     }
 
     // Layer 3: LLM analysis (only in deep mode + API key)
@@ -4078,6 +4189,10 @@ export class HardeningScanner {
         // Counts, never paths — a single-file scan normalises its target into
         // a generated temp directory, and emitting read paths leaked that name.
         filesReadByCategory: this.coverage.categoryFileCounts(),
+        // The decode bound, and what the pass did under it. Counts only, same
+        // rule as the line above — the decoded text reaches the user through
+        // the findings that name it, never through this block.
+        decode: this.coverage.decode,
         suppressedFailures,
         unevidencedFailures,
         // Counts and errno codes, never paths — same rule as the line above.
@@ -17325,6 +17440,333 @@ dist/
       // Assembly scan failure is non-fatal
       return [];
     }
+  }
+
+  /**
+   * Decode-then-rescan: run the COMPLETE rule bank over what the artifacts
+   * actually say, rather than over the wrapper they say it in.
+   *
+   * ## Why this is a scan and not a rule list
+   *
+   * The obvious implementation is a table of patterns to look for in decoded
+   * text. It is also the wrong one: it would be a SECOND rule bank, containing
+   * whichever rules someone remembered to write twice, and every rule added to
+   * the real bank afterwards would be a rule that only matches unencoded
+   * payloads. So the reconstructed artifacts are written to a scratch tree at
+   * their ORIGINAL relative paths and scanned by `scan()` — the same entry
+   * point, the same 62 checks, the same semantic layer. A rule added tomorrow
+   * matches decoded payloads on the day it is added, because nothing here
+   * enumerates rules.
+   *
+   * The relative path is preserved rather than flattened because the bank is
+   * path-sensitive: `SKILL.md` is read by the SKILL-* checks, `.mcp.json` by
+   * the MCP checks, and a decoded payload rehomed to `payload-3.txt` would be
+   * scanned by neither. `isReportableFinding` is then re-applied with the OUTER
+   * scan's project type, so the scratch tree's shape cannot widen or narrow
+   * what is reported about the real one.
+   *
+   * ## What it reports
+   *
+   * The rule's OWN finding — its checkId, its severity, its attack class —
+   * re-attributed to the artifact the payload came out of, with the decoded
+   * text named in the message. A payload that decodes to a remote-execution
+   * command therefore blocks exactly as the plain command would, which is the
+   * whole point: the pre-fix scanner reported `SKILL-023 Obfuscated Code
+   * Pattern` and could not say what was obfuscated.
+   *
+   * Findings whose rule ALREADY fired on the same file are dropped
+   * (`baseFindings`): `SKILL-023` fires on the encoded form and stays a
+   * SKILL-023 at its existing severity. This pass adds a pass; it does not
+   * relabel anything.
+   *
+   * ## What it does not do
+   *
+   * It never writes to the target and never marks a finding fixable. Every
+   * remedy here is manual, because the auto-fixes are written against file
+   * content and the content this finding is about does not exist on disk in
+   * that form.
+   */
+  private async checkEncodedPayloads(
+    targetDir: string,
+    options: ScanOptions,
+    baseFindings: readonly SecurityFindingDraft[],
+    projectType: ProjectType,
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
+    const { files: artifacts, capped } = await this.findDecodableArtifacts(targetDir);
+
+    const decoded: Array<{ rel: string; decode: ArtifactDecode }> = [];
+    let artifactsRead = 0;
+    let payloads = 0;
+    let deepestDepth = 0;
+    let haltedAtBound = false;
+
+    for (const abs of artifacts) {
+      const rel = path.relative(targetDir, abs) || path.basename(abs);
+      let content: string;
+      try {
+        const stats = await fs.stat(abs);
+        if (stats.size > MAX_FILE_SIZE) continue;
+        content = await fs.readFile(abs, 'utf-8');
+      } catch {
+        // An unreadable artifact is already recorded by the tracked namespace
+        // and reported as SCAN-UNREAD-001. Nothing to add here.
+        continue;
+      }
+      artifactsRead++;
+
+      const result = decodeArtifact(content);
+      if (result.payloads.length === 0) continue;
+      decoded.push({ rel, decode: result });
+      payloads += result.payloads.length;
+      deepestDepth = Math.max(deepestDepth, result.deepestDepth);
+
+      for (const payload of result.payloads) {
+        if (!payload.haltedAtBound) continue;
+        haltedAtBound = true;
+        findings.push(this.decodeBoundFinding(rel, payload));
+      }
+    }
+
+    // Recorded before the rescan and unconditionally, `payloads: 0` included:
+    // "nothing was encoded here" is a measurement, and a block that appears
+    // only when the pass found something cannot be told from a pass that never
+    // ran. Same contract as the ledger it sits in.
+    this.coverage.noteDecodePass({
+      maxDepth: MAX_DECODE_DEPTH,
+      artifactsRead,
+      artifactsWithPayloads: decoded.length,
+      payloads,
+      deepestDepth,
+      haltedAtBound,
+    });
+
+    if (capped) {
+      this.coverage.truncate({
+        layer: 'decode',
+        cap: MAX_DECODE_ARTIFACTS,
+        prefixes: ['SCAN'],
+        reason: `the decode pass reads at most ${MAX_DECODE_ARTIFACTS} artifacts; artifacts past that cap were not decoded`,
+      });
+    }
+
+    if (decoded.length === 0) return findings;
+
+    // A scratch tree outside the target. Writing the reconstruction back into
+    // the target would be a scanner modifying the thing it is measuring, and
+    // `mkdtemp` gives a 0700 directory nothing else can read while it exists.
+    let scratch: string;
+    try {
+      scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'hma-decoded-'));
+    } catch {
+      // No scratch space, no rescan. The decode record above still stands, so
+      // the coverage output says payloads were found; it does not claim they
+      // were examined.
+      return findings;
+    }
+
+    try {
+      for (const { rel, decode } of decoded) {
+        const dest = path.join(scratch, rel);
+        await fs.mkdir(path.dirname(dest), { recursive: true });
+        await fs.writeFile(dest, decode.reconstructed, 'utf-8');
+      }
+
+      const inner = new HardeningScanner();
+      const innerResult = await inner.scan({
+        targetDir: scratch,
+        // Never fixes: a fix here would rewrite the scratch copy and report a
+        // remedy the user's tree never received.
+        autoFix: false,
+        // `standard`, not the caller's depth: `deep` would send the decoded
+        // payloads to the LLM as a second billed pass over content the outer
+        // run is already sending.
+        scanDepth: 'standard',
+        // The scratch tree is not a source repo — no git history, no
+        // `.gitignore` to be missing.
+        isNpmPackage: true,
+        // The line that terminates the recursion.
+        decodeRescan: false,
+        cliName: options.cliName,
+      });
+
+      const already = new Set<string>();
+      for (const f of baseFindings) {
+        if (f.file) already.add(`${f.file}\u0000${f.checkId}`);
+      }
+
+      const byArtifact = new Map(decoded.map((d) => [d.rel, d.decode]));
+      for (const f of innerResult.allFindings ?? innerResult.findings) {
+        // Operational records describe A RUN, and the run they describe is the
+        // inner one: `SCAN-001` about the size of a scratch copy, or the inner
+        // scan's own unread-input record, says nothing about the user's tree
+        // and would arrive attributed to a file it is not about.
+        if (TAXONOMY_EXEMPT_CHECKIDS.has(f.checkId)) continue;
+        if (!this.isReportableFinding(f, projectType)) continue;
+        const decode = f.file ? byArtifact.get(f.file) : undefined;
+        if (!decode || !f.file) continue;
+        const key = `${f.file}\u0000${f.checkId}`;
+        if (already.has(key)) continue;
+        already.add(key);
+        findings.push(this.decodedRuleFinding(f, f.file, decode));
+      }
+    } catch {
+      // A rescan that throws reports nothing rather than taking the outer scan
+      // down with it. The decode record already says payloads were found.
+    } finally {
+      await fs.rm(scratch, { recursive: true, force: true }).catch(() => {});
+    }
+
+    return findings;
+  }
+
+  /**
+   * One rule-bank finding, re-attributed from the reconstruction to the
+   * artifact the payload came out of.
+   *
+   * `reemitFinding` rather than a hand-built object: the inner finding has
+   * already crossed the redaction boundary, and a named-field rebuild is
+   * exactly the shape that downgrades an honest `'applied'` to `'clean'`
+   * (`finding-emit.ts`). The overrides carry no redaction field and cannot.
+   */
+  private decodedRuleFinding(
+    inner: SecurityFinding,
+    rel: string,
+    decode: ArtifactDecode,
+  ): SecurityFindingDraft {
+    const payload = payloadForLine(decode, inner.line);
+    const chain = payload.encodings.join(' → ');
+    const excerpt = decodedExcerpt(payload.text);
+    const where = `${rel}:${payload.line}`;
+
+    return reemitFinding(inner, {
+      name: `${inner.name} (decoded payload)`,
+      // The citation is the ENCODED span in the real file. The inner finding's
+      // line is a line of the reconstruction, which exists on no disk — citing
+      // it would send a reader to an unrelated line of the real artifact.
+      file: rel,
+      line: payload.line,
+      message:
+        `${where}: a ${chain} payload decodes to \`${excerpt}\`, and the decoded text matches ` +
+        `${inner.checkId}. Reported on the reconstructed command, not on the wrapper: the encoded ` +
+        `form matched no rule, which is what made it worth encoding.`,
+      description:
+        `${inner.description} Detected after decoding, not in the artifact's surface text.`,
+      // Evidence dropped deliberately: it cites line numbers of the
+      // reconstruction, and a citation that resolves against the real file
+      // would print an unrelated line with a straight face.
+      evidence: undefined,
+      // Never auto-fixable. The auto-fixes rewrite file content, and the
+      // content this finding is about is not the content on disk.
+      fixable: false,
+      fixed: undefined,
+      fixVerified: undefined,
+      wouldFix: undefined,
+      fix:
+        `Remove the encoded payload at ${where}. If the command it decodes to is genuinely ` +
+        `required, write it in plain text so it can be reviewed and so this rule can judge it ` +
+        `on its own terms.`,
+      manualFix: undefined,
+      details: {
+        ...(inner.details ?? {}),
+        decodedPayload: {
+          artifact: rel,
+          line: payload.line,
+          encodings: payload.encodings,
+          depth: payload.depth,
+          matchedCheckId: inner.checkId,
+          haltedAtBound: payload.haltedAtBound,
+        },
+      },
+    });
+  }
+
+  /** The `SCAN-DECODE-BOUND` record for one chain the bound stopped. */
+  private decodeBoundFinding(rel: string, payload: DecodedPayload): SecurityFindingDraft {
+    const chain = payload.encodings.join(' → ');
+    const where = `${rel}:${payload.line}`;
+    return {
+      checkId: 'SCAN-DECODE-BOUND',
+      name: 'Decode Depth Bound Reached',
+      description:
+        'A payload was still encoded at the decoder\'s depth bound, so the plaintext below that point was not examined by any rule.',
+      category: 'scan',
+      severity: 'medium',
+      passed: false,
+      message:
+        `${where}: a ${chain} payload was STILL encoded after ${MAX_DECODE_DEPTH} decodes. The scan ` +
+        `stopped at the bound and did not examine what is below it — this is a gap in coverage, not ` +
+        `a clean result. The layers that were decoded are reported by whichever rules matched them.`,
+      file: rel,
+      line: payload.line,
+      fixable: false,
+      fix:
+        `Decode the payload at ${where} by hand and inspect what it contains, or remove it. ` +
+        `Nesting an encoding past the scanner's bound has no legitimate use in an agent artifact.`,
+      guidance:
+        'The bound exists so a crafted artifact cannot make the scanner decode forever. Reaching it ' +
+        'is reported rather than absorbed, because a truncation nobody is told about reads exactly ' +
+        'like a clean result.',
+    };
+  }
+
+  /**
+   * Text artifacts the decode pass reads.
+   *
+   * Wider than any single check's walk on purpose — a payload does not care
+   * what extension it is hidden behind — and bounded by `MAX_DECODE_ARTIFACTS`,
+   * with the cap reported when it bites. This run's own backup archive is
+   * excluded by IDENTITY, never by name: a directory name is a suppression
+   * token the scanned tree can plant (#305/#309).
+   */
+  private async findDecodableArtifacts(
+    targetDir: string,
+  ): Promise<{ files: string[]; capped: boolean }> {
+    const files: string[] = [];
+    let capped = false;
+
+    const walk = async (dir: string, depth: number): Promise<void> => {
+      if (depth > 8 || files.length >= MAX_DECODE_ARTIFACTS) return;
+      let entries;
+      try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (files.length >= MAX_DECODE_ARTIFACTS) {
+          capped = true;
+          return;
+        }
+        if (entry.isSymbolicLink()) continue;
+        const full = path.join(dir, entry.name);
+        if (!this.isPathWithinDirectory(full, targetDir)) continue;
+        if (entry.isDirectory()) {
+          if (DECODE_SKIP_DIRS.has(entry.name)) continue;
+          if (await this.isOwnBackupDir(full)) continue;
+          await walk(full, depth + 1);
+        } else if (entry.isFile()) {
+          const ext = path.extname(entry.name).toLowerCase();
+          if (DECODE_ARTIFACT_EXTENSIONS.has(ext)) files.push(full);
+        }
+      }
+    };
+
+    try {
+      const stats = await fs.stat(targetDir);
+      if (stats.isFile()) {
+        // Single-file target, the `secure SKILL.md` shape. Extension-gated like
+        // every other artifact: the caller pointed at it, which does not make
+        // an ELF binary text.
+        const ext = path.extname(targetDir).toLowerCase();
+        return { files: DECODE_ARTIFACT_EXTENSIONS.has(ext) ? [targetDir] : [], capped: false };
+      }
+    } catch {
+      return { files: [], capped: false };
+    }
+
+    await walk(targetDir, 0);
+    return { files, capped };
   }
 
   /** Helper: recursively find files in web-served directories */

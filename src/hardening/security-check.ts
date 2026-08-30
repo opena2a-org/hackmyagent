@@ -415,6 +415,20 @@ export interface ScanResult {
     executions: CoverageCheckExecution[];
     /** Caps that stopped a layer short of the whole tree. */
     truncations: CoverageTruncationRecord[];
+    /**
+     * What the decode-then-rescan pass did, and the bound it did it under.
+     *
+     * Present whenever the pass ran (`standard` and `deep`), `payloads: 0`
+     * included — an artifact set with nothing encoded in it is a MEASUREMENT,
+     * and omitting the block there would make "nothing was encoded" and "the
+     * pass never ran" the same absence. Absent at `--scan-depth quick`, where
+     * the pass is one of the checks the depth skips.
+     *
+     * `maxDepth` is carried even when no chain came near it, because the
+     * question a reader has about a bounded decoder is what the bound IS, and a
+     * number that only appears once it bites cannot be checked in advance.
+     */
+    decode?: CoverageDecodeRecord;
     /** Distinct files read per category. Counts only — never filenames. */
     filesReadByCategory?: Record<string, number>;
     /**
@@ -509,6 +523,32 @@ export interface CoverageCheckExecution {
   pathsInspected: number;
   skipReason?: string;
   error?: string;
+}
+
+/**
+ * What the decode-then-rescan pass examined. Mirrors `DecodeCoverage`.
+ *
+ * Counts only — never a payload, never a path. The decoded text reaches the
+ * user through the finding that names it, which is the channel that carries
+ * `file:line`, a fix, and the redaction boundary.
+ */
+export interface CoverageDecodeRecord {
+  /** The recursion bound (`MAX_DECODE_DEPTH`), whether or not it was reached. */
+  maxDepth: number;
+  /** Artifacts whose contents the pass read. */
+  artifactsRead: number;
+  /** Of those, how many carried at least one decodable payload. */
+  artifactsWithPayloads: number;
+  /** Decoded payload spans across the tree. */
+  payloads: number;
+  /** Deepest chain actually decoded. `<= maxDepth`. */
+  deepestDepth: number;
+  /**
+   * At least one chain still had something decodable when the bound stopped
+   * it, so plaintext below that point was NOT examined by any rule. Reported
+   * per artifact as `SCAN-DECODE-BOUND`.
+   */
+  haltedAtBound: boolean;
 }
 
 /** One cap that stopped a layer short. Mirrors `CoverageTruncation`. */
