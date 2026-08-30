@@ -115,6 +115,23 @@ export interface CoverageTruncation {
   reason: string;
 }
 
+/**
+ * What the decode-then-rescan pass examined, and the bound it ran under.
+ *
+ * Recorded here rather than derived from findings for the reason the rest of
+ * this module exists: a decoder that reports only when it finds something
+ * cannot be distinguished from a decoder that did not run. `payloads: 0` is a
+ * measurement and it is worth carrying.
+ */
+export interface DecodeCoverage {
+  maxDepth: number;
+  artifactsRead: number;
+  artifactsWithPayloads: number;
+  payloads: number;
+  deepestDepth: number;
+  haltedAtBound: boolean;
+}
+
 /** Per-category rollup, derived entirely from the records above. */
 export interface CategoryCoverage {
   /** Category label, matching the renderer's vocabulary. */
@@ -204,6 +221,15 @@ export const CHECK_METHOD_PREFIXES: Readonly<Record<string, readonly string[]>> 
   checkMemoryStoreSanitization: ['MEM'],
   checkAgentCredentialProtection: ['AGENT-CRED'],
   checkContextLifecycle: ['LIFECYCLE'],
+  // Decode-then-rescan. `SCAN` is the prefix of the ID this pass emits under
+  // its own name (`SCAN-DECODE-BOUND`, a statement about what the run did NOT
+  // reach — the `SCAN-UNREAD-001` family). The pass's real output carries the
+  // check IDs of whichever rules matched the decoded plaintext, and those
+  // findings credit their OWN categories through `observedCheckIds`; claiming
+  // them here would credit every category the bank can speak about on the
+  // strength of one decoded blob, which is the overstating direction this
+  // ledger forbids.
+  checkEncodedPayloads: ['SCAN'],
 };
 
 /**
@@ -336,6 +362,8 @@ export class CoverageLedger {
   private readonly targetRoot: string;
   private readonly executions = new Map<string, CheckExecution>();
   private readonly truncations: CoverageTruncation[] = [];
+  /** Set once by `noteDecodePass`; absent when the depth skipped that pass. */
+  private decodeRecord?: DecodeCoverage;
   /** Stack of running methods — the innermost gets the attribution. */
   private readonly stack: string[] = [];
   /** Distinct target paths whose contents were read, across the whole scan. */
@@ -416,7 +444,7 @@ export class CoverageLedger {
   /**
    * Mark every registered method with no execution record as skipped.
    *
-   * Used by the quick-depth branch, where 55 of the 61 orchestrated checks
+   * Used by the quick-depth branch, where 56 of the 62 orchestrated checks
    * sit inside one `if (!isQuick)` block. Deriving the set from "has no record
    * yet" rather than from a hand-written list is deliberate: a list would
    * drift the moment a check is added to or moved out of that block, and a
@@ -436,6 +464,25 @@ export class CoverageLedger {
   /** Record a cap that stopped a layer short of the whole tree. */
   truncate(t: CoverageTruncation): void {
     this.truncations.push(t);
+  }
+
+  /**
+   * Record what the decode-then-rescan pass examined.
+   *
+   * Kept apart from `truncate` even though both describe a limit. A truncation
+   * DOWNGRADES the categories its prefixes name, which is right for a cap that
+   * left part of the tree unread; the decode bound leaves no artifact unread —
+   * every file was examined, and one payload inside one of them was not
+   * followed to the bottom. Filing that as a truncation would report a dozen
+   * categories as partly-covered on the strength of one nested blob.
+   */
+  noteDecodePass(record: DecodeCoverage): void {
+    this.decodeRecord = record;
+  }
+
+  /** What the decode pass measured, or undefined when it did not run. */
+  get decode(): DecodeCoverage | undefined {
+    return this.decodeRecord;
   }
 
   /**
