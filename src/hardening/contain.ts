@@ -10,7 +10,39 @@
  */
 
 import * as path from 'path';
-import { promises as fs } from 'fs';
+import { promises as fs, realpathSync } from 'fs';
+
+/**
+ * Site-level read confinement for the few raw-`fs` readers that bypass the
+ * tracked namespace by design (`readArtifactForCitation`, the NanoMind
+ * bridge's policy probe and citation re-read, the CLI's single-file copy).
+ *
+ * Same decision as the namespace guard in `tracked-fs.ts`, on the same
+ * predicate: the read is refused when `filePath` really resolves outside
+ * `realpath(treeRoot)`. The lexical form of `filePath` is NOT checked here —
+ * every caller has already joined its name onto the tree, and the guard's
+ * "lexically inside" test is about which paths the tree can redirect, which
+ * at these sites is all of them. Both sides are resolved before comparing, so
+ * a target under a symlinked ancestor (`/var` -> `/private/var`) stays inside.
+ *
+ * `{ ok: true }` when either side cannot be resolved: an unresolvable path is
+ * the caller's own errno to report, and refusing on a claim the filesystem
+ * would not confirm would mask a genuine lost input.
+ */
+export function readStaysInsideTree(
+  filePath: string,
+  treeRoot: string,
+): { ok: true } | { ok: false; resolved: string } {
+  let real: string;
+  let rootReal: string;
+  try {
+    real = realpathSync(filePath);
+    rootReal = realpathSync(treeRoot);
+  } catch {
+    return { ok: true };
+  }
+  return isPathWithinDirectory(real, rootReal) ? { ok: true } : { ok: false, resolved: real };
+}
 
 /**
  * Why `resolveInsideTree` would not hand back a path to act on.

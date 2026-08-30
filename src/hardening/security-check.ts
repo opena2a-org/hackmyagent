@@ -285,6 +285,18 @@ export interface NanoMindIntentSignal {
   modelVersion: string;
 }
 
+/**
+ * One link the scan refused to follow (see `ScanResult.withheldLinks`).
+ * `retarget` is the operator-facing instruction: the scan target that would
+ * include the file, spelled as a runnable command.
+ */
+export interface WithheldLinkRecord {
+  rel: string;
+  resolved: string;
+  call: string;
+  retarget: string;
+}
+
 export interface ScanResult {
   timestamp: Date;
   platform: string;
@@ -388,6 +400,16 @@ export interface ScanResult {
     llmCost?: number;
     cachedResults?: number;
   };
+  /**
+   * Links inside the scanned tree that resolve outside it and were therefore
+   * NOT read. Confinement is the default and only mode: the scanned tree
+   * decides what it contains, not where the scanner's reads go. Each entry
+   * names the link as the tree spells it, where it resolves, the operation
+   * withheld, and the retarget instruction. Disclosed on every report
+   * channel; never an unread input, never a finding, never an exit-code
+   * change. Absent (not empty) when nothing was withheld.
+   */
+  withheldLinks?: WithheldLinkRecord[];
   /**
    * Summaries of AI runtimes installed on this machine but OUTSIDE the scan
    * target (`~/.openclaw`, `~/.nemoclaw`, ...).

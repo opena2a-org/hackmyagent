@@ -305,7 +305,45 @@ import {
   withActiveLedger,
   type CategoryCoverage,
 } from './hardening/coverage-ledger';
-import type { ScanResult, SuppressionChannel, SecurityFindingDraft } from './hardening/security-check';
+import type { ScanResult, SuppressionChannel, SecurityFindingDraft, WithheldLinkRecord } from './hardening/security-check';
+import { readStaysInsideTree } from './hardening/contain';
+import { mergeWithheldLinks, retargetInstruction, withheldLinkLines } from './hardening/withheld-links';
+
+/**
+ * `statSync` for a scan target as typed, without following a link out of the
+ * target's own directory.
+ *
+ * `stat` follows links, so asking "is this a file?" about `./config.json`
+ * when it is `config.json -> ~/.aws/credentials` resolves through the link
+ * before the scan has decided anything — the one filesystem operation the
+ * confinement invariant forbids on a path the scanned tree can redirect. The
+ * link is examined with `lstat` first; only a link that stays inside its own
+ * parent is followed. An out-of-tree link is reported as what it is, a link,
+ * with `outOfTreeLink` set so the caller can treat it as a withheld file
+ * target (single-file mode does) rather than a directory.
+ */
+function statTargetWithoutFollowingOut(target: string): { stats?: import('node:fs').Stats; outOfTreeLink: boolean } {
+  const nodeFs = require('node:fs') as typeof import('node:fs');
+  const nodePath = require('node:path') as typeof import('node:path');
+  const link = nodeFs.lstatSync(target, { throwIfNoEntry: false });
+  if (!link) return { outOfTreeLink: false };
+  if (!link.isSymbolicLink()) return { stats: link, outOfTreeLink: false };
+  if (readStaysInsideTree(target, nodePath.dirname(target)).ok) {
+    return { stats: nodeFs.statSync(target, { throwIfNoEntry: false }), outOfTreeLink: false };
+  }
+  // Out of its own directory. A link to a DIRECTORY is the operator naming a
+  // tree through a link (`secure ~/oclink` -> `~/.openclaw`), which is the
+  // symlinked-parent case and is scanned as that directory. A link to
+  // anything else is a withheld single-file target. Classified by `realpath`
+  // (the instrument) plus `lstat` of the resolved path, which is lexically
+  // outside the target's directory and so outside the invariant's domain —
+  // no link-following call is made on the path as typed.
+  let real: string;
+  try { real = nodeFs.realpathSync(target); } catch { return { stats: link, outOfTreeLink: true }; }
+  const resolved = nodeFs.lstatSync(real, { throwIfNoEntry: false });
+  if (resolved?.isDirectory()) return { stats: resolved, outOfTreeLink: false };
+  return { stats: link, outOfTreeLink: true };
+}
 import { emitFindings, reemitFinding, assertRedactionProvenance, rethrowIfRedactionProvenance, type RedactedFinding } from './hardening/finding-emit';
 import { buildJsonStdoutDocument } from './output/json-stdout';
 import { compareFindingsByTier } from './ui/finding-tier';
@@ -1167,6 +1205,12 @@ interface UnifiedCheckDisplayOptions {
   registry?: RegistryTrustData | null;
   verbose?: boolean;
   version?: string;
+  /**
+   * Links inside the scanned tree that resolve outside it and were not read.
+   * Printed under the header beside the unread-input line, because both say
+   * the same kind of thing about the risk level below: what it is over.
+   */
+  withheldLinks?: WithheldLinkRecord[];
   nanomindScan?: {
     compiledArtifacts: number;
     /** True when the semantic compile set hit its 200-file cap. */
@@ -1885,6 +1929,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     const verb = first.kind === 'directory' || ancestor !== undefined ? 'ls -ld' : 'ls -l';
     const cited = verifyTarget === '.' || verifyTarget === '' ? citationPath(scanRoot ?? first.path) : citationPath(verifyTarget);
     console.log(`  ${colors.dim}The risk level below is an upper bound: ${n} input${n === 1 ? '' : 's'} discovered and not read.${cited ? ` Verify: ${verb} ${cited}` : ''}${RESET()}`);
+  }
+
+  // Links the scan refused to follow, each with where it goes and the scan
+  // target that would include it. A disclosure, not a finding: the exit code
+  // and the score are over the tree as it is, and a tree that contains a
+  // link contains a link.
+  for (const line of withheldLinkLines(opts.withheldLinks ?? [])) {
+    console.log(`  ${colors.dim}${line}${RESET()}`);
   }
 
   // ── Verdict + Score ─────────────────────────────────────────────────
@@ -4792,8 +4844,10 @@ Examples:
 
       // Single-FILE target handling.
       const _fs = require('node:fs');
-      const _fileStat = _fs.statSync(originalTarget, { throwIfNoEntry: false });
-      const _isFileTarget = !!(_fileStat && _fileStat.isFile());
+      // Without following a link out of its own directory: an out-of-tree
+      // link is a single-file target that the copy below withholds.
+      const _target = statTargetWithoutFollowingOut(originalTarget);
+      const _isFileTarget = _target.outOfTreeLink || !!(_target.stats && _target.stats.isFile());
 
       // --fix / --dry-run operate on a project directory (backup dir creation,
       // harden-soul rewrites). On a lone file they crash (ENOTDIR creating a
@@ -4822,11 +4876,32 @@ Examples:
       // sole file in a project. Findings carry the basename, so paths stay
       // correct; displayDir shows the user's original path. The temp dir is
       // removed on process exit (covers the command's process.exit() paths).
+      //
+      // The copy IS the read, and the temp dir becomes the scan root, so this
+      // sits outside the scanner's namespace guard and confines at its own
+      // site. The root is the real location of the argument's lexical parent:
+      // a repo's own instructions can tell the operator to name a path inside
+      // a clone, and naming `./agent-config.json` is not consent to read
+      // whatever `agent-config.json -> ~/.aws/credentials` points at. A link
+      // that leaves that directory is not copied; the scan runs over the
+      // empty temp dir and the disclosure names the link and where to point
+      // the scan instead.
+      let singleFileWithheld: WithheldLinkRecord | undefined;
       if (_isFileTarget) {
         const _os = require('node:os');
         const _path = require('node:path');
         const _tmp = _fs.mkdtempSync(_path.join(_os.tmpdir(), 'hma-secure-file-'));
-        _fs.copyFileSync(originalTarget, _path.join(_tmp, _path.basename(originalTarget)));
+        const stays = readStaysInsideTree(originalTarget, _path.dirname(originalTarget));
+        if (stays.ok) {
+          _fs.copyFileSync(originalTarget, _path.join(_tmp, _path.basename(originalTarget)));
+        } else {
+          singleFileWithheld = {
+            rel: _path.basename(originalTarget),
+            resolved: stays.resolved,
+            call: 'copyFileSync',
+            retarget: retargetInstruction(stays.resolved, RAW_CLI_PREFIX),
+          };
+        }
         process.on('exit', () => {
           try { _fs.rmSync(_tmp, { recursive: true, force: true }); } catch { /* best effort */ }
         });
@@ -5041,6 +5116,11 @@ Examples:
         },
       });
       const scanDurationMs = Date.now() - scanStartMs;
+      // A single-file target withheld before the scan joins the scan's own
+      // withheld links, so every channel below discloses it the same way.
+      if (singleFileWithheld) {
+        result.withheldLinks = mergeWithheldLinks(result.withheldLinks, [singleFileWithheld]);
+      }
 
       // `scanInner` invokes the hook unconditionally and does not swallow its
       // throw, so reaching here means it ran. Asserted rather than defaulted:
@@ -5963,6 +6043,7 @@ Examples:
           : undefined,
         artifactSummaries: nmResult.artifactSummaries,
         machinePosture: result.machinePosture,
+        withheldLinks: result.withheldLinks,
         nextStepsTarget: directory,
       });
 
@@ -12595,7 +12676,9 @@ function printCheckNextSteps(
   const dirTarget = ((): string => {
     if (!isLocal) return target;
     try {
-      return require('fs').statSync(target).isDirectory()
+      // Without following a link out of the target's own directory (an
+      // out-of-tree link stands where a file would, so it cites the parent).
+      return statTargetWithoutFollowingOut(target).stats?.isDirectory()
         ? target
         : require('path').dirname(target);
     } catch {
@@ -13967,10 +14050,11 @@ async function checkNpmPackage(
           // the pathless citation already says. Nothing to complete.
           setCitationTarget(undefined);
         } else {
-          const { statSync } = require('node:fs') as typeof import('node:fs');
           const nodePath = require('node:path') as typeof import('node:path');
-          let st: ReturnType<typeof statSync> | undefined;
-          try { st = statSync(rawTarget); } catch { /* not a local path */ }
+          let st: import('node:fs').Stats | undefined;
+          // lstat-first: this hook runs before the command, and a `stat` here
+          // would follow an out-of-tree link before confinement decides.
+          try { st = statTargetWithoutFollowingOut(rawTarget).stats; } catch { /* not a local path */ }
           if (!st) {
             // npm / PyPI / GitHub / skill ref — there is no local path any
             // local-fix advice could correctly name.

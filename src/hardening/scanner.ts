@@ -36,7 +36,9 @@ import {
   describeResolveRefusal,
   type ResolveOutcome,
   type ResolveRefusal,
+  readStaysInsideTree,
 } from './contain';
+import { withheldLinkRecords } from './withheld-links';
 import { GOVERNANCE_FILES } from '../soul/governance-files';
 // One vocabulary with `detect`'s permission-grant rule (#363, #364), so the two
 // commands cannot disagree in direction on the same `.claude/settings.json`.
@@ -821,6 +823,16 @@ export interface ScanOptions {
    * its own drift.
    */
   decodeRescan?: boolean;
+  /**
+   * The confinement root set: directories a read may resolve into. A link
+   * inside the target whose real location is outside every root is withheld
+   * by the tracked `fs` namespace, recorded on the ledger, and disclosed on
+   * `ScanResult.withheldLinks`. Defaults to `[realpath(targetDir)]`, and the
+   * target is always a member. The MCP handlers pass every granted root so a
+   * link between two granted projects is read. There is no option and no
+   * flag that widens this beyond the roots the caller was already given.
+   */
+  confineRoots?: string[];
   /**
    * The NanoMind semantic pass, run INSIDE the coverage ledger's window (#499).
    *
@@ -2838,6 +2850,7 @@ export class HardeningScanner {
    */
   async scan(options: ScanOptions): Promise<ScanResult> {
     const ledger = new CoverageLedger(options.targetDir);
+    if (options.confineRoots) ledger.setConfineRoots(options.confineRoots);
     this.coverage = ledger;
     // Per-run, like the ledger itself: a reused instance must not inherit the
     // previous scan's unread set.
@@ -3206,8 +3219,15 @@ export class HardeningScanner {
       // rather than a directory NAME: a name is a suppression token the
       // scanned tree can plant (#305/#309), while the identity check excludes
       // THIS RUN's backup and nothing else.
+      //
+      // `confineTo` is belt-and-suspenders: the tracked namespace already
+      // withholds an out-of-tree link before `take` can `stat` it, and this
+      // scan runs under the ledger that decides it. Passing the same roots
+      // here keeps the structural seam confined on its own terms too, the
+      // way the MCP server passes them (#463).
       const structuralFindings = await structural.analyze(targetDir, {
         isExcludedDir: (dir) => this.isOwnBackupDir(dir),
+        confineTo: this.structuralConfinement(),
       });
       const converted = toSecurityFindings(
         structuralFindings,
@@ -3252,6 +3272,7 @@ export class HardeningScanner {
         // duplicated backup copy would be a billed LLM call.
         const files = await structural.discoverFiles(targetDir, {
           isExcludedDir: (dir) => this.isOwnBackupDir(dir),
+          confineTo: this.structuralConfinement(),
         });
         const llm = new LLMAnalyzer({
           apiKey: process.env.ANTHROPIC_API_KEY,
@@ -4202,6 +4223,24 @@ export class HardeningScanner {
         // number `cli.ts` settles the exit code on (#590).
         unreadableInputs: this.allUnreadableInputs(),
       },
+      // Links the scan refused to follow, with the retarget instruction.
+      // Absent when nothing was withheld, so an unchanged tree produces an
+      // unchanged document.
+      ...(this.coverage.withheldLinks.length > 0
+        ? { withheldLinks: withheldLinkRecords(this.coverage.withheldLinks, this.cliName) }
+        : {}),
+    };
+  }
+
+  /**
+   * The structural seam's `confineTo`, built from the active ledger's root
+   * set so the two mechanisms cannot disagree about where the tree ends. A
+   * withhold the seam decides on its own lands on the same ledger channel.
+   */
+  private structuralConfinement(): { roots: string[]; onWithheld: (rel: string, resolved: string) => void } {
+    return {
+      roots: [...this.coverage.confinementRoots],
+      onWithheld: (rel, resolved) => { this.coverage.noteWithheldLink(rel, resolved, 'readFile'); },
     };
   }
 
@@ -5175,8 +5214,17 @@ export class HardeningScanner {
    * outcome, and a throw here would take out the whole Layer 2 conversion.
    */
   private readArtifactForCitation(targetDir: string, file: string): string | undefined {
+    // Raw read by design (it must not attribute, see `tracked-fs.ts`), so it
+    // confines at its own site: a finding that names a file by its in-tree
+    // spelling must not be able to quote out-of-tree bytes by re-reading it.
+    const filePath = path.resolve(targetDir, file);
+    const stays = readStaysInsideTree(filePath, targetDir);
+    if (!stays.ok) {
+      this.coverage.noteWithheldLink(path.relative(path.resolve(targetDir), filePath), stays.resolved, 'readFileSync');
+      return undefined;
+    }
     try {
-      return fsSync.readFileSync(path.resolve(targetDir, file), 'utf-8');
+      return fsSync.readFileSync(filePath, 'utf-8');
     } catch {
       return undefined;
     }

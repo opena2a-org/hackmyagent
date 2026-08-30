@@ -135,6 +135,8 @@ hackmyagent secure -b oasb-1 --fail-below 70  # CI gate (adds a floor; the ratin
 hackmyagent secure --nanomind                 # AI analyst: per-finding narratives + coverage escalations
 ```
 
+**Reads stay inside the directory you scan.** A symbolic link inside the tree that resolves outside it (`.env -> ~/.aws/credentials`, `skills -> /`) is not followed, by any check, on any `secure` run or MCP scan: the report lists each such link with where it resolves, and to include that file you point the scan at the directory that really contains it, for example `hackmyagent secure ~/shared`. Withheld links do not change the exit code and are not counted as unread inputs; a link that resolves inside the tree is read normally. There is no flag that follows links out, because the tree being scanned is the one thing a scan must not let choose what it reads.
+
 Output shows an Observations block (surfaces, checks, categories, verdict) and a per-finding list. Every HIGH or CRITICAL finding names the file it came from. Findings from a specific line — hardcoded credentials in source, for example — carry `file:line` and a runnable `Fix:` with a `Verify:` command. Findings about a file's overall configuration, such as an over-permissive `.claude/settings.json`, currently name the file without a line and describe the fix in prose rather than as a command ([#299](https://github.com/opena2a-org/hackmyagent/issues/299), [#368](https://github.com/opena2a-org/hackmyagent/issues/368)).
 
 ### NanoMind semantic analysis
