@@ -4,6 +4,47 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The MCP checks read every root config spelling, so renaming mcp.json no longer raises the rating
+
+The deterministic MCP checks (`MCP-001` to `MCP-010`, `NET-001`, `NET-002`,
+`TOOL-001` to `TOOL-003`) read only a root `mcp.json`. `.mcp.json` — the
+project-scope file Claude Code reads — was outside their discovery set, so a
+tree whose servers lived there scored higher than the same servers in
+`mcp.json`: OASB-1 controls 2.3, 4.1 and 5.2 read `not-applicable` while the
+servers were live (33% as `mcp.json`, 36% as `.mcp.json` on the tracking
+issue's fixture). Discovery is now the exported `ROOT_MCP_CONFIG_FILES`
+constant (`mcp.json`, `.mcp.json`), consumed by every root read site and
+every list that names the root config, and pinned in both directions by a
+source contract test. Every spelling that exists is evaluated on its own —
+a first-found read would let a clean `mcp.json` shadow a live `.mcp.json` —
+and each record names the file it came from; auto-fix writes back to the
+file it read, and the backup manifest pre-seeds both spellings. A tree with
+neither spelling records `not applicable` naming the set, `mcp.json or
+.mcp.json` (#637).
+
+Those checks' records also now carry `file:`, with two score effects, both
+in the direction of counting what was measured. On a tree whose
+`package.json` does not type it as an MCP project, the failing records were
+dropped as pathless noise: a benchmark run can now report controls 2.3, 4.1
+and 5.2 as measured (and failing on real configuration gaps) where it
+previously reported them `unverified` — or `passed`, when the only record
+that survived the drop was a passing one — while the plain `secure` score is
+unchanged there (the project-type scope still keeps MCP checks out of the
+scored list; measured unchanged on every corpus fixture and five workspace
+repositories). On a tree that IS MCP-typed, the same records previously
+failed the scored list's file requirement, so a failing root config now
+lowers the plain score — and can lower the verdict — where it silently did
+not (measured 55 to 36 on a config failing six of the checks). (#637)
+
+The benchmark evaluator now folds every record a checkId carries instead of
+keeping the last one: any failing record fails the control whatever a later
+record says, a measured record outranks a not-applicable sibling, the
+verdict is independent of scanner emission order, and a control cites one
+evidence line per failing record — the one-result-per-failing-record shape
+SARIF uses. On every corpus fixture and test tree measured, no control status,
+count or compliance figure moves from the fold alone; evidence arrays grow
+to cite every failing site.
+
 ### The ASP profile's credential summary no longer misses semantic secrets
 
 `secure -b oasb-1 --format asp` could report `credentials.hardcodedSecrets: 0`
