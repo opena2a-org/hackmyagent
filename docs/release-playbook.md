@@ -367,6 +367,50 @@ Failures:
   but generic. Does NOT block current release; fix before next.
 - **LOW**: polish. Batch.
 
+## Stub write-back — two steps, non-skippable
+
+`mark-stub` is the terminus of the observation -> shipped-check loop: it is
+the only place a stub the release actually implemented gets recorded as
+`integrated`, and the only place an authored-but-never-wired check is caught
+(`integrated` is refused when the check ID names a family this build ships and
+never calls). A release that ships checks and records none of them leaves the
+question "how many confirmed observations became a shipped check" unanswerable
+for that version.
+
+Both steps require `INTERNAL_API_KEY`. Neither is skippable, and neither runs
+against a fixture registry.
+
+**1. Before the tag is pushed — preview every stub the release claims.**
+
+Run a preview for each stub this release says it implemented. It runs every
+preflight and the reachability probe, prints the exact body that would be
+sent, and sends nothing, so a stub whose check was authored but never wired
+into `scanInner` fails HERE rather than after publish.
+
+```bash
+node dist/cli.js pull-stubs --status reviewed
+node dist/cli.js mark-stub <stub-id> integrated --source-commit $(git rev-parse HEAD) --dry-run
+```
+
+Exit 0 means the transition would be recorded. Exit 1 is a refusal and blocks
+the tag push — read the `Fix:` line, it names the real remedy. Exit 2 means the
+registry could not be reached, so nothing was determined; resolve that and
+re-run rather than proceeding.
+
+**2. After publish — send it for real, from the RELEASED artifact.**
+
+Run the real send from the published package, not from the working tree. The
+evidence carries the version of the artifact that produced it, and the whole
+point of the record is that it describes what users can install:
+
+```bash
+npx hackmyagent@<version> mark-stub <stub-id> integrated --source-commit <sha>
+```
+
+Record the stub ids and the exit code of each send in `briefs/release-findings.md`
+alongside the rest of the run. A stub that refuses at this step after passing
+step 1 is a finding: the published artifact and the working tree disagree.
+
 ## Self-learning loop (MANDATORY — this is how the playbook grows)
 
 Five mechanisms, none optional:

@@ -371,6 +371,16 @@ import { generateBenchmarkReport } from './benchmarks/benchmark-report';
 import { UsageError, usageError, isRefusal, networkTimeoutError } from './checker/errors';
 import { RootRefusalError } from './mcp/roots';
 import { shellQuote, citationPath, citationTarget, commandNaming } from './ui/shell-quote';
+import {
+  preflight,
+  probeReachability,
+  settledSourceWarning,
+  buildEvidence,
+  buildPatchBody,
+  EVIDENCE_GATED_STATUS,
+  type StubRefusal,
+  type StubEvidence,
+} from './registry/stub-writeback';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
 import type { ConceptId } from './types/finding-evidence';
 import { trustAapGate } from './aap';
@@ -11727,6 +11737,18 @@ Examples:
   });
 
 // pull-stubs: fetch pending HMA check stubs from the registry
+//
+// The status vocabulary is the REGISTRY'S, not this CLI's (DEFECT 1 of
+// `todo/roadmap/hackmyagent-pull-stubs-status-vocabulary-mismatch.md`, ruled
+// by [CHIEF-CA] 2026-08-31). This command used to validate against a
+// hardcoded `['draft','review','integrated','rejected']` and then filter the
+// response client-side against the same list, while the DB CHECK constraint
+// held a different set — so every value except the default `draft` was
+// unusable in one direction or the other and the pipeline's only working
+// query was the default. Both halves are gone: `--status` rides to the
+// registry verbatim as `?status=`, and a 4xx answer is printed as it came
+// back, because that body is what carries the allowed set. A CLI that
+// re-states a vocabulary it does not own can only ever be wrong later.
 program
   .command('pull-stubs')
   .description(`Fetch pending HMA check stubs from the registry for review.
@@ -11735,27 +11757,26 @@ The ARIA pipeline discovers new attack patterns and creates stub definitions
 for checks that HMA doesn't yet implement. This command pulls those stubs
 so you can review, refine, and integrate them.
 
+--status is sent to the registry verbatim; the registry owns the vocabulary
+and answers with the allowed set when it does not recognise a word.
+
 Requires INTERNAL_API_KEY environment variable for registry authentication.
 
 Examples:
   $ ${CLI_PREFIX} pull-stubs
-  $ ${CLI_PREFIX} pull-stubs --status review
+  $ ${CLI_PREFIX} pull-stubs --status reviewed
+  $ ${CLI_PREFIX} pull-stubs --all
   $ ${CLI_PREFIX} pull-stubs --json`)
-  .option('--status <status>', 'Filter by stub status (draft, review, integrated, rejected)', 'draft')
+  .option('--status <status>', 'Filter by stub status, sent verbatim to the registry (current vocabulary: draft, reviewed, integrated, rejected)', 'draft')
+  .option('--all', 'Every stub, whatever its status (omits the status filter from the request)')
   .option('--registry-url <url>', 'Registry base URL', validateRegistryUrl(process.env.REGISTRY_URL || 'https://api.oa2a.org'))
   .option('--json', 'Output raw JSON instead of formatted table')
   .action(async (opts: {
     status: string;
+    all?: boolean;
     registryUrl: string;
     json?: boolean;
-  }) => {
-    const validStatuses = ['draft', 'review', 'integrated', 'rejected'];
-    if (!validStatuses.includes(opts.status)) {
-      process.stderr.write(`Error: --status must be one of: ${validStatuses.join(', ')}\n`);
-      process.stderr.write(`  Got: ${opts.status}\n`);
-      process.exit(1); // exit-unsettled(#350/S042): pre-work refusal; events await the schema reason field (#525)
-    }
-
+  }, command: Command) => {
     const apiKey = process.env.INTERNAL_API_KEY;
     // HTTP header values are ByteStrings (Latin-1). A key carrying anything
     // outside that range — most often U+FFFD after a bad copy-paste or a
@@ -11785,7 +11806,18 @@ Examples:
     }
 
     const registryUrl = validateRegistryUrl(opts.registryUrl).replace(/\/+$/, '');
-    const endpoint = `${registryUrl}/internal/aria/hma-stubs`;
+    // `--all` is a REQUEST-SHAPE switch, not a magic status word: it omits
+    // `?status=` entirely rather than sending a value the registry would then
+    // have to know about. A vocabulary the two sides have to agree on is the
+    // defect this unit closes, so the "no filter" case must not need one.
+    if (opts.all && command.getOptionValueSource('status') === 'cli') {
+      process.stderr.write('Note: --all omits the status filter, so --status is not sent.\n');
+    }
+    const endpoint = opts.all
+      ? `${registryUrl}/internal/aria/hma-stubs`
+      : `${registryUrl}/internal/aria/hma-stubs?status=${encodeURIComponent(opts.status)}`;
+    /** What this request asked for, for the labels and the JSON echo. */
+    const filterLabel = opts.all ? 'all' : opts.status;
 
     let responseData: { stubs: Array<{
       id: string;
@@ -11819,7 +11851,16 @@ Examples:
         if (res.status === 401 || res.status === 403) {
           process.stderr.write('  Your INTERNAL_API_KEY may be invalid or expired.\n');
         }
-        if (body) process.stderr.write(`  ${body.slice(0, 200)}\n`);
+        // Near-verbatim, and no longer clipped at 200 bytes: a 400 here
+        // carries the allowed status set, which is the ONE thing the CLI no
+        // longer knows and the reader most needs. Escaped per line because
+        // these are registry bytes reaching a terminal (#601), and bounded
+        // only against a pathological body.
+        if (body) {
+          for (const line of body.slice(0, 4000).split('\n')) {
+            process.stderr.write(`  ${escapeForDisplay(line)}\n`);
+          }
+        }
         await exitRecorded(1, 'error');
       }
 
@@ -11838,16 +11879,20 @@ Examples:
       return;
     }
 
-    // Filter by status
-    const stubs = responseData.stubs.filter(s => s.status === opts.status);
+    // No client-side filter. The rows the registry returned ARE the answer;
+    // re-filtering them here is what made `--status reviewed` return nothing
+    // on a registry that had rows in exactly that state.
+    const stubs = responseData.stubs;
 
     if (stubs.length === 0) {
       if (opts.json) {
-        writeJsonStdout({ stubs: [], total: responseData.total, filtered: 0, status: opts.status });
+        writeJsonStdout({ stubs: [], total: responseData.total, filtered: 0, status: opts.all ? null : opts.status, all: opts.all === true });
       } else {
-        console.log(`No stubs with status "${opts.status}" found.`);
+        console.log(opts.all
+          ? 'No stubs found.'
+          : `No stubs with status "${escapeForDisplay(opts.status)}" found.`);
         if (responseData.total > 0) {
-          console.log(`  Registry has ${responseData.total} total stub(s). Try a different --status filter.`);
+          console.log(`  Registry has ${responseData.total} total stub(s). Try a different --status filter, or --all.`);
         }
       }
       return;
@@ -11855,7 +11900,7 @@ Examples:
 
     // JSON output mode
     if (opts.json) {
-      writeJsonStdout({ stubs, total: responseData.total, filtered: stubs.length, status: opts.status });
+      writeJsonStdout({ stubs, total: responseData.total, filtered: stubs.length, status: opts.all ? null : opts.status, all: opts.all === true });
       return;
     }
 
@@ -11868,7 +11913,7 @@ Examples:
       info: colors.dim,
     };
 
-    console.log(`\nHMA Check Stubs (status: ${opts.status})\n`);
+    console.log(`\nHMA Check Stubs (status: ${escapeForDisplay(filterLabel)})\n`);
 
     for (const stub of stubs) {
       // #601 — every field here is bytes from the Registry JSON response; a
@@ -11878,6 +11923,9 @@ Examples:
       // yields no color, never renders).
       const sc = severityColor[stub.severity?.toLowerCase()] || '';
       console.log(`${'='.repeat(60)}`);
+      // Stub ID leads: it is the argument `mark-stub` takes, and a report
+      // whose next step needs an identifier it never printed is a dead end.
+      console.log(`  Stub ID:    ${escapeForDisplay(String(stub.id))}`);
       console.log(`  Check ID:   ${escapeForDisplay(String(stub.checkId))}`);
       console.log(`  Series:     ${escapeForDisplay(String(stub.series))}`);
       console.log(`  Name:       ${escapeForDisplay(String(stub.name))}`);
@@ -11900,7 +11948,7 @@ Examples:
     console.log('='.repeat(60));
     console.log(`\nSummary`);
     console.log(`  Total in registry:  ${responseData.total}`);
-    console.log(`  Matching "${opts.status}":  ${stubs.length}`);
+    console.log(`  Matching "${escapeForDisplay(filterLabel)}":  ${stubs.length}`);
 
     // By series
     const bySeries: Record<string, number> = {};
@@ -11916,10 +11964,253 @@ Examples:
     console.log(`\n  By severity:`);
     for (const [sev, count] of Object.entries(bySeverity).sort((a, b) => b[1] - a[1])) {
       const sc = severityColor[sev?.toLowerCase()] || '';
-      console.log(`    ${sc}${sev}${colors.reset}: ${count}`);
+      console.log(`    ${sc}${escapeForDisplay(sev)}${colors.reset}: ${count}`);
     }
 
+    console.log(`\n  Next step: record a transition with ${CLI_PREFIX} mark-stub <stub-id> <status> (add --dry-run to preview it)`);
+
     console.log('');
+  });
+
+// mark-stub: the write-back half of the observation -> shipped-check loop.
+//
+// DEFECT 2 of the same roadmap unit, UX ruled verbatim by [CHIEF-CPO]
+// 2026-08-31. Nothing in HMA marked a stub integrated, so nobody could answer
+// "how many confirmed observations became a shipped check" — the only figure
+// that proves the flywheel turns. The registry endpoint this PATCHes ships
+// separately (REG-10); every test here runs against a mocked registry so the
+// two legs land independently.
+//
+// The refusals are the product. A write-back that records whatever it is told
+// measures how often someone typed the command, not how often a check
+// shipped, and the manual authoring path has a step (`scanInner` wiring)
+// whose omission leaves a check counted and unable to fire — which is exactly
+// what the reachability probe reads the built inventory to catch.
+program
+  .command('mark-stub')
+  .argument('<id>', 'Stub id, as printed by pull-stubs under "Stub ID"')
+  .argument('<status>', 'Status to record. Sent verbatim; the registry owns the vocabulary')
+  .description(`Requires INTERNAL_API_KEY: record an HMA check-stub status transition in the registry.
+
+Sends PATCH /internal/aria/hma-stubs/:id. The status word is sent verbatim —
+the registry owns the vocabulary and answers with the allowed set when it does
+not recognise one.
+
+Two transitions carry a local gate, because both are claims somebody will be
+asked to defend later:
+
+  integrated  refused without --source-commit, and refused unless the check ID
+              names a family THIS build both ships and calls. The evidence
+              recorded alongside it (check id, this artifact's version, the
+              commit, the probe verdict) is measured here, never supplied.
+  rejected    refused without --reason.
+
+Examples:
+  $ ${CLI_PREFIX} mark-stub 7f3c1d2e reviewed
+  $ ${CLI_PREFIX} mark-stub 7f3c1d2e integrated --source-commit 1a2b3c4 --dry-run
+  $ ${CLI_PREFIX} mark-stub 7f3c1d2e rejected --reason "duplicate of CRED-014"`)
+  .option('--reason <text>', 'Why this transition is being recorded. Required for rejected.')
+  .option('--source-commit <sha>', 'Commit carrying the shipped check, 7-40 hex. Required for integrated.')
+  .option('--check-id <id>', 'Check ID to probe. Defaults to the checkId the registry already records for this stub.')
+  .option('--dry-run', 'Run every preflight and the reachability probe, print the exact PATCH body, and send nothing')
+  .option('--registry-url <url>', 'Registry base URL', validateRegistryUrl(process.env.REGISTRY_URL || 'https://api.oa2a.org'))
+  .option('--json', 'Output raw JSON instead of formatted text')
+  .action(async (id: string, status: string, opts: {
+    reason?: string;
+    sourceCommit?: string;
+    checkId?: string;
+    dryRun?: boolean;
+    registryUrl: string;
+    json?: boolean;
+  }) => {
+    /** 1 — the run refused. 2 — the run could not tell whether it landed. */
+    const EXIT_REFUSED = 1;
+    const EXIT_NOT_SETTLED = 2;
+
+    /** The one place a refusal ends, on both channels. */
+    const refuse = async (refusal: StubRefusal, checkId: string | null): Promise<never> => {
+      if (opts.json) {
+        writeJsonStdout({ ok: false, stubId: id, status, checkId, refusal });
+      } else {
+        // WHAT it refused, how to check that for yourself, and the way
+        // forward. No fourth line offering a flag that skips the gate: there
+        // isn't one, and a refusal that hints at one teaches the bypass.
+        // Escaped at the printing line as well as at construction (#601).
+        // Every field is authored, and `registry-refused` splices a Registry
+        // body into `what` — already escaped where it enters, and escaping is
+        // idempotent, so the second pass costs nothing and keeps the property
+        // true on the line a reader checks it on.
+        process.stderr.write(`Refused: ${escapeForDisplay(refusal.what)}\n`);
+        process.stderr.write(`  Verify: ${escapeForDisplay(refusal.verify)}\n`);
+        process.stderr.write(`  Fix: ${escapeForDisplay(refusal.fix)}\n`);
+      }
+      return exitRecorded(EXIT_REFUSED, 'refused');
+    };
+
+    const apiKey = process.env.INTERNAL_API_KEY;
+    // Parity with pull-stubs (#253.4): a header value outside Latin-1 makes
+    // fetch() throw a raw internal ByteString exception.
+    if (apiKey) {
+      const badIndex = [...apiKey].findIndex(ch => ch.codePointAt(0)! > 0xff);
+      if (badIndex !== -1) {
+        await refuse({
+          code: 'api-key-not-latin1',
+          what: `INTERNAL_API_KEY contains a non-Latin1 character at index ${badIndex} and cannot be sent as an HTTP header.`,
+          verify: 'printf %s "$INTERNAL_API_KEY" | LC_ALL=C grep -n "[^ -~]"',
+          fix: 'Re-copy the key as plain ASCII: export INTERNAL_API_KEY=<your-key>',
+        }, opts.checkId ?? null);
+      }
+    }
+    if (!apiKey) {
+      await refuse({
+        code: 'api-key-missing',
+        what: 'INTERNAL_API_KEY is not set, and this command writes to the registry under it.',
+        verify: 'env | grep -c INTERNAL_API_KEY',
+        fix: 'export INTERNAL_API_KEY=<your-key>',
+      }, opts.checkId ?? null);
+      return;
+    }
+
+    const localRefusal = preflight({ stubId: id, status, reason: opts.reason, sourceCommit: opts.sourceCommit });
+    if (localRefusal) await refuse(localRefusal, opts.checkId ?? null);
+
+    const registryUrl = validateRegistryUrl(opts.registryUrl).replace(/\/+$/, '');
+    const collection = `${registryUrl}/internal/aria/hma-stubs`;
+    // NOT named `target`: the render-source gate reads that spelling as a
+    // filesystem path, and this is a registry URL. Renaming keeps the gate
+    // measuring what it is for instead of taking an exemption.
+    const stubEndpoint = `${collection}/${encodeURIComponent(id)}`;
+
+    /**
+     * Read the stub the registry already holds.
+     *
+     * Only when `--check-id` was not given: the flag names the check to probe,
+     * which is the ONLY thing this read supplies that the run cannot do
+     * without. That is what lets `--dry-run --check-id <id>` make zero HTTP
+     * calls while still running every gate.
+     */
+    let recorded: { id: string; checkId: string; status: string } | undefined;
+    if (!opts.checkId) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15_000);
+        const res = await fetch(collection, {
+          headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (res.status >= 500) {
+          process.stderr.write(`Not settled: the registry returned ${res.status} ${res.statusText} reading the stub; nothing was sent.\n`);
+          await exitRecorded(EXIT_NOT_SETTLED, 'unmeasured');
+        }
+        if (!res.ok) {
+          const body = await res.text().catch(() => '');
+          await refuse({
+            code: 'registry-rejected-read',
+            what: `The registry answered ${res.status} ${res.statusText} reading the stub list: ${escapeForDisplay(body.slice(0, 2000))}`,
+            verify: `${CLI_PREFIX} pull-stubs --json`,
+            fix: 'Resolve what the registry reported above, then re-run.',
+          }, null);
+        }
+        const listed = await res.json() as { stubs?: Array<{ id: string; checkId: string; status: string }> };
+        recorded = (listed.stubs ?? []).find(s => String(s.id) === id);
+      } catch (err: unknown) {
+        const cause = err instanceof Error && err.name === 'AbortError'
+          ? 'the read timed out after 15s'
+          : escapeForDisplay(err instanceof Error ? err.message : String(err));
+        process.stderr.write(`Not settled: could not reach the registry (${cause}); nothing was sent.\n`);
+        await exitRecorded(EXIT_NOT_SETTLED, 'unmeasured');
+        return;
+      }
+
+      if (!recorded) {
+        await refuse({
+          code: 'stub-not-found',
+          what: `The registry lists no stub with id ${escapeForDisplay(id)}, so there is nothing to transition.`,
+          verify: `${CLI_PREFIX} pull-stubs --all --json`,
+          fix: 'Take the Stub ID from a pull-stubs run against this same registry.',
+        }, null);
+      }
+    }
+
+    const checkId = opts.checkId ?? recorded!.checkId;
+
+    // Live data, so the heads-up is worth printing. Never a refusal — the
+    // registry owns the transition table (see `settledSourceWarning`).
+    if (recorded) {
+      const warning = settledSourceWarning(String(recorded.status), status);
+      // stderr on BOTH channels: a `--json` consumer that suppressed this
+      // would be the one reader most likely to be scripting the transition
+      // that triggers it, and stderr cannot corrupt the stdout document.
+      if (warning) process.stderr.write(`${warning}\n`);
+    }
+
+    let evidence: StubEvidence | undefined;
+    if (status === EVIDENCE_GATED_STATUS) {
+      const probeRefusal = probeReachability(String(checkId));
+      if (probeRefusal) await refuse(probeRefusal, String(checkId));
+      // `opts.sourceCommit` is non-null here: `preflight` refuses `integrated`
+      // without it, above, and nothing between reassigns it.
+      evidence = buildEvidence(String(checkId), opts.sourceCommit!);
+    }
+
+    const body = buildPatchBody({ status, reason: opts.reason, evidence });
+
+    if (opts.dryRun) {
+      if (opts.json) {
+        writeJsonStdout({ ok: true, stubId: id, status, checkId, evidence, reason: opts.reason, dryRun: true });
+      } else {
+        console.log(`Dry run — nothing was sent. PATCH ${escapeForDisplay(stubEndpoint)} would carry:`);
+        console.log(JSON.stringify(body, null, 2));
+      }
+      return;
+    }
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15_000);
+      const res = await fetch(stubEndpoint, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (res.status >= 500) {
+        process.stderr.write(`Not settled: the registry returned ${res.status} ${res.statusText}; whether the transition was recorded is unknown.\n`);
+        await exitRecorded(EXIT_NOT_SETTLED, 'incomplete');
+      }
+      if (!res.ok) {
+        const answer = await res.text().catch(() => '');
+        await refuse({
+          code: 'registry-refused',
+          what: `The registry refused the transition with ${res.status} ${res.statusText}: ${escapeForDisplay(answer.slice(0, 2000))}`,
+          verify: `${CLI_PREFIX} pull-stubs --all --json`,
+          fix: 'Resolve what the registry reported above, then re-run.',
+        }, String(checkId));
+      }
+    } catch (err: unknown) {
+      const cause = err instanceof Error && err.name === 'AbortError'
+        ? 'the request timed out after 15s'
+        : escapeForDisplay(err instanceof Error ? err.message : String(err));
+      process.stderr.write(`Not settled: the PATCH did not complete (${cause}); whether the transition was recorded is unknown.\n`);
+      await exitRecorded(EXIT_NOT_SETTLED, 'incomplete');
+      return;
+    }
+
+    if (opts.json) {
+      writeJsonStdout({ ok: true, stubId: id, status, checkId, evidence, reason: opts.reason });
+    } else {
+      console.log(`Recorded: stub ${escapeForDisplay(id)} is now "${escapeForDisplay(status)}".`);
+      if (evidence) {
+        console.log(`  Evidence: ${escapeForDisplay(evidence.checkId)} reachable in v${evidence.hmaVersion}, commit ${escapeForDisplay(evidence.sourceCommit)}`);
+      }
+    }
   });
 
 // create-skill: generate best-practice, secured skills from plain English

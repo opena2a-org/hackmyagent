@@ -35,11 +35,20 @@ function sourceFiles(dir: string, acc: string[] = []): string[] {
  * Every `-x` / `--flag` token registered through commander's
  * `.option` / `.requiredOption` / `.addOption` anywhere under `src/`, on
  * origin/main c2a9c2f. 88 tokens.
+ *
+ * HMA-08 adds four, deliberately, exactly as the assertion message below
+ * prescribes: `--all` on `pull-stubs` (a request-shape switch that omits the
+ * `?status=` filter) and `--reason`, `--source-commit`, `--check-id` on the
+ * new `mark-stub` command. None of them touches the semantic layer, and none
+ * is an opt-out of anything — `--source-commit` and `--reason` are GATES that
+ * make a write-back refuse without them, which is the opposite direction to
+ * the flag this invariant exists to forbid.
  */
 const COMMAND_SURFACE = [
   '--a2a-recipient', '--a2a-sender', '--analm', '--api-format', '--at', '--atx',
   '--audit', '--aws-account-id', '--aws-region', '--batch', '--benchmark',
   '--broker-socket', '--broker-token', '--category', '--ci', '--ci-publish',
+  '--all', '--check-id', '--reason', '--source-commit',        // HMA-08, see note below
   '--contribute', '--deep', '--delay', '--directory', '--dry-run', '--explain',
   '--export-csv', '--export-training', '--fail-below', '--fail-on-gate',
   '--fail-on-vulnerable', '--fix', '--format', '--grant', '--grant-agent-id',

@@ -55,11 +55,24 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 /** Recorded at HMA-07 intake, against origin/main 957bb65. */
 const TRACKED_FS_SHA256 = 'bf6566fa2dfab6877ebed88b67b0d28e518e013d2ca164d5640aa5c472586389';
 
-/** Long flags registered anywhere under `src/`, recorded at HMA-07 intake. */
+/**
+ * Long flags registered anywhere under `src/`, recorded at HMA-07 intake.
+ *
+ * SCOPE DECISION, taken with HMA-08 (the `pull-stubs` / `mark-stub` unit),
+ * following the rule in the docblock above: that change legitimately adds four
+ * flags, so they are recorded here rather than the assertion being retired.
+ * Recording is the stronger option and it is available BECAUSE the invariant
+ * HMA-07 needs is narrower than "no flag ever" — it is "the wider skills walk
+ * is not opt-in". `--all` (pull-stubs, omits the `?status=` filter),
+ * `--reason`, `--source-commit` and `--check-id` (mark-stub, the registry
+ * write-back) are on two registry commands that never reach the scanner walk,
+ * and two of them are refusal GATES rather than escape hatches. A flag that
+ * did make the walk opt-in would still turn this red.
+ */
 const REGISTERED_LONG_FLAGS = [
-  '--a2a-recipient', '--a2a-sender', '--analm', '--api-format', '--at', '--atx',
-  '--audit', '--aws-account-id', '--aws-region', '--batch', '--benchmark',
-  '--broker-socket', '--broker-token', '--category', '--ci', '--ci-publish',
+  '--a2a-recipient', '--a2a-sender', '--all', '--analm', '--api-format', '--at',
+  '--atx', '--audit', '--aws-account-id', '--aws-region', '--batch', '--benchmark',
+  '--broker-socket', '--broker-token', '--category', '--check-id', '--ci', '--ci-publish',
   '--contribute', '--deep', '--delay', '--directory', '--dry-run', '--explain',
   '--export-csv', '--export-training', '--fail-below', '--fail-on-gate',
   '--fail-on-vulnerable', '--fix', '--format', '--grant', '--grant-agent-id',
@@ -67,9 +80,9 @@ const REGISTERED_LONG_FLAGS = [
   '--local', '--mcp-tool', '--min-trust', '--model', '--name', '--nanomind',
   '--no-color', '--no-contribute', '--no-machine-posture', '--no-registry',
   '--no-scan', '--offline', '--output', '--payload-file', '--ports', '--profile',
-  '--publish', '--registry-key', '--registry-report', '--registry-url',
-  '--rescan', '--root', '--scan-depth', '--scan-only', '--static-only',
-  '--status', '--stop-on-success', '--surface', '--system-prompt',
+  '--publish', '--reason', '--registry-key', '--registry-report', '--registry-url',
+  '--rescan', '--root', '--scan-depth', '--scan-only', '--source-commit',
+  '--static-only', '--status', '--stop-on-success', '--surface', '--system-prompt',
   '--target-type', '--tier', '--timeout', '--tool', '--type', '--verbose',
   '--version', '--version-id', '--with-aim',
 ];
