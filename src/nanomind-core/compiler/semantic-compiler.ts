@@ -2024,7 +2024,14 @@ export function enforceDeterministicSurfaceFloor(
 ): RiskSurface[] {
   const floored: RiskSurface[] = surfaces.map(s => ({ ...s }));
   for (const det of deterministic) {
-    const match = floored.find(s => s.attackClass === det.attackClass && s.surface === det.surface);
+    // `offset` is part of the identity: two hits of the same shape at two
+    // places are two instances (#478 — "four secrets count as four"), so a
+    // same-vendor second key must not be merged into the first. Both passes
+    // derive their surfaces from the same producers, so a true duplicate
+    // carries the same offset (or none on either side).
+    const match = floored.find(
+      s => s.attackClass === det.attackClass && s.surface === det.surface && s.offset === det.offset,
+    );
     if (!match) {
       floored.push({ ...det });
       continue;

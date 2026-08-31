@@ -85,6 +85,29 @@ function sourceWithSecrets(count: number): string {
 
 const ARTIFACT = join('app', 'config.ts');
 
+/**
+ * Two secrets of the SAME vendor shape. The four-vendor fixture above cannot
+ * see a dedup keyed on the surface STRING (`Hardcoded GitHub token`), because
+ * each vendor's string differs; two keys of one vendor share it, and a
+ * (attackClass, surface)-keyed merge collapses them to the first instance —
+ * exactly the #478 failure reintroduced one layer up.
+ */
+function sourceWithSameVendorSecrets(): string {
+  return [
+    '// Runtime configuration for the billing worker.',
+    "import { createClient } from './client';",
+    '',
+    'export const settings = {',
+    `  githubToken: "ghp_${body(36)}",`,
+    "  endpoint: 'https://api.openai.com/v1',",
+    `  githubBackupToken: "ghp_${body(36)}",`,
+    '};',
+    '',
+    'export const client = createClient(settings);',
+    '',
+  ].join('\n');
+}
+
 describe('HMA-01.AC1 / HMA-01.AC3: hardcoded secrets are locatable and countable', () => {
   /** Write the fixture into a fresh tree and run the real semantic pipeline. */
   async function scanWith(count: number) {
@@ -175,6 +198,29 @@ describe('HMA-01.AC1 / HMA-01.AC3: hardcoded secrets are locatable and countable
         const details = (f as { details?: { instanceCount?: unknown } }).details;
         expect(details?.instanceCount ?? null, 'instanceCount must not be null').not.toBeNull();
       }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('HMA-01.AC3 two secrets of the SAME vendor are two findings at two lines', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hma-01-cred-tree-'));
+    await mkdir(join(dir, 'app'), { recursive: true });
+    await writeFile(join(dir, ARTIFACT), sourceWithSameVendorSecrets(), 'utf-8');
+    try {
+      const result = await runNanoMindScan(dir, []);
+      const cred = result.mergedFindings.filter(
+        (f) => !f.passed && f.checkId === 'AST-CRED-003' && f.file === ARTIFACT,
+      );
+      expect(
+        cred.length,
+        `two same-vendor keys must stay two findings — a surface-string-keyed merge collapses them. Got ${cred.length}`,
+      ).toBe(2);
+      const lines = cred.map((f) => f.line);
+      expect(
+        new Set(lines).size,
+        `both instances must carry their own line: ${lines.join(', ')}`,
+      ).toBe(2);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
