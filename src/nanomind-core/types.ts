@@ -268,6 +268,16 @@ export interface EvidenceSpan {
   supports: string;         // e.g., "exfiltration_intent", "credential_exposure"
   /** Confidence this evidence is relevant */
   confidence: number;
+  /**
+   * True when the report redaction boundary CHANGED this span's window at
+   * construction — i.e. credential material was removed from `text` before it
+   * ever left `extractEvidenceSpans`. It records only that comparison
+   * (redacted window !== raw window); it does not claim the remaining text is
+   * free of every credential shape. A finding built from this span carries the
+   * fact of that removal forward so its `redactionStatus` can say `applied`
+   * instead of re-deriving `clean` from fields the material is no longer in.
+   */
+  redactionApplied?: boolean;
 }
 
 // ============================================================================

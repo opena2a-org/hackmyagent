@@ -1190,7 +1190,7 @@ function astFindingToSecurityFinding(
   // therefore a property of the control flow here, not a convention a later
   // edit could quietly invert — there is no path on which the redacted text is
   // what gets located.
-  return emitFinding({
+  const draft: SecurityFindingDraft = {
     checkId: ast.checkId,
     name: ast.name,
     description: ast.description,
@@ -1216,7 +1216,20 @@ function astFindingToSecurityFinding(
       // consumer reads it yet, so it is not a contract.
       ...(ast.matched ? { matched: ast.matched } : {}),
     },
-  });
+  };
+  // HMA-15.AC2 — the producer already removed credential material from this
+  // finding (masked at the point of production); hand `emitFinding` that FACT
+  // through its documented prior-status absorption, so the emitted
+  // `redactionStatus` reports the removal instead of concluding `clean` from
+  // fields the material is no longer in. Structural, exactly the path
+  // `emitFinding` reads priors off (`draft as Partial<SecurityFinding>`): the
+  // draft type omits the field so no producer can stamp a status by accident,
+  // and `applied` is the one value that cannot downgrade anything — the merge
+  // is absorbing.
+  if (ast.redactionApplied === true) {
+    (draft as Partial<SecurityFinding>).redactionStatus = 'applied';
+  }
+  return emitFinding(draft);
 }
 
 /**
