@@ -4,6 +4,57 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The stub loop has a terminus again: `pull-stubs` drops its vocabulary, `mark-stub` writes back (HMA-08)
+
+Two defects at the same place — the point where a confirmed ARIA observation is
+supposed to become a shipped check.
+
+**`pull-stubs` held a vocabulary it did not own.** The CLI validated `--status`
+against a hardcoded `['draft','review','integrated','rejected']` and then
+filtered the response against the same list, while the database's own CHECK
+constraint held a different set. Every value except the default was unusable in
+one direction or the other: `--status review|integrated|rejected` could never
+match a row, and `--status reviewed|published` was refused client-side before
+the request was made. The pipeline's only working query was the default.
+
+Both halves are gone. `--status` is sent to the registry verbatim as
+`?status=`, the rows the registry returns are the rows that print, and a 4xx
+answer is rendered near-verbatim — no longer clipped at 200 bytes, because that
+body carries the allowed set, which is the one thing the CLI deliberately no
+longer knows. `--all` omits the parameter entirely rather than sending a magic
+word for "any", so the two sides need no agreement for the unfiltered case
+either. Each stub now leads with its **Stub ID**, and the summary closes by
+naming the command that consumes it.
+
+**Nothing marked a stub integrated.** So the transition was manual and
+unaudited, and "how many confirmed observations became a shipped check" — the
+only figure that shows the flywheel turns — had no answer. `mark-stub <id>
+<status>` is that write-back: `PATCH /internal/aria/hma-stubs/:id`, status sent
+verbatim, exit 0 recorded / 1 refused / 2 not settled.
+
+The refusals are the product. `integrated` is refused without
+`--source-commit`, and refused unless an in-process probe finds the check ID in
+the RUNNING build's coverage inventory — reading `CHECK_METHOD_PREFIXES` and
+`UNREACHABLE_PREFIXES` out of the built module rather than re-reading `src/` or
+carrying a copy. That closes the `UNREACHABLE_PREFIXES` class at write time:
+`CODEINJ`, `TMPPATH` and `ENVLEAK` are implemented, emit findings, are counted
+in the advertised suite and have no caller in `scanInner`, so a stub mapped to
+one of them would otherwise be recorded as a shipped check whose detector can
+never fire. `rejected` is refused without `--reason`.
+
+**Fabrication has no first-class UX.** There is no `--evidence`, `--reachable`
+or `--hma-version` flag: `hmaVersion` comes from the running artifact's own
+version and `reachable` is the probe's verdict. A refusal prints WHAT, a
+`Verify:` line and a `Fix:` line, and offers no flag that skips the gate —
+there isn't one. `--dry-run` runs every preflight and the probe, prints the
+exact body that would be sent, and sends nothing.
+
+The registry leg — the migration, the server-side filter and the PATCH endpoint
+— ships separately, so every test here runs against a mocked registry and the
+two land independently. `docs/release-playbook.md` gains the two release steps:
+a `--dry-run` preview for every stub a release claims, before the tag is
+pushed, and the real send afterwards from the published artifact.
+
 ### The static suite reaches where skills actually live (HMA-07)
 
 `.claude/skills/<name>/SKILL.md` is where skills sit on disk, and the scanner

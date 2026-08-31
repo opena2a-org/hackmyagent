@@ -111,6 +111,7 @@ export const COMMAND_CLASSIFICATION: Record<string, 'renders-paths' | string> = 
   nanomind: 'renders model identifiers and local model state',
   'mcp-serve': 'a server, not a report',
   'pull-stubs': 'downloads model stubs; renders the tool\'s own cache paths',
+  'mark-stub': 'renders a stub id, a status word and the PATCH body it would send; no filesystem path reaches its output',
 };
 
 /**
