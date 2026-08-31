@@ -43,7 +43,7 @@ in the same statement), so an ordinary bundled installer stays quiet: every
 committed fixture in the tree, and the repository's own self-scan, produce a
 byte-identical finding set before and after.
 
-### Benign framing in an artifact can no longer clear a finding read from its own bytes
+### A benign-context score can no longer clear a finding read from the artifact's own bytes
 
 The pattern rules that read a source file directly — a hardcoded API key, an
 external URL paired with a data-forwarding verb — now set a floor the intent
@@ -70,10 +70,10 @@ Two things change in what `secure` reports on source artifacts:
 
 Net effect for operators: some source artifacts that previously scored benign
 now surface findings, because an exfiltration pattern in the file's own bytes
-can no longer be talked down by text in the same file, and any downgrade the
+can no longer be talked down by the benign-context score, and any downgrade the
 framing does earn is now recorded rather than applied silently. The detection
 vocabulary is unchanged — the same shapes are found on the same files at the
-same or higher severity; only the subtraction is gone.
+same or higher severity; on this path, only the subtraction is gone.
 
 ### The CRITICAL hardcoded-secret finding says where the secret is, and four secrets count as four (#368, #478)
 
