@@ -34,17 +34,21 @@
  * change legitimately edits `src/nanomind-core/**` or `tracked-fs.ts`, retire
  * this suite with that change rather than loosening it silently.
  *
- * git is spawned only through `gitFreeEnv()` (#348): under a git hook GIT_DIR
- * is exported and points at THIS repository, so a git subprocess that inherits
- * the ambient environment writes to the real repo. Every git call here scrubs
- * that environment first.
+ * SCOPE DECISION, taken with the deterministic-floor change (#688): that change
+ * legitimately edits `src/nanomind-core/**`, so the two diff-derived scope
+ * assertions are retired here, exactly as the paragraph above prescribes. They
+ * were invariants of HMA-07's BRANCH lifetime, not of main: on main the diff
+ * against origin/main is empty (vacuously green) and on any later feature
+ * branch they re-assert HMA-07's scope against someone else's diff — while
+ * skipping in CI clones that lack an origin/main ref, so the failure appears
+ * only in local full-suite runs. The two always-on halves below (HMA-04's
+ * tracked-fs byte digest, the frozen CLI-flag surface) survive unchanged; each
+ * holds in any checkout and still witnesses the invariant it names.
  */
 import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import * as path from 'node:path';
-import { gitFreeEnv } from '../helpers/throwaway-repo';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
@@ -68,23 +72,6 @@ const REGISTERED_LONG_FLAGS = [
   '--status', '--stop-on-success', '--surface', '--system-prompt',
   '--target-type', '--tier', '--timeout', '--tool', '--type', '--verbose',
   '--version', '--version-id', '--with-aim',
-];
-
-/** Paths HMA-07 is allowed to touch, as `git diff --name-only` names them. */
-const ALLOWED_DIFF_PATHS = [
-  /^src\/hardening\/scanner\.ts$/,
-  /^__tests__\//,
-  /^test-fixtures\//,
-  /^CHANGELOG\.md$/,
-];
-
-/**
- * The out-of-scope areas, as predicates over a diff path. A change to any of
- * these is a scope violation, whatever else the diff contains.
- */
-const OUT_OF_SCOPE: Array<(p: string) => boolean> = [
-  (p) => p.startsWith('src/nanomind-core/'),
-  (p) => p === 'src/hardening/tracked-fs.ts',
 ];
 
 function sha256(bytes: Buffer | string): string {
@@ -117,41 +104,6 @@ function registeredLongFlags(): { flags: string[]; files: string[] } {
   return { flags: [...flags].sort(), files: [...files].sort() };
 }
 
-/**
- * `origin/main`, or null where the ref is not fetched (shallow or detached
- * clones). git runs with a scrubbed environment (#348).
- */
-function originMain(): string | null {
-  try {
-    return execFileSync('git', ['rev-parse', '--verify', 'origin/main'], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-      env: gitFreeEnv(),
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Paths that differ between `base` and the working tree. git runs with a
- * scrubbed environment (#348).
- */
-function changedPaths(base: string): string[] {
-  const out = execFileSync('git', ['diff', '--name-only', base, '--'], {
-    cwd: REPO_ROOT,
-    encoding: 'utf8',
-    env: gitFreeEnv(),
-  });
-  return out.split('\n').map((s) => s.trim()).filter(Boolean);
-}
-
-/** Diff paths that fall in an out-of-scope area. Pure, so it has teeth on any list. */
-function outOfScopeChanges(changed: string[]): string[] {
-  return changed.filter((p) => OUT_OF_SCOPE.some((match) => match(p)));
-}
-
 describe('HMA-07.AC5 scope invariant', () => {
   it('HMA-07.AC5 src/hardening/tracked-fs.ts is byte-identical to origin/main (HMA-04 confinement untouched)', () => {
     const file = path.join(REPO_ROOT, 'src', 'hardening', 'tracked-fs.ts');
@@ -165,18 +117,9 @@ describe('HMA-07.AC5 scope invariant', () => {
     expect(flags).toEqual(REGISTERED_LONG_FLAGS);
   });
 
-  it('HMA-07.AC5 the diff against origin/main touches no path under src/nanomind-core/** or src/hardening/tracked-fs.ts', () => {
-    const base = originMain();
-    if (!base) return; // no origin/main fetched here; the always-on halves still hold.
-    expect(outOfScopeChanges(changedPaths(base))).toEqual([]);
-  });
-
-  it('HMA-07.AC5 git diff --name-only origin/main names only scanner.ts, tests, fixtures and CHANGELOG.md', () => {
-    const base = originMain();
-    if (!base) return; // no origin/main fetched here; the always-on halves still hold.
-
-    const changed = changedPaths(base);
-    const outOfScope = changed.filter((p) => !ALLOWED_DIFF_PATHS.some((rx) => rx.test(p)));
-    expect(outOfScope).toEqual([]);
-  });
+  // The two diff-derived scope assertions (no nanomind-core/tracked-fs paths in
+  // the diff; diff limited to scanner.ts/tests/fixtures/CHANGELOG) are RETIRED —
+  // see the SCOPE DECISION paragraph in the file docblock. They asserted
+  // HMA-07's branch scope against whatever checkout runs them, which is wrong
+  // on every later branch that legitimately edits those areas.
 });
