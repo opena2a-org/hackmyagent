@@ -472,6 +472,14 @@ export const TAXONOMY_EXEMPT_CHECKIDS: ReadonlySet<string> = new Set([
   // precisely what this run could not determine — the finding exists to say
   // that nothing is known about it.
   'SCAN-UNREAD-001',
+  // Reports that a payload was still encoded when the decoder's depth bound
+  // stopped it, so the plaintext below that point was examined by nothing. The
+  // same family as SCAN-UNREAD-001 and SEM-LLM-NOT-ANALYZED above: it names an
+  // ABSENCE of measurement. An attack class here would be a claim about what
+  // the undecoded bytes contain, which is the one thing the run could not
+  // determine — the layers it DID decode are reported by whichever rules
+  // matched them, each carrying its own class.
+  'SCAN-DECODE-BOUND',
 ]);
 
 /**

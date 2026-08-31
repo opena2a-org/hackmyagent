@@ -12,12 +12,13 @@ import { fs } from './tracked-fs';
 // root needs it: the JS implementation does not canonicalize case (#334).
 import * as fsSync from 'fs';
 import * as crypto from 'crypto';
+import * as os from 'os';
 import * as path from 'path';
 import { execFile } from 'child_process';
 import type { ScanResult, SecurityFinding, SecurityFindingDraft, Severity, ProjectType } from './security-check';
-import { emitFinding } from './finding-emit';
+import { emitFinding, reemitFinding } from './finding-emit';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
-import { enrichWithTaxonomy } from './taxonomy';
+import { enrichWithTaxonomy, TAXONOMY_EXEMPT_CHECKIDS } from './taxonomy';
 import { lineFromOffset } from '../types/text-position';
 import { classifySkillSection, isLikelyFalsePositive } from './skill-context';
 import { isCorpusPath, isTestPath, isExamplePath } from './path-context';
@@ -35,7 +36,9 @@ import {
   describeResolveRefusal,
   type ResolveOutcome,
   type ResolveRefusal,
+  readStaysInsideTree,
 } from './contain';
+import { withheldLinkRecords } from './withheld-links';
 import { GOVERNANCE_FILES } from '../soul/governance-files';
 // One vocabulary with `detect`'s permission-grant rule (#363, #364), so the two
 // commands cannot disagree in direction on the same `.claude/settings.json`.
@@ -45,6 +48,12 @@ import { parseAiConfig, proseAllowEntry, forReport, MAX_TEXT } from '../scanner/
 /** Redact, escape and cap a value out of a scanned config before quoting it. */
 const forFinding = (s: string): string => forReport(s, MAX_TEXT);
 import { escapeForDisplay } from '../ui/display-safe';
+import {
+  decodeArtifact,
+  MAX_DECODE_DEPTH,
+  type ArtifactDecode,
+  type DecodedPayload,
+} from './payload-decode';
 import {
   CoverageLedger,
   withActiveLedger,
@@ -99,6 +108,74 @@ const BACKUP_MANIFEST_VERSION = 2;
  * and widening it would cost scan time and invite false positives.
  */
 export const JS_FAMILY_EXTENSIONS = ['.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx'] as const;
+
+/**
+ * Extensions the decode-then-rescan pass reads.
+ *
+ * Deliberately wider than any single check's walk, and deliberately NOT the
+ * "source file" list #414 unified: a base64 payload does not care what
+ * extension it sits behind, and the artifacts that carry them in practice are
+ * markdown skills and YAML configs rather than TypeScript. Binary extensions
+ * are absent because `decodeArtifact` reads text; a `.png` read as UTF-8
+ * produces replacement characters and no candidate survives them.
+ */
+const DECODE_ARTIFACT_EXTENSIONS = new Set<string>([
+  ...JS_FAMILY_EXTENSIONS,
+  '.md', '.markdown', '.txt', '.json', '.jsonc', '.yaml', '.yml', '.toml',
+  '.py', '.sh', '.bash', '.zsh', '.env', '.cfg', '.ini', '.xml',
+]);
+
+/**
+ * Directories the decode walk never descends into.
+ *
+ * `.git` holds packed objects, `node_modules` is not the product being
+ * assessed, and both are large enough to spend the artifact budget on content
+ * nobody asked about. THIS RUN's backup archive is excluded separately, by
+ * identity rather than by name (`isOwnBackupDir`).
+ */
+const DECODE_SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', '.venv', '__pycache__']);
+
+/**
+ * Artifacts one decode pass reads.
+ *
+ * A cap and not a timeout, so the pass costs the same on the same tree twice.
+ * It is REPORTED when it bites (`coverage.truncations`), because a decoder
+ * that quietly stopped reading is the false-clean this whole subsystem exists
+ * to avoid.
+ */
+const MAX_DECODE_ARTIFACTS = 400;
+
+/**
+ * The payload a reconstruction line belongs to.
+ *
+ * Falls back to the deepest payload rather than throwing: a rule can fire on a
+ * line the substitution did not produce (a rule reading the whole file, or a
+ * line the decoded text pushed down), and the artifact still has exactly one
+ * honest thing to cite — the encoded span that made the rescan happen at all.
+ */
+function payloadForLine(decode: ArtifactDecode, line?: number): DecodedPayload {
+  if (typeof line === 'number') {
+    const hit = decode.payloads.find(
+      (p) => line >= p.reconstructedFromLine && line <= p.reconstructedToLine,
+    );
+    if (hit) return hit;
+  }
+  return decode.payloads.reduce((deepest, p) => (p.depth > deepest.depth ? p : deepest));
+}
+
+/**
+ * Decoded text as one line of a finding message.
+ *
+ * `escapeForDisplay` because this is attacker-controlled text on its way to a
+ * terminal: a payload carrying `\r` or a CSI sequence would otherwise rewrite
+ * the line it is being reported on. Capped because a finding message is a
+ * sentence, not a file.
+ */
+function decodedExcerpt(text: string): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim();
+  const capped = oneLine.length > 160 ? `${oneLine.slice(0, 157)}...` : oneLine;
+  return escapeForDisplay(capped);
+}
 
 /**
  * Sync twin of `HardeningScanner.unsearchableAncestor`, at module scope so
@@ -735,13 +812,35 @@ export interface ScanOptions {
    */
   isNpmPackage?: boolean;
   /**
+   * Run the decode-then-rescan pass (`checkEncodedPayloads`). Default true at
+   * `standard` and `deep`; `quick` skips it with every other non-quick check.
+   *
+   * The pass re-runs the WHOLE bank over the reconstructed artifacts by
+   * scanning them, so it sets this to `false` on its own inner scan. That is
+   * what terminates the recursion, and it is an option rather than an internal
+   * flag because the inner scan goes through the same public `scan()` every
+   * other caller uses — a private back door would be a second entry point with
+   * its own drift.
+   */
+  decodeRescan?: boolean;
+  /**
+   * The confinement root set: directories a read may resolve into. A link
+   * inside the target whose real location is outside every root is withheld
+   * by the tracked `fs` namespace, recorded on the ledger, and disclosed on
+   * `ScanResult.withheldLinks`. Defaults to `[realpath(targetDir)]`, and the
+   * target is always a member. The MCP handlers pass every granted root so a
+   * link between two granted projects is read. There is no option and no
+   * flag that widens this beyond the roots the caller was already given.
+   */
+  confineRoots?: string[];
+  /**
    * The NanoMind semantic pass, run INSIDE the coverage ledger's window (#499).
    *
    * The caller supplies it as a hook rather than calling it after `scan()`
    * returns, and that placement is the whole fix. `scan()` installs the ambient
    * ledger around `scanInner` only, so a semantic pass invoked afterwards ran
    * with `activeLedger` null: its reads reported nothing, its read FAILURES
-   * reported nothing, and at `--scan-depth quick` — where 55 of the 61 static
+   * reported nothing, and at `--scan-depth quick` — where 56 of the 62 static
    * checks are skipped and the semantic layer is the only reader of the tree —
    * an unreadable credential file left the assessment entirely. `secure` scored
    * that tree 98/100 at exit 0 while the same tree readable scored 69/100 at
@@ -1228,6 +1327,53 @@ const PERSISTENT_RECEIVER_PARTS = new Set([
   'db', 'database', 'databases',
 ]);
 
+/**
+ * Dot-directories `findSkillFiles` enters BY NAME. Every other dot-directory —
+ * `.git`, `.venv`, `.cache`, `.hackmyagent-backup` — stays skipped, and so does
+ * `node_modules`.
+ *
+ * `.claude` is here because that is where skills actually live on disk:
+ * `.claude/skills/<name>/SKILL.md`. Until HMA-07 the walk skipped every
+ * dot-directory except the three OpenClaw ones, so a reverse-shell SKILL.md at
+ * `.claude/skills/x/SKILL.md` received NO SKILL-* check while the byte-identical
+ * twin at `skills/x/SKILL.md` was reported CRITICAL. That is a false clean on
+ * the most common layout, not a coverage gap at the margin.
+ *
+ * Named entries, not "every dot-directory": widening the walk to all of them
+ * puts the scanner inside `.git` objects and `.venv` site-packages, which is
+ * cost with no skill in it.
+ */
+const SKILL_WALK_DOT_DIRS: ReadonlySet<string> = new Set([
+  '.openclaw',
+  '.moltbot',
+  '.clawdbot',
+  '.claude',
+]);
+
+/**
+ * Extensions of bundled skill files worth reading. A skill is a DIRECTORY, not
+ * a Markdown file: the prose in SKILL.md is what the agent is told, and
+ * `scripts/`, `hooks/` and `tests/` beside it are what actually runs. Before
+ * HMA-07 only `SKILL.md` and `*.skill.md` were ever opened, so the payload
+ * simply moved one file across and went unread.
+ *
+ * Markdown is excluded here on purpose — SKILL.md and `*.skill.md` are already
+ * analyzed as skill files, and a bundled `README.md` is prose, not a payload.
+ */
+const SKILL_BUNDLE_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.sh', '.bash', '.zsh', '.fish',
+  '.py', '.rb', '.pl', '.php', '.lua',
+  '.js', '.mjs', '.cjs', '.ts', '.mts', '.cts',
+  '.ps1', '.bat', '.cmd',
+  '.json', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.txt',
+]);
+
+/** Depth walked BELOW a skill directory when collecting its bundled files. */
+const SKILL_BUNDLE_MAX_DEPTH = 4;
+/** Bundled files read per skill directory, and skill directories inspected per scan. */
+const SKILL_BUNDLE_MAX_FILES = 60;
+const SKILL_BUNDLE_MAX_DIRS = 40;
+
 // OpenClaw skill security patterns
 const SKILL_REMOTE_FETCH_PATTERNS: RegExp[] = [
   /curl\s+(-[a-zA-Z]+\s+)*https?:\/\//gi,
@@ -1633,6 +1779,87 @@ export function isMatchInsideStringLiteral(line: string, matchIndex: number): bo
 }
 
 /**
+ * Blank the comment regions of ONE line, carrying block-comment state across the
+ * line boundary in `state`, and return a line of the same length with every
+ * comment character replaced by a space.
+ *
+ * `isMatchInsideStringLiteral` above already answers this for strings and for a
+ * block comment that opens and closes on the line it is asked about, which is
+ * all its four NEMO-009 call sites need: they ask about one line at a time and
+ * about code they were already walking line by line. A FILE-WIDE reader sees
+ * something they do not — the body of a doc comment, where every line after the
+ * first carries no opener. `src/hardening/scanner.ts` self-flagged CRITICAL on
+ * the `eval(...)` written in the doc comment above that very helper (#475), so
+ * the block state has to survive the line boundary. Kept as a separate function
+ * rather than folded into the predicate, whose signature is per-line and whose
+ * existing callers pass no state.
+ *
+ * SAME LENGTH IN, SAME LENGTH OUT. A caller can measure an offset on the
+ * returned line and hand it straight back to `isMatchInsideStringLiteral`, which
+ * is the point: comments are handled here, strings there, and neither function
+ * grows a second job.
+ *
+ * Quote-aware, so `"http://example"` is not read as a line comment and `'/*'` is
+ * not read as a comment opener. Quote state does NOT carry across lines: a
+ * template literal spanning lines is read as code on its continuation lines.
+ * That direction over-reports rather than under-reports, and it is the same
+ * limit the per-line predicate already has, stated rather than silently shared.
+ * Regex literals are likewise not lexed — a `/don't/` toggles quote state, as
+ * documented on the predicate above.
+ */
+function blankCommentRegions(line: string, state: { inBlockComment: boolean }): string {
+  let out = '';
+  let quote: string | null = null;
+  let i = 0;
+  while (i < line.length) {
+    const c = line[i];
+    if (state.inBlockComment) {
+      if (c === '*' && line[i + 1] === '/') {
+        state.inBlockComment = false;
+        out += '  ';
+        i += 2;
+        continue;
+      }
+      out += ' ';
+      i += 1;
+      continue;
+    }
+    if (quote !== null) {
+      // A backslash consumes the next character if one exists. A trailing
+      // backslash at end of line consumes only itself, same as the predicate.
+      if (c === '\\' && i + 1 < line.length) {
+        out += line.slice(i, i + 2);
+        i += 2;
+        continue;
+      }
+      if (c === quote) quote = null;
+      out += c;
+      i += 1;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      quote = c;
+      out += c;
+      i += 1;
+      continue;
+    }
+    if (c === '/' && line[i + 1] === '/') {
+      out += ' '.repeat(line.length - i);
+      return out;
+    }
+    if (c === '/' && line[i + 1] === '*') {
+      state.inBlockComment = true;
+      out += '  ';
+      i += 2;
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
+/**
  * Parsed .hmaignore rules split into path patterns and check ID patterns.
  * Check ID patterns start with `!` and support trailing `*` wildcards.
  * Example: `!SANDBOX-*` suppresses all SANDBOX checks.
@@ -1692,6 +1919,19 @@ export function isCheckIgnored(checkId: string, ignoredChecks: string[]): boolea
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB max file size to prevent memory exhaustion
 const MAX_LINE_LENGTH = 10000; // 10KB max line length for regex safety
+
+/**
+ * Walk depth for the shell-script checks (INSTALL-001, SHELL-EXFIL-001,
+ * TMPPATH-001, DOCKERINJ-001).
+ *
+ * These four walked with `maxDepth 2`, which stops one directory short of where
+ * skill scripts live: `skills/foo/scripts/setup.sh` is depth 3 from the repo
+ * root, so a credential upload sitting in a bundled installer was never read.
+ * 5 matches the depth the same walker is already given for the shell/JS/Python/
+ * YAML sweep at `checkNemoClawPatterns`, so this is the file's existing bound
+ * rather than a new one.
+ */
+const SHELL_CHECK_MAX_DEPTH = 5;
 
 /**
  * Shell-escape a string for safe interpolation into advisory fix commands.
@@ -2207,6 +2447,54 @@ export function detectShellCredentialExfil(
   return null;
 }
 
+/**
+ * First match of any pattern in `patterns` on `line`, or null.
+ *
+ * Every list in this file is `/g`, so `lastIndex` is reset before each test —
+ * a shared `/g` regex that is not reset skips alternate calls, which reads as a
+ * flaky detector rather than a bug.
+ */
+function firstPatternMatch(patterns: RegExp[], line: string): string | null {
+  for (const pattern of patterns) {
+    pattern.lastIndex = 0;
+    const m = pattern.exec(line);
+    if (m) return m[0].trim();
+  }
+  return null;
+}
+
+/**
+ * What makes one line of a BUNDLED skill file a payload, or null.
+ *
+ * Two shapes, both conjunctive, because a bundled script is ordinary code and a
+ * single-signal rule over `scripts/` would flag most of them:
+ *
+ *  1. `detectShellCredentialExfil` — a curl/wget that reads a known credential
+ *     file into the request body of a remote URL. Already the SHELL-EXFIL-001
+ *     discriminator; reused verbatim so the two checks cannot disagree.
+ *  2. a credential path AND an exfiltration sink on the SAME line. A deploy
+ *     script that legitimately reads `~/.aws/credentials` does not also POST it
+ *     to `webhook.site` in the same statement, and a script that POSTs telemetry
+ *     does not name a credential file in the same statement.
+ *
+ * Comment lines are skipped so a `# curl ... @~/.aws/credentials` note in a
+ * runbook does not fire, matching `checkShellCredentialExfil`. The shebang is
+ * skipped as a comment for the same reason it is not code.
+ */
+function describeSkillBundlePayload(line: string): string | null {
+  const trimmed = line.trimStart();
+  if (trimmed.startsWith('#') || trimmed.startsWith('//')) return null;
+
+  const cred = detectShellCredentialExfil(line);
+  if (cred) return `uploads ${cred.credPath} to ${cred.url}`;
+
+  const credRead = firstPatternMatch(SKILL_CREDENTIAL_ACCESS_PATTERNS, line);
+  if (!credRead) return null;
+  const sink = firstPatternMatch(SKILL_EXFILTRATION_PATTERNS, line);
+  if (!sink) return null;
+  return `reads ${credRead} and sends it out via ${sink}`;
+}
+
 export class HardeningScanner {
   private cliName = 'hackmyagent';
   /**
@@ -2670,6 +2958,7 @@ export class HardeningScanner {
    */
   async scan(options: ScanOptions): Promise<ScanResult> {
     const ledger = new CoverageLedger(options.targetDir);
+    if (options.confineRoots) ledger.setConfineRoots(options.confineRoots);
     this.coverage = ledger;
     // Per-run, like the ledger itself: a reused instance must not inherit the
     // previous scan's unread set.
@@ -3013,7 +3302,7 @@ export class HardeningScanner {
     findings.push(...lifecycleFindings);
     } // end of standard/deep checks
 
-    // A quick scan runs 6 of the 61 orchestrated checks. Record the other 55
+    // A quick scan runs 6 of the 62 orchestrated checks. Record the other 56
     // as skipped so their categories report `not examined` with the depth as
     // the reason, instead of inheriting the fail-closed default's vaguer
     // "no check in this category ran".
@@ -3038,8 +3327,15 @@ export class HardeningScanner {
       // rather than a directory NAME: a name is a suppression token the
       // scanned tree can plant (#305/#309), while the identity check excludes
       // THIS RUN's backup and nothing else.
+      //
+      // `confineTo` is belt-and-suspenders: the tracked namespace already
+      // withholds an out-of-tree link before `take` can `stat` it, and this
+      // scan runs under the ledger that decides it. Passing the same roots
+      // here keeps the structural seam confined on its own terms too, the
+      // way the MCP server passes them (#463).
       const structuralFindings = await structural.analyze(targetDir, {
         isExcludedDir: (dir) => this.isOwnBackupDir(dir),
+        confineTo: this.structuralConfinement(),
       });
       const converted = toSecurityFindings(
         structuralFindings,
@@ -3052,6 +3348,30 @@ export class HardeningScanner {
     }
     }
 
+    // Decode-then-rescan.
+    //
+    // Placed after every other static layer, and that ordering is the whole
+    // dedup rule: this pass reports a rule-bank match ONLY when the same rule
+    // did not already match the same file in its encoded form. A finding that
+    // fires on both is one finding about one file, and reporting it twice is
+    // how a decoder makes a report worse rather than better.
+    //
+    // Skipped at `quick` with every other non-quick check, and skipped
+    // explicitly on the inner scan the pass itself runs — that skip is what
+    // makes the recursion terminate, and it is recorded rather than silent so
+    // the inner scan's coverage says why the pass did not run in it.
+    if (!isQuick) {
+      if (options.decodeRescan === false) {
+        this.coverage.skip(
+          'checkEncodedPayloads',
+          'this is the inner scan of already-decoded artifacts — decoding is not re-entered',
+        );
+      } else {
+        const decodedFindings = await this.coverage.run('checkEncodedPayloads', () => this.checkEncodedPayloads(targetDir, options, findings, projectType));
+        findings.push(...decodedFindings);
+      }
+    }
+
     // Layer 3: LLM analysis (only in deep mode + API key)
     if ((isDeepScan || options.deep) && process.env.ANTHROPIC_API_KEY) {
       try {
@@ -3060,6 +3380,7 @@ export class HardeningScanner {
         // duplicated backup copy would be a billed LLM call.
         const files = await structural.discoverFiles(targetDir, {
           isExcludedDir: (dir) => this.isOwnBackupDir(dir),
+          confineTo: this.structuralConfinement(),
         });
         const llm = new LLMAnalyzer({
           apiKey: process.env.ANTHROPIC_API_KEY,
@@ -3997,6 +4318,10 @@ export class HardeningScanner {
         // Counts, never paths — a single-file scan normalises its target into
         // a generated temp directory, and emitting read paths leaked that name.
         filesReadByCategory: this.coverage.categoryFileCounts(),
+        // The decode bound, and what the pass did under it. Counts only, same
+        // rule as the line above — the decoded text reaches the user through
+        // the findings that name it, never through this block.
+        decode: this.coverage.decode,
         suppressedFailures,
         unevidencedFailures,
         // Counts and errno codes, never paths — same rule as the line above.
@@ -4006,6 +4331,24 @@ export class HardeningScanner {
         // number `cli.ts` settles the exit code on (#590).
         unreadableInputs: this.allUnreadableInputs(),
       },
+      // Links the scan refused to follow, with the retarget instruction.
+      // Absent when nothing was withheld, so an unchanged tree produces an
+      // unchanged document.
+      ...(this.coverage.withheldLinks.length > 0
+        ? { withheldLinks: withheldLinkRecords(this.coverage.withheldLinks, this.cliName) }
+        : {}),
+    };
+  }
+
+  /**
+   * The structural seam's `confineTo`, built from the active ledger's root
+   * set so the two mechanisms cannot disagree about where the tree ends. A
+   * withhold the seam decides on its own lands on the same ledger channel.
+   */
+  private structuralConfinement(): { roots: string[]; onWithheld: (rel: string, resolved: string) => void } {
+    return {
+      roots: [...this.coverage.confinementRoots],
+      onWithheld: (rel, resolved) => { this.coverage.noteWithheldLink(rel, resolved, 'readFile'); },
     };
   }
 
@@ -4979,8 +5322,17 @@ export class HardeningScanner {
    * outcome, and a throw here would take out the whole Layer 2 conversion.
    */
   private readArtifactForCitation(targetDir: string, file: string): string | undefined {
+    // Raw read by design (it must not attribute, see `tracked-fs.ts`), so it
+    // confines at its own site: a finding that names a file by its in-tree
+    // spelling must not be able to quote out-of-tree bytes by re-reading it.
+    const filePath = path.resolve(targetDir, file);
+    const stays = readStaysInsideTree(filePath, targetDir);
+    if (!stays.ok) {
+      this.coverage.noteWithheldLink(path.relative(path.resolve(targetDir), filePath), stays.resolved, 'readFileSync');
+      return undefined;
+    }
     try {
-      return fsSync.readFileSync(path.resolve(targetDir, file), 'utf-8');
+      return fsSync.readFileSync(filePath, 'utf-8');
     } catch {
       return undefined;
     }
@@ -10932,10 +11284,10 @@ dist/
         }
 
         if (entry.isDirectory()) {
-          // Skip node_modules and hidden directories (except .openclaw, .moltbot, .clawdbot)
+          // Skip node_modules and hidden directories, except the dot-directories
+          // skills are actually kept in (`SKILL_WALK_DOT_DIRS`, `.claude` among them).
           if (entry.name === 'node_modules') continue;
-          if (entry.name.startsWith('.') &&
-              !['openclaw', 'moltbot', 'clawdbot'].includes(entry.name.slice(1))) {
+          if (entry.name.startsWith('.') && !SKILL_WALK_DOT_DIRS.has(entry.name)) {
             continue;
           }
 
@@ -11709,6 +12061,158 @@ dist/
           });
         }
       }
+    }
+
+    // The bundle: everything beside SKILL.md that is not Markdown. See
+    // `skillBundleFindings` — the skill is the directory, not the one file.
+    findings.push(...await this.skillBundleFindings(targetDir, skillFiles));
+
+    return findings;
+  }
+
+  /**
+   * Non-Markdown files bundled beside a skill: `scripts/setup.sh`,
+   * `scripts/install` (extensionless, shebang line), `tests/x.py`, `hooks/*`.
+   *
+   * A skill is a DIRECTORY. `findSkillFiles` admits only `SKILL.md` and
+   * `*.skill.md`, so until HMA-07 the rest of the bundle was never opened and
+   * moving a payload out of the Markdown and into `scripts/setup.sh` defeated
+   * every SKILL-* check while the skill still shipped and ran it.
+   *
+   * Extensionless files are admitted on a shebang: that is the shape
+   * `scripts/install` takes, and an extension allow-list alone cannot see it.
+   *
+   * Symlinked entries are skipped here exactly as `findSkillFiles` skips them.
+   * This walk adds no way out of the tree.
+   */
+  private async findSkillBundleFiles(skillDir: string, depth: number = 0): Promise<string[]> {
+    if (depth > SKILL_BUNDLE_MAX_DEPTH) return [];
+
+    const bundleFiles: string[] = [];
+    let entries;
+    try {
+      entries = await fs.readdir(skillDir, { withFileTypes: true });
+    } catch {
+      return bundleFiles;
+    }
+
+    for (const entry of entries) {
+      if (bundleFiles.length >= SKILL_BUNDLE_MAX_FILES) break;
+      if (entry.isSymbolicLink()) continue;
+
+      const fullPath = path.join(skillDir, entry.name);
+      if (!this.isPathWithinDirectory(fullPath, skillDir)) continue;
+
+      if (entry.isDirectory()) {
+        if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+        bundleFiles.push(...await this.findSkillBundleFiles(fullPath, depth + 1));
+      } else if (entry.isFile()) {
+        // SKILL.md and *.skill.md are analyzed as skill files; other Markdown
+        // beside a skill is prose (README, CHANGELOG), not a payload carrier.
+        if (entry.name.toLowerCase().endsWith('.md')) continue;
+        const ext = path.extname(entry.name).toLowerCase();
+        const admitted = ext
+          ? SKILL_BUNDLE_EXTENSIONS.has(ext)
+          : await this.startsWithShebang(fullPath);
+        if (admitted) bundleFiles.push(fullPath);
+      }
+    }
+
+    return bundleFiles.slice(0, SKILL_BUNDLE_MAX_FILES);
+  }
+
+  /** True when a file's first bytes are `#!` — how an extensionless script declares itself. */
+  private async startsWithShebang(filePath: string): Promise<boolean> {
+    try {
+      const stat = await fs.stat(filePath);
+      if (stat.size < 2 || stat.size > MAX_FILE_SIZE) return false;
+      const content = await fs.readFile(filePath, 'utf-8');
+      return content.startsWith('#!');
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * SKILL-006 over the skill BUNDLE rather than its Markdown.
+   *
+   * One finding per skill DIRECTORY, and its `evidence` names every bundled
+   * file that carried a payload. That grouping is the point: the reviewer is
+   * being told "this skill exfiltrates", and the three files it does it from
+   * are one decision, not three. A finding per file would let the reader fix
+   * `scripts/setup.sh`, see the count drop, and ship the other two.
+   *
+   * Deliberately NOT named `check*`. It is a helper of `checkOpenclawSkills`,
+   * not an orchestrated check: its reads are already attributed to that
+   * method's ledger entry, and `coverage-honesty.test.ts` reads the `check`
+   * prefix to find calls that escaped the ledger.
+   */
+  private async skillBundleFindings(
+    targetDir: string,
+    skillFiles: string[]
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
+    const seenDirs = new Set<string>();
+
+    for (const skillFile of skillFiles) {
+      const skillDir = path.dirname(skillFile);
+      if (seenDirs.has(skillDir)) continue;
+      if (seenDirs.size >= SKILL_BUNDLE_MAX_DIRS) break;
+      seenDirs.add(skillDir);
+
+      const hits: Array<{ rel: string; line: number; content: string; why: string }> = [];
+
+      for (const file of await this.findSkillBundleFiles(skillDir)) {
+        let content: string;
+        try {
+          const stat = await fs.stat(file);
+          if (stat.size > MAX_FILE_SIZE) continue;
+          content = await fs.readFile(file, 'utf-8');
+        } catch {
+          continue;
+        }
+
+        const rel = path.relative(targetDir, file) || path.basename(file);
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].length > MAX_LINE_LENGTH) continue;
+          const why = describeSkillBundlePayload(lines[i]);
+          if (!why) continue;
+          hits.push({
+            rel,
+            line: i + 1,
+            content: lines[i].trim().substring(0, 200),
+            why: `${rel} ${why}`,
+          });
+          break; // One citation per bundled file — the evidence names files, not lines.
+        }
+      }
+
+      if (hits.length === 0) continue;
+
+      // `readdir` order is filesystem-dependent, and this finding's message and
+      // evidence both enumerate files — sorted so the same skill produces the
+      // same finding text on every machine.
+      hits.sort((a, b) => a.rel.localeCompare(b.rel));
+      const named = hits.map(h => h.rel);
+      findings.push({
+        checkId: 'SKILL-006',
+        name: 'Data Exfiltration Pattern',
+        description: 'A file bundled with this skill — a script or test beside SKILL.md, not the Markdown itself — reads credential material and sends it to a remote endpoint.',
+        category: 'skill',
+        severity: 'critical',
+        passed: false,
+        message: `Exfiltration payload in ${named.length} bundled skill file(s): ${named.join(', ')}`,
+        file: hits[0].rel,
+        line: hits[0].line,
+        fixable: false,
+        fix: `Remove the exfiltration payload from ${named.join(', ')}. Reviewing only SKILL.md reviews the description of the skill, not the code that ships with it.`,
+        guidance: 'A skill is a directory: SKILL.md is what the agent is told, and the scripts beside it are what runs. A payload moved out of the Markdown into scripts/ or tests/ ships with the skill and executes with the agent\'s privileges.',
+        evidence: {
+          kind: 'positive',
+          lines: hits.map(h => ({ n: h.line, content: h.content, why: h.why })),
+        },
+      });
     }
 
     return findings;
@@ -14261,6 +14765,55 @@ dist/
 
       const hexPattern = /0x(?:FE0[0-9A-Fa-f]|fe0[0-9a-f]|E010[0-9A-Fa-f]|e010[0-9a-f]|E01[0-9A-Ea-e][0-9A-Fa-f]|e01[0-9a-e][0-9a-f])/;
 
+      // #475, the execution-sink corroborator. BOTH PATTERNS ARE THE ONES THIS
+      // CHECK HAS ALWAYS USED, character for character. What moved is the text
+      // they are asked about, and only in the two directions the issue names:
+      //
+      //  1. THE SAME LINE POPULATION AS THE PRESENCE LOOP. The two signals below
+      //     skip a line over MAX_LINE_LENGTH; the corroborator used to run over
+      //     whole file content, so an `eval(` inside a minified bundle line
+      //     corroborated `.codePointAt(` and a range literal read from ordinary
+      //     lines the bundle had nothing to do with. One loop now reads one
+      //     population, so the two cannot disagree about which lines exist.
+      //  2. COMMENTS AND STRING LITERALS ARE NOT CODE. `src/hardening/scanner.ts`
+      //     self-flagged CRITICAL on the `eval(...)` in a doc comment and the
+      //     `'eval() dynamic execution'` label of a detection rule, and stayed
+      //     out of its own score only because `.hmaignore` excludes the path.
+      //     Comments are blanked by `blankCommentRegions` (block state carried
+      //     across lines); strings are left to `isMatchInsideStringLiteral`, the
+      //     predicate NEMO-009 already uses for the same question one line at a
+      //     time.
+      //
+      // WHAT THIS IS NOT: the sink VOCABULARY is unchanged and deliberately so.
+      // `vm.runInNewContext`, `globalThis.eval`, `(0,eval)`, a constructor chain,
+      // `Reflect.construct`, dynamic `import()`, `child_process` and
+      // `module._compile` still do not corroborate. Widening the regex is a
+      // semantic question answered by a lexical test for the third time; it
+      // belongs with #424's AST dataflow work, and the finding's own guidance
+      // already tells the reader which sinks it cannot see.
+      //
+      // ONE NARROWING, DISCLOSED: matching per line means `eval` and `(`
+      // separated by a NEWLINE (`\s` spans one) no longer match. That spelling
+      // is legal JavaScript and is not detected any more, which is a loss of
+      // exactly one lexical variant on a corroborator that already misses the
+      // eight spellings above.
+      const EXECUTION_SINK_PATTERNS = [
+        /(?:^|[^\w.$])eval\s*\(/,
+        /(?:^|[^\w.$])(?:new\s+)?Function\s*\(/,
+      ];
+      // Scanned with `g` so a line can be walked past a mention and still reach a
+      // real call after it — `const label = 'eval() docs'; eval(payload);` has
+      // both, and a first-match-only reader would answer for the label and stop.
+      // Built from `.source`, so the patterns above stay the literal bytes this
+      // check has always carried and a reader can diff them without reading here.
+      // `^` still anchors to index 0 only (no `m`), which is what makes the
+      // second and later matches on a line require the `[^\w.$]` arm.
+      const executionSinkScanners = EXECUTION_SINK_PATTERNS.map(
+        (pattern) => new RegExp(pattern.source, 'g'),
+      );
+      const sinkCommentState = { inBlockComment: false };
+      let hasExecutionSink = false;
+
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         if (line.length > MAX_LINE_LENGTH) continue;
@@ -14271,6 +14824,42 @@ dist/
         if (!hasHexLiteral && hexPattern.test(line)) {
           hasHexLiteral = true;
           hexLiteralLine = i + 1;
+        }
+        // A line that carries neither sink token and cannot open or close a
+        // block comment leaves both the state and the answer unchanged, so the
+        // character walk is skipped rather than run over every line of every
+        // scanned file. `inBlockComment` forces the walk because only the walk
+        // can find the closing delimiter.
+        const mayAffectSink =
+          !hasExecutionSink &&
+          (sinkCommentState.inBlockComment ||
+            line.includes('/*') ||
+            line.includes('*/') ||
+            line.includes('eval') ||
+            line.includes('Function'));
+        if (!mayAffectSink) continue;
+        const codeLine = blankCommentRegions(line, sinkCommentState);
+        for (const sinkScanner of executionSinkScanners) {
+          sinkScanner.lastIndex = 0;
+          let m: RegExpExecArray | null;
+          while ((m = sinkScanner.exec(codeLine)) !== null) {
+            // The patterns open with `(?:^|[^\w.$])`, so `m.index` is the
+            // character BEFORE the token — and when that character is the
+            // opening quote of a string, asking the predicate about it answers
+            // for a position that is not yet inside the string. Ask about the
+            // token.
+            const tokenOffset = m[0].search(/eval|Function/);
+            const tokenIndex = m.index + (tokenOffset >= 0 ? tokenOffset : 0);
+            if (!isMatchInsideStringLiteral(codeLine, tokenIndex)) {
+              hasExecutionSink = true;
+              break;
+            }
+            // A zero-length match cannot happen here (both patterns require a
+            // token and a paren), but advancing explicitly keeps the loop
+            // terminating on any future edit to them.
+            if (sinkScanner.lastIndex <= m.index) sinkScanner.lastIndex = m.index + 1;
+          }
+          if (hasExecutionSink) break;
         }
       }
 
@@ -14326,9 +14915,10 @@ dist/
       //      it just does not lift THIS decoder finding to CRITICAL.
       // Neither corroborator holds for a test that builds a payload and asserts a
       // sanitiser escapes it — a correct DEFENCE against this technique.
-      const hasExecutionSink =
-        /(?:^|[^\w.$])eval\s*\(/.test(content) ||
-        /(?:^|[^\w.$])(?:new\s+)?Function\s*\(/.test(content);
+      //
+      // `hasExecutionSink` is settled in the presence loop above, over the same
+      // lines and with comments and string literals excluded — see the block
+      // there for what did and did not change about it.
       const hasDecodablePayload = hasVariationSelectors || hasTagCharsIn001;
       const corroborated = hasExecutionSink || hasDecodablePayload;
 
@@ -14354,7 +14944,7 @@ dist/
           name: 'GlassWorm Decoder Pattern Detected',
           description: corroboration
             ? `Source file ${act} Unicode variation selector or tag character codepoints AND carries corroborating evidence - this is the decoder half of a GlassWorm attack`
-            : `Source file ${act} Unicode variation selector or tag character codepoints. This is the shape of a GlassWorm decoder, but neither corroborator this check recognises is present - no literal eval( or Function( call, and no variation-selector or tag-character payload`,
+            : `Source file ${act} Unicode variation selector or tag character codepoints. This is the shape of a GlassWorm decoder, but neither corroborator this check recognises is present - no literal eval( or Function( call in code, and no variation-selector or tag-character payload`,
           category: 'unicode-stego',
           severity: corroborated ? 'critical' : 'medium',
           passed: false,
@@ -14369,7 +14959,7 @@ dist/
             : `sed -n '${Math.max(1, reportedLine - 5)},${reportedLine + 20}p' ${shellEscape(relativePath)}   # confirm this decodes for inspection, not for execution`,
           guidance: corroboration
             ? `The GlassWorm attack hides a payload in invisible Unicode characters and rebuilds it at runtime from their codepoints. This file ${act} those codepoints AND carries corroborating evidence, so treat it as live until traced. Follow the value from the range literal to whatever consumes it.`
-            : `This file ${act} codepoints in the variation selector or tag range. Sanitisers, linters, width calculators and tests for this attack all legitimately do the same thing, which is why this is a lead rather than a verdict. What was actually checked, stated narrowly on purpose: no literal eval( or Function( call appears in this file, and no variation-selector or tag-character payload - the invisible classes this shape decodes - is present (a lone zero-width char or a mid-file BOM, which UNICODE-STEGO-001 may still report on its own, does not corroborate this finding). Neither is a statement about the class. A decoded string can reach an executor through vm, child_process, a dynamic import(), a member expression such as globalThis.eval, or the Function constructor reached through a prototype chain, and this check recognises none of those - so read the file rather than trusting this line. Reconstitution likewise has many spellings (an alias, a destructured binding, .map, Buffer.from, TextDecoder), so its absence from the message above is not proof the file does not rebuild a string.`,
+            : `This file ${act} codepoints in the variation selector or tag range. Sanitisers, linters, width calculators and tests for this attack all legitimately do the same thing, which is why this is a lead rather than a verdict. What was actually checked, stated narrowly on purpose: no literal eval( or Function( call appears in this file's CODE - one written inside a comment or a string literal is a mention rather than a call site and is not counted, and a line longer than the scanner's per-line limit is not read here any more than it is by the two signals this finding is built from - and no variation-selector or tag-character payload - the invisible classes this shape decodes - is present (a lone zero-width char or a mid-file BOM, which UNICODE-STEGO-001 may still report on its own, does not corroborate this finding). Neither is a statement about the class. A decoded string can reach an executor through vm, child_process, a dynamic import(), a member expression such as globalThis.eval, or the Function constructor reached through a prototype chain, and this check recognises none of those - so read the file rather than trusting this line. Reconstitution likewise has many spellings (an alias, a destructured binding, .map, Buffer.from, TextDecoder), so its absence from the message above is not proof the file does not rebuild a string.`,
         });
       }
 
@@ -15943,7 +16533,7 @@ dist/
     _autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const files = await this.walkDirectory(targetDir, ['.sh'], 0, 2);
+    const files = await this.walkDirectory(targetDir, ['.sh'], 0, SHELL_CHECK_MAX_DEPTH);
 
     const pattern = /\b(curl|wget)\b[^|]*\|\s*(ba)?sh\b/g;
 
@@ -15994,7 +16584,7 @@ dist/
     _autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const files = await this.walkDirectory(targetDir, ['.sh', '.bash', '.zsh'], 0, 2);
+    const files = await this.walkDirectory(targetDir, ['.sh', '.bash', '.zsh'], 0, SHELL_CHECK_MAX_DEPTH);
 
     for (const file of files.slice(0, 100)) {
       try {
@@ -16248,7 +16838,7 @@ dist/
     _autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const files = await this.walkDirectory(targetDir, ['.sh'], 0, 2);
+    const files = await this.walkDirectory(targetDir, ['.sh'], 0, SHELL_CHECK_MAX_DEPTH);
 
     const pattern = /(>|>>)\s*\/tmp\/|(-o)\s+\/tmp\/|\s\/tmp\/\S+/g;
 
@@ -16300,7 +16890,7 @@ dist/
     _autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const files = await this.walkDirectory(targetDir, ['.sh'], 0, 2);
+    const files = await this.walkDirectory(targetDir, ['.sh'], 0, SHELL_CHECK_MAX_DEPTH);
 
     const pattern = /docker\s+exec\b.*?(\$\{?\w+\}?)/g;
 
@@ -17158,6 +17748,333 @@ dist/
       // Assembly scan failure is non-fatal
       return [];
     }
+  }
+
+  /**
+   * Decode-then-rescan: run the COMPLETE rule bank over what the artifacts
+   * actually say, rather than over the wrapper they say it in.
+   *
+   * ## Why this is a scan and not a rule list
+   *
+   * The obvious implementation is a table of patterns to look for in decoded
+   * text. It is also the wrong one: it would be a SECOND rule bank, containing
+   * whichever rules someone remembered to write twice, and every rule added to
+   * the real bank afterwards would be a rule that only matches unencoded
+   * payloads. So the reconstructed artifacts are written to a scratch tree at
+   * their ORIGINAL relative paths and scanned by `scan()` — the same entry
+   * point, the same 62 checks, the same semantic layer. A rule added tomorrow
+   * matches decoded payloads on the day it is added, because nothing here
+   * enumerates rules.
+   *
+   * The relative path is preserved rather than flattened because the bank is
+   * path-sensitive: `SKILL.md` is read by the SKILL-* checks, `.mcp.json` by
+   * the MCP checks, and a decoded payload rehomed to `payload-3.txt` would be
+   * scanned by neither. `isReportableFinding` is then re-applied with the OUTER
+   * scan's project type, so the scratch tree's shape cannot widen or narrow
+   * what is reported about the real one.
+   *
+   * ## What it reports
+   *
+   * The rule's OWN finding — its checkId, its severity, its attack class —
+   * re-attributed to the artifact the payload came out of, with the decoded
+   * text named in the message. A payload that decodes to a remote-execution
+   * command therefore blocks exactly as the plain command would, which is the
+   * whole point: the pre-fix scanner reported `SKILL-023 Obfuscated Code
+   * Pattern` and could not say what was obfuscated.
+   *
+   * Findings whose rule ALREADY fired on the same file are dropped
+   * (`baseFindings`): `SKILL-023` fires on the encoded form and stays a
+   * SKILL-023 at its existing severity. This pass adds a pass; it does not
+   * relabel anything.
+   *
+   * ## What it does not do
+   *
+   * It never writes to the target and never marks a finding fixable. Every
+   * remedy here is manual, because the auto-fixes are written against file
+   * content and the content this finding is about does not exist on disk in
+   * that form.
+   */
+  private async checkEncodedPayloads(
+    targetDir: string,
+    options: ScanOptions,
+    baseFindings: readonly SecurityFindingDraft[],
+    projectType: ProjectType,
+  ): Promise<SecurityFindingDraft[]> {
+    const findings: SecurityFindingDraft[] = [];
+    const { files: artifacts, capped } = await this.findDecodableArtifacts(targetDir);
+
+    const decoded: Array<{ rel: string; decode: ArtifactDecode }> = [];
+    let artifactsRead = 0;
+    let payloads = 0;
+    let deepestDepth = 0;
+    let haltedAtBound = false;
+
+    for (const abs of artifacts) {
+      const rel = path.relative(targetDir, abs) || path.basename(abs);
+      let content: string;
+      try {
+        const stats = await fs.stat(abs);
+        if (stats.size > MAX_FILE_SIZE) continue;
+        content = await fs.readFile(abs, 'utf-8');
+      } catch {
+        // An unreadable artifact is already recorded by the tracked namespace
+        // and reported as SCAN-UNREAD-001. Nothing to add here.
+        continue;
+      }
+      artifactsRead++;
+
+      const result = decodeArtifact(content);
+      if (result.payloads.length === 0) continue;
+      decoded.push({ rel, decode: result });
+      payloads += result.payloads.length;
+      deepestDepth = Math.max(deepestDepth, result.deepestDepth);
+
+      for (const payload of result.payloads) {
+        if (!payload.haltedAtBound) continue;
+        haltedAtBound = true;
+        findings.push(this.decodeBoundFinding(rel, payload));
+      }
+    }
+
+    // Recorded before the rescan and unconditionally, `payloads: 0` included:
+    // "nothing was encoded here" is a measurement, and a block that appears
+    // only when the pass found something cannot be told from a pass that never
+    // ran. Same contract as the ledger it sits in.
+    this.coverage.noteDecodePass({
+      maxDepth: MAX_DECODE_DEPTH,
+      artifactsRead,
+      artifactsWithPayloads: decoded.length,
+      payloads,
+      deepestDepth,
+      haltedAtBound,
+    });
+
+    if (capped) {
+      this.coverage.truncate({
+        layer: 'decode',
+        cap: MAX_DECODE_ARTIFACTS,
+        prefixes: ['SCAN'],
+        reason: `the decode pass reads at most ${MAX_DECODE_ARTIFACTS} artifacts; artifacts past that cap were not decoded`,
+      });
+    }
+
+    if (decoded.length === 0) return findings;
+
+    // A scratch tree outside the target. Writing the reconstruction back into
+    // the target would be a scanner modifying the thing it is measuring, and
+    // `mkdtemp` gives a 0700 directory nothing else can read while it exists.
+    let scratch: string;
+    try {
+      scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'hma-decoded-'));
+    } catch {
+      // No scratch space, no rescan. The decode record above still stands, so
+      // the coverage output says payloads were found; it does not claim they
+      // were examined.
+      return findings;
+    }
+
+    try {
+      for (const { rel, decode } of decoded) {
+        const dest = path.join(scratch, rel);
+        await fs.mkdir(path.dirname(dest), { recursive: true });
+        await fs.writeFile(dest, decode.reconstructed, 'utf-8');
+      }
+
+      const inner = new HardeningScanner();
+      const innerResult = await inner.scan({
+        targetDir: scratch,
+        // Never fixes: a fix here would rewrite the scratch copy and report a
+        // remedy the user's tree never received.
+        autoFix: false,
+        // `standard`, not the caller's depth: `deep` would send the decoded
+        // payloads to the LLM as a second billed pass over content the outer
+        // run is already sending.
+        scanDepth: 'standard',
+        // The scratch tree is not a source repo — no git history, no
+        // `.gitignore` to be missing.
+        isNpmPackage: true,
+        // The line that terminates the recursion.
+        decodeRescan: false,
+        cliName: options.cliName,
+      });
+
+      const already = new Set<string>();
+      for (const f of baseFindings) {
+        if (f.file) already.add(`${f.file}\u0000${f.checkId}`);
+      }
+
+      const byArtifact = new Map(decoded.map((d) => [d.rel, d.decode]));
+      for (const f of innerResult.allFindings ?? innerResult.findings) {
+        // Operational records describe A RUN, and the run they describe is the
+        // inner one: `SCAN-001` about the size of a scratch copy, or the inner
+        // scan's own unread-input record, says nothing about the user's tree
+        // and would arrive attributed to a file it is not about.
+        if (TAXONOMY_EXEMPT_CHECKIDS.has(f.checkId)) continue;
+        if (!this.isReportableFinding(f, projectType)) continue;
+        const decode = f.file ? byArtifact.get(f.file) : undefined;
+        if (!decode || !f.file) continue;
+        const key = `${f.file}\u0000${f.checkId}`;
+        if (already.has(key)) continue;
+        already.add(key);
+        findings.push(this.decodedRuleFinding(f, f.file, decode));
+      }
+    } catch {
+      // A rescan that throws reports nothing rather than taking the outer scan
+      // down with it. The decode record already says payloads were found.
+    } finally {
+      await fs.rm(scratch, { recursive: true, force: true }).catch(() => {});
+    }
+
+    return findings;
+  }
+
+  /**
+   * One rule-bank finding, re-attributed from the reconstruction to the
+   * artifact the payload came out of.
+   *
+   * `reemitFinding` rather than a hand-built object: the inner finding has
+   * already crossed the redaction boundary, and a named-field rebuild is
+   * exactly the shape that downgrades an honest `'applied'` to `'clean'`
+   * (`finding-emit.ts`). The overrides carry no redaction field and cannot.
+   */
+  private decodedRuleFinding(
+    inner: SecurityFinding,
+    rel: string,
+    decode: ArtifactDecode,
+  ): SecurityFindingDraft {
+    const payload = payloadForLine(decode, inner.line);
+    const chain = payload.encodings.join(' → ');
+    const excerpt = decodedExcerpt(payload.text);
+    const where = `${rel}:${payload.line}`;
+
+    return reemitFinding(inner, {
+      name: `${inner.name} (decoded payload)`,
+      // The citation is the ENCODED span in the real file. The inner finding's
+      // line is a line of the reconstruction, which exists on no disk — citing
+      // it would send a reader to an unrelated line of the real artifact.
+      file: rel,
+      line: payload.line,
+      message:
+        `${where}: a ${chain} payload decodes to \`${excerpt}\`, and the decoded text matches ` +
+        `${inner.checkId}. Reported on the reconstructed command, not on the wrapper: the encoded ` +
+        `form matched no rule, which is what made it worth encoding.`,
+      description:
+        `${inner.description} Detected after decoding, not in the artifact's surface text.`,
+      // Evidence dropped deliberately: it cites line numbers of the
+      // reconstruction, and a citation that resolves against the real file
+      // would print an unrelated line with a straight face.
+      evidence: undefined,
+      // Never auto-fixable. The auto-fixes rewrite file content, and the
+      // content this finding is about is not the content on disk.
+      fixable: false,
+      fixed: undefined,
+      fixVerified: undefined,
+      wouldFix: undefined,
+      fix:
+        `Remove the encoded payload at ${where}. If the command it decodes to is genuinely ` +
+        `required, write it in plain text so it can be reviewed and so this rule can judge it ` +
+        `on its own terms.`,
+      manualFix: undefined,
+      details: {
+        ...(inner.details ?? {}),
+        decodedPayload: {
+          artifact: rel,
+          line: payload.line,
+          encodings: payload.encodings,
+          depth: payload.depth,
+          matchedCheckId: inner.checkId,
+          haltedAtBound: payload.haltedAtBound,
+        },
+      },
+    });
+  }
+
+  /** The `SCAN-DECODE-BOUND` record for one chain the bound stopped. */
+  private decodeBoundFinding(rel: string, payload: DecodedPayload): SecurityFindingDraft {
+    const chain = payload.encodings.join(' → ');
+    const where = `${rel}:${payload.line}`;
+    return {
+      checkId: 'SCAN-DECODE-BOUND',
+      name: 'Decode Depth Bound Reached',
+      description:
+        'A payload was still encoded at the decoder\'s depth bound, so the plaintext below that point was not examined by any rule.',
+      category: 'scan',
+      severity: 'medium',
+      passed: false,
+      message:
+        `${where}: a ${chain} payload was STILL encoded after ${MAX_DECODE_DEPTH} decodes. The scan ` +
+        `stopped at the bound and did not examine what is below it — this is a gap in coverage, not ` +
+        `a clean result. The layers that were decoded are reported by whichever rules matched them.`,
+      file: rel,
+      line: payload.line,
+      fixable: false,
+      fix:
+        `Decode the payload at ${where} by hand and inspect what it contains, or remove it. ` +
+        `Nesting an encoding past the scanner's bound has no legitimate use in an agent artifact.`,
+      guidance:
+        'The bound exists so a crafted artifact cannot make the scanner decode forever. Reaching it ' +
+        'is reported rather than absorbed, because a truncation nobody is told about reads exactly ' +
+        'like a clean result.',
+    };
+  }
+
+  /**
+   * Text artifacts the decode pass reads.
+   *
+   * Wider than any single check's walk on purpose — a payload does not care
+   * what extension it is hidden behind — and bounded by `MAX_DECODE_ARTIFACTS`,
+   * with the cap reported when it bites. This run's own backup archive is
+   * excluded by IDENTITY, never by name: a directory name is a suppression
+   * token the scanned tree can plant (#305/#309).
+   */
+  private async findDecodableArtifacts(
+    targetDir: string,
+  ): Promise<{ files: string[]; capped: boolean }> {
+    const files: string[] = [];
+    let capped = false;
+
+    const walk = async (dir: string, depth: number): Promise<void> => {
+      if (depth > 8 || files.length >= MAX_DECODE_ARTIFACTS) return;
+      let entries;
+      try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (files.length >= MAX_DECODE_ARTIFACTS) {
+          capped = true;
+          return;
+        }
+        if (entry.isSymbolicLink()) continue;
+        const full = path.join(dir, entry.name);
+        if (!this.isPathWithinDirectory(full, targetDir)) continue;
+        if (entry.isDirectory()) {
+          if (DECODE_SKIP_DIRS.has(entry.name)) continue;
+          if (await this.isOwnBackupDir(full)) continue;
+          await walk(full, depth + 1);
+        } else if (entry.isFile()) {
+          const ext = path.extname(entry.name).toLowerCase();
+          if (DECODE_ARTIFACT_EXTENSIONS.has(ext)) files.push(full);
+        }
+      }
+    };
+
+    try {
+      const stats = await fs.stat(targetDir);
+      if (stats.isFile()) {
+        // Single-file target, the `secure SKILL.md` shape. Extension-gated like
+        // every other artifact: the caller pointed at it, which does not make
+        // an ELF binary text.
+        const ext = path.extname(targetDir).toLowerCase();
+        return { files: DECODE_ARTIFACT_EXTENSIONS.has(ext) ? [targetDir] : [], capped: false };
+      }
+    } catch {
+      return { files: [], capped: false };
+    }
+
+    await walk(targetDir, 0);
+    return { files, capped };
   }
 
   /** Helper: recursively find files in web-served directories */

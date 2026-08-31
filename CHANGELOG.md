@@ -4,6 +4,274 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The stub loop has a terminus again: `pull-stubs` drops its vocabulary, `mark-stub` writes back (HMA-08)
+
+Two defects at the same place — the point where a confirmed ARIA observation is
+supposed to become a shipped check.
+
+**`pull-stubs` held a vocabulary it did not own.** The CLI validated `--status`
+against a hardcoded `['draft','review','integrated','rejected']` and then
+filtered the response against the same list, while the database's own CHECK
+constraint held a different set. Every value except the default was unusable in
+one direction or the other: `--status review|integrated|rejected` could never
+match a row, and `--status reviewed|published` was refused client-side before
+the request was made. The pipeline's only working query was the default.
+
+Both halves are gone. `--status` is sent to the registry verbatim as
+`?status=`, the rows the registry returns are the rows that print, and a 4xx
+answer is rendered near-verbatim — no longer clipped at 200 bytes, because that
+body carries the allowed set, which is the one thing the CLI deliberately no
+longer knows. `--all` omits the parameter entirely rather than sending a magic
+word for "any", so the two sides need no agreement for the unfiltered case
+either. Each stub now leads with its **Stub ID**, and the summary closes by
+naming the command that consumes it.
+
+**Nothing marked a stub integrated.** So the transition was manual and
+unaudited, and "how many confirmed observations became a shipped check" — the
+only figure that shows the flywheel turns — had no answer. `mark-stub <id>
+<status>` is that write-back: `PATCH /internal/aria/hma-stubs/:id`, status sent
+verbatim, exit 0 recorded / 1 refused / 2 not settled.
+
+The refusals are the product. `integrated` is refused without
+`--source-commit`, and refused unless an in-process probe finds the check ID in
+the RUNNING build's coverage inventory — reading `CHECK_METHOD_PREFIXES` and
+`UNREACHABLE_PREFIXES` out of the built module rather than re-reading `src/` or
+carrying a copy. That closes the `UNREACHABLE_PREFIXES` class at write time:
+`CODEINJ`, `TMPPATH` and `ENVLEAK` are implemented, emit findings, are counted
+in the advertised suite and have no caller in `scanInner`, so a stub mapped to
+one of them would otherwise be recorded as a shipped check whose detector can
+never fire. `rejected` is refused without `--reason`.
+
+**Fabrication has no first-class UX.** There is no `--evidence`, `--reachable`
+or `--hma-version` flag: `hmaVersion` comes from the running artifact's own
+version and `reachable` is the probe's verdict. A refusal prints WHAT, a
+`Verify:` line and a `Fix:` line, and offers no flag that skips the gate —
+there isn't one. `--dry-run` runs every preflight and the probe, prints the
+exact body that would be sent, and sends nothing.
+
+The registry leg — the migration, the server-side filter and the PATCH endpoint
+— ships separately, so every test here runs against a mocked registry and the
+two land independently. `docs/release-playbook.md` gains the two release steps:
+a `--dry-run` preview for every stub a release claims, before the tag is
+pushed, and the real send afterwards from the published artifact.
+
+### The static suite reaches where skills actually live (HMA-07)
+
+`.claude/skills/<name>/SKILL.md` is where skills sit on disk, and the scanner
+never opened one. `findSkillFiles` skipped every dot-directory except
+`.openclaw`, `.moltbot` and `.clawdbot`, so a reverse-shell SKILL.md placed
+there received no SKILL-* check at all — while the byte-identical file one
+directory over at `skills/<name>/SKILL.md` was reported CRITICAL. Not a coverage
+gap at the margin: a false clean on the most common layout, reachable by putting
+the file where the tooling itself puts it.
+
+Three reaches were short, and all three are now the reach a reader would assume:
+
+- **`.claude` is entered by name.** `.git`, `node_modules`, `.venv` and every
+  other dot-directory stay skipped — descending into git objects and
+  site-packages buys no skill coverage, and the symlink refusal that keeps a
+  directory link from walking out of the tree (#685) is untouched.
+- **The bundle is read, not just the Markdown.** A skill is a directory:
+  SKILL.md is what the agent is told, and `scripts/`, `hooks/` and `tests/`
+  beside it are what runs. Only `SKILL.md` and `*.skill.md` were ever opened, so
+  moving a credential upload one file across — into `scripts/setup.sh`, or into
+  an extensionless `scripts/install` that no extension list can match — was
+  enough to go unread. Bundled files are now analyzed, and one SKILL-006 per
+  skill directory cites every file that carried a payload, so the reviewer sees
+  one decision instead of three findings they can fix one at a time.
+- **The shell checks reach depth 3.** INSTALL-001, SHELL-EXFIL-001, TMPPATH-001
+  and DOCKERINJ-001 walked with `maxDepth 2`, which stops one directory short of
+  `skills/foo/scripts/setup.sh`.
+
+**No new flag.** The wider walk is the default walk; an opt-in would have left
+the default scan reporting the same false clean.
+
+**The detection vocabulary does not move.** No check was added, no severity
+changed, and no pattern was widened — this changes only which files the existing
+checks are given. The bundle finding fires on a conjunction (a credential file
+read into a remote request body, or a credential path and an exfiltration sink
+in the same statement), so an ordinary bundled installer stays quiet: every
+committed fixture in the tree, and the repository's own self-scan, produce a
+byte-identical finding set before and after.
+
+### A benign-context score can no longer clear a finding read from the artifact's own bytes
+
+The pattern rules that read a source file directly — a hardcoded API key, an
+external URL paired with a data-forwarding verb — now set a floor the intent
+scorer cannot go under. Before this, a paragraph of authorization or
+educational prose written into the artifact could pull its intent verdict down
+to `benign` and, on that path, suppress byte-derived findings: once the framing
+scored high enough, the external-transmission (exfiltration) surface was gated
+out of the analysis entirely, and the lowered verdict was applied with no record
+that anything had been talked down.
+
+Two things change in what `secure` reports on source artifacts:
+
+- **A downgrade the framing asks for is refused when a byte-level rule fired
+  underneath it.** The scorer's pre-downgrade verdict stands, and the refusal
+  is recorded rather than applied silently. Where nothing deterministic fired,
+  the downgrade still lands — framing prose is often the right answer for an
+  artifact accused only by vocabulary scoring — and that too is now recorded,
+  so a `benign` verdict on something that was accused and a `benign` verdict on
+  something nothing accused are no longer indistinguishable.
+- **The exfiltration surface holds its rung.** The same matched bytes used to
+  be reported CRITICAL, HIGH or MEDIUM depending on what the scorer made of the
+  surrounding prose; an external-transmission surface now floors at HIGH and the
+  verdict may only raise it, never drop it to MEDIUM.
+
+Net effect for operators: some source artifacts that previously scored benign
+now surface findings, because an exfiltration pattern in the file's own bytes
+can no longer be talked down by the benign-context score, and any downgrade the
+framing does earn is now recorded rather than applied silently. The detection
+vocabulary is unchanged — the same shapes are found on the same files at the
+same or higher severity; on this path, only the subtraction is gone.
+
+### The CRITICAL hardcoded-secret finding says where the secret is, and four secrets count as four (#368, #478)
+
+One cause, two symptoms, both carried since 0.28.0.
+
+`scanCanonicalCredentialFormats` knew the exact offset of every key it matched
+and threw it away. What it emitted was a CLASSIFICATION — `OpenAI legacy key:
+[REDACTED]` — which is the right thing to emit (no part of a value rides in a
+finding) but is not a substring of the file, and the only way back to a line ran
+through `extractEvidenceSpans`, which looks evidence up with `indexOf`. So:
+
+- **The CRITICAL was vaguer than the HIGH beneath it.** `AST-CRED-003` rendered
+  as `app/config.ts` with no `:N`, and with no line there is deliberately no
+  `Verify:` — directly above an `AST-CRED-001` HIGH on the same file that
+  printed both. A CRITICAL a reader cannot locate, above a HIGH they can,
+  inverts the severity signal the repo's own standard rests on (#368).
+- **Four keys in one file scored as one.** They collapsed into a single finding
+  naming the first, so removing three of the four moved the score by exactly
+  zero — which reads as "my fix did not work" (#478). Each shape was detected in
+  isolation the whole time; the loss was aggregation, not pattern coverage.
+
+The offset is now recorded at the point of the match, carried on the risk
+surface as `offset`, and turned into a line by the emit site. One finding per
+located instance, keyed on the offset rather than the line so two secrets
+sharing a line stay two secrets, and the per-file rollup in
+`deduplicateFindings` keys credential findings on their line as well — a
+hardcoded secret is a separate key to rotate, not a repetition of one issue the
+way 60 constraints in a SOUL.md are.
+
+**The detection vocabulary does not move.** The same shapes are found on the
+same files, and a file holding one secret still produces exactly one finding at
+the same severity, which a test pins beside the four-secret one.
+`MAX_FINDINGS_PER_CHECK` still caps the score contribution at three at full
+weight and 10% after, so this widens what the score can SEE without uncapping
+it. Several credential shapes remain undetected entirely — a plain
+`DB_PASSWORD`, a `postgres://` DSN, `glpat-` and `hf_` tokens still score 98/100
+at exit 0, exactly as 0.32.0 disclosed, and that is unchanged here.
+
+**Not closed by this: #497.** `AST-CRED-001` still derives its line by
+re-searching for the leftmost credential-shaped string, which is the wrong line
+whenever a digest or an `sk-EXAMPLE…` placeholder sits above the real key. The
+producer-offset route landed here for `AST-CRED-003` because the canonical scan
+records the offset of the value it matched; #497's harder half — a
+`-----BEGIN RSA PRIVATE KEY-----` match that is a good citation when a key body
+follows and a bad one when nothing does — is untouched and stays open.
+
+### `fix-all` reads the files `secure` reads before it calls credentials clean (#477)
+
+On a tree where `secure` reported a CRITICAL hardcoded secret and exited 1,
+`fix-all --scan-only` printed `Credential Protection  [+] No issues found` and
+exited 0 — while `secure --fix` routes users to `fix-all` in its own output. Two
+analyzers in one tool, opposite directions, one artifact.
+
+It was never a disagreement about which credential SHAPES count: credvault's
+catalog already carried the vendor shapes `secure` reports. It was a
+disagreement about which FILES get opened. credvault read fourteen fixed config
+paths, so an ordinary `.py` or `.ts` holding an API key was outside its
+population entirely. It now sweeps the same source extensions
+`artifact-parser.ts` classifies as `source_code`, with the same catalog and the
+same per-line ReDoS bound, and reports **CRED-005**. The sweep is bounded (depth
+8, 2000 files, no symlink traversal, the usual build and vendor directories
+skipped) and a quoted pattern in a scanner's own source does not count — source
+files legitimately hold the shapes a scanner matches with, which config files do
+not.
+
+**CRED-005 is not auto-fixable, deliberately.** `fix()` rewrites the config
+paths and nothing else, so marking it fixable would print a remedy that never
+runs and would clear the finding out of `remainingFindings` — the list the exit
+code reads. `fix-all` names the file and the line and asks the user to rotate;
+it does not rewrite source.
+
+### The GlassWorm decoder's execution-sink corroborator reads code, and reads the same lines (#475, in part)
+
+`UNICODE-STEGO-002` lifts a decoder shape to CRITICAL when it finds an execution
+sink in the same file. It looked for one over the whole file content, with no idea
+what was code, so two things corroborated that are not calls:
+
+- **A mention in a comment or a string literal.** `src/hardening/scanner.ts`
+  self-flagged CRITICAL on the `eval(...)` written into one of its own doc comments
+  and on the `'eval() dynamic execution'` label of a detection rule. It stayed out
+  of our own score only because `.hmaignore` excludes that path — the exemption was
+  carrying the defect, so the same file scanned anywhere else reported CRITICAL on
+  its own prose. Comments are now blanked with block state carried across the line
+  boundary (the body of a doc comment has no opener on its own line, which is why
+  the existing per-line predicate could not see this), and strings are left to
+  `isMatchInsideStringLiteral`, the predicate NEMO-009 already uses for the same
+  question. Scanned as a copy with no `.hmaignore` in reach, `scanner.ts` moves from
+  CRITICAL to a MEDIUM lead. It is still reported: the file does read codepoints in
+  the range, and saying so costs a line of output.
+- **A line the finding's own signals never read.** The presence loop skips a line
+  over `MAX_LINE_LENGTH`; the corroborator ran over whole content, so an `eval(`
+  inside a minified bundle line corroborated a `.codePointAt(` and a range literal
+  read from ordinary lines. Both now read one population in one loop, so they cannot
+  disagree about which lines exist. A pair of fixtures differing only in the length
+  of one padding string pins each direction.
+
+**The sink vocabulary is unchanged, deliberately.** `vm.runInNewContext`,
+`globalThis.eval`, `(0,eval)`, a constructor chain, `Reflect.construct`, dynamic
+`import()`, `child_process` and `module._compile` still do not corroborate, and the
+finding's guidance still says so. Widening the regex would answer a semantic
+question with a lexical test for the third time in this check; it belongs with
+#424's AST dataflow work, and the regexes themselves are byte-identical to before
+this change so that claim can be diffed rather than taken on trust.
+
+**One narrowing, disclosed:** matching per line means `eval` and `(` separated by a
+newline no longer match. That spelling is legal JavaScript and is a real loss of one
+lexical variant, on a corroborator that already misses the eight spellings above.
+
+The uncorroborated finding's own description and guidance were reworded to match:
+they used to say no `eval(` or `Function(` call "appears in this file", which is now
+false about a file that mentions one in a comment. They say "in code" and name the
+line-length limit.
+
+### secure no longer follows a link out of the directory it scans
+
+A symbolic link inside the scanned tree that resolves outside it was followed
+by every check that probes a fixed name (`.env`, `CLAUDE.md`, `config.json`,
+`.claude/settings.json`, `SOUL.md`, and the rest), by the walkers when the link
+was the directory they were handed (`skills -> /`), by the structural layer,
+by the citation re-reads, and by the single-file copy — measured on a five-link
+fixture, a plain `secure` made 58 link-following calls that reached an
+out-of-tree file, quoted its bytes into findings and `--output`, and under
+`--deep` sent them in the Layer-3 request. The MCP server's `hackmyagent_scan`
+had the same gap on Layer 1; #463 had confined only the structural half of
+`hackmyagent_deep_scan`.
+
+Confinement is now enforced once, at the filesystem namespace every check
+reads through, rather than at each of the ~150 sites: before any
+link-following call (`readFile`, `stat`, `access`, `readdir`, `opendir`,
+`open`), a path inside the scanned tree whose real location is outside it is
+refused with the same not-found error an absent file produces, and the refusal
+is recorded and disclosed. The report lists each withheld link with where it
+resolves, and to include that file you point the scan at the directory that
+really contains it. Withheld links never change the exit code and are never
+counted as unread inputs, so a monorepo that shares a `.env` through a link
+still exits 0 when nothing else is wrong; a link that resolves inside the tree,
+a scan under a symlinked parent, and a target under a symlinked temp directory
+are read exactly as before. The four raw reads that bypass the namespace by
+design (the citation re-reads in the scanner and the NanoMind bridge, the
+bridge's policy probe, the single-file copy) confine at their own site, and a
+static census pins every raw `fs` import in `src/` to a justified allowlist so
+a new one fails the suite. The MCP handlers confine Layer 1 to the granted
+roots, so a link from one granted project into another is read and a link into
+an ungranted location is withheld. There is no flag that follows links out.
+The `scan-soul`, `harden-soul` and `detect` governance reads are not covered
+by this change and are tracked as a follow-up.
+
 ### The ASP profile's credential summary no longer misses semantic secrets
 
 `secure -b oasb-1 --format asp` could report `credentials.hardcodedSecrets: 0`

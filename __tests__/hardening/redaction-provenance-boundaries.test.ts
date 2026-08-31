@@ -108,12 +108,20 @@ describe('cli.ts JSON-serialization tripwire', () => {
   // (route through writeJsonStdout, add an assert, or record why neither),
   // then update the count. It does not prove coverage; the injections above
   // and the healthy e2e runs do that for the known set.
+  // HMA-08 added two, both classified here rather than routed: `mark-stub`
+  // serializes its PATCH body twice — once into the request and once into the
+  // `--dry-run` preview, which must print the SAME bytes to be worth reading.
+  // Neither carries a `SecurityFinding`: the body is `{status, reason?,
+  // evidence?}` where `evidence` is four measured scalars, so the
+  // publish-boundary read has nothing to cover on either. The `--json`
+  // envelope, which is the finding-adjacent channel, does go through
+  // `writeJsonStdout`.
   it('the number of JSON.stringify sites in cli.ts is accounted for', () => {
     const cli = readFileSync(join(__dirname, '..', '..', 'src', 'cli.ts'), 'utf8');
     const count = (cli.match(/JSON\.stringify\(/g) ?? []).length;
     expect(
       count,
       'cli.ts gained or lost a JSON.stringify site — classify it against the publish-boundary read (unit 2) before updating this pin',
-    ).toBe(18);
+    ).toBe(20);
   });
 });

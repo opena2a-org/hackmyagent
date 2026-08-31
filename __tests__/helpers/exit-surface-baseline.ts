@@ -14,11 +14,16 @@
  * regenerate it mechanically.
  */
 export const UNSETTLED_EXIT_IDS: ReadonlySet<string> = new Set([
-  // Pre-work refusals (Class R) — events await the schema reason field (#525):
+  // Pre-work refusals (Class R) — events await the schema reason field (#525).
+  // S042 (pull-stubs' client-side `--status` vocabulary refusal) is GONE: the
+  // validStatuses array it guarded was deleted with the rest of the client
+  // vocabulary, so the site it annotated no longer exists. A shrink, which is
+  // the only direction this list moves.
+
   'S001', 'S002', 'S003', 'S004', 'S005', 'S006', 'S007', 'S008', 'S009', 'S010',
   'S012', 'S013', 'S014', 'S016', 'S017', 'S018', 'S019', 'S020', 'S021', 'S022',
   'S023', 'S024', 'S025', 'S026', 'S027', 'S031', 'S035', 'S037', 'S039', 'S041',
-  'S042', 'S043', 'S044', 'S045',
+  'S043', 'S044', 'S045',
   // Bare `process.exitCode` assignments outside the funnel — migrate to raiseExitCode.
   // (S050-S054, check's PyPI and URL fetch-failure exits, settled via
   // settleCheckVerdict under #602 — the first baseline shrink.)
