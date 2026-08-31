@@ -108,6 +108,14 @@ const JSON_EXIT_PARITY: Record<string, Parity> = {
     kind: 'unrunnable-offline',
     reason: 'fetches pending check stubs from the registry; no local target, no findings verdict',
   },
+  'mark-stub': {
+    kind: 'unrunnable-offline',
+    reason:
+      'writes a stub status transition to the registry; there is no local target and no '
+      + 'findings verdict. Its own exit contract (0 recorded / 1 refused / 2 not settled) is '
+      + 'asserted against a mocked registry in __tests__/cli/hma08-mark-stub.test.ts, one '
+      + 'test per class, on both channels',
+  },
 };
 
 /** Commands registering `--json`, read from the CLI source. */

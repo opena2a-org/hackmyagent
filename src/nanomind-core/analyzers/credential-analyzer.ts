@@ -512,16 +512,8 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
       ? credentialEvidence[0].text.slice(0, 120)
       : credentialRisks[0]?.evidence ?? 'Credential pattern detected';
 
-  // Prefer the EvidenceSpan's character offset (signed AST data) — it's
-  // exact and local. Fall back to substring search on the unsigned content
-  // when only a RiskSurface evidence string is available.
-  const spanStart = credentialEvidence[0]?.start;
-  const lineFromSpan = artifactContent !== undefined && spanStart !== undefined
-    ? lineFromOffset(artifactContent, spanStart)
-    : undefined;
-  const fallbackLine = lineFromSpan ?? findLineFromString(artifactContent, evidenceSummary);
-
-  findings.push({
+  /** Everything but the two per-instance fields, which every emit below shares. */
+  const emit = (summary: string, line: number | undefined): ASTFinding => ({
     checkId: 'AST-CRED-003',
     name: 'Hardcoded Secret Detected',
     description:
@@ -531,10 +523,10 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
     category: 'Credential Security',
     severity,
     passed: false,
-    message: `Hardcoded secret: ${evidenceSummary.slice(0, 80)}`,
+    message: `Hardcoded secret: ${summary.slice(0, 80)}`,
     fixable: false,
     file: ast.artifactPath,
-    line: fallbackLine,
+    line,
     fix:
       'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only. ' +
       'Rotate any credentials that were committed to version control.',
@@ -543,8 +535,53 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
       'The old values may already be in git history or build caches.',
     attackClass: 'CRED-HARDCODED',
     confidence: allTestFixtures ? 0.3 : maxConfidence,
-    evidence: evidenceSummary,
+    evidence: summary,
   });
+
+  // ── One finding per credential the producer LOCATED (#478, #368) ──────────
+  //
+  // The canonical credential scan records the offset of every match it makes,
+  // so four keys in one file are four known positions. Collapsing them into a
+  // single finding naming the first cost two things at once: the CRITICAL had
+  // no line and therefore no `Verify:` while the HIGH beside it had both
+  // (#368), and removing three of the four moved the score by zero, because
+  // scoring counts findings and there was one either way (#478).
+  //
+  // Keyed on OFFSET, not on line: two distinct patterns cannot match at one
+  // offset (the vendor shapes are mutually exclusive at their prefixes — see
+  // CANONICAL_CREDENTIAL_PATTERNS), so this counts secrets rather than
+  // collapsing two secrets that happen to share a line.
+  //
+  // NOTHING ELSE ABOUT THE FINDING MOVES. Severity, confidence and the
+  // suppression gates above are computed once, over the whole artifact, and
+  // read by every instance — so a file with exactly one secret produces
+  // exactly the finding it produced before, at the same severity, plus the
+  // line it always had the data for.
+  if (artifactContent !== undefined) {
+    const located = new Map<number, string>();
+    for (const r of credentialRisks) {
+      if (typeof r.offset === 'number' && r.offset >= 0 && !located.has(r.offset)) {
+        located.set(r.offset, r.evidence);
+      }
+    }
+    if (located.size > 0) {
+      for (const [offset, summary] of [...located.entries()].sort((a, b) => a[0] - b[0])) {
+        findings.push(emit(summary, lineFromOffset(artifactContent, offset)));
+      }
+      return findings;
+    }
+  }
+
+  // Prefer the EvidenceSpan's character offset (signed AST data) — it's
+  // exact and local. Fall back to substring search on the unsigned content
+  // when only a RiskSurface evidence string is available.
+  const spanStart = credentialEvidence[0]?.start;
+  const lineFromSpan = artifactContent !== undefined && spanStart !== undefined
+    ? lineFromOffset(artifactContent, spanStart)
+    : undefined;
+  const fallbackLine = lineFromSpan ?? findLineFromString(artifactContent, evidenceSummary);
+
+  findings.push(emit(evidenceSummary, fallbackLine));
 
   return findings;
 }

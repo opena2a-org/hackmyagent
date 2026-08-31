@@ -31,13 +31,23 @@ export default defineConfig({
     // `spawnSync` blocks the event loop, so vitest cannot interrupt one. A cap
     // under the spawn budget still waits out the whole spawn and only then
     // reports an unhelpful "Test timed out", which is how the layering was
-    // inverted here. 60s covers the spawn tests with several times the
-    // headroom they need — a CLI scan that runs longer than that is broken,
-    // not slow — while staying tight enough that a genuinely hung unit test
-    // still fails quickly. The handful of files whose own spawn budgets
-    // exceed 60s carry an explicit higher `{ timeout }` on their describe.
-    testTimeout: 60_000,
-    hookTimeout: 60_000,
+    // inverted here.
+    //
+    // 60s was the previous cap, on the claim that a longer scan is broken
+    // rather than slow. Measured false under full-suite parallelism
+    // (2026-08-29): the suite packs ~5600s of test time into ~660s wall, and
+    // scans that take 13-20s in isolation contend past 60s — three different
+    // spawn-test files flaked at exactly 60000ms across three otherwise-green
+    // full-suite runs on an idle machine. 180s covers a contended scan with
+    // headroom while a genuinely hung unit test still fails in minutes, not
+    // hours. A file whose own spawn budget meets or exceeds this cap carries
+    // an explicit higher `{ timeout }` on its describe (secure-unread-input-
+    // gate: spawn budget 240s, describe timeout 300s).
+    // hookTimeout matches testTimeout for the same reason: several files run
+    // their scan spawns in beforeAll (fix-marker-under-prefix timed out its
+    // hook at exactly 60000ms in the run after testTimeout alone was raised).
+    testTimeout: 180_000,
+    hookTimeout: 180_000,
     // The OPENA2A_CORPUS_DETERMINISTIC default that used to sit here as
     // `env: { ... }` now lives in vitest.setup.ts, which sets it only when it is
     // unset. That conditional form is the reason it moved: a deliberate

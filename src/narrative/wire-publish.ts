@@ -16,6 +16,7 @@
  *   they do NOT alter the parent publish's success state.
  */
 import { existsSync, readFileSync } from "node:fs";
+import { readStaysInsideTree } from "../hardening/contain";
 import { join } from "node:path";
 import type { SecurityFinding } from "../hardening";
 import type { ProjectType } from "../hardening/security-check";
@@ -84,7 +85,13 @@ export async function wireNarrativePublish(
     let compiledContent: string;
     let compiledPath: string;
 
+    // Raw reads of a target-joined name, and this content is POSTED to the
+    // registry: confined at the site, as every raw reader on the scan path
+    // is, so a `SKILL.md -> ~/...` link is not read and not sent.
     if (isSkill) {
+      if (!readStaysInsideTree(skillPath, options.targetDir).ok) {
+        return { attempted: false, skippedReason: "SKILL.md is a link that resolves outside the scanned tree" };
+      }
       compiledContent = readFileSync(skillPath, "utf-8");
       compiledPath = skillPath;
     } else {
@@ -92,6 +99,9 @@ export async function wireNarrativePublish(
       // mcpServers config we can find in the target directory.
       const pkgPath = join(options.targetDir, "package.json");
       if (existsSync(pkgPath)) {
+        if (!readStaysInsideTree(pkgPath, options.targetDir).ok) {
+          return { attempted: false, skippedReason: "package.json is a link that resolves outside the scanned tree" };
+        }
         compiledContent = readFileSync(pkgPath, "utf-8");
         compiledPath = pkgPath;
       } else {
