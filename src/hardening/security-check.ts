@@ -29,8 +29,66 @@ export type ProjectType = 'cli' | 'library' | 'sdk' | 'webapp' | 'api' | 'mcp' |
  * report (#450). Named rather than a bare string so the disclosure can say
  * which knob was turned, and so a fourth channel cannot be added without
  * touching this union.
+ *
+ * Split by GATE SEMANTICS, which is the property a channel cannot be allowed
+ * to get wrong: a presentational channel narrows the report and never the
+ * verdict (the finding stays scored and in the exit code), while a scope
+ * channel removes the finding from the score and the exit code because the
+ * committed rule says that part of the tree is not the product. Every site
+ * that partitions findings between `suppressed` and `outOfScope` routes
+ * through `isScopeChannel`, so a fifth channel added to either half of the
+ * union inherits the right gate behaviour instead of falling through a
+ * string comparison onto the wrong side.
  */
-export type SuppressionChannel = 'ignore-flag' | 'hmaignore-check' | 'hmaignore-path';
+export type ScopeChannel = 'hmaignore-path' | 'hmaignore-path-check';
+export type PresentationalChannel = 'ignore-flag' | 'hmaignore-check';
+export type SuppressionChannel = PresentationalChannel | ScopeChannel;
+
+/**
+ * The one spelling of "does this channel leave the exit code". Accepts any
+ * string because the Row types on the wires keep `suppressedBy: string`
+ * (open vocabulary, additive only).
+ */
+export function isScopeChannel(ch: string): ch is ScopeChannel {
+  return ch === 'hmaignore-path' || ch === 'hmaignore-path-check';
+}
+
+/**
+ * The per-rule `.hmaignore` disclosure (CLI-local; terminal and `--json`
+ * only). Present on `ScanResult` iff a `.hmaignore` file exists at the
+ * target — even when `rules` is empty or every rule matched nothing — and
+ * absent otherwise, so a document from a tree without the file is
+ * byte-identical to one from before this field existed.
+ *
+ * Never on a wire: excluded from `SettledOutcome`, every publish payload and
+ * every contribution event, because it necessarily carries paths and
+ * free-text reasons, which the settled record excludes by construction.
+ */
+export interface HmaIgnoreDisclosure {
+  /** '.hmaignore', relative to the target. */
+  file: string;
+  rules: Array<{
+    /** 1-based line in the file. */
+    line: number;
+    /** The line as written. */
+    rule: string;
+    channel: 'hmaignore-path' | 'hmaignore-check' | 'hmaignore-path-check';
+    /** Present for hmaignore-path and hmaignore-path-check. */
+    path?: string;
+    /** Present for hmaignore-check and hmaignore-path-check; UPPER-CASED pattern. */
+    checkId?: string;
+    /** Trailing `# <reason>` text. */
+    reason?: string;
+    /** YYYY-MM-DD as written; only on active rules (a lapsed rule is an error). */
+    expires?: string;
+    /** Findings this rule removed from the report on this run. */
+    matched: number;
+    /** Line of the whole-path rule that absorbs this rule (CPO §3). */
+    redundantTo?: number;
+  }>;
+  /** Unparseable, refused, lapsed or unreadable lines. Loud, and exit-neutral. */
+  errors: Array<{ line: number; rule: string; error: string }>;
+}
 
 export interface SecurityCheck {
   id: string;
@@ -393,6 +451,14 @@ export interface ScanResult {
    * `expandSuppressed` or the laundering this field exists to stop comes back.
    */
   suppressed?: Array<{ checkId: string; name: string; category: string; severity: string; count: number; suppressedBy: string }>;
+  /**
+   * The per-rule `.hmaignore` disclosure. Present iff the file exists at the
+   * target. Carried on `ScanResult` (the `secure --json` document spreads
+   * `...result`), never on `SettledOutcome` or any wire builder — the wires
+   * test in `__tests__/registry` and the key-collision assertion in
+   * `settled-outcome.ts` are the guards.
+   */
+  hmaignore?: HmaIgnoreDisclosure;
   /** Semantic analysis summary (Layer 2 + Layer 3) */
   semanticAnalysis?: {
     layer2Findings: number;

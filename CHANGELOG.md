@@ -4,6 +4,49 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### `.hmaignore` gains `<path>:<CHECK-ID>`, trailing comments, `expires:`, and loud exit-neutral errors (HMA-21)
+
+A path rule used to be all-or-nothing: `danger.py` removed EVERY check on that
+path from the score and the exit code. The new `danger.py:NEMO-009 # <reason>`
+form removes exactly one, with the same scope semantics as the path rule it
+narrows (the finding moves to `outOfScope`, channel `hmaignore-path-check`,
+and leaves the exit code) — and the reason is required. Any rule may carry
+`expires:<YYYY-MM-DD>` at the end of the line; the rule is active through the
+named day (UTC) and lapses to a loud, inert error afterwards, its findings
+returning to the report.
+
+The parser is now one two-step parser shared by `secure` and `check` (the
+private duplicate in the NanoMind path is deleted), and the matcher is the one
+`secure` always shipped: check ids match case-insensitively, `*` anywhere in a
+pattern — `check` gains that parity. Every line the parser refuses renders a
+`.hmaignore:<line>` error by default on both commands and rides
+`hmaignore.errors[]` in `--json`; an unreadable `.hmaignore` is the line-0
+entry with its errno. Errors never change the exit code.
+
+`secure --json` and `check --json` gain a top-level `hmaignore` key —
+present exactly when the file exists at the target — carrying every rule with
+its channel, reason, expiry and per-rule match count, plus the errors. It is
+CLI-local: no publish payload, contribution event, or settled record carries
+it. Documents from trees without a `.hmaignore` are byte-identical to the
+previous release's.
+
+Why this is a minor rather than a patch: `--json` gains a top-level key, the
+documented `suppressedBy` field gains the `hmaignore-path-check` value, and
+the file grammar now honours trailing comments and refuses path globs.
+
+Three behaviour changes on existing `.hmaignore` files:
+
+- `danger.py # reason` was silently inert (the whole line, comment included,
+  was read as a path that matched nothing). The comment is now stripped and
+  the rule is an ACTIVE scope rule: the path's findings leave the score and
+  the exit code, disclosed on the `Scope` line — a CI exit can move 1 -> 0 on
+  upgrade, toward the committed line's stated intent.
+- `!NEMO-009 # reason` was silently inert for the same reason. It is now an
+  active presentational rule: the finding leaves the list, never the verdict
+  or the exit code.
+- `*.py` (any glob in a path rule) was a silent no-op. It is now a loud,
+  exit-neutral `.hmaignore:<line>` error; the line is still not applied.
+
 ### The stub loop has a terminus again: `pull-stubs` drops its vocabulary, `mark-stub` writes back (HMA-08)
 
 Two defects at the same place — the point where a confirmed ARIA observation is

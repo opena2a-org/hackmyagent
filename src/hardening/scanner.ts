@@ -15,7 +15,8 @@ import * as crypto from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
 import { execFile } from 'child_process';
-import type { ScanResult, SecurityFinding, SecurityFindingDraft, Severity, ProjectType } from './security-check';
+import type { ScanResult, SecurityFinding, SecurityFindingDraft, Severity, ProjectType, HmaIgnoreDisclosure } from './security-check';
+import { isScopeChannel } from './security-check';
 import { emitFinding, reemitFinding } from './finding-emit';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
 import { enrichWithTaxonomy, TAXONOMY_EXEMPT_CHECKIDS } from './taxonomy';
@@ -1860,34 +1861,259 @@ function blankCommentRegions(line: string, state: { inBlockComment: boolean }): 
 }
 
 /**
- * Parsed .hmaignore rules split into path patterns and check ID patterns.
- * Check ID patterns start with `!` and support trailing `*` wildcards.
- * Example: `!SANDBOX-*` suppresses all SANDBOX checks.
+ * One parsed `.hmaignore` rule. Three channels, one file:
+ *
+ *   `<path>`                — scope: the path leaves the score and the exit code
+ *   `<path>:<CHECK-ID>`     — scope, narrowed to one check on that path
+ *   `!<CHECK-ID>`           — presentational: listed out, still scored and gated
+ *
+ * Every rule may carry a trailing `# <reason>` comment and an
+ * `expires:<YYYY-MM-DD>` attribute at the end of the line. A
+ * `<path>:<CHECK-ID>` rule REQUIRES the reason.
  */
-export interface HmaIgnoreRules {
-  paths: string[];
-  checkIds: string[];
+export interface HmaIgnoreRule {
+  /** 1-based line in the file. */
+  line: number;
+  /** The line as written. */
+  rule: string;
+  channel: 'hmaignore-path' | 'hmaignore-check' | 'hmaignore-path-check';
+  /** Present for hmaignore-path and hmaignore-path-check. */
+  path?: string;
+  /** Present for hmaignore-check and hmaignore-path-check; UPPER-CASED pattern. */
+  checkId?: string;
+  /** Trailing `# <reason>` text, when non-empty. */
+  reason?: string;
+  /** YYYY-MM-DD as written. Only active rules parse into `rules`. */
+  expires?: string;
+}
+
+export interface HmaIgnoreParseError {
+  /** 1-based line; 0 for a file that exists and cannot be read. */
+  line: number;
+  /** The line as written ('' for the unreadable-file entry). */
+  rule: string;
+  error: string;
+}
+
+export interface ParsedHmaIgnore {
+  /** True iff a `.hmaignore` exists at the target (readable or not). */
+  present: boolean;
+  /** '.hmaignore', relative to the target. */
+  file: string;
+  rules: HmaIgnoreRule[];
+  /**
+   * Every line the parser refused, one entry per line, loud and EXIT-NEUTRAL:
+   * an unparseable, refused, lapsed or unreadable rule is inert, so everything
+   * it would have hidden is already in the score and the exit code.
+   */
+  errors: HmaIgnoreParseError[];
 }
 
 /**
- * Load .hmaignore patterns from a target directory. Exported so CLI
- * can re-apply ignore filtering after NanoMind merge.
+ * The two check-pattern expressions (CPO reconciliation §1(f)) — one grammar
+ * shared by `!<CHECK>` and `<path>:<CHECK>`. Matched case-insensitively;
+ * matched ids are stored upper-cased, which is what the `secure` matcher has
+ * always done at runtime.
  */
-export async function loadHmaIgnore(targetDir: string): Promise<HmaIgnoreRules> {
-  const ignorePath = path.join(targetDir, '.hmaignore');
-  try {
-    const content = await fs.readFile(ignorePath, 'utf-8');
-    const lines = content
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line && !line.startsWith('#'));
-    return {
-      paths: lines.filter(l => !l.startsWith('!')),
-      checkIds: lines.filter(l => l.startsWith('!')).map(l => l.slice(1)),
+const CHECK_PATTERN_WITH_STAR = /^[A-Z0-9*]+(-[A-Z0-9*]+)*$/i;
+const CHECK_PATTERN_EXACT = /^[A-Z][A-Z0-9]*(-[A-Z0-9]+)+$/i;
+
+// The three channel spellings, written once. Every comparison below goes
+// through these names (or `isScopeChannel`), never a string literal — a
+// literal comparison is the pattern that let a fourth channel fall through
+// the partition onto the wrong side of the gate.
+const WHOLE_PATH_CHANNEL: HmaIgnoreRule['channel'] = 'hmaignore-path';
+const PATH_CHECK_CHANNEL: HmaIgnoreRule['channel'] = 'hmaignore-path-check';
+const CHECK_CHANNEL: HmaIgnoreRule['channel'] = 'hmaignore-check';
+
+/** `2026-02-30` is not a date; neither is `2026-1-5` (zero-padded only). */
+function isRealCalendarDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [y, m, d] = value.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
+/**
+ * The two-step `.hmaignore` parser (CPO reconciliation §1, steps (a)-(h)).
+ * `today` is the scan clock's UTC calendar date as `YYYY-MM-DD`, injected so
+ * the row table in the tests is deterministic; a rule is active while
+ * `today <= expires` (inclusive of the named day), and a lapsed rule is an
+ * error entry, not a rule.
+ */
+export function parseHmaIgnore(content: string, today: string): { rules: HmaIgnoreRule[]; errors: HmaIgnoreParseError[] } {
+  const rules: HmaIgnoreRule[] = [];
+  const errors: HmaIgnoreParseError[] = [];
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const lineNo = i + 1;
+    let raw = lines[i].replace(/\r$/, '');
+    // (a) strip a leading BOM, trim, skip blanks and whole-line comments
+    if (lineNo === 1 && raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+    const asWritten = raw.trim();
+    const fail = (error: string) => errors.push({ line: lineNo, rule: asWritten, error });
+    if (asWritten.length === 0 || asWritten[0] === '#') continue;
+
+    // (b) a `#` preceded by whitespace begins the trailing comment; the text
+    // after it, trimmed, is the reason. `danger.py#1` is a path; `danger.py
+    // # fixture` is a path with a reason.
+    let text = asWritten;
+    let reason = '';
+    for (let j = 1; j < text.length; j++) {
+      if (text[j] === '#' && (text[j - 1] === ' ' || text[j - 1] === '\t')) {
+        reason = text.slice(j + 1).trim();
+        text = text.slice(0, j).trimEnd();
+        break;
+      }
+    }
+
+    // (c) pull attributes from the END of what remains, repeatedly
+    let expires: string | undefined;
+    let attrError: string | undefined;
+    for (;;) {
+      const m = text.match(/(\S+)\s*$/);
+      if (!m || !/^expires:/i.test(m[1])) break;
+      const token = m[1];
+      if (expires !== undefined) {
+        attrError = 'two `expires:` attributes on one line — write one';
+        break;
+      }
+      const value = token.slice('expires:'.length);
+      if (!isRealCalendarDate(value)) {
+        attrError = `\`${token}\` is not a valid date — write \`expires:YYYY-MM-DD\``;
+        break;
+      }
+      expires = value;
+      text = text.slice(0, text.length - m[0].length).trimEnd();
+    }
+    if (attrError) { fail(attrError); continue; }
+    if (/(^|\s)expires:/i.test(text)) {
+      fail('`expires:` must follow the rule, at the end of the line');
+      continue;
+    }
+    if (text.length === 0) {
+      fail('an `expires:` attribute needs a rule in front of it');
+      continue;
+    }
+
+    const attach = (rule: Omit<HmaIgnoreRule, 'line' | 'rule'>) => {
+      // §2 — active while `today <= date` (ISO strings, so a laptop and a CI
+      // runner agree at the same instant). From the next UTC day the line is
+      // an error and its findings return to the report.
+      if (expires !== undefined && today > expires) {
+        fail(`expired on ${expires} — the rule is no longer applied and its findings are reported again`);
+        return;
+      }
+      rules.push({ line: lineNo, rule: asWritten, ...rule });
     };
-  } catch {
-    return { paths: [], checkIds: [] };
+
+    // (d) `!<CHECK PATTERN>` — presentational check suppression
+    if (text.startsWith('!')) {
+      const pattern = text.slice(1);
+      if (pattern.length === 0) { fail('empty check pattern — write `!<CHECK-ID>`'); continue; }
+      const wellFormed = pattern.includes('*')
+        ? CHECK_PATTERN_WITH_STAR.test(pattern)
+        : CHECK_PATTERN_EXACT.test(pattern);
+      if (!wellFormed) { fail(`\`${pattern}\` is not a check pattern`); continue; }
+      attach({
+        channel: CHECK_CHANNEL,
+        checkId: pattern.toUpperCase(),
+        ...(reason ? { reason } : {}),
+        ...(expires !== undefined ? { expires } : {}),
+      });
+      continue;
+    }
+
+    // (e) split at the LAST colon and classify the suffix
+    const idx = text.lastIndexOf(':');
+    let isPathCheck = false;
+    let suffix = '';
+    let prefix = text;
+    let suffixError: string | undefined;
+    if (idx >= 0) {
+      suffix = text.slice(idx + 1);
+      prefix = text.slice(0, idx);
+      if (/[/\\.\s]/.test(suffix)) {
+        // contains `/`, `\`, `.` or whitespace: not a check; the line is a path
+      } else if (suffix.includes('*')) {
+        if (/^[*-]+$/.test(suffix)) {
+          suffixError = `\`${text}\` — \`<path>:*\` is not a form; write \`${prefix}\` to exclude the whole path`;
+        } else if (CHECK_PATTERN_WITH_STAR.test(suffix)) {
+          isPathCheck = true;
+        } else {
+          suffixError = `\`${suffix}\` is a malformed check pattern`;
+        }
+      } else if (CHECK_PATTERN_EXACT.test(suffix)) {
+        isPathCheck = true;
+      }
+      // otherwise (`snapshot-10:30`): not letter-led-and-dashed, stays a path
+    }
+    if (suffixError) { fail(suffixError); continue; }
+
+    if (isPathCheck) {
+      // never a silent fallback to a path: each failed requirement is an error
+      if (prefix.length === 0) { fail('empty path — write `<path>:<CHECK-ID>`'); continue; }
+      if (prefix.includes('*')) { fail('globs are not supported in path rules'); continue; }
+      if (reason.length === 0) {
+        fail('a `<path>:<CHECK-ID>` rule requires a reason — append `# <why>`');
+        continue;
+      }
+      attach({
+        channel: PATH_CHECK_CHANNEL,
+        path: prefix,
+        checkId: suffix.toUpperCase(),
+        reason,
+        ...(expires !== undefined ? { expires } : {}),
+      });
+      continue;
+    }
+
+    // (g) a path containing `*` is a loud error, never a silent no-op —
+    // `*.py` and `dan*` matched nothing at all before this parser existed.
+    // `[` is NOT a glob here (`app/[slug]/page.tsx` is a real path).
+    if (text.includes('*')) { fail('globs are not supported in path rules'); continue; }
+    attach({
+      channel: WHOLE_PATH_CHANNEL,
+      path: text,
+      ...(reason ? { reason } : {}),
+      ...(expires !== undefined ? { expires } : {}),
+    });
   }
+  return { rules, errors };
+}
+
+/** The scan clock's UTC calendar date, the production value of `today` (h). */
+export function utcToday(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * Load and parse `.hmaignore` from a target directory. THE one parser —
+ * `secure`, the post-NanoMind re-filter and `check` all read this. Exported
+ * so the CLI can re-apply ignore filtering after NanoMind merge.
+ *
+ * A missing file is `present: false` and nothing else; a file that exists
+ * and cannot be read is `present: true` with an `errors[]` entry at line 0
+ * carrying the errno — loud, and exit-neutral like every other error here.
+ */
+export async function loadHmaIgnore(targetDir: string, today: string = utcToday()): Promise<ParsedHmaIgnore> {
+  const ignorePath = path.join(targetDir, '.hmaignore');
+  let content: string;
+  try {
+    content = await fs.readFile(ignorePath, 'utf-8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT') {
+      return { present: false, file: '.hmaignore', rules: [], errors: [] };
+    }
+    return {
+      present: true,
+      file: '.hmaignore',
+      rules: [],
+      errors: [{ line: 0, rule: '', error: `cannot read .hmaignore (${code ?? 'unknown errno'})` }],
+    };
+  }
+  return { present: true, file: '.hmaignore', ...parseHmaIgnore(content, today) };
 }
 
 /**
@@ -1904,17 +2130,170 @@ export function isPathIgnored(filePath: string, ignoredPaths: string[]): boolean
 }
 
 /**
- * Check if a checkId matches any .hmaignore check ID pattern.
- * Supports exact match and trailing `*` wildcard (e.g. `SANDBOX-*`).
+ * THE check-pattern matcher — the one `secure` has always shipped, now the
+ * only one (CA (4)): case-insensitive ids, `*` anywhere in the pattern.
+ * `check` gains parity; the narrower trailing-`*`-only, case-sensitive
+ * matcher that used to live beside it is deleted, because a grammar stricter
+ * than its matcher would silently reopen the class this unit closes.
  */
-export function isCheckIgnored(checkId: string, ignoredChecks: string[]): boolean {
-  if (!checkId || ignoredChecks.length === 0) return false;
-  return ignoredChecks.some(pattern => {
-    if (pattern.endsWith('*')) {
-      return checkId.startsWith(pattern.slice(0, -1));
+export function matchesCheckPattern(checkId: string, pattern: string): boolean {
+  if (!checkId || !pattern) return false;
+  const upper = checkId.toUpperCase();
+  const p = pattern.toUpperCase();
+  if (p.includes('*')) {
+    const regexStr = '^' + p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$';
+    return new RegExp(regexStr).test(upper);
+  }
+  return upper === p;
+}
+
+/**
+ * Every path a finding speaks for — `details.files` plus `file` (#280).
+ * Module-level so `secure`'s scan pass, the post-merge re-filter and the
+ * `check` arm apply one rulebook.
+ */
+export function coveredFilesOfFinding(f: { file?: string; details?: Record<string, unknown> }): string[] {
+  const listed = Array.isArray(f.details?.files) ? (f.details.files as unknown[]) : [];
+  return [...new Set(
+    [f.file, ...listed].filter(
+      (p): p is string => typeof p === 'string' && p.length > 0,
+    ),
+  )];
+}
+
+/**
+ * #280 — decide whether a set of ignored paths suppresses a finding, keying
+ * on ALL the paths it covers. Returns true to KEEP; may re-point `f.file` /
+ * `f.details.files` onto surviving paths in place. See the method of the
+ * same name on `HardeningScanner` for the full history; the logic moved to
+ * module level so the `<path>:<CHECK>` tier and the `check` command share it.
+ */
+export function retainAfterPathSuppression(
+  f: { checkId: string; file?: string; details?: Record<string, unknown> },
+  ignoredPaths: string[],
+): boolean {
+  // A coverage statement is not a finding ABOUT a path's contents, so a path
+  // rule cannot scope it away (#438).
+  if (f.checkId === 'SCAN-UNREAD-001') return true;
+
+  const covered = coveredFilesOfFinding(f);
+  // Nothing path-shaped to judge — a finding about the tree as a whole.
+  if (covered.length === 0) return true;
+
+  const survivors = covered.filter((p) => !isPathIgnored(p, ignoredPaths));
+  if (survivors.length === 0) return false;
+  if (survivors.length === covered.length) return true;
+
+  // Partially ignored: keep it, but stop naming suppressed paths.
+  if (f.file && isPathIgnored(f.file, ignoredPaths)) {
+    f.file = survivors[0];
+  }
+  if (Array.isArray(f.details?.files)) {
+    (f.details as { files: string[] }).files = survivors;
+  }
+  return true;
+}
+
+/** What `matchHmaIgnore` decided for one finding. */
+export interface HmaIgnoreMatch {
+  channel: 'hmaignore-path' | 'hmaignore-check' | 'hmaignore-path-check';
+  /**
+   * 1-based line of the attributed rule — the first matching rule in file
+   * order WITHIN the winning tier. Undefined when a programmatic ignore path
+   * (no `.hmaignore` line) did the covering.
+   */
+  line?: number;
+}
+
+/**
+ * Classify one finding against a parsed `.hmaignore` — the one place the
+ * three channels' precedence lives. Tiers, in order (CPO reconciliation §4):
+ * whole-path, then `<path>:<CHECK>`, then `!<CHECK>`. A flat first-in-file-
+ * order walk would let a `!NEMO-009` on line 1 keep a `danger.py:NEMO-009`
+ * finding in the exit code, inverting the scope semantics.
+ *
+ * May re-point a partially-covered multi-file finding in place (#280).
+ * Returns null when no rule matches (the finding stays reported).
+ */
+export function matchHmaIgnore(
+  f: { checkId: string; file?: string; details?: Record<string, unknown> },
+  parsed: ParsedHmaIgnore,
+  additionalIgnorePaths: string[] = [],
+): HmaIgnoreMatch | null {
+  const wholePathRules = parsed.rules.filter((r) => r.channel === WHOLE_PATH_CHANNEL);
+  const allPaths = [...wholePathRules.map((r) => r.path as string), ...additionalIgnorePaths];
+
+  // Tier 1: whole-path. Suppresses only when EVERY covered path is ignored;
+  // otherwise keeps the finding, re-pointed off the ignored paths.
+  if (allPaths.length > 0 && !retainAfterPathSuppression(f, allPaths)) {
+    const attributed =
+      wholePathRules.find((r) => f.file && isPathIgnored(f.file, [r.path as string]))
+      ?? wholePathRules.find((r) => coveredFilesOfFinding(f).some((p) => isPathIgnored(p, [r.path as string])));
+    return { channel: WHOLE_PATH_CHANNEL, line: attributed?.line };
+  }
+
+  // Tier 2: `<path>:<CHECK>` — scope, narrowed to one check. Same whole-set
+  // rule as tier 1, over the paths of the rules whose pattern matches this
+  // check; the same SCAN-UNREAD-001 carve-out (a path rule cannot make an
+  // unread file read, and neither can a narrower one).
+  if (f.checkId !== 'SCAN-UNREAD-001') {
+    const pcRules = parsed.rules.filter(
+      (r) => r.channel === PATH_CHECK_CHANNEL && matchesCheckPattern(f.checkId, r.checkId as string),
+    );
+    if (pcRules.length > 0) {
+      const covered = coveredFilesOfFinding(f);
+      const pcPaths = pcRules.map((r) => r.path as string);
+      if (covered.length > 0 && covered.every((p) => isPathIgnored(p, pcPaths))) {
+        const attributed =
+          pcRules.find((r) => f.file && isPathIgnored(f.file, [r.path as string])) ?? pcRules[0];
+        return { channel: PATH_CHECK_CHANNEL, line: attributed.line };
+      }
     }
-    return checkId === pattern;
-  });
+  }
+
+  // Tier 3: `!<CHECK>` — presentational.
+  const checkRule = parsed.rules.find(
+    (r) => r.channel === CHECK_CHANNEL && matchesCheckPattern(f.checkId, r.checkId as string),
+  );
+  if (checkRule) return { channel: CHECK_CHANNEL, line: checkRule.line };
+
+  return null;
+}
+
+/**
+ * Project a parsed file plus per-line match counts into the disclosure the
+ * CLI carries (CA (3)). `matchedByLine` must be counted over EXACTLY the
+ * findings the `suppressed`/`outOfScope` Rows count — that identity is the
+ * Σ-matched cross-check in the tests. A `<path>:<CHECK>` rule absorbed by a
+ * whole-path rule carries `redundantTo` (and, the tiers being what they are,
+ * `matched: 0`) — reported redundant, never silently swallowed.
+ */
+export function buildHmaIgnoreDisclosure(
+  parsed: ParsedHmaIgnore,
+  matchedByLine: ReadonlyMap<number, number>,
+): HmaIgnoreDisclosure | undefined {
+  if (!parsed.present) return undefined;
+  const wholePathRules = parsed.rules.filter((r) => r.channel === WHOLE_PATH_CHANNEL);
+  return {
+    file: parsed.file,
+    rules: parsed.rules.map((r) => {
+      const absorbedBy = r.channel === PATH_CHECK_CHANNEL
+        ? wholePathRules.find((wp) => isPathIgnored(r.path as string, [wp.path as string]))
+        : undefined;
+      return {
+        line: r.line,
+        rule: r.rule,
+        channel: r.channel,
+        ...(r.path !== undefined ? { path: r.path } : {}),
+        ...(r.checkId !== undefined ? { checkId: r.checkId } : {}),
+        ...(r.reason !== undefined ? { reason: r.reason } : {}),
+        ...(r.expires !== undefined ? { expires: r.expires } : {}),
+        matched: matchedByLine.get(r.line) ?? 0,
+        ...(absorbedBy ? { redundantTo: absorbedBy.line } : {}),
+      };
+    }),
+    errors: parsed.errors.map((e) => ({ line: e.line, rule: e.rule, error: e.error })),
+  };
 }
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB max file size to prevent memory exhaustion
@@ -2621,51 +3000,6 @@ export class HardeningScanner {
   }
 
   /**
-   * Load .hmaignore file from target directory.
-   * Returns path patterns (plain lines) and check ID suppression patterns (lines starting with !).
-   */
-  private async loadHmaIgnore(targetDir: string): Promise<{ paths: string[]; checkIds: string[] }> {
-    const ignorePath = path.join(targetDir, '.hmaignore');
-    try {
-      const content = await fs.readFile(ignorePath, 'utf-8');
-      const lines = content
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line && !line.startsWith('#'));
-      const paths: string[] = [];
-      const checkIds: string[] = [];
-      for (const line of lines) {
-        if (line.startsWith('!')) {
-          // Check ID suppression pattern: strip the ! prefix, store uppercase
-          checkIds.push(line.slice(1).toUpperCase());
-        } else {
-          paths.push(line);
-        }
-      }
-      return { paths, checkIds };
-    } catch {
-      return { paths: [], checkIds: [] };
-    }
-  }
-
-  /**
-   * Check if a check ID matches any suppression pattern from .hmaignore.
-   * Supports exact match and wildcard (*) at the end (e.g. SANDBOX-* matches SANDBOX-001).
-   */
-  private isCheckIdSuppressed(checkId: string, patterns: string[]): boolean {
-    if (patterns.length === 0) return false;
-    const upper = checkId.toUpperCase();
-    return patterns.some(pattern => {
-      if (pattern.includes('*')) {
-        // Convert glob pattern to regex: escape special chars, replace * with .*
-        const regexStr = '^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$';
-        return new RegExp(regexStr).test(upper);
-      }
-      return upper === pattern;
-    });
-  }
-
-  /**
    * Re-apply .hmaignore filters to a set of findings.
    * Call this after NanoMind merge overwrites result.findings with unfiltered data.
    *
@@ -2695,16 +3029,18 @@ export class HardeningScanner {
     projectType: ProjectType,
     additionalIgnorePaths?: string[],
   ): Promise<T[]> {
-    const hmaIgnore = await this.loadHmaIgnore(targetDir);
-    const allIgnoredPaths = [...hmaIgnore.paths, ...(additionalIgnorePaths || [])];
-    const suppressedCheckPatterns = hmaIgnore.checkIds;
+    const parsed = await loadHmaIgnore(targetDir);
+    const extraPaths = additionalIgnorePaths || [];
 
     // Reset FIRST, and on the no-op path too: a reused scanner instance must not
     // let the previous target's scope narrowing be disclosed against this one.
     this.lastOutOfScope = [];
     this.lastSuppressed = [];
+    // Presence rule, not rule-count rule: an empty or all-error file still
+    // discloses itself (and its errors) on this run.
+    this.lastHmaIgnore = buildHmaIgnoreDisclosure(parsed, new Map());
 
-    if (allIgnoredPaths.length === 0 && suppressedCheckPatterns.length === 0) {
+    if (parsed.rules.length === 0 && extraPaths.length === 0) {
       return findings;
     }
 
@@ -2712,30 +3048,33 @@ export class HardeningScanner {
     // rule is MARKED and kept, because this runs after the NanoMind merge on the
     // very array the CLI recomputes the score from, so returning a shortened
     // array re-created the laundering the scan path had just stopped doing. A
-    // path rule is a scope change and leaves the array, with the summary parked
-    // on `lastOutOfScope` for the caller to disclose. Callers render with
-    // `isDisplayed()`.
+    // path-shaped rule (whole-path or `<path>:<CHECK>`) is a scope change and
+    // leaves the array, with the summary parked on `lastOutOfScope` for the
+    // caller to disclose. Callers render with `isDisplayed()`.
     const pathExcluded: T[] = [];
     const checkSuppressed: T[] = [];
+    const attribution = new Map<T, number>();
     for (const f of findings) {
-      // Already out of scope from the scan pass. It must be re-collected, not
-      // skipped: `nmResult.mergedFindings` is rebuilt from `allFindings`, which
-      // holds the SAME objects `scanInner` marked, so an early `continue` here
-      // let every path-excluded finding ride back into the scored array. That
-      // put HMA's own 65 excluded fixture findings on both the `Scope` line and
-      // the `Suppressed` line while still scoring them 0/100 — the marking was
-      // idempotent, the filtering was not.
-      if (f.suppressedBy === 'hmaignore-path') { pathExcluded.push(f); continue; }
-      if (f.suppressed) { checkSuppressed.push(f); continue; }
-      if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) {
+      // A finding the caller suppressed by flag keeps that channel; only the
+      // `.hmaignore` channels are re-derived here.
+      if (f.suppressedBy === 'ignore-flag') { checkSuppressed.push(f); continue; }
+      // Findings the scan pass already marked are re-CLASSIFIED, not skipped:
+      // `nmResult.mergedFindings` is rebuilt from `allFindings`, which holds
+      // the SAME objects `scanInner` marked, so an early `continue` here let
+      // every path-excluded finding ride back into the scored array. Rules and
+      // file are the same, so re-classification lands where the scan pass did —
+      // and carries the per-rule attribution the disclosure needs.
+      const m = matchHmaIgnore(f, parsed, extraPaths);
+      if (m) {
         f.suppressed = true;
-        f.suppressedBy = 'hmaignore-check';
+        f.suppressedBy = m.channel;
+        if (m.line !== undefined) attribution.set(f, m.line);
+        if (isScopeChannel(m.channel)) pathExcluded.push(f);
+        else checkSuppressed.push(f);
+      } else if (f.suppressed) {
+        // Marked earlier by a channel this file does not explain (defensive:
+        // the base behaviour kept such findings on the suppressed side).
         checkSuppressed.push(f);
-      } else if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) {
-        // #280 — keys on every covered path, not just `f.file`.
-        f.suppressed = true;
-        f.suppressedBy = 'hmaignore-path';
-        pathExcluded.push(f);
       }
     }
     // #457 — the DISCLOSURE is gated on what would have been reported; the
@@ -2761,6 +3100,15 @@ export class HardeningScanner {
     const reportable = (f: SecurityFindingDraft) => isReportableFinding(f, projectType);
     this.lastOutOfScope = summarizeSuppressed(pathExcluded.filter(reportable));
     this.lastSuppressed = summarizeSuppressed(checkSuppressed.filter(reportable));
+    // Σ matched per rule ≡ the Row counts above: counted over the same arrays,
+    // through the same reportable + countsAgainstScore gates the summaries use.
+    const matchedByLine = new Map<number, number>();
+    for (const f of [...pathExcluded, ...checkSuppressed]) {
+      if (!reportable(f) || !countsAgainstScore(f)) continue;
+      const line = attribution.get(f);
+      if (line !== undefined) matchedByLine.set(line, (matchedByLine.get(line) ?? 0) + 1);
+    }
+    this.lastHmaIgnore = buildHmaIgnoreDisclosure(parsed, matchedByLine);
     if (pathExcluded.length === 0 && checkSuppressed.length === 0) return findings;
     const removed = new Set([...pathExcluded, ...checkSuppressed]);
     return findings.filter((f) => !removed.has(f));
@@ -2784,6 +3132,15 @@ export class HardeningScanner {
   lastSuppressed: ReturnType<typeof summarizeSuppressed> = [];
 
   /**
+   * The per-rule `.hmaignore` disclosure from the most recent
+   * `reapplyIgnoreFilters` call, with `matched` recounted over the post-merge
+   * array — the same array `lastOutOfScope`/`lastSuppressed` are counted
+   * over, so the Σ-matched cross-check holds on the record the CLI adopts.
+   * `undefined` when the target has no `.hmaignore` (presence rule).
+   */
+  lastHmaIgnore: HmaIgnoreDisclosure | undefined = undefined;
+
+  /**
    * Every path a finding speaks for.
    *
    * `details.files`: checks like GIT-001 and PERM-001 point `file` at one
@@ -2791,12 +3148,7 @@ export class HardeningScanner {
    * `details.files`, so reading either side alone loses paths.
    */
   private coveredFilesOf(f: SecurityFindingDraft): string[] {
-    const listed = Array.isArray(f.details?.files) ? f.details.files : [];
-    return [...new Set(
-      [f.file, ...listed].filter(
-        (p): p is string => typeof p === 'string' && p.length > 0,
-      ),
-    )];
+    return coveredFilesOfFinding(f);
   }
 
   /**
@@ -2820,42 +3172,10 @@ export class HardeningScanner {
    * Returns true to KEEP. May re-point `f.file` / `f.details.files` in place.
    */
   private retainAfterPathSuppression(f: SecurityFindingDraft, ignoredPaths: string[]): boolean {
-    // A coverage statement is not a finding ABOUT a path's contents, so a path
-    // rule cannot scope it away (#438).
-    //
-    // `test-fixtures/` in an `.hmaignore` means "this part of the tree is not my
-    // product", which honestly removes findings about what is IN those files.
-    // It cannot make the scan's own claim about what it READ true. And the
-    // paragraph above is explicit that scoping is legitimate *provided the scope
-    // is disclosed* — for this finding that proviso does not hold: `outOfScope`
-    // is rendered as a bare count on text and `--json`, and NOT AT ALL on sarif,
-    // asff and html. Letting a path rule clear this gate therefore produced
-    // exit 0 with nothing said on three of the five channels, on the channels a
-    // CI consumer reads. Measured, and it is the exact failure this unit exists
-    // to remove.
-    //
-    // So it stays visible and stays in the exit code. The remedy is to make the
-    // file readable or to scan a narrower target — not to declare the unread
-    // file out of scope. If `outOfScope` ever renders on every channel, this
-    // carve-out is the thing to revisit.
-    if (f.checkId === 'SCAN-UNREAD-001') return true;
-
-    const covered = this.coveredFilesOf(f);
-    // Nothing path-shaped to judge — a finding about the tree as a whole.
-    if (covered.length === 0) return true;
-
-    const survivors = covered.filter((p) => !this.isPathIgnored(p, ignoredPaths));
-    if (survivors.length === 0) return false;
-    if (survivors.length === covered.length) return true;
-
-    // Partially ignored: keep it, but stop naming suppressed paths.
-    if (f.file && this.isPathIgnored(f.file, ignoredPaths)) {
-      f.file = survivors[0];
-    }
-    if (Array.isArray(f.details?.files)) {
-      (f.details as { files: string[] }).files = survivors;
-    }
-    return true;
+    // The SCAN-UNREAD-001 carve-out and the full history live on the
+    // module-level function, which `matchHmaIgnore` and the `check` command
+    // share so `secure` and `check` apply one rulebook.
+    return retainAfterPathSuppression(f, ignoredPaths);
   }
 
   /**
@@ -2940,12 +3260,7 @@ export class HardeningScanner {
   }
 
   private isPathIgnored(filePath: string, ignoredPaths: string[]): boolean {
-    if (!filePath || ignoredPaths.length === 0) return false;
-    const normalized = filePath.replace(/\\/g, '/');
-    return ignoredPaths.some(pattern => {
-      const normalizedPattern = pattern.replace(/\\/g, '/').replace(/\/$/, '');
-      return normalized.startsWith(normalizedPattern + '/') || normalized === normalizedPattern;
-    });
+    return isPathIgnored(filePath, ignoredPaths);
   }
 
   /**
@@ -2987,12 +3302,14 @@ export class HardeningScanner {
     const isQuick = scanDepth === 'quick';
     const isDeepScan = scanDepth === 'deep';
 
-    // Load .hmaignore for path-based exclusions and check ID suppressions
-    const hmaIgnore = await this.loadHmaIgnore(targetDir);
-    // Merge with any programmatic ignorePaths
-    const allIgnoredPaths = [...hmaIgnore.paths, ...(options.ignorePaths || [])];
-    // Check ID suppression patterns from .hmaignore (supports wildcards)
-    const suppressedCheckPatterns = hmaIgnore.checkIds;
+    // Load .hmaignore: whole-path exclusions, `<path>:<CHECK>` narrowings and
+    // `!CHECK-ID` suppressions, through the one parser
+    const hmaIgnore = await loadHmaIgnore(targetDir);
+    // Merge whole-path rules with any programmatic ignorePaths
+    const allIgnoredPaths = [
+      ...hmaIgnore.rules.filter((r) => r.channel === WHOLE_PATH_CHANNEL).map((r) => r.path as string),
+      ...(options.ignorePaths || []),
+    ];
 
     // Normalize ignore list to uppercase for case-insensitive matching
     // Merge CLI --ignore flags with .hmaignore !-prefixed check IDs
@@ -4074,24 +4391,24 @@ export class HardeningScanner {
     // So: path exclusions leave the scored set and are reported as scope;
     // check-ID suppressions stay in it and are reported as suppression.
     const pathExcluded: SecurityFindingDraft[] = [];
+    const hmaAttribution = new Map<SecurityFindingDraft, number>();
     for (const f of filteredFindings) {
       if (ignoredChecks.has(f.checkId.toUpperCase())) {
         f.suppressed = true;
         f.suppressedBy = 'ignore-flag';
-      } else if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) {
-        f.suppressed = true;
-        f.suppressedBy = 'hmaignore-check';
-      } else if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) {
-        // #280's re-pointing behaviour is preserved: `retainAfterPathSuppression`
-        // returns true for a multi-file finding while ANY covered path survives,
-        // and has already re-pointed `file` onto a survivor by the time it does.
-        // Only a finding whose every covered path is ignored reaches here, so a
-        // partial ignore still keeps its finding and still scores — which is the
-        // #280 rule, unchanged.
-        f.suppressed = true;
-        f.suppressedBy = 'hmaignore-path';
-        pathExcluded.push(f);
+        continue;
       }
+      // `matchHmaIgnore` holds the tier order (whole-path, then
+      // `<path>:<CHECK>`, then `!<CHECK>`) and #280's re-pointing behaviour:
+      // `retainAfterPathSuppression` keeps a multi-file finding while ANY
+      // covered path survives, re-pointed onto a survivor. Only a finding
+      // whose every covered path is ignored comes back as a scope channel.
+      const m = matchHmaIgnore(f, hmaIgnore, options.ignorePaths || []);
+      if (!m) continue;
+      f.suppressed = true;
+      f.suppressedBy = m.channel;
+      if (m.line !== undefined) hmaAttribution.set(f, m.line);
+      if (isScopeChannel(m.channel)) pathExcluded.push(f);
     }
     // Both kinds leave `findings`; they differ in what happens to the SCORE.
     //
@@ -4113,9 +4430,21 @@ export class HardeningScanner {
     // actually is — the score and the gate, via `suppressed`, which
     // `scoreWithSuppressed` adds back.
     const suppressed = summarizeSuppressed(
-      filteredFindings.filter((f) => f.suppressedBy && f.suppressedBy !== 'hmaignore-path'),
+      filteredFindings.filter((f) => f.suppressedBy && !isScopeChannel(f.suppressedBy)),
     );
     const outOfScope = summarizeSuppressed(pathExcluded);
+
+    // Per-rule match counts for the `.hmaignore` disclosure — over the same
+    // findings, through the same `countsAgainstScore` gate, as the two Row
+    // summaries above, so Σ matched per (checkId, channel) equals the Row
+    // count (the cross-check the tests hold).
+    const hmaMatchedByLine = new Map<number, number>();
+    for (const f of filteredFindings) {
+      if (!f.suppressed || !countsAgainstScore(f)) continue;
+      const line = hmaAttribution.get(f);
+      if (line !== undefined) hmaMatchedByLine.set(line, (hmaMatchedByLine.get(line) ?? 0) + 1);
+    }
+    const hmaignoreDisclosure = buildHmaIgnoreDisclosure(hmaIgnore, hmaMatchedByLine);
 
     filteredFindings = filteredFindings.filter((f) => !f.suppressed);
 
@@ -4157,8 +4486,10 @@ export class HardeningScanner {
       if (f.passed && !f.fixed) continue;
       if (survived.has(f)) continue;
       if (ignoredChecks.has(f.checkId.toUpperCase())) continue;
-      if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) continue;
-      if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) continue;
+      // One classifier for all three `.hmaignore` channels — a finding any of
+      // them covers was withheld at the USER's request and is disclosed
+      // through `suppressed`/`outOfScope`, not re-reported here.
+      if (matchHmaIgnore(f, hmaIgnore, options.ignorePaths || [])) continue;
       if (!f.file) {
         unevidencedFailures++;
         continue;
@@ -4302,6 +4633,12 @@ export class HardeningScanner {
       // penalties ARE in `score`, and every later re-score must add them back
       // via `expandSuppressed` or the laundering returns.
       suppressed: suppressed.length > 0 ? suppressed : undefined,
+      // The per-rule `.hmaignore` disclosure. Present iff the FILE is present
+      // (rules empty, all-error and matched-nothing included), absent
+      // otherwise — so a document from a tree without the file is
+      // byte-identical to one from before this key existed. CLI-local:
+      // `secure --json` spreads `...result`; no wire builder reads it.
+      hmaignore: hmaignoreDisclosure,
       semanticAnalysis: (layer2Count > 0 || layer3Count > 0) ? {
         layer2Findings: layer2Count,
         layer3Findings: layer3Count,
