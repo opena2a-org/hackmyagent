@@ -1631,7 +1631,7 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
  * flood of false positives (any 40-char base64 blob, hash, or random id would
  * hit). They are only flagged when the assignment TARGET names the credential.
  *
- * AWS secret access key is the canonical case: a 40-char `[A-Za-z0-9/+]` value.
+ * AWS secret access key is the canonical case: a 40+-char `[A-Za-z0-9/+]` value.
  * We require `aws … secret|private …` within a short window before the value
  * (the standard gitleaks approach), so `awsSecretAccessKey = "<40>"` and
  * `AWS_SECRET_ACCESS_KEY=<40>` fire, but a bare 40-char blob, a git SHA, or a
@@ -1645,7 +1645,7 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
 const NAME_GATED_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   {
     label: 'AWS secret access key',
-    // Two name anchors, both ending in `key`, then assignment + 40-char value:
+    // Two name anchors, both ending in `key`, then assignment + 40+-char value:
     //   (a) `aws … secret|private … key` — `AWS_SECRET_ACCESS_KEY`, `awsSecretKey`
     //   (b) `secret[_ ]access[_ ]key` — the AWS-specific full phrase, distinctive
     //       enough WITHOUT a nearby `aws` token, so it also catches the very
@@ -1654,7 +1654,20 @@ const NAME_GATED_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = 
     // The `key` token rejects `aws secretsmanager arn:` / `aws secret etag =`
     // + 40-char-id false positives; JSON `"awsSecretAccessKey":"<40>"` is
     // handled by the `["'\s]*[:=]+` operator class.
-    regex: /(?:aws.{0,16}?(?:secret|private).{0,16}?key|secret[_\s.-]?access[_\s.-]?key)["'\s]*[:=]+>?\s*["']?([A-Za-z0-9/+]{40})(?![A-Za-z0-9/+])/gi,
+    //
+    // `{40,}` is a LOWER bound, not `{40}`: the canonical AWS width is the
+    // minimum a real secret can have, and this shape previously pinned the
+    // body to exactly `{40}` and then forbade a same-alphabet continuation
+    // with `(?![A-Za-z0-9/+])` — the `{40}` consumed forty characters and the
+    // lookahead rejected the forty-first, so any 41+ character secret matched
+    // NOTHING. The greedy `{40,}` consumes the whole same-alphabet run, which
+    // preserves the lookahead's boundary semantics (it can only succeed at
+    // the end of the run) without capping the width. The redaction mirror in
+    // `security/defense-in-depth.ts` already used `{40,}`.
+    // `name-gated-credential-width.test.ts` (HMA-17.AC5) structurally rejects
+    // any re-introduction of a fixed-width body paired with a same-alphabet
+    // lookahead in this list.
+    regex: /(?:aws.{0,16}?(?:secret|private).{0,16}?key|secret[_\s.-]?access[_\s.-]?key)["'\s]*[:=]+>?\s*["']?([A-Za-z0-9/+]{40,})(?![A-Za-z0-9/+])/gi,
   },
 ];
 
@@ -1702,6 +1715,17 @@ export function canonicalCredentialLabelsForTest(): string[] {
     ...CANONICAL_CREDENTIAL_PATTERNS.map(p => p.label),
     ...NAME_GATED_CREDENTIAL_PATTERNS.map(p => p.label),
   ];
+}
+
+/**
+ * Test-only accessor for the name-gated pattern list. Exported so
+ * `__tests__/nanomind-core/name-gated-credential-width.test.ts` can assert a
+ * STRUCTURAL invariant over every entry — no fixed-width `{N}` body paired
+ * with a trailing lookahead over the same alphabet, the shape that made any
+ * 41+ character AWS secret invisible — instead of hand-sweeping the list.
+ */
+export function nameGatedCredentialPatternsForTest(): Array<{ label: string; regex: RegExp }> {
+  return NAME_GATED_CREDENTIAL_PATTERNS;
 }
 
 function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit[] {
