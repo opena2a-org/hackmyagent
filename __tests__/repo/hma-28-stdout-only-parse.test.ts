@@ -27,7 +27,7 @@
  *
  * The full-suite form of AC2 (the three harnesses run under
  * `NODE_OPTIONS="--require __tests__/helpers/stderr-injection.cjs"`, red at
- * base d6fade15, green at the fix) is pasted in qgf/runs/HMA-28.md; see the
+ * base d6fade15, green at the fix) is recorded with the task; see the
  * injection module's header for the exact command.
  */
 import { describe, it, expect } from 'vitest';
@@ -138,7 +138,7 @@ describe('HMA-28 — stdout-only JSON parsing in the confinement harnesses', () 
     expect(
       offenders,
       'a run() helper concatenates stdout and stderr and JSON.parses the result — ' +
-        'parse res.stdout alone (see this file\'s header and qgf/runs/HMA-28.md)',
+        'parse res.stdout alone (see this file\'s header)',
     ).toEqual([]);
   });
 });
