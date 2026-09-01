@@ -66,7 +66,17 @@ function runCli(target: string): { failedCred: ReportFinding[]; stdout: string }
   });
   const stdout = run.stdout ?? '';
   const start = stdout.indexOf('{');
-  const parsed = start >= 0 ? JSON.parse(stdout.slice(start)) : {};
+  // Fail loudly rather than returning an empty finding list. Every negative
+  // assertion in this file compares against [], so a spawn that never ran would
+  // satisfy all of them silently — the scanner reporting nothing and the scanner
+  // never starting must not look the same to a test.
+  if (start < 0) {
+    throw new Error(
+      `the scanner produced no JSON for ${target} (status ${run.status}, signal ${run.signal}); `
+        + `stderr: ${(run.stderr ?? '').slice(0, 400)}`,
+    );
+  }
+  const parsed = JSON.parse(stdout.slice(start));
   const all: ReportFinding[] = parsed.allFindings ?? parsed.findings ?? [];
   return {
     failedCred: all.filter(f => f.passed === false && /^AST-CRED-/.test(f.checkId)),
@@ -74,9 +84,15 @@ function runCli(target: string): { failedCred: ReportFinding[]; stdout: string }
   };
 }
 
+// A 64-character run over the value alphabet, assigned to an identifier the
+// name gate does not match. Long enough that the widened body reaches it, so
+// the assertion can actually fail if the name gate ever stops bounding it.
+const BENIGN_BLOB = 'a1B2c3D4e5F6g7H8i9J0kLmNoPqRsTuVwXyZ01234567890abcdefghijklmnopq';
+
 let root: string;
 const credFindingsByWidth = new Map<number, ReportFinding[]>();
 let proseFailedCred: ReportFinding[] = [];
+let benignBlobFailedCred: ReportFinding[] = [];
 
 beforeAll(() => {
   root = mkdtempSync(path.join(tmpdir(), 'hma17-'));
@@ -96,6 +112,14 @@ beforeAll(() => {
     `AWS_SECRET_ACCESS_KEY = "${PROSE_SENTENCE}"\n`,
   );
   proseFailedCred = runCli(proseDir).failedCred;
+
+  const blobDir = path.join(root, 'benign-blob');
+  mkdirSync(blobDir, { recursive: true });
+  writeFileSync(
+    path.join(blobDir, 'config.py'),
+    `BUILD_MANIFEST_DIGEST = "${BENIGN_BLOB}"\n`,
+  );
+  benignBlobFailedCred = runCli(blobDir).failedCred;
 }, 1_200_000);
 
 afterAll(() => {
@@ -151,20 +175,56 @@ describe('HMA-17 name-gated credential width', () => {
     const patterns = accessor!();
     expect(patterns.length).toBeGreaterThanOrEqual(1);
 
-    // A character class, a fixed-width quantifier closing the capture, then a
-    // negative lookahead over the SAME class text. `{40}` consumes exactly N
-    // characters and the lookahead rejects the N+1th, so any entry with this
-    // shape detects exactly one width and nothing longer — the defect this
-    // suite exists for. Measured at origin/main a598f61 the population was
-    // exactly one (semantic-compiler.ts:1657); this refuses a re-introduction.
-    const fixedWidthSameAlphabetLookahead = /(\[[^\]]+\])\{\d+\}\)?\(\?!\1/;
-    const offenders = patterns
-      .filter(p => fixedWidthSameAlphabetLookahead.test(p.regex.source))
-      .map(p => `${p.label}: /${p.regex.source}/`);
+    // A character class, then a quantifier with an UPPER BOUND closing the
+    // capture, then a negative lookahead over the same class. Both `{N}` and
+    // `{N,M}` are offenders and the range form is the trap: the quantifier can
+    // consume at most M characters, the lookahead then rejects the M+1th, and
+    // backtracking cannot help because every shorter length hits the same
+    // rejection — so a secret longer than M is invisible exactly as it was
+    // under `{40}`. Measured on this pattern's own shape: `{40}` misses at 41,
+    // and `{40,256}` misses at 257, 300 and 1000 while matching 40 through 256.
+    // Only an open lower bound `{N,}` is safe here.
+    //
+    // The class-text comparison is deliberately semantic rather than a byte
+    // backreference: `[A-Za-z0-9/+]` and `[A-Za-z0-9+/]` are the same class and
+    // a `\1` match would miss the reordered spelling.
+    const boundedBodyThenLookahead = /\[([^\]]+)\]\{\d+(,\d*)?\}\)?\s*\(\?!\s*\[([^\]]+)\]/g;
+    const sortChars = (s: string) => s.split('').sort().join('');
+    const offenders: string[] = [];
+    for (const p of patterns) {
+      boundedBodyThenLookahead.lastIndex = 0;
+      for (const m of p.regex.source.matchAll(boundedBodyThenLookahead)) {
+        const [, bodyClass, upperBound, aheadClass] = m;
+        // `{N,}` (no upper bound) is the safe form this fix introduced.
+        if (upperBound === ',') continue;
+        if (sortChars(bodyClass) !== sortChars(aheadClass)) continue;
+        offenders.push(`${p.label}: /${p.regex.source}/`);
+      }
+    }
     expect(
       offenders,
-      'these name-gated shapes pin an exact width and then forbid a same-alphabet '
-        + 'continuation, so any longer secret is invisible; use a lower bound {N,} instead',
+      'these name-gated shapes cap the value width and then forbid a same-alphabet '
+        + 'continuation, so any secret longer than the cap is invisible; use an open '
+        + 'lower bound {N,} instead — a range {N,M} moves the blind spot, it does not '
+        + 'remove it',
+    ).toEqual([]);
+  }, 30_000);
+
+  it('HMA-17.AC4b a long benign alphabet-only run on a line the name gate does not match stays unreported', () => {
+    // The paired negative AC4 cannot supply. AC4's fixture is prose whose
+    // longest [A-Za-z0-9/+] run is far below the 40-character minimum, so it
+    // passes under every quantifier this diff could have used and cannot fail
+    // under the change it guards. The risk the widening actually opens is a
+    // long alphanumeric run — a hash, a base64 blob, an integrity string —
+    // and what keeps that from firing is the NAME GATE, which this change does
+    // not touch. So the assertion that can fail is: an unmistakable 64-character
+    // blob on a line whose identifier is not credential-named stays silent.
+    expect(BENIGN_BLOB.length).toBeGreaterThanOrEqual(41);
+    expect(/^[A-Za-z0-9/+]+$/.test(BENIGN_BLOB)).toBe(true);
+    expect(
+      benignBlobFailedCred.map(f => f.checkId),
+      'a long alphabet-only run assigned to a non-credential identifier must not be '
+        + 'reported: the widened body is bounded by the name gate, not by the value width',
     ).toEqual([]);
   }, 30_000);
 });
