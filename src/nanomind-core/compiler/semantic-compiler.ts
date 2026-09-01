@@ -2391,43 +2391,12 @@ function extractEvidenceSpans(content: string, risks: RiskSurface[]): EvidenceSp
     const idx = content.toLowerCase().indexOf(risk.evidence.toLowerCase().slice(0, 30));
     if (idx >= 0) {
       const end = Math.min(idx + 100, content.length);
-      // Redaction lives INSIDE this constructor, before the 100-char slice —
-      // the same single guarantee point `extractDeclaredPurpose` uses, and the
-      // same boundary (`redactSecretsForReport`, never the daemon variant).
-      // Order matters for the same reason it does there: slicing first can cut
-      // a secret down to a fragment shorter than a pattern's minimum length,
-      // so the redactor stops matching while the value's bytes still ship.
-      // A released build rendered 32 of a 40-character name-gated value into
-      // `details.evidence` stamped `clean` through exactly that ordering.
-      //
-      // The window offered to the redactor is widened to whole lines on both
-      // sides of the [idx, end) slice, so a secret that straddles either cut
-      // is in full view of the shape patterns (single-line, all of them —
-      // the PEM block rule is the one multi-line shape, and a block cut by
-      // the widened window is the same pre-existing residual it is at every
-      // other boundary: the rule needs both markers in view).
-      // The prefix is redacted separately to locate where the slice starts in
-      // the redacted region: when no match crosses `idx`, redaction composes
-      // and the position is exact; when one does, the slice can only drift
-      // into replacement-marker text, never into raw secret bytes, because
-      // the entire region was redacted before any slicing.
-      const lineStart = idx === 0 ? 0 : content.lastIndexOf('\n', idx - 1) + 1;
-      const newlineAfterEnd = content.indexOf('\n', end);
-      const lineEnd = newlineAfterEnd === -1 ? content.length : newlineAfterEnd;
-      const rawRegion = content.slice(lineStart, lineEnd);
-      const redactedRegion = redactSecretsForReport(rawRegion);
-      const prefixLength = redactSecretsForReport(content.slice(lineStart, idx)).length;
       spans.push({
         start: idx,
         end,
-        text: redactedRegion.slice(prefixLength, prefixLength + 100),
+        text: content.slice(idx, end),
         supports: risk.attackClass,
         confidence: risk.confidence,
-        // The FACT of the removal rides with the span, so a finding built
-        // from it can report `applied` without re-detecting anything: the
-        // boundary changed this window, therefore credential material was
-        // removed before the text left this constructor (HMA-15.AC2).
-        redactionApplied: redactedRegion !== rawRegion,
       });
     }
   }
