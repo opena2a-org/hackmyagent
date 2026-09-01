@@ -6,99 +6,71 @@
  * one process. At the base the ledger they both read was the module global
  * (`activeLedger`, coverage-ledger.ts), so each call's confinement was
  * decided against whichever call installed last, and records keyed by `rel`
- * were visible across the two callers. Both fixtures here plant a link at the
- * SAME rel (`.env`) with a different resolved target, so an overwrite or a
- * cross-read is observable in the returned text: each call must disclose its
- * own `.env` record, and neither call's text may name a link, path, withheld
- * entry or file content from the other call's tree.
+ * were visible across the two callers.
+ *
+ * Both fixtures here are the full all-basenames link tree, which plants the
+ * SAME nine rels (`.env`, `CLAUDE.md`, `skills`, ...) resolving into each
+ * fixture's own out-of-tree directory, and whose probes span the whole scan —
+ * so the two calls genuinely overlap at withholding sites, and an overwrite
+ * or cross-read of a rel-keyed record is observable in the returned text.
+ * Each call must disclose every one of its own records with its own resolved
+ * target, and neither call's text may name a link, path or withheld entry
+ * from the other call's tree, nor return out-of-tree bytes from either.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { handleToolCall } from '../../src/mcp-server';
+import { buildLinkFixture, CANARY, type LinkFixture } from '../helpers/out-of-tree-link-fixture';
 
-const CANARY_A = 'CANARY_HMA26_TREE_A_7b3d';
-const CANARY_B = 'CANARY_HMA26_TREE_B_e91c';
-
-let tmp: string;
-let rootA: string;
-let rootB: string;
-let outsideA: string;
-let outsideB: string;
-let resolvedA: string;
-let resolvedB: string;
-
-function project(dir: string, name: string): void {
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'package.json'), `{"name":"${name}","version":"1.0.0"}\n`);
-  fs.writeFileSync(path.join(dir, 'README.md'), `# ${name}\n`);
-}
+let fxA: LinkFixture;
+let fxB: LinkFixture;
 
 function text(r: { content: Array<{ type: string; text?: string }> }): string {
   return r.content.map((c) => c.text ?? '').join('\n');
 }
 
 beforeAll(() => {
-  tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hma26-mcp-')));
-  rootA = path.join(tmp, 'tree-a');
-  rootB = path.join(tmp, 'tree-b');
-  outsideA = path.join(tmp, 'outside-a');
-  outsideB = path.join(tmp, 'outside-b');
-  project(rootA, 'tree-a');
-  project(rootB, 'tree-b');
-  fs.mkdirSync(outsideA, { recursive: true });
-  fs.mkdirSync(outsideB, { recursive: true });
-  // The SAME rel in both trees, resolving to different ungranted targets:
-  // rel-keyed records that leak across the scans collide here and disclose
-  // the wrong tree's target.
-  resolvedA = path.join(outsideA, 'secrets.env');
-  resolvedB = path.join(outsideB, 'secrets.env');
-  fs.writeFileSync(resolvedA, `AWS_SECRET_ACCESS_KEY=${CANARY_A}\n`);
-  fs.writeFileSync(resolvedB, `AWS_SECRET_ACCESS_KEY=${CANARY_B}\n`);
-  fs.chmodSync(resolvedA, 0o644);
-  fs.chmodSync(resolvedB, 0o644);
-  fs.symlinkSync(resolvedA, path.join(rootA, '.env'));
-  fs.symlinkSync(resolvedB, path.join(rootB, '.env'));
+  fxA = buildLinkFixture('hma26-mcp-a-');
+  fxB = buildLinkFixture('hma26-mcp-b-');
 });
 
 afterAll(() => {
-  fs.rmSync(tmp, { recursive: true, force: true });
+  fs.rmSync(fxA.base, { recursive: true, force: true });
+  fs.rmSync(fxB.base, { recursive: true, force: true });
 });
 
 describe('overlapping hackmyagent_scan calls with disjoint roots', () => {
-  it('HMA-26.AC3 neither call\'s text names the other tree\'s links or paths, and rel-keyed records are not overwritten across the scans', async () => {
+  it('HMA-26.AC3 each call discloses exactly its own withheld links and neither text names the other tree\'s links, paths or bytes', async () => {
     const [ra, rb] = await Promise.all([
-      handleToolCall('hackmyagent_scan', { directory: rootA }, [rootA]),
-      handleToolCall('hackmyagent_scan', { directory: rootB }, [rootB]),
+      handleToolCall('hackmyagent_scan', { directory: fxA.linked }, [fxA.linked]),
+      handleToolCall('hackmyagent_scan', { directory: fxB.linked }, [fxB.linked]),
     ]);
     expect(ra.isError).toBeUndefined();
     expect(rb.isError).toBeUndefined();
     const ta = text(ra);
     const tb = text(rb);
 
-    // Each call withheld and disclosed ITS OWN `.env` — the record keyed by
-    // that rel carries the resolved target of the caller's own tree.
-    expect(ta).toContain(`.env -> ${resolvedA}`);
-    expect(tb).toContain(`.env -> ${resolvedB}`);
+    // Each call withheld and disclosed every one of ITS OWN links: the record
+    // keyed by each rel carries the resolved target of the caller's own tree.
+    // Both trees plant the same rels, so a record overwritten by — or read
+    // from — the other scan surfaces the other tree's target here instead.
+    for (const planted of fxA.plantedLinks) {
+      expect(ta).toContain(`${planted.rel} -> ${planted.resolved}`);
+    }
+    for (const planted of fxB.plantedLinks) {
+      expect(tb).toContain(`${planted.rel} -> ${planted.resolved}`);
+    }
 
-    // Not overwritten across the scans: the same key never surfaces the other
-    // caller's target.
-    expect(ta).not.toContain(resolvedB);
-    expect(tb).not.toContain(resolvedA);
+    // No cross-disclosure on any channel: nothing under the other fixture's
+    // base (its tree, its shared directory, any withheld entry's target) is
+    // named in the returned text.
+    expect(ta).not.toContain(fxB.base);
+    expect(tb).not.toContain(fxA.base);
 
-    // No cross-disclosure on any channel: no path, link or withheld entry of
-    // the other call's tree, and no file content from either side of it.
-    expect(ta).not.toContain(rootB);
-    expect(ta).not.toContain(outsideB);
-    expect(ta).not.toContain(CANARY_B);
-    expect(tb).not.toContain(rootA);
-    expect(tb).not.toContain(outsideA);
-    expect(tb).not.toContain(CANARY_A);
-
-    // And confinement held for each call's own link too: withheld means the
-    // bytes never came back to anyone.
-    expect(ta).not.toContain(CANARY_A);
-    expect(tb).not.toContain(CANARY_B);
+    // And no out-of-tree bytes came back to either caller: withheld means
+    // neither its own targets' contents nor the other's.
+    expect(ta).not.toContain(CANARY);
+    expect(tb).not.toContain(CANARY);
   });
 });
