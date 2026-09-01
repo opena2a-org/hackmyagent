@@ -31,7 +31,6 @@ const VERSION = JSON.parse(
 ).version as string;
 
 function canRunSpawn(): boolean {
-  if (process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true') return false;
   return existsSync(CLI);
 }
 

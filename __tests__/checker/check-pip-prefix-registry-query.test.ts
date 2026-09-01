@@ -19,7 +19,8 @@
 //
 // 2. Spawned smoke test: invokes the built dist/cli.js against a
 //    Registry-known PyPI package, asserts the JSON output reports
-//    found:true. Local-only; skipped on CI runners.
+//    found:true. Needs network and a built dist, both of which release.yml
+//    provides before it runs the suite.
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -36,7 +37,6 @@ const CLI_TS = join(REPO_ROOT, 'src', 'cli.ts');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
 
 function canRunSpawn(): boolean {
-  if (process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true') return false;
   return existsSync(CLI);
 }
 

@@ -34,7 +34,6 @@ const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
 
 function canRunSpawn(): boolean {
-  if (process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true') return false;
   return existsSync(CLI);
 }
 

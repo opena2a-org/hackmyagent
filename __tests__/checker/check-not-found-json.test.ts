@@ -6,8 +6,9 @@
 //    fixtures' must_match contract. No spawn, no network, runs everywhere.
 // 2. Spawned smoke test — invokes the built `dist/cli.js` against a
 //    non-existent npm package and a non-existent GitHub repo, asserts the
-//    JSON output. Skipped on CI runners since the harness needs network +
-//    a built dist.
+//    JSON output. Needs network and a built dist. release.yml provides
+//    both before it runs the suite, so this layer runs where a publish
+//    happens.
 //
 // The unit layer is the contract gate (closes F3 + F4). The spawn layer
 // is local-only confirmation that the wiring in cli.ts is reaching the
@@ -38,7 +39,6 @@ const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
 
 function canRunSpawn(): boolean {
-  if (process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true') return false;
   // The npm shim below is a POSIX sh script.
   if (process.platform === 'win32') return false;
   return existsSync(CLI);
