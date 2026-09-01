@@ -63,13 +63,16 @@ function run(args: string[]) {
       HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')),
     },
   });
-  return { status: res.status, out: `${res.stdout ?? ''}${res.stderr ?? ''}` };
+  // `stdout` is the machine channel: every JSON and SARIF parse reads it alone,
+  // so a load-induced stderr byte cannot corrupt the body (HMA-28). The merged
+  // `out` stays for text assertions that want the message on either channel.
+  return { status: res.status, stdout: res.stdout ?? '', out: `${res.stdout ?? ''}${res.stderr ?? ''}` };
 }
 
 function json(args: string[]) {
   const res = run([...args, '--json']);
   try {
-    return { status: res.status, body: JSON.parse(res.out.slice(res.out.indexOf('{'))) as any };
+    return { status: res.status, body: JSON.parse(res.stdout.slice(res.stdout.indexOf('{'))) as any };
   } catch {
     return { status: res.status, body: null as any };
   }
@@ -466,7 +469,7 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
       for (const depth of ['quick', 'standard']) {
         const res = run(['secure', '--scan-depth', depth, '--format', 'sarif', dir]);
         expect(res.status).toBe(EXIT_INCOMPLETE);
-        const sarif = JSON.parse(res.out.slice(res.out.indexOf('{')));
+        const sarif = JSON.parse(res.stdout.slice(res.stdout.indexOf('{')));
         const results = sarif.runs[0].results.filter((r: any) => r.ruleId === 'SCAN-UNREAD-001');
         expect(results).toHaveLength(1);
         expect(results[0].level).toBe('warning');
