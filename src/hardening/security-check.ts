@@ -83,7 +83,7 @@ export interface HmaIgnoreDisclosure {
     expires?: string;
     /** Findings this rule removed from the report on this run. */
     matched: number;
-    /** Line of the whole-path rule that absorbs this rule (CPO §3). */
+    /** Line of the whole-path rule that absorbs this rule. */
     redundantTo?: number;
   }>;
   /** Unparseable, refused, lapsed or unreadable lines. Loud, and exit-neutral. */

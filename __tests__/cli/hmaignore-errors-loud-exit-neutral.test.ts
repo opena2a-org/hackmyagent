@@ -1,6 +1,5 @@
 /**
- * HMA-21.AC5 — one parser, one matcher, loud errors, exit-neutral (CA (4),
- * CPO reconciliation §2-§3).
+ * HMA-21.AC5 — one parser, one matcher, loud errors, exit-neutral.
  *
  * - The private `loadHmaIgnore` / `isCheckIdSuppressed` pair is deleted; the
  *   exported `loadHmaIgnore` is the only parser; the matcher is the one

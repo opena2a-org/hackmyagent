@@ -1910,7 +1910,7 @@ export interface ParsedHmaIgnore {
 }
 
 /**
- * The two check-pattern expressions (CPO reconciliation §1(f)) — one grammar
+ * The two check-pattern expressions — one grammar
  * shared by `!<CHECK>` and `<path>:<CHECK>`. Matched case-insensitively;
  * matched ids are stored upper-cased, which is what the `secure` matcher has
  * always done at runtime.
@@ -1935,7 +1935,7 @@ function isRealCalendarDate(value: string): boolean {
 }
 
 /**
- * The two-step `.hmaignore` parser (CPO reconciliation §1, steps (a)-(h)).
+ * The two-step `.hmaignore` parser, steps (a)-(h).
  * `today` is the scan clock's UTC calendar date as `YYYY-MM-DD`, injected so
  * the row table in the tests is deterministic; a rule is active while
  * `today <= expires` (inclusive of the named day), and a lapsed rule is an
@@ -1975,12 +1975,12 @@ export function parseHmaIgnore(content: string, today: string): { rules: HmaIgno
       if (!m || !/^expires:/i.test(m[1])) break;
       const token = m[1];
       if (expires !== undefined) {
-        attrError = 'two `expires:` attributes on one line — write one';
+        attrError = 'two `expires:` attributes on one line; keep one';
         break;
       }
       const value = token.slice('expires:'.length);
       if (!isRealCalendarDate(value)) {
-        attrError = `\`${token}\` is not a valid date — write \`expires:YYYY-MM-DD\``;
+        attrError = `\`${token}\` is not a valid date; write \`expires:YYYY-MM-DD\``;
         break;
       }
       expires = value;
@@ -2001,7 +2001,7 @@ export function parseHmaIgnore(content: string, today: string): { rules: HmaIgno
       // runner agree at the same instant). From the next UTC day the line is
       // an error and its findings return to the report.
       if (expires !== undefined && today > expires) {
-        fail(`expired on ${expires} — the rule is no longer applied and its findings are reported again`);
+        fail(`expired on ${expires}; the rule is no longer applied and its findings are reported again`);
         return;
       }
       rules.push({ line: lineNo, rule: asWritten, ...rule });
@@ -2010,11 +2010,11 @@ export function parseHmaIgnore(content: string, today: string): { rules: HmaIgno
     // (d) `!<CHECK PATTERN>` — presentational check suppression
     if (text.startsWith('!')) {
       const pattern = text.slice(1);
-      if (pattern.length === 0) { fail('empty check pattern — write `!<CHECK-ID>`'); continue; }
+      if (pattern.length === 0) { fail('empty check pattern; write `!<CHECK-ID>`'); continue; }
       const wellFormed = pattern.includes('*')
         ? CHECK_PATTERN_WITH_STAR.test(pattern)
         : CHECK_PATTERN_EXACT.test(pattern);
-      if (!wellFormed) { fail(`\`${pattern}\` is not a check pattern`); continue; }
+      if (!wellFormed) { fail(`\`${pattern}\` is not a check pattern; write \`!<CHECK-ID>\` (for example \`!NEMO-009\`), or a path without the \`!\``); continue; }
       attach({
         channel: CHECK_CHANNEL,
         checkId: pattern.toUpperCase(),
@@ -2037,11 +2037,11 @@ export function parseHmaIgnore(content: string, today: string): { rules: HmaIgno
         // contains `/`, `\`, `.` or whitespace: not a check; the line is a path
       } else if (suffix.includes('*')) {
         if (/^[*-]+$/.test(suffix)) {
-          suffixError = `\`${text}\` — \`<path>:*\` is not a form; write \`${prefix}\` to exclude the whole path`;
+          suffixError = `\`<path>:*\` is not a form; write \`${prefix}\` to exclude the whole path`;
         } else if (CHECK_PATTERN_WITH_STAR.test(suffix)) {
           isPathCheck = true;
         } else {
-          suffixError = `\`${suffix}\` is a malformed check pattern`;
+          suffixError = `\`${suffix}\` is a malformed check pattern; use letters, digits, \`-\` and \`*\` only`;
         }
       } else if (CHECK_PATTERN_EXACT.test(suffix)) {
         isPathCheck = true;
@@ -2052,10 +2052,10 @@ export function parseHmaIgnore(content: string, today: string): { rules: HmaIgno
 
     if (isPathCheck) {
       // never a silent fallback to a path: each failed requirement is an error
-      if (prefix.length === 0) { fail('empty path — write `<path>:<CHECK-ID>`'); continue; }
-      if (prefix.includes('*')) { fail('globs are not supported in path rules'); continue; }
+      if (prefix.length === 0) { fail('empty path; write `<path>:<CHECK-ID>`'); continue; }
+      if (prefix.includes('*')) { fail('globs are not supported in path rules; write a file or directory path (a directory covers everything under it)'); continue; }
       if (reason.length === 0) {
-        fail('a `<path>:<CHECK-ID>` rule requires a reason — append `# <why>`');
+        fail('a `<path>:<CHECK-ID>` rule requires a reason; append `# <why>`');
         continue;
       }
       attach({
@@ -2071,7 +2071,7 @@ export function parseHmaIgnore(content: string, today: string): { rules: HmaIgno
     // (g) a path containing `*` is a loud error, never a silent no-op —
     // `*.py` and `dan*` matched nothing at all before this parser existed.
     // `[` is NOT a glob here (`app/[slug]/page.tsx` is a real path).
-    if (text.includes('*')) { fail('globs are not supported in path rules'); continue; }
+    if (text.includes('*')) { fail('globs are not supported in path rules; write a file or directory path (a directory covers everything under it)'); continue; }
     attach({
       channel: WHOLE_PATH_CHANNEL,
       path: text,
@@ -2131,7 +2131,7 @@ export function isPathIgnored(filePath: string, ignoredPaths: string[]): boolean
 
 /**
  * THE check-pattern matcher — the one `secure` has always shipped, now the
- * only one (CA (4)): case-insensitive ids, `*` anywhere in the pattern.
+ * only one: case-insensitive ids, `*` anywhere in the pattern.
  * `check` gains parity; the narrower trailing-`*`-only, case-sensitive
  * matcher that used to live beside it is deleted, because a grammar stricter
  * than its matcher would silently reopen the class this unit closes.
@@ -2207,7 +2207,7 @@ export interface HmaIgnoreMatch {
 
 /**
  * Classify one finding against a parsed `.hmaignore` — the one place the
- * three channels' precedence lives. Tiers, in order (CPO reconciliation §4):
+ * three channels' precedence lives. Tiers, in order:
  * whole-path, then `<path>:<CHECK>`, then `!<CHECK>`. A flat first-in-file-
  * order walk would let a `!NEMO-009` on line 1 keep a `danger.py:NEMO-009`
  * finding in the exit code, inverting the scope semantics.
@@ -2262,7 +2262,7 @@ export function matchHmaIgnore(
 
 /**
  * Project a parsed file plus per-line match counts into the disclosure the
- * CLI carries (CA (3)). `matchedByLine` must be counted over EXACTLY the
+ * CLI carries. `matchedByLine` must be counted over EXACTLY the
  * findings the `suppressed`/`outOfScope` Rows count — that identity is the
  * Σ-matched cross-check in the tests. A `<path>:<CHECK>` rule absorbed by a
  * whole-path rule carries `redundantTo` (and, the tiers being what they are,

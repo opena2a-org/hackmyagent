@@ -1,6 +1,5 @@
 /**
- * HMA-21.AC3 — per-rule disclosure and the (checkId, channel) fold (CA (3),
- * CPO reconciliation §4).
+ * HMA-21.AC3 — per-rule disclosure and the (checkId, channel) fold.
  *
  * `secure --json` and `check --json` carry a top-level `hmaignore` key iff a
  * `.hmaignore` exists at the target, with the CA's literal shape;

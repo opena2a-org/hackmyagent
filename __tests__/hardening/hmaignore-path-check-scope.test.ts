@@ -1,5 +1,5 @@
 /**
- * HMA-21.AC2 — scope semantics reach the exit code (CA (2), CPO §3).
+ * HMA-21.AC2 — scope semantics reach the exit code.
  *
  * Fixture: `danger.py` = `eval(user_input)`, neutral HOME,
  * `node dist/cli.js secure --ci --json .`. Measured at base a598f616:

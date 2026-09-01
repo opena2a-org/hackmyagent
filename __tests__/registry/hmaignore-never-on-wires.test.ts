@@ -1,6 +1,6 @@
 /**
- * HMA-21.AC4 — the per-rule `.hmaignore` disclosure never rides a wire
- * (CA (3)). Same shape as `settled-outcome-wires.test.ts`: build a
+ * HMA-21.AC4 — the per-rule `.hmaignore` disclosure never rides a wire.
+ * Same shape as `settled-outcome-wires.test.ts`: build a
  * `ScanResult` that CARRIES the `hmaignore` key, run it through every
  * outbound builder, and assert `'hmaignore' in payload === false` on each.
  *

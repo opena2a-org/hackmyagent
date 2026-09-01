@@ -2529,7 +2529,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       const labelPad = 'Ignore file'.padEnd(LABEL_WIDTH, ' ');
       const first = hmaErrorRows[0];
       const renderError = (e: { line: number; rule: string; error: string }) =>
-        `.hmaignore:${e.line}: ${e.error}${e.rule ? ` — \`${escapeForDisplay(e.rule)}\`` : ''}`;
+        `.hmaignore:${e.line}: ${e.rule ? `\`${escapeForDisplay(e.rule)}\`: ` : ''}${e.error}`;
       console.log(
         `  ${colors.dim}${labelPad}${RESET()}${colors.yellow}${renderError(first)}${RESET()}`,
       );
@@ -2538,11 +2538,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           `  ${colors.dim}${''.padEnd(LABEL_WIDTH, ' ')}${RESET()}${colors.yellow}${renderError(e)}${RESET()}`,
         );
       }
+      const inert = first.line === 0
+        ? 'The file is not applied, so anything it would have covered is still reported.'
+        : hmaErrorRows.length === 1
+          ? 'This line is not applied, so anything it would have covered is still reported.'
+          : 'These lines are not applied, so anything they would have covered is still reported.';
       console.log(
         `  ${colors.dim}${''.padEnd(LABEL_WIDTH, ' ')}` +
-        `${hmaErrorRows.length === 1 ? 'This line is' : 'These lines are'} not applied. ` +
-        `Errors never change the exit code; anything ` +
-        `${hmaErrorRows.length === 1 ? 'this line' : 'they'} would have covered is reported above.${RESET()}`,
+        `${inert} Errors never change the exit code.${RESET()}`,
       );
     }
 

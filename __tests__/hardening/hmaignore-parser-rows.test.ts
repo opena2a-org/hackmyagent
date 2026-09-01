@@ -1,6 +1,6 @@
 /**
- * HMA-21.AC1 — the 47 rows of the CPO reconciliation (2026-09-01, binding
- * spec Part 1 §1), table-driven, with `today` injected as `2026-09-01`.
+ * HMA-21.AC1 — the 47 committed parser rows (2026-09-01), table-driven, with
+ * `today` injected as `2026-09-01`.
  *
  * RED ON BASE a598f616: the parser there has no trailing-comment strip, no
  * `expires:`, no `<path>:<CHECK-ID>` form and no errors — `parseHmaIgnore`
@@ -44,7 +44,7 @@ const ACCEPT: Accept[] = [
   { row: 'SKILL.md:SKILL-* # r', channel: 'hmaignore-path-check', path: 'SKILL.md', checkId: 'SKILL-*', reason: 'r' },
   { row: 'SKILL.md:SKILL-0* # r', channel: 'hmaignore-path-check', path: 'SKILL.md', checkId: 'SKILL-0*', reason: 'r' },
   { row: 'SKILL.md:*-001 # r', channel: 'hmaignore-path-check', path: 'SKILL.md', checkId: '*-001', reason: 'r' },
-  // disclosed as such; CPO pre-mortem 1
+  // disclosed as such: a letter-led, dashed suffix reads as a check, by design
   { row: 'weird:bar-baz # r', channel: 'hmaignore-path-check', path: 'weird', checkId: 'BAR-BAZ', reason: 'r' },
   { row: '!NEMO-009', channel: 'hmaignore-check', checkId: 'NEMO-009' },
   { row: '!nemo-009', channel: 'hmaignore-check', checkId: 'NEMO-009' },

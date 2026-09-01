@@ -381,12 +381,12 @@ the rule is active through the named day (UTC), and from the next day the
 line is reported as an error and its findings return to the report.
 
 Every rule and its match count are disclosed under `hmaignore` in `--json`.
-A line the parser cannot apply — a glob in a path rule, a missing reason, a
-bad or lapsed `expires:` date — is never a silent no-op: it prints as a
+A line the parser cannot apply (a glob in a path rule, a missing reason, a
+bad or lapsed `expires:` date) is never a silent no-op: it prints as a
 `.hmaignore:<line>` error by default, appears in `hmaignore.errors`, and the
 line is not applied. Errors never change the exit code: an inert line hides
 nothing, so everything it would have covered is already in the score and the
-exit code. To gate CI on a clean ignore file, check the document instead:
+exit code. To gate CI on a clean ignore file, test the `--json` document instead:
 `hackmyagent secure --ci --json . | jq -e '.hmaignore.errors | length == 0'`.
 
 ## Exit codes
