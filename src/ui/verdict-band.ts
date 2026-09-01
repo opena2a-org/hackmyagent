@@ -262,23 +262,33 @@ export function summarizeSuppressed(
     // "suppressed" would overstate what the flag cost the reader.
     if (!f.suppressed || !countsAgainstScore(f)) continue;
     const checkId = f.checkId || '_unknown_';
-    const existing = rows.get(checkId);
+    const suppressedBy = f.suppressedBy || 'ignore-flag';
+    // Folded per (checkId, channel), not per checkId: with two scope channels
+    // one check can be scoped by both, and a checkId-only key would let the
+    // first-seen channel label the whole row. Invisible on every input where
+    // each check rides one channel, which is every input before the
+    // `<path>:<CHECK>` form existed.
+    const key = checkId + '\0' + suppressedBy;
+    const existing = rows.get(key);
     if (existing) {
       existing.count += 1;
       continue;
     }
-    rows.set(checkId, {
+    rows.set(key, {
       checkId,
       name: f.name || checkId,
       category: f.category || '',
       severity: f.severity || 'info',
       count: 1,
-      suppressedBy: f.suppressedBy || 'ignore-flag',
+      suppressedBy,
     });
   }
   const order: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
   return [...rows.values()].sort(
-    (a, b) => (order[a.severity] ?? 5) - (order[b.severity] ?? 5) || a.checkId.localeCompare(b.checkId),
+    (a, b) =>
+      (order[a.severity] ?? 5) - (order[b.severity] ?? 5)
+      || a.checkId.localeCompare(b.checkId)
+      || a.suppressedBy.localeCompare(b.suppressedBy),
   );
 }
 

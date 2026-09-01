@@ -306,6 +306,7 @@ import {
   type CategoryCoverage,
 } from './hardening/coverage-ledger';
 import type { ScanResult, SuppressionChannel, SecurityFindingDraft, WithheldLinkRecord } from './hardening/security-check';
+import { isScopeChannel } from './hardening/security-check';
 import { readStaysInsideTree } from './hardening/contain';
 import { mergeWithheldLinks, retargetInstruction, withheldLinkLines } from './hardening/withheld-links';
 
@@ -791,8 +792,11 @@ Examples:
         const unreadRecord = ledger.unreadableInputs;
         const unreadPaths = ledger.unreadablePaths();
 
-        // Apply .hmaignore filtering (paths + check IDs)
-        const { loadHmaIgnore: loadIgnore, isPathIgnored: pathIgnored, isCheckIgnored: checkIgnored, buildUnreadInputFinding, unsearchableAncestorSync } = await import('./hardening/scanner.js');
+        // Apply .hmaignore filtering through the scanner's ONE parser and ONE
+        // matcher (whole paths, `<path>:<CHECK>` narrowings, `!CHECK`
+        // patterns — case-insensitive ids, `*` anywhere), so `check` and
+        // `secure` read a committed file identically.
+        const { loadHmaIgnore: loadIgnore, matchHmaIgnore: matchIgnore, buildHmaIgnoreDisclosure: buildIgnoreDisclosure, buildUnreadInputFinding, unsearchableAncestorSync } = await import('./hardening/scanner.js');
         const skillIgnoreRules = await loadIgnore(targetDir);
         // #450 — one of the hand-rolled copies of the suppression rule. The
         // findings still LEAVE the reported set, exactly as before; what changes
@@ -814,27 +818,44 @@ Examples:
         }
         const skillSuppressedRaw: any[] = [];
         const skillOutOfScopeRaw: any[] = [];
-        if (skillIgnoreRules.paths.length > 0 || skillIgnoreRules.checkIds.length > 0) {
+        const skillAttribution = new Map<any, number>();
+        if (skillIgnoreRules.rules.length > 0) {
           for (const f of skillFindings as any[]) {
-            if (checkIgnored(f.checkId, skillIgnoreRules.checkIds)) {
-              skillSuppressedRaw.push({ ...f, suppressed: true, suppressedBy: 'hmaignore-check' });
-            } else if (f.checkId !== UNREAD_INPUT_CHECK_ID && f.file && pathIgnored(f.file, skillIgnoreRules.paths)) {
-              // The carve-out above mirrors `secure` exactly (see
-              // retainAfterPathSuppression in scanner.ts): a coverage
-              // statement is not a finding about a path's contents, so a path
-              // rule cannot scope it away — `outOfScope` renders as a bare
-              // count, and this arm's exit code was settled from the same
-              // record, so scoping the finding out would print "not in the
-              // exit code" about the very input holding the exit at 2. An
-              // explicit `!SCAN-UNREAD-001` check rule (the branch above)
-              // still suppresses it onto the Suppressed line, with the
-              // penalty, exactly as on `secure`.
-              skillOutOfScopeRaw.push({ ...f, suppressed: true, suppressedBy: 'hmaignore-path' });
-            }
+            // `matchHmaIgnore` holds the tier order (whole-path, then
+            // `<path>:<CHECK>`, then `!<CHECK>`) and the SCAN-UNREAD-001
+            // carve-out `secure` applies: a coverage statement is not a
+            // finding about a path's contents, so a path-shaped rule cannot
+            // scope it away — this arm's exit code was settled from the same
+            // record, so scoping the finding out would print "not in the exit
+            // code" about the very input holding the exit at 2. An explicit
+            // `!SCAN-UNREAD-001` check rule still suppresses it onto the
+            // Suppressed line, with the penalty, exactly as on `secure`.
+            const m = matchIgnore(f, skillIgnoreRules);
+            if (!m) continue;
+            const marked = { ...f, suppressed: true, suppressedBy: m.channel };
+            if (m.line !== undefined) skillAttribution.set(marked, m.line);
+            // The scope/presentational partition routes through
+            // `isScopeChannel`, never a channel literal: a scope channel
+            // leaves the risk band and the exit code, a presentational one
+            // narrows only the list.
+            if (isScopeChannel(m.channel)) skillOutOfScopeRaw.push(marked);
+            else skillSuppressedRaw.push(marked);
           }
         }
         const skillSuppressed = summarizeSuppressed(skillSuppressedRaw);
         const skillOutOfScope = summarizeSuppressed(skillOutOfScopeRaw);
+        // Per-rule match counts, over the same findings and through the same
+        // `countsAgainstScore` gate as the two Row summaries above, so
+        // Σ matched per (checkId, channel) equals the Row count.
+        const skillMatchedByLine = new Map<number, number>();
+        for (const f of [...skillSuppressedRaw, ...skillOutOfScopeRaw] as any[]) {
+          if (!countsAgainstScore(f)) continue;
+          const line = skillAttribution.get(f);
+          if (line !== undefined) skillMatchedByLine.set(line, (skillMatchedByLine.get(line) ?? 0) + 1);
+        }
+        // Present iff the target carries a `.hmaignore` (even one with no
+        // rules), absent otherwise — same key and presence rule as `secure`.
+        const skillHmaignore = buildIgnoreDisclosure(skillIgnoreRules, skillMatchedByLine);
         const withheld = new Set<string>([
           ...skillSuppressedRaw.map((f) => `${f.checkId}\u0000${f.file ?? ''}`),
           ...skillOutOfScopeRaw.map((f) => `${f.checkId}\u0000${f.file ?? ''}`),
@@ -921,6 +942,9 @@ Examples:
             details: issues,
             ...(skillSuppressed.length > 0 ? { suppressed: skillSuppressed } : {}),
             ...(skillOutOfScope.length > 0 ? { outOfScope: skillOutOfScope } : {}),
+            // Presence keyed on the FILE, not on the rules: an empty or
+            // all-error `.hmaignore` still discloses itself and its errors.
+            ...(skillHmaignore ? { hmaignore: skillHmaignore } : {}),
           });
           return;
         }
@@ -973,6 +997,7 @@ Examples:
           artifactSummaries: nmResult.artifactSummaries,
           suppressed: skillSuppressed.length > 0 ? skillSuppressed : undefined,
           outOfScope: skillOutOfScope.length > 0 ? skillOutOfScope : undefined,
+          hmaignore: skillHmaignore,
           verbose: !!options.verbose,
           usedAnalm: resolveNanomindFlag(options),
           analystFindings: nmResult.analystFindings,
@@ -1277,6 +1302,14 @@ interface UnifiedCheckDisplayOptions {
    * are already in the score. Top-level for the same reason as `outOfScope`.
    */
   suppressed?: ScanResult['suppressed'];
+  /**
+   * The per-rule `.hmaignore` disclosure. The renderer reads `errors[]` from
+   * it: every line the parser refused prints, by default, beside the
+   * `Scope`/`Suppressed` lines — the user believes the rule is active and it
+   * is not, which is the one silence this feature exists to remove. Errors
+   * NEVER change the exit code.
+   */
+  hmaignore?: ScanResult['hmaignore'];
   artifactSummaries?: Array<{
     path: string;
     type: string;
@@ -2481,6 +2514,38 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         `Withheld from the list at your request. Still scored, still in the verdict, ` +
         `still in the exit code — ${worst.checkId} would have reported ` +
         `${worst.severity} ${worst.name}.${RESET()}`,
+      );
+    }
+
+    // Every `.hmaignore` line the parser refused — unparseable, malformed,
+    // lapsed, or the whole file unreadable (line 0). Loud BY DEFAULT, never
+    // behind --verbose: the user believes the rule is active and it is not.
+    // And exit-neutral, on every command and mode: an inert line hides
+    // nothing, so everything it would have covered is already in the score
+    // and the exit code — a syntax-based exit change would be a second gate
+    // with no finding behind it, whose fastest fix is deleting the line.
+    const hmaErrorRows = opts.hmaignore?.errors ?? [];
+    if (hmaErrorRows.length > 0) {
+      const labelPad = 'Ignore file'.padEnd(LABEL_WIDTH, ' ');
+      const first = hmaErrorRows[0];
+      const renderError = (e: { line: number; rule: string; error: string }) =>
+        `.hmaignore:${e.line}: ${e.rule ? `\`${escapeForDisplay(e.rule)}\`: ` : ''}${e.error}`;
+      console.log(
+        `  ${colors.dim}${labelPad}${RESET()}${colors.yellow}${renderError(first)}${RESET()}`,
+      );
+      for (const e of hmaErrorRows.slice(1)) {
+        console.log(
+          `  ${colors.dim}${''.padEnd(LABEL_WIDTH, ' ')}${RESET()}${colors.yellow}${renderError(e)}${RESET()}`,
+        );
+      }
+      const inert = first.line === 0
+        ? 'The file is not applied, so anything it would have covered is still reported.'
+        : hmaErrorRows.length === 1
+          ? 'This line is not applied, so anything it would have covered is still reported.'
+          : 'These lines are not applied, so anything they would have covered is still reported.';
+      console.log(
+        `  ${colors.dim}${''.padEnd(LABEL_WIDTH, ' ')}` +
+        `${inert} Errors never change the exit code.${RESET()}`,
       );
     }
 
@@ -5166,6 +5231,12 @@ Examples:
         // array. Accumulating instead counted each suppressed finding twice and
         // printed `CONFIG-004 (critical x2)` for a single occurrence.
         result.suppressed = scanner.lastSuppressed.length > 0 ? scanner.lastSuppressed : undefined;
+        // The disclosure's `matched` counts are recounted by the same call
+        // over the same post-merge array as the two Row records above, so the
+        // Σ-matched cross-check holds on what `--json` finally carries.
+        // Presence rule unchanged: `lastHmaIgnore` is undefined exactly when
+        // the target has no `.hmaignore`.
+        result.hmaignore = scanner.lastHmaIgnore;
         if (result.allFindings) {
           // No cast. `reapplyIgnoreFilters` is generic over the finding type and
           // only marks and filters, so `refiltered` is still branded and assigns
@@ -6017,6 +6088,7 @@ Examples:
         // `.hmaignore` held back 65 findings, 26 of them critical.
         outOfScope: result.outOfScope,
         suppressed: result.suppressed,
+        hmaignore: result.hmaignore,
         localScan: {
           score: result.score,
           rawScore: result.rawScore,
@@ -6969,12 +7041,14 @@ Examples:
 
       // Re-apply .hmaignore filtering after NanoMind merge (paths + check IDs)
       try {
-        const { loadHmaIgnore: loadIgnore, isPathIgnored: pathIgnored, isCheckIgnored: checkIgnored } = await import('./hardening/scanner.js');
+        const { loadHmaIgnore: loadIgnore, matchHmaIgnore: matchIgnore } = await import('./hardening/scanner.js');
         const ncIgnoreRules = await loadIgnore(targetDir);
-        if (ncIgnoreRules.paths.length > 0 || ncIgnoreRules.checkIds.length > 0) {
-          mergedFindings = mergedFindings.filter((f: SecurityFinding) =>
-            !(f.file && pathIgnored(f.file, ncIgnoreRules.paths)) &&
-            !checkIgnored(f.checkId, ncIgnoreRules.checkIds));
+        if (ncIgnoreRules.rules.length > 0) {
+          // One parser, one matcher: whole paths, `<path>:<CHECK>` narrowings
+          // and `!CHECK` patterns all read the way `secure` reads them. This
+          // arm keeps its pre-existing behaviour of dropping the matched
+          // findings from its report outright.
+          mergedFindings = mergedFindings.filter((f: SecurityFinding) => !matchIgnore(f, ncIgnoreRules));
         }
       } catch { /* ignore filter unavailable */ }
 
