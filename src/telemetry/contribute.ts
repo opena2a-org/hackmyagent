@@ -298,6 +298,46 @@ async function checkRegistryHealth(baseUrl: string): Promise<boolean> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Health-probe seam
+// ---------------------------------------------------------------------------
+//
+// `flushQueue` runs the pre-flight health check above before it will call
+// `submitBatch`, and that check is the one piece of the flush path a test
+// cannot reach: it is a live `node:https` GET, not the global `fetch` that the
+// suite stubs, and its verdict is cached on disk for five minutes under
+// $OPENA2A_HOME. So the three tests in __tests__/telemetry/contribute.test.ts
+// that assert on the stubbed `fetch` were really asserting two things they
+// never named — that api.oa2a.org was up, and that the previous run had left a
+// `healthy: true` in contribute-health.json. When either was false the probe
+// short-circuited the flush, `fetch` was never called, and they failed with
+// `expected false to be true`. That is what turned the test matrix red twice on
+// main (2026-08-30 macos, 2026-08-31 ubuntu), not shared queue state.
+//
+// The probe is therefore reached through this one-entry indirection so a test
+// can hand `flushQueue` a verdict directly. Nothing on the production path
+// changes: the default is `checkRegistryHealth` itself — same URL, same
+// 3-second timeout, same 5-minute on-disk cache — and nothing outside the
+// suite calls the setter.
+
+export type RegistryHealthProbe = (baseUrl: string) => Promise<boolean>;
+
+let registryHealthProbe: RegistryHealthProbe = checkRegistryHealth;
+
+/**
+ * Test seam: replace the pre-flight registry health probe.
+ * Pair every call with `_resetRegistryHealthProbe` in an `afterEach` — the
+ * binding is module-level and outlives the test that set it.
+ */
+export function _setRegistryHealthProbe(probe: RegistryHealthProbe): void {
+  registryHealthProbe = probe;
+}
+
+/** Test seam: restore the production `node:https` probe. */
+export function _resetRegistryHealthProbe(): void {
+  registryHealthProbe = checkRegistryHealth;
+}
+
 /**
  * Send a scan_ping heartbeat event if more than PING_INTERVAL_MS has elapsed.
  * Tells the registry this tool is installed and active — used for adoption stats.
@@ -487,8 +527,10 @@ export async function flushQueue(
     return true;
   }
 
-  // Pre-flight health check — skip submission if registry is down
-  const healthy = await checkRegistryHealth(url);
+  // Pre-flight health check — skip submission if registry is down.
+  // Goes through the seam above so the suite can supply a verdict instead of
+  // depending on the live registry and the on-disk cache.
+  const healthy = await registryHealthProbe(url);
   if (!healthy) {
     recordFailure(readRetryState());
     return false;
