@@ -19,6 +19,7 @@ import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
 import { lineFromOffset, findLineFromString } from '../../types/text-position.js';
 import {
+  findAllCredentialFormatMatches,
   findCredentialFormatMatch,
   hasCredentialFormat,
   hasAnyCredentialCandidate,
@@ -458,9 +459,30 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
     return findings;
   }
 
-  // Filter out test fixtures and documentation
+  // Filter out test fixtures and documentation.
+  //
+  // The two context gates below (`allTestFixtures`, and the doc-context
+  // credential-format gate at the end of this block) are evaluated on the RAW
+  // evidence window re-sliced from the artifact, not on `e.text`: spans are
+  // post-redaction at construction (HMA-15.AC1), and a redaction marker
+  // carries neither the placeholder vocabulary the fixture gate reads nor the
+  // vendor prefix the format sniff reads. Judging the redacted text would
+  // therefore both un-suppress doc-context placeholders (a new FP class) and
+  // suppress doc-context real leaks (detection narrowing, HMA-15.AC9) — the
+  // raw window keeps both gates byte-equivalent to their pre-redaction
+  // behaviour. Only the GATES read the raw slice; everything that ships in
+  // the finding still comes from the redacted span text.
   const isTestOrDoc = isDocumentationOrTestContext(ast);
-  const evidenceTexts = credentialEvidence.map(e => e.text);
+  const evidenceTexts = credentialEvidence.map(e =>
+    artifactContent !== undefined &&
+    typeof e.start === 'number' &&
+    typeof e.end === 'number' &&
+    e.start >= 0 &&
+    e.end > e.start &&
+    e.end <= artifactContent.length
+      ? artifactContent.slice(e.start, e.end)
+      : e.text,
+  );
   const allTestFixtures = evidenceTexts.every(t => isTestFixtureCredential(t));
 
   if (isTestOrDoc && allTestFixtures) {
@@ -566,7 +588,18 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
     }
     if (located.size > 0) {
       for (const [offset, summary] of [...located.entries()].sort((a, b) => a[0] - b[0])) {
-        findings.push(emit(summary, lineFromOffset(artifactContent, offset)));
+        const finding = emit(summary, lineFromOffset(artifactContent, offset));
+        // HMA-15.AC2 — the PRODUCER already removed the value: a located risk
+        // is a canonical-scan hit, and that scan emits `<label>: [REDACTED]`
+        // in place of the match, so no byte of it ever entered this record.
+        // The flag carries the FACT of that removal to `emitFinding`, whose
+        // absorbing-`applied` merge reports it — instead of re-deriving
+        // `clean` from fields the value was never in. (The r1 design carried
+        // the RAW match for `emitFinding` to remove; for any shape outside
+        // that table it removed nothing and the value shipped stamped clean,
+        // so the raw carry is deleted, not filtered.)
+        finding.redactionApplied = true;
+        findings.push(finding);
       }
       return findings;
     }
@@ -581,7 +614,47 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
     : undefined;
   const fallbackLine = lineFromSpan ?? findLineFromString(artifactContent, evidenceSummary);
 
-  findings.push(emit(evidenceSummary, fallbackLine));
+  // HMA-15.AC2, fallback arm — the path markdown artifacts take. The span's
+  // text is post-boundary (extractEvidenceSpans redacts at construction), but
+  // that boundary is a SHAPE TABLE: a value outside it — a JWT, an anonymous
+  // high-entropy blob, a quoting the name-gated rule does not match —
+  // survives into the span verbatim, and `emitFinding` downstream runs the
+  // SAME table, so nothing later can remove what it missed. The producer
+  // therefore masks HERE, at the point of production, and from a window in
+  // which every value is WHOLE: the span's window re-sliced from the raw
+  // artifact and widened to full lines. The span TEXT is a 100-char cut, and
+  // a value the cut truncated matches no format signal — a truncated probe is
+  // this arm's original defect, so the mask must run before any slice.
+  // Masking is `maskCredentialValue`'s scheme: vendor prefix preserved,
+  // unknown shape masked ENTIRELY. No raw scanned byte is handed to a
+  // downstream filter to clean up.
+  const span = credentialEvidence[0];
+  let summarySource = evidenceSummary;
+  if (
+    artifactContent !== undefined &&
+    span !== undefined &&
+    typeof span.start === 'number' &&
+    typeof span.end === 'number' &&
+    span.start >= 0 &&
+    span.end > span.start &&
+    span.end <= artifactContent.length
+  ) {
+    const lineStart = span.start === 0 ? 0 : artifactContent.lastIndexOf('\n', span.start - 1) + 1;
+    const newlineAfterEnd = artifactContent.indexOf('\n', span.end);
+    const lineEnd = newlineAfterEnd === -1 ? artifactContent.length : newlineAfterEnd;
+    summarySource = artifactContent.slice(lineStart, lineEnd);
+  }
+  const { text: maskedSummary, masked } = maskCredentialFormats(summarySource);
+  const fallback = emit(maskedSummary.slice(0, 120), fallbackLine);
+  // The FACT of a removal — by this arm's own masking, or by the report
+  // boundary inside the span constructor — rides to `emitFinding`, whose
+  // absorbing-`applied` merge reports it. Nothing here certifies fields
+  // clean: `clean` remains what `emitFinding` derives when nothing was
+  // removed anywhere on the path.
+  if (masked || span?.redactionApplied === true) {
+    fallback.redactionApplied = true;
+  }
+  findings.push(fallback);
 
   return findings;
 }
@@ -685,7 +758,22 @@ function isDocumentationOrTestContext(ast: SecurityAST): boolean {
  * `../../types/credential-format.js`.
  */
 function evidenceShowsCredentialFormat(evidenceTexts: string[]): boolean {
-  return evidenceTexts.some(t => hasCredentialFormat(t));
+  // The caller normally hands this gate RAW evidence windows re-sliced from
+  // the artifact, so the sniff behaves exactly as it did before spans became
+  // post-redaction at construction (HMA-15.AC1). The marker clause covers the
+  // one path where only the redacted span text exists (no artifact content in
+  // hand): there, a shape marker is the boundary's own record that a
+  // credential FORMAT was present — without it, redaction would suppress the
+  // doc-context finding the raw bytes used to prove, closing the render class
+  // by detecting less (forbidden by HMA-15.AC9).
+  //
+  // Only SHAPE-anchored markers (`[REDACTED_AWS_SECRET]`, underscore-suffixed)
+  // count. The generic name-gated rule's bare `[REDACTED]` proves no format —
+  // it fires on an identifier without ever inspecting the value (C9) — and
+  // accepting it would WIDEN detection over quoted non-credential values that
+  // never passed this gate before.
+  const shapeMarker = /\[REDACTED_[A-Z0-9_]+\]/;
+  return evidenceTexts.some(t => hasCredentialFormat(t) || shapeMarker.test(t));
 }
 
 /**
@@ -1030,6 +1118,33 @@ function maskCredentialValue(value: string): string {
   // one the boundary cannot clean up downstream because a truncated credential no longer
   // matches the redactor's full-length shapes. Cap the mask so output stays bounded.
   return '*'.repeat(Math.min(Math.max(value.length, 1), 24));
+}
+
+/**
+ * Mask EVERY credential-format value in `text` — vendor-prefixed, JWT, and
+ * credible high-entropy blob — the way `maskCredentialValue` masks a single
+ * one: prefix preserved when a vendor is recognisable, the whole value
+ * otherwise. `masked` is true exactly when at least one value was replaced,
+ * which is the honest input to a `redactionStatus` of `applied`: it reports a
+ * removal that actually happened here, at the point of production.
+ *
+ * This is deliberately NOT the report redaction boundary. The boundary is a
+ * shape table with two documented omissions (`jwt`, `entropy-blob` — GAP-8),
+ * and this arm's evidence window is exactly where a value outside the table
+ * was measured shipping whole. The format scan has no table to fall behind:
+ * anything it can find, `maskCredentialValue` can mask, and a value neither
+ * signal sees is a value the detection layer cannot call a credential either.
+ */
+function maskCredentialFormats(text: string): { text: string; masked: boolean } {
+  const hits = findAllCredentialFormatMatches(text);
+  if (hits.length === 0) return { text, masked: false };
+  let out = '';
+  let pos = 0;
+  for (const hit of hits) {
+    out += text.slice(pos, hit.index) + maskCredentialValue(hit.value);
+    pos = hit.index + hit.value.length;
+  }
+  return { text: out + text.slice(pos), masked: true };
 }
 
 /**

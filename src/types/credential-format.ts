@@ -848,13 +848,20 @@ function isAlphanumericCode(c: number): boolean {
  * terminating `.` is a property of the RUN, not of the `eyJ` inside it, so the
  * payload and signature are resolved once per run rather than once per `eyJ` —
  * that is what removes the quadratic without removing any input.
+ *
+ * `from` starts the walk at an absolute offset so an all-matches caller
+ * (`findAllCredentialFormatMatches`) can resume past a hit without slicing —
+ * a slice per hit is the quadratic this scan exists to avoid. The anchor test
+ * stays absolute: position `from` is anchored by the byte before it, exactly
+ * as it would be in a full scan.
  */
 export function findJwtMatch(
   text: string,
   anchored: boolean,
+  from = 0,
 ): { value: string; index: number } | undefined {
   const n = text.length;
-  let i = 0;
+  let i = from;
   while (i < n) {
     if (!isBase64UrlCode(text.charCodeAt(i))) {
       i++;
@@ -1157,6 +1164,63 @@ export function findCredentialFormatMatch(
 /** True when `text` contains at least one accepted credential-format value. */
 export function hasCredentialFormat(text: string): boolean {
   return findCredentialFormatMatch(text) !== undefined;
+}
+
+/**
+ * EVERY credential-format substring in `text`, left to right, non-overlapping.
+ *
+ * Same three signals as `findCredentialFormatMatch` (vendor alternation, JWT
+ * scan, entropy fallback), collected in ONE pass each rather than by repeated
+ * leftmost scans — a rescan-per-hit loop is quadratic on hit-dense input, and
+ * this function exists for a producer that must mask every value out of an
+ * evidence window before any of it ships (HMA-15.AC2), where "the first one"
+ * is exactly the per-producer blindness that let a second value through.
+ *
+ * Overlaps resolve leftmost-first; on a tie the vendor match wins, then the
+ * JWT, then the blob — the same precedence `leftmost` gives the single-match
+ * entry point. A hit starting inside an accepted hit is dropped, not
+ * re-anchored: its bytes are already inside a value the caller will mask
+ * whole.
+ */
+export function findAllCredentialFormatMatches(
+  text: string,
+): { value: string; index: number }[] {
+  const hits: { value: string; index: number; rank: number }[] = [];
+
+  const vendorRe = new RegExp(vendorAlternation(), 'g');
+  let vm: RegExpExecArray | null;
+  while ((vm = vendorRe.exec(text)) !== null) {
+    hits.push({ value: vm[0], index: vm.index, rank: 0 });
+    // A zero-width match cannot happen (every alternative consumes its head),
+    // but a stuck lastIndex would loop forever; step defensively.
+    if (vm[0].length === 0) vendorRe.lastIndex++;
+  }
+
+  for (let pos = 0; ; ) {
+    const jwt = findJwtMatch(text, false, pos);
+    if (!jwt) break;
+    hits.push({ value: jwt.value, index: jwt.index, rank: 1 });
+    pos = jwt.index + jwt.value.length;
+  }
+
+  const blobRe = new RegExp(ENTROPY_BLOB_ALTERNATIVE, 'g');
+  let bm: RegExpExecArray | null;
+  while ((bm = blobRe.exec(text)) !== null) {
+    const offset = findCredibleWindowOffset(bm[0]);
+    if (offset !== undefined) {
+      hits.push({ value: bm[0].slice(offset), index: bm.index + offset, rank: 2 });
+    }
+  }
+
+  hits.sort((a, b) => a.index - b.index || a.rank - b.rank);
+  const merged: { value: string; index: number }[] = [];
+  let consumedTo = 0;
+  for (const h of hits) {
+    if (h.index < consumedTo) continue;
+    merged.push({ value: h.value, index: h.index });
+    consumedTo = h.index + h.value.length;
+  }
+  return merged;
 }
 
 /**
