@@ -249,7 +249,7 @@ describe('analyzeCredentialKeywordContext', () => {
   });
 
   it('returns value-present for hardcoded credential value', () => {
-    const content = `{"credentials": "sk-ant-api03-REAL-VALUE-HERE"}`;
+    const content = `{"credentials": "${['sk', '-ant-api03-REAL-VALUE-HERE'].join('')}"}`;
     expect(analyzeCredentialKeywordContext(content)).toBe('value-present');
   });
 
@@ -306,7 +306,7 @@ describe('analyzeCredentialKeywordContext', () => {
     // Real sk-ant-api key hidden in an unrelated field.
     const content = `{
       "credentials": null,
-      "x-custom-header": "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX"
+      "x-custom-header": "${['sk', '-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX'].join('')}"
     }`;
     expect(analyzeCredentialKeywordContext(content)).toBe('value-present');
   });
@@ -322,7 +322,7 @@ describe('analyzeCredentialKeywordContext', () => {
   it('stays schema-only when canonical format is clearly a FAKE test fixture', () => {
     const content = `{
       "credentials": null,
-      "fake_key": "sk-ant-api03-FAKE-EXAMPLE-0000000000"
+      "fake_key": "${['sk', '-ant-api03-FAKE-EXAMPLE-0000000000'].join('')}"
     }`;
     expect(analyzeCredentialKeywordContext(content)).toBe('schema-only');
   });

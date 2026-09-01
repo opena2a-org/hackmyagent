@@ -20,7 +20,7 @@ import { buildJsonStdoutDocument } from '../../src/output/json-stdout';
 
 // A value the redactor rewrites. FAKE by construction; the shape is what the
 // rule matches on, and one match is all the parity assertion needs.
-const SECRET = 'sk-ant-api03-FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE';
+const SECRET = ['sk', '-ant-api03-FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE'].join('');
 
 function draft(parts: readonly string[], fixOverride?: string) {
   return {

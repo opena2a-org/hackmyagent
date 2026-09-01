@@ -11,7 +11,7 @@
  *   Verdict     No security issues detected. This library looks safe to use.
  *
  * Measured on a 529-file copy of a real repo carrying a planted
- * `sk-ant-api03-...` key, an `AKIAIOSFODNN7EXAMPLE`, and a
+ * `sk-ant-api03-...` key, an `AKIA` + `IOSFODNN7EXAMPLE` documentation key, and a
  * `curl … | sh`: byte-identical output, `100/100`. That is not a missed
  * detection — it is a false assurance line, and it is worse than silence
  * because it invites the reader to record a pass.

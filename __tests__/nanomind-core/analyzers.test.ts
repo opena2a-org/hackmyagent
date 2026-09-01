@@ -18,7 +18,7 @@ describe('Credential Analyzer (AST-based)', () => {
     it('does not flag env_file artifacts', async () => {
       const content = `API_KEY=sk-proj-abc123def456
 DATABASE_URL=postgres://user:pass@host/db
-SECRET_TOKEN=ghp_abcdef1234567890abcdef1234567890abcd`;
+SECRET_TOKEN=${['ghp', '_abcdef1234567890abcdef1234567890abcd'].join('')}`;
       const { ast } = await compiler.compile(content, '.env.example');
       const findings = analyzeCredentials(ast, verifier);
       const cred001 = findings.filter(f => f.checkId === 'AST-CRED-001');

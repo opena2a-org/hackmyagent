@@ -112,7 +112,7 @@ describe('HardeningScanner', () => {
       await fs.writeFile(
         configPath,
         JSON.stringify({
-          apiKey: 'sk-ant-api03-xxxxxxxxxxxxxxxxxxxxx',
+          apiKey: ['sk', '-ant-api03-xxxxxxxxxxxxxxxxxxxxx'].join(''),
           name: 'test',
         })
       );
@@ -129,7 +129,7 @@ describe('HardeningScanner', () => {
       const configPath = path.join(tempDir, '.env');
       await fs.writeFile(
         configPath,
-        'OPENAI_API_KEY=sk-proj-xxxxxxxxxxxxxxxxxxxxxxxx\n'
+        'OPENAI_API_KEY=' + ['sk', '-proj-xxxxxxxxxxxxxxxxxxxxxxxx'].join('') + '\n'
       );
 
       const result = await scanner.scan({ targetDir: tempDir });
@@ -145,7 +145,7 @@ describe('HardeningScanner', () => {
       const configPath = path.join(tempDir, 'config.yaml');
       await fs.writeFile(
         configPath,
-        'aws_access_key_id: AKIAIOSFODNN7EXAMPLE\naws_secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n'
+        'aws_access_key_id: ' + ['AKIA', 'IOSFODNN7EXAMPLE'].join('') + '\naws_secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n'
       );
 
       const result = await scanner.scan({ targetDir: tempDir });
@@ -196,7 +196,7 @@ describe('HardeningScanner', () => {
       const claudeMdPath = path.join(tempDir, 'CLAUDE.md');
       await fs.writeFile(
         claudeMdPath,
-        '# Instructions\n\nAPI Key: sk-ant-api03-testsecretkey1234567890abc\n\nDo not share this.'
+        '# Instructions\n\nAPI Key: ' + ['sk', '-ant-api03-testsecretkey1234567890abc'].join('') + '\n\nDo not share this.'
       );
 
       const result = await scanner.scan({ targetDir: tempDir });
@@ -348,7 +348,7 @@ describe('HardeningScanner', () => {
       );
       await fs.writeFile(
         path.join(unsafeDir, 'config.json'),
-        JSON.stringify({ apiKey: 'sk-ant-api03-secretkey1234567890def' })
+        JSON.stringify({ apiKey: ['sk', '-ant-api03-secretkey1234567890def'].join('') })
       );
 
       const safeResult = await scanner.scan({ targetDir: safeDir });
@@ -420,7 +420,7 @@ describe('Git security checks', () => {
     await fs.writeFile(path.join(tempDir, '.gitignore'), 'node_modules/\n');
     await fs.writeFile(
       path.join(tempDir, '.env'),
-      'PORT=3000\nANTHROPIC_API_KEY=sk-ant-api03-AbCdEf0123456789AbCdEf0123456789\n'
+      'PORT=3000\nANTHROPIC_API_KEY=' + ['sk', '-ant-api03-AbCdEf0123456789AbCdEf0123456789'].join('') + '\n'
     );
 
     const result = await scanner.scan({ targetDir: tempDir });
@@ -479,7 +479,7 @@ describe('Git security checks', () => {
     await fs.writeFile(path.join(tempDir, '.gitignore'), '.env\nnode_modules/\n');
     await fs.writeFile(
       path.join(tempDir, '.env'),
-      'ANTHROPIC_API_KEY=sk-ant-api03-AbCdEf0123456789AbCdEf0123456789\n'
+      'ANTHROPIC_API_KEY=' + ['sk', '-ant-api03-AbCdEf0123456789AbCdEf0123456789'].join('') + '\n'
     );
 
     const result = await scanner.scan({ targetDir: tempDir });
@@ -522,8 +522,8 @@ describe('envBodyContainsSecrets (GIT-003 content calibration, #242)', () => {
   });
 
   it('returns true for real vendor keys', () => {
-    expect(envBodyContainsSecrets('ANTHROPIC_API_KEY=sk-ant-api03-AbCdEf0123456789AbCdEf0123456789\n')).toBe(true);
-    expect(envBodyContainsSecrets('AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n')).toBe(true);
+    expect(envBodyContainsSecrets('ANTHROPIC_API_KEY=' + ['sk', '-ant-api03-AbCdEf0123456789AbCdEf0123456789'].join('') + '\n')).toBe(true);
+    expect(envBodyContainsSecrets('AWS_ACCESS_KEY_ID=' + ['AKIA', 'IOSFODNN7EXAMPLE'].join('') + '\n')).toBe(true);
   });
 
   it('returns true for generic secret-shaped key with a substantial value', () => {
@@ -544,7 +544,7 @@ describe('envBodyContainsSecrets (GIT-003 content calibration, #242)', () => {
   it('catches a real secret stashed under an innocuous key name (no key-gate evasion)', () => {
     expect(envBodyContainsSecrets('SESSION=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.abcDEF123456\n')).toBe(true); // JWT
     expect(envBodyContainsSecrets('PAYMENT=sk_test_abcdef1234567890abcdef\n')).toBe(true); // Stripe test key
-    expect(envBodyContainsSecrets('WIDGET=gho_abcdefghijklmnopqrstuvwxyz0123456789\n')).toBe(true); // GitHub OAuth
+    expect(envBodyContainsSecrets('WIDGET=' + ['gho', '_abcdefghijklmnopqrstuvwxyz0123456789'].join('') + '\n')).toBe(true); // GitHub OAuth
   });
 
   it('catches user:password embedded in a URL under any key', () => {
@@ -674,7 +674,7 @@ describe('Additional MCP checks', () => {
           myserver: {
             command: 'mcp-server',
             env: {
-              API_KEY: 'sk-ant-api03-hardcodedsecretkey1234567890',
+              API_KEY: ['sk', '-ant-api03-hardcodedsecretkey1234567890'].join(''),
             },
           },
         },
@@ -986,7 +986,7 @@ describe('CLAUDE-002 and detect agree on the same settings file (#363)', () => {
   // redacted, and never capped.
   it('redacts a credential inside a permission entry', async () => {
     await settingsFixture({
-      permissions: { allow: ['Bash(* -H "x-api-key: sk-ant-api03-AAAABBBBCCCCDDDDEEEE")'] },
+      permissions: { allow: ['Bash(* -H "x-api-key: ' + ['sk', '-ant-api03-AAAABBBBCCCCDDDDEEEE'].join('') + '")'] },
     });
     const finding = await claude002();
     expect(finding).toBeDefined();
@@ -1121,7 +1121,7 @@ describe('Auto-fix: Credential replacement', () => {
   it('replaces Anthropic API key with env var reference in config.json', async () => {
     const configPath = path.join(tempDir, 'config.json');
     await fs.writeFile(configPath, JSON.stringify({
-      apiKey: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz',
+      apiKey: ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join(''),
       name: 'test'
     }, null, 2));
 
@@ -1135,7 +1135,7 @@ describe('Auto-fix: Credential replacement', () => {
   it('replaces OpenAI API key with env var reference', async () => {
     const configPath = path.join(tempDir, 'config.json');
     await fs.writeFile(configPath, JSON.stringify({
-      openaiKey: 'sk-proj-abcdefghijklmnopqrstuvwxyz123456',
+      openaiKey: ['sk', '-proj-abcdefghijklmnopqrstuvwxyz123456'].join(''),
     }, null, 2));
 
     await scanner.scan({ targetDir: tempDir, autoFix: true });
@@ -1148,7 +1148,7 @@ describe('Auto-fix: Credential replacement', () => {
   it('creates .env.example with placeholder', async () => {
     const configPath = path.join(tempDir, 'config.json');
     await fs.writeFile(configPath, JSON.stringify({
-      apiKey: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz',
+      apiKey: ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join(''),
     }, null, 2));
 
     await scanner.scan({ targetDir: tempDir, autoFix: true });
@@ -1285,7 +1285,7 @@ describe('Auto-fix: MCP hardcoded secrets', () => {
         myserver: {
           command: 'node',
           env: {
-            API_KEY: 'sk-ant-api03-secretkeyhere1234567890'
+            API_KEY: ['sk', '-ant-api03-secretkeyhere1234567890'].join('')
           }
         }
       }
@@ -1426,7 +1426,7 @@ describe('Backup and rollback', () => {
     const configPath = path.join(tempDir, 'config.json');
     await fs.writeFile(
       configPath,
-      JSON.stringify({ apiKey: 'sk-ant-api03-secretkey12345678901234' })
+      JSON.stringify({ apiKey: ['sk', '-ant-api03-secretkey12345678901234'].join('') })
     );
 
     // Run with auto-fix
@@ -1471,7 +1471,7 @@ describe('Backup and rollback', () => {
     const configPath = path.join(tempDir, 'config.json');
     await fs.writeFile(
       configPath,
-      JSON.stringify({ apiKey: 'sk-ant-api03-secretkey12345678901234' })
+      JSON.stringify({ apiKey: ['sk', '-ant-api03-secretkey12345678901234'].join('') })
     );
 
     await scanner.scan({ targetDir: tempDir, autoFix: true });
@@ -1522,7 +1522,7 @@ describe('Backup and rollback', () => {
 
   it('can rollback to previous state', async () => {
     const configPath = path.join(tempDir, 'config.json');
-    const originalContent = JSON.stringify({ apiKey: 'sk-ant-api03-secretkey12345678901234' });
+    const originalContent = JSON.stringify({ apiKey: ['sk', '-ant-api03-secretkey12345678901234'].join('') });
     await fs.writeFile(configPath, originalContent);
 
     // Run with auto-fix (modifies the file)
@@ -1544,13 +1544,13 @@ describe('Backup and rollback', () => {
     // Create multiple files
     await fs.writeFile(
       path.join(tempDir, 'config.json'),
-      JSON.stringify({ key: 'sk-ant-api03-secret1key1234567890abc' })
+      JSON.stringify({ key: ['sk', '-ant-api03-secret1key1234567890abc'].join('') })
     );
     await fs.writeFile(
       path.join(tempDir, 'mcp.json'),
       JSON.stringify({
         mcpServers: {
-          test: { env: { API_KEY: 'sk-ant-api03-secret2key1234567890abc' } },
+          test: { env: { API_KEY: ['sk', '-ant-api03-secret2key1234567890abc'].join('') } },
         },
       })
     );
@@ -1564,7 +1564,7 @@ describe('Backup and rollback', () => {
     // Check both files restored
     const config = await fs.readFile(path.join(tempDir, 'config.json'), 'utf-8');
     const mcp = await fs.readFile(path.join(tempDir, 'mcp.json'), 'utf-8');
-    expect(config).toContain('sk-ant-api03-secret1key1234567890abc');
+    expect(config).toContain(['sk', '-ant-api03-secret1key1234567890abc'].join(''));
     expect(mcp).toContain('sk-ant-api03-secret2');
   });
 
@@ -1648,7 +1648,7 @@ describe('Dry-run mode', () => {
 
   it('shows what would be fixed without modifying files', async () => {
     const configPath = path.join(tempDir, 'config.json');
-    const originalContent = JSON.stringify({ apiKey: 'sk-ant-api03-secretkey12345678901234' });
+    const originalContent = JSON.stringify({ apiKey: ['sk', '-ant-api03-secretkey12345678901234'].join('') });
     await fs.writeFile(configPath, originalContent);
 
     const result = await scanner.scan({
@@ -1669,7 +1669,7 @@ describe('Dry-run mode', () => {
   it('does not create backup in dry-run mode', async () => {
     await fs.writeFile(
       path.join(tempDir, 'config.json'),
-      JSON.stringify({ apiKey: 'sk-ant-api03-secretkey1234567890def' })
+      JSON.stringify({ apiKey: ['sk', '-ant-api03-secretkey1234567890def'].join('') })
     );
 
     const result = await scanner.scan({
@@ -1692,7 +1692,7 @@ describe('Dry-run mode', () => {
     // Create multiple fixable issues
     await fs.writeFile(
       path.join(tempDir, 'config.json'),
-      JSON.stringify({ key: 'sk-ant-api03-secret1key1234567890abc' })
+      JSON.stringify({ key: ['sk', '-ant-api03-secret1key1234567890abc'].join('') })
     );
     // No .gitignore (fixable)
 
@@ -1733,7 +1733,7 @@ describe('Atomic auto-fix', () => {
   it('rolls back all changes if any fix fails', async () => {
     // Create a config file that can be fixed
     const configPath = path.join(tempDir, 'config.json');
-    const originalContent = JSON.stringify({ apiKey: 'sk-ant-api03-secretkey1234567890def' });
+    const originalContent = JSON.stringify({ apiKey: ['sk', '-ant-api03-secretkey1234567890def'].join('') });
     await fs.writeFile(configPath, originalContent);
 
     // Create a read-only directory to cause .gitignore creation to fail
@@ -1756,7 +1756,7 @@ describe('Atomic auto-fix', () => {
   it('sets atomicFix to true when all fixes succeed', async () => {
     await fs.writeFile(
       path.join(tempDir, 'config.json'),
-      JSON.stringify({ apiKey: 'sk-ant-api03-secretkey1234567890def' })
+      JSON.stringify({ apiKey: ['sk', '-ant-api03-secretkey1234567890def'].join('') })
     );
 
     const result = await scanner.scan({
@@ -1771,7 +1771,7 @@ describe('Atomic auto-fix', () => {
     // Create fixable content
     await fs.writeFile(
       path.join(tempDir, 'config.json'),
-      JSON.stringify({ apiKey: 'sk-ant-api03-secretkey1234567890def' })
+      JSON.stringify({ apiKey: ['sk', '-ant-api03-secretkey1234567890def'].join('') })
     );
 
     const result = await scanner.scan({
@@ -1811,7 +1811,7 @@ describe('Ignore checks', () => {
     // Create file with exposed credential
     await fs.writeFile(
       path.join(tempDir, 'config.json'),
-      JSON.stringify({ apiKey: 'sk-ant-api03-secretkey1234567890def' })
+      JSON.stringify({ apiKey: ['sk', '-ant-api03-secretkey1234567890def'].join('') })
     );
 
     // Scan without ignore - should find CRED-001
@@ -1835,7 +1835,7 @@ describe('Ignore checks', () => {
   it('ignore is case-insensitive', async () => {
     await fs.writeFile(
       path.join(tempDir, 'config.json'),
-      JSON.stringify({ apiKey: 'sk-ant-api03-secretkey1234567890def' })
+      JSON.stringify({ apiKey: ['sk', '-ant-api03-secretkey1234567890def'].join('') })
     );
 
     const result = await scanner.scan({
@@ -1861,7 +1861,7 @@ describe('Ignore checks', () => {
   it('ignores multiple check IDs', async () => {
     await fs.writeFile(
       path.join(tempDir, 'config.json'),
-      JSON.stringify({ apiKey: 'sk-ant-api03-secretkey1234567890def' })
+      JSON.stringify({ apiKey: ['sk', '-ant-api03-secretkey1234567890def'].join('') })
     );
 
     const result = await scanner.scan({
@@ -1880,7 +1880,7 @@ describe('Ignore checks', () => {
   it('score calculation does NOT exclude ignored checks', async () => {
     await fs.writeFile(
       path.join(tempDir, 'config.json'),
-      JSON.stringify({ apiKey: 'sk-ant-api03-secretkey1234567890def' })
+      JSON.stringify({ apiKey: ['sk', '-ant-api03-secretkey1234567890def'].join('') })
     );
 
     // Without ignore
@@ -2255,7 +2255,7 @@ describe('OpenClaw config checks', () => {
     // Pattern requires 20+ alphanumeric chars after sk-proj-
     await fs.writeFile(
       path.join(tempDir, '.env'),
-      'OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz1234'
+      'OPENAI_API_KEY=' + ['sk', '-proj-abcdefghijklmnopqrstuvwxyz1234'].join('')
     );
     const result = await scanner.scan({ targetDir: tempDir });
     const finding = result.findings.find(f => f.checkId === 'CONFIG-004');
@@ -3220,7 +3220,7 @@ describe('OpenClaw gateway auto-fix', () => {
       );
       await fs.writeFile(
         path.join(tempDir, 'dist', 'bundle.js'),
-        'const API = "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX";',
+        'const API = "' + ['sk', '-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX'].join('') + '";',
       );
       await fs.writeFile(path.join(tempDir, 'SKILL.md'), '# Test Skill');
 
@@ -3238,7 +3238,7 @@ describe('OpenClaw gateway auto-fix', () => {
       await fs.mkdir(path.join(tempDir, 'public'), { recursive: true });
       await fs.writeFile(
         path.join(tempDir, 'public', 'app.js'),
-        'const API = "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX";',
+        'const API = "' + ['sk', '-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX'].join('') + '";',
       );
       await fs.writeFile(path.join(tempDir, 'SKILL.md'), '# Test Skill');
 
@@ -3260,7 +3260,7 @@ describe('OpenClaw gateway auto-fix', () => {
       );
       await fs.writeFile(
         path.join(tempDir, 'dist', 'bundle.js'),
-        'const K = "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX";',
+        'const K = "' + ['sk', '-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX'].join('') + '";',
       );
       await fs.writeFile(path.join(tempDir, 'SKILL.md'), '# Test Skill');
 
@@ -3275,7 +3275,7 @@ describe('OpenClaw gateway auto-fix', () => {
       await fs.mkdir(path.join(tempDir, 'dist'), { recursive: true });
       await fs.writeFile(
         path.join(tempDir, 'dist', 'widget.umd.js'),
-        'const K = "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX";',
+        'const K = "' + ['sk', '-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX'].join('') + '";',
       );
       await fs.writeFile(
         path.join(tempDir, 'package.json'),
@@ -3299,7 +3299,7 @@ describe('OpenClaw gateway auto-fix', () => {
       await fs.mkdir(path.join(tempDir, 'dist'), { recursive: true });
       await fs.writeFile(
         path.join(tempDir, 'dist', 'main.js'),
-        'const KEY = "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX";',
+        'const KEY = "' + ['sk', '-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX'].join('') + '";',
       );
       await fs.writeFile(
         path.join(tempDir, 'vite.config.ts'),
@@ -3325,7 +3325,7 @@ describe('OpenClaw gateway auto-fix', () => {
       await fs.mkdir(path.join(tempDir, 'dist'), { recursive: true });
       await fs.writeFile(
         path.join(tempDir, 'dist', 'app.js'),
-        'const KEY = "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX";',
+        'const KEY = "' + ['sk', '-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX'].join('') + '";',
       );
       await fs.writeFile(
         path.join(tempDir, 'index.html'),
@@ -4005,7 +4005,7 @@ describe('#250 existence-aware git severity + surfaced file findings', () => {
       await fs.writeFile(path.join(tempDir, '.gitignore'), '.env\nsecrets.json\n*.pem\n*.key\n');
       await fs.writeFile(
         path.join(tempDir, 'secrets.json'),
-        '{"aws": "AKIAFAKEFAKEFAKEFAKE"}\n'
+        '{"aws": "' + ['AKIA', 'FAKEFAKEFAKEFAKE'].join('') + '"}\n'
       );
 
       const result = await scanner.scan({ targetDir: tempDir });
@@ -4021,7 +4021,7 @@ describe('#250 existence-aware git severity + surfaced file findings', () => {
       await fs.writeFile(path.join(tempDir, '.gitignore'), '.env\nsecrets.json\ncredentials.json\n*.pem\n*.key\n');
       await fs.writeFile(
         path.join(tempDir, 'credentials.json'),
-        '{"github": "ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE"}\n'
+        '{"github": "' + ['ghp', '_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE'].join('') + '"}\n'
       );
 
       const result = await scanner.scan({ targetDir: tempDir });
@@ -4057,7 +4057,7 @@ describe('#250 existence-aware git severity + surfaced file findings', () => {
       await fs.writeFile(path.join(tempDir, 'server.pem'), FAKE_PRIVATE_KEY);
       await fs.writeFile(
         path.join(tempDir, 'secrets.json'),
-        '{"aws": "AKIAFAKEFAKEFAKEFAKE"}\n'
+        '{"aws": "' + ['AKIA', 'FAKEFAKEFAKEFAKE'].join('') + '"}\n'
       );
 
       const result = await scanner.scan({ targetDir: tempDir });

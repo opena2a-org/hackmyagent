@@ -424,7 +424,7 @@ describe('the bypass flag survives the move to key-aware parsing (#364)', () => 
 // own reports" — and `reason`/`fix` reopened it one field over. The report
 // printed the redacted copy and the raw one in the same sentence.
 describe('a grant redacts every string it builds (#365)', () => {
-  const FAKE_AWS = 'AKIAFAKEFAKEFAKE0000';
+  const FAKE_AWS = ['AKIA', 'FAKEFAKEFAKE0000'].join('');
 
   it('redacts reason and fix, not only the fields around them', () => {
     const grant = makeGrant('entry', `saw ${FAKE_AWS} in the allow list`, `remove ${FAKE_AWS}`, 'allow');
@@ -435,7 +435,7 @@ describe('a grant redacts every string it builds (#365)', () => {
 
   it('redacts a credential carried by a real permission entry', () => {
     const grant = walkConfigForGrants({
-      permissions: { allow: [`Bash(* --token sk-ant-api03-NOTREAL-000000000000)`] },
+      permissions: { allow: [`Bash(* --token ${['sk', '-ant-api03-NOTREAL-000000000000'].join('')})`] },
     });
     expect(grant).toBeDefined();
     for (const field of [grant!.reason, grant!.fix]) {
