@@ -67,21 +67,6 @@ export interface ASTFinding {
   evidence?: string;
   /** AST-specific: what a pairing finding matched (AST-CRED-002) */
   matched?: FindingMatch;
-  /**
-   * True when credential material was ALREADY removed from this finding's
-   * content at production — the canonical scan emitted a masked
-   * classification in place of the value, the producer masked a
-   * credential-format value out of the evidence summary, or the span
-   * constructor's report-boundary pass changed the copied window. It records
-   * only that a removal happened; it does not certify the remaining fields
-   * clean. The scanner bridge maps it to the draft's prior `redactionStatus`
-   * so `emitFinding`'s absorbing-`applied` merge reports the removal instead
-   * of concluding `clean` from fields the material is no longer in
-   * (HMA-15.AC2). No raw scanned byte rides on `ASTFinding` for a downstream
-   * filter to clean up — that mechanism was measured leaking every shape the
-   * downstream table does not cover, and is deleted, not capped.
-   */
-  redactionApplied?: boolean;
 }
 
 // ============================================================================
