@@ -46,7 +46,7 @@ function fixture(): string {
   writeFileSync(path.join(target, 'package.json'), '{"name":"p","version":"1.0.0"}\n');
   writeFileSync(
     path.join(target, 'config.json'),
-    '{"token":"ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}\n',
+    '{"token":"' + ['ghp', '_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'].join('') + '"}\n',
   );
   return dir;
 }

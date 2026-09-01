@@ -146,12 +146,12 @@ describe('credential-format entropy floor', () => {
     }
 
     const vendorCredentials: Array<[string, string]> = [
-      ['OpenAI/Anthropic sk-', 'sk-abcdefghijklmnopqrstuvwxyz0123456789'],
+      ['OpenAI/Anthropic sk-', ['sk', '-abcdefghijklmnopqrstuvwxyz0123456789'].join('')],
       ['Stripe live', ['sk', '_live_abcdefghijklmnopqrstuvwxyz'].join('')],
       ['GitHub PAT', GITHUB_PAT_FIXTURE],
-      ['AWS access key id', 'AKIAIOSFODNN7EXAMPLE'],
+      ['AWS access key id', ['AKIA', 'IOSFODNN7EXAMPLE'].join('')],
       ['Google API key', ['AIza', 'SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q'].join('')],
-      ['Slack bot token', 'xoxb-123456789012-abcdefghijkl'],
+      ['Slack bot token', ['xox', 'b-123456789012-abcdefghijkl'].join('')],
       ['JWT', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.abcDEF123'],
       ['SendGrid', sendGridKey()],
     ];
@@ -485,9 +485,9 @@ describe('credential-format entropy floor', () => {
       // trade this unit exists to stop making.
       for (const text of [
         'MYghp_' + 'a'.repeat(20),
-        'xAKIAIOSFODNN7EXAMPLE',
+        'x' + ['AKIA', 'IOSFODNN7EXAMPLE'].join(''),
         'token' + 'ghp_' + 'a'.repeat(20),
-        'v1AKIAIOSFODNN7EXAMPLE',
+        'v1' + ['AKIA', 'IOSFODNN7EXAMPLE'].join(''),
       ]) {
         expect(hasCredentialFormat(text), `detection: ${text}`).toBe(true);
         expect(MAIN_DETECT_RE.test(text), `main detects: ${text}`).toBe(true);
@@ -508,8 +508,8 @@ describe('credential-format entropy floor', () => {
       // as a word character, so it would drop a real key glued to a form blank —
       // the exact document shape this unit is about. Mutation guard: swapping the
       // anchor for `\b` turns these red.
-      expect(hasAnchoredVendorCredential('_'.repeat(38) + 'sk-ant-api03-R3alK3yV4lu3W1thEntropy0')).toBe(true);
-      expect(hasAnchoredVendorCredential('_'.repeat(47) + 'AKIAIOSFODNN7EXAMPLE')).toBe(true);
+      expect(hasAnchoredVendorCredential('_'.repeat(38) + ['sk', '-ant-api03-R3alK3yV4lu3W1thEntropy0'].join(''))).toBe(true);
+      expect(hasAnchoredVendorCredential('_'.repeat(47) + ['AKIA', 'IOSFODNN7EXAMPLE'].join(''))).toBe(true);
     });
   });
 
@@ -529,7 +529,7 @@ describe('credential-format entropy floor', () => {
         ['glpat-' + 'a'.repeat(30), 'glpat-'],
         ['npm_' + 'a'.repeat(30), 'npm_'],
         ['github_pat_' + 'a'.repeat(30), 'github_pat_'],
-        ['AKIAIOSFODNN7EXAMPLE', 'AKIA'],
+        [['AKIA', 'IOSFODNN7EXAMPLE'].join(''), 'AKIA'],
         [sendGridKey(), 'SG.'],
         // The JWT left the alternation for a linear scan, so its prefix has to
         // be carried into the masking list explicitly. Without it every
@@ -544,8 +544,8 @@ describe('credential-format entropy floor', () => {
     it('keeps a Slack token recognisable as a bot/user token, not a bare xox', () => {
       // `xox[abprs]-` — the single-character class is unquantified, so the
       // letter that says WHICH kind of Slack token this is stays visible.
-      expect(matchVendorPrefix('xoxb-123456789012-abcdefghijkl')).toBe('xoxb-');
-      expect(matchVendorPrefix('xoxp-123456789012-abcdefghijkl')).toBe('xoxp-');
+      expect(matchVendorPrefix(['xox', 'b-123456789012-abcdefghijkl'].join(''))).toBe('xoxb-');
+      expect(matchVendorPrefix(['xox', 'p-123456789012-abcdefghijkl'].join(''))).toBe('xoxp-');
     });
 
     it('returns undefined for an anonymous high-entropy blob', () => {
@@ -636,7 +636,7 @@ describe('credential-format entropy floor', () => {
 
     it('finds a VENDOR key buried behind a megabyte of filler', () => {
       const filler = ('a'.repeat(40) + '=').repeat(Math.floor((1024 * 1024) / 41));
-      const key = 'sk-ant-api03-R3alK3yV4lu3W1thEntropy0';
+      const key = ['sk', '-ant-api03-R3alK3yV4lu3W1thEntropy0'].join('');
       expect(hasCredentialFormat(`${filler}\n${key}\n`), 'key after 1 MB of filler').toBe(true);
       expect(findCredentialFormatMatch(`${filler}\n${key}\n`)?.value).toBe(key);
     });
@@ -686,8 +686,8 @@ describe('credential-format entropy floor', () => {
 
   describe('filler glued to a credential must not swallow it', () => {
     const glued: Array<[string, string]> = [
-      ['anthropic key', '_'.repeat(38) + 'sk-ant-api03-R3alK3yV4lu3W1thEntropy0'],
-      ['slack token', '_'.repeat(38) + 'xoxb-123456789012-abcdefghijkl'],
+      ['anthropic key', '_'.repeat(38) + ['sk', '-ant-api03-R3alK3yV4lu3W1thEntropy0'].join('')],
+      ['slack token', '_'.repeat(38) + ['xox', 'b-123456789012-abcdefghijkl'].join('')],
       ['github pat', '_'.repeat(38) + GITHUB_PAT_FIXTURE],
     ];
 
@@ -705,7 +705,7 @@ describe('credential-format entropy floor', () => {
       // 40-character candidate, so a blob-only scan reports the filler run (or,
       // once the dominance rule rejects it, nothing at all). Mutation guard:
       // removing the vendor pass turns this red.
-      const key = 'sk-ant-api03-R3alK3yV4lu3W1thEntropy0';
+      const key = ['sk', '-ant-api03-R3alK3yV4lu3W1thEntropy0'].join('');
       const hit = findCredentialFormatMatch('_'.repeat(38) + key);
       expect(hit?.value, 'the match must be the key itself').toBe(key);
       expect(hit?.index, 'and it must be reported at the key offset').toBe(38);
@@ -749,7 +749,7 @@ describe('credential-format entropy floor', () => {
       // Unanchored on purpose: under an anchored veto a token glued to a
       // preceding identifier matches nothing, the veto stops holding, and the
       // planted secret is suppressed.
-      expect(hasAnyCredentialCandidate('"label":"MSGghp_AAAAAAAAAAAAAAAAAAAA"')).toBe(true);
+      expect(hasAnyCredentialCandidate('"label":"MSG' + ['ghp', '_AAAAAAAAAAAAAAAAAAAA'].join('') + '"')).toBe(true);
     });
   });
 

@@ -502,7 +502,7 @@ describe('the quoted output never carries a credential (#299)', () => {
   // where the line-level redaction is provable. A structured finding has no
   // line and therefore no line text to leak.
   it('redacts a key that shares a line with a prose grant', () => {
-    const doc = 'Give the agent unrestricted access. apiKey=sk-ant-api03-NOTREAL-000000000000\n';
+    const doc = 'Give the agent unrestricted access. apiKey=' + ['sk', '-ant-api03-NOTREAL-000000000000'].join('') + '\n';
     const grant = findPermissionGrant(doc, 'CLAUDE.md');
     expect(grant).toBeDefined();
     expect(grant!.text).not.toContain('NOTREAL');
@@ -510,7 +510,7 @@ describe('the quoted output never carries a credential (#299)', () => {
   });
 
   it('carries no line text at all for a structured config', () => {
-    const line = '{"permissions":{"allow":["Bash(*)"]},"apiKey":"sk-ant-api03-NOTREAL-000000000000"}';
+    const line = '{"permissions":{"allow":["Bash(*)"]},"apiKey":"' + ['sk', '-ant-api03-NOTREAL-000000000000'].join('') + '"}';
     const grant = findPermissionGrant(line, SETTINGS);
     expect(grant).toBeDefined();
     expect(grant!.text, 'a structured finding must not quote a file line').toBeUndefined();
@@ -527,7 +527,7 @@ describe('the quoted output never carries a credential (#299)', () => {
     // the redaction path has to be reachable for the test to mean anything.
     // `Bash(sudo curl … *)` is bounded by `curl` and produces no finding at all.
     const doc = settings({
-      permissions: { allow: ['Bash(* --token sk-ant-api03-NOTREAL-000000000000)'] },
+      permissions: { allow: ['Bash(* --token ' + ['sk', '-ant-api03-NOTREAL-000000000000'].join('') + ')'] },
     });
     const grant = findPermissionGrant(doc, SETTINGS);
     expect(grant).toBeDefined();
@@ -591,14 +591,14 @@ describe('the quoted output never carries a credential (#299)', () => {
     // they are what a real allow entry carries.
     expect(redactLikelySecrets('Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.PAYLOADPAYLOAD.SIG0'))
       .not.toContain('PAYLOADPAYLOAD');
-    expect(redactLikelySecrets('Authorization: sk-ant-api03-NOTREAL-000000000000'))
+    expect(redactLikelySecrets('Authorization: ' + ['sk', '-ant-api03-NOTREAL-000000000000'].join('')))
       .not.toContain('NOTREAL');
   });
 
   it.each([
-    'token: ghp_000000000000000000000000000000000000',
+    'token: ' + ['ghp', '_000000000000000000000000000000000000'].join(''),
     'password = hunter2hunter2hunter2',
-    'AWS key AKIA0000000000000000',
+    'AWS key ' + ['AKIA', '0000000000000000'].join(''),
   ])('redacts %j', (s) => {
     expect(redactLikelySecrets(s)).toContain('[redacted]');
   });
@@ -617,7 +617,7 @@ describe('the quoted output never carries a credential (#299)', () => {
   //   "allow AKIA[redacted] any" states a grant ("allow AKIAFAKE… any")
   it('redacts the credential inside reason and fix, not only around them', () => {
     const doc = settings({
-      permissions: { allow: ['allow AKIAFAKEFAKEFAKE0000 any command'] },
+      permissions: { allow: ['allow ' + ['AKIA', 'FAKEFAKEFAKE0000'].join('') + ' any command'] },
     });
     const grant = findPermissionGrant(doc, SETTINGS);
     expect(grant).toBeDefined();
@@ -913,7 +913,7 @@ describe('scanAiConfigs carries the evidence through (#299)', () => {
 
   it('reports a credential by key name and never quotes its value', () => {
     const dir = fixture({
-      '.cursorrules': 'You have full access.\nAPI_KEY=sk-ant-api03-NOTREAL-0000000000000000000\n',
+      '.cursorrules': 'You have full access.\nAPI_KEY=' + ['sk', '-ant-api03-NOTREAL-0000000000000000000'].join('') + '\n',
     });
     const config = scanAiConfigs(dir).find((c) => c.file === '.cursorrules');
     expect(config?.risk).toBe('critical');

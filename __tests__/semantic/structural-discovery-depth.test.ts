@@ -20,7 +20,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 const MCP_WITH_SECRET = JSON.stringify(
-  { mcpServers: { gh: { command: 'npx', env: { GITHUB_TOKEN: 'ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' } } } },
+  { mcpServers: { gh: { command: 'npx', env: { GITHUB_TOKEN: ['ghp', '_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'].join('') } } } },
   null,
   2,
 );

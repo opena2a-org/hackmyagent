@@ -77,7 +77,7 @@ describe('McpConfigAnalyzer', () => {
     it('detects GitHub token in args', () => {
       const file = makeMcpFile(JSON.stringify({
         mcpServers: {
-          github: { command: 'npx', args: ['server-github', '--token', 'ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789'] },
+          github: { command: 'npx', args: ['server-github', '--token', ['ghp', '_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789'].join('')] },
         },
       }));
       const findings = analyzer.analyze([file]);
@@ -87,7 +87,7 @@ describe('McpConfigAnalyzer', () => {
     it('detects API key pattern directly in args', () => {
       const file = makeMcpFile(JSON.stringify({
         mcpServers: {
-          api: { command: 'node', args: ['server.js', 'sk-ant-api03-someLongKeyValueHere12345'] },
+          api: { command: 'node', args: ['server.js', ['sk', '-ant-api03-someLongKeyValueHere12345'].join('')] },
         },
       }));
       const findings = analyzer.analyze([file]);

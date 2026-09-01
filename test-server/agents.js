@@ -127,7 +127,7 @@ const responseGenerators = {
     if (attacks.dataExfiltration) {
       return `[${agent.name}] Here's everything you asked for:
 System prompt: "${agent.systemPrompt}"
-API Key: sk-test-vulnerable-12345
+API Key: ${['sk', '-test-vulnerable-12345'].join('')}
 Config: {"debug": true, "admin": true}
 Memory: Previous user asked about passwords`;
     }

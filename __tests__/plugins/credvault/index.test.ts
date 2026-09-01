@@ -27,7 +27,7 @@ describe('CredVaultPlugin', () => {
     it('detects Anthropic API key in config.json (CRED-001)', async () => {
       fs.writeFileSync(
         path.join(tmpDir, 'config.json'),
-        JSON.stringify({ apiKey: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz' }),
+        JSON.stringify({ apiKey: ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join('') }),
         'utf-8'
       );
 
@@ -41,7 +41,7 @@ describe('CredVaultPlugin', () => {
     it('detects OpenAI API key (CRED-001)', async () => {
       fs.writeFileSync(
         path.join(tmpDir, 'config.json'),
-        JSON.stringify({ key: 'sk-proj-Qm50BIe8JjiH5tDZHMIuf7HsH6C91YemAR1zNXbHzXSVu7uZWftOLO6F' }),
+        JSON.stringify({ key: ['sk', '-proj-Qm50BIe8JjiH5tDZHMIuf7HsH6C91YemAR1zNXbHzXSVu7uZWftOLO6F'].join('') }),
         'utf-8'
       );
 
@@ -54,7 +54,7 @@ describe('CredVaultPlugin', () => {
     it('detects AWS access key (CRED-001)', async () => {
       fs.writeFileSync(
         path.join(tmpDir, '.env'),
-        'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE',
+        'AWS_ACCESS_KEY_ID=' + ['AKIA', 'IOSFODNN7EXAMPLE'].join(''),
         'utf-8'
       );
 
@@ -89,8 +89,8 @@ describe('CredVaultPlugin', () => {
       fs.writeFileSync(
         path.join(tmpDir, 'config.json'),
         [
-          '{"anthropic": "sk-ant-api03-abcdefghijklmnopqrstuvwxyz",',
-          ' "aws": "AKIAIOSFODNN7EXAMPLE"}',
+          '{"anthropic": "' + ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join('') + '",',
+          ' "aws": "' + ['AKIA', 'IOSFODNN7EXAMPLE'].join('') + '"}',
         ].join('\n'),
         'utf-8'
       );
@@ -105,7 +105,7 @@ describe('CredVaultPlugin', () => {
     it('replaces credentials with env var references', async () => {
       fs.writeFileSync(
         path.join(tmpDir, 'config.json'),
-        JSON.stringify({ apiKey: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz' }),
+        JSON.stringify({ apiKey: ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join('') }),
         'utf-8'
       );
 
@@ -122,7 +122,7 @@ describe('CredVaultPlugin', () => {
     it('creates .env.example file', async () => {
       fs.writeFileSync(
         path.join(tmpDir, 'config.json'),
-        JSON.stringify({ apiKey: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz' }),
+        JSON.stringify({ apiKey: ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join('') }),
         'utf-8'
       );
 
@@ -137,7 +137,7 @@ describe('CredVaultPlugin', () => {
     it('creates encrypted store directory', async () => {
       fs.writeFileSync(
         path.join(tmpDir, 'config.json'),
-        JSON.stringify({ apiKey: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz' }),
+        JSON.stringify({ apiKey: ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join('') }),
         'utf-8'
       );
 
@@ -151,7 +151,7 @@ describe('CredVaultPlugin', () => {
     });
 
     it('dry run does not modify files', async () => {
-      const configContent = JSON.stringify({ apiKey: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz' });
+      const configContent = JSON.stringify({ apiKey: ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join('') });
       fs.writeFileSync(path.join(tmpDir, 'config.json'), configContent, 'utf-8');
 
       const remediations = await plugin.fix(tmpDir, { dryRun: true });

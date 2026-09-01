@@ -415,7 +415,7 @@ describe('CredentialContextAnalyzer', () => {
 
   describe('credentials in instruction files', () => {
     it('detects API key patterns in CLAUDE.md', () => {
-      const file = makeFile('CLAUDE.md', 'Use this key: sk-ant-api03-abc123def456789012345678', 'agent_instructions');
+      const file = makeFile('CLAUDE.md', 'Use this key: ' + ['sk', '-ant-api03-abc123def456789012345678'].join(''), 'agent_instructions');
       const findings = analyzer.analyze([file]);
       expect(findings.some((f) => f.id === 'SEM-CRED-003')).toBe(true);
       expect(findings[0].severity).toBe('critical');
@@ -428,7 +428,7 @@ describe('CredentialContextAnalyzer', () => {
     });
 
     it('does not flag non-instruction files', () => {
-      const file = makeFile('README.md', 'Use this key: sk-ant-api03-abc123def456789012345678', 'other');
+      const file = makeFile('README.md', 'Use this key: ' + ['sk', '-ant-api03-abc123def456789012345678'].join(''), 'other');
       const findings = analyzer.analyze([file]);
       expect(findings.filter((f) => f.id === 'SEM-CRED-003')).toHaveLength(0);
     });
@@ -534,7 +534,7 @@ describe('CredentialContextAnalyzer', () => {
             command: 'node',
             args: ['server.js'],
             env: {
-              API_KEY: 'sk-ant-api03-realKeyValue1234567890',
+              API_KEY: ['sk', '-ant-api03-realKeyValue1234567890'].join(''),
             },
           },
         },

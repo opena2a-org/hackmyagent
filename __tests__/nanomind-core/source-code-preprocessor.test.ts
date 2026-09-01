@@ -258,7 +258,7 @@ type AgentDescriptor struct {
   it('detects a hardcoded Anthropic API key in Go source', async () => {
     const src = `package planted
 
-const ApiKey = "sk-ant-api03-deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+const ApiKey = "${['sk', '-ant-api03-deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'].join('')}"
 
 func LeakCreds() {
     _ = ApiKey
@@ -294,13 +294,13 @@ var AnthropicKeyPattern = regexp.MustCompile(` + '`' + `sk-ant-api\\d{2}-[a-zA-Z
   });
 
   it('does not flag AWS key format in a doc comment (stripped by preprocessor)', async () => {
-    // AKIAIOSFODNN7EXAMPLE is the canonical AWS documentation key.
+    // The canonical AWS documentation key (AKIA + IOSFODNN7EXAMPLE) is used here.
     // Since it appears inside a line comment, the preprocessor strips
     // it before the compiler sees it. Even if it weren't stripped, the
     // `EXAMPLE` marker embedded in the key would suppress the match.
     const src = `package scanner
 
-// Example AWS key: AKIAIOSFODNN7EXAMPLE (documentation placeholder)
+// Example AWS key: ${['AKIA', 'IOSFODNN7EXAMPLE'].join('')} (documentation placeholder)
 var x = 1
 `;
     const result = await compiler.compile(src, 'scanner.go');

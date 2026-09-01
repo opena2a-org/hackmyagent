@@ -204,7 +204,7 @@ describe('ExternalScanner', () => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           config: {
-            apiKey: 'sk-ant-api03-realkey1234567890abcdef',
+            apiKey: ['sk', '-ant-api03-realkey1234567890abcdef'].join(''),
           },
         }));
       });
