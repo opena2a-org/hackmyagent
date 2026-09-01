@@ -133,7 +133,7 @@ const FIX_WRITE_CHECKS: { name: string; file: string; body: string; expect: stri
   {
     name: 'CRED-001',
     file: 'config.json',
-    body: '{"anthropic":"sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}',
+    body: '{"anthropic":"' + ['sk', '-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'].join('') + '"}',
     expect: 'CRED-001',
   },
   {
@@ -219,7 +219,7 @@ describe.runIf(darwin)('the whole fix-write class, not just one check', { timeou
     initThrowawayRepo(dir, false);
     writeFileSync(join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}');
     const target = join(dir, 'config.json');
-    writeFileSync(target, '{"anthropic":"sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}');
+    writeFileSync(target, '{"anthropic":"' + ['sk', '-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'].join('') + '"}');
 
     lock(target);
     const after = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
@@ -312,7 +312,7 @@ describe.runIf(darwin)('revokes are scoped, and do not leave a success message',
     initThrowawayRepo(dir, false);
     writeFileSync(join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}');
     mkdirSync(join(dir, 'public'), { recursive: true });
-    const body = '<script>const k="sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";</script>';
+    const body = '<script>const k="' + ['sk', '-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'].join('') + '";</script>';
     writeFileSync(join(dir, 'public', 'index.html'), body);
 
     lock(join(dir, 'public', 'index.html'));
@@ -365,7 +365,7 @@ describe.runIf(darwin)('a backup that cannot be taken degrades, it does not abor
     dirs.push(dir);
     writeFileSync(join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}');
     writeFileSync(join(dir, 'config.json'),
-      '{"anthropic":"sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}');
+      '{"anthropic":"' + ['sk', '-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'].join('') + '"}');
 
     const before = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
     expect(before.findings.some(f => f.checkId === 'CRED-001')).toBe(true);

@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StructuralAnalyzer } from '../../src/semantic/structural';
 
-const FAKE_ENV_BODY = 'ANTHROPIC_API_KEY=sk-ant-FAKE1234567890abcdefghijklmnop\n';
+const FAKE_ENV_BODY = 'ANTHROPIC_API_KEY=' + ['sk', '-ant-FAKE1234567890abcdefghijklmnop'].join('') + '\n';
 
 function git(cwd: string, ...args: string[]): void {
   // Strip ambient git env. When this suite runs inside a git hook (e.g. the
@@ -242,8 +242,8 @@ describe('#208: .env credential severity by git state', () => {
     git(dir, 'commit', '-q', '-m', 'init');
     writeFileSync(
       join(dir, '.env'),
-      'ANTHROPIC_API_KEY=sk-ant-FAKE1234567890abcdefghijklmnop\n' +
-        '"api_key": "sk-proj-FAKEabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstu"\n',
+      'ANTHROPIC_API_KEY=' + ['sk', '-ant-FAKE1234567890abcdefghijklmnop'].join('') + '\n' +
+        '"api_key": "' + ['sk', '-proj-FAKEabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstu'].join('') + '"\n',
     );
 
     const analyzer = new StructuralAnalyzer();

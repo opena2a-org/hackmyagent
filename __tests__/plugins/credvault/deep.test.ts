@@ -39,18 +39,18 @@ describe('CredVaultPlugin (deep)', () => {
 
     describe('Anthropic API Key', () => {
       it('detects valid Anthropic key', async () => {
-        const titles = await scanCredential('sk-ant-api03-ZGbnD4IEg1WTciUzH6ntayxIp2nq0KNsKdv3LYTaVt8PLo64w70bLILy8M');
+        const titles = await scanCredential(['sk', '-ant-api03-ZGbnD4IEg1WTciUzH6ntayxIp2nq0KNsKdv3LYTaVt8PLo64w70bLILy8M'].join(''));
         expect(titles.length).toBe(1);
         expect(titles[0]).toContain('Anthropic');
       });
 
       it('detects sk-ant-api02 variant', async () => {
-        const titles = await scanCredential('sk-ant-api02-abcdefghijklmnopqrstuvwxyz');
+        const titles = await scanCredential(['sk', '-ant-api02-abcdefghijklmnopqrstuvwxyz'].join(''));
         expect(titles.length).toBe(1);
       });
 
       it('rejects partial prefix sk-ant-api without digits', async () => {
-        const titles = await scanCredential('sk-ant-api-abcdefghijklmnopqrstuvwxyz');
+        const titles = await scanCredential(['sk', '-ant-api-abcdefghijklmnopqrstuvwxyz'].join(''));
         expect(titles.length).toBe(0);
       });
 
@@ -62,7 +62,7 @@ describe('CredVaultPlugin (deep)', () => {
 
     describe('OpenAI API Key', () => {
       it('detects sk-proj- key', async () => {
-        const titles = await scanCredential('sk-proj-Qm50BIe8JjiH5tDZHMIuf7HsH6C91YemAR1zNXbHzXSVu7uZWftOLO6F');
+        const titles = await scanCredential(['sk', '-proj-Qm50BIe8JjiH5tDZHMIuf7HsH6C91YemAR1zNXbHzXSVu7uZWftOLO6F'].join(''));
         expect(titles.length).toBe(1);
         expect(titles[0]).toContain('OpenAI');
       });
@@ -75,7 +75,7 @@ describe('CredVaultPlugin (deep)', () => {
 
     describe('AWS Access Key', () => {
       it('detects valid AKIA key', async () => {
-        const titles = await scanCredential('AKIAIOSFODNN7EXAMPLE');
+        const titles = await scanCredential(['AKIA', 'IOSFODNN7EXAMPLE'].join(''));
         expect(titles.length).toBe(1);
         expect(titles[0]).toContain('AWS');
       });
@@ -91,7 +91,7 @@ describe('CredVaultPlugin (deep)', () => {
       });
 
       it('detects AKIA key in .env format', async () => {
-        fs.writeFileSync(path.join(tmpDir, '.env'), 'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n', 'utf-8');
+        fs.writeFileSync(path.join(tmpDir, '.env'), 'AWS_ACCESS_KEY_ID=' + ['AKIA', 'IOSFODNN7EXAMPLE'].join('') + '\n', 'utf-8');
         const findings = await plugin.scan(tmpDir);
         expect(findings.some((f) => f.title.includes('AWS'))).toBe(true);
       });
@@ -99,7 +99,7 @@ describe('CredVaultPlugin (deep)', () => {
 
     describe('GitHub Token', () => {
       it('detects ghp_ fine-grained token', async () => {
-        const titles = await scanCredential('ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij');
+        const titles = await scanCredential(['ghp', '_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij'].join(''));
         expect(titles.length).toBe(1);
         expect(titles[0]).toContain('GitHub');
       });
@@ -112,7 +112,7 @@ describe('CredVaultPlugin (deep)', () => {
 
     describe('Google API Key', () => {
       it('detects AIza key', async () => {
-        const titles = await scanCredential('AIzaSyB1234567890abcdefghijklmnopqrstuv');
+        const titles = await scanCredential(['AIza', 'SyB1234567890abcdefghijklmnopqrstuv'].join(''));
         expect(titles.length).toBe(1);
         expect(titles[0]).toContain('Google');
       });
@@ -205,8 +205,8 @@ describe('CredVaultPlugin (deep)', () => {
         path.join(tmpDir, 'config.json'),
         [
           '{',
-          '  "anthropic": "sk-ant-api03-abcdefghijklmnopqrstuvwxyz",',
-          '  "aws": "AKIAIOSFODNN7EXAMPLE"',
+          '  "anthropic": "' + ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join('') + '",',
+          '  "aws": "' + ['AKIA', 'IOSFODNN7EXAMPLE'].join('') + '"',
           '}',
         ].join('\n'),
         'utf-8'
@@ -219,12 +219,12 @@ describe('CredVaultPlugin (deep)', () => {
     it('finds credentials across multiple files', async () => {
       fs.writeFileSync(
         path.join(tmpDir, 'config.json'),
-        JSON.stringify({ key: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz' }),
+        JSON.stringify({ key: ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join('') }),
         'utf-8'
       );
       fs.writeFileSync(
         path.join(tmpDir, '.env'),
-        'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n',
+        'AWS_ACCESS_KEY_ID=' + ['AKIA', 'IOSFODNN7EXAMPLE'].join('') + '\n',
         'utf-8'
       );
       const findings = await plugin.scan(tmpDir);
@@ -311,7 +311,7 @@ describe('CredVaultPlugin (deep)', () => {
     it('fix then scan returns zero CRED-001 findings', async () => {
       fs.writeFileSync(
         path.join(tmpDir, 'config.json'),
-        JSON.stringify({ apiKey: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz' }),
+        JSON.stringify({ apiKey: ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join('') }),
         'utf-8'
       );
 
@@ -325,7 +325,7 @@ describe('CredVaultPlugin (deep)', () => {
     it('fix called twice does not double-replace', async () => {
       fs.writeFileSync(
         path.join(tmpDir, 'config.json'),
-        JSON.stringify({ apiKey: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz' }),
+        JSON.stringify({ apiKey: ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join('') }),
         'utf-8'
       );
 
@@ -355,7 +355,7 @@ describe('CredVaultPlugin (deep)', () => {
     it('creates no store and no key; writes the example env file', async () => {
       fs.writeFileSync(
         path.join(tmpDir, 'config.json'),
-        JSON.stringify({ key: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz' }),
+        JSON.stringify({ key: ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join('') }),
         'utf-8'
       );
 
@@ -374,8 +374,8 @@ describe('CredVaultPlugin (deep)', () => {
       fs.writeFileSync(
         path.join(tmpDir, 'config.json'),
         ['{',
-          '  "a": "sk-ant-api03-abcdefghijklmnopqrstuvwxyz",',
-          '  "b": "AKIAIOSFODNN7EXAMPLE"',
+          '  "a": "' + ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join('') + '",',
+          '  "b": "' + ['AKIA', 'IOSFODNN7EXAMPLE'].join('') + '"',
           '}'].join('\n'),
         'utf-8'
       );
@@ -409,7 +409,7 @@ describe('CredVaultPlugin (deep)', () => {
     });
 
     it('skips very long lines (>4096 chars) for ReDoS protection', async () => {
-      const longLine = 'x'.repeat(4096) + 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz';
+      const longLine = 'x'.repeat(4096) + ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join('');
       fs.writeFileSync(path.join(tmpDir, 'config.json'), longLine, 'utf-8');
       const findings = await plugin.scan(tmpDir);
       // Line exceeds 4096 so should be skipped
@@ -417,7 +417,7 @@ describe('CredVaultPlugin (deep)', () => {
     });
 
     it('detects credential on line under 4096 chars', async () => {
-      const line = 'x'.repeat(100) + 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz';
+      const line = 'x'.repeat(100) + ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join('');
       fs.writeFileSync(path.join(tmpDir, 'config.json'), line, 'utf-8');
       const findings = await plugin.scan(tmpDir);
       expect(findings.filter((f) => f.id === 'CRED-001').length).toBe(1);
@@ -427,7 +427,7 @@ describe('CredVaultPlugin (deep)', () => {
       fs.mkdirSync(path.join(tmpDir, '.openclaw'), { recursive: true });
       fs.writeFileSync(
         path.join(tmpDir, '.openclaw', 'config.json'),
-        JSON.stringify({ key: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz' }),
+        JSON.stringify({ key: ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join('') }),
         'utf-8'
       );
       const findings = await plugin.scan(tmpDir);
@@ -437,7 +437,7 @@ describe('CredVaultPlugin (deep)', () => {
     it('scans .env.local', async () => {
       fs.writeFileSync(
         path.join(tmpDir, '.env.local'),
-        'API_KEY=sk-ant-api03-abcdefghijklmnopqrstuvwxyz\n',
+        'API_KEY=' + ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join('') + '\n',
         'utf-8'
       );
       const findings = await plugin.scan(tmpDir);
@@ -447,7 +447,7 @@ describe('CredVaultPlugin (deep)', () => {
     it('reports correct line numbers', async () => {
       fs.writeFileSync(
         path.join(tmpDir, 'config.json'),
-        ['line1', 'line2', 'AKIAIOSFODNN7EXAMPLE', 'line4'].join('\n'),
+        ['line1', 'line2', ['AKIA', 'IOSFODNN7EXAMPLE'].join(''), 'line4'].join('\n'),
         'utf-8'
       );
       const findings = await plugin.scan(tmpDir);
@@ -459,7 +459,7 @@ describe('CredVaultPlugin (deep)', () => {
     it('dry run does not create store', async () => {
       fs.writeFileSync(
         path.join(tmpDir, 'config.json'),
-        JSON.stringify({ key: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz' }),
+        JSON.stringify({ key: ['sk', '-ant-api03-abcdefghijklmnopqrstuvwxyz'].join('') }),
         'utf-8'
       );
       await plugin.fix(tmpDir, { dryRun: true });

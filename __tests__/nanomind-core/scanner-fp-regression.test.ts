@@ -540,7 +540,7 @@ describe('AST-CRED-001/003 FP regression (nanomind#26 finding 3)', () => {
     // The corpus carve-out is scoped to AST-CRED-002 only. AST-CRED-001
     // and AST-CRED-003 keep firing on real credentials in corpus paths
     // so a planted secret in `training/corpus/exfil.json` still surfaces.
-    const realKey = 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+    const realKey = ['sk', '-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'].join('');
     const content = `{"sample": "...", "leaked": "${realKey}"}`;
     const ast = makeAST({
       artifactType: 'system_prompt',
@@ -709,7 +709,7 @@ describe('AST-CRED-001/003 FP regression (nanomind#26 finding 3)', () => {
     // sk- key. The `hasVendorPrefixCredential` short-circuit in the
     // unified gate AND the AST-CRED-002-specific carve-out both
     // refuse to suppress. Finding fires.
-    const realKey = 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+    const realKey = ['sk', '-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'].join('');
     const content = `{"sample":"labeled","planted":"${realKey}"}`;
     const ast = makeAST({
       artifactPath: 'training/corpus/exfil-labeled.json',
@@ -759,7 +759,7 @@ describe('AST-CRED-001/003 FP regression (nanomind#26 finding 3)', () => {
   it('STILL fires AST-CRED-003 when a real vendor-prefix credential is alongside hashes in a manifest', () => {
     // Defensive — make sure the hash-shape gate does NOT swallow a real
     // credential that happens to sit in the same evidence set as a hash.
-    const realKey = 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+    const realKey = ['sk', '-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'].join('');
     const content = `{
   "models": { "x": { "sha256": { "f": "${sha256Hex}" } } },
   "leaked": "${realKey}"

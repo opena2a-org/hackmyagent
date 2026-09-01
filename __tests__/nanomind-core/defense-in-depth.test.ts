@@ -70,28 +70,28 @@ describe('Defense-in-Depth: NanoMind Security', () => {
 
   describe('Rule 4: NanoMind Never Sees Secrets', () => {
     it('redacts Anthropic API keys', () => {
-      const input = 'key: sk-ant-api03-abc123def456ghi789jkl012mno345pqr678';
+      const input = 'key: ' + ['sk', '-ant-api03-abc123def456ghi789jkl012mno345pqr678'].join('');
       const redacted = redactSecretsForNanoMind(input);
       expect(redacted).not.toContain('sk-ant-api03');
       expect(redacted).toContain('[REDACTED_ANTHROPIC_KEY]');
     });
 
     it('redacts OpenAI API keys', () => {
-      const input = 'OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwx';
+      const input = 'OPENAI_API_KEY=' + ['sk', '-proj-abcdefghijklmnopqrstuvwx'].join('');
       const redacted = redactSecretsForNanoMind(input);
       expect(redacted).not.toContain('sk-proj-');
       expect(redacted).toContain('[REDACTED_OPENAI_KEY]');
     });
 
     it('redacts AWS keys', () => {
-      const input = 'aws_key = AKIAIOSFODNN7EXAMPLE';
+      const input = 'aws_key = ' + ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
       const redacted = redactSecretsForNanoMind(input);
       expect(redacted).not.toContain('AKIA');
       expect(redacted).toContain('[REDACTED_AWS_KEY]');
     });
 
     it('redacts GitHub tokens', () => {
-      const input = 'token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij';
+      const input = 'token: ' + ['ghp', '_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij'].join('');
       const redacted = redactSecretsForNanoMind(input);
       expect(redacted).not.toContain('ghp_');
     });

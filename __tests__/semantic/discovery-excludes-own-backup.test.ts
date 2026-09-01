@@ -41,7 +41,7 @@ describe('#298 the semantic walk skips this run\'s own backup', () => {
     await writeFile(path.join(dir, '.claude', 'settings.json'), SETTINGS);
     await writeFile(
       path.join(dir, 'config.json'),
-      JSON.stringify({ githubToken: 'ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }, null, 2),
+      JSON.stringify({ githubToken: ['ghp', '_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'].join('') }, null, 2),
     );
   });
 

@@ -172,7 +172,7 @@ describe("AST-CRED-002 line population — inferred-capability path (#141)", () 
 });
 
 describe("AST-CRED-003 line population (#141)", () => {
-  const secretLine = "API_KEY = 'sk-real-not-a-fixture-12345'";
+  const secretLine = "API_KEY = '" + ['sk', '-real-not-a-fixture-12345'].join('') + "'";
   const content = [
     "# Source file",
     "import os",

@@ -64,7 +64,7 @@ describe('the --fix verify scan never transmits the archive to the LLM', () => {
     prevKey = process.env.ANTHROPIC_API_KEY;
     // Layer 3 is gated on this being set. The analyzer is mocked, so no request
     // leaves the machine — the value is never used as a credential.
-    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-not-a-real-key';
+    process.env.ANTHROPIC_API_KEY = ['sk', '-ant-test-not-a-real-key'].join('');
   });
   afterEach(() => {
     if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;

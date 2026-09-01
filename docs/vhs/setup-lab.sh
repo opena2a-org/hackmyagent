@@ -53,5 +53,5 @@ const API_KEY = "sk-ant-api03-fake123456789";
 module.exports = { API_KEY };
 EOF
 
-git add -A && git commit -m "Initial commit" --no-verify -q
+git add -A && git commit -m "Initial commit" -q
 echo "Lab ready: $LAB_DIR"

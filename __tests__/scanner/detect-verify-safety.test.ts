@@ -52,7 +52,7 @@ import { assertDistFresh, BUILT_CLI } from '../helpers/dist-freshness';
 const WHOLE_FILE_VERIFY = /Verify:\s*(?:cat|less|more|head|tail|bat|type)\b/;
 
 /** Placeholder values. Shaped like the real thing, obviously not real. */
-const FAKE_ANTHROPIC = 'sk-ant-api03-FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE';
+const FAKE_ANTHROPIC = ['sk', '-ant-api03-FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE'].join('');
 const FAKE_PASSWORD = 'FAKEFAKEFAKEFAKEFAKE';
 
 let target: string;

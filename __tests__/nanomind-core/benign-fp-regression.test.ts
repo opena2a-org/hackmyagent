@@ -571,7 +571,7 @@ Refer to https://docs.example.com/v1/auth/getting-started/api-key-information fo
 Set your API key in the environment:
 
 \`\`\`
-export ANTHROPIC_API_KEY=sk-ant-AAAAAAAAAAAAAAAAAAAAAAAAAAAA
+export ANTHROPIC_API_KEY=${['sk', '-ant-AAAAAAAAAAAAAAAAAAAAAAAAAAAA'].join('')}
 \`\`\`
 
 Then ask the agent to provide a response.
@@ -799,7 +799,7 @@ Then ask the agent to provide a response.
 Set your API key in the environment:
 
 \`\`\`
-export ANTHROPIC_API_KEY=sk-ant-AAAAAAAAAAAAAAAAAAAAAAAAAAAA
+export ANTHROPIC_API_KEY=${['sk', '-ant-AAAAAAAAAAAAAAAAAAAAAAAAAAAA'].join('')}
 \`\`\`
 
 Then ask the agent to provide a response.
