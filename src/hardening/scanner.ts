@@ -1375,6 +1375,15 @@ const SKILL_BUNDLE_MAX_DEPTH = 4;
 const SKILL_BUNDLE_MAX_FILES = 60;
 const SKILL_BUNDLE_MAX_DIRS = 40;
 
+/**
+ * Files one capped layer touches before it stops and discloses: source files
+ * read per extension by the NemoClaw checks, and extensionless files probed
+ * for a shebang below one skill directory. ONE constant on purpose — a fired
+ * cap is reported to the coverage ledger with this value, and a second number
+ * would let a disclosure drift from the bound it describes.
+ */
+const MAX_FILES_PER_LAYER = 200;
+
 // OpenClaw skill security patterns
 const SKILL_REMOTE_FETCH_PATTERNS: RegExp[] = [
   /curl\s+(-[a-zA-Z]+\s+)*https?:\/\//gi,
@@ -12422,7 +12431,14 @@ dist/
    * Symlinked entries are skipped here exactly as `findSkillFiles` skips them.
    * This walk adds no way out of the tree.
    */
-  private async findSkillBundleFiles(skillDir: string, depth: number = 0): Promise<string[]> {
+  private async findSkillBundleFiles(
+    skillDir: string,
+    depth: number = 0,
+    // Shared across the recursion below ONE skill directory: every
+    // `startsWithShebang` call spends from the same probe budget, admitted or
+    // not, so junk extensionless files cannot buy unbounded opens.
+    walk: { probes: number; probeCapped: boolean } = { probes: 0, probeCapped: false },
+  ): Promise<string[]> {
     if (depth > SKILL_BUNDLE_MAX_DEPTH) return [];
 
     const bundleFiles: string[] = [];
@@ -12442,31 +12458,72 @@ dist/
 
       if (entry.isDirectory()) {
         if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
-        bundleFiles.push(...await this.findSkillBundleFiles(fullPath, depth + 1));
+        bundleFiles.push(...await this.findSkillBundleFiles(fullPath, depth + 1, walk));
       } else if (entry.isFile()) {
         // SKILL.md and *.skill.md are analyzed as skill files; other Markdown
         // beside a skill is prose (README, CHANGELOG), not a payload carrier.
         if (entry.name.toLowerCase().endsWith('.md')) continue;
         const ext = path.extname(entry.name).toLowerCase();
-        const admitted = ext
-          ? SKILL_BUNDLE_EXTENSIONS.has(ext)
-          : await this.startsWithShebang(fullPath);
+        let admitted: boolean;
+        if (ext) {
+          admitted = SKILL_BUNDLE_EXTENSIONS.has(ext);
+        } else if (walk.probes >= MAX_FILES_PER_LAYER) {
+          walk.probeCapped = true;
+          continue;
+        } else {
+          walk.probes++;
+          admitted = await this.startsWithShebang(fullPath);
+        }
         if (admitted) bundleFiles.push(fullPath);
+      }
+    }
+
+    // A cap that fires is disclosed, never silent: an invisible cap is a
+    // cap-stuffing primitive — junk files ahead of the payload make the scan
+    // report a clean `skill` category over files it never opened. Reported at
+    // the top of the recursion, once per skill directory.
+    if (depth === 0) {
+      if (walk.probeCapped) {
+        this.coverage.truncate({
+          layer: 'skill-bundle',
+          cap: MAX_FILES_PER_LAYER,
+          prefixes: ['SKILL'],
+          reason: `probed at most ${MAX_FILES_PER_LAYER} extensionless files under a skill directory — extensionless files past that cap were not opened`,
+        });
+      }
+      if (bundleFiles.length > SKILL_BUNDLE_MAX_FILES) {
+        this.coverage.truncate({
+          layer: 'skill-bundle',
+          cap: SKILL_BUNDLE_MAX_FILES,
+          prefixes: ['SKILL'],
+          reason: `read at most ${SKILL_BUNDLE_MAX_FILES} bundled files per skill directory — ${bundleFiles.length - SKILL_BUNDLE_MAX_FILES} admitted file${bundleFiles.length - SKILL_BUNDLE_MAX_FILES === 1 ? '' : 's'} not read`,
+        });
       }
     }
 
     return bundleFiles.slice(0, SKILL_BUNDLE_MAX_FILES);
   }
 
-  /** True when a file's first bytes are `#!` — how an extensionless script declares itself. */
+  /**
+   * True when a file's first bytes are `#!` — how an extensionless script
+   * declares itself. `execve` admits a script on those 2 bytes at offset 0 and
+   * nothing else, so the probe reads exactly those 2 bytes and never the file:
+   * a whole-file read here handed every extensionless byte in a skill tree to
+   * a yes/no question.
+   */
   private async startsWithShebang(filePath: string): Promise<boolean> {
+    let fh;
     try {
       const stat = await fs.stat(filePath);
       if (stat.size < 2 || stat.size > MAX_FILE_SIZE) return false;
-      const content = await fs.readFile(filePath, 'utf-8');
-      return content.startsWith('#!');
+      fh = await fs.open(filePath, 'r');
+      const head = Buffer.alloc(2);
+      const { bytesRead } = await fh.read(head, 0, 2, 0);
+      return bytesRead === 2 && head[0] === 0x23 && head[1] === 0x21; // `#!`
     } catch {
       return false;
+    } finally {
+      try { await fh?.close(); } catch { /* ignore */ }
     }
   }
 
@@ -15500,11 +15557,10 @@ dist/
     const yamlFiles = await this.walkDirectory(targetDir, ['.yaml', '.yml'], 0, 5);
 
     // Cap file counts to avoid scanning enormous repos
-    const maxFiles = 200;
-    const cappedSh = shFiles.slice(0, maxFiles);
-    const cappedTsJs = tsJsFiles.slice(0, maxFiles);
-    const cappedPy = pyFiles.slice(0, maxFiles);
-    const cappedYaml = yamlFiles.slice(0, maxFiles);
+    const cappedSh = shFiles.slice(0, MAX_FILES_PER_LAYER);
+    const cappedTsJs = tsJsFiles.slice(0, MAX_FILES_PER_LAYER);
+    const cappedPy = pyFiles.slice(0, MAX_FILES_PER_LAYER);
+    const cappedYaml = yamlFiles.slice(0, MAX_FILES_PER_LAYER);
 
     // A cap that fires means a clean NEMO result covers only the files that
     // were reached, not the tree. Reported so the category prints `partial`
@@ -15518,9 +15574,9 @@ dist/
     if (nemoDropped > 0) {
       this.coverage.truncate({
         layer: 'nemo-source',
-        cap: maxFiles,
+        cap: MAX_FILES_PER_LAYER,
         prefixes: ['NEMO'],
-        reason: `capped at ${maxFiles} files per extension — ${nemoDropped} source file${nemoDropped === 1 ? '' : 's'} not read`,
+        reason: `capped at ${MAX_FILES_PER_LAYER} files per extension — ${nemoDropped} source file${nemoDropped === 1 ? '' : 's'} not read`,
       });
     }
 
