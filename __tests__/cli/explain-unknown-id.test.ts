@@ -1,5 +1,5 @@
 /**
- * HMA-29 — `explain` must refuse an unknown check ID instead of printing a
+ * `explain` must refuse an unknown check ID instead of printing a
  * generic prefix stub with exit 0.
  *
  * Measured on the pre-fix build (cebbc442): `explain NEMO-999` printed
@@ -8,11 +8,11 @@
  * exited 0. A user asking about a typo'd or fabricated ID got a confident
  * non-answer and a green exit code a pipeline would wave through.
  *
- * AC1: an ID that is not in the check inventory — not a TAXONOMY_MAP key,
- *      not a static-explanations key, not a scan-soul CONTROL_DEFS id —
+ * Refusal: an ID that is not in the check inventory — not a TAXONOMY_MAP
+ *      key, not a static-explanations key, not a scan-soul CONTROL_DEFS id —
  *      exits non-zero, names the rejected ID, and suggests the nearest
  *      known IDs (shared-prefix or edit-distance neighbours).
- * AC2: the refusal misfires on nothing known — every ID the CLI already
+ * No misfire: the refusal rejects nothing known — every ID the CLI already
  *      explains still produces an explanation with exit 0. The sweep below
  *      walks ALL THREE id sources (static explanations, CONTROL_DEFS,
  *      TAXONOMY_MAP), not a sample; spawn cells then pin exit 0 end-to-end
@@ -50,8 +50,8 @@ function runExplain(id: string): { code: number | null; stdout: string; stderr: 
   return { code: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
 }
 
-describe.runIf(existsSync(CLI))('HMA-29.AC1 — explain refuses unknown check IDs (spawn)', () => {
-  it('HMA-29.AC1 explain NEMO-999 exits non-zero, names the ID, and suggests neighbours', () => {
+describe.runIf(existsSync(CLI))('explain refuses unknown check IDs (spawn)', () => {
+  it('explain NEMO-999 exits non-zero, names the ID, and suggests neighbours', () => {
     const { code, stdout, stderr } = runExplain('NEMO-999');
 
     // The pre-fix behaviour this test was demonstrated RED against: the
@@ -68,7 +68,7 @@ describe.runIf(existsSync(CLI))('HMA-29.AC1 — explain refuses unknown check ID
     expect(stderr).toMatch(/NEMO-\d/);
   });
 
-  it('HMA-29.AC1 an unknown ID with no known prefix also refuses with suggestions', () => {
+  it('an unknown ID with no known prefix also refuses with suggestions', () => {
     const { code, stderr } = runExplain('ZZZQ-123');
     expect(code).not.toBe(0);
     expect(code).not.toBeNull();
@@ -77,7 +77,7 @@ describe.runIf(existsSync(CLI))('HMA-29.AC1 — explain refuses unknown check ID
     expect(stderr).toMatch(/Did you mean/i);
   });
 
-  it('HMA-29.AC1 the final-else unknown (unmapped prefix, no hyphen family) refuses too', () => {
+  it('the final-else unknown (unmapped prefix, no hyphen family) refuses too', () => {
     // Pre-fix this landed in the "may not be a valid check ID" branch — and
     // still exited 0. A message that says the ID may be invalid must not
     // carry a green exit code.
@@ -88,7 +88,7 @@ describe.runIf(existsSync(CLI))('HMA-29.AC1 — explain refuses unknown check ID
   });
 });
 
-describe('HMA-29.AC2 — the refusal misfires on nothing known (all three id sources)', () => {
+describe('the refusal misfires on nothing known (all three id sources)', () => {
   // The three inventories the CLI explains from, enumerated in full. The
   // union feeds the predicate the CLI's refusal branch actually calls, so a
   // false refusal here is a false refusal in the binary.
@@ -109,7 +109,7 @@ describe('HMA-29.AC2 — the refusal misfires on nothing known (all three id sou
     return 'none';
   }
 
-  it('HMA-29.AC2 sweep: sources are non-empty (non-vacuity floor)', () => {
+  it('sweep: sources are non-empty (non-vacuity floor)', () => {
     expect(staticIds.length).toBeGreaterThan(20);
     expect(controlIds.length).toBeGreaterThan(50);
     expect(taxonomyIds.length).toBeGreaterThan(300);
@@ -119,7 +119,7 @@ describe('HMA-29.AC2 — the refusal misfires on nothing known (all three id sou
     ['static explanations table', staticIds],
     ['scan-soul CONTROL_DEFS', controlIds],
     ['TAXONOMY_MAP', taxonomyIds],
-  ] as const)('HMA-29.AC2 every id in the %s is known and yields an explanation branch', (_source, ids) => {
+  ] as const)('every id in the %s is known and yields an explanation branch', (_source, ids) => {
     const refused = ids.filter((id) => !isKnownExplainId(id));
     expect(refused, `known ids the refusal would reject: ${refused.join(', ')}`).toEqual([]);
 
@@ -130,7 +130,7 @@ describe('HMA-29.AC2 — the refusal misfires on nothing known (all three id sou
     ).toEqual([]);
   });
 
-  it('HMA-29.AC2 suggestions never contain an unknown id', () => {
+  it('suggestions never contain an unknown id', () => {
     for (const probe of ['NEMO-999', 'ZZZQ-123', 'SOUL-IH-999', 'CRED-01']) {
       for (const s of suggestExplainIds(probe)) {
         expect(isKnownExplainId(s), `suggested ${s} for ${probe} is itself unknown`).toBe(true);
@@ -139,7 +139,7 @@ describe('HMA-29.AC2 — the refusal misfires on nothing known (all three id sou
   });
 });
 
-describe.runIf(existsSync(CLI))('HMA-29.AC2 — known IDs still explain with exit 0 (spawn, one per path)', () => {
+describe.runIf(existsSync(CLI))('known IDs still explain with exit 0 (spawn, one per path)', () => {
   it.each([
     // static explanations table
     ['CRED-001', /Hardcoded credential/i],
@@ -147,11 +147,11 @@ describe.runIf(existsSync(CLI))('HMA-29.AC2 — known IDs still explain with exi
     // TAXONOMY_MAP; it resolves through the governance catalog.
     ['SOUL-IH-003', /Role-play refusal/i],
     // taxonomy-only, prefix NOT in the category-label table: resolves only
-    // through the attack-class lookup path (the AC2 callout).
+    // through the attack-class lookup path.
     ['HEARTBEAT-001', /Attack class/i],
     // taxonomy + known prefix (the family NEMO-999 was impersonating).
     ['NEMO-001', /Attack class|finding/i],
-  ] as const)('HMA-29.AC2 explain %s exits 0 and prints an explanation', (id, pattern) => {
+  ] as const)('explain %s exits 0 and prints an explanation', (id, pattern) => {
     const { code, stdout, stderr } = runExplain(id);
     expect(stderr).not.toMatch(/Unknown check ID/i);
     expect(stdout).toMatch(pattern);
@@ -160,8 +160,8 @@ describe.runIf(existsSync(CLI))('HMA-29.AC2 — known IDs still explain with exi
   });
 });
 
-describe.runIf(existsSync(CLI))('HMA-29.AC5 — ids secure emits on the tree’s own fixtures explain (spawn)', () => {
-  // Red at 3a0ac37e (r1 review finding 1): `secure --ci --json
+describe.runIf(existsSync(CLI))('ids secure emits on the tree’s own fixtures explain (spawn)', () => {
+  // Before the SEM-MCP ids were inventory keys: `secure --ci --json
   // test-fixtures` emitted SEM-MCP-001 at critical while `explain
   // SEM-MCP-001` exited 1 suggesting SEM-CRED-001. The eight SEM-MCP ids
   // are TAXONOMY_MAP keys now and resolve through the attack-class path.
@@ -169,7 +169,7 @@ describe.runIf(existsSync(CLI))('HMA-29.AC5 — ids secure emits on the tree’s
     ['SEM-MCP-001', /MCP-PRIV-ESC/],
     ['SEM-MCP-006', /MCP-SCOPE-EXPAND/],
     ['SEM-MCP-008', /MCP-SUPPLY-CHAIN/],
-  ] as const)('HMA-29.AC5 explain %s exits 0 and names the attack class', (id, pattern) => {
+  ] as const)('explain %s exits 0 and names the attack class', (id, pattern) => {
     const { code, stdout, stderr } = runExplain(id);
     expect(stderr).not.toMatch(/Unknown check ID/i);
     expect(stdout).toMatch(id);
@@ -178,12 +178,12 @@ describe.runIf(existsSync(CLI))('HMA-29.AC5 — ids secure emits on the tree’s
   });
 });
 
-describe.runIf(existsSync(CLI))('HMA-29.AC6 — the sweep population is independent of the predicate (spawn)', () => {
-  // The r1 sweep filtered by isKnownExplainId — the predicate under test —
-  // so it could not fail (review finding 2). This population comes from
+describe.runIf(existsSync(CLI))('the sweep population is independent of the predicate (spawn)', () => {
+  // A sweep filtered by isKnownExplainId — the predicate under test —
+  // could not fail, so this population does not use it. It comes from
   // `check-metadata --json`, the inventory the CLI advertises to users,
   // and every id is pushed through a real `explain` spawn.
-  it('HMA-29.AC6 every check-metadata --json check id explains with exit 0', async () => {
+  it('every check-metadata --json check id explains with exit 0', async () => {
     const meta = spawnSync(process.execPath, [CLI, 'check-metadata', '--json'], {
       encoding: 'utf-8',
       env: { ...process.env, NO_COLOR: '1' },
@@ -215,10 +215,10 @@ describe.runIf(existsSync(CLI))('HMA-29.AC6 — the sweep population is independ
   }, 300_000);
 });
 
-describe.runIf(existsSync(CLI))('HMA-29.AC7 — input normalisation and self-referencing help (spawn)', () => {
-  it('HMA-29.AC7 the id is trimmed before matching', () => {
-    // Red at 3a0ac37e (review finding 6): `explain "CRED-001 "` was
-    // refused while suggesting the very id it was handed.
+describe.runIf(existsSync(CLI))('input normalisation and self-referencing help (spawn)', () => {
+  it('the id is trimmed before matching', () => {
+    // Without the trim, `explain "CRED-001 "` was refused while
+    // suggesting the very id it was handed.
     for (const raw of ['CRED-001 ', '  cred-001']) {
       const { code, stdout, stderr } = runExplain(raw);
       expect(stderr, `explain ${JSON.stringify(raw)} must not refuse`).not.toMatch(/Unknown check ID/i);
@@ -227,7 +227,7 @@ describe.runIf(existsSync(CLI))('HMA-29.AC7 — input normalisation and self-ref
     }
   });
 
-  it('HMA-29.AC7 an empty or whitespace-only id is refused with its own message', () => {
+  it('an empty or whitespace-only id is refused with its own message', () => {
     for (const raw of ['', '   ']) {
       const { code, stderr } = runExplain(raw);
       expect(code).not.toBe(0);
@@ -239,9 +239,9 @@ describe.runIf(existsSync(CLI))('HMA-29.AC7 — input normalisation and self-ref
     }
   });
 
-  it('HMA-29.AC7 the help example names only ids the command answers', () => {
-    // Red at 3a0ac37e (review finding 3): the help cited
-    // SKILL-SEMANTIC-007, which the command refuses.
+  it('the help example names only ids the command answers', () => {
+    // The help once cited SKILL-SEMANTIC-007, an id the command
+    // refuses; an example must be answerable.
     const help = spawnSync(process.execPath, [CLI, 'explain', '--help'], {
       encoding: 'utf-8',
       env: { ...process.env, NO_COLOR: '1' },

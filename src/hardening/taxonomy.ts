@@ -415,9 +415,9 @@ const TAXONOMY_MAP: Record<string, string> = {
   'SEM-PERM-003': 'SANDBOX-ESCAPE',
   // SEM-MCP-* set `attackClass` inline at every emission site
   // (src/semantic/structural/mcp-config.ts) and the inline value takes
-  // precedence per `enrichWithTaxonomy`. HMA-29 r2: they are listed anyway,
-  // because `secure` emits them on the tree's own fixtures while
-  // `check-metadata` and `explain` denied they exist (r1 review finding 1).
+  // precedence per `enrichWithTaxonomy`. They are listed anyway, because
+  // `secure` emits them on the tree's own fixtures, and an id the scanner
+  // emits must not be one `check-metadata` and `explain` deny exists.
   // SEM-MCP-005 varies by matched pattern (MCP-CHAIN-EXFIL for the
   // filesystem+network chain, MCP-SCOPE-LEAK for the scope leak); its
   // primary class is listed here, same convention as AST-CRED-001 below.
@@ -444,7 +444,7 @@ const TAXONOMY_MAP: Record<string, string> = {
   'AST-SCOPE-004': 'PRIV-ESCALATION',
 
   // The rest of the NanoMind semantic (AST) layer, same shape as
-  // AST-EXFIL-001 / AST-SCOPE-004 above (HMA-29): every one of these is
+  // AST-EXFIL-001 / AST-SCOPE-004 above: every one of these is
   // emitted with `attackClass:` set inline at the emission site, and the
   // inline assignment takes precedence per `enrichWithTaxonomy`. The
   // entries are the defensive fallback AND the inventory membership —
@@ -478,7 +478,7 @@ const TAXONOMY_MAP: Record<string, string> = {
   'AST-SCOPE-003': 'SEMANTIC-MISMATCH',
 
   // SOUL narrative-analysis checks (the scanner's soul-analysis
-  // integration, src/hardening/scanner.ts), same HMA-29 shape: each is
+  // integration, src/hardening/scanner.ts), same shape: each is
   // emitted with an inline attackClass equal to the class here.
   'SOUL-BYPASS': 'SOUL-BYPASS',
   'SOUL-COMPLETENESS': 'SOUL-COMPLETENESS',
@@ -545,7 +545,7 @@ export const TAXONOMY_EXEMPT_CHECKIDS: ReadonlySet<string> = new Set([
 /**
  * A check-id family (or exact ids within one) deliberately outside the
  * TAXONOMY_MAP inventory, with the reason stated — the exemption mechanism
- * above, made visible (HMA-29). `check-metadata --json` publishes these,
+ * above, made visible. `check-metadata --json` publishes these,
  * and the census test (`__tests__/hardening/checkid-census.test.ts`) holds
  * its measured population — the `checkId:`/`id:` emission sites in src/:
  * string literals, `PREFIX-${…}` templates, and the registered
@@ -729,7 +729,7 @@ const SEVERITY_OVERRIDES: Record<string, string> = {
   'SKILL-018': 'medium',
   'SUPPLY-002': 'medium',
   'SEM-MCP-006': 'low',
-  // HMA-29 r2 (review finding 4): these sites emit a fixed severity, so the
+  // These sites emit a fixed severity, so the
   // inventory default (medium for AST, high for SOUL) contradicted every
   // finding the scanner actually reported. Other AST/SEM checks assign
   // severity per finding at analysis time and keep the prefix default here.

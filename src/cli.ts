@@ -444,9 +444,9 @@ function writeJsonStdout(data: unknown): void {
 // command citation — program name, --help examples, hints, scanner `fix:`
 // strings — reads in the parent's verb namespace (e.g. `opena2a secure …`).
 import { CLI_PREFIX, RAW_CLI_PREFIX, rebrandCommandCitations, OPENA2A_PACKAGE, setCitationTarget } from './cli-prefix';
-// The explain command's knowledge (HMA-29): the static explanations and
-// category labels moved to src/explain-registry.ts so the unknown-id
-// refusal predicate and the AC2 sweep test share one inventory.
+// The explain command's knowledge lives in src/explain-registry.ts: the
+// static explanations and category labels moved there so the unknown-id
+// refusal predicate and the known-id sweep test share one inventory.
 import { STATIC_EXPLANATIONS, PREFIX_DESCRIPTIONS, isKnownExplainId, suggestExplainIds } from './explain-registry';
 
 let nanomindDeprecationWarned = false;
@@ -11243,14 +11243,14 @@ program
       semanticChecks: counts.semantic,
       categories: counts.totalCategories,
       staticCategories: counts.staticCategories,
-      // HMA-29 — the deliberate holes in the inventory, each with its
+      // The deliberate holes in the inventory, each with its
       // reason (TAXONOMY_EXEMPT_CHECKIDS made visible, plus family and
       // pattern exclusions). Scope: what the checkid census measures —
       // the `checkId:`/`id:` emission sites in src/ (string literals,
       // `PREFIX-${…}` templates, and the registered expression-valued
       // sites; __tests__/hardening/checkid-census.test.ts).
       exclusions: getDeclaredCheckIdExclusions(),
-      // HMA-29 r2 (review finding 4): the severity column is the inventory
+      // The severity column is the inventory
       // default. Semantic checks (AST-*/SEM-*) assign severity per finding
       // at analysis time; the fixed-severity sites are pinned via
       // SEVERITY_OVERRIDES so this table matches what `secure` emits.
@@ -11267,7 +11267,7 @@ program
   .argument('<findingId>', 'Finding ID to explain (e.g., CRED-001 or AST-INJECT-001)')
   .description('Explain a security finding in plain English')
   .action(async (findingId: string) => {
-    // Trimmed before matching (r1 review finding 6): `explain "CRED-001 "`
+    // Trimmed before matching: `explain "CRED-001 "`
     // used to be refused while suggesting the very id it was handed.
     const checkId = findingId.trim().toUpperCase();
 
@@ -11277,7 +11277,7 @@ program
       return exitRecorded(1, 'refused');
     }
 
-    // HMA-29 — an id outside the check inventory (static explanations,
+    // An id outside the check inventory (static explanations,
     // scan-soul CONTROL_DEFS, TAXONOMY_MAP) is refused, not stubbed:
     // `explain NEMO-999` used to print "Static analysis pattern finding."
     // — the prefix-label branch below, reached by every hyphenated unknown
@@ -11306,7 +11306,7 @@ program
     }
 
     // Static explanation lookup — tables live in src/explain-registry.ts
-    // (HMA-29) alongside the refusal predicate they feed.
+    // alongside the refusal predicate they feed.
     const staticExplanations = STATIC_EXPLANATIONS;
     const prefixDescriptions = PREFIX_DESCRIPTIONS;
 

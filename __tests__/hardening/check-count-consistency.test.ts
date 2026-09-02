@@ -34,10 +34,11 @@ describe('check-count single source of truth', () => {
   // whenever the taxonomy changes — this test fails on drift by design, forcing
   // the public-facing numbers to be updated in the same change.
   it('matches the published golden counts (update docs when this changes)', () => {
-    // HMA-29 raised these from 324/311/13/75/70: the 24 semantic (AST) and
-    // 6 SOUL narrative ids the scanner emitted without inventory entries
-    // are TAXONOMY_MAP keys now. r2 added the 8 SEM-MCP structural checks
-    // (354/37/87 → 362/45/88) the r1 census could not see.
+    // Raised from 324/311/13/75/70: the 24 semantic (AST) and 6 SOUL
+    // narrative ids the scanner emitted without inventory entries are
+    // TAXONOMY_MAP keys now, as are the 8 SEM-MCP structural checks
+    // (354/37/87 → 362/45/88), which are emitted as `id:` rather than
+    // `checkId:` and so were missed by a literal-only census.
     expect(counts.total).toBe(362);
     expect(counts.static).toBe(317);
     expect(counts.semantic).toBe(45);

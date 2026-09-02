@@ -1,5 +1,5 @@
 /**
- * HMA-29 — the check inventory covers (or names its exclusions of) every id
+ * The check inventory covers (or names its exclusions of) every id
  * the scanner emits, and the gap cannot regrow silently.
  *
  * Measured baseline at the grounding snapshot (d6fade15 / cebbc442):
@@ -8,17 +8,17 @@
  * SOUL 6, FIX 4, SCAN 4, SEM 1. `check-metadata` advertised "totalChecks
  * 324" as if that were the whole story.
  *
- * AC3: every emitted id is now an inventory key, or the CLI's
+ * Coverage: every emitted id is now an inventory key, or the CLI's
  *      `check-metadata` output carries an explicit exclusions declaration
  *      naming the family and the reason (TAXONOMY_EXEMPT_CHECKIDS made
  *      visible, plus family/pattern exclusions).
- * AC4: this census extracts the emitted `checkId:` literals from src/ —
+ * Census: this census extracts the emitted `checkId:` literals from src/ —
  *      in-src test fixtures included, which is why the walk does NOT skip
  *      `__tests__` directories the way taxonomy-coverage.test.ts (#138)
  *      does — and fails when any emitted id is neither an inventory key
  *      nor declared-excluded. The plant cell proves it non-vacuous.
- * AC5: the r1 census read only `checkId: '<literal>'` and was blind to the
- *      other emission shapes (r1 review findings 1 and 5). It now also
+ * Shapes: a census that reads only `checkId: '<literal>'` is blind to
+ *      the other emission shapes, so this one also
  *      reads: `id: 'SEM-…'` literals under src/semantic (carried into
  *      `SecurityFinding.checkId` by finding-adapter.ts), `PREFIX-${…}`
  *      template ids (ARP-* in eval/oracle.ts, SEM-LLM-NNN in
@@ -53,11 +53,10 @@ import { CONTROL_DEFS } from '../../src/soul/scanner';
 
 const SRC_ROOT = resolve(__dirname, '../../src');
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.git']);
-// The taxonomy file holds `'CRED-001': '...'` mapping keys (and, since r2,
-// prose that cites the expression sites), not emission sites; everything
-// else in src/ — in-src test fixtures included — counts, because that is
-// the population the HMA-29 baseline measured (273 emitted ids, 50
-// unmapped).
+// The taxonomy file holds `'CRED-001': '...'` mapping keys (and prose
+// that cites the expression sites), not emission sites; everything else
+// in src/ — in-src test fixtures included — counts, because that is the
+// population the baseline measured (273 emitted ids, 50 unmapped).
 const SKIP_FILES = new Set([resolve(SRC_ROOT, 'hardening/taxonomy.ts')]);
 
 const CHECKID_RE = /checkId:\s*(?:['"]([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)['"]|`([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)`)/g;
@@ -68,8 +67,8 @@ const SEMANTIC_ID_RE = /\bid:\s*(?:['"](SEM-[A-Z0-9-]+)['"]|`(SEM-[A-Z0-9-]+)`)/
 // A checkId (or SemanticFinding/payload id) built as `PREFIX-${…}`: the
 // static prefix is the family; the suffix is runtime data.
 const TEMPLATE_RE = /\b(?:checkId|id):\s*`([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)-\$\{/g;
-// An expression-valued `checkId:` — the shape the r1 census was blind to
-// (review finding 5). Captures up to the delimiter; the shape filter below
+// An expression-valued `checkId:` — the shape a literal-only census is
+// blind to. Captures up to the delimiter; the shape filter below
 // keeps identifier chains (`ctrl.id`, `f.checkId || ''`) and drops TS type
 // annotations and doc prose.
 const EXPR_RE = /\bcheckId:\s*([^'"`\s][^,\n]*?)\s*[,}\n]/g;
@@ -218,8 +217,8 @@ const exclusions = getDeclaredCheckIdExclusions();
 const exclusionFamilies = new Set(exclusions.map((e) => e.family));
 const templates = collectTemplateFamilies();
 
-describe('HMA-29.AC4 — emitted-checkId census', () => {
-  it('HMA-29.AC4 the walk reads the emission population at all (non-vacuity floor)', () => {
+describe('emitted-checkId census', () => {
+  it('the walk reads the emission population at all (non-vacuity floor)', () => {
     // The baseline measured 273 distinct emitted ids; a walk that returns a
     // trivial set is measuring nothing.
     expect(emitted.size).toBeGreaterThan(200);
@@ -227,7 +226,7 @@ describe('HMA-29.AC4 — emitted-checkId census', () => {
     expect(emitted.has('CRED-001')).toBe(true);
   });
 
-  it('HMA-29.AC4 every emitted checkId is an inventory key or declared-excluded', () => {
+  it('every emitted checkId is an inventory key or declared-excluded', () => {
     const gap = censusGap(emitted, inventory, isDeclaredExcludedCheckId);
     expect(
       gap,
@@ -238,13 +237,13 @@ describe('HMA-29.AC4 — emitted-checkId census', () => {
     ).toEqual([]);
   });
 
-  it('HMA-29.AC4 plant: an emitted id removed from the inventory in-memory is reported as exactly that id', () => {
+  it('plant: an emitted id removed from the inventory in-memory is reported as exactly that id', () => {
     const doctored = new Set(inventory);
     doctored.delete('AST-CRED-001');
     expect(censusGap(emitted, doctored, isDeclaredExcludedCheckId)).toEqual(['AST-CRED-001']);
   });
 
-  it('HMA-29.AC4 the declared-exclusion entries and isDeclaredExcludedCheckId agree', () => {
+  it('the declared-exclusion entries and isDeclaredExcludedCheckId agree', () => {
     // The plants below doctor the entry list and match with
     // checkIdExclusionMatches; this cell pins that matcher to the predicate
     // the shipping census check uses, over the whole census population plus
@@ -264,11 +263,11 @@ describe('HMA-29.AC4 — emitted-checkId census', () => {
   });
 });
 
-describe('HMA-29.AC5 — the emission shapes the r1 census could not see', () => {
-  it('HMA-29.AC5 the eight SEM-MCP ids (emitted as `id:` under src/semantic) are inventory keys with their inline classes', () => {
-    // Red at 3a0ac37e: `secure --ci --json test-fixtures` emitted
-    // SEM-MCP-001 at critical while `explain SEM-MCP-001` exited 1 and
-    // check-metadata denied the id exists (r1 review finding 1).
+describe('the emission shapes a literal-only census misses', () => {
+  it('the eight SEM-MCP ids (emitted as `id:` under src/semantic) are inventory keys with their inline classes', () => {
+    // Before these were inventory keys: `secure --ci --json test-fixtures`
+    // emitted SEM-MCP-001 at critical while `explain SEM-MCP-001` exited 1
+    // and check-metadata denied the id exists.
     const expected: Record<string, string> = {
       'SEM-MCP-001': 'MCP-PRIV-ESC',
       'SEM-MCP-002': 'MCP-PRIV-ESC',
@@ -288,14 +287,14 @@ describe('HMA-29.AC5 — the emission shapes the r1 census could not see', () =>
     expect(getCheckCounts().semantic).toBeGreaterThanOrEqual(45);
   });
 
-  it('HMA-29.AC5 plant (semantic-id shape): SEM-MCP-001 removed from the inventory is reported as exactly that id', () => {
+  it('plant (semantic-id shape): SEM-MCP-001 removed from the inventory is reported as exactly that id', () => {
     const doctored = new Set(inventory);
     doctored.delete('SEM-MCP-001');
     expect(censusGap(emitted, doctored, isDeclaredExcludedCheckId)).toEqual(['SEM-MCP-001']);
   });
 
-  it('HMA-29.AC5 every `PREFIX-${…}` template family is declared-excluded or keyed', () => {
-    // The shapes the r1 census was blind to: ARP-${pattern.id}
+  it('every `PREFIX-${…}` template family is declared-excluded or keyed', () => {
+    // The template shapes a literal-only census misses: ARP-${pattern.id}
     // (eval/oracle.ts), SEM-LLM-NNN (semantic/llm/index.ts), the payload
     // counters (attack-engine/payload-generator.ts), and the NanoMind
     // daemon narrative families (semantic/nanomind-analyzer.ts).
@@ -306,15 +305,15 @@ describe('HMA-29.AC5 — the emission shapes the r1 census could not see', () =>
     expect(uncoveredTemplateFamilies(templates, inventory, exclusionFamilies)).toEqual([]);
   });
 
-  it('HMA-29.AC5 plant (template shape): with the ARP exclusion dropped, exactly ARP is reported', () => {
+  it('plant (template shape): with the ARP exclusion dropped, exactly ARP is reported', () => {
     const doctored = new Set(
       exclusions.filter((e) => e.family !== 'ARP').map((e) => e.family),
     );
     expect(uncoveredTemplateFamilies(templates, inventory, doctored)).toEqual(['ARP']);
   });
 
-  it('HMA-29.AC5 the scan-soul control catalogue is declared: every CONTROL_DEFS id is keyed or excluded', () => {
-    // Red at 3a0ac37e (review finding 5): 49 of the 72 control ids were
+  it('the scan-soul control catalogue is declared: every CONTROL_DEFS id is keyed or excluded', () => {
+    // Before the catalogue exclusion: 49 of the 72 control ids were
     // emitted at cli.ts (`checkId: ctrl.id`) while being neither inventory
     // keys nor declared exclusions.
     const controlIds = CONTROL_DEFS.map((c) => c.id);
@@ -332,7 +331,7 @@ describe('HMA-29.AC5 — the emission shapes the r1 census could not see', () =>
     expect(soulEntry!.reason).toMatch(/explain/i);
   });
 
-  it('HMA-29.AC5 plant (ctrl.id shape): with the catalogue exclusion dropped, the uncovered control ids are reported', () => {
+  it('plant (ctrl.id shape): with the catalogue exclusion dropped, the uncovered control ids are reported', () => {
     const doctored = excludedByEntries(exclusions.filter((e) => e.family !== 'SOUL'));
     const uncovered = CONTROL_DEFS.map((c) => c.id).filter(
       (id) => !inventory.has(id) && !doctored(id),
@@ -341,7 +340,7 @@ describe('HMA-29.AC5 — the emission shapes the r1 census could not see', () =>
     expect(uncovered).toContain('SOUL-TH-006');
   });
 
-  it('HMA-29.AC5 every expression-valued checkId site is registered with its population', () => {
+  it('every expression-valued checkId site is registered with its population', () => {
     const found = [...collectExpressionSites()].sort();
     expect(found).toEqual(Object.keys(EXPRESSION_SITES).sort());
 
@@ -372,7 +371,7 @@ describe('HMA-29.AC5 — the emission shapes the r1 census could not see', () =>
     // ctrl.id → covered by the control-catalogue cell above.
   });
 
-  it('HMA-29.AC5 plant (expression-site shape): an unregistered site is reported as exactly that site', () => {
+  it('plant (expression-site shape): an unregistered site is reported as exactly that site', () => {
     const registry = new Set(Object.keys(EXPRESSION_SITES));
     registry.delete('registry/publish.ts :: r.payload.id');
     const unregistered = [...collectExpressionSites()].filter((s) => !registry.has(s));
@@ -380,7 +379,7 @@ describe('HMA-29.AC5 — the emission shapes the r1 census could not see', () =>
   });
 });
 
-describe('HMA-29.AC7 — inventory severity agrees with fixed-severity emission sites', () => {
+describe('inventory severity agrees with fixed-severity emission sites', () => {
   it.each([
     ['AST-MANIP-001', 'critical'],
     ['AST-HEARTBEAT-001', 'critical'],
@@ -388,8 +387,8 @@ describe('HMA-29.AC7 — inventory severity agrees with fixed-severity emission 
     ['AST-GOV-004', 'high'],
     ['AST-PERSIST-001', 'high'],
     ['SOUL-UNVERIFIABLE-CLAIM', 'medium'],
-  ] as const)('HMA-29.AC7 getCheckSeverity(%s) matches the emission site (%s)', (id, severity) => {
-    // Red at 3a0ac37e (review finding 4): all 26 AST entries reported the
+  ] as const)('getCheckSeverity(%s) matches the emission site (%s)', (id, severity) => {
+    // Before SEVERITY_OVERRIDES pinned them: all 26 AST entries reported the
     // medium prefix default while these sites emit one fixed severity, and
     // SOUL-UNVERIFIABLE-CLAIM reported the SOUL default high vs emitted
     // medium.
@@ -397,7 +396,7 @@ describe('HMA-29.AC7 — inventory severity agrees with fixed-severity emission 
   });
 });
 
-describe('HMA-29.AC3 — the inventory covers, or declares its exclusion of, every emitted family', () => {
+describe('the inventory covers, or declares its exclusion of, every emitted family', () => {
   // The six families the baseline found emitted-but-uninventoried, with the
   // shape each must have landed in.
   it.each([
@@ -407,7 +406,7 @@ describe('HMA-29.AC3 — the inventory covers, or declares its exclusion of, eve
     ['FIX', 'excluded'],
     ['SCAN', 'excluded'],
     ['SEM', 'excluded'],
-  ] as const)('HMA-29.AC3 baseline gap family %s is covered (%s)', (family, _shape) => {
+  ] as const)('baseline gap family %s is covered (%s)', (family, _shape) => {
     const familyEmitted = [...emitted].filter((id) => id.split('-')[0] === family);
     expect(familyEmitted.length).toBeGreaterThan(0);
     const uncovered = familyEmitted.filter(
@@ -416,7 +415,7 @@ describe('HMA-29.AC3 — the inventory covers, or declares its exclusion of, eve
     expect(uncovered, `family ${family} still has uncovered emitted ids`).toEqual([]);
   });
 
-  it('HMA-29.AC3 the 24 baseline AST ids and 6 SOUL ids are inventory keys, counted by totalChecks', () => {
+  it('the 24 baseline AST ids and 6 SOUL ids are inventory keys, counted by totalChecks', () => {
     const baselineAst = [
       'AST-CAP-001', 'AST-CAP-002', 'AST-CODE-001', 'AST-CODE-002', 'AST-CODE-003',
       'AST-CRED-001', 'AST-CRED-002', 'AST-CRED-003',
@@ -438,7 +437,7 @@ describe('HMA-29.AC3 — the inventory covers, or declares its exclusion of, eve
     expect(inventory.size).toBeGreaterThanOrEqual(324 + baselineAst.length + baselineSoul.length);
   });
 
-  it('HMA-29.AC3 every declared exclusion names a family and a reason', () => {
+  it('every declared exclusion names a family and a reason', () => {
     expect(exclusions.length).toBeGreaterThan(0);
     for (const ex of exclusions) {
       expect(ex.family).toMatch(/^[A-Z][A-Z0-9-]*$/);
@@ -450,7 +449,7 @@ describe('HMA-29.AC3 — the inventory covers, or declares its exclusion of, eve
     }
   });
 
-  it('HMA-29.AC3 the visible exclusions cover every TAXONOMY_EXEMPT_CHECKIDS member (the mechanism, made visible)', () => {
+  it('the visible exclusions cover every TAXONOMY_EXEMPT_CHECKIDS member (the mechanism, made visible)', () => {
     const declaredIds = new Set(exclusions.flatMap((e) => e.ids));
     for (const id of TAXONOMY_EXEMPT_CHECKIDS) {
       expect(declaredIds.has(id), `exempt id ${id} missing from the declared exclusions`).toBe(true);
@@ -467,10 +466,10 @@ describe('HMA-29.AC3 — the inventory covers, or declares its exclusion of, eve
   });
 });
 
-describe.runIf(existsSync(CLI))('HMA-29.AC3 — check-metadata carries the coverage and the exclusions (spawn)', () => {
+describe.runIf(existsSync(CLI))('check-metadata carries the coverage and the exclusions (spawn)', () => {
   beforeAll(assertDistFreshIfPresent);
 
-  it('HMA-29.AC3 check-metadata --json: totalChecks reflects the added ids and exclusions are declared', () => {
+  it('check-metadata --json: totalChecks reflects the added ids and exclusions are declared', () => {
     const res = spawnSync(process.execPath, [CLI, 'check-metadata', '--json'], {
       encoding: 'utf-8',
       env: { ...process.env, NO_COLOR: '1' },
@@ -498,7 +497,7 @@ describe.runIf(existsSync(CLI))('HMA-29.AC3 — check-metadata carries the cover
     expect(byFamily.get('INJECT')!.pattern).toBeDefined();
   });
 
-  it('HMA-29.AC7 check-metadata --json: severityNote documents per-finding AST severity and the pinned sites match', () => {
+  it('check-metadata --json: severityNote documents per-finding AST severity and the pinned sites match', () => {
     const res = spawnSync(process.execPath, [CLI, 'check-metadata', '--json'], {
       encoding: 'utf-8',
       env: { ...process.env, NO_COLOR: '1' },
