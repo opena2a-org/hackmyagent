@@ -4,6 +4,16 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The PEM private-key redaction rule is bounded per block
+
+`redactSecretsForReport` carried a `pem-private-key` rule with an unbounded lazy body,
+so a report containing many armor headers with no footer took 10 s and more at the
+1 MiB size gate. The rule now bounds each block at 32768 characters and stops at the
+next `-----BEGIN` header, which brings the same input to a few milliseconds and keeps
+every key size the producing toolchains emit (up to RSA-16384) fully redacted. A block
+longer than the bound is left as it was rather than partially consumed. New tests mint
+every key and probe at test time; none is committed.
+
 ### `.hmaignore` gains `<path>:<CHECK-ID>`, trailing comments, `expires:`, and loud exit-neutral errors
 
 A path rule used to be all-or-nothing: `danger.py` removed every check on that
