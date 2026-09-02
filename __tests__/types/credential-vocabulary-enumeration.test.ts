@@ -99,10 +99,11 @@ const FROZEN_ALLOWLIST: Readonly<Record<string, number>> = {
   'src/nanomind-core/compiler/source-code-preprocessor.ts': 3,
   'src/nanomind-core/ingestion/artifact-parser.ts': 6,
   // 27 -> 28 in HMA-34. The counter is blind to what a literal is FOR, and the
-  // bounded `pem-private-key` rule states its own invariant with a negative
+  // fail-closed `pem-private-key` rule states its own invariant with a negative
   // lookahead — the body may not cross another armor header — so the ruled
   // pattern spells the `-----BEGIN` guard token twice, once in the header and
-  // once inside `(?:(?!...)[\s\S]){0,32768}?`. No new vocabulary was added: it
+  // once inside the lookahead that stops the body at the next armor header.
+  // No new vocabulary was added: it
   // is the same token the rule already carried, now load-bearing twice. Nothing
   // else in the file moved.
   'src/nanomind-core/security/defense-in-depth.ts': 28,

@@ -418,7 +418,7 @@ describe('HMA-34: pem-private-key fails closed at any block size, never crossing
       );
     });
 
-    it('HMA-34.AC3 the largest-real-variant stand-in is comfortably inside the bound', () => {
+    it('HMA-34.AC3 the largest-real-variant stand-in redacts whole', () => {
       // 197 x 64-column lines at 16-space YAML indentation = a 15,958-char
       // span — a real-formatting shape (16-space YAML indentation, 64-column
       // lines) inside the 1 MiB gate; no size is the largest — see the
