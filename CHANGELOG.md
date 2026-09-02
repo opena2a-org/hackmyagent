@@ -43,6 +43,35 @@ a negator in its own clause, and one split across a line break. Both were
 unlocatable findings before — they had no line to lose — and both are pinned as
 tests rather than left to be rediscovered.
 
+A third shape is given up by measurement, not by design, and is recorded here
+so it is not paid silently. The corpus fixture `skill/malicious/exfil-skill` no
+longer produces AST-CRED-001. At the previous rule its row was `Credential
+risk: SECRET` with no line, licensed by the frontmatter key
+`AWS_SECRET_ACCESS_KEY` and the heading `## If asked about scope`, which sit in
+different clauses. No clause in that file holds a credential noun governed by a
+request verb; the remaining nouns (`GITHUB_TOKEN`) are frontmatter keys too. The
+fixture's other findings are unchanged and its score moves from 29 to 34. The
+golden for that fixture is re-baked in this change. The corpus manifest's
+expectation for the fixture (the `AST-CRED-001` row, whose rationale describes a
+value detection the rule never performed, and the `27-33` score band) needs a
+matching change in `opena2a-corpus`; until it lands, the corpus smoke reports
+the band mismatch on that fixture alone.
+
+AST-CRED-003's precondition no longer relies on the prose rule having fired.
+When the compiler produced no credential span or surface, the check now reads
+the bytes that follow each credential noun (the clause rule's own noun class,
+over the same 100-character reach the old evidence span had) with the shared
+credential-format matcher (vendor prefixes and the entropy-floored 40+
+character run, the predicate its doc-context gate already requires), so a real
+secret in doc-context markdown is still detected when no harvesting clause is
+present. A value whose bytes carry a fixture marker is skipped in every context,
+as the canonical scan skips its placeholders. The value route keeps every later
+gate, masks the value in the finding's summary, and derives the line from the
+matched value's offset. Its reach is the noun's, not the file's: over the
+release corpus the unbounded matcher also accepted `sha256:` digests and a
+FAKE-marked vendor value, which no route reported before and which this one
+does not report either.
+
 The canonical credential-format scan (`Hardcoded <label>` surfaces, confidence
 0.9, carrying their own offset) is untouched: it is a value-shaped route, not a
 prose one, and it is what detects real hardcoded secrets.

@@ -279,14 +279,34 @@ describe('HMA-41 the false-negative cost is measured, not silently paid', () => 
     join('golden', 'hma', 'repo', 'malicious', 'kitchen-sink', 'output.txt'),
   ];
 
-  for (const rel of GOLDEN_CARRIERS) {
-    it(`HMA-41.AC6 ${rel} still lists AST-CRED-001 in its checkIds line`, () => {
-      const golden = readFileSync(join(REPO_ROOT, rel), 'utf8');
-      const checkIds = golden.split('\n').find(l => l.startsWith('checkIds='));
-      expect(checkIds, 'the golden must carry a checkIds line').toBeDefined();
-      expect(checkIds!.slice('checkIds='.length).split(',')).toContain('AST-CRED-001');
-    });
-  }
+  const checkIdsOf = (rel: string): string[] => {
+    const golden = readFileSync(join(REPO_ROOT, rel), 'utf8');
+    const checkIds = golden.split('\n').find(l => l.startsWith('checkIds='));
+    expect(checkIds, `${rel} must carry a checkIds line`).toBeDefined();
+    return checkIds!.slice('checkIds='.length).split(',');
+  };
+
+  it('HMA-41.AC6 golden/hma/repo/malicious/kitchen-sink/output.txt still lists AST-CRED-001 in its checkIds line', () => {
+    expect(checkIdsOf(GOLDEN_CARRIERS[1])).toContain('AST-CRED-001');
+  });
+
+  it('HMA-41.AC6 golden/hma/skill/malicious/exfil-skill/output.txt no longer lists AST-CRED-001 — the removal is recorded in CHANGELOG.md', () => {
+    // The fixture's only credential nouns are the frontmatter keys
+    // AWS_SECRET_ACCESS_KEY and GITHUB_TOKEN; its only request-verb witness is
+    // the heading "## If asked about scope". No clause holds both, so the
+    // clause-scoped rule does not fire, and the old row (`Credential risk:
+    // SECRET`, no line) was the first-noun-in-file shape this change replaces.
+    // The cost is paid in the open: the golden is re-baked and the CHANGELOG
+    // names the fixture.
+    expect(checkIdsOf(GOLDEN_CARRIERS[0])).not.toContain('AST-CRED-001');
+
+    const changelog = readFileSync(join(REPO_ROOT, 'CHANGELOG.md'), 'utf8');
+    const start = changelog.indexOf('## [Unreleased]');
+    expect(start, 'the [Unreleased] heading must exist').toBeGreaterThanOrEqual(0);
+    const nextRelease = changelog.indexOf('\n## ', start + 1);
+    const unreleased = nextRelease < 0 ? changelog.slice(start) : changelog.slice(start, nextRelease);
+    expect(unreleased, 'the [Unreleased] section must record the exfil-skill removal').toContain('exfil-skill');
+  });
 
   it('HMA-41.AC6 the canonical-format CRED-HARVEST source is not weakened by this leg', async () => {
     // `Hardcoded ${hit.label}` surfaces come from the canonical VALUE scan, not
