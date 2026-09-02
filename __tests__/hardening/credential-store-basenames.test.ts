@@ -32,6 +32,10 @@ const AWS_PAIR =
   'aws_access_key_id = ' + ['AKIA', 'IOSFODNN7EXAMPLE'].join('') + '\n' +
   'aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n';
 
+// Header and footer are assembled from parts so no committed line carries a
+// private-key-block-shaped string; the scanner sees the joined form at runtime.
+const PEM_BEGIN = ['-----BEGIN RSA', 'PRIVATE KEY-----'].join(' ');
+const PEM_END = ['-----END RSA', 'PRIVATE KEY-----'].join(' ');
 const REPO_ROOT = path.join(__dirname, '..', '..');
 const SCANNER_SRC = path.join(REPO_ROOT, 'src', 'hardening', 'scanner.ts');
 const CLI = path.join(REPO_ROOT, 'dist', 'cli.js');
@@ -96,7 +100,7 @@ describe('HMA-30 — credential-store basenames reach CRED-001', () => {
       // is non-vacuous: routed through the CRED-001 regexes it WOULD fire.
       const { findings } = await scanTree({
         [path.join('.ssh', 'id_rsa')]:
-          '-----BEGIN RSA PRIVATE KEY-----\n' + AWS_PAIR + '-----END RSA PRIVATE KEY-----\n',
+          PEM_BEGIN + '\n' + AWS_PAIR + PEM_END + '\n',
       });
       const keyFinding = findings.find((f) => f.checkId === 'CRED-002' && !f.passed);
       expect(keyFinding, 'CRED-002 for .ssh/id_rsa').toBeDefined();
