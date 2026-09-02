@@ -4,6 +4,30 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The Gate file approval predicate now covers the credential-boundary paths
+
+The path-scoped merge gate in `.github/workflows/gate-file-approval.yml` gated
+exactly `^.github/`. Its changed-file predicate now also classifies four
+credential-boundary sources as gate files requiring an approving review on the
+pull request's current head commit:
+`src/nanomind-core/analyzers/credential-analyzer.ts`,
+`src/nanomind-core/compiler/semantic-compiler.ts`,
+`src/nanomind-core/security/defense-in-depth.ts` (the report-redaction module)
+and `src/nanomind-core/analyzers/stego-analyzer.ts`. Each file pattern is
+anchored at both ends, so a lookalike path above, below or beside a gated one
+does not gate, and a pull request touching neither class still passes
+immediately.
+
+The workflow is restructured so every API read happens before a
+marker-delimited, pure-shell verdict block, and a new suite,
+`__tests__/gate/gate-file-verdict.test.ts`, lifts that block out of the YAML
+and executes it verbatim against planted changed-file lists: each boundary
+path evaluates to the blocking `action_required` conclusion absent approval on
+the current head, a change touching no gate file evaluates to `success` ("no
+gate files touched"), and over every no-approval input the conclusion
+vocabulary is exactly `action_required` or `failure` — never `success`, and
+never `neutral`, which required checks treat as passing.
+
 ### `mcp-serve` no longer posts its command telemetry event, and the MCP server's confinement is pinned by witness suites
 
 `mcp-serve` reads inside the granted roots and reaches nothing by default, so
