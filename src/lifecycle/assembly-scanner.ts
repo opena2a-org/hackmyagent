@@ -45,7 +45,9 @@ const INJECTION_PATTERNS: { pattern: RegExp; name: string; severity: 'critical' 
   { pattern: /\bassistant\s*:\s*\n/i, name: 'role-delimiter-injection', severity: 'high' },
   { pattern: /\bsystem\s*:\s*\n/i, name: 'system-delimiter-injection', severity: 'high' },
   { pattern: /\b(reveal|show|output|print)\s+(your\s+)?(system\s+prompt|instructions?|rules?)/i, name: 'prompt-extraction', severity: 'medium' },
-  { pattern: /<!--[\s\S]*?(ignore|override|disregard)[\s\S]*?-->/i, name: 'html-comment-injection', severity: 'high' },
+  // Both lazy scans are bounded at the next `<!--` so a flood of unclosed
+  // openers costs O(n) total instead of O(n^2) (HMA-44); comments cannot nest.
+  { pattern: /<!--(?:(?!<!--)[\s\S])*?(ignore|override|disregard)(?:(?!<!--)[\s\S])*?-->/i, name: 'html-comment-injection', severity: 'high' },
   { pattern: /\u200b|\u200c|\u200d|\ufeff/g, name: 'zero-width-char', severity: 'medium' },
 ];
 
