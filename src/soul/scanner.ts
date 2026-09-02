@@ -276,8 +276,11 @@ export interface HardenResult {
   /**
    * Governance-named links that resolve outside the target tree, withheld by
    * `findGovernanceFile` rather than read (see `SoulScanResult.withheldLinks`).
-   * A withheld link leaves `existedBefore` false: a link is not the file, and
-   * the write side independently refuses to write through it.
+   * A withheld link leaves `existedBefore` true: the link IS the first
+   * existing governance name, so it stays the selected target (skipping it
+   * would silently redirect the write to a fresh file — see the target
+   * selection note in `hardenSoul`). Only the read through it is withheld,
+   * and the write side independently refuses to write through it.
    */
   withheldLinks?: WithheldLink[];
 }
