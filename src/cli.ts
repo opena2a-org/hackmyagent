@@ -83,7 +83,17 @@ import type { TelemetryAction } from '@opena2a/cli-ui' with { 'resolution-mode':
 // download counts and event counts can be correlated.
 const TELEMETRY_TOOL = 'hackmyagent';
 // Subcommands not tracked: pure config / self-referential commands.
-const NON_TRACKED_TELEMETRY_COMMANDS = new Set<string>(['telemetry', 'help']);
+// 'telemetry' and 'help' are excluded to avoid self-referential events.
+// 'mcp-serve' is excluded because its MCP contract is READ inside the granted
+// roots and REACH nothing by default (HMA-39, CISO decision 3): the command
+// event would be the session's ONE default network attempt, posted from a
+// process a host model drives. It is also posted at the wrong moment — the
+// action returns as soon as the transport connects, so postAction fires at
+// STARTUP and the duration it reports is transport setup, not the session.
+// Measured by __tests__/mcp/stdio-egress-witness.test.ts: with the event, a
+// session behind a logging proxy shows exactly one `CONNECT api.oa2a.org:443`
+// before the first tool call; without it, zero.
+const NON_TRACKED_TELEMETRY_COMMANDS = new Set<string>(['telemetry', 'help', 'mcp-serve']);
 
 /**
  * How long a command will wait for its telemetry post before giving up (#297).
