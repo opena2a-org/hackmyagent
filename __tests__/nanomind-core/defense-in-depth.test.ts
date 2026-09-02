@@ -225,8 +225,9 @@ describe('Defense-in-Depth: NanoMind Security', () => {
 });
 
 /**
- * HMA-34 — the `pem-private-key` redaction body is bounded per BLOCK at
- * N = 32768 and refuses to cross another armor header.
+ * HMA-34 — the `pem-private-key` redaction rule fails closed at any block
+ * size, refuses to cross another KEY header, and replaces a block whose
+ * footer is missing together with the key material after its header.
  *
  * Nothing below is a committed key. The two real blocks are MINTED in-process
  * by `node:crypto` and never written to disk; every synthetic block is built
@@ -254,11 +255,13 @@ function msFor(fn: () => unknown): number {
 }
 
 /** A PKCS#8 PEM, minted here and discarded with the process. */
-function mintPkcs8(kind: 'rsa' | 'ec'): string {
+function mintPkcs8(kind: 'rsa' | 'ec' | 'ed25519'): string {
   const { privateKey } =
     kind === 'rsa'
       ? generateKeyPairSync('rsa', { modulusLength: 2048 })
-      : generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+      : kind === 'ec'
+        ? generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
+        : generateKeyPairSync('ed25519');
   return privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
 }
 
@@ -273,9 +276,8 @@ function indentBlock(pem: string, width: number): string {
 /**
  * A body span of EXACTLY `total` chars: a leading newline, then 64-column runs
  * of `A`. The span is every char between the header's closing `-----` and the
- * footer's leading `-----END`, newlines included, which is what the `{0,32768}`
- * quantifier counts (JS counts UTF-16 code units; PEM armor is ASCII, so units,
- * chars and bytes all agree).
+ * footer's leading `-----END`, newlines included (JS counts UTF-16 code units;
+ * PEM armor is ASCII, so units, chars and bytes all agree).
  */
 function spanOfLength(total: number): string {
   const line = 'A'.repeat(64) + '\n';
@@ -284,7 +286,7 @@ function spanOfLength(total: number): string {
   return span.slice(0, total);
 }
 
-describe('HMA-34: pem-private-key body bounded per block, never crossing a header', () => {
+describe('HMA-34: pem-private-key fails closed at any block size, never crossing a KEY header', () => {
   // One header run, 22 chars, no END anywhere. This is the pattern's own
   // alphabet: the shape that makes an unbounded lazy body quadratic, because
   // every header without a footer scans to end-of-input before failing.
@@ -378,7 +380,7 @@ describe('HMA-34: pem-private-key body bounded per block, never crossing a heade
     });
   });
 
-  describe('AC3 — the bound is structural, per block, at N = 32768', () => {
+  describe('AC3 — the redactor fails closed at any block size, bounded only structurally', () => {
     const KIND = 'RSA PRIVATE';
 
     it('HMA-34.AC3 a 32,768-char span is replaced by exactly the marker', () => {
@@ -390,29 +392,38 @@ describe('HMA-34: pem-private-key body bounded per block, never crossing a heade
       );
     });
 
-    it('HMA-34.AC3 a 32,769-char span is left VERBATIM rather than partly consumed', () => {
-      const span = spanOfLength(32_769);
-      expect(span.length).toBe(32_769);
+    it('HMA-34.AC3 a 32,769-char span is replaced by exactly the marker, as is a 1,000,000-char span', () => {
+      // Past 32 KiB is not 'not a key': Node and the OpenSSL CLI both emit
+      // RSA-32768 (25,112 chars plain, 34,424 at 24-space indentation),
+      // FrodoKEM PKCS#8 bodies start at 42,434, and indentation depth has no
+      // producer bound. The rule has no size bound; a complete block of any
+      // size is replaced whole, because a redactor that fails open on a size
+      // is the defect.
+      for (const n of [32_769, 1_000_000]) {
+        const span = spanOfLength(n);
+        expect(span.length).toBe(n);
 
-      // One char past the bound is not a key either producing toolchain can
-      // emit (OpenSSL caps RSA at 16384 bits; the largest measured formatted
-      // body is 15,884 chars). The rule declines the whole block rather than
-      // eating a bounded prefix of it — red at base, where the unbounded body
-      // redacts this.
-      const input = armorHeader(KIND) + span + armorFooter(KIND);
-      const out = redactSecretsForReport(input);
+        expect(redactSecretsForReport(armorHeader(KIND) + span + armorFooter(KIND))).toBe(
+          PRIVATE_KEY_MARKER,
+        );
+      }
+    });
 
-      expect(out).toBe(input);
-      expect(out).not.toContain(PRIVATE_KEY_MARKER);
-      expect(out).toContain(armorHeader(KIND));
-      expect(out).toContain(armorFooter(KIND));
+    it('HMA-34.AC3 a 65,536-char span is replaced by exactly the marker', () => {
+      const span = spanOfLength(65_536);
+      expect(span.length).toBe(65_536);
+
+      expect(redactSecretsForReport(armorHeader(KIND) + span + armorFooter(KIND))).toBe(
+        PRIVATE_KEY_MARKER,
+      );
     });
 
     it('HMA-34.AC3 the largest-real-variant stand-in is comfortably inside the bound', () => {
       // 197 x 64-column lines at 16-space YAML indentation = a 15,958-char
-      // span, at or above the largest real body measured (an encrypted
-      // RSA-16384 PKCS#8 block indented 16, at 15,884). RSA-16384 is not minted
-      // here: generating one costs ~14 s.
+      // span — a real-formatting shape (16-space YAML indentation, 64-column
+      // lines) inside the 1 MiB gate; no size is the largest — see the
+      // over-bound pins. RSA-16384 is not minted here: generating one costs
+      // ~14 s.
       const kind = 'ENCRYPTED PRIVATE';
       const span = '\n' + (' '.repeat(16) + 'A'.repeat(64) + '\n').repeat(197);
       expect(span.length).toBe(15_958);
@@ -421,6 +432,148 @@ describe('HMA-34: pem-private-key body bounded per block, never crossing a heade
         PRIVATE_KEY_MARKER,
       );
     });
+
+    it('HMA-34.AC3 the RSA-32768-shaped stand-in at 24-space indentation redacts whole', () => {
+      // The layout measured on a real RSA-32768 PKCS#8 PEM — 25,112 chars over
+      // 388 lines: one header line, 385 body lines of 64 chars, one 32-char
+      // last body line, one footer line, every line newline-terminated —
+      // rebuilt from the pattern's own alphabet. RSA-32768 is never minted
+      // here: generating one measured 521,705 ms. At 24-space indentation the
+      // block is 34,424 chars, which the withdrawn per-block bound of 32,768
+      // left VERBATIM — the measured fail-open this revision closes.
+      const body = ('A'.repeat(64) + '\n').repeat(385) + 'A'.repeat(32) + '\n';
+      const plain = armorHeader('PRIVATE') + '\n' + body + armorFooter('PRIVATE') + '\n';
+      expect(plain.length).toBe(25_112);
+      expect(plain.split('\n').length - 1).toBe(388);
+
+      const indented = indentBlock(plain, 24);
+      expect(indented.length).toBe(34_424);
+
+      expect(redactSecretsForReport(indented)).toBe(' '.repeat(24) + PRIVATE_KEY_MARKER + '\n');
+    });
+  });
+
+  describe('AC3 — a block whose footer is missing is replaced with the key material after its header', () => {
+    /**
+     * Sliding 16-char windows of the minted key's base64 body, none of which
+     * may survive in `out`. Windows rather than whole lines so that a form
+     * that re-wraps, squashes or escapes the body still trips the check.
+     */
+    function expectNoBodyLeak(out: string, pem: string): void {
+      const body = pem
+        .split('\n')
+        .filter(line => line !== '' && !line.includes('-----'))
+        .join('');
+      for (let i = 0; i + 16 <= body.length; i += 8) {
+        expect(out).not.toContain(body.slice(i, i + 16));
+      }
+    }
+
+    it('HMA-34.AC3 a truncated block ahead of a complete block yields exactly two markers', () => {
+      // At the withdrawn footer-requiring literal this left the truncated
+      // key's body verbatim while the report was stamped as redacted.
+      const truncated = mintPkcs8('rsa').slice(0, -40);
+      const complete = mintPkcs8('ec');
+      const out = redactSecretsForReport(truncated + '\n' + complete);
+
+      expect(out).toBe(PRIVATE_KEY_MARKER + '\n' + PRIVATE_KEY_MARKER + '\n');
+      expect(out.length).toBe(46);
+      expectNoBodyLeak(out, truncated + '\n');
+      expectNoBodyLeak(out, complete);
+    });
+
+    it('HMA-34.AC3 a truncated block alone at end of input is replaced by exactly the marker', () => {
+      const truncated = mintPkcs8('rsa').slice(0, -40);
+
+      expect(redactSecretsForReport(truncated)).toBe(PRIVATE_KEY_MARKER);
+      expect(redactSecretsForReport(truncated.slice(0, 200))).toBe(PRIVATE_KEY_MARKER);
+    });
+
+    it('HMA-34.AC3 no base64 char of a truncated block survives in any of its six carrier forms', () => {
+      const rsa = mintPkcs8('rsa');
+      const truncated = rsa.slice(0, -40);
+      const ed = mintPkcs8('ed25519');
+      const edTruncated = ed.slice(0, ed.indexOf(ARMOR_END.trimEnd()));
+
+      const forms: ReadonlyArray<[string, string, string]> = [
+        ['16-space-indented', indentBlock(rsa, 16).slice(0, -40), rsa],
+        ['CRLF', truncated.replace(/\n/g, '\r\n'), rsa],
+        [
+          'traditional-encrypted',
+          armorHeader('RSA PRIVATE') +
+            '\nProc-Type: 4,ENCRYPTED\nDEK-Info: DES-EDE3-CBC,0123456789ABCDEF\n\n' +
+            truncated.split('\n').slice(1).join('\n'),
+          rsa,
+        ],
+        ['Ed25519 single-line', edTruncated.replace(/\n/g, '\\n'), ed],
+        ['squashed-to-spaces', truncated.replace(/\n/g, ' '), rsa],
+        ['escaped end-of-input', truncated.replace(/\n/g, '\\n'), rsa],
+      ];
+
+      for (const [label, input, pem] of forms) {
+        const out = redactSecretsForReport(input);
+        expect(out, `${label} did not redact`).toContain(PRIVATE_KEY_MARKER);
+        expectNoBodyLeak(out, pem);
+      }
+    });
+
+    it('HMA-34.AC3 a complete CERTIFICATE block nested in a key body is crossed, not a boundary', () => {
+      // The lazy body refuses only KEY headers. A CERTIFICATE header inside
+      // the block is crossed, so the whole outer block still collapses to one
+      // marker instead of leaking the tail after the certificate.
+      const cert =
+        ARMOR_BEGIN + 'CERTIFICATE-----' + '\n' +
+        ('B'.repeat(64) + '\n').repeat(3) +
+        ARMOR_END + 'CERTIFICATE-----';
+      const lines = mintPkcs8('rsa').slice(0, -1).split('\n');
+      const nested = [...lines.slice(0, 3), cert, ...lines.slice(3)].join('\n') + '\n';
+
+      expect(redactSecretsForReport(nested)).toBe(PRIVATE_KEY_MARKER + '\n');
+    });
+  });
+
+  describe('AC3 — prose, stack and gate-edge pins', () => {
+    it('HMA-34.AC3 the declared-purpose prose fixture passes through unchanged', () => {
+      // The exact fixture of declared-purpose-redaction.test.ts ("does not eat
+      // prose after a mentioned PEM header"), here fed straight through
+      // `redactSecretsForReport`: a header mentioned in prose carries no key
+      // material, so it stays verbatim and the doc-context words survive.
+      const prose =
+        'const NOTE = "reject uploads starting with ' +
+        armorHeader('PRIVATE') +
+        ' ; example fixture for tests and demo only";\n';
+
+      expect(redactSecretsForReport(prose)).toBe(prose);
+    });
+
+    it('HMA-34.AC3 a bare header line with nothing after it is returned unchanged', () => {
+      const input = armorHeader('A') + '\n';
+      expect(redactSecretsForReport(input)).toBe(input);
+    });
+
+    it('HMA-34.AC3 a header before half a MiB of two-char lines neither throws nor stalls', () => {
+      // The shape that made an uncapped key-material loop throw RangeError:
+      // one iteration per two-char line. The {1,16384} cap bounds V8's
+      // backtrack stack, so this completes in milliseconds — measured 4 ms
+      // here; only the budget is asserted.
+      const input = armorHeader('A') + 'A\n'.repeat(524_276);
+      expect(input.length).toBe(1_048_573);
+
+      let out = '';
+      const ms = msFor(() => {
+        out = redactSecretsForReport(input);
+      });
+
+      expect(ms).toBeLessThan(BUDGET_MS);
+      expect(out).toContain(PRIVATE_KEY_MARKER);
+    });
+
+    it('HMA-34.AC3 a footerless block just under the size gate is replaced by exactly the marker', () => {
+      const input = armorHeader('A') + '\n' + ('A'.repeat(64) + '\n').repeat(16_131);
+      expect(input.length).toBe(1_048_537); // just under MAX_REDACTION_INPUT_BYTES
+
+      expect(redactSecretsForReport(input)).toBe(PRIVATE_KEY_MARKER + '\n');
+    });
   });
 
   describe('AC4 — the ruled literal and its hand-held mirror move together', () => {
@@ -428,15 +581,21 @@ describe('HMA-34: pem-private-key body bounded per block, never crossing a heade
 
     // Built from the same parts as everything else above, so no line in this
     // file is a whole armor header. `[\\s\\S]` here is the two-character class
-    // `[\s\S]` as it is spelled in both sources.
+    // `[\s\S]` as it is spelled in both sources: alternative 1 is a complete
+    // block of any size whose lazy body refuses to cross another KEY header;
+    // alternative 2 is a footerless header with the key material after it,
+    // its loop capped at {1,16384} only to bound the regexp backtrack stack.
     const RULED_PATTERN =
       armorHeader('[A-Z ]+') +
-      '(?:(?!' +
-      ARMOR_BEGIN.trimEnd() +
-      ')[\\s\\S]){0,32768}?' +
-      armorFooter('[A-Z ]+');
+      '(?:(?:(?!' +
+      armorHeader('[A-Z ]+') +
+      ')[\\s\\S])*?' +
+      armorFooter('[A-Z ]+') +
+      '|(?:(?:\\s|\\\\[rn])*(?:[A-Za-z0-9+/=]{40,}' +
+      '|[A-Za-z0-9+/=]+(?=[ \\t]*(?:\\r?\\n|(?:\\\\r)?\\\\n|$))' +
+      '|(?:Proc-Type|DEK-Info):[^\\r\\n\\\\]*)){1,16384})';
 
-    it('HMA-34.AC4 the rule table carries the ruled bounded entry verbatim', () => {
+    it('HMA-34.AC4 the rule table carries the ruled fail-closed entry verbatim', () => {
       const src = readFileSync(
         join(REPO_ROOT, 'src', 'nanomind-core', 'security', 'defense-in-depth.ts'),
         'utf-8',
@@ -449,8 +608,10 @@ describe('HMA-34: pem-private-key body bounded per block, never crossing a heade
           PRIVATE_KEY_MARKER +
           "' },",
       );
-      // The old unbounded body is gone, not merely shadowed.
+      // The unbounded body and the withdrawn per-block bound are gone, not
+      // merely shadowed.
       expect(src).not.toContain(armorHeader('[A-Z ]+') + '[\\s\\S]*?' + armorFooter('[A-Z ]+'));
+      expect(src).not.toContain('{0,32768}');
     });
 
     it('HMA-34.AC4 the parity oracle was hand-edited to the same ruled pattern', () => {
@@ -464,6 +625,7 @@ describe('HMA-34: pem-private-key body bounded per block, never crossing a heade
 
       expect(oracle).toContain('/' + RULED_PATTERN + '/g');
       expect(oracle).not.toContain(armorHeader('[A-Z ]+') + '[\\s\\S]*?' + armorFooter('[A-Z ]+'));
+      expect(oracle).not.toContain('{0,32768}');
     });
   });
 });
