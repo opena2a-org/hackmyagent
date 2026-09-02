@@ -36,6 +36,19 @@
  *                         secure --ci` must report the planted control —
  *                         zero credential findings means the shipped scanner
  *                         cannot see the one thing it ships to find.
+ *   self-check-live       the shipped integrity self-check, proven live over
+ *                         the shipped bytes. Static half: the tarball carries
+ *                         package/dist/integrity-manifest.json, its version
+ *                         is the packed package.json version, and its `files`
+ *                         key set is exactly the dist/ file entries minus the
+ *                         manifest itself (an absent `signature` is recorded
+ *                         as "unsigned", not failed). Executing half, run
+ *                         LAST of the executing checks because it corrupts
+ *                         the prefix: append `\n//x\n` to the installed
+ *                         dist/index.js and require `hackmyagent --version`
+ *                         to quarantine — exit 3 with INTEGRITY CHECK FAILED
+ *                         on stderr. A manifest that goes missing must never
+ *                         fail open as a silent CLEAN.
  *   audit-high            `npm audit --omit=dev` at high-or-above over the
  *                         packed package.json's resolution.
  *
@@ -68,6 +81,7 @@ const CHECKS = [
   'smoke-help',
   'smoke-secure-ci',
   'credential-control',
+  'self-check-live',
   'audit-high',
 ];
 
@@ -80,7 +94,13 @@ const STATIC_CHECKS = new Set([
 ]);
 
 /** Checks that execute code out of the artifact. Never run after a static FAIL. */
-const EXECUTING_CHECKS = ['smoke-version', 'smoke-help', 'smoke-secure-ci', 'credential-control'];
+const EXECUTING_CHECKS = [
+  'smoke-version',
+  'smoke-help',
+  'smoke-secure-ci',
+  'credential-control',
+  'self-check-live',
+];
 
 // name -> { status: 'pass' | 'FAIL' | 'precondition', detail: string }
 const results = new Map();
@@ -294,6 +314,55 @@ function cliProblem(r) {
   return null;
 }
 
+/**
+ * self-check-live, static half: the shipped manifest names the shipped bytes.
+ * With the manifest absent the CLI's startup self-check returns dev-mode
+ * CLEAN, so an artifact that silently drops it fails OPEN — this is the check
+ * that makes that class a named FAIL instead.
+ */
+function selfCheckManifestProblem() {
+  const manifestEntry = 'package/dist/integrity-manifest.json';
+  if (!entries.some((e) => e === manifestEntry)) {
+    return { problem: `${manifestEntry} is not an entry in the tarball` };
+  }
+  let manifest = null;
+  try {
+    const raw = extractText(manifestEntry);
+    manifest = raw === null ? null : JSON.parse(raw);
+  } catch {
+    manifest = null;
+  }
+  if (!manifest || typeof manifest !== 'object') {
+    return { problem: 'integrity manifest present but unreadable or unparsable' };
+  }
+  if (!packedPkg) {
+    return { problem: 'packed package.json unreadable; manifest version cannot be compared' };
+  }
+  if (manifest.version !== packedPkg.version) {
+    return {
+      problem: `manifest version ${manifest.version} is not the packed package.json version ${packedPkg.version}`,
+    };
+  }
+  const shipped = entries
+    .filter((e) => !e.endsWith('/') && e.startsWith('package/dist/'))
+    .map((e) => e.slice('package/dist/'.length))
+    .filter((p) => p !== 'integrity-manifest.json')
+    .sort();
+  const listed = Object.keys(manifest.files ?? {}).sort();
+  if (shipped.length !== listed.length || shipped.some((p, i) => p !== listed[i])) {
+    const unlisted = shipped.filter((p) => !listed.includes(p));
+    const unshipped = listed.filter((p) => !shipped.includes(p));
+    const parts = [];
+    if (unlisted.length) parts.push(`shipped but not in manifest: dist/${unlisted[0]}${unlisted.length > 1 ? ` (+${unlisted.length - 1} more)` : ''}`);
+    if (unshipped.length) parts.push(`in manifest but not shipped: dist/${unshipped[0]}${unshipped.length > 1 ? ` (+${unshipped.length - 1} more)` : ''}`);
+    return { problem: `manifest files do not match the shipped dist/ — ${parts.join('; ')}` };
+  }
+  return {
+    problem: null,
+    signed: typeof manifest.signature === 'string' ? 'signed' : 'unsigned',
+  };
+}
+
 if (staticFailures.length) {
   for (const name of EXECUTING_CHECKS) {
     record(
@@ -307,14 +376,17 @@ if (staticFailures.length) {
     record(name, 'precondition', 'no dist/ in tarball; nothing to execute');
   }
 } else {
-  // Clean global prefix. The install itself may use the network (the packed
-  // dependencies resolve from the registry) and the ambient npm cache; the
-  // CLI RUNS are what get the empty HOME and the cut network.
+  // Clean global prefix, named with the --prefix flag rather than npm's
+  // prefix environment variable: that variable's name is a credential-shape
+  // guard literal (the npm token prefix), and this file may not carry one.
+  // The install itself may use the network (the packed dependencies resolve
+  // from the registry) and the ambient npm cache; the CLI RUNS are what get
+  // the empty HOME and the cut network.
   const prefix = mkScratch('prefix');
   const install = sh(
     'npm',
-    ['install', '-g', tarball, '--ignore-scripts', '--no-audit', '--no-fund'],
-    { env: { ...process.env, npm_config_prefix: prefix }, timeout: 600_000 },
+    ['install', '-g', tarball, '--ignore-scripts', '--no-audit', '--no-fund', '--prefix', prefix],
+    { timeout: 600_000 },
   );
 
   if (install.status !== 0) {
@@ -407,6 +479,47 @@ if (staticFailures.length) {
           problem ??
             `planted control found (${credFindings.length} credential finding(s), ${isolationNote})`,
         );
+      }
+      {
+        // self-check-live, last of the executing checks BECAUSE it corrupts
+        // the installed prefix: every check after it would be measuring the
+        // corruption, not the artifact.
+        const manifest = selfCheckManifestProblem();
+        if (manifest.problem) {
+          record('self-check-live', 'FAIL', manifest.problem);
+        } else if (results.get('smoke-version')?.status !== 'pass') {
+          record(
+            'self-check-live',
+            'precondition',
+            'the tamper probe needs a passing --version baseline, and smoke-version did not pass',
+          );
+        } else {
+          // `bin` is the realpath of the installed bin link, i.e.
+          // <prefix>/lib/node_modules/hackmyagent/dist/cli.js — so index.js
+          // sits beside it in the installed dist/.
+          const target = path.join(path.dirname(bin), 'index.js');
+          if (!fs.existsSync(target)) {
+            record('self-check-live', 'precondition', `installed prefix has no ${target}; nothing to corrupt`);
+          } else {
+            fs.appendFileSync(target, '\n//x\n');
+            const r = hermeticRun([bin, '--version']);
+            const stderr = `${r.stderr ?? ''}`;
+            if (r.status === 3 && stderr.includes('INTEGRITY CHECK FAILED')) {
+              record(
+                'self-check-live',
+                'pass',
+                `corrupted dist/index.js quarantined: exit 3 with INTEGRITY CHECK FAILED (manifest ${manifest.signed}, ${isolationNote})`,
+              );
+            } else {
+              const firstErr = stderr.trim().split('\n')[0] || '(no stderr)';
+              record(
+                'self-check-live',
+                'FAIL',
+                `corrupted dist/index.js was not quarantined: exit ${r.status}, stderr: ${firstErr}`,
+              );
+            }
+          }
+        }
       }
     }
   }

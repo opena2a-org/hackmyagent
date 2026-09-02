@@ -37,6 +37,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as yaml from 'js-yaml';
+import { initThrowawayRepo, gitFreeEnv } from '../helpers/throwaway-repo';
 
 const ROOT = path.join(__dirname, '..', '..');
 const WORKFLOW_DIR = path.join(ROOT, '.github', 'workflows');
@@ -221,7 +222,9 @@ describe('HMA-40.AC4: every npm ci is preceded by the package-manager-config gua
   });
 
   it('HMA-40.AC4 the delivered tree tracks no package-manager config: the guard grep prints nothing', () => {
-    const tracked = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' })
+    // gitFreeEnv(): under this project's pre-push hook git exports GIT_DIR,
+    // and an inherited one would redirect this listing (#348).
+    const tracked = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8', env: gitFreeEnv() })
       .split('\n')
       .filter(Boolean);
     const re = new RegExp(PM_CONFIG_PATTERN);
@@ -230,14 +233,14 @@ describe('HMA-40.AC4: every npm ci is preceded by the package-manager-config gua
 
   it('HMA-40.AC4 the guard pipeline goes red on a scratch tree with one tracked .npmrc, and quiet without it', () => {
     // Both polarities, so the row cannot pass against a pipeline that matches
-    // nothing (or everything). GIT_* stripped for the reason vitest.setup.ts
-    // documents: the pre-push hook exports them and a spawned git would
-    // silently answer about the OUTER repository.
+    // nothing (or everything). The fixture repo comes from initThrowawayRepo
+    // and every git child gets gitFreeEnv() (#348): the pre-push hook exports
+    // GIT_DIR, and a raw git here would silently answer about — or write
+    // into — the OUTER repository.
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'hma40-guard-'));
-    const env = { ...process.env };
-    for (const k of Object.keys(env)) if (k.startsWith('GIT_')) delete env[k];
+    const env = gitFreeEnv();
     try {
-      execFileSync('git', ['init', '-q'], { cwd: scratch, env });
+      initThrowawayRepo(scratch);
       fs.writeFileSync(path.join(scratch, 'index.js'), 'module.exports = 1;\n');
       execFileSync('git', ['add', 'index.js'], { cwd: scratch, env });
       const quiet = spawnSync('bash', ['-c', GUARD_COMMAND], { cwd: scratch, env, encoding: 'utf8' });

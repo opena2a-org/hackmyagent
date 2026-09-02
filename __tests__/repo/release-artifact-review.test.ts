@@ -4,10 +4,11 @@
  *
  * One poisoned tarball per blocking class in the contract (a dotfile entry, a
  * fixtures/ entry, a postinstall script, a caret on an `@opena2a/` dependency,
- * a dist/cli.js that exits 1 on `--version`), each asserting the script exits
- * non-zero with THAT check and only that check failing. Then the green side:
- * a clean fixture passes 10/10, and the tarball packed from the delivered
- * tree has no failing check at all.
+ * a dist/cli.js that exits 1 on `--version`, an integrity manifest that is
+ * absent, and one whose `files` set omits a shipped file), each asserting the
+ * script exits non-zero with THAT check and only that check failing. Then the
+ * green side: a clean fixture passes 11/11, and the tarball packed from the
+ * delivered tree has no failing check at all.
  *
  * The poisoned tarballs carry a dependency-free stand-in CLI rather than the
  * real dist: the poison under test is in the TARBALL SHAPE, and a stand-in
@@ -23,9 +24,16 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+
+// #285 — the delivered-tree row packs the repository, dist/ included, so a
+// stale build here would review (and pass) a binary that is no longer the
+// code under review.
+beforeAll(assertDistFreshIfPresent);
 
 const ROOT = path.join(__dirname, '..', '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'release-artifact-review.mjs');
@@ -41,6 +49,7 @@ const CHECK_NAMES = [
   'smoke-help',
   'smoke-secure-ci',
   'credential-control',
+  'self-check-live',
   'audit-high',
 ];
 
@@ -56,13 +65,33 @@ afterAll(() => {
  * The stand-in CLI. It honours the exact surface the review script drives:
  * `--version`, `--help`, and `secure --ci [--format json] <dir>` with the
  * real CLI's exit-code contract (0 clean, 1 on findings) and the real JSON
- * shape (`{ findings: [{ checkId, file }] }`). The credential marker is
- * assembled at runtime so no credential-shaped literal sits in this file —
- * same idiom as obstruction-disclosure.test.ts.
+ * shape (`{ findings: [{ checkId, file }] }`), plus the real CLI's startup
+ * self-check: every file the shipped `dist/integrity-manifest.json` lists is
+ * hashed before any command is served, a mismatch quarantines (exit 3,
+ * INTEGRITY CHECK FAILED on stderr), and an absent manifest is dev-mode
+ * CLEAN — which is exactly the fail-open class `self-check-live` exists to
+ * catch. The credential marker is assembled at runtime so no
+ * credential-shaped literal sits in this file — same idiom as
+ * obstruction-disclosure.test.ts.
  */
 const FIXTURE_CLI = `#!/usr/bin/env node
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+const manifestPath = path.join(__dirname, 'integrity-manifest.json');
+if (fs.existsSync(manifestPath)) {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  for (const [rel, expected] of Object.entries(manifest.files || {})) {
+    let actual = null;
+    try {
+      actual = crypto.createHash('sha256').update(fs.readFileSync(path.join(__dirname, rel))).digest('hex');
+    } catch {}
+    if (actual !== expected) {
+      console.error('INTEGRITY CHECK FAILED: ' + rel + ' tampered');
+      process.exit(3);
+    }
+  }
+}
 const a = process.argv.slice(2);
 if (a[0] === '--version') { console.log('0.0.0-fixture'); process.exit(0); }
 if (a[0] === '--help') { console.log('Usage: hackmyagent <command>'); process.exit(0); }
@@ -96,10 +125,43 @@ const BASE_PKG = {
   dependencies: {} as Record<string, string>,
 };
 
-function makeTarball(name: string, files: Record<string, string>): string {
+interface FixtureManifest {
+  version: string;
+  files: Record<string, string>;
+}
+
+/**
+ * How a tarball gets its integrity manifest. `'auto'` (the default) computes
+ * it from the final file record exactly as the build script does — every
+ * dist/ file hashed, the manifest itself excluded — so each poisoned row
+ * stays one mutation away from the clean one. `'absent'` drops it, and a
+ * mutator poisons it, which are the two `self-check-live` red classes.
+ */
+type ManifestMode = 'auto' | 'absent' | ((m: FixtureManifest) => FixtureManifest);
+
+function makeTarball(
+  name: string,
+  files: Record<string, string>,
+  manifestMode: ManifestMode = 'auto',
+): string {
+  const full = { ...files };
+  if (manifestMode !== 'absent') {
+    const hashes: Record<string, string> = {};
+    for (const [p, c] of Object.entries(full)) {
+      if (p.startsWith('dist/')) {
+        hashes[p.slice('dist/'.length)] = createHash('sha256').update(c).digest('hex');
+      }
+    }
+    let manifest: FixtureManifest = {
+      version: JSON.parse(full['package.json']).version,
+      files: hashes,
+    };
+    if (typeof manifestMode === 'function') manifest = manifestMode(manifest);
+    full['dist/integrity-manifest.json'] = JSON.stringify(manifest);
+  }
   const stage = path.join(work, `stage-${name}`);
   fs.rmSync(stage, { recursive: true, force: true });
-  for (const [p, c] of Object.entries(files)) {
+  for (const [p, c] of Object.entries(full)) {
     const fp = path.join(stage, 'package', p);
     fs.mkdirSync(path.dirname(fp), { recursive: true });
     fs.writeFileSync(fp, c);
@@ -115,6 +177,7 @@ function baseFiles(): Record<string, string> {
     'README.md': 'fixture\n',
     LICENSE: 'Apache-2.0\n',
     'dist/cli.js': FIXTURE_CLI,
+    'dist/index.js': 'module.exports = {};\n',
   };
 }
 
@@ -198,7 +261,7 @@ describe('HMA-40: release-artifact-review over poisoned and clean tarballs', { t
     expectFullCensus(r);
     // A tarball that failed static review is never executed: the smoke checks
     // must be preconditions here, not passes and not installs.
-    for (const name of ['smoke-version', 'smoke-help', 'smoke-secure-ci', 'credential-control']) {
+    for (const name of ['smoke-version', 'smoke-help', 'smoke-secure-ci', 'credential-control', 'self-check-live']) {
       expect(r.preconditions).toContain(name);
     }
   });
@@ -215,14 +278,43 @@ describe('HMA-40: release-artifact-review over poisoned and clean tarballs', { t
     expectFullCensus(r);
   });
 
+  it('HMA-40.AC3 an absent integrity manifest fails the review naming self-check-live and nothing else', () => {
+    // The fail-open class the rework ruling names: with the manifest absent
+    // the CLI's own startup check answers dev-mode CLEAN, every smoke check
+    // passes, and only self-check-live stands between that tarball and a
+    // publish.
+    const r = review(makeTarball('nomanifest', baseFiles(), 'absent'));
+    expect(r.status).not.toBe(0);
+    expect(r.fails).toEqual(['self-check-live']);
+    expectFullCensus(r);
+  });
+
+  it('HMA-40.AC3 a manifest with one files key removed fails the review naming self-check-live and nothing else', () => {
+    // A file the manifest does not list is a file the self-check never
+    // verifies — undetectably tamperable in every install.
+    const r = review(
+      makeTarball('gappedmanifest', baseFiles(), (manifest) => {
+        expect(manifest.files['index.js']).toBeDefined(); // the deletion below deletes something real
+        delete manifest.files['index.js'];
+        return manifest;
+      }),
+    );
+    expect(r.status).not.toBe(0);
+    expect(r.fails).toEqual(['self-check-live']);
+    expectFullCensus(r);
+  });
+
   it('HMA-40.AC3 a tarball with no dist/ exits non-zero with precondition in its output, and zero failing checks', () => {
     const files = baseFiles();
     delete files['dist/cli.js'];
-    const r = review(makeTarball('nodist', files));
+    delete files['dist/index.js'];
+    // 'absent' so nothing at all ships under dist/ — an auto manifest would
+    // itself be a dist/ entry and turn this into a different class.
+    const r = review(makeTarball('nodist', files, 'absent'));
     expect(r.status).not.toBe(0);
     expect(r.fails).toEqual([]);
     expect(r.stdout).toContain('precondition');
-    for (const name of ['smoke-version', 'smoke-help', 'smoke-secure-ci', 'credential-control']) {
+    for (const name of ['smoke-version', 'smoke-help', 'smoke-secure-ci', 'credential-control', 'self-check-live']) {
       expect(r.preconditions).toContain(name);
     }
     expectFullCensus(r);
@@ -240,6 +332,8 @@ describe('HMA-40: release-artifact-review over poisoned and clean tarballs', { t
     expectFullCensus(r);
     // The planted credential control really ran against the artifact bytes.
     expect(r.census).toContain('credential-control=pass');
+    // And the tamper probe really corrupted an install and saw it quarantine.
+    expect(r.census).toContain('self-check-live=pass');
   });
 
   it('HMA-40.AC2+AC3 the tarball packed from the delivered tree has no failing check, and exits 0 exactly when nothing was a precondition', () => {
