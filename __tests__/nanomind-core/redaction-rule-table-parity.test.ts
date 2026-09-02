@@ -55,7 +55,7 @@ function oracleChain(content: string): string {
     /((?:aws.{0,16}?(?:secret|private).{0,16}?key|secret[_\s.-]?access[_\s.-]?key)["'\s]*[:=]+>?\s*["']?)([A-Za-z0-9/+=]{40,})/gi,
     '$1[REDACTED_AWS_SECRET]',
   );
-  r = r.replace(/-----BEGIN [A-Z ]+ KEY-----[\s\S]*?-----END [A-Z ]+ KEY-----/g, '[REDACTED_PRIVATE_KEY]');
+  r = r.replace(/-----BEGIN [A-Z ]+ KEY-----(?:(?!-----BEGIN)[\s\S]){0,32768}?-----END [A-Z ]+ KEY-----/g, '[REDACTED_PRIVATE_KEY]');
   r = r.replace(/(?:postgres|mysql|mongodb|redis):\/\/[^\s'"]+/gi, '[REDACTED_CONNECTION_STRING]');
   return r;
 }

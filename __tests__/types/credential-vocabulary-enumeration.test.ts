@@ -98,7 +98,14 @@ const FROZEN_ALLOWLIST: Readonly<Record<string, number>> = {
   'src/nanomind-core/compiler/semantic-compiler.ts': 32,
   'src/nanomind-core/compiler/source-code-preprocessor.ts': 3,
   'src/nanomind-core/ingestion/artifact-parser.ts': 6,
-  'src/nanomind-core/security/defense-in-depth.ts': 27,
+  // 27 -> 28 in HMA-34. The counter is blind to what a literal is FOR, and the
+  // bounded `pem-private-key` rule states its own invariant with a negative
+  // lookahead — the body may not cross another armor header — so the ruled
+  // pattern spells the `-----BEGIN` guard token twice, once in the header and
+  // once inside `(?:(?!...)[\s\S]){0,32768}?`. No new vocabulary was added: it
+  // is the same token the rule already carried, now load-bearing twice. Nothing
+  // else in the file moved.
+  'src/nanomind-core/security/defense-in-depth.ts': 28,
   'src/narrative/build-narrative.ts': 26,
   'src/plugins/credvault.ts': 10,
   'src/plugins/signcrypt.ts': 1,
@@ -108,7 +115,8 @@ const FROZEN_ALLOWLIST: Readonly<Record<string, number>> = {
   'src/semantic/structural/mcp-config.ts': 6,
 };
 
-const FROZEN_TOTAL = 302;
+// 302 -> 303 in HMA-34, the single +1 from `defense-in-depth.ts` above.
+const FROZEN_TOTAL = 303;
 
 function guardLiterals(): string[] {
   return [...CREDENTIAL_SHAPES.flatMap(s => [...s.guards]), ...UNOWNED_SHAPE_LITERALS];

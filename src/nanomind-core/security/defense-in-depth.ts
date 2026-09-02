@@ -207,7 +207,7 @@ const CREDENTIAL_REDACTION_RULES: readonly CredentialRedactionRule[] = [
   // The header alone is enough: the detector fires on `-----BEGIN … KEY-----`
   // without requiring the closing marker, and a truncated or single-line block
   // would otherwise stay verbatim.
-  { id: 'pem-private-key', pattern: /-----BEGIN [A-Z ]+ KEY-----[\s\S]*?-----END [A-Z ]+ KEY-----/g, replacement: '[REDACTED_PRIVATE_KEY]' },
+  { id: 'pem-private-key', pattern: /-----BEGIN [A-Z ]+ KEY-----(?:(?!-----BEGIN)[\s\S]){0,32768}?-----END [A-Z ]+ KEY-----/g, replacement: '[REDACTED_PRIVATE_KEY]' },
   { id: 'connection-string', pattern: /(?:postgres|mysql|mongodb|redis):\/\/[^\s'"]+/gi, replacement: '[REDACTED_CONNECTION_STRING]' },
 ];
 
