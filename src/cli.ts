@@ -4962,16 +4962,34 @@ Examples:
       // empty temp dir and the disclosure names the link and where to point
       // the scan instead.
       let singleFileWithheld: WithheldLinkRecord | undefined;
+      // HMA-30: true when the copy is nested under the parent's name (see below).
+      let _singleFileNested = false;
       if (_isFileTarget) {
         const _os = require('node:os');
         const _path = require('node:path');
         const _tmp = _fs.mkdtempSync(_path.join(_os.tmpdir(), 'hma-secure-file-'));
+        // HMA-30 — the copy lands at <tmp>/<parentBasename>/<basename> when the
+        // parent's name is what a discovery predicate reads, and at
+        // <tmp>/<basename> otherwise. Flattening everything discarded the one
+        // path component the credential predicates read: `secure
+        // ~/.aws/credentials` copied to `<tmp>/credentials`, where neither the
+        // `/.aws/credentials` suffix nor the config-directory rule can fire.
+        // Nesting everything moved basename-matched files (CLAUDE.md, .env,
+        // SKILL.md) out of the scan root, where the root-only probes
+        // (CLAUDE-001, GIT-003, PERM-001) stopped seeing them. So: nest only
+        // when the parent changes a predicate's answer.
+        const _parentBase = _path.basename(_path.dirname(originalTarget));
+        const _base = _path.basename(originalTarget);
+        const { singleFileNeedsParent } = await import('./hardening/scanner.js');
+        _singleFileNested = singleFileNeedsParent(_parentBase, _base);
+        const _copyDir = _singleFileNested ? _path.join(_tmp, _parentBase) : _tmp;
         const stays = readStaysInsideTree(originalTarget, _path.dirname(originalTarget));
         if (stays.ok) {
-          _fs.copyFileSync(originalTarget, _path.join(_tmp, _path.basename(originalTarget)));
+          _fs.mkdirSync(_copyDir, { recursive: true });
+          _fs.copyFileSync(originalTarget, _path.join(_copyDir, _base));
         } else {
           singleFileWithheld = {
-            rel: _path.basename(originalTarget),
+            rel: _singleFileNested ? _path.join(_parentBase, _base) : _base,
             resolved: stays.resolved,
             call: 'copyFileSync',
             retarget: retargetInstruction(stays.resolved, RAW_CLI_PREFIX),
@@ -4986,11 +5004,15 @@ Examples:
       // #286 — the directory a finding's `file` actually resolves against, for
       // building runnable `Verify:` commands. NOT `displayDir` for a lone-file
       // target: that target is copied into a temp dir and its findings carry
-      // the BASENAME, so `join(displayDir, basename)` would name
-      // `<file>/<file>`. The containing directory is where that basename
-      // resolves, and it is also the path the reader recognises.
+      // `<parentBasename>/<basename>` when the copy is nested (HMA-30), so the
+      // root that joins back to the user's real path is then the parent's
+      // PARENT — one `dirname` would double the parent
+      // (`<dir>/.aws/.aws/credentials`). A flat copy carries `<basename>` and
+      // joins against the parent, as before.
       const citationRoot = _isFileTarget
-        ? require('node:path').dirname(originalTarget)
+        ? (_singleFileNested
+            ? require('node:path').dirname(require('node:path').dirname(originalTarget))
+            : require('node:path').dirname(originalTarget))
         : displayDir;
 
       // Parse ignore list

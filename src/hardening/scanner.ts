@@ -2722,11 +2722,18 @@ const SHELL_EXFIL_HOME_CRED_SUFFIXES = [
 /** Any file under the gcloud config dir is credential material. */
 const SHELL_EXFIL_GCLOUD_DIR = '/.config/gcloud/';
 
-/** Credential files matched by basename (project-local or home). */
+/**
+ * Credential files matched by basename (project-local or home). `credentials`
+ * (bare, no extension) is the CSR-ruled addition (2026-09-01, item 1): the AWS
+ * CLI's own store is `~/.aws/credentials`, and a copy dropped anywhere keeps
+ * that basename. The same membership makes the walk hand the file to CRED-001
+ * and makes its upload a shell-exfil hit — one vocabulary, both detectors.
+ */
 const SHELL_EXFIL_BARE_CRED_NAMES = new Set([
   '.npmrc',
   '.netrc',
   '.git-credentials',
+  'credentials',
 ]);
 
 /** `.env.example` and friends are placeholder templates, not secrets. */
@@ -2764,6 +2771,22 @@ export function isCredentialFilePath(rawPath: string): boolean {
     return !segments.some(s => SHELL_EXFIL_ENV_TEMPLATE_TOKENS.has(s));
   }
   return SHELL_EXFIL_BARE_CRED_NAMES.has(base);
+}
+
+/**
+ * HMA-30 single-file mode: does the lone file's PARENT directory name change what the
+ * two discovery predicates say about it? True for `.aws/credentials`, `.kube/config`,
+ * `config/x.json`, `.ssh/id_rsa`; false for `CLAUDE.md`, `.env`, `SKILL.md`, `mcp.json` and
+ * a bare `credentials`, which match by basename alone. The caller nests the temp copy under
+ * the parent only when this is true, so basename-matched files stay at the scan root where
+ * the root-only probes (CLAUDE-001, GIT-003, PERM-001, project-type detection) still see them.
+ * A derived view of the two existing vocabularies, not a third list.
+ */
+export function singleFileNeedsParent(parentBase: string, base: string): boolean {
+  return (
+    isConfigShapedFile(base, parentBase) !== isConfigShapedFile(base, '') ||
+    isCredentialFilePath('/' + parentBase + '/' + base) !== isCredentialFilePath('/' + base)
+  );
 }
 
 /**
@@ -5010,7 +5033,14 @@ export class HardeningScanner {
     // locations, never subtract them. Absent files are skipped by the same
     // readFile catch as before.
     const { configFiles: discovered } = await this.collectSensitiveArtifacts(targetDir);
-    const nested = discovered.filter((rel) => rel.includes(path.sep)).sort();
+    // HMA-30 — filtered by membership in the root probe, not by depth. The old
+    // `rel.includes(path.sep)` filter existed only to dedupe the root probe's
+    // own names, but it also dropped every OTHER root-level discovery: a bare
+    // `credentials` at the scan root was found by the walk and then never
+    // read. Root-level rels are single-component, so the set test dedupes
+    // exactly the ten probed names and nothing deeper.
+    const rootProbeSet = new Set(rootProbeOrder);
+    const nested = discovered.filter((rel) => !rootProbeSet.has(rel)).sort();
     const filesToCheck = [...rootProbeOrder, ...nested];
 
     for (const filename of filesToCheck) {
@@ -6998,7 +7028,28 @@ dist/
         // #317 — and the directory is recognised by `dev`+`ino`, decided on the
         // way in by `isOwnBackupDir`, never by comparing this file's path
         // against a string.
-        if (isConfigShapedFile(dirent.name, path.basename(dir)) && !insideOwnBackup) {
+        //
+        // HMA-30 — credential-store files join the CRED-001 population through
+        // the SAME predicate the shell-exfil detector already owns:
+        // `isCredentialFilePath` over the file's absolute path (posix-
+        // separated, so the /.aws/credentials-style suffixes fire on every
+        // platform). No third basename list: a file is examined when it is
+        // config-shaped OR a credential path, and nothing else. The one
+        // exception is an SSH identity (`/.ssh/id_*`): it holds a private key,
+        // not key=value credentials, so it routes to `keyFiles` through the
+        // same `pemLooksPrivate` gate as `.pem` and is reported by CRED-002 —
+        // running the CRED-001 regexes over PEM base64 would be noise.
+        const credAbsPosix = absResolved.split(path.sep).join('/');
+        const isCredentialStore = isCredentialFilePath(credAbsPosix);
+        const isSshIdentity = isCredentialStore
+          && SHELL_EXFIL_HOME_CRED_SUFFIXES.some(
+            (suf) => suf.startsWith('/.ssh/') && credAbsPosix.endsWith(suf));
+        if (isSshIdentity) {
+          if (await this.pemLooksPrivate(abs, targetDir)) keyFiles.push(rel);
+        } else if (
+          (isConfigShapedFile(dirent.name, path.basename(dir)) || isCredentialStore)
+          && !insideOwnBackup
+        ) {
           configFiles.push(rel);
         }
         if (dirent.name.endsWith('.key')) {
