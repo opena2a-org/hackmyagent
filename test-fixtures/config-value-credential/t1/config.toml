@@ -1,7 +1,7 @@
-# Ingest worker runtime settings.
+# Ingest service runtime settings.
 
-[worker]
-name = "ingest-worker"
+[service]
+name = "ingest-service"
 region = "us-east-1"
 retries = 3
 
