@@ -4,6 +4,16 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### `--json` is not deprecated, and the help strings stop saying it is
+
+From 0.8.0 through 0.32.0, `secure --help` described `--json` as deprecated
+(and `attack --help` called it a deprecated alias) while the README cited the
+flag throughout as the ordinary machine-output spelling. `--json` is not
+deprecated: it is shorthand for `--format json`, kept indefinitely. The
+`secure` and `attack` help strings, the #605 contradiction refusal and the
+source comments now say so. No flag is removed and no behaviour changes —
+same flags, same output, same exit codes.
+
 ### A reverse shell in a skill's bundled scripts is now described by the bundle check
 
 `describeSkillBundlePayload` — the predicate behind the SKILL-006 finding over
@@ -447,7 +457,7 @@ their em dash (`fix-all --with-aim`, `opena2a protect .`,
 
 ### A contradiction between --json and --format is named, not resolved silently
 
-`--json` is the deprecated alias of `--format json`. Given together with a
+`--json` is shorthand for `--format json`. Given together with a
 different format — `secure --ci --json --format sarif` — the alias won
 silently: the json report printed at exit 0 and nothing said the requested
 format was discarded. Both commands that carry the two flags (`secure` and
