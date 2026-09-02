@@ -4,6 +4,22 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### `mcp-serve` no longer posts its command telemetry event, and the MCP server's confinement is pinned by witness suites
+
+`mcp-serve` reads inside the granted roots and reaches nothing by default, so
+its command event was the session's one default network attempt, posted from a
+process a host model drives, and posted at startup rather than at the end of
+the session. The command now joins the untracked set alongside `telemetry` and
+`help`; nothing else about telemetry changes.
+
+Two suites now witness the confinement over a real stdio session against the
+built server: `__tests__/mcp/stdio-confinement-witness.test.ts` (absolute,
+`../` and symlink-out paths refused by every tool, `--root /` and `--root
+<HOME>` refused at initialisation, the set of paths a session creates equal to
+a committed allowlist) and `__tests__/mcp/stdio-egress-witness.test.ts` (an
+in-process logging proxy sees zero lines from a scan and a deep scan, and
+exactly one from the direct-request control).
+
 ### `--json` is not deprecated, and the help strings stop saying it is
 
 From 0.8.0 through 0.32.0, `secure --help` described `--json` as deprecated

@@ -85,7 +85,7 @@ const TELEMETRY_TOOL = 'hackmyagent';
 // Subcommands not tracked: pure config / self-referential commands.
 // 'telemetry' and 'help' are excluded to avoid self-referential events.
 // 'mcp-serve' is excluded because its MCP contract is READ inside the granted
-// roots and REACH nothing by default (HMA-39, CISO decision 3): the command
+// roots and REACH nothing by default (HMA-39): the command
 // event would be the session's ONE default network attempt, posted from a
 // process a host model drives. It is also posted at the wrong moment — the
 // action returns as soon as the transport connects, so postAction fires at

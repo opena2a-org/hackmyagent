@@ -234,7 +234,7 @@ describe('HMA-39.AC2 the session leaves the world as it found it', () => {
   it('HMA-39.AC2 --root / is refused at initialisation and the refusal is what the transport returns', async () => {
     // The refusal is computed once at startup (`resolveRoots` in
     // `startMcpServer`). By deliberate design the connection still opens so
-    // the refusal text is READABLE (src/mcp-server.ts records the CPO ruling:
+    // the refusal text is READABLE (src/mcp-server.ts records the reason:
     // a startup exit surfaces as an opaque "server failed to start"); the
     // initialisation error is then the only thing any tool call returns.
     const home = fs.mkdtempSync(path.join(tmp, 'home-neg-'));
