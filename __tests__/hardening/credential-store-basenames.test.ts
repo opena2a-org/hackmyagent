@@ -159,8 +159,24 @@ describe('HMA-30 — credential-store basenames reach CRED-001', () => {
       const out = (r.stdout || '') + (r.stderr || '');
       // The Verify line must name the user's path; `Scanning <target>` on line 1
       // would satisfy a bare toContain(target), so anchor on the citation.
-      expect(out).toMatch(new RegExp("Verify: sed -n '1p' " + target.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')));
+      expect(out).toContain("Verify: sed -n '1p' " + target);
       expect(out).not.toContain(path.join(dir, '.aws', '.aws')); // the doubled-parent defect
+    });
+
+    it('HMA-30.AC3 a traversal-shaped lone target is resolved before the parent name is read, so the copy stays inside the temp dir', () => {
+      // originalTarget is path.resolve'd (cli.ts) before dirname/basename are
+      // taken, so `..` can never become the parent component of the copy path.
+      if (!canSpawn()) return;
+      const dir = mkdtempSync(path.join(tmpdir(), 'hma30-trav-'));
+      const real = path.join(dir, '.aws', 'credentials');
+      mkdirSync(path.dirname(real), { recursive: true });
+      writeFileSync(real, AWS_PAIR);
+      const shaped = path.join(dir, '.aws', '..', '.aws', 'credentials');
+      const r = spawnSync('node', [CLI, 'secure', shaped, '--ci'], { encoding: 'utf8', timeout: 120_000 });
+      const out = (r.stdout || '') + (r.stderr || '');
+      expect(out).toContain("Verify: sed -n '1p' " + real); // the resolved path, not the shaped one
+      expect(out).not.toContain(tmpdir() + path.sep + '..'); // join() would normalise this away
+      expect(out).not.toContain(path.join(dir, '.aws', '.aws'));
     });
 
     it('HMA-30.AC6 a lone CLAUDE.md keeps CLAUDE-001 and a lone world-readable .env keeps PERM-001 and GIT-003', () => {
