@@ -83,7 +83,13 @@ const FROZEN_ALLOWLIST: Readonly<Record<string, number>> = {
   'src/attack/payloads/memory-weaponization.ts': 1,
   'src/attack/scanner.ts': 1,
   'src/benchmarks/oasb-1.ts': 2,
-  'src/cli.ts': 4,
+  // 4 -> 1 when the explain command's static explanations — prose naming
+  // the sk-proj/sk-ant/AKIA key shapes users ask about — moved verbatim
+  // into src/explain-registry.ts. The three literals moved WITH the
+  // text, not multiplied: this entry shrinks by exactly what the new entry
+  // below carries, and the frozen total is unchanged.
+  'src/cli.ts': 1,
+  'src/explain-registry.ts': 3,
   'src/hardening/coverage-ledger.ts': 2,
   'src/hardening/nemoclaw-scanner.ts': 1,
   // 95 -> 96 when v0.32.0 merged into main. The 96th is NOT code: #533 added a

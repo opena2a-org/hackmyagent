@@ -123,17 +123,30 @@ describe('name-gated AWS secret access key', () => {
     expect(hasAwsSecretSurface(ast.inferredRiskSurface)).toBe(true);
   });
 
-  it('cache does not leak a source_code AWS finding onto same-content non-source artifact', async () => {
+  it('cache does not leak a source_code AST onto a same-content non-source artifact', async () => {
     // Regression: the compiler cache was keyed on content hash alone, so a
     // byte-identical file parsed as a different (non-source_code) type could
-    // serve the cached source_code AST — and inherit its AWS finding. Cache is
-    // now keyed on type+hash. Compile as source first (flags), then as a
-    // non-source extension with identical bytes (must NOT inherit the finding).
+    // serve the cached source_code AST wholesale. Cache is now keyed on
+    // type+hash.
+    //
+    // The original observable — the non-source compile must NOT carry the AWS
+    // surface — is gone by design: HMA-27 runs the canonical + name-gated
+    // value scan for every artifact type, so both compiles now flag the value.
+    // What still differs by type, and therefore still catches a hash-only
+    // cache serving the source AST, is the AST itself: its `artifactType`, and
+    // the `dataType: 'credentials'` read pattern that step 6b pushes for
+    // source_code artifacts only.
     const c = new SemanticCompiler({ useNanoMind: false });
     const body = `aws_secret_access_key = "${REAL}"\n`;
     const src = await c.compile(body, 'creds.py');
     expect(hasAwsSecretSurface(src.ast.inferredRiskSurface)).toBe(true);
+    expect(src.ast.artifactType).toBe('source_code');
+    expect(src.ast.declaredDataAccess.some((d) => d.dataType === 'credentials')).toBe(true);
     const doc = await c.compile(body, 'notes.md'); // same bytes, different type
-    expect(hasAwsSecretSurface(doc.ast.inferredRiskSurface)).toBe(false);
+    // HMA-27: the value scan is type-independent, so the surface stays.
+    expect(hasAwsSecretSurface(doc.ast.inferredRiskSurface)).toBe(true);
+    // A cached source AST leaking through would carry both of these.
+    expect(doc.ast.artifactType).not.toBe('source_code');
+    expect(doc.ast.declaredDataAccess.some((d) => d.dataType === 'credentials')).toBe(false);
   });
 });

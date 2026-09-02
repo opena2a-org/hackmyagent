@@ -20,6 +20,10 @@ import { citationTarget as safeCitationTarget, citationPath } from '../ui/shell-
 import { escapePathForDisplay, escapeForDisplay } from '../ui/display-safe';
 import { findPermissionGrant } from './permission-grant';
 import { deriveCheckVerdict, fullCoverage, unmeasuredBanner, coverageJson, unmeasured, EXIT_UNMEASURED } from '../check/verdict';
+import { readStaysInsideTree } from '../hardening/contain';
+import { withheldLinkRecords, withheldLinkLines } from '../hardening/withheld-links';
+import type { WithheldLink } from '../hardening/coverage-ledger';
+import { CLI_PREFIX } from '../cli-prefix';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -513,12 +517,23 @@ function firstMatchLine(content: string, pattern: RegExp): { line: number; token
   return undefined;
 }
 
-export function scanAiConfigs(targetDir: string): AiConfigFile[] {
+export function scanAiConfigs(targetDir: string, withheld?: WithheldLink[]): AiConfigFile[] {
   const configs: AiConfigFile[] = [];
 
   for (const pattern of AI_CONFIG_PATTERNS) {
     for (const file of pattern.files) {
       const fullPath = path.join(targetDir, file);
+      // Three of these names (`.cursorrules`, `CLAUDE.md`,
+      // `.github/copilot-instructions.md`) are governance files. `statSync`
+      // and `readFileSync` below both follow links, so a name that is a link
+      // resolving outside the scanned tree is withheld before either runs —
+      // recorded for disclosure, skipped like an absent file. An unresolvable
+      // path passes and fails the `statSync` below with its own errno.
+      const stays = readStaysInsideTree(fullPath, targetDir);
+      if (!stays.ok) {
+        withheld?.push({ rel: file, resolved: stays.resolved, call: 'statSync' });
+        continue;
+      }
       let stats: ReturnType<typeof fs.statSync> | undefined;
       try { stats = fs.statSync(fullPath); } catch { continue; }
       if (!stats) continue;
@@ -1638,7 +1653,8 @@ export async function detect(options: DetectOptions): Promise<number> {
   const agents     = scanProcesses();
   const mcpServers = scanMcpServers(dir);
   const identity   = scanIdentity(dir);
-  const aiConfigs  = scanAiConfigs(dir);
+  const aiConfigWithheld: WithheldLink[] = [];
+  const aiConfigs  = scanAiConfigs(dir, aiConfigWithheld);
 
   identity.totalAgents = agents.length;
 
@@ -1648,6 +1664,16 @@ export async function detect(options: DetectOptions): Promise<number> {
   // Which document that measurement came from, so no consumer has to infer
   // it from `soulFiles` and get it wrong for the other eight names (#303).
   identity.governanceFile = soul.file;
+
+  // Links inside the tree that resolve outside it and were not read, from
+  // both read paths that meet governance-named files here (`scanAiConfigs`
+  // and the soul scan). Deduped by name: `CLAUDE.md` is on both lists. A
+  // policy skip that is announced, never a finding — same channel `secure`
+  // uses, same wording.
+  const withheldLinks = withheldLinkRecords(
+    [...aiConfigWithheld, ...(soul.withheldLinks ?? [])],
+    CLI_PREFIX,
+  );
 
   // Apply governance status from the conformance result.
   //
@@ -1784,9 +1810,18 @@ export async function detect(options: DetectOptions): Promise<number> {
   if (options.format === 'json') {
     // The machine channel carries the measurement the exit code was derived
     // from, so a consumer never has to infer it from the finding count.
-    process.stdout.write(JSON.stringify({ ...result, coverage: coverageJson(verdict) }, null, 2) + '\n');
+    // `withheldLinks` only when a link was withheld: the key is additive and
+    // a linkless tree's document is byte-identical to before.
+    process.stdout.write(JSON.stringify({
+      ...result,
+      coverage: coverageJson(verdict),
+      ...(withheldLinks.length > 0 ? { withheldLinks } : {}),
+    }, null, 2) + '\n');
   } else {
     process.stdout.write(formatText(result, options.verbose ?? false, dir) + '\n');
+    for (const line of withheldLinkLines(withheldLinks)) {
+      process.stdout.write(`${line}\n`);
+    }
     if (!verdict.measured) process.stderr.write(`${unmeasuredBanner(verdict)}\n`);
   }
 
