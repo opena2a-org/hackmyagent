@@ -34,6 +34,7 @@
  */
 
 import * as path from 'path';
+import { AsyncLocalStorage } from 'async_hooks';
 // Real `fs`, deliberately NOT the tracked namespace: this module is what the
 // tracked namespace reports INTO, so importing it back would be a cycle.
 import { realpathSync } from 'fs';
@@ -1153,44 +1154,53 @@ function methodsForCategory(category: string): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * The ledger currently collecting evidence.
+ * The ledger currently collecting evidence, carried per async context.
  *
- * Module-scoped because the tracked `fs` namespace is module-scoped: wrapping
- * the namespace once is what lets all 153 read sites be attributed without
- * touching any of them. Set and cleared by `withActiveLedger` around a scan.
+ * The tracked `fs` namespace is module-scoped — wrapping the namespace once
+ * is what lets all 153 read sites be attributed without touching any of them
+ * — but the ledger it reports to must not be, and for a while it was: a plain
+ * module variable meant every concurrent scan in the process shared whichever
+ * ledger was installed last, so one scan's reads were attributed (and its
+ * link confinement decided) against another scan's roots. Two overlapping
+ * `scan()` calls with disjoint targets each bypassed the other's confinement.
+ * `AsyncLocalStorage` gives every `withActiveLedger` call its own store that
+ * follows the scan's async control flow, so each namespace call consults the
+ * ledger of the scan that made it.
  *
  * Nested scans (the verify pass inside `--fix` constructs its own scanner)
- * save and restore, so the inner run's reads are attributed to the inner
- * ledger and the outer one resumes intact.
+ * keep the documented save/restore semantics: `run` scopes the inner ledger
+ * to the inner call, so the inner run's reads are attributed to the inner
+ * ledger and the outer one resumes intact when it returns.
  */
-let activeLedger: CoverageLedger | null = null;
+const activeLedgerStore = new AsyncLocalStorage<CoverageLedger>();
+
+/** The calling context's ledger, or `null` outside any `withActiveLedger`. */
+function activeLedger(): CoverageLedger | null {
+  return activeLedgerStore.getStore() ?? null;
+}
 
 /** Run `fn` with `ledger` collecting evidence, restoring any prior ledger. */
 export async function withActiveLedger<T>(
   ledger: CoverageLedger,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const previous = activeLedger;
-  activeLedger = ledger;
-  try {
-    return await fn();
-  } finally {
-    activeLedger = previous;
-  }
+  return activeLedgerStore.run(ledger, fn);
 }
 
 /** Report a content read to the active ledger, if any. */
 export function noteRead(target: unknown): void {
-  if (!activeLedger) return;
+  const ledger = activeLedger();
+  if (!ledger) return;
   if (typeof target !== 'string') return; // fd / URL / Buffer — not attributable
-  activeLedger.noteRead(target);
+  ledger.noteRead(target);
 }
 
 /** Report a stat/readdir-style inspection to the active ledger, if any. */
 export function noteInspect(target: unknown): void {
-  if (!activeLedger) return;
+  const ledger = activeLedger();
+  if (!ledger) return;
   if (typeof target !== 'string') return;
-  activeLedger.noteInspect(target);
+  ledger.noteInspect(target);
 }
 
 /**
@@ -1201,16 +1211,18 @@ export function noteInspect(target: unknown): void {
  * ledger is read, not here.
  */
 export function noteReadFailure(target: unknown, code: unknown): void {
-  if (!activeLedger) return;
+  const ledger = activeLedger();
+  if (!ledger) return;
   if (typeof target !== 'string') return; // fd / URL / Buffer — not attributable
-  activeLedger.noteReadFailure(target, typeof code === 'string' ? code : 'UNKNOWN');
+  ledger.noteReadFailure(target, typeof code === 'string' ? code : 'UNKNOWN');
 }
 
 /** Report a directory listing that succeeded to the active ledger, if any (#588). */
 export function noteListed(target: unknown): void {
-  if (!activeLedger) return;
+  const ledger = activeLedger();
+  if (!ledger) return;
   if (typeof target !== 'string') return;
-  activeLedger.noteListed(target);
+  ledger.noteListed(target);
 }
 
 /**
@@ -1218,9 +1230,10 @@ export function noteListed(target: unknown): void {
  * Same contract as `noteReadFailure`: the errno is recorded verbatim.
  */
 export function noteListFailure(target: unknown, code: unknown): void {
-  if (!activeLedger) return;
+  const ledger = activeLedger();
+  if (!ledger) return;
   if (typeof target !== 'string') return;
-  activeLedger.noteListFailure(target, typeof code === 'string' ? code : 'UNKNOWN');
+  ledger.noteListFailure(target, typeof code === 'string' ? code : 'UNKNOWN');
 }
 
 /**
@@ -1231,11 +1244,12 @@ export function noteListFailure(target: unknown, code: unknown): void {
  * confinement domain, or when it cannot be resolved.
  */
 export function withholdOutOfTree(target: string, call: string, parentOnly: boolean): WithheldLink | null {
-  if (!activeLedger) return null;
-  return activeLedger.withholdOutOfTree(target, call, parentOnly);
+  const ledger = activeLedger();
+  if (!ledger) return null;
+  return ledger.withholdOutOfTree(target, call, parentOnly);
 }
 
-/** Test seam: the ledger currently installed, or null. */
+/** Test seam: the calling context's ledger, or null. */
 export function currentLedger(): CoverageLedger | null {
-  return activeLedger;
+  return activeLedger();
 }

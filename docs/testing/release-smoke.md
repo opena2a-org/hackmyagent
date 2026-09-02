@@ -28,6 +28,23 @@ npx vitest run __tests__/nanomind-core/benign-fp-regression.test.ts
 # Expected: 10 tests pass, FPR = 0/10 = 0%
 ```
 
+Then the corpus gate — BLOCKING. It runs the built CLI over every fixture in the
+opena2a-corpus checkout and compares scores against the manifest bands and the
+rendered output against `golden/hma/`. A red result here means either the scoring
+moved (re-bake the goldens in the same PR that moved it and say why) or the corpus
+checkout is stale; it never means "skip it":
+
+```bash
+git -C ~/.opena2a/corpus rev-parse --short HEAD   # record this in the release notes
+OPENA2A_CORPUS_PATH=$HOME/.opena2a/corpus npm run release-smoke:corpus
+# Expected: 12 passed, 0 failed, 2 skipped (a2a/* and npm/* surfaces are not in the corpus yet)
+# Baseline recorded 2026-09-01 against corpus c899830 (opena2a-corpus#11); a different
+# corpus HEAD needs the counts re-recorded here.
+```
+
+Do not set `OPENA2A_CORPUS_UPDATE_GOLDEN=1` on a release branch to make this pass: a golden
+moves only in the PR that moved the score, with the cause named in the commit.
+
 Fail the release if:
 - Any test is red
 - Any benign oracle fixture (b01–b10) triggers a HIGH or CRITICAL finding
