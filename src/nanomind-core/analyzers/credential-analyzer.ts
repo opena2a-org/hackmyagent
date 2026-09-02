@@ -26,6 +26,7 @@ import {
   matchVendorPrefix,
 } from '../../types/credential-format.js';
 import { isCorpusPath, isIntegrityManifestPath } from '../../hardening/path-context.js';
+import { credHarvestNounPattern } from '../compiler/semantic-compiler.js';
 
 // ============================================================================
 // Public API
@@ -416,8 +417,20 @@ function checkCredentialForwarding(
 // ============================================================================
 
 /**
+ * Confidence of a finding whose only signal is the value route below: the
+ * shared credential-format matcher over the artifact's bytes, with no
+ * compiler-derived span or surface behind it. It is the confidence the
+ * prose-licensed finding carried on the same documents, so a secret that was
+ * reported as HIGH before is reported as HIGH now; the canonical value scan
+ * keeps its own 0.9 for the strict vendor shapes.
+ */
+const VALUE_ROUTE_CONFIDENCE = 0.7;
+
+/**
  * Detects evidence of hardcoded secrets in the artifact by examining
- * evidence spans and risk surfaces for credential patterns.
+ * evidence spans and risk surfaces for credential patterns, and, when the
+ * compiler produced neither, by asking the artifact's own bytes for a
+ * credential-shaped value.
  * Distinguishes real secrets from test fixtures (containing "FAKE",
  * "EXAMPLE", "test", "placeholder") and documentation examples.
  */
@@ -441,17 +454,52 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
   const hasCredentialSignals =
     credentialEvidence.length > 0 || credentialRisks.length > 0;
 
-  if (!hasCredentialSignals) {
+  // Value-shaped precondition. The signals above come from the artifact's
+  // PROSE (a harvesting clause) or from the compiler's canonical VALUE scan
+  // (`Hardcoded <label>`: the strict vendor shapes and the name-gated
+  // assignments). A real secret matching neither list -- a loosely shaped
+  // vendor prefix, or an anonymous 40+ character run behind a key name the
+  // name-gated list does not carry -- reached this check only when the prose
+  // rule happened to fire on the same document, and the prose rule fired
+  // whenever a credential noun and a request verb sat anywhere in the file.
+  // Once that rule became clause-scoped, a setup document holding such a key
+  // and, four lines later, the sentence "ask the agent to provide a response"
+  // produced no signal at all, and this check returned before it had read a
+  // byte of the content.
+  //
+  // So when nothing upstream has spoken, ask the content itself, with the
+  // SAME shared matcher the doc-context format gate below already trusts as
+  // sufficient to emit, over the SAME reach the prose route gave it: the
+  // bytes that follow a credential noun. What the old licence actually
+  // checked in doc context was the span cut after the credential noun, and
+  // `findNounGovernedCredentialValue` reads exactly that. The whole file is
+  // deliberately not the reach: measured over the release corpus, the
+  // unbounded shared matcher also accepted `sha256:<64 hex>` digests (a
+  // public-key fingerprint in a benign SOUL.md, four `pinned_hash:` lines in
+  // a repo fixture) and a FAKE-marked vendor value the canonical scan skips by
+  // its own placeholder filter, none of which any route reported before.
+  // Every gate that follows (fixture markers, doc-context format, manifest /
+  // corpus / taxonomy carve-outs) applies to the value route unchanged. This
+  // is neither an allowlist nor a path rule: its inputs are a credential noun
+  // and the bytes of the value after it.
+  const valueHit =
+    !hasCredentialSignals && artifactContent !== undefined
+      ? findNounGovernedCredentialValue(artifactContent)
+      : undefined;
+
+  if (!hasCredentialSignals && valueHit === undefined) {
     return findings;
   }
 
   // Filter out defensive constraint contexts: if the artifact has constraints
   // about credential management (e.g., "must never store credentials"), the
   // CRED-HARVEST signal is from the constraint text, not actual harvesting.
+  // A value hit is not constraint text, so the value route is not subject to
+  // this gate; it answers to the fixture and format gates below instead.
   const hasDefensiveCredConstraint = ast.declaredConstraints.some(
     c => c.domain === 'credential_management' && c.enforceability >= 0.6,
   );
-  if (hasDefensiveCredConstraint && credentialEvidence.length === 0) {
+  if (hasDefensiveCredConstraint && credentialEvidence.length === 0 && valueHit === undefined) {
     // The credential signal is likely from the constraint text, not from
     // actual credential harvesting patterns. Only risk surfaces exist,
     // and they were triggered by the constraint's mention of credentials.
@@ -460,7 +508,8 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
 
   // Filter out test fixtures and documentation
   const isTestOrDoc = isDocumentationOrTestContext(ast);
-  const evidenceTexts = credentialEvidence.map(e => e.text);
+  const evidenceTexts =
+    valueHit !== undefined ? [valueHit.value] : credentialEvidence.map(e => e.text);
   const allTestFixtures = evidenceTexts.every(t => isTestFixtureCredential(t));
 
   if (isTestOrDoc && allTestFixtures) {
@@ -501,16 +550,20 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
   const maxConfidence = Math.max(
     ...credentialEvidence.map(e => e.confidence),
     ...credentialRisks.map(r => r.confidence),
-    0,
+    valueHit !== undefined ? VALUE_ROUTE_CONFIDENCE : 0,
   );
 
   const severity: ASTFinding['severity'] =
     maxConfidence >= 0.8 ? 'critical' : maxConfidence >= 0.5 ? 'high' : 'medium';
 
+  // The value route's summary is MASKED at this layer: its text is the secret
+  // itself, and a finding must never echo a credential back.
   const evidenceSummary =
-    credentialEvidence.length > 0
-      ? credentialEvidence[0].text.slice(0, 120)
-      : credentialRisks[0]?.evidence ?? 'Credential pattern detected';
+    valueHit !== undefined
+      ? maskCredentialValue(valueHit.value)
+      : credentialEvidence.length > 0
+        ? credentialEvidence[0].text.slice(0, 120)
+        : credentialRisks[0]?.evidence ?? 'Credential pattern detected';
 
   /** Everything but the two per-instance fields, which every emit below shares. */
   const emit = (summary: string, line: number | undefined): ASTFinding => ({
@@ -573,9 +626,10 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
   }
 
   // Prefer the EvidenceSpan's character offset (signed AST data) — it's
-  // exact and local. Fall back to substring search on the unsigned content
-  // when only a RiskSurface evidence string is available.
-  const spanStart = credentialEvidence[0]?.start;
+  // exact and local. The value route carries the matched value's own offset.
+  // Fall back to substring search on the unsigned content when only a
+  // RiskSurface evidence string is available.
+  const spanStart = valueHit?.index ?? credentialEvidence[0]?.start;
   const lineFromSpan = artifactContent !== undefined && spanStart !== undefined
     ? lineFromOffset(artifactContent, spanStart)
     : undefined;
@@ -589,6 +643,40 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/**
+ * Reach of a credential noun over the bytes after it, for the AST-CRED-003
+ * value route: the width of the span the compiler cuts after a risk surface's
+ * evidence (`extractEvidenceSpans`), which is the span the doc-context format
+ * gate read when the prose rule was the licence. Fixed, not extended to the
+ * line end, so the walk stays linear on a long single-line artifact.
+ */
+const NOUN_GOVERNED_VALUE_WINDOW_CHARS = 100;
+
+/**
+ * The first credential-format value that follows a credential noun within
+ * `NOUN_GOVERNED_VALUE_WINDOW_CHARS`, with the value's absolute offset in
+ * `content`. The noun class is the clause rule's own (`credHarvestNounPattern`)
+ * so the two never disagree on what a credential noun is; the value shape is
+ * the shared matcher's (`findCredentialFormatMatch`: vendor prefixes, the JWT,
+ * the entropy-floored run). A value whose own bytes carry a fixture marker is
+ * skipped in every context, as the canonical scan skips its placeholder
+ * values; the walk then continues with the next noun. Returns undefined when
+ * no noun governs an accepted value.
+ */
+function findNounGovernedCredentialValue(
+  content: string,
+): { value: string; index: number } | undefined {
+  const nounRe = credHarvestNounPattern();
+  let noun: RegExpExecArray | null;
+  while ((noun = nounRe.exec(content)) !== null) {
+    const window = content.slice(noun.index, noun.index + NOUN_GOVERNED_VALUE_WINDOW_CHARS);
+    const hit = findCredentialFormatMatch(window);
+    if (hit === undefined || isTestFixtureCredential(hit.value)) continue;
+    return { value: hit.value, index: noun.index + hit.index };
+  }
+  return undefined;
+}
 
 /**
  * Determine if the artifact is a documentation example or test fixture.

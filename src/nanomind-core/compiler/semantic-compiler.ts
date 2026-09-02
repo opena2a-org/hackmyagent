@@ -2200,6 +2200,17 @@ export function isGovernanceContent(text: string): boolean {
 const CRED_HARVEST_NOUN = /password|credential|api[_\-\s]?key|secret|token/gi;
 
 /**
+ * The credential-noun class above, as a fresh `g`-flagged RegExp for a caller
+ * outside this module. The AST-CRED-003 value route reads the bytes that
+ * follow a credential noun, and it must agree with this rule on what a
+ * credential noun is: two spellings of the list is how they drift. A fresh
+ * instance each call, because a shared `g` regex carries `lastIndex`.
+ */
+export function credHarvestNounPattern(): RegExp {
+  return new RegExp(CRED_HARVEST_NOUN.source, 'gi');
+}
+
+/**
  * Request / collect / forward verbs, as LEMMAS.
  *
  * `ask|request|share|provide` are the four the old regex carried;
