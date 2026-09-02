@@ -546,6 +546,17 @@ describe('HMA-34: pem-private-key fails closed at any block size, never crossing
       expect(redactSecretsForReport(prose)).toBe(prose);
     });
 
+    it('HMA-34.AC3 prose between a complete block and a stray footer survives (the body is lazy, not greedy)', () => {
+      // A greedy body would run from the first header to the LAST footer and
+      // eat everything between; the lazy body stops at the first footer, so a
+      // stray footer later in the text leaves the prose before it as written.
+      const block = armorHeader('A') + '\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n' + ARMOR_END + 'A KEY-----';
+      const prose = ' the deployment notes explain the rotation policy in plain words ';
+      const stray = ARMOR_END + 'B KEY-----';
+      const out = redactSecretsForReport(block + prose + stray);
+      expect(out).toBe(PRIVATE_KEY_MARKER + prose + stray);
+    });
+
     it('HMA-34.AC3 a bare header line with nothing after it is returned unchanged', () => {
       const input = armorHeader('A') + '\n';
       expect(redactSecretsForReport(input)).toBe(input);
