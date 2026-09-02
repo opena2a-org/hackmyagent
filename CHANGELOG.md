@@ -16,14 +16,31 @@ edit-distance neighbours), and exits 1. Every ID the CLI already explained
 still explains with exit 0.
 
 The inventory itself grew to match what `secure` actually emits: 24
-NanoMind semantic (AST) checks and 6 SOUL narrative checks were reported in
-scan output but absent from `check-metadata` — `totalChecks` is now 354
-(317 static · 37 semantic, 87 categories), and each remaining deliberate
-hole is published in `check-metadata --json` under a new `exclusions` key
-naming the family, its IDs, and the reason (fix-application statuses,
-scan-status indicators, the Layer-3 coverage statement, and the eval
-oracle's in-src test fixtures). A census test holds emitted `checkId`
-literals to exactly that contract, so the gap cannot regrow silently.
+NanoMind semantic (AST) checks, 6 SOUL narrative checks, and the 8 SEM-MCP
+structural checks were reported in scan output but absent from
+`check-metadata` — `totalChecks` is now 362 (317 static · 45 semantic, 88
+categories). The deliberate holes the census measures are published in
+`check-metadata --json` under a new `exclusions` key naming the family,
+its IDs (or id pattern), and the reason: fix-application statuses,
+scan-status indicators, the Layer-3 coverage statement, the eval oracle's
+in-src test fixtures, the scan-soul governance control catalogue (still
+answered by `explain` via CONTROL_DEFS), per-run id families (ARP-*
+runtime-protection patterns, SEM-LLM-* narrative indices, red-team payload
+counters), and the inactive NanoMind daemon narrative families. A census
+test reads every emission shape in src/ — `checkId:` string literals,
+`PREFIX-${…}` templates, and a registered list of expression-valued sites
+(`ctrl.id`, `check.id`, `finding.id`, `r.payload.id`) — and fails when any
+emitted id is neither an inventory key nor declared-excluded, so the gap
+cannot regrow silently.
+
+`check-metadata --json` also gained a `severityNote`: severities are
+inventory defaults, semantic (AST/SEM) findings carry per-finding severity,
+and the fixed-severity sites (AST-MANIP-001, AST-HEARTBEAT-001,
+AST-INJECT-001 critical; AST-GOV-004, AST-PERSIST-001 high;
+SOUL-UNVERIFIABLE-CLAIM medium) are pinned so the table matches what
+`secure` emits. `explain` trims its argument before matching, refuses an
+empty ID with its own message, and its help example names IDs the command
+actually answers.
 
 ### `.hmaignore` gains `<path>:<CHECK-ID>`, trailing comments, `expires:`, and loud exit-neutral errors
 

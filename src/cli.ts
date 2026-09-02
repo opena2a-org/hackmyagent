@@ -11244,10 +11244,18 @@ program
       categories: counts.totalCategories,
       staticCategories: counts.staticCategories,
       // HMA-29 — the deliberate holes in the inventory, each with its
-      // reason (TAXONOMY_EXEMPT_CHECKIDS made visible, plus whole-family
-      // exclusions): totalChecks plus these is the whole story of the ids
-      // `secure` can emit.
+      // reason (TAXONOMY_EXEMPT_CHECKIDS made visible, plus family and
+      // pattern exclusions). Scope: what the checkid census measures —
+      // the `checkId:`/`id:` emission sites in src/ (string literals,
+      // `PREFIX-${…}` templates, and the registered expression-valued
+      // sites; __tests__/hardening/checkid-census.test.ts).
       exclusions: getDeclaredCheckIdExclusions(),
+      // HMA-29 r2 (review finding 4): the severity column is the inventory
+      // default. Semantic checks (AST-*/SEM-*) assign severity per finding
+      // at analysis time; the fixed-severity sites are pinned via
+      // SEVERITY_OVERRIDES so this table matches what `secure` emits.
+      severityNote:
+        'Severities are inventory defaults. AST-* and SEM-* semantic checks assign severity per finding at analysis time; sites that emit one fixed severity are pinned to it here.',
       checks: metadata,
     });
   });
@@ -11256,10 +11264,18 @@ program
 // explain command: NanoMind-powered finding explanation
 program
   .command('explain')
-  .argument('<findingId>', 'Finding ID to explain (e.g., SKILL-SEMANTIC-007 or CRED-001)')
+  .argument('<findingId>', 'Finding ID to explain (e.g., CRED-001 or AST-INJECT-001)')
   .description('Explain a security finding in plain English')
   .action(async (findingId: string) => {
-    const checkId = findingId.toUpperCase();
+    // Trimmed before matching (r1 review finding 6): `explain "CRED-001 "`
+    // used to be refused while suggesting the very id it was handed.
+    const checkId = findingId.trim().toUpperCase();
+
+    if (checkId === '') {
+      process.stderr.write('Empty check ID: explain needs a check ID to look up (e.g., CRED-001).\n');
+      process.stderr.write(`  Full inventory: ${CLI_PREFIX} check-metadata --json\n`);
+      return exitRecorded(1, 'refused');
+    }
 
     // HMA-29 — an id outside the check inventory (static explanations,
     // scan-soul CONTROL_DEFS, TAXONOMY_MAP) is refused, not stubbed:

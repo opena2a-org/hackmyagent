@@ -5,6 +5,7 @@
  */
 
 import type { SecurityFindingDraft } from './security-check';
+import { CONTROL_DEFS } from '../soul/scanner';
 
 /** Maps HMA check ID prefixes and exact IDs to attack class identifiers */
 const TAXONOMY_MAP: Record<string, string> = {
@@ -398,8 +399,7 @@ const TAXONOMY_MAP: Record<string, string> = {
   'RATE-004': 'INTEGRITY-BYPASS',
 
   // Semantic engine — Layer 2 structural analyzers (credential, instruction,
-  // permission). SEM-MCP-* set `attackClass` inline at the emission site and
-  // are not listed here. SemanticFinding uses `id:` (not `checkId:`); the
+  // permission, MCP config). SemanticFinding uses `id:` (not `checkId:`); the
   // adapter at `src/semantic/integration/finding-adapter.ts` copies it into
   // `SecurityFinding.checkId` before `enrichWithTaxonomy` runs.
   'SEM-CRED-001': 'RETROACTIVE-PRIV',
@@ -413,6 +413,22 @@ const TAXONOMY_MAP: Record<string, string> = {
   'SEM-PERM-001': 'SOUL-INJECT',
   'SEM-PERM-002': 'SOUL-INJECT',
   'SEM-PERM-003': 'SANDBOX-ESCAPE',
+  // SEM-MCP-* set `attackClass` inline at every emission site
+  // (src/semantic/structural/mcp-config.ts) and the inline value takes
+  // precedence per `enrichWithTaxonomy`. HMA-29 r2: they are listed anyway,
+  // because `secure` emits them on the tree's own fixtures while
+  // `check-metadata` and `explain` denied they exist (r1 review finding 1).
+  // SEM-MCP-005 varies by matched pattern (MCP-CHAIN-EXFIL for the
+  // filesystem+network chain, MCP-SCOPE-LEAK for the scope leak); its
+  // primary class is listed here, same convention as AST-CRED-001 below.
+  'SEM-MCP-001': 'MCP-PRIV-ESC',
+  'SEM-MCP-002': 'MCP-PRIV-ESC',
+  'SEM-MCP-003': 'MCP-CRED',
+  'SEM-MCP-004': 'MCP-SCOPE-WILDCARD',
+  'SEM-MCP-005': 'MCP-CHAIN-EXFIL',
+  'SEM-MCP-006': 'MCP-SCOPE-EXPAND',
+  'SEM-MCP-007': 'MCP-TYPOSQUAT',
+  'SEM-MCP-008': 'MCP-SUPPLY-CHAIN',
 
   // AST capability-analyzer: AST-EXFIL-001 sets `attackClass: surface.attackClass`
   // dynamically at the emission site (capability-analyzer.ts:232). This entry
@@ -529,17 +545,20 @@ export const TAXONOMY_EXEMPT_CHECKIDS: ReadonlySet<string> = new Set([
 /**
  * A check-id family (or exact ids within one) deliberately outside the
  * TAXONOMY_MAP inventory, with the reason stated — the exemption mechanism
- * above, made visible (HMA-29). `check-metadata --json` publishes these so
- * "totalChecks" plus the exclusions is the whole story of what `secure`
- * can emit, and the census test
- * (`__tests__/hardening/checkid-census.test.ts`) holds emitted ids to
- * exactly this contract: inventory key, or declared here.
+ * above, made visible (HMA-29). `check-metadata --json` publishes these,
+ * and the census test (`__tests__/hardening/checkid-census.test.ts`) holds
+ * its measured population — the `checkId:`/`id:` emission sites in src/:
+ * string literals, `PREFIX-${…}` templates, and the registered
+ * expression-valued sites — to exactly this contract: inventory key, or
+ * declared here.
  */
 export interface CheckIdExclusion {
-  /** Family prefix (the segment before the first hyphen), e.g. 'FIX'. */
+  /** Family prefix, e.g. 'FIX' or 'SEM-LLM' (everything before the id's numeric/terminal segment). */
   family: string;
-  /** Exact excluded ids. Empty means the entire family is excluded. */
+  /** Exact excluded ids. Empty means the family is excluded by prefix (or by `pattern`, when set). */
   ids: string[];
+  /** Anchored regex source; when set, an id is excluded iff it matches (overrides the prefix rule). */
+  pattern?: string;
   /** Why these ids carry no inventory entry. */
   reason: string;
 }
@@ -558,19 +577,66 @@ const GENERIC_EXEMPT_REASON =
   'Operational/meta finding: reports scanner status rather than a security threat, so it carries no inventory entry.';
 
 /**
- * Whole families excluded from the inventory. CHK-* ids exist only as
- * fixtures inside the eval oracle’s own in-src test suite
- * (src/eval/__tests__/oracle.test.ts); no scanner path emits them, but the
- * emitted-literal census reads them, so the exclusion is declared rather
- * than left to the census’s file-selection heuristics.
+ * Families excluded from the inventory, each with its reason. The census
+ * reads every emission shape in src/ — string literals, `PREFIX-${…}`
+ * templates, and the registered expression-valued `checkId:` sites — so
+ * every family it can see is either keyed or declared here.
  */
+const ATTACK_PAYLOAD_REASON =
+  'Attack-session payload identifier: the numeric suffix is a per-run counter (INJECT-3 names the third payload a red-team session generated, published in registry contributions), not a stable check. The no-leading-zero pattern leaves zero-padded ids of the same prefix (e.g. the INJECT-001 explanation entry) untouched.';
 const FAMILY_EXCLUSIONS: readonly CheckIdExclusion[] = [
   {
     family: 'CHK',
     ids: [],
     reason: 'Test fixtures of the eval oracle’s in-src suite (src/eval/__tests__/oracle.test.ts). Never emitted by a scan; excluded as a family so new fixture ids need no bookkeeping.',
   },
+  {
+    family: 'ARP',
+    ids: [],
+    reason: 'Runtime-protection pattern findings: ARP-<pattern-id> ids are derived at scan time from the AIM SDK pattern set (src/eval/oracle.ts); the pattern catalogue lives in @opena2a/aim-sdk, not in this inventory.',
+  },
+  {
+    family: 'SEM-LLM',
+    ids: [],
+    reason: 'Layer-3 LLM narrative findings: SEM-LLM-NNN numbers the findings inside one LLM analysis response (src/semantic/llm/index.ts), so the id is a per-response index, not a stable check. SEM-LLM-NOT-ANALYZED (the coverage statement) rides the SEM exclusion above.',
+  },
+  // NanoMind daemon narrative ids: numbered per analysis by the optional
+  // daemon (src/semantic/nanomind-analyzer.ts), not stable checks; the
+  // emission path is inactive in the shipped scan flow.
+  ...(['MCP-SEMANTIC', 'PROMPT-SEMANTIC', 'SKILL-SEMANTIC', 'SOUL-SEMANTIC'] as const).map((family) => ({
+    family,
+    ids: [],
+    reason: `NanoMind daemon narrative ids (${family}-NNN, src/semantic/nanomind-analyzer.ts): numbered per analysis by the optional daemon, not stable checks; the emission path is inactive in the shipped scan flow.`,
+  })),
+  // Red-team payload counter families (src/attack-engine/payload-generator.ts,
+  // carried as `checkId: r.payload.id` by src/registry/publish.ts).
+  ...(['ADAPT', 'BASE', 'CAPABUSE', 'EXFIL', 'INJECT', 'OVERRIDE', 'SOCIAL', 'SOULBYPASS'] as const).map((family) => ({
+    family,
+    ids: [],
+    pattern: `^${family}-[1-9][0-9]*$`,
+    reason: ATTACK_PAYLOAD_REASON,
+  })),
 ];
+
+/**
+ * Scan-soul governance control ids that do not double as taxonomy checks.
+ * They are emitted as findings by `scan-soul --contribute` (`checkId:
+ * ctrl.id`, src/cli.ts) and every one of them is answered by
+ * `explain <id>` through CONTROL_DEFS — the catalogue, not this inventory,
+ * is their registry, so the exclusion is declared rather than implied.
+ * Memoised because isDeclaredExcludedCheckId consults it per lookup.
+ */
+let soulControlCatalogIds: ReadonlySet<string> | undefined;
+function getSoulControlCatalogIds(): ReadonlySet<string> {
+  if (!soulControlCatalogIds) {
+    soulControlCatalogIds = new Set(
+      CONTROL_DEFS.map((c) => c.id).filter((id) => !(id in TAXONOMY_MAP)),
+    );
+  }
+  return soulControlCatalogIds;
+}
+const SOUL_CONTROL_CATALOG_REASON =
+  'Scan-soul governance control catalogue: these controls are counted, scored and explained through CONTROL_DEFS (`explain <id>` answers each; `scan-soul --explain` prints the catalogue). The controls that double as taxonomy checks are inventory keys; the rest are catalogued there, not here.';
 
 /**
  * Every deliberate hole in the inventory, stated with its reason:
@@ -591,15 +657,27 @@ export function getDeclaredCheckIdExclusions(): CheckIdExclusion[] {
     reason: EXEMPT_FAMILY_REASONS[family] ?? GENERIC_EXEMPT_REASON,
   }));
   declared.push(...FAMILY_EXCLUSIONS.map((e) => ({ ...e, ids: [...e.ids] })));
+  declared.push({
+    family: 'SOUL',
+    ids: [...getSoulControlCatalogIds()].sort(),
+    reason: SOUL_CONTROL_CATALOG_REASON,
+  });
   declared.sort((a, b) => (a.family < b.family ? -1 : a.family > b.family ? 1 : 0));
   return declared;
+}
+
+/** One exclusion entry's matching rule: exact ids when listed, else pattern, else family prefix. */
+export function checkIdExclusionMatches(e: CheckIdExclusion, checkId: string): boolean {
+  if (e.ids.length > 0) return e.ids.includes(checkId);
+  if (e.pattern) return new RegExp(e.pattern).test(checkId);
+  return checkId.startsWith(`${e.family}-`);
 }
 
 /** True when `checkId` is deliberately outside the inventory, with a declared reason. */
 export function isDeclaredExcludedCheckId(checkId: string): boolean {
   if (TAXONOMY_EXEMPT_CHECKIDS.has(checkId)) return true;
-  const family = checkId.split('-')[0];
-  return FAMILY_EXCLUSIONS.some((e) => e.ids.length === 0 && e.family === family);
+  if (getSoulControlCatalogIds().has(checkId)) return true;
+  return FAMILY_EXCLUSIONS.some((e) => checkIdExclusionMatches(e, checkId));
 }
 
 /**
@@ -651,6 +729,16 @@ const SEVERITY_OVERRIDES: Record<string, string> = {
   'SKILL-018': 'medium',
   'SUPPLY-002': 'medium',
   'SEM-MCP-006': 'low',
+  // HMA-29 r2 (review finding 4): these sites emit a fixed severity, so the
+  // inventory default (medium for AST, high for SOUL) contradicted every
+  // finding the scanner actually reported. Other AST/SEM checks assign
+  // severity per finding at analysis time and keep the prefix default here.
+  'AST-MANIP-001': 'critical', // capability-analyzer.ts, fixed critical
+  'AST-HEARTBEAT-001': 'critical', // capability-analyzer.ts, fixed critical
+  'AST-INJECT-001': 'critical', // capability-analyzer.ts, fixed critical
+  'AST-GOV-004': 'high', // governance-analyzer.ts, fixed high
+  'AST-PERSIST-001': 'high', // capability-analyzer.ts, fixed high
+  'SOUL-UNVERIFIABLE-CLAIM': 'medium', // scanner.ts narrative check, fixed medium
 };
 
 /**
