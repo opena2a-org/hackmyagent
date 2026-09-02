@@ -158,7 +158,7 @@ describe('HMA-22 AST-CRED-003 is anchored on a secret-shaped value in the raw ar
   });
 
   it('HMA-22.AC1 P2: the long-$comment credential-shape-exemptions.json (f2c2871 bytes) reports exactly zero AST-CRED-003', async () => {
-    const content = fixture('P2.credential-shape-exemptions.json', '1890b264223e47402429ab32272ccc8243638c31da8c4d4d2deca21bc8e9abdc');
+    const content = fixture('P2.credential-shape-exemptions.json', 'ad17a5aa573217d1d598453cbe3431bce1e5fcf2a83910fa076408f34e463f04');
     const { cred003 } = await analyze(content, 'security/credential-shape-exemptions.json');
     expect(cred003.length).toBe(0);
   });
