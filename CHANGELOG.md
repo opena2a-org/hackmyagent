@@ -32,6 +32,44 @@ reads `opens a reverse shell via /dev/tcp/`. No check was added, no severity
 changed, and the skill Markdown path is untouched: a reverse shell in SKILL.md
 is still SKILL-008.
 
+### `explain` refuses unknown check IDs, and the inventory stops lying by omission (HMA-29)
+
+`explain NEMO-999` used to print the generic "Static analysis pattern
+finding." stub and exit 0 — every hyphenated unknown whose prefix had a
+category label got a confident non-answer with a green exit code. An ID
+outside the check inventory (the static explanations, the scan-soul
+governance catalog, and the taxonomy) now refuses on stderr, names the
+rejected ID, suggests the nearest known IDs (shared-prefix, then
+edit-distance neighbours), and exits 1. Every ID the CLI already explained
+still explains with exit 0.
+
+The inventory itself grew to match what `secure` actually emits: 24
+NanoMind semantic (AST) checks, 6 SOUL narrative checks, and the 8 SEM-MCP
+structural checks were reported in scan output but absent from
+`check-metadata` — `totalChecks` is now 362 (317 static · 45 semantic, 88
+categories). The deliberate holes the census measures are published in
+`check-metadata --json` under a new `exclusions` key naming the family,
+its IDs (or id pattern), and the reason: fix-application statuses,
+scan-status indicators, the Layer-3 coverage statement, the eval oracle's
+in-src test fixtures, the scan-soul governance control catalogue (still
+answered by `explain` via CONTROL_DEFS), per-run id families (ARP-*
+runtime-protection patterns, SEM-LLM-* narrative indices, red-team payload
+counters), and the inactive NanoMind daemon narrative families. A census
+test reads every emission shape in src/ — `checkId:` string literals,
+`PREFIX-${…}` templates, and a registered list of expression-valued sites
+(`ctrl.id`, `check.id`, `finding.id`, `r.payload.id`) — and fails when any
+emitted id is neither an inventory key nor declared-excluded, so the gap
+cannot regrow silently.
+
+`check-metadata --json` also gained a `severityNote`: severities are
+inventory defaults, semantic (AST/SEM) findings carry per-finding severity,
+and the fixed-severity sites (AST-MANIP-001, AST-HEARTBEAT-001,
+AST-INJECT-001 critical; AST-GOV-004, AST-PERSIST-001 high;
+SOUL-UNVERIFIABLE-CLAIM medium) are pinned so the table matches what
+`secure` emits. `explain` trims its argument before matching, refuses an
+empty ID with its own message, and its help example names IDs the command
+actually answers.
+
 ### `.hmaignore` gains `<path>:<CHECK-ID>`, trailing comments, `expires:`, and loud exit-neutral errors
 
 A path rule used to be all-or-nothing: `danger.py` removed every check on that
