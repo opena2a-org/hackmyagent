@@ -483,6 +483,82 @@ export const TAXONOMY_EXEMPT_CHECKIDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * A check-id family (or exact ids within one) deliberately outside the
+ * TAXONOMY_MAP inventory, with the reason stated — the exemption mechanism
+ * above, made visible (HMA-29). `check-metadata --json` publishes these so
+ * "totalChecks" plus the exclusions is the whole story of what `secure`
+ * can emit, and the census test
+ * (`__tests__/hardening/checkid-census.test.ts`) holds emitted ids to
+ * exactly this contract: inventory key, or declared here.
+ */
+export interface CheckIdExclusion {
+  /** Family prefix (the segment before the first hyphen), e.g. 'FIX'. */
+  family: string;
+  /** Exact excluded ids. Empty means the entire family is excluded. */
+  ids: string[];
+  /** Why these ids carry no inventory entry. */
+  reason: string;
+}
+
+/**
+ * Reasons for the exempt families above. A future exempt id in a new
+ * family falls back to the generic operational/meta wording rather than
+ * shipping reasonless.
+ */
+const EXEMPT_FAMILY_REASONS: Record<string, string> = {
+  FIX: 'Fix-application statuses: they report what a --fix run did (or could not do), not a security threat. The underlying threat is reported by whichever check found it, which carries its own inventory entry.',
+  SCAN: 'Scan-status indicators: they report that something was not examined or not reachable — an absence of measurement, not a threat in the target.',
+  SEM: 'Layer-3 coverage statement: SEM-LLM-NOT-ANALYZED names a file the semantic layer could not analyze. An inventory entry would assert something about contents the run could not determine.',
+};
+const GENERIC_EXEMPT_REASON =
+  'Operational/meta finding: reports scanner status rather than a security threat, so it carries no inventory entry.';
+
+/**
+ * Whole families excluded from the inventory. CHK-* ids exist only as
+ * fixtures inside the eval oracle’s own in-src test suite
+ * (src/eval/__tests__/oracle.test.ts); no scanner path emits them, but the
+ * emitted-literal census reads them, so the exclusion is declared rather
+ * than left to the census’s file-selection heuristics.
+ */
+const FAMILY_EXCLUSIONS: readonly CheckIdExclusion[] = [
+  {
+    family: 'CHK',
+    ids: [],
+    reason: 'Test fixtures of the eval oracle’s in-src suite (src/eval/__tests__/oracle.test.ts). Never emitted by a scan; excluded as a family so new fixture ids need no bookkeeping.',
+  },
+];
+
+/**
+ * Every deliberate hole in the inventory, stated with its reason:
+ * TAXONOMY_EXEMPT_CHECKIDS grouped by family, plus the whole-family
+ * exclusions. This is what `check-metadata --json` publishes.
+ */
+export function getDeclaredCheckIdExclusions(): CheckIdExclusion[] {
+  const byFamily = new Map<string, string[]>();
+  for (const id of [...TAXONOMY_EXEMPT_CHECKIDS].sort()) {
+    const family = id.split('-')[0];
+    const ids = byFamily.get(family);
+    if (ids) ids.push(id);
+    else byFamily.set(family, [id]);
+  }
+  const declared: CheckIdExclusion[] = [...byFamily.entries()].map(([family, ids]) => ({
+    family,
+    ids,
+    reason: EXEMPT_FAMILY_REASONS[family] ?? GENERIC_EXEMPT_REASON,
+  }));
+  declared.push(...FAMILY_EXCLUSIONS.map((e) => ({ ...e, ids: [...e.ids] })));
+  declared.sort((a, b) => (a.family < b.family ? -1 : a.family > b.family ? 1 : 0));
+  return declared;
+}
+
+/** True when `checkId` is deliberately outside the inventory, with a declared reason. */
+export function isDeclaredExcludedCheckId(checkId: string): boolean {
+  if (TAXONOMY_EXEMPT_CHECKIDS.has(checkId)) return true;
+  const family = checkId.split('-')[0];
+  return FAMILY_EXCLUSIONS.some((e) => e.ids.length === 0 && e.family === family);
+}
+
+/**
  * Default severity by check ID prefix. Based on the security impact
  * of each category. Individual checks may override via SEVERITY_OVERRIDES.
  */
