@@ -75,6 +75,22 @@ does not report either.
 The canonical credential-format scan (`Hardcoded <label>` surfaces, confidence
 0.9, carrying their own offset) is untouched: it is a value-shaped route, not a
 prose one, and it is what detects real hardcoded secrets.
+
+### `mcp-serve` no longer posts its command telemetry event, and the MCP server's confinement is pinned by witness suites
+
+`mcp-serve` reads inside the granted roots and reaches nothing by default, so
+its command event was the session's one default network attempt, posted from a
+process a host model drives, and posted at startup rather than at the end of
+the session. The command now joins the untracked set alongside `telemetry` and
+`help`; nothing else about telemetry changes.
+
+Two suites now witness the confinement over a real stdio session against the
+built server: `__tests__/mcp/stdio-confinement-witness.test.ts` (absolute,
+`../` and symlink-out paths refused by every tool, `--root /` and `--root
+<HOME>` refused at initialisation, the set of paths a session creates equal to
+a committed allowlist) and `__tests__/mcp/stdio-egress-witness.test.ts` (an
+in-process logging proxy sees zero lines from a scan and a deep scan, and
+exactly one from the direct-request control).
 ### "Hardcoded Secret Detected" now requires a secret-shaped value in the raw artifact bytes
 
 AST-CRED-003 fired on prose that merely NAMES credential types. The
