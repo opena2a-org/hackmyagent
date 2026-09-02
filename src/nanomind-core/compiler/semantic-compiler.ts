@@ -218,16 +218,22 @@ export class SemanticCompiler {
     // reported below, never swallowed — an artifact nobody read is not an
     // artifact with no credentials in it.
     //
-    // The SCAN is type-gated; the REFUSAL is not. For every non-source_code
-    // type the same patterns still run inside `hasCanonicalCredentialFormat`
-    // (via `extractDataAccessPatterns` above and `mapRiskSurfaces` below), and
-    // that probe answers an oversize artifact with a silent `false`. So the
-    // refusal is raised HERE from the same predicate for every artifact type:
-    // without it, a 6 MB SOUL.md came back `benign` with zero findings — the C1
-    // shape — while the byte-identical .py was loudly refused.
-    const canonicalScan = parsed.type === 'source_code'
-      ? scanCanonicalCredentialFormats(content)
-      : { hits: [], refusedForSize: exceedsCredentialScanBytes(content) };
+    // The scan runs for EVERY artifact type, not just source_code (HMA-27).
+    // While it was type-gated, a non-source artifact's only route to a
+    // CRED-HARVEST signal was prose — `mapRiskSurfaces` requires a credential
+    // noun AND a harvesting verb — so a `config.toml` whose only credential
+    // content was a canonical VALUE (`sk-ant-api…`, or a name-gated
+    // `secret_access_key = "<40 hex>"`) produced zero findings from every
+    // layer. Detection is decided by the value shapes alone: the same
+    // canonical + name-gated lists the source path uses, with their own
+    // placeholder / regex-context / low-entropy filters, so the 40-hex
+    // residual class (git SHAs, base64-ish i18n strings) stays out — those
+    // are matched by neither list. The scan also refuses oversize content
+    // from its own predicate, so the refusal below is raised identically for
+    // every type: without it, a 6 MB SOUL.md came back `benign` with zero
+    // findings — the C1 shape — while the byte-identical .py was loudly
+    // refused.
+    const canonicalScan = scanCanonicalCredentialFormats(content);
     const canonicalHits = canonicalScan.hits;
     if (canonicalScan.refusedForSize) {
       warnings.push(credentialScanRefusedWarning(parsed.size));

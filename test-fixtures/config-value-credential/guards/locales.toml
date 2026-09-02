@@ -1,0 +1,6 @@
+# Setup wizard strings (locale: en).
+
+[en]
+greeting = "Welcome back"
+continue_label = "Continue"
+resume_marker = "V2VsY29tZSBiYWNrIHRvIHRoZSBzZXR1cCB3aXphcmQh"
