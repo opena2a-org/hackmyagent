@@ -19,6 +19,18 @@
  *    uncorroborated message now names the skipped line and says why it was
  *    not read.
  *
+ * Rework r2 (qgf/refs/HMA-31-rework-r2.md, from the r1 adversarial review):
+ *  - AC7: keyword-spelled property and method names are identifiers —
+ *    `stats.in / stats.out` and `obj.if(y) / 2` are divisions, not regex
+ *    openers.
+ *  - AC8: postfix `++`/`--` and non-ASCII identifiers decide division; the
+ *    fallback for an unlisted punctuator is the ruled opener set, not "any
+ *    other punctuator opens a regex".
+ *  - AC9: comment blanking is regex-aware — `//` or `/*` inside a regex
+ *    literal's body is regex text, not a comment opener.
+ *  - AC10: the undecidable-slash walk is paid once per line, so a crafted
+ *    line cannot amplify the corroborator's per-mention predicate calls.
+ *
  * Same discipline as sink-corroborator-scope.test.ts: no invisible codepoint
  * is written anywhere in this file, and every suppression case is paired with
  * a case that must still reach CRITICAL.
@@ -104,6 +116,36 @@ describe('HMA-31.AC2: the predicate lexes regex literals under the shape-(a) rul
   it('HMA-31.AC2 the predicate doc comment no longer disclaims regex lexing', async () => {
     const source = await fs.readFile(SCANNER_SOURCE, 'utf-8');
     expect(source).not.toContain('does NOT attempt to detect regex literals');
+  });
+});
+
+describe('HMA-31.AC7/AC8: keyword-spelled names and unlisted punctuators, at the predicate level', () => {
+  it('HMA-31.AC7 a keyword-spelled property name does not open a regex', () => {
+    const line = 'x = a.in / b; eval(p)';
+    const idx = line.indexOf('eval(');
+    expect(idx).toBeGreaterThan(0);
+    expect(isMatchInsideStringLiteral(line, idx)).toBe(false);
+  });
+
+  it('HMA-31.AC7 a keyword-spelled method call decides division after its closing paren', () => {
+    const line = 'const r = obj.if(y) / 2; eval(p)';
+    const idx = line.indexOf('eval(');
+    expect(idx).toBeGreaterThan(0);
+    expect(isMatchInsideStringLiteral(line, idx)).toBe(false);
+  });
+
+  it('HMA-31.AC8 postfix ++ before a slash decides division, not a regex opener', () => {
+    const line = 'let h = i++ / 2; eval(p)';
+    const idx = line.indexOf('eval(');
+    expect(idx).toBeGreaterThan(0);
+    expect(isMatchInsideStringLiteral(line, idx)).toBe(false);
+  });
+
+  it('HMA-31.AC8 a non-ASCII identifier is a word, so the slash after it is division', () => {
+    const line = 'const t = groß / 2; eval(p)';
+    const idx = line.indexOf('eval(');
+    expect(idx).toBeGreaterThan(0);
+    expect(isMatchInsideStringLiteral(line, idx)).toBe(false);
   });
 });
 
@@ -272,6 +314,211 @@ describe('HMA-31: the corroborator end to end', () => {
     expect(findings[0].severity).toBe('medium');
     expect(findings[0].message).toContain('uncorroborated');
   });
+
+  it('HMA-31.AC7 a keyword-spelled property name (.in) beside a division no longer downgrades the decoder', async () => {
+    const content = [
+      ...DECODER_SHAPE,
+      'const r = stats.in / stats.out; eval(buildPayload());',
+    ].join('\n');
+    expectFixtureStillTriggersTheOldReader(content);
+    await fs.writeFile(path.join(tempDir, 'property-in.js'), content);
+
+    const findings = await stego002For('property-in.js');
+    expect(findings.length).toBe(1);
+    expect(findings[0].severity).toBe('critical');
+    expect(findings[0].message).toContain('execution sink');
+  });
+
+  it('HMA-31.AC7 a keyword-spelled property name (.new) beside a division no longer downgrades the decoder', async () => {
+    const content = [
+      ...DECODER_SHAPE,
+      'const r = counts.new / counts.total; eval(buildPayload());',
+    ].join('\n');
+    expectFixtureStillTriggersTheOldReader(content);
+    await fs.writeFile(path.join(tempDir, 'property-new.js'), content);
+
+    const findings = await stego002For('property-new.js');
+    expect(findings.length).toBe(1);
+    expect(findings[0].severity).toBe('critical');
+    expect(findings[0].message).toContain('execution sink');
+  });
+
+  it('HMA-31.AC7 a keyword-spelled method call (obj.if) beside a division no longer downgrades the decoder', async () => {
+    const content = [
+      ...DECODER_SHAPE,
+      'const r = obj.if(y) / 2; eval(buildPayload());',
+    ].join('\n');
+    expectFixtureStillTriggersTheOldReader(content);
+    await fs.writeFile(path.join(tempDir, 'method-if.js'), content);
+
+    const findings = await stego002For('method-if.js');
+    expect(findings.length).toBe(1);
+    expect(findings[0].severity).toBe('critical');
+    expect(findings[0].message).toContain('execution sink');
+  });
+
+  it('HMA-31.AC8 postfix ++ before a division no longer downgrades the decoder', async () => {
+    const content = [
+      ...DECODER_SHAPE,
+      'let i = 0; const h = i++ / 2; eval(buildPayload());',
+    ].join('\n');
+    expectFixtureStillTriggersTheOldReader(content);
+    await fs.writeFile(path.join(tempDir, 'postfix-increment.js'), content);
+
+    const findings = await stego002For('postfix-increment.js');
+    expect(findings.length).toBe(1);
+    expect(findings[0].severity).toBe('critical');
+    expect(findings[0].message).toContain('execution sink');
+  });
+
+  it('HMA-31.AC8 a non-ASCII identifier before a division no longer downgrades the decoder', async () => {
+    const content = [
+      ...DECODER_SHAPE,
+      'const t = π / 2; eval(buildPayload());',
+    ].join('\n');
+    expectFixtureStillTriggersTheOldReader(content);
+    await fs.writeFile(path.join(tempDir, 'non-ascii-identifier.js'), content);
+
+    const findings = await stego002For('non-ascii-identifier.js');
+    expect(findings.length).toBe(1);
+    expect(findings[0].severity).toBe('critical');
+    expect(findings[0].message).toContain('execution sink');
+  });
+
+  it('HMA-31.AC9 a regex literal whose body spells // does not open a phantom line comment', async () => {
+    const content = [
+      ...DECODER_SHAPE,
+      String.raw`const u = /^https?:\/\//; eval(buildPayload());`,
+    ].join('\n');
+    expectFixtureStillTriggersTheOldReader(content);
+    await fs.writeFile(path.join(tempDir, 'url-regex.js'), content);
+
+    const findings = await stego002For('url-regex.js');
+    expect(findings.length).toBe(1);
+    expect(findings[0].severity).toBe('critical');
+    expect(findings[0].message).toContain('execution sink');
+  });
+
+  it('HMA-31.AC9 a regex literal whose body spells /* does not open a phantom block comment', async () => {
+    const content = [
+      ...DECODER_SHAPE,
+      String.raw`const clean = s.replace(/\/*$/, '');`,
+      'eval(buildPayload());',
+    ].join('\n');
+    expectFixtureStillTriggersTheOldReader(content);
+    await fs.writeFile(path.join(tempDir, 'strip-slash-regex.js'), content);
+
+    const findings = await stego002For('strip-slash-regex.js');
+    expect(findings.length).toBe(1);
+    expect(findings[0].severity).toBe('critical');
+    expect(findings[0].message).toContain('execution sink');
+  });
+
+  it('HMA-31.AC9 the phantom block comment does not swallow a sink four lines later either', async () => {
+    const content = [
+      ...DECODER_SHAPE,
+      String.raw`const clean = s.replace(/\/*$/, '');`,
+      'const a = 1;',
+      'const b = 2;',
+      'const c = 3;',
+      'eval(buildPayload());',
+    ].join('\n');
+    expectFixtureStillTriggersTheOldReader(content);
+    await fs.writeFile(path.join(tempDir, 'strip-slash-regex-later.js'), content);
+
+    const findings = await stego002For('strip-slash-regex-later.js');
+    expect(findings.length).toBe(1);
+    expect(findings[0].severity).toBe('critical');
+    expect(findings[0].message).toContain('execution sink');
+  });
+
+  it('HMA-31.AC3 the cross-line carry resets at a skipped over-length line', async () => {
+    // Review finding 8: the over-length branch `continue`d before the
+    // pending-token check, so a trailing `eval` leaked across the skipped
+    // line and corroborated an IIFE that is not its call.
+    const content = [
+      ...DECODER_SHAPE,
+      'const a = eval',
+      'x'.repeat(MAX_LINE_LENGTH + 1),
+      '(function(){})();',
+    ].join('\n');
+    await fs.writeFile(path.join(tempDir, 'carry-across-skipped.js'), content);
+
+    const findings = await stego002For('carry-across-skipped.js');
+    expect(findings.length).toBe(1);
+    expect(findings[0].severity).toBe('medium');
+    expect(findings[0].message).toContain('uncorroborated');
+  });
+});
+
+describe('HMA-31.AC10: the undecidable-slash walk cannot be amplified by a crafted line', () => {
+  let scanner: HardeningScanner;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    scanner = new HardeningScanner();
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hma-sink-amplify-'));
+    await fs.writeFile(
+      path.join(tempDir, 'package.json'),
+      JSON.stringify({ name: 'sink-amplify-project', version: '1.0.0' })
+    );
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  /**
+   * The review's amplification line: six undecidable fork points, then 800
+   * string mentions of eval — every mention used to re-run the full forked
+   * walk (base 29 ms → r1 1005 ms for one line; 137 ms → 9293 ms for ten).
+   */
+  const AMPLIFIER = '} /a/ '.repeat(6) + "'eval(p)' + ".repeat(800) + '0;';
+
+  it('HMA-31.AC10 one amplification line scans within the pinned bound', async () => {
+    await fs.writeFile(path.join(tempDir, 'amplifier.js'), AMPLIFIER);
+    const t0 = performance.now();
+    await scanner.scan({ targetDir: tempDir });
+    // Generous vs the fix (~tens of ms), red vs r1's measured 1005 ms.
+    expect(performance.now() - t0).toBeLessThan(750);
+  });
+
+  it('HMA-31.AC10 ten amplification lines scan within the pinned bound', async () => {
+    await fs.writeFile(
+      path.join(tempDir, 'amplifier10.js'),
+      Array(10).fill(AMPLIFIER).join('\n')
+    );
+    const t0 = performance.now();
+    await scanner.scan({ targetDir: tempDir });
+    // Generous vs the fix, red vs r1's measured 9293 ms.
+    expect(performance.now() - t0).toBeLessThan(2500);
+  });
+
+  it('HMA-31.AC10 six undecidable points with the sink in a string still agree on suppression', () => {
+    // The discriminating pair (review finding 7): with `/a/` bodies the
+    // honest lexings of every path agree the eval mention is inside the
+    // trailing string, so at six points — within budget — the answer is
+    // "inside". At a budget of 100 the seven-point line below would answer
+    // the same; only the ruled budget makes it differ.
+    const line = '} /a/ '.repeat(6) + "'eval(p)'";
+    const idx = line.indexOf('eval(');
+    expect(idx).toBeGreaterThan(0);
+    expect(isMatchInsideStringLiteral(line, idx)).toBe(true);
+  });
+
+  it('HMA-31.AC10 the seventh undecidable point hits the budget and fails toward corroboration', () => {
+    const line = '} /a/ '.repeat(7) + "'eval(p)'";
+    const idx = line.indexOf('eval(');
+    expect(idx).toBeGreaterThan(0);
+    expect(isMatchInsideStringLiteral(line, idx)).toBe(false);
+  });
+
+  it('HMA-31.AC9 the blanker doc no longer claims a phantom quote can only blank less', async () => {
+    const source = await fs.readFile(SCANNER_SOURCE, 'utf-8');
+    // The r1 wording wraps mid-phrase ("blank less, not\n * more"), so pin
+    // the fragment that survives the wrap.
+    expect(source).not.toContain('blank less');
+  });
 });
 
 describe('HMA-31.AC6: nothing outside the ruling moves', () => {
@@ -297,6 +544,13 @@ describe('HMA-31.AC6: nothing outside the ruling moves', () => {
 
     // The per-line bound is kept.
     expect(source).toContain('const MAX_LINE_LENGTH = 10000');
+
+    // The cross-line carry (HMA-31.AC3) names the same two tokens as the
+    // patterns above and nothing else — diff-pinned so a new sink cannot
+    // enter through it (review finding 10).
+    expect(source).toContain(
+      String.raw`const TRAILING_SINK_TOKEN = /(?:^|[^\w.$])((?:new\s+)?Function|eval)\s*$/;`
+    );
 
     // The predicate remains the corroborator's decision path (#424 untouched:
     // no AST route replaces it here).
