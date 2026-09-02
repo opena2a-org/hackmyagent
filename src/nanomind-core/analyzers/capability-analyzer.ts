@@ -15,6 +15,7 @@
 
 import type { SecurityAST, Capability, Constraint, RiskSurface } from '../types.js';
 import type { ProjectType } from '../../hardening/security-check.js';
+import type { ShapeId } from '../../types/credential-format.js';
 import { isNonAgentProjectType } from './family-coverage.js';
 import { FIX_LINES } from '../../hardening/fix-lines.js';
 
@@ -67,6 +68,30 @@ export interface ASTFinding {
   evidence?: string;
   /** AST-specific: what a pairing finding matched (AST-CRED-002) */
   matched?: FindingMatch;
+  /**
+   * Redaction provenance FORWARDED from the AST, not asserted by the analyzer
+   * (HMA-38). Set — via `purposeRedactionProvenance` — only when this
+   * finding's text was constructed from a `declaredPurpose` whose extraction
+   * removed content. The redacted purpose is inert under `emitFinding`'s own
+   * pass (a marker matches no rule), so without this the emitted finding
+   * would read `redactionStatus: 'clean'` over a removal; `emitFinding`'s
+   * absorbing prior-'applied' rule is the sanctioned carrier for exactly this.
+   */
+  redactionStatus?: 'applied';
+  redactedShapes?: readonly ShapeId[];
+}
+
+/**
+ * The fields a finding that interpolates `ast.declaredPurpose` spreads into
+ * its literal: redaction provenance when the purpose's construction removed
+ * content, nothing otherwise. See `ASTFinding.redactionStatus`.
+ */
+export function purposeRedactionProvenance(
+  ast: SecurityAST,
+): Pick<ASTFinding, 'redactionStatus' | 'redactedShapes'> {
+  const redaction = ast.declaredPurposeRedaction;
+  if (redaction?.status !== 'applied') return {};
+  return { redactionStatus: 'applied', redactedShapes: redaction.shapes };
 }
 
 // ============================================================================
@@ -430,6 +455,7 @@ function checkScopeMismatch(ast: SecurityAST): ASTFinding[] {
 
       if (!relevantToPurpose && purposeWords.size > 3) {
         findings.push({
+          ...purposeRedactionProvenance(ast),
           checkId: `AST-SCOPE-001`,
           name: 'Capability-Purpose Mismatch',
           description: `Capability "${cap.name}" does not appear related to the declared purpose: "${ast.declaredPurpose.slice(0, 100)}".`,

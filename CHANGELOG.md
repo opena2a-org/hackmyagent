@@ -30,6 +30,11 @@ same prose, and AST-CRED-002 still fires on forwarding lines. The producer
 (`mapRiskSurfaces`, `extractEvidenceSpans`, the canonical value scan) is
 untouched, and HMA-27's value-shaped route for config artifacts keeps its
 exact finding set.
+### The PEM private-key redaction rule fails closed at any block size
+
+`redactSecretsForReport` carried a `pem-private-key` rule with an unbounded lazy body, so a report containing many armor headers with no footer took 10 s and more at the 1 MiB size gate. The body now stops at the next armor header instead of scanning to end of input, which brings the same input to a few milliseconds without bounding the block size: a complete block of any size is replaced whole (an RSA-32768 block exceeds 32 KiB once indented, the larger FrodoKEM PKCS#8 bodies exceed it by computed size alone, and indentation is unbounded), and a block whose footer is missing is replaced together with the key material that follows its header, while a header mentioned in prose is left as written unless key-shaped text follows it. New tests mint the keys they probe at test time and use a same-size synthetic stand-in for the RSA-32768 shape; none is committed.
+
+### `--json` is not deprecated, and the help strings stop saying it is
 
 From 0.8.0 through 0.32.0, `secure --help` described `--json` as deprecated
 (and `attack --help` called it a deprecated alias) while the README cited the
