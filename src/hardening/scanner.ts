@@ -1411,7 +1411,17 @@ const SKILL_EXFILTRATION_PATTERNS: RegExp[] = [
   /fetch\s*\([^)]*method:\s*['"]POST/gi,
 ];
 
-const SKILL_REVERSE_SHELL_PATTERNS: RegExp[] = [
+/**
+ * Reverse-shell shapes, treated as sufficient on their own wherever they are
+ * consumed: no ordinary script opens `/dev/tcp` or execs a shell over netcat.
+ *
+ * Exported so its consumers can be tested against the LIST rather than against
+ * a restatement of it. Two call sites read it — the skill Markdown path
+ * (SKILL-008) and `describeSkillBundlePayload` (SKILL-006 over the bundle) —
+ * and a test that pasted the six patterns instead of importing them would go
+ * on passing while the two drifted apart pattern by pattern.
+ */
+export const SKILL_REVERSE_SHELL_PATTERNS: RegExp[] = [
   /nc\s+(-[a-zA-Z]+\s+)*.*-e/gi,
   /bash\s+-i\s+/gi,
   /\/dev\/tcp\//gi,
@@ -2868,8 +2878,9 @@ function firstPatternMatch(patterns: RegExp[], line: string): string | null {
 /**
  * What makes one line of a BUNDLED skill file a payload, or null.
  *
- * Two shapes, both conjunctive, because a bundled script is ordinary code and a
- * single-signal rule over `scripts/` would flag most of them:
+ * Three shapes. The first two are conjunctive, because a bundled script is
+ * ordinary code and a single-signal credential or network rule over `scripts/`
+ * would flag most of them:
  *
  *  1. `detectShellCredentialExfil` — a curl/wget that reads a known credential
  *     file into the request body of a remote URL. Already the SHELL-EXFIL-001
@@ -2878,10 +2889,19 @@ function firstPatternMatch(patterns: RegExp[], line: string): string | null {
  *     script that legitimately reads `~/.aws/credentials` does not also POST it
  *     to `webhook.site` in the same statement, and a script that POSTs telemetry
  *     does not name a credential file in the same statement.
+ *  3. a reverse shell, which needs no second signal. `SKILL_REVERSE_SHELL_PATTERNS`
+ *     is the list the skill Markdown path already treats as sufficient on its
+ *     own, and the conjunctions above are blind to it: an interactive shell over
+ *     `/dev/tcp` names no credential and posts to no sink, so a payload moved
+ *     into `scripts/` was described by nothing here. Reusing the list rather
+ *     than restating it is what stops the bundle and the Markdown from drifting
+ *     apart pattern by pattern.
  *
  * Comment lines are skipped so a `# curl ... @~/.aws/credentials` note in a
  * runbook does not fire, matching `checkShellCredentialExfil`. The shebang is
- * skipped as a comment for the same reason it is not code.
+ * skipped as a comment for the same reason it is not code. The skip is at the
+ * top, so it covers the reverse-shell branch too — a `# bash -i >& /dev/tcp/...`
+ * line in a recovery runbook is documentation, not a payload.
  */
 function describeSkillBundlePayload(line: string): string | null {
   const trimmed = line.trimStart();
@@ -2889,6 +2909,9 @@ function describeSkillBundlePayload(line: string): string | null {
 
   const cred = detectShellCredentialExfil(line);
   if (cred) return `uploads ${cred.credPath} to ${cred.url}`;
+
+  const reverseShell = firstPatternMatch(SKILL_REVERSE_SHELL_PATTERNS, line);
+  if (reverseShell) return `opens a reverse shell via ${reverseShell}`;
 
   const credRead = firstPatternMatch(SKILL_CREDENTIAL_ACCESS_PATTERNS, line);
   if (!credRead) return null;
@@ -12586,16 +12609,16 @@ dist/
       findings.push({
         checkId: 'SKILL-006',
         name: 'Data Exfiltration Pattern',
-        description: 'A file bundled with this skill — a script or test beside SKILL.md, not the Markdown itself — reads credential material and sends it to a remote endpoint.',
+        description: 'A file bundled with this skill — a script or test beside SKILL.md, not the Markdown itself — sends credential material to a remote endpoint or opens a reverse shell.',
         category: 'skill',
         severity: 'critical',
         passed: false,
-        message: `Exfiltration payload in ${named.length} bundled skill file(s): ${named.join(', ')}`,
+        message: `Payload in ${named.length} bundled skill file(s): ${named.join(', ')}`,
         file: hits[0].rel,
         line: hits[0].line,
         fixable: false,
-        fix: `Remove the exfiltration payload from ${named.join(', ')}. Reviewing only SKILL.md reviews the description of the skill, not the code that ships with it.`,
-        guidance: 'A skill is a directory: SKILL.md is what the agent is told, and the scripts beside it are what runs. A payload moved out of the Markdown into scripts/ or tests/ ships with the skill and executes with the agent\'s privileges.',
+        fix: `Remove the payload from ${named.join(', ')} — each citation's reason says what that file does. Reviewing only SKILL.md reviews the description of the skill, not the code that ships with it.`,
+        guidance: 'A skill is a directory: SKILL.md is what the agent is told, and the scripts beside it are what runs. A payload moved out of the Markdown into scripts/ or tests/ — an upload of credential material, or a reverse shell — ships with the skill and executes with the agent\'s privileges.',
         evidence: {
           kind: 'positive',
           lines: hits.map(h => ({ n: h.line, content: h.content, why: h.why })),
