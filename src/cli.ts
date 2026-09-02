@@ -4966,12 +4966,21 @@ Examples:
         const _os = require('node:os');
         const _path = require('node:path');
         const _tmp = _fs.mkdtempSync(_path.join(_os.tmpdir(), 'hma-secure-file-'));
+        // HMA-30 — the copy lands at <tmp>/<parentBasename>/<basename>, not
+        // <tmp>/<basename>. Flattening discarded the one path component the
+        // credential predicates read: `secure ~/.aws/credentials` copied to
+        // `<tmp>/credentials`, where neither the `/.aws/credentials` suffix
+        // nor the config-directory rule can fire, so the lone-file scan
+        // under-reported exactly the files whose names promise secrets.
+        const _parentBase = _path.basename(_path.dirname(originalTarget));
+        const _copyDir = _path.join(_tmp, _parentBase);
         const stays = readStaysInsideTree(originalTarget, _path.dirname(originalTarget));
         if (stays.ok) {
-          _fs.copyFileSync(originalTarget, _path.join(_tmp, _path.basename(originalTarget)));
+          _fs.mkdirSync(_copyDir, { recursive: true });
+          _fs.copyFileSync(originalTarget, _path.join(_copyDir, _path.basename(originalTarget)));
         } else {
           singleFileWithheld = {
-            rel: _path.basename(originalTarget),
+            rel: _path.join(_parentBase, _path.basename(originalTarget)),
             resolved: stays.resolved,
             call: 'copyFileSync',
             retarget: retargetInstruction(stays.resolved, RAW_CLI_PREFIX),
@@ -4986,11 +4995,11 @@ Examples:
       // #286 — the directory a finding's `file` actually resolves against, for
       // building runnable `Verify:` commands. NOT `displayDir` for a lone-file
       // target: that target is copied into a temp dir and its findings carry
-      // the BASENAME, so `join(displayDir, basename)` would name
-      // `<file>/<file>`. The containing directory is where that basename
-      // resolves, and it is also the path the reader recognises.
+      // `<parentBasename>/<basename>` (HMA-30), so the root that joins back to
+      // the user's real path is the parent's PARENT — one `dirname` would
+      // double the parent (`<dir>/.aws/.aws/credentials`).
       const citationRoot = _isFileTarget
-        ? require('node:path').dirname(originalTarget)
+        ? require('node:path').dirname(require('node:path').dirname(originalTarget))
         : displayDir;
 
       // Parse ignore list
