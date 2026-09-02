@@ -308,7 +308,7 @@ import {
 import type { ScanResult, SuppressionChannel, SecurityFindingDraft, WithheldLinkRecord } from './hardening/security-check';
 import { isScopeChannel } from './hardening/security-check';
 import { readStaysInsideTree } from './hardening/contain';
-import { mergeWithheldLinks, retargetInstruction, withheldLinkLines } from './hardening/withheld-links';
+import { mergeWithheldLinks, retargetInstruction, withheldLinkLines, withheldLinkRecords } from './hardening/withheld-links';
 
 /**
  * `statSync` for a scan target as typed, without following a link out of the
@@ -6034,7 +6034,14 @@ Examples:
           const govTarget = soulScanner.findGovernanceFile(targetDir)
             ?? require('path').join(targetDir, 'SOUL.md');
           let soulHashBefore: string | null = null;
-          try { soulHashBefore = createHash('sha256').update(readFileSync(govTarget)).digest('hex'); } catch { /* the governance file may not exist yet */ }
+          // The pre-hash is a raw read of a name the tree controls, so it is
+          // confined like every other read: a link resolving outside the
+          // scanned tree is not followed, and the hash stays unset — the same
+          // outcome as "the governance file does not exist yet". The scan
+          // report already disclosed the withheld link.
+          if (readStaysInsideTree(govTarget, targetDir).ok) {
+            try { soulHashBefore = createHash('sha256').update(readFileSync(govTarget)).digest('hex'); } catch { /* the governance file may not exist yet */ }
+          }
           const hardenResult = await soulScanner.hardenSoul(targetDir, {
             dryRun: false,
             // The governance write is gated by the same recoverability rule as
@@ -9714,6 +9721,12 @@ Examples:
       }
       const soulScanDurationMs = Date.now() - soulScanStartMs;
 
+      // Links `findGovernanceFile` refused to follow because they resolve
+      // outside the scanned tree. A policy skip, not a failure: announced on
+      // both channels in the wording `secure` already uses, and the exit code
+      // is the same as for the tree with the link absent.
+      const soulWithheldLinks = withheldLinkRecords(result.withheldLinks ?? [], prefix);
+
       // #390 — `scan-soul`'s exit contract, settled in ONE place.
       //
       // Settled HERE, above the output-channel branch, for the reason #373
@@ -9840,10 +9853,15 @@ Examples:
             // cases contradicted the `detail` string beside it, which names
             // the file it could not read.
             file: result.file ?? null,
+            // Carried so a consumer can tell a withheld link from a failed
+            // read: a withheld link reports `file` null and `fileReadFailed`
+            // false — nothing was attempted, nothing failed.
+            fileReadFailed: result.fileReadFailed,
             score: null,
             conformance: null,
             coverage: coverageJson(soulVerdict),
             searched: GOVERNANCE_FILES,
+            withheldLinks: soulWithheldLinks,
             ...(mi ? { markerInvalid: mi } : {}),
             gate: {
               failed: true,
@@ -9857,6 +9875,9 @@ Examples:
           console.log();
           console.log(`  ${colors.bold}${unmeasuredBanner(soulVerdict)}${RESET()}`);
           console.log(`  ${colors.dim}Searched: ${searched}${RESET()}`);
+          for (const line of withheldLinkLines(soulWithheldLinks)) {
+            console.log(`  ${colors.dim}${line}${RESET()}`);
+          }
           if (mi) {
             const sourceLabel = mi.source === 'flag' ? '--profile flag' : 'marker';
             const displayedValue = mi.attemptedValue.length === 0 ? '(empty)' : mi.attemptedValue;
@@ -9952,7 +9973,9 @@ Examples:
             exitCode: soulVerdict.exitCode,
           },
         };
-        const jsonBaseSoul = { ...result, ...soulGateJson };
+        // `withheldLinks` replaced with the record form (adds `retarget`),
+        // the same shape `secure --format json` emits for the same channel.
+        const jsonBaseSoul = { ...result, withheldLinks: soulWithheldLinks, ...soulGateJson };
         const jsonOutput = publishStatus ? { ...jsonBaseSoul, publish: publishStatus } : jsonBaseSoul;
         writeJsonStdout(jsonOutput);
         await handleSoulContribution(options.contribute, targetDir, result, soulScanDurationMs, options.registryUrl, 'json');
@@ -10293,6 +10316,13 @@ Examples:
         }
       }
 
+      // Reached when a withheld governance name fell through to a lower-
+      // priority file that WAS read (the unmeasured arm above discloses the
+      // link-only case). Same channel and wording as `secure`.
+      for (const line of withheldLinkLines(soulWithheldLinks)) {
+        console.log(`  ${colors.dim}${line}${RESET()}`);
+      }
+
       // ── Next Steps ─────────────────────────────────────────────────
       if (!isCiMode(options)) {
         console.log();
@@ -10557,6 +10587,12 @@ Examples:
         writeGuard: hardenGuard,
       });
 
+      // Links `findGovernanceFile` refused to follow because they resolve
+      // outside the target tree — announced on both channels, in the wording
+      // `secure` already uses. A withheld name is treated as absent, so the
+      // run composes (or creates) content exactly as it would without the link.
+      const hardenWithheldLinks = withheldLinkRecords(result.withheldLinks ?? [], prefix);
+
       // JSON output
       if (options.json) {
         // Exclude full content from JSON to keep it concise
@@ -10566,6 +10602,7 @@ Examples:
           controlsAdded: result.controlsAdded,
           dryRun: result.dryRun,
           existedBefore: result.existedBefore,
+          withheldLinks: hardenWithheldLinks,
           // #270/#271 — a consumer that only reads `sectionsAdded` would see an
           // empty list and conclude the file was already compliant. The refusal
           // is the reason it is empty, so it travels in the machine output too.
@@ -10574,6 +10611,15 @@ Examples:
         writeJsonStdout(jsonResult);
         if (result.writeRefused) process.exitCode = 1; // exit-unsettled(#350/S029): bare assignment outside the funnel; migrate to raiseExitCode
         return;
+      }
+
+      // Disclosure before any outcome line, so "create" cannot read as a
+      // statement about the linked name the run refused to follow.
+      if (hardenWithheldLinks.length > 0) {
+        console.log();
+        for (const line of withheldLinkLines(hardenWithheldLinks)) {
+          console.log(`  ${colors.dim}${line}${RESET()}`);
+        }
       }
 
       // #270/#271 — the write was refused. Say so before anything that could be
