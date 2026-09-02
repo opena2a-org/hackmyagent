@@ -1,3 +1,3 @@
-score=43
-severities={"critical":5,"low":1,"medium":1}
-checkIds=CRED-001,DEP-001,GIT-001,SEM-CRED-001,SEM-CRED-004
+score=40
+severities={"critical":5,"low":1,"medium":2}
+checkIds=CRED-001,DEP-001,GIT-001,SANDBOX-001,SEM-CRED-001,SEM-CRED-004
