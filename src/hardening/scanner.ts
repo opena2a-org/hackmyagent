@@ -1375,6 +1375,15 @@ const SKILL_BUNDLE_MAX_DEPTH = 4;
 const SKILL_BUNDLE_MAX_FILES = 60;
 const SKILL_BUNDLE_MAX_DIRS = 40;
 
+/**
+ * Files one capped layer touches before it stops and discloses: source files
+ * read per extension by the NemoClaw checks, and extensionless files probed
+ * for a shebang below one skill directory. ONE constant on purpose — a fired
+ * cap is reported to the coverage ledger with this value, and a second number
+ * would let a disclosure drift from the bound it describes.
+ */
+const MAX_FILES_PER_LAYER = 200;
+
 // OpenClaw skill security patterns
 const SKILL_REMOTE_FETCH_PATTERNS: RegExp[] = [
   /curl\s+(-[a-zA-Z]+\s+)*https?:\/\//gi,
@@ -1411,7 +1420,17 @@ const SKILL_EXFILTRATION_PATTERNS: RegExp[] = [
   /fetch\s*\([^)]*method:\s*['"]POST/gi,
 ];
 
-const SKILL_REVERSE_SHELL_PATTERNS: RegExp[] = [
+/**
+ * Reverse-shell shapes, treated as sufficient on their own wherever they are
+ * consumed: no ordinary script opens `/dev/tcp` or execs a shell over netcat.
+ *
+ * Exported so its consumers can be tested against the LIST rather than against
+ * a restatement of it. Two call sites read it — the skill Markdown path
+ * (SKILL-008) and `describeSkillBundlePayload` (SKILL-006 over the bundle) —
+ * and a test that pasted the six patterns instead of importing them would go
+ * on passing while the two drifted apart pattern by pattern.
+ */
+export const SKILL_REVERSE_SHELL_PATTERNS: RegExp[] = [
   /nc\s+(-[a-zA-Z]+\s+)*.*-e/gi,
   /bash\s+-i\s+/gi,
   /\/dev\/tcp\//gi,
@@ -2868,8 +2887,9 @@ function firstPatternMatch(patterns: RegExp[], line: string): string | null {
 /**
  * What makes one line of a BUNDLED skill file a payload, or null.
  *
- * Two shapes, both conjunctive, because a bundled script is ordinary code and a
- * single-signal rule over `scripts/` would flag most of them:
+ * Three shapes. The first two are conjunctive, because a bundled script is
+ * ordinary code and a single-signal credential or network rule over `scripts/`
+ * would flag most of them:
  *
  *  1. `detectShellCredentialExfil` — a curl/wget that reads a known credential
  *     file into the request body of a remote URL. Already the SHELL-EXFIL-001
@@ -2878,10 +2898,19 @@ function firstPatternMatch(patterns: RegExp[], line: string): string | null {
  *     script that legitimately reads `~/.aws/credentials` does not also POST it
  *     to `webhook.site` in the same statement, and a script that POSTs telemetry
  *     does not name a credential file in the same statement.
+ *  3. a reverse shell, which needs no second signal. `SKILL_REVERSE_SHELL_PATTERNS`
+ *     is the list the skill Markdown path already treats as sufficient on its
+ *     own, and the conjunctions above are blind to it: an interactive shell over
+ *     `/dev/tcp` names no credential and posts to no sink, so a payload moved
+ *     into `scripts/` was described by nothing here. Reusing the list rather
+ *     than restating it is what stops the bundle and the Markdown from drifting
+ *     apart pattern by pattern.
  *
  * Comment lines are skipped so a `# curl ... @~/.aws/credentials` note in a
  * runbook does not fire, matching `checkShellCredentialExfil`. The shebang is
- * skipped as a comment for the same reason it is not code.
+ * skipped as a comment for the same reason it is not code. The skip is at the
+ * top, so it covers the reverse-shell branch too — a `# bash -i >& /dev/tcp/...`
+ * line in a recovery runbook is documentation, not a payload.
  */
 function describeSkillBundlePayload(line: string): string | null {
   const trimmed = line.trimStart();
@@ -2889,6 +2918,9 @@ function describeSkillBundlePayload(line: string): string | null {
 
   const cred = detectShellCredentialExfil(line);
   if (cred) return `uploads ${cred.credPath} to ${cred.url}`;
+
+  const reverseShell = firstPatternMatch(SKILL_REVERSE_SHELL_PATTERNS, line);
+  if (reverseShell) return `opens a reverse shell via ${reverseShell}`;
 
   const credRead = firstPatternMatch(SKILL_CREDENTIAL_ACCESS_PATTERNS, line);
   if (!credRead) return null;
@@ -12473,7 +12505,15 @@ dist/
    * Symlinked entries are skipped here exactly as `findSkillFiles` skips them.
    * This walk adds no way out of the tree.
    */
-  private async findSkillBundleFiles(skillDir: string, depth: number = 0): Promise<string[]> {
+  private async findSkillBundleFiles(
+    skillDir: string,
+    depth: number = 0,
+    // Shared across the recursion below ONE skill directory: every
+    // `startsWithShebang` call spends from the same probe budget, admitted or
+    // not, so junk extensionless files cannot buy unbounded opens.
+    walk: { probes: number; probeCapped: boolean; admitted: number; droppedAdmitted: number } =
+      { probes: 0, probeCapped: false, admitted: 0, droppedAdmitted: 0 },
+  ): Promise<string[]> {
     if (depth > SKILL_BUNDLE_MAX_DEPTH) return [];
 
     const bundleFiles: string[] = [];
@@ -12485,7 +12525,6 @@ dist/
     }
 
     for (const entry of entries) {
-      if (bundleFiles.length >= SKILL_BUNDLE_MAX_FILES) break;
       if (entry.isSymbolicLink()) continue;
 
       const fullPath = path.join(skillDir, entry.name);
@@ -12493,31 +12532,84 @@ dist/
 
       if (entry.isDirectory()) {
         if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
-        bundleFiles.push(...await this.findSkillBundleFiles(fullPath, depth + 1));
+        bundleFiles.push(...await this.findSkillBundleFiles(fullPath, depth + 1, walk));
       } else if (entry.isFile()) {
         // SKILL.md and *.skill.md are analyzed as skill files; other Markdown
         // beside a skill is prose (README, CHANGELOG), not a payload carrier.
         if (entry.name.toLowerCase().endsWith('.md')) continue;
         const ext = path.extname(entry.name).toLowerCase();
-        const admitted = ext
-          ? SKILL_BUNDLE_EXTENSIONS.has(ext)
-          : await this.startsWithShebang(fullPath);
-        if (admitted) bundleFiles.push(fullPath);
+        let admitted: boolean;
+        if (ext) {
+          admitted = SKILL_BUNDLE_EXTENSIONS.has(ext);
+        } else if (walk.probes >= MAX_FILES_PER_LAYER) {
+          walk.probeCapped = true;
+          continue;
+        } else {
+          walk.probes++;
+          admitted = await this.startsWithShebang(fullPath);
+        }
+        if (!admitted) continue;
+        // ONE admitted counter across the recursion below a skill directory:
+        // a per-level break and slice let the cap fire silently in the flat
+        // and single-subdirectory shapes and stopped the walk before a payload
+        // behind 60 admitted files was even probed. Past the cap an admissible
+        // file is counted as dropped, never pushed, so the depth-0 disclosure
+        // carries the exact number the scan did not read.
+        if (walk.admitted >= SKILL_BUNDLE_MAX_FILES) {
+          walk.droppedAdmitted++;
+          continue;
+        }
+        walk.admitted++;
+        bundleFiles.push(fullPath);
       }
     }
 
-    return bundleFiles.slice(0, SKILL_BUNDLE_MAX_FILES);
+    // A cap that fires is disclosed, never silent: an invisible cap is a
+    // cap-stuffing primitive — junk files ahead of the payload make the scan
+    // report a clean `skill` category over files it never opened. Reported at
+    // the top of the recursion, once per skill directory.
+    if (depth === 0) {
+      if (walk.probeCapped) {
+        this.coverage.truncate({
+          layer: 'skill-bundle',
+          cap: MAX_FILES_PER_LAYER,
+          prefixes: ['SKILL'],
+          reason: `probed at most ${MAX_FILES_PER_LAYER} extensionless files under a skill directory — extensionless files past that cap were not opened`,
+        });
+      }
+      if (walk.droppedAdmitted > 0) {
+        this.coverage.truncate({
+          layer: 'skill-bundle',
+          cap: SKILL_BUNDLE_MAX_FILES,
+          prefixes: ['SKILL'],
+          reason: `read at most ${SKILL_BUNDLE_MAX_FILES} bundled files per skill directory — ${walk.droppedAdmitted} admitted file${bundleFiles.length - SKILL_BUNDLE_MAX_FILES === 1 ? '' : 's'} not read`,
+        });
+      }
+    }
+
+    return bundleFiles;
   }
 
-  /** True when a file's first bytes are `#!` — how an extensionless script declares itself. */
+  /**
+   * True when a file's first bytes are `#!` — how an extensionless script
+   * declares itself. `execve` admits a script on those 2 bytes at offset 0 and
+   * nothing else, so the probe reads exactly those 2 bytes and never the file:
+   * a whole-file read here handed every extensionless byte in a skill tree to
+   * a yes/no question.
+   */
   private async startsWithShebang(filePath: string): Promise<boolean> {
+    let fh;
     try {
       const stat = await fs.stat(filePath);
       if (stat.size < 2 || stat.size > MAX_FILE_SIZE) return false;
-      const content = await fs.readFile(filePath, 'utf-8');
-      return content.startsWith('#!');
+      fh = await fs.open(filePath, 'r');
+      const head = Buffer.alloc(2);
+      const { bytesRead } = await fh.read(head, 0, 2, 0);
+      return bytesRead === 2 && head[0] === 0x23 && head[1] === 0x21; // `#!`
     } catch {
       return false;
+    } finally {
+      try { await fh?.close(); } catch { /* ignore */ }
     }
   }
 
@@ -12586,16 +12678,16 @@ dist/
       findings.push({
         checkId: 'SKILL-006',
         name: 'Data Exfiltration Pattern',
-        description: 'A file bundled with this skill — a script or test beside SKILL.md, not the Markdown itself — reads credential material and sends it to a remote endpoint.',
+        description: 'A file bundled with this skill — a script or test beside SKILL.md, not the Markdown itself — sends credential material to a remote endpoint or opens a reverse shell.',
         category: 'skill',
         severity: 'critical',
         passed: false,
-        message: `Exfiltration payload in ${named.length} bundled skill file(s): ${named.join(', ')}`,
+        message: `Payload in ${named.length} bundled skill file(s): ${named.join(', ')}`,
         file: hits[0].rel,
         line: hits[0].line,
         fixable: false,
-        fix: `Remove the exfiltration payload from ${named.join(', ')}. Reviewing only SKILL.md reviews the description of the skill, not the code that ships with it.`,
-        guidance: 'A skill is a directory: SKILL.md is what the agent is told, and the scripts beside it are what runs. A payload moved out of the Markdown into scripts/ or tests/ ships with the skill and executes with the agent\'s privileges.',
+        fix: `Remove the payload from ${named.join(', ')} — each citation's reason says what that file does. Reviewing only SKILL.md reviews the description of the skill, not the code that ships with it.`,
+        guidance: 'A skill is a directory: SKILL.md is what the agent is told, and the scripts beside it are what runs. A payload moved out of the Markdown into scripts/ or tests/ — an upload of credential material, or a reverse shell — ships with the skill and executes with the agent\'s privileges.',
         evidence: {
           kind: 'positive',
           lines: hits.map(h => ({ n: h.line, content: h.content, why: h.why })),
@@ -15551,11 +15643,10 @@ dist/
     const yamlFiles = await this.walkDirectory(targetDir, ['.yaml', '.yml'], 0, 5);
 
     // Cap file counts to avoid scanning enormous repos
-    const maxFiles = 200;
-    const cappedSh = shFiles.slice(0, maxFiles);
-    const cappedTsJs = tsJsFiles.slice(0, maxFiles);
-    const cappedPy = pyFiles.slice(0, maxFiles);
-    const cappedYaml = yamlFiles.slice(0, maxFiles);
+    const cappedSh = shFiles.slice(0, MAX_FILES_PER_LAYER);
+    const cappedTsJs = tsJsFiles.slice(0, MAX_FILES_PER_LAYER);
+    const cappedPy = pyFiles.slice(0, MAX_FILES_PER_LAYER);
+    const cappedYaml = yamlFiles.slice(0, MAX_FILES_PER_LAYER);
 
     // A cap that fires means a clean NEMO result covers only the files that
     // were reached, not the tree. Reported so the category prints `partial`
@@ -15569,9 +15660,9 @@ dist/
     if (nemoDropped > 0) {
       this.coverage.truncate({
         layer: 'nemo-source',
-        cap: maxFiles,
+        cap: MAX_FILES_PER_LAYER,
         prefixes: ['NEMO'],
-        reason: `capped at ${maxFiles} files per extension — ${nemoDropped} source file${nemoDropped === 1 ? '' : 's'} not read`,
+        reason: `capped at ${MAX_FILES_PER_LAYER} files per extension — ${nemoDropped} source file${nemoDropped === 1 ? '' : 's'} not read`,
       });
     }
 
