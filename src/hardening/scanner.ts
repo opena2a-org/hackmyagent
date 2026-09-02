@@ -2765,6 +2765,22 @@ export function isCredentialFilePath(rawPath: string): boolean {
 }
 
 /**
+ * HMA-30 single-file mode: does the lone file's PARENT directory name change what the
+ * two discovery predicates say about it? True for `.aws/credentials`, `.kube/config`,
+ * `config/x.json`, `.ssh/id_rsa`; false for `CLAUDE.md`, `.env`, `SKILL.md`, `mcp.json` and
+ * a bare `credentials`, which match by basename alone. The caller nests the temp copy under
+ * the parent only when this is true, so basename-matched files stay at the scan root where
+ * the root-only probes (CLAUDE-001, GIT-003, PERM-001, project-type detection) still see them.
+ * A derived view of the two existing vocabularies, not a third list.
+ */
+export function singleFileNeedsParent(parentBase: string, base: string): boolean {
+  return (
+    isConfigShapedFile(base, parentBase) !== isConfigShapedFile(base, '') ||
+    isCredentialFilePath('/' + parentBase + '/' + base) !== isCredentialFilePath('/' + base)
+  );
+}
+
+/**
  * Upload tokens that make curl/wget READ a local file into the request body.
  * Each captures the file path (group 1). Modelled on how curl actually decides
  * to read a file, verified against curl 8.7.1:

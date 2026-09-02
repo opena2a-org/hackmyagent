@@ -157,8 +157,27 @@ describe('HMA-30 — credential-store basenames reach CRED-001', () => {
         timeout: 120_000,
       });
       const out = (r.stdout || '') + (r.stderr || '');
-      expect(out).toContain(target); // Verify/Fix citations join back to the user's path
-      expect(out).not.toContain(path.join(dir, path.basename(dir))); // the doubled-parent defect
+      // The Verify line must name the user's path; `Scanning <target>` on line 1
+      // would satisfy a bare toContain(target), so anchor on the citation.
+      expect(out).toMatch(new RegExp("Verify: sed -n '1p' " + target.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')));
+      expect(out).not.toContain(path.join(dir, '.aws', '.aws')); // the doubled-parent defect
+    });
+
+    it('HMA-30.AC6 a lone CLAUDE.md keeps CLAUDE-001 and a lone world-readable .env keeps PERM-001 and GIT-003', () => {
+      // Nesting EVERY copy under its parent moved basename-matched files out of
+      // the scan root, where the root-only probes stopped seeing them (review r3,
+      // finding 1: lost at cc2f7b88, reported at 73383b1b).
+      if (!canSpawn()) return;
+      const dir = mkdtempSync(path.join(tmpdir(), 'hma30-root-'));
+      const claude = path.join(dir, 'CLAUDE.md');
+      writeFileSync(claude, '# agent instructions\n' + AWS_PAIR);
+      const dotenv = path.join(dir, '.env');
+      writeFileSync(dotenv, AWS_PAIR, { mode: 0o644 });
+      const failed = (t: string) => new Set(secureJson(t).filter((f) => !f.passed).map((f) => f.checkId));
+      expect(failed(claude).has('CLAUDE-001'), 'CLAUDE-001 for a lone CLAUDE.md').toBe(true);
+      const envIds = failed(dotenv);
+      expect(envIds.has('PERM-001'), 'PERM-001 for a lone world-readable .env').toBe(true);
+      expect(envIds.has('GIT-003'), 'GIT-003 for a lone .env').toBe(true);
     });
 
     it('HMA-30.AC3 a symlink named credentials that leaves the parent is still withheld, not copied', () => {
