@@ -26,7 +26,7 @@
  * explanation path is what's measured.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
 import {
@@ -157,5 +157,102 @@ describe.runIf(existsSync(CLI))('HMA-29.AC2 — known IDs still explain with exi
     expect(stdout).toMatch(pattern);
     expect(stdout).toMatch(id);
     expect(code).toBe(0);
+  });
+});
+
+describe.runIf(existsSync(CLI))('HMA-29.AC5 — ids secure emits on the tree’s own fixtures explain (spawn)', () => {
+  // Red at 3a0ac37e (r1 review finding 1): `secure --ci --json
+  // test-fixtures` emitted SEM-MCP-001 at critical while `explain
+  // SEM-MCP-001` exited 1 suggesting SEM-CRED-001. The eight SEM-MCP ids
+  // are TAXONOMY_MAP keys now and resolve through the attack-class path.
+  it.each([
+    ['SEM-MCP-001', /MCP-PRIV-ESC/],
+    ['SEM-MCP-006', /MCP-SCOPE-EXPAND/],
+    ['SEM-MCP-008', /MCP-SUPPLY-CHAIN/],
+  ] as const)('HMA-29.AC5 explain %s exits 0 and names the attack class', (id, pattern) => {
+    const { code, stdout, stderr } = runExplain(id);
+    expect(stderr).not.toMatch(/Unknown check ID/i);
+    expect(stdout).toMatch(id);
+    expect(stdout).toMatch(pattern);
+    expect(code).toBe(0);
+  });
+});
+
+describe.runIf(existsSync(CLI))('HMA-29.AC6 — the sweep population is independent of the predicate (spawn)', () => {
+  // The r1 sweep filtered by isKnownExplainId — the predicate under test —
+  // so it could not fail (review finding 2). This population comes from
+  // `check-metadata --json`, the inventory the CLI advertises to users,
+  // and every id is pushed through a real `explain` spawn.
+  it('HMA-29.AC6 every check-metadata --json check id explains with exit 0', async () => {
+    const meta = spawnSync(process.execPath, [CLI, 'check-metadata', '--json'], {
+      encoding: 'utf-8',
+      env: { ...process.env, NO_COLOR: '1' },
+    });
+    expect(meta.status).toBe(0);
+    const ids: string[] = Object.keys(JSON.parse(meta.stdout).checks);
+    expect(ids.length).toBeGreaterThan(350);
+    expect(ids).toContain('AST-CRED-001');
+    expect(ids).toContain('SEM-MCP-001');
+
+    const failures: string[] = [];
+    let next = 0;
+    async function worker(): Promise<void> {
+      while (next < ids.length) {
+        const id = ids[next++];
+        const ok = await new Promise<boolean>((resolveDone) => {
+          const child = spawn(process.execPath, [CLI, 'explain', id], {
+            env: { ...process.env, NO_COLOR: '1', NANOMIND_URL: DEAD_DAEMON },
+            stdio: 'ignore',
+          });
+          child.on('close', (code) => resolveDone(code === 0));
+          child.on('error', () => resolveDone(false));
+        });
+        if (!ok) failures.push(id);
+      }
+    }
+    await Promise.all(Array.from({ length: 8 }, worker));
+    expect(failures.sort(), 'inventory ids explain refused or crashed on').toEqual([]);
+  }, 300_000);
+});
+
+describe.runIf(existsSync(CLI))('HMA-29.AC7 — input normalisation and self-referencing help (spawn)', () => {
+  it('HMA-29.AC7 the id is trimmed before matching', () => {
+    // Red at 3a0ac37e (review finding 6): `explain "CRED-001 "` was
+    // refused while suggesting the very id it was handed.
+    for (const raw of ['CRED-001 ', '  cred-001']) {
+      const { code, stdout, stderr } = runExplain(raw);
+      expect(stderr, `explain ${JSON.stringify(raw)} must not refuse`).not.toMatch(/Unknown check ID/i);
+      expect(stdout).toMatch(/Hardcoded credential/i);
+      expect(code).toBe(0);
+    }
+  });
+
+  it('HMA-29.AC7 an empty or whitespace-only id is refused with its own message', () => {
+    for (const raw of ['', '   ']) {
+      const { code, stderr } = runExplain(raw);
+      expect(code).not.toBe(0);
+      expect(code).not.toBeNull();
+      expect(stderr).toMatch(/Empty check ID/i);
+      // The nonsense "Unknown check ID:  / Did you mean: IO-001" shape is
+      // exactly what this replaces.
+      expect(stderr).not.toMatch(/Did you mean/i);
+    }
+  });
+
+  it('HMA-29.AC7 the help example names only ids the command answers', () => {
+    // Red at 3a0ac37e (review finding 3): the help cited
+    // SKILL-SEMANTIC-007, which the command refuses.
+    const help = spawnSync(process.execPath, [CLI, 'explain', '--help'], {
+      encoding: 'utf-8',
+      env: { ...process.env, NO_COLOR: '1' },
+    });
+    expect(help.status).toBe(0);
+    const exampleIds = help.stdout.match(/[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+/g) ?? [];
+    expect(exampleIds.length).toBeGreaterThan(0);
+    for (const id of new Set(exampleIds)) {
+      const { code, stderr } = runExplain(id);
+      expect(stderr, `help example ${id} must not dead-end`).not.toMatch(/Unknown check ID/i);
+      expect(code).toBe(0);
+    }
   });
 });
