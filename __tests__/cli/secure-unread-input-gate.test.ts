@@ -59,13 +59,16 @@ function run(args: string[]) {
       HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')),
     },
   });
-  return { status: res.status, out: `${res.stdout ?? ''}${res.stderr ?? ''}` };
+  // `stdout` is the machine channel: the JSON parse reads it alone, so a
+  // load-induced stderr byte cannot corrupt the body (HMA-28). The merged
+  // `out` stays for text assertions that want the message on either channel.
+  return { status: res.status, stdout: res.stdout ?? '', out: `${res.stdout ?? ''}${res.stderr ?? ''}` };
 }
 
 function json(args: string[]) {
   const res = run([...args, '--format', 'json']);
   try {
-    return { status: res.status, body: JSON.parse(res.out.slice(res.out.indexOf('{'))) as any };
+    return { status: res.status, body: JSON.parse(res.stdout.slice(res.stdout.indexOf('{'))) as any };
   } catch {
     return { status: res.status, body: null as any };
   }
