@@ -282,14 +282,46 @@ question with a lexical test for the third time in this check; it belongs with
 #424's AST dataflow work, and the regexes themselves are byte-identical to before
 this change so that claim can be diffed rather than taken on trust.
 
-**One narrowing, disclosed:** matching per line means `eval` and `(` separated by a
-newline no longer match. That spelling is legal JavaScript and is a real loss of one
-lexical variant, on a corroborator that already misses the eight spellings above.
+**The newline spelling corroborates.** Matching per line briefly meant `eval` and
+`(` separated by a newline did not match — a real loss of one legal-JavaScript
+lexical variant, disclosed at the time. The presence loop now carries the trailing
+sink token across the line boundary: a line whose last code token (outside strings
+and comments) is `eval`, `Function` or `new Function`, followed by the next line
+with code opening with `(`, is the same call the per-line patterns match. The two
+patterns themselves are still byte-identical; the newline case is state, not
+vocabulary.
 
 The uncorroborated finding's own description and guidance were reworded to match:
 they used to say no `eval(` or `Function(` call "appears in this file", which is now
 false about a file that mentions one in a comment. They say "in code" and name the
 line-length limit.
+
+### The sink corroborator's string predicate lexes regex literals, so a same-line regex no longer downgrades a decoder (HMA-31)
+
+`isMatchInsideStringLiteral` tracked quote state character by character and its
+own doc comment said it did not attempt to detect regex literals. So the
+apostrophe in `const re = /['"]/; eval(buildPayload());` opened phantom quote
+state, the `eval` token answered "inside a string", and a live GlassWorm decoder
+reported MEDIUM instead of CRITICAL. MEDIUM exits 0: one zero-cost line beside
+the sink walked the finding past a CI gate.
+
+The predicate now lexes regex literals. A `/` opens a regex after an operator or
+opening punctuator, after a regex-position keyword, or at line start; it is
+division after an identifier, a number, a string literal, or `]`; after `)` the
+same-line matching `(` decides (`if`/`while`/`for`/`with`). When the previous
+token is `}` — or a `)` whose `(` is not on the line — the slash is undecidable:
+the rest of the line is lexed both ways and only agreement suppresses, and past
+six such points on one line the helper stops branching and fails toward
+corroboration. Inside a regex, escapes and `[...]` classes are honoured. The
+suppression cases all hold: `{ pattern: /eval\s*\(/, label: 'eval() dynamic
+execution' }` still reads the label as a string, and `scanner.ts` scanned on its
+own text is still a MEDIUM lead, not a CRITICAL.
+
+A sink on a line over the per-line length bound is still not read — removing the
+bound would reopen the minified-bundle false positive it was introduced for —
+but the uncorroborated finding now names the skipped line and says it was not
+read because it exceeds the per-line limit, instead of implying it was read and
+found clean.
 
 ### secure no longer follows a link out of the directory it scans
 
