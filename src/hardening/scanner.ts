@@ -1744,9 +1744,9 @@ const PAREN_KEYWORDS_BEFORE_REGEX = new Set(['if', 'while', 'for', 'with']);
  * The ruled opener set (HMA-31.AC2): punctuators after which a `/` opens a
  * regex literal. `(` is listed for fidelity to the ruling although its own
  * branch handles it (it also records itself for the `)` rule). A punctuator
- * NOT in this set is undecidable rather than an opener (HMA-31.AC8): the r1
- * generalisation "any other operator punctuator opens a regex" read `i++ / 2`
- * as a regex and suppressed the sink after it.
+ * NOT in this set is undecidable rather than an opener (HMA-31.AC8): an
+ * earlier generalisation "any other operator punctuator opens a regex" read
+ * `i++ / 2` as a regex and suppressed the sink after it.
  */
 const REGEX_OPENING_PUNCTUATORS = new Set([
   '(', ',', '=', ':', '[', '!', '&', '|', '?', ';', '{',
@@ -1756,7 +1756,7 @@ const REGEX_OPENING_PUNCTUATORS = new Set([
 type SlashMeaning = 'regex' | 'division' | 'undecidable';
 
 /**
- * Every identifier character is a word character (HMA-31.AC8). The r1
+ * Every identifier character is a word character (HMA-31.AC8). An earlier
  * ASCII-only class dropped `π`, `groß` and friends into the punctuator
  * branch, where the old fallback opened a phantom regex. A lone surrogate
  * half does not match, so an astral identifier falls to the undecidable
@@ -1766,8 +1766,8 @@ const WORD_CHAR = /[\p{ID_Continue}$]/u;
 
 /**
  * The predicate answers for every sink mention on a line, so the walk runs
- * once per LINE and each call is a mask lookup (HMA-31.AC10). The r1 shape —
- * one forked walk per mention — let a crafted line (six fork points, then
+ * once per LINE and each call is a mask lookup (HMA-31.AC10). The earlier
+ * shape — one forked walk per mention — let a crafted line (six fork points, then
  * hundreds of string mentions) multiply 2^6 lexings by the mention count.
  * A single-entry cache is enough: callers ask about one line's matches
  * before moving to the next.
@@ -2076,8 +2076,8 @@ function lexMaskInto(
     }
     // The ruled opener set opens a regex. Any OTHER punctuator (`+` `-`
     // `*` `<` `>` `~` `^` `%` …) is undecidable rather than an opener
-    // (HMA-31.AC8): `i++ / 2` is a division the r1 fallback mis-read as a
-    // regex, while `a + /re/.source` really does open one — both ways are
+    // (HMA-31.AC8): `i++ / 2` is a division the earlier fallback mis-read as
+    // a regex, while `a + /re/.source` really does open one — both ways are
     // lexed and only agreement suppresses.
     slashMeaning = REGEX_OPENING_PUNCTUATORS.has(c) ? 'regex' : 'undecidable';
     afterDot = false;
@@ -2114,7 +2114,7 @@ function lexMaskInto(
  * Regex literals ARE lexed here, under the predicate's own slash-meaning
  * rules (HMA-31.AC9): a literal's body is copied through verbatim, so the
  * `//` in `/^https?:\/\//` does not open a phantom line comment and the `/*`
- * in `/\/*$/` does not open a phantom block comment — the r1 quote-only
+ * in `/\/*$/` does not open a phantom block comment — an earlier quote-only
  * reading of that second literal blanked every following line up to a `*\/`,
  * which is blanking MORE, not less, and swallowed real sinks. An undecidable
  * slash is lexed both ways: a character is blanked only when both lexings

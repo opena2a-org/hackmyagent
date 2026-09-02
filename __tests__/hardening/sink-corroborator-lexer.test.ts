@@ -19,7 +19,7 @@
  *    uncorroborated message now names the skipped line and says why it was
  *    not read.
  *
- * Rework r2 (qgf/refs/HMA-31-rework-r2.md, from the r1 adversarial review):
+ * Second revision of the lexer, addressing the findings below:
  *  - AC7: keyword-spelled property and method names are identifiers —
  *    `stats.in / stats.out` and `obj.if(y) / 2` are divisions, not regex
  *    openers.
@@ -433,7 +433,7 @@ describe('HMA-31: the corroborator end to end', () => {
   });
 
   it('HMA-31.AC3 the cross-line carry resets at a skipped over-length line', async () => {
-    // Review finding 8: the over-length branch `continue`d before the
+    // The over-length branch `continue`d before the
     // pending-token check, so a trailing `eval` leaked across the skipped
     // line and corroborated an IIFE that is not its call.
     const content = [
@@ -469,9 +469,10 @@ describe('HMA-31.AC10: the undecidable-slash walk cannot be amplified by a craft
   });
 
   /**
-   * The review's amplification line: six undecidable fork points, then 800
-   * string mentions of eval — every mention used to re-run the full forked
-   * walk (base 29 ms → r1 1005 ms for one line; 137 ms → 9293 ms for ten).
+   * The amplification line: six undecidable fork points, then 800 string
+   * mentions of eval — every mention used to re-run the full forked walk
+   * (base 29 ms → 1005 ms for one line with the earlier per-mention walk;
+   * 137 ms → 9293 ms for ten).
    */
   const AMPLIFIER = '} /a/ '.repeat(6) + "'eval(p)' + ".repeat(800) + '0;';
 
@@ -479,7 +480,8 @@ describe('HMA-31.AC10: the undecidable-slash walk cannot be amplified by a craft
     await fs.writeFile(path.join(tempDir, 'amplifier.js'), AMPLIFIER);
     const t0 = performance.now();
     await scanner.scan({ targetDir: tempDir });
-    // Generous vs the fix (~tens of ms), red vs r1's measured 1005 ms.
+    // Generous against the fix (~tens of ms), red against the earlier
+    // per-mention walk, measured at 1005 ms.
     expect(performance.now() - t0).toBeLessThan(750);
   });
 
@@ -490,12 +492,13 @@ describe('HMA-31.AC10: the undecidable-slash walk cannot be amplified by a craft
     );
     const t0 = performance.now();
     await scanner.scan({ targetDir: tempDir });
-    // Generous vs the fix, red vs r1's measured 9293 ms.
+    // Generous against the fix, red against the earlier per-mention walk,
+    // measured at 9293 ms.
     expect(performance.now() - t0).toBeLessThan(2500);
   });
 
   it('HMA-31.AC10 six undecidable points with the sink in a string still agree on suppression', () => {
-    // The discriminating pair (review finding 7): with `/a/` bodies the
+    // The discriminating pair: with `/a/` bodies the
     // honest lexings of every path agree the eval mention is inside the
     // trailing string, so at six points — within budget — the answer is
     // "inside". At a budget of 100 the seven-point line below would answer
@@ -515,7 +518,7 @@ describe('HMA-31.AC10: the undecidable-slash walk cannot be amplified by a craft
 
   it('HMA-31.AC9 the blanker doc no longer claims a phantom quote can only blank less', async () => {
     const source = await fs.readFile(SCANNER_SOURCE, 'utf-8');
-    // The r1 wording wraps mid-phrase ("blank less, not\n * more"), so pin
+    // The earlier wording wrapped mid-phrase ("blank less, not\n * more"), so pin
     // the fragment that survives the wrap.
     expect(source).not.toContain('blank less');
   });
@@ -547,7 +550,7 @@ describe('HMA-31.AC6: nothing outside the ruling moves', () => {
 
     // The cross-line carry (HMA-31.AC3) names the same two tokens as the
     // patterns above and nothing else — diff-pinned so a new sink cannot
-    // enter through it (review finding 10).
+    // enter through it.
     expect(source).toContain(
       String.raw`const TRAILING_SINK_TOKEN = /(?:^|[^\w.$])((?:new\s+)?Function|eval)\s*$/;`
     );
