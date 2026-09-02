@@ -12437,7 +12437,8 @@ dist/
     // Shared across the recursion below ONE skill directory: every
     // `startsWithShebang` call spends from the same probe budget, admitted or
     // not, so junk extensionless files cannot buy unbounded opens.
-    walk: { probes: number; probeCapped: boolean } = { probes: 0, probeCapped: false },
+    walk: { probes: number; probeCapped: boolean; admitted: number; droppedAdmitted: number } =
+      { probes: 0, probeCapped: false, admitted: 0, droppedAdmitted: 0 },
   ): Promise<string[]> {
     if (depth > SKILL_BUNDLE_MAX_DEPTH) return [];
 
@@ -12450,7 +12451,6 @@ dist/
     }
 
     for (const entry of entries) {
-      if (bundleFiles.length >= SKILL_BUNDLE_MAX_FILES) break;
       if (entry.isSymbolicLink()) continue;
 
       const fullPath = path.join(skillDir, entry.name);
@@ -12474,7 +12474,19 @@ dist/
           walk.probes++;
           admitted = await this.startsWithShebang(fullPath);
         }
-        if (admitted) bundleFiles.push(fullPath);
+        if (!admitted) continue;
+        // ONE admitted counter across the recursion below a skill directory:
+        // a per-level break and slice let the cap fire silently in the flat
+        // and single-subdirectory shapes and stopped the walk before a payload
+        // behind 60 admitted files was even probed. Past the cap an admissible
+        // file is counted as dropped, never pushed, so the depth-0 disclosure
+        // carries the exact number the scan did not read.
+        if (walk.admitted >= SKILL_BUNDLE_MAX_FILES) {
+          walk.droppedAdmitted++;
+          continue;
+        }
+        walk.admitted++;
+        bundleFiles.push(fullPath);
       }
     }
 
@@ -12491,17 +12503,17 @@ dist/
           reason: `probed at most ${MAX_FILES_PER_LAYER} extensionless files under a skill directory — extensionless files past that cap were not opened`,
         });
       }
-      if (bundleFiles.length > SKILL_BUNDLE_MAX_FILES) {
+      if (walk.droppedAdmitted > 0) {
         this.coverage.truncate({
           layer: 'skill-bundle',
           cap: SKILL_BUNDLE_MAX_FILES,
           prefixes: ['SKILL'],
-          reason: `read at most ${SKILL_BUNDLE_MAX_FILES} bundled files per skill directory — ${bundleFiles.length - SKILL_BUNDLE_MAX_FILES} admitted file${bundleFiles.length - SKILL_BUNDLE_MAX_FILES === 1 ? '' : 's'} not read`,
+          reason: `read at most ${SKILL_BUNDLE_MAX_FILES} bundled files per skill directory — ${walk.droppedAdmitted} admitted file${bundleFiles.length - SKILL_BUNDLE_MAX_FILES === 1 ? '' : 's'} not read`,
         });
       }
     }
 
-    return bundleFiles.slice(0, SKILL_BUNDLE_MAX_FILES);
+    return bundleFiles;
   }
 
   /**
