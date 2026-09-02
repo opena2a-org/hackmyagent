@@ -1,6 +1,6 @@
 # Security Checks Reference
 
-HackMyAgent performs 324 security checks across 75 categories (311 static checks plus the NanoMind semantic layer). This document describes representative checks by category; run `hackmyagent check-metadata --json` for the complete, authoritative list.
+HackMyAgent performs 354 security checks across 87 categories (317 static checks plus the NanoMind semantic layer). This document describes representative checks by category; run `hackmyagent check-metadata --json` for the complete, authoritative list.
 
 ## Severity Levels
 

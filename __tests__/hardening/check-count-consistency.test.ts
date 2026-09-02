@@ -34,11 +34,14 @@ describe('check-count single source of truth', () => {
   // whenever the taxonomy changes — this test fails on drift by design, forcing
   // the public-facing numbers to be updated in the same change.
   it('matches the published golden counts (update docs when this changes)', () => {
-    expect(counts.total).toBe(324);
-    expect(counts.static).toBe(311);
-    expect(counts.semantic).toBe(13);
-    expect(counts.totalCategories).toBe(75);
-    expect(counts.staticCategories).toBe(70);
+    // HMA-29 raised these from 324/311/13/75/70: the 24 semantic (AST) and
+    // 6 SOUL narrative ids the scanner emitted without inventory entries
+    // are TAXONOMY_MAP keys now.
+    expect(counts.total).toBe(354);
+    expect(counts.static).toBe(317);
+    expect(counts.semantic).toBe(37);
+    expect(counts.totalCategories).toBe(87);
+    expect(counts.staticCategories).toBe(73);
   });
 
   it('the scan display no longer hardcodes a static-check count (teeth)', () => {

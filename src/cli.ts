@@ -11190,7 +11190,7 @@ program
   .option('-d, --directory <dir>', 'Scan a specific directory to collect check metadata from findings')
   .option('--json', 'Output as JSON (default)')
   .action(async (options: { directory?: string }) => {
-    const { getAttackClass, getTaxonomyMap, getCheckSeverity } = require('./hardening/taxonomy');
+    const { getAttackClass, getTaxonomyMap, getCheckSeverity, getDeclaredCheckIdExclusions } = require('./hardening/taxonomy');
 
     // Build static registry from taxonomy map (covers all known checks)
     const taxMap = getTaxonomyMap();
@@ -11243,6 +11243,11 @@ program
       semanticChecks: counts.semantic,
       categories: counts.totalCategories,
       staticCategories: counts.staticCategories,
+      // HMA-29 — the deliberate holes in the inventory, each with its
+      // reason (TAXONOMY_EXEMPT_CHECKIDS made visible, plus whole-family
+      // exclusions): totalChecks plus these is the whole story of the ids
+      // `secure` can emit.
+      exclusions: getDeclaredCheckIdExclusions(),
       checks: metadata,
     });
   });
@@ -11254,6 +11259,25 @@ program
   .argument('<findingId>', 'Finding ID to explain (e.g., SKILL-SEMANTIC-007 or CRED-001)')
   .description('Explain a security finding in plain English')
   .action(async (findingId: string) => {
+    const checkId = findingId.toUpperCase();
+
+    // HMA-29 — an id outside the check inventory (static explanations,
+    // scan-soul CONTROL_DEFS, TAXONOMY_MAP) is refused, not stubbed:
+    // `explain NEMO-999` used to print "Static analysis pattern finding."
+    // — the prefix-label branch below, reached by every hyphenated unknown
+    // whose prefix has a category label — and exit 0. Checked before the
+    // daemon probe so an unknown id refuses identically with or without
+    // NanoMind running.
+    if (!isKnownExplainId(checkId)) {
+      process.stderr.write(`Unknown check ID: ${escapeForDisplay(checkId)}\n`);
+      const nearest = suggestExplainIds(checkId);
+      if (nearest.length > 0) {
+        process.stderr.write(`  Did you mean: ${nearest.join(', ')}?\n`);
+      }
+      process.stderr.write(`  Full inventory: ${CLI_PREFIX} check-metadata --json\n`);
+      return exitRecorded(1, 'refused');
+    }
+
     // Try NanoMind daemon first for dynamic explanation
     const { isDaemonAvailable, explainFinding } = await import('./semantic/nanomind-analyzer.js');
     const available = await isDaemonAvailable();
@@ -11267,7 +11291,6 @@ program
 
     // Static explanation lookup — tables live in src/explain-registry.ts
     // (HMA-29) alongside the refusal predicate they feed.
-    const checkId = findingId.toUpperCase();
     const staticExplanations = STATIC_EXPLANATIONS;
     const prefixDescriptions = PREFIX_DESCRIPTIONS;
 

@@ -426,6 +426,50 @@ const TAXONOMY_MAP: Record<string, string> = {
   // family (PRIV-ESCALATION / PERSIST / CRED-HARVEST). This entry is the
   // defensive fallback; the inline assignment takes precedence.
   'AST-SCOPE-004': 'PRIV-ESCALATION',
+
+  // The rest of the NanoMind semantic (AST) layer, same shape as
+  // AST-EXFIL-001 / AST-SCOPE-004 above (HMA-29): every one of these is
+  // emitted with `attackClass:` set inline at the emission site, and the
+  // inline assignment takes precedence per `enrichWithTaxonomy`. The
+  // entries are the defensive fallback AND the inventory membership —
+  // before them `secure` could report AST-CRED-001 while `check-metadata`
+  // (totalChecks, the checks table) denied it exists. Sites that vary the
+  // class by matched pattern (AST-CRED-001, AST-GOV-003, AST-PROMPT-001,
+  // AST-PROMPT-004, AST-SCOPE-001) list their primary class here.
+  'AST-CAP-001': 'PRIV-ESCALATION',
+  'AST-CAP-002': 'CAPABILITY-ABUSE',
+  'AST-CODE-001': 'CMD-INJECT',
+  'AST-CODE-002': 'UNSAFE-DESER',
+  'AST-CODE-003': 'PATH-TRAVERSAL',
+  'AST-CRED-001': 'CRED-EXPOSURE',
+  'AST-CRED-002': 'CRED-EXFIL',
+  'AST-CRED-003': 'CRED-HARDCODED',
+  'AST-GOV-001': 'SOUL-GAP',
+  'AST-GOV-002': 'SOUL-BYPASS',
+  'AST-GOV-003': 'SOUL-MISSING',
+  'AST-GOV-004': 'PROMPT-INJECT',
+  'AST-GOV-005': 'SOUL-GAP',
+  'AST-HEARTBEAT-001': 'HEARTBEAT-RCE',
+  'AST-INJECT-001': 'PROMPT-INJECT',
+  'AST-MANIP-001': 'SCAN-EVASION',
+  'AST-PERSIST-001': 'PERSISTENCE',
+  'AST-PROMPT-001': 'JAILBREAK',
+  'AST-PROMPT-002': 'CAPABILITY-CREEP',
+  'AST-PROMPT-003': 'PROMPT-INJECT',
+  'AST-PROMPT-004': 'AUTHORITY-CONFUSION',
+  'AST-SCOPE-001': 'SCOPE-WILDCARD',
+  'AST-SCOPE-002': 'SCOPE-UNDECLARED',
+  'AST-SCOPE-003': 'SEMANTIC-MISMATCH',
+
+  // SOUL narrative-analysis checks (the scanner's soul-analysis
+  // integration, src/hardening/scanner.ts), same HMA-29 shape: each is
+  // emitted with an inline attackClass equal to the class here.
+  'SOUL-BYPASS': 'SOUL-BYPASS',
+  'SOUL-COMPLETENESS': 'SOUL-COMPLETENESS',
+  'SOUL-CONSENT': 'SOUL-CONSENT',
+  'SOUL-CONTRADICTION': 'SOUL-CONTRADICTION',
+  'SOUL-ESCAPE-CLAUSE': 'SOUL-ESCAPE-CLAUSE',
+  'SOUL-UNVERIFIABLE-CLAIM': 'SOUL-UNVERIFIABLE-CLAIM',
 };
 
 /**

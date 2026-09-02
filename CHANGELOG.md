@@ -4,6 +4,27 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### `explain` refuses unknown check IDs, and the inventory stops lying by omission (HMA-29)
+
+`explain NEMO-999` used to print the generic "Static analysis pattern
+finding." stub and exit 0 — every hyphenated unknown whose prefix had a
+category label got a confident non-answer with a green exit code. An ID
+outside the check inventory (the static explanations, the scan-soul
+governance catalog, and the taxonomy) now refuses on stderr, names the
+rejected ID, suggests the nearest known IDs (shared-prefix, then
+edit-distance neighbours), and exits 1. Every ID the CLI already explained
+still explains with exit 0.
+
+The inventory itself grew to match what `secure` actually emits: 24
+NanoMind semantic (AST) checks and 6 SOUL narrative checks were reported in
+scan output but absent from `check-metadata` — `totalChecks` is now 354
+(317 static · 37 semantic, 87 categories), and each remaining deliberate
+hole is published in `check-metadata --json` under a new `exclusions` key
+naming the family, its IDs, and the reason (fix-application statuses,
+scan-status indicators, the Layer-3 coverage statement, and the eval
+oracle's in-src test fixtures). A census test holds emitted `checkId`
+literals to exactly that contract, so the gap cannot regrow silently.
+
 ### `.hmaignore` gains `<path>:<CHECK-ID>`, trailing comments, `expires:`, and loud exit-neutral errors
 
 A path rule used to be all-or-nothing: `danger.py` removed every check on that
