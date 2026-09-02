@@ -44,7 +44,8 @@ Answer with exactly one word, YES or NO.`;
 }
 import { DOMAIN_TEMPLATES } from './templates';
 import { GOVERNANCE_FILES } from './governance-files';
-import { resolveInsideTree, describeResolveRefusal } from '../hardening/contain';
+import { resolveInsideTree, describeResolveRefusal, readStaysInsideTree } from '../hardening/contain';
+import type { WithheldLink } from '../hardening/coverage-ledger';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -187,6 +188,16 @@ export interface SoulScanResult {
    * `rawScore` — the internal scanner always populates it.
    */
   violations?: SoulViolation[];
+  /**
+   * Governance-named links inside the scanned tree that resolve outside it
+   * and were therefore not read — a policy skip, announced, never a scan
+   * failure (same channel `secure` reports). A withheld link is treated as
+   * "governance file absent": it does not set `fileReadFailed` and it does
+   * not change the exit code relative to the same tree without the link.
+   * Optional for the same SDK back-compat reason as `rawScore`; the internal
+   * scanner always populates it.
+   */
+  withheldLinks?: WithheldLink[];
 }
 
 /**
@@ -262,6 +273,13 @@ export interface HardenResult {
    * result and the callers must render it.
    */
   writeRefused?: { path: string; reason: string };
+  /**
+   * Governance-named links that resolve outside the target tree, withheld by
+   * `findGovernanceFile` rather than read (see `SoulScanResult.withheldLinks`).
+   * A withheld link leaves `existedBefore` false: a link is not the file, and
+   * the write side independently refuses to write through it.
+   */
+  withheldLinks?: WithheldLink[];
 }
 
 /**
@@ -1381,16 +1399,36 @@ export class SoulScanner {
   /**
    * Find the governance file in a directory.
    * Returns the first match from GOVERNANCE_FILES priority order, or null.
+   *
+   * A name that is a symlink resolving OUTSIDE the tree is withheld, not
+   * returned: every caller reads whatever this returns, so this is where the
+   * read is routed, and `readStaysInsideTree` decides on the same predicate
+   * as the tracked namespace. A withheld name is treated as absent — the next
+   * name in priority order (or none) takes over — and is recorded on
+   * `withheld` so the caller can disclose it. An in-tree link, and a tree
+   * reached through a symlinked parent, pass: both sides are realpath-resolved.
    */
-  findGovernanceFile(targetDir: string): string | null {
+  findGovernanceFile(targetDir: string, withheld?: WithheldLink[]): string | null {
     // A file target names the governance file itself. Without this the join
     // below builds `SOUL.md/SOUL.md`, nothing matches, and the caller scans
     // the empty string — which `scanSoul` then scored as a confident 0/100
     // on a file it had never opened. Honour the exact file the caller named
     // rather than re-picking one by priority order: "scan this document" must
     // not silently scan a different one.
+    //
+    // Resolved-first, because `statSync` on the caller's spelling would
+    // itself follow a link out of the tree: `realpath` decides where the name
+    // goes, `lstat` on the resolved path says what stands there, and neither
+    // touches an out-of-tree file's contents.
     try {
-      if (fs.statSync(targetDir).isFile()) return targetDir;
+      if (fs.lstatSync(fs.realpathSync(targetDir)).isFile()) {
+        const stays = readStaysInsideTree(targetDir, path.dirname(targetDir));
+        if (!stays.ok) {
+          withheld?.push({ rel: path.basename(targetDir), resolved: stays.resolved, call: 'readFileSync' });
+          return null;
+        }
+        return targetDir;
+      }
     } catch {
       // Missing path — fall through and let the join below return null.
     }
@@ -1398,6 +1436,11 @@ export class SoulScanner {
     for (const filename of GOVERNANCE_FILES) {
       const fullPath = path.join(targetDir, filename);
       if (fs.existsSync(fullPath)) {
+        const stays = readStaysInsideTree(fullPath, targetDir);
+        if (!stays.ok) {
+          withheld?.push({ rel: filename, resolved: stays.resolved, call: 'readFileSync' });
+          continue;
+        }
         return fullPath;
       }
     }
@@ -1859,14 +1902,17 @@ export class SoulScanner {
       onProgress?: (analyzed: number, total: number) => void;
     },
   ): Promise<SoulScanResult> {
-    const govFile = this.findGovernanceFile(target);
+    const withheldLinks: WithheldLink[] = [];
+    const govFile = this.findGovernanceFile(target, withheldLinks);
 
     // A file target names the governance document; the directory it sits in
     // supplies the project context, since tier detection and the project-file
     // heuristics below read siblings. Everything after this line treats
     // `targetDir` as a directory, which is what it always assumed it was.
+    // Resolved-first for the same reason as in `findGovernanceFile`: `statSync`
+    // on the spelling would follow a link out of the tree to answer.
     const targetIsFile = (() => {
-      try { return fs.statSync(target).isFile(); } catch { return false; }
+      try { return fs.lstatSync(fs.realpathSync(target)).isFile(); } catch { return false; }
     })();
     const targetDir = targetIsFile ? path.dirname(target) : target;
 
@@ -1874,6 +1920,11 @@ export class SoulScanner {
     let fileReadFailed = false;
     const contentForTier = govFile
       ? (() => {
+          // Site-level confinement on the read itself. `findGovernanceFile`
+          // has already refused a name resolving outside the tree, so this
+          // cannot fire today; it pins the read site to the same predicate so
+          // a future caller handing a path here cannot re-open the channel.
+          if (!readStaysInsideTree(govFile, targetIsFile ? path.dirname(target) : target).ok) return '';
           try { return fs.readFileSync(govFile, 'utf-8'); }
           catch { fileReadFailed = true; return ''; }
         })()
@@ -2130,6 +2181,7 @@ export class SoulScanner {
         profileMismatch,
         markerInvalid: earlyMarkerInvalid,
         violations: [],
+        withheldLinks,
       };
     }
 
@@ -2337,6 +2389,7 @@ export class SoulScanner {
       profileMismatch,
       markerInvalid: markerInvalidFinding,
       violations,
+      withheldLinks,
     };
 
     if (options?.deepAnalysis) {
@@ -2379,14 +2432,53 @@ export class SoulScanner {
   ): Promise<HardenResult> {
     const dryRun = options?.dryRun ?? false;
 
-    // Detect tier BEFORE hardening so we can pin it
-    const govFileCheck = this.findGovernanceFile(targetDir);
+    // Detect tier BEFORE hardening so we can pin it.
+    //
+    // TARGET selection keeps the pre-confinement semantics on purpose: the
+    // first EXISTING governance name, even when it is a link resolving
+    // outside the tree. Skipping the link here would route the write to a
+    // fresh `SOUL.md` beside a `.cursorrules` the operator believes governs
+    // the tree — a silent redirect where #271 pinned a loud refusal. The
+    // write side (`resolveInsideTree` below) refuses the out-of-tree leaf
+    // with `writeRefused`, and only the READ through it is withheld here:
+    // `existingContent` stays empty, recorded on `withheldLinks`, never a
+    // thrown error.
+    const withheldLinks: WithheldLink[] = [];
+    let govFileCheck: string | null = null;
+    // A file target names the governance file itself (same rule as
+    // `findGovernanceFile`, resolved-first so the probe follows no link out).
+    try {
+      if (fs.lstatSync(fs.realpathSync(targetDir)).isFile()) govFileCheck = targetDir;
+    } catch {
+      // Missing path — fall through to the join loop.
+    }
+    if (!govFileCheck) {
+      for (const filename of GOVERNANCE_FILES) {
+        const fullPath = path.join(targetDir, filename);
+        if (fs.existsSync(fullPath)) {
+          govFileCheck = fullPath;
+          break;
+        }
+      }
+    }
     let existingContent = '';
     if (govFileCheck) {
-      try {
-        existingContent = fs.readFileSync(govFileCheck, 'utf-8');
-      } catch {
-        // File may not be readable
+      // Root for the read guard: the scanned tree, or the named file's own
+      // directory when the target IS the file (same root `scanSoul` uses).
+      const readRoot = govFileCheck === targetDir ? path.dirname(targetDir) : targetDir;
+      const stays = readStaysInsideTree(govFileCheck, readRoot);
+      if (!stays.ok) {
+        withheldLinks.push({
+          rel: path.relative(readRoot, govFileCheck) || path.basename(govFileCheck),
+          resolved: stays.resolved,
+          call: 'readFileSync',
+        });
+      } else {
+        try {
+          existingContent = fs.readFileSync(govFileCheck, 'utf-8');
+        } catch {
+          // File may not be readable
+        }
       }
     }
 
@@ -2524,6 +2616,7 @@ export class SoulScanner {
       content: newContent,
       existedBefore,
       ...(writeRefused ? { writeRefused } : {}),
+      withheldLinks,
     };
   }
 }
