@@ -1,0 +1,10 @@
+# Ingest service runtime settings.
+
+[service]
+name = "ingest-service"
+region = "us-east-1"
+retries = 3
+
+[anthropic]
+api_key = "__T1_VALUE__"
+model = "claude-sonnet-5"

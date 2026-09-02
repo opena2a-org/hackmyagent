@@ -1,0 +1,6 @@
+# Archive sync job settings.
+
+[storage]
+bucket = "archive-eu-central"
+sync_interval_minutes = 15
+secret_access_key = "bbbfbbbc0ab78bba5eae6d14146da6fd3dbef117"
