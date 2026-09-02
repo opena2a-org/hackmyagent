@@ -4,7 +4,32 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
-### `--json` is not deprecated, and the help strings stop saying it is
+### "Hardcoded Secret Detected" now requires a secret-shaped value in the raw artifact bytes
+
+AST-CRED-003 fired on prose that merely NAMES credential types. The
+CRED-HARVEST surfaces it consumes are produced for any non-source artifact
+whose text contains a credential noun and any `ask|request|share|provide`
+substring — no word boundary, no proximity — and the emit gate required an
+actual credential-format value only in doc/test contexts, reading the
+evidence SPANS (a 100-char window anchored at the first credential noun)
+rather than the file. Three failure modes at once: a gitleaks config was
+reported as a hardcoded secret at line 2 (`secret`) because line 156 says
+`task's`; a JSON schema's long `$comment` did the same; and a documentation
+file whose real secret sat outside the noun-anchored span was suppressed
+entirely — the gate judged the span text, not the artifact.
+
+The gate in `checkHardcodedSecrets` now reads the RAW `artifactContent` for
+every artifact context: no AST-CRED-003 is emitted unless a canonical
+credential format (`hasCredentialFormat`) matches the raw bytes, and the
+finding's line and evidence come from the located value — masked, never the
+value itself — instead of the span start. When the caller supplies no
+content, doc/test contexts keep the evidence-text check as the fallback.
+Harvesting INTENT is unchanged and stays reportable: the capability
+analyzer's AST-CRED-001 "Credential Harvesting Pattern" still fires on the
+same prose, and AST-CRED-002 still fires on forwarding lines. The producer
+(`mapRiskSurfaces`, `extractEvidenceSpans`, the canonical value scan) is
+untouched, and HMA-27's value-shaped route for config artifacts keeps its
+exact finding set.
 
 From 0.8.0 through 0.32.0, `secure --help` described `--json` as deprecated
 (and `attack --help` called it a deprecated alias) while the README cited the
