@@ -24,7 +24,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import { parseArtifact } from '../ingestion/artifact-parser.js';
 import { sanitizeForNanoMind } from '../ingestion/input-sanitizer.js';
-import { redactSecretsForReport } from '../security/defense-in-depth.js';
+import { redactSecretsForReportReporting } from '../security/defense-in-depth.js';
 import { getTMEClassifier } from '../inference/tme-classifier.js';
 import { TMENeuralClassifier } from '../inference/tme-neural.js';
 import { buildAnalysisView } from './source-code-preprocessor.js';
@@ -45,6 +45,7 @@ import type {
   Constraint,
   ConstraintDomain,
   DataAccessPattern,
+  DeclaredPurposeRedaction,
   DeterministicFinding,
   RiskSurface,
   IntentClass,
@@ -188,7 +189,14 @@ export class SemanticCompiler {
     // also redacts any long quoted value assigned to a key/token/secret
     // identifier, which destroys ordinary prose and measurably changed what
     // the scanner reported.
-    const declaredPurpose = extractDeclaredPurpose(content, parsed.frontmatter);
+    //
+    // The extractor also reports whether that redaction CHANGED anything
+    // (HMA-38): the redacted value itself is inert under any later redaction
+    // pass, so `declaredPurposeRedaction` is the only witness downstream
+    // finding construction has that content was removed — see
+    // `DeclaredPurposeRedaction` in `../types.ts`.
+    const { text: declaredPurpose, redaction: declaredPurposeRedaction } =
+      extractDeclaredPurpose(content, parsed.frontmatter);
 
     // Step 5: NanoMind inference (intent + inferred capabilities)
     // Step 4b: THE DETERMINISTIC LAYER, and it runs FIRST.
@@ -354,6 +362,7 @@ export class SemanticCompiler {
       artifactPath: path,
       artifactSize: parsed.size,
       declaredPurpose,
+      declaredPurposeRedaction,
       declaredCapabilities,
       declaredConstraints,
       declaredDataAccess,
@@ -554,7 +563,15 @@ export class SemanticCompiler {
 // Extraction Functions
 // ============================================================================
 
-function extractDeclaredPurpose(content: string, frontmatter?: Record<string, unknown>): string {
+/** `extractDeclaredPurpose`'s result: the purpose plus the redaction
+ * provenance the AST carries so downstream finding construction can forward
+ * it (see `DeclaredPurposeRedaction` in `../types.ts`). */
+interface ExtractedPurpose {
+  text: string;
+  redaction: DeclaredPurposeRedaction;
+}
+
+function extractDeclaredPurpose(content: string, frontmatter?: Record<string, unknown>): ExtractedPurpose {
   // Redaction happens on BOTH return paths below, and BEFORE the 200-char
   // slice. Order matters: slicing first can cut a secret that straddles the
   // boundary down to a fragment shorter than a pattern's minimum length, so
@@ -563,14 +580,33 @@ function extractDeclaredPurpose(content: string, frontmatter?: Record<string, un
   // secret in a field the rest of this file treats as already clean.
 
   // From YAML frontmatter
-  if (frontmatter?.description) return redactSecretsForReport(String(frontmatter.description));
+  if (frontmatter?.description) {
+    const raw = String(frontmatter.description);
+    const { text, shapes } = redactSecretsForReportReporting(raw);
+    return { text, redaction: { status: text === raw ? 'clean' : 'applied', shapes } };
+  }
+
+  // The WHOLE content is redacted before it is split into candidate lines
+  // (HMA-38). Splitting first and redacting the selected line was a measured
+  // leak: a multi-line armored key's header is skipped by the '-' rule below,
+  // which leaves a bare base64 body line as the first candidate — and every
+  // redaction rule is anchored to a vendor prefix, a name, an armor header or
+  // a scheme, so a header-less body line matches none of them and returned
+  // verbatim. For an Ed25519 PKCS#8 key that single line is the entire seed.
+  // Redacting first lets the multi-line key rule see header AND footer, so
+  // the whole block collapses to its marker before any line is selected.
+  const { text: redactedContent, shapes } = redactSecretsForReportReporting(content);
+  const redaction: DeclaredPurposeRedaction = {
+    status: redactedContent === content ? 'clean' : 'applied',
+    shapes,
+  };
 
   // From first paragraph. Skip comment lines (line comments, block
   // comment bodies, shebangs) so that a doc comment saying "this is a
   // fixture" or "for testing" does not get mistaken for the artifact's
   // declared purpose — which would then incorrectly classify the file as
   // a test/doc context and suppress credential findings.
-  const lines = content.split('\n').filter(l => l.trim().length > 0);
+  const lines = redactedContent.split('\n').filter(l => l.trim().length > 0);
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (
@@ -586,10 +622,10 @@ function extractDeclaredPurpose(content: string, frontmatter?: Record<string, un
       continue;
     }
     if (line.length > 20) {
-      return redactSecretsForReport(line).slice(0, 200);
+      return { text: line.slice(0, 200), redaction };
     }
   }
-  return 'Unknown purpose';
+  return { text: 'Unknown purpose', redaction };
 }
 
 /**

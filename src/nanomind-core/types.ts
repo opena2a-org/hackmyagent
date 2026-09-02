@@ -11,9 +11,32 @@
  * - Tampered ASTs are rejected
  */
 
+import type { ShapeId } from '../types/credential-format.js';
+
 // ============================================================================
 // Abstract Security Tree
 // ============================================================================
+
+/**
+ * What the report-boundary redactor concluded while `declaredPurpose` was
+ * being constructed (HMA-38).
+ *
+ * `status: 'applied'` means redaction CHANGED the text the purpose was lifted
+ * from — content was removed before the purpose ever existed. The redacted
+ * value itself (a marker, or prose selected from the redacted stream) changes
+ * nothing under a later redaction pass, so `emitFinding`'s own RedactionPass
+ * would conclude `'clean'` for a finding that interpolates it. Producers that
+ * render `declaredPurpose` into finding text forward this provenance onto the
+ * draft, and `emitFinding`'s absorbing prior-'applied' rule carries it out.
+ *
+ * `shapes` is what the redactor resolved from the content — empty when only
+ * the name-gated rule (which resolves no shape) or the size-gate withholding
+ * changed the text.
+ */
+export interface DeclaredPurposeRedaction {
+  status: 'applied' | 'clean';
+  shapes: readonly ShapeId[];
+}
 
 export interface SecurityAST {
   /** Artifact identity */
@@ -24,6 +47,11 @@ export interface SecurityAST {
 
   /** Declarations: what the artifact SAYS it does */
   declaredPurpose: string;
+  /**
+   * Redaction provenance of `declaredPurpose` (see the interface doc).
+   * Optional so hand-built ASTs stay valid; the compiler always sets it.
+   */
+  declaredPurposeRedaction?: DeclaredPurposeRedaction;
   declaredCapabilities: Capability[];
   declaredConstraints: Constraint[];
   declaredDataAccess: DataAccessPattern[];
