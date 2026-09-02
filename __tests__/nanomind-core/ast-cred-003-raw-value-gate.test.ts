@@ -275,7 +275,7 @@ describe('HMA-22 AST-CRED-003 is anchored on a secret-shaped value in the raw ar
     ).toBe(false);
   });
 
-  // ── AC6(b): the producer is untouched — P1's AST is byte-for-byte the ruling's ──
+  // ── AC6(b): the producer is untouched — P1's AST is byte-for-byte the pinned base reading ──
   it("HMA-22.AC6 (b) the compiled P1 AST still carries exactly one CRED-HARVEST risk surface (confidence 0.7, evidence at the first noun) and one supporting span", async () => {
     const content = fixture('P1.gitleaks.toml', 'b76842b30506e8d1601f46b8023130f2c5c4abfbb17ae1322c7cfdccd02b2438');
     const { ast } = await compiler.compile(content, '.gitleaks.toml');
