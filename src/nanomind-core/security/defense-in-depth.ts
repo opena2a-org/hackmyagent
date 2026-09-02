@@ -206,7 +206,8 @@ const CREDENTIAL_REDACTION_RULES: readonly CredentialRedactionRule[] = [
   },
   // Two shapes, one rule. A complete block — header through the next footer,
   // never crossing another `-----BEGIN … KEY-----` header — is replaced whole
-  // at ANY size: a size bound fails open (RSA-32768 and FrodoKEM blocks pass
+  // at ANY size: a size bound fails open (an indented RSA-32768 block and
+  // FrodoKEM blocks pass
   // 32 KiB, and indentation depth is unbounded), and this rule must fail
   // closed. A header with no footer is replaced together with the key
   // material that follows it and nothing else: base64 runs of 40+, shorter
