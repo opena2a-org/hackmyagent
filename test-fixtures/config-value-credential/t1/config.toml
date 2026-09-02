@@ -6,5 +6,5 @@ region = "us-east-1"
 retries = 3
 
 [anthropic]
-api_key = "sk-ant-api03-695F928AF723DCE4AB5AE75ED0B38D7A520D42D1"
+api_key = "__T1_VALUE__"
 model = "claude-sonnet-5"

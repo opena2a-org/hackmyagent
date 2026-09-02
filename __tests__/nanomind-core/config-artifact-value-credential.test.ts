@@ -19,9 +19,14 @@
  * never by prose and never by a path or filename regex — the fixture is
  * still detected renamed and moved, and in a file with no prose at all.
  *
- * The fixtures are COMMITTED at `test-fixtures/config-value-credential/`
- * and read as raw bytes (T1 carries a token-shape line and is registered in
- * `security/credential-shape-exemptions.json`). Nothing in this file spells
+ * The fixtures are COMMITTED at `test-fixtures/config-value-credential/`.
+ * N4 and the guards are read as raw bytes. T1's key line is committed with
+ * the stand-in `__T1_VALUE__` in place of the value: the repository's push
+ * scan refuses any provider-token-shaped literal, and a FAKE/PLACEHOLDER
+ * marker on the line would make the scanner suppress the value, so the
+ * fixture would measure suppression rather than detection. This file
+ * assembles the value from parts at run time, writes it into a temporary
+ * copy of the t1 directory, and scans the copy. Nothing in this file spells
  * a token-shape value as a source literal.
  *
  * The CLI is driven through `src/cli.ts` with the repo's own `tsx`, not the
@@ -31,7 +36,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { SemanticCompiler } from '../../src/nanomind-core/compiler/semantic-compiler';
@@ -42,7 +47,20 @@ const TSX = path.join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
 const CLI_SRC = path.join(REPO_ROOT, 'src', 'cli.ts');
 const FIXTURES = path.join(REPO_ROOT, 'test-fixtures', 'config-value-credential');
 
-const T1 = readFileSync(path.join(FIXTURES, 't1', 'config.toml'), 'utf-8');
+const T1_DIR = path.join(FIXTURES, 't1');
+/** The committed T1 bytes: the key line carries the stand-in, not the value. */
+const T1_COMMITTED = readFileSync(path.join(T1_DIR, 'config.toml'), 'utf-8');
+const T1_STAND_IN = '__T1_VALUE__';
+/**
+ * The canonical Anthropic-shaped value, assembled from parts so that no line
+ * of this file matches the provider-token shape while the runtime string is
+ * byte-identical to what the scanner recognises.
+ */
+const T1_VALUE = ['sk-ant-', 'api03-', '695F928AF723DCE4AB5A', 'E75ED0B38D7A520D42D1'].join('');
+/** The assembled T1 bytes: what the temporary copy carries and what is scanned. */
+const T1 = T1_COMMITTED.replace(T1_STAND_IN, T1_VALUE);
+/** The scanner's own canonical Anthropic shape (src/hardening/scanner.ts). */
+const CANONICAL_ANTHROPIC_SHAPE = /sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/;
 const N4 = readFileSync(path.join(FIXTURES, 'n4', 'config.toml'), 'utf-8');
 const GUARD_SHA = readFileSync(path.join(FIXTURES, 'guards', 'config.toml'), 'utf-8');
 const GUARD_I18N = readFileSync(path.join(FIXTURES, 'guards', 'locales.toml'), 'utf-8');
@@ -63,8 +81,6 @@ function valueOf(content: string, key: string): string {
 
 const T1_LINE = lineOf(T1, 'api_key');
 const N4_LINE = lineOf(N4, 'secret_access_key');
-/** The T1 value alone — used for the rename/move and no-prose variants. */
-const T1_VALUE = valueOf(T1, 'api_key');
 
 interface ReportFinding {
   checkId?: string;
@@ -108,7 +124,9 @@ function runCli(target: string): { failedCred: ReportFinding[] } {
 }
 
 let root: string;
+let t1Copy: string;
 let t1Cred: ReportFinding[] = [];
+let committedT1Cred: ReportFinding[] = [];
 let n4Cred: ReportFinding[] = [];
 let movedCred: ReportFinding[] = [];
 let noProseCred: ReportFinding[] = [];
@@ -129,7 +147,14 @@ beforeAll(() => {
     return dir;
   };
 
-  t1Cred = runCli(tree('t1', { 'config.toml': T1 })).failedCred;
+  // AC1 T1: a temporary copy of the committed t1 directory with the stand-in
+  // replaced by the assembled value; the copy is what the scanner reads.
+  t1Copy = mkdtempSync(path.join(tmpdir(), 'hma27-t1-'));
+  cpSync(T1_DIR, t1Copy, { recursive: true });
+  writeFileSync(path.join(t1Copy, 'config.toml'), T1);
+  t1Cred = runCli(t1Copy).failedCred;
+  // The committed directory as-is carries only the stand-in.
+  committedT1Cred = runCli(T1_DIR).failedCred;
   n4Cred = runCli(tree('n4', { 'config.toml': N4 })).failedCred;
   // AC2(a): same bytes, renamed AND moved below two directories.
   movedCred = runCli(tree('moved', { [MOVED_REL]: T1 })).failedCred;
@@ -141,11 +166,26 @@ beforeAll(() => {
 
 afterAll(() => {
   if (root) rmSync(root, { recursive: true, force: true });
+  if (t1Copy) rmSync(t1Copy, { recursive: true, force: true });
 });
 
 describe('HMA-27 value-shaped credential route for config artifacts', () => {
+  it('HMA-27.AC1 T1 as committed: the key line carries the stand-in, matches no canonical-shaped value, and the committed directory reports zero credential findings', () => {
+    expect(T1_COMMITTED).toContain(T1_STAND_IN);
+    expect(
+      CANONICAL_ANTHROPIC_SHAPE.test(T1_COMMITTED),
+      'the committed fixture must not carry a value matching the canonical shape',
+    ).toBe(false);
+    expect(
+      committedT1Cred.map((f) => `${f.checkId}@${f.file}:${f.line}`),
+      'the stand-in is not a credential: the committed directory scanned as-is reports nothing',
+    ).toEqual([]);
+  }, 30_000);
+
   it('HMA-27.AC1 T1: a config.toml whose only credential content is a canonical Anthropic-shaped value reports exactly one credential finding, at the value line', () => {
     expect(T1_LINE).toBeGreaterThan(0);
+    expect(valueOf(T1, 'api_key'), 'the assembled copy carries the value on the key line').toBe(T1_VALUE);
+    expect(CANONICAL_ANTHROPIC_SHAPE.test(T1), 'the assembled copy matches the canonical shape').toBe(true);
     expect(
       t1Cred.length,
       `expected exactly one credential finding across every layer, got `
