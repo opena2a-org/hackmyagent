@@ -467,19 +467,27 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
     return findings;
   }
 
-  // In doc/test/manifest contexts where the CRED-HARVEST trigger fired on
-  // descriptive language ("No credentials printed", "files spanning
-  // credentials", "must never store credentials"), require an actual
-  // credential-format pattern (sk-/ghp_/gho_ prefixes or 32+ char alpha-
-  // numeric blob) in the evidence span before emitting HIGH. The previous
-  // implicit gate was `credentialEvidence.length === 0`: pre-#151 the
-  // evidence-span lookup silently failed for description-style risk evidence
-  // and kept doc-context findings suppressed. Post-#151 the compiler emits
-  // verbatim keyword spans (an activation effect of the heuristic-evidence
-  // fix) and the implicit gate disengaged — re-engage it explicitly here.
-  // Skill/agent files (`.skill.md`, `.soul.md`, etc.) bypass this gate and
-  // continue to fire on bare-keyword harvesting language as designed.
-  if (isTestOrDoc && !evidenceShowsCredentialFormat(evidenceTexts)) {
+  // A "Hardcoded Secret" requires a secret-shaped VALUE in the artifact's
+  // RAW bytes, in EVERY artifact context. The CRED-HARVEST surfaces this
+  // check consumes are also produced for descriptive prose (a credential
+  // noun plus a harvesting verb anywhere in the text, no proximity), so
+  // without a value gate a gitleaks config or a security policy document
+  // reads as a hardcoded secret anchored at its first credential noun.
+  // The gate reads `artifactContent`, never the evidence spans: a span is
+  // a 100-char window at the first noun's offset and can sit hundreds of
+  // bytes away from a real value, which both un-suppressed prose-only
+  // docs (the span showed no value — correct — but only doc contexts were
+  // gated) and suppressed docs whose real value lay OUTSIDE the span (the
+  // displaced-evidence false negative). Harvesting INTENT stays
+  // reportable regardless: the capability analyzer emits AST-CRED-001
+  // "Credential Harvesting Pattern" from the same surfaces.
+  // When the caller supplied no content there are no raw bytes to judge,
+  // so doc/test contexts keep the evidence-text check as the fallback.
+  if (artifactContent !== undefined) {
+    if (!hasCredentialFormat(artifactContent)) {
+      return findings;
+    }
+  } else if (isTestOrDoc && !evidenceShowsCredentialFormat(evidenceTexts)) {
     return findings;
   }
 
@@ -568,6 +576,20 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
       for (const [offset, summary] of [...located.entries()].sort((a, b) => a[0] - b[0])) {
         findings.push(emit(summary, lineFromOffset(artifactContent, offset)));
       }
+      return findings;
+    }
+  }
+
+  // The remaining surfaces are prose-derived and carry no offset, but the
+  // raw-bytes gate above proved a secret-shaped value exists in the
+  // artifact — anchor the finding on that value. A span start is the
+  // first credential NOUN's offset, an arbitrary distance from the secret
+  // itself, and the span text can omit the value entirely; the masked
+  // match keeps the value out of `evidence`.
+  if (artifactContent !== undefined) {
+    const first = findFirstCredentialFormat(artifactContent);
+    if (first !== undefined) {
+      findings.push(emit(first.match, first.line));
       return findings;
     }
   }

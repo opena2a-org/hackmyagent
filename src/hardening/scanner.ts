@@ -61,6 +61,7 @@ import {
   type CategoryCoverage,
   type CheckExecution,
   type CoverageTruncation,
+  type WithheldLink,
   countsAsUnread,
   noteListFailure,
 } from './coverage-ledger';
@@ -3441,6 +3442,13 @@ export class HardeningScanner {
   private lastBackupCovered: string[] = [];
   /** Identity of the directory the last `createBackup` created. See #317. */
   private lastBackupIdent: FsIdentity | undefined;
+  /**
+   * Candidates the last `createBackup` refused to copy because they resolve
+   * outside the scanned tree. The refusal is a policy skip that must be
+   * ANNOUNCED, never silent: the caller that renders withheld links merges
+   * these with the scan-side records (`backupWithheldLinks`).
+   */
+  private lastBackupWithheldLinks: WithheldLink[] = [];
   // Files that may be created or modified during auto-fix
   private static readonly BACKUP_FILES = [
     'config.json',
@@ -6263,6 +6271,17 @@ export class HardeningScanner {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Copy candidates the last backup WITHHELD because they resolve outside the
+   * scanned tree, for the caller that renders the run's disclosures.
+   * `harden-soul` merges these with the scan-side records — same
+   * `WithheldLinkRecord` shape after `withheldLinkRecords`, deduped by `rel`,
+   * so one withheld link is one line however many sides refused it.
+   */
+  backupWithheldLinks(): WithheldLink[] {
+    return [...this.lastBackupWithheldLinks];
   }
 
   /**
@@ -11256,6 +11275,7 @@ dist/
    * Create a backup of files that may be modified during auto-fix
    */
   private async createBackup(targetDir: string): Promise<string> {
+    this.lastBackupWithheldLinks = [];
     const backupDir = await this.createRunBackupDir(await this.prepareBackupRoot(targetDir));
 
     // The identity of the directory just created, captured once. Every later
@@ -11321,22 +11341,27 @@ dist/
       const sourcePath = path.join(targetDir, file);
       try {
         await fs.access(sourcePath);
-        // NOTE: `access` and `copyFile` both follow symlinks, so a symlinked
-        // candidate is backed up by CONTENT. That is deliberate for now.
-        //
-        // It has a real downside — a repo shipping `SOUL.md -> ~/.ssh/id_rsa`
-        // gets that key's bytes copied into `.hackmyagent-backup/`, inside
-        // the scanned tree. But simply skipping symlinked candidates is
-        // WORSE, and was tried and reverted: roughly 18 fix sites here plus
-        // `hardenSoul`'s `appendFileSync` still write through the link, so
-        // skipping the backup leaves the out-of-tree file mutated with no
-        // copy to restore from, and `rollback` reports success having
-        // reverted nothing. Following the link at least keeps the write
-        // recoverable.
-        //
-        // The root fix is to stop writing through symlinks at every fix
-        // site, not to drop the backup that compensates for it. Tracked
-        // separately; do not re-apply the skip on its own.
+        // `access` and `copyFile` both follow symlinks, so an unconfined copy
+        // backs a symlinked candidate up by CONTENT: a repo shipping
+        // `SOUL.md -> <outside>/SOUL.md` got the link target's bytes copied
+        // into `.hackmyagent-backup/`, inside the scanned tree. Skipping the
+        // copy SILENTLY was tried and reverted while the fix sites still
+        // wrote through links; those writes are refused now
+        // (`resolveInsideTree`, `followLeafLink: true`), so this is the
+        // separate track the old note promised: every candidate is resolved
+        // against the scanned tree, and one that leaves it is WITHHELD — no
+        // copy, and a manifest entry in NEITHER list (not restorable, so
+        // `existingFiles` would lie; not a creation, so `absentAtBackup`
+        // would let rollback delete through it; uncovered, so
+        // `ensureBackupCovers` refuses a write through it — the safe
+        // direction) — plus a disclosure the caller renders alongside the
+        // scan-side withheld links. An in-tree link (`SOUL.md ->
+        // docs/SOUL.md`) resolves inside and is still backed up by content.
+        const stays = readStaysInsideTree(sourcePath, targetDir);
+        if (!stays.ok) {
+          this.lastBackupWithheldLinks.push({ rel: file, resolved: stays.resolved, call: 'copyFile' });
+          continue;
+        }
         const destPath = path.join(backupDir, file);
         await fs.mkdir(path.dirname(destPath), { recursive: true });
         await fs.copyFile(sourcePath, destPath);

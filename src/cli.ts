@@ -10573,10 +10573,15 @@ Examples:
       // backup directory for it would be a side effect of a preview.
       let hardenBackup: string | null = null;
       let hardenGuard: ((rel: string) => Promise<boolean>) | undefined;
+      // Candidates the backup refused to copy because they resolve outside
+      // the tree — disclosed below in the same withheldLinks shape as the
+      // scan side, merged one line per link.
+      let hardenBackupWithheld: ReturnType<typeof withheldLinkRecords> = [];
       if (!options.dryRun) {
         const { HardeningScanner } = await import('./hardening/scanner.js');
         const hardening = new HardeningScanner();
         hardenBackup = await hardening.beginExternalBackup(targetDir);
+        hardenBackupWithheld = withheldLinkRecords(hardening.backupWithheldLinks(), prefix);
         if (hardenBackup === null) {
           // Fail closed, like `scan()` does when its backup cannot be taken.
           process.stderr.write(
@@ -10601,7 +10606,12 @@ Examples:
       // outside the target tree — announced on both channels, in the wording
       // `secure` already uses. A withheld name is treated as absent, so the
       // run composes (or creates) content exactly as it would without the link.
-      const hardenWithheldLinks = withheldLinkRecords(result.withheldLinks ?? [], prefix);
+      // The backup side's withheld copy candidates are merged in, deduped by
+      // `rel`: the same link refused twice (read and copy) is one disclosure.
+      const hardenWithheldLinks = mergeWithheldLinks(
+        withheldLinkRecords(result.withheldLinks ?? [], prefix),
+        hardenBackupWithheld,
+      );
 
       // JSON output
       if (options.json) {
