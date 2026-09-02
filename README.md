@@ -333,8 +333,8 @@ OpenAI API, MCP and A2A traffic. It is driven from `opena2a runtime`
 `secure` and `scan-soul` take `--ci` for non-interactive, byte-stable output. It also
 turns contribution off for that run, so a build server never shares scan results on the
 strength of an opt-in recorded earlier on the same machine. Most scanning commands take
-`--json` — `check`, `secure`, `attack`, `scan`, `fix-all`, `scan-soul`, `harden-soul`,
-`red-team`, `wild`, `detect`, `trust`.
+`--json` — `check`, `secure`, `attack`, `scan`, `fix-all`, `scan-soul`, `harden-soul`, `red-team`, `wild`, `detect`, `trust`.
+`secure` and `attack` also take `-f, --format <format>`; on those two commands `--json` is shorthand for `--format json`.
 
 `--json` never changes the exit code: a command that exits 1 on findings exits 1 in both
 channels. `--ci` mostly doesn't either — it selects how a run reports, not what it
