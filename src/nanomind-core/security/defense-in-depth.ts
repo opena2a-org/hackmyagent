@@ -204,10 +204,20 @@ const CREDENTIAL_REDACTION_RULES: readonly CredentialRedactionRule[] = [
     pattern: /((?:aws.{0,16}?(?:secret|private).{0,16}?key|secret[_\s.-]?access[_\s.-]?key)["'\s]*[:=]+>?\s*["']?)([A-Za-z0-9/+=]{40,})/gi,
     replacement: '$1[REDACTED_AWS_SECRET]',
   },
-  // The header alone is enough: the detector fires on `-----BEGIN … KEY-----`
-  // without requiring the closing marker, and a truncated or single-line block
-  // would otherwise stay verbatim.
-  { id: 'pem-private-key', pattern: /-----BEGIN [A-Z ]+ KEY-----[\s\S]*?-----END [A-Z ]+ KEY-----/g, replacement: '[REDACTED_PRIVATE_KEY]' },
+  // Two shapes, one rule. A complete block — header through the next footer,
+  // never crossing another `-----BEGIN … KEY-----` header — is replaced whole
+  // at ANY size: a size bound fails open (an indented RSA-32768 block and
+  // FrodoKEM blocks pass
+  // 32 KiB, and indentation depth is unbounded), and this rule must fail
+  // closed. A header with no footer is replaced together with the key
+  // material that follows it: base64 runs of 40+, shorter runs that end a
+  // line, and RFC 1421 Proc-Type/DEK-Info lines. A header mentioned in prose
+  // stays verbatim unless key-shaped text follows it — a header-to-end-of-line rule was
+  // measured to destroy the doc-context words the credential analyzer reads
+  // (declared-purpose-redaction.test.ts). The line loop is counted at 16384
+  // only to bound the regexp backtrack stack; at 64+ columns that is past the
+  // 1 MiB gate, so no block of 63 or more columns reaches it.
+  { id: 'pem-private-key', pattern: /-----BEGIN [A-Z ]+ KEY-----(?:(?:(?!-----BEGIN [A-Z ]+ KEY-----)[\s\S])*?-----END [A-Z ]+ KEY-----|(?:(?:\s|\\[rn])*(?:[A-Za-z0-9+/=]{40,}|[A-Za-z0-9+/=]+(?=[ \t]*(?:\r?\n|(?:\\r)?\\n|$))|(?:Proc-Type|DEK-Info):[^\r\n\\]*)){1,16384})/g, replacement: '[REDACTED_PRIVATE_KEY]' },
   { id: 'connection-string', pattern: /(?:postgres|mysql|mongodb|redis):\/\/[^\s'"]+/gi, replacement: '[REDACTED_CONNECTION_STRING]' },
 ];
 

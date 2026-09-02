@@ -1191,6 +1191,16 @@ function astFindingToSecurityFinding(
   // edit could quietly invert — there is no path on which the redacted text is
   // what gets located.
   return emitFinding({
+    // Redaction provenance forwarded from construction (HMA-38): an AST
+    // finding that interpolated a declaredPurpose whose extraction removed
+    // content carries a prior 'applied', which emitFinding's absorbing rule
+    // honours — its own pass sees only the inert redacted value and would
+    // otherwise conclude 'clean' over a removal. Spread, not named fields:
+    // `SecurityFindingDraft` deliberately omits the pair, and emitFinding
+    // reads them off the runtime value.
+    ...(ast.redactionStatus === 'applied'
+      ? { redactionStatus: 'applied' as const, redactedShapes: ast.redactedShapes ?? [] }
+      : {}),
     checkId: ast.checkId,
     name: ast.name,
     description: ast.description,
