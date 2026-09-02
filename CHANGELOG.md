@@ -4,6 +4,49 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The CRED-HARVEST prose rule is clause-scoped, not two whole-file regexes ANDed
+
+The rule behind the `Credential harvesting` risk surface — and therefore behind
+every prose-derived AST-CRED-001 — was a credential noun matched ANYWHERE in a
+document ANDed with a request verb matched ANYWHERE in the same document.
+Neither operand knew where the other had matched, so two ordinary sentences
+hundreds of lines apart, about unrelated things, were enough to earn a CRITICAL.
+The measured witness: a skill document whose only credential noun was `token`
+inside "per-token attribution graphs", and whose only verb witnesses were
+`provide` inside "provider" and `request` inside "requested". No directive
+anywhere in the file, one CRITICAL.
+
+The evidence was as coarse as the gate. It was the FIRST credential noun in the
+file — a bare dictionary word, which `resolveFindingLine` correctly refuses to
+turn into a citation — so every row the rule produced was a CRITICAL carrying no
+line and no `Verify:`.
+
+The signal is now the CLAUSE. A credential noun and a request verb must occur in
+one clause, with the verb GOVERNING the noun (its object phrase, the passive
+subject that is the same relation inverted, or a same-clause anaphor) and no
+negator ahead of the verb in that clause. The clause window breaks at sentence
+ends and line ends, and deliberately not at colons or commas, so a split
+directive — "Provide the following: username, password, and API keys." — does
+not under-fire. The clause span is also the evidence, which is what gives every
+resulting AST-CRED-001 row a line for the first time.
+
+Verb matching is now whole-word over an enumerated set of inflections, so
+`provider` is no longer read as `provide` while "should be included" and "when
+requested" still match. The verb vocabulary gains `include|send|paste|reveal|
+disclose|return` alongside the original `ask|request|share|provide`, which is
+safe precisely because the window closed. The credential-noun class gains one
+spelling: `api[_-]?key` also admits a space, so the English "API key" that
+directives actually use is recognised rather than missed.
+
+Two shapes are knowingly given up: a harvesting directive whose verb sits behind
+a negator in its own clause, and one split across a line break. Both were
+unlocatable findings before — they had no line to lose — and both are pinned as
+tests rather than left to be rediscovered.
+
+The canonical credential-format scan (`Hardcoded <label>` surfaces, confidence
+0.9, carrying their own offset) is untouched: it is a value-shaped route, not a
+prose one, and it is what detects real hardcoded secrets.
+
 ### `--json` is not deprecated, and the help strings stop saying it is
 
 From 0.8.0 through 0.32.0, `secure --help` described `--json` as deprecated

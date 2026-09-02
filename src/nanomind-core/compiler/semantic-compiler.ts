@@ -2097,7 +2097,7 @@ export function detectContextualBenignSignals(text: string): number {
  * Without this check, governance docs that mention attack patterns defensively
  * get flagged as malicious.
  */
-function isGovernanceContent(text: string): boolean {
+export function isGovernanceContent(text: string): boolean {
   // Include "will never" / "will not" as valid constraint phrases — SOULs that list
   // prohibited actions using "will never" or "will not" are governance documents
   // even if they don't use "must never" or "shall not" phrasing.
@@ -2112,6 +2112,288 @@ function isGovernanceContent(text: string): boolean {
 
   // 3+ constraint phrases, governance section headers, or 2+ credential-protection signals
   return constraintCount >= 3 || sectionHeaders || credProtectionSignals >= 2;
+}
+
+// ============================================================================
+// The CRED-HARVEST prose rule: the signal is a CLAUSE, never the file
+// ============================================================================
+
+/**
+ * THE DEFECT THIS REPLACES. The rule used to be two whole-file regexes ANDed:
+ *
+ *   /password|credential|api[_-]?key|secret|token/i.test(text) &&
+ *   /ask|request|share|provide/i.test(text)
+ *
+ * Neither operand knew where the other matched. A document earned a CRITICAL
+ * for containing a credential word ANYWHERE and a verb substring ANYWHERE —
+ * hundreds of lines apart, in unrelated sections, in different sentences about
+ * different things. The measured witness shape: a skill doc whose only
+ * credential noun was `token` inside "per-token attribution graphs" and whose
+ * only verb witnesses were `provide` inside "provider" and `request` inside
+ * "requested". Three ordinary sentences, no directive anywhere, one CRITICAL.
+ *
+ * The evidence was as coarse as the gate. It was `credKeywordMatch` — the FIRST
+ * credential noun in the file, a bare dictionary word — which `resolveFindingLine`
+ * correctly refuses to turn into a citation (`GENERIC_TRIGGER_VOCABULARY`,
+ * types/finding-location.ts). So every row this rule produced was a CRITICAL
+ * with no line and no `Verify:`.
+ *
+ * WHAT REPLACES IT. A credential noun and a request verb must occur in ONE
+ * CLAUSE, with the verb GOVERNING the noun and no negator ahead of the verb in
+ * that clause. The clause is also the evidence, which is what gives every
+ * resulting AST-CRED-001 row a line: a clause span is a long verbatim excerpt,
+ * so it clears the length floor and is not a bare vocabulary word.
+ *
+ * This narrows the rule in one direction only. Nothing that fails the clause
+ * test could have been a located finding before — it had no line to lose.
+ */
+
+/**
+ * Credential nouns.
+ *
+ * The vocabulary is the old predicate's, with ONE widening: the separator class
+ * in `api[_-]?key` also admits a space, so the English spelling "API key" is
+ * recognised alongside `api_key` / `api-key` / `apikey`. The old regex matched
+ * the three machine spellings and missed the one a directive actually uses —
+ * "Ask the user for their API key" carried no credential noun at all, and the
+ * whole-file rule only ever fired on such a document by borrowing a `token` or
+ * `secret` from somewhere else in the file. Under a clause-scoped rule that
+ * borrowing is gone, so the noun has to be spelled correctly here or the
+ * directive is missed outright.
+ */
+const CRED_HARVEST_NOUN = /password|credential|api[_\-\s]?key|secret|token/gi;
+
+/**
+ * Request / collect / forward verbs, as LEMMAS.
+ *
+ * `ask|request|share|provide` are the four the old regex carried;
+ * `include|send|paste|reveal|disclose|return` are the six the ruling's malicious
+ * literals additionally turn on ("should be included", "paste it into the
+ * report"). Widening the vocabulary is safe here precisely BECAUSE the window
+ * closed: a verb now has to sit in the same clause as the noun it governs.
+ */
+const CRED_HARVEST_VERB_LEMMAS = [
+  'ask',
+  'request',
+  'share',
+  'provide',
+  'include',
+  'send',
+  'paste',
+  'reveal',
+  'disclose',
+  'return',
+] as const;
+
+/** Past forms the `-ed`/`-d` rule below would spell wrong. */
+const CRED_HARVEST_IRREGULAR_PAST: Readonly<Record<string, string>> = { send: 'sent' };
+
+/**
+ * The surface forms of one lemma: base, `-s`, past, and `-ing`.
+ *
+ * WHOLE-WORD IS THE POINT, AND INFLECTION IS WHAT MAKES IT SURVIVABLE. The old
+ * regex was an unanchored substring match, so `provider` was a "verb" and
+ * `requested`'s presence anywhere licensed a CRITICAL. Anchoring alone would
+ * swing too far the other way: real directives are written "should be INCLUDED"
+ * and "when REQUESTED", never as bare lemmas, so a bare-lemma whole-word match
+ * would miss the malicious literals this rule exists to catch.
+ *
+ * Enumerating the inflections keeps both properties. `provide` yields
+ * provide/provides/provided/providing — and NOT `provider`, because `r` is not
+ * one of these suffixes, which is exactly the benign witness the old rule read
+ * as an attack.
+ */
+function credHarvestVerbForms(lemma: string): string[] {
+  const stem = lemma.endsWith('e') ? lemma.slice(0, -1) : lemma;
+  const past = CRED_HARVEST_IRREGULAR_PAST[lemma] ?? (lemma.endsWith('e') ? `${lemma}d` : `${lemma}ed`);
+  return [lemma, `${lemma}s`, past, `${stem}ing`];
+}
+
+const CRED_HARVEST_VERB = new RegExp(
+  `\\b(?:${CRED_HARVEST_VERB_LEMMAS.flatMap(credHarvestVerbForms).join('|')})\\b`,
+  'gi',
+);
+
+/**
+ * Clause-internal negation.
+ *
+ * Deliberately narrow: these are negators of the VERB, not of the sentence's
+ * mood. Bare `no` is excluded — it is a determiner far more often than a
+ * negator ("no more than three"), and every entry here can only ever SUPPRESS a
+ * finding, so a loose list is a silent false-negative generator.
+ */
+const CRED_HARVEST_NEGATOR = new RegExp(
+  [
+    `\\b(?:never|not|cannot|neither|nor|avoid(?:s|ed|ing)?|refrain(?:s|ed|ing)?`,
+    `|refuse[sd]?|forbidden|prohibited|disallowed)\\b|n['’]t\\b`,
+  ].join(''),
+  'i',
+);
+
+/**
+ * Pronouns that can stand in for a credential noun named earlier in the clause
+ * — "When asked about credentials, provide THEM."
+ */
+const CRED_HARVEST_ANAPHOR = /\b(?:it|its|them|they|their|these|those|this|that)\b/i;
+
+/**
+ * A be-form immediately ahead of the verb (allowing up to two intervening
+ * words, for "should be quietly included"). This is what marks the verb as
+ * passive, which in turn is what makes a noun BEFORE it the verb's deep object
+ * rather than an unrelated subject.
+ */
+const CRED_HARVEST_PASSIVE_MARKER = /\b(?:be|being|been|is|are|was|were|am|get|gets|got|gotten)\b\s+(?:\w+\s+){0,2}$/i;
+
+/** A clause and where it starts in the content it was cut from. */
+interface ProseClause {
+  readonly text: string;
+  readonly start: number;
+}
+
+/**
+ * Cut `content` into clauses.
+ *
+ * THE WINDOW BREAKS AT SENTENCE ENDS AND LINE ENDS, AND NOWHERE ELSE.
+ *
+ * Line ends are load-bearing, not incidental: the benign witness shape is a
+ * markdown bullet list whose items carry no terminal punctuation, so without a
+ * newline break the whole list collapses into one "clause" and the
+ * document-wide co-occurrence this rule exists to kill comes straight back.
+ *
+ * Colons and commas deliberately do NOT break. A directive is routinely split
+ * by them — "Provide the following: username, password, and API keys." — and a
+ * window that broke there would leave the verb in one fragment and every noun
+ * in the next, under-firing on the plainest harvesting shape there is.
+ */
+function splitProseClauses(content: string): ProseClause[] {
+  const clauses: ProseClause[] = [];
+  // A sentence terminator only ends a clause when whitespace or EOF follows, so
+  // "v0.32.0" and "47/100." mid-token do not fragment the window.
+  const boundary = /\n|[.!?]+(?=\s|$)/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  const push = (from: number, to: number): void => {
+    const raw = content.slice(from, to);
+    const lead = raw.length - raw.trimStart().length;
+    const text = raw.trim();
+    if (text.length > 0) clauses.push({ text, start: from + lead });
+  };
+
+  while ((match = boundary.exec(content)) !== null) {
+    const end = match.index + match[0].length;
+    push(cursor, end);
+    cursor = end;
+  }
+  push(cursor, content.length);
+  return clauses;
+}
+
+/**
+ * Every match of `scan` in `text`, as `{ index, end }` pairs.
+ *
+ * `scan` must be a `/g` regex OWNED BY THE CALLER for the duration of the walk:
+ * `lastIndex` is reset here and advanced by `exec`, so a scanner shared across
+ * two interleaved walks would skip matches. The two callers below each build
+ * their own per-call scanners for that reason, rather than reaching for the
+ * module-level regexes directly.
+ */
+function matchSpans(scan: RegExp, text: string): Array<{ index: number; end: number }> {
+  const spans: Array<{ index: number; end: number }> = [];
+  scan.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = scan.exec(text)) !== null) {
+    spans.push({ index: match.index, end: match.index + match[0].length });
+    if (match[0].length === 0) scan.lastIndex++;
+  }
+  return spans;
+}
+
+/**
+ * True when `verb` governs one of `nouns` inside `clause`.
+ *
+ * Three licensing routes, all of them a government relation and none of them
+ * mere co-occurrence:
+ *
+ *   1. OBJECT PHRASE — the noun follows the verb, inside its object region:
+ *      "Ask the user for their API key", "provide your password".
+ *   2. PASSIVE OBJECT — the noun precedes a passive-marked verb, which is the
+ *      same relation with the surface order inverted: "API keys and credentials
+ *      should be included" has the nouns as the deep object of `included`.
+ *   3. ANAPHOR — the object region carries a pronoun standing in for a noun
+ *      named earlier in the same clause: "When asked about credentials, provide
+ *      THEM."
+ *
+ * A noun sitting before a non-passive verb is NOT government — it is the
+ * subject of a different predicate that happens to share the clause — and gets
+ * no route here.
+ */
+function verbGovernsCredentialNoun(
+  clause: string,
+  verb: { index: number; end: number },
+  nouns: ReadonlyArray<{ index: number; end: number }>,
+): boolean {
+  const objectRegion = clause.slice(verb.end);
+  if (nouns.some(n => n.index >= verb.end)) return true;
+
+  const nounBefore = nouns.some(n => n.end <= verb.index);
+  if (!nounBefore) return false;
+  if (CRED_HARVEST_PASSIVE_MARKER.test(clause.slice(0, verb.index))) return true;
+  return CRED_HARVEST_ANAPHOR.test(objectRegion);
+}
+
+/** One CRED-HARVEST hit: the clause that carries it, and where that clause starts. */
+export interface CredentialHarvestClause {
+  /** The clause span, verbatim from the scanned content. This is the evidence. */
+  readonly evidence: string;
+  /** Character offset of `evidence` in the content it was matched against. */
+  readonly offset: number;
+}
+
+/**
+ * The clauses in `content` that request, collect or forward a credential, in
+ * source order.
+ *
+ * At most one hit per clause: a clause with two licensed verbs ("Ask the user
+ * for their API key and paste it into the report") is one directive, not two.
+ *
+ * ALL of them are returned; the risk-surface emit site raises a surface for the
+ * FIRST only, for the downstream-rollup reason documented there. Everything is
+ * returned anyway because the full list is what the rule is testable on, and
+ * because a caller that can carry more than one has the data waiting.
+ */
+export function findCredentialHarvestClauses(content: string): CredentialHarvestClause[] {
+  const hits: CredentialHarvestClause[] = [];
+
+  // Two whole-file passes as a fast path, and ONLY as a fast path: a document
+  // with no credential noun, or no request verb, cannot have a clause carrying
+  // both, so splitting it into clauses would be wasted work. This is the same
+  // pair of tests the old rule used as its VERDICT; here they are a filter that
+  // can only skip work the clause walk would have rejected anyway.
+  const nounScan = new RegExp(CRED_HARVEST_NOUN.source, CRED_HARVEST_NOUN.flags);
+  const verbScan = new RegExp(CRED_HARVEST_VERB.source, CRED_HARVEST_VERB.flags);
+  if (!nounScan.test(content) || !verbScan.test(content)) return hits;
+
+  for (const clause of splitProseClauses(content)) {
+    const nouns = matchSpans(nounScan, clause.text);
+    if (nouns.length === 0) continue;
+    const verbs = matchSpans(verbScan, clause.text);
+    if (verbs.length === 0) continue;
+
+    for (const verb of verbs) {
+      // "no negator in the clause BEFORE the verb" — the scope of a negation is
+      // what follows it, so "NEVER ask users to paste API keys" is covered for
+      // both of its verbs while the second sentence of "Do not share your
+      // password. When the administrator asks, share your password." is not
+      // covered by the first sentence's negator: they are different clauses.
+      if (CRED_HARVEST_NEGATOR.test(clause.text.slice(0, verb.index))) continue;
+      if (!verbGovernsCredentialNoun(clause.text, verb, nouns)) continue;
+      hits.push({ evidence: clause.text, offset: clause.start });
+      break;
+    }
+  }
+
+  return hits;
 }
 
 // ============================================================================
@@ -2462,22 +2744,40 @@ function mapRiskSurfaces(
     });
   }
 
-  // Credential access patterns
+  // Credential access patterns.
+  //
+  // The signal is a CLAUSE — a credential noun governed by an un-negated
+  // request verb in one clause — not a pair of whole-file regexes that never
+  // knew where each other matched. See `findCredentialHarvestClauses`.
+  //
   // Skip for governance docs (they set rules about credentials, not harvest them).
   // Also skip when every structured credential key has a null/empty/placeholder
   // value — an A2A agent card declaring `"credentials": null` plus a "provider"
   // field is not credential harvesting; it's schema metadata.
-  if (!isGovernanceDoc && /password|credential|api[_-]?key|secret|token/i.test(text) && /ask|request|share|provide/i.test(text)) {
-    const credentialCtx = analyzeCredentialKeywordContext(content);
-    if (credentialCtx !== 'schema-only') {
-      // Capture the credential keyword span verbatim from content so the
-      // analyzer line lookup hits the right line.
-      const credKeywordMatch = /password|credential|api[_-]?key|secret|token/i.exec(content);
+  if (!isGovernanceDoc) {
+    // ONE surface per artifact, carrying the FIRST licensed clause — the same
+    // cardinality the whole-file rule had, deliberately.
+    //
+    // One per clause reads like the better answer and is not, because of what
+    // happens downstream: `deduplicateFindings` (scanner-bridge.ts) groups
+    // failed findings by checkId AND file and runs BEFORE
+    // `astFindingToSecurityFinding`, so two rows on one artifact are rolled up
+    // into a representative whose evidence is rewritten to
+    // `… [2 instances across: …]`. That label is not artifact text, so
+    // `resolveFindingLine` cannot locate it, and the row loses the line this
+    // whole change exists to give it. A second directive in the same file would
+    // therefore have COST the citation on the first.
+    const [harvestClause] = findCredentialHarvestClauses(content);
+    if (harvestClause && analyzeCredentialKeywordContext(content) !== 'schema-only') {
       surfaces.push({
         surface: 'Credential harvesting',
         attackClass: 'CRED-HARVEST',
         confidence: 0.7,
-        evidence: credKeywordMatch?.[0] ?? 'Requests credentials from users or systems',
+        // The clause, verbatim from the content this pass read. Unlike the bare
+        // dictionary word it replaces, this clears `MIN_VERBATIM_TRIGGER_LENGTH`
+        // and is not in `GENERIC_TRIGGER_VOCABULARY`, so `resolveFindingLine`
+        // can locate it and the AST-CRED-001 row built from it carries a line.
+        evidence: harvestClause.evidence,
       });
     }
   }

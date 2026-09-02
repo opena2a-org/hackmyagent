@@ -15,7 +15,12 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SemanticCompiler, extractDeclaredConstraints } from '../../src/nanomind-core/compiler/semantic-compiler';
+import {
+  SemanticCompiler,
+  extractDeclaredConstraints,
+  analyzeCredentialKeywordContext,
+  isGovernanceContent,
+} from '../../src/nanomind-core/compiler/semantic-compiler';
 import { analyzeCapabilities } from '../../src/nanomind-core/analyzers/capability-analyzer';
 import { analyzeGovernance } from '../../src/nanomind-core/analyzers/governance-analyzer';
 import { analyzePrompt } from '../../src/nanomind-core/analyzers/prompt-analyzer';
@@ -1068,4 +1073,119 @@ service:
       }
     });
   }
+
+  // ==========================================================================
+  // b19 / b20 — HMA-41: the CRED-HARVEST prose rule is clause-scoped.
+  //
+  // The rule used to be two whole-file regexes ANDed, so a document earned a
+  // CRITICAL for holding a credential word somewhere and a verb substring
+  // somewhere else. These two rows are the measured negatives of that defect:
+  // b19 is the witness SHAPE that produced the false positive, b20 the negated
+  // directive that must never fire. Neither may pass through the governance
+  // gate or the schema-only gate — the clause structure has to be what carries
+  // them, which is what the extra assertions below pin.
+  //
+  // The positives that pair with these live in cred-harvest-clause-scope.test.ts.
+  // ==========================================================================
+
+  /**
+   * Read the DETERMINISTIC pass (`contextualBenign: false`) and the AST rows
+   * built from it. The deterministic pass is the strict one: the benign-context
+   * score is forced to zero, so nothing here can pass because the prose around
+   * it sounds reassuring.
+   */
+  async function credHarvestVerdict(content: string, path?: string) {
+    const compiler = new SemanticCompiler({ useNanoMind: false });
+    const result = await compiler.compile(content, path);
+    return {
+      surfaces: result.deterministicFindings
+        .filter(f => f.attackClass === 'CRED-HARVEST')
+        .map(f => `${f.surface}: ${f.evidence}`),
+      cred001: analyzeCapabilities(result.ast).filter(f => f.checkId === 'AST-CRED-001'),
+      artifactType: result.ast.artifactType,
+    };
+  }
+
+  const B19_FIXTURE_REL = 'test-fixtures/cred-harvest-clause-scope/attribution-telemetry-skill.md';
+  const B19_ARIA_TRAP_SHAPE = readFileSync(join(__dirname, '../..', B19_FIXTURE_REL), 'utf-8');
+
+  it('HMA-41.AC2 b19: aria-trap witness shape — whole-file regexes both true, clause predicate false, zero CRED-HARVEST', async () => {
+    // Non-vacuity first. If either whole-file regex were false the row would be
+    // measuring nothing: the OLD rule has to fire on these bytes for the new
+    // rule's silence to be the thing under test.
+    expect(
+      /password|credential|api[_-]?key|secret|token/i.test(B19_ARIA_TRAP_SHAPE),
+      "the old rule's noun operand must be TRUE on this fixture",
+    ).toBe(true);
+    expect(
+      /ask|request|share|provide/i.test(B19_ARIA_TRAP_SHAPE),
+      "the old rule's verb operand must be TRUE on this fixture",
+    ).toBe(true);
+
+    // The witnesses are exactly the ones the ruling measured: `token` only in
+    // `per-token` and the field name `tokenId`, and the verb operand satisfied
+    // only by `provide` inside "provider" and `request` inside "requested".
+    const verbWitnesses = B19_ARIA_TRAP_SHAPE.match(/ask|request|share|provide/gi) ?? [];
+    expect(verbWitnesses, 'exactly two verb witnesses, both mid-word').toEqual(['provide', 'request']);
+    for (const m of B19_ARIA_TRAP_SHAPE.matchAll(/token/gi)) {
+      const at = m.index ?? 0;
+      const around = B19_ARIA_TRAP_SHAPE.slice(Math.max(0, at - 12), at + 12);
+      expect(around, `every 'token' witness is per-token or tokenId, got ${JSON.stringify(around)}`)
+        .toMatch(/per-token|tokenId/i);
+    }
+    expect(B19_ARIA_TRAP_SHAPE.split('\n').length, 'the fixture is a real document, not a snippet')
+      .toBeGreaterThanOrEqual(200);
+
+    // Neither gate may be the reason this passes.
+    expect(
+      isGovernanceContent(B19_ARIA_TRAP_SHAPE.toLowerCase()),
+      'the fixture must carry NO recognised governance header — it must not need that gate',
+    ).toBe(false);
+    expect(
+      analyzeCredentialKeywordContext(B19_ARIA_TRAP_SHAPE),
+      "the fixture must not reach the 'schema-only' escape either",
+    ).not.toBe('schema-only');
+
+    const { surfaces, cred001, artifactType } = await credHarvestVerdict(B19_ARIA_TRAP_SHAPE, 'SKILL.md');
+    expect(artifactType, 'prose artifact, so the risk-surface pass actually runs').not.toBe('source_code');
+    expect(surfaces, `zero CRED-HARVEST surfaces on the deterministic pass. Got: ${surfaces.join(' | ')}`)
+      .toEqual([]);
+    expect(
+      cred001,
+      `zero AST-CRED-001 through analyzeCapabilities. Got: ${cred001.map(f => `${f.severity}: ${f.message}`).join(', ')}`,
+    ).toHaveLength(0);
+  });
+
+  const B20_NEGATED_DIRECTIVE = 'NEVER ask users to paste API keys, tokens, or passwords into the conversation';
+
+  it('HMA-41.AC3 b20: the mandatory negated directive yields zero — the negator precedes the verb inside the clause', async () => {
+    // Both whole-file operands are true here too, and emphatically so: this one
+    // sentence carries three credential nouns and two verbs. Only their
+    // arrangement — a negator ahead of both verbs, in their clause — makes it
+    // benign, and that is the whole claim.
+    expect(/password|credential|api[_-]?key|secret|token/i.test(B20_NEGATED_DIRECTIVE)).toBe(true);
+    expect(/ask|request|share|provide/i.test(B20_NEGATED_DIRECTIVE)).toBe(true);
+
+    expect(
+      isGovernanceContent(B20_NEGATED_DIRECTIVE.toLowerCase()),
+      'a bare directive is not governance content — it must not need that gate to pass',
+    ).toBe(false);
+    expect(analyzeCredentialKeywordContext(B20_NEGATED_DIRECTIVE)).not.toBe('schema-only');
+
+    const { surfaces, cred001 } = await credHarvestVerdict(`${B20_NEGATED_DIRECTIVE}\n`, 'SKILL.md');
+    expect(surfaces, `zero CRED-HARVEST surfaces. Got: ${surfaces.join(' | ')}`).toEqual([]);
+    expect(
+      cred001,
+      `zero AST-CRED-001. Got: ${cred001.map(f => `${f.severity}: ${f.message}`).join(', ')}`,
+    ).toHaveLength(0);
+  });
+
+  it('HMA-41.AC3 b20-positive: drop the negator and the same sentence fires (control for b20)', async () => {
+    // Without this, b20 is satisfied by a rule that never fires on anything.
+    const unNegated = B20_NEGATED_DIRECTIVE.replace(/^NEVER /, 'Please ');
+    const { surfaces, cred001 } = await credHarvestVerdict(`${unNegated}\n`, 'SKILL.md');
+    expect(surfaces.length, 'the negator is the only difference, so it must be the deciding one')
+      .toBeGreaterThanOrEqual(1);
+    expect(cred001.length).toBeGreaterThanOrEqual(1);
+  });
 });
