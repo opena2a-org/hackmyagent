@@ -1702,100 +1702,406 @@ export function dropPathlessNoiseFloor(
  *    skips past the entire `${...}` region (still inside the backtick)
  *    and keeps walking, so a `//` comment after the closing backtick
  *    is still recognized.
- *  - The helper does NOT attempt to detect regex literals. A real
- *    `/don't/; eval(payload)` line will be mis-suppressed only if the
- *    apostrophe inside the regex toggles open-quote state and the
- *    eval token comes before the regex closes; in practice eval
- *    appearing on the same line as a regex literal containing an
- *    apostrophe is rare enough to leave unhandled rather than ship a
- *    regex-context heuristic that FPs on multi-line strings.
+ *  - Regex literals ARE lexed (HMA-31, shape (a) of the ruling). A `/`
+ *    OPENS a regex literal when the previous significant token is the
+ *    start of the line; one of `(` `,` `=` `:` `[` `!` `&` `|` `?` `;`
+ *    `{` — the ruled opener set, and ONLY that set (HMA-31.AC8) — or
+ *    one of the keywords return, typeof, instanceof, in, of, new,
+ *    delete, void, throw, case, else, do, yield, await. A word after
+ *    `.` is a property name — an identifier, never a keyword — so
+ *    `stats.in / stats.out` is a division (HMA-31.AC7), and a word is
+ *    any run of identifier characters, ASCII or not, so `π / 2` is a
+ *    division too (HMA-31.AC8). A `/` is DIVISION after an identifier,
+ *    a number, a string literal, or `]`. After `)` it opens a regex iff
+ *    the same-line matching `(` is preceded by the KEYWORD if, while,
+ *    for or with — `obj.if(y)` is a method call, so division
+ *    (HMA-31.AC7) — and is division otherwise. When the previous token
+ *    is `}`, a `)` whose matching `(` is not on this line, or any
+ *    punctuator outside the opener set (`+` `-` `*` `<` `>` …), the
+ *    slash is UNDECIDABLE: the rest of the line is lexed BOTH ways and
+ *    a position answers "inside" only if both lexings say so; past
+ *    MAX_UNDECIDABLE_SLASHES such points on one lexing path the walk
+ *    stops branching and the rest of the line fails toward
+ *    corroboration ("not inside"). Inside a regex literal every
+ *    character is literal, backslash escapes are honoured, and a
+ *    `[...]` class is skipped as a unit — a `/` inside it does not
+ *    close the literal. So `/won't/; eval(payload)` is real code, and
+ *    the `eval()` in `{ pattern: /eval\s*\(/, label: 'eval() dynamic
+ *    execution' }` is still inside a string. A match that sits inside a
+ *    regex literal answers true: like a string, it is a mention, not a
+ *    call site.
  *  - Returns false when the match is in real code.
  *
- * Complexity: O(line.length) per call. The outer walker advances `i`
- * monotonically (every branch either does `i++` or `i = j` past a
- * matched region); the inner template-interpolation brace loop is
- * bounded by `j < line.length` and is entered at most once per `${...}`
- * region that the outer walker steps into. MAX_WALK_ITERATIONS is a
- * belt-and-suspenders cap that fires only on inputs already pathological
- * enough to be a different problem.
+ * Complexity: the walk computes an inside/outside mask for the WHOLE line
+ * in one pass and caches it per line (HMA-31.AC10), so asking about every
+ * sink mention on a line — the corroborator's per-match loop — costs one
+ * walk, not one forked walk per mention. Undecidable slashes fork the
+ * walk, bounded by 2^MAX_UNDECIDABLE_SLASHES paths per line, paid once
+ * per line; MAX_WALK_ITERATIONS caps each path as a belt-and-suspenders
+ * bound that fires only on inputs already pathological enough to be a
+ * different problem (past it a path keeps the pre-lexer walker's
+ * conservative default and marks the rest of its line "inside").
  */
 const MAX_WALK_ITERATIONS = 100000;
 
+/**
+ * HMA-31.AC2: how many undecidable slashes on ONE lexing path may fork the
+ * walk before it stops branching and fails toward corroboration.
+ */
+const MAX_UNDECIDABLE_SLASHES = 6;
+
+/** Keywords after which a `/` opens a regex literal. */
+const REGEX_OPENING_KEYWORDS = new Set([
+  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
+  'throw', 'case', 'else', 'do', 'yield', 'await',
+]);
+
+/** A `/` after `)` opens a regex only when the `(` belongs to one of these. */
+const PAREN_KEYWORDS_BEFORE_REGEX = new Set(['if', 'while', 'for', 'with']);
+
+/**
+ * The ruled opener set (HMA-31.AC2): punctuators after which a `/` opens a
+ * regex literal. `(` is listed for fidelity to the ruling although its own
+ * branch handles it (it also records itself for the `)` rule). A punctuator
+ * NOT in this set is undecidable rather than an opener (HMA-31.AC8): an
+ * earlier generalisation "any other operator punctuator opens a regex" read
+ * `i++ / 2` as a regex and suppressed the sink after it.
+ */
+const REGEX_OPENING_PUNCTUATORS = new Set([
+  '(', ',', '=', ':', '[', '!', '&', '|', '?', ';', '{',
+]);
+
+/** What the next `/` in the walk would be. */
+type SlashMeaning = 'regex' | 'division' | 'undecidable';
+
+/**
+ * Every identifier character is a word character (HMA-31.AC8). An earlier
+ * ASCII-only class dropped `π`, `groß` and friends into the punctuator
+ * branch, where the old fallback opened a phantom regex. A lone surrogate
+ * half does not match, so an astral identifier falls to the undecidable
+ * branch — both-ways lexing, not a phantom opener.
+ */
+const WORD_CHAR = /[\p{ID_Continue}$]/u;
+
+/**
+ * The predicate answers for every sink mention on a line, so the walk runs
+ * once per LINE and each call is a mask lookup (HMA-31.AC10). The earlier
+ * shape — one forked walk per mention — let a crafted line (six fork points, then
+ * hundreds of string mentions) multiply 2^6 lexings by the mention count.
+ * A single-entry cache is enough: callers ask about one line's matches
+ * before moving to the next.
+ */
+let insideMaskLine: string | null = null;
+let insideMaskCache: Uint8Array | null = null;
+
 export function isMatchInsideStringLiteral(line: string, matchIndex: number): boolean {
-  let inSingle = false;
-  let inDouble = false;
-  let inBacktick = false;
-  let i = 0;
-  let outerIters = 0;
-  while (i < matchIndex) {
-    if (++outerIters > MAX_WALK_ITERATIONS) {
-      // Pathological input. Conservative default: treat the match as
-      // inside-string so the suppression path fires; over-suppression
-      // is a smaller harm than walker hang on a CI pipeline.
-      return true;
+  if (matchIndex < 0 || matchIndex >= line.length) return false;
+  if (line !== insideMaskLine) {
+    const mask = new Uint8Array(line.length);
+    lexMaskInto(line, 0, 'regex', false, [], 0, 0, mask);
+    insideMaskLine = line;
+    insideMaskCache = mask;
+  }
+  return insideMaskCache![matchIndex] === 1;
+}
+
+/** End (exclusive) of the word token starting at `i`. */
+function scanWordEnd(line: string, i: number): number {
+  let j = i + 1;
+  while (j < line.length && WORD_CHAR.test(line[j])) j++;
+  return j;
+}
+
+/**
+ * End of the regex literal whose opening `/` sits at `i`: the index just
+ * past the closing `/` and its flags, or -1 when the literal does not close
+ * on the line. Backslash escapes are honoured and a `[...]` class is
+ * skipped as a unit — a `/` inside it does not close the literal.
+ */
+function scanRegexLiteralEnd(line: string, i: number): number {
+  let j = i + 1;
+  let closed = false;
+  while (j < line.length) {
+    const cj = line[j];
+    if (cj === '\\') {
+      j += 2;
+      continue;
+    }
+    if (cj === '[') {
+      j++;
+      while (j < line.length) {
+        if (line[j] === '\\') {
+          j += 2;
+          continue;
+        }
+        if (line[j] === ']') break;
+        j++;
+      }
+      if (j < line.length) j++; // past `]`
+      continue;
+    }
+    if (cj === '/') {
+      closed = true;
+      j++;
+      break;
+    }
+    j++;
+  }
+  if (!closed) return -1;
+  while (j < line.length && WORD_CHAR.test(line[j])) j++; // flags
+  return j;
+}
+
+/**
+ * Slash meaning after a `)`, given the index of its same-line `(` (undefined
+ * when the `(` is not on this line, which is undecidable). Regex iff the `(`
+ * is preceded by if, while, for or with — and that word is the KEYWORD, not
+ * a keyword-spelled method name: `obj.if(y) / 2` is a division (HMA-31.AC7).
+ */
+function slashMeaningAfterCloseParen(line: string, openIndex: number | undefined): SlashMeaning {
+  if (openIndex === undefined) return 'undecidable';
+  let k = openIndex - 1;
+  while (k >= 0 && (line[k] === ' ' || line[k] === '\t')) k--;
+  let w = k;
+  while (w >= 0 && WORD_CHAR.test(line[w])) w--;
+  if (w >= 0 && line[w] === '.') return 'division';
+  return PAREN_KEYWORDS_BEFORE_REGEX.has(line.slice(w + 1, k + 1)) ? 'regex' : 'division';
+}
+
+/**
+ * One lexing of `line` from `start` to the end of the line, writing 1 into
+ * `mask` at every position that sits inside a string literal, comment, or
+ * regex literal. `slashMeaningIn` is what a `/` at `start` would open;
+ * `afterDotIn` is whether the previous significant character is `.` (a word
+ * after it is a property name, HMA-31.AC7); `parenStack` holds the indices
+ * of `(` tokens this lexing has seen (so `)` can find its same-line
+ * partner); `undecidableCount` and `itersIn` are this PATH's budgets — a
+ * fork inherits the spent amount rather than sharing a pool, so branching
+ * alone cannot exhaust the iteration cap.
+ */
+function lexMaskInto(
+  line: string,
+  start: number,
+  slashMeaningIn: SlashMeaning,
+  afterDotIn: boolean,
+  parenStack: number[],
+  undecidableCount: number,
+  itersIn: number,
+  mask: Uint8Array,
+): void {
+  let i = start;
+  let slashMeaning: SlashMeaning = slashMeaningIn;
+  let afterDot = afterDotIn;
+  let iters = itersIn;
+  while (i < line.length) {
+    if (++iters > MAX_WALK_ITERATIONS) {
+      // Pathological input. The pre-lexer walker's conservative default,
+      // kept per path: over-suppression is a smaller harm than a walker
+      // hang on a CI pipeline.
+      mask.fill(1, i);
+      return;
     }
     const c = line[i];
-    if (!inSingle && !inDouble && !inBacktick) {
-      if (c === '/' && line[i + 1] === '/') {
-        return true;
+    if (c === '/') {
+      const next = line[i + 1];
+      // `//` is always a line comment and `/*` always opens a block
+      // comment — an empty regex is spelled `/(?:)/`. Comments are
+      // whitespace to the token stream: they do not change slashMeaning.
+      if (next === '/') {
+        mask.fill(1, i + 1);
+        return;
       }
-      if (c === '/' && line[i + 1] === '*') {
+      if (next === '*') {
         const end = line.indexOf('*/', i + 2);
         if (end === -1) {
-          return true;
+          mask.fill(1, i + 1);
+          return;
         }
-        if (matchIndex < end + 2) {
-          return true;
-        }
+        mask.fill(1, i + 1, end + 2);
+        iters += end + 2 - i;
         i = end + 2;
         continue;
       }
-      if (c === "'") inSingle = true;
-      else if (c === '"') inDouble = true;
-      else if (c === '`') inBacktick = true;
-    } else {
-      if (inBacktick && c === '$' && line[i + 1] === '{') {
-        let depth = 1;
-        let j = i + 2;
-        let innerIters = 0;
-        while (j < line.length && depth > 0) {
-          if (++innerIters > MAX_WALK_ITERATIONS) {
-            // Same defensive default as the outer cap. Outer walker
-            // continues past the `${...}` region by setting i.
-            break;
-          }
-          const cj = line[j];
-          if (cj === '{') depth++;
-          else if (cj === '}') depth--;
-          j++;
+      if (slashMeaning === 'undecidable') {
+        if (undecidableCount >= MAX_UNDECIDABLE_SLASHES) {
+          // Fail toward corroboration: past the budget the rest of the
+          // line answers "not inside", so a line the lexer cannot settle
+          // never suppresses a sink.
+          return;
         }
-        const exprStart = i + 2;
-        const exprEnd = depth === 0 ? j - 1 : line.length;
-        if (matchIndex >= exprStart && matchIndex < exprEnd) {
-          return false;
-        }
-        i = depth === 0 ? j : line.length;
+        // Lex both ways; a position is "inside" only where both lexings
+        // say so — disagreement fails toward corroboration.
+        const regexMask = new Uint8Array(line.length);
+        const divisionMask = new Uint8Array(line.length);
+        lexMaskInto(line, i, 'regex', false, [...parenStack], undecidableCount + 1, iters, regexMask);
+        lexMaskInto(line, i, 'division', false, [...parenStack], undecidableCount + 1, iters, divisionMask);
+        for (let k = i; k < line.length; k++) mask[k] = regexMask[k] & divisionMask[k];
+        return;
+      }
+      if (slashMeaning === 'division') {
+        i++;
+        slashMeaning = 'regex'; // an operand position follows the operator
+        afterDot = false;
         continue;
       }
-      if (c === '\\') {
-        // Backslash escape inside a quote. Skip the next character only
-        // if one exists in the line. A trailing backslash at EOL falls
-        // through to the unchanged `i++` and the outer loop exits
-        // naturally on the next iteration. Bound against `line.length`
-        // (not `matchIndex`) so the helper stays correct if a caller
-        // ever passes `matchIndex >= line.length`.
-        if (i + 1 < line.length) {
-          i += 2;
+      // The slash opens a regex literal.
+      const end = scanRegexLiteralEnd(line, i);
+      if (end === -1) {
+        mask.fill(1, i + 1); // unterminated: the rest sits inside the literal
+        return;
+      }
+      mask.fill(1, i + 1, end); // the literal's body, closing `/` and flags
+      iters += end - i;
+      i = end;
+      slashMeaning = 'division'; // a regex literal is a value
+      afterDot = false;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      // A backslash escape consumes the next character if one exists; a
+      // trailing backslash at end of line consumes only itself.
+      let j = i + 1;
+      let closed = false;
+      while (j < line.length) {
+        if (++iters > MAX_WALK_ITERATIONS) {
+          mask.fill(1, i + 1);
+          return;
+        }
+        const cj = line[j];
+        if (cj === '\\' && j + 1 < line.length) {
+          j += 2;
           continue;
         }
+        if (cj === c) {
+          closed = true;
+          break;
+        }
+        j++;
       }
-      if (inSingle && c === "'") inSingle = false;
-      else if (inDouble && c === '"') inDouble = false;
-      else if (inBacktick && c === '`') inBacktick = false;
+      // The closing quote still counts as inside, as the walker always
+      // answered; an unclosed string owns the rest of the line.
+      if (!closed) {
+        mask.fill(1, i + 1);
+        return;
+      }
+      mask.fill(1, i + 1, j + 1);
+      i = j + 1;
+      slashMeaning = 'division'; // a string literal is a value
+      afterDot = false;
+      continue;
     }
+    if (c === '`') {
+      let j = i + 1;
+      let closed = false;
+      while (j < line.length) {
+        if (++iters > MAX_WALK_ITERATIONS) {
+          mask.fill(1, j);
+          return;
+        }
+        const cj = line[j];
+        if (cj === '\\' && j + 1 < line.length) {
+          mask[j] = 1;
+          mask[j + 1] = 1;
+          j += 2;
+          continue;
+        }
+        if (cj === '$' && line[j + 1] === '{') {
+          // Template interpolation is a re-entry into code state. Scan a
+          // brace-depth counter to the matching `}`; the span between the
+          // braces is real code and stays unmasked.
+          mask[j] = 1;
+          mask[j + 1] = 1;
+          let depth = 1;
+          let k = j + 2;
+          while (k < line.length && depth > 0) {
+            if (++iters > MAX_WALK_ITERATIONS) {
+              mask.fill(1, k);
+              return;
+            }
+            const ck = line[k];
+            if (ck === '{') depth++;
+            else if (ck === '}') depth--;
+            k++;
+          }
+          if (depth === 0) {
+            mask[k - 1] = 1; // the closing `}` of the interpolation
+            j = k;
+          } else {
+            j = line.length;
+          }
+          continue;
+        }
+        mask[j] = 1;
+        if (cj === '`') {
+          closed = true;
+          break;
+        }
+        j++;
+      }
+      if (!closed) return; // interior already masked; `${...}` spans stay code
+      i = j + 1;
+      slashMeaning = 'division'; // a template literal is a value
+      afterDot = false;
+      continue;
+    }
+    if (WORD_CHAR.test(c)) {
+      const j = scanWordEnd(line, i);
+      // After `.` a word is a property name — an identifier, never a
+      // keyword — so it cannot open a regex (HMA-31.AC7).
+      slashMeaning =
+        !afterDot && REGEX_OPENING_KEYWORDS.has(line.slice(i, j)) ? 'regex' : 'division';
+      iters += j - i;
+      i = j;
+      afterDot = false;
+      continue;
+    }
+    if (c === '(') {
+      parenStack.push(i);
+      slashMeaning = 'regex';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === ')') {
+      slashMeaning = slashMeaningAfterCloseParen(line, parenStack.pop());
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === '}') {
+      slashMeaning = 'undecidable';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === ']') {
+      slashMeaning = 'division';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === '.') {
+      // Member access: the word that follows is a property name. A `/`
+      // straight after `.` is not valid JavaScript under either reading;
+      // division keeps it in the fail-toward-corroboration direction.
+      slashMeaning = 'division';
+      afterDot = true;
+      i++;
+      continue;
+    }
+    if (c === ' ' || c === '\t' || c === '\r' || c === '\v' || c === '\f') {
+      i++;
+      continue;
+    }
+    // The ruled opener set opens a regex. Any OTHER punctuator (`+` `-`
+    // `*` `<` `>` `~` `^` `%` …) is undecidable rather than an opener
+    // (HMA-31.AC8): `i++ / 2` is a division the earlier fallback mis-read as
+    // a regex, while `a + /re/.source` really does open one — both ways are
+    // lexed and only agreement suppresses.
+    slashMeaning = REGEX_OPENING_PUNCTUATORS.has(c) ? 'regex' : 'undecidable';
+    afterDot = false;
     i++;
   }
-  return inSingle || inDouble || inBacktick;
 }
 
 /**
@@ -1824,59 +2130,189 @@ export function isMatchInsideStringLiteral(line: string, matchIndex: number): bo
  * template literal spanning lines is read as code on its continuation lines.
  * That direction over-reports rather than under-reports, and it is the same
  * limit the per-line predicate already has, stated rather than silently shared.
- * Regex literals are likewise not lexed — a `/don't/` toggles quote state, as
- * documented on the predicate above.
+ * Regex literals ARE lexed here, under the predicate's own slash-meaning
+ * rules (HMA-31.AC9): a literal's body is copied through verbatim, so the
+ * `//` in `/^https?:\/\//` does not open a phantom line comment and the `/*`
+ * in `/\/*$/` does not open a phantom block comment — an earlier quote-only
+ * reading of that second literal blanked every following line up to a `*\/`,
+ * which is blanking MORE, not less, and swallowed real sinks. An undecidable
+ * slash is lexed both ways: a character is blanked only when both lexings
+ * call it a comment, and the block-comment state carries out of the line
+ * only when both lexings agree it is open — the same fail-toward-
+ * corroboration direction the predicate rules.
  */
 function blankCommentRegions(line: string, state: { inBlockComment: boolean }): string {
+  const blank = new Uint8Array(line.length);
+  state.inBlockComment = blankMaskInto(
+    line, 0, 'regex', false, [], state.inBlockComment, 0, 0, blank,
+  );
   let out = '';
-  let quote: string | null = null;
-  let i = 0;
+  for (let i = 0; i < line.length; i++) out += blank[i] === 1 ? ' ' : line[i];
+  return out;
+}
+
+/**
+ * One lexing of `line` from `start` for the blanker: writes 1 into `blank`
+ * at every comment character (delimiters included) and returns whether the
+ * line ends inside a block comment. Token walking — words, parens, the
+ * opener set, `.`-prefixed property names — mirrors `lexMaskInto` through
+ * the shared helpers, because which `/` opens a comment is decided by the
+ * same slash meaning that decides which `/` opens a regex.
+ */
+function blankMaskInto(
+  line: string,
+  start: number,
+  slashMeaningIn: SlashMeaning,
+  afterDotIn: boolean,
+  parenStack: number[],
+  inBlockIn: boolean,
+  undecidableCount: number,
+  itersIn: number,
+  blank: Uint8Array,
+): boolean {
+  let i = start;
+  let slashMeaning: SlashMeaning = slashMeaningIn;
+  let afterDot = afterDotIn;
+  let inBlock = inBlockIn;
+  let iters = itersIn;
   while (i < line.length) {
-    const c = line[i];
-    if (state.inBlockComment) {
-      if (c === '*' && line[i + 1] === '/') {
-        state.inBlockComment = false;
-        out += '  ';
+    if (++iters > MAX_WALK_ITERATIONS) {
+      // Pathological input: stop blanking. The predicate still owns the
+      // string-or-code question for whatever is left unblanked.
+      return inBlock;
+    }
+    if (inBlock) {
+      if (line[i] === '*' && line[i + 1] === '/') {
+        blank[i] = 1;
+        blank[i + 1] = 1;
+        inBlock = false;
         i += 2;
-        continue;
+        continue; // comments are whitespace: slashMeaning is unchanged
       }
-      out += ' ';
+      blank[i] = 1;
       i += 1;
       continue;
     }
-    if (quote !== null) {
-      // A backslash consumes the next character if one exists. A trailing
-      // backslash at end of line consumes only itself, same as the predicate.
-      if (c === '\\' && i + 1 < line.length) {
-        out += line.slice(i, i + 2);
+    const c = line[i];
+    if (c === '/') {
+      const next = line[i + 1];
+      if (next === '/') {
+        blank.fill(1, i);
+        return false;
+      }
+      if (next === '*') {
+        blank[i] = 1;
+        blank[i + 1] = 1;
+        inBlock = true;
         i += 2;
         continue;
       }
-      if (c === quote) quote = null;
-      out += c;
-      i += 1;
+      if (slashMeaning === 'undecidable') {
+        if (undecidableCount >= MAX_UNDECIDABLE_SLASHES) {
+          // Past the budget: blank nothing further and drop the block
+          // state — kept text over-reports at worst, and the predicate
+          // fails toward corroboration on the same line.
+          return false;
+        }
+        // Lex both ways; blank only what both lexings call a comment, and
+        // carry the block state out only when both agree it is open.
+        const regexBlank = new Uint8Array(line.length);
+        const divisionBlank = new Uint8Array(line.length);
+        const regexEndsInBlock = blankMaskInto(
+          line, i, 'regex', false, [...parenStack], false, undecidableCount + 1, iters, regexBlank,
+        );
+        const divisionEndsInBlock = blankMaskInto(
+          line, i, 'division', false, [...parenStack], false, undecidableCount + 1, iters, divisionBlank,
+        );
+        for (let k = i; k < line.length; k++) blank[k] = regexBlank[k] & divisionBlank[k];
+        return regexEndsInBlock && divisionEndsInBlock;
+      }
+      if (slashMeaning === 'division') {
+        i++;
+        slashMeaning = 'regex';
+        afterDot = false;
+        continue;
+      }
+      // A regex literal is copied through verbatim (HMA-31.AC9): a `//`
+      // or `/*` inside its body is regex text, not a comment opener.
+      const end = scanRegexLiteralEnd(line, i);
+      if (end === -1) return false; // unterminated: keep the text; the predicate owns it
+      iters += end - i;
+      i = end;
+      slashMeaning = 'division';
+      afterDot = false;
       continue;
     }
     if (c === "'" || c === '"' || c === '`') {
-      quote = c;
-      out += c;
-      i += 1;
+      let j = i + 1;
+      let closed = false;
+      while (j < line.length) {
+        if (++iters > MAX_WALK_ITERATIONS) return false;
+        if (line[j] === '\\' && j + 1 < line.length) {
+          j += 2;
+          continue;
+        }
+        if (line[j] === c) {
+          closed = true;
+          break;
+        }
+        j++;
+      }
+      if (!closed) return false; // an unclosed quote owns the rest: nothing there is a comment
+      i = j + 1;
+      slashMeaning = 'division';
+      afterDot = false;
       continue;
     }
-    if (c === '/' && line[i + 1] === '/') {
-      out += ' '.repeat(line.length - i);
-      return out;
-    }
-    if (c === '/' && line[i + 1] === '*') {
-      state.inBlockComment = true;
-      out += '  ';
-      i += 2;
+    if (WORD_CHAR.test(c)) {
+      const j = scanWordEnd(line, i);
+      slashMeaning =
+        !afterDot && REGEX_OPENING_KEYWORDS.has(line.slice(i, j)) ? 'regex' : 'division';
+      iters += j - i;
+      i = j;
+      afterDot = false;
       continue;
     }
-    out += c;
-    i += 1;
+    if (c === '(') {
+      parenStack.push(i);
+      slashMeaning = 'regex';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === ')') {
+      slashMeaning = slashMeaningAfterCloseParen(line, parenStack.pop());
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === '}') {
+      slashMeaning = 'undecidable';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === ']') {
+      slashMeaning = 'division';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === '.') {
+      slashMeaning = 'division';
+      afterDot = true;
+      i++;
+      continue;
+    }
+    if (c === ' ' || c === '\t' || c === '\r' || c === '\v' || c === '\f') {
+      i++;
+      continue;
+    }
+    slashMeaning = REGEX_OPENING_PUNCTUATORS.has(c) ? 'regex' : 'undecidable';
+    afterDot = false;
+    i++;
   }
-  return out;
+  return inBlock;
 }
 
 /**
@@ -15272,11 +15708,14 @@ dist/
       // belongs with #424's AST dataflow work, and the finding's own guidance
       // already tells the reader which sinks it cannot see.
       //
-      // ONE NARROWING, DISCLOSED: matching per line means `eval` and `(`
-      // separated by a NEWLINE (`\s` spans one) no longer match. That spelling
-      // is legal JavaScript and is not detected any more, which is a loss of
-      // exactly one lexical variant on a corroborator that already misses the
-      // eight spellings above.
+      // The two patterns below are per-line, and `eval` and `(` separated by
+      // a NEWLINE is legal JavaScript, so the loop carries one bit of state
+      // across the line boundary (HMA-31.AC3): a line whose last code token
+      // (outside strings and comments) is `eval`, `Function` or
+      // `new Function`, followed by the next line with any code on it opening
+      // with `(`, is the same call the same-line patterns match, and it
+      // corroborates. The patterns themselves stay byte-identical — the
+      // newline case is state, not vocabulary.
       const EXECUTION_SINK_PATTERNS = [
         /(?:^|[^\w.$])eval\s*\(/,
         /(?:^|[^\w.$])(?:new\s+)?Function\s*\(/,
@@ -15293,10 +15732,33 @@ dist/
       );
       const sinkCommentState = { inBlockComment: false };
       let hasExecutionSink = false;
+      // HMA-31.AC3: the cross-line half of the sink patterns above. The same
+      // two sinks with the same `[^\w.$]` guard against `foo.eval`, anchored
+      // to end of line instead of to `(`; no new sink vocabulary.
+      const TRAILING_SINK_TOKEN = /(?:^|[^\w.$])((?:new\s+)?Function|eval)\s*$/;
+      let pendingSinkToken = false;
+      // HMA-31.AC4: a line over MAX_LINE_LENGTH is still skipped whole — the
+      // bound is what keeps a minified bundle from corroborating signals read
+      // from ordinary lines — but when such a line carries a sink token by a
+      // plain substring test, the uncorroborated message names it below, so
+      // the reader learns the line was not read rather than read and cleared.
+      let skippedSinkLine = 0;
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        if (line.length > MAX_LINE_LENGTH) continue;
+        if (line.length > MAX_LINE_LENGTH) {
+          if (
+            skippedSinkLine === 0 &&
+            (line.includes('eval(') || line.includes('Function('))
+          ) {
+            skippedSinkLine = i + 1;
+          }
+          // A skipped line is not blank: whatever follows it is not the
+          // continuation of a trailing sink token above it, so the carry
+          // ends here rather than leaking across the unread line.
+          pendingSinkToken = false;
+          continue;
+        }
         if (!hasCodePointAt && line.includes('.codePointAt(')) {
           hasCodePointAt = true;
           codePointAtLine = i + 1;
@@ -15305,20 +15767,36 @@ dist/
           hasHexLiteral = true;
           hexLiteralLine = i + 1;
         }
-        // A line that carries neither sink token and cannot open or close a
-        // block comment leaves both the state and the answer unchanged, so the
-        // character walk is skipped rather than run over every line of every
-        // scanned file. `inBlockComment` forces the walk because only the walk
-        // can find the closing delimiter.
+        // A line that carries neither sink token, cannot open or close a
+        // block comment, and has no pending cross-line sink token leaves both
+        // the state and the answer unchanged, so the character walk is
+        // skipped rather than run over every line of every scanned file.
+        // `inBlockComment` forces the walk because only the walk can find the
+        // closing delimiter; `pendingSinkToken` forces it because only the
+        // blanked line says whether its first code character is `(`.
         const mayAffectSink =
           !hasExecutionSink &&
-          (sinkCommentState.inBlockComment ||
+          (pendingSinkToken ||
+            sinkCommentState.inBlockComment ||
             line.includes('/*') ||
             line.includes('*/') ||
             line.includes('eval') ||
             line.includes('Function'));
         if (!mayAffectSink) continue;
         const codeLine = blankCommentRegions(line, sinkCommentState);
+        if (pendingSinkToken) {
+          const firstCode = codeLine.trimStart();
+          if (firstCode.length > 0) {
+            // A blank or comment-only line does not consume the pending
+            // token, same as the whitespace `\s*` inside the per-line
+            // patterns; the first line with code either opens the call or
+            // ends the carry.
+            pendingSinkToken = false;
+            if (firstCode.startsWith('(')) {
+              hasExecutionSink = true;
+            }
+          }
+        }
         for (const sinkScanner of executionSinkScanners) {
           sinkScanner.lastIndex = 0;
           let m: RegExpExecArray | null;
@@ -15340,6 +15818,18 @@ dist/
             if (sinkScanner.lastIndex <= m.index) sinkScanner.lastIndex = m.index + 1;
           }
           if (hasExecutionSink) break;
+        }
+        if (!hasExecutionSink) {
+          const trailing = TRAILING_SINK_TOKEN.exec(codeLine);
+          if (trailing) {
+            // Same discipline as the per-line loop above: the token must be
+            // code, not a string mention. Ask the predicate about the token
+            // itself, not the guard character before it.
+            const tokenIndex = trailing.index + trailing[0].indexOf(trailing[1]);
+            if (!isMatchInsideStringLiteral(codeLine, tokenIndex)) {
+              pendingSinkToken = true;
+            }
+          }
         }
       }
 
@@ -15430,7 +15920,11 @@ dist/
           passed: false,
           message: corroboration
             ? `Found GlassWorm decoder pattern in ${relativePath} (codepoint range literal at line ${hexLiteralLine}, .codePointAt at line ${codePointAtLine}), corroborated by ${corroboration}`
-            : `Found GlassWorm decoder shape in ${relativePath} (codepoint range literal at line ${hexLiteralLine}, .codePointAt at line ${codePointAtLine}), uncorroborated`,
+            : `Found GlassWorm decoder shape in ${relativePath} (codepoint range literal at line ${hexLiteralLine}, .codePointAt at line ${codePointAtLine}), uncorroborated${
+                skippedSinkLine > 0
+                  ? ` — note: line ${skippedSinkLine} contains an eval( or Function( token but was not read, because it exceeds the ${MAX_LINE_LENGTH}-character per-line limit`
+                  : ''
+              }`,
           file: relativePath,
           line: reportedLine,
           fixable: false,
