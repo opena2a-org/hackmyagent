@@ -1122,7 +1122,7 @@ service:
       "the old rule's verb operand must be TRUE on this fixture",
     ).toBe(true);
 
-    // The witnesses are exactly the ones the ruling measured: `token` only in
+    // The witnesses are exactly the measured ones: `token` only in
     // `per-token` and the field name `tokenId`, and the verb operand satisfied
     // only by `provide` inside "provider" and `request` inside "requested".
     const verbWitnesses = B19_ARIA_TRAP_SHAPE.match(/ask|request|share|provide/gi) ?? [];

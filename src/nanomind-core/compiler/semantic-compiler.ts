@@ -2167,7 +2167,7 @@ const CRED_HARVEST_NOUN = /password|credential|api[_\-\s]?key|secret|token/gi;
  * Request / collect / forward verbs, as LEMMAS.
  *
  * `ask|request|share|provide` are the four the old regex carried;
- * `include|send|paste|reveal|disclose|return` are the six the ruling's malicious
+ * `include|send|paste|reveal|disclose|return` are the six the measured malicious
  * literals additionally turn on ("should be included", "paste it into the
  * report"). Widening the vocabulary is safe here precisely BECAUSE the window
  * closed: a verb now has to sit in the same clause as the noun it governs.
