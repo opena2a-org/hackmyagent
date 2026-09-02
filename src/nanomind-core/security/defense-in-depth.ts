@@ -204,18 +204,18 @@ const CREDENTIAL_REDACTION_RULES: readonly CredentialRedactionRule[] = [
     pattern: /((?:aws.{0,16}?(?:secret|private).{0,16}?key|secret[_\s.-]?access[_\s.-]?key)["'\s]*[:=]+>?\s*["']?)([A-Za-z0-9/+=]{40,})/gi,
     replacement: '$1[REDACTED_AWS_SECRET]',
   },
-  // Fails CLOSED at any block size; the bounds are structural, not numeric —
-  // no size N fails closed, because indentation depth has no producer bound.
-  // Alternative 1: a complete block of ANY size, header through the next KEY
-  // footer, the lazy body refusing to cross another `-----BEGIN [A-Z ]+
-  // KEY-----` header (a nested CERTIFICATE block is crossed; only KEY headers
-  // are refused, which is what keeps the cost linear). Alternative 2: a header
-  // whose footer never arrives, together with the key material after it and
-  // nothing else — base64 runs of 40 or more, shorter runs that end a line,
-  // RFC 1421 armor-header lines, separated by whitespace or a literal escape.
-  // A header with no material after it — a header mentioned in prose — stays
-  // verbatim. The `{1,16384}` cap bounds V8's regexp backtrack stack, not key
-  // size: inside the 1 MiB input gate it is unreachable at real line widths.
+  // Two shapes, one rule. A complete block — header through the next footer,
+  // never crossing another `-----BEGIN … KEY-----` header — is replaced whole
+  // at ANY size: a size bound fails open (RSA-32768 and FrodoKEM blocks pass
+  // 32 KiB, and indentation depth is unbounded), and this rule must fail
+  // closed. A header with no footer is replaced together with the key
+  // material that follows it and nothing else: base64 runs of 40+, shorter
+  // runs that end a line, and RFC 1421 Proc-Type/DEK-Info lines. A header
+  // mentioned in prose stays verbatim — a header-to-end-of-line rule was
+  // measured to destroy the doc-context words the credential analyzer reads
+  // (declared-purpose-redaction.test.ts). The line loop is counted at 16384
+  // only to bound the regexp backtrack stack; at 64+ columns that is past the
+  // 1 MiB gate, so no real block reaches it.
   { id: 'pem-private-key', pattern: /-----BEGIN [A-Z ]+ KEY-----(?:(?:(?!-----BEGIN [A-Z ]+ KEY-----)[\s\S])*?-----END [A-Z ]+ KEY-----|(?:(?:\s|\\[rn])*(?:[A-Za-z0-9+/=]{40,}|[A-Za-z0-9+/=]+(?=[ \t]*(?:\r?\n|(?:\\r)?\\n|$))|(?:Proc-Type|DEK-Info):[^\r\n\\]*)){1,16384})/g, replacement: '[REDACTED_PRIVATE_KEY]' },
   { id: 'connection-string', pattern: /(?:postgres|mysql|mongodb|redis):\/\/[^\s'"]+/gi, replacement: '[REDACTED_CONNECTION_STRING]' },
 ];

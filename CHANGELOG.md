@@ -6,15 +6,7 @@ All notable changes to HackMyAgent are documented in this file.
 
 ### The PEM private-key redaction rule fails closed at any block size
 
-`redactSecretsForReport` carried a `pem-private-key` rule with an unbounded lazy body,
-so a report containing many armor headers with no footer took 10 s and more at the
-1 MiB size gate. The rule now has no size bound: a complete block of any size is
-replaced whole, the body stops at the next armor header rather than crossing it, and
-a block whose footer is missing is replaced together with the key material after its
-header instead of surviving verbatim. The same 1 MiB inputs redact in a few
-milliseconds, and no key size — RSA-32768, an indented YAML embedding, a post-quantum
-PKCS#8 body — passes through unredacted. New tests mint every key and probe at test
-time; none is committed.
+`redactSecretsForReport` carried a `pem-private-key` rule with an unbounded lazy body, so a report containing many armor headers with no footer took 10 s and more at the 1 MiB size gate. The body now stops at the next armor header instead of scanning to end of input, which brings the same input to a few milliseconds without bounding the block size: a complete block of any size is replaced whole (RSA-32768 and post-quantum PKCS#8 blocks exceed 32 KiB; indentation is unbounded), and a block whose footer is missing is replaced together with the key material that follows its header, while a header mentioned in prose is left as written. New tests mint every key and probe at test time; none is committed.
 
 ### `.hmaignore` gains `<path>:<CHECK-ID>`, trailing comments, `expires:`, and loud exit-neutral errors
 
