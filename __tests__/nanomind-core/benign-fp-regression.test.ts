@@ -474,11 +474,31 @@ body: |
     const { analyzeCredentials } = await import('../../src/nanomind-core/analyzers/credential-analyzer');
     const findings = analyzeCredentials(result.ast, verifier, undefined, adversarialManifest);
 
+    // HMA-22 re-point (the it-name above is kept verbatim; the check that
+    // carries the intent moved): the renamed harvesting body still must not
+    // escape detection, but harvesting PROSE is intent, not a hardcoded
+    // secret. AST-CRED-003 now requires a secret-shaped value in the raw
+    // artifact bytes — this body carries none, so it reports zero — while
+    // the same AST still fires AST-CRED-002 on the forwarding line and the
+    // capability analyzer's AST-CRED-001 "Credential Harvesting Pattern".
     const cred003 = findings.filter(f => f.checkId === 'AST-CRED-003');
     expect(
       cred003.length,
-      'manifest.yaml rename must NOT bypass AST-CRED-003 when declaredPurpose lacks fixture/test markers',
-    ).toBeGreaterThan(0);
+      'harvesting prose without a secret-shaped value is not a hardcoded secret',
+    ).toBe(0);
+    const cred002 = findings.filter(f => f.checkId === 'AST-CRED-002');
+    expect(
+      cred002.length,
+      'manifest.yaml rename must NOT bypass AST-CRED-002 on the forwarding line',
+    ).toBe(1);
+    expect(cred002[0].line).toBe(6);
+    const harvesting = analyzeCapabilities(result.ast).filter(
+      f => f.checkId === 'AST-CRED-001' && f.name === 'Credential Harvesting Pattern',
+    );
+    expect(
+      harvesting.length,
+      'manifest.yaml rename must NOT bypass the credential-harvesting capability finding',
+    ).toBe(1);
   });
 
   it('b13c: slug-style 32+ char identifier in defensive markdown does NOT fire AST-CRED-003', async () => {
