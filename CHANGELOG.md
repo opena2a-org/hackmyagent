@@ -4,6 +4,15 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- The semantic compiler (the `./nanomind-core` library entry) threw an uncaught `RangeError` on
+  multi-megabyte same-alphabet runs: every credential pattern battery reachable from `compile()` is
+  now bounded at 1 MiB (the same cap the CLI applies before compiling). An artifact over the cap is
+  reported as a named refusal — a warning plus a high-severity refusal finding — for every artifact
+  type, never as a clean result, and a raised `maxArtifactSize` cannot re-arm the throw. No
+  credential pattern was narrowed; artifacts under the cap produce byte-identical results.
+
 ### The stub loop has a terminus again: `pull-stubs` drops its vocabulary, `mark-stub` writes back (HMA-08)
 
 Two defects at the same place — the point where a confirmed ARIA observation is
