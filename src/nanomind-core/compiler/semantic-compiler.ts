@@ -87,6 +87,13 @@ interface CachedCompilation {
   deterministicFindings: DeterministicFinding[];
   verdictAdjustments: VerdictAdjustment[];
   refusedAdjustments: VerdictAdjustment[];
+  /**
+   * Whether the credential scan refused this content for size. Cached with the
+   * rest of the compilation for the same reason the floor is: the refusal is a
+   * property of the COMPILATION, and a cache hit is the one path on which it
+   * would otherwise go unreported.
+   */
+  credentialScanRefused: boolean;
 }
 
 export class SemanticCompiler {
@@ -134,7 +141,9 @@ export class SemanticCompiler {
         ast: cached.ast,
         durationMs: Date.now() - startMs,
         nanomindUsed: false,
-        warnings: ['Served from cache'],
+        warnings: cached.credentialScanRefused
+          ? ['Served from cache', credentialScanRefusedWarning(cached.ast.artifactSize)]
+          : ['Served from cache'],
         deterministicFindings: cached.deterministicFindings,
         verdictAdjustments: cached.verdictAdjustments,
         refusedAdjustments: cached.refusedAdjustments,
@@ -201,9 +210,37 @@ export class SemanticCompiler {
     // signal the compiler has — so it is run HERE and its hits are reused
     // below rather than rescanned. Running it after the verdict would have left
     // a hardcoded key out of the floor the verdict is measured against.
-    const canonicalHits = parsed.type === 'source_code' ? scanCanonicalCredentialFormats(content) : [];
+    //
+    // The scan can also REFUSE: its patterns carry unbounded lower-bound
+    // quantifiers that throw `RangeError` rather than merely running slowly on a
+    // multi-megabyte same-alphabet run, so it declines content over
+    // `MAX_CREDENTIAL_SCAN_BYTES` instead of handing it to them. That refusal is
+    // reported below, never swallowed — an artifact nobody read is not an
+    // artifact with no credentials in it.
+    //
+    // The SCAN is type-gated; the REFUSAL is not. For every non-source_code
+    // type the same patterns still run inside `hasCanonicalCredentialFormat`
+    // (via `extractDataAccessPatterns` above and `mapRiskSurfaces` below), and
+    // that probe answers an oversize artifact with a silent `false`. So the
+    // refusal is raised HERE from the same predicate for every artifact type:
+    // without it, a 6 MB SOUL.md came back `benign` with zero findings — the C1
+    // shape — while the byte-identical .py was loudly refused.
+    const canonicalScan = parsed.type === 'source_code'
+      ? scanCanonicalCredentialFormats(content)
+      : { hits: [], refusedForSize: exceedsCredentialScanBytes(content) };
+    const canonicalHits = canonicalScan.hits;
+    if (canonicalScan.refusedForSize) {
+      warnings.push(credentialScanRefusedWarning(parsed.size));
+    }
     const deterministicSurfaces = [
       ...deterministicRiskSurfaces(analysisContent, declaredCapabilities, parsed.type),
+      // The refusal enters the DETERMINISTIC list, not just `warnings`, because
+      // that list is what `applyDeterministicFloor` reads: an entry here lifts
+      // the artifact off `benign` and refuses any downgrade proposed over it. A
+      // warnings-only refusal would still return `intentClassification: 'benign'`
+      // with zero findings, which is the shape a credential-bearing file stamped
+      // clean has.
+      ...(canonicalScan.refusedForSize ? [credentialScanRefusedSurface(parsed.size)] : []),
       ...canonicalHits.map(hit => ({
         surface: `Hardcoded ${hit.label}`,
         attackClass: 'CRED-HARVEST',
@@ -339,6 +376,7 @@ export class SemanticCompiler {
       deterministicFindings,
       verdictAdjustments: floored.applied,
       refusedAdjustments: floored.refused,
+      credentialScanRefused: canonicalScan.refusedForSize,
     });
 
     return {
@@ -1503,6 +1541,16 @@ export function analyzeCredentialKeywordContext(
  * (real API key / PEM block / etc.) outside obvious test-fixture markers.
  */
 function hasCanonicalCredentialFormat(content: string): boolean {
+  // The same throw class as `scanCanonicalCredentialFormats`, on the same
+  // regexes — and this is the entry point `compile()` reaches for every
+  // NON-source_code artifact (`extractDataAccessPatterns` returns early only
+  // for source_code), so without this gate a 6 MB SOUL.md threw where a 6 MB
+  // .py file was refused. `false` is the only honest boolean here: no canonical
+  // format was CONFIRMED. The loud per-artifact refusal is not this function's
+  // job — `compile()` raises it from the same predicate, for every type.
+  if (exceedsCredentialScanBytes(content)) {
+    return false;
+  }
   for (const { regex } of CANONICAL_CREDENTIAL_PATTERNS) {
     regex.lastIndex = 0;
     const match = regex.exec(content);
@@ -1543,6 +1591,20 @@ interface CanonicalCredentialHit {
 }
 
 /**
+ * What one run of the credential scan produced.
+ *
+ * `refusedForSize` is why this is a record rather than a bare array: an empty
+ * `hits` means "no credential in this content" on the ordinary path and "this
+ * content was never read" on the refusal path, and a caller that cannot tell the
+ * two apart will report the second as the first.
+ */
+interface CanonicalCredentialScan {
+  hits: CanonicalCredentialHit[];
+  /** True when the content exceeded `MAX_CREDENTIAL_SCAN_BYTES` and NOTHING ran. */
+  refusedForSize: boolean;
+}
+
+/**
  * Canonical credential-format patterns we trust enough to flag even when
  * the surrounding context is source code. Each pattern targets a real-world
  * secret format with low false-positive rate on arbitrary text.
@@ -1570,6 +1632,92 @@ const LEFT_ANCHOR = '(?<![A-Za-z0-9])';
 
 /** Build an anchored, global pattern from a bare vendor shape. */
 const vendor = (shape: string) => new RegExp(LEFT_ANCHOR + shape, 'g');
+
+/**
+ * Hard upper bound, in bytes, on the content the credential patterns below are
+ * allowed to see.
+ *
+ * Several of those patterns carry an UNBOUNDED lower-bound quantifier over a
+ * single character class — `{20,}` (Anthropic, OpenAI project), `{48,}` (OpenAI
+ * legacy), `{10,}` (Slack), `{24,}` (Stripe), and the name-gated `{40,}`. On an
+ * unbroken same-alphabet run those are not merely slow: `regex.exec` THROWS
+ * `RangeError: Maximum call stack size exceeded` once V8's backtrack stack runs
+ * out, measured at 5.5 MB for `sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}`. The throw
+ * takes down the whole scan and, before this bound existed, escaped
+ * `SemanticCompiler.compile()` to the caller.
+ *
+ * The bound lives HERE rather than only at the call sites because the call sites
+ * do not all have one. `scanner-bridge.ts` filters oversized files out before
+ * they reach the compiler, but `src/soul/scanner.ts` and
+ * `src/narrative/wire-publish.ts` read a file and call `compile()` with no size
+ * check at all, and the `./nanomind-core` package export hands `SemanticCompiler`
+ * to third parties with no reason to know about either.
+ *
+ * The patterns have TWO entry points reachable from `compile()`, and the gate
+ * stands in front of both: `scanCanonicalCredentialFormats` (the source_code
+ * scan below) and `hasCanonicalCredentialFormat` (which
+ * `analyzeCredentialKeywordContext` runs for every OTHER artifact type — the
+ * types `src/soul/scanner.ts` and `src/narrative/wire-publish.ts` actually
+ * compile). r1 gated only the first, so a 6 MB SOUL.md still threw out of the
+ * second; `compile()` only "no longer throws" because both are covered.
+ *
+ * Deliberately NOT `config.maxArtifactSize`: that is a consumer knob, and a
+ * consumer raising it must not be able to re-arm a `RangeError` inside the
+ * scanner. The VALUE matches `MAX_FILE_SIZE` in `scanner-bridge.ts` so the
+ * library path and the CLI path refuse the same inputs.
+ *
+ * Capping the quantifiers instead was rejected: a cap relocates the blind spot to
+ * the first credential longer than the cap rather than removing it, and a real
+ * `sk-ant-api03-…` key is longer than any width that would help here.
+ */
+const MAX_CREDENTIAL_SCAN_BYTES = 1_048_576;
+
+/**
+ * The one predicate every gate on the credential patterns consults. Bytes, not
+ * code units, to match the units the cap is stated in — and one spelling of the
+ * comparison, so the scan gate, the boolean-probe gate, and the refusal that
+ * `compile()` reports for non-source_code artifacts cannot disagree about
+ * which inputs are over the line.
+ */
+function exceedsCredentialScanBytes(content: string): boolean {
+  return Buffer.byteLength(content, 'utf-8') > MAX_CREDENTIAL_SCAN_BYTES;
+}
+
+/**
+ * The named refusal for content the credential scan declined to read.
+ *
+ * One spelling, shared by the fresh-compile path, the cache-hit path, and the
+ * risk surface, so a consumer matching on it sees the same string every time.
+ */
+function credentialScanRefusedWarning(size: number): string {
+  return `Credential scan skipped: artifact is ${size} bytes, over the `
+    + `${MAX_CREDENTIAL_SCAN_BYTES}-byte credential-scan limit. `
+    + 'No credential pattern was evaluated against this content.';
+}
+
+/**
+ * The refusal as a deterministic risk surface.
+ *
+ * It carries no `offset`: nothing was matched, and the surface is about the whole
+ * artifact rather than a place in it.
+ */
+function credentialScanRefusedSurface(size: number): RiskSurface {
+  return {
+    surface: 'Credential scan not performed (artifact over size limit)',
+    // The class of the scan that did NOT run, so this lands in the same bucket a
+    // consumer already inspects for credential risk — which is exactly where
+    // someone has to look when told the credential check was skipped.
+    attackClass: 'CRED-HARVEST',
+    // Not an accusation; the bytes were never read. Held at the `high` rung
+    // (>= 0.5) rather than the noise floor because the only other reading of an
+    // empty credential result is "no credentials here", and that is a claim this
+    // compiler is not entitled to make about content it declined to scan.
+    confidence: 0.5,
+    evidence: credentialScanRefusedWarning(size),
+    mitigation: `Scan this artifact in segments under ${MAX_CREDENTIAL_SCAN_BYTES} bytes, `
+      + 'or exclude it deliberately. An unscanned artifact is not a clean one.',
+  };
+}
 
 const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   { label: 'Anthropic API key', regex: vendor(String.raw`sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}`) },
@@ -1610,9 +1758,17 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   // a hyphenated GitLab runner slug and a drawn-blank GitLab token placeholder —
   // GitLab's own docs placeholder — while introducing a QUADRATIC scan on
   // attacker-supplied file content (measured 0ms -> 651ms at 60 KB,
-  // 1ms -> 40s at 480 KB, against a 10 MB file cap). A denial of service in a
-  // security scanner is worse than the false negative it was closing, and
-  // GitLab detection was never part of the defect this release fixes.
+  // 1ms -> 40s at 480 KB, against the 1 MiB cap that actually governs this
+  // path: `MAX_CREDENTIAL_SCAN_BYTES` above, matching `MAX_FILE_SIZE =
+  // 1_048_576` in `src/nanomind-core/scanner-bridge.ts`). This note used to say
+  // "a 10 MB file cap", which is `MAX_FILE_SIZE` in `src/hardening/scanner.ts`
+  // — a different component that never feeds this scan. The margin it implied
+  // was 10x too generous, and anyone who had trusted it and raised the real cap
+  // toward 10 MB would have armed the `RangeError` on the CLI path too.
+  //
+  // A denial of service in a security scanner is worse than the false negative
+  // it was closing, and GitLab detection was never part of the defect this
+  // release fixes.
   //
   // The static credential lists in `scanner.ts` still carry `glpat-`, so
   // `protect` and `--fix` are unaffected. Re-adding it here needs a bounded
@@ -1691,7 +1847,17 @@ const NAME_GATED_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = 
  * and then filtered", which is the distinction that matters here.
  */
 export function scanCanonicalCredentialFormatsForTest(content: string): CanonicalCredentialHit[] {
-  return scanCanonicalCredentialFormats(content);
+  return scanCanonicalCredentialFormats(content).hits;
+}
+
+/**
+ * Test-only accessor for the size gate in front of the credential patterns.
+ * Exported so `credential-scan-size-gate.test.ts` can assert the bound the
+ * compiler actually applies rather than restating the number, which is how a
+ * guard test and the code it guards drift apart.
+ */
+export function maxCredentialScanBytesForTest(): number {
+  return MAX_CREDENTIAL_SCAN_BYTES;
 }
 
 /**
@@ -1728,8 +1894,28 @@ export function nameGatedCredentialPatternsForTest(): Array<{ label: string; reg
   return NAME_GATED_CREDENTIAL_PATTERNS;
 }
 
-function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit[] {
+/**
+ * Test-only accessor for the canonical pattern list, the twin of the name-gated
+ * one above. Exported so `credential-scan-size-gate.test.ts` can assert the
+ * quantifier shapes over the LIVE regexes: the size gate must not have been paid
+ * for by narrowing a `{20,}` into a `{20}` or a `{20,256}`, and a test that
+ * restated the patterns instead of reading them could not tell.
+ */
+export function canonicalCredentialPatternsForTest(): Array<{ label: string; regex: RegExp }> {
+  return CANONICAL_CREDENTIAL_PATTERNS;
+}
+
+function scanCanonicalCredentialFormats(content: string): CanonicalCredentialScan {
   const hits: CanonicalCredentialHit[] = [];
+
+  // The size gate, in front of EVERY pattern in both lists — see
+  // `MAX_CREDENTIAL_SCAN_BYTES`. Returning early is the only safe move: the
+  // failure mode past this size is a thrown `RangeError`, not a slow match, so
+  // there is no partial result to salvage and no per-pattern recovery worth
+  // attempting.
+  if (exceedsCredentialScanBytes(content)) {
+    return { hits, refusedForSize: true };
+  }
 
   // Markers that, when embedded directly in the key bytes themselves,
   // indicate the value is a placeholder rather than a real credential.
@@ -1830,7 +2016,7 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit
       });
     }
   }
-  return hits;
+  return { hits, refusedForSize: false };
 }
 
 function extractDependencies(content: string): string[] {

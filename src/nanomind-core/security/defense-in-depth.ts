@@ -212,9 +212,48 @@ const CREDENTIAL_REDACTION_RULES: readonly CredentialRedactionRule[] = [
 ];
 
 /**
+ * Upper bound, in bytes, on the content the rules above will be run against.
+ *
+ * Most of those patterns end in an unbounded lower-bound quantifier over a
+ * single character class — `{20,}`, `{48,}`, `{24,}`, `{10,}`, `{34,}`, `{60,}`,
+ * and the AWS rule's `[A-Za-z0-9/+=]{40,}`. Against an unbroken same-alphabet
+ * run they do not merely get slow: `String.prototype.replace` exhausts V8's
+ * backtrack stack and throws `RangeError: Maximum call stack size exceeded`
+ * somewhere past 5 MB. Since this table is folded in a loop, the first rule to
+ * throw takes the whole redaction pass with it and the error propagates to
+ * whatever was being redacted — which is how a multi-megabyte single line
+ * reached `SemanticCompiler.compile()` callers as an uncaught `RangeError`
+ * through `extractDeclaredPurpose`.
+ *
+ * Matches `MAX_CREDENTIAL_SCAN_BYTES` in `compiler/semantic-compiler.ts` and
+ * `MAX_FILE_SIZE` in `scanner-bridge.ts`: the detector and its redaction mirror
+ * refusing at different sizes is the drift this file exists to prevent. That
+ * equality is no longer only asserted in prose —
+ * `credential-scan-size-gate.test.ts` (HMA-23.AC7) pins the two constants
+ * equal, so moving one without the other fails a test instead of a comment.
+ */
+export const MAX_REDACTION_INPUT_BYTES = 1_048_576;
+
+/**
+ * What the redactor substitutes for content it could not inspect.
+ *
+ * It is a marker rather than the original text because the refusal has to fail
+ * CLOSED. This function is the last thing between a live secret and a report, so
+ * content too large to read is content that must not be passed through — an
+ * oversized input is exactly the shape an attacker would choose if returning the
+ * input unredacted were the escape hatch. It is not `''` because a silent
+ * disappearance reads downstream as "there was nothing here".
+ */
+export const REDACTION_WITHHELD = '[WITHHELD: content exceeds the redaction size limit and was not inspected]';
+
+/**
  * Shape-anchored redaction that also reports WHICH shapes it resolved from the
- * value. `shapes` is sorted and deduped, and it is empty exactly when nothing
- * shape-anchored matched.
+ * value. `shapes` is sorted and deduped.
+ *
+ * `shapes` is empty when nothing shape-anchored matched — and also when the
+ * content was refused unread for size, where `text` is `REDACTION_WITHHELD`.
+ * Those two are distinguishable by the text, and neither may be reported as a
+ * shape that was resolved: this function only names shapes it actually saw.
  *
  * This is the only function that can answer C9 honestly, because it is the only
  * point at which the matched rule — and therefore the shape id — is still in
@@ -224,6 +263,11 @@ export function redactCredentialShapesReporting(content: string): {
   text: string;
   shapes: ShapeId[];
 } {
+  // The size gate, in front of the whole table — see `MAX_REDACTION_INPUT_BYTES`.
+  if (Buffer.byteLength(content, 'utf-8') > MAX_REDACTION_INPUT_BYTES) {
+    return { text: REDACTION_WITHHELD, shapes: [] };
+  }
+
   let text = content;
   const shapes = new Set<ShapeId>();
 
