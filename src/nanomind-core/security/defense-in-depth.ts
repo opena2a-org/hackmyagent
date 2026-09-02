@@ -227,7 +227,10 @@ const CREDENTIAL_REDACTION_RULES: readonly CredentialRedactionRule[] = [
  *
  * Matches `MAX_CREDENTIAL_SCAN_BYTES` in `compiler/semantic-compiler.ts` and
  * `MAX_FILE_SIZE` in `scanner-bridge.ts`: the detector and its redaction mirror
- * refusing at different sizes is the drift this file exists to prevent.
+ * refusing at different sizes is the drift this file exists to prevent. That
+ * equality is no longer only asserted in prose —
+ * `credential-scan-size-gate.test.ts` (HMA-23.AC7) pins the two constants
+ * equal, so moving one without the other fails a test instead of a comment.
  */
 export const MAX_REDACTION_INPUT_BYTES = 1_048_576;
 

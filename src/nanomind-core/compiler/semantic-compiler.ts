@@ -217,9 +217,17 @@ export class SemanticCompiler {
     // `MAX_CREDENTIAL_SCAN_BYTES` instead of handing it to them. That refusal is
     // reported below, never swallowed — an artifact nobody read is not an
     // artifact with no credentials in it.
+    //
+    // The SCAN is type-gated; the REFUSAL is not. For every non-source_code
+    // type the same patterns still run inside `hasCanonicalCredentialFormat`
+    // (via `extractDataAccessPatterns` above and `mapRiskSurfaces` below), and
+    // that probe answers an oversize artifact with a silent `false`. So the
+    // refusal is raised HERE from the same predicate for every artifact type:
+    // without it, a 6 MB SOUL.md came back `benign` with zero findings — the C1
+    // shape — while the byte-identical .py was loudly refused.
     const canonicalScan = parsed.type === 'source_code'
       ? scanCanonicalCredentialFormats(content)
-      : { hits: [], refusedForSize: false };
+      : { hits: [], refusedForSize: exceedsCredentialScanBytes(content) };
     const canonicalHits = canonicalScan.hits;
     if (canonicalScan.refusedForSize) {
       warnings.push(credentialScanRefusedWarning(parsed.size));
@@ -1533,6 +1541,16 @@ export function analyzeCredentialKeywordContext(
  * (real API key / PEM block / etc.) outside obvious test-fixture markers.
  */
 function hasCanonicalCredentialFormat(content: string): boolean {
+  // The same throw class as `scanCanonicalCredentialFormats`, on the same
+  // regexes — and this is the entry point `compile()` reaches for every
+  // NON-source_code artifact (`extractDataAccessPatterns` returns early only
+  // for source_code), so without this gate a 6 MB SOUL.md threw where a 6 MB
+  // .py file was refused. `false` is the only honest boolean here: no canonical
+  // format was CONFIRMED. The loud per-artifact refusal is not this function's
+  // job — `compile()` raises it from the same predicate, for every type.
+  if (exceedsCredentialScanBytes(content)) {
+    return false;
+  }
   for (const { regex } of CANONICAL_CREDENTIAL_PATTERNS) {
     regex.lastIndex = 0;
     const match = regex.exec(content);
@@ -1635,6 +1653,14 @@ const vendor = (shape: string) => new RegExp(LEFT_ANCHOR + shape, 'g');
  * check at all, and the `./nanomind-core` package export hands `SemanticCompiler`
  * to third parties with no reason to know about either.
  *
+ * The patterns have TWO entry points reachable from `compile()`, and the gate
+ * stands in front of both: `scanCanonicalCredentialFormats` (the source_code
+ * scan below) and `hasCanonicalCredentialFormat` (which
+ * `analyzeCredentialKeywordContext` runs for every OTHER artifact type — the
+ * types `src/soul/scanner.ts` and `src/narrative/wire-publish.ts` actually
+ * compile). r1 gated only the first, so a 6 MB SOUL.md still threw out of the
+ * second; `compile()` only "no longer throws" because both are covered.
+ *
  * Deliberately NOT `config.maxArtifactSize`: that is a consumer knob, and a
  * consumer raising it must not be able to re-arm a `RangeError` inside the
  * scanner. The VALUE matches `MAX_FILE_SIZE` in `scanner-bridge.ts` so the
@@ -1645,6 +1671,17 @@ const vendor = (shape: string) => new RegExp(LEFT_ANCHOR + shape, 'g');
  * `sk-ant-api03-…` key is longer than any width that would help here.
  */
 const MAX_CREDENTIAL_SCAN_BYTES = 1_048_576;
+
+/**
+ * The one predicate every gate on the credential patterns consults. Bytes, not
+ * code units, to match the units the cap is stated in — and one spelling of the
+ * comparison, so the scan gate, the boolean-probe gate, and the refusal that
+ * `compile()` reports for non-source_code artifacts cannot disagree about
+ * which inputs are over the line.
+ */
+function exceedsCredentialScanBytes(content: string): boolean {
+  return Buffer.byteLength(content, 'utf-8') > MAX_CREDENTIAL_SCAN_BYTES;
+}
 
 /**
  * The named refusal for content the credential scan declined to read.
@@ -1875,8 +1912,8 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialSca
   // `MAX_CREDENTIAL_SCAN_BYTES`. Returning early is the only safe move: the
   // failure mode past this size is a thrown `RangeError`, not a slow match, so
   // there is no partial result to salvage and no per-pattern recovery worth
-  // attempting. Bytes, not code units, to match the units the cap is stated in.
-  if (Buffer.byteLength(content, 'utf-8') > MAX_CREDENTIAL_SCAN_BYTES) {
+  // attempting.
+  if (exceedsCredentialScanBytes(content)) {
     return { hits, refusedForSize: true };
   }
 

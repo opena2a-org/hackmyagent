@@ -42,6 +42,7 @@ import {
   nameGatedCredentialPatternsForTest,
   maxCredentialScanBytesForTest,
 } from '../../src/nanomind-core/compiler/semantic-compiler';
+import { MAX_REDACTION_INPUT_BYTES } from '../../src/nanomind-core/security/defense-in-depth';
 
 const repoFile = (rel: string) =>
   readFileSync(fileURLToPath(new URL(`../../${rel}`, import.meta.url)), 'utf-8');
@@ -59,6 +60,18 @@ const PROBES: Array<{ name: string; content: string }> = [
  * the deterministic layer, which runs before and independently of inference.
  */
 const compiler = () => new SemanticCompiler({ useNanoMind: false });
+
+/**
+ * Non-source_code paths a library consumer actually compiles: `src/soul/scanner.ts`
+ * compiles file content as 'SOUL.md', `src/narrative/wire-publish.ts` compiles
+ * SKILL.md and package.json; README.md rides along as a no-signature artifact.
+ * None of the four classifies as `source_code`, so all of them route AROUND
+ * `scanCanonicalCredentialFormats` and reach the same canonical regexes through
+ * `hasCanonicalCredentialFormat` (via `extractDataAccessPatterns` →
+ * `analyzeCredentialKeywordContext`) — the r1 hole: gated on the source_code
+ * branch, throwing on every other one.
+ */
+const NON_SOURCE_PATHS = ['SOUL.md', 'SKILL.md', 'README.md', 'package.json'];
 
 /**
  * Synthetic filler: alphanumeric, none of the placeholder markers the FP filters
@@ -230,6 +243,65 @@ describe('HMA-23 credential scan size gate', () => {
       const content = `AWS_SECRET_ACCESS_KEY = "${'A'.repeat(maxCredentialScanBytesForTest() - 32)}"`;
       expect(Buffer.byteLength(content, 'utf-8')).toBeLessThanOrEqual(maxCredentialScanBytesForTest());
       await expect(compiler().compile(content, 'x.py')).resolves.toBeDefined();
+    }, 120_000);
+  });
+
+  describe('AC5 — the gate covers every caller reachable from compile(), not only source_code', () => {
+    for (const path of NON_SOURCE_PATHS) {
+      for (const probe of PROBES) {
+        it(`HMA-23.AC5 compile() returns rather than throwing on a 6 MB ${probe.name} compiled as ${path}`, async () => {
+          // Red-first at 3a8af88: the Anthropic probe compiled as any of these
+          // paths threw `RangeError: Maximum call stack size exceeded` out of
+          // `hasCanonicalCredentialFormat` — `compile()` calls
+          // `extractDataAccessPatterns` unconditionally, and that returns early
+          // only for source_code.
+          await expect(compiler().compile(probe.content, path)).resolves.toBeDefined();
+        }, 120_000);
+      }
+    }
+  });
+
+  describe('AC6 — the refusal surface is not type-gated', () => {
+    for (const path of NON_SOURCE_PATHS) {
+      it(`HMA-23.AC6 an oversize artifact compiled as ${path} gets the named refusal warning and the deterministic refusal finding, and is not benign`, async () => {
+        // Red-first at 3a8af88: warnings carried only the generic oversize
+        // parse error, `deterministicFindings` was empty, and the artifact came
+        // back `benign` — the C1 shape (unexamined content stamped clean) that
+        // AC2 closed for source_code and nothing closed for the other types.
+        const result = await compiler().compile(PROBES[0].content, path);
+        const refusal = result.warnings.find(w => w.startsWith('Credential scan skipped'));
+        expect(refusal).toBeDefined();
+        // The SAME constant as the source_code branch: the warning cites the
+        // limit it refused against, read off the live gate.
+        expect(refusal).toContain(String(maxCredentialScanBytesForTest()));
+        expect(result.deterministicFindings.map(f => f.surface))
+          .toContain('Credential scan not performed (artifact over size limit)');
+        expect(result.ast.intentClassification).not.toBe('benign');
+      }, 120_000);
+    }
+  });
+
+  describe('AC7 — the two caps are one number, guarded', () => {
+    it('HMA-23.AC7 MAX_CREDENTIAL_SCAN_BYTES equals MAX_REDACTION_INPUT_BYTES', () => {
+      // The two gates were born as independent literals that happened to agree.
+      // The r1 comments say the pair must not drift — this is the guard that
+      // makes drift a test failure instead of a comment violation: raise either
+      // cap without the other and the scan band and the redaction band diverge,
+      // re-opening a window where one side reads bytes the other refuses.
+      expect(maxCredentialScanBytesForTest()).toBe(MAX_REDACTION_INPUT_BYTES);
+    });
+
+    it('HMA-23.AC7 a raised maxArtifactSize cannot re-arm the throw off the source_code branch', async () => {
+      // The exact configuration r1's review measured as a THROW: the consumer
+      // knob raised to 100 MiB, a 6 MB canonical-prefix run compiled as
+      // SOUL.md. The r1 commit claimed the knob could not re-arm the throw; AC5
+      // makes that claim true by gating on the constant, not the config, on
+      // every branch — and the refusal still arrives.
+      const permissive = new SemanticCompiler({ useNanoMind: false, maxArtifactSize: 100 * 1024 * 1024 });
+      const result = await permissive.compile(PROBES[1].content, 'SOUL.md');
+      expect(result.warnings.some(w => w.startsWith('Credential scan skipped'))).toBe(true);
+      expect(result.deterministicFindings.map(f => f.surface))
+        .toContain('Credential scan not performed (artifact over size limit)');
     }, 120_000);
   });
 
