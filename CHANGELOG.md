@@ -4,6 +4,32 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The release is reviewed as the CI-packed tarball, never the tree (HMA-40)
+
+`release.yml` no longer grants `contents: write` and `id-token: write` to one
+job that also ran `npm ci` and `npm test` with them in hand. It is now four
+jobs joined by `needs:`: `build` (`contents: read`, `npm ci --ignore-scripts`,
+build, test, `npm pack`, sha256 recorded and the tarball uploaded), `review`
+(runs `scripts/release-artifact-review.mjs` against the downloaded artifact),
+`publish` (`id-token: write` and nothing else, no checkout, publishes the
+digest-checked tarball with `--provenance`), and `verify` (SLSA v1 predicate
+present and npm's `dist.integrity` equal to the sha512 of the reviewed bytes).
+
+The review script refuses: entries outside the `files` allowlist, dotfiles,
+test-shaped paths, install-time scripts, caret/tilde ranges on `@opena2a/*`
+or `aim-sdk`, a CLI that cannot run `--version`/`--help`/`secure --ci` from a
+clean global prefix with an empty HOME and the network cut, a shipped scanner
+that misses a planted credential control, and high-or-above `npm audit
+--omit=dev` advisories. A check that cannot run is an error, never a pass,
+and every check appears in the census line on every outcome.
+
+Fallout absorbed in this change: the integrity manifest ships as
+`dist/integrity-manifest.json` (no leading dot — the review refuses dotfile
+entries), and the three floated `@opena2a/*` dependency ranges are pinned to
+their locked versions. Every workflow job that runs `npm ci` now refuses,
+before its install, a tree that tracks a `.npmrc` / `.yarnrc(.yml)` /
+`.pnpmfile.cjs` / `.envrc`.
+
 ### `mcp-serve` no longer posts its command telemetry event, and the MCP server's confinement is pinned by witness suites
 
 `mcp-serve` reads inside the granted roots and reaches nothing by default, so

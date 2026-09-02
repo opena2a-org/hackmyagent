@@ -5,9 +5,13 @@ on:
     tags:
       - 'v*'
 
-permissions:
-  contents: write
-  id-token: write
+# Job-scoped permissions only (HMA-40). The previous shape granted
+# `contents: write` and `id-token: write` workflow-wide to a single job that
+# also ran `npm ci` and `npm test` — so every dependency script and every test
+# executed while holding the token that publishes. Now the only job holding
+# `id-token: write` runs no checkout and no install: it publishes bytes that
+# `build` packed and `review` inspected, verified by digest at every hop.
+permissions: {}
 
 # Opt the v4-line JavaScript actions (checkout, setup-node) into Node 24
 # today. They run on Node 20 by default and emit a deprecation warning on
@@ -17,40 +21,162 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tarball-name: ${{ steps.pack.outputs.tarball-name }}
+      tarball-sha256: ${{ steps.pack.outputs.tarball-sha256 }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-          registry-url: https://registry.npmjs.org
-      - run: npm ci
+      - name: Refuse tracked package-manager config
+        # A tracked .npmrc (or yarn/pnpm/direnv equivalent) redirects or hooks
+        # the install that follows it. Fails when the grep prints anything.
+        run: |
+          if git ls-files | grep -E '(^|/)(\.npmrc|\.yarnrc(\.yml)?|\.pnpmfile\.cjs|\.envrc)$'; then
+            echo "::error::A tracked package-manager config file is in the tree; it can redirect or hook the install below. Remove it."
+            exit 1
+          fi
+      - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm test
-
-      - name: Publish to npm with provenance (OIDC trusted publishing)
-        run: npm publish --provenance --access public
-
-      - name: Verify provenance attached
+      - name: Pack the tarball under review
+        id: pack
+        # `tail -n 1`: npm prints the filename as the last stdout line, after
+        # any notice lines. The sha256 recorded here is what `review`,
+        # `publish` and `verify` each re-check before touching the artifact.
         run: |
-          pkg_version=$(node -p "require('./package.json').version")
-          pkg_name=$(node -p "require('./package.json').name")
+          mkdir -p release-pack
+          tarball=$(npm pack --pack-destination release-pack | tail -n 1)
+          digest=$(sha256sum "release-pack/${tarball}" | cut -d' ' -f1)
+          printf 'tarball-name=%s\n' "$tarball" >> "$GITHUB_OUTPUT"
+          printf 'tarball-sha256=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+          echo "packed ${tarball} sha256=${digest}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-tarball
+          path: release-pack/*.tgz
+          if-no-files-found: error
+
+  review:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-tarball
+          path: release-pack
+      - name: Review the packed tarball, not the tree
+        # The reviewed bytes are pinned to the digest `build` recorded before
+        # the review script sees them; a mismatched artifact is refused, not
+        # reviewed. The script exits non-zero on any failed or unrunnable
+        # check, which fails this job and stops `publish` from ever starting.
+        env:
+          TARBALL_NAME: ${{ needs.build.outputs.tarball-name }}
+          TARBALL_SHA256: ${{ needs.build.outputs.tarball-sha256 }}
+        run: |
+          digest=$(sha256sum "release-pack/${TARBALL_NAME}" | cut -d' ' -f1)
+          if [ "$digest" != "$TARBALL_SHA256" ]; then
+            echo "::error::Downloaded artifact sha256 ${digest} does not match the digest build recorded (${TARBALL_SHA256})"
+            exit 1
+          fi
+          node scripts/release-artifact-review.mjs --tarball "release-pack/${TARBALL_NAME}"
+
+  publish:
+    needs: [build, review]
+    runs-on: ubuntu-latest
+    # `id-token: write` and nothing else, in the one job with no checkout and
+    # no install: nothing here executes repository or dependency code while
+    # the OIDC token is grantable.
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-tarball
+          path: release-pack
+      - name: Publish the reviewed bytes with provenance (OIDC trusted publishing)
+        env:
+          TARBALL_NAME: ${{ needs.build.outputs.tarball-name }}
+          TARBALL_SHA256: ${{ needs.build.outputs.tarball-sha256 }}
+        run: |
+          digest=$(sha256sum "release-pack/${TARBALL_NAME}" | cut -d' ' -f1)
+          if [ "$digest" != "$TARBALL_SHA256" ]; then
+            echo "::error::Refusing to publish: artifact sha256 ${digest} is not the reviewed digest (${TARBALL_SHA256})"
+            exit 1
+          fi
+          npm publish "release-pack/${TARBALL_NAME}" --provenance --access public
+
+  verify:
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-tarball
+          path: release-pack
+      - name: Verify SLSA v1 provenance and dist.integrity against the reviewed bytes
+        # Two equalities tie what npm serves to what review read: the artifact
+        # re-downloaded here hashes to the sha256 `build` recorded, and npm's
+        # `dist.integrity` equals the sha512 of those same bytes. The
+        # attestation check reads the SLSA v1 predicate type off the packument
+        # rather than merely "some attestations exist".
+        env:
+          TARBALL_NAME: ${{ needs.build.outputs.tarball-name }}
+          TARBALL_SHA256: ${{ needs.build.outputs.tarball-sha256 }}
+        run: |
+          set -u
+          digest=$(sha256sum "release-pack/${TARBALL_NAME}" | cut -d' ' -f1)
+          if [ "$digest" != "$TARBALL_SHA256" ]; then
+            echo "::error::Artifact sha256 ${digest} does not match the recorded digest (${TARBALL_SHA256})"
+            exit 1
+          fi
+          pkg_name=$(tar -xzOf "release-pack/${TARBALL_NAME}" package/package.json | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log(JSON.parse(d).name))")
+          pkg_version=$(tar -xzOf "release-pack/${TARBALL_NAME}" package/package.json | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log(JSON.parse(d).version))")
+          expected_integrity="sha512-$(openssl dgst -sha512 -binary "release-pack/${TARBALL_NAME}" | openssl base64 -A)"
           deadline=$((SECONDS + 300))
-          attestations=""
+          verified=""
           while [ $SECONDS -lt $deadline ]; do
-            attestations=$(npm view "${pkg_name}@${pkg_version}" dist.attestations --json 2>&1 || true)
-            if [ -n "$attestations" ] && [ "$attestations" != "null" ] && [ "$attestations" != "{}" ]; then
-              echo "Provenance verified for ${pkg_name}@${pkg_version}"
-              exit 0
+            predicate=$(npm view "${pkg_name}@${pkg_version}" dist.attestations.provenance.predicateType 2>/dev/null || true)
+            integrity=$(npm view "${pkg_name}@${pkg_version}" dist.integrity 2>/dev/null || true)
+            if [ "$predicate" = "https://slsa.dev/provenance/v1" ] && [ "$integrity" = "$expected_integrity" ]; then
+              echo "SLSA v1 attestation present and dist.integrity matches the reviewed bytes for ${pkg_name}@${pkg_version} (sha256 ${digest})"
+              verified=1
+              break
             fi
-            echo "Attestations not yet visible, retrying in 15s... (elapsed ${SECONDS}s)"
+            echo "Not yet verifiable (predicate='${predicate}'), retrying in 15s... (elapsed ${SECONDS}s)"
             sleep 15
           done
-          echo "::error::Provenance attestations missing from npm for ${pkg_name}@${pkg_version} after 5 minutes"
-          exit 1
+          if [ -z "$verified" ]; then
+            echo "::error::SLSA v1 provenance or dist.integrity did not verify for ${pkg_name}@${pkg_version} after 5 minutes"
+            exit 1
+          fi
 
+  github-release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

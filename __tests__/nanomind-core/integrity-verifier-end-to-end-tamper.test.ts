@@ -52,7 +52,7 @@ describe('integrity-verifier: end-to-end tamper gate', () => {
 
   const builtArtifactsExist =
     existsSync(join(SRC_DIST, 'cli.js')) &&
-    existsSync(join(SRC_DIST, '.integrity-manifest.json'));
+    existsSync(join(SRC_DIST, 'integrity-manifest.json'));
 
   beforeAll(() => {
     if (!builtArtifactsExist) return;
@@ -70,7 +70,7 @@ describe('integrity-verifier: end-to-end tamper gate', () => {
       symlinkSync(SRC_NODE_MODULES, join(tmpRoot, 'node_modules'));
     }
     tmpCli = join(tmpRoot, 'dist', 'cli.js');
-    tmpManifest = join(tmpRoot, 'dist', '.integrity-manifest.json');
+    tmpManifest = join(tmpRoot, 'dist', 'integrity-manifest.json');
     originalCli = readFileSync(tmpCli);
     originalManifest = readFileSync(tmpManifest);
   });
