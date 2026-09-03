@@ -46,7 +46,6 @@ const CLI = join(REPO_ROOT, 'dist', 'cli.js');
 const PRELOAD = join(REPO_ROOT, '__tests__', 'fixtures', 'stub-registry-fetch-preload.cjs');
 
 function canRunSpawn(): boolean {
-  if (process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true') return false;
   return existsSync(CLI);
 }
 
