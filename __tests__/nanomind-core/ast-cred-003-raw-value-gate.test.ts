@@ -275,16 +275,19 @@ describe('HMA-22 AST-CRED-003 is anchored on a secret-shaped value in the raw ar
     ).toBe(false);
   });
 
-  // ── AC6(b): the producer is untouched — P1's AST is byte-for-byte the pinned base reading ──
-  it("HMA-22.AC6 (b) the compiled P1 AST still carries exactly one CRED-HARVEST risk surface (confidence 0.7, evidence at the first noun) and one supporting span", async () => {
+  // ── AC6(b): the prose producer's reading of P1 is pinned. P1 is a gitleaks config: it names
+  // credential nouns (`secret`, `token`, `key`) in rule descriptions and never asks anyone to
+  // send, share or paste one. Under the clause-scoped CRED-HARVEST rule (a request verb must
+  // govern the noun inside one clause) that file carries no prose surface; the earlier pin of
+  // one file-level surface at confidence 0.7 was the vocabulary-only reading that rule retired.
+  // The value route is out of scope here (P1 holds regexes, not values), so 0 is the whole answer.
+  it("HMA-22.AC6 (b) the compiled P1 AST carries no CRED-HARVEST risk surface and no supporting span: credential nouns without a governing request verb are not a harvest clause", async () => {
     const content = fixture('P1.gitleaks.toml', 'b76842b30506e8d1601f46b8023130f2c5c4abfbb17ae1322c7cfdccd02b2438');
     const { ast } = await compiler.compile(content, '.gitleaks.toml');
     const surfaces = ast.inferredRiskSurface.filter(r => r.attackClass === 'CRED-HARVEST');
-    expect(surfaces.length).toBe(1);
-    expect(surfaces[0].confidence).toBe(0.7);
-    expect(surfaces[0].evidence).toMatch(/^secret/);
+    expect(surfaces.length).toBe(0);
     const spans = ast.evidenceSpans.filter(e => e.supports === 'CRED-HARVEST');
-    expect(spans.length).toBe(1);
+    expect(spans.length).toBe(0);
   });
 });
 

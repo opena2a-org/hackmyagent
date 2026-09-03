@@ -27,6 +27,77 @@ the current head, a change touching no gate file evaluates to `success` ("no
 gate files touched"), and over every no-approval input the conclusion
 vocabulary is exactly `action_required` or `failure` — never `success`, and
 never `neutral`, which required checks treat as passing.
+### The CRED-HARVEST prose rule is clause-scoped, not two whole-file regexes ANDed
+
+The rule behind the `Credential harvesting` risk surface — and therefore behind
+every prose-derived AST-CRED-001 — was a credential noun matched ANYWHERE in a
+document ANDed with a request verb matched ANYWHERE in the same document.
+Neither operand knew where the other had matched, so two ordinary sentences
+hundreds of lines apart, about unrelated things, were enough to earn a CRITICAL.
+The measured witness: a skill document whose only credential noun was `token`
+inside "per-token attribution graphs", and whose only verb witnesses were
+`provide` inside "provider" and `request` inside "requested". No directive
+anywhere in the file, one CRITICAL.
+
+The evidence was as coarse as the gate. It was the FIRST credential noun in the
+file — a bare dictionary word, which `resolveFindingLine` correctly refuses to
+turn into a citation — so every row the rule produced was a CRITICAL carrying no
+line and no `Verify:`.
+
+The signal is now the CLAUSE. A credential noun and a request verb must occur in
+one clause, with the verb GOVERNING the noun (its object phrase, the passive
+subject that is the same relation inverted, or a same-clause anaphor) and no
+negator ahead of the verb in that clause. The clause window breaks at sentence
+ends and line ends, and deliberately not at colons or commas, so a split
+directive — "Provide the following: username, password, and API keys." — does
+not under-fire. The clause span is also the evidence, which is what gives every
+resulting AST-CRED-001 row a line for the first time.
+
+Verb matching is now whole-word over an enumerated set of inflections, so
+`provider` is no longer read as `provide` while "should be included" and "when
+requested" still match. The verb vocabulary gains `include|send|paste|reveal|
+disclose|return` alongside the original `ask|request|share|provide`, which is
+safe precisely because the window closed. The credential-noun class gains one
+spelling: `api[_-]?key` also admits a space, so the English "API key" that
+directives actually use is recognised rather than missed.
+
+Two shapes are knowingly given up: a harvesting directive whose verb sits behind
+a negator in its own clause, and one split across a line break. Both were
+unlocatable findings before — they had no line to lose — and both are pinned as
+tests rather than left to be rediscovered.
+
+A third shape is given up by measurement, not by design, and is recorded here
+so it is not paid silently. The corpus fixture `skill/malicious/exfil-skill` no
+longer produces AST-CRED-001. At the previous rule its row was `Credential
+risk: SECRET` with no line, licensed by the frontmatter key
+`AWS_SECRET_ACCESS_KEY` and the heading `## If asked about scope`, which sit in
+different clauses. No clause in that file holds a credential noun governed by a
+request verb; the remaining nouns (`GITHUB_TOKEN`) are frontmatter keys too. The
+fixture's other findings are unchanged and its score moves from 29 to 34. The
+golden for that fixture is re-baked in this change. The corpus manifest's
+expectation for the fixture (the `AST-CRED-001` row, whose rationale describes a
+value detection the rule never performed, and the `27-33` score band) needs a
+matching change in `opena2a-corpus`; until it lands, the corpus smoke reports
+the band mismatch on that fixture alone.
+
+AST-CRED-003's precondition no longer relies on the prose rule having fired.
+When the compiler produced no credential span or surface, the check now reads
+the bytes that follow each credential noun (the clause rule's own noun class,
+over the same 100-character reach the old evidence span had) with the shared
+credential-format matcher (vendor prefixes and the entropy-floored 40+
+character run, the predicate its doc-context gate already requires), so a real
+secret in doc-context markdown is still detected when no harvesting clause is
+present. A value whose bytes carry a fixture marker is skipped in every context,
+as the canonical scan skips its placeholders. The value route keeps every later
+gate, masks the value in the finding's summary, and derives the line from the
+matched value's offset. Its reach is the noun's, not the file's: over the
+release corpus the unbounded matcher also accepted `sha256:` digests and a
+FAKE-marked vendor value, which no route reported before and which this one
+does not report either.
+
+The canonical credential-format scan (`Hardcoded <label>` surfaces, confidence
+0.9, carrying their own offset) is untouched: it is a value-shaped route, not a
+prose one, and it is what detects real hardcoded secrets.
 
 ### `mcp-serve` no longer posts its command telemetry event, and the MCP server's confinement is pinned by witness suites
 
