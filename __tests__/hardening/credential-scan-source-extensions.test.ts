@@ -29,12 +29,13 @@
  *              including CI, which is where a silent re-omission would land.
  *   End-to-end — a credential really is reported in a `.mjs` file by the built
  *              CLI. Proves the walk actually consults the set, which the
- *              contract layer cannot. Needs a built dist, so it self-skips.
+ *              contract layer cannot. Needs a built dist, and nothing else:
+ *              release.yml builds before it runs the suite.
  *
  * Neither is sufficient alone. The contract layer would pass if the walk stopped
- * consulting the set entirely; the end-to-end layer does not run in CI. The
- * negative control (`.bin`) is load-bearing in both: without it, a scanner that
- * simply read every file would satisfy every positive case.
+ * consulting the set entirely. The negative control (`.bin`) is load-bearing in
+ * both: without it, a scanner that simply read every file would satisfy every
+ * positive case.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -96,8 +97,7 @@ const CLI = join(REPO_ROOT, 'dist', 'cli.js');
 // happily measure a binary older than src/ and report a pass.
 beforeAll(assertDistFreshIfPresent);
 
-const canSpawn = (): boolean =>
-  process.env.CI !== 'true' && process.env.GITHUB_ACTIONS !== 'true' && existsSync(CLI);
+const canSpawn = (): boolean => existsSync(CLI);
 
 /** Write a project holding one high-entropy credential at `relPath`, scan it. */
 function scanFixture(relPath: string): { detected: boolean; output: string } {
