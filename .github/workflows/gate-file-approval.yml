@@ -1,10 +1,13 @@
 # Gate file approval — a path-scoped merge gate for this repository's own CI,
-# review, and release configuration.
+# review, and release configuration, and for the credential-boundary sources
+# ruled into the same class.
 #
-# Any pull request that changes a file under .github/ must carry an approving
-# review from a listed approver, given on the pull request's current head
-# commit. Pull requests that touch nothing under .github/ pass immediately, so
-# ordinary changes stay gated by status checks alone.
+# Any pull request that changes a file under .github/ — or one of the named
+# credential-boundary paths: the credential analyzer, the semantic compiler,
+# the report-redaction module (defense-in-depth) and the stego analyzer —
+# must carry an approving review from a listed approver, given on the pull
+# request's current head commit. Pull requests that touch no gate file pass
+# immediately, so ordinary changes stay gated by status checks alone.
 #
 # Why pull_request_target: the workflow definition is read from the BASE
 # branch, so a pull request that modifies this file is judged by the unmodified
@@ -80,10 +83,56 @@ jobs:
             exit 0
           fi
 
+          # ---- API reads. Everything the verdict needs is fetched here, so
+          # the verdict itself is pure shell over the variables these reads
+          # leave behind. That purity is load-bearing: the block between the
+          # VERDICT markers below is lifted out of this file and executed
+          # verbatim against planted inputs by
+          # __tests__/gate/gate-file-verdict.test.ts — the same discipline as
+          # pr-review-partition.test.ts, because a workflow's bash is the one
+          # kind of code in this repository that nothing else executes before
+          # it reaches main.
+
           # The files listing endpoint is capped at 3000 entries; a gate file
-          # hidden past the cap would otherwise pass unseen. Refuse to evaluate
-          # oversized pull requests instead of failing open.
+          # hidden past the cap would otherwise pass unseen. The count is read
+          # here and refused inside the verdict rather than evaluated blind
+          # (fail closed, never open).
           changed_count=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .changed_files)
+
+          # Both sides of a rename count: a pull request that renames a file OUT
+          # of a gated path reports the old path only in previous_filename, and
+          # a rename is as much a gate-file change as an edit.
+          files=$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate \
+            --jq '.[] | .filename, (.previous_filename // empty)')
+
+          # The tripwire inside the verdict inspects the proposed copy of this
+          # workflow AS DATA (never executed). The fetch happens here so the
+          # verdict stays pure; an unreadable copy arrives there as an empty
+          # string and is refused, never waved through.
+          workflow_modified=false
+          head_copy=""
+          if printf '%s\n' "$files" | grep -qx '\.github/workflows/gate-file-approval\.yml'; then
+            workflow_modified=true
+            head_copy=$(gh api "repos/$REPO/contents/.github/workflows/gate-file-approval.yml?ref=$HEAD_SHA" --jq .content | base64 -d)
+          fi
+
+          # Latest state-changing review from an approver. A stale approval
+          # (older head commit) does not count: approval must be on the
+          # current head, so it cannot survive a later push. Fetched
+          # unconditionally — one extra read on pull requests that turn out to
+          # touch no gate file — so the verdict needs no API access at all.
+          latest=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" --paginate \
+            | jq -s -c --arg u "$approvers" 'add
+                | [.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")
+                       | select(.user.login == $u)]
+                | last // empty')
+          review_state=$(printf '%s' "$latest" | jq -r '.state // empty')
+          review_commit=$(printf '%s' "$latest" | jq -r '.commit_id // empty')
+
+          # --- BEGIN VERDICT (pure shell; lifted and executed verbatim by __tests__/gate/gate-file-verdict.test.ts) ---
+          # Inputs:  approvers HEAD_SHA changed_count files workflow_modified
+          #          head_copy review_state review_commit
+          # Outputs: conclusion title summary
           if [ "$changed_count" -ge 3000 ]; then
             conclusion="failure"
             title="Too many changed files to evaluate"
@@ -94,16 +143,26 @@ jobs:
             summary=""
           fi
 
-          # Both sides of a rename count: a pull request that renames a file OUT
-          # of .github/ reports the old path only in previous_filename, and a
-          # rename is as much a gate-file change as an edit.
-          files=$(gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate \
-            --jq '.[] | .filename, (.previous_filename // empty)')
+          # Gate files are this repository's own CI, review and release
+          # configuration (everything under .github/) plus the
+          # credential-boundary paths ruled into the same class on 2026-09-01:
+          # the credential analyzer, the semantic compiler (evidence-span
+          # extraction), the report-redaction module and the stego analyzer.
+          # Weakening any of these changes what the scanner can see or say
+          # about credentials, so changes to them require the same human
+          # approval as changes to the gate itself. Each file pattern is
+          # anchored at both ends: a lookalike path above, below or beside a
+          # gated one is not gated.
+          gate_pattern='^\.github/'
+          gate_pattern="$gate_pattern|"'^src/nanomind-core/analyzers/credential-analyzer\.ts$'
+          gate_pattern="$gate_pattern|"'^src/nanomind-core/compiler/semantic-compiler\.ts$'
+          gate_pattern="$gate_pattern|"'^src/nanomind-core/security/defense-in-depth\.ts$'
+          gate_pattern="$gate_pattern|"'^src/nanomind-core/analyzers/stego-analyzer\.ts$'
 
           # grep exit 1 means no match; anything above 1 is an execution error
           # and must abort rather than read as "no gate files" (fail closed).
           set +e
-          printf '%s\n' "$files" | grep -q '^\.github/'
+          printf '%s\n' "$files" | grep -Eq "$gate_pattern"
           gate_rc=$?
           set -e
           [ "$gate_rc" -le 1 ]
@@ -111,48 +170,35 @@ jobs:
           if [ -z "$conclusion" ] && [ "$gate_rc" -eq 1 ]; then
             conclusion="success"
             title="No gate files touched"
-            summary="This pull request changes nothing under .github/, so no gate-file approval is required."
+            summary="This pull request changes nothing under .github/ and none of the credential-boundary paths, so no gate-file approval is required."
           fi
 
-          if [ -z "$conclusion" ]; then
-            # Tripwire: if this pull request modifies this workflow, inspect the
-            # proposed copy AS DATA (never executed) and refuse patterns that
-            # would re-arm the pull_request_target attack surface. The patterns
-            # are split so this file cannot match itself. An unreadable proposed
-            # copy is refused too, never waved through.
-            if printf '%s\n' "$files" | grep -qx '\.github/workflows/gate-file-approval\.yml'; then
-              p_checkout='actions/''checkout'
-              p_secret='secrets''[.]'
-              p_write='contents:''[[:space:]]*write'
-              p_writeall='write-''all'
-              head_copy=$(gh api "repos/$REPO/contents/.github/workflows/gate-file-approval.yml?ref=$HEAD_SHA" --jq .content | base64 -d)
-              if [ -z "$head_copy" ]; then
-                conclusion="failure"
-                title="Gate workflow copy unreadable"
-                summary="The proposed gate-file-approval.yml could not be read for inspection (empty contents response). Refused rather than waved through."
-              elif printf '%s\n' "$head_copy" | grep -Eq "$p_checkout|$p_secret|$p_write|$p_writeall"; then
-                conclusion="failure"
-                title="Gate workflow hardening violated"
-                summary="The proposed gate-file-approval.yml checks out head content, references a secret, or widens write permissions. Those are refused regardless of approval."
-              fi
+          if [ -z "$conclusion" ] && [ "$workflow_modified" = "true" ]; then
+            # Tripwire: the proposed copy of this workflow is judged AS DATA
+            # and refused if it would re-arm the pull_request_target attack
+            # surface. The patterns are split so this file cannot match
+            # itself. An unreadable proposed copy is refused too, never waved
+            # through.
+            p_checkout='actions/''checkout'
+            p_secret='secrets''[.]'
+            p_write='contents:''[[:space:]]*write'
+            p_writeall='write-''all'
+            if [ -z "$head_copy" ]; then
+              conclusion="failure"
+              title="Gate workflow copy unreadable"
+              summary="The proposed gate-file-approval.yml could not be read for inspection (empty contents response). Refused rather than waved through."
+            elif printf '%s\n' "$head_copy" | grep -Eq "$p_checkout|$p_secret|$p_write|$p_writeall"; then
+              conclusion="failure"
+              title="Gate workflow hardening violated"
+              summary="The proposed gate-file-approval.yml checks out head content, references a secret, or widens write permissions. Those are refused regardless of approval."
             fi
           fi
 
           if [ -z "$conclusion" ]; then
-            # Latest state-changing review from an approver. A stale approval
-            # (older head commit) does not count: approval must be on the
-            # current head, so it cannot survive a later push.
-            latest=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" --paginate \
-              | jq -s -c --arg u "$approvers" 'add
-                  | [.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")
-                         | select(.user.login == $u)]
-                  | last // empty')
-            state=$(printf '%s' "$latest" | jq -r '.state // empty')
-            commit=$(printf '%s' "$latest" | jq -r '.commit_id // empty')
-            if [ "$state" = "APPROVED" ] && [ "$commit" = "$HEAD_SHA" ]; then
+            if [ "$review_state" = "APPROVED" ] && [ "$review_commit" = "$HEAD_SHA" ]; then
               conclusion="success"
               title="Gate-file change approved"
-              summary="This pull request changes files under .github/ and carries an approving review from $approvers on the current head commit."
+              summary="This pull request changes gate files and carries an approving review from $approvers on the current head commit."
             else
               # The expected state of a gate-file pull request: evaluated,
               # verdict posted, a human must act. action_required blocks a
@@ -160,9 +206,10 @@ jobs:
               # no failure email fires for a routine state.
               conclusion="action_required"
               title="Gate-file change needs approval"
-              summary="This pull request changes files under .github/. It requires an approving review from $approvers on the current head commit ($HEAD_SHA). Automation can author gate-file changes; it cannot approve them."
+              summary="This pull request changes gate files: paths under .github/ or the credential-boundary sources. It requires an approving review from $approvers on the current head commit ($HEAD_SHA). Automation can author gate-file changes; it cannot approve them."
             fi
           fi
+          # --- END VERDICT ---
 
           gh api -X POST "repos/$REPO/check-runs" \
             -f name='Gate file approval' \
