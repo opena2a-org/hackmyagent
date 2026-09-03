@@ -8,9 +8,8 @@
  *
  * Spawn-based — exercises `dist/cli.js` end-to-end against the adversarial
  * corpus fixture. Gated on:
- *   1. Non-CI environment (corpus is not present in CI runners).
- *   2. Built `dist/cli.js` exists.
- *   3. Corpus fixture exists at `~/.opena2a/corpus/skill/malicious/exfil-skill`.
+ *   1. Built `dist/cli.js` exists.
+ *   2. Corpus fixture exists at `~/.opena2a/corpus/skill/malicious/exfil-skill`.
  *
  * Mirrors the gate pattern in `__tests__/checker/check-not-found-json.test.ts`.
  */
@@ -38,9 +37,6 @@ const FIXTURE = join(
 );
 
 function canRun(): boolean {
-  if (process.env.CI === "true" || process.env.GITHUB_ACTIONS === "true") {
-    return false;
-  }
   return existsSync(CLI) && existsSync(FIXTURE);
 }
 
