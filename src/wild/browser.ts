@@ -206,7 +206,9 @@ export function extractContent(page: FetchedPage): ExtractedContent {
 
   // Extract visible text (strip HTML tags, roughly)
   const visibleText = html
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    // Bounded at the next `<script` so a flood of unclosed openers costs
+    // O(n) total instead of O(n^2) (HMA-44); script elements cannot nest.
+    .replace(/<script(?:(?!<script)[\s\S])*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
