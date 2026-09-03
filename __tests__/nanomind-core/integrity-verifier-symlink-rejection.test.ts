@@ -77,7 +77,7 @@ describe('integrity-verifier: symlink rejection in loadManifest', () => {
     const realManifest = generateManifest(root);
     const attackerPath = join(root, 'attacker-manifest.json');
     writeFileSync(attackerPath, JSON.stringify(realManifest));
-    const canonicalPath = join(root, 'dist', '.integrity-manifest.json');
+    const canonicalPath = join(root, 'dist', 'integrity-manifest.json');
     symlinkSync(attackerPath, canonicalPath);
 
     const stderr = captureStderr();
@@ -95,7 +95,7 @@ describe('integrity-verifier: symlink rejection in loadManifest', () => {
     const realManifest = generateManifest(root);
     const attackerPath = join(root, 'attacker-manifest.json');
     writeFileSync(attackerPath, JSON.stringify(realManifest));
-    const fallbackPath = join(root, '.integrity-manifest.json');
+    const fallbackPath = join(root, 'integrity-manifest.json');
     symlinkSync(attackerPath, fallbackPath);
 
     const stderr = captureStderr();
@@ -111,7 +111,7 @@ describe('integrity-verifier: symlink rejection in loadManifest', () => {
     const realManifest = generateManifest(root);
     const attackerPath = join(root, 'attacker-manifest.json');
     writeFileSync(attackerPath, JSON.stringify(realManifest));
-    symlinkSync(attackerPath, join(root, 'dist', '.integrity-manifest.json'));
+    symlinkSync(attackerPath, join(root, 'dist', 'integrity-manifest.json'));
 
     const stderr = captureStderr();
     const result = verifyAll({
@@ -132,8 +132,8 @@ describe('integrity-verifier: symlink rejection in loadManifest', () => {
     const realManifest = generateManifest(root);
     const attackerPath = join(root, 'attacker-manifest.json');
     writeFileSync(attackerPath, JSON.stringify(realManifest));
-    symlinkSync(attackerPath, join(root, 'dist', '.integrity-manifest.json'));
-    writeFileSync(join(root, '.integrity-manifest.json'), JSON.stringify(realManifest));
+    symlinkSync(attackerPath, join(root, 'dist', 'integrity-manifest.json'));
+    writeFileSync(join(root, 'integrity-manifest.json'), JSON.stringify(realManifest));
 
     const stderr = captureStderr();
     const loaded = loadManifest(root);
@@ -146,7 +146,7 @@ describe('integrity-verifier: symlink rejection in loadManifest', () => {
   it('regular file manifests are still accepted (no false positive)', () => {
     // Sanity check: the symlink rejection must not break legitimate manifests.
     const manifest = generateManifest(root);
-    writeFileSync(join(root, 'dist', '.integrity-manifest.json'), JSON.stringify(manifest));
+    writeFileSync(join(root, 'dist', 'integrity-manifest.json'), JSON.stringify(manifest));
     const loaded = loadManifest(root);
     expect(loaded).not.toBeNull();
     expect(loaded?.version).toBe('0.0.0');
@@ -160,7 +160,7 @@ describe('integrity-verifier: symlink rejection in loadManifest', () => {
     mkdirSync(join(root, 'inner'), { recursive: true });
     const realManifest = generateManifest(root);
     writeFileSync(target, JSON.stringify(realManifest));
-    symlinkSync(target, join(root, 'dist', '.integrity-manifest.json'));
+    symlinkSync(target, join(root, 'dist', 'integrity-manifest.json'));
 
     const stderr = captureStderr();
     const loaded = loadManifest(root);
@@ -172,7 +172,7 @@ describe('integrity-verifier: symlink rejection in loadManifest', () => {
 
   it('broken symlink (target missing) is still rejected as symlink, not missed', () => {
     const missingTarget = join(root, 'does-not-exist.json');
-    symlinkSync(missingTarget, join(root, 'dist', '.integrity-manifest.json'));
+    symlinkSync(missingTarget, join(root, 'dist', 'integrity-manifest.json'));
 
     const stderr = captureStderr();
     const loaded = loadManifest(root);

@@ -26,7 +26,7 @@ function setupFakePackage(): string {
 
 function bake(root: string): IntegrityManifest {
   const manifest = generateManifest(root);
-  writeFileSync(join(root, 'dist', '.integrity-manifest.json'), JSON.stringify(manifest));
+  writeFileSync(join(root, 'dist', 'integrity-manifest.json'), JSON.stringify(manifest));
   return manifest;
 }
 
@@ -39,7 +39,7 @@ describe('integrity-verifier manifest path resolution', () => {
     if (root && existsSync(root)) rmSync(root, { recursive: true, force: true });
   });
 
-  it('loadManifest finds the manifest at dist/.integrity-manifest.json (where the build script writes it)', () => {
+  it('loadManifest finds the manifest at dist/integrity-manifest.json (where the build script writes it)', () => {
     bake(root);
     const loaded = loadManifest(root);
     expect(loaded).not.toBeNull();
@@ -48,7 +48,7 @@ describe('integrity-verifier manifest path resolution', () => {
 
   it('loadManifest also finds a manifest at the package root (legacy fallback)', () => {
     const manifest = generateManifest(root);
-    writeFileSync(join(root, '.integrity-manifest.json'), JSON.stringify(manifest));
+    writeFileSync(join(root, 'integrity-manifest.json'), JSON.stringify(manifest));
     const loaded = loadManifest(root);
     expect(loaded).not.toBeNull();
     expect(loaded?.version).toBe('0.0.0');
@@ -60,11 +60,11 @@ describe('integrity-verifier manifest path resolution', () => {
 
   it('generateManifest does NOT include the manifest filename in its own files map (chicken-and-egg)', () => {
     const manifest = generateManifest(root);
-    expect(manifest.files['.integrity-manifest.json']).toBeUndefined();
+    expect(manifest.files['integrity-manifest.json']).toBeUndefined();
     // Re-running after the file lands on disk still must not include it.
     bake(root);
     const second = generateManifest(root);
-    expect(second.files['.integrity-manifest.json']).toBeUndefined();
+    expect(second.files['integrity-manifest.json']).toBeUndefined();
   });
 
   it('verifyAll returns CLEAN on an unmodified package', () => {
@@ -102,10 +102,10 @@ describe('integrity-verifier manifest path resolution', () => {
   it('manifest at the canonical location is the one consumed (dist/ wins over root if both exist)', () => {
     const distManifest = generateManifest(root);
     distManifest.version = 'from-dist';
-    writeFileSync(join(root, 'dist', '.integrity-manifest.json'), JSON.stringify(distManifest));
+    writeFileSync(join(root, 'dist', 'integrity-manifest.json'), JSON.stringify(distManifest));
 
     const rootManifest = { ...distManifest, version: 'from-root' };
-    writeFileSync(join(root, '.integrity-manifest.json'), JSON.stringify(rootManifest));
+    writeFileSync(join(root, 'integrity-manifest.json'), JSON.stringify(rootManifest));
 
     expect(loadManifest(root)?.version).toBe('from-dist');
   });
@@ -114,10 +114,10 @@ describe('integrity-verifier manifest path resolution', () => {
     bake(root);
     // External auditors can verify by hashing the manifest content directly —
     // the manifest does not need to include itself for that purpose.
-    const raw = readFileSync(join(root, 'dist', '.integrity-manifest.json'), 'utf-8');
+    const raw = readFileSync(join(root, 'dist', 'integrity-manifest.json'), 'utf-8');
     const manifest = JSON.parse(raw) as IntegrityManifest;
     expect(Object.keys(manifest.files).length).toBeGreaterThan(0);
-    expect('.integrity-manifest.json' in manifest.files).toBe(false);
+    expect('integrity-manifest.json' in manifest.files).toBe(false);
   });
 
   // The 9 tests above pass `packageRoot` explicitly. The production caller in
@@ -128,7 +128,7 @@ describe('integrity-verifier manifest path resolution', () => {
   // silently no-op the gate again. This test exercises that codepath against
   // the real shipped layout — `dist/nanomind-core/security/integrity-verifier.js`
   // climbs to the repo's own package.json and finds the real
-  // `dist/.integrity-manifest.json`.
+  // `dist/integrity-manifest.json`.
   it('verifyAll() with no options resolves the real package root and loads the shipped manifest', async () => {
     // Dynamically import the BUILT module (matches how cli.ts imports it).
     const builtModule = await import(

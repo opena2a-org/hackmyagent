@@ -4,6 +4,43 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The release is reviewed as the CI-packed tarball, never the tree (HMA-40)
+
+`release.yml` no longer grants `contents: write` and `id-token: write` to one
+job that also ran `npm ci` and `npm test` with them in hand. It is now four
+jobs joined by `needs:`: `build` (`contents: read`, `npm ci --ignore-scripts`,
+build, test, `npm pack`, sha256 recorded and the tarball uploaded), `review`
+(runs `scripts/release-artifact-review.mjs` against the downloaded artifact),
+`publish` (`id-token: write` and nothing else, no checkout, publishes the
+digest-checked tarball with `--provenance`), and `verify` (SLSA v1 predicate
+present and npm's `dist.integrity` equal to the sha512 of the reviewed bytes).
+
+The review script refuses: entries outside the `files` allowlist, dotfiles,
+test-shaped paths, install-time scripts, caret/tilde ranges on `@opena2a/*`
+or `aim-sdk`, a CLI that cannot run `--version`/`--help`/`secure --ci` from a
+clean global prefix with an empty HOME and the network cut, a shipped scanner
+that misses a planted credential control, an integrity self-check that is not
+live in the shipped tarball, and high-or-above `npm audit --omit=dev`
+advisories. A check that cannot run is an error, never a pass, and every
+check appears in the census line on every outcome.
+
+Fallout absorbed in this change: the integrity manifest the CLI verifies
+itself against moves from `dist/.integrity-manifest.json` to
+`dist/integrity-manifest.json` (no leading dot — the review refuses dotfile
+entries). Already-installed versions are unaffected: each installed version
+reads only its own `dist/`, so no existing install ever looks for the new
+path. No documented interface and no external consumer reads the manifest
+path; it is internal to the CLI's startup self-check. And the release review
+now proves that self-check is live in the shipped tarball rather than
+assuming it: the `self-check-live` check requires the manifest to cover
+exactly the packed `dist/` files at the packed version, then corrupts
+`dist/index.js` in a scratch install and requires `hackmyagent --version` to
+quarantine (exit 3, `INTEGRITY CHECK FAILED`) — so a manifest that goes
+missing under any future rename is a named release failure, never a silent
+dev-mode CLEAN. Separately, the three floated `@opena2a/*` dependency ranges
+are pinned to their locked versions, and every workflow job that runs
+`npm ci` now refuses, before its install, a tree that tracks a `.npmrc` /
+`.yarnrc(.yml)` / `.pnpmfile.cjs` / `.envrc`.
 ### The CRED-HARVEST prose rule is clause-scoped, not two whole-file regexes ANDed
 
 The rule behind the `Credential harvesting` risk surface — and therefore behind
