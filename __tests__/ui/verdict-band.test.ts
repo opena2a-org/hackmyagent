@@ -38,7 +38,6 @@ const CLI = join(REPO_ROOT, 'dist', 'cli.js');
 const FIXTURE = join(homedir(), '.opena2a', 'corpus', 'soul', 'malicious', 'permissive-overrides-soul');
 
 function canRunSpawn(): boolean {
-  if (process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true') return false;
   return existsSync(CLI) && existsSync(FIXTURE);
 }
 

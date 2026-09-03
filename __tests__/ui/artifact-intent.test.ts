@@ -41,7 +41,6 @@ const BENIGN_FIXTURE = join(CORPUS, 'benign', 'hardened-soul');
 const MALICIOUS_FIXTURE = join(CORPUS, 'malicious', 'permissive-overrides-soul');
 
 function canRun(fixture: string): boolean {
-  if (process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true') return false;
   return existsSync(CLI) && existsSync(fixture);
 }
 
