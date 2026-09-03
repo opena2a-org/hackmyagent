@@ -12890,7 +12890,11 @@ dist/
         { pattern: /eval\s*\(/, label: 'eval() dynamic execution' },
         { pattern: /String\.fromCharCode/, label: 'String.fromCharCode obfuscation' },
         { pattern: /\\x[0-9a-fA-F]{2}/, label: 'hex-encoded string' },
-        { pattern: /(?:atob|Buffer\.from)\s*\([^)]+\)[\s\S]*?eval\s*\(/, label: 'base64+eval combo' },
+        // The decode-to-eval scan is bounded at the next decode call so a
+        // flood of unclosed openers costs O(n) total instead of O(n^2)
+        // (HMA-44); when a later decode call precedes the eval, that later
+        // call anchors its own match, so decode..eval content still tests true.
+        { pattern: /(?:atob|Buffer\.from)\s*\([^)]+\)(?:(?!(?:atob|Buffer\.from)\s*\()[\s\S])*?eval\s*\(/, label: 'base64+eval combo' },
         { pattern: /base64\s+-d/, label: 'shell base64 decode' },
         { pattern: /eval\s+\$\(/, label: 'shell eval $(...)' },
         { pattern: /\becho\s+['"][A-Za-z0-9+/=]{20,}['"]\s*\|\s*base64/, label: 'echo+base64 pipe' },
