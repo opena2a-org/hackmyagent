@@ -124,6 +124,31 @@ describe('NEMO-009 multi-line template-literal gating', () => {
     expect(hits[0].line).toBe(2);
   });
 
+  // A `}` inside a string, comment or regex literal WITHIN the interpolation
+  // must not close it early: the interpolation walk lexes its interior under
+  // the same rules as the rest of the line. A bare brace counter closed the
+  // interpolation at the quoted `}` and blanked the live eval( after it as
+  // template text — under-reporting, the direction no walker here may take.
+  const interpBraceCases: Array<[string, string]> = [
+    ['single-quoted string', "tpl text ${'}' + eval(userInput)} more"],
+    ['double-quoted string', 'tpl text ${"}" + eval(userInput)} more'],
+    ['nested backtick string', 'tpl text ${`}` + eval(userInput)} more'],
+    ['block comment', 'tpl text ${/* } */ eval(userInput)} more'],
+    ['regex literal', 'tpl text ${/}/.test(x) && eval(userInput)} more'],
+  ];
+  for (const [holder, middle] of interpBraceCases) {
+    it(`HMA-65.AC4 a } inside a ${holder} within \${...} does not close the interpolation: eval( still fires`, async () => {
+      const ts = ['const t = `', middle, '`;'].join('\n');
+      await fs.writeFile(path.join(tempDir, 'interp-brace.ts'), ts);
+      const result = await scanner.scan({ targetDir: tempDir });
+      const hits = nemo009(result.findings);
+      expect(hits).toHaveLength(1);
+      expect(hits[0].line).toBe(2);
+      expect(hits[0].name).toBe('Unsafe deserialization: eval()');
+      expect(hits[0].severity).toBe('critical');
+    });
+  }
+
   it('HMA-65.AC4 isMatchInsideStringLiteral keeps its two-argument per-line signature and answers', () => {
     expect(isMatchInsideStringLiteral.length).toBe(2);
     expect(isMatchInsideStringLiteral('eval(userInput);', 0)).toBe(false);

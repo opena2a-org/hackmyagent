@@ -25,6 +25,10 @@ Suppression is scoped to the literal's own span, never to the file. A real
 the closing backtick returns the walk to code state, so the very next line is
 read as code again; and `${...}` interpolation inside the literal is a
 re-entry into code state, so an eval( in the interpolation keeps firing. The
+interpolation walk lexes its own strings, comments and regex literals under
+the same rules as the rest of the line, so a `}` sitting inside a quoted
+string, a comment or a regex within `${...}` never closes the interpolation
+early and never blanks the live code after it as template text. The
 walk is comment-aware across lines too, so a stray backtick in a doc comment
 (a markdown code fence, say) cannot open a phantom template that swallows the
 real code after it. The per-line predicate keeps its signature and its

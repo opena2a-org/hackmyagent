@@ -2342,7 +2342,9 @@ function blankMaskInto(
  * `${...}` interpolation is a re-entry into code state and stays unblanked:
  * an eval( inside the interpolation executes and must keep firing. The walk
  * is quote-, comment- and regex-aware through the same slash-meaning rules
- * the predicate uses, and block-comment state is carried across lines for one
+ * the predicate uses — inside the interpolation too, so a `}` sitting in a
+ * quoted string, comment or regex literal there never closes the
+ * interpolation early — and block-comment state is carried across lines for one
  * reason — a stray backtick in a doc comment (a markdown code fence, say)
  * must not open a phantom template that swallows the real code after it.
  * Every end-of-line state the walk cannot settle — an interpolation left
@@ -2367,7 +2369,7 @@ function blankTemplateLiteralSpans(
   }
   const blank = new Uint8Array(line.length);
   const end = templateMaskInto(
-    line, 0, 'regex', false, [], state.inTemplateLiteral, state.inBlockComment, 0, 0, blank,
+    line, 0, 'regex', false, [], state.inTemplateLiteral, state.inBlockComment, [], 0, 0, blank,
   );
   state.inTemplateLiteral = end.inTemplateLiteral;
   state.inBlockComment = end.inBlockComment;
@@ -2383,9 +2385,15 @@ function blankTemplateLiteralSpans(
  * line ends with. Token walking — words, parens, the opener set, `.`-prefixed
  * property names — mirrors `lexMaskInto` through the shared helpers, because
  * whether a backtick is a template opener or regex/string/comment text is
- * decided by the same slash meaning that decides which `/` opens a regex. On
- * an undecidable slash both readings are lexed: a character is blanked, and a
- * carry survives the line, only when both lexings agree.
+ * decided by the same slash meaning that decides which `/` opens a regex.
+ * `${...}` interpolation re-enters this same code walk with a brace depth
+ * pushed onto `interpDepths` (one entry per open interpolation, so templates
+ * nest): the interior's strings, comments and regex literals are lexed under
+ * the same rules, and only a code-level `}` at depth zero hands the walk back
+ * to template text — a `}` inside any of them never closes the interpolation.
+ * An interpolation still open at end of line is an unsettled state and drops
+ * the carry. On an undecidable slash both readings are lexed: a character is
+ * blanked, and a carry survives the line, only when both lexings agree.
  */
 function templateMaskInto(
   line: string,
@@ -2395,6 +2403,7 @@ function templateMaskInto(
   parenStack: number[],
   inTemplateIn: boolean,
   inBlockIn: boolean,
+  interpDepths: number[],
   undecidableCount: number,
   itersIn: number,
   blank: Uint8Array,
@@ -2432,28 +2441,21 @@ function templateMaskInto(
         continue;
       }
       if (cj === '$' && line[i + 1] === '{') {
-        // Template interpolation is a re-entry into code state. Scan a
-        // brace-depth counter to the matching `}`; the span between the
-        // braces is real code and stays unblanked.
+        // Template interpolation is a re-entry into code state: push a
+        // brace depth and fall back into the code walk below, which owns
+        // the interior's strings, comments and regex literals. A `}`
+        // inside any of those never closes the interpolation — the bug a
+        // bare brace counter had: `${'}'; eval(x)}` closed at the quoted
+        // brace and blanked the live eval( after it as template text,
+        // under-reporting. The span between the braces is real code and
+        // stays unblanked.
         blank[i] = 1;
         blank[i + 1] = 1;
-        let depth = 1;
-        let k = i + 2;
-        while (k < line.length && depth > 0) {
-          if (++iters > MAX_WALK_ITERATIONS) return DROP_CARRY;
-          const ck = line[k];
-          if (ck === '{') depth++;
-          else if (ck === '}') depth--;
-          k++;
-        }
-        if (depth > 0) {
-          // Interpolation left open at end of line: the next line is code
-          // to this walker, and when the template text later resumes it
-          // over-reports — the per-line limit this pass does not repay.
-          return DROP_CARRY;
-        }
-        blank[k - 1] = 1; // the closing `}` of the interpolation
-        i = k;
+        interpDepths.push(0);
+        inTemplate = false;
+        slashMeaning = 'regex';
+        afterDot = false;
+        i += 2;
         continue;
       }
       blank[i] = 1;
@@ -2488,10 +2490,10 @@ function templateMaskInto(
         const regexBlank = new Uint8Array(line.length);
         const divisionBlank = new Uint8Array(line.length);
         const regexEnd = templateMaskInto(
-          line, i, 'regex', false, [...parenStack], false, false, undecidableCount + 1, iters, regexBlank,
+          line, i, 'regex', false, [...parenStack], false, false, [...interpDepths], undecidableCount + 1, iters, regexBlank,
         );
         const divisionEnd = templateMaskInto(
-          line, i, 'division', false, [...parenStack], false, false, undecidableCount + 1, iters, divisionBlank,
+          line, i, 'division', false, [...parenStack], false, false, [...interpDepths], undecidableCount + 1, iters, divisionBlank,
         );
         for (let k = i; k < line.length; k++) blank[k] = regexBlank[k] & divisionBlank[k];
         return {
@@ -2567,7 +2569,24 @@ function templateMaskInto(
       i++;
       continue;
     }
+    if (c === '{') {
+      if (interpDepths.length > 0) interpDepths[interpDepths.length - 1]++;
+      slashMeaning = 'regex';
+      afterDot = false;
+      i++;
+      continue;
+    }
     if (c === '}') {
+      if (interpDepths.length > 0 && interpDepths[interpDepths.length - 1] === 0) {
+        // The code-level `}` at depth zero: the interpolation closes and
+        // the walk hands back to the enclosing template's text.
+        blank[i] = 1;
+        interpDepths.pop();
+        inTemplate = true;
+        i++;
+        continue;
+      }
+      if (interpDepths.length > 0) interpDepths[interpDepths.length - 1]--;
       slashMeaning = 'undecidable';
       afterDot = false;
       i++;
@@ -2592,6 +2611,12 @@ function templateMaskInto(
     slashMeaning = REGEX_OPENING_PUNCTUATORS.has(c) ? 'regex' : 'undecidable';
     afterDot = false;
     i++;
+  }
+  if (interpDepths.length > 0) {
+    // End of line inside an interpolation (or a template nested in one):
+    // an unsettled state. Drop the carry and read the next line as code —
+    // over-reporting, never under-reporting.
+    return DROP_CARRY;
   }
   return { inTemplateLiteral: inTemplate, inBlockComment: inBlock };
 }
